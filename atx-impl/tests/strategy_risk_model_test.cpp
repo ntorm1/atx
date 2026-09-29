@@ -411,7 +411,7 @@ void restrict_membership(Planted& p) {
       p.present[k] = 0; p.close[k] = missing; p.raw[k] = missing; p.volume[k] = missing;
     }
 }
-struct Rows final : rk::RiskSink {
+struct MaskRows final : rk::RiskSink {
   std::vector<usize> regression_rows;
   std::vector<u8> fitted, last_eligible;
   std::vector<f64> last_specific;
@@ -430,7 +430,7 @@ TEST(RiskModel, AbsentMembersAndNonMembersStayOutOfTheFit) {
   Planted planted(300, 200, 53);
   restrict_membership(planted);
   const auto panel = planted.panel();
-  Rows rows; rows.dates = planted.d;
+  MaskRows rows; rows.dates = planted.d;
   std::array<rk::RiskSink*, 1> sinks{&rows};
   const auto status = rk::run_risk_model(panel, rk::RiskModelConfig{}, sinks);
   ASSERT_TRUE(status) << status.error().to_string();
