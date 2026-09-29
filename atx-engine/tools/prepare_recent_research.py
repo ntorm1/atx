@@ -25,6 +25,20 @@ Unlinked lines (ETFs, ETNs, most ADRs, unbridged names) fail the first test. Eve
 member.u8 is copied byte for byte; the manifest keeps the base keys (membership_recipe included,
 so role readers admit it) with score_member_counts recomputed and a ``universe`` block: the id,
 the rule, pinned inputs, per-reason drop counts and the dropped member share per session.
+
+``linked-operating-v2`` (platform v7 W5b) is the same restriction with the atx-db identity bridge
+``export/identity-bridge-v2-pit`` (strict + name tiers) in place of the r4 bridge. That bridge's
+class_status is ``common`` or the line's share-class letter: letters U, W and R (units, warrants,
+rights; the Nasdaq fifth-letter convention of atx-db U3) fail the class test, every other letter
+(A, B, C, ...) is a common share class and passes. It also marks the delisting terminations of
+role lines from the pinned atx-db ``delisting`` stage (``--delisting``: events.parquet, rule
+delisting-rule-r-v1; non-continued lines whose last vendor session lies in the role) as role
+attributes in ``universe.delisting`` (delist_code = the stage cause, delist_return = its imputed
+dlret, null where the stage has none). ``--delisting-returns`` (default off: payloads stay byte for
+byte) applies ``DELISTING_RETURN_RULE``: on the termination session (the role session after the
+last vendor session L) a line with a stage dlret gets close = close[L] x (1 + dlret), raw_close =
+raw_close[L] x (1 + dlret), volume 0 and present 1, and is not a member there, so a position held
+from L realises the imputed delisting return; skipped cases are counted by reason.
 """
 from __future__ import annotations
 
@@ -52,7 +66,8 @@ ROLE_SCHEMA = "atx.recent-research-role/v1"
 CLOCK = "modeled-session+22h-mark+23h-decision-v1"
 DEFAULT_UNIVERSE = "research-prior63-usd-adv-topn-v1"   # the membership rule above (unchanged)
 LINKED_OPERATING_UNIVERSE = "linked-operating-v1"       # v6 revision V6-U
-UNIVERSES = (DEFAULT_UNIVERSE, LINKED_OPERATING_UNIVERSE)
+LINKED_OPERATING_V2_UNIVERSE = "linked-operating-v2"    # platform v7 W5b: atx-db identity bridge v2 + delisting
+UNIVERSES = (DEFAULT_UNIVERSE, LINKED_OPERATING_UNIVERSE, LINKED_OPERATING_V2_UNIVERSE)
 UNIVERSE_SIC_LAG_SESSIONS = 1     # the grp_* / fundamentals clock of fields-v6 (v4-prereg R2 --fund-lag-sessions 1)
 UNIVERSE_SIC_STALE_DAYS = 550     # prepare_research_fields.GRP_STALE_DAYS (asserted at run time)
 # Not operating companies: asset-backed (6189), commodity pools (6221), open-end funds (6722), unit investment
@@ -78,6 +93,40 @@ UNIVERSE_LIMITS = [
     "identity is the r4 rehearsal bridge (rehearsal_identity, scope_complete false): unbridged operating stocks drop",
     "membership_recipe keeps the base ADV top-N rule (an upper envelope); the universe block is the restriction",
 ]
+# linked-operating-v2 (platform v7 W5b)
+V2_NON_COMMON_CLASSES = ("U", "W", "R")   # units, warrants, rights: atx-db U3 Nasdaq fifth-letter convention
+V2_CLASS_RULE = ("class_status 'common' or a single upper-case share-class letter other than U, W, R (units, warrants, "
+                 "rights) passes; any other value (null, U, W, R, words) is class_not_common")
+LINKED_OPERATING_V2_RULE = (
+    "linked-operating-v2: linked-operating-v1 with the identity bridge replaced by the atx-db export identity-bridge-v2-pit "
+    "(tiers strict + name, the atx.identity-bridge/v1 contract, same LINK_RULE) and its class test by: " + V2_CLASS_RULE
+    + "; SIC test, lag, staleness, non_operating_sic and reason order unchanged")
+UNIVERSE_V2_LIMITS = [
+    "identity is the atx-db v2 point-in-time bridge (strict + name tiers; the backfill tier is excluded, so lines alive "
+    "only at the 2026 snapshot stay unlinked)",
+    "SIC comes from the pinned --sic-events: CIKs linked by the v2 bridge but absent from those events drop as "
+    "no_visible_sic",
+    "membership_recipe keeps the base ADV top-N rule (an upper envelope); the universe block is the restriction",
+]
+DELISTING_ADAPTER = {
+    "schema": "atx.alpha-panel.delisting/v1", "file": "events.parquet",
+    "columns": ("security_id", "last_session", "continued", "cause", "cause_basis", "dlret", "dlret_if_performance",
+                "available_at", "exchange", "ever_member"),
+}
+DELISTING_STAGE_RULE = "delisting-rule-r-v1"
+DELISTING_MARK_RULE = (
+    "a delisting termination = a delisting/events.parquet row of a role line with continued false and last_session L "
+    "within [first, last] role session; termination_session = the role session after L (null when L is not a role "
+    "session or is the last one); attributes are the stage's cause (delist_code), imputed dlret (delist_return, null "
+    "where absent), dlret_if_performance, cause_basis, exchange and available_at (the classification clock, which may "
+    "follow the termination session by up to 30 days); rows available on or after 2025-01-01 are dropped")
+DELISTING_RETURN_RULE = (
+    "delisting-return-on-termination-v1 (--delisting-returns; default off): for a marked termination with a non-null "
+    "delist_return r whose line is present at L and at no role session after L, the termination session T = L + 1 "
+    "gets close[T] = close[L] x (1 + r), raw_close[T] = raw_close[L] x (1 + r), volume[T] = 0, present[T] = 1 and "
+    "member[T] = 0: a position held from the L decision realises r on T and none is opened at T. The return is imputed "
+    "(Shumway: M&A and non-common 0, performance -30% NYSE family / -55% Nasdaq); its cause may be classified after T, "
+    "so the option models realised P&L and must not feed a T-dated signal")
 
 
 def day(value: str | dt.date) -> int:
@@ -503,8 +552,16 @@ def classify_linked_operating(member, link, primary, not_common, sic_visible, si
     return reason == 0, reason
 
 
-def _bridge_class(prf, bridge: Path, bridge_sha256: str, role, links: dict, budget):
-    """class_status == 'common' per kept bridge row, aligned with prepare_research_fields.load_bridge's rows."""
+def v2_class_ok(status) -> np.ndarray:
+    """The linked-operating-v2 class test (``V2_CLASS_RULE``) per class_status value."""
+    status = np.asarray(status, dtype=object)
+    letter = np.array([isinstance(x, str) and len(x) == 1 and "A" <= x <= "Z" for x in status], dtype=bool)
+    return (status == UNIVERSE_CLASS) | (letter & ~np.isin(status.astype(str), V2_NON_COMMON_CLASSES))
+
+
+def _bridge_class(prf, bridge: Path, bridge_sha256: str, role, links: dict, budget, v2: bool = False):
+    """class_status == 'common' per kept bridge row, aligned with prepare_research_fields.load_bridge's rows
+    (linked-operating-v2: ``v2_class_ok``)."""
     m, _ = prf.pinned_manifest(bridge, bridge_sha256, "identity-bridge", prf.BRIDGE_ADAPTER["schema"])
     table, _ = prf.read_listed(bridge, m, prf.BRIDGE_ADAPTER, "identity-bridge", budget, extra=("class_status",))
     sid = prf.as_ids(prf.column_of(table, "sr_id"), "identity-bridge sr_id")
@@ -519,7 +576,7 @@ def _bridge_class(prf, bridge: Path, bridge_sha256: str, role, links: dict, budg
         raise ValueError("identity-bridge class rows do not align with the link rows")
     status = np.asarray(prf.as_text(prf.column_of(table, "class_status")).to_pylist(), dtype=object)[keep]
     values, counts = np.unique(status.astype(str), return_counts=True)
-    return status == UNIVERSE_CLASS, {str(v): int(c) for v, c in zip(values, counts)}
+    return (v2_class_ok(status) if v2 else status == UNIVERSE_CLASS), {str(v): int(c) for v, c in zip(values, counts)}
 
 
 def _check_fields(prf, fields: Path, fields_sha256: str, base_sha256: str, visible: np.ndarray, link_counts: dict,
@@ -559,11 +616,18 @@ def _check_fields(prf, fields: Path, fields_sha256: str, base_sha256: str, visib
 
 def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *, bridge: Path, bridge_sha256: str,
                   sic_events: Path, sic_events_sha256: str, fields: Path | None = None,
-                  fields_sha256: str | None = None, universe: str = LINKED_OPERATING_UNIVERSE):
-    """``--universe linked-operating-v1``: a new role = the base role with member.u8 restricted (see module doc)."""
+                  fields_sha256: str | None = None, universe: str = LINKED_OPERATING_UNIVERSE,
+                  delisting: Path | None = None, delisting_sha256: str | None = None, delisting_returns: bool = False):
+    """``--universe linked-operating-v1`` / ``-v2``: a new role = the base role with member.u8 restricted (see module
+    doc); v2 also marks delisting terminations and, with ``delisting_returns``, applies their imputed returns."""
     import prepare_research_fields as prf  # same directory: the fields' own link / SIC semantics
-    if universe != LINKED_OPERATING_UNIVERSE:
-        raise ValueError(f"restrict_role implements {LINKED_OPERATING_UNIVERSE} only")
+    if universe not in (LINKED_OPERATING_UNIVERSE, LINKED_OPERATING_V2_UNIVERSE):
+        raise ValueError(f"restrict_role implements {LINKED_OPERATING_UNIVERSE} and {LINKED_OPERATING_V2_UNIVERSE} only")
+    v2 = universe == LINKED_OPERATING_V2_UNIVERSE
+    if (delisting is None) != (delisting_sha256 is None) or v2 != (delisting is not None):
+        raise ValueError(f"--delisting and --delisting-sha256 go together, with {LINKED_OPERATING_V2_UNIVERSE} only")
+    if delisting_returns and not v2:
+        raise ValueError(f"--delisting-returns applies to {LINKED_OPERATING_V2_UNIVERSE} only")
     if prf.GRP_STALE_DAYS != UNIVERSE_SIC_STALE_DAYS:
         raise ValueError("prepare_research_fields.GRP_STALE_DAYS changed; the universe SIC staleness is declared 550")
     if (fields is None) != (fields_sha256 is None):
@@ -577,7 +641,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     nd, n = role.n_dates, role.n
     budget.admit(nd * n * 10 + (64 << 20), "universe-link-matrix")
     links, bridge_sources, bridge_st = prf.load_bridge(bridge, bridge_sha256, role, budget)
-    common_rows, class_tally = _bridge_class(prf, bridge, bridge_sha256, role, links, budget)
+    common_rows, class_tally = _bridge_class(prf, bridge, bridge_sha256, role, links, budget, v2)
     marks = role.days * DAY_NS + prf.MARK_NS
     ciks, link, primary, link_st = prf.resolve_links(links, role, marks, budget)
     # a cell is not common when any row qualifying there (resolve_links' own qualification) is not common
@@ -631,11 +695,22 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     if fields is not None:
         crosscheck = _check_fields(prf, fields, fields_sha256, base_sha256, visible_all, link_counts, limits)
     del visible_all, not_common, link, primary
-    # Output: every base payload byte for byte, member.u8 restricted, manifest last (exclusive).
+    delist, patched = None, {}
+    if v2:  # marked (and applied) before the output directory exists: a refusal leaves nothing behind
+        delist, patched = _delisting(prf, delisting, delisting_sha256, role, base, kept, delisting_returns, budget)
+        if patched:  # members cleared on applied termination sessions (counted in universe.delisting.applied)
+            kept_counts = [int(x) for x in kept.astype(np.int64).sum(axis=1)]
+    # Output: every base payload byte for byte (or as patched by --delisting-returns), member.u8 restricted,
+    # manifest last (exclusive).
     output.mkdir(parents=False, exist_ok=False)
     files = {}
     for name, entry in sorted(m["files"].items()):
         if name == "member.u8":
+            continue
+        if name in patched:
+            with (output / name).open("xb") as dst:
+                dst.write(patched[name])
+            files[name] = {"bytes": len(patched[name]), "sha256": hashlib.sha256(patched[name]).hexdigest()}
             continue
         h, size = hashlib.sha256(), 0
         with (base / name).open("rb") as src, (output / name).open("xb") as dst:
@@ -662,10 +737,11 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     result["files"] = files
     result["score_member_counts"] = kept_counts[role.score_begin:]
     result["universe"] = {
-        "id": universe, "rule": LINKED_OPERATING_RULE, "point_in_time": UNIVERSE_PIT, "limits": UNIVERSE_LIMITS,
+        "id": universe, "rule": LINKED_OPERATING_V2_RULE if v2 else LINKED_OPERATING_RULE,
+        "point_in_time": UNIVERSE_PIT, "limits": UNIVERSE_V2_LIMITS if v2 else UNIVERSE_LIMITS,
         "base_role": {"path": str(base.resolve()), "manifest_sha256": base_sha256.lower(),
                       "membership_recipe": m["membership_recipe"], "member_sha256": m["files"]["member.u8"]["sha256"]},
-        "class_status_required": UNIVERSE_CLASS, "sic_lag_sessions": UNIVERSE_SIC_LAG_SESSIONS,
+        "class_status_required": V2_CLASS_RULE if v2 else UNIVERSE_CLASS, "sic_lag_sessions": UNIVERSE_SIC_LAG_SESSIONS,
         "sic_stale_days": UNIVERSE_SIC_STALE_DAYS, "non_operating_sic": list(NON_OPERATING_SIC),
         "reasons": list(UNIVERSE_REASONS),
         "inputs": {"identity_bridge": {"manifest_sha256": bridge_sha256.lower(), "sources": bridge_sources,
@@ -685,9 +761,102 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
         "dropped_member_share": share,
         "dropped_member_share_definition": "per session: 1 - kept members / base members (null: no base member)",
     }
+    if v2:
+        result["universe"]["inputs"]["delisting"] = delist.pop("inputs")
+        result["universe"]["delisting"] = delist
     publish(output / "manifest.json", result, limits)
     limits.report("universe-complete", universe=universe, base_member_cells=base_cells, kept_member_cells=kept_cells)
     return result
+
+
+def delisting_dir(path: Path) -> Path:
+    """A delisting stage directory named directly or through its events.parquet."""
+    path = Path(path)
+    return (path.parent if path.name == DELISTING_ADAPTER["file"] else path).resolve()
+
+
+def _delisting(prf, directory: Path, expected_sha256: str, role, base: Path, kept: np.ndarray, apply: bool, budget):
+    """``DELISTING_MARK_RULE`` attributes and, with ``apply``, the ``DELISTING_RETURN_RULE`` payload patches
+    (returns (block, {payload name: patched bytes}); ``kept`` loses the members of applied termination sessions)."""
+    m, man_src = prf.pinned_manifest(Path(directory), expected_sha256, "delisting", DELISTING_ADAPTER["schema"])
+    if m.get("rule") != DELISTING_STAGE_RULE:
+        raise ValueError(f"delisting stage rule {m.get('rule')!r} is not {DELISTING_STAGE_RULE}")
+    table, sources = prf.read_listed(Path(directory), m, DELISTING_ADAPTER, "delisting", budget)
+    sid = prf.as_ids(prf.column_of(table, "security_id"), "delisting security_id")
+    last = prf.as_days(prf.column_of(table, "last_session"), "delisting last_session")
+    cont = pc.fill_null(prf.column_of(table, "continued"), False).to_numpy(zero_copy_only=False).astype(bool)
+    avail = prf.as_instants_ns(prf.column_of(table, "available_at"), "delisting available_at")
+    dlret, dperf = (prf.as_f64(pc.cast(prf.column_of(table, c), pa.float64()), f"delisting {c}")
+                    for c in ("dlret", "dlret_if_performance"))
+    cause, basis, exch = (prf.as_text(prf.column_of(table, c)).to_pylist() for c in ("cause", "cause_basis", "exchange"))
+    del table
+    nd, n = role.n_dates, role.n
+    pos, on = role.columns_of(sid)
+    inside = on & (last >= role.days[0]) & (last <= role.days[-1])
+    sealed = inside & (avail >= prf.SEAL_NS)
+    term = inside & ~sealed & ~cont
+    counts = {"rows_total": int(len(sid)), "rows_on_role_in_window": int(np.count_nonzero(inside)),
+              "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(sealed)),
+              "continued_not_terminations": int(np.count_nonzero(inside & ~sealed & cont)),
+              "terminations": int(np.count_nonzero(term))}
+    present = close = raw = volume = None
+    if apply:
+        budget.admit(nd * n * 25 + (64 << 20), "delisting-payloads")
+        loaded = {}
+        for name, dtype in (("close.f64", "<f8"), ("raw_close.f64", "<f8"), ("volume.f64", "<f8"), ("present.u8", "u1")):
+            blob = (base / name).read_bytes()
+            entry = role.manifest["files"][name]
+            if len(blob) != entry["bytes"] or hashlib.sha256(blob).hexdigest() != entry["sha256"]:
+                raise ValueError(f"base role {name} bytes do not match its manifest")
+            loaded[name] = np.frombuffer(blob, dtype=dtype).reshape(nd, n).copy()
+        close, raw, volume, present = (loaded[x] for x in ("close.f64", "raw_close.f64", "volume.f64", "present.u8"))
+    skipped = dict.fromkeys(("no_delist_return", "last_session_not_a_role_session", "last_role_session",
+                             "not_present_at_last_session", "present_after_last_session"), 0)
+    events, by_cause, applied, cleared = [], {}, 0, 0
+    for k in np.flatnonzero(term)[np.lexsort((sid[term], last[term]))]:
+        j, day = int(pos[k]), int(last[k])
+        t = int(np.searchsorted(role.days, day))
+        on_cal = t < nd and int(role.days[t]) == day
+        tt = t + 1 if on_cal and t + 1 < nd else None
+        r = float(dlret[k]) if np.isfinite(dlret[k]) else None
+        c = by_cause.setdefault(cause[k], {"terminations": 0, "kept_member_at_last_session": 0, "with_return": 0})
+        c["terminations"] += 1
+        c["kept_member_at_last_session"] += int(on_cal and kept[t, j] != 0)
+        c["with_return"] += int(r is not None)
+        done = False
+        if apply:
+            why = ("no_delist_return" if r is None else "last_session_not_a_role_session" if not on_cal
+                   else "last_role_session" if tt is None else "not_present_at_last_session" if not present[t, j]
+                   else "present_after_last_session" if present[t + 1:, j].any() else None)
+            if why:
+                skipped[why] += 1
+            else:
+                close[tt, j], raw[tt, j] = close[t, j] * (1.0 + r), raw[t, j] * (1.0 + r)
+                volume[tt, j], present[tt, j] = 0.0, 1
+                cleared += int(kept[tt, j] != 0)
+                kept[tt, j] = 0
+                applied += 1
+                done = True
+        events.append({"security_id": int(sid[k]), "last_session": prf.date_of(day),
+                       "termination_session": prf.date_of(role.days[tt]) if tt is not None else None,
+                       "delist_code": cause[k], "cause_basis": basis[k] or None, "delist_return": r,
+                       "delist_return_if_performance": float(dperf[k]) if np.isfinite(dperf[k]) else None,
+                       "delist_return_imputed": True, "exchange": exch[k] or None,
+                       "available_at": str(np.datetime64(int(avail[k]), "us")) + "Z",
+                       "kept_member_at_last_session": bool(on_cal and kept[t, j] != 0), "returns_applied": done})
+    budget.check("delisting")
+    block = {"rule": DELISTING_MARK_RULE, "stage_rule": m.get("rule"), "returns_applied": bool(apply),
+             "return_rule": DELISTING_RETURN_RULE, "counts": counts, "by_cause": dict(sorted(by_cause.items())),
+             "events": events,
+             "inputs": {"manifest_sha256": man_src["sha256"], "sources": [man_src] + sources}}
+    patched = {}
+    if apply:
+        block["applied"] = {"terminations": applied, "members_cleared_on_termination_session": cleared,
+                            "skipped": skipped}
+        patched = {name: arr.astype(dtype).tobytes() for name, arr, dtype in (
+            ("close.f64", close, "<f8"), ("raw_close.f64", raw, "<f8"), ("volume.f64", volume, "<f8"),
+            ("present.u8", present, "u1"))}
+    return block, patched
 
 
 def main():
@@ -709,27 +878,42 @@ def main():
     p.add_argument("--sic-events-sha256")
     p.add_argument("--check-fields", type=Path, help="optional: the base role's fields directory to cross-check")
     p.add_argument("--check-fields-sha256")
+    p.add_argument("--delisting", type=Path, help=f"{LINKED_OPERATING_V2_UNIVERSE}: atx-db delisting stage directory")
+    p.add_argument("--delisting-sha256")
+    p.add_argument("--delisting-returns", type=Path,
+                   help="apply the imputed delisting returns of this delisting stage (must be the --delisting stage; "
+                        "default off)")
     a = p.parse_args(); limits = Limits(a.max_seconds, a.memory_mib << 20, a.disk_mib << 20)
+    v2_args = (a.delisting, a.delisting_sha256, a.delisting_returns)
     linked = (a.base_role, a.base_role_sha256, a.identity_bridge, a.identity_bridge_sha256, a.sic_events,
               a.sic_events_sha256, a.check_fields, a.check_fields_sha256)
     if a.mode == "project":
         if a.source is None: p.error("project requires --source")
-        if a.universe != DEFAULT_UNIVERSE or any(x is not None for x in linked):
+        if a.universe != DEFAULT_UNIVERSE or any(x is not None for x in linked + v2_args):
             p.error("--universe and its inputs apply to mode role only")
         prepare_cache(a.source, a.out, a.start, a.end, limits)
     elif a.universe == DEFAULT_UNIVERSE:
         if a.cache is None: p.error("role requires --cache")
-        if any(x is not None for x in linked):
-            p.error(f"--base-role/--identity-bridge/--sic-events/--check-fields need --universe {LINKED_OPERATING_UNIVERSE}")
+        if any(x is not None for x in linked + v2_args):
+            p.error(f"--base-role/--identity-bridge/--sic-events/--check-fields/--delisting need --universe "
+                    f"{LINKED_OPERATING_UNIVERSE} or {LINKED_OPERATING_V2_UNIVERSE}")
         create_role(a.cache, a.out, a.start, a.score_start, a.end, limits, a.top_n, a.max_union, a.max_output_mib << 20)
     else:
         if a.cache is not None: p.error(f"--universe {LINKED_OPERATING_UNIVERSE} restricts --base-role; --cache is not read")
         if any(x is None for x in linked[:6]):
             p.error(f"--universe {LINKED_OPERATING_UNIVERSE} requires --base-role/--identity-bridge/--sic-events and "
                     "their -sha256 pins")
+        if a.universe == LINKED_OPERATING_UNIVERSE and any(x is not None for x in v2_args):
+            p.error(f"--delisting/--delisting-returns need --universe {LINKED_OPERATING_V2_UNIVERSE}")
+        if a.universe == LINKED_OPERATING_V2_UNIVERSE and (a.delisting is None or a.delisting_sha256 is None):
+            p.error(f"--universe {LINKED_OPERATING_V2_UNIVERSE} requires --delisting and --delisting-sha256")
+        if a.delisting_returns is not None and delisting_dir(a.delisting_returns) != delisting_dir(a.delisting):
+            p.error("--delisting-returns must name the --delisting stage")
         restrict_role(a.base_role, a.base_role_sha256, a.out, limits, bridge=a.identity_bridge,
                       bridge_sha256=a.identity_bridge_sha256, sic_events=a.sic_events,
-                      sic_events_sha256=a.sic_events_sha256, fields=a.check_fields, fields_sha256=a.check_fields_sha256)
+                      sic_events_sha256=a.sic_events_sha256, fields=a.check_fields, fields_sha256=a.check_fields_sha256,
+                      universe=a.universe, delisting=a.delisting, delisting_sha256=a.delisting_sha256,
+                      delisting_returns=a.delisting_returns is not None)
 
 
 if __name__ == "__main__":
