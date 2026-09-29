@@ -452,8 +452,8 @@ Json family_exclusions(const std::vector<const BiasSeries*>& family,
   const usize dropped = factor_drops + name_drops;
   const char* status = refused.empty() ? (ok.empty() ? "empty" : "ok")
                                        : (ok.empty() ? "refused" : "partial");
-  const f64 share = dropped + kept ? static_cast<f64>(dropped) / static_cast<f64>(dropped + kept)
-                                   : 0.0;
+  const usize total = dropped + kept;
+  const f64 share = total > 0 ? static_cast<f64>(dropped) / static_cast<f64>(total) : 0.0;
   const usize refused_count = refused.size();
   return Json{{"status", status}, {"series_ok", ok.size()}, {"series_refused", refused_count},
       {"series_empty", empty}, {"refused_series", std::move(refused)}, {"observations", kept},
