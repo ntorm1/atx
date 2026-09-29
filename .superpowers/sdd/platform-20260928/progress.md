@@ -17,6 +17,48 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 library v7.0 (wave 1) ACCEPTED under its pre-registration; N 34; freeze gate still UNMET
+- Cycle `research_cycle.py run scripts/specs/v70.json` (three invocations: two hard-stops on a dirty tree when lane
+  reports landed in the sprint dir, resumed after a commit; no phase was re-run): u 48.4 s / 1,162 MiB (cache seeded from
+  v7w2), fit 28.9 s, card 21.3 s, w 19.4 s / 505 MiB, nav 42.1 s / 346 MiB.
+- Identity (ruling 7.0-d): the 39 v6.1 members' orientations and train_daily_ic rows are byte-identical to
+  mega-v61-train-u-1; only the `__combined__` rows differ (the u-pass combination includes the new members).
+- Admission v4-prior-v1 (5 trials): q5_eg ADMITTED (HAC t 1.09, max |rho| .78 value_composite), smax5 ADMITTED (t 1.26,
+  |rho| .69 high_52w); qmj_safety rejected by the veto (HAC t -2.33 against its prior sign); nincr redundant with sue
+  (|rho| .93); res_mom_ind redundant with res_mom_12_1 (|rho| .91). Library 39 -> 41 admitted-eligible members.
+- Cell mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (v6.1 final construction, L 1.247): S2 net SR +1.313 vs
+  +1.239, gross SR 1.688 vs 1.594, cost 13.44 vs 13.55 bps/$, tau .0375 (p95 .0463), held names 1,849, HAC t 2.26.
+  Paired dSR +0.073, rho .978, Memmel SE .123 (t +0.60), CBB 95% [-.180, +.309], LW p .566.
+  Mechanics: gross all rows .9700, |net| .0048, tau mean .0375, p95 .0463 -> PASS.
+- VERDICT: wave 1 ACCEPTED whole (pre-registered rule: paired S2 net dSR > 0, sign-only inside one SE, AND mechanics).
+  The gain is inside one SE: it is a sign result, not a significant improvement. Rejected members are disclosed above
+  and stay in the library file as non-admitted; nothing was dropped one by one. v7.0 is the parent and its cell the
+  reference for wave 2 (ruling W2-a).
+- Integrity (N 34): cell-count DSR .7952 (SR0 .807 ann), effective-N DSR .8512 (ONC N_eff 2), Lo null .5534, PSR(0)
+  .9838, MinTRL 95% 446 sessions. PBO: all 34 cells .284; explicit grid {v6.1, C1-C3, spo-v1, v7.0} .258 (IS winner OOS
+  +1.269, P[OOS < 0] .023) (ruling 7.0-c: both reported, neither gates).
+  FREEZE GATE UNMET: S2 net >= 1.0 yes, mechanics yes, cell-count DSR .7952 < .95.
+- CORRECTION to handoff 1 / the 2026-09-28 ledger: the baseline's "cell-count DSR .9032 (N 33)" was the N 32 figure
+  (before spo-v1). With the spo-v1 defect cell (SR -0.94) inside the cross-cell variance the baseline scores .7663 at
+  N 33 and .7594 at N 34 (V[SR_n] 1.75e-4 -> 5.59e-4). Ruling 7.0-e (declared after seeing it, so it is a disclosure,
+  not a choice): the protocol's variance is "all ledgered cells" and stays so; no cell is removed from the variance ex
+  post -- cost if wrong: a defect cell, which is not a research hypothesis, makes the gate harder; whether defect cells
+  belong in the variance is an owner question (recorded for the scorecard), not something root changes mid-sprint.
+- JSON: build-equity/mega-nav-v70-summ-n34.json, mega-nav-v70-pbo-n34.json, mega-nav-v70-pbo-grid6.json; cards
+  build-equity/mega-cards-v70; monitor build-equity/mega-monitor-v70.
+- R2 review of spo-v2 (task-R2-review.md): 2 I, 4 M, 6 m; NO-GO on b63829f0 as committed. I-1 the gross budget must be
+  1.0 (hard cap vs R6'); I-2 the risk model is corrupt at the source (one asset_growth outlier -> style collapse ->
+  structural specific variance 3.9e12 -> decile shrinkage spreads it to 176 names; pins 897ffdf2 and 17f9328f both
+  carry it; the asset_growth style is a one-name dummy on 259 dates). Lanes F3 (pool-7, risk model atx-risk-v1.1) and
+  W1b (pool-3, spo-v2 corrections) launched; spo trial #2 waits for both, a new risk pin and its pre-registration.
+  Ledger correction from R2: spo `exante_vol` is annualised (v1's .0066 = .66%/yr, not 10%).
+- U2 (pool-9 9105bcbc): role lo3 keeps 1,404,404 score cells (lo1 1,343,804, lo2 1,360,656); 43,811 of the 53,691
+  no_visible_sic cells recovered, 9,776 reclassified non-operating; the recovered cells have no fundamentals under
+  fundamental-events-v2 (be finite .000). Universe trial not yet pre-registered.
+- Appendix A: TRAIN construction cells 34 (29 v6 era + C1-C3 + spo-v1, all four rejected, + v7.0 accepted); ledger
+  build-equity/trials.jsonl 34 lines. Admission trials this sprint: 5 (wave 1). Validation trials 2 spent (2023-2024
+  read twice). 2025+ reserved. No per-candidate VAL statistic read.
+
 ## 2026-09-29 L7 merged (library v7.0, spec v70); wave 2 pre-registered; rulings before the v7.0 run
 - L7b finished the stopped lane: pool-10 e1915059 + merge 36f92885; library sha e7bae75c..., recipe 60b82300...; 327
   pytests. P4 wrote library-v7-wave2-prereg.md; v7-prereg.md "Library v7.1" appended with rulings W2-a..e (e3880d83),
