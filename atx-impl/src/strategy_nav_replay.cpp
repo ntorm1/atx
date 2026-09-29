@@ -834,9 +834,10 @@ co::Status plan_weights(const PlanInputs& p, f64 spent, std::span<const f64> rat
                         const std::vector<f64>& current, std::vector<f64>& planned, f64 nav_post,
                         std::span<f64> rule, TargetReplayDay& plan, NavReplayDay& day) {
   std::copy(current.begin(), current.end(), planned.begin());
-  // L4 hook: detail::update_weights unless the v7 extension (aim-partial-v6) is installed.
+  // L4/W1 hook: detail::update_weights unless the v7 extension (aim-partial-v6, spo-v1) is
+  // installed; spo-v1 also reads the decision's borrow tiers and decide --locates.
   ATX_TRY_VOID(v7::plan(p.x, p.cfg, p.d, p.rebalance, spent, nav_post, p.desired, planned, plan,
-                        rates));
+                        rates, p.tiers.tier, p.no_locate));
   if (!rule.empty()) std::copy(planned.begin(), planned.end(), rule.begin());
   if (p.cfg.scenario.financing.block_special_shorts)
     block_special_plan(p.tiers, p.no_locate, current, planned, nav_post, day);
