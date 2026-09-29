@@ -1,12 +1,10 @@
 # Library v7 pre-registration draft (P3): wave 1 and wave 2 candidates
 
-Root appends this text to `v7-prereg.md` after its own review. Declared 2026-09-28, before any IC, TRAIN or return read
-of any v7 candidate. Read-only research; nothing was built or run.
-
-**Hygiene.** No validation, VAL or 2023+ statistic was read, and no v7 candidate has a return statistic to read. The
-mandated `v6-literature.md` quotes TRAIN HAC t of some v5 members (opbe, roa, low-risk, SI); they were seen there and
-used for nothing. The fields-v7 manifest was read for names and coverage only; the ALPHA_PANEL docs for schemas,
-clocks and gaps only.
+Root appends this to `v7-prereg.md` after review. Declared 2026-09-28, before any IC, TRAIN or return read of any v7
+candidate; read-only research, nothing built or run. **Hygiene:** no validation, VAL or 2023+ statistic was read, and
+no v7 candidate has a return statistic. The mandated `v6-literature.md` quotes TRAIN HAC t of some v5 members (opbe,
+roa, low-risk, SI); seen there, used for nothing. fields-v7 manifest: names and coverage only; ALPHA_PANEL docs:
+schemas, clocks and gaps only.
 
 ## 0. Conventions (binding for every candidate)
 
@@ -179,15 +177,12 @@ rank(max(sign((21.5 - ea_days_to_expected)), 0))
 rank((-1 * ftd_shares_ratio21))
 ```
 - **Definition.** Fails summed over 21 sessions / shares_out, visible from the SEC publication date.
-- **Sign logic:**
-  - (a) Constraint (-). Fails concentrate where borrowing is scarce or costly: market makers fail instead of paying
-    specials (Evans-Geczy-Musto-Reed 2009 RFS). Binding short constraints let prices run high and later returns fall
-    (Miller 1977). Autore-Boulton-Braga-Alves (2015 FinRev) find threshold-level FTD stocks overvalued, then
-    reversing (t n/v).
-  - (b) Informed shorting that cannot borrow (-): "Informed short selling, fails-to-deliver, and abnormal returns"
-    (JEF 2016).
-  - (c) Reg SHO close-out buy-ins push prices up over days (+). At our horizon of weeks to months, (a) and (b)
-    dominate, so the prior is negative.
+- **Sign logic.** (a) Constraint (-): fails concentrate where borrowing is scarce or costly, as market makers fail
+  instead of paying specials (Evans-Geczy-Musto-Reed 2009 RFS); binding constraints let prices run high and later
+  returns fall (Miller 1977); Autore-Boulton-Braga-Alves (2015 FinRev) find threshold-level FTD stocks overvalued,
+  then reversing (t n/v). (b) Informed shorting that cannot borrow (-): "Informed short selling, fails-to-deliver,
+  and abnormal returns" (JEF 2016). (c) Reg SHO close-out buy-ins push prices up over days (+). At our horizon of
+  weeks to months, (a) and (b) dominate, so the prior is negative.
 - **Harvestability and data.** The short leg is mostly borrow fee (Muravyev-Pearson-Pollet 2025), so net value is
   expected in the long leg (not holding high-FTD names); S2 swap-fin-v1 tiers must price the shorts. FTD rows carry
   `vintage_risk`; the universe excludes ETF/ADR operational fails. Expected abs(rho) [est]: si_ratio .25-.4; dtc
@@ -272,8 +267,8 @@ fields-v7 plus the W5a/W5b fields, 41 existing payload SHAs unchanged; (iii) the
 rows of orientations.json and train_daily_ic.csv byte for byte; (iv) the v6.1 cell (library v6.1 on fields-v8)
 reproduces its S2 daily CSV bit for bit.
 
-**3.8 Order.** Wave 1 needs only W2 and runs once W2 is merged and root has aligned the spellings. Wave 2 runs after
-W5a and W5b land and fields-v8 is built. Neither wave changes a construction parameter.
+**3.8 Order.** Wave 1 needs only W2 (merged, spellings aligned); wave 2 runs after W5a/W5b land and fields-v8 is
+built. Neither wave changes a construction parameter.
 
 ## 4. What is not included, and why
 
@@ -282,11 +277,10 @@ W5a and W5b land and fields-v8 is built. Neither wave changes a construction par
   monthly turnover rarely survive costs (Novy-Marx-Velikov 2016). Excluded on these grounds: short-term reversal
   variants (turnover-conditioned, residual), raw IVOL or MAX1 additions, connected-stock reversal, and any EAP variant
   faster than one month.
-- **No consensus (D5).** No analyst SUE, revisions, dispersion or consensus surprises.
+- **No consensus (D5)**: no analyst SUE, revisions or dispersion. **No GICS or NAICS (U5)**: industry stays FF12/FF49.
 - **No borrow fee or utilisation (D4 is proxy only).** No fee or CME signals. SI / IO as a utilisation member is
-  excluded: expected abs(rho) with si_ratio is at least .85 [est], and v6.1 already holds four SI members; SI / IO is
-  kept for the borrow-tier cost input. Modelled net stays optimistic until name-level fees exist (MPP 2025).
-- **No GICS or NAICS (U5).** Industry signals stay on FF12 and FF49.
+  excluded (expected abs(rho) with si_ratio at least .85 [est]; v6.1 already holds four SI members) and kept for the
+  borrow-tier cost input. Modelled net stays optimistic until name-level fees exist (MPP 2025).
 - **FPI 6-K gap.** FPIs announce on 6-K without item codes, so eap_8k and ea_overdue are NaN for FPIs and most ADRs
   (backfill tier about 55-60% covered). They rank domestic filers only, a disclosed coverage bias.
 - **Other data gaps.** No options skew, OI or volume (D8), so no skew, delta-IV or call-put members. No VWAP or trade
