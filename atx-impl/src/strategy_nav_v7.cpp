@@ -72,15 +72,17 @@ std::string relabel_v6(const std::string& rule, const char* id = "aim-partial-v6
 }
 // The construction rule the extension runs instead of aim-partial-v5 (nullptr: v5 itself).
 const char* rule_id(const NavV7Options& o) {
-  return o.aim_v6 ? "aim-partial-v6" : o.spo_v1 ? "spo-v1" : nullptr;
+  return o.aim_v6 ? "aim-partial-v6" : o.spo_v1 ? spo::rule_name(o.spo_params) : nullptr;
 }
-// The spo-v1 value flags (each takes one value).
+// The spo value flags (each takes one value).
 bool spo_flag(std::string_view key) {
   return key == "--risk-model" || key == "--risk-model-sha256" || key == "--gamma" ||
          key == "--ic-book" || key == "--w-max" || key == "--adv-cap-q" ||
          key == "--adv-trade-p" || key == "--spo-iters" || key == "--spo-tol" ||
-         key == "--target-vol" || key == "--spo-horizon" || key == "--spo-books";
+         key == "--target-vol" || key == "--spo-horizon" || key == "--spo-books" ||
+         key == "--alpha-horizon" || key == "--specific-ceiling";
 }
+bool spo_rule(std::string_view rule) { return rule == "spo-v1" || rule == "spo-v2"; }
 const char* pass_name(NavV7Pass pass) { return pass == NavV7Pass::Main ? "main" : "capacity"; }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
 f64 quantile(std::vector<f64> values, f64 q) {
@@ -169,7 +171,7 @@ Json declarations(const ScopedNavExtension::State& s) {
         {"rate_clip", Json::array({v6.clip_lo, v6.clip_hi})},
         {"reference_decisions", v6.reference_decisions}};
   if (s.engine) {
-    Json block{{"rule", spo::declaration()},
+    Json block{{"rule", spo::declaration(s.options.spo_params)},
                {"parameters", spo::parameters_json(s.options.spo_params, s.engine->horizon())},
                {"calibration", spo::calibration_json(s.engine->calibration())}};
     if (s.options.spo_risk)
@@ -305,9 +307,13 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
     return co::Err(co::ErrorCode::InvalidArgument,
                    "aim-partial-v6 / spo-v1: the per-name rate is not part of the rule "
                    "(--rate fixed)");
-  // Non-rebalance decisions keep every member and only trade exits: aim-partial-v5's move.
-  if (!rebalance || (!v6 && !engine && !observe))
+  // Non-rebalance decisions keep every member and only trade exits: aim-partial-v5's move
+  // (spo: its shadow book makes the same move).
+  if (!rebalance || (!v6 && !engine && !observe)) {
+    if (engine && !rebalance)
+      ATX_TRY_VOID(engine->hold(x, cfg, d, desired, book_label(cfg.scenario)));
     return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
+  }
   const usize n = x.instruments;
   if (d >= x.dates || desired.size() != n || planned.size() != n)
     return co::Err(co::ErrorCode::InvalidArgument, "nav v7: decision geometry");
@@ -387,8 +393,7 @@ bool claims_nav_args(int argc, char** argv) {
         key == "--band-b" || key == "--band-exponent" || key == "--rate-clip" || spo_flag(key))
       return true;
     if (key == "--rule" && i + 1 < argc &&
-        (std::string_view(argv[i + 1]) == "aim-partial-v6" ||
-         std::string_view(argv[i + 1]) == "spo-v1"))
+        (std::string_view(argv[i + 1]) == "aim-partial-v6" || spo_rule(argv[i + 1])))
       return true;
   }
   return false;
@@ -520,7 +525,10 @@ void append_help(std::ostream& out) {
          "--risk-model-sha256 SHA [--gamma G (default: calibrated, --target-vol .05)] "
          "[--ic-book .02] [--w-max .01] [--adv-cap-q .05] [--adv-trade-p .01] "
          "[--spo-iters 500] [--spo-tol 1e-8] [--spo-horizon (default 1/theta)] "
-         "[--spo-books all|primary] (adds <output>/spo_diagnostics.csv; fixed rate only)]\n";
+         "[--spo-books all|primary] [--alpha-horizon (default 1)] [--specific-ceiling "
+         "(default inf)] (adds <output>/spo_diagnostics.csv; fixed rate only)] [--rule spo-v2 "
+         "(spo-v1 flags; defaults --alpha-horizon = the spo horizon, --specific-ceiling 1, "
+         "gamma = the vol-target gamma)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -529,7 +537,9 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     std::vector<std::string> args;
     args.emplace_back(argc > 0 ? argv[0] : "nav");
     std::set<std::string> seen;
-    bool band_given = false, v6_params = false, spo_params = false;
+    bool band_given = false, v6_params = false;
+    u32 spo_version = 1;
+    std::vector<std::pair<std::string, std::string>> spo_values; // applied after the scan
     std::string risk_model, risk_model_sha256;
     const auto number = [](const std::string& value) {
       usize used = 0;
@@ -576,29 +586,19 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       if (spo_flag(key)) {
         if (!seen.insert(key).second || i + 1 >= argc)
           throw std::invalid_argument("duplicate/missing value: " + key);
-        const std::string value = argv[++i];
-        spo_params = true;
-        auto& sp = o.spo_params;
-        if (key == "--risk-model") risk_model = value;
-        else if (key == "--risk-model-sha256") risk_model_sha256 = value;
-        else if (key == "--gamma") sp.gamma = number(value);
-        else if (key == "--ic-book") sp.ic_book = number(value);
-        else if (key == "--w-max") sp.w_max = number(value);
-        else if (key == "--adv-cap-q") sp.adv_cap_q = number(value);
-        else if (key == "--adv-trade-p") sp.adv_trade_p = number(value);
-        else if (key == "--spo-iters") sp.max_iterations = count(value);
-        else if (key == "--spo-tol") sp.tolerance = number(value);
-        else if (key == "--target-vol") sp.target_vol = number(value);
-        else if (key == "--spo-horizon") sp.horizon = number(value);
-        else if (value == "all" || value == "primary") sp.all_books = value == "all";
-        else throw std::invalid_argument("--spo-books all|primary");
+        spo_values.emplace_back(key, argv[++i]);
         continue;
       }
       if (key == "--rule" && i + 1 < argc &&
-          (std::string_view(argv[i + 1]) == "aim-partial-v6" ||
-           std::string_view(argv[i + 1]) == "spo-v1")) {
+          (std::string_view(argv[i + 1]) == "aim-partial-v6" || spo_rule(argv[i + 1]))) {
         if (!seen.insert(key).second) throw std::invalid_argument("duplicate flag --rule");
-        (std::string_view(argv[i + 1]) == "spo-v1" ? o.spo_v1 : o.aim_v6) = true;
+        const std::string_view rule = argv[i + 1];
+        if (rule == "aim-partial-v6") {
+          o.aim_v6 = true;
+        } else {
+          o.spo_v1 = true;
+          spo_version = rule == "spo-v2" ? 2U : 1U;
+        }
         args.emplace_back("--rule"); args.emplace_back("aim-partial-v5");
         ++i;
         continue;
@@ -617,8 +617,28 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     if (v6_params && !o.aim_v6)
       throw std::invalid_argument(
           "--cost-shrink-kappa/--band-b/--band-exponent/--rate-clip need --rule aim-partial-v6");
-    if (spo_params && !o.spo_v1)
-      throw std::invalid_argument("--risk-model, --gamma, ... --spo-books need --rule spo-v1");
+    if (!spo_values.empty() && !o.spo_v1)
+      throw std::invalid_argument("--risk-model, --gamma, ... --spo-books need --rule spo-v1|v2");
+    // The rule's defaults first (spo-v2: spo::v2_params), then the flags given.
+    if (o.spo_v1 && spo_version == 2) o.spo_params = spo::v2_params();
+    for (const auto& [key, value] : spo_values) {
+      auto& sp = o.spo_params;
+      if (key == "--risk-model") risk_model = value;
+      else if (key == "--risk-model-sha256") risk_model_sha256 = value;
+      else if (key == "--gamma") sp.gamma = number(value);
+      else if (key == "--ic-book") sp.ic_book = number(value);
+      else if (key == "--w-max") sp.w_max = number(value);
+      else if (key == "--adv-cap-q") sp.adv_cap_q = number(value);
+      else if (key == "--adv-trade-p") sp.adv_trade_p = number(value);
+      else if (key == "--spo-iters") sp.max_iterations = count(value);
+      else if (key == "--spo-tol") sp.tolerance = number(value);
+      else if (key == "--target-vol") sp.target_vol = number(value);
+      else if (key == "--spo-horizon") sp.horizon = number(value);
+      else if (key == "--alpha-horizon") sp.alpha_horizon = number(value);
+      else if (key == "--specific-ceiling") sp.specific_ceiling = number(value);
+      else if (value == "all" || value == "primary") sp.all_books = value == "all";
+      else throw std::invalid_argument("--spo-books all|primary");
+    }
     if (o.spo_v1) {
       if (o.capacity)
         throw std::invalid_argument("spo-v1 does not run the capacity curve (--capacity-curve)");
@@ -688,7 +708,8 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
     // Console only: solve timing is not a published byte.
     if (const auto* engine = extension.spo_engine()) {
       const auto t = engine->timing();
-      out << "nav v7: spo-v1 " << t.solves << " solves, " << t.seconds << " s, mean "
+      out << "nav v7: " << spo::rule_name(engine->params()) << ' ' << t.solves << " solves, "
+          << t.seconds << " s, mean "
           << (t.solves ? 1e3 * t.seconds / static_cast<f64>(t.solves) : 0.0) << " ms, max "
           << 1e3 * t.max_seconds << " ms; gamma " << engine->calibration().gamma << '\n';
     }
