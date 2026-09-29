@@ -108,3 +108,31 @@ Cross-cell N for the v7.1 construction cell = ledger lines at run time + 1 (the 
 cells decides the number; each cell adds exactly one). Acceptance as in section 5 of the referenced text: wave whole,
 P2 paired S2 net dSR > 0 vs the reference (sign-only inside one SE) AND R6' mechanics; admitted-but-losing members
 disclosed, never dropped one by one. Citations to complete before the freeze (JEF 2016 authors): not a variant.
+
+## Universe trial U-lo3 (declared 2026-09-29 before any IC pass, fit or NAV on role lo3; after the v7.0 read)
+Parent: the accepted library v7.0 cell on role lo1 (`mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`, fields-v7,
+ew-theme-v1, final construction, L 1.247). Change, one thing: role lo1 -> lo3 = `linked-operating-v3` (the v2 rule with
+the SIC table from the atx-db fundamentals stage, manifest sha 9f9b2f85...06816b; identity-bridge-v2-pit 09aac28f;
+delisting attributes only, delisting returns off), and the fields-v7 list rebuilt on lo3 with the same bridge and the
+same stage SIC (`--sic-events`), so that finite(grp_ff12) == linked-P and visible SIC holds on every cell.
+Held fixed: library v7.0 + recipe, admission v4-prior-v1 and ew-theme-v1 (both refit on lo3, as V6-U did), aim-partial-v5
+theta .05 dust .1 fixed rate, delta orders, exit .05, locate-in-aim, liquidity cache, price-risk-v1, L 1.247 (not
+re-derived), cost S2, fundamental items from fundamental-events-v2 (74ed9a50), every non-issuer source, TRAIN 2020-2022.
+Known before the run (membership counts only, no returns): score-window member cells 1,343,804 -> 1,404,404 (+4.5%);
+43,811 recovered cells on 162 lines; those cells carry no fundamental items, so they rank on non-fundamental themes only;
+20 cells change FF12 / FF49 label. Prior (V6-U form): gross SR up slightly or flat; cost per dollar ambiguous.
+Budget: 1 u pass, 1 composition, 1 construction cell; ledger kind universe; cross-cell N = ledger lines at run time + 1.
+Acceptance: paired S2 net dSR > 0 vs the parent (sign-only inside one SE) AND R6' mechanics (all-rows gross in
+[.90, 1.05], |mean net| <= .02, tau mean <= .20, p95 <= .30). If rejected, lo1 stays the role and lo3 is not retried
+in v7 with another library.
+- Ruling U-a: the parent is v7.0 on the fields-v7 list, not v7.1 on fields-v9 -- the cycle does not yet pass the W5a /
+  W5b stage arguments on a new role, and the universe question is separable from wave 2 -- cost if wrong: if both U-lo3
+  and v7.1 are accepted, their combination is one more cell (V7-F below).
+- Ruling U-b: admission is refit on lo3 (members may change status); the comparison is book against book, and the
+  admission differences are disclosed -- this is what V6-U did -- cost if wrong: the universe effect and an admission
+  flip are confounded in one number; the admission table shows which.
+- Ruling U-c: switching the fundamentals source to the atx-db export (which would give the recovered cells fundamental
+  items) is a separate data trial and is not part of v7.
+V7-F (declared now, run only if BOTH v7.1 and U-lo3 are accepted): one final cell = library v7.1 on role lo3 with
+fields-v9 rebuilt on lo3, same construction, L 1.247; acceptance paired S2 net dSR > 0 vs the better of the two accepted
+cells AND mechanics; N + 1. If only one is accepted, that cell is the v7 final cell and V7-F is not run.
