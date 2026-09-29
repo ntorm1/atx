@@ -17,6 +17,17 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 F1, W2, W3 merged (7de07b49, W2/W3 -> 94770874)
+- F1 (R1 fixes I-1, M-5, M-6, M-7 + m-5/6/13/16): build mega-v7-f1 exit 0; 101/102 C++ (only the known SPO test), 26
+  pytests. Real-data re-runs (risk verb counts, --reuse with code identity) in progress.
+- W2 DSL ops (ids 89-104: pack2/3, ts_topk_mean, bucket -> Group, group_cross, ts_resid_on/ts_beta_on, cs_resid_on,
+  ts_count_increases, *_mp min-periods variants; builtin_ops() unchanged at 74 rows; checker extended). Golden-digest
+  test deliberately unpinned: root captures digests on the merged build, verifies the v6.1 IC pass byte-identical on
+  real data (the stronger unchanged-semantics proof), then has W2 pin them. W2 notes: q5 DSL needs vec_sum (checker
+  policy), nincr lookback 797 and FF3/q5 503 sessions vs the runner's lookback limit -> P3 must respect these.
+- W3 (alpha_report_card.py, book_monitor.py M1-M4, fitter WorkStore, cycle card/monitor phases, specs/v61-ops.json):
+  173 pytests pass + 1 skipped (live). Real-data acceptance (cards, monitor baseline, fitter identity) next.
+
 ## 2026-09-28 W1 merged (f6faa6cd); spo-v1 pre-registered; risk exposures built
 - W1 spo-v1 (FISTA/ADMM around the GP aim with factor risk + cost v2; new strategy_spo.{cpp,hpp}). Build mega-v7-w1 exit
   0 (6 TUs, 35 s). Tests 77/78: SpoSolver.NetGrossBetaAndBoxesHoldTo1e10 fails on `multipliers.rho == 0` (gross
