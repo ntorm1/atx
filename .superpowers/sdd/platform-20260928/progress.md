@@ -17,6 +17,25 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 W2, W3, F1, W1-fix ACCEPTED; spo-v1 cell launched
+- W2: build mega-v7-w2 exit 0 (120 TUs, 223 s); AlphaLitOps 22/22; golden digests captured on the merged build
+  (vm_audit_exact 0x971c3da60ca89aa3, vm_research_fast 0xe9e7128fd5359900, oracle 0x971c3da60ca89aa3) and pinned by W2
+  (merged ce0ab3a6); real-data proof of unchanged semantics: v6.1 u pass on a fresh cache with the W2 engine ->
+  orientations/daily IC/combined byte-identical to mega-v61-train-u-1, candidates identical after drops (72.6 s, 1,061 MiB).
+  vec_sum allowed via an explicit POLICY_OPS entry (q5).
+- W3: 173 pytests; report cards for the 39 v6.1 candidates in 22.2 s / 922 MiB, runner_check valid_date_mismatches 0 at
+  h = 5/21/63 for all 39; monitor baseline written (M1 n/a: no book bias rows yet; M2 in-sample IC CUSUM: 1 alarm / 16
+  warn / 15 ok of 32 sleeves -- W3-F1: the alarming sleeve is a within-TRAIN decay signal to read in the cards; M3, M4
+  ok); fitter WorkStore: computed 39 (24.9 s) then computed 0 / reused 39 (0.5 s), admission byte-identical a == b and
+  candidate-identical to the v6.1 admission (only the `inputs` pins differ). W3 ACCEPTED.
+- F1: risk verb bias v2: factor family ok (51 series, b .995, dropped 0); random family REFUSED (dropped_factor_exposures
+  15,168 of 38,528 obs = 28% > 5%): random long-short portfolios load on 11 factors with < 63 observations (empty
+  forecast series) -> F1-F1: the earlier random-family b was optimistic; also the optimiser's X F X' treats those
+  exposures as zero variance. Fix = structural forecast for short-history factors (R3.1 already called for it) -> lane F2.
+  --reuse r7c with code identity: computed [sv_ratio126], 40 reused with reused_from code records. F1 ACCEPTED.
+- W1 fix (test expectation; gross multiplier populated; gamma calibration unaffected): target tests 103/103 (build
+  mega-v7-w1b). Identity flag-off on the current exe then the pre-registered spo-v1 cell launched.
+
 ## 2026-09-28 F1, W2, W3 merged (7de07b49, W2/W3 -> 94770874)
 - F1 (R1 fixes I-1, M-5, M-6, M-7 + m-5/6/13/16): build mega-v7-f1 exit 0; 101/102 C++ (only the known SPO test), 26
   pytests. Real-data re-runs (risk verb counts, --reuse with code identity) in progress.
