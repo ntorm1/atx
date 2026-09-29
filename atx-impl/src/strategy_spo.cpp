@@ -17,7 +17,6 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
-#include "strategy_target_replay_detail.hpp"
 
 namespace atx::impl::strategy::spo {
 namespace {

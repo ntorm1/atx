@@ -52,7 +52,7 @@ struct NavV7Options {
   bool capacity{}; // --capacity-curve
   bool aim_v6{};   // --rule aim-partial-v6
   cost_v2::AimV6Params v6{};
-  bool spo{};      // --rule spo-v1
+  bool spo_v1{};   // --rule spo-v1
   spo::SpoParams spo_params{};
   std::shared_ptr<const spo::RiskStore> spo_risk; // opened by dispatch_nav_v7
 };
@@ -93,7 +93,7 @@ public:
   [[nodiscard]] std::span<const TcRecord> tc_records() const noexcept;
   [[nodiscard]] std::span<const BookRecord> books() const noexcept;
   // The spo-v1 engine (nullptr without --rule spo-v1).
-  [[nodiscard]] const spo::Engine* spo() const noexcept;
+  [[nodiscard]] const spo::Engine* spo_engine() const noexcept;
   struct State;
 
 private:
