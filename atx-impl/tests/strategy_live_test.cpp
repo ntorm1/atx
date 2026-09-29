@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -9,7 +10,9 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <locale>
 #include <map>
+#include <set>
 #include <sstream>
 #include <span>
 #include <stdexcept>
@@ -20,12 +23,17 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "../src/strategy_cost_v2.hpp"
+#include "../src/strategy_holdings.hpp"
 #include "../src/strategy_live.hpp"
 #include "../src/strategy_nav_replay.hpp"
 #include "../src/strategy_nav_replay_detail.hpp"
+#include "../src/strategy_orders.hpp"
+#include "../src/strategy_reconcile.hpp"
 #include "../src/strategy_target_replay.hpp"
 
 // v7 lane L3: --emit-holdings, the decide verb and the atx.book-deploy/v1 manifest.
+// v7 lane W4: the f64 holdings layout, share orders, reconcile, freshness and the TC band.
 // Synthetic roles only (no real data).
 namespace {
 using namespace atx;
@@ -337,10 +345,11 @@ st::DecideConfig decide_config(const Fixture& fx, usize d, const std::filesystem
   st::DecideConfig cfg;
   cfg.deploy_path = fx.deploy_path.string();
   cfg.asof = date_of(fx.panel.sessions[d]);
-  cfg.positions_path = (fx.holdings_dir / "holdings.csv").string();
+  cfg.positions_path = fx.holdings_dir.string(); // the f64 layout (the default emit)
   cfg.output_directory = out.string();
   cfg.executable_sha256 = exe_pin;
   cfg.build_source_sha = std::string(40, 'b');
+  cfg.allow_stale = true; // TRAIN-window decisions are not the role's last session
   return cfg;
 }
 // A deploy manifest edit refused by run_decide with a message containing `expected`.
@@ -539,8 +548,8 @@ TEST(StrategyLive, NavDecideLastRowRefusalsAndLocateMask) {
 }
 
 // (1) at the CLI: --emit-holdings leaves every NAV output byte-identical (run twice,
-// compare bytes), and publishes holdings.csv / holdings_days.csv with manifest.json last
-// binding their SHAs and the NAV recipe SHA.
+// compare bytes), and publishes the f64 layout (holdings.f64, holdings_index.json) and
+// holdings_days.csv with manifest.json (v2) last binding their SHAs and the NAV recipe SHA.
 TEST(StrategyLive, EmitHoldingsLeavesNavOutputsByteIdentical) {
   Directory dir;
   const auto fx = make_fixture(dir.path);
@@ -556,20 +565,28 @@ TEST(StrategyLive, EmitHoldingsLeavesNavOutputsByteIdentical) {
                               std::filesystem::directory_iterator(fx.nav_dir),
                               std::filesystem::directory_iterator{})));
   const auto manifest = read_json(fx.holdings_dir / "manifest.json");
-  EXPECT_EQ(manifest.at("schema"), "atx.nav-holdings/v1");
+  EXPECT_EQ(manifest.at("schema"), "atx.nav-holdings/v2");
   EXPECT_EQ(manifest.at("status"), "complete");
+  EXPECT_EQ(manifest.at("format").at("id"), "f64");
   EXPECT_EQ(manifest.at("book"), "modeled-1bn-stale5-v1+swap-fin-v1");
   EXPECT_EQ(manifest.at("nav_recipe_sha256"),
             read_json(fx.nav_dir / "summary.json").at("recipe_sha256"));
-  for (const auto* file : {"holdings.csv", "holdings_days.csv"})
+  for (const auto* file : {"holdings.f64", "holdings_index.json", "holdings_days.csv"})
     EXPECT_EQ(manifest.at("files").at(file),
               co::sha256_file((fx.holdings_dir / file).string()).value()) << file;
-  const auto rows = lines(fx.holdings_dir / "holdings.csv");
+  EXPECT_FALSE(std::filesystem::exists(fx.holdings_dir / "holdings.csv"));
+  const auto index = read_json(fx.holdings_dir / "holdings_index.json");
   const auto days = lines(fx.holdings_dir / "holdings_days.csv");
-  ASSERT_GT(rows.size(), 1U);
-  EXPECT_EQ(rows.front(), st::detail::holdings_csv_columns());
-  EXPECT_EQ(manifest.at("rows").get<usize>(), rows.size() - 1);
+  EXPECT_EQ(index.at("schema"), "atx.nav-holdings-f64/v1");
+  const auto rows = index.at("data").at("rows").get<u64>();
+  ASSERT_GT(rows, 0U);
+  EXPECT_EQ(index.at("data").at("sha256"), manifest.at("files").at("holdings.f64"));
+  EXPECT_EQ(std::filesystem::file_size(fx.holdings_dir / "holdings.f64"),
+            rows * st::holdings::row_width * sizeof(f64));
+  EXPECT_EQ(index.at("instrument_ids").size(), fx.panel.n);
+  EXPECT_EQ(manifest.at("rows").get<u64>(), rows);
   EXPECT_EQ(manifest.at("sessions").get<usize>(), days.size() - 1);
+  EXPECT_EQ(index.at("sessions").size(), days.size() - 1);
   EXPECT_EQ(days.size() - 1, fx.panel.d - 1); // sessions [begin, end-2]
   // Before price-risk-v1 has 126 return pairs every cadence rebalance is skipped: the
   // skips are counted (B9) instead of passing silently.
@@ -605,10 +622,13 @@ TEST(StrategyLive, DecideFromEmittedHoldingsEqualsReplayTargetsAtThreeDates) {
     EXPECT_EQ(summary.at("decision").at("neutralize"), "applied");
     EXPECT_GT(summary.at("positions").at("rows").get<usize>(), 0U);
     EXPECT_GT(summary.at("orders").at("count").get<usize>(), 0U);
-    EXPECT_GT(summary.at("transfer_coefficient").at("names").get<usize>(), 2U);
-    const auto tc = summary.at("transfer_coefficient").at("target");
-    ASSERT_TRUE(tc.is_number());
-    EXPECT_LE(std::abs(tc.get<f64>()), 1.0);
+    EXPECT_GT(summary.at("transfer_coefficient").at("signal_names").get<usize>(), 2U);
+    for (const auto* key : {"transfer_coefficient", "desired_over_sigma_target",
+                            "signal_over_variance_target"}) {
+      const auto tc = summary.at("transfer_coefficient").at(key);
+      ASSERT_TRUE(tc.is_number()) << key;
+      EXPECT_LE(std::abs(tc.get<f64>()), 1.0) << key;
+    }
     EXPECT_EQ(summary.at("pins_verified").at("nav_recipe_sha256"),
               fx.deploy.at("nav").at("recipe_sha256"));
     EXPECT_EQ(summary.at("files").at("orders.csv"),
@@ -616,32 +636,36 @@ TEST(StrategyLive, DecideFromEmittedHoldingsEqualsReplayTargetsAtThreeDates) {
     EXPECT_EQ(lines(out / "orders.csv").size(),
               summary.at("orders").at("count").get<usize>() + 1);
   }
-  // The live use: decide on the final row (the replay never decides there) from a plain
-  // positions file and an explicit NAV.
+  // The live use: decide on the final row (the replay never decides there; the role's
+  // last session, so fresh without --allow-stale) from a plain positions file and an
+  // explicit NAV.
   const usize held_row = fx.panel.d - 2;
-  const auto rows = lines(fx.holdings_dir / "holdings.csv");
+  const auto held = st::holdings::read_session(fx.holdings_dir.string(),
+                                               fx.panel.sessions[held_row]);
+  ASSERT_TRUE(held) << held.error().to_string();
+  ASSERT_FALSE(held->names.empty());
   std::ofstream positions(dir.path / "positions.csv", std::ios::binary);
+  positions.imbue(std::locale::classic()); positions << std::setprecision(17);
   positions << "instrument_id,held_dollars\n";
-  const std::string prefix = std::to_string(fx.panel.sessions[held_row]) + ",";
-  std::string nav_text;
-  for (usize r = 1; r < rows.size(); ++r) {
-    if (rows[r].rfind(prefix, 0) != 0) continue;
-    std::vector<std::string> cells;
-    std::stringstream line(rows[r]); std::string cell;
-    while (std::getline(line, cell, ',')) cells.push_back(cell);
-    positions << cells[1] << ',' << cells[7] << '\n';
-    nav_text = cells[9];
-  }
+  for (const auto& h : held->names) positions << h.instrument_id << ',' << h.held_dollars << '\n';
   positions.close();
-  ASSERT_FALSE(nav_text.empty());
   auto live = decide_config(fx, fx.panel.d - 1, dir.path / "decide-last");
   live.positions_path = (dir.path / "positions.csv").string();
-  live.nav = std::stod(nav_text);
+  live.nav = held->session.nav_post;
+  live.allow_stale = false;
   std::ostringstream progress;
   const auto last = st::run_decide(live, progress);
   ASSERT_TRUE(last) << last.error().to_string();
   EXPECT_FALSE(last->parity_checked);
-  EXPECT_TRUE(std::filesystem::exists(dir.path / "decide-last" / "decision.json"));
+  const auto summary = read_json(dir.path / "decide-last" / "decision.json");
+  bool fresh = false;
+  for (const auto& c : summary.at("health").at("checks")) {
+    if (c.at("check") != "data_freshness") continue;
+    fresh = true;
+    EXPECT_EQ(c.at("status"), "ok");
+    EXPECT_EQ(c.at("sessions_behind"), 0);
+  }
+  EXPECT_TRUE(fresh);
 }
 
 // B1: every required pin, removed, is refused by name before anything is written.
@@ -734,7 +758,7 @@ TEST(StrategyLive, DeployManifestRefusesEveryMismatchedPin) {
   std::ostringstream out, err;
   EXPECT_EQ(decide_cli({"decide", "--deploy", fx.deploy_path.string(), "--asof",
                         date_of(fx.panel.sessions[150]), "--positions",
-                        (fx.holdings_dir / "holdings.csv").string(), "--output",
+                        fx.holdings_dir.string(), "--allow-stale", "--output",
                         (dir.path / "cli").string()}, out, err), 1);
   EXPECT_NE(err.str().find("pin mismatch executables.atx-equity-strategy-targets"),
             std::string::npos) << err.str();
@@ -781,9 +805,10 @@ TEST(StrategyLive, HealthFlagsSkipAsErrorAndBandsLocatesAsWarnings) {
   Directory dir;
   const auto fx = make_fixture(dir.path);
   std::ostringstream progress;
-  // Session 60: price-risk-v1 has too few return pairs, the book is still flat.
+  // Session 60: price-risk-v1 has too few return pairs, the book is still flat (declared:
+  // an empty selection is refused otherwise, review R1 M-1).
   auto early = decide_config(fx, 60, dir.path / "early");
-  early.nav = 1e9;
+  early.flat_book = true;
   const auto skipped = st::run_decide(early, progress);
   ASSERT_TRUE(skipped) << skipped.error().to_string();
   EXPECT_EQ(skipped->health, st::DecideHealth::Error);
@@ -851,4 +876,623 @@ TEST(StrategyLive, HealthFlagsSkipAsErrorAndBandsLocatesAsWarnings) {
       << differs_outcome.error().to_string();
   EXPECT_FALSE(std::filesystem::exists(dir.path / "decide-stray"));
   EXPECT_FALSE(std::filesystem::exists(dir.path / "decide-nav-differs"));
+}
+
+// ==== v7 lane W4 ====
+namespace {
+// The CSV the v1 writer produces for one session's rows (its expressions, verbatim).
+std::string v1_rows(const st::holdings::SessionEntry& s, const std::vector<st::NavHolding>& names) {
+  std::ostringstream f;
+  f.imbue(std::locale::classic()); f << std::setprecision(17);
+  const auto value = [&f](f64 v) { if (std::isnan(v)) f << "nan"; else f << v; };
+  for (const auto& h : names) {
+    f << s.session_ns << ',' << h.instrument_id << ',' << h.member << ',' << h.stale << ','
+      << st::detail::borrow_tier_label(h.tier) << ',' << unsigned{h.tier_missing} << ','
+      << (h.held_dollars > 0 ? "long" : h.held_dollars < 0 ? "short" : "flat") << ','
+      << h.held_dollars << ',' << h.held_weight << ',' << s.nav_post << ','
+      << st::detail::fill_status_label(h.fill) << ',' << h.filled_dollars << ','
+      << h.fill_cost_dollars << ',' << h.unfilled_dollars << ',';
+    value(h.desired); f << ',';
+    value(h.rule_weight); f << ',';
+    value(h.target_weight); f << ',';
+    value(s.decision ? h.target_weight - h.held_weight : missing); f << ',';
+    f << (h.order_placed ? h.order_dollars - h.held_dollars : 0.0) << ',' << h.order_placed
+      << ',' << h.locate_blocked << ',' << h.order_working << ',';
+    value(h.order_dollars); f << '\n';
+  }
+  return f.str();
+}
+// The fixture's NAV run again with --holdings-format csv (the v1 holdings.csv).
+std::filesystem::path emit_csv(const Fixture& fx, const std::filesystem::path& dir) {
+  std::ostringstream out, err;
+  const auto holdings = dir / "holdings-csv";
+  if (nav_cli(nav_args(fx.artifact, dir / "nav-csv",
+                       {"--emit-holdings", holdings.string(), "--holdings-format", "csv"}),
+              out, err) != 0)
+    throw std::runtime_error("csv nav run: " + err.str());
+  return holdings;
+}
+std::vector<std::string> cells_of(const std::string& line) {
+  std::vector<std::string> cells;
+  std::stringstream in(line); std::string cell;
+  while (std::getline(in, cell, ',')) cells.push_back(cell);
+  if (!line.empty() && line.back() == ',') cells.emplace_back();
+  return cells;
+}
+// A CSV as header -> column index and data rows.
+struct CsvFile {
+  std::map<std::string, usize> column;
+  std::vector<std::vector<std::string>> rows;
+};
+CsvFile read_csv(const std::filesystem::path& path) {
+  const auto all = lines(path);
+  CsvFile out;
+  const auto header = cells_of(all.at(0));
+  for (usize k = 0; k < header.size(); ++k) out.column[header[k]] = k;
+  for (usize r = 1; r < all.size(); ++r) out.rows.push_back(cells_of(all[r]));
+  return out;
+}
+bool parse_i64(const std::string& s, i64& out) {
+  const auto parsed = std::from_chars(s.data(), s.data() + s.size(), out);
+  return parsed.ec == std::errc{} && parsed.ptr == s.data() + s.size();
+}
+std::string fmt17(f64 v) {
+  std::ostringstream out;
+  out.imbue(std::locale::classic()); out << std::setprecision(17) << v;
+  return out.str();
+}
+int reconcile_cli(std::vector<std::string> args, std::ostream& out, std::ostream& err) {
+  std::vector<char*> argv;
+  for (auto& arg : args) argv.push_back(arg.data());
+  return st::dispatch_reconcile(static_cast<int>(argv.size()), argv.data(), out, err);
+}
+const Json* health_check(const Json& summary, const std::string& name) {
+  for (const auto& c : summary.at("health").at("checks"))
+    if (c.at("check") == name) return &c;
+  return nullptr;
+}
+// The deploy's primary book config, as the decide path parses it from deploy_manifest().
+st::NavReplayConfig deployed_book() {
+  st::NavReplayConfig c;
+  c.target.rule = st::TargetReplayRule::AimPartialV5; c.target.cadence = 1;
+  c.target.trade_fraction = 0.3; c.target.dust_multiple = 0.1; c.target.aim_leverage = 1.247;
+  c.target.band_multiple = 0; c.target.monthly_budget = 0.3; c.target.exit_rate = 0.05;
+  c.target.neutralize = st::TargetNeutralize::PriceRiskV1;
+  c.target.max_working_bytes = 1073741824;
+  c.order_basis = st::NavOrderBasis::Delta; c.locate_in_aim = true; c.liquidity_cache = true;
+  c.scenario = st::nav_scenario_matrix(true)[st::nav_primary_scenario_index];
+  return c;
+}
+} // namespace
+
+// Writer identity: the f64 layout carries every v1 holdings.csv column bit for bit (the CSV
+// the v1 writer emits, rebuilt from the f64 reader, equals --holdings-format csv's bytes),
+// the NAV outputs and holdings_days.csv are byte-identical across the formats, and the csv
+// format keeps the v1 manifest.
+TEST(StrategyLive, HoldingsF64CarriesEveryV1CsvColumnBitForBit) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  const auto csv = emit_csv(fx, dir.path);
+  usize nav_files = 0;
+  for (const auto& e : std::filesystem::directory_iterator(fx.nav_dir)) {
+    ++nav_files;
+    EXPECT_TRUE(file_bytes(e.path()) == file_bytes(dir.path / "nav-csv" / e.path().filename()))
+        << e.path().filename();
+  }
+  EXPECT_GT(nav_files, 0U);
+  EXPECT_TRUE(file_bytes(fx.holdings_dir / "holdings_days.csv") ==
+              file_bytes(csv / "holdings_days.csv"));
+  const auto v1 = read_json(csv / "manifest.json");
+  const auto v2 = read_json(fx.holdings_dir / "manifest.json");
+  EXPECT_EQ(v1.at("schema"), "atx.nav-holdings/v1");
+  EXPECT_FALSE(v1.contains("format"));
+  EXPECT_EQ(v1.at("files").size(), 2U);
+  EXPECT_EQ(v1.at("rows"), v2.at("rows"));
+  EXPECT_EQ(v1.at("columns"), v2.at("columns"));
+  const auto index = read_json(fx.holdings_dir / "holdings_index.json");
+  std::string rebuilt = std::string(st::detail::holdings_csv_columns()) + "\n";
+  usize sessions = 0;
+  for (const auto& entry : index.at("sessions")) {
+    const auto read = st::holdings::read_session(fx.holdings_dir.string(), entry[1].get<i64>());
+    ASSERT_TRUE(read) << read.error().to_string();
+    EXPECT_EQ(read->session.session_index, entry[0].get<usize>());
+    EXPECT_EQ(read->names.size(), entry[5].get<usize>());
+    rebuilt += v1_rows(read->session, read->names);
+    ++sessions;
+  }
+  EXPECT_EQ(sessions, fx.panel.d - 1);
+  EXPECT_TRUE(rebuilt == file_bytes(csv / "holdings.csv"));
+  // The index path is the same reader; a session the replay did not report is refused.
+  const auto by_index = st::holdings::read_session(
+      (fx.holdings_dir / "holdings_index.json").string(), fx.panel.sessions[150]);
+  ASSERT_TRUE(by_index) << by_index.error().to_string();
+  EXPECT_FALSE(st::holdings::read_session(fx.holdings_dir.string(),
+                                          fx.panel.sessions[fx.panel.d - 1]));
+  // Unknown format: usage error.
+  std::ostringstream out, err;
+  EXPECT_EQ(nav_cli(nav_args(fx.artifact, dir.path / "nav-bad",
+                             {"--emit-holdings", (dir.path / "h-bad").string(),
+                              "--holdings-format", "parquet"}), out, err), 2);
+}
+
+// decide accepts the f64 layout (directory or index) and the v1 CSV with the same bytes out,
+// and refuses a tampered holdings.f64 (its SHA-256 no longer matches the index).
+TEST(StrategyLive, DecideReadsF64AndV1CsvIdenticallyAndRefusesTamperedHoldings) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  const auto csv = emit_csv(fx, dir.path);
+  const usize d = 170;
+  const std::vector<std::pair<std::string, std::string>> sources{
+      {"f64", fx.holdings_dir.string()},
+      {"index", (fx.holdings_dir / "holdings_index.json").string()},
+      {"csv", (csv / "holdings.csv").string()}};
+  for (const auto& [label, path] : sources) {
+    auto cfg = decide_config(fx, d, dir.path / ("decide-" + label));
+    cfg.positions_path = path; cfg.check_replay = true;
+    std::ostringstream progress;
+    const auto outcome = st::run_decide(cfg, progress);
+    ASSERT_TRUE(outcome) << label << ": " << outcome.error().to_string();
+    EXPECT_EQ(outcome->parity_mismatches, 0U) << label;
+    const auto summary = read_json(dir.path / ("decide-" + label) / "decision.json");
+    EXPECT_EQ(summary.at("positions").at("layout"), label == "csv" ? "csv" : "f64") << label;
+  }
+  for (const auto* file : {"targets.csv", "orders.csv", "orders_shares.csv",
+                           "expected_holdings.csv"}) {
+    const auto reference = file_bytes(dir.path / "decide-f64" / file);
+    EXPECT_FALSE(reference.empty()) << file;
+    EXPECT_TRUE(reference == file_bytes(dir.path / "decide-index" / file)) << file;
+    EXPECT_TRUE(reference == file_bytes(dir.path / "decide-csv" / file)) << file;
+  }
+  const auto tampered = dir.path / "tampered";
+  std::filesystem::copy(fx.holdings_dir, tampered, std::filesystem::copy_options::recursive);
+  {
+    std::fstream f(tampered / "holdings.f64", std::ios::binary | std::ios::in | std::ios::out);
+    f.seekg(100); char byte = 0; f.read(&byte, 1);
+    f.seekp(100); byte = static_cast<char>(byte ^ 1); f.write(&byte, 1);
+  }
+  auto cfg = decide_config(fx, d, dir.path / "decide-tampered");
+  cfg.positions_path = tampered.string();
+  std::ostringstream progress;
+  const auto refused = st::run_decide(cfg, progress);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("SHA-256"), std::string::npos)
+      << refused.error().to_string();
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "decide-tampered"));
+}
+
+// B7 rounding rule, exact binary64 fixtures (nav = nav_dollars = 2^20, price 8, lot 100,
+// min notional 1000): half away from zero, residuals, min-notional drop, exits kept,
+// rounding to zero, no close, participation cap, shares column; refusals.
+TEST(StrategyLive, ShareOrdersRoundToLotsAndDropBelowMinNotional) {
+  const f64 nav = 1048576.0, unit = 0x1.0p-17; // raw shares = weight x 2^20 / 8 = weight / unit
+  const f64 hold = 0.001;
+  const std::vector<f64> target{150 * unit, -150 * unit, 149 * unit, 40 * unit, 0.0,
+                                1000 * unit, hold};
+  const std::vector<f64> current{0, 0, 0, 0, 800.0 / nav, 0, hold};
+  const std::vector<f64> held{0, 0, 0, 0, 800.0, 0, hold * nav};
+  const std::vector<f64> price{8, 8, 8, 8, 8, missing, 8};
+  const std::vector<f64> mark = price;
+  const std::vector<f64> adv(7, 1e5);
+  st::orders::Inputs in{target, current, held, {}, price, mark, adv, nav, nav, 1000.0, 0.01, 100};
+  const auto book = st::orders::build(in);
+  ASSERT_TRUE(book) << book.error().to_string();
+  const auto& s = book->summary;
+  ASSERT_EQ(book->orders.size(), 3U);
+  EXPECT_EQ(book->orders[0].index, 0U);
+  EXPECT_EQ(book->orders[0].shares, 200);  // raw 150, lots 1.5 -> 2 (half away from zero)
+  EXPECT_EQ(book->orders[0].residual_shares, -50.0);
+  EXPECT_EQ(book->orders[0].notional, 1600.0);
+  EXPECT_EQ(book->orders[0].participation, 0.016);
+  EXPECT_EQ(book->orders[1].shares, -200); // raw -150 -> -2 lots
+  EXPECT_TRUE(book->orders[1].short_sale);
+  EXPECT_EQ(book->orders[2].index, 4U);    // the exit: 100 held shares, $800 < 1000, kept
+  EXPECT_EQ(book->orders[2].shares, -100);
+  EXPECT_TRUE(book->orders[2].exit);
+  EXPECT_TRUE(book->orders[2].below_min_kept);
+  EXPECT_FALSE(book->orders[2].short_sale);
+  EXPECT_EQ(s.orders, 3U); EXPECT_EQ(s.buys, 1U); EXPECT_EQ(s.sells, 2U);
+  EXPECT_EQ(s.short_sales, 1U); EXPECT_EQ(s.exits, 1U); EXPECT_EQ(s.exits_below_min_kept, 1U);
+  EXPECT_EQ(s.dropped_min_notional, 1U); EXPECT_EQ(s.dropped_notional, 800.0); // raw 149 -> 100
+  EXPECT_EQ(s.rounded_to_zero, 1U); EXPECT_EQ(s.rounded_to_zero_notional, 320.0); // raw 40
+  EXPECT_EQ(s.refused_no_close, 1U);
+  EXPECT_EQ(s.buy_notional, 1600.0); EXPECT_EQ(s.sell_notional, 2400.0);
+  EXPECT_EQ(s.residual_notional_net, 0.0); EXPECT_EQ(s.residual_notional_abs, 800.0);
+  EXPECT_EQ(s.residual_notional_max_abs, 400.0);
+  EXPECT_EQ(s.above_participation_cap, 2U); EXPECT_EQ(s.participation_max, 0.016);
+  // Expected book: the two opened names, the exit (0) and the held name that did not trade.
+  ASSERT_EQ(book->expected.size(), 4U);
+  EXPECT_EQ(book->expected[0].shares, 200.0);
+  EXPECT_EQ(book->expected[1].shares, -200.0);
+  EXPECT_EQ(book->expected[2].index, 4U); EXPECT_EQ(book->expected[2].shares, 0.0);
+  EXPECT_EQ(book->expected[3].index, 6U);
+  EXPECT_EQ(book->expected[3].shares, hold * nav / 8); EXPECT_EQ(book->expected[3].order_shares, 0);
+  // A broker shares column and nav_dollars = 2 x nav: current shares = shares x 2.
+  const std::vector<f64> shares{0, 0, 0, 0, 100, 0, 131};
+  in.shares = shares; in.nav_dollars = 2 * nav;
+  const auto scaled = st::orders::build(in);
+  ASSERT_TRUE(scaled) << scaled.error().to_string();
+  EXPECT_EQ(scaled->orders.front().shares, 300); // raw 300
+  const auto exit_order = std::find_if(scaled->orders.begin(), scaled->orders.end(),
+                                       [](const auto& o) { return o.index == 4; });
+  ASSERT_NE(exit_order, scaled->orders.end());
+  EXPECT_EQ(exit_order->shares, -200);
+  EXPECT_EQ(scaled->expected.back().shares, 262.0); // 131 x 2, no order
+  // round_to_lots and the refusals.
+  EXPECT_EQ(st::orders::round_to_lots(2.5, 1).value(), 3);
+  EXPECT_EQ(st::orders::round_to_lots(-2.5, 1).value(), -3);
+  EXPECT_EQ(st::orders::round_to_lots(249.0, 100).value(), 200);
+  EXPECT_FALSE(st::orders::round_to_lots(missing, 1));
+  EXPECT_FALSE(st::orders::round_to_lots(1e300, 1));
+  EXPECT_FALSE(st::orders::round_to_lots(1.0, 0));
+  auto bad = in; bad.lot_size = 0;
+  EXPECT_FALSE(st::orders::build(bad));
+  bad = in; bad.nav = 0;
+  EXPECT_FALSE(st::orders::build(bad));
+  bad = in; bad.min_notional = -1;
+  EXPECT_FALSE(st::orders::build(bad));
+  const std::vector<f64> short_price(6, 8.0);
+  bad = in; bad.price = short_price;
+  EXPECT_FALSE(st::orders::build(bad));
+}
+
+// B7 at the decide: orders_shares.csv and expected_holdings.csv (lot 1, min notional $500,
+// nav_dollars 1e7), every formed order in exactly one bucket, notional = shares x price,
+// the files and the inputs pinned (R1 M-2), both TC definitions reported (R1 M-3), and
+// targets.csv / orders.csv unchanged by the share-order flags.
+TEST(StrategyLive, DecideWritesShareOrdersExpectedHoldingsAndInputPins) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  const usize d = 170;
+  auto cfg = decide_config(fx, d, dir.path / "shares");
+  cfg.nav_dollars = 1e7; cfg.min_notional = 500; cfg.lot_size = 1;
+  std::ostringstream progress;
+  const auto outcome = st::run_decide(cfg, progress);
+  ASSERT_TRUE(outcome) << outcome.error().to_string();
+  const auto out = dir.path / "shares";
+  const auto summary = read_json(out / "decision.json");
+  const auto& so = summary.at("orders_shares");
+  EXPECT_EQ(so.at("nav_dollars"), 1e7);
+  EXPECT_EQ(so.at("nav_dollars_source"), "--nav-dollars");
+  EXPECT_EQ(so.at("price_source"), "close");
+  const usize sent = so.at("orders").get<usize>();
+  EXPECT_GT(sent, 0U);
+  EXPECT_EQ(sent + so.at("dropped_min_notional").at("count").get<usize>() +
+                so.at("rounded_to_zero").at("count").get<usize>() +
+                so.at("refused_no_close").get<usize>(),
+            summary.at("orders").at("count").get<usize>());
+  const auto orders = read_csv(out / "orders_shares.csv");
+  ASSERT_EQ(orders.rows.size(), sent);
+  const auto col = [&orders](const char* name) { return orders.column.at(name); };
+  for (const auto& r : orders.rows) {
+    i64 shares = 0;
+    ASSERT_TRUE(parse_i64(r[col("shares")], shares)) << r[col("shares")];
+    EXPECT_NE(shares, 0);
+    EXPECT_EQ(r[col("side")], shares > 0 ? "buy" : "sell");
+    const f64 price = std::stod(r[col("reference_price")]);
+    const f64 notional = std::stod(r[col("notional")]);
+    EXPECT_EQ(bits(notional), bits(static_cast<f64>(shares) * price));
+    if (r[col("exit")] == "0") {
+      EXPECT_GE(std::abs(notional), 500.0);
+    }
+    EXPECT_EQ(r[col("tag")], "moc");
+  }
+  const auto expected = read_csv(out / "expected_holdings.csv");
+  EXPECT_EQ(expected.rows.size(), so.at("expected_holdings_rows").get<usize>());
+  for (const auto* file : {"orders_shares.csv", "expected_holdings.csv"})
+    EXPECT_EQ(summary.at("files").at(file), co::sha256_file((out / file).string()).value());
+  // R1 M-2: the positions (an f64 directory: its manifest.json) and the NAV source.
+  const auto& pins = summary.at("pins_verified");
+  EXPECT_EQ(pins.at("positions").at("layout"), "f64");
+  EXPECT_EQ(pins.at("positions").at("sha256_of"), "manifest.json");
+  EXPECT_EQ(pins.at("positions").at("sha256"),
+            co::sha256_file((fx.holdings_dir / "manifest.json").string()).value());
+  EXPECT_TRUE(pins.at("locates").is_null());
+  EXPECT_EQ(pins.at("nav").at("source"), "positions nav_post");
+  // R1 M-3: transfer_coefficient is the replay's own definition, recomputed here.
+  const st::NavReplayInput in{fx.panel.target(), fx.panel.volume, fx.fields.view()};
+  const auto held = st::holdings::read_session(fx.holdings_dir.string(), fx.panel.sessions[d]);
+  ASSERT_TRUE(held) << held.error().to_string();
+  std::vector<f64> dollars(fx.panel.n, 0.0);
+  for (const auto& h : held->names) dollars[h.index] = h.held_dollars;
+  const auto dec = st::detail::nav_decide(in, deployed_book(), d, dollars, held->session.nav_post);
+  ASSERT_TRUE(dec) << dec.error().to_string();
+  const auto member = std::span<const u8>(fx.panel.member).subspan(d * fx.panel.n, fx.panel.n);
+  const auto& tc = summary.at("transfer_coefficient");
+  EXPECT_EQ(bits(tc.at("transfer_coefficient").get<f64>()),
+            bits(st::cost_v2::transfer_coefficient(member, dec->desired, dec->sigma, dec->rule)));
+  EXPECT_EQ(bits(tc.at("desired_over_sigma_target").get<f64>()),
+            bits(st::cost_v2::transfer_coefficient(member, dec->desired, dec->sigma,
+                                                   dec->target)));
+  EXPECT_TRUE(tc.at("definitions").contains("signal_over_variance"));
+  // The share-order flags change no other output.
+  auto plain = decide_config(fx, d, dir.path / "plain");
+  ASSERT_TRUE(st::run_decide(plain, progress));
+  for (const auto* file : {"targets.csv", "orders.csv"})
+    EXPECT_TRUE(file_bytes(out / file) == file_bytes(dir.path / "plain" / file)) << file;
+  EXPECT_EQ(read_json(dir.path / "plain" / "decision.json").at("orders_shares")
+                .at("nav_dollars_source"), "the book NAV");
+  // Invalid share-order arguments are refused before anything is written.
+  auto bad = decide_config(fx, d, dir.path / "bad");
+  bad.price_source = "vwap";
+  EXPECT_FALSE(st::run_decide(bad, progress));
+  bad.price_source = "close"; bad.lot_size = 0;
+  EXPECT_FALSE(st::run_decide(bad, progress));
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "bad"));
+}
+
+// B8: reconcile on the decide's own expected book finds no break; a mutated broker copy
+// finds exactly the planted missing / extra / quantity breaks, and a 2:1 split the
+// corporate actions explain; ticker and CIK brokers map through the identity bridge.
+TEST(StrategyLive, ReconcileFindsBreaksAndExplainsASplitByCorporateActions) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  const usize d = 170;
+  auto cfg = decide_config(fx, d, dir.path / "decide");
+  std::ostringstream progress;
+  ASSERT_TRUE(st::run_decide(cfg, progress));
+  const auto decided = dir.path / "decide";
+  const auto broker_asof = date_of(fx.panel.sessions[d + 1]);
+  const auto args = [&](const std::filesystem::path& broker, std::vector<std::string> extra) {
+    std::vector<std::string> all{"reconcile", "--deploy", fx.deploy_path.string(), "--expected",
+                                 decided.string(), "--broker", broker.string(), "--asof",
+                                 broker_asof};
+    all.insert(all.end(), extra.begin(), extra.end());
+    return all;
+  };
+  std::ostringstream out, err;
+  ASSERT_EQ(reconcile_cli(args(decided / "expected_holdings.csv", {"--output",
+                                   (dir.path / "self").string()}), out, err), 0) << err.str();
+  const auto self = read_json(dir.path / "self" / "reconcile.json");
+  EXPECT_EQ(self.at("schema"), "atx.book-reconcile/v1");
+  EXPECT_EQ(self.at("counts").at("unexplained_breaks"), 0);
+  EXPECT_GT(self.at("counts").at("ok").get<usize>(), 3U);
+  // Plant the breaks.
+  const auto expected = read_csv(decided / "expected_holdings.csv");
+  const usize id_col = expected.column.at("instrument_id"), sh_col = expected.column.at("shares");
+  std::vector<std::pair<std::string, f64>> rows;
+  std::set<std::string> held_ids;
+  for (const auto& r : expected.rows) {
+    rows.emplace_back(r[id_col], std::stod(r[sh_col]));
+    held_ids.insert(r[id_col]);
+  }
+  std::vector<usize> big;
+  for (usize k = 0; k < rows.size(); ++k)
+    if (std::abs(rows[k].second) > 10) big.push_back(k);
+  ASSERT_GE(big.size(), 3U);
+  const usize missing_row = big[0], quantity_row = big[1], split_row = big[2];
+  const std::string extra_id = "999999"; // an instrument the book never expected
+  ASSERT_FALSE(held_ids.count(extra_id));
+  {
+    std::ofstream broker(dir.path / "broker.csv", std::ios::binary);
+    broker << "instrument_id,shares\n";
+    for (usize k = 0; k < rows.size(); ++k) {
+      if (k == missing_row) continue;
+      f64 shares = rows[k].second;
+      if (k == quantity_row) shares += 10;
+      if (k == split_row) shares *= 2;
+      broker << rows[k].first << ',' << fmt17(shares) << '\n';
+    }
+    broker << extra_id << ",100\n";
+    std::ofstream actions(dir.path / "actions.csv", std::ios::binary);
+    actions << "instrument_id,date,ratio\n"
+            << rows[split_row].first << ',' << broker_asof << ",2\n"
+            // dated at the decision's own session: before the window, never applied
+            << rows[quantity_row].first << ',' << date_of(fx.panel.sessions[d]) << ",3\n";
+  }
+  const auto actions = (dir.path / "actions.csv").string();
+  st::ReconcileConfig rc;
+  rc.deploy_path = fx.deploy_path.string(); rc.expected_path = decided.string();
+  rc.broker_path = (dir.path / "broker.csv").string(); rc.asof = broker_asof;
+  rc.corporate_actions_path = actions;
+  std::ostringstream report;
+  const auto broken = st::run_reconcile(rc, report);
+  ASSERT_TRUE(broken) << broken.error().to_string();
+  EXPECT_EQ(broken->missing, 1U);
+  EXPECT_EQ(broken->extra, 1U);
+  EXPECT_EQ(broken->quantity, 1U);
+  EXPECT_EQ(broken->explained, 1U);
+  EXPECT_EQ(broken->unmapped, 0U);
+  EXPECT_EQ(broken->breaks(), 3U);
+  EXPECT_NE(report.str().find("break missing " + rows[missing_row].first), std::string::npos)
+      << report.str();
+  // Without the corporate actions the split is a quantity break too; the CLI exits 5.
+  rc.corporate_actions_path.clear();
+  const auto unexplained = st::run_reconcile(rc, report);
+  ASSERT_TRUE(unexplained);
+  EXPECT_EQ(unexplained->quantity, 2U);
+  EXPECT_EQ(unexplained->explained, 0U);
+  EXPECT_EQ(reconcile_cli(args(dir.path / "broker.csv",
+                               {"--corporate-actions", actions, "--output",
+                                (dir.path / "broken").string()}), out, err), 5);
+  const auto listed = read_csv(dir.path / "broken" / "reconciliation.csv");
+  std::map<std::string, std::string> status;
+  for (const auto& r : listed.rows)
+    status[r[listed.column.at("instrument_id")]] = r[listed.column.at("status")];
+  EXPECT_EQ(status.at(rows[split_row].first), "explained");
+  EXPECT_EQ(status.at(rows[missing_row].first), "missing");
+  EXPECT_EQ(status.at(extra_id), "extra");
+  // Tickers and CIKs through the identity bridge (a CIK with a P and a J line: P wins).
+  {
+    std::ofstream identity(dir.path / "identity.csv", std::ios::binary);
+    identity << "sr_id,ticker,cik,start,end_incl,primary\n";
+    for (const auto& [id, shares] : rows)
+      identity << id << ",T" << id << ',' << id << ",2019-01-01,2030-12-31,P\n";
+    identity << extra_id << ",OTHER," << rows[0].first << ",2019-01-01,2030-12-31,J\n";
+    std::ofstream tickers(dir.path / "tickers.csv", std::ios::binary);
+    std::ofstream ciks(dir.path / "ciks.csv", std::ios::binary);
+    tickers << "ticker,shares\n";
+    ciks << "cik,shares\n";
+    for (const auto& [id, shares] : rows) {
+      tickers << 't' << id << ',' << fmt17(shares) << '\n';
+      ciks << id << ',' << fmt17(shares) << '\n';
+    }
+    tickers << "ZZZZ,5\n";
+  }
+  const auto identity = (dir.path / "identity.csv").string();
+  EXPECT_EQ(reconcile_cli(args(dir.path / "ciks.csv", {"--identity", identity}), out, err), 0)
+      << err.str();
+  rc.broker_path = (dir.path / "tickers.csv").string(); rc.identity_path = identity;
+  const auto by_ticker = st::run_reconcile(rc, report);
+  ASSERT_TRUE(by_ticker) << by_ticker.error().to_string();
+  EXPECT_EQ(by_ticker->unmapped, 1U); // ZZZZ
+  EXPECT_EQ(by_ticker->breaks(), 1U);
+  rc.identity_path.clear();
+  EXPECT_FALSE(st::run_reconcile(rc, report)); // tickers without a bridge: refused
+  // Bindings: another deploy manifest, a tampered expected book, a broker before the decision.
+  auto other = fx.deploy;
+  other["book"] = "another-book";
+  write_json(dir.path / "other.json", other);
+  rc.broker_path = (decided / "expected_holdings.csv").string();
+  rc.deploy_path = (dir.path / "other.json").string();
+  EXPECT_FALSE(st::run_reconcile(rc, report));
+  rc.deploy_path = fx.deploy_path.string();
+  rc.asof = date_of(fx.panel.sessions[d - 1]);
+  EXPECT_FALSE(st::run_reconcile(rc, report));
+  rc.asof = broker_asof;
+  ASSERT_TRUE(st::run_reconcile(rc, report));
+  { std::ofstream tamper(decided / "expected_holdings.csv", std::ios::binary | std::ios::app);
+    tamper << extra_id << ",1\n"; }
+  const auto tampered = st::run_reconcile(rc, report);
+  ASSERT_FALSE(tampered);
+  EXPECT_NE(tampered.error().to_string().find("SHA-256"), std::string::npos);
+  EXPECT_EQ(reconcile_cli({"reconcile", "--bogus", "x"}, out, err), 2);
+}
+
+// B9 freshness: an as-of that is not the role's last session is refused (nothing written)
+// unless --allow-stale, which decides and warns with the lag.
+TEST(StrategyLive, FreshnessRefusesAStaleAsOfUnlessAllowed) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  auto cfg = decide_config(fx, 170, dir.path / "stale");
+  cfg.allow_stale = false;
+  std::ostringstream progress;
+  const auto refused = st::run_decide(cfg, progress);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("stale data"), std::string::npos)
+      << refused.error().to_string();
+  EXPECT_NE(refused.error().to_string().find(date_of(fx.panel.sessions[fx.panel.d - 1])),
+            std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "stale"));
+  cfg.allow_stale = true;
+  const auto allowed = st::run_decide(cfg, progress);
+  ASSERT_TRUE(allowed) << allowed.error().to_string();
+  EXPECT_NE(allowed->health, st::DecideHealth::Ok);
+  const auto stale = read_json(dir.path / "stale" / "decision.json");
+  const auto* check = health_check(stale, "data_freshness");
+  ASSERT_NE(check, nullptr);
+  EXPECT_EQ(check->at("status"), "warn");
+  EXPECT_EQ(check->at("sessions_behind").get<usize>(), fx.panel.d - 1 - 170);
+  EXPECT_EQ(check->at("allow_stale"), true);
+}
+
+// B9 TC band: the run rule, then the prior decisions read from --prior-decisions (this
+// book's, strictly before the as-of; other books, later sessions and other schemas are
+// ignored; two records of one session must agree).
+TEST(StrategyLive, TransferCoefficientBandWarnsOnFiveLowDecisions) {
+  const std::vector<f64> low{0.2, 0.3, 0.4, 0.1, 0.1, 0.1};
+  EXPECT_EQ(st::tc_band_run(0.1, std::span(low).first(4)), 5U);
+  EXPECT_EQ(st::tc_band_run(0.1, low), 5U); // capped
+  EXPECT_EQ(st::tc_band_run(0.1, std::span(low).first(3)), 4U);
+  const std::vector<f64> broken{0.2, missing, 0.1};
+  EXPECT_EQ(st::tc_band_run(0.1, broken), 2U);
+  const std::vector<f64> high{0.2, 0.7, 0.1};
+  EXPECT_EQ(st::tc_band_run(0.1, high), 2U);
+  EXPECT_EQ(st::tc_band_run(0.6, low), 0U);
+  EXPECT_EQ(st::tc_band_run(missing, low), 0U);
+  EXPECT_EQ(st::tc_band_run(0.5, low), 0U); // the band is strict: < .5
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  const usize d = 170;
+  std::ostringstream progress;
+  ASSERT_TRUE(st::run_decide(decide_config(fx, d, dir.path / "alone"), progress));
+  const auto alone = read_json(dir.path / "alone" / "decision.json");
+  const auto* unsupplied = health_check(alone, "transfer_coefficient_band");
+  ASSERT_NE(unsupplied, nullptr);
+  EXPECT_EQ(unsupplied->at("prior_decisions"), "not-supplied");
+  EXPECT_EQ(unsupplied->at("status"), "warn");
+  const auto tc0 = alone.at("transfer_coefficient").at("desired_over_sigma_target");
+  const bool low_now = tc0.is_number() && tc0.get<f64>() < st::tc_band_min;
+  const auto prior = [&](const std::filesystem::path& root, const std::string& name, usize row,
+                         const std::string& book, f64 tc) {
+    std::filesystem::create_directories(root / name);
+    write_json(root / name / "decision.json",
+               Json{{"schema", "atx.book-decision/v1"}, {"status", "complete"}, {"book", book},
+                    {"asof_session_ns", fx.panel.sessions[row]},
+                    {"transfer_coefficient", {{"desired_over_sigma_target", tc}}}});
+  };
+  const auto priors = dir.path / "priors";
+  for (usize k = 1; k <= 4; ++k)
+    prior(priors, "p" + std::to_string(k), d - k, "synthetic-v61-s2", 0.1);
+  prior(priors, "other-book", d - 5, "another-book", 0.1);
+  prior(priors, "later", d + 3, "synthetic-v61-s2", 0.1);
+  write_json(priors / "deploy.json", fx.deploy);
+  auto cfg = decide_config(fx, d, dir.path / "banded");
+  cfg.prior_decisions_directory = priors.string();
+  ASSERT_TRUE(st::run_decide(cfg, progress));
+  const auto banded = read_json(dir.path / "banded" / "decision.json");
+  const auto* band = health_check(banded, "transfer_coefficient_band");
+  ASSERT_NE(band, nullptr);
+  EXPECT_EQ(band->at("prior_decisions"), "supplied");
+  EXPECT_EQ(band->at("prior_files_read"), 7);
+  EXPECT_EQ(band->at("prior_decisions_used"), 4);
+  EXPECT_EQ(band->at("consecutive_below"), low_now ? 5 : 0);
+  EXPECT_EQ(band->at("status"), low_now ? "warn" : "ok");
+  std::filesystem::remove_all(priors / "p4");
+  cfg.output_directory = (dir.path / "banded-3").string();
+  ASSERT_TRUE(st::run_decide(cfg, progress));
+  const auto banded3 = read_json(dir.path / "banded-3" / "decision.json");
+  const auto* three = health_check(banded3, "transfer_coefficient_band");
+  ASSERT_NE(three, nullptr);
+  EXPECT_EQ(three->at("consecutive_below"), low_now ? 4 : 0);
+  EXPECT_EQ(three->at("status"), "ok");
+  prior(priors, "p1-again", d - 1, "synthetic-v61-s2", 0.2); // disagrees with p1
+  cfg.output_directory = (dir.path / "disagree").string();
+  const auto refused = st::run_decide(cfg, progress);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("disagree"), std::string::npos);
+}
+
+// Review R1 M-1: a positions file with a session column and no row at the as-of is refused
+// even with --nav (never read as a flat book) unless --flat-book declares it.
+TEST(StrategyLive, PositionsWithoutAnAsOfRowAreRefusedUnlessFlatBook) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  {
+    std::ofstream positions(dir.path / "dated.csv", std::ios::binary);
+    positions << "session_ns,instrument_id,held_dollars\n"
+              << fx.panel.sessions[100] << ',' << fx.panel.ids[0] << ",1000\n";
+  }
+  auto cfg = decide_config(fx, 170, dir.path / "no-row");
+  cfg.positions_path = (dir.path / "dated.csv").string(); cfg.nav = 1e9;
+  std::ostringstream progress;
+  const auto refused = st::run_decide(cfg, progress);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("select no row"), std::string::npos)
+      << refused.error().to_string();
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "no-row"));
+  cfg.flat_book = true;
+  ASSERT_TRUE(st::run_decide(cfg, progress));
+  const auto summary = read_json(dir.path / "no-row" / "decision.json");
+  EXPECT_EQ(summary.at("positions").at("flat_book"), true);
+  EXPECT_EQ(summary.at("positions").at("rows"), 0);
+  EXPECT_EQ(summary.at("pins_verified").at("positions").at("sha256"),
+            co::sha256_file((dir.path / "dated.csv").string()).value());
+  EXPECT_EQ(summary.at("pins_verified").at("nav").at("source"), "--nav");
+}
+
+// Review R1 m-14: nav.cadence_anchor, when pinned, must be the role's decision_begin session.
+TEST(StrategyLive, CadenceAnchorPinIsChecked) {
+  Directory dir;
+  const auto fx = make_fixture(dir.path);
+  expect_refused(fx, dir.path, "anchor",
+                 [](Json& m) { m["nav"]["cadence_anchor"] = "2020-01-03"; },
+                 "pin mismatch nav.cadence_anchor");
+  auto pinned = fx.deploy;
+  pinned["nav"]["cadence_anchor"] = date_of(fx.panel.sessions[0]);
+  write_json(dir.path / "anchored.json", pinned);
+  auto cfg = decide_config(fx, 150, dir.path / "anchored");
+  cfg.deploy_path = (dir.path / "anchored.json").string();
+  std::ostringstream progress;
+  const auto outcome = st::run_decide(cfg, progress);
+  EXPECT_TRUE(outcome) << (outcome ? "" : outcome.error().to_string());
 }
