@@ -78,3 +78,7 @@ POLICY_OPS entries for nincr. Nothing else in the pre-registration changes.
 1. Form 4 joint filings that include a 10% owner are dropped from every `ins_*` field (sponsor block sales are not
    insider signals). 2. `ins_net_buy_ratio` and `ins_opportunistic_net` are NaN outside [-1, 1] (vendor shares_out unit
    defects; 13 cells on lo1 2020-2022). Fields v8 = fields v7 (41, byte-identical via --reuse) + 14 SEC-derived fields.
+Ruling 7.0-b (2026-09-28, before any run; from L7's static check): qmj_safety needs 8 estimated peak slots (house budget 7);
+allowed as a recorded exception (recipe row), cost ~+52 MB per slot per worker in the u pass (headroom: 1,061 MiB peak vs
+1,536 cap). Wave 1 stays 5 candidates / 5 trials. q5_eg slopes: RoF 2021 Table I Panel D (-0.029 / 0.516 / 0.771) are
+used; the NBER WP values (-0.031 / 0.530 / 0.802) are disclosed as the draft's source.
