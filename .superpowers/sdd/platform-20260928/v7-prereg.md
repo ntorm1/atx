@@ -68,3 +68,8 @@ one by one. Wave 2 (§2 of the draft minus eap_8k = 4 trials: ins_opp, inst_best
 pre-registered only when the W5a/W5b fields exist and their semantics are checked against the draft; not before.
 Root checks before the run: W2 op spellings in the DSL; q5 slopes against the RoF 2021 version (the draft cites the NBER
 WP); if a slope differs, the RoF value is used and disclosed.
+Correction (2026-09-28, before any run; from L7): the draft's "six extra fields" for q5_eg means the candidate reads six
+existing fields-v7 fields (me_company, at, cfo_ttm, ni_q, be_lag1q, grp_ff12), one over the per-candidate budget of five.
+There are no new fields and no fields v8; library v7.0 runs on lo1-fields-v7 unchanged. The ruling "q5_eg's six extra
+fields are allowed" is read as "q5_eg's six-field read is allowed". max() and sign() are allowed in the checker via
+POLICY_OPS entries for nincr. Nothing else in the pre-registration changes.
