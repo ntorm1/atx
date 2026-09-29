@@ -353,9 +353,19 @@ def _nav_series(ctx: Ctx, cell, sc: dict, **kw) -> dict | None:
     dates, nav = D.nav_path(d)
     if not dates:
         return None
-    s = {'x': dates, 'y': nav.tolist(), 'dd': D.drawdown(nav).tolist(), 'last': float(nav[-1])}
+    s = {'x': dates, 'y': nav.tolist(), 'dd': D.drawdown(nav).tolist(), 'last': float(nav[-1]), 'sr': None}
+    _, r = D.returns(d)
+    r = np.asarray(r, dtype=float)
+    r = r[np.isfinite(r)]
+    if r.size > 1 and r.std(ddof=1) > 0:
+        s['sr'] = float(r.mean() / r.std(ddof=1) * math.sqrt(ctx.annual))
     s.update(kw)
     return s
+
+
+def _nav_sr(s: dict) -> str:
+    # The end NAV alone hides a Sharpe difference that comes from lower vol at the same return.
+    return C.NA_TEXT if s.get('sr') is None else C.fmt(s['sr'], '+.2f')
 
 
 def blk_equity(ctx: Ctx) -> str:
@@ -381,18 +391,20 @@ def blk_equity(ctx: Ctx) -> str:
             continue
         series.append(s)
     for s in series:
-        s['end_label'] = f"{s['short']} {C.fmt(s['last'], '.3f')}"
+        s['end_label'] = f"{s['short']} {C.fmt(s['last'], '.3f')} (SR {_nav_sr(s)})"
     nav = C.line_chart(series, height=380, y_fmt='.2f', ref_values=(1.0,), y_label='NAV, net of costs (start 1.0)',
                        aria='net NAV equity curves')
     dd = C.drawdown_chart([dict(s, y=s['dd']) for s in series], height=180, y_label='Drawdown from running peak',
                           aria='drawdown')
     lg = C.legend([{'name': s['name'], 'color': s['color'], 'dash': s.get('dash'), 'width': max(s['width'], 2.0),
-                    'value': C.fmt(s['last'], '.3f')} for s in series]
+                    'value': f"NAV {C.fmt(s['last'], '.3f')}, SR {_nav_sr(s)}"} for s in series]
                   + [{'name': f'{m}: {C.NA_TEXT}', 'color': 'rule', 'kind': 'bar'} for m in missing])
     extras = ', '.join(s['name'] for s in series if not s['name'].startswith(f.label))
     cap = (f"Net NAV (start 1.0 on the session before the first return row) of {f.label} under each cost scenario "
            f"({ctx.primary['short']} emphasised) and {extras or 'no reference cell'}; drawdown from the running peak "
-           f"below, emphasised trough labelled. Source: daily_<scenario>.csv net_return over return rows of "
+           f"below, emphasised trough labelled. Each line carries its end NAV and its annualised net Sharpe: two "
+           f"books can end at the same NAV with different Sharpe when one earns the same return at lower "
+           f"volatility. Source: daily_<scenario>.csv net_return over return rows of "
            f"{f.rel_dir} and the reference cell dirs.")
     return C.figure(ctx.next_fig(), nav + dd, cap, 'fig-equity', lg)
 

@@ -1,7 +1,7 @@
 {
   "schema": "atx.mega-report-config/v2",
   "title": "Mega-alpha v7.1: strategy pitch",
-  "kicker": "atx mega-alpha \u00b7 library v7.1 \u00b7 in-sample TRAIN 2020-2022 \u00b7 2026-09-29 \u00b7 for a quantitative PM",
+  "kicker": "atx mega-alpha · library v7.1 · in-sample TRAIN 2020-2022 · 2026-09-29 · for a quantitative PM",
   "root": "C:/atx-wt/pool-2",
   "train_window": {
     "label": "TRAIN 2020-2022"
@@ -619,8 +619,17 @@
         "label": "V6.1 baseline",
         "short": "v6.1",
         "scenario": "S2",
-        "color": "s2",
-        "dash": "5 4",
+        "color": "s1",
+        "dash": "6 4",
+        "width": 1.8
+      },
+      {
+        "cell": "v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "v7.0 on role lo3",
+        "short": "v7.0 lo3",
+        "scenario": "S2",
+        "color": "s3",
+        "dash": "2 3",
         "width": 1.4
       },
       {
