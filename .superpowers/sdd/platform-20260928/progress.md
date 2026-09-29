@@ -17,6 +17,15 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 W1 merged (f6faa6cd); spo-v1 pre-registered; risk exposures built
+- W1 spo-v1 (FISTA/ADMM around the GP aim with factor risk + cost v2; new strategy_spo.{cpp,hpp}). Build mega-v7-w1 exit
+  0 (6 TUs, 35 s). Tests 77/78: SpoSolver.NetGrossBetaAndBoxesHoldTo1e10 fails on `multipliers.rho == 0` (gross
+  multiplier) -> sent to W1; the cell waits for the fix because gamma is calibrated from the binding gross constraint.
+- v7-prereg.md: spo-v1 single cell declared (defaults ic-book .02, w-max .01, adv q .05 / p .01, iters 500, tol 1e-8,
+  target-vol .05, gamma = max(vol-5% gamma, gross-1.247 gamma), 20-session cost amortisation, primary books; N 32 -> 33).
+- Risk model with per-date exposures (`--emit-exposures all`): build-equity/v7-w1-risk-all, 27.9 s, 495 MiB, 377 MB,
+  manifest sha 897ffdf2...b46bd9d19967e (pinned for the cell).
+
 ## 2026-09-28 W4 merged (8921dc2c) and ACCEPTED on real data
 - Build mega-v7-w4 exit 0 (12 TUs, 54 s), 80/80 gtests (StrategyLive 18 + identity suites). NAV v6.1 flag off 32.8 s /
   flag on with binary holdings 39.8 s (1.21x, cap 1.3x; L3-F1 CLOSED: was 140 s / 374 MB CSV, now 118 MB f64 + index);
