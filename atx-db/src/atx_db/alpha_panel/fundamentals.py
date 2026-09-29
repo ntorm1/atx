@@ -39,6 +39,7 @@ import argparse
 import collections
 import datetime as dt
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -101,6 +102,8 @@ CURRENCY_RULE = (
     "`currency` (the reporting-currency values of converted events).")
 
 WORK = "_work"
+DUCKDB_MEM = os.environ.get("ATX_FUND_DUCKDB_MEM", "450MB")
+DUCKDB_MEM_BATCH = os.environ.get("ATX_FUND_DUCKDB_MEM_BATCH", "300MB")
 
 
 def fund_dir() -> Path:
@@ -351,7 +354,7 @@ def label_lines_sql(pre_glob: str, num_glob: str) -> str:
 
 def prepare() -> dict[str, Any]:
     receipt: dict[str, Any] = {}
-    con = common.connect(memory="450MB", threads=2)
+    con = common.connect(memory=DUCKDB_MEM, threads=2)
     try:
         with common.timed(receipt, "sub_clock"):
             sub_glob = (common.FSDS_DIR / "sub" / "*.parquet").as_posix()
@@ -722,7 +725,7 @@ def run_batches(only: tuple[int, int] | None = None) -> None:
     batches = cf_batches()
     fx_table = ffx.load_optional()
     print(f"fx: {_fx_identity(fx_table)}", flush=True)
-    con = common.connect(memory="300MB", threads=2)
+    con = common.connect(memory=DUCKDB_MEM_BATCH, threads=2)
     try:
         _register_static(con)
         for batch in batches:
@@ -817,7 +820,7 @@ def finalize() -> dict[str, Any]:
     stale = out_dir / "manifest.json"
     if stale.exists():
         stale.unlink()  # publish-last: no manifest while the outputs are being replaced
-    con = common.connect(memory="450MB", threads=2)
+    con = common.connect(memory=DUCKDB_MEM, threads=2)
     try:
         parts = (parts_dir() / "events-*.parquet").as_posix()
         with common.timed(manifest, "events"):
@@ -1120,7 +1123,7 @@ def validate(out: Path | None) -> dict[str, Any]:
     cf_glob = (fx.out_dir() / "batch-[0-9][0-9][0-9][0-9].parquet").as_posix()
     forms = ", ".join(f"'{f}'" for f in FORMS)
     res: dict[str, Any] = {}
-    con = common.connect(memory="450MB", threads=2)
+    con = common.connect(memory=DUCKDB_MEM, threads=2)
     try:
         con.execute(
             f"""
@@ -1300,7 +1303,7 @@ def validate_cutoff(out: Path | None, ciks: tuple[int, ...] = CUTOFF_CIKS) -> di
     hist = (fund_dir() / "quarterly_history.parquet").as_posix()
     cf_glob = (fx.out_dir() / "batch-[0-9][0-9][0-9][0-9].parquet").as_posix()
     res: dict[str, Any] = {"ciks": list(ciks), "cutoffs": [c.isoformat() for c in CUTOFFS], "by_cutoff": {}}
-    con = common.connect(memory="450MB", threads=2)
+    con = common.connect(memory=DUCKDB_MEM, threads=2)
     try:
         _register_static(con)
         base = _base_sql(cf_glob, f"AND CAST(b.cik AS BIGINT) IN ({cik_list})")
@@ -1366,6 +1369,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("prepare")
+    ba = sub.add_parser("build-all", help="prepare, batches, finalize in one process (one guard slot)")
+    ba.add_argument("--skip-prepare", action="store_true")
     b = sub.add_parser("batches")
     b.add_argument("--only", help="inclusive batch id range a-b")
     sub.add_parser("finalize")
@@ -1377,7 +1382,16 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--receipt", required=True, type=Path)
     a.add_argument("--key", default="finalize")
     args = ap.parse_args(argv)
-    if args.cmd == "prepare":
+    if args.cmd == "build-all":
+        t0 = time.perf_counter()
+        if not args.skip_prepare:
+            print({k: v for k, v in prepare().items() if not k.endswith("rule")}, flush=True)
+        print(f"prepare done {time.perf_counter() - t0:.0f}s", flush=True)
+        run_batches(None)
+        print(f"batches done {time.perf_counter() - t0:.0f}s", flush=True)
+        m = finalize()
+        print({k: m["stats"][k] for k in ("rows", "ciks", "clock_basis")}, f"{time.perf_counter() - t0:.0f}s", flush=True)
+    elif args.cmd == "prepare":
         print(prepare())
     elif args.cmd == "batches":
         only = tuple(int(x) for x in args.only.split("-")) if args.only else None
