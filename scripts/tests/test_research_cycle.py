@@ -62,7 +62,7 @@ def test_plan_live_root_equals_the_fixture():
 def test_v61_states_pins_and_phase_order(tmp_path):
     c = v61_cycle(tmp_path)
     steps = c.steps()
-    assert [s.phase for s in steps] == list(RC.PHASES)
+    assert [s.phase for s in steps] == [p for p in RC.PHASES if p not in ("card", "monitor")]  # W3 phases: v61-ops
     assert {s.phase: s.state for s in steps} == {"fields": "done", "check": "always", "u": "done", "fit": "done",
                                                  "gate": "always", "w": "done", "nav": "done", "summ": "always"}
     pins = json.loads((FIX / "v61_pins.json").read_text())
@@ -178,7 +178,10 @@ if b == "incomplete":
     (out / "stdout.log").write_text('{"status": "incomplete", "partial": true}'); receipt("process-error", 3); sys.exit(1)
 child = Path(cmd[cmd.index("--output") + 1])
 child.mkdir(parents=True, exist_ok=True)
-if "fit.py" in " ".join(cmd):
+if "card.py" in " ".join(cmd):
+    (child / "index.json").write_text("{}")
+    (child / "daily_sleeve.csv").write_text("id,decision_index,session_ns,turnover,pnl,coverage\n")
+elif "fit.py" in " ".join(cmd):
     (child / "composition_weights.json").write_text("{}")
     (child / "admission.json").write_text(json.dumps(beh.get("admission", {"rules": {"tau_limit": 0.7}, "candidates": [
         {"id": "new_alpha", "status": "admitted", "sign_agrees": True, "failed_checks": []}]})))
@@ -400,3 +403,119 @@ def test_keep_fields_and_runner_override(tmp_path):
         RC.parse_runner_overrides(["workers=2"])
     with pytest.raises(RC.CycleError, match="exclude"):
         v61_cycle(tmp_path, keep_fields=True, reuse_fields="x")
+
+
+# ------------------------------------------------------------------ W3: card and monitor phases
+V61_OPS = HERE.parent / "specs" / "v61-ops.json"
+
+FAKE_MONITOR = r'''
+import json, sys
+from pathlib import Path
+a = sys.argv[1:]
+with open("calls.log", "a") as f:
+    f.write("monitor " + " ".join(a) + "\n")
+beh = json.loads(Path("behaviour.json").read_text()) if Path("behaviour.json").exists() else {}
+if beh.get("monitor") == "fail":
+    sys.exit(1)
+out = Path(a[a.index("--output") + 1])
+out.mkdir(parents=True)
+(out / "monitor.json").write_text("{}")
+'''
+
+
+def test_v61_ops_is_v61_plus_the_card_and_monitor_sections():
+    ops, v61 = RC.load_spec(V61_OPS), RC.load_spec(V61)
+    assert ({k: v for k, v in ops.items() if k not in ("name", "description", "card", "monitor")} ==
+            {k: v for k, v in v61.items() if k not in ("name", "description")})
+    assert list(ops).index("card") == list(ops).index("fit") + 1 and list(ops).index("monitor") == list(ops).index("nav") + 1
+
+
+def test_v61_ops_plan_adds_the_card_after_fit_and_the_monitor_after_nav(tmp_path):
+    known = json.loads((FIX / "v61_pins.json").read_text(encoding="utf-8"))
+    c = RC.Cycle(RC.load_spec(V61_OPS), RC.Resolver(tmp_path, known), spec_path=V61_OPS)
+    steps = c.steps()
+    assert [s.phase for s in steps] == list(RC.PHASES)
+    lines = RC.plan_lines(c, lines_only=True)
+    base = (FIX / "v61_train_dry.txt").read_text(encoding="utf-8").splitlines()
+    card, monitor = (next(s for s in steps if s.phase == p) for p in ("card", "monitor"))
+    assert [x for x in lines if x not in (RC.fmt_argv(card.argv), RC.fmt_argv(monitor.argv))] == base
+    assert lines.index(RC.fmt_argv(card.argv)) == [s.phase for s in steps if s.argv].index("card")
+    u, w = "build-equity/mega-v61-train-u-1", "build-equity/mega-weights-v61-ew"
+    a = card.argv[card.argv.index("--") + 1:]
+    assert a == [sys.executable if False else c.py, "atx-impl/tools/alpha_report_card.py", "--u-pass", u, "--train",
+                 "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json", "--train-sha256", c.pin("role"),
+                 "--admission", f"{w}/admission.json", "--admission-sha256", f"<sha256:{w}/admission.json>",
+                 "--workers", "4", "--output", "build-equity/mega-cards-v61"]
+    assert card.run_dir == "build-equity/mega-cards-v61-run" and card.state == "pending"
+    assert monitor.kind == "direct" and monitor.state == "pending"
+    m = monitor.argv
+    assert m[1:] == ["atx-impl/tools/book_monitor.py", "--baseline", "--daily-ic", f"{u}/train_daily_ic.csv",
+                     "--admission", f"{w}/admission.json", "--fit-work", "build-equity/mega-fit-work-v61",
+                     "--sleeve-daily", "build-equity/mega-cards-v61/daily_sleeve.csv", "--holdings-days",
+                     "build-equity/v7-l3-holdings/holdings_days.csv", "--bias", "build-equity/v7-l4-risk/bias.csv",
+                     "--output", "build-equity/mega-monitor-v61"]
+    r7 = {s.phase: s for s in RC.Cycle(RC.load_spec(V61_OPS), RC.Resolver(tmp_path, known), spec_path=V61_OPS,
+                                       suffix="r7").steps()}
+    assert r7["card"].output == "build-equity/mega-cards-v61-r7"
+    assert r7["monitor"].argv[r7["monitor"].argv.index("--fit-work") + 1] == "build-equity/mega-fit-work-v61-r7"
+
+
+def ops_root(tmp_path, **over):
+    root, sp = make_root(tmp_path, card={"script": "scripts/card.py", "output": "out/C", "flags": ["--workers", "2"]},
+                         monitor={"script": "scripts/monitor.py", "output": "out/M", "bias": "risk/bias.csv"}, **over)
+    (root / "scripts" / "card.py").write_text("")
+    (root / "scripts" / "monitor.py").write_text(FAKE_MONITOR)
+    return root, sp
+
+
+def test_run_orders_card_before_the_gate_and_monitor_after_nav(tmp_path):
+    root, sp = ops_root(tmp_path)
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    got = calls(root)
+    assert got[:5] == ["fields ", "check", "U-run1", "W-run1", "C-run"]
+    assert got[5:7] == ["WT-run1", "N-run"]
+    assert got[7].startswith("monitor --baseline --daily-ic out/U-1/train_daily_ic.csv --admission "
+                             "out/W/admission.json --fit-work out/WORK --sleeve-daily out/C/daily_sleeve.csv --bias "
+                             "risk/bias.csv --output out/M")
+    assert got[8].startswith("summ ")
+    assert log.index("== card") < log.index("gate p1 PASS")
+    lines = []
+    assert run(root, sp, lines) == RC.EXIT_OK  # resume: every phase done, nothing re-executed
+    assert calls(root)[len(got):] == ["check", got[-1]]  # only the always-run check and summ
+    assert "== card: done (out/C)" in lines and "== monitor: done (out/M)" in lines
+
+
+def test_card_output_is_needed_even_when_the_gate_fails(tmp_path):
+    root, sp = ops_root(tmp_path)
+    behave(root, admission={"rules": {}, "candidates": [{"id": "new_alpha", "status": "reject_veto",
+                                                         "sign_agrees": True, "failed_checks": ["veto"]}]})
+    with pytest.raises(RC.CycleError) as e:
+        run(root, sp)
+    assert e.value.code == RC.EXIT_GATE
+    assert (root / "out" / "C" / "index.json").is_file()
+    assert "C-run" in calls(root) and "WT-run1" not in calls(root)
+
+
+def test_card_refusal_and_monitor_failure_stop(tmp_path):
+    root, sp = ops_root(tmp_path)
+    behave(root, **{"C-run": "error"})
+    with pytest.raises(RC.CycleError) as e:
+        run(root, sp)
+    assert "HARD-STOP [card]" in str(e.value) and e.value.code == RC.EXIT_STOP
+    root2, sp2 = ops_root(tmp_path / "second")
+    behave(root2, monitor="fail")
+    with pytest.raises(RC.CycleError) as e:
+        run(root2, sp2)
+    assert "HARD-STOP [monitor]: exit 1" in str(e.value)
+    assert "summ" not in " ".join(calls(root2))
+
+
+def test_card_and_monitor_need_their_upstream_sections():
+    base = minimal_spec()
+    for bad in (dict(base, card={"script": "c.py", "output": "C"}),
+                dict(base, monitor={"script": "m.py", "output": "M"}),
+                dict(base, card={"script": "c.py"})):
+        with pytest.raises(RC.CycleError) as e:
+            RC.validate_spec(bad)
+        assert e.value.code == RC.EXIT_USAGE
