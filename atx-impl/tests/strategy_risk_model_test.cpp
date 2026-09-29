@@ -1,7 +1,9 @@
-// atx-risk-v1 (platform v7 lane L4): the constrained WLS, the recursive EWMA/Newey-West
+// atx-risk-v1.1 (platform v7 lane L4): the constrained WLS, the recursive EWMA/Newey-West
 // estimator against atx-engine risk V2, the bias statistic, and the model end to end on a
 // planted factor panel; F2: structural forecasts for short-history factors, the per-date
-// residual-slot merge, and the optimiser's view of them. Synthetic inputs only.
+// residual-slot merge, and the optimiser's view of them; F3 (R2 I-2): robust standardisation,
+// style validity, the bounded structural specific vol, the robust decile target and the
+// specific-variance invariant. Synthetic inputs only.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -18,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 #include <Eigen/Dense>
 #include <gtest/gtest.h>
@@ -138,6 +141,39 @@ TEST(RiskWls, CollinearStylesAreRefusedNotSolved) {
   const auto fit = rk::regress_cross_section(rows.view());
   ASSERT_FALSE(fit);
   EXPECT_EQ(fit.error().code(), co::ErrorCode::Unavailable);
+}
+// F3 style validity: a one-name dummy column (the I-2 asset_growth shape) has 1 effective name
+// and is left out at the floor (factor NaN, reported dropped); a +-1 column on 40 names has
+// (sum w)^2 / sum w^2 (~31 here, at most 40) and passes; the v1 kernel (floor 0) regresses both.
+TEST(RiskWls, DegenerateStyleColumnIsNotRegressedAndReported) {
+  std::array<f64, rk::factor_count> planted{};
+  auto rows = planted_rows(400, planted, true, 11);
+  constexpr usize dummy = static_cast<usize>(rk::Style::AssetGrowth);
+  constexpr usize sparse = static_cast<usize>(rk::Style::Profitability);
+  for (usize k = 0; k < 400; ++k) {
+    rows.styles[k * rk::style_count + dummy] = k == 0 ? 3.0 : 0.0;
+    rows.styles[k * rk::style_count + sparse] = k < 40 ? (k % 2 ? 1.0 : -1.0) : 0.0;
+  }
+  const rk::RiskModelConfig cfg;
+  const auto fit = rk::regress_cross_section(rows.view(), cfg.min_style_effective_names);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_TRUE(std::isnan(fit->factor[rk::style_factor(dummy)]));
+  EXPECT_TRUE(fit->style_dropped[dummy]);
+  EXPECT_EQ(fit->style_effective_names[dummy], 1.0);
+  EXPECT_TRUE(std::isfinite(fit->factor[rk::style_factor(sparse)]));
+  EXPECT_FALSE(fit->style_dropped[sparse]);
+  EXPECT_GE(fit->style_effective_names[sparse], cfg.min_style_effective_names);
+  EXPECT_LE(fit->style_effective_names[sparse], 40.0);
+  for (usize s = 0; s < rk::style_count; ++s) {
+    if (s == dummy) continue;
+    EXPECT_FALSE(fit->style_dropped[s]) << s;
+    EXPECT_GT(fit->style_dispersion[s], 0.0) << s;
+  }
+  const auto v1 = rk::regress_cross_section(rows.view());
+  ASSERT_TRUE(v1);
+  EXPECT_TRUE(std::isfinite(v1->factor[rk::style_factor(dummy)]));
+  EXPECT_FALSE(v1->style_dropped[dummy]);
+  EXPECT_FALSE(rk::regress_cross_section(rows.view(), -1.0)); // a negative floor is refused
 }
 
 // ---- recursive EWMA / Newey-West against the engine ---------------------------------------
@@ -1063,5 +1099,432 @@ TEST(RiskVerb, StructuralFactorsAreMarkedAndTheOptimiserReadsTheirVariance) {
   x[k] = 0.0;
   EXPECT_GT(with, 0.0);
   EXPECT_NE(with, factor_variance(x)); // the short-history factor carries risk
+}
+
+// ---- F3: robustness to a single outlier (R2 finding I-2), atx-risk-v1.1 ---------------------
+// The lower weighted median as declared: (value, weight) ascending, the first value whose
+// cumulative weight reaches half the total (both summed in that order).
+f64 lower_weighted_median(std::vector<std::pair<f64, f64>> pairs) {
+  std::sort(pairs.begin(), pairs.end());
+  f64 total = 0;
+  for (const auto& entry : pairs) total += entry.second;
+  f64 cumulative = 0;
+  for (const auto& [v, w] : pairs) {
+    cumulative += w;
+    if (cumulative >= 0.5 * total) return v;
+  }
+  return pairs.back().first;
+}
+// One name of 1,000 moved to +-1e12 (the median-cap name and the largest, 1.2% of cap). Stated
+// bound, first order in that name: its fenced value moves by at most (k + u) s (u = its clean
+// robust z), so the cap-weighted mean moves by omega (k + u) s and the equal-weighted variance by
+// at most (k + u)^2 s^2 / (n - 1); with |z| <= clip every other z moves by at most
+// omega (k + u) s / sd + clip (k + u)^2 s^2 / (2 (n - 1) sd^2) + .01 (median and MAD each move
+// by one order statistic, ~2.5 / n s). The v1 rule moved every other z by O(1) (~3 here: the
+// outlier sat inside the SD it was fenced with).
+TEST(RiskRobust, OneExtremeOutlierMovesOtherStyleZOnlyWithinTheStatedBound) {
+  constexpr usize n = 1000;
+  const rk::RiskModelConfig cfg;
+  Normal rng{83};
+  std::vector<f64> raw(n), cap(n);
+  for (usize i = 0; i < n; ++i) { cap[i] = 1e9 * std::exp(rng()); raw[i] = rng(); }
+  const std::vector<u8> universe(n, 1);
+  std::vector<f64> clean(n);
+  const auto base = rk::standardize_style(raw, universe, cap, cfg.winsor_k, cfg.clip_z, clean);
+  ASSERT_TRUE(base.valid);
+  EXPECT_EQ(base.names, n);
+  EXPECT_EQ(base.fenced, 0U);
+  f64 cap_total = 0;
+  for (const f64 c : cap) cap_total += c;
+  std::vector<usize> by_cap(n);
+  for (usize i = 0; i < n; ++i) by_cap[i] = i;
+  std::sort(by_cap.begin(), by_cap.end(), [&](usize a, usize b) { return cap[a] < cap[b]; });
+  for (const usize o : {by_cap[n / 2], by_cap[n - 1]})
+    for (const f64 value : {1e12, -1e12}) {
+      SCOPED_TRACE(std::to_string(o) + " " + std::to_string(value));
+      auto corrupt = raw;
+      corrupt[o] = value;
+      std::vector<f64> z(n);
+      const auto scale =
+          rk::standardize_style(corrupt, universe, cap, cfg.winsor_k, cfg.clip_z, z);
+      ASSERT_TRUE(scale.valid);
+      EXPECT_EQ(scale.fenced, 1U);
+      EXPECT_EQ(z[o], value > 0 ? cfg.clip_z : -cfg.clip_z); // fenced, then clipped
+      const f64 omega = cap[o] / cap_total, k = cfg.winsor_k;
+      const f64 u = std::abs(raw[o] - base.median) / base.robust_sd;
+      const f64 ratio = base.robust_sd / base.sd;
+      const f64 mean_term = omega * (k + u) * ratio;
+      const f64 sd_term =
+          cfg.clip_z * (k + u) * (k + u) * ratio * ratio / (2.0 * static_cast<f64>(n - 1));
+      const f64 bound = mean_term + sd_term + 0.01;
+      f64 worst = 0;
+      for (usize i = 0; i < n; ++i)
+        if (i != o) worst = std::max(worst, std::abs(z[i] - clean[i]));
+      EXPECT_LE(worst, bound);
+      EXPECT_LT(bound, 0.1);
+    }
+}
+// Boundaries: fewer than two universe values or a zero MAD (over half tied) leave z all 0; a
+// name outside the universe gets the universe's transform and never sets the scale.
+TEST(RiskRobust, StandardizeStyleBoundariesAndNamesOutsideTheUniverse) {
+  const rk::RiskModelConfig cfg;
+  std::vector<f64> z(5, 7.0);
+  const std::vector<f64> caps(5, 1e9);
+  const std::vector<u8> all(5, 1);
+  const std::vector<f64> single{1.0, missing, missing, missing, missing};
+  EXPECT_FALSE(rk::standardize_style(single, all, caps, cfg.winsor_k, cfg.clip_z, z).valid);
+  for (const f64 v : z) EXPECT_EQ(v, 0.0);
+  const std::vector<f64> tied{5.0, 5.0, 5.0, 5.0, 7.0};
+  const auto t = rk::standardize_style(tied, all, caps, cfg.winsor_k, cfg.clip_z, z);
+  EXPECT_FALSE(t.valid);
+  EXPECT_EQ(t.robust_sd, 0.0);
+  for (const f64 v : z) EXPECT_EQ(v, 0.0);
+  EXPECT_FALSE(rk::standardize_style(tied, all, caps, 0.0, cfg.clip_z, z).valid);
+  Normal rng{5};
+  constexpr usize n = 200;
+  std::vector<f64> raw(n), cap(n), zz(n);
+  std::vector<u8> universe(n, 1);
+  for (usize i = 0; i < n; ++i) { raw[i] = rng(); cap[i] = 1e9 * std::exp(rng()); }
+  universe[0] = 0; universe[1] = 0;
+  raw[0] = 1e9;    // outside: fenced like any value, never part of the scale
+  raw[1] = 0.25;
+  const auto s = rk::standardize_style(raw, universe, cap, cfg.winsor_k, cfg.clip_z, zz);
+  ASSERT_TRUE(s.valid);
+  EXPECT_EQ(s.names, n - 2);
+  const f64 lo = s.median - cfg.winsor_k * s.robust_sd;
+  const f64 hi = s.median + cfg.winsor_k * s.robust_sd;
+  EXPECT_EQ(zz[1], std::clamp((std::clamp(raw[1], lo, hi) - s.mean) / s.sd, -3.0, 3.0));
+  EXPECT_EQ(zz[0], cfg.clip_z);
+}
+
+// A pinned synthetic role where book-to-price exists for 4 of 200 names: the value column is
+// a 4-name column on every session, so it is never regressed (effective names <= 4 < 10); its
+// factor return is missing, the F2 structural forecast covers its exposures (random family ok,
+// nothing dropped), and the manifest, bias_summary.json and diagnostics.csv carry the v1.1
+// audit.
+TEST(RiskRobust, DegenerateStyleIsDroppedEverySessionAndCountedInTheManifest) {
+  Directory dir;
+  Planted planted(300, 200, 101);
+  for (usize t = 0; t < planted.d; ++t)
+    for (usize i = 4; i < planted.n; ++i)
+      planted.value[t * planted.n + i] = std::numeric_limits<f32>::quiet_NaN();
+  const auto pinned = write_role_and_fields(dir.path / "sparse", planted);
+  const auto out = dir.path / "sparse" / "out";
+  std::string error;
+  ASSERT_EQ(run_verb(pinned, out, error), 0) << error;
+  Json manifest, bias;
+  {
+    std::ifstream in(out / "manifest.json");
+    in >> manifest;
+  }
+  {
+    std::ifstream in(out / "bias_summary.json");
+    in >> bias;
+  }
+  EXPECT_EQ(manifest.at("schema"), "atx.risk-model/v1"); // readers (spo-v1) accept the directory
+  EXPECT_EQ(manifest.at("model"), "atx-risk-v1.1");
+  EXPECT_EQ(manifest.at("recipe").at("model"), "atx-risk-v1.1");
+  const auto& r = manifest.at("robustness");
+  EXPECT_EQ(bias.at("risk_model_robustness"), r);
+  const usize fitted = planted.d - 1; // every session t >= 1 (200 rows)
+  EXPECT_EQ(r.at("style_dates_dropped").get<usize>(), fitted);
+  EXPECT_EQ(r.at("style_dates_dropped_by_style").at("value").get<usize>(), fitted);
+  EXPECT_EQ(r.at("invariant_refusals").get<usize>(), 0U);
+  EXPECT_EQ(r.at("unscaled_descriptor_dates").get<usize>(), 0U); // no tied descriptor here
+  const f64 max_d = r.at("max_daily_specific_variance").at("value").get<f64>();
+  EXPECT_GT(max_d, 0.0);
+  EXPECT_LT(max_d, r.at("specific_variance_bound").get<f64>());
+  EXPECT_TRUE(r.at("max_daily_specific_variance").at("instrument_id").is_number());
+  EXPECT_GE(r.at("min_style_effective_names").at("value").get<f64>(), 10.0);
+  EXPECT_GT(r.at("min_style_dispersion").at("value").get<f64>(), 0.0);
+  const auto& random = bias.at("families").at("random");
+  EXPECT_EQ(random.at("status"), "ok");
+  EXPECT_EQ(random.at("dropped_factor_exposures").get<usize>(), 0U);
+  // The value factor has no return and a structural forecast on every forecast session.
+  std::ifstream returns(out / "factor_returns.csv");
+  std::string line;
+  ASSERT_TRUE(std::getline(returns, line));
+  const auto header = split_csv(line);
+  const auto column = static_cast<usize>(
+      std::find(header.begin(), header.end(), "style_value") - header.begin());
+  ASSERT_LT(column, header.size());
+  usize rows = 0;
+  while (std::getline(returns, line)) {
+    if (line.empty()) continue;
+    const auto cells = split_csv(line);
+    ASSERT_LT(column, cells.size());
+    EXPECT_NE(cells[column].find("nan"), std::string::npos) << rows << ' ' << cells[column];
+    ++rows;
+  }
+  EXPECT_EQ(rows, planted.d);
+  std::ifstream diagnostics(out / "diagnostics.csv");
+  ASSERT_TRUE(std::getline(diagnostics, line));
+  const auto names = split_csv(line);
+  std::string last;
+  while (std::getline(diagnostics, line))
+    if (!line.empty()) last = line;
+  const auto row = split_csv(last);
+  ASSERT_EQ(row.size(), names.size());
+  const auto cell = [&](const char* name) -> std::string {
+    const auto it = std::find(names.begin(), names.end(), name);
+    return it == names.end() ? "missing" : row[static_cast<usize>(it - names.begin())];
+  };
+  EXPECT_EQ(cell("styles_dropped"), "1");
+  EXPECT_NE(cell("max_specific_variance"), "missing");
+  EXPECT_NE(cell("structural_sigma_upper"), "missing");
+  EXPECT_NE(cell("fenced_values"), "missing");
+  EXPECT_EQ(cell("unscaled_descriptors"), "0");
+}
+
+// Structural ln-sigma on 300 fitted names whose asset-growth z spans only [-.05, .05] with ln
+// sigma = ln .02 + 40 z (the I-2 shape: a collapsed column, a steep slope). A name at z = 3
+// would be predicted at exp(40 x 3) ~ 1e50; its exposure is clamped to the fitted range and its
+// sigma bounded to the fitted names' p99. Every sigma lies in [p1, p99]; the fallback (too few
+// rows for the fit) is their cap-weighted median.
+TEST(RiskRobust, StructuralSpecificVolIsClampedToTheFitAndBoundedToItsSigmaQuantiles) {
+  constexpr usize rows = 300, names = rows + 2;
+  constexpr usize ag = static_cast<usize>(rk::Style::AssetGrowth);
+  Normal rng{97};
+  std::vector<u8> slot(rows);
+  std::vector<f64> cap(rows), weight(rows), styles(rows * rk::style_count), value(rows);
+  for (usize r = 0; r < rows; ++r) {
+    slot[r] = static_cast<u8>(r % 5);
+    cap[r] = 1e9 * std::exp(rng());
+    weight[r] = std::sqrt(cap[r]);
+    for (usize s = 0; s < rk::style_count; ++s)
+      styles[r * rk::style_count + s] = s == ag ? 0.05 * (2.0 * rng.uniform() - 1.0) : rng();
+    value[r] = std::log(0.02) + 40.0 * styles[r * rk::style_count + ag] + 0.05 * rng();
+  }
+  const rk::CrossSection fit{slot, styles, weight, cap, value};
+  std::vector<u8> query_slot(slot);
+  std::vector<f64> query(styles);
+  query_slot.push_back(slot[0]); // the outlier: row 0 with asset growth at 3
+  query.insert(query.end(), styles.begin(),
+               styles.begin() + static_cast<std::ptrdiff_t>(rk::style_count));
+  query[rows * rk::style_count + ag] = 3.0;
+  query_slot.push_back(rk::no_exposure);
+  query.insert(query.end(), rk::style_count, 0.0);
+  std::vector<f64> sigma(names);
+  std::vector<u8> flags(names);
+  const rk::RiskModelConfig cfg;
+  const auto vol = rk::structural_specific_vol(fit, cfg, query_slot, query, sigma, flags);
+  ASSERT_TRUE(vol) << vol.error().to_string();
+  EXPECT_TRUE(vol->regression);
+  std::vector<f64> sorted(rows);
+  for (usize r = 0; r < rows; ++r) sorted[r] = std::exp(value[r]);
+  std::sort(sorted.begin(), sorted.end());
+  const auto type7 = [&](f64 q) {
+    const f64 h = q * static_cast<f64>(rows - 1);
+    const auto lo = static_cast<usize>(std::floor(h));
+    return sorted[lo] + (h - static_cast<f64>(lo)) * (sorted[lo + 1] - sorted[lo]);
+  };
+  EXPECT_EQ(vol->lower, type7(cfg.structural_sigma_quantile));
+  EXPECT_EQ(vol->upper, type7(1.0 - cfg.structural_sigma_quantile));
+  const auto flag = [&](usize i) { return static_cast<unsigned>(flags[i]); };
+  constexpr unsigned bounded_bit = rk::structural_sigma_bounded;
+  constexpr unsigned clamped_bit = rk::structural_exposure_clamped;
+  EXPECT_EQ(sigma[rows], vol->upper); // the clamped prediction (~.149) still exceeds p99 (~.140)
+  EXPECT_EQ(flag(rows), bounded_bit | clamped_bit);
+  EXPECT_TRUE(std::isnan(sigma[rows + 1]));
+  EXPECT_EQ(flag(rows + 1), 0U);
+  usize bounded = 0;
+  for (usize r = 0; r < rows; ++r) {
+    EXPECT_GE(sigma[r], vol->lower) << r;
+    EXPECT_LE(sigma[r], vol->upper) << r;
+    EXPECT_EQ(flag(r) & clamped_bit, 0U) << r; // inside its own range
+    if (flag(r) & bounded_bit) { ++bounded; continue; }
+    EXPECT_LT(std::abs(std::log(sigma[r]) - value[r]), 0.3) << r; // the fit, not the bound
+  }
+  EXPECT_LE(bounded, 30U);
+  // Fallback: the fit needs more rows than there are.
+  rk::RiskModelConfig few = cfg;
+  few.min_regression_names = rows + 1;
+  const auto median = rk::structural_specific_vol(fit, few, query_slot, query, sigma, flags);
+  ASSERT_TRUE(median);
+  EXPECT_FALSE(median->regression);
+  std::vector<std::pair<f64, f64>> pairs;
+  for (usize r = 0; r < rows; ++r) pairs.emplace_back(std::exp(value[r]), cap[r]);
+  const f64 expected = lower_weighted_median(pairs);
+  for (usize i = 0; i <= rows; ++i) {
+    EXPECT_EQ(sigma[i], expected) << i;
+    EXPECT_EQ(flag(i), 0U) << i;
+  }
+  std::vector<f64> short_sigma(names - 1);
+  EXPECT_FALSE(rk::structural_specific_vol(fit, cfg, query_slot, query, short_sigma, flags));
+}
+
+// 200 names in 10 cap deciles of 20 (cap rises with the index); name 105 (decile 5, 4.8% of
+// its cap) is corrupted to sigma 1e6. A cap-weighted mean target would be ~5e4 for all 20;
+// the lower cap-weighted median moves by at most one rank: other deciles are bit-identical,
+// decile 5's target stays one of the other names' sigmas, each shrunk sigma stays between the
+// name's own and the target. The corrupt name is not hidden (the invariant sees it).
+TEST(RiskRobust, SizeDecileTargetIsRobustToOneCorruptName) {
+  constexpr usize n = 200, corrupt_name = 105;
+  Normal rng{31};
+  std::vector<f64> sigma(n), cap(n);
+  std::vector<u8> eligible(n, 1);
+  for (usize i = 0; i < n; ++i) {
+    sigma[i] = 0.02 * std::exp(0.3 * rng());
+    cap[i] = 1e9 * static_cast<f64>(i + 1);
+  }
+  const auto clean = rk::shrink_to_size_deciles(sigma, cap, eligible, 0.1);
+  ASSERT_TRUE(clean) << clean.error().to_string();
+  std::vector<std::pair<f64, f64>> d0; // decile 0's target is its lower cap-weighted median
+  for (usize i = 0; i < 20; ++i) d0.emplace_back(sigma[i], cap[i]);
+  EXPECT_EQ(clean->target[0], lower_weighted_median(d0));
+  auto bad = sigma;
+  bad[corrupt_name] = 1e6;
+  const auto corrupt = rk::shrink_to_size_deciles(bad, cap, eligible, 0.1);
+  ASSERT_TRUE(corrupt);
+  const f64 target = corrupt->target[100];
+  f64 others_max = 0;
+  bool is_other_value = false;
+  for (usize i = 100; i < 120; ++i) {
+    if (i == corrupt_name) continue;
+    others_max = std::max(others_max, sigma[i]);
+    is_other_value = is_other_value || sigma[i] == target;
+  }
+  EXPECT_TRUE(is_other_value);
+  EXPECT_LE(target, others_max);
+  EXPECT_GE(target, clean->target[100]);
+  for (usize i = 0; i < n; ++i) {
+    if (i >= 100 && i < 120) {
+      EXPECT_EQ(corrupt->target[i], target) << i;
+      if (i == corrupt_name) continue;
+      constexpr f64 ulps = 1e-12; // a convex combination, up to rounding
+      EXPECT_GE(corrupt->shrunk[i], std::min(sigma[i], target) * (1.0 - ulps)) << i;
+      EXPECT_LE(corrupt->shrunk[i], std::max(sigma[i], target) * (1.0 + ulps)) << i;
+      continue;
+    }
+    EXPECT_EQ(corrupt->target[i], clean->target[i]) << i;
+    EXPECT_EQ(corrupt->shrunk[i], clean->shrunk[i]) << i;
+  }
+  EXPECT_GT(corrupt->shrunk[corrupt_name], 1.0);
+  eligible[7] = 0; // outside the pool: kept as is, no target
+  const auto pooled = rk::shrink_to_size_deciles(sigma, cap, eligible, 0.1);
+  ASSERT_TRUE(pooled);
+  EXPECT_EQ(pooled->shrunk[7], sigma[7]);
+  EXPECT_TRUE(std::isnan(pooled->target[7]));
+  EXPECT_FALSE(rk::shrink_to_size_deciles(sigma, std::span<const f64>(cap).first(n - 1),
+                                          eligible, 0.1));
+}
+
+// The invariant: D in (0, 1) or refuse, naming the instrument and the session (ns and date).
+TEST(RiskRobust, SpecificVarianceOutsideTheBoundIsRefusedNamingInstrumentAndDate) {
+  const std::array<u64, 3> ids{11, 22, 33};
+  const i64 session =
+      static_cast<i64>(std::chrono::sys_days{std::chrono::year{2020} / 5 / 12}
+                           .time_since_epoch().count()) * day_ns;
+  const std::array<f64, 3> fine{1e-4, missing, 2e-4}; // NaN = no forecast
+  EXPECT_TRUE(rk::check_specific_variance(fine, ids, session, 1.0));
+  for (const f64 v : {1.5, 1.0, 0.0, -1e-6, std::numeric_limits<f64>::infinity(), 3.9e12}) {
+    SCOPED_TRACE(v);
+    const std::array<f64, 3> bad{1e-4, v, 2e-4};
+    const auto status = rk::check_specific_variance(bad, ids, session, 1.0);
+    ASSERT_FALSE(status);
+    EXPECT_EQ(status.error().code(), co::ErrorCode::OutOfRange);
+    const std::string& message = status.error().message();
+    EXPECT_NE(message.find("instrument 22"), std::string::npos) << message;
+    EXPECT_NE(message.find("2020-05-12"), std::string::npos) << message;
+    EXPECT_NE(message.find(std::to_string(session)), std::string::npos) << message;
+    EXPECT_NE(message.find("atx-risk-v1.1"), std::string::npos) << message;
+  }
+  EXPECT_FALSE(
+      rk::check_specific_variance(fine, std::span<const u64>(ids).first(2), session, 1.0));
+}
+// Through the driver: a bound below every planted D (sigma .01-.03) refuses the run at the first
+// session with specific forecasts, before any sink sees it.
+struct SpecificDays final : rk::RiskSink {
+  usize days{}, with_specific{};
+  co::Status on_day(const rk::RiskDay& day) override {
+    ++days;
+    with_specific += day.specific_names > 0 ? 1U : 0U;
+    return co::Ok();
+  }
+};
+TEST(RiskRobust, TheDriverRefusesTheRunAtTheFirstOutOfRangeSession) {
+  const Planted planted(300, 150, 103);
+  const auto panel = planted.panel();
+  rk::RiskModelConfig cfg;
+  cfg.max_specific_variance = 1e-6;
+  SpecificDays seen;
+  std::array<rk::RiskSink*, 1> sinks{&seen};
+  const auto status = rk::run_risk_model(panel, cfg, sinks);
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), co::ErrorCode::OutOfRange);
+  EXPECT_NE(status.error().message().find("outside (0, 1e-06)"), std::string::npos)
+      << status.error().message();
+  EXPECT_EQ(seen.with_specific, 0U);
+  EXPECT_GE(seen.days, cfg.structural_history); // no name has 252 residuals before then
+  EXPECT_LT(seen.days, planted.d);
+  cfg.max_specific_variance = 0.0;
+  EXPECT_FALSE(rk::validate_config(cfg));
+}
+
+// The I-2 chain end to end: asset growth N(0, 1) for 300 names; name 7 lists at session 250
+// (fewer than 252 residuals at the end: its sigma uses the structural model) with asset growth
+// 1e9. v1 collapsed every other z, extrapolated exp(3 f) to name 7 and spread it through the
+// size decile. v1.1: name 7 is fenced to z 3, the others keep SD ~1, the style is regressed on
+// every session, and D stays at the planted level (sigma .01-.03) for every name and session.
+struct OutlierLog final : rk::RiskSink {
+  usize dates{}, dropped{}, structural_last{};
+  f64 max_d{0.0};
+  std::vector<f64> last_z, last_specific;
+  std::vector<u8> last_eligible;
+  co::Status on_day(const rk::RiskDay& day) override {
+    constexpr usize ag = static_cast<usize>(rk::Style::AssetGrowth);
+    dropped += day.style_dropped[ag];
+    if (std::isfinite(day.max_specific_variance))
+      max_d = std::max(max_d, day.max_specific_variance);
+    if (day.date + 1 != dates) return co::Ok();
+    structural_last = day.structural_names;
+    last_specific.assign(day.specific_variance.begin(), day.specific_variance.end());
+    last_eligible.assign(day.eligible.begin(), day.eligible.end());
+    for (usize i = 0; i < day.eligible.size(); ++i)
+      last_z.push_back(day.styles[i * rk::style_count + ag]);
+    return co::Ok();
+  }
+};
+TEST(RiskModel, AssetGrowthOutlierOnAShortHistoryNameStaysBounded) {
+  constexpr usize listed = 250, outlier = 7;
+  Planted planted(420, 300, 89);
+  std::vector<f32> growth(planted.d * planted.n);
+  Normal rng{90};
+  std::vector<f32> per_name(planted.n);
+  for (auto& g : per_name) g = static_cast<f32>(rng());
+  for (usize t = 0; t < planted.d; ++t)
+    for (usize i = 0; i < planted.n; ++i) {
+      const usize k = t * planted.n + i;
+      growth[k] = i == outlier ? 1e9F : per_name[i];
+      if (i != outlier || t >= listed) continue;
+      planted.present[k] = 0; planted.close[k] = missing; planted.raw[k] = missing;
+      planted.volume[k] = missing;
+      growth[k] = std::numeric_limits<f32>::quiet_NaN();
+    }
+  auto panel = planted.panel();
+  panel.descriptors[3] = growth; // asset_growth (at / at_lag4 - 1)
+  OutlierLog log;
+  log.dates = planted.d;
+  std::array<rk::RiskSink*, 1> sinks{&log};
+  const auto status = rk::run_risk_model(panel, rk::RiskModelConfig{}, sinks);
+  ASSERT_TRUE(status) << status.error().to_string(); // the invariant held on every session
+  EXPECT_EQ(log.dropped, 0U);
+  EXPECT_LT(log.max_d, 1e-2);
+  ASSERT_EQ(log.last_z.size(), planted.n);
+  EXPECT_EQ(log.last_z[outlier], 3.0);
+  f64 sum = 0, sq = 0;
+  usize count = 0;
+  for (usize i = 0; i < planted.n; ++i) {
+    if (i == outlier || !log.last_eligible[i]) continue;
+    sum += log.last_z[i]; sq += log.last_z[i] * log.last_z[i]; ++count;
+  }
+  ASSERT_GT(count, 250U);
+  const f64 mean = sum / static_cast<f64>(count);
+  const f64 sd = std::sqrt(sq / static_cast<f64>(count) - mean * mean);
+  EXPECT_GT(sd, 0.85); EXPECT_LT(sd, 1.15);
+  EXPECT_GE(log.structural_last, 1U); // name 7 (169 residuals)
+  const f64 d7 = log.last_specific[outlier];
+  EXPECT_GT(d7, 1e-5);
+  EXPECT_LT(d7, 5e-3);
 }
 } // namespace

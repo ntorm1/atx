@@ -2,8 +2,8 @@
 #include <string_view>
 #include "strategy_risk_model.hpp"
 
-// `risk` verb: atx-risk-v1 factor exposures, factor covariance, specific variances and the
-// bias harness for a pinned research role + fields set (platform v7 lane L4).
+// `risk` verb: atx-risk-v1.1 factor exposures, factor covariance, specific variances and the
+// bias harness for a pinned research role + fields set (platform v7 lanes L4, F2, F3).
 int main(int argc, char** argv) {
   if (argc > 1 && std::string_view{argv[1]} == "risk")
     return atx::impl::strategy::risk::dispatch_risk_model(argc - 1, argv + 1, std::cout,

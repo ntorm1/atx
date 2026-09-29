@@ -1,11 +1,15 @@
 #include "strategy_risk_model.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <locale>
 #include <numbers>
 #include <numeric>
+#include <sstream>
 #include <utility>
 #include <Eigen/Dense>
 
@@ -40,40 +44,101 @@ u64 splitmix(u64 x) {
   x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
   return x ^ (x >> 31U);
 }
-// Cross-sectional z-score (Barra): cap-weighted mean, equal-weighted SD over the universe,
-// winsorized at +-winsor SD (second pass on the winsorized values), clipped at +-clip; names
-// outside the universe get the same transform; missing -> 0. False (z all 0) when fewer than
-// two universe values or no dispersion.
-bool standardize(std::span<const f64> raw, std::span<const u8> universe, std::span<const f64> cap,
-                 f64 winsor, f64 clip, std::span<f64> z) {
-  const usize n = raw.size();
-  std::fill(z.begin(), z.end(), 0.0);
-  f64 lo = -std::numeric_limits<f64>::infinity(), hi = std::numeric_limits<f64>::infinity();
-  f64 mu = 0, sd = 0;
-  for (int pass = 0; pass < 2; ++pass) {
-    f64 cw = 0, cx = 0; usize count = 0;
-    for (usize i = 0; i < n; ++i) {
-      if (!universe[i] || !std::isfinite(raw[i])) continue;
-      const f64 v = std::clamp(raw[i], lo, hi);
-      cw += cap[i]; cx += cap[i] * v; ++count;
-    }
-    if (count < 2 || !(cw > 0)) return false;
-    mu = cx / cw;
-    f64 ss = 0;
-    for (usize i = 0; i < n; ++i) {
-      if (!universe[i] || !std::isfinite(raw[i])) continue;
-      const f64 d = std::clamp(raw[i], lo, hi) - mu;
-      ss += d * d;
-    }
-    sd = std::sqrt(ss / static_cast<f64>(count - 1));
-    if (!(sd > 0) || !std::isfinite(sd)) return false;
-    if (pass == 0) { lo = mu - winsor * sd; hi = mu + winsor * sd; }
+// Median of v (reordered in place): the middle value, or the mean of the two middle values;
+// NaN when empty.
+f64 median_inplace(std::vector<f64>& v) {
+  if (v.empty()) return nan;
+  const auto mid = v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2);
+  std::nth_element(v.begin(), mid, v.end());
+  const f64 upper = *mid;
+  if (v.size() % 2) return upper;
+  return 0.5 * (*std::max_element(v.begin(), mid) + upper);
+}
+// Lower weighted median of (value, weight >= 0) pairs (reordered): the smallest value whose
+// cumulative weight, values ascending, reaches half the total; equal weights when the total is
+// not positive. NaN when empty.
+f64 weighted_median(std::vector<std::pair<f64, f64>>& pairs) {
+  if (pairs.empty()) return nan;
+  std::sort(pairs.begin(), pairs.end());
+  f64 total = 0;
+  for (const auto& entry : pairs) total += entry.second;
+  const bool equal = !(total > 0) || !std::isfinite(total);
+  const f64 half = 0.5 * (equal ? static_cast<f64>(pairs.size()) : total);
+  f64 cumulative = 0;
+  for (const auto& [value, weight] : pairs) {
+    cumulative += equal ? 1.0 : weight;
+    if (cumulative >= half) return value;
   }
-  for (usize i = 0; i < n; ++i)
-    if (std::isfinite(raw[i])) z[i] = std::clamp((std::clamp(raw[i], lo, hi) - mu) / sd, -clip, clip);
-  return true;
+  return pairs.back().first;
+}
+// Type-7 sample quantile (Hyndman-Fan 1996; numpy's default) of ascending values, p in [0, 1].
+f64 quantile_sorted(std::span<const f64> sorted, f64 p) {
+  if (sorted.empty()) return nan;
+  const f64 h = std::clamp(p, 0.0, 1.0) * static_cast<f64>(sorted.size() - 1);
+  const auto lo = static_cast<usize>(std::floor(h));
+  const usize hi = std::min(lo + 1, sorted.size() - 1);
+  return sorted[lo] + (h - static_cast<f64>(lo)) * (sorted[hi] - sorted[lo]);
+}
+std::string format_number(f64 x) {
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << x;
+  return out.str();
+}
+// UTC calendar date of a session key (ns since the epoch), YYYY-MM-DD.
+std::string iso_date(i64 session_ns) {
+  namespace ch = std::chrono;
+  const ch::sys_time<ch::nanoseconds> at{ch::nanoseconds(session_ns)};
+  const ch::year_month_day ymd{ch::floor<ch::days>(at)};
+  const auto two = [](unsigned v) { return (v < 10 ? "0" : "") + std::to_string(v); };
+  return std::to_string(static_cast<int>(ymd.year())) + '-' +
+         two(static_cast<unsigned>(ymd.month())) + '-' + two(static_cast<unsigned>(ymd.day()));
 }
 } // namespace
+
+StyleScale standardize_style(std::span<const f64> raw, std::span<const u8> universe,
+                             std::span<const f64> cap, f64 winsor_k, f64 clip, std::span<f64> z) {
+  StyleScale out;
+  std::fill(z.begin(), z.end(), 0.0);
+  const usize n = raw.size();
+  if (universe.size() != n || cap.size() != n || z.size() != n || !finite_positive(winsor_k) ||
+      !finite_positive(clip))
+    return out;
+  std::vector<f64> values;
+  values.reserve(n);
+  for (usize i = 0; i < n; ++i)
+    if (universe[i] && std::isfinite(raw[i])) values.push_back(raw[i]);
+  out.names = values.size();
+  if (values.size() < 2) return out;
+  const f64 med = median_inplace(values);
+  for (f64& v : values) v = std::abs(v - med);
+  const f64 s = mad_consistency * median_inplace(values);
+  out.median = med; out.robust_sd = s;
+  if (!finite_positive(s)) return out; // more than half the universe tied at the median
+  const f64 lo = med - winsor_k * s, hi = med + winsor_k * s;
+  f64 cw = 0, cx = 0;
+  for (usize i = 0; i < n; ++i) {
+    if (!universe[i] || !std::isfinite(raw[i])) continue;
+    const f64 v = std::clamp(raw[i], lo, hi);
+    out.fenced += v != raw[i] ? 1U : 0U;
+    cw += cap[i]; cx += cap[i] * v;
+  }
+  if (!finite_positive(cw)) return out;
+  const f64 mu = cx / cw;
+  f64 ss = 0;
+  for (usize i = 0; i < n; ++i) {
+    if (!universe[i] || !std::isfinite(raw[i])) continue;
+    const f64 d = std::clamp(raw[i], lo, hi) - mu;
+    ss += d * d;
+  }
+  const f64 sd = std::sqrt(ss / static_cast<f64>(out.names - 1));
+  out.mean = mu; out.sd = sd;
+  if (!finite_positive(sd)) return out;
+  for (usize i = 0; i < n; ++i)
+    if (std::isfinite(raw[i])) z[i] = std::clamp((std::clamp(raw[i], lo, hi) - mu) / sd, -clip, clip);
+  out.valid = true;
+  return out;
+}
 
 std::string factor_name(usize k) {
   if (k == 0) return "market";
@@ -92,21 +157,25 @@ co::Status validate_config(const RiskModelConfig& c) {
       c.beta_window >= 3 && c.beta_window <= 4096 && c.min_beta_pairs >= 3 &&
       c.min_beta_pairs <= c.beta_window && c.momentum_window <= 4096 &&
       c.momentum_skip < c.momentum_window && c.adv_window >= 1 && c.adv_window <= 4096 &&
-      std::isfinite(c.winsor_sd) && c.winsor_sd > 0 && std::isfinite(c.clip_z) && c.clip_z > 0 &&
-      c.min_regression_names >= 2;
+      finite_positive(c.winsor_k) && finite_positive(c.clip_z) && c.min_regression_names >= 2 &&
+      std::isfinite(c.min_style_effective_names) && c.min_style_effective_names >= 1 &&
+      std::isfinite(c.structural_sigma_quantile) && c.structural_sigma_quantile >= 0 &&
+      c.structural_sigma_quantile < 0.5 && finite_positive(c.max_specific_variance);
   if (!ok) return co::Err(co::ErrorCode::InvalidArgument, "risk model: invalid configuration");
   return co::Ok();
 }
 
 // ---- regression ----------------------------------------------------------------------------
-co::Result<CrossSectionFit> regress_cross_section(const CrossSection& x) {
+co::Result<CrossSectionFit> regress_cross_section(const CrossSection& x, f64 min_style_names) {
   const usize rows = x.value.size();
   if (x.industry.size() != rows || x.styles.size() != rows * style_count ||
       x.weight.size() != rows || x.cap.size() != rows)
     return co::Err(co::ErrorCode::InvalidArgument, "risk regression: row geometry");
+  if (!std::isfinite(min_style_names) || min_style_names < 0)
+    return co::Err(co::ErrorCode::InvalidArgument, "risk regression: style floor");
   std::array<usize, industry_slots> count{};
   std::array<f64, industry_slots> cap{};
-  std::array<f64, style_count> mass{};
+  std::array<f64, style_count> mass{}, mass_sq{}, z_sum{}, z_sq{};
   f64 wsum = 0;
   for (usize r = 0; r < rows; ++r) {
     const u8 slot = x.industry[r];
@@ -117,7 +186,8 @@ co::Result<CrossSectionFit> regress_cross_section(const CrossSection& x) {
     for (usize s = 0; s < style_count; ++s) {
       const f64 z = x.styles[r * style_count + s];
       if (!std::isfinite(z)) return co::Err(co::ErrorCode::InvalidArgument, "risk regression: style");
-      mass[s] += x.weight[r] * z * z;
+      const f64 m = x.weight[r] * z * z;
+      mass[s] += m; mass_sq[s] += m * m; z_sum[s] += z; z_sq[s] += z * z;
     }
   }
   std::array<usize, factor_count> index{};
@@ -129,8 +199,19 @@ co::Result<CrossSectionFit> regress_cross_section(const CrossSection& x) {
     if (!count[g]) continue;
     index[industry_factor(g)] = p++; ++active_industries; cap_total += cap[g];
   }
-  for (usize s = 0; s < style_count; ++s)
-    if (mass[s] > 1e-12 * wsum) index[style_factor(s)] = p++;
+  // Style validity (F3): exposure mass, then breadth (effective names) at least the floor.
+  std::array<f64, style_count> effective{}, dispersion{};
+  std::array<bool, style_count> dropped{};
+  for (usize s = 0; s < style_count; ++s) {
+    effective[s] = nan; dispersion[s] = nan;
+    if (!(mass[s] > 1e-12 * wsum)) continue;
+    effective[s] = mass[s] * mass[s] / mass_sq[s];
+    const f64 z_mean = z_sum[s] / static_cast<f64>(rows);
+    const f64 z_var = z_sq[s] / static_cast<f64>(rows) - z_mean * z_mean;
+    dispersion[s] = std::sqrt(std::max(0.0, z_var));
+    if (effective[s] < min_style_names) { dropped[s] = true; continue; }
+    index[style_factor(s)] = p++;
+  }
   if (rows <= p || !(wsum > 0))
     return co::Err(co::ErrorCode::Unavailable, "risk regression: rows do not exceed parameters");
   Eigen::MatrixXd a = Eigen::MatrixXd::Zero(ix(p + 1), ix(p + 1));
@@ -170,6 +251,8 @@ co::Result<CrossSectionFit> regress_cross_section(const CrossSection& x) {
   for (usize k = 0; k < factor_count; ++k)
     if (index[k] != npos) fit.factor[k] = solution[ix(index[k])];
   fit.rows = rows; fit.active_industries = active_industries;
+  fit.style_effective_names = effective; fit.style_dispersion = dispersion;
+  fit.style_dropped = dropped;
   fit.residual.resize(rows);
   f64 mean = 0;
   for (usize r = 0; r < rows; ++r) mean += x.weight[r] / wsum * x.value[r];
@@ -183,6 +266,143 @@ co::Result<CrossSectionFit> regress_cross_section(const CrossSection& x) {
   }
   fit.r2 = ss_tot > 0 ? 1.0 - ss_res / ss_tot : nan;
   return co::Ok(std::move(fit));
+}
+
+// ---- robustness (F3) -----------------------------------------------------------------------
+namespace {
+// E0 exp(x b) for every query name with a slot, each style exposure clamped to [lo, hi] of the
+// fit rows (flags the names whose clamp touched an active style); false when E0 is unusable.
+bool predict_structural(const CrossSectionFit& wls, const std::array<f64, style_count>& lo,
+                        const std::array<f64, style_count>& hi, std::span<const u8> slot,
+                        std::span<const f64> styles, std::span<f64> sigma, std::span<u8> flags) {
+  f64 correction = 0;
+  for (const f64 u : wls.residual) correction += std::exp(u);
+  correction /= static_cast<f64>(wls.residual.size());
+  if (!finite_positive(correction)) return false;
+  std::array<f64, style_count> x{};
+  for (usize i = 0; i < slot.size(); ++i) {
+    if (slot[i] == no_exposure) continue;
+    bool clamped = false;
+    for (usize s = 0; s < style_count; ++s) {
+      const f64 z = styles[i * style_count + s];
+      x[s] = std::clamp(z, lo[s], hi[s]);
+      clamped = clamped || (x[s] != z && std::isfinite(wls.factor[style_factor(s)]));
+    }
+    sigma[i] = correction * std::exp(predict(wls.factor, slot[i], x));
+    if (clamped) flags[i] = static_cast<u8>(flags[i] | structural_exposure_clamped);
+  }
+  return true;
+}
+} // namespace
+
+co::Result<StructuralVol> structural_specific_vol(const CrossSection& fit,
+                                                  const RiskModelConfig& cfg,
+                                                  std::span<const u8> query_slot,
+                                                  std::span<const f64> query_styles,
+                                                  std::span<f64> sigma, std::span<u8> flags) {
+  const usize rows = fit.value.size(), names = query_slot.size();
+  if (!rows || fit.industry.size() != rows || fit.styles.size() != rows * style_count ||
+      fit.weight.size() != rows || fit.cap.size() != rows ||
+      query_styles.size() != names * style_count || sigma.size() != names || flags.size() != names)
+    return co::Err(co::ErrorCode::InvalidArgument, "risk structural vol: geometry");
+  std::fill(sigma.begin(), sigma.end(), nan);
+  std::fill(flags.begin(), flags.end(), u8{0});
+  // The fit rows' sigma_TS (sorted) bound the prediction; their exposures bound x.
+  std::vector<f64> fitted(rows);
+  std::vector<std::pair<f64, f64>> weighted;
+  weighted.reserve(rows);
+  std::array<f64, style_count> lo{}, hi{};
+  lo.fill(std::numeric_limits<f64>::infinity());
+  hi.fill(-std::numeric_limits<f64>::infinity());
+  for (usize r = 0; r < rows; ++r) {
+    fitted[r] = std::exp(fit.value[r]);
+    if (!finite_positive(fitted[r]))
+      return co::Err(co::ErrorCode::InvalidArgument, "risk structural vol: fit sigma");
+    weighted.emplace_back(fitted[r], std::isfinite(fit.cap[r]) ? std::max(0.0, fit.cap[r]) : 0.0);
+    for (usize s = 0; s < style_count; ++s) {
+      const f64 z = fit.styles[r * style_count + s];
+      if (!std::isfinite(z))
+        return co::Err(co::ErrorCode::InvalidArgument, "risk structural vol: style");
+      lo[s] = std::min(lo[s], z); hi[s] = std::max(hi[s], z);
+    }
+  }
+  std::sort(fitted.begin(), fitted.end());
+  StructuralVol out;
+  out.lower = quantile_sorted(fitted, cfg.structural_sigma_quantile);
+  out.upper = quantile_sorted(fitted, 1.0 - cfg.structural_sigma_quantile);
+  if (rows >= cfg.min_regression_names) {
+    const auto wls = regress_cross_section(fit, cfg.min_style_effective_names);
+    out.regression =
+        wls && predict_structural(*wls, lo, hi, query_slot, query_styles, sigma, flags);
+  }
+  if (!out.regression) {
+    std::fill(flags.begin(), flags.end(), u8{0});
+    const f64 fallback = weighted_median(weighted);
+    for (usize i = 0; i < names; ++i)
+      if (query_slot[i] != no_exposure) sigma[i] = fallback;
+  }
+  for (usize i = 0; i < names; ++i) {
+    if (query_slot[i] == no_exposure || std::isnan(sigma[i])) continue;
+    const f64 bounded = std::clamp(sigma[i], out.lower, out.upper);
+    if (bounded != sigma[i]) flags[i] = static_cast<u8>(flags[i] | structural_sigma_bounded);
+    sigma[i] = bounded;
+  }
+  return co::Ok(out);
+}
+
+co::Result<DecileShrinkage> shrink_to_size_deciles(std::span<const f64> sigma,
+                                                   std::span<const f64> cap,
+                                                   std::span<const u8> eligible, f64 q) {
+  const usize n = sigma.size();
+  if (cap.size() != n || eligible.size() != n || !std::isfinite(q) || q < 0)
+    return co::Err(co::ErrorCode::InvalidArgument, "risk shrinkage: geometry or q");
+  DecileShrinkage out;
+  out.shrunk.assign(sigma.begin(), sigma.end());
+  out.target.assign(n, nan);
+  std::vector<usize> order;
+  for (usize i = 0; i < n; ++i)
+    if (eligible[i] && std::isfinite(sigma[i]) && finite_positive(cap[i])) order.push_back(i);
+  std::stable_sort(order.begin(), order.end(), [&](usize a, usize b) { return cap[a] < cap[b]; });
+  const usize count = order.size();
+  std::vector<std::pair<f64, f64>> pairs;
+  for (usize decile = 0; decile < 10 && count; ++decile) {
+    const usize begin = decile * count / 10, end = (decile + 1) * count / 10;
+    if (begin == end) continue;
+    pairs.clear();
+    for (usize r = begin; r < end; ++r) pairs.emplace_back(sigma[order[r]], cap[order[r]]);
+    const f64 target = weighted_median(pairs);
+    f64 ss = 0;
+    for (usize r = begin; r < end; ++r) {
+      const f64 d = sigma[order[r]] - target;
+      ss += d * d;
+    }
+    const f64 dispersion = std::sqrt(ss / static_cast<f64>(end - begin));
+    for (usize r = begin; r < end; ++r) {
+      const usize i = order[r];
+      const f64 distance = q * std::abs(sigma[i] - target);
+      const f64 intensity = distance > 0 ? distance / (dispersion + distance) : 0.0;
+      out.shrunk[i] = intensity * target + (1.0 - intensity) * sigma[i];
+      out.target[i] = target;
+    }
+  }
+  return co::Ok(std::move(out));
+}
+
+co::Status check_specific_variance(std::span<const f64> variance, std::span<const u64> ids,
+                                   i64 session, f64 bound) {
+  if (ids.size() != variance.size() || !finite_positive(bound))
+    return co::Err(co::ErrorCode::InvalidArgument, "risk invariant: geometry or bound");
+  for (usize i = 0; i < variance.size(); ++i) {
+    const f64 v = variance[i];
+    if (std::isnan(v) || (v > 0 && v < bound)) continue;
+    return co::Err(co::ErrorCode::OutOfRange,
+                   std::string("risk model: daily specific variance ") + format_number(v) +
+                       " of instrument " + std::to_string(ids[i]) + " at session " +
+                       std::to_string(session) + " (" + iso_date(session) + ") is outside (0, " +
+                       format_number(bound) + "): refused (" + risk_model_id +
+                       " invariant; nothing is clamped)");
+  }
+  return co::Ok();
 }
 
 // ---- recursive EWMA moments ----------------------------------------------------------------
@@ -385,7 +605,8 @@ struct Model {
         observed(panel.dates * n), history(n), prior_factor_var(factor_count, nan),
         prior_spec_var(n, nan), factor_return(factor_count, nan),
         cov(factor_count * factor_count, nan), spec(n, nan), raw(n), zbuf(n), zbuf2(n),
-        sigma_ts(n, nan), sigma_str(n, nan), blend(n, nan), structural_flag(factor_count, 0) {}
+        sigma_ts(n, nan), sigma_str(n, nan), blend(n, nan), structural_flag(factor_count, 0),
+        structural_vol_flag(n, 0) {}
   const RiskPanel& p;
   const RiskModelConfig& cfg;
   usize n;
@@ -403,19 +624,21 @@ struct Model {
   std::vector<f64> prior_factor_var, prior_spec_var, factor_return, cov, spec;
   std::vector<f64> raw, zbuf, zbuf2, sigma_ts, sigma_str, blend;
   std::vector<u8> structural_flag; // factor_count: 1 = structural forecast at t (F2)
+  std::vector<u8> structural_vol_flag; // instruments: structural_sigma_bounded | ..._clamped (F3)
 
   [[nodiscard]] f64 cap_at(usize t, usize i) const { return p.cap[t * n + i]; }
   void update_prices(usize t);
   void regress(usize t, RiskDay& day);
   void update_vra(usize t, RiskDay& day);
-  void exposures(usize t);
+  void exposures(usize t, RiskDay& day);
   [[nodiscard]] ExposureAudit audit_exposures(usize t) const;
   void factor_forecast(RiskDay& day);
   [[nodiscard]] bool fully_observed_forecast(RiskDay& day, std::vector<usize>& keep,
                                              Eigen::MatrixXd& f);
   void structural_forecast(RiskDay& day, const ExposureAudit& exposure,
                            std::span<const usize> keep, const Eigen::MatrixXd& full);
-  void specific_forecast(RiskDay& day);
+  [[nodiscard]] co::Status specific_forecast(RiskDay& day);
+  void blend_specific(RiskDay& day);
   [[nodiscard]] f64 vra(f64 acc, f64 mass, usize count) const {
     return count >= cfg.vra_min_dates && mass > 0 && acc > 0 ? acc / mass : 1.0;
   }
@@ -456,6 +679,9 @@ void Model::update_prices(usize t) {
 void Model::regress(usize t, RiskDay& day) {
   std::fill(factor_return.begin(), factor_return.end(), nan);
   std::fill(residual.begin(), residual.end(), nan);
+  day.style_effective_names.fill(nan);
+  day.style_dispersion.fill(nan);
+  day.style_dropped.fill(u8{0});
   if (t == 0) return;
   std::vector<u8> ind; std::vector<f64> sty, wgt, cap, val;
   for (usize i = 0; i < n; ++i) {
@@ -468,9 +694,13 @@ void Model::regress(usize t, RiskDay& day) {
   }
   day.regression_rows = val.size();
   if (val.size() < cfg.min_regression_names) return;
-  const auto fit = regress_cross_section({ind, sty, wgt, cap, val});
+  const auto fit = regress_cross_section({ind, sty, wgt, cap, val}, cfg.min_style_effective_names);
   if (!fit) return; // an unfittable session is a missing factor-return row
   day.fitted = true; day.r2 = fit->r2; day.active_industries = fit->active_industries;
+  day.style_effective_names = fit->style_effective_names;
+  day.style_dispersion = fit->style_dispersion;
+  for (usize s = 0; s < style_count; ++s)
+    day.style_dropped[s] = fit->style_dropped[s] ? u8{1} : u8{0};
   std::copy(fit->factor.begin(), fit->factor.end(), factor_return.begin());
   for (usize i = 0; i < n; ++i) {
     if (slot_prev[i] == no_exposure || !std::isfinite(ret[i])) continue;
@@ -519,8 +749,9 @@ void Model::update_vra(usize t, RiskDay& day) {
   day.lambda2_specific = vra(vra_s_acc, vra_s_mass, vra_s_n);
 }
 
-// Exposures X_t: eligibility, industry slots (pooling small industries), 11 styles.
-void Model::exposures(usize t) {
+// Exposures X_t: eligibility, industry slots (pooling small industries), 11 styles (robust
+// standardisation, F3; day counts the fenced values and the unscaled standardisations).
+void Model::exposures(usize t, RiskDay& day) {
   const usize row = t * n;
   std::array<usize, industry_slots> count{};
   for (usize i = 0; i < n; ++i) {
@@ -536,9 +767,14 @@ void Model::exposures(usize t) {
         ? static_cast<u8>(id - 1U) : static_cast<u8>(residual_industry);
   }
   const std::span<const f64> caps = p.cap.subspan(row, n);
+  const auto standardize = [&](std::span<f64> z) {
+    const StyleScale scale = standardize_style(raw, elig_cur, caps, cfg.winsor_k, cfg.clip_z, z);
+    day.fenced_values += scale.fenced;
+    day.unscaled_descriptors += (scale.names >= 2 && !scale.valid) ? 1U : 0U;
+  };
   const auto style = [&](usize s, const auto& descriptor) {
     for (usize i = 0; i < n; ++i) raw[i] = p.present[row + i] ? descriptor(i) : nan;
-    standardize(raw, elig_cur, caps, cfg.winsor_sd, cfg.clip_z, zbuf);
+    standardize(zbuf);
     for (usize i = 0; i < n; ++i) z_cur[i * style_count + s] = zbuf[i];
   };
   const auto cell = [&](usize d, usize i) -> f64 {
@@ -571,9 +807,9 @@ void Model::exposures(usize t) {
   });
   // short_interest: mean of the standardized SI ratio and days to cover, re-standardized.
   for (usize i = 0; i < n; ++i) raw[i] = p.present[row + i] ? cell(style_si_ratio, i) : nan;
-  standardize(raw, elig_cur, caps, cfg.winsor_sd, cfg.clip_z, zbuf);
+  standardize(zbuf);
   for (usize i = 0; i < n; ++i) raw[i] = p.present[row + i] ? cell(style_dtc, i) : nan;
-  standardize(raw, elig_cur, caps, cfg.winsor_sd, cfg.clip_z, zbuf2);
+  standardize(zbuf2);
   // The composite reads zbuf/zbuf2 while style() fills raw, before it overwrites zbuf.
   style(10, [&](usize i) -> f64 {
     const bool a = std::isfinite(cell(style_si_ratio, i)), b = std::isfinite(cell(style_dtc, i));
@@ -725,13 +961,15 @@ void Model::structural_forecast(RiskDay& day, const ExposureAudit& exposure,
   day.structural_scale = scale;
 }
 
-// D_t: time-series (EWMA + NW) / structural blend, Bayesian size-decile shrinkage, VRA.
-void Model::specific_forecast(RiskDay& day) {
+// D_t: time-series (EWMA + NW) / structural blend (bounded, F3), Bayesian size-decile shrinkage
+// to the cap-weighted median (F3), VRA. Records D_t's maximum; the invariant is checked by the
+// driver.
+co::Status Model::specific_forecast(RiskDay& day) {
   std::fill(spec.begin(), spec.end(), nan);
   std::fill(prior_spec_var.begin(), prior_spec_var.end(), nan);
   std::fill(sigma_str.begin(), sigma_str.end(), nan);
-  std::vector<u8> ind; std::vector<f64> sty, wgt, cap, val; std::vector<usize> fit_names;
-  f64 pop_sum = 0, pop_mass = 0;
+  std::fill(blend.begin(), blend.end(), nan);
+  std::vector<u8> ind; std::vector<f64> sty, wgt, cap, val;
   for (usize i = 0; i < n; ++i) {
     sigma_ts[i] = nan;
     if (slot_cur[i] == no_exposure || spec_fast.observations(i) < 2) continue;
@@ -740,71 +978,48 @@ void Model::specific_forecast(RiskDay& day) {
     if (!elig_cur[i] || history[i] < cfg.structural_history || !finite_positive(sigma_ts[i])) continue;
     const f64 c = cap_at(day.date, i);
     ind.push_back(slot_cur[i]); wgt.push_back(std::sqrt(c)); cap.push_back(c);
-    val.push_back(std::log(sigma_ts[i])); fit_names.push_back(i);
+    val.push_back(std::log(sigma_ts[i]));
     sty.insert(sty.end(), z_cur.begin() + static_cast<std::ptrdiff_t>(i * style_count),
                z_cur.begin() + static_cast<std::ptrdiff_t>((i + 1) * style_count));
-    pop_sum += c * sigma_ts[i]; pop_mass += c;
   }
-  if (fit_names.empty()) return; // no reliable specific history yet
-  bool structural = false;
-  if (val.size() >= cfg.min_regression_names) {
-    const auto fit = regress_cross_section({ind, sty, wgt, cap, val});
-    if (fit) {
-      f64 correction = 0;
-      for (const f64 u : fit->residual) correction += std::exp(u);
-      correction /= static_cast<f64>(fit->residual.size());
-      structural = finite_positive(correction);
-      for (usize i = 0; structural && i < n; ++i) {
-        if (slot_cur[i] == no_exposure) continue;
-        sigma_str[i] = correction * std::exp(predict(fit->factor, slot_cur[i],
-            std::span<const f64>(z_cur).subspan(i * style_count, style_count)));
-      }
+  if (val.empty()) return co::Ok(); // no reliable specific history yet
+  ATX_TRY(const StructuralVol structural,
+          structural_specific_vol({ind, sty, wgt, cap, val}, cfg, slot_cur, z_cur, sigma_str,
+                                  structural_vol_flag));
+  day.structural_sigma_lower = structural.lower;
+  day.structural_sigma_upper = structural.upper;
+  blend_specific(day);
+  ATX_TRY(const DecileShrinkage shrinkage,
+          shrink_to_size_deciles(blend, p.cap.subspan(day.date * n, n), elig_cur, cfg.bayesian_q));
+  for (usize i = 0; i < n; ++i) {
+    const f64 shrunk = shrinkage.shrunk[i];
+    if (!std::isfinite(shrunk)) continue;
+    prior_spec_var[i] = shrunk * shrunk;
+    spec[i] = day.lambda2_specific * prior_spec_var[i];
+    ++day.specific_names;
+    if (std::isnan(day.max_specific_variance) || spec[i] > day.max_specific_variance) {
+      day.max_specific_variance = spec[i];
+      day.max_specific_instrument = i;
     }
   }
-  if (!structural)
-    for (usize i = 0; i < n; ++i)
-      if (slot_cur[i] != no_exposure) sigma_str[i] = pop_sum / pop_mass;
+  return co::Ok();
+}
+
+// sigma = gamma sigma_TS + (1 - gamma) sigma_STR, gamma = min(1, h / structural_history), and
+// the audit of the structural names (gamma < 1) whose sigma_STR sat at a bound or was clamped.
+void Model::blend_specific(RiskDay& day) {
   const f64 horizon = static_cast<f64>(cfg.structural_history);
   for (usize i = 0; i < n; ++i) {
-    blend[i] = nan;
     if (slot_cur[i] == no_exposure) continue;
     const f64 gamma = std::min(1.0, static_cast<f64>(history[i]) / horizon);
     const bool ts = std::isfinite(sigma_ts[i]), st = std::isfinite(sigma_str[i]);
-    blend[i] = ts && st ? gamma * sigma_ts[i] + (1.0 - gamma) * sigma_str[i] : (ts ? sigma_ts[i] : sigma_str[i]);
-    if (std::isfinite(blend[i]) && gamma < 1.0) ++day.structural_names;
-  }
-  // Bayesian shrinkage toward the cap-weighted size-decile mean (eligible names).
-  std::vector<usize> order;
-  for (usize i = 0; i < n; ++i)
-    if (elig_cur[i] && std::isfinite(blend[i])) order.push_back(i);
-  std::stable_sort(order.begin(), order.end(),
-                   [&](usize a, usize b) { return cap_at(day.date, a) < cap_at(day.date, b); });
-  std::vector<f64> shrunk(blend);
-  const usize count = order.size();
-  for (usize decile = 0; decile < 10 && count; ++decile) {
-    const usize begin = decile * count / 10, end = (decile + 1) * count / 10;
-    if (begin == end) continue;
-    f64 sum = 0, mass = 0;
-    for (usize r = begin; r < end; ++r) {
-      const f64 c = cap_at(day.date, order[r]);
-      sum += c * blend[order[r]]; mass += c;
-    }
-    const f64 target = sum / mass;
-    f64 ss = 0;
-    for (usize r = begin; r < end; ++r) ss += (blend[order[r]] - target) * (blend[order[r]] - target);
-    const f64 dispersion = std::sqrt(ss / static_cast<f64>(end - begin));
-    for (usize r = begin; r < end; ++r) {
-      const usize i = order[r];
-      const f64 distance = cfg.bayesian_q * std::abs(blend[i] - target);
-      const f64 intensity = distance > 0 ? distance / (dispersion + distance) : 0.0;
-      shrunk[i] = intensity * target + (1.0 - intensity) * blend[i];
-    }
-  }
-  for (usize i = 0; i < n; ++i) {
-    if (!std::isfinite(shrunk[i])) continue;
-    prior_spec_var[i] = shrunk[i] * shrunk[i];
-    spec[i] = day.lambda2_specific * prior_spec_var[i];
-    ++day.specific_names;
+    blend[i] = ts && st ? gamma * sigma_ts[i] + (1.0 - gamma) * sigma_str[i]
+                        : (ts ? sigma_ts[i] : sigma_str[i]);
+    if (!std::isfinite(blend[i]) || !(gamma < 1.0)) continue;
+    ++day.structural_names;
+    const u8 flag = structural_vol_flag[i];
+    if (flag & structural_sigma_bounded) ++day.structural_bounded_names;
+    if (flag & structural_exposure_clamped) ++day.structural_clamped_names;
   }
 }
 } // namespace
@@ -829,9 +1044,12 @@ co::Status run_risk_model(const RiskPanel& p, const RiskModelConfig& cfg,
       model.update_prices(t);
       model.regress(t, day);
       model.update_vra(t, day);
-      model.exposures(t);
+      model.exposures(t, day);
       model.factor_forecast(day);
-      model.specific_forecast(day);
+      ATX_TRY_VOID(model.specific_forecast(day));
+      // The v1.1 invariant (F3): refuse before any sink sees an out-of-range D_t.
+      ATX_TRY_VOID(
+          check_specific_variance(model.spec, p.ids, day.session, cfg.max_specific_variance));
       day.forecast = day.specific_names > 0 &&
           std::any_of(model.cov.begin(), model.cov.end(), [](f64 v) { return std::isfinite(v); });
       day.factor_return = model.factor_return; day.covariance = model.cov;
