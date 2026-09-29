@@ -106,5 +106,6 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     strategy_live_test.cpp
     strategy_cost_v2_test.cpp
     strategy_risk_model_test.cpp
-    strategy_spo_test.cpp)
+    strategy_spo_test.cpp
+    strategy_spo_pin_test.cpp)
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
