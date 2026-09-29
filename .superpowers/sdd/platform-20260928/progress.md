@@ -17,12 +17,25 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 session 2 opened; W1 spo-v2 merged (4cd5513e), build v7-3, identity ok
+- Lanes launched (Opus 5.5): L7b pool-10 (finish library v7.0), P5 pool-11 (pitch iteration 3 sections), U2 pool-9 (role
+  lo3 with atx-db SIC events + fields SIC override + universe prereg draft); read-only: P4 (wave-2 prereg text), R2
+  (adversarial review of spo-v2 b63829f0 + specific-variance root cause + prereg defaults). Briefs task-{L7b,P4,R2,P5,U2}-brief.md.
+- Ruling: merge and build W1 before the R2 review returns -- spo-v2 is behind `--rule spo-v2`, spo-v1 and flag-off paths
+  claim bit identity, and the identity run below tests that claim -- cost if wrong: one more build tag if R2 finds a defect.
+- Build mega-v7-3 exit 0 (6 TUs, 42.6 s; targets atx-impl-strategy-target-tests, atx-equity-strategy-targets). Tests
+  Spo*/Risk*/NavV7Hook*/AimV6*/CostV2*/StrategyLive*/StrategyNavReplay*/NavV5*/TargetReplayV5*/TransferCoefficient* 116/116.
+- Identity (not a trial): v6.1 final construction, --rule aim-partial-v5, on the v7-3 exe -> build-equity/v7-3-id: 10/10
+  daily/events files byte-identical to mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247.
+- No spo-v2 cell run: waits for R2 and the pre-registration. Appendix A unchanged: TRAIN construction cells 33;
+  validation trials 2 spent; 2025+ reserved.
+
 ## 2026-09-28 SESSION CLOSED by owner ("stop here") -- handoff written
 - docs/plans/2026-09-28-platform-v7-handoff-1.md (state, lanes, evidence, open decisions, next steps, commands, pitfalls)
   and docs/plans/2026-09-28-platform-v7-next-goal-prompt.md (the /goal text for the next PM).
 - In flight at close: L7 (pool-10, library v7.0), W1 (pool-3, spo root-cause), P4 (read-only wave-2 prereg). Their
   commits live in their pools; hand-backs to this session are lost. Nothing was run after the fields-v9 build.
-- Not in local main yet: everything since c0dc376f. Merge command in the handoff §0.
+- Not in local main yet: everything since c0dc376f. Merge command in the handoff ï¿½0.
 
 ## 2026-09-28 role linked-operating-v2 built (lo2); fields v9 building
 - lo2 (identity-bridge-v2-pit, share-class letters allowed, delisting block): kept member cells 1,967,838 vs lo1
