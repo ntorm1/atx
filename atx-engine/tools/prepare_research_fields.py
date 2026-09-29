@@ -2672,5 +2672,11 @@ def main(argv=None):
         reuse_hardlink=a.reuse_hardlink)
 
 
+# W5a registry hook (placeholder: lane W5a registers research_fields_sec.py here)
+# W5b registry hook (platform v7): the 13F / FTD / Reg SHO / short-volume-ext fields of research_fields_holdings.py.
+# register() wraps run() and main() in this namespace; nothing changes unless one of its fields is requested.
+import research_fields_holdings as _holdings  # noqa: E402  (same directory, as prepare_recent_research imports this)
+_holdings.register(globals())
+
 if __name__ == "__main__":
     main()
