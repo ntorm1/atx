@@ -561,6 +561,31 @@ def parse_archive(zpath: Path, key: str, work: Path | None = None) -> dict[str, 
     return res
 
 
+def stitch_parquet(parts: list[Path], dest: Path, row_group: int = ROW_GROUP) -> int:
+    """Concatenate Parquet files of one schema in the given order into ``dest`` (streamed by row group,
+    ``.partial`` then rename); return the row count. Used by the per-year builds of the consumer stages."""
+    import pyarrow.parquet as pq
+
+    parts = [p for p in parts if p.exists()]
+    if not parts:
+        raise RuntimeError(f"{dest}: nothing to stitch")
+    schema = pq.read_schema(parts[0])
+    tmp = dest.with_name(dest.name + ".partial")
+    rows = 0
+    with pq.ParquetWriter(tmp, schema, compression="zstd") as w:
+        for p in parts:
+            f = pq.ParquetFile(p)
+            if not f.schema_arrow.equals(schema):
+                raise RuntimeError(f"{p}: schema differs from {parts[0]}")
+            for b in f.iter_batches(batch_size=row_group):
+                w.write_batch(b, row_group_size=row_group)
+                rows += b.num_rows
+    if pq.ParquetFile(tmp).metadata.num_rows != rows:
+        raise RuntimeError(f"{tmp}: re-read row count differs from {rows}")
+    os.replace(tmp, dest)
+    return rows
+
+
 # ---------------------------------------------------------------- fetch
 def _zip_path(ds: dict[str, Any]) -> Path:
     return RAW_DIR / ds["file"]
