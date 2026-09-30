@@ -18,6 +18,10 @@ struct IcCompositionConfig {
   atx::f64 trade_fraction{0.25};
   atx::u64 max_working_bytes{256ULL << 20};
 };
+// Rule applied to pinned_themes (see create; ignored without themes).
+//   redistribute  fitter ew-theme-v6, rule within-theme-v1.
+//   standardise   fitter ew-theme-std-v1 (platform v8 R-1).
+enum class IcThemeRule : atx::u8 { redistribute, standardise };
 struct IcCompositionResult {
   std::vector<atx::f64> signal; // date-major; nonmembers NaN, missing contributions zero (pinned themes: see create)
   std::vector<atx::f64> planned_turnover, contribution_fraction;
@@ -28,10 +32,11 @@ struct IcCompositionResult {
 };
 // Conservative owned allocation envelope, including result + scratch and bounded
 // candidate strings. Excludes caller Panel, VM, labels and incoming signal.
-// `themes` > 0 (pinned within-theme redistribution, at most 32) adds two f64
-// planes per theme; 0 is the unchanged envelope.
+// `themes` > 0 (pinned themes, at most 32) adds two f64 planes per theme under
+// `redistribute` and one under `standardise`; 0 is the unchanged envelope.
 [[nodiscard]] atx::core::Result<atx::u64> ic_composition_working_bytes(
-    atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes = 0);
+    atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes = 0,
+    IcThemeRule rule = IcThemeRule::redistribute);
 
 // Streaming equal-family/equal-within-family centered tied-rank composition.
 // create copies membership and candidate metadata. add borrows one signal only
@@ -53,6 +58,16 @@ struct IcCompositionResult {
 // its mass inside its theme and a theme with no present member adds nothing.
 // Present = a member name with a finite signal on a date where the candidate ranks
 // >= 2 names, added with a nonzero sign. Empty (default): the path above, bit for bit.
+// `rule` standardise (fitter ew-theme-std-v1, platform v8 R-1) replaces that
+// redistribution with theme standardisation: per date and theme the weighted sum of the
+// theme's present signed member ranks, sum_{k present} w_k s_k r_k (a missing member is
+// neutral, nothing is redistributed; its order is that of the weighted mean, which only
+// divides by the constant W_theme), is re-ranked over the names with at least one present
+// member (centred tied rank in [-0.5, 0.5], atx/engine/combine/group_rerank.hpp) and adds
+//   W_theme * rerank_theme,
+// W_theme = the sum of its pinned weights; a name with no present member of a theme gets
+// nothing from it. Every theme so enters with the same dispersion whatever its member
+// count. Member ranks are the pinned path's expression; themes fold in index order.
 class IcComposition {
  public:
   ~IcComposition();
@@ -64,7 +79,8 @@ class IcComposition {
       const IcCompositionConfig&, std::span<const IcCompositionCandidate>,
       std::span<const atx::u8> decision_member,
       std::span<const atx::f64> pinned_weights = {}, // empty: equal family/within
-      std::span<const atx::usize> pinned_themes = {}); // empty: no redistribution
+      std::span<const atx::usize> pinned_themes = {}, // empty: no redistribution
+      IcThemeRule rule = IcThemeRule::redistribute);  // what pinned_themes switch on
   // Optional `pool` (borrowed; alive for the call, never invoked from inside one
   // of its jobs): dates split into contiguous bands, each ranked in a per-worker
   // row. Every blend cell and per-date coverage sum is written by exactly one
@@ -85,6 +101,9 @@ class IcComposition {
  private:
   struct Impl;
   explicit IcComposition(std::unique_ptr<Impl>);
+  // add() for IcThemeRule::standardise: the member's ranks go to its theme's plane.
+  [[nodiscard]] atx::core::Status add_standardised(atx::usize candidate_index, std::span<const atx::f64> signal,
+                                                   int frozen_sign, atx::engine::parallel::DetPool* pool);
   std::unique_ptr<Impl> impl_;
 };
 } // namespace atx::impl::strategy
