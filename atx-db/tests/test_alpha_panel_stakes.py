@@ -108,3 +108,10 @@ def test_issuer_name_skips_form_boilerplate_and_split_dates() -> None:
     assert K._parse_long_date("(212) 728-8000\n September 16,\n2022") == dt.date(2022, 9, 16)
     assert K._parse_long_date("October\n6, 2020") == dt.date(2020, 10, 6)
     assert K._parse_long_date("no date here") is None
+
+
+def test_parse_xml_13g_issuer_cusip_tag() -> None:
+    body = XML_13G.replace(b"<issuerCusips><issuerCusipNumber>433921103</issuerCusipNumber></issuerCusips>",
+                           b"<issuerCusip>78413P101</issuerCusip>")
+    f, _persons = K.parse_xml(body)
+    assert f["cusip"] == "78413P101"                    # the tag live 13G filings use

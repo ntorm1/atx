@@ -127,7 +127,7 @@ def parse_xml(body: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                          "security_title": _first(root, "securitiesClassTitle"),
                          "issuer_cik": _int(_first(root, "issuerCIK") or _first(root, "issuerCik")),
                          "issuer_name": _first(root, "issuerName"),
-                         "cusip": _clean_cusip(_first(root, "issuerCUSIP") or _first(root, "issuerCusipNumber")),
+                         "cusip": _clean_cusip(_first(root, "issuerCUSIP") or _first(root, "issuerCusip") or _first(root, "issuerCusipNumber")),
                          "cusips": ",".join(_all(root, "issuerCusipNumber")) or None,
                          "event_date": _date_mdy(_first(root, "dateOfEvent") or _first(root, "eventDateRequiresFilingThisStatement")),
                          "amendment_no": _int(_first(root, "amendmentNo")),
