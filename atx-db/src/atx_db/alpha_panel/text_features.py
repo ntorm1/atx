@@ -270,9 +270,9 @@ def profile_pass() -> dict[str, Any]:
         if marker.exists():
             stats["skipped"] += 1
             continue
-        t = pq.read_table(part)
         buckets: dict[int, list[dict[str, Any]]] = {}
-        for r in t.to_pylist():
+        # small record batches: only a few section texts are Python strings at a time (guard cap)
+        for r in (x for b in pq.ParquetFile(part).iter_batches(batch_size=16) for x in b.to_pylist()):
             prof = compact_profile(r["text"])
             for cik in r["ciks"]:
                 buckets.setdefault(int(cik) % N_BUCKETS, []).append({
@@ -281,7 +281,6 @@ def profile_pass() -> dict[str, Any]:
                     "method": r["method"], "flags": r["flags"], **{k: prof[k] for k in (
                         "chars", "words", "sentences", "complex_words", "fog", "pct_complex")},
                     "tf_keys": prof["tf_keys"], "tf_counts": prof["tf_counts"], "sent_keys": prof["sent_keys"]})
-        del t
         for b, rows in buckets.items():
             dest = root / f"bucket={b:02d}" / f"{part.stem}.parquet"
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -487,19 +486,22 @@ def _cells_sql(year: int, basis: str) -> str | None:
 def member_coverage(years: Iterable[int], bases: Sequence[str] = ("panel_member_equity", "panel_member_linked"),
                     features: Path | None = None) -> dict[str, dict[str, dict[str, Any]]]:
     """Share of member cells with a visible (``available_at`` < 22:00 UTC of the previous session) and fresh
-    (<= STALE_DAYS) text-feature row of the cell's CIK, per measure, basis and year."""
+    (<= STALE_DAYS) text-feature row of the cell's CIK, per measure, basis and year. A year is measured on the first
+    basis that has cells for it (the panel's ``member_equity``, else ``panel_member`` + link table)."""
     feats = (features or (C.stage_dir(STAGE) / "features.parquet")).as_posix()
-    con = C.connect(memory="400MB", threads=2)
+    con = C.connect(memory="250MB", threads=1)
     con.execute(f"""CREATE TEMP TABLE cal AS SELECT session_date,
                     lag(session_date) OVER (ORDER BY session_date) AS prev_session
                     FROM read_parquet('{C.calendar_path().as_posix()}')""")
     con.execute(f"CREATE TEMP TABLE f AS SELECT * FROM read_parquet('{feats}') WHERE available_at IS NOT NULL")
     out: dict[str, dict[str, dict[str, Any]]] = {}
+    done_years: set[int] = set()
     for basis in bases:
         for y in years:
-            sql = _cells_sql(y, basis)
+            sql = None if y in done_years else _cells_sql(y, basis)
             if sql is None:
                 continue
+            done_years.add(y)
             meas = ", ".join(f"count(*) FILTER (WHERE fresh AND {cond}) AS {name}"
                              for name, cond in COVERAGE_MEASURES.items())
             r = con.execute(f"""
