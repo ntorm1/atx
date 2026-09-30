@@ -266,3 +266,42 @@ Rulings on the draft's section 9, declared before any read:
   marginal step lacks --role.
 - Trial accounting unchanged: TRAIN construction cells 37; no read on the 2020-2023 window; validation reads 2 (2023-2024,
   before v8); 2025+ never read. Two hidden-data disclosures this sprint (manifest metadata only), recorded above.
+
+## 2026-09-30 PM session 2 (goal: finish v8 from handoff 1). Rulings before dispatch; no read yet on 2020-2023
+State at start: root bef1c906 clean; all lane trees clean; no `ledger-pending*.md` left (folded in integration 3).
+Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 review, Wave 0, cells.
+
+- Ruling E-14 (R-6 S_prior, pre-read amendment): the spo-v3 registration is amended to S_prior = 20, and the cell gains
+  the mechanical criterion "mean correlation of the traded book with the aim over scored decisions >= .9" -- 1.0 was a
+  guess, not literature; on the lane's synthetic prototype 1.0 follows factor loadings only (correlation .35, gross
+  .37 L), which is another book, not a cheaper way to hold the accepted one; no TRAIN statistic informed the change --
+  cost if wrong: the tracker sits so close to the aim that the cell measures only a small cost saving; one trial.
+- Ruling E-15 (R-5 NAV in the ADV cap): accepted as coded (R5-b): the cap uses the run's initial NAV for every capacity
+  book -- the rule is a $1bn rule and the 4x figure is a stress of that book; a per-multiple cap needs a per-book
+  desired target -- cost if wrong: the 4x acceptance measures a cap set for $1bn (holdings up to 4 x Q of ADV at 4x);
+  disclosed on the cell.
+- Ruling E-16 (R-4 decide parity): the holdings export gains `rank_set` / `desired_prev` (lane R45); it does not block
+  the R-4 cell -- v8 deploys nothing -- cost if wrong: `decide --check-replay` fails on a hold-band book until it lands.
+- Ruling E-17 (H-1 finding 1): "frozen book" for a history read means frozen rules with pooled re-admission (Python
+  tooling as designed); no runner change in v8; era window rule in `backtest_integrity` and the pooled fitter mask are
+  approved cross-lane edits -- rebinding E3 weights to another role would defeat the role binding -- cost if wrong:
+  the owner wants frozen weights and a small runner change follows. No era is read in v8 (Ruling E-2 stands).
+- Ruling E-18 (G runtime): diagnostics run in `--only` splits under the preparation caps 600 s / 2,560 MiB -- they are
+  not trials and gate nothing -- cost if wrong: none for inference.
+- Ruling E-19 (plan rows): K1 (`--plan-only`) is the checker of record (R2-f). The A-1 test compares DSL SHA, lookback
+  and extra fields per candidate and the maxima, and requires `validate_plan` to accept; the recipe's static node and
+  slot figures stay as committed (the v7.1 recipe must regenerate byte for byte) -- cost if wrong: a one-node
+  difference between the Python mirror and the exe goes unflagged; K1 still enforces the budget.
+- Ruling E-20 (F-C, F-D open questions, declared before any build): F-C quarterly sales growth is
+  `sale_ttm(P) / sale_ttm(P - 1q) - 1`; both variances need 12 of 16 quarters; bm uses `me_company` at t-1; peers are
+  member names; ratios are scaled by `at` as the house fields do (Mohanram scales by beginning assets and uses the
+  lowest BM quintile: disclosed deviations; the tercile is registered). F-D: denominator
+  `mean(abs(EPS_q-4), abs(EPS_q-8))`, NaN when 0 (the CZ code as recalled, not re-read: disclosed); shares on the
+  as-reported basis, as CZ's raw EPS (a split inside the span distorts g for up to 8 quarters: disclosed); sign +1 --
+  one variant per hypothesis, no data read -- cost if wrong: a C+ / B- member is mis-specified and its prior is
+  weaker than stated.
+- Ruling E-21 (F-1 reuse interface defect): lane F3 fixes it as its first commit (Python, testable in the lane);
+  integration 4 merges it.
+- Ruling E-22 (FactoryOos x2): triaged read-only against main before Wave 0; if pre-sprint, recorded as an owner item
+  and not fixed here (factory goldens are outside the v8 plan).
+- C-1 `context_sha256`: ruled after identity b states what it hashes.
