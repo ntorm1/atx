@@ -2897,4 +2897,142 @@ TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
   EXPECT_EQ(cli("16385","16",printed),2); // the CLI's memory bound
   EXPECT_EQ(cli("2560","17",printed),1);  // bounded config
 }
+// ---- Platform v8 R-1: composition ew-theme-std-v1 (theme_standardise block) ----
+std::string std_block(const std::string& themes,bool rerank,const std::string& rule="ew-theme-std-v1") {
+  return ",\"theme_standardise\":{\"rule\":\""+rule+"\",\"rerank\":"+(rerank?"true":"false")+",\"themes\":"+themes+"}";
+}
+// The `__combined__` rows of a daily IC CSV, in file order.
+std::string combined_rows(const std::filesystem::path& path) {
+  std::ifstream in(path,std::ios::binary); std::string out;
+  for (std::string line;std::getline(in,line);)
+    if (line.starts_with("__combined__,")) out+=line+'\n';
+  return out;
+}
+// The fixture library plus volume_vee, whose rank is V-shaped in the instrument (the
+// fixture's volume rises with it), so a theme of volume_level and volume_vee has a
+// composite that is not itself a rank grid: re-ranking it must change the blend.
+bool vee_library(atx::impl::strategy::IcRunnerConfig& cfg) {
+  auto lib=read_json(cfg.library_path);
+  lib["candidates"].push_back({{"id","volume_vee"},{"family","fixed_volume"},{"dsl","abs(volume - 450000000)"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  return json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+// R-1 identity (brief step 3): the rule with its re-rank off (the file's rerank false)
+// and its member cap off (the fitter's side: here the ew-theme-v1 weights themselves)
+// reproduces the ew-theme-v1 blend byte for byte -- saved signal, planned targets and
+// __combined__ IC rows; only the weights pin and the summary's standardise record
+// differ. With rerank true the blend changes and the rule is recorded.
+TEST(CompositionV8, IdentityWithReRankAndCapOffIsEwThemeV1) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  // ew-theme-v1 over one theme of two admitted members: 1 / (T n) = .5 each; volume_rank not admitted.
+  const std::string weights=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_vee":1})";
+  const std::string themes=R"({"volume_level":"liquidity","volume_vee":"liquidity"})";
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("v1.json",themed_text(weights_v1,cfg,weights,signs)));
+  const auto v1=run_named(dir,cfg,"v1"); ASSERT_TRUE(v1.ok) << v1.error;
+  ASSERT_TRUE(pin("off.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,false))));
+  const auto off=run_named(dir,cfg,"off"); ASSERT_TRUE(off.ok) << off.error;
+  ASSERT_TRUE(pin("on.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true))));
+  const auto on=run_named(dir,cfg,"on"); ASSERT_TRUE(on.ok) << on.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8","_planned_targets.csv"}) {
+      const auto expected=file_sha(dir.path/"v1"/(role_name+suffix)); ASSERT_FALSE(expected.empty()) << suffix;
+      EXPECT_EQ(file_sha(dir.path/"off"/(role_name+suffix)),expected) << suffix;
+    }
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_EQ(combined_rows(dir.path/"off"/daily),combined_rows(dir.path/"v1"/daily));
+    EXPECT_FALSE(combined_rows(dir.path/"v1"/daily).empty());
+    // Member IC rows never see the composition.
+    EXPECT_EQ(member_rows(dir.path/"on"/daily),member_rows(dir.path/"v1"/daily));
+    EXPECT_NE(file_sha(dir.path/"on"/(role_name+"_combined.f64")),file_sha(dir.path/"v1"/(role_name+"_combined.f64")));
+    const auto v1_manifest=read_json(dir.path/"v1"/(role_name+"_combined.json"));
+    EXPECT_FALSE(read_json(dir.path/"off"/(role_name+"_combined.json")).contains("composition_standardise"));
+    const auto on_manifest=read_json(dir.path/"on"/(role_name+"_combined.json"));
+    EXPECT_EQ(on_manifest.at("composition_standardise"),"ew-theme-std-v1");
+    EXPECT_FALSE(on_manifest.contains("composition_redistribution"));
+    EXPECT_EQ(on_manifest.at("signal_semantics"),v1_manifest.at("signal_semantics")); // still admissible to replay
+  }
+  // recipe.json: rerank off is the pinned method (only the weights pin differs); on is the rule.
+  auto v1_recipe=read_json(dir.path/"v1"/"recipe.json"),off_recipe=read_json(dir.path/"off"/"recipe.json");
+  const auto on_recipe=read_json(dir.path/"on"/"recipe.json");
+  EXPECT_FALSE(off_recipe.contains("composition_standardise"));
+  off_recipe.erase("composition_weights_sha256"); v1_recipe.erase("composition_weights_sha256");
+  EXPECT_EQ(off_recipe,v1_recipe);
+  EXPECT_EQ(on_recipe.at("composition_standardise"),"ew-theme-std-v1");
+  EXPECT_EQ(on_recipe.at("composition"),"pinned-candidate-weights;pinned-candidate-signs;centered-tied-rank;"
+      "theme-weighted-rank-sum-missing-neutral;theme-rerank-centered-tied-over-names-with-a-present-member;"
+      "theme-weight-sum-of-member-weights");
+  // summary.json composition_weights.standardise names the block, rerank-off included.
+  EXPECT_FALSE(read_json(dir.path/"v1"/"summary.json").at("composition_weights").contains("standardise"));
+  EXPECT_EQ(read_json(dir.path/"off"/"summary.json").at("composition_weights").at("standardise"),
+            "ew-theme-std-v1;rerank-off");
+  EXPECT_EQ(read_json(dir.path/"on"/"summary.json").at("composition_weights").at("standardise"),"ew-theme-std-v1");
+}
+TEST(CompositionV8, ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Payloads are absent: every refusal below must precede any role payload read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const std::string equal=R"({"volume_level":0.5,"volume_rank":0.5})";
+  const std::string both=R"({"volume_level":"liquidity","volume_rank":"liquidity"})";
+  const auto plan=[&](const std::string& text,Json& printed) {
+    if (!text_file(path,text,cfg.composition_weights_sha256)) return std::string("unwritable");
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    if (!status) return status.error().to_string();
+    printed=Json::parse(log.str()); return std::string{};
+  };
+  // Admitted: rerank on and off, and a zero-weight candidate without a theme. The
+  // standardised composition admits one f64 plane per theme; rerank off admits none.
+  Json on,off,sparse;
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,equal,std_block(both,true)),on),"");
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,equal,std_block(both,false)),off),"");
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,R"({"volume_level":1,"volume_rank":0})",
+                             std_block(R"({"volume_level":"a"})",true)),sparse),"");
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(on.at("roles").at(r).at("required_bytes").get<u64>()-off.at("roles").at(r).at("required_bytes").get<u64>(),
+              D*N*8U) << r;
+  const std::string shape="theme_standardise must be {rule: ew-theme-std-v1, rerank: true|false, themes: {id: theme}}";
+  const std::string block_without_rerank=R"(,"theme_standardise":{"rule":"ew-theme-std-v1","themes":)"+both+"}";
+  const std::string numeric_rerank=R"(,"theme_standardise":{"rule":"ew-theme-std-v1","rerank":1,"themes":)"+both+"}";
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {themed_text(weights_v1,cfg,equal,std_block(both,true)),
+       "theme_standardise requires composition weights schema atx.dsl-composition-weights/v2"},
+      {themed_text(weights_v1,cfg,equal,std_block(both,false)),
+       "theme_standardise requires composition weights schema atx.dsl-composition-weights/v2"},
+      {themed_text(weights_v2,cfg,equal,theme_block(both)+std_block(both,true)),
+       "theme_redistribution and theme_standardise are exclusive"},
+      {themed_text(weights_v2,cfg,equal,""),"requires a theme_redistribution block or a theme_standardise block"},
+      {themed_text(weights_v2,cfg,equal,std_block(both,true,"ew-theme-std-v2")),shape},
+      {themed_text(weights_v2,cfg,equal,block_without_rerank),shape},
+      {themed_text(weights_v2,cfg,equal,numeric_rerank),shape},
+      {themed_text(weights_v2,cfg,equal,R"(,"theme_standardise":[1])"),shape},
+      // The themes map is checked with rerank off too.
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"a"})",false)),
+       "theme missing for weighted candidate: volume_rank"},
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"a","volume_rank":"a","other":"a"})",true)),
+       "theme for unknown candidate: other"},
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"A","volume_rank":"a"})",true)),
+       "theme name must match [a-z0-9_]{1,64}: volume_level"},
+      {themed_text(weights_v2,cfg,R"({"volume_level":0,"volume_rank":0})",std_block("{}",true)),
+       "theme_standardise needs 1..32 weighted themes"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [text,reason]:cases) {
+      ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+      cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+      ASSERT_FALSE(status) << text;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << text << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
 } // namespace

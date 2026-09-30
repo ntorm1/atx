@@ -305,3 +305,45 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Ruling E-22 (FactoryOos x2): triaged read-only against main before Wave 0; if pre-sprint, recorded as an owner item
   and not fixed here (factory goldens are outside the v8 plan).
 - C-1 `context_sha256`: ruled after identity b states what it hashes.
+
+## 2026-09-30 integration 3 Part 4 closed (identities a-f; log section "integration 3 Part 4", commit c5492e4a)
+- a W0-1 NAV identity PASS (12 files byte-identical). d B-2 workers 4 vs 12 PASS (daily IC, planned targets, combined
+  byte-identical to each other and to mega-v71-train-u-1; cold 119 s / 1,212 MiB and 143 s / 1,216 MiB, both inside
+  300 s). e D-1 timers PASS (summary.json gains only `stage_seconds`).
+- c C-3 FINDING: recorded argv refused (regsho stage republished, as W0-d); with the live pin 62 of 63 payloads equal
+  fields-v9, regsho_threshold_days63 differs by the new stage. Reuse copied 0 of 63: W0-1 changed every builder
+  group's code fingerprint (one-time). The copy path itself is still untested: step 2 (`--reuse` from the new dir,
+  expect 63 reused) runs in integration 4.
+- f F-0 FINDING, accepted: all 7 role payloads byte-identical; manifest differs in 19 paths, all explained (two code
+  identities, W0-1's seal text and 12 seal-drop counters).
+- No disclosure. No statistic read on 2020-2023.
+- Ruling E-23 (C-1 `context_sha256`): accepted as coded. It hashes data (five context arrays, role SHA, window, two
+  constants); C-1 moved the fitter's code SHA out of it into the code fingerprint, which is why admission.json differed
+  in two provenance hashes and admission.csv in none -- code identity and data identity are separate keys by design
+  -- cost if wrong: none for inference.
+- Ruling E-24 (workers): IC passes stay at `--workers 4` on this host (12 workers: ic 18.3 -> 8.9 s but vm and
+  composition slower, net +23 s) -- measured -- cost if wrong: seconds.
+
+## 2026-09-30 FactoryOos triage (read-only lane; nothing built)
+- Verdict: PRE-SPRINT, confidence about 85%. Pins `factory_oos_test.cpp:893` (4049056013) and `:1589` (703512706)
+  were last set in 3a1197b5 (2026-09-24). a187e2fe (2026-09-26, on main before base 7fbfc379) added
+  `&& !bind_recipe_identity_` to the V1 short-circuit in `store.hpp` `record_crc`, so each alpha's segment_crc is now
+  crc32(integrity_crc, recipe_crc) on a fresh directory (rule ExistingOrSignedV2). `version_id` moves; digest and
+  admitted count do not. No sprint file feeds `compute_version_id` (`manifest.hpp:123-159`).
+- Ruling E-22a (amends E-22): integration 4 runs the one-build confirmation (pass `CorrIndexRule::LegacyBandsV1` to
+  `Library::open` in both tests; the old pins must come back), then reverts that edit and re-pins the two
+  `kPinnedVersionId` values to 916304603 and 3123399341 with a comment citing a187e2fe -- a standing red test hides
+  new failures, and the move is the intended V2 design (`library.hpp:580-582`) -- cost if wrong: a factory golden is
+  re-pinned over a real regression; the confirmation build bounds that. If the old pins do not come back, no re-pin:
+  owner item.
+
+## 2026-09-30 lanes dispatched (PM session 2; all merged root 41ac94fd first)
+| lane | pool | branch | work |
+|---|---|---|---|
+| R6 | 7 | feat/platform-v8-r6-20260929 | spo-v3 rule part 2 (S_prior 20, E-14) |
+| R45 | 11 | feat/platform-v8-r45-20260929 | R-5 missing tests; E-16 hold-band state in the holdings export |
+| F3 | 9 | feat/platform-v8-f3-20260929 | F-1 reuse fix (E-21), F-B, F-C, F-D (E-20) |
+| REPORT | 10 | feat/platform-v8-report-20260929 | tasks 2-4 |
+| H3 | 4 | feat/platform-v8-h3-20260929 | mining verb parts 2-3 (fixture only) |
+| H1 | 3 | feat/platform-v8-h1-20260929 | era shards tooling (E-17) |
+| A2 | 8 | feat/platform-v8-a2-20260930 | marginal step argv; E-19 test; v8 spec drafts |

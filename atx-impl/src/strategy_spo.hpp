@@ -73,6 +73,11 @@
 // Every other default is unchanged. A plan-level aim-partial-v5 shadow book (full fills, no
 // drift) runs beside each book: its a'w, gross, turnover, modeled cost and ex-ante vol are
 // recorded per decision, so alpha capture is read apart from cost.
+//
+// spo-v3 (platform v8 R-6, strategy_spo_v3.hpp) is target tracking toward the aim itself: no
+// alpha vector, the engine's solve_tracking instead of FISTA, its own rows (TrackingRow).
+// It shares with spo-v1/v2 the risk store, the fixed positions, the per-name market terms,
+// the plan fields and the shadow book. With spo-v1/v2 nothing of it runs.
 
 #include <cmath>
 #include <limits>
@@ -115,16 +120,19 @@ struct SpoParams {
   bool void_on_capped{false};      // --specific-ceiling-void on|off: a clamp voids the run
   atx::f64 gross_budget{unset};    // --spo-gross G (NaN: --aim-leverage)
   GammaRule gamma_rule{GammaRule::VolAndBind};
-  atx::u32 version{1}; // 1: spo-v1 as pre-registered; 2: spo-v2 (v2_params)
+  // 1: spo-v1 as pre-registered; 2: spo-v2 (v2_params); 3: spo-v3 (v3_params,
+  // strategy_spo_v3.hpp)
+  atx::u32 version{1};
+  atx::f64 sharpe_prior{unset}; // spo-v3 only: S_prior, gamma = S_prior / sigma_aim
 };
 // spo-v2's defaults: SpoParams{} with h = 21, G = 1.0, specific ceiling 1.0 (daily vol 100%)
 // as a tripwire (void on) and gamma = gamma_vol.
 [[nodiscard]] SpoParams v2_params();
-[[nodiscard]] const char* rule_name(const SpoParams& p); // "spo-v1" / "spo-v2"
-// The key of the rule's recipe / summary / extras blocks: "spo_v1" / "spo_v2".
+[[nodiscard]] const char* rule_name(const SpoParams& p); // "spo-v1" / "spo-v2" / "spo-v3"
+// The key of the rule's recipe / summary / extras blocks: "spo_v1" / "spo_v2" / "spo_v3".
 [[nodiscard]] const char* json_key(const SpoParams& p);
-// Ranges of every parameter; G (when given) finite > 0. The bound against --aim-leverage is
-// validate_gross_budget's (the leverage is a replay flag).
+// Ranges of every parameter; G (when given) finite > 0; spo-v3's S_prior finite in (0, 1e3].
+// The bound against --aim-leverage is validate_gross_budget's (the leverage is a replay flag).
 [[nodiscard]] atx::core::Status validate_params(const SpoParams& p);
 // G in effect: --spo-gross, else aim_leverage (spo-v1 as pre-registered, bit for bit).
 [[nodiscard]] atx::f64 gross_budget_of(const SpoParams& p, atx::f64 aim_leverage) noexcept;
@@ -298,6 +306,38 @@ struct DiagnosticRow {
   atx::f64 alpha_shadow{unset}, gross_shadow{unset}, turnover_shadow{unset};
   atx::f64 trade_cost_shadow{unset}, exante_vol_shadow{unset};
 };
+// spo-v3's diagnostics row per (rebalance decision, book) (strategy_spo_v3.hpp).
+struct TrackingRow {
+  atx::i64 session{};
+  std::string book;
+  atx::usize members{}, optimized{}, unpriced_members{}, fixed_nonmembers{};
+  atx::f64 gamma{};
+  atx::usize iterations{};
+  bool converged{}, limits_met{};
+  atx::f64 primal_residual{}, dual_residual{}, limit_violation{}; // weight units
+  atx::usize clipped_eigenvalues{};
+  // ANNUALISED (sqrt(252 x daily variance)), whole book (priced names): the plan's and the
+  // current book's distance to the aim w_aim.
+  atx::f64 tracking_error{}, tracking_error_current{};
+  // Pearson correlation of the planned and the aim weights over the optimized names.
+  atx::f64 aim_correlation{};
+  // The solver's terms (per session, NAV fractions): objective = (gamma/2) tracking variance
+  // over the problem + amortized_cost + borrow; trade_cost = amortized_cost x H (unamortized).
+  atx::f64 objective{}, trade_cost{}, amortized_cost{}, borrow{};
+  atx::f64 gross{}, aim_gross{}, net{}, long_weight{}, short_weight{}, abs_beta{}, turnover{};
+  atx::usize no_trade{}, at_trade_limit{};
+  atx::f64 trade_limit_share{}; // at_trade_limit / optimized
+  atx::usize at_locate_floor{};
+  bool gross_bound_breached{}; // planned gross above the sanity bound 2 x --aim-leverage
+  atx::f64 nu{}, rho{};        // the net and beta multipliers of the solver's x-update
+  // Risk-model entries (every instrument of the slice) clamped at d (--specific-ceiling).
+  atx::usize capped_specific{};
+  // The plan-level aim-partial-v5 shadow book at d (same aim, S2 law and risk model; full
+  // fills, no drift): gross, turnover, modeled (unamortized) trade cost over the optimized
+  // names, its tracking error (annualised) and aim correlation.
+  atx::f64 gross_shadow{unset}, turnover_shadow{unset}, trade_cost_shadow{unset};
+  atx::f64 tracking_error_shadow{unset}, aim_correlation_shadow{unset};
+};
 struct Calibration {
   bool done{}, from_flag{};
   GammaRule rule{GammaRule::VolAndBind};
@@ -345,12 +385,28 @@ public:
                                        std::string_view book);
   // A new replay pass: clears the per-book warm state (gamma and the rows are kept).
   void begin_run();
-  [[nodiscard]] std::span<const DiagnosticRow> rows() const noexcept;
+  [[nodiscard]] std::span<const DiagnosticRow> rows() const noexcept; // spo-v1/v2
+  [[nodiscard]] std::span<const TrackingRow> tracking_rows() const noexcept; // spo-v3
+  // spo-v3: session, gamma, aim_vol = sigma_aim, aim_gross and names of its calibration.
   [[nodiscard]] const Calibration& calibration() const noexcept;
   [[nodiscard]] const SpoParams& params() const noexcept;
   [[nodiscard]] Timing timing() const noexcept;
   [[nodiscard]] atx::f64 horizon() const noexcept; // H in effect (NaN before the first plan)
-  [[nodiscard]] atx::f64 gross_budget() const noexcept; // G in effect (NaN before the first plan)
+  // G in effect, spo-v3's gross sanity bound 2 x L (NaN before the first plan).
+  [[nodiscard]] atx::f64 gross_budget() const noexcept;
+  // The rule's published blocks over its scored rows (strategy_spo_v3.cpp). spo-v1/v2
+  // delegate unchanged to declaration(params()), parameters_json(params(), horizon(),
+  // gross_budget()), calibration_json(calibration()) and diagnostics_csv,
+  // diagnostics_units_json, summary_json, tripwire_json, ceiling_tripwire on rows(); spo-v3
+  // to the tracking_* functions of strategy_spo_v3.hpp on tracking_rows().
+  [[nodiscard]] std::string rule_declaration() const;
+  [[nodiscard]] nlohmann::json rule_parameters_json() const;
+  [[nodiscard]] nlohmann::json rule_calibration_json() const;
+  [[nodiscard]] std::string rows_csv() const;
+  [[nodiscard]] nlohmann::json rows_units_json() const;
+  [[nodiscard]] nlohmann::json rows_summary_json() const;
+  [[nodiscard]] nlohmann::json rows_tripwire_json() const;
+  [[nodiscard]] atx::core::Status rows_tripwire() const;
   struct Impl;
 
 private:

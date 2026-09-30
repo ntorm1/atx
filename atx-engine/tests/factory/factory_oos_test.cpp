@@ -888,9 +888,13 @@ TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
   // rule): pre-W0 digest 14354626274288095608, admitted 29, version_id 2670205213.
   // The PBO report-only property this test guards is unaffected: the new pin is
   // the same run with PBO folded nowhere (see the lane-a0 report).
+  // a187e2fe RE-PIN (Ruling E-22a): the default rule ExistingOrSignedV2 binds the
+  // recipe identity (store.hpp record_crc), so version_id moved 4049056013 -> 916304603;
+  // digest and admitted did not. Under CorrIndexRule::LegacyBandsV1 the old
+  // 4049056013 comes back (confirmed in integration 4, build v8-4b).
   static constexpr atx::u64  kPinnedDigest    = 100871560902752353ULL;
   static constexpr atx::usize kPinnedAdmitted  = 28U;
-  static constexpr atx::u64  kPinnedVersionId  = 4049056013ULL;
+  static constexpr atx::u64  kPinnedVersionId  = 916304603ULL;
 
   GateConfig gc;
   gc.min_sharpe    = 0.0;
@@ -1584,9 +1588,13 @@ TEST(FactoryOos, HoldoutEngineReuse_DigestUnchanged) {
   // W0-A0 RE-BASELINE (A-01/A-02/A-09/A-13 kernel policies + A-03 scalar-literal
   // rule): pre-W0 digest 10909738412604108776, version_id 3846488092 (admitted
   // unchanged at 5). Run==run identity (prong a) still holds (lane-a0 report).
+  // a187e2fe RE-PIN (Ruling E-22a): the default rule ExistingOrSignedV2 binds the
+  // recipe identity (store.hpp record_crc), so version_id moved 703512706 -> 3123399341;
+  // digest and admitted did not. Under CorrIndexRule::LegacyBandsV1 the old
+  // 703512706 comes back (confirmed in integration 4, build v8-4b).
   static constexpr atx::u64 kPinnedDigest = 5867665479471522971ULL;
   static constexpr atx::usize kPinnedAdmitted = 5U;
-  static constexpr atx::u64 kPinnedVersionId = 703512706ULL;
+  static constexpr atx::u64 kPinnedVersionId = 3123399341ULL;
 
   AlphaGate gate{default_gate_cfg()};
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);

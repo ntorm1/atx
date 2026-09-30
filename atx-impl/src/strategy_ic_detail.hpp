@@ -31,6 +31,7 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/data/strategy_data.hpp"
 #include "atx/engine/factory/ic_research.hpp"
+#include "strategy_ic_composition.hpp"
 #include "strategy_ic_runner.hpp"
 
 namespace atx::impl::strategy::ic_detail {
@@ -43,6 +44,8 @@ inline constexpr f64 quiet_nan=std::numeric_limits<f64>::quiet_NaN();
 inline constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-member-mask";
 // ew-theme-v6 (v4-prereg v6 revision V6-W): the only admitted theme_redistribution rule.
 inline constexpr const char* theme_redistribution_rule="within-theme-v1";
+// ew-theme-std-v1 (platform v8 R-1): the only admitted theme_standardise rule.
+inline constexpr const char* theme_standardise_rule="ew-theme-std-v1";
 inline constexpr const char* fields_schema="atx.research-role-fields/v1";
 inline constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";
 inline constexpr usize io_chunk=1U<<20;
@@ -125,8 +128,24 @@ struct FrozenTrain {
 // TRAIN artifact by frozen_weights_binding in validation-only mode.
 // `themes`: per-candidate theme index of an ew-theme-v6 theme_redistribution block
 // (empty: none; see composition_themes), `theme_count` its number of themes.
+// `std_themes`/`std_theme_count`: the same for an ew-theme-std-v1 theme_standardise block
+// with rerank true (empty: no block, or rerank false -- then the composition is the plain
+// pinned-weights path, the ew-theme-v1 blend bit for bit); `standardise` records a present
+// block for the summary ("" absent; else the rule, suffixed ";rerank-off" when off).
 struct PinnedWeights {
   std::vector<f64> values; std::vector<int> signs; Json provenance; std::vector<usize> themes; usize theme_count{};
+  std::vector<usize> std_themes; usize std_theme_count{}; std::string standardise;
+  // What the composition and admission receive: the standardised themes under their rule,
+  // else the (possibly empty) within-theme-v1 themes under redistribute.
+  [[nodiscard]] IcThemeRule theme_rule() const noexcept {
+    return std_themes.empty()?IcThemeRule::redistribute:IcThemeRule::standardise;
+  }
+  [[nodiscard]] std::span<const usize> composition_themes() const noexcept {
+    return std_themes.empty()?std::span<const usize>(themes):std::span<const usize>(std_themes);
+  }
+  [[nodiscard]] usize composition_theme_count() const noexcept {
+    return std_themes.empty()?theme_count:std_theme_count;
+  }
 };
 // ---- Candidate signal cache (layout: strategy_ic_signal_cache.cpp) ----------
 // field name -> payload SHA256, ordered by name (the key's field order).
@@ -234,13 +253,15 @@ co::Status check_field_extents(const Role& spec);
 co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& meter,
                          std::vector<std::optional<FileStamp>>& verified);
 // ---- strategy_ic_admission.cpp -----------------------------------------------
-Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false);
+Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false,
+                   bool standardised=false);
 Json fields_recipe(Json pins,const Library& lib);
 Json fields_pins(const IcRunnerConfig& cfg);
 bool fields_pinned(const IcRunnerConfig& cfg);
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train);
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
-                      std::string pin,std::string name,bool enforce_budget=true,usize themes=0);
+                      std::string pin,std::string name,bool enforce_budget=true,usize themes=0,
+                      IcThemeRule rule=IcThemeRule::redistribute);
 co::Status same_field_definitions(const Library& lib,const Role& train,const Role& validation);
 co::Status bind_fields(const Library& lib,Role& role,const std::string& directory,const std::string& pin,
                        bool scored);

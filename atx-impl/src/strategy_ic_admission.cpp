@@ -26,7 +26,7 @@ constexpr const char* theme_redistribution_composition="ew-theme-v6";
 constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by-name;NaN-where-not-visible;"
     "role-presence-mask;decision-member-mask-unchanged";
 } // namespace
-Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed) {
+Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed,bool standardised) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -60,6 +60,15 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
           "centered-tied-rank;missing-or-unoriented-mass-stays-in-theme;within-theme-v1;"
           "theme-without-present-member-neutral";
       recipe["composition_redistribution"]=theme_redistribution_rule;
+    }
+    // A theme_standardise block with rerank true (ew-theme-std-v1, v8 R-1) likewise; with
+    // rerank false the method is the pinned one above and only the weights pin differs.
+    if (standardised) {
+      recipe["composition"]=std::string(pinned_signs?"pinned-candidate-weights;pinned-candidate-signs;"
+                                                    :"pinned-candidate-weights;TRAIN-orientation-signs;")+
+          "centered-tied-rank;theme-weighted-rank-sum-missing-neutral;"
+          "theme-rerank-centered-tied-over-names-with-a-present-member;theme-weight-sum-of-member-weights";
+      recipe["composition_standardise"]=theme_standardise_rule;
     }
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
@@ -198,9 +207,9 @@ struct Budget {
   bool add(u64 n,u64 width) { if (width && n>(limit-used)/width) return false; used+=n*width; return true; }
 };
 } // namespace
-// `themes`: pinned within-theme redistribution themes (0: none, admission unchanged).
+// `themes`: pinned themes under `rule` (0: none, admission unchanged).
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
-                      std::string pin,std::string name,bool enforce_budget,usize themes) {
+                      std::string pin,std::string name,bool enforce_budget,usize themes,IcThemeRule rule) {
   ATX_TRY(auto j,pinned_json(path,pin));
   const auto d=j.at("dates").get<u64>(),n=j.at("instruments").get<u64>();
   const auto begin=j.at("score_begin").get<u64>(),end=j.at("score_end").get<u64>();
@@ -209,7 +218,7 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: role shape/warmup/maturity");
   const auto cells=d*n,score_dates=end-begin;
   ATX_TRY(auto composition,ic_composition_working_bytes(static_cast<usize>(d),
-      static_cast<usize>(n),lib.candidates.size(),themes));
+      static_cast<usize>(n),lib.candidates.size(),themes,rule));
   Budget b{std::numeric_limits<u64>::max(),0};
   // One role26, guard4, effective+VM masks2, returned signal8, VM scratch32;
   // One maximum compiled slot payload: the runner destroys an undersized Engine
@@ -411,22 +420,12 @@ co::Result<std::vector<int>> composition_signs(const Json& j,const Library& lib,
   }
   return co::Ok(std::move(signs));
 }
-// Optional top-level `theme_redistribution` (fitter ew-theme-v6, v4-prereg v6 revision
-// V6-W): exactly {"rule":"within-theme-v1","composition":"ew-theme-v6","themes":{id:
-// theme}} with known ids, names [a-z0-9_]{1,64}, a theme for every positive-weight
-// candidate and 1..32 themes. Indices follow first appearance in library order; a
-// zero-weight candidate keeps 0 (ignored by the composition). Absent: pinned.themes
-// stays empty and nothing downstream changes. The block requires schema v2 and v2
-// requires the block (checked by composition_weights).
-co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pinned) {
-  if (!j.contains("theme_redistribution")) return co::Ok();
-  const auto& block=j.at("theme_redistribution");
-  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_redistribution_rule ||
-      !block.contains("composition") || block.at("composition")!=theme_redistribution_composition ||
-      !block.contains("themes") || !block.at("themes").is_object())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_redistribution must be {rule: within-theme-v1, "
-        "composition: ew-theme-v6, themes: {id: theme}}");
-  const auto& rows=block.at("themes");
+// A block's `themes` object {id: theme} (theme_redistribution and theme_standardise
+// alike): known ids, names [a-z0-9_]{1,64}, a theme for every positive-weight candidate
+// and 1..32 themes, `block` naming the block in that last refusal. Indices follow first
+// appearance in library order; a zero-weight candidate keeps 0 (ignored by the composition).
+co::Status theme_indices(const Json& rows,const Library& lib,const std::vector<f64>& weights,const char* block,
+                         std::vector<usize>& index,usize& count) {
   std::set<std::string> ids;
   for (const auto& c:lib.candidates) ids.insert(c.id);
   const auto theme_name=[](const std::string& s) {
@@ -441,9 +440,9 @@ co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pi
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme name must match [a-z0-9_]{1,64}: "+it.key());
   }
   std::vector<std::string> names;
-  std::vector<usize> index(lib.candidates.size(),0);
+  index.assign(lib.candidates.size(),0);
   for (usize k=0;k<lib.candidates.size();++k) {
-    if (!(pinned.values[k]>0)) continue;
+    if (!(weights[k]>0)) continue;
     const auto it=rows.find(lib.candidates[k].id);
     if (it==rows.end())
       return co::Err(co::ErrorCode::InvalidArgument,
@@ -454,8 +453,44 @@ co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pi
     if (at==names.end()) names.push_back(name);
   }
   if (names.empty() || names.size()>32)
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_redistribution needs 1..32 weighted themes");
-  pinned.themes=std::move(index); pinned.theme_count=names.size();
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+std::string(block)+" needs 1..32 weighted themes");
+  count=names.size();
+  return co::Ok();
+}
+// Optional top-level `theme_redistribution` (fitter ew-theme-v6, v4-prereg v6 revision
+// V6-W): exactly {"rule":"within-theme-v1","composition":"ew-theme-v6","themes":{id:
+// theme}} with themes as theme_indices checks them. Absent: pinned.themes stays empty and
+// nothing downstream changes. The block requires schema v2 and v2 requires a block
+// (checked by composition_weights).
+co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pinned) {
+  if (!j.contains("theme_redistribution")) return co::Ok();
+  const auto& block=j.at("theme_redistribution");
+  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_redistribution_rule ||
+      !block.contains("composition") || block.at("composition")!=theme_redistribution_composition ||
+      !block.contains("themes") || !block.at("themes").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_redistribution must be {rule: within-theme-v1, "
+        "composition: ew-theme-v6, themes: {id: theme}}");
+  return theme_indices(block.at("themes"),lib,pinned.values,"theme_redistribution",pinned.themes,pinned.theme_count);
+}
+// Optional top-level `theme_standardise` (fitter ew-theme-std-v1, platform v8 R-1):
+// exactly {"rule":"ew-theme-std-v1","rerank":true|false,"themes":{id: theme}}, themes as
+// theme_indices checks them (also when rerank is false). rerank true fills
+// pinned.std_themes (IcThemeRule::standardise); rerank false is the rule's identity
+// switch: the composition is the plain pinned-weights path, whose blend is the ew-theme-v1
+// one bit for bit. Absent: nothing changes. Schema v2 as for theme_redistribution.
+co::Status composition_standardise(const Json& j,const Library& lib,PinnedWeights& pinned) {
+  if (!j.contains("theme_standardise")) return co::Ok();
+  const auto& block=j.at("theme_standardise");
+  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_standardise_rule ||
+      !block.contains("rerank") || !block.at("rerank").is_boolean() ||
+      !block.contains("themes") || !block.at("themes").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise must be {rule: ew-theme-std-v1, "
+        "rerank: true|false, themes: {id: theme}}");
+  std::vector<usize> index; usize count=0;
+  ATX_TRY_VOID(theme_indices(block.at("themes"),lib,pinned.values,"theme_standardise",index,count));
+  const bool rerank=block.at("rerank").get<bool>();
+  pinned.standardise=std::string(theme_standardise_rule)+(rerank?"":";rerank-off");
+  if (rerank) { pinned.std_themes=std::move(index); pinned.std_theme_count=count; }
   return co::Ok();
 }
 } // namespace
@@ -496,13 +531,22 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
         "IC runner: composition weights TRAIN binding: train_manifest_sha256 must equal --train-sha256");
   ATX_TRY(pinned.signs,composition_signs(j,lib,weights));
   ATX_TRY_VOID(composition_themes(j,lib,pinned));
+  ATX_TRY_VOID(composition_standardise(j,lib,pinned));
   const bool v2=j.at("schema")==weights_schema_v2;
-  if (v2 && pinned.themes.empty())
+  const bool standardise=!pinned.standardise.empty();
+  if (!pinned.themes.empty() && standardise)
     return co::Err(co::ErrorCode::InvalidArgument,
-        "IC runner: composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block");
+        "IC runner: theme_redistribution and theme_standardise are exclusive");
+  if (v2 && pinned.themes.empty() && !standardise)
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "IC runner: composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block "
+        "or a theme_standardise block");
   if (!v2 && !pinned.themes.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2");
+  if (!v2 && standardise)
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "IC runner: theme_standardise requires composition weights schema atx.dsl-composition-weights/v2");
   if (j.contains("provenance")) pinned.provenance=j.at("provenance");
   return co::Ok(std::move(pinned));
 }
@@ -517,6 +561,8 @@ Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const
       {"provenance_fields_manifest_sha256",pin("fields_manifest_sha256")},{"binding",binding}};
   // ew-theme-v6 only (absent otherwise): the pinned within-theme redistribution.
   if (!pinned.themes.empty()) out["redistribution"]=theme_redistribution_rule;
+  // ew-theme-std-v1 only (absent otherwise): the block's rule, ";rerank-off" when off.
+  if (!pinned.standardise.empty()) out["standardise"]=pinned.standardise;
   return out;
 }
 // Review M1 (root ruling, strict): weights applied against a frozen TRAIN artifact

@@ -398,7 +398,8 @@ def oracle_k8(t, sid):
     new = lambda w: [v for v in vis.values() if not usable(v[0], CAL[IDX[d] - w])]
     material = [v for v in new(21) if set(v[1]) & set(sec.K8_MATERIAL_ITEMS)]
     out.update(k8_count_63=float(len(new(63))), k8_item_material_21=float(bool(material)),
-               k8_days_since_any=float(IDX[d] - event_session(latest)))
+               k8_days_since_any=float(IDX[d] - event_session(latest)),
+               k8_item402_63=float(any("4.02" in v[1] for v in new(63))))   # v8 F-B (no 4.02 filing here: 0)
     return out
 
 
