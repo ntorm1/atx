@@ -189,9 +189,12 @@ struct Artifact {
 };
 // The combined blend, the price role (with volume) and the role fields
 // (atx.research-role-fields/v1 with code_sha256), every provenance pin `pin`. score_begin
-// (default 0) is the role's and the blend's (a warm start needs pre-score history).
+// (default 0) is the role's and the blend's (a warm start needs pre-score history). universe
+// (v8 E-25; default null: none) is the role manifest's universe block; role_member (default:
+// p.member) is the role's member.u8 (the blend keeps p.member).
 Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const Fields& f,
-                        usize score_begin = 0) {
+                        usize score_begin = 0, const Json& universe = Json(),
+                        const std::vector<u8>* role_member = nullptr) {
   std::vector<u8> finite(p.signal.size()); u64 finite_count = 0, members = 0;
   for (usize k = 0; k < finite.size(); ++k) {
     finite[k] = static_cast<u8>(std::isfinite(p.signal[k]));
@@ -210,7 +213,7 @@ Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const 
   role_files["close.f64"] = write_payload(dir / "close.f64", p.close);
   role_files["raw_close.f64"] = write_payload(dir / "raw_close.f64", p.raw);
   role_files["present.u8"] = write_payload(dir / "present.u8", p.present);
-  role_files["member.u8"] = write_payload(dir / "member.u8", p.member);
+  role_files["member.u8"] = write_payload(dir / "member.u8", role_member ? *role_member : p.member);
   role_files["volume.f64"] = write_payload(dir / "volume.f64", p.volume);
   Artifact a;
   a.role = Json{{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
@@ -221,6 +224,7 @@ Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const 
       {"common_stock_verified", false}, {"historical_vintage_verified", false},
       {"dates", p.d}, {"instruments", p.n}, {"score_begin", score_begin}, {"score_end", p.d},
       {"files", role_files}};
+  if (!universe.is_null()) a.role["universe"] = universe;
   a.cfg.role_path = (dir / "role.json").string();
   a.cfg.role_sha256 = write_json(a.cfg.role_path, a.role);
   const Json manifest{{"schema", "atx.dsl-combined-signal/v1"}, {"status", "complete"},
@@ -2364,6 +2368,20 @@ LabelPin write_label_role(const std::filesystem::path& dir, const Artifact& a, c
 std::vector<std::string> label_flags(const LabelPin& label) {
   return {"--label-role", label.path, "--label-role-sha256", label.sha256};
 }
+// The NAV argv of a role pair on disk (160 sessions, score_begin 20): the financing matrix, no
+// neutralization (the book holds the planted name from the first sessions), a 20-session warm
+// start, then `extra`.
+std::vector<std::string> pair_args(const Artifact& a, const std::filesystem::path& out,
+                                   const std::vector<std::string>& extra = {}) {
+  std::vector<std::string> all{"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+      a.cfg.combined_sha256, "--role", a.cfg.role_path, "--role-sha256", a.cfg.role_sha256,
+      "--fields", a.fields.manifest_path, "--fields-sha256", a.fields.manifest_sha256,
+      "--output", out.string(), "--rule", "aim-partial-v5", "--cadence", "1",
+      "--trade-fraction", ".3", "--aim-leverage", "1.247", "--order-basis", "delta",
+      "--warm-start-sessions", "20", "--max-bytes", "1073741824"};
+  all.insert(all.end(), extra.begin(), extra.end());
+  return all;
+}
 } // namespace
 
 // Flag off is the replay's own MARK: the books MARKED by an explicit copy of the role's own close,
@@ -2598,17 +2616,8 @@ TEST(NavLabelRole, TerminalReturnReachesThePnlAndNoDecisionInput) {
   const auto a = write_artifact(decision_dir, roles.first, fields, 20);
   const auto label = write_label_role(dir.path / "label", a, roles.second, [](Json&) {});
   const auto args = [&](const char* name, bool labelled) {
-    std::vector<std::string> all{"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
-        a.cfg.combined_sha256, "--role", a.cfg.role_path, "--role-sha256", a.cfg.role_sha256,
-        "--fields", a.fields.manifest_path, "--fields-sha256", a.fields.manifest_sha256,
-        "--output", (dir.path / name).string(), "--rule", "aim-partial-v5", "--cadence", "1",
-        "--trade-fraction", ".3", "--aim-leverage", "1.247", "--order-basis", "delta",
-        "--warm-start-sessions", "20", "--max-bytes", "1073741824"};
-    if (labelled) {
-      const auto extra = label_flags(label);
-      all.insert(all.end(), extra.begin(), extra.end());
-    }
-    return all;
+    return pair_args(a, dir.path / name,
+                     labelled ? label_flags(label) : std::vector<std::string>{});
   };
   std::ostringstream out, err;
   ASSERT_EQ(nav_cli(args("off", false), out, err), 0) << err.str();
@@ -2708,4 +2717,68 @@ TEST(NavLabelRole, RefusesMismatchedAxes) {
   // The control: the same role pair written in full runs.
   EXPECT_EQ(nav_cli(nav_args(a, root / "good-run", label_flags(good)), out, err), 0)
       << err.str();
+}
+
+// A --delisting-returns label role clears the member --role keeps on a termination session (the
+// lagged membership: prepare_recent_research.py DELISTING_RETURN_RULE member[T] = 0), so its
+// member.u8 differs from --role's while member & present & close > 0 does not. Admitted only when
+// declared (universe.delisting.applied.members_cleared_on_termination_session N) and only on
+// exactly N cells, each one --role has absent and keeps a member and the label role presents and
+// clears: N = 1 runs and records its one label-only cell; undeclared is refused from the
+// manifests; N = 2, and a further difference on a cell absent in both roles, from the payloads;
+// every refusal before the output exists.
+TEST(NavLabelRole, AdmitsOnlyTheDeclaredDelistingClearing) {
+  Directory dir;
+  const auto panel = market_panel(160, 60, 17, 3e7);
+  const Fields fields(panel, 23);
+  const usize T = 120, j = panel.n - 1;
+  const auto roles = terminated(panel, {T, j, -0.55});
+  const Panel& decision = roles.first;
+  std::vector<u8> lagged = decision.member; // --role keeps j a member at T, absent there
+  lagged[decision.k(T, j)] = 1;
+  const Json universe{{"id", "linked-operating-v1"},
+      {"base_role", {{"manifest_sha256", pin}, {"member_sha256", pin}}},
+      {"inputs", {{"identity_bridge", {{"manifest_sha256", pin}}},
+                  {"sic_events", {{"manifest_sha256", pin}}},
+                  {"delisting", {{"manifest_sha256", pin}}}}},
+      {"delisting", {{"returns_applied", false}}}};
+  const auto decision_dir = dir.path / "decision";
+  ASSERT_TRUE(std::filesystem::create_directory(decision_dir));
+  const auto a = write_artifact(decision_dir, decision, fields, 20, universe, &lagged);
+  const auto declares = [](u64 cleared) {
+    return [cleared](Json& m) {
+      auto& d = m.at("universe").at("delisting");
+      d["returns_applied"] = true;
+      d["applied"] = Json{{"terminations", 1},
+                          {"members_cleared_on_termination_session", cleared}};
+    };
+  };
+  usize cases = 0;
+  const auto refused = [&](const LabelPin& label, const std::string& expected) {
+    const auto out_dir = dir.path / ("refused-" + std::to_string(cases++));
+    std::ostringstream out, err;
+    EXPECT_EQ(nav_cli(pair_args(a, out_dir, label_flags(label)), out, err), 1) << expected;
+    EXPECT_NE(err.str().find("--label-role refused: "), std::string::npos) << err.str();
+    EXPECT_NE(err.str().find(expected), std::string::npos) << expected << ": " << err.str();
+    EXPECT_FALSE(std::filesystem::exists(out_dir)) << expected;
+  };
+  const std::string differs = "the membership (member.u8) differs from --role's";
+  refused(write_label_role(dir.path / "undeclared", a, roles.second, [](Json&) {}),
+          differs + " (only the members a --delisting-returns role declares cleared");
+  refused(write_label_role(dir.path / "two", a, roles.second, declares(2U)),
+          differs + " on 1 cells and the label role declares 2 cleared");
+  Panel stray = roles.second; // a further difference where both roles are absent
+  stray.member[stray.k(T + 1, j)] = 1;
+  refused(write_label_role(dir.path / "stray", a, stray, declares(2U)),
+          differs + " (row " + std::to_string(T + 1) + ", instrument " +
+              std::to_string(decision.ids[j]) + ") outside a delisting-return clearing");
+  const auto one = write_label_role(dir.path / "one", a, roles.second, declares(1U));
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(pair_args(a, dir.path / "on", label_flags(one)), out, err), 0) << err.str();
+  const auto recorded = read_json(dir.path / "on" / "summary.json").at("label_role");
+  EXPECT_EQ(recorded.at("manifest_sha256"), one.sha256);
+  EXPECT_EQ(recorded.at("label_only_present_cells"), 1);
+  const auto rule = read_json(dir.path / "on" / "recipe.json").at("label_role").at("rule");
+  EXPECT_NE(rule.get<std::string>().find("members_cleared_on_termination_session"),
+            std::string::npos);
 }
