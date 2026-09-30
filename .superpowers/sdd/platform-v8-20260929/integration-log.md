@@ -419,3 +419,206 @@ Other findings (not fixed, not in the dispatch):
   not rebuilt or run in this integration.
 - `build_provenance.cpp` is generated at configure time: v8-3c records `159d265f`, not its source `464e9858`.
 - C-1 admission.json ruling (integration 2 finding c1) waits for Part 4b.
+
+## integration 3 Part 4 (2026-09-30)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD `41ac94fd`, tree clean before every run.
+Scope: identities a-f of "STOPPED HERE" (g, E-1, was not in this dispatch; no build ran in this session). Executables:
+build v8-3c as found (ic `3f43cef0...`, targets `6f277869...`; source `464e9858`, only docs commits since). Every run
+went through `scripts/run_bounded_research.py`, one at a time; every receipt says `git: clean in the code pathspec`,
+source `41ac94fd`. Outputs are all under `build-equity/v8-i3p4-*`.
+
+| run | receipt | caps s / MiB / min free | outcome | wall s | peak MiB |
+|---|---|---|---|---|---|
+| a | `v8-i3p4-a-run` | 180 / 1,536 / 512 | completed, exit 0 | 20.4 | 358 |
+| c (1) | `v8-i3p4-c-run` | 600 / 2,560 / 512 | process-error, exit 1 (stage pin refusal) | 0.5 | 46 |
+| c (2) | `v8-i3p4-c-run2` | 600 / 2,560 / 512 | completed, exit 0 | 189.2 | 958 |
+| d, 4 workers | `v8-i3p4-d-w4-run` | 300 / 2,560 / 512 | completed, exit 0 (cold, fresh cache) | 119.4 | 1,212 |
+| d, 12 workers | `v8-i3p4-d-w12-run` | 300 / 2,560 / 512 | completed, exit 0 (cold, fresh cache) | 142.5 | 1,216 |
+| e | `v8-i3p4-e-run` | 180 / 1,536 / 512 | completed, exit 0 | 17.3 | 358 |
+| f | `v8-i3p4-f-run` | 600 / 2,560 / 512 | completed, exit 0 | 1.6 | 216 |
+
+### a. W0-1: v7.1 NAV cell, integration 2 argv (PASS)
+
+Argv: that of `v8-i2-nav-run1/receipt.json` with `--output build-equity/v8-i3p4-a-nav`. Result: **all 12 files
+byte-identical** to `mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247` (5 daily, 5 events, recipe.json,
+summary.json). No NAV output names the window id, so nothing needed excepting. stdout.log hash equals integration 2's
+(`813ce59c...`).
+
+### b. C-1: what `inputs.context_sha256` hashes (read, no run)
+
+`fit_composition_weights.py` `Context.__init__` (lines 898-910): `digest = sha256(canonical_compact(meta))`. `meta` holds:
+- `schema` and `semantics`: two constant strings;
+- `role_manifest_sha256`, `decision_begin`, `decision_end_exclusive` and the `refused` decision list;
+- `arrays`: dtype, shape and SHA-256 of the five derived arrays `columns`, `used`, `basis` (the price-risk-v1
+  neutralization bases), `forward` (forward returns) and `used_rows`, computed from the role payloads.
+
+So it hashes **data** (derived content bound to the role), not code. Before C-1 (base `ef11f462`, line 841) `meta` also
+held `"script_sha256": SCRIPT_SHA256`, the SHA-256 of the fitter file's bytes, so every edit of the fitter moved the
+digest. C-1 removed that key; the code is now bound by the store path (`WorkStore.context_dir` = CONTEXT_PRODUCERS
+fingerprint), not by the digest.
+
+Proof, metadata only (stored `v8-i2-fitstore/.../context/aab64ac1.../context.json`):
+- sha256 of the C-1 meta as stored = `6edcef8e...` = integration 2 `v8-i2-fit-1` `inputs.context_sha256`;
+- sha256 of the same meta plus `script_sha256` = the accepted file's `inputs.script_sha256` (`4cff96b6...`) =
+  `edb8afdf...` = the accepted `mega-weights-v71-ew` `inputs.context_sha256`, exactly.
+
+So the five array SHAs, the role binding and the window are equal to the accepted run's. The two provenance
+differences of integration 2 are both code SHAs:
+- `script_sha256`: the file changed;
+- `context_sha256`: the file's SHA was dropped from the hashed meta.
+
+admission.csv was byte-identical because it holds only decisions and statistics, no provenance hash.
+
+### c. C-3: fields rebuild with `--reuse` of fields-v9 (FINDING)
+
+fields-v9 has no receipt (built direct). Argv as reconstructed in `w0-2-runbook.md` R10 for the 3-year role, with the
+source roots and stage pins recorded in fields-v9's own entries:
+- role lo1 (`3e79978a...`), the 63 names of `scripts/specs/v71.json` `fields.list`;
+- sources: `--finra`, `--tickerhistory`, `--finra-short-volume`, identity-bridge-r4-v1, fundamental-events-v2,
+  `--fund-lag-sessions 1`, `--sec-stages` with the v2-pit bridge and the three SEC stage pins, the five holdings stages;
+- `--max-rss-mib 2048 --max-seconds 580`;
+- `--reuse build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9 --reuse-sha256 8fd00e9f...` in copy mode, so no
+  inode is shared with the accepted directory.
+
+- Run 1 (`v8-i3p4-c-run`), with fields-v9's own regsho pin `68f431f0...`: refused before any compute or output.
+  `research_fields_holdings.pin_stage`: "regsho_threshold stage manifest SHA-256 does not match
+  --regsho-threshold-sha256". The stage was republished (W0-2 runbook blocker 1). **fields-v9's argv can no longer
+  be replayed as recorded.**
+- Run 2 (`v8-i3p4-c-run2`, output `v8-i3p4-c-fields2`, manifest `5e5def8d...`): same argv with the live pin
+  `fb073c62...` (runbook value). Completed.
+
+Payload identity vs fields-v9:
+- **62 of 63 field payloads byte-identical** (manifest sha256 = fields-v9 pin = bytes on disk).
+- `regsho_threshold_days63` differs (`031016d4...` -> `2cb2fe40...`, with its coverage, NaN reasons and stage pin),
+  from the republished stage.
+
+Other entry differences:
+- the 14 SEC fields: `clock` and `formula_sha256` (W0-1: `SEC_CLOCK` names the seal date);
+- `inst_own_share`, `inst_own_chg_q`, `ftd_shares_ratio21`: in `sources`, only the path of this run's
+  `shares_out.f64` (same SHA).
+
+Top-level differences: `seal` (2024-01-01), code identity, `source_checks`, `reuse`.
+
+**Reuse counts: reused 0, computed 63** (C-3 expected 40 builder fields reused on this first rebuild). `reuse.not_reused`
+states the reasons:
+- 40 builder fields: "producing code differs (builder closure of group role/finra/th/issuer; prior code from git
+  blob `0347e46c`)". A closure diff (`code_fingerprint.Module.reach` / `closure`, against prior blob `0347e46c` and
+  v9's builder blob `3f8e8c09`) shows every group now reaches the new `rw` import binding and changed `SEAL`
+  (`= rw.SEAL`) and `Role` (seal refusal): **W0-1**, whose report says "--reuse recomputes once". Also changed:
+  - `FIELDS` (finra, th);
+  - issuer: `issuer_fields`, `load_events`, `sic_mapping` and the new `SIC_STAGE_*` / `reference_classifications`
+    names.
+  - C-3's own comparison was of pre- and post-C-3 code only, before W0-1 was merged.
+- sv_ratio126: producing code differs (finra_sv: `sv_field` / `sv_window_files` from C-3, plus `rw` / `SEAL`).
+- 14 SEC fields: "formula differs" (W0-1's clock text).
+- 8 holdings fields: "producing code differs" (module or builder blob changed; C-3 open risk).
+
+The copy path of C-3 was therefore not exercised. C-3's step 2 was not dispatched and not run: `--reuse
+v8-i3p4-c-fields2` with the live regsho pin, expecting reused 63, computed 0.
+
+Read set: equal to fields-v9's.
+- CNMS: 1,112 files, list SHA `6a968e5a...`.
+- insider: 33 files read, 13 not read after the role.
+- TickerHistory3: rows scanned and selected equal.
+
+SEC row counters moved slightly, because the seal moved and fewer post-role rows count as used. No payload moved.
+
+### d. B-2: v7.1 u pass at 4 and 12 workers (PASS)
+
+Argv: that of `mega-v71-train-u-run1/receipt.json`, with these changes:
+- `--max-memory-mib 2560` (was 1536);
+- `--workers 4` or `--workers 12`;
+- fresh cache roots `v8-i3p4-d-w{4,12}-cache`;
+- outputs `v8-i3p4-d-w{4,12}-u`.
+
+Both runs were cold and finished well inside 300 s, so no re-run was needed.
+
+Byte-identical across w4, w12 and the accepted `mega-v71-train-u-1`: `train_daily_ic.csv`,
+`train_planned_targets.csv`, `train_combined.f64`, `train_combined_{member,finite}.u8`, `train_combined_ids.u64`,
+`train_combined_sessions.i64`.
+
+Differences, all by design:
+- `orientations.json`: only `recipe_sha256`; `candidates` and every other key equal.
+- `recipe.json` vs the accepted run: `max_working_bytes` (1,610,612,736 -> 2,684,354,560) at both counts, plus
+  `vm_workers` / `research_ic_workers` 4 -> 12 at 12.
+- `train_combined.json`: only `run_recipe_sha256`.
+- `train_candidates.jsonl` (96 records): only `wall_seconds`, `stage_seconds.*` and the signal / IC cache hit-miss
+  fields.
+- `summary.json`:
+  - the recipe and orientation hashes;
+  - the cache directory, entry paths and hit-miss counts;
+  - timings, `workers`, `ic_scratch_bytes` and `admitted_working_bytes`;
+  - field-load counts, which differ from the accepted warm run.
+
+Admitted working bytes: 1,553,063,994 at 4 workers (= the runbook formula) and 1,670,986,170 (1,594 MiB) at 12, as
+B-2 estimated.
+
+| workers | vm s | ic s | composition s | fields_verify s | fields_load s | role wall s |
+|---|---|---|---|---|---|---|
+| 4 | 65.53 | 18.33 | 11.90 | 5.16 | 5.03 | 119.0 |
+| 12 | 81.82 | 8.92 | 26.96 | 4.35 | 5.72 | 142.0 |
+
+Finding (timing only): on this host (12 physical / 16 logical cores, about 3.5-5.5 GB free), 12 workers halve the IC
+stage but slow VM (+25%) and composition (x2.3), for a net +23 s. One sample each, cold.
+
+### e. D-1: v7.1 NAV cell with `--stage-timers` (PASS)
+
+Argv: that of a plus `--stage-timers`, output `v8-i3p4-e-nav`.
+- 11 files byte-identical to the accepted cell.
+- `summary.json` gains exactly one top-level key, `stage_seconds`, inserted in sorted position before the last key
+  `status` (the first 122,071 bytes are unchanged). With the key dropped it equals the accepted summary, key order
+  included.
+- Timers: load 1.22, exposures 6.70, construction 1.42, books 6.74, hash 0.01, write 1.05; the six sum to wall 17.13 s.
+
+### f. F-0: lo1 role rebuilt, delisting options off (FINDING)
+
+Argv: that of `recent-fast-train-2020-2022-v2-lo1-run/receipt.json` (same three `--bind`s, `--check-fields` fields-v6),
+with `--out build-equity/v8-i3p4-f-role`. Manifest `19383422...` (accepted `3e79978a...`).
+
+- **Payloads: all 7 files byte-identical** (close, raw_close, volume, present, member, ids, sessions).
+- The manifest differs in 19 JSON paths, not one:
+  1. `universe.inputs.code.prepare_recent_research` (3 values): the expected difference.
+  2. `universe.inputs.code.prepare_research_fields` (3 values): F-0's report anticipated this ("plus the
+     prepare_research_fields values if that file has changed since").
+  3. W0-1, the seal moved from 2025-01-01 to 2024-01-01:
+     - `universe.point_in_time`: equal after replacing the seal date;
+     - 8 `universe.inputs.identity_bridge` counters (`checks.linked_ciks`, `rows_available_on_or_after_2025_dropped`,
+       `rows_ignored_off_axis`, `rows_never_qualifying_on_role`, `rows_used`,
+       `rows_used_available_exactly_at_start_mark`, `rows_used_primary`, `class_status_rows.common`);
+     - 4 `universe.inputs.sic_events.checks` counters (`rows_available_on_or_after_2025_dropped`,
+       `rows_ignored_unlinked_cik`, `rows_sharing_cik_and_clock`, `rows_used`).
+
+     Rows available on or after the new seal are now dropped before classification. The key names still say 2025
+     (W0-1 deviation 6). The counts are not copied here because they count rows in the sealed year.
+- F-0's flag-off path is payload-identical. The manifest SHA changes by W0-1 as much as by F-0. The PM rules whether
+  that is acceptable.
+
+### Hidden-data record
+
+- No session on or after 2024-01-01 in any stdout or stderr of these runs (grep for 2024+ dates, `year=`, `q` forms:
+  0 hits).
+- Inputs were the accepted TRAIN role, fields and artifacts only. No directory named validation, val, holdout or a
+  2023+ range was opened.
+- Like the accepted fields-v9 manifest, the new fields manifest carries listing metadata that reaches past the seal:
+  - the CNMS directory `listed_last_date` and `downloaded_at_*`;
+  - the insider stage's `quarters_listed` range;
+  - the SEC module's NYSE rule calendar `calendar.last`;
+  - caveat texts.
+
+  These are file names, download times and a rule calendar, not data rows. My scan printed only their JSON paths,
+  never the values.
+- The read set equals fields-v9's (see c); no file after the role was read.
+- The role and fields manifests hold seal-drop counters; I saw the role's (f) while diffing, and they are not copied.
+- **No disclosure.**
+
+### Open items
+
+- C-1: the PM rules on `context_sha256` (b: a data digest; integration 2 moved only the two code SHAs).
+- C-3:
+  - the regsho_threshold stage was republished, so fields-v9 cannot be rebuilt as pinned;
+  - W0-1 invalidated every builder group's reuse fingerprint once;
+  - C-3's step 2 (`--reuse v8-i3p4-c-fields2`, expect reused 63) is the remaining check of the copy path.
+- F-0: the lo1 manifest cannot stay byte-identical after W0-1: seal text and counters, plus both code identities.
+- B-2: 12 workers are slower than 4 on this host (vm and composition).
+- g (E-1 "last build of the session"): not in this dispatch.
