@@ -5,6 +5,7 @@ Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider at
 C-3 defect and re-run flags on a ledgered cell are refused, a defect found later is a defect line.
 C-4 rerun_of names an earlier cell line of the same kind; a window re-run's target is on another window.
 C-5 a blind (or returns) re-run needs a defect of its target on an earlier line; a re-run never lowers N.
+C-6 the hash chain covers the legacy (unchained) lines from the first line of the ledger.
 Synthetic NAV cells only (test_nav_summ.write_nav: calendar-day sessions from 2020-01-02, inside TRAIN).
 """
 from __future__ import annotations
@@ -134,6 +135,57 @@ def test_rerun_of_must_name_an_earlier_cell_line_of_the_same_kind(tmp_path):
     with pytest.raises(ValueError, match="rerun_of '\\?'"):                        # one refusal: nothing appended
         BI.ledger_append(ledger, batch, chain=True)
     assert len(BI.ledger_read(ledger)) == 4
+
+
+# ------------------------------------------------------------------ C-6
+def legacy_ledger(path: Path, n: int = 37) -> list[str]:
+    """n legacy construction lines as nav_summ v7 wrote them (unchained, compact sorted-key JSON): the v7 ledger."""
+    lines = [json.dumps({"schema": BI.LEDGER_SCHEMA, "kind": "construction", "count": 1, "cell": f"legacy/c{k:02d}",
+                         "window": {"label": "TRAIN", "first_session": "2020-01-06", "last_session": "2022-12-30",
+                                    "sessions": 754}, "s2_net_sr": 0.5 + 0.01 * k, "trial_id": f"{k:016x}"},
+                        sort_keys=True, separators=(",", ":")) for k in range(n)]
+    path.write_text("".join(x + "\n" for x in lines), encoding="utf-8")
+    return lines
+
+
+def test_the_chain_covers_the_37_legacy_lines(tmp_path):
+    """Review C-6: only the last of the 37 unchained legacy lines was pinned by the first chained line, so adding
+    "rerun_basis":"window" to legacy line 5 lowered N by 1 and ledger_read passed. The first chained line now names the
+    fold of every line before it (each hashed as stored); an unchained line after a chained one is refused."""
+    ledger = tmp_path / "trials.jsonl"
+    legacy = legacy_ledger(ledger)
+    assert BI.ledger_n(BI.ledger_read(ledger), True) == 37
+    head37 = BI.ledger_head(ledger)
+    assert head37 == BI.chain_head(legacy) != BI.line_sha256(legacy[-1])            # the fold of all 37
+    d = cells(tmp_path, 1)[0]
+    appended, _ = BI.ledger_append(ledger, [record(d, 0.7)], chain=True)             # the first v8 line
+    assert appended[0]["prev_sha256"] == head37
+    text = ledger.read_text(encoding="utf-8").splitlines()
+    assert len(BI.ledger_read(ledger)) == 38 and BI.ledger_head(ledger) == BI.line_sha256(text[-1])
+    edited = list(text)
+    edited[4] = edited[4].replace('"count":1,', '"count":1,"rerun_basis":"window",')  # legacy line 5 out of N
+    assert edited[4] != text[4]
+    assert BI.ledger_n([json.loads(x) for x in edited], True) == 37                  # what the edit would do
+    for name, rows in (("edited", edited), ("removed", text[:11] + text[12:]),
+                       ("inserted", text[:20] + [text[20].replace("c20", "cXX")] + text[20:])):
+        p = tmp_path / f"{name}.jsonl"
+        p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="hash chain broken"):
+            BI.ledger_read(p)
+    tail = tmp_path / "tail.jsonl"                                                   # after a chained line, never
+    tail.write_text("\n".join(text + [legacy[0].replace("c00", "late")]) + "\n", encoding="utf-8")   # unchained
+    with pytest.raises(ValueError, match="an unchained line after the chained line 38"):
+        BI.ledger_read(tail)
+    last = tmp_path / "last.jsonl"                                                   # the tail itself: caught
+    last.write_text("\n".join(text[:-1] + [text[-1].replace('"s2_net_sr":0.7', '"s2_net_sr":0.9')]) + "\n",
+                    encoding="utf-8")                                                # against a recorded head
+    assert BI.ledger_head(last) != BI.ledger_head(ledger)
+    only = tmp_path / "only.jsonl"                                                   # before any chained line, the
+    only.write_text("\n".join(edited[:37]) + "\n", encoding="utf-8")                 # recorded head catches an edit
+    assert BI.ledger_head(only) != head37
+    crlf = tmp_path / "crlf.jsonl"                                                   # a CRLF checkout: same chain
+    crlf.write_bytes(ledger.read_bytes().replace(b"\n", b"\r\n"))
+    assert BI.ledger_head(crlf) == BI.ledger_head(ledger) and len(BI.ledger_read(crlf)) == 38
 
 
 # ------------------------------------------------------------------ C-5

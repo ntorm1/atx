@@ -1564,13 +1564,26 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
 
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
     try:
-        return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log)
-    except VerdictError as exc:           # review C-1: no verdict DSR from a cell count
+        return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log,
+                              ledger_state(cycle))
+    except ValueError as exc:     # review C-1: no verdict DSR from a cell count; C-6: a broken ledger chain
         raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
 
 
+def ledger_state(cycle) -> dict | None:
+    """{path, head, lines} of the sprint ledger of record (--ledger, else summ.ledger) when it exists: the chain head
+    (backtest_integrity.ledger_head, the chain verified) every verdict records (review C-6). None without one."""
+    rel = cycle.ledger or (cycle.spec.get("summ") or {}).get("ledger")
+    if not rel or not cycle.res.path(rel).is_file():
+        return None
+    bi = research_ledger.backtest_integrity()
+    p = cycle.res.path(rel)
+    return {"path": rel, "head": bi.ledger_head(p), "lines": len(bi.ledger_read(p))}
+
+
 def copy_ledger(cycle: Cycle, log) -> None:
-    """summ.ledger_copy: the trial ledger copied (e.g. into the sprint directory) after the cycle's summ."""
+    """summ.ledger_copy: the trial ledger copied (e.g. into the sprint directory) after the cycle's summ, with its chain
+    head logged (review C-6)."""
     sm = cycle.spec["summ"]
     if not sm.get("ledger_copy"):
         return
@@ -1579,7 +1592,11 @@ def copy_ledger(cycle: Cycle, log) -> None:
         raise CycleError(f"HARD-STOP [summ]: summ.ledger_copy: no ledger at {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)
-    log(f"   ledger copied: {src} -> {sm['ledger_copy']} (sha256 {sha256_file(dst)})")
+    try:
+        head = research_ledger.backtest_integrity().ledger_head(dst)
+    except ValueError as exc:
+        raise CycleError(f"HARD-STOP [summ]: summ.ledger_copy: {exc}") from exc
+    log(f"   ledger copied: {src} -> {sm['ledger_copy']} (sha256 {sha256_file(dst)}, chain head {head})")
 
 
 # ------------------------------------------------------------------ lock

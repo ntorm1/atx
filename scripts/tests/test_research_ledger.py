@@ -138,16 +138,23 @@ def test_protocol_line_is_chained_when_written(tmp_path):
     assert len(text) == 3
     line = json.loads(text[2])
     assert line["kind"] == "protocol" and line["count"] == 0 and "cell" not in line
-    assert line["prev_sha256"] == BI.line_sha256(text[1])                              # linked when written
+    assert line["prev_sha256"] == BI.chain_head(text[:2])                              # linked when written: it
+    assert line["prev_sha256"] != BI.line_sha256(text[1])                              # pins both legacy lines (C-6)
     assert text[2] == json.dumps(line, sort_keys=True, separators=(",", ":"))         # nav_summ's encoding
     assert len(BI.ledger_read(ledger)) == 3 and BI.ledger_head(ledger) == BI.line_sha256(text[2])
     appended, _ = BI.ledger_append(ledger, [record(root, "prior/c")])                 # a later nav_summ append
     assert appended[0]["prev_sha256"] == BI.line_sha256(text[2])                       # continues the chain
-    tampered = text[1].replace('"s2_net_sr":0.5', '"s2_net_sr":0.6')
-    assert tampered != text[1]
-    ledger.write_text("\n".join([text[0], tampered, *ledger.read_text().splitlines()[2:]]) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match=r"trials.jsonl:3: hash chain broken"):       # the protocol line guards
-        BI.ledger_read(ledger)                                                          # the line before it
+    for k in (0, 1):                                                                   # either legacy line edited
+        tampered = text[k].replace('"s2_net_sr":0.5', '"s2_net_sr":0.6')
+        assert tampered != text[k]
+        rows = list(text)
+        rows[k] = tampered
+        edited = root / f"edited{k}.jsonl"
+        edited.write_text("\n".join(rows + ledger.read_text().splitlines()[3:]) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=rf"edited{k}.jsonl:3: hash chain broken"):   # the protocol line
+            BI.ledger_read(edited)                                                          # guards both
+    ledger.write_text("\n".join([text[0], text[1].replace('"s2_net_sr":0.5', '"s2_net_sr":0.6'),
+                                 *ledger.read_text().splitlines()[2:]]) + "\n", encoding="utf-8")
     before = ledger.read_bytes()
     window = root / "research_window.json"
     window.write_text('{"schema": "atx.research-window/v2", "note": "another window"}\n')

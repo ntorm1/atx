@@ -9,7 +9,8 @@
                  --dsr-ledger's ``deflated_ledger`` (N and V[SR] from the sprint ledger of record, never from a cell
                  count), the legacy-variance DSR beside it (gates nothing); a summ row without it is refused,
    phases[{name, seconds, peak_mib}]  from each phase's bounded-runner receipt, else the cycle's own wall clock
-                 (peak_mib null) for a direct phase run by this invocation}
+                 (peak_mib null) for a direct phase run by this invocation,
+   ledger{path, head, lines}  the sprint ledger of record's chain head when the cycle has a ledger (review C-6)}
 
 The cycle is duck-typed (research_cycle.Cycle, or research_roles.RolesCycle): spec, res, screen, steps(), receipt(),
 cycle_dir(). A step of one era of a roles: cycle (task H-1) is keyed ``phase:role`` (``step_key``) in the phase rows;
@@ -92,7 +93,9 @@ def dsr_block(row: dict) -> dict:
             "source": "nav_summ --dsr-ledger (deflated_ledger)"}
 
 
-def verdict(cycle, timings: dict, spec_sha256: str | None) -> dict:
+def verdict(cycle, timings: dict, spec_sha256: str | None, ledger: dict | None = None) -> dict:
+    """The verdict document; ``ledger`` = {path, head, lines} of the sprint ledger of record when the cycle has one
+    (review C-6: the chain head as this cycle left it, so a later edit of the ledger's tail is detected)."""
     s, res = cycle.spec, cycle.res
     steps = {step_key(st): st for st in cycle.steps()}
     ids = s["gate"]["admitted"] if "gate" in s else None
@@ -110,13 +113,15 @@ def verdict(cycle, timings: dict, spec_sha256: str | None) -> dict:
     navs = [st for st in steps.values() if st.phase == "nav"]
     if not cycle.screen and s.get("verdict") and navs:
         doc.update(scoring_blocks(res, cycle.cycle_dir(), navs[-1].output))
+    if ledger is not None:
+        doc["ledger"] = ledger
     return doc
 
 
-def write_verdict(cycle, timings: dict, spec_sha256: str | None, log) -> dict:
+def write_verdict(cycle, timings: dict, spec_sha256: str | None, log, ledger: dict | None = None) -> dict:
     path = cycle.res.path(f"{cycle.cycle_dir()}/{VERDICT}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc = verdict(cycle, timings, spec_sha256)
+    doc = verdict(cycle, timings, spec_sha256, ledger)
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
     for r in doc["marginal"]:
         log(f"marginal {r.get('id')}: ic21 {r.get('ic21')} (HAC t {r.get('ic21_hac_t')}); marginal ic21 "

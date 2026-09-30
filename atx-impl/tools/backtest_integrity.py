@@ -23,9 +23,11 @@
                   target is invalid on an earlier line (its defect flag or a defect line).
   protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
                   series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
-  hash chain      (v8, ledger-chain-v1) prev_sha256 = SHA-256 of the previous non-blank line's bytes (64 zeros for
-                  the first); ledger_read verifies every link, so an edited or removed line, a protocol line
-                  included, breaks the next chained line. Lines written without prev_sha256 are accepted as before.
+  hash chain      (v8; review C-6) a running head from 64 zeros: a legacy (unchained) line folds into it in its stored
+                  form, a chained line's prev_sha256 must equal it and the line's own SHA-256 becomes the head. So the
+                  first chained line pins every legacy line before it (the 37 v7 cells), an edited, inserted or
+                  removed line before the last chained line breaks the chain, and an unchained line after a chained
+                  one is refused. ledger_head is recorded by every cycle verdict and ledger copy (the tail).
   DSR variance   (v8-prereg item 3, OD-4) N = the construction trial count; V[SR] = sample variance of the
                   per-session S2 net SRs of the construction lines scored on the current window (re-runs and new
                   cells; invalid or replaced lines left out); the legacy variance (lines without a window_id, the
@@ -800,34 +802,62 @@ def _ledger_lines(p: Path) -> list[tuple[int, str]]:
     return [(n, line) for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if line.strip()]
 
 
-def ledger_read(path: Path) -> list[dict]:
-    """Every ledger line, schema-checked, with the hash chain verified.
+def fold_head(head: str, line: str) -> str:
+    """The chain head after an unchained (legacy) line: SHA-256 of the previous head and the line's own SHA-256, so
+    the head covers every line from the first, each hashed in its stored form (review C-6)."""
+    return hashlib.sha256((head + line_sha256(line)).encode()).hexdigest()
 
-    Chain (v8, ledger-chain-v1): a line that carries ``prev_sha256`` must name the SHA-256 of the previous non-blank
-    line's bytes (``line_sha256``; the first line names 64 zeros). Every line takes part, the ``protocol`` line
-    included. Lines without the key (every line written before v8) are accepted as they are: their rule is unchanged."""
-    p = Path(path)
-    if not p.exists():
-        return []
-    out, prev = [], CHAIN_GENESIS
+
+def chain_head(lines: list[str]) -> str:
+    """The chain head after the given non-blank line texts, in order (the head of a ledger holding exactly them)."""
+    head = CHAIN_GENESIS
+    for line in lines:
+        head = line_sha256(line) if "prev_sha256" in json.loads(line) else fold_head(head, line)
+    return head
+
+
+def _walk(p: Path) -> tuple[list[dict], str]:
+    """(every line, schema-checked and chain-verified; the chain head after the last line). See ``ledger_read``."""
+    out, head, chained = [], CHAIN_GENESIS, 0
     for n, line in _ledger_lines(p):
         rec = json.loads(line)
         if rec.get("schema") != LEDGER_SCHEMA:
             raise ValueError(f"ledger {p}:{n}: schema {rec.get('schema')!r} is not {LEDGER_SCHEMA}")
         link = rec.get("prev_sha256")
-        if link is not None and link != prev:
-            raise ValueError(f"ledger {p}:{n}: hash chain broken: prev_sha256 {str(link)[:16]} is not the SHA-256 of "
-                             f"the previous line ({prev[:16]})")
-        prev = line_sha256(line)
+        if link is None:
+            if chained:
+                raise ValueError(f"ledger {p}:{n}: an unchained line after the chained line {chained}: every line "
+                                 "after the first chained one carries prev_sha256")
+            head = fold_head(head, line)
+        elif link != head:
+            raise ValueError(f"ledger {p}:{n}: hash chain broken: prev_sha256 {str(link)[:16]} is not the chain head "
+                             f"of the lines before it ({head[:16]})")
+        else:
+            chained = chained or n
+            head = line_sha256(line)
         out.append(rec)
-    return out
+    return out, head
+
+
+def ledger_read(path: Path) -> list[dict]:
+    """Every ledger line, schema-checked, with the hash chain verified.
+
+    Chain (v8; review C-6): the chain head starts at 64 zeros; an unchained (legacy, pre-v8) line folds into it
+    (``fold_head``: its bytes as stored), a chained line must name the head of every line before it in
+    ``prev_sha256`` and becomes the head (``line_sha256`` of its bytes). So the first chained line pins every legacy
+    line before it, each chained line pins the whole prefix, and an edited, inserted or removed line anywhere before
+    the last chained line breaks the chain. A line without ``prev_sha256`` after a chained one is refused. A ledger
+    chained from its first line reads exactly as under ledger-chain-v1 (prev = the previous line's SHA-256)."""
+    p = Path(path)
+    return _walk(p)[0] if p.exists() else []
 
 
 def ledger_head(path: Path) -> str:
-    """The chain head: the SHA-256 of the ledger's last non-blank line (64 zeros for an empty or absent ledger)."""
+    """The chain head of the ledger (64 zeros for an empty or absent one), after verifying it: the SHA-256 of the last
+    line when it is chained, else the fold of every line (review C-6: a verdict and a ledger copy record it, so an
+    edit of the tail is detected against the recorded head)."""
     p = Path(path)
-    lines = _ledger_lines(p) if p.exists() else []
-    return line_sha256(lines[-1][1]) if lines else CHAIN_GENESIS
+    return _walk(p)[1] if p.exists() else CHAIN_GENESIS
 
 
 def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tuple[list[dict], list[dict]]:
@@ -836,7 +866,8 @@ def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tu
     ``chain`` (and any ledger whose last line is already chained) writes ``prev_sha256`` into every appended line;
     without it the lines are written exactly as before v8. Every record is checked against the lines before it
     (``check_line``) before anything is written: one refusal (ValueError) appends nothing."""
-    existing = ledger_read(path)                     # verifies the chain before anything is appended
+    p = Path(path)
+    existing, prev = _walk(p) if p.exists() else ([], CHAIN_GENESIS)   # verifies the chain before anything is appended
     before = {r.get("trial_id"): r for r in existing}
     chained = chain or bool(existing and "prev_sha256" in existing[-1])
     appended: list[dict] = []
@@ -845,14 +876,13 @@ def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tu
         (appended if check_line(before, rec) else skipped).append(rec)
         before.setdefault(rec["trial_id"], rec)
     if appended:
-        prev = ledger_head(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with Path(path).open("a", encoding="utf-8", newline="\n") as f:
             for k, rec in enumerate(appended):
                 if chained:
                     rec = appended[k] = dict(rec, prev_sha256=prev)
                 text = json.dumps(rec, sort_keys=True, separators=(",", ":"))
-                prev = line_sha256(text)
+                prev = line_sha256(text) if chained else fold_head(prev, text)
                 f.write(text + "\n")
     return appended, skipped
 

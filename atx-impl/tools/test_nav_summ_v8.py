@@ -202,7 +202,7 @@ def test_origin_class_in_ledger_line(tmp_path, capsys, monkeypatch):
     assert [r.get("origin") for r in rows] == [None, "grid", "grid"]
     assert [r.get("window_id") for r in rows] == [None, BI.window_id(), BI.window_id()]
     text = Path(ledger).read_text(encoding="utf-8").splitlines()
-    assert rows[1]["prev_sha256"] == BI.line_sha256(text[0]) and rows[2]["prev_sha256"] == BI.line_sha256(text[1])
+    assert rows[1]["prev_sha256"] == BI.chain_head(text[:1]) and rows[2]["prev_sha256"] == BI.line_sha256(text[1])
     # trial_id rule unchanged: the v8 fields never enter it
     for d, r in zip(dirs, rows):
         assert r["trial_id"] == BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{SCEN}.csv"))
@@ -302,7 +302,14 @@ def test_protocol_line_is_chained_but_not_counted(tmp_path, capsys):
     cells = noise_cells(tmp_path, 3)
     ledger = tmp_path / "trials.jsonl"
     BI.ledger_append(ledger, [record(cells[0], 0.5), record(cells[1], 0.8)], chain=True)
-    proto = lane_a_protocol_line(ledger, "ab" * 32)          # lane A's writer: unchained, no cell
+    unchained = tmp_path / "unchained.jsonl"                 # the pre-A-3 writer (unchained) after chained lines:
+    unchained.write_bytes(ledger.read_bytes())               # refused since review C-6
+    lane_a_protocol_line(unchained, "ab" * 32)
+    with pytest.raises(ValueError, match="an unchained line after the chained line 1"):
+        BI.ledger_read(unchained)
+    proto = lane_a_protocol_line(tmp_path / "proto.jsonl", "ab" * 32)
+    (tmp_path / "proto.jsonl").unlink()
+    BI.ledger_append(ledger, [proto], chain=True)            # lane A's writer today (research_ledger.append): chained
     wid = BI.window_id()
     BI.ledger_append(ledger, [record(cells[2], 1.1, research_window_id=wid, origin="prior")], chain=True)
     lines = ledger.read_text(encoding="utf-8").splitlines()
@@ -359,6 +366,8 @@ def test_protocol_line_is_chained_but_not_counted(tmp_path, capsys):
     lane_a_protocol_line(old, "cd" * 32)
     BI.ledger_append(old, [record(cells[2], 1.1)], chain=True)
     assert BI.trial_counts(BI.ledger_read(old)) == [1, 1, 0, 1]
+    old_lines = old.read_text(encoding="utf-8").splitlines()
+    assert json.loads(old_lines[3])["prev_sha256"] == BI.chain_head(old_lines[:3])   # pins all three (review C-6)
 
 
 # ------------------------------------------------------------------ seal, v8 defaults, shim
