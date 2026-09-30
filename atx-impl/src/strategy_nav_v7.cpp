@@ -18,6 +18,7 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
 
 namespace atx::impl::strategy::v7 {
@@ -82,9 +83,17 @@ bool spo_flag(std::string_view key) {
          key == "--adv-trade-p" || key == "--spo-iters" || key == "--spo-tol" ||
          key == "--target-vol" || key == "--spo-horizon" || key == "--spo-books" ||
          key == "--alpha-horizon" || key == "--specific-ceiling" ||
-         key == "--specific-ceiling-void" || key == "--spo-gross";
+         key == "--specific-ceiling-void" || key == "--spo-gross" || key == "--spo-alpha";
 }
-bool spo_rule(std::string_view rule) { return rule == "spo-v1" || rule == "spo-v2"; }
+bool spo_rule(std::string_view rule) {
+  return rule == "spo-v1" || rule == "spo-v2" || rule == "spo-v3";
+}
+// The spo flags that would move a registered constant of spo-v3 (refused with it).
+bool refused_with_v3(std::string_view key) {
+  return key == "--gamma" || key == "--ic-book" || key == "--w-max" || key == "--adv-cap-q" ||
+         key == "--adv-trade-p" || key == "--target-vol" || key == "--spo-horizon" ||
+         key == "--alpha-horizon" || key == "--spo-gross";
+}
 const char* pass_name(NavV7Pass pass) { return pass == NavV7Pass::Main ? "main" : "capacity"; }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
 f64 quantile(std::vector<f64> values, f64 q) {
@@ -173,15 +182,13 @@ Json declarations(const ScopedNavExtension::State& s) {
         {"rate_clip", Json::array({v6.clip_lo, v6.clip_hi})},
         {"reference_decisions", v6.reference_decisions}};
   if (s.engine) {
-    const auto& p = s.options.spo_params;
-    Json block{{"rule", spo::declaration(p)},
-               {"parameters",
-                spo::parameters_json(p, s.engine->horizon(), s.engine->gross_budget())},
-               {"calibration", spo::calibration_json(s.engine->calibration())}};
+    Json block{{"rule", s.engine->rule_declaration()},
+               {"parameters", s.engine->rule_parameters_json()},
+               {"calibration", s.engine->rule_calibration_json()}};
     if (s.options.spo_risk)
       block["risk_model"] = Json{{"directory", s.options.spo_risk->directory()},
                                  {"manifest_sha256", s.options.spo_risk->manifest_sha256()}};
-    j[spo::json_key(p)] = std::move(block);
+    j[spo::json_key(s.options.spo_params)] = std::move(block);
   }
   return j;
 }
@@ -293,16 +300,15 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
   }
   if (const auto* engine = ext.spo_engine()) {
     const auto path = dir / "spo_diagnostics.csv";
-    ATX_TRY_VOID(write_text(path, spo::diagnostics_csv(engine->rows())));
+    ATX_TRY_VOID(write_text(path, engine->rows_csv()));
     ATX_TRY(auto sha, co::sha256_file(path.string()));
     files["spo_diagnostics.csv"] = sha;
-    const auto& p = engine->params();
-    extras[spo::json_key(p)] =
-        Json{{"parameters", spo::parameters_json(p, engine->horizon(), engine->gross_budget())},
-             {"calibration", spo::calibration_json(engine->calibration())},
-             {"tripwire", spo::tripwire_json(p, engine->rows())},
-             {"diagnostics_units", spo::diagnostics_units_json()},
-             {"books", spo::summary_json(engine->rows())}};
+    extras[spo::json_key(engine->params())] =
+        Json{{"parameters", engine->rule_parameters_json()},
+             {"calibration", engine->rule_calibration_json()},
+             {"tripwire", engine->rows_tripwire_json()},
+             {"diagnostics_units", engine->rows_units_json()},
+             {"books", engine->rows_summary_json()}};
   }
   extras["files"] = std::move(files);
   return write_text(dir / "v7_extras.json", extras.dump(2) + "\n");
@@ -455,7 +461,7 @@ co::Status capture(std::span<const NavScenario> scenarios,
   // replay returns this error before its output directory exists, so no NAV or return file
   // (and no return statistic on the console) exists for a void run.
   if (s->engine) {
-    auto tripwire = spo::ceiling_tripwire(s->engine->params(), s->engine->rows());
+    auto tripwire = s->engine->rows_tripwire();
     if (!tripwire) {
       s->void_reason = tripwire.error().message();
       return tripwire;
@@ -527,10 +533,9 @@ void extend_summary(Json& summary) {
                  "spo_diagnostics.csv (spo-v1/v2) and v7_extras.json are written after this "
                  "summary"}};
   if (s->engine) {
-    const auto& p = s->engine->params();
-    const std::string key = spo::json_key(p);
-    summary["v7"][key + "_books"] = spo::summary_json(s->engine->rows());
-    summary["v7"][key + "_tripwire"] = spo::tripwire_json(p, s->engine->rows());
+    const std::string key = spo::json_key(s->engine->params());
+    summary["v7"][key + "_books"] = s->engine->rows_summary_json();
+    summary["v7"][key + "_tripwire"] = s->engine->rows_tripwire_json();
   }
   if (const char* id = rule_id(s->options);
       id && summary.contains("rule") && summary.at("rule").is_string())
@@ -568,7 +573,14 @@ void append_help(std::ostream& out) {
          "flags; defaults --alpha-horizon 21 (independent of --spo-horizon), --spo-gross 1, "
          "--specific-ceiling 1, --specific-ceiling-void on (a clamp voids the run: exit 3, "
          "diagnostics only, no NAV or return file; not with --emit-holdings), gamma = the "
-         "vol-target gamma)]\n";
+         "vol-target gamma)] [--rule spo-v3 [--spo-alpha implied-aim] (target tracking toward "
+         "the aim --aim-leverage x desired, no alpha vector; --risk-model DIR "
+         "--risk-model-sha256 SHA [--spo-iters 2000] [--spo-tol 1e-9] [--spo-books "
+         "all|primary] [--specific-ceiling 1] [--specific-ceiling-void on|off (default on: a "
+         "clamp or a planned gross above 2 x --aim-leverage voids the run)]; registered "
+         "S_prior 20, H 20, --adv-trade-p .01, beta .02: --gamma, --ic-book, --w-max, "
+         "--adv-cap-q, --adv-trade-p, --target-vol, --spo-horizon, --alpha-horizon and "
+         "--spo-gross are refused; fixed rate only)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -637,7 +649,7 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
           o.aim_v6 = true;
         } else {
           o.spo_v1 = true;
-          spo_version = rule == "spo-v2" ? 2U : 1U;
+          spo_version = rule == "spo-v3" ? 3U : rule == "spo-v2" ? 2U : 1U;
         }
         args.emplace_back("--rule"); args.emplace_back("aim-partial-v5");
         ++i;
@@ -658,9 +670,18 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       throw std::invalid_argument(
           "--cost-shrink-kappa/--band-b/--band-exponent/--rate-clip need --rule aim-partial-v6");
     if (!spo_values.empty() && !o.spo_v1)
-      throw std::invalid_argument("--risk-model, --gamma, ... --spo-books need --rule spo-v1|v2");
-    // The rule's defaults first (spo-v2: spo::v2_params), then the flags given.
+      throw std::invalid_argument(
+          "--risk-model, --gamma, ... --spo-books need --rule spo-v1|v2|v3");
+    // The rule's defaults first (spo-v2: spo::v2_params; spo-v3: spo::v3_params, whose
+    // registered constants no flag may move), then the flags given.
     if (o.spo_v1 && spo_version == 2) o.spo_params = spo::v2_params();
+    if (o.spo_v1 && spo_version == 3) {
+      o.spo_params = spo::v3_params();
+      for (const auto& entry : spo_values)
+        if (refused_with_v3(entry.first))
+          throw std::invalid_argument(entry.first + " is refused with spo-v3 (a registered "
+                                                    "constant of the rule)");
+    }
     for (const auto& [key, value] : spo_values) {
       auto& sp = o.spo_params;
       if (key == "--risk-model") risk_model = value;
@@ -683,6 +704,12 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         sp.void_on_capped = value == "on";
       else if (key == "--specific-ceiling-void")
         throw std::invalid_argument("--specific-ceiling-void on|off");
+      else if (key == "--spo-alpha" && spo_version != 3)
+        throw std::invalid_argument("--spo-alpha needs --rule spo-v3");
+      else if (key == "--spo-alpha" && value != "implied-aim")
+        throw std::invalid_argument("--spo-alpha implied-aim (the only value)");
+      else if (key == "--spo-alpha")
+        continue; // implied-aim: spo-v3 fits no alpha vector
       else if (key == "--spo-books" && (value == "all" || value == "primary"))
         sp.all_books = value == "all";
       else throw std::invalid_argument("--spo-books all|primary");
