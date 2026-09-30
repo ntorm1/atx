@@ -270,8 +270,11 @@ def one_role_pair(tmp: Path, first: int, last: int) -> tuple[Path, Path, Path, d
 
 
 def tree(root: Path) -> dict:
+    """Every output file's SHA-256 except those naming the spec file by its digest: the cycle dir (the verdict's
+    spec_sha256) and the NAV run's cycle_binding.json (review C-13)."""
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(root.rglob("*")) if p.is_file() and "cycle-era" not in p.as_posix()}
+            for p in sorted(root.rglob("*")) if p.is_file() and "cycle-era" not in p.as_posix() and
+            p.name != "cycle_binding.json"}
 
 
 def test_e3_alone_is_the_single_role_cycle_byte_for_byte(tmp_path):
@@ -286,6 +289,9 @@ def test_e3_alone_is_the_single_role_cycle_byte_for_byte(tmp_path):
     assert run(root_single, sp_single) == run(root_roles, sp_roles) == RC.EXIT_OK
     assert calls(root_single) == calls(root_roles)
     assert tree(root_single) == tree(root_roles)         # every output byte, the ledger included
+    bindings = [json.loads(next(r.rglob("cycle_binding.json")).read_text()) for r in (root_single, root_roles)]
+    same = [{k: v for k, v in b.items() if k != "spec_sha256"} for b in bindings]
+    assert same[0] == same[1]                            # the same NAV command (argv sha256); the spec files differ
     assert BI.ledger_read(root_single / "trials.jsonl")[0]["window"]["label"] == "TRAIN"
 
 

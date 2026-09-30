@@ -33,6 +33,9 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
                   construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
                   research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
+  resume          (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec and argv
+                  SHA-256); a done NAV is scored only when its spec digest (else its argv digest, from the binding or
+                  its receipt's command) matches the current spec: a mismatch is a pin stop (exit 3) naming both
   admission lines (review C-7) the gate of a v8 cycle with a ledger first appends one chained admission line per
                   listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
   summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
@@ -140,6 +143,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_admission  # noqa: E402
+import cycle_resume  # noqa: E402
 import research_ledger  # noqa: E402
 import research_tree  # noqa: E402
 from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
@@ -1505,6 +1509,11 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
+            if st.phase == "nav":           # review C-13: scored only when made from this spec
+                try:
+                    log(f"   binding: {cycle_resume.check_binding(cycle, st)}")
+                except cycle_resume.ResumeError as exc:
+                    raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
             admission_trials(cycle, w_dir, log)
@@ -1553,6 +1562,8 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
+            if st.phase == "nav":           # review C-13: what a later resume checks before scoring it
+                cycle_resume.write_binding(cycle, st)
             if st.phase == "summ":
                 copy_ledger(cycle, log)
         # --stop-after PHASE stops after the last step of that phase (every era's, in a roles: cycle)
