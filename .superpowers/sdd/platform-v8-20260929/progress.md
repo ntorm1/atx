@@ -251,3 +251,18 @@ Rulings on the draft's section 9, declared before any read:
   --role and a themes file (lanes A, F).
 - Not done (owner stop): Part 4 identities a-g (W0-1 NAV, C-1 context ruling, C-3 reuse, B-2 workers, D-1 timers,
   F-0 lo1 role, E-1 last build).
+
+## 2026-09-30 STOP at owner instruction; handoff 1 written
+- Owner (2026-09-29 late): "stop at the next logical break point for all agents and write a detailed handoff file for the
+  next parent agent + a goal prompt". All 8 running agents stopped at a commit boundary; every lane tree clean; every
+  lane report committed in its worktree with a STOPPED HERE section.
+- Root HEAD ca0e59d8 (integration 3 parts 1-3 done; identities a-g NOT run). Wave 1 merged. Unmerged lane heads:
+  R1 ec2dfd16 (pool 10 old branch), R45 638957ab (11), G fea9b6e9 (8), R6 52501f31 (7), H3 763b0759 (4),
+  H1 a30b6038 (3, design only), F3 79e5e006 (9), REPORT 01158204 (10).
+- Handoff: docs/plans/2026-09-30-platform-v8-handoff-1.md. Goal prompt: docs/plans/2026-09-30-platform-v8-next-goal-prompt.md.
+- Open rulings for the next PM (handoff section 5): spo-v3 S_prior (lane finding: 1.0 loses the stock-level bets on
+  synthetic data; 20 tracks at .96); ADV cap NAV at 4x; hold-band decide parity; F-1 reuse interface defect; H-1 blockers;
+  two FactoryOos pin test failures of unknown cause; C-1 context_sha256; plan-row static figures differ on 5 values;
+  marginal step lacks --role.
+- Trial accounting unchanged: TRAIN construction cells 37; no read on the 2020-2023 window; validation reads 2 (2023-2024,
+  before v8); 2025+ never read. Two hidden-data disclosures this sprint (manifest metadata only), recorded above.
