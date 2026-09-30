@@ -12,6 +12,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_runner.cpp
     src/strategy_ic_runner.cpp
     src/strategy_ic_composition.cpp
+    # platform v8 F-2: `atx-equity-strategy-ic marginal` (contract K6, marginal_ic.json)
+    src/strategy_marginal_ic.cpp
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
     src/strategy_nav_replay.cpp
