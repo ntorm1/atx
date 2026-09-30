@@ -1,0 +1,18 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-b0c",
+  "description": "Cell B0c (v8-prereg.md, W0-4; Ruling E-10): the v8 baseline whatever its sign. Parent = the winner of B0a / B0b (root sets parent to base-lo1.json or base-lo3.json once both are read; planned on base-lo1.json until then). Signals, fields, admission and weights are the winner's: a NAV-only change, so u, fit, card and w are the parent's outputs (resumed as done) and only nav runs anew. Changes: terminal (delisting) returns in the NAV replay's labels only (see requires: not expressible yet) and the warm start --warm-start-sessions 60 (lane D, D-0: decide from score_begin - 60, score from score_begin). Also --capacity-curve (report only: a second pass at NAV x .5..8 into <output>/capacity; the primary series and every scored file are unchanged) so that every R cell can report net Sharpe at 4x NAV against its parent (plan section 9; R-3 and R-5 acceptance); root drops it if it reads E-10 strictly. Paired reference: the parent's cell (derived). dsr_n = ledger N + 1 (40 after B0a, B0b).",
+  "parent": null,
+  "nominal_parent": "base-lo1.json",
+  "requires": [
+    "NAV label role (Ruling E-10): the delisting-returns role (runbook R15: the winner's role rebuilt with --delisting --delisting-returns, e.g. build-equity/train-2020-2023-lo1-dlret) may feed the NAV replay's labels only, but the NAV verb binds --combined, --fields and --role to one role manifest SHA-256 (strategy_target_replay.cpp admit_saved / load_prices; the fields manifest's role pin) and research_cycle passes one inputs.role to every phase. Needs a NAV option for a separate label role (C++) plus its pinned input and flag in this template; without it B0c would be the warm start alone."
+  ],
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+    },
+    "flags": {
+      "nav": {"--warm-start-sessions": "60", "--capacity-curve": true}
+    }
+  }
+}

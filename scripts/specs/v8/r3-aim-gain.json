@@ -1,0 +1,22 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r3-aim-gain",
+  "description": "Cell R-3 (plan section 9, N 43): persistence gain on the aim (S-2 option A): g_k = theta sum_j (1 - theta)^j rho_k(j) from rank autocorrelation only, theta .05, clipped to [.05, 1] as coded (fit_composition_weights.py ew-theme-aim-v1). The change as coded: fit --composition ew-theme-aim-v1; downstream outputs renamed (fit, card, w, nav, monitor); the u pass is the parent's. Acceptance: dSR > 0 AND mechanics AND net Sharpe at 2x NAV not lower (capacity curve, carried from B0c) AND turnover lower.",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "requires": [
+    "composition on top of the parent's: the registration applies the aim gains on top of the R-1 weights, but as coded ew-theme-aim-v1 scales the ew-theme-v1 weights (no composable std + aim rule; test_aim_gain_composes_with_theme_std is unwritten). Remove this entry when the parent's fit uses --composition ew-theme-v1 (R-1 rejected) or once a composable rule exists and its flag is set here."
+  ],
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8-r3-aim",
+      "card.output": "build-equity/mega-cards-v8-r3-aim",
+      "ic.w_output": "build-equity/mega-v8-r3w-train-aim",
+      "nav.output": "build-equity/mega-nav-v8-r3-aim-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "monitor.output": "build-equity/mega-monitor-v8-r3-aim"
+    },
+    "flags": {
+      "fit": {"--composition": "ew-theme-aim-v1"}
+    }
+  }
+}

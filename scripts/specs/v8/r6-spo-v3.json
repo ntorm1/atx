@@ -1,0 +1,20 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r6-spo-v3",
+  "description": "Cell R-6 (plan section 9, N 46; spo trial 3): target-tracking optimiser spo-v3 (S-8; lane R6, task-R-6-report.md): minimise (gamma/2)(w - w_aim)' Sigma (w - w_aim) + trade cost / H + borrow, w_aim = L x desired of the accepted rule, Sigma atx-risk-v1.1 on the 4-year role, gamma = S_prior / sigma_aim with S_prior = 20 (Ruling E-14, amended before any read), H = 20, gross bound 2 L slack. The change: nav --rule spo-v3 --spo-alpha implied-aim --risk-model <atx-risk-v1.1, 4-year role> --risk-model-sha256 <pin> --spo-books primary, and no --capacity-curve (spo refuses it). NAV-only: u, fit, card and w are the parent's. Before any return: identities (flag off; spo-v1 and spo-v2 digests) and v7_extras.json spo_v3.tripwire.status == clear. Acceptance: dSR > 0 AND mechanics AND cost per traded dollar not higher AND tripwire clear AND mean corr(traded book, aim) over scored decisions >= .9 (Ruling E-14).",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "requires": [
+    "spo-v3 NAV rule (R-6 part 2: --rule spo-v3 --spo-alpha implied-aim with S_prior 20 per Ruling E-14, strategy_spo_v3.cpp) is not implemented; only the engine solver (part 1) is. The rule is registered on aim-partial-v5's desired target: a parent carrying --hold-band or --adv-hold-q (R-4 or R-5 accepted) needs a ruling on how w_aim takes them before this cell runs."
+  ],
+  "change": {
+    "set": {
+      "nav.rule": "spo-v3",
+      "nav.output": "build-equity/mega-nav-v8-r6-spo-v3-L1.247"
+    },
+    "flags": {
+      "nav": {"--spo-alpha": "implied-aim", "--risk-model": null, "--risk-model-sha256": null, "--spo-books": "primary",
+              "--capacity-curve": false}
+    }
+  }
+}

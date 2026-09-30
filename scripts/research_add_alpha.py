@@ -75,7 +75,7 @@ def parent_outputs(spec: dict, root: Path) -> dict:
     """The parent cycle's resolved outputs (out_root placement, the complete IC attempts) and its S2 CSV name."""
     c = RC.Cycle(spec, RC.Resolver(root), verify=False)
     f = spec["fields"]
-    fd = f["output"] if f.get("manifest_sha256") else c.placed(f["output"])
+    fd = f["output"] if RC.as_built(f) else c.placed(f["output"])
     ic = spec["ic"]
     u_base, w_base = c.out(ic["u_output"]), c.out(ic["w_output"])
     nav = c.out(spec["nav"]["output"])

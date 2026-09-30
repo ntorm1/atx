@@ -1,0 +1,15 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r4-hold-band",
+  "description": "Cell R-4 (plan section 9, N 44): rank hysteresis hold-band-v1 (lane R45, task-R-4-report.md): a name's desired weight moves only when its centred rank of the blend leaves a band of half-width .10 around the rank at which its current aim was set; then the existing demean, gross 1, locate zeroing and neutralization (Rulings R4-a, R4-b). The only change: nav --hold-band .1 (aim-partial-v5 only). NAV-only: u, fit, card and w are the parent's. Identity cell first: the parent's NAV argv with --hold-band 0 (every file byte-identical). Acceptance: dSR > 0 AND mechanics AND turnover at least 15% lower.",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-r4-hb.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+    },
+    "flags": {
+      "nav": {"--hold-band": ".1"}
+    }
+  }
+}
