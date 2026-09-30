@@ -1966,3 +1966,109 @@ TEST(AdvHold, DeployPinAndDecisionRecord) {
   ASSERT_FALSE(malformed);
   EXPECT_NE(malformed.error().to_string().find("nav.adv_hold_q"), std::string::npos);
 }
+
+// adv-hold-v1 is a NAV replay option (it reads the execution ADV and the run's NAV): the target
+// replay refuses Q > 0 (its CLI has no such flag), and the target replay, the NAV replay, decide
+// and the nav CLI refuse a negative, NaN or infinite Q and Q > 0 under baseline-v1, before any
+// output. The same configurations at Q = 0 run (the controls), so each refusal is the cap's.
+TEST(AdvHold, RefusedOutsideTheNavPathAndWhenMalformed) {
+  const CapBench bench;
+  const auto in = bench.input();
+  const std::array<st::NavScenario, 1> one{v61_book(1e7).scenario};
+  const auto text = [](const auto& r) {
+    return r ? std::string("accepted") : r.error().to_string();
+  };
+  const std::string malformed = "adv_hold_q must be finite >= 0";
+  // The target replay: Q = 0 runs; Q > 0 under aim-partial-v5 is a NAV replay option.
+  auto v5 = v61_book(1e7).target;
+  EXPECT_EQ(text(st::replay_targets(in.target, v5)), "accepted");
+  v5.adv_hold_q = 0.1;
+  EXPECT_NE(text(st::replay_targets(in.target, v5)).find("is a NAV replay option"),
+            std::string::npos);
+  // baseline-v1: Q = 0 runs in both replays; Q > 0 is refused in both.
+  st::TargetReplayConfig baseline;
+  auto nav_baseline = v61_book(1e7);
+  nav_baseline.target.rule = st::TargetReplayRule::BaselineTargetV1;
+  nav_baseline.target.dust_multiple = 0;
+  nav_baseline.target.aim_leverage = 1;
+  nav_baseline.target.exit_rate = 1;
+  EXPECT_EQ(text(st::replay_targets(in.target, baseline)), "accepted");
+  EXPECT_EQ(text(st::replay_nav_scenarios(in, nav_baseline, one)), "accepted");
+  baseline.adv_hold_q = 0.1;
+  nav_baseline.target.adv_hold_q = 0.1;
+  EXPECT_NE(text(st::replay_targets(in.target, baseline)).find(malformed), std::string::npos);
+  EXPECT_NE(text(st::replay_nav_scenarios(in, nav_baseline, one)).find(malformed),
+            std::string::npos);
+  // A negative, NaN or infinite Q under aim-partial-v5: refused on every path.
+  const std::vector<f64> flat(bench.panel.n, 0.0);
+  for (const f64 q : {-0.1, missing, std::numeric_limits<f64>::infinity()}) {
+    auto target = v61_book(1e7).target;
+    target.adv_hold_q = q;
+    EXPECT_NE(text(st::replay_targets(in.target, target)).find(malformed), std::string::npos)
+        << q;
+    auto nav = v61_book(1e7);
+    nav.target.adv_hold_q = q;
+    EXPECT_NE(text(st::replay_nav_scenarios(in, nav, one)).find(malformed), std::string::npos)
+        << q;
+    EXPECT_NE(text(st::detail::nav_decide(in, nav, 40, flat, 1e7)).find(malformed),
+              std::string::npos) << q;
+  }
+  // The CLIs: the target replay does not know the flag (usage error); nav refuses a malformed
+  // Q (exit 1) before its output exists, and a value that is not a number is a usage error.
+  std::ostringstream out, err;
+  std::vector<std::string> targets{"targets", "--adv-hold-q", ".1"};
+  std::vector<char*> argv;
+  for (auto& arg : targets) argv.push_back(arg.data());
+  EXPECT_EQ(st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err), 2);
+  EXPECT_NE(err.str().find("unknown flag: --adv-hold-q"), std::string::npos) << err.str();
+  PinBench pins;
+  for (const char* q : {"-1", "nan", "inf"}) {
+    std::ostringstream nav_out, nav_err;
+    const auto dir = pins.dir.path / (std::string("bad") + q);
+    EXPECT_EQ(nav_cli(nav_args(pins.artifact, dir, {"--adv-hold-q", q}), nav_out, nav_err), 1)
+        << q;
+    EXPECT_NE(nav_err.str().find(malformed), std::string::npos) << q << ": " << nav_err.str();
+    EXPECT_FALSE(std::filesystem::exists(dir)) << q;
+  }
+  const auto word = pins.dir.path / "word";
+  EXPECT_EQ(nav_cli(nav_args(pins.artifact, word, {"--adv-hold-q", "x"}), out, err), 2);
+  EXPECT_FALSE(std::filesystem::exists(word));
+}
+
+// --capacity-curve with --adv-hold-q (ruling E-15): the v7 parser passes the flag through to both
+// passes, so the main pass and every capacity book record the cap (rule id, recipe adv_hold keys
+// with the E-15 sentence, summary construction.adv_hold), and the x1 capacity book is still the
+// main pass's S2 book bit for bit (both passes cap at the run's initial NAV).
+TEST(AdvHold, CapacityCurveCarriesTheCapInBothPasses) {
+  PinBench bench;
+  const auto root = bench.dir.path / "curve";
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, root, {"--adv-hold-q", ".1", "--capacity-curve"}),
+                    out, err), 0) << err.str();
+  const std::array<std::filesystem::path, 2> passes{root, root / "capacity"};
+  for (const auto& dir : passes) {
+    const auto recipe = read_json(dir / "recipe.json");
+    EXPECT_EQ(recipe.at("adv_hold_q"), 0.1) << dir;
+    EXPECT_NE(recipe.at("rule").get<std::string>().find("+adv-hold-0.1"), std::string::npos)
+        << dir;
+    EXPECT_NE(recipe.at("adv_hold_rule").get<std::string>().find("every capacity book"),
+              std::string::npos) << dir;
+    const auto summary = read_json(dir / "summary.json");
+    ASSERT_FALSE(summary.at("scenarios").empty()) << dir;
+    for (const auto& s : summary.at("scenarios")) {
+      const auto& cap = s.at("construction").at("adv_hold");
+      EXPECT_EQ(cap.at("q"), 0.1) << dir;
+      EXPECT_GT(cap.at("decisions").get<usize>(), 0U) << dir;
+    }
+  }
+  EXPECT_EQ(read_json(root / "capacity" / "summary.json").at("scenarios").size(),
+            st::cost_v2::capacity_multiples.size());
+  const auto extras = read_json(root / "v7_extras.json");
+  EXPECT_EQ(extras.at("capacity").size(), st::cost_v2::capacity_multiples.size());
+  EXPECT_EQ(extras.at("capacity_x1_equals_primary_bit_for_bit"), true);
+  EXPECT_TRUE(std::filesystem::exists(root / "capacity_curve.csv"));
+  std::ostringstream help, quiet;
+  ASSERT_EQ(nav_cli({"nav", "--help"}, help, quiet), 0);
+  EXPECT_NE(help.str().find("the cap uses the run's initial NAV for every book, each "
+                            "--capacity-curve book included"), std::string::npos);
+}

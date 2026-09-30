@@ -831,7 +831,10 @@ constexpr const char* adv_hold_rule_declaration =
     "multiple alike); each clipped name is set to its cap and the clipped mass is added to the "
     "same side's unclipped names pro rata to their weight, one pass (side gross preserved; "
     "unplaced when no unclipped name is left on the side); names the pass lifts above their cap "
-    "stay and are reported as the residual breach (summary construction.adv_hold)";
+    "stay and are reported as the residual breach (summary construction.adv_hold). Ruling "
+    "E-15: the cap uses the run's initial NAV for every capacity book, so the capacity book at "
+    "multiple m holds up to m x adv_hold_q of ADV (the initial-NAV rule stressed at NAV x m, "
+    "not a cap set per multiple)";
 // The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
 // default text byte for byte) or, below 1, a pointer to exit_rate_rule.
 const char* nonmember_exit(const TargetReplayConfig& c) {
