@@ -1,7 +1,7 @@
 # Task REPORT report: v8 report lane (pool-10, branch feat/platform-v8-report-20260929)
 
-Status: DONE_WITH_CONCERNS -- tasks 1-4 done. Synthetic data only: the renderer never ran on `build-equity` data and
-no file dated 2024-01-01 or later was opened.
+Status: DONE_WITH_CONCERNS -- tasks 1-4 and the PM follow-up (book sections, header, `final` check) done. Synthetic
+data only: the renderer never ran on `build-equity` data and no file dated 2024-01-01 or later was opened.
 
 | task | commit |
 |---|---|
@@ -10,6 +10,7 @@ no file dated 2024-01-01 or later was opened.
 | 2 v8 report components and pitch blocks | 7fa1c730 |
 | 3 v8 pitch config, scorecard v8 template | d0348c27 |
 | 4 render tests on synthetic JSON | 93fb94c2 |
+| follow-up: legacy book sections, header span and final cell, ladder `final` / verdict refusals | bf3de0dc |
 
 ## Task 1: ruling E-11 in code, memmap gap closed (commit 09d14980)
 
@@ -129,14 +130,83 @@ did about each contradiction).
 - the v7 pitch config is untouched (LF digest `73f80583...` at 39926caa) and has no v8 block.
 tiny_world was not used: it builds inputs only, and yields no NAV or nav_summ output without the built executables.
 
+## PM follow-up: book sections, header, `final` check (commit bf3de0dc)
+
+### 1. Legacy book sections (`v8_book`)
+- `v8.py`: layout entry `{"type": "v8_book", "block": NAME, ...}` runs one of the v7 pitch's book-level blocks
+  (`BOOK_BLOCKS`: `fig_equity`, `t_drawdowns`, `fig_returns`, `fig_rolling`, `t_retstats`, `t_stress`, `t_cost_model`,
+  `t_financing`, `costdec`, `t_attrib`, `fig_cost_drag`, `fig_turnover`, `capacity_curve`, `fig_exposure`, `fig_fills`,
+  `fig_corr` signal / ic / theme, `t_theme_corr`) on the top-level `final` cell. The v7 blocks name no path when an
+  input is absent, so `book_inputs(ctx, spec)` derives every file the block reads from the config as the block does, and
+  `input_status` checks each first: Registry read (E-4 / E-11 path seal, SHA-256 into the manifest; a directory is only
+  seal-checked and stat-ed), then a content seal (a CSV `session_ns` or a JSON `session_ns` / `calendar_year_returns`
+  year at or after the seal). The first failing file is named in the block's unavailable block
+  (`fig_equity: not available (<path>: missing)`), others counted; a config error names `config`. Otherwise the v7 block
+  runs unchanged (an exception renders report._na_block).
+- `docs/plans/mega-alpha-v8-pitch.config.json`: a trailing section 5 "The final book (V8-F)" (h3 groups: equity curve and
+  returns; costs, turnover and capacity; exposures and execution; signal correlation) before the appendix (now 6); the
+  v8 sections 0-4 are unchanged and keep one owning block per input. New top-level keys (all placeholders for the V8-F
+  cell): `final` `v8-r7`, `cells` (V8-F = `build-equity/mega-nav-v8-r7`, B0c = `build-equity/mega-nav-v8-b0c`),
+  `groups`, the five v7 scenarios, `writeoff_kind`, `equity` (5 scenarios + B0c), `rolling` (63, V8-F and B0c),
+  `turnover`, `analysis`, `alphas`, `capacity_curve`. `inputs.nav_summ_json` is left unset, so the v8 summ keeps one
+  owner.
+- One shared file: `build-equity/mega-weights-v8-r7-ew/admission.json` is `v8.member_horizon.admission` and
+  `alphas.roles[lo1].admission`; missing, it marks `v8_member_horizon` plus the four correlation blocks.
+
+### 2. Header
+No code change: with top-level `final` / `cells` / the primary scenario set, report._header shows
+"TRAIN 2020-2023 (research-window-v2): <first> to <last> (<n> return sessions)" from the final cell's S2 daily CSV and
+"Final cell: V8-F (R-7 library v8.1): v8-r7". v7 bytes unchanged (golden digest and differential tests green; v7 config
+digest pinned). The ladder block runs the content seal on that daily CSV first (`guard_final_daily`): a sealed file is
+dropped and the header shows n/a.
+
+### 3. `final` check
+`ladder_checks(ctx, rows)`; `blk_ladder` renders each as `v8_ladder: refused (<key>: <reason>)` above the table, in the
+unavailable markup (the CLI counts it):
+- `v8.final` is not the last cell whose verdict kind is `accepted` (explicit `verdict_kind` or the badge rules), or no
+  cell is accepted;
+- a cell whose paired JSON was read but whose verdict is missing or pending ("pending run");
+- a top-level `final` that is not among the cells, or whose dir is not v8.final's dir.
+As committed (every verdict "pending run") the config renders 9 refusals (8 paired cells + `v8.final`): root records the
+verdicts, then "unavailable blocks 0" applies to the full config.
+
+### Tests
+- `test_mega_report_v8.py` (38): + `ladder_checks` final / rejected / explicit kind, pending and missing verdict with and
+  without the paired JSON, top-level final mismatch and unknown, refusal above the table.
+- `test_mega_report_v8_render.py` (58): `book_world` writes V8-F's summary, recipe, daily and events CSVs of the five
+  scenarios over TRAIN weekdays (dates from research_window), B0c's S2 daily CSV, the capacity-stress dir, library /
+  recipe / admission / weights, role manifest + member.u8, a v2 signal cache with summary entries, train_daily_ic.csv
+  and the fields manifest. Full config (verdicts filled): 0 unavailable, every book figure / table id present, every
+  book input `read`; each of the 28 book inputs missing (parametrized): exactly its reader blocks, each naming it; a
+  content-sealed S2 daily CSV: its 12 readers refused and the header span n/a; a sealed book path refused by name;
+  config errors visible; header span and final cell; committed config -> 9 ladder refusals; top-level final mismatch.
+
+### New placeholders and the artifact root must produce (paths relative to `C:/atx-wt/pool-2`)
+
+| config key (book blocks reading it) | path | artifact root produces |
+|---|---|---|
+| `final`, `cells[0]` (all book blocks, page header) | `build-equity/mega-nav-v8-r7` | the V8-F NAV cell dir (`mega_nav` on V8-F, the five scenarios): `summary.json` (scenarios with `calendar_year_returns`, `financing`, `costs`, `daily_csv_sha256`; `role_sha256`, `source_bindings`, `locate_in_aim`), `recipe.json`, `daily_<sid>.csv` and `events_<sid>.csv` for the 5 scenario ids. Rename `final`/`cells[0]` if V8-F is not R-7 (the ladder refuses a mismatch) |
+| `cells[1]` (`fig_equity`, `fig_rolling`, `t_retstats`, `fig_turnover`) | `build-equity/mega-nav-v8-b0c/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv` | the B0c cell's S2 daily CSV (same dir as the v8 ladder's B0c) |
+| `capacity_curve` (`capacity_curve`) | `build-equity/mega-nav-v8-r7-stress/{v7_extras.json, summary.json, daily_<S2, S2-KO, S2-FIM ids>.csv}` | the capacity pass of V8-F (as v7's `v7-71-nav-stress`: `atx.nav-v7-extras/v1` extras with `capacity[]`, and the KO / FIM cost-law books) |
+| `analysis.u_pass` (`fig_corr` ic, `t_theme_corr`; summary also signal / theme) | `build-equity/mega-v8-r7-train-u/{train_daily_ic.csv, summary.json}` | the TRAIN IC run of the V8-F library on role lo1 (v2 runner: summary.json with `roles[].candidate_cache.entries`) |
+| `analysis.role` (signal / theme, `t_theme_corr`) | `build-equity/train-2020-2023-lo1/{manifest.json, member.u8}` | exists per the W0-2 runbook (the role V8-F ran on) |
+| `analysis.candidate_cache` (signal / theme, `t_theme_corr`) | `build-equity/mega-candidate-cache-v8-lo1/` | the `--candidate-cache` DIR of that IC run |
+| `analysis.fields_manifest` (signal / theme, `t_theme_corr`) | `build-equity/train-2020-2023-lo1-fields-v9/manifest.json` | exists per W0-2; point it at the later fields build if the V8-F IC run pinned one |
+| `analysis.compare_cell` = `v8-b0c` (`t_retstats`) | (B0c S2 daily CSV above) | - |
+| `alphas.library` / `alphas.recipe` (all correlation blocks) | `atx-impl/strategies/fund_industry_ic_v81.json`, `...v81.recipe.v2.json` | the library v8.1 file and its recipe as R-7 committed them (rename to the real file names) |
+| `alphas.roles[lo1].admission` (correlation blocks; also `v8.member_horizon.admission`) | `build-equity/mega-weights-v8-r7-ew/admission.json` | already in the v8 table above |
+| `alphas.roles[lo1].weights` (correlation blocks) | `build-equity/mega-weights-v8-r7-ew/composition_weights.json` | written by the same `fit_composition_weights.py` run |
+
+Plus the recorded `verdict` of every v8 cell (see 3).
+
 ## How root verifies
 
 ```bash
 PY="C:/Program Files/Python312/python.exe"
 "$PY" -m pytest -q -p no:cacheprovider atx-impl/tools/test_mega_report_v8.py atx-impl/tools/test_mega_report_v8_render.py \
   atx-impl/tools/test_mega_report_seal.py atx-impl/tools/test_mega_report_sig_corr.py \
-  atx-impl/tools/test_mega_report_pitch3.py atx-impl/tools/test_alpha_report_card.py      # 123 passed here
-"$PY" -m pytest -q -p no:cacheprovider atx-impl/tools                                        # 344 passed, 2 skipped here
+  atx-impl/tools/test_mega_report_pitch3.py atx-impl/tools/test_alpha_report_card.py      # 163 passed here
+"$PY" -m pytest -q -p no:cacheprovider atx-impl/tools                                        # 384 passed, 2 skipped here
 ```
 
 Render commands (root, in `C:/atx-wt/pool-2` after merging this branch; both configs name root `C:/atx-wt/pool-2`):
@@ -152,13 +222,10 @@ Render commands (root, in `C:/atx-wt/pool-2` after merging this branch; both con
 ```
 
 ## Deviations
-- The v8 pitch is v8-focused (the eight v8 sections, prose, callouts, appendix), not a copy of the whole v7 layout. The
-  legacy blocks (equity curve, costs, alpha library, DSL, attribution) need the final cell's daily CSVs, library and
-  u pass; one missing file takes out many blocks at once (against "each missing input -> exactly one unavailable
-  block") and they cannot be rendered synthetically without a full world. The PM can append v7 sections (layout entries
-  plus their config keys, with `cells` / `final` set) after the cells run.
-- Without `cells` / `final` the page header shows the window label with "n/a" for the session span and the final cell
-  (report.py left untouched to keep v7 identical).
+- (Superseded by the follow-up) Tasks 2-4 left the legacy book blocks out; they are now a trailing `v8_book` section in
+  which one missing file marks every book block that reads it (by design; the v8 sections keep one block per input).
+  Not carried over from v7: alpha library / DSL / admission tables, IC panels, ladder waterfall, scatter, KPI, gates,
+  report cards, risk bias, monitoring, ops loop (not asked; they need v7-specific keys).
 - Per-cell paired tests use `nav_summ --bundle PARENT CELL` (one-sided p, cell names checked), not `--reference`
   (two-sided p only, one run per parent).
 - Lane G's module was read with `git show feat/platform-v8-g-20260929:atx-impl/tools/book_diagnostics.py` (pool-8 now
@@ -176,6 +243,11 @@ None. `pitch.py` and `v8.py` are this lane's mega_report module; `nav_summ.py`, 
 - The v7 golden digest is a tripwire on pitch3's synthetic world and the shared components: a deliberate change there
   needs the constant re-recorded after the diff is checked.
 - The default parent chain and `final` = R-7 assume every R cell is accepted; a wrong parent is caught (the bundle's base
-  name must equal the parent's dir), a wrong `final` is not.
+  name must equal the parent's dir) and so, since the follow-up, is a `v8.final` / top-level `final` that is not the
+  last accepted cell.
+- `book_inputs` mirrors each v7 block's reads; a later change to what a v7 block reads must be mirrored there (a file
+  the list misses still renders, through the Registry's path seal, but without the pre-check's path naming).
+- The content seal of book inputs parses every CSV's `session_ns` column once more before the block does (negligible at
+  ~1,000 rows).
 - The gate's DSR item reads `deflated_ledger.dsr`: the summ command needs `--dsr-ledger`, else the item is n/a and the
   gate undetermined.
