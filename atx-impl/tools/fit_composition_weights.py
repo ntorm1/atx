@@ -166,6 +166,7 @@ import code_fingerprint  # noqa: E402
 import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
 import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
+import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pure functions in this directory)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -191,6 +192,8 @@ V6_FAST_FACTOR = 1.0 / 3.0  # a fast member's within-theme weight multiplier
 V6_REDISTRIBUTION = "within-theme-v1"
 PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
 COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
+PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_RULE_ID,),  # v8 R-1 registration
+                                    COMPOSITIONS + (composition_rules.STD_RULE_ID,))
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -2030,6 +2033,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                            "dropped themes", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                            seconds=round(time.perf_counter() - started, 2))
             return EXIT_NO_WEIGHTS, summary
+    elif args.composition == composition_rules.STD_RULE_ID:  # v8 R-1: the rule lives in composition_rules.py
+        std = composition_rules.ew_theme_std([ids[k] for k in active], [themes[k] for k in active],
+                                             [tiers[k] for k in active], error=FitError)
+        weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
     else:
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
         composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
@@ -2096,6 +2103,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             "themes": {row["id"]: row["theme_v6"] for row in weight_rows if row["weight"] > 0}}
         document["provenance"]["v6"] = v6_provenance(v6_detail, theme_table, admission_sha, args, inputs,
                                                      priors["recipe_sha256"])
+    if args.composition == composition_rules.STD_RULE_ID:  # schema v2, theme_standardise block, provenance.std
+        composition_rules.attach_std(document, std)
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
     publish_directory(out, files)

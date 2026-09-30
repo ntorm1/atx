@@ -3,7 +3,9 @@
 Everything is read through ``Registry`` so every input file is hashed and listed in the report header, a missing
 file is recorded (and rendered n/a by the caller) instead of raising, and a path that names hidden data is refused
 before it is opened (``path_is_sealed``: validation / holdout / VAL, or a date-shaped path part in the first sealed year
-of the research window or later; hash-named parts are ignored; the path is taken relative to the registry root).
+of the research window or later; hash-named parts are ignored; the path is taken relative to the registry root;
+tracked documents under ``DOCUMENT_ROOTS`` are exempt from the year rule only, ruling E-11). A file the report maps
+instead of reading (a memmapped cache payload) passes the same check through ``Registry.sealed`` first.
 Derived statistics mirror ``atx-impl/tools/nav_summ.py`` (return rows = return_observation
 == 1 and not the first CSV row; Sharpe = mean / sd(ddof 1) x sqrt(sessions per year); tau_t over executed sessions
 with positive pre-trade gross, deployment session excluded; Memmel (2003) SE; Lo (2002) single-cell DSR null).
@@ -30,16 +32,28 @@ _HEX = re.compile(r'^(?:fp_|ic1_)?[0-9a-f]{16,64}$')
 _NAMED = re.compile(r'(validation|holdout|(?<![A-Za-z])VAL(?![A-Za-z]))')
 _YEAR = re.compile(r'(?<!\d)(20\d\d)')
 FIRST_SEALED_YEAR = _window.FIRST_SEALED_YEAR
+# Ruling E-11 (platform v8): tracked documents (sprint ledgers, plans, scorecards) carry run dates in their paths and
+# are quoted by the report; they are exempt from the year rule by root class. The named pattern still applies to them.
+DOCUMENT_ROOTS = ('.superpowers/sdd/', 'docs/plans/')
 DAILY_COLS = ('session_ns', 'return_observation', 'executed', 'net_return', 'gross_return', 'pretrade_gross_dollars',
               'traded_dollars', 'one_way_turnover_gmv', 'gross_leverage', 'net_leverage', 'posttrade_nav')
 EULER_GAMMA = 0.5772156649015329
 
 
 # ----------------------------------------------------------------------------------------------- registry
+def is_document_path(rel_path: str) -> bool:
+    """True for a path under a tracked-document root (``DOCUMENT_ROOTS``, relative to the report root, no ``..``)."""
+    p = rel_path.replace('\\', '/')
+    return p.startswith(DOCUMENT_ROOTS) and '..' not in p.split('/')
+
+
 def path_is_sealed(rel_path: str, first_sealed_year: int = FIRST_SEALED_YEAR) -> bool:
-    """True when a path names hidden data. Hash-named parts are ignored; date-shaped parts are not."""
+    """True when a path names hidden data. Hash-named parts are ignored; date-shaped parts are not, except in a
+    tracked document (ruling E-11: exempt from the year rule by root class, never from the named pattern)."""
     if _NAMED.search(rel_path):
         return True
+    if is_document_path(rel_path):
+        return False
     for part in re.split(r'[\\/._-]', rel_path):
         if not part or _HEX.match(part):
             continue
@@ -64,11 +78,19 @@ class Registry:
         except ValueError:
             return Path(p).as_posix()
 
-    def read_bytes(self, rel) -> bytes | None:
-        p = self.path(rel)
-        key = self.rel(p)  # relative to the research output root: a run-date-stamped root never enters the check
+    def sealed(self, rel) -> bool:
+        """Seal check of ``rel`` (relative to the root) without opening it; a refusal is recorded in the manifest.
+        Every read goes through it, and so must any file the caller maps or stats instead of reading."""
+        key = self.rel(self.path(rel))  # relative to the research output root: a run-date-stamped root never enters
         if path_is_sealed(key):
             self.files[key] = {'status': 'refused (sealed)'}
+            return True
+        return False
+
+    def read_bytes(self, rel) -> bytes | None:
+        p = self.path(rel)
+        key = self.rel(p)
+        if self.sealed(p):
             return None
         if key in self.files and 'data' in self.files[key]:
             return self.files[key]['data']

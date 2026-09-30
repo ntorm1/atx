@@ -188,8 +188,10 @@ struct Artifact {
   st::NavFieldsPin fields;
 };
 // The combined blend, the price role (with volume) and the role fields
-// (atx.research-role-fields/v1 with code_sha256), every provenance pin `pin`.
-Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const Fields& f) {
+// (atx.research-role-fields/v1 with code_sha256), every provenance pin `pin`. score_begin
+// (default 0) is the role's and the blend's (a warm start needs pre-score history).
+Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const Fields& f,
+                        usize score_begin = 0) {
   std::vector<u8> finite(p.signal.size()); u64 finite_count = 0, members = 0;
   for (usize k = 0; k < finite.size(); ++k) {
     finite[k] = static_cast<u8>(std::isfinite(p.signal[k]));
@@ -217,13 +219,13 @@ Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const 
       {"volume_basis", "raw-share-volume"},
       {"clock_recipe", "modeled-session+22h-mark+23h-decision-v1"},
       {"common_stock_verified", false}, {"historical_vintage_verified", false},
-      {"dates", p.d}, {"instruments", p.n}, {"score_begin", 0}, {"score_end", p.d},
+      {"dates", p.d}, {"instruments", p.n}, {"score_begin", score_begin}, {"score_end", p.d},
       {"files", role_files}};
   a.cfg.role_path = (dir / "role.json").string();
   a.cfg.role_sha256 = write_json(a.cfg.role_path, a.role);
   const Json manifest{{"schema", "atx.dsl-combined-signal/v1"}, {"status", "complete"},
       {"role", "train"}, {"layout", "date-major-little-endian"}, {"dates", p.d},
-      {"instruments", p.n}, {"score_begin", 0}, {"score_end", p.d},
+      {"instruments", p.n}, {"score_begin", score_begin}, {"score_end", p.d},
       {"role_manifest_sha256", a.cfg.role_sha256}, {"source_sha256", pin},
       {"library_sha256", pin}, {"train_manifest_sha256", pin}, {"run_recipe_sha256", pin},
       {"orientation_candidates_sha256", pin}, {"orientations_artifact_sha256", nullptr},
@@ -327,15 +329,17 @@ struct Fixture {
   std::filesystem::path nav_dir, holdings_dir, deploy_path;
   Json deploy;
 };
-Fixture make_fixture(const std::filesystem::path& dir) {
+// `extra`: further nav flags (the deploy manifest's nav block then needs the matching keys).
+Fixture make_fixture(const std::filesystem::path& dir, std::vector<std::string> extra = {}) {
   auto panel = market_panel(200, 60, 17, 3e7);
   Fields fields(panel, 23);
   auto artifact = write_artifact(dir, panel, fields);
   Fixture fx{std::move(panel), std::move(fields), std::move(artifact), dir / "nav",
              dir / "holdings", dir / "deploy.json", Json{}};
   std::ostringstream out, err;
-  if (nav_cli(nav_args(fx.artifact, fx.nav_dir, {"--emit-holdings", fx.holdings_dir.string()}),
-              out, err) != 0)
+  extra.emplace_back("--emit-holdings");
+  extra.push_back(fx.holdings_dir.string());
+  if (nav_cli(nav_args(fx.artifact, fx.nav_dir, std::move(extra)), out, err) != 0)
     throw std::runtime_error("fixture nav run: " + err.str());
   const auto recipe = read_json(fx.nav_dir / "summary.json").at("recipe_sha256");
   fx.deploy = deploy_manifest(fx.artifact, recipe.get<std::string>());
@@ -1504,4 +1508,703 @@ TEST(StrategyLive, CadenceAnchorPinIsChecked) {
   std::ostringstream progress;
   const auto outcome = st::run_decide(cfg, progress);
   EXPECT_TRUE(outcome) << (outcome ? "" : outcome.error().to_string());
+}
+
+namespace {
+// A 160 x 60 book with 20 sessions of pre-score history (a warm start needs them) and a flat
+// positions file: every decide below is one verified_load (all pins and the recomputed NAV
+// recipe) plus one decision at row 150 of a manifest pinned to one of its NAV runs.
+struct PinBench {
+  Directory dir;
+  Panel panel = market_panel(160, 60, 17, 3e7);
+  Fields fields{panel, 23};
+  Artifact artifact = write_artifact(dir.path, panel, fields, 20);
+  usize runs = 0;
+  PinBench() {
+    std::ofstream positions(dir.path / "flat.csv", std::ios::binary);
+    positions << "instrument_id,held_dollars\n";
+  }
+  // The recipe_sha256 of a NAV run with the book flags plus `extra`.
+  std::string nav_recipe(const std::string& name, std::vector<std::string> extra) {
+    std::ostringstream out, err;
+    const auto status = nav_cli(nav_args(artifact, dir.path / name, std::move(extra)), out, err);
+    EXPECT_EQ(status, 0) << name << ": " << err.str();
+    return read_json(dir.path / name / "summary.json").at("recipe_sha256").get<std::string>();
+  }
+  // run_decide on the deploy manifest pinned to `recipe`, its nav block edited by `edit`.
+  template<class Edit> co::Result<st::DecideOutcome> decide(const std::string& recipe, Edit edit) {
+    auto m = deploy_manifest(artifact, recipe);
+    edit(m.at("nav"));
+    const auto tag = std::to_string(runs++);
+    const auto path = dir.path / ("deploy-" + tag + ".json");
+    write_json(path, m);
+    st::DecideConfig cfg;
+    cfg.deploy_path = path.string();
+    cfg.asof = date_of(panel.sessions[150]);
+    cfg.positions_path = (dir.path / "flat.csv").string();
+    cfg.output_directory = (dir.path / ("decide-" + tag)).string();
+    cfg.flat_book = true; cfg.nav = 1e9;
+    cfg.executable_sha256 = exe_pin; cfg.build_source_sha = std::string(40, 'b');
+    cfg.allow_stale = true;
+    std::ostringstream progress;
+    return st::run_decide(cfg, progress);
+  }
+};
+std::string outcome_text(const co::Result<st::DecideOutcome>& r) {
+  return r ? std::string("verified") : r.error().to_string();
+}
+bool recipe_mismatch(const co::Result<st::DecideOutcome>& r) {
+  return !r && r.error().to_string().find("pin mismatch nav.recipe_sha256") != std::string::npos;
+}
+} // namespace
+
+// PM (v8): the deploy manifest's optional nav keys (warm_start_sessions, D-0; hold_band, R-4).
+// Absent, or at the off value, the recomputed NAV recipe hashes exactly as before, so a
+// manifest pinned to a NAV run without the flag still verifies; on, the key is part of the pin
+// both ways (a run with the flag needs the key, a run without it refuses the key); a malformed
+// key is refused by name.
+TEST(StrategyLive, RecipePinBackwardCompatibleWithNewConstructionFields) {
+  PinBench bench;
+  const auto plain = bench.nav_recipe("nav-plain", {});
+  const auto warm = bench.nav_recipe("nav-warm", {"--warm-start-sessions", "5"});
+  EXPECT_NE(plain, warm);
+  const auto none = [](Json&) {};
+  EXPECT_EQ(outcome_text(bench.decide(plain, none)), "verified");
+  EXPECT_EQ(outcome_text(bench.decide(plain, [](Json& nav) { nav["warm_start_sessions"] = 0; })),
+            "verified");
+  EXPECT_EQ(outcome_text(bench.decide(warm, [](Json& nav) { nav["warm_start_sessions"] = 5; })),
+            "verified");
+  EXPECT_TRUE(recipe_mismatch(bench.decide(warm, none)));
+  EXPECT_TRUE(recipe_mismatch(bench.decide(plain, [](Json& nav) {
+    nav["warm_start_sessions"] = 5;
+  })));
+  const auto expect_malformed = [&bench](const std::string& recipe, const char* key,
+                                         const Json& bad) {
+    const auto refused = bench.decide(recipe, [&](Json& nav) { nav[key] = bad; });
+    ASSERT_FALSE(refused) << key << ' ' << bad.dump();
+    EXPECT_NE(refused.error().to_string().find(std::string("nav.") + key), std::string::npos)
+        << refused.error().to_string();
+  };
+  for (const Json& bad : {Json("5"), Json(-1), Json(5000), Json(2.5)})
+    expect_malformed(warm, "warm_start_sessions", bad);
+  // v8 R-4 hold_band: B = 0 is the identity and hashes as absent.
+  const auto hold = bench.nav_recipe("nav-hold", {"--hold-band", ".1"});
+  EXPECT_NE(hold, plain);
+  EXPECT_EQ(bench.nav_recipe("nav-hold0", {"--hold-band", "0"}), plain);
+  EXPECT_EQ(outcome_text(bench.decide(hold, [](Json& nav) { nav["hold_band"] = 0.1; })),
+            "verified");
+  EXPECT_EQ(outcome_text(bench.decide(plain, [](Json& nav) { nav["hold_band"] = 0.0; })),
+            "verified");
+  EXPECT_TRUE(recipe_mismatch(bench.decide(hold, none)));
+  EXPECT_TRUE(recipe_mismatch(bench.decide(plain, [](Json& nav) { nav["hold_band"] = 0.1; })));
+  expect_malformed(hold, "hold_band", Json("0.1"));
+}
+
+// v8 R-4, the identity cell's shape (the accepted construction's flags with the borrow fields):
+// --hold-band 0 runs the kernel at every decision, yet every NAV output file is byte-identical
+// to the run without the flag.
+TEST(HoldBand, ZeroBandNavRunIsByteIdentical) {
+  PinBench bench;
+  EXPECT_EQ(bench.nav_recipe("plain", {}), bench.nav_recipe("zero", {"--hold-band", "0"}));
+  const auto root = bench.dir.path;
+  std::vector<std::string> names;
+  for (const auto& e : std::filesystem::directory_iterator(root / "plain"))
+    names.push_back(e.path().filename().string());
+  ASSERT_GE(names.size(), 5U);
+  for (const auto& name : names)
+    EXPECT_TRUE(file_bytes(root / "plain" / name) == file_bytes(root / "zero" / name)) << name;
+  EXPECT_EQ(names.size(), static_cast<usize>(std::distance(
+                              std::filesystem::directory_iterator(root / "zero"),
+                              std::filesystem::directory_iterator{})));
+}
+
+// v8 R-4 at the library level: nav_decide chained over every decision row from the first,
+// each fed the replay's holdings and the previous decision's hold state, is the replay's
+// decision bit for bit (target and rule weights, desired, the band's counts); the same row
+// decided without the carried state re-sets every member instead.
+TEST(HoldBand, NavDecideChainReproducesReplay) {
+  const auto p = market_panel(70, 12, 5, 2e5);
+  const Fields f(p, 9);
+  const st::NavReplayInput in{p.target(), p.volume, f.view()};
+  auto cfg = v61_book(1e7);
+  cfg.target.hold_band = 0.1;
+  const std::array<st::NavScenario, 1> one{cfg.scenario};
+  Recorder recorder;
+  ASSERT_TRUE(st::replay_nav_scenarios(in, cfg, one, recorder, 0));
+  atx::engine::book::HoldBandState state; // every name unset before the first decision
+  usize kept = 0, compared = 0;
+  for (usize d = 0; d <= 60; ++d) {
+    const auto& [day, rows] = recorder.sessions.at(d);
+    const auto dec = st::detail::nav_decide(in, cfg, d, held_at(recorder, d, p.n),
+                                            day.posttrade_nav, {}, &state);
+    ASSERT_TRUE(dec) << d << ": " << dec.error().to_string();
+    EXPECT_EQ(dec->construction.hold_moved, day.construction.hold_moved) << d;
+    EXPECT_EQ(dec->construction.hold_kept, day.construction.hold_kept) << d;
+    EXPECT_EQ(dec->construction.hold_first_set, day.construction.hold_first_set) << d;
+    kept += dec->construction.hold_kept;
+    if (d == 30 || d == 45 || d == 60) {
+      ASSERT_TRUE(day.rebalance) << d;
+      std::vector<f64> target(p.n, 0.0), rule(p.n, 0.0);
+      for (const auto& h : rows) {
+        target[h.index] = h.target_weight; rule[h.index] = h.rule_weight;
+        EXPECT_EQ(bits(dec->desired[h.index]), bits(h.desired)) << d << " name " << h.index;
+      }
+      for (usize i = 0; i < p.n; ++i) {
+        EXPECT_EQ(bits(dec->target[i]), bits(target[i])) << d << " name " << i;
+        EXPECT_EQ(bits(dec->rule[i]), bits(rule[i])) << d << " name " << i;
+      }
+      ++compared;
+    }
+    state = dec->hold;
+  }
+  EXPECT_EQ(compared, 3U);
+  EXPECT_GT(kept, 0U);
+  const auto& day45 = recorder.sessions.at(45).first;
+  const auto fresh = st::detail::nav_decide(in, cfg, 45, held_at(recorder, 45, p.n),
+                                            day45.posttrade_nav);
+  ASSERT_TRUE(fresh) << fresh.error().to_string();
+  EXPECT_EQ(fresh->construction.hold_kept, 0U);
+  EXPECT_EQ(fresh->construction.hold_first_set, fresh->members);
+}
+
+// v8 R-4 at the CLI: the decide verb reads the hold-band state from the positions file's
+// rank_set/desired_prev columns and writes the state after the decision into targets.csv.
+// A positions file without the columns (a broker file: the replay's holdings of 150 as
+// instrument_id,held_dollars) loads every name unset, so the first decision sets every member;
+// fed back as the next session's positions columns the state carries: nothing is re-set, and
+// every member either kept its state or moved its rank by more than the band. (Since E-16 the
+// hold-band run's own export carries the state: HoldBand.CheckReplayMatchesEmittedHoldings.)
+TEST(HoldBand, DecideVerbCarriesState) {
+  Directory dir;
+  auto fx = make_fixture(dir.path, {"--hold-band", ".1"});
+  fx.deploy["nav"]["hold_band"] = 0.1;
+  write_json(fx.deploy_path, fx.deploy);
+  std::ostringstream progress;
+  const auto held150 = st::holdings::read_session(fx.holdings_dir.string(),
+                                                  fx.panel.sessions[150]);
+  ASSERT_TRUE(held150) << held150.error().to_string();
+  {
+    std::ofstream positions(dir.path / "positions-150.csv", std::ios::binary);
+    positions.imbue(std::locale::classic()); positions << std::setprecision(17);
+    positions << "instrument_id,held_dollars\n";
+    for (const auto& h : held150->names)
+      positions << h.instrument_id << ',' << h.held_dollars << '\n';
+  }
+  auto first = decide_config(fx, 150, dir.path / "decide-150");
+  first.positions_path = (dir.path / "positions-150.csv").string();
+  first.nav = held150->session.nav_post;
+  ASSERT_TRUE(st::run_decide(first, progress));
+  const auto s150 = read_json(dir.path / "decide-150" / "decision.json");
+  const usize members = s150.at("decision").at("members").get<usize>();
+  EXPECT_EQ(s150.at("rule"), "aim-partial-v5+neutral-price-risk-v1+hold-band-0.1");
+  EXPECT_EQ(s150.at("hold_band").at("state_in"), "none (no state columns): every name unset");
+  EXPECT_EQ(s150.at("hold_band").at("first_set"), members);
+  EXPECT_EQ(s150.at("hold_band").at("names_set_out"), members);
+  const auto t150 = read_csv(dir.path / "decide-150" / "targets.csv");
+  ASSERT_TRUE(t150.column.count("rank_set") && t150.column.count("desired_prev"));
+  // The next session's positions: the replay's holdings at 151 plus the state columns of 150.
+  const usize d = 151;
+  const auto held = st::holdings::read_session(fx.holdings_dir.string(), fx.panel.sessions[d]);
+  ASSERT_TRUE(held) << held.error().to_string();
+  std::map<u64, std::array<std::string, 3>> book; // held_dollars, rank_set, desired_prev
+  for (const auto& h : held->names) book[h.instrument_id] = {fmt17(h.held_dollars), "nan", "nan"};
+  std::map<u64, std::pair<f64, f64>> before;
+  for (const auto& row : t150.rows) {
+    const u64 id = std::stoull(row.at(t150.column.at("instrument_id")));
+    const auto& rank = row.at(t150.column.at("rank_set"));
+    const auto& prev = row.at(t150.column.at("desired_prev"));
+    auto& entry = book[id];
+    if (entry[0].empty()) entry[0] = "0";
+    entry[1] = rank; entry[2] = prev;
+    if (rank != "nan") before[id] = {std::stod(rank), std::stod(prev)};
+  }
+  EXPECT_EQ(before.size(), members);
+  {
+    std::ofstream positions(dir.path / "positions-151.csv", std::ios::binary);
+    positions << "instrument_id,held_dollars,rank_set,desired_prev\n";
+    for (const auto& [id, cells] : book)
+      positions << id << ',' << cells[0] << ',' << cells[1] << ',' << cells[2] << '\n';
+  }
+  auto next = decide_config(fx, d, dir.path / "decide-151");
+  next.positions_path = (dir.path / "positions-151.csv").string();
+  next.nav = held->session.nav_post;
+  ASSERT_TRUE(st::run_decide(next, progress));
+  const auto s151 = read_json(dir.path / "decide-151" / "decision.json");
+  const auto& hold = s151.at("hold_band");
+  EXPECT_EQ(hold.at("state_in"), "positions rank_set,desired_prev columns");
+  EXPECT_EQ(hold.at("names_set_in"), members);
+  EXPECT_EQ(hold.at("first_set"), 0);
+  EXPECT_EQ(hold.at("moved").get<usize>() + hold.at("kept").get<usize>(), members);
+  EXPECT_GT(hold.at("kept").get<usize>(), 0U);
+  const auto t151 = read_csv(dir.path / "decide-151" / "targets.csv");
+  usize checked = 0;
+  for (const auto& row : t151.rows) {
+    const u64 id = std::stoull(row.at(t151.column.at("instrument_id")));
+    const auto it = before.find(id);
+    if (it == before.end() || row.at(t151.column.at("member")) != "1") continue;
+    const f64 rank = std::stod(row.at(t151.column.at("rank_set")));
+    const f64 prev = std::stod(row.at(t151.column.at("desired_prev")));
+    if (bits(rank) == bits(it->second.first)) {
+      EXPECT_EQ(bits(prev), bits(it->second.second)) << id; // kept: the whole state carried
+    } else {
+      EXPECT_GT(std::abs(rank - it->second.first), 0.1) << id; // moved: left the band
+    }
+    ++checked;
+  }
+  EXPECT_EQ(checked, members);
+  // One state column without the other is refused.
+  {
+    std::ofstream half(dir.path / "half.csv", std::ios::binary);
+    half << "instrument_id,held_dollars,rank_set\n" << fx.panel.ids[0] << ",0,0.1\n";
+  }
+  auto refused = decide_config(fx, d, dir.path / "decide-half");
+  refused.positions_path = (dir.path / "half.csv").string();
+  refused.nav = held->session.nav_post;
+  const auto half = st::run_decide(refused, progress);
+  ASSERT_FALSE(half);
+  EXPECT_NE(half.error().to_string().find("go together"), std::string::npos);
+}
+
+// v8 R-4/R-5 in a construction grid (lane D's lockstep): the hold band and the ADV cap shape the
+// shared desired target, so every variant carries the base's; the band's state advances on the
+// shared cadence decisions (the union of the variants' cadences), so a hold-band grid has one
+// cadence. A grid that keeps both is each variant's standalone replay bit for bit.
+TEST(HoldBand, GridSharesTheBandAndOneCadence) {
+  const auto p = market_panel(70, 12, 5, 2e5);
+  const Fields f(p, 9);
+  const st::NavReplayInput in{p.target(), p.volume, f.view()};
+  auto base = v61_book(1e7);
+  base.target.hold_band = 0.1;
+  const std::array<st::NavScenario, 1> one{base.scenario};
+  const auto refused = [&](const std::vector<st::NavReplayConfig>& grid) {
+    const auto r = st::replay_nav_grid(in, grid, one);
+    return !r && r.error().code() == co::ErrorCode::InvalidArgument;
+  };
+  auto slower = base;
+  slower.target.cadence = 2;
+  EXPECT_TRUE(refused({base, slower}));
+  auto unbanded = base;
+  unbanded.target.hold_band.reset();
+  EXPECT_TRUE(refused({base, unbanded}));
+  auto capped = base;
+  capped.target.adv_hold_q = 0.1;
+  EXPECT_TRUE(refused({base, capped}));
+  auto faster = base;
+  faster.target.trade_fraction = 0.5;
+  const std::vector<st::NavReplayConfig> grid{base, faster};
+  const auto run = st::replay_nav_grid(in, grid, one);
+  ASSERT_TRUE(run) << run.error().to_string();
+  ASSERT_EQ(run->size(), grid.size());
+  usize kept = 0;
+  for (usize v = 0; v < grid.size(); ++v) {
+    const auto alone = st::replay_nav_scenarios(in, grid[v], one);
+    ASSERT_TRUE(alone) << alone.error().to_string();
+    const auto& a = (*run)[v].front().days;
+    const auto& b = alone->front().days;
+    ASSERT_EQ(a.size(), b.size());
+    for (usize t = 0; t < a.size(); ++t) {
+      EXPECT_EQ(bits(a[t].pretrade_nav), bits(b[t].pretrade_nav)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].planned_gross), bits(b[t].planned_gross)) << v << ' ' << t;
+      EXPECT_EQ(a[t].construction.hold_kept, b[t].construction.hold_kept) << v << ' ' << t;
+      kept += a[t].construction.hold_kept;
+    }
+  }
+  EXPECT_GT(kept, 0U); // the band acts in the grid
+}
+
+// Ruling E-16: the holdings export of a hold-band NAV run (b > 0 declared) carries the band's
+// state DECIDE read at each session (rank_set, desired_prev: the state entering the session's
+// construction) in both layouts, and a name holding a set rank has a row; decide reads it, so
+// decide --check-replay from the export reproduces the replay's targets bit for bit at every
+// session tried, from either layout. Emitting it changes no NAV output. Without the state
+// columns the same session re-sets every member and no longer matches.
+TEST(HoldBand, CheckReplayMatchesEmittedHoldings) {
+  Directory dir;
+  auto fx = make_fixture(dir.path, {"--hold-band", ".1"});
+  fx.deploy["nav"]["hold_band"] = 0.1;
+  write_json(fx.deploy_path, fx.deploy);
+  const auto csv = dir.path / "holdings-csv";
+  {
+    std::ostringstream out, err;
+    ASSERT_EQ(nav_cli(nav_args(fx.artifact, dir.path / "nav-csv",
+                               {"--hold-band", ".1", "--emit-holdings", csv.string(),
+                                "--holdings-format", "csv"}), out, err), 0) << err.str();
+    ASSERT_EQ(nav_cli(nav_args(fx.artifact, dir.path / "nav-plain", {"--hold-band", ".1"}), out,
+                      err), 0) << err.str();
+  }
+  usize nav_files = 0;
+  for (const auto& e : std::filesystem::directory_iterator(fx.nav_dir)) {
+    ++nav_files;
+    EXPECT_TRUE(file_bytes(e.path()) ==
+                file_bytes(dir.path / "nav-plain" / e.path().filename())) << e.path().filename();
+  }
+  EXPECT_GT(nav_files, 0U);
+  // The layouts name the state columns; both manifests declare them.
+  const auto data = read_json(fx.holdings_dir / "holdings_index.json").at("data");
+  EXPECT_EQ(data.at("row_width"), st::holdings::hold_row_width);
+  EXPECT_EQ(data.at("columns").at(st::holdings::col_rank_set), "rank_set");
+  EXPECT_EQ(data.at("columns").at(st::holdings::col_desired_prev), "desired_prev");
+  EXPECT_EQ(std::filesystem::file_size(fx.holdings_dir / "holdings.f64"),
+            data.at("rows").get<u64>() * st::holdings::hold_row_width * sizeof(f64));
+  EXPECT_EQ(lines(csv / "holdings.csv").front(),
+            std::string(st::detail::holdings_csv_columns()) + ",rank_set,desired_prev");
+  for (const auto& emitted : {fx.holdings_dir, csv})
+    EXPECT_TRUE(read_json(emitted / "manifest.json").contains("hold_band_state")) << emitted;
+  const std::vector<std::pair<std::string, std::string>> sources{
+      {"f64", fx.holdings_dir.string()}, {"csv", (csv / "holdings.csv").string()}};
+  usize kept_at = 0; // a session where the replay kept some member's desired value
+  for (const usize d : {usize{150}, usize{151}, usize{170}, usize{190}}) {
+    for (const auto& [label, path] : sources) {
+      auto cfg = decide_config(fx, d, dir.path / ("decide-" + label + "-" + std::to_string(d)));
+      cfg.positions_path = path; cfg.check_replay = true;
+      std::ostringstream progress;
+      const auto outcome = st::run_decide(cfg, progress);
+      ASSERT_TRUE(outcome) << label << ' ' << d << ": " << outcome.error().to_string();
+      EXPECT_TRUE(outcome->parity_checked);
+      EXPECT_EQ(outcome->parity_names, fx.panel.n);
+      EXPECT_EQ(outcome->parity_mismatches, 0U) << label << ' ' << d;
+      const auto hold =
+          read_json(std::filesystem::path(cfg.output_directory) / "decision.json").at("hold_band");
+      EXPECT_NE(hold.at("state_in").get<std::string>().find("rank_set,desired_prev"),
+                std::string::npos) << label << ' ' << d;
+      EXPECT_GT(hold.at("names_set_in").get<usize>(), 0U) << label << ' ' << d;
+      if (!kept_at && hold.at("kept").get<usize>() > 0) kept_at = d;
+    }
+  }
+  ASSERT_GT(kept_at, 0U); // the band held some member at a session tried
+  // The same session from the export's positions and targets without the state columns: every
+  // member re-set, so the band's kept members move and the replay's targets are not reproduced.
+  const auto held = st::holdings::read_session(fx.holdings_dir.string(),
+                                               fx.panel.sessions[kept_at]);
+  ASSERT_TRUE(held) << held.error().to_string();
+  {
+    std::ofstream positions(dir.path / "stateless.csv", std::ios::binary);
+    positions.imbue(std::locale::classic()); positions << std::setprecision(17);
+    positions << "instrument_id,held_dollars,nav_post,target_weight\n";
+    for (const auto& h : held->names)
+      positions << h.instrument_id << ',' << h.held_dollars << ',' << held->session.nav_post
+                << ',' << h.target_weight << '\n';
+  }
+  auto stateless = decide_config(fx, kept_at, dir.path / "decide-stateless");
+  stateless.positions_path = (dir.path / "stateless.csv").string();
+  stateless.check_replay = true;
+  std::ostringstream progress;
+  const auto unmatched = st::run_decide(stateless, progress);
+  ASSERT_TRUE(unmatched) << unmatched.error().to_string();
+  EXPECT_GT(unmatched->parity_mismatches, 0U);
+}
+
+// E-16 identity: without a declared band (flag off, or --hold-band 0: b = 0 runs the kernel but
+// declares nothing) the holdings export is the pre-E-16 layout byte for byte: in both formats
+// the same files with the same bytes, 11-value f64 rows under the v1 column names, the v1
+// holdings.csv header and no hold_band_state key.
+TEST(HoldBand, EmittedHoldingsUnchangedWithoutADeclaredBand) {
+  PinBench bench;
+  const auto root = bench.dir.path;
+  Json v1_columns = Json::array();
+  for (const char* column : st::holdings::column_names) v1_columns.push_back(column);
+  for (const char* layout : {"f64", "csv"}) {
+    const std::string format = layout;
+    const auto off = root / ("holdings-off-" + format);
+    const auto zero = root / ("holdings-zero-" + format);
+    bench.nav_recipe("nav-off-" + format,
+                     {"--emit-holdings", off.string(), "--holdings-format", format});
+    bench.nav_recipe("nav-zero-" + format, {"--hold-band", "0", "--emit-holdings", zero.string(),
+                                            "--holdings-format", format});
+    std::vector<std::string> names;
+    for (const auto& e : std::filesystem::directory_iterator(off))
+      names.push_back(e.path().filename().string());
+    EXPECT_EQ(names.size(), format == "f64" ? 4U : 3U) << format;
+    EXPECT_EQ(names.size(), static_cast<usize>(std::distance(
+                                std::filesystem::directory_iterator(zero),
+                                std::filesystem::directory_iterator{}))) << format;
+    for (const auto& name : names)
+      EXPECT_TRUE(file_bytes(off / name) == file_bytes(zero / name)) << format << ' ' << name;
+    EXPECT_FALSE(read_json(off / "manifest.json").contains("hold_band_state")) << format;
+    if (format == "f64") {
+      const auto index = read_json(off / "holdings_index.json");
+      const auto& data = index.at("data");
+      EXPECT_EQ(data.at("row_width"), st::holdings::row_width);
+      EXPECT_EQ(data.at("columns"), v1_columns);
+      EXPECT_FALSE(index.contains("hold_state"));
+      EXPECT_EQ(std::filesystem::file_size(off / "holdings.f64"),
+                data.at("rows").get<u64>() * st::holdings::row_width * sizeof(f64));
+    } else {
+      EXPECT_EQ(lines(off / "holdings.csv").front(), st::detail::holdings_csv_columns());
+    }
+  }
+}
+
+// ---- v8 R-5: adv-hold-v1 (ADV holding cap) ----
+namespace {
+// One decision of a flat book (the desired target does not depend on the holdings) and the caps
+// adv-hold-v1 applies there: Q x the execution ADV of the fill session d + 1 / (L x NAV), the
+// replay's own expression (+inf with the cap off).
+struct CapCheck {
+  st::detail::NavDecision dec;
+  std::vector<f64> caps;
+};
+CapCheck capped_decision(const st::NavReplayInput& in, const st::NavReplayConfig& cfg, usize d) {
+  const usize n = in.target.instruments;
+  CapCheck out{{}, std::vector<f64>(n, std::numeric_limits<f64>::infinity())};
+  auto dec = st::detail::nav_decide(in, cfg, d, std::vector<f64>(n, 0.0), cfg.initial_nav);
+  EXPECT_TRUE(dec) << d << ": " << (dec ? "" : dec.error().to_string());
+  const auto adv = st::detail::execution_adv(in, cfg, d + 1);
+  EXPECT_TRUE(adv) << (adv ? "" : adv.error().to_string());
+  if (!dec || !adv) return out;
+  out.dec = std::move(*dec);
+  if (cfg.target.adv_hold_q > 0)
+    for (usize i = 0; i < n; ++i)
+      out.caps[i] = cfg.target.adv_hold_q * (*adv)[i] /
+                    (cfg.target.aim_leverage * cfg.initial_nav);
+  return out;
+}
+// A 12-name book whose ADV (about $1e7) is near its NAV ($1e7): at Q = .1 the cap binds on the
+// larger rank weights and the pro rata spreading lifts some names above their own cap.
+struct CapBench {
+  Panel panel = market_panel(70, 12, 5, 2e5);
+  Fields fields{panel, 9};
+  st::NavReplayInput input() const { return {panel.target(), panel.volume, fields.view()}; }
+};
+} // namespace
+
+// After the one pass every weighted name is at or below its cap, except the residual breach the
+// decision reports: its names, summed excess and largest excess are exactly what is left above
+// the caps (recomputed from the execution ADV).
+TEST(AdvHold, NoNameAboveCapAfterOnePassOrReported) {
+  const CapBench bench;
+  const auto in = bench.input();
+  auto cfg = v61_book(1e7);
+  cfg.target.adv_hold_q = 0.1;
+  usize rows = 0, clipped = 0;
+  for (usize d = 25; d <= 65; d += 5) {
+    const auto c = capped_decision(in, cfg, d);
+    if (!c.dec.rebalance) continue;
+    ++rows;
+    usize over = 0;
+    f64 mass = 0, worst = 0;
+    for (usize i = 0; i < bench.panel.n; ++i) {
+      if (c.dec.desired[i] == 0) continue;
+      const f64 excess = std::abs(c.dec.desired[i]) - c.caps[i];
+      if (!(excess > 0)) continue;
+      ++over; mass += excess; worst = std::max(worst, excess);
+    }
+    const auto& k = c.dec.construction;
+    EXPECT_EQ(over, k.adv_residual_names) << d;
+    EXPECT_NEAR(mass, k.adv_residual_mass, 1e-15) << d;
+    EXPECT_EQ(bits(worst), bits(k.adv_residual_max)) << d;
+    clipped += k.adv_clipped;
+  }
+  EXPECT_GT(rows, 3U);
+  EXPECT_GT(clipped, 0U); // the cap binds on this book
+}
+
+// The cap acts on the projected target: clipped names sit exactly at their cap, every unclipped
+// name of a side is scaled by one common factor, signs and zeros are kept, and each side's
+// gross (hence the net) is the projection's.
+TEST(AdvHold, SideGrossPreserved) {
+  const CapBench bench;
+  const auto in = bench.input();
+  const auto off = v61_book(1e7);
+  auto on = off;
+  on.target.adv_hold_q = 0.1;
+  usize compared = 0, clipped = 0;
+  for (usize d = 25; d <= 65; d += 5) {
+    const auto a = capped_decision(in, off, d);
+    const auto b = capped_decision(in, on, d);
+    if (!a.dec.rebalance) continue;
+    ASSERT_TRUE(b.dec.rebalance) << d;
+    const f64 unplaced = b.dec.construction.adv_unplaced_mass;
+    std::array<f64, 2> before{}, after{}, factor{0.0, 0.0};
+    for (usize i = 0; i < bench.panel.n; ++i) {
+      const f64 w0 = a.dec.desired[i], w1 = b.dec.desired[i];
+      if (w0 == 0) {
+        EXPECT_EQ(bits(w1), bits(w0)) << d << ' ' << i;
+        continue;
+      }
+      EXPECT_GT(w0 * w1, 0) << d << ' ' << i;
+      const usize side = w0 > 0 ? 0U : 1U;
+      before[side] += std::abs(w0); after[side] += std::abs(w1);
+      const f64 cap = b.caps[i];
+      if (std::abs(w0) > cap) {
+        EXPECT_EQ(bits(std::abs(w1)), bits(cap)) << d << ' ' << i;
+        ++clipped;
+      } else if (factor[side] == 0) {
+        factor[side] = w1 / w0;
+      } else {
+        EXPECT_NEAR(w1 / w0, factor[side], 1e-14) << d << ' ' << i;
+      }
+    }
+    // Only a side with every name clipped (unplaced mass) may shrink, by exactly that mass.
+    EXPECT_NEAR(after[0] + after[1] + unplaced, before[0] + before[1], 1e-12) << d;
+    if (unplaced == 0) {
+      EXPECT_NEAR(after[0], before[0], 1e-12) << d;
+      EXPECT_NEAR(after[1], before[1], 1e-12) << d;
+    }
+    ++compared;
+  }
+  EXPECT_GT(compared, 3U);
+  EXPECT_GT(clipped, 0U);
+}
+
+// A Q no name reaches is the accepted construction byte for byte in every daily and events CSV
+// (the recipe and summary add only the adv-hold keys, with no clip and no breach recorded).
+TEST(AdvHold, LargeQIsByteIdentical) {
+  PinBench bench;
+  bench.nav_recipe("plain", {});
+  bench.nav_recipe("large", {"--adv-hold-q", "1e9"});
+  const auto root = bench.dir.path;
+  usize compared = 0;
+  for (const auto& e : std::filesystem::directory_iterator(root / "plain")) {
+    const auto name = e.path().filename().string();
+    if (name == "recipe.json" || name == "summary.json") continue;
+    EXPECT_TRUE(file_bytes(root / "plain" / name) == file_bytes(root / "large" / name)) << name;
+    ++compared;
+  }
+  EXPECT_GE(compared, 4U);
+  const auto plain = read_json(root / "plain" / "recipe.json");
+  auto large = read_json(root / "large" / "recipe.json");
+  EXPECT_EQ(large.at("rule"), plain.at("rule").get<std::string>() + "+adv-hold-1e+09");
+  EXPECT_EQ(large.at("adv_hold_q"), 1e9);
+  EXPECT_TRUE(large.at("adv_hold_rule").is_string());
+  large.erase("adv_hold_q"); large.erase("adv_hold_rule"); large["rule"] = plain.at("rule");
+  EXPECT_EQ(large, plain);
+  const auto summary = read_json(root / "large" / "summary.json");
+  ASSERT_FALSE(summary.at("scenarios").empty());
+  for (const auto& s : summary.at("scenarios")) {
+    const auto& cap = s.at("construction").at("adv_hold");
+    EXPECT_GT(cap.at("decisions").get<usize>(), 0U);
+    EXPECT_EQ(cap.at("clipped_names_total"), 0);
+    EXPECT_EQ(cap.at("residual_breach").at("names_total"), 0);
+  }
+}
+
+// The deploy key nav.adv_hold_q: 0 hashes as absent, Q > 0 is part of the pin both ways, and the
+// decision records its cap pass in decision.json (adv_hold).
+TEST(AdvHold, DeployPinAndDecisionRecord) {
+  PinBench bench;
+  const auto plain = bench.nav_recipe("nav-plain", {});
+  const auto capped = bench.nav_recipe("nav-adv", {"--adv-hold-q", ".1"});
+  EXPECT_NE(plain, capped);
+  EXPECT_EQ(bench.nav_recipe("nav-adv0", {"--adv-hold-q", "0"}), plain);
+  EXPECT_EQ(outcome_text(bench.decide(plain, [](Json& nav) { nav["adv_hold_q"] = 0.0; })),
+            "verified");
+  EXPECT_TRUE(recipe_mismatch(bench.decide(capped, [](Json&) {})));
+  EXPECT_TRUE(recipe_mismatch(bench.decide(plain, [](Json& nav) { nav["adv_hold_q"] = 0.1; })));
+  EXPECT_EQ(outcome_text(bench.decide(capped, [](Json& nav) { nav["adv_hold_q"] = 0.1; })),
+            "verified");
+  const auto decision =
+      read_json(bench.dir.path / ("decide-" + std::to_string(bench.runs - 1)) / "decision.json");
+  EXPECT_EQ(decision.at("adv_hold").at("q"), 0.1);
+  EXPECT_EQ(decision.at("adv_hold").at("nav"), 1e9);
+  EXPECT_TRUE(decision.at("adv_hold").contains("residual_names"));
+  const auto malformed = bench.decide(capped, [](Json& nav) { nav["adv_hold_q"] = "0.1"; });
+  ASSERT_FALSE(malformed);
+  EXPECT_NE(malformed.error().to_string().find("nav.adv_hold_q"), std::string::npos);
+}
+
+// adv-hold-v1 is a NAV replay option (it reads the execution ADV and the run's NAV): the target
+// replay refuses Q > 0 (its CLI has no such flag), and the target replay, the NAV replay, decide
+// and the nav CLI refuse a negative, NaN or infinite Q and Q > 0 under baseline-v1, before any
+// output. The same configurations at Q = 0 run (the controls), so each refusal is the cap's.
+TEST(AdvHold, RefusedOutsideTheNavPathAndWhenMalformed) {
+  const CapBench bench;
+  const auto in = bench.input();
+  const std::array<st::NavScenario, 1> one{v61_book(1e7).scenario};
+  const auto text = [](const auto& r) {
+    return r ? std::string("accepted") : r.error().to_string();
+  };
+  const std::string malformed = "adv_hold_q must be finite >= 0";
+  // The target replay: Q = 0 runs; Q > 0 under aim-partial-v5 is a NAV replay option.
+  auto v5 = v61_book(1e7).target;
+  EXPECT_EQ(text(st::replay_targets(in.target, v5)), "accepted");
+  v5.adv_hold_q = 0.1;
+  EXPECT_NE(text(st::replay_targets(in.target, v5)).find("is a NAV replay option"),
+            std::string::npos);
+  // baseline-v1: Q = 0 runs in both replays; Q > 0 is refused in both.
+  st::TargetReplayConfig baseline;
+  auto nav_baseline = v61_book(1e7);
+  nav_baseline.target.rule = st::TargetReplayRule::BaselineTargetV1;
+  nav_baseline.target.dust_multiple = 0;
+  nav_baseline.target.aim_leverage = 1;
+  nav_baseline.target.exit_rate = 1;
+  EXPECT_EQ(text(st::replay_targets(in.target, baseline)), "accepted");
+  EXPECT_EQ(text(st::replay_nav_scenarios(in, nav_baseline, one)), "accepted");
+  baseline.adv_hold_q = 0.1;
+  nav_baseline.target.adv_hold_q = 0.1;
+  EXPECT_NE(text(st::replay_targets(in.target, baseline)).find(malformed), std::string::npos);
+  EXPECT_NE(text(st::replay_nav_scenarios(in, nav_baseline, one)).find(malformed),
+            std::string::npos);
+  // A negative, NaN or infinite Q under aim-partial-v5: refused on every path.
+  const std::vector<f64> flat(bench.panel.n, 0.0);
+  for (const f64 q : {-0.1, missing, std::numeric_limits<f64>::infinity()}) {
+    auto target = v61_book(1e7).target;
+    target.adv_hold_q = q;
+    EXPECT_NE(text(st::replay_targets(in.target, target)).find(malformed), std::string::npos)
+        << q;
+    auto nav = v61_book(1e7);
+    nav.target.adv_hold_q = q;
+    EXPECT_NE(text(st::replay_nav_scenarios(in, nav, one)).find(malformed), std::string::npos)
+        << q;
+    EXPECT_NE(text(st::detail::nav_decide(in, nav, 40, flat, 1e7)).find(malformed),
+              std::string::npos) << q;
+  }
+  // The CLIs: the target replay does not know the flag (usage error); nav refuses a malformed
+  // Q (exit 1) before its output exists, and a value that is not a number is a usage error.
+  std::ostringstream out, err;
+  std::vector<std::string> targets{"targets", "--adv-hold-q", ".1"};
+  std::vector<char*> argv;
+  for (auto& arg : targets) argv.push_back(arg.data());
+  EXPECT_EQ(st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err), 2);
+  EXPECT_NE(err.str().find("unknown flag: --adv-hold-q"), std::string::npos) << err.str();
+  PinBench pins;
+  for (const char* q : {"-1", "nan", "inf"}) {
+    std::ostringstream nav_out, nav_err;
+    const auto dir = pins.dir.path / (std::string("bad") + q);
+    EXPECT_EQ(nav_cli(nav_args(pins.artifact, dir, {"--adv-hold-q", q}), nav_out, nav_err), 1)
+        << q;
+    EXPECT_NE(nav_err.str().find(malformed), std::string::npos) << q << ": " << nav_err.str();
+    EXPECT_FALSE(std::filesystem::exists(dir)) << q;
+  }
+  const auto word = pins.dir.path / "word";
+  EXPECT_EQ(nav_cli(nav_args(pins.artifact, word, {"--adv-hold-q", "x"}), out, err), 2);
+  EXPECT_FALSE(std::filesystem::exists(word));
+}
+
+// --capacity-curve with --adv-hold-q (ruling E-15): the v7 parser passes the flag through to both
+// passes, so the main pass and every capacity book record the cap (rule id, recipe adv_hold keys
+// with the E-15 sentence, summary construction.adv_hold), and the x1 capacity book is still the
+// main pass's S2 book bit for bit (both passes cap at the run's initial NAV).
+TEST(AdvHold, CapacityCurveCarriesTheCapInBothPasses) {
+  PinBench bench;
+  const auto root = bench.dir.path / "curve";
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, root, {"--adv-hold-q", ".1", "--capacity-curve"}),
+                    out, err), 0) << err.str();
+  const std::array<std::filesystem::path, 2> passes{root, root / "capacity"};
+  for (const auto& dir : passes) {
+    const auto recipe = read_json(dir / "recipe.json");
+    EXPECT_EQ(recipe.at("adv_hold_q"), 0.1) << dir;
+    EXPECT_NE(recipe.at("rule").get<std::string>().find("+adv-hold-0.1"), std::string::npos)
+        << dir;
+    EXPECT_NE(recipe.at("adv_hold_rule").get<std::string>().find("every capacity book"),
+              std::string::npos) << dir;
+    const auto summary = read_json(dir / "summary.json");
+    ASSERT_FALSE(summary.at("scenarios").empty()) << dir;
+    for (const auto& s : summary.at("scenarios")) {
+      const auto& cap = s.at("construction").at("adv_hold");
+      EXPECT_EQ(cap.at("q"), 0.1) << dir;
+      EXPECT_GT(cap.at("decisions").get<usize>(), 0U) << dir;
+    }
+  }
+  EXPECT_EQ(read_json(root / "capacity" / "summary.json").at("scenarios").size(),
+            st::cost_v2::capacity_multiples.size());
+  const auto extras = read_json(root / "v7_extras.json");
+  EXPECT_EQ(extras.at("capacity").size(), st::cost_v2::capacity_multiples.size());
+  EXPECT_EQ(extras.at("capacity_x1_equals_primary_bit_for_bit"), true);
+  EXPECT_TRUE(std::filesystem::exists(root / "capacity_curve.csv"));
+  std::ostringstream help, quiet;
+  ASSERT_EQ(nav_cli({"nav", "--help"}, help, quiet), 0);
+  EXPECT_NE(help.str().find("the cap uses the run's initial NAV for every book, each "
+                            "--capacity-curve book included"), std::string::npos);
 }

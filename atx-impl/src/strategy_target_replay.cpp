@@ -29,6 +29,7 @@ namespace atx::impl::strategy {
 namespace {
 using namespace atx;
 namespace co = atx::core;
+namespace eb = atx::engine::book;
 using Json = nlohmann::json;
 using Ranked = std::pair<f64, usize>;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
@@ -129,6 +130,17 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "target replay: exit_rate must be in (0, 1]; below 1 it needs "
                    "aim-partial-v5 with dust_multiple > 0");
+  // hold-band-v1 (v8 R-4): aim-partial-v5 only, b in [0, 1] (NaN refused).
+  if (hold_band_on(cfg) &&
+      (!aim_partial(cfg) || !(*cfg.hold_band >= 0 && *cfg.hold_band <= 1)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: hold_band needs aim-partial-v5 and b in [0, 1]");
+  // adv-hold-v1 (v8 R-5): Q finite >= 0 (0 = off); on, aim-partial-v5 only.
+  if (!std::isfinite(cfg.adv_hold_q) || cfg.adv_hold_q < 0 ||
+      (adv_hold_on(cfg) && !aim_partial(cfg)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: adv_hold_q must be finite >= 0 (0 = off) and needs "
+                   "aim-partial-v5");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
@@ -143,6 +155,12 @@ u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   const u64 groups = neutralize_by_industry(cfg.neutralize) ? kGroupTableBytes : 0;
   return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64) + groups;
 }
+// The v8 construction state per name (detail::DesiredState): hold-band-v1's rank_set and
+// desired_prev, adv-hold-v1's ADV row and caps. Zero with every v8 option off.
+u64 desired_state_bytes(const TargetReplayConfig& cfg, usize instruments) {
+  const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U);
+  return u64{instruments} * per_name * sizeof(f64);
+}
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
   ATX_TRY_VOID(validate_config(cfg));
   if (!in.dates || in.dates > max_dates || !in.instruments || in.instruments > max_names ||
@@ -152,7 +170,8 @@ co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig&
   Budget budget{cfg.max_working_bytes};
   if (!budget.add(1, 65536) || !budget.add(in.instruments, sizeof(Ranked) + 2 * sizeof(f64)) ||
       !budget.add(in.decision_end - in.decision_begin, sizeof(TargetReplayDay)) ||
-      !budget.add(1, price_risk_scratch_bytes(cfg, in.instruments)))
+      !budget.add(1, price_risk_scratch_bytes(cfg, in.instruments)) ||
+      !budget.add(1, desired_state_bytes(cfg, in.instruments)))
     return co::Err(co::ErrorCode::OutOfRange, "target replay: workspace budget");
   const bool prices = !in.close.empty() || !in.raw_close.empty() || !in.present.empty();
   if (in.signal.size() != cells || in.member.size() != cells ||
@@ -179,10 +198,11 @@ co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig&
   }
   return co::Ok();
 }
-// Same operations and order as IcComposition::finish. In particular a tied
-// all-zero blend stays flat, and no daily renormalization changes partial fills.
-void desired_target(std::span<const f64> signal, std::span<const u8> member,
-                    std::vector<Ranked>& row, std::vector<f64>& target) {
+// desired_target, first half: the centred tied rank of every member in [-.5, .5] (0 for
+// nonmembers, and for every name with fewer than two members); `row` = the members by
+// ascending signal.
+void member_ranks(std::span<const f64> signal, std::span<const u8> member,
+                  std::vector<Ranked>& row, std::vector<f64>& target) {
   std::fill(target.begin(), target.end(), 0); row.clear();
   for (usize i = 0; i < signal.size(); ++i) if (member[i]) row.emplace_back(signal[i], i);
   std::sort(row.begin(), row.end());
@@ -194,6 +214,10 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
     for (usize k = b; k < e; ++k) target[row[k].second] = r;
     b = e;
   }
+}
+// desired_target, second half: demean over the members of `row`, then gross 1 (a flat row
+// stays flat).
+void demean_gross_one(const std::vector<Ranked>& row, std::vector<f64>& target) {
   f64 sum = 0;
   for (const auto& value : row) sum += target[value.second];
   const f64 mean = row.empty() ? 0 : sum / static_cast<f64>(row.size());
@@ -202,6 +226,31 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
     target[value.second] -= mean; gross += std::abs(target[value.second]);
   }
   if (gross > 0) for (const auto& value : row) target[value.second] /= gross;
+}
+// Same operations and order as IcComposition::finish. In particular a tied
+// all-zero blend stays flat, and no daily renormalization changes partial fills.
+// The two halves are the pre-v8 body split at the seam hold-band-v1 uses (statements
+// unchanged, in the same order).
+void desired_target(std::span<const f64> signal, std::span<const u8> member,
+                    std::vector<Ranked>& row, std::vector<f64>& target) {
+  member_ranks(signal, member, row, target);
+  demean_gross_one(row, target);
+}
+// hold-band-v1 (TargetReplayConfig::hold_band): the tied ranks, the band on the members (the
+// fresh desired value of a member is its rank, so rank_now and desired are one row), then the
+// unchanged demean and gross 1. The kernel's counts go to `out`.
+co::Status held_desired(std::span<const f64> signal, std::span<const u8> member, f64 band,
+                        detail::DesiredState* state, std::vector<Ranked>& row,
+                        std::vector<f64>& desired, ConstructionDay& out) {
+  if (!state)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: hold_band needs the construction state");
+  member_ranks(signal, member, row, desired);
+  ATX_TRY(const auto counts, eb::apply_hold_band(desired, desired, member, band, state->hold));
+  out.hold_moved = counts.moved; out.hold_kept = counts.kept;
+  out.hold_first_set = counts.first_set;
+  demean_gross_one(row, desired);
+  return co::Ok();
 }
 usize members_at(const TargetReplayInput& in, usize d) {
   const auto offset = d * in.instruments;
@@ -357,20 +406,65 @@ co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cf
 // intercept and beta columns re-balance the book around the zeroed shorts. Under the
 // industry ids no_short is also the hold mask (review I3): a special-tier aim at 0 is
 // reset to 0 after the within-group demeaning, so it cannot return as -(group mean).
+// adv-hold-v1 (TargetReplayConfig::adv_hold_q): cap_i = Q ADV_i / (aim_leverage NAV) on every
+// name with a nonzero desired weight (+inf elsewhere, never read), then one capped pro rata pass
+// per side; the pass's record goes to `out`.
+co::Status adv_capped(const TargetReplayConfig& cfg, detail::DesiredState* state,
+                      std::vector<f64>& desired, ConstructionDay& out) {
+  const usize n = desired.size();
+  if (!state || state->adv_dollars.size() != n || !std::isfinite(state->nav) || !(state->nav > 0))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: adv_hold_q needs the NAV replay's ADV row and NAV");
+  auto& caps = state->caps;
+  caps.assign(n, std::numeric_limits<f64>::infinity());
+  const f64 dollars = cfg.aim_leverage * state->nav;
+  for (usize i = 0; i < n; ++i) {
+    if (desired[i] == 0) continue;
+    const f64 adv = state->adv_dollars[i];
+    if (!std::isfinite(adv) || adv < 0)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: adv_hold_q needs a finite ADV >= 0 for every weighted name");
+    caps[i] = cfg.adv_hold_q * adv / dollars;
+  }
+  ATX_TRY(const auto stats, eb::cap_pro_rata_one_pass(desired, caps));
+  out.adv_clipped = stats.longs.clipped + stats.shorts.clipped;
+  out.adv_clipped_mass = stats.longs.clipped_mass + stats.shorts.clipped_mass;
+  out.adv_unplaced_mass = stats.longs.unplaced_mass + stats.shorts.unplaced_mass;
+  out.adv_residual_names = stats.longs.residual_names + stats.shorts.residual_names;
+  out.adv_residual_mass = stats.longs.residual_mass + stats.shorts.residual_mass;
+  out.adv_residual_max = std::max(stats.longs.residual_max, stats.shorts.residual_max);
+  return co::Ok();
+}
+// The end of form_desired: a rebalance that proceeds gets the adv-hold-v1 cap after the
+// post-processing (off: `proceed` as it is, nothing touched).
+co::Result<bool> finish_desired(const TargetReplayConfig& cfg, detail::DesiredState* state,
+                                std::vector<f64>& desired, ConstructionDay& out, bool proceed) {
+  if (proceed && adv_hold_on(cfg)) ATX_TRY_VOID(adv_capped(cfg, state, desired, out));
+  return co::Ok(proceed);
+}
+// v8 hold-band-v1: the band acts on the members' tied ranks inside the desired target (between
+// the ranks and the demean), on `state`; adv-hold-v1 caps the result of a rebalance that
+// proceeds (finish_desired). Both off, the construction is the pre-v8 one.
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                               usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
                               PriceRiskScratch& scratch, ConstructionDay& out,
-                              std::span<const u8> no_short = {}) {
+                              std::span<const u8> no_short = {},
+                              detail::DesiredState* state = nullptr) {
   const usize n = in.instruments, offset = d * n;
   if (!no_short.empty() && no_short.size() != n)
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: no-short mask geometry");
   const auto member = in.member.subspan(offset, n);
-  desired_target(in.signal.subspan(offset, n), member, row, desired);
+  if (hold_band_on(cfg)) {
+    ATX_TRY_VOID(held_desired(in.signal.subspan(offset, n), member, *cfg.hold_band, state, row,
+                              desired, out));
+  } else {
+    desired_target(in.signal.subspan(offset, n), member, row, desired);
+  }
   for (usize i = 0; i < no_short.size(); ++i) {
     if (!member[i] || !no_short[i] || !(desired[i] < 0)) continue;
     desired[i] = 0; ++out.locate_zeroed;
   }
-  if (!neutralizing(cfg)) return co::Ok(true);
+  if (!neutralizing(cfg)) return finish_desired(cfg, state, desired, out, true);
   const PriceExposureInput prices{in.dates, n, in.close, in.raw_close, in.volume, in.present};
   const bool industry = neutralize_by_industry(cfg.neutralize);
   if (industry && in.industry.size() != in.dates * n)
@@ -399,7 +493,7 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   else if (out.neutralize_amplification > cfg.neutralize_max_amplification)
     outcome = NeutralizeOutcome::SkippedAmplification; // NaN (flat target) never skips
   out.neutralize = outcome;
-  return co::Ok(outcome == NeutralizeOutcome::Applied);
+  return finish_desired(cfg, state, desired, out, outcome == NeutralizeOutcome::Applied);
 }
 void rough_return(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                   std::span<const f64> weights, TargetReplayDay& out) {
@@ -447,9 +541,14 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
     if (neutralize_by_industry(cfg.neutralize) && in.industry.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: industry neutralization requires the industry field");
+    // adv-hold-v1 needs the execution ADV and the run's NAV: a NAV replay (or decide) option.
+    if (adv_hold_on(cfg))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: adv_hold_q is a NAV replay option (ADV and NAV)");
     std::vector<f64> current(in.instruments), desired(in.instruments);
     std::vector<Ranked> row; row.reserve(in.instruments);
     PriceRiskScratch price; // grows only when neutralizing
+    detail::DesiredState state; // v8 hold-band-v1 state (empty with the band off)
     u32 month = 0; f64 spent = 0;
     for (usize d = in.decision_begin; d < in.decision_end; ++d) {
       TargetReplayDay day; day.decision = d; day.session = in.session_keys[d];
@@ -458,7 +557,9 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
       if (day.calendar_month != month) { month = day.calendar_month; spent = 0; }
       bool rebalance = (d - in.decision_begin) % cfg.cadence == 0;
       if (rebalance) {
-        ATX_TRY(rebalance, form_desired(in, cfg, d, row, desired, price, day.construction));
+        // Qualified: the detail::DesiredState argument brings detail::form_desired in by ADL.
+        ATX_TRY(rebalance, ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, price,
+                                                               day.construction, {}, &state));
       }
       day.construction.rebalance = rebalance;
       ATX_TRY_VOID(update_weights(in, cfg, d, rebalance, spent, desired, current, day));
@@ -684,6 +785,8 @@ std::string rule_id(const TargetReplayConfig& c) {
   std::string id = rule_name(c.rule);
   if (neutralizing(c)) id += std::string("+neutral-") + neutralize_name(c.neutralize);
   if (c.band_multiple > 0) id += "+band-" + decimal(c.band_multiple);
+  if (hold_band_declared(c)) id += "+hold-band-" + decimal(*c.hold_band);
+  if (adv_hold_on(c)) id += "+adv-hold-" + decimal(c.adv_hold_q);
   return id;
 }
 const char* outcome_label(NeutralizeOutcome outcome) {
@@ -711,6 +814,28 @@ constexpr const char* exit_rate_rule_declaration =
     "d; every name when N_d = 0); a nonmember absent at d exits to 0 at once (stale carry "
     "and write-off unchanged); the moves count as forced turnover; r = 1 is the immediate "
     "exit";
+constexpr const char* hold_band_rule_declaration =
+    "hold-band-v1 (v8 R-4, rank hysteresis): on every rebalance decision each member's centred "
+    "tied rank r_i of the blend (in [-.5, .5], range 1) is compared with rank_set_i, the rank at "
+    "which its current desired value was set; if rank_set_i is unset or |r_i - rank_set_i| > "
+    "hold_band the member takes r_i as its desired value and rank_set_i = r_i, otherwise it "
+    "keeps its previous desired value; then the unchanged demean, gross 1, locate zeroing and "
+    "neutralization. The state is per name and carried across decisions; a nonmember keeps its "
+    "state and follows the exit rule unchanged; the state advances on every cadence decision, "
+    "a neutralization-skipped one included";
+constexpr const char* adv_hold_rule_declaration =
+    "adv-hold-v1 (v8 R-5, ADV holding cap): on every rebalance decision that proceeds, after the "
+    "post-processing (the projection), |desired_i| <= adv_hold_q * ADV_i / (aim_leverage * NAV), "
+    "ADV_i = the raw-dollar ADV the execution trade limit reads for this decision's fills "
+    "(session d + 1: present raw_close x volume over rows [d + 1 - w, d + 1) / w, w = "
+    "liquidity_window; rows <= d only), NAV = initial_nav (the run's, every book and capacity "
+    "multiple alike); each clipped name is set to its cap and the clipped mass is added to the "
+    "same side's unclipped names pro rata to their weight, one pass (side gross preserved; "
+    "unplaced when no unclipped name is left on the side); names the pass lifts above their cap "
+    "stay and are reported as the residual breach (summary construction.adv_hold). Ruling "
+    "E-15: the cap uses the run's initial NAV for every capacity book, so the capacity book at "
+    "multiple m holds up to m x adv_hold_q of ADV (the initial-NAV rule stressed at NAV x m, "
+    "not a cap set per multiple)";
 // The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
 // default text byte for byte) or, below 1, a pointer to exit_rate_rule.
 const char* nonmember_exit(const TargetReplayConfig& c) {
@@ -773,6 +898,14 @@ Json construction_recipe(const TargetReplayConfig& c) {
     j["exit_rate"] = c.exit_rate;
     j["exit_rate_rule"] = exit_rate_rule_declaration;
   }
+  if (hold_band_declared(c)) { // v8 R-4; absent unset and at b = 0 (the identity)
+    j["hold_band"] = *c.hold_band;
+    j["hold_band_rule"] = hold_band_rule_declaration;
+  }
+  if (adv_hold_on(c)) { // v8 R-5; absent at Q = 0 (off)
+    j["adv_hold_q"] = c.adv_hold_q;
+    j["adv_hold_rule"] = adv_hold_rule_declaration;
+  }
   return j;
 }
 // construction.v5 (see detail::aim_partial_summary_json).
@@ -815,6 +948,53 @@ Json industry_summary(std::span<const ConstructionDay> decisions) {
   return Json{{"field", industry_group_field}, {"applied_decisions", groups.size()},
               {"groups", spread(groups)}, {"unknown_group_names", spread(unknown)},
               {"fallback_names", spread(fallback)}};
+}
+// hold-band-v1 (v8 R-4) over the decisions the kernel saw a member on (moved + kept > 0):
+// totals of moved (first set included) and kept members, and the mean kept share.
+Json hold_band_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
+  usize seen = 0, moved = 0, kept = 0, first = 0;
+  f64 share = 0;
+  for (const auto& d : decisions) {
+    const usize members = d.hold_moved + d.hold_kept;
+    if (!members) continue;
+    ++seen; moved += d.hold_moved; kept += d.hold_kept; first += d.hold_first_set;
+    share += static_cast<f64>(d.hold_kept) / static_cast<f64>(members);
+  }
+  return Json{{"band", *c.hold_band}, {"rule", "recipe hold_band_rule"}, {"decisions", seen},
+      {"moved_names_total", moved}, {"kept_names_total", kept},
+      {"first_set_names_total", first},
+      {"mean_kept_share", seen ? Json(share / static_cast<f64>(seen)) : Json(nullptr)}};
+}
+// adv-hold-v1 (v8 R-5) over the rebalances the cap pass ran on: clipped names and mass, the
+// unplaced mass, and the residual breach left by the one pass (desired-weight units).
+Json adv_hold_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
+  usize passes = 0, clipped = 0, clipped_max = 0, breached = 0, over = 0, over_max = 0;
+  f64 mass = 0, mass_max = 0, unplaced = 0, unplaced_max = 0, residual = 0, residual_max = 0;
+  f64 excess_max = 0;
+  for (const auto& d : decisions) {
+    if (!d.rebalance) continue;
+    ++passes;
+    clipped += d.adv_clipped; clipped_max = std::max(clipped_max, d.adv_clipped);
+    mass += d.adv_clipped_mass; mass_max = std::max(mass_max, d.adv_clipped_mass);
+    unplaced += d.adv_unplaced_mass; unplaced_max = std::max(unplaced_max, d.adv_unplaced_mass);
+    breached += d.adv_residual_names ? 1U : 0U;
+    over += d.adv_residual_names; over_max = std::max(over_max, d.adv_residual_names);
+    residual += d.adv_residual_mass; residual_max = std::max(residual_max, d.adv_residual_mass);
+    excess_max = std::max(excess_max, d.adv_residual_max);
+  }
+  const auto mean = [passes](f64 sum) {
+    return passes ? Json(sum / static_cast<f64>(passes)) : Json(nullptr);
+  };
+  return Json{{"q", c.adv_hold_q}, {"rule", "recipe adv_hold_rule"},
+      {"units", "desired weight (x aim_leverage x initial_nav = dollars)"},
+      {"decisions", passes}, {"clipped_names_total", clipped},
+      {"clipped_names_mean", mean(static_cast<f64>(clipped))},
+      {"clipped_names_max", clipped_max}, {"clipped_mass_mean", mean(mass)},
+      {"clipped_mass_max", mass_max}, {"unplaced_mass_total", unplaced},
+      {"unplaced_mass_max", unplaced_max},
+      {"residual_breach", {{"decisions", breached}, {"names_total", over},
+                           {"names_max", over_max}, {"mass_mean", mean(residual)},
+                           {"mass_max", residual_max}, {"excess_max", excess_max}}}};
 }
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
@@ -864,6 +1044,8 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
        rebalanced ? static_cast<f64>(banded) / static_cast<f64>(rebalanced) : 0.0}};
   if (neutralize_by_industry(c.neutralize))
     body["neutralize_industry"] = industry_summary(decisions);
+  if (hold_band_declared(c)) body["hold_band"] = hold_band_summary(c, decisions);
+  if (adv_hold_on(c)) body["adv_hold"] = adv_hold_summary(c, decisions);
   return Json{{"construction", std::move(body)}};
 }
 // The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows
@@ -1058,6 +1240,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
                "[--neutralize none|price-risk-v1 (needs --role)] [--band-multiple 0] "
                "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
                "[--exit-rate 1 (below 1: aim-partial-v5, dust > 0, --role)] "
+               "[--hold-band B (aim-partial-v5; v8 hold-band-v1, B in [0, 1])] "
                "[--one-way-bps 0 --annual-borrow-bps 0] [--max-bytes 536870912]\n";
         return 0;
       }
@@ -1091,6 +1274,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--exit-rate") cfg.target.exit_rate = real();
+      else if (key == "--hold-band") cfg.target.hold_band = real();
       else if (key == "--neutralize") {
         if (!parse_neutralize(value, cfg.target))
           throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
@@ -1163,8 +1347,9 @@ usize members_at(const TargetReplayInput& in, usize d) {
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                               std::vector<std::pair<f64, usize>>& row, std::vector<f64>& desired,
                               PriceRiskScratch& scratch, ConstructionDay& out,
-                              std::span<const u8> no_short) {
-  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out, no_short);
+                              std::span<const u8> no_short, DesiredState* state) {
+  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out, no_short,
+                                             state);
 }
 bool construction_active(const TargetReplayConfig& cfg) { return construction_on(cfg); }
 std::string construction_rule_id(const TargetReplayConfig& cfg) { return rule_id(cfg); }
@@ -1180,7 +1365,7 @@ std::string aim_partial_summary_json(const TargetReplayConfig& cfg,
   return aim_partial(cfg) ? aim_partial_summary(cfg, decisions).dump() : std::string{};
 }
 u64 construction_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
-  return price_risk_scratch_bytes(cfg, instruments);
+  return price_risk_scratch_bytes(cfg, instruments) + desired_state_bytes(cfg, instruments);
 }
 const char* construction_csv_columns() { return construction_columns; }
 void write_construction_csv(std::ostream& out, const ConstructionDay& day) {

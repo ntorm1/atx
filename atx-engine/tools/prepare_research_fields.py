@@ -2463,6 +2463,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         raise ValueError("--fields: sv_ratio126 needs --finra-short-volume (the CNMSshvol*.txt.gz directory)")
     for m in FIELD_MODULES:  # W5a registry hook: each opt-in module checks its inputs before any output
         m.check(selected, module_options or {})
+        if reuse is not None and any(f in m.FIELDS for f in selected):  # v8 E-21: before the output exists
+            module_reuse_interface(sys.modules[type(m).__module__])
     budget = Budget(max_rss_mib, max_seconds)
     role = Role(role_dir, role_sha256)
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
@@ -2739,6 +2741,18 @@ REUSE_MODULE_RULE = ("a field module's field is copied from the prior fields dir
                      "manifest or by reused_from.host_code, found as this code or its git blob); same inputs (the stage "
                      "manifest SHA-256s, and the SEC identity bridge, recorded by the entry); every field it requires "
                      "is reused; copied bytes re-hash to the prior pin")
+
+
+MODULE_REUSE_INTERFACE = ("PRODUCERS", "HOST_HANDLES", "producer_group", "field_spec", "reuse_inputs",
+                          "entry_inputs")
+
+
+def module_reuse_interface(module) -> None:
+    """Refuse, before any output, a field module with requested fields that lacks the --reuse interface (v8 E-21)."""
+    missing = [x for x in MODULE_REUSE_INTERFACE if not hasattr(module, x)]
+    if missing:
+        raise ValueError(f"--reuse: field module {Path(module.__file__).name} lacks the reuse interface "
+                         f"({', '.join(missing)})")
 
 
 def module_source(module) -> bytes:
@@ -3176,6 +3190,10 @@ _holdings.register(globals())
 import research_fields_price as _price  # noqa: E402  (same directory; it does not import this module)
 FIELD_MODULES.append(_price.bind(globals()))
 ALL_FIELDS.update(_price.FIELDS)
+# Platform v8 F-3 registry hook: the v8 fields of research_fields_v8.py (grp_ff12f49), an opt-in FIELD_MODULES module;
+# its bind() appends its registry to ALL_FIELDS itself, so no ALL_FIELDS statement joins the SEC module's host closure.
+import research_fields_v8 as _v8  # noqa: E402  (same directory; it does not import this module)
+FIELD_MODULES.append(_v8.bind(globals()))
 
 if __name__ == "__main__":
     main()

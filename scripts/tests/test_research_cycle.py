@@ -201,6 +201,8 @@ if b == "incomplete":
 for rel, text in beh.get("touch", {}).get(out.name, []):   # v8 A-3: a file written while this phase runs
     Path(rel).parent.mkdir(parents=True, exist_ok=True)
     Path(rel).write_text(text)
+if "marginal" in cmd and any(k not in cmd for k in @MARGINAL_REQUIRED@):   # A2: the verb's required options
+    print("marginal IC: bounded config", file=sys.stderr); receipt("process-error", 1); sys.exit(1)
 if len(cmd) > 1 and Path(cmd[1]).name in ("fields.py", "check.py", "summ.py", "monitor.py"):  # v8: every-phase
     import subprocess
     code = subprocess.run(cmd).returncode
@@ -230,6 +232,12 @@ else:
         (child / name).write_bytes(text.encode())
 receipt("completed", 0)
 '''
+# The marginal verb's required options, read from atx-impl/src/strategy_marginal_ic.cpp (run_marginal_ic's refusal of an
+# unbounded config) and pinned; test_marginal_argv_is_the_verbs_full_cli re-reads the C++ and fails if it moves.
+VERB_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
+VERB_OPTIONS = {"--candidate-cache", "--library", "--library-sha256", "--pool", "--pool-sha256", "--role", "--themes",
+                "--fields", "--output", "--min-names", "--max-memory-mib"}   # dispatch_marginal_ic, each takes a value
+FAKE_RUNNER = FAKE_RUNNER.replace("@MARGINAL_REQUIRED@", repr(VERB_REQUIRED))
 
 FAKE_FIELDS = r'''
 import json, sys
@@ -1499,16 +1507,108 @@ STRATEGIES = HERE.parents[1] / "atx-impl" / "strategies"
 CAPS = frozenset({"no-composition", "marginal"})
 
 
+def pool_manifest(root: Path, role: str, weights: str) -> str:
+    """A parent's combined-signal manifest as the marginal verb binds it: its role and composition weights by SHA-256."""
+    return json.dumps({"schema": "atx.dsl-combined-signal/v1", "role_manifest_sha256": RC.sha256_file(root / role),
+                       "composition_weights_sha256": RC.sha256_file(root / weights)})
+
+
 def screen_root(tmp_path: Path, **over) -> tuple[Path, Path]:
-    """ops_root plus a marginal section on the parent's combined signal and --save-combined in the IC flags."""
-    root, sp = ops_root(tmp_path, marginal={"output": "out/MIC", "pool": "reference_combined", "flags": ["--themes"]},
-                        **over)
-    (root / "ref-w" / "train_combined.json").write_text('{"ref": 1}')
+    """ops_root plus a marginal section on the parent's combined signal (themes: the parent's weights, the file the
+    pool names), --save-combined and --min-names in the IC flags."""
+    root, sp = ops_root(tmp_path, marginal={"output": "out/MIC", "pool": "reference_combined",
+                                            "themes": "reference_weights"}, **over)
+    (root / "ref-fit").mkdir()
+    (root / "ref-fit" / "composition_weights.json").write_text('{"weights": {"old": 1.0}}')
+    (root / "ref-w" / "train_combined.json").write_text(pool_manifest(root, "role/manifest.json",
+                                                                      "ref-fit/composition_weights.json"))
     spec = json.loads(sp.read_text())
     spec["inputs"]["reference_combined"] = {"path": "ref-w/train_combined.json", "sha256": None}
-    spec["ic"]["flags"] = spec["ic"]["flags"] + ["--save-combined"]
+    spec["inputs"]["reference_weights"] = {"path": "ref-fit/composition_weights.json", "sha256": None}
+    spec["ic"]["flags"] = spec["ic"]["flags"] + ["--min-names", "1000", "--save-combined"]
     sp.write_text(json.dumps(spec))
     return root, sp
+
+
+def parse_marginal(argv: list[str]) -> dict:
+    """dispatch_marginal_ic's parse, mirrored: the verb, then option/value pairs of VERB_OPTIONS (each once here), and
+    run_marginal_ic's refusal without VERB_REQUIRED."""
+    assert argv[0] == "marginal" and len(argv) % 2 == 1, argv
+    opts = {}
+    for key, value in zip(argv[1::2], argv[2::2]):
+        assert key in VERB_OPTIONS and key not in opts and not value.startswith("--"), (key, value)
+        opts[key] = value
+    assert set(VERB_REQUIRED) <= set(opts), sorted(set(VERB_REQUIRED) - set(opts))
+    return opts
+
+
+def verb_cli_from_cpp() -> tuple[set, set]:
+    """(options, required options) of the marginal verb, read from its C++: the `key == "--x") cfg.member` lines of
+    dispatch_marginal_ic, and the members run_marginal_ic refuses empty (its "bounded config" check)."""
+    text = (HERE.parents[1] / "atx-impl" / "src" / "strategy_marginal_ic.cpp").read_text(encoding="utf-8")
+    parser = text[text.index("int dispatch_marginal_ic("):]
+    member = dict(re.findall(r'key == "(--[a-z0-9-]+)"\) cfg\.(\w+)', parser))
+    member.update({k: "max_working_bytes" for k in re.findall(r'key == "(--max-memory-mib)"\) \{', parser)})
+    check = text[text.index("co::Status run_marginal_ic("):text.index("bounded config (needs")]
+    empty = set(re.findall(r"(?<!!)cfg\.(\w+)\.empty\(\)", check))
+    return set(member), {k for k, v in member.items() if v in empty}
+
+
+def test_marginal_argv_is_the_verbs_full_cli(tmp_path):
+    """The planned marginal argv is what the verb's parser takes: every required option, each option once with a value,
+    every pin the spec has (library, pool), the role, the parent's weights as themes, this cycle's fields and cache."""
+    assert verb_cli_from_cpp() == (VERB_OPTIONS, set(VERB_REQUIRED))           # the C++ CLI, pinned
+    assert set(RC.MARGINAL_REQUIRED) == set(VERB_REQUIRED)
+    assert set(RC.MARGINAL_BUILT) | set(RC.MARGINAL_SPEC_FLAGS) == VERB_OPTIONS  # nothing unbuildable, nothing unknown
+    root, sp = screen_root(tmp_path)
+    c = cycle_of(root, sp, screen=True, capabilities=CAPS)
+    st = next(s for s in c.steps() if s.phase == "marginal")
+    k = st.argv.index("--")
+    assert st.argv[k + 1] == "bin/ic.exe" and st.state == "pending"
+    assert parse_marginal(st.argv[k + 2:]) == {
+        "--candidate-cache": "out/CC", "--library": "lib/lib.json", "--library-sha256": c.pin("library"),
+        "--pool": "ref-w/train_combined.json", "--pool-sha256": c.pin("reference_combined"),
+        "--role": "role/manifest.json", "--themes": "ref-fit/composition_weights.json", "--fields": "out/F",
+        "--min-names": "1000", "--output": "out/MIC"}                        # --min-names: the u pass's
+    runner = st.argv[:k]
+    assert [runner[j + 1] for j, x in enumerate(runner) if x == "--bind"] == [
+        "bin/ic.exe", "lib/lib.json", "ref-w/train_combined.json", "role/manifest.json",
+        "ref-fit/composition_weights.json", "out/F/manifest.json"]
+    spec = json.loads(sp.read_text())
+    spec["marginal"] = {"output": "out/MIC", "flags": ["--max-memory-mib", "800", "--min-names", "200"]}   # no themes
+    sp.write_text(json.dumps(spec))
+    st = next(s for s in cycle_of(root, sp, capabilities=CAPS).steps() if s.phase == "marginal")
+    opts = parse_marginal(st.argv[st.argv.index("--") + 2:])
+    assert "--themes" not in opts and (opts["--max-memory-mib"], opts["--min-names"]) == ("800", "200")
+
+
+def test_marginal_spec_refused_before_any_run(tmp_path):
+    root, sp = screen_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    for change, needle in ((dict(flags=["--themes"]), "option/value pairs"),        # A-2's bare flag
+                           (dict(themes="reference_nope"), "marginal.themes"),
+                           (dict(themes=None, flags=["--themes", "ref-fit/composition_weights.json"]), "built by the step"),
+                           (dict(flags=["--role", "role/manifest.json"]), "built by the step"),
+                           (dict(flags=["--min-names", "2"]), "--min-names '2'"),
+                           (dict(flags=["--max-memory-mib", "99999"]), "--max-memory-mib '99999'"),
+                           (dict(flags=["--workers", "4"]), "--workers")):
+        with pytest.raises(RC.CycleError, match=re.escape(needle)) as e:
+            RC.validate_spec(dict(spec, marginal={k: v for k, v in dict(spec["marginal"], **change).items()
+                                                  if v is not None}))
+        assert e.value.code == RC.EXIT_USAGE
+    with pytest.raises(RC.CycleError, match="not a count"):
+        RC.validate_spec(dict(spec, ic=dict(spec["ic"], flags=["--min-names", "{n}"])))
+    # the verb's bindings, checked when the step is planned: nothing runs
+    (root / "ref-fit" / "composition_weights.json").write_text('{"weights": {"old": 0.5}}')   # not the pool's weights
+    assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_PIN
+    with pytest.raises(RC.CycleError, match="names composition weights") as e:
+        run(root, sp, screen=True, capabilities=CAPS)
+    assert e.value.code == RC.EXIT_PIN and calls(root) == []
+    (root / "ref-w" / "train_combined.json").write_text(pool_manifest(root, "lib/base.json",
+                                                                      "ref-fit/composition_weights.json"))
+    with pytest.raises(RC.CycleError, match="blended on role"):
+        run(root, sp, screen=True, capabilities=CAPS)
+    assert calls(root) == []
 
 
 def test_screen_stops_before_w(tmp_path):
@@ -1521,9 +1621,13 @@ def test_screen_stops_before_w(tmp_path):
     u = steps["u"].argv
     assert "--no-composition" in u and "--save-combined" not in u                     # B-1, when the exe offers it
     m = steps["marginal"].argv
+    pin = RC.sha256_file
     assert m[m.index("--") + 1:] == ["bin/ic.exe", "marginal", "--candidate-cache", "out/CC", "--library",
-                                     "lib/lib.json", "--pool", "ref-w/train_combined.json", "--themes", "--output",
-                                     "out/MIC"]
+                                     "lib/lib.json", "--library-sha256", pin(root / "lib/lib.json"), "--pool",
+                                     "ref-w/train_combined.json", "--pool-sha256", pin(root / "ref-w/train_combined.json"),
+                                     "--role", "role/manifest.json", "--themes", "ref-fit/composition_weights.json",
+                                     "--fields", "out/F", "--min-names", "1000", "--output", "out/MIC"]
+    assert steps["marginal"].state == "done" and (root / "out" / "MIC" / "marginal_ic.json").is_file()  # the verb ran
     assert {p: steps[p].state for p in ("w", "nav", "monitor", "summ")} == dict.fromkeys(("w", "nav", "monitor",
                                                                                           "summ"), "skipped")
     assert log.index("== marginal") < log.index("gate p1 PASS") < log.index("== w: skipped (screen: runs with the "
@@ -1648,12 +1752,15 @@ def add_alpha_root(tmp_path: Path) -> Path:
              f"{V70_OUT['u']}/summary.json": json.dumps({"status": "complete"}),
              f"{V70_OUT['u']}/orientations.json": "{}", f"{V70_OUT['u']}/train_daily_ic.csv": "id,h,v\n",
              f"{V70_OUT['w']}/summary.json": json.dumps({"status": "complete"}),
-             f"{V70_OUT['w']}/train_combined.json": "{}", f"{V70_OUT['fit']}/admission.json": "{}",
+             f"{V70_OUT['fit']}/admission.json": "{}", f"{V70_OUT['fit']}/composition_weights.json": "{}",
              f"{V70_CELL}/summary.json": json.dumps({"primary_scenario": "modeled-1bn-stale5-v1+swap-fin-v1"}),
              f"{V70_CELL}/{S2_CSV}": "net_return\n"}
     for rel, text in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
+    (root / V70_OUT["w"] / "train_combined.json").write_text(pool_manifest(
+        root, "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json",
+        f"{V70_OUT['fit']}/composition_weights.json"))              # the v7.0 pool: its role and weights by SHA-256
     return root
 
 
@@ -1715,7 +1822,16 @@ def test_add_alpha_entry_byte_identical_to_committed(tmp_path):
                             "report": []}
     assert (spec["summ"]["dsr_n"], spec["summ"]["cells_from_ledger"], "cells" in spec["summ"]) == ("ledger+1", True,
                                                                                                    False)
-    assert (spec["receipts"], spec["verdict"], spec["marginal"]["pool"]) == ("every-phase", True, "reference_combined")
+    assert (spec["receipts"], spec["verdict"]) == ("every-phase", True)
+    assert spec["marginal"] == {"output": "build-equity/mega-v71a-train-u-marginal", "pool": "reference_combined",
+                                "themes": "reference_weights"}                  # A2: the parent's weights, by input
+    assert spec["inputs"]["reference_weights"]["path"] == f"{V70_OUT['fit']}/composition_weights.json"
+    c = RC.Cycle(spec, RC.Resolver(root), capabilities=CAPS)                       # the step accepts the derived spec
+    st = c.marginal_step(c.ipath("library"), FIELDS_V7)
+    opts = parse_marginal(st.argv[st.argv.index("--") + 2:])
+    assert (opts["--themes"], opts["--role"], opts["--pool-sha256"], opts["--min-names"]) == (
+        f"{V70_OUT['fit']}/composition_weights.json", "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json",
+        spec["inputs"]["reference_combined"]["sha256"], "1000")
     assert [c["name"] for c in spec["compare"]] == ["ref-s2-daily", "parent-orientations", "parent-train-daily-ic"]
     assert "phases" not in spec["runner"]                                        # a 3-year role: no OD-2 caps
     reg_bytes = (s / "alphas" / "registry.json").read_bytes()

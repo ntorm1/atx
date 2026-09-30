@@ -6,12 +6,14 @@
 #include <new>
 #include <stdexcept>
 #include <utility>
+#include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
 
 namespace atx::impl::strategy {
 namespace {
 using namespace atx;
 namespace co = atx::core;
+namespace cb = atx::engine::combine;
 constexpr usize max_candidates = 256;
 constexpr usize max_themes = 32; // pinned within-theme redistribution (ew-theme-v6)
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
@@ -34,9 +36,42 @@ template<class F> void each_centered_rank(const std::vector<Ranked>& v, F&& appl
     b = e;
   }
 }
+// f64 planes per theme: redistribute keeps a blend and a present-weight plane,
+// standardise one summed-rank plane (NaN = no member present).
+constexpr u64 theme_planes(IcThemeRule rule) noexcept {
+  return rule == IcThemeRule::standardise ? 1U : 2U;
+}
+// ew-theme-std-v1 pooled add: dates split into contiguous bands as the pinned path splits
+// them (quotient/remainder, no count*band), one ranked row per worker, allocated once.
+// rank_dates(begin, end, row) must touch only rows [begin, end) of what it writes.
+template <class RankDates>
+co::Status pooled_date_bands(engine::parallel::DetPool& pool, usize dates, usize names,
+                             std::vector<std::vector<Ranked>>& worker_rows, RankDates&& rank_dates) {
+  const usize workers = pool.n_workers();
+  if (worker_rows.size() != workers) {
+    try {
+      worker_rows.assign(workers, {});
+      for (auto& row : worker_rows) row.reserve(names);
+    } catch (const std::bad_alloc&) {
+      worker_rows.clear();
+      return co::Err(co::ErrorCode::OutOfRange, "IC composition: worker row allocation failed");
+    } catch (const std::length_error&) {
+      worker_rows.clear();
+      return co::Err(co::ErrorCode::OutOfRange, "IC composition: worker row extent exceeded");
+    }
+  }
+  const usize bands = std::min(dates, workers * 4U);
+  pool.parallel_for(bands, [&](usize band, usize worker) {
+    const usize begin = dates / bands * band + dates % bands * band / bands;
+    const usize end = dates / bands * (band + 1U) + dates % bands * (band + 1U) / bands;
+    rank_dates(begin, end, worker_rows[worker]);
+  });
+  return co::Ok();
+}
 } // namespace
 
-co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize count, usize themes) {
+co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize count, usize themes,
+                                             IcThemeRule rule) {
   if (!dates || !names || !count || count > max_candidates || themes > max_themes)
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: invalid dimensions/count");
   u64 total = 4096;
@@ -50,8 +85,9 @@ co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize cou
       !add(dates, 4 * sizeof(f64) + sizeof(usize)) ||
       !add(names, sizeof(Ranked) + 2 * sizeof(f64)) || !add(count, 512))
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
-  // Pinned themes: one blend and one present-weight f64 plane per theme (none: +0).
-  if (themes && !add(dates * names, 2 * sizeof(f64) * static_cast<u64>(themes)))
+  // Pinned themes: per theme a blend and a present-weight f64 plane (redistribute) or
+  // one summed-rank f64 plane (standardise); none: +0.
+  if (themes && !add(dates * names, theme_planes(rule) * sizeof(f64) * static_cast<u64>(themes)))
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
   return co::Ok(total);
 }
@@ -69,6 +105,11 @@ struct IcComposition::Impl {
   std::vector<usize> theme;
   std::vector<f64> theme_mass;
   std::vector<std::vector<f64>> theme_blend, theme_present;
+  // ew-theme-std-v1 (empty: off): theme index per candidate, W_theme, and per theme the
+  // date-major plane of summed weighted signed member ranks, NaN where no member is present.
+  std::vector<usize> std_theme;
+  std::vector<f64> std_mass;
+  std::vector<std::vector<f64>> std_plane;
   IcCompositionResult result;
   usize next{};
   bool finished{};
@@ -80,7 +121,7 @@ IcComposition& IcComposition::operator=(IcComposition&&) noexcept = default;
 
 co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
     std::span<const IcCompositionCandidate> candidates, std::span<const u8> member,
-    std::span<const f64> pinned, std::span<const usize> pinned_themes) {
+    std::span<const f64> pinned, std::span<const usize> pinned_themes, IcThemeRule rule) {
   // Pinned themes need pinned weights; only positive-weight candidates name a theme.
   usize themes = 0;
   if (!pinned_themes.empty()) {
@@ -95,7 +136,8 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
     if (!themes)
       return co::Err(co::ErrorCode::InvalidArgument, "IC composition: themes without a weighted candidate");
   }
-  ATX_TRY(auto bytes, ic_composition_working_bytes(cfg.dates, cfg.instruments, candidates.size(), themes));
+  ATX_TRY(auto bytes, ic_composition_working_bytes(cfg.dates, cfg.instruments, candidates.size(), themes, rule));
+  const bool standardise = themes && rule == IcThemeRule::standardise;
   if (bytes > cfg.max_working_bytes)
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working budget exceeded");
   const usize cells = cfg.dates * cfg.instruments;
@@ -135,7 +177,14 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
       p->weights[i] = 1.0 / (static_cast<f64>(families) * static_cast<f64>(n));
     }
     p->row.reserve(cfg.instruments); p->current.resize(cfg.instruments); p->target.resize(cfg.instruments);
-    if (themes) {
+    if (standardise) {
+      p->std_theme.assign(pinned_themes.begin(), pinned_themes.end());
+      p->std_mass.assign(themes, 0.0);
+      for (usize i = 0; i < candidates.size(); ++i)
+        if (pinned[i] > 0) p->std_mass[pinned_themes[i]] += pinned[i];
+      p->std_plane.resize(themes);
+      for (auto& plane : p->std_plane) plane.assign(cells, nan);
+    } else if (themes) {
       p->theme.assign(pinned_themes.begin(), pinned_themes.end());
       p->theme_mass.assign(themes, 0.0);
       for (usize i = 0; i < candidates.size(); ++i)
@@ -170,6 +219,7 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
   // Default weights are strictly positive, so the weight test alters only pinned
   // zeros: skipping adds of +/-0 leaves every accumulator bit unchanged.
   if (sign == 0 || p.weights[index] == 0) { ++p.next; return co::Ok(); }
+  if (!p.std_theme.empty()) return add_standardised(index, signal, sign, pool);
   const f64 weight = p.weights[index];
   // Pinned themes: the candidate accumulates into its theme's blend plane and adds
   // its weight to the theme's present-weight plane (folded by finish); otherwise
@@ -225,6 +275,40 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
   ++p.next; return co::Ok();
 }
 
+// ew-theme-std-v1: the member's centred tied rank over member names with a finite signal
+// (the pinned path's rank and sign * weight * r expression) accumulates into its theme's
+// plane instead of the blend; coverage is counted as the pinned path counts it. add()
+// has validated the call and skipped neutral and zero-weight candidates.
+co::Status IcComposition::add_standardised(usize index, std::span<const f64> signal, int sign,
+                                           engine::parallel::DetPool* pool) {
+  auto& p = *impl_;
+  const f64 weight = p.weights[index];
+  f64* const plane = p.std_plane[p.std_theme[index]].data();
+  const auto rank_dates = [&](usize begin, usize end, std::vector<Ranked>& row) {
+    for (usize d = begin; d < end; ++d) {
+      row.clear(); const auto offset = d * p.cfg.instruments;
+      for (usize i = 0; i < p.cfg.instruments; ++i)
+        if (p.member[offset + i] && std::isfinite(signal[offset + i]))
+          row.emplace_back(signal[offset + i], i);
+      if (row.size() < 2) continue;
+      cb::for_each_centered_rank(row, [&](usize i, f64 r) {
+        cb::accumulate_group_cell(plane[offset + i], static_cast<f64>(sign) * weight * r);
+      });
+      p.result.contribution_fraction[d] += weight * static_cast<f64>(row.size());
+    }
+  };
+  if (pool == nullptr || pool->n_workers() < 2 || p.cfg.dates < 2) {
+    rank_dates(0, p.cfg.dates, p.row);
+  } else {
+    // SAFETY (data races): bands partition [0, dates), so each plane cell and each
+    // contribution_fraction[d] has exactly one writer; worker w alone uses worker_rows[w];
+    // weights, membership and the borrowed signal are read-only; parallel_for's barrier
+    // orders every write before it returns.
+    ATX_TRY_VOID(pooled_date_bands(*pool, p.cfg.dates, p.cfg.instruments, p.worker_rows, rank_dates));
+  }
+  ++p.next; return co::Ok();
+}
+
 co::Result<IcCompositionResult> IcComposition::finish() {
   if (!impl_ || impl_->finished || impl_->next != impl_->candidates.size())
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: incomplete/finished input");
@@ -238,6 +322,13 @@ co::Result<IcCompositionResult> IcComposition::finish() {
       if (present[k] > 0) out.signal[k] += p.theme_mass[t] * (blend[k] / present[k]);
   }
   std::vector<std::vector<f64>>().swap(p.theme_blend); std::vector<std::vector<f64>>().swap(p.theme_present);
+  // ew-theme-std-v1 (else no-op): each theme's plane re-ranked per date over the names
+  // with a present member, W_theme * rank added in theme index order; planes released
+  // before the target pass. Nonmember cells are never present, so they stay NaN.
+  for (usize t = 0; t < p.std_plane.size(); ++t)
+    ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
+                                      out.signal, p.row));
+  std::vector<std::vector<f64>>().swap(p.std_plane);
   for (usize d = 0; d < p.cfg.dates; ++d)
     out.contribution_fraction[d] = out.eligible_names[d]
       ? out.contribution_fraction[d] / static_cast<f64>(out.eligible_names[d]) : 0;

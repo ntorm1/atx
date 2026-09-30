@@ -25,6 +25,11 @@ contract (unique positive (date, id) key, finite positive close and cumulReturnF
 cumulReturnFactor is chained with the builder's ``factor_breaks`` (rule factor-break-v1, as ``shares_out``): every
 repaired step is divided out, and a span across a kept_gap step is NaN. Rows dated after the role's last session or on
 or after the builder's seal are never used.
+
+``--reuse`` (v8 C-3 contract; Ruling E-21): ``PRODUCERS``, ``HOST_HANDLES``, ``producer_group``, ``field_spec``,
+``reuse_inputs`` and ``entry_inputs``; every computed entry records ``producer`` (this module's code identity). The
+inputs beyond the role are pinned by the role itself: ``--price-source`` must hash to the role's ``source_sha256``
+(and the prior is bound to the same role), and ``xrd0_ttm``'s required fields must be reused with it.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ import hashlib
 import math
 from pathlib import Path
 import shutil
+import sys
 
 import numpy as np
 import pyarrow as pa
@@ -43,6 +49,7 @@ from research_fields_sec import _Host, nyse_sessions  # the SEC module's calenda
 
 GROUP = "price"
 OPTIONS = ("price_source",)
+HOST_HANDLES = ("h",)                 # v8 C-3: the producers read the builder through ``h``
 LAG_SESSIONS = 1
 CEQ_SESSIONS = 1260                   # five years of sessions (Daniel-Titman 2006: 60 months)
 CEQ_DOMAIN = (-math.log(100.0), math.log(100.0))   # outside: a vendor share-units defect (1000x = 6.9), counted
@@ -652,6 +659,26 @@ def bind(host_namespace: dict) -> "PriceFieldModule":
     return PriceFieldModule(host_namespace)
 
 
+# -- --reuse interface (v8 C-3; Ruling E-21) ------------------------------------------------------------------------
+def producer_group(name: str) -> str:
+    return FIELDS[name]["group"]
+
+
+def field_spec(name: str) -> dict:
+    return FIELDS[name]
+
+
+def reuse_inputs(name: str, options: dict) -> dict:
+    """This run's input pins of a price field beyond the role and its required fields: none. The price source must
+    hash to the role's source_sha256 and the prior is bound to the same role (load_prior)."""
+    return {}
+
+
+def entry_inputs(entry: dict) -> dict:
+    """The same pins as a manifest entry records them (none)."""
+    return {}
+
+
 class PriceFieldModule:
     GROUP, FIELDS, OPTIONS = GROUP, FIELDS, OPTIONS
 
@@ -714,13 +741,12 @@ class PriceFieldModule:
         if "xrd0_ttm" in want:
             results.update(zero_filled_rows(h, role, output, budget))
         source_checks[GROUP] = st
-        producer = {"module": Path(__file__).name, **h.code_identity(Path(__file__).resolve())}
+        producer = {"module": Path(__file__).name, **h.module_code_identity(sys.modules[__name__])}  # v8 C-3 --reuse
         for x in names:
             w, sources, extra = results[x]
             spec = FIELDS[x]
-            field_extras[x] = {"formula_id": spec["formula_id"],
+            field_extras[x] = {"producer": producer, "formula_id": spec["formula_id"],
                                "formula_sha256": h.formula_id(x, h.spec_definition(x, LAG_SESSIONS)),
-                               "lag_sessions": LAG_SESSIONS, "min_history": spec["min_history"],
-                               "producer_code": producer, **extra}
+                               "lag_sessions": LAG_SESSIONS, "min_history": spec["min_history"], **extra}
             outcome[x] = (w, sources, w.coverage())
         budget.report("price-complete", fields=len(names))
