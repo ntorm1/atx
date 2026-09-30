@@ -2,11 +2,18 @@
 """Run one owned research process with time/RAM limits and an immutable receipt.
 
 Arguments after -- are passed directly to the process, never through a shell.
-Outputs must be new directories inside this worktree. This requires psutil and
-does not authorize concurrent compilation or turn a smoke run into alpha evidence.
+Outputs must be new directories inside the root (--root, default this worktree),
+where the process runs. This requires psutil and does not authorize concurrent
+compilation or turn a smoke run into alpha evidence.
 This is a sampled operational guard, not a process sandbox: supported research
 commands must not detach children between samples. Observed descendants remain
 owned and monitored after the direct child exits.
+
+The source must be committed: the root's `git status` restricted to the code
+pathspec (research_tree.CODE_PATHSPEC) must be empty; dirty paths outside it
+(lane reports, research outputs) are listed in the receipt, not refused.
+--no-git (contract K3) skips git for a root outside any repository (test roots
+such as the tiny_world fixture) and is refused for a root inside one.
 """
 from __future__ import annotations
 
@@ -22,6 +29,9 @@ import sys
 import time
 
 import psutil
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import research_tree  # noqa: E402
 
 
 def digest(path: Path) -> str:
@@ -67,16 +77,22 @@ def main() -> int:
     parser.add_argument("--max-rss-mib", type=int, default=1024)
     parser.add_argument("--min-free-mib", type=int, default=256)
     parser.add_argument("--bind", type=Path, action="append", default=[])
+    parser.add_argument("--root", type=Path, default=None,
+                        help="where the process runs and outputs go (default: this worktree)")
+    parser.add_argument("--no-git", action="store_true",
+                        help="no source pin: only for a --root outside any git repository (contract K3)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if (not command or not math.isfinite(args.seconds) or not 0 < args.seconds <= 600
             or not 32 <= args.max_rss_mib <= 8192 or not 64 <= args.min_free_mib <= 8192):
         parser.error("require a command, <=600 seconds, and explicit bounded RAM limits")
-    root = Path(__file__).resolve().parents[1]
+    root = (args.root or Path(__file__).resolve().parents[1]).resolve()
+    if args.no_git and research_tree.no_git_refusal(root):
+        parser.error(research_tree.no_git_refusal(root))
     output = args.output.resolve()
     if not output.is_relative_to(root) or output == root:
-        parser.error("output must be a new directory inside this worktree")
+        parser.error("output must be a new directory inside the root")
     executable = shutil.which(command[0])
     if executable is None:
         parser.error("executable was not found")
@@ -87,10 +103,13 @@ def main() -> int:
         if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
             parser.error("bind small config/source manifests, not full data payloads")
         bindings.append({"path": str(path), "sha256": digest(path)})
-    source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True)
-    if dirty.strip():
-        parser.error("commit the source before running a recorded research experiment")
+    source, ignored = None, []
+    if not args.no_git:
+        source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        blocking, ignored = research_tree.dirty_paths(root)
+        if blocking:
+            parser.error("commit the source before running a recorded research experiment (dirty in the code "
+                         f"pathspec: {', '.join(blocking[:8])})")
     output.mkdir(parents=True, exist_ok=False)
     receipt = dict(schema="atx.bounded-research-run/v1", source_sha=source,
         started_utc=dt.datetime.now(dt.timezone.utc).isoformat(), command=command,
@@ -98,7 +117,9 @@ def main() -> int:
         limits=dict(seconds=args.seconds, max_rss_mib=args.max_rss_mib,
                     min_free_mib=args.min_free_mib), sampled_peak_tree_rss_bytes=0,
         minimum_system_free_bytes=psutil.virtual_memory().available,
-        outcome="launch-failed", exit_code=None)
+        outcome="launch-failed", exit_code=None,
+        git="none (--no-git: root outside any repository)" if args.no_git else "clean in the code pathspec",
+        dirty_outside_pathspec=ignored)
     (output / "start.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     started = time.monotonic()
     child = None
