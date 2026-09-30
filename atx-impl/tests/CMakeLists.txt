@@ -109,3 +109,13 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     strategy_spo_test.cpp
     strategy_spo_pin_test.cpp)
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
+
+# Platform v8 E-3: the three strategy executables are ctest-visible under one label, so a built tree qualifies them
+# with `ctest -L atx_equity_strategy`. They stay EXCLUDE_FROM_ALL: PRE_TEST discovery enumerates each at ctest time,
+# and one that is not built appears as <target>_NOT_BUILT, which carries no label. The prefix keeps their names
+# apart from the same sources registered by atx-impl-tests above and by the atx-engine groups.
+foreach(_strategy_tests IN ITEMS
+        atx-impl-strategy-tests atx-impl-strategy-ic-tests atx-impl-strategy-target-tests)
+    gtest_discover_tests(${_strategy_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_strategy_tests}."
+        PROPERTIES LABELS atx_equity_strategy)
+endforeach()
