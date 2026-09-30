@@ -86,6 +86,19 @@ at or after the seal is refused before a statistic is formed.
                          CBB percentile CI and the studentized CBB (Ledoit-Wolf) two-sided and one-sided p, a per-year
                          dSR table and the verdict dSR > 0 and one-sided p < --bundle-alpha (.10, the freeze gate);
                          --bundle-json OUT writes it.
+
+Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
+  --pool DIR ... [--pool-ids ID,...] [--pool-reference DIR ...]
+                         one pooled row of era NAV dirs in date order (era_pool.pool_rows), after the listed dirs:
+                         return rows, deployment, tau sessions and the post-ramp rows are taken per era (each era
+                         deploys afresh), the eras must share one scenario and one rule, and their windows pass
+                         era_pool.check_windows (no overlap, date order, nothing sealed or straddling the TRAIN begin).
+                         One era: the era's own row (pooled == single, apart from dir and the pool block). Several:
+                         net and gross Sharpe recomputed over the pooled return rows (mean / sd ddof 1 x sqrt 252),
+                         hac_t and held_share null, the per-era rows in row["pool"]["eras"]; the paired block against
+                         --pool-reference (pooled) or --reference is skipped with a note below 3 common sessions.
+                         With --ledger: one line per era (adds no trial) and one pooled line (window POOL, one trial);
+                         a one-era pool is the era's own line (backtest_integrity.ledger_pool_records).
 """
 from __future__ import annotations
 
@@ -103,6 +116,7 @@ import numpy as np
 
 import backtest_integrity as BI
 
+EP = BI.era_pool()  # task H-1: the era pooling rules (atx-engine/tools/era_pool.py; standard library)
 ANNUAL = 252
 DEFAULT_DRAWS, DEFAULT_BLOCK, DEFAULT_SEED = 2000, 21, 20260927
 V8_DRAWS, V8_SEED = 4999, 20260929  # v8-prereg item 4 (block stays DEFAULT_BLOCK = 21)
@@ -190,10 +204,20 @@ def load_daily_csv(path: Path, *, allow_sealed: bool = False) -> dict:
     return out
 
 
+def segments(daily: dict) -> list[tuple[int, int]]:
+    """[(first row, end row)] of each era segment of a pooled daily dict (``era_pool.pool_rows``: key SEGMENTS); a
+    single CSV is one segment. Every per-CSV rule below (first row, deployment, ramp) applies per segment."""
+    rows = len(next(iter(daily.values())))       # any column (SEGMENTS is added after the columns)
+    starts = list(daily.get(EP.SEGMENTS) or [0])
+    return list(zip(starts, starts[1:] + [rows]))
+
+
 def return_mask(daily: dict) -> np.ndarray:
-    """Rows that enter the summary's return statistics: return_observation and not the first row."""
+    """Rows that enter the summary's return statistics: return_observation and not the first row (of each era)."""
     mask = daily["return_observation"] == 1
     mask[:1] = False
+    for first, _ in segments(daily)[1:]:  # an era pool: each era's first row, as a single CSV's
+        mask[first] = False
     return mask
 
 
@@ -202,13 +226,32 @@ def deployment_row(daily: dict) -> int | None:
     return int(fills[0]) if fills.size else None
 
 
+def deployment_rows(daily: dict) -> list[int]:
+    """The deployment row of each era segment (one per CSV; each era deploys afresh)."""
+    out = []
+    for first, end in segments(daily):
+        dep = deployment_row({k: daily[k][first:end] for k in ("executed", "traded_dollars")})
+        if dep is not None:
+            out.append(first + dep)
+    return out
+
+
 def turnover_rows(daily: dict) -> np.ndarray:
     """The tau_t sessions: executed with positive pre-trade gross, the deployment session excluded (bool mask)."""
     keep = (daily["executed"] == 1) & (daily["pretrade_gross_dollars"] > 0)
-    dep = deployment_row(daily)
-    if dep is not None:
+    for dep in deployment_rows(daily):
         keep[dep] = False
     return keep
+
+
+def post_ramp_rows(daily: dict):
+    """Index of the rows after the first RAMP_ROWS: the slice of a single CSV, or a mask over each era segment."""
+    if EP.SEGMENTS not in daily:
+        return slice(RAMP_ROWS, None)
+    mask = np.zeros(int(daily["gross_leverage"].size), dtype=bool)
+    for first, end in segments(daily):
+        mask[first + RAMP_ROWS:end] = True
+    return mask
 
 
 def turnover_gmv(daily: dict) -> np.ndarray:
@@ -231,11 +274,13 @@ def construction_stats(daily: dict, scenario: dict) -> dict:
     cost_tau = float((daily["trade_cost_dollars"][keep] / daily["pretrade_nav"][keep]).sum())
     rows = int(daily["gross_leverage"].size)
     any_prev = prev.size > 0
-    post_ramp = rows > RAMP_ROWS
+    ramp = post_ramp_rows(daily)
+    post_rows = int(daily["gross_leverage"][ramp].size)
+    post_ramp = post_rows > 0
     return {
-        "mean_gross_leverage_post_ramp": float(daily["gross_leverage"][RAMP_ROWS:].mean()) if post_ramp else None,
-        "mean_net_leverage_post_ramp": float(daily["net_leverage"][RAMP_ROWS:].mean()) if post_ramp else None,
-        "post_ramp_rows": max(rows - RAMP_ROWS, 0),
+        "mean_gross_leverage_post_ramp": float(daily["gross_leverage"][ramp].mean()) if post_ramp else None,
+        "mean_net_leverage_post_ramp": float(daily["net_leverage"][ramp].mean()) if post_ramp else None,
+        "post_ramp_rows": post_rows,
         "mean_gross_leverage": float(daily["gross_leverage"][prev].mean()) if any_prev else None,
         "mean_net_leverage": float(daily["net_leverage"][prev].mean()) if any_prev else None,
         "mean_abs_net_leverage": float(np.abs(daily["net_leverage"][prev]).mean()) if any_prev else None,
@@ -645,6 +690,111 @@ def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> tuple[
     return out, nets
 
 
+# ------------------------------------------------------------------ era pools (platform v8 H-1)
+def load_era(d: Path, args) -> tuple[dict, dict, dict]:
+    """(summary, scenario, daily) of one era's NAV dir (its primary scenario, or --scenario)."""
+    summary = load_summary(d)
+    scen = scenario_of(summary, args.scenario)
+    return summary, scen, load_daily(d, scen["scenario"])
+
+
+def pooled_daily(dirs: list[str], ids: list[str], args) -> tuple[dict, list[tuple[dict, dict, dict]]]:
+    """The pooled daily dict of era NAV dirs (date order; era_pool.pool_rows) and each era's (summary, scenario,
+    daily). Refuses eras of different scenarios or rules and era windows that era_pool.check_windows refuses."""
+    loaded = [load_era(Path(d), args) for d in dirs]
+    if len({scen["scenario"] for _, scen, _ in loaded}) != 1 or len({s.get("rule") for s, _, _ in loaded}) != 1:
+        raise SystemExit("nav_summ: --pool eras must share one scenario and one rule")
+    rw = BI.research_window()
+    try:
+        windows = [(i, int(daily["session_ns"][0]), int(daily["session_ns"][-1]) + BI.DAY_NS)
+                   for i, (_, _, daily) in zip(ids, loaded)]
+        EP.check_windows(windows, rw.TRAIN_BEGIN_NS, rw.TRAIN_END_NS, rw.SEAL_NS)
+        return EP.pool_rows([(i, daily) for i, (_, _, daily) in zip(ids, loaded)]), loaded
+    except (EP.PoolError, IndexError) as exc:
+        raise SystemExit(f"nav_summ: --pool: {exc}") from exc
+
+
+def pool_weights(weights: list[dict], summaries: list[dict]) -> tuple[dict | None, str]:
+    """The weights of a pooled row: every era's summary matches a --weights file and the matched files carry one
+    weighted standalone turnover (the per-era files of one pooled fit); else none."""
+    matched = [match_weights(weights, s) for s in summaries]
+    if all(how == "matched" for _, how in matched) and \
+            len({w["weighted_standalone_turnover"] for w, _ in matched}) == 1:
+        return matched[-1][0], "matched (every era)"
+    return None, "none"
+
+
+def paired_or_note(nets: dict, ref_nets: dict, args) -> dict:
+    """A pooled row's paired block, skipped with a note below 3 sessions in common with the reference."""
+    a, b = align(nets, ref_nets)
+    if a.size < 3:
+        return {"paired_note": f"paired skipped: {a.size} session(s) in common with the reference (3 needed)"}
+    return {"paired": paired_stats(a, b, args.draws, args.block, args.seed)}
+
+
+def analyse_pool(dirs: list[str], ids: list[str], args, weights: list[dict], ref_nets: dict | None) -> tuple[dict, dict]:
+    """The pooled row of era NAV dirs (date order) and its net series.
+
+    One era: that era's row (``analyse``) with the pool's dir and block, so pooled == single. Several: the statistics
+    of the pooled daily dict (each era's first row, deployment and ramp are per era: ``segments``), net and gross Sharpe
+    recomputed with ``sharpe`` over the pooled return rows, hac_t and held_share null. The eras' own rows (no
+    reference) sit in row["pool"]["eras"]."""
+    label = EP.pool_label(dirs)
+    daily, loaded = pooled_daily(dirs, ids, args)
+    eras = [analyse(Path(d), args, weights, None) for d in dirs]
+    if len(dirs) == 1:
+        row, nets = dict(eras[0][0]), eras[0][1]
+    else:
+        ret = return_mask(daily)
+        scen = loaded[0][1]
+        row = {"scenario": scen["scenario"], "rule": loaded[0][0].get("rule"),
+               "net_sharpe": finite_or_none(sharpe(daily["net_return"][ret])),
+               "gross_sharpe": finite_or_none(sharpe(daily["gross_return"][ret])) if "gross_return" in daily else None,
+               "hac_t": None, **construction_stats(daily, {})}
+        if weights:
+            w, how = pool_weights(weights, [s for s, _, _ in loaded])
+            row["weights_match"] = how
+            if w is not None:
+                row.update(netting_ratio=netting_ratio(row["tau_gmv_mean"], w["weighted_standalone_turnover"]),
+                           weighted_standalone_turnover=w["weighted_standalone_turnover"],
+                           tau_book=row["tau_gmv_mean"], weights_sha256=w["sha256"])
+        nets = net_series(daily)
+        row["net_moments"] = net_moments(np.array(list(nets.values()), dtype=np.float64))
+        if getattr(args, "year_table", False):
+            row["year_table"] = year_table(daily)
+    if ref_nets is not None:
+        row.update(paired_or_note(nets, ref_nets, args))
+    row["dir"] = label
+    row["pool"] = {"schema": EP.SCHEMA, "ids": list(ids), "dirs": [str(d) for d in dirs],
+                   "segments": list(daily[EP.SEGMENTS]),
+                   "eras": [dict(r, id=i, role_sha256=s.get("role_sha256"))
+                            for i, (r, _), (s, _, _) in zip(ids, eras, loaded)]}
+    return row, nets
+
+
+def pool_ids(args) -> list[str]:
+    ids = args.pool_ids.split(",") if args.pool_ids else [f"E{k}" for k in range(1, len(args.pool) + 1)]
+    try:
+        ids = [EP.check_id(i) for i in ids]
+    except EP.PoolError as exc:
+        raise SystemExit(f"nav_summ: --pool-ids: {exc}") from exc
+    if len(ids) != len(args.pool) or len(set(ids)) != len(ids):
+        raise SystemExit("nav_summ: --pool-ids names each --pool dir once (distinct ids)")
+    return ids
+
+
+def print_pool(r: dict) -> None:
+    p = r["pool"]
+    print(f"   pool {','.join(p['ids'])} (segments {p['segments']}): {len(p['ids'])} era(s) in date order")
+    for e in p["eras"]:
+        print(f"   era {e['id']} {e['dir']}: net {fmt(e['net_sharpe'], '+.3f')} gross {fmt(e['gross_sharpe'], '+.3f')} "
+              f"hac {fmt(e['hac_t'], '+.2f')} return rows {e['return_rows']} tau_gmv mean "
+              f"{fmt(e['tau_gmv_mean'], '.4f')} gross_lev_post_ramp {fmt(e['mean_gross_leverage_post_ramp'], '.4f')} "
+              f"({e['post_ramp_rows']} rows)")
+    if "paired_note" in r:
+        print(f"   {r['paired_note']}")
+
+
 def print_analysis(r: dict, reference: str | None) -> None:
     print(f"== {r['dir']} [{r['scenario']}] rule={r['rule']}")
     print(f"   construction: gross_lev {fmt(r['mean_gross_leverage'], '.4f')} net_lev {fmt(r['mean_net_leverage'], '+.4f')} "
@@ -748,9 +898,11 @@ def ledger_fields(args) -> dict:
 def integrity(args, argv, results, analysed) -> None:
     """--ledger / --psr / --effective-n / --pbo / --ledger-n, after the legacy per-dir analysis (v8: the v8 ledger
     fields and chain, --dsr-ledger and the v8 Appendix A block). Every ledger reader skips protocol lines."""
-    nets_by = {d: nets for d, (_, nets) in zip(args.dirs, analysed)}
+    pool = getattr(args, "pool", None)
+    labels = list(args.dirs) + ([results[-1]["dir"]] if pool else [])  # the pooled row is the last result
+    nets_by = {d: nets for d, (_, nets) in zip(labels, analysed)}
     v8 = getattr(args, "protocol", "v7") == "v8"
-    if args.ledger and args.dirs:
+    if args.ledger and (args.dirs or pool):
         run = {k: v for k, v in run_provenance(argv, []).items() if k in ("script_sha256", "git_head")}
         recs = []
         for d, r in zip(args.dirs, results):
@@ -761,24 +913,40 @@ def integrity(args, argv, results, analysed) -> None:
                                              note=args.ledger_note, run=run, **ledger_fields(args)))
             except ValueError as exc:
                 raise SystemExit(f"nav_summ: {exc}") from exc
+        pool_recs = []
+        if pool:
+            pooled = results[-1]
+            eras = [{"id": e["id"], "role_sha256": e.get("role_sha256"), "cell": e["dir"],
+                     "summary_path": Path(e["dir"]) / "summary.json",
+                     "daily_path": Path(e["dir"]) / f"daily_{e['scenario']}.csv", "scenario": e["scenario"],
+                     "nets": net_series(load_era(Path(e["dir"]), args)[2]), "net_sharpe": e["net_sharpe"]}
+                    for e in pooled["pool"]["eras"]]
+            try:
+                pool_recs = BI.ledger_pool_records(args.ledger_kind, eras, nets_by[pooled["dir"]],
+                                                   pooled["net_sharpe"], count=args.ledger_count,
+                                                   note=args.ledger_note, run=run, **ledger_fields(args))
+            except ValueError as exc:
+                raise SystemExit(f"nav_summ: {exc}") from exc
+            recs += pool_recs
         try:
             added, skipped = BI.ledger_append(Path(args.ledger), recs, chain=v8)
         except ValueError as exc:
             raise SystemExit(f"nav_summ: {exc}") from exc
         added_ids = {a["trial_id"] for a in added}
-        for rec, r in zip(recs, results):
+        owners = recs[:len(args.dirs)] + pool_recs[-1:]   # the pooled row owns its trial line (the last)
+        for rec, r in zip(owners, results):
             r["ledger"] = {"path": args.ledger, "trial_id": rec["trial_id"], "kind": rec["kind"],
                            "appended": rec["trial_id"] in added_ids}
         print(f"== ledger {args.ledger}: appended {len(added)}, skipped {len(skipped)} already ledgered "
               f"(kind {args.ledger_kind})")
     if args.psr:
-        for d, r in zip(args.dirs, results):
+        for d, r in zip(labels, results):
             r["psr"] = BI.psr_report(np.array(list(nets_by[d].values()), dtype=np.float64), args.psr_benchmarks,
                                      args.psr_alpha)
     eff = None
     if args.effective_n:
         if args.effective_n == "dirs":
-            names, series = list(args.dirs), [nets_by[d] for d in args.dirs]
+            names, series = list(labels), [nets_by[d] for d in labels]
         else:
             records = BI.ledger_read(Path(args.effective_n))
             names, series = BI.ledger_net_series(
@@ -789,7 +957,7 @@ def integrity(args, argv, results, analysed) -> None:
             r["deflated_effective_n"] = dict(BI.effective_n_dsr(r["net_moments"], eff), clusters=eff["clusters"],
                                              source=args.effective_n)
             r["deflated_lo_null"] = BI.lo_null_dsr(r["net_moments"], args.dsr_n)
-    for d, r in zip(args.dirs, results):
+    for d, r in zip(labels, results):
         if "deflated_effective_n" in r or "psr" in r:
             print(f"== integrity {d}")
             print_integrity(r)
@@ -814,10 +982,13 @@ def integrity(args, argv, results, analysed) -> None:
         records = BI.ledger_read(Path(args.dsr_ledger))
         present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
         wid = BI.window_id()
-        for d, r in zip(args.dirs, results):
-            series_sha = BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv")
-            r["deflated_ledger"] = ledger_dsr(r["net_moments"], records,
-                                              BI.trial_id("construction", series_sha) in present, wid)
+        for d, r in zip(labels, results):
+            if "pool" in r and d not in args.dirs:   # the pooled row: its pooled trial_id (task H-1)
+                tid = BI.pooled_trial_id("construction", [BI.sha256_file(Path(e["dir"]) / f"daily_{e['scenario']}.csv")
+                                                          for e in r["pool"]["eras"]])
+            else:
+                tid = BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
+            r["deflated_ledger"] = ledger_dsr(r["net_moments"], records, tid in present, wid)
             print(f"== ledger DSR {d}")
             print_ledger_dsr(r["deflated_ledger"])
     if args.ledger_n:
@@ -873,6 +1044,11 @@ def main(argv=None) -> int:
                     help="cumulative paired test FINAL vs BASE with its verdict")
     ap.add_argument("--bundle-alpha", type=float, default=BUNDLE_ALPHA)
     ap.add_argument("--bundle-json", default=None, help="write the --bundle result as JSON")
+    ap.add_argument("--pool", nargs="+", default=None, metavar="DIR",
+                    help="era NAV dirs in date order: one pooled row after the listed dirs (task H-1)")
+    ap.add_argument("--pool-ids", default=None, help="ID,... of the --pool eras (default E1,E2,...)")
+    ap.add_argument("--pool-reference", nargs="+", default=None, metavar="DIR",
+                    help="the reference's era NAV dirs, pooled, for the pooled row's paired dSR (default --reference)")
     argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
     v8 = args.protocol == "v8"
@@ -881,19 +1057,21 @@ def main(argv=None) -> int:
     args.year_table = args.year_table or v8
     if args.dsr_n < 2:
         ap.error("--dsr-n must be >= 2")
-    if not args.dirs and not args.ledger_n and not args.pbo and not args.bundle:
+    if not args.dirs and not args.ledger_n and not args.pbo and not args.bundle and not args.pool:
         ap.error("give NAV dirs (or --ledger-n LEDGER / --pbo CELL ...)")
     if args.ledger_count < 1 or args.onc_init < 1 or not 0 < args.psr_alpha < 0.5:
         ap.error("--ledger-count and --onc-init must be >= 1; --psr-alpha in (0, 0.5)")
-    if (args.ledger or args.psr or args.effective_n == "dirs") and not args.dirs:
+    if (args.ledger or args.psr or args.effective_n == "dirs") and not (args.dirs or args.pool):
         ap.error("--ledger / --psr / --effective-n dirs need NAV dirs")
+    if (args.pool_ids or args.pool_reference) and not args.pool:
+        ap.error("--pool-ids / --pool-reference need --pool")
     if (args.rerun_of is None) != (args.rerun_basis is None):
         ap.error("--rerun-of and --rerun-basis go together")
     if (args.origin or args.rerun_of or args.ledger_defect) and not args.ledger:
         ap.error("--origin / --rerun-of / --ledger-defect need --ledger")
-    if v8 and args.ledger and args.dirs and not args.origin:
+    if v8 and args.ledger and (args.dirs or args.pool) and not args.origin:
         ap.error("--protocol v8 records the origin class in every ledger line: give --origin prior|grid|mined (K5)")
-    if args.dsr_ledger and not args.dirs:
+    if args.dsr_ledger and not (args.dirs or args.pool):
         ap.error("--dsr-ledger needs NAV dirs")
     if args.bundle_json and not args.bundle:
         ap.error("--bundle-json needs --bundle BASE FINAL")
@@ -906,17 +1084,27 @@ def main(argv=None) -> int:
         ref_nets = net_series(load_daily(Path(args.reference), scenario_of(ref_summary, args.scenario)["scenario"]))
     # every dir first: V[SR_n] of the deflated Sharpe ratio spans all the NAV dirs on the command line
     analysed = [analyse(Path(d), args, weights, ref_nets) for d in args.dirs]
+    if args.pool:  # task H-1: the pooled row of the era dirs, after the listed dirs (one trial in V[SR_n] and N)
+        pool_ref = ref_nets
+        if args.pool_reference:
+            ids = [f"R{k}" for k in range(1, len(args.pool_reference) + 1)]
+            pool_ref = net_series(pooled_daily(args.pool_reference, ids, args)[0])
+        analysed.append(analyse_pool(args.pool, pool_ids(args), args, weights, pool_ref))
     results = [r for r, _ in analysed]
+    names = list(args.dirs) + ([results[-1]["dir"]] if args.pool else [])
     warnings = []
     if results:
         for r, q in zip(results, dsr_rows([r["net_moments"] for r in results], args.dsr_n)):
             r["deflated"] = q
-        warnings = listing_warnings(args.dirs, results, [nets for _, nets in analysed], args.dsr_n)
+        warnings = listing_warnings(names, results, [nets for _, nets in analysed], args.dsr_n)
     for w in warnings:
         print(f"nav_summ: WARNING {w}", file=sys.stderr)
-    for d, r in zip(args.dirs, results):
-        print_scenarios(load_summary(Path(d)))
-        print_analysis(r, args.reference)
+    for d, r in zip(names, results):
+        if d in args.dirs:
+            print_scenarios(load_summary(Path(d)))
+        print_analysis(r, " + ".join(args.pool_reference) if args.pool_reference and "pool" in r else args.reference)
+        if "pool" in r and d not in args.dirs:
+            print_pool(r)
         if "year_table" in r:
             print_year_table(r["year_table"])
     integrity(args, argv, results, analysed)

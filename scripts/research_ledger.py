@@ -78,11 +78,17 @@ def read_lines(path: Path) -> list[tuple[int, dict]]:
 
 
 def cells(path: Path) -> list[str]:
-    """The ledgered cells in ledger order (protocol lines skipped); a trial line without a cell is an error."""
+    """The ledgered cells in ledger order (protocol lines skipped); a trial line without a cell is an error. Era shard
+    and pooled era lines (task H-1) are skipped too: they are not grid NAV dirs of the research window."""
     out = []
+    bi = None
     for k, rec in read_lines(path):
         if rec.get("kind") in NON_TRIAL_KINDS:
             continue
+        if "era_of" in rec or "eras" in rec:
+            bi = bi or backtest_integrity()
+            if bi.is_era_line(rec) or bi.is_pool_line(rec):
+                continue
         cell = rec.get("cell")
         if not isinstance(cell, str) or not cell:
             raise LedgerError(f"{path} line {k} has no cell")
@@ -106,11 +112,33 @@ def scored_trial_id(nav_dir: Path | None) -> str | None:
     return bi.trial_id(N_KIND, bi.sha256_file(daily))
 
 
-def ledger_n(path: Path, cell: str, nav_dir: Path | None = None) -> int:
+def pool_label(dirs: list[str]) -> str:
+    """The cell name of a pooled era cell (task H-1): era_pool.pool_label of its era NAV dirs as nav_summ is given them."""
+    return backtest_integrity().era_pool().pool_label(dirs)
+
+
+def pooled_trial_id(nav_dirs: list[Path]) -> str | None:
+    """The trial_id of a pooled era cell (task H-1): backtest_integrity.pooled_trial_id over the eras' primary daily
+    CSVs in date order (one era: the era's own trial_id); None while any era's NAV output does not exist."""
+    shas = []
+    for d in nav_dirs:
+        try:
+            summary = json.loads((Path(d) / "summary.json").read_text(encoding="utf-8"))
+            daily = Path(d) / f"daily_{summary['primary_scenario']}.csv"
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if not daily.is_file():
+            return None
+        shas.append(backtest_integrity().sha256_file(daily))
+    return backtest_integrity().pooled_trial_id(N_KIND, shas) if shas else None
+
+
+def ledger_n(path: Path, cell: str, nav_dir: Path | None = None, pool_dirs: list[Path] | None = None) -> int:
     """N for summ.dsr_n "ledger+1": backtest_integrity.ledger_n over every line (the defect rule), the scored cell
-    matched by its daily series' trial_id once ``nav_dir`` holds the NAV output (nav_summ's rule), else by its name."""
+    matched by its daily series' trial_id once ``nav_dir`` holds the NAV output (nav_summ's rule), else by its name.
+    ``pool_dirs`` (task H-1, a pooled era cell named ``cell``): matched by the pooled trial_id."""
     records = [rec for _, rec in read_lines(path)]
-    tid = scored_trial_id(nav_dir)
+    tid = pooled_trial_id(pool_dirs) if pool_dirs else scored_trial_id(nav_dir)
 
     def scored(rec: dict) -> bool:
         if rec.get("kind", N_KIND) != N_KIND:

@@ -131,6 +131,17 @@ partial-pass marker: rerun the same command to resume.
 Report only (v8 C-2): ``--report-f-theta`` adds ``f_theta`` / ``f_theta_hac_t`` to every admission row (the factor
 return of the theta-averaged sleeve book, theta .05, horizon_stats.theta_book_returns, over live TRAIN decisions, and
 its Newey-West t) and a ``report_only`` block; they are computed after every verdict and nothing reads them back.
+Era pools (v8 H-1; prior screens with ew-theme-v1 / ew-theme-v6 only): ``--era ID ROLE ROLE_SHA ORIENT ORIENT_SHA
+SUMMARY SUMMARY_SHA`` (repeatable, date order) adds an era scored by its own TRAIN-only IC run, and ``--era-id ID``
+names the main --train role (the anchor, the last era). Each era keeps its own RoleManifest, orientations, cache layout
+and factor records (its own role-keyed WorkStore under --work-dir); the era windows (first to one day after the last
+scored decision) pass era_pool.check_windows. The factor series are concatenated in date order
+(era_pool.pool_matrix), tau_k is the era taus' mean weighted by transitions (decisions - 1: each era deploys afresh),
+the context digest is era_pool.pooled_sha256 of the eras' digests and the refused decisions are tagged by era. Every
+pooled decision is scored (an explicit all-True mask: each lies in its own era's scored window, before the TRAIN
+end); rules.train_window_ns lists the era windows; admission.json and provenance carry a ``pool`` block; one extra
+``composition_weights.<id>.json`` per non-anchor era differs from composition_weights.json only in
+train_manifest_sha256 (the runner binds weights to its role). Without --era / --era-id the bytes are unchanged.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -163,6 +174,7 @@ IMPL_TOOLS = Path(__file__).resolve().parent
 if str(IMPL_TOOLS) not in sys.path:
     sys.path.append(str(IMPL_TOOLS))
 import code_fingerprint  # noqa: E402
+import era_pool  # noqa: E402  (v8 H-1: the era pooling rules)
 import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
 import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
@@ -1697,6 +1709,82 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
     return records, computed, reused, aims  # type: ignore[return-value]
 
 
+# ------------------------------------------------------- v8 H-1 era pools
+def pooled(args) -> bool:
+    return bool(getattr(args, "era", None)) or getattr(args, "era_id", None) is not None
+
+
+def era_state(args, library: list[dict], eid: str, role_path, role_sha: str, orient, orient_sha: str, summary,
+              summary_sha: str, started: float, log) -> dict:
+    """One era of a pool: its role, orientations, cache layout and factor records (in its role-keyed WorkStore)."""
+    runner_signs, orientation_recipe = load_orientations(Path(orient), orient_sha, library, args.library_sha256,
+                                                         role_sha)
+    role = RoleManifest(Path(role_path), role_sha)
+    layout = CacheLayout(Path(summary), summary_sha, role, orient_sha, orientation_recipe)
+    entries = [layout.resolve(c, role) for c in library]
+    records, computed, reused, _ = ensure_records(args, role, library, entries, layout.vm_identity, started, log)
+    return era_entry(eid, role, layout, entries, records, runner_signs, orient_sha, orientation_recipe, summary_sha,
+                     computed, reused)
+
+
+def era_entry(eid: str, role: RoleManifest, layout: CacheLayout, entries: list[dict], records: list[dict],
+              runner_signs: list[int], orient_sha: str, orientation_recipe: str, summary_sha: str, computed: int,
+              reused: int) -> dict:
+    return {"id": eid, "role": role, "layout": layout, "entries": entries, "records": records,
+            "runner_signs": runner_signs, "orientations_sha256": orient_sha, "orientations_recipe": orientation_recipe,
+            "runner_summary_sha256": summary_sha, "computed": computed, "reused": reused}
+
+
+def era_window(role: RoleManifest) -> tuple[int, int]:
+    """[first scored decision session, one day after the last) of a role."""
+    w = role.window()
+    return w["first_decision_session_ns"], w["last_decision_session_ns"] + DAY_NS
+
+
+def pool_eras(eras: list[dict]) -> dict:
+    """The pooled fit inputs of the eras (date order): factor rows and sessions (era_pool.pool_matrix), taus (mean by
+    transitions), pooled records (context digest, f_theta, refused decisions tagged by era) and the pool block."""
+    try:
+        era_pool.check_windows([(e["id"], *era_window(e["role"])) for e in eras], rw.TRAIN_BEGIN_NS,
+                               rw.TRAIN_END_NS, rw.SEAL_NS)
+    except era_pool.PoolError as exc:
+        raise FitError(f"--era: {exc}") from exc
+
+    def rows(e: dict, key: str) -> np.ndarray:
+        return np.array([[np.nan if v is None else v for v in r[key]] for r in e["records"]], dtype=np.float64)
+    parts = [(e["id"], e["role"].sessions[e["role"].begin:e["role"].end]) for e in eras]
+    sessions, factors, starts = era_pool.pool_matrix([(i, s, rows(e, "f_unsigned")) for (i, s), e in zip(parts, eras)])
+    _, theta, _ = era_pool.pool_matrix([(i, s, rows(e, "f_theta_unsigned")) for (i, s), e in zip(parts, eras)])
+    transitions = [e["role"].end - e["role"].begin - 1 for e in eras]
+    k_count = len(eras[0]["records"])
+    taus = [era_pool.weighted_mean([e["records"][k]["tau"] for e in eras], transitions) for k in range(k_count)]
+    digest = era_pool.pooled_sha256([e["records"][0]["context_sha256"] for e in eras])
+    refused = [dict(r, era=e["id"]) for e in eras for r in e["records"][0]["context_refused"]]
+    used = [e["records"][0]["context_used_rows_unrefused"] for e in eras]
+    used_rows = {"min": min(u["min"] for u in used), "max": max(u["max"] for u in used)}
+    records = [{"context_sha256": digest, "tau": taus[k], "context_refused": refused,
+                "context_used_rows_unrefused": used_rows,
+                "f_theta_unsigned": [None if not math.isfinite(x) else float(x) for x in theta[k]]}
+               for k in range(k_count)]
+    windows = [list(era_window(e["role"])) for e in eras]
+    block = {"schema": era_pool.SCHEMA, "anchor": eras[-1]["id"], "decisions": int(len(sessions)),
+             "tau": "mean of the eras' standalone taus weighted by transitions (decisions - 1; each era deploys afresh)",
+             "context_sha256": digest, "mask": "every pooled decision (each in its own era's scored window)",
+             "eras": [{"id": e["id"], "role_manifest_sha256": e["role"].sha, "role_source_sha256": e["role"].source_sha256,
+                       "orientations_sha256": e["orientations_sha256"],
+                       "orientations_recipe_sha256": e["orientations_recipe"],
+                       "runner_summary_sha256": e["runner_summary_sha256"], "vm_identity": e["layout"].vm_identity,
+                       "fields_manifest_sha256": e["layout"].fields_sha,
+                       "context_sha256": e["records"][0]["context_sha256"], "window_ns": w,
+                       "window": e["role"].window(), "segment_start": int(s),
+                       "cache_payload_sha256": {c["id"]: c["payload_sha256"] for c in e["entries"]}}
+                      for e, w, s in zip(eras, windows, starts)]}
+    return {"sessions": sessions, "factors": factors, "taus": taus, "records": records, "windows": windows,
+            "block": block, "window": {"decisions": int(len(sessions)),
+                                       "eras": [dict(e["role"].window(), id=e["id"]) for e in eras]},
+            "roles": {e["id"]: e["role"].sha for e in eras[:-1]}}
+
+
 def fit(args, log=None) -> tuple[int, dict]:
     started = time.perf_counter()
     require(args.screen in SCREENS, f"--screen must be one of {SCREENS}")
@@ -1716,6 +1804,16 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(args.max_seconds is None or (math.isfinite(args.max_seconds) and args.max_seconds > 0),
             "--max-seconds must be finite and > 0")
     require(args.max_new_candidates is None or args.max_new_candidates >= 0, "--max-new-candidates must be >= 0")
+    if pooled(args):  # v8 H-1
+        require(prior and args.composition != AIM_RULE_ID, "--era pools the prior screens with ew-theme-v1 or "
+                "ew-theme-v6 only (ew-theme-aim-v1 reads TRAIN signal ranks; v3/none estimate signs)")
+        ids = [e[0] for e in (args.era or [])] + [args.era_id]
+        require(args.era_id is not None, "--era needs --era-id (the id of the --train role, the last era)")
+        try:
+            [era_pool.check_id(i) for i in ids]
+        except era_pool.PoolError as exc:
+            raise FitError(f"--era: {exc}") from exc
+        require(len(set(ids)) == len(ids), "--era: duplicate era id")
     library = load_library(args.library, args.library_sha256)
     runner_signs, orientation_recipe = load_orientations(args.orientations, args.orientations_sha256, library,
                                                          args.library_sha256, args.train_sha256)
@@ -1749,6 +1847,15 @@ def fit(args, log=None) -> tuple[int, dict]:
               "script_sha256": script_sha, "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha}
     cache_entry = ["base" if e["fields_manifest_sha256"] is None else "fields" for e in entries]
     window = role.window()
+    if pooled(args):  # v8 H-1: the other eras, then the pooled prior fit (the anchor = the --train role, last)
+        eras = [era_state(args, library, *e, started, log) for e in (args.era or [])]
+        eras.append(era_entry(args.era_id, role, layout, entries, records, runner_signs, args.orientations_sha256,
+                              orientation_recipe, args.runner_summary_sha256, computed, reused))
+        pool = pool_eras(eras)
+        return fit_prior(args, library, priors, runner_signs, pool["factors"], pool["taus"], shas, cache_entry,
+                         pool["records"], dict(inputs, context_sha256=pool["block"]["context_sha256"]), pool["window"],
+                         pool["sessions"], sum(e["computed"] for e in eras), sum(e["reused"] for e in eras), out,
+                         started, None, pool=pool)
     if prior:
         return fit_prior(args, library, priors, runner_signs, factors, taus, shas, cache_entry, records, inputs,
                          window, decision_sessions, computed, reused, out, started, aims)
@@ -1900,13 +2007,15 @@ def fit(args, log=None) -> tuple[int, dict]:
 def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], factors: np.ndarray,
               taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
               window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
-              started: float, aims: list[dict] | None = None) -> tuple[int, dict]:
+              started: float, aims: list[dict] | None = None, pool: dict | None = None) -> tuple[int, dict]:
     """v4-prior-v1/v2 admission + ew-theme-v1 weights (pre-registration R3/R4, v4.2 R3'). Nothing is estimated but tau.
 
     ``ew-theme-aim-v1`` (v5 R4') scales the same member set by the aim gains in ``aims``; the admission
     table is identical and the ew-theme-v1 document carries no aim key (its bytes are unchanged).
     ``ew-theme-v6`` (v6 V6-W) re-weights the same member set by ``ew_theme_v6_weights`` and adds the top-level
     ``theme_redistribution`` block and ``provenance.v6``; the admission table is again identical.
+    ``pool`` (v8 H-1, ``pool_eras``): the pooled era decisions, every one scored (explicit all-True mask), the era
+    windows as the train window, a ``pool`` block and one weights file per non-anchor era; None: unchanged bytes.
     """
     ids = [c["id"] for c in library]
     screen = args.screen
@@ -1916,7 +2025,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
-    train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    if pool is None:
+        train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    else:  # every pooled decision lies in its own era's scored window (era_pool.check_windows ran in pool_eras)
+        train_mask = np.ones(len(decision_sessions), dtype=bool)
     report_f_theta = getattr(args, "report_f_theta", False)
     inputs = dict(inputs, recipe_sha256=priors["recipe_sha256"], prior_metadata_source=priors["source"])
     rows = screen_v4(factors, taus, ids, train_mask, priors["tier_rank"], prior_signs,
@@ -1969,6 +2081,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                         "at $1bn; structural, not performance); checked after turnover, before veto")
     if report_f_theta:
         admission["report_only"] = f_theta_report()
+    if pool is not None:  # v8 H-1
+        admission["rules"]["train_window_ns"] = pool["windows"]
+        admission["pool"] = pool["block"]
+        if report_f_theta:
+            admission["report_only"]["f_theta"]["window_ns"] = pool["windows"]
     files = {OUTPUT_ADMISSION: canonical_bytes(admission),
              OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS + (F_THETA_COLUMNS if report_f_theta
                                                                                else ()))}
@@ -2105,8 +2222,12 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                                      priors["recipe_sha256"])
     if args.composition == composition_rules.STD_RULE_ID:  # schema v2, theme_standardise block, provenance.std
         composition_rules.attach_std(document, std)
+    if pool is not None:  # v8 H-1
+        document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
+    for eid, role_sha in (pool or {}).get("roles", {}).items():  # each era's runner binds the file to its own role
+        files[era_pool.era_weights_name(eid)] = canonical_bytes(dict(document, train_manifest_sha256=role_sha))
     publish_directory(out, files)
     summary.update(files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                    weights_sha256=hashlib.sha256(files[OUTPUT_WEIGHTS]).hexdigest(),
@@ -2121,6 +2242,9 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     if v6:
         summary.update(shrunk_members=v6_detail["shrunk_members"], dropped_members=v6_detail["dropped_members"],
                        theme_redistribution=V6_REDISTRIBUTION)
+    if pool is not None:
+        summary.update(pool={"anchor": pool["block"]["anchor"], "eras": [e["id"] for e in pool["block"]["eras"]],
+                             "decisions": pool["block"]["decisions"]})
     return EXIT_OK, summary
 
 
@@ -2240,6 +2364,11 @@ def parse_args(argv):
                    help="report only (v8 C-2): add f_theta and f_theta_hac_t (factor return of the theta-averaged "
                         "sleeve book, theta .05, and its Newey-West t) to every admission row and a report_only block; "
                         "no check, order or weight reads them; off: admission bytes unchanged")
+    p.add_argument("--era", action="append", nargs=7, default=None,
+                   metavar=("ID", "ROLE", "ROLE_SHA", "ORIENT", "ORIENT_SHA", "SUMMARY", "SUMMARY_SHA"),
+                   help="v8 H-1: an era pooled before the --train role (date order; repeatable): its role manifest, "
+                        "TRAIN orientations.json and runner summary.json with their SHA-256 pins")
+    p.add_argument("--era-id", default=None, help="v8 H-1: the era id of the --train role (the anchor, last era)")
     return p.parse_args(argv)
 
 

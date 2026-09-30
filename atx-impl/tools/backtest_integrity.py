@@ -69,6 +69,7 @@ PRIOR_VALIDATION_READS = "2 (2023-2024)"  # v8-prereg item 1 disclosure (history
 DAY_NS = 86_400_000_000_000
 PBO_BLOCKS = 16
 PBO_MIN_CELLS = 4
+POOL_WINDOW = "POOL"                      # task H-1: the window label of a pooled era line
 ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
 
 
@@ -83,13 +84,24 @@ def research_window():
         return rw
     except ImportError:
         pass
+    return _engine_module("research_window")
+
+
+def era_pool():
+    """The ``era_pool`` module (task H-1, atx-engine/tools): the era pooling rules, loaded as the window is."""
+    return _engine_module("era_pool")
+
+
+def _engine_module(name: str):
+    """``atx-engine/tools/<name>.py`` as the private module ``atx_impl_engine_tools_<name>`` (engine_tools.py's
+    naming, so both loaders share one instance)."""
     import importlib.util
-    private = "atx_impl_engine_tools_research_window"
+    private = f"atx_impl_engine_tools_{name}"
     if private in sys.modules:
         return sys.modules[private]
-    spec = importlib.util.spec_from_file_location(private, ENGINE_TOOLS / "research_window.py")
+    spec = importlib.util.spec_from_file_location(private, ENGINE_TOOLS / f"{name}.py")
     if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {ENGINE_TOOLS / 'research_window.py'} (task W0-1)")
+        raise ImportError(f"cannot load {ENGINE_TOOLS / f'{name}.py'}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[private] = module
     try:
@@ -532,13 +544,22 @@ def session_date(ns: int) -> dt.date:
     return dt.date(1970, 1, 1) + dt.timedelta(days=int(ns) // DAY_NS)
 
 
-def window_of(sessions: list[int]) -> dict:
+def window_of(sessions: list[int], era: str | None = None, pool: bool = False) -> dict:
     """The series window; refuses any session outside the research window's TRAIN [begin, end) (the ledger records
-    TRAIN trials only; a series ending before the TRAIN end, e.g. a 2020-2022 cell, is a TRAIN series)."""
+    TRAIN trials only; a series ending before the TRAIN end, e.g. a 2020-2022 cell, is a TRAIN series).
+
+    Era rule (task H-1): an era shard (``era`` = its id, label ``ERA <id>``) or a pooled series (``pool``, label
+    ``POOL``) may begin before TRAIN, but every session must still lie before the TRAIN end."""
     if not sessions:
         raise ValueError("ledger: empty net series")
     rw = research_window()
     first, last = session_date(min(sessions)), session_date(max(sessions))
+    if era is not None or pool:
+        if max(sessions) >= rw.TRAIN_END_NS:
+            raise ValueError(f"ledger: {'pooled' if pool else f'era {era}'} series ends {last.isoformat()}, on or "
+                             f"after the TRAIN end {session_date(rw.TRAIN_END_NS).isoformat()} of {window_id()}")
+        return {"label": POOL_WINDOW if pool else f"ERA {era}", "first_session": first.isoformat(),
+                "last_session": last.isoformat(), "sessions": len(sessions)}
     if max(sessions) >= rw.TRAIN_END_NS or min(sessions) < rw.TRAIN_BEGIN_NS:
         span = f"[{session_date(rw.TRAIN_BEGIN_NS).isoformat()}, {session_date(rw.TRAIN_END_NS).isoformat()})"
         raise ValueError(f"ledger: series spans {first.isoformat()}..{last.isoformat()}, outside TRAIN {span} of "
@@ -560,12 +581,38 @@ def summary_pins(summary: dict) -> dict:
 def ledger_record(kind: str, cell: str, summary_path: Path, daily_path: Path, scenario: str, nets: dict,
                   net_sharpe, *, count: int = 1, note: str | None = None, run: dict | None = None,
                   origin: str | None = None, research_window_id: str | None = None, rerun_of: str | None = None,
-                  rerun_basis: str | None = None, defect: str | None = None) -> dict:
+                  rerun_basis: str | None = None, defect: str | None = None, era: dict | None = None,
+                  era_of: str | None = None) -> dict:
     """One ledger line for a NAV cell (its primary/selected scenario's daily net series).
 
     The v8 keyword fields are written only when given (a line without them is byte-identical to the v7 layout):
     ``origin`` (K5), ``research_window_id`` (key ``window_id``), ``rerun_of`` + ``rerun_basis`` and
-    ``defect`` (the invalid-cell reason). None of them enters ``trial_id``."""
+    ``defect`` (the invalid-cell reason). None of them enters ``trial_id``.
+
+    Task H-1: ``era`` = {id, role_sha256} marks an era shard (window rule ``ERA <id>``, see ``window_of``);
+    ``era_of`` = the pooled trial_id it belongs to (an era shard of a pooled cell adds no trial)."""
+    check_record_fields(kind, count, origin, rerun_of, rerun_basis, defect)
+    summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+    series_sha = sha256_file(daily_path)
+    window = window_of(list(nets), era=era["id"] if era else None)
+    pins = dict(summary_pins(summary), summary_sha256=sha256_file(summary_path))
+    rec = {"schema": LEDGER_SCHEMA, "kind": kind, "count": count, "cell": str(cell).replace("\\", "/"),
+           "window": window, "scenario": scenario,
+           "series": {"path": str(daily_path).replace("\\", "/"), "sha256": series_sha, "column": "net_return",
+                      "rows": "return_observation == 1, first CSV row excluded (nav_summ return rows)"},
+           "pins": pins, "s2_net_sr": net_sharpe}
+    rec.update(ledger_record_fields(note, run, origin, research_window_id, rerun_of, rerun_basis, defect))
+    if era is not None:
+        rec["era"] = {"id": era["id"], "role_sha256": era.get("role_sha256")}
+    if era_of is not None:
+        rec["era_of"] = era_of
+    rec["trial_id"] = trial_id(kind, series_sha)
+    return rec
+
+
+def check_record_fields(kind: str, count: int, origin: str | None = None, rerun_of: str | None = None,
+                        rerun_basis: str | None = None, defect: str | None = None) -> None:
+    """The refusals of a ledger line's kind, count and v8 fields (ledger_record, ledger_pool_records)."""
     if kind not in LEDGER_KINDS:
         raise ValueError(f"ledger: kind must be one of {', '.join(LEDGER_KINDS)}")
     if not isinstance(count, int) or count < 1:
@@ -576,29 +623,83 @@ def ledger_record(kind: str, cell: str, summary_path: Path, daily_path: Path, sc
         raise ValueError(f"ledger: rerun_of and rerun_basis ({', '.join(RERUN_BASES)}) go together")
     if defect is not None and not (isinstance(defect, str) and defect.strip()):
         raise ValueError("ledger: a defect needs a reason")
-    summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
-    series_sha = sha256_file(daily_path)
-    window = window_of(list(nets))
-    pins = dict(summary_pins(summary), summary_sha256=sha256_file(summary_path))
-    rec = {"schema": LEDGER_SCHEMA, "kind": kind, "count": count, "cell": str(cell).replace("\\", "/"),
-           "window": window, "scenario": scenario,
-           "series": {"path": str(daily_path).replace("\\", "/"), "sha256": series_sha, "column": "net_return",
-                      "rows": "return_observation == 1, first CSV row excluded (nav_summ return rows)"},
-           "pins": pins, "s2_net_sr": net_sharpe}
+
+
+def is_era_line(rec: dict) -> bool:
+    """An era shard line of a pooled cell (``era_of``): recorded for audit, adds no trial."""
+    return "era_of" in rec
+
+
+def is_pool_line(rec: dict) -> bool:
+    """A pooled era line (window POOL): one trial for all its eras."""
+    return (rec.get("window") or {}).get("label") == POOL_WINDOW
+
+
+def pooled_trial_id(kind: str, series_sha256s: list[str]) -> str:
+    """The trial_id of a pool of era series (date order): one era is that era's trial_id (era_pool.pooled_sha256)."""
+    return trial_id(kind, era_pool().pooled_sha256(series_sha256s))
+
+
+def ledger_pool_records(kind: str, eras: list[dict], pooled_nets: dict, pooled_sr, *, count: int = 1,
+                        note: str | None = None, run: dict | None = None, **v8) -> list[dict]:
+    """The ledger lines of a pooled era cell (task H-1: an era shard of a registered cell is one trial in total).
+
+    ``eras`` (date order): {id, role_sha256, cell, summary_path, daily_path, scenario, nets, net_sharpe}. One era is a
+    single line, the era's own (``ledger_record``; the era block and the ``ERA`` window only when the series begins
+    before TRAIN). Two or more: one line per era (``era``, ``era_of`` = the pooled trial_id; adds 0; it carries the
+    origin and window id only) and one pooled line (window ``POOL``, ``series.pool[]``, ``eras[]``, ``s2_net_sr`` =
+    ``pooled_sr``; adds ``count``; it carries every v8 field, re-run and defect included: it is the trial)."""
+    if not eras:
+        raise ValueError("ledger: a pool needs an era")
+    check_record_fields(kind, count, **{k: v for k, v in v8.items() if k != "research_window_id"})
+    shas = [sha256_file(e["daily_path"]) for e in eras]
+    if len(eras) == 1:
+        e = eras[0]
+        history = min(e["nets"]) < research_window().TRAIN_BEGIN_NS
+        return [ledger_record(kind, e["cell"], e["summary_path"], e["daily_path"], e["scenario"], e["nets"],
+                              e["net_sharpe"], era={"id": e["id"], "role_sha256": e.get("role_sha256")}
+                              if history else None, count=count, note=note, run=run, **v8)]
+    tid = pooled_trial_id(kind, shas)
+    audit = {k: v for k, v in v8.items() if k in ("origin", "research_window_id")}
+    lines = [ledger_record(kind, e["cell"], e["summary_path"], e["daily_path"], e["scenario"], e["nets"],
+                           e["net_sharpe"], era={"id": e["id"], "role_sha256": e.get("role_sha256")}, era_of=tid,
+                           count=count, note=note, run=run, **audit) for e in eras]
+    scenarios = sorted({e["scenario"] for e in eras})
+    if len(scenarios) != 1:
+        raise ValueError(f"ledger: the eras of a pool are scored on different scenarios {scenarios}")
+    dirs = [str(e["cell"]).replace("\\", "/") for e in eras]
+    rec = {"schema": LEDGER_SCHEMA, "kind": kind, "count": count, "cell": era_pool().pool_label(dirs),
+           "window": window_of(list(pooled_nets), pool=True), "scenario": scenarios[0],
+           "series": {"pool": [{"id": e["id"], "path": str(e["daily_path"]).replace("\\", "/"), "sha256": s}
+                               for e, s in zip(eras, shas)],
+                      "sha256": era_pool().pooled_sha256(shas), "column": "net_return",
+                      "rows": "each era's return rows (nav_summ), concatenated in date order"},
+           "eras": [{"id": e["id"], "role_sha256": e.get("role_sha256"), "cell": d, "trial_id": line["trial_id"],
+                     "series_sha256": s} for e, d, line, s in zip(eras, dirs, lines, shas)],
+           "pins": {}, "s2_net_sr": pooled_sr}
+    rec.update(ledger_record_fields(note=note, run=run, **v8))
+    rec["trial_id"] = tid
+    return lines + [rec]
+
+
+def ledger_record_fields(note: str | None = None, run: dict | None = None, origin: str | None = None,
+                         research_window_id: str | None = None, rerun_of: str | None = None,
+                         rerun_basis: str | None = None, defect: str | None = None) -> dict:
+    """The optional ledger_record keys (note, recorded_by and the v8 fields) of a line built outside ledger_record."""
+    out: dict = {}
     if note:
-        rec["note"] = note
+        out["note"] = note
     if run:
-        rec["recorded_by"] = run
+        out["recorded_by"] = run
     if origin is not None:
-        rec["origin"] = origin
+        out["origin"] = origin
     if research_window_id is not None:
-        rec["window_id"] = research_window_id
+        out["window_id"] = research_window_id
     if rerun_of is not None:
-        rec["rerun_of"], rec["rerun_basis"] = rerun_of, rerun_basis
+        out["rerun_of"], out["rerun_basis"] = rerun_of, rerun_basis
     if defect is not None:
-        rec["defect"] = {"invalid": True, "reason": defect}
-    rec["trial_id"] = trial_id(kind, series_sha)
-    return rec
+        out["defect"] = {"invalid": True, "reason": defect}
+    return out
 
 
 def trial_id(kind: str, series_sha256: str) -> str:
@@ -685,13 +786,14 @@ def trial_counts(records: list[dict]) -> list[int]:
     ledgered cell re-run on a longer window) add 0; an invalid cell (``defect``) and a cell replaced by a blind re-run
     (``rerun_basis`` blind: decided without seeing returns) add 0, unless a re-run decided because its returns looked
     wrong (``rerun_basis`` returns) names it, in which case it stays a trial and the re-run is a new one. Lines without
-    the v8 fields add their count, exactly as ``ledger_counts`` summed them before v8."""
+    the v8 fields add their count, exactly as ``ledger_counts`` summed them before v8. An era shard line (``era_of``,
+    task H-1) adds 0: its pooled line is the trial."""
     seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
     replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
     out = []
     for rec in records:
         tid = rec.get("trial_id")
-        if rec.get("kind") in ZERO_TRIAL_KINDS or rec.get("rerun_basis") == "window":
+        if rec.get("kind") in ZERO_TRIAL_KINDS or rec.get("rerun_basis") == "window" or is_era_line(rec):
             out.append(0)
         elif tid not in seen and (_invalid(rec) or tid in replaced):
             out.append(0)
@@ -722,7 +824,7 @@ def ledger_counts(records: list[dict]) -> dict:
     lines are events, not trials: they are skipped."""
     out: dict = {}
     for rec, trials in zip(records, trial_counts(records)):
-        if rec.get("kind") in ZERO_TRIAL_KINDS:
+        if rec.get("kind") in ZERO_TRIAL_KINDS or is_era_line(rec):
             continue
         w = rec.get("window") or {}
         key = f"{w.get('label', '?')} {w.get('first_session', '?')}..{w.get('last_session', '?')}"
@@ -740,12 +842,16 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
             lines.append(f"   {kind:12s} {n:5d}  [{window}]")
         if kind not in counts:
             lines.append(f"   {kind:12s} {0:5d}")
-    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0]
+    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r)]
     if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
         out = excluded_lines(records)
         lines.append(f"   adding no trial: {len(zero)} line(s) ({len(out)} by the defect rule, "
                      f"{sum(1 for r in zero if r.get('rerun_basis') == 'window')} window re-run(s), "
                      f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s))")
+    eras = [r for r in records if is_era_line(r)]
+    if eras:  # task H-1: printed only when an era shard is ledgered
+        lines.append(f"   era shard line(s): {len(eras)}, adding no trial (each pooled line counts its eras once: "
+                     f"{sum(1 for r in records if is_pool_line(r))} pooled line(s))")
     return lines
 
 
@@ -772,13 +878,15 @@ def dsr_variance(records: list[dict], research_window_id: str, kind: str = "cons
     N = the ``kind`` trials by ``trial_counts``. V[SR] = sample variance (ddof 1) of the per-session S2 net SRs
     (``s2_net_sr`` / sqrt(252)) of the ``kind`` lines scored on ``research_window_id`` (the ledgered cells re-run on it
     and the new cells), the defect rule's excluded lines left out; None below two such lines. The legacy variance over
-    the ``kind`` lines without a window_id (the cells ledgered before the window change) is reported beside it."""
+    the ``kind`` lines without a window_id (the cells ledgered before the window change) is reported beside it. Era
+    shard and pooled lines (task H-1) are scored on history eras, not on a research window's TRAIN: left out of both."""
     counts = trial_counts(records)
     out_ids = {r.get("trial_id") for r in excluded_lines(records)}
 
     def srs(select) -> list[float]:
         return [float(r["s2_net_sr"]) / math.sqrt(ANNUAL) for r in records
                 if r.get("kind") == kind and select(r) and r.get("trial_id") not in out_ids
+                and not is_era_line(r) and not is_pool_line(r)
                 and isinstance(r.get("s2_net_sr"), (int, float)) and math.isfinite(r["s2_net_sr"])]
     cur = srs(lambda r: r.get("window_id") == research_window_id)
     old = srs(lambda r: "window_id" not in r)
@@ -791,13 +899,13 @@ def dsr_variance(records: list[dict], research_window_id: str, kind: str = "cons
 
 def ledger_net_series(records: list[dict], load) -> tuple[list[str], list[dict]]:
     """(cell names, net series) of the ledger lines with a series, in ledger order; ``load(record)`` -> nets map.
-    Protocol lines (no cell, no series) are skipped.
+    Protocol lines (no cell, no series), era shard lines and pooled lines (no single path; task H-1) are skipped.
 
     The series file must still hash to the ledgered SHA-256 (a changed file is refused, never silently used)."""
     names, series = [], []
     for rec in records:
         s = rec.get("series")
-        if rec.get("kind") in ZERO_TRIAL_KINDS or not s or not s.get("path"):
+        if rec.get("kind") in ZERO_TRIAL_KINDS or is_era_line(rec) or not s or not s.get("path"):
             continue
         if sha256_file(Path(s["path"])) != s["sha256"]:
             raise ValueError(f"ledger: series {s['path']} no longer matches its ledgered SHA-256")
