@@ -1,8 +1,10 @@
 """Loaders and derived series for the mega-alpha report.
 
 Everything is read through ``Registry`` so every input file is hashed and listed in the report header, a missing
-file is recorded (and rendered n/a by the caller) instead of raising, and a path naming validation / VAL / 2023-2025
-is refused before it is opened. Derived statistics mirror ``atx-impl/tools/nav_summ.py`` (return rows = return_observation
+file is recorded (and rendered n/a by the caller) instead of raising, and a path that names hidden data is refused
+before it is opened (``path_is_sealed``: validation / holdout / VAL, or a date-shaped path part in the first sealed year
+of the research window or later; hash-named parts are ignored; the path is taken relative to the registry root).
+Derived statistics mirror ``atx-impl/tools/nav_summ.py`` (return rows = return_observation
 == 1 and not the first CSV row; Sharpe = mean / sd(ddof 1) x sqrt(sessions per year); tau_t over executed sessions
 with positive pre-trade gross, deployment session excluded; Memmel (2003) SE; Lo (2002) single-cell DSR null).
 """
@@ -20,13 +22,32 @@ from pathlib import Path
 
 import numpy as np
 
-FORBIDDEN = re.compile(r'(validation|(?<![A-Za-z])VAL(?![A-Za-z])|2023|2024|2025)')
+from engine_tools import research_window as _window  # atx-impl/tools is on sys.path for every mega_report entry
+
+# OD-5 (platform v8 E-4): the report seal check matches date-shaped path parts only (v7 defect P6-F1: a hex cache
+# folder such as fp_2e2025f0aa11bb22 was refused as if it named 2025).
+_HEX = re.compile(r'^(?:fp_|ic1_)?[0-9a-f]{16,64}$')
+_NAMED = re.compile(r'(validation|holdout|(?<![A-Za-z])VAL(?![A-Za-z]))')
+_YEAR = re.compile(r'(?<!\d)(20\d\d)')
+FIRST_SEALED_YEAR = _window.FIRST_SEALED_YEAR
 DAILY_COLS = ('session_ns', 'return_observation', 'executed', 'net_return', 'gross_return', 'pretrade_gross_dollars',
               'traded_dollars', 'one_way_turnover_gmv', 'gross_leverage', 'net_leverage', 'posttrade_nav')
 EULER_GAMMA = 0.5772156649015329
 
 
 # ----------------------------------------------------------------------------------------------- registry
+def path_is_sealed(rel_path: str, first_sealed_year: int = FIRST_SEALED_YEAR) -> bool:
+    """True when a path names hidden data. Hash-named parts are ignored; date-shaped parts are not."""
+    if _NAMED.search(rel_path):
+        return True
+    for part in re.split(r'[\\/._-]', rel_path):
+        if not part or _HEX.match(part):
+            continue
+        if any(int(y) >= first_sealed_year for y in _YEAR.findall(part)):
+            return True
+    return False
+
+
 @dataclass
 class Registry:
     """Reads files relative to ``root``; records path, bytes and SHA-256 (or the reason a file was not read)."""
@@ -45,9 +66,9 @@ class Registry:
 
     def read_bytes(self, rel) -> bytes | None:
         p = self.path(rel)
-        key = self.rel(p)
-        if FORBIDDEN.search(key):
-            self.files[key] = {'status': 'refused (forbidden name)'}
+        key = self.rel(p)  # relative to the research output root: a run-date-stamped root never enters the check
+        if path_is_sealed(key):
+            self.files[key] = {'status': 'refused (sealed)'}
             return None
         if key in self.files and 'data' in self.files[key]:
             return self.files[key]['data']
