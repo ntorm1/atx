@@ -29,7 +29,8 @@ The 13F coverage measure (``measure``) reproduces the thirteenf stage's effectiv
 repair from ``filing_checks.parquet``, rule ``13f-row-sanity-v1`` price outliers excluded) and reports, per
 quarter, the share of SH value (no put/call) that maps to a line under (a) the stage's PIT FTD map, (b) this
 history with FTD evidence only, (c) all evidence; ``equity_only`` variants drop debt CUSIPs (letter in the issue
-number) and option titles, which filers mis-type as SH.
+number) and the value of SH rows titled PUT / CALL (options some filers mis-type as SH; per row, so one filer's
+mis-typed row does not drop the CUSIP's whole value).
 
 Usage (under the memory guard)::
 
@@ -226,7 +227,10 @@ def collect(first_q: str = "2013-01-01") -> dict[str, Any]:
                    count(*) FILTER (WHERE sh_non_option AND NOT outlier) AS rows_sh,
                    count(DISTINCT filer_cik) AS filers,
                    min(nameofissuer) AS name, min(upper(titleofclass)) AS title,
-                   bool_or(upper(trim(titleofclass)) IN ('PUT', 'CALL', 'PUTS', 'CALLS')) AS option_title
+                   bool_or(upper(trim(titleofclass)) IN ('PUT', 'CALL', 'PUTS', 'CALLS')) AS option_title,
+                   -- SH rows whose title says PUT / CALL (options mis-typed SH): per row, not per CUSIP
+                   sum(v) FILTER (WHERE sh_non_option AND NOT outlier
+                                  AND upper(trim(titleofclass)) IN ('PUT', 'CALL', 'PUTS', 'CALLS')) AS value_sh_option_title
             FROM x GROUP BY 2""", dest)
     C.copy_to_parquet(con, f"SELECT * FROM read_parquet('{_p(parts / 'q_*.parquet')}') ORDER BY period_q, cusip",
                       wd / "thirteenf_cusip_q.parquet")
@@ -477,7 +481,8 @@ def measure(con=None) -> dict[str, Any]:
     con.execute(f"CREATE OR REPLACE TEMP VIEW hq AS SELECT * FROM read_parquet('{hist}')")
     con.execute(f"CREATE OR REPLACE TEMP VIEW hq_ftd AS SELECT * FROM read_parquet('{hist}') WHERE basis = 'ftd_symbol'")
     con.execute(f"""CREATE OR REPLACE TEMP TABLE k AS
-        SELECT period_q, cusip, value_sh, option_title FROM read_parquet('{q}') WHERE value_sh > 0""")
+        SELECT period_q, cusip, value_sh, coalesce(value_sh_option_title, 0) AS v_opt FROM read_parquet('{q}')
+        WHERE value_sh > 0""")
     con.create_function("issue_kind", issue_kind, ["VARCHAR"], "VARCHAR", null_handling="special")
     con.execute(f"CREATE OR REPLACE TEMP TABLE m_all AS {resolve_sql('hq', 'k', 'period_q')}")
     con.execute(f"CREATE OR REPLACE TEMP TABLE m_ftd AS {resolve_sql('hq_ftd', 'k', 'period_q')}")
@@ -486,10 +491,10 @@ def measure(con=None) -> dict[str, Any]:
                sum(k.value_sh) FILTER (WHERE p.security_id IS NOT NULL) AS v_pit_stage,
                sum(k.value_sh) FILTER (WHERE mf.security_id IS NOT NULL) AS v_ftd,
                sum(k.value_sh) FILTER (WHERE ma.security_id IS NOT NULL) AS v_all,
-               sum(k.value_sh) FILTER (WHERE eq) AS v_eq,
-               sum(k.value_sh) FILTER (WHERE eq AND ma.security_id IS NOT NULL) AS v_eq_all,
-               sum(k.value_sh) FILTER (WHERE eq AND mf.security_id IS NOT NULL) AS v_eq_ftd
-        FROM (SELECT *, issue_kind(cusip) <> 'debt' AND NOT coalesce(option_title, false) AS eq FROM k) k
+               sum(k.v_eq) AS v_eq,
+               sum(k.v_eq) FILTER (WHERE ma.security_id IS NOT NULL) AS v_eq_all,
+               sum(k.v_eq) FILTER (WHERE mf.security_id IS NOT NULL) AS v_eq_ftd
+        FROM (SELECT *, CASE WHEN issue_kind(cusip) <> 'debt' THEN value_sh - v_opt ELSE 0 END AS v_eq FROM k) k
         LEFT JOIN read_parquet('{pit}') p ON p.period_q = k.period_q AND p.cusip = k.cusip AND p.security_id IS NOT NULL
         LEFT JOIN m_ftd mf ON mf.period_q = k.period_q AND mf.cusip = k.cusip
         LEFT JOIN m_all ma ON ma.period_q = k.period_q AND ma.cusip = k.cusip

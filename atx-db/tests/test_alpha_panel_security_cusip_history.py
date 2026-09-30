@@ -35,16 +35,16 @@ def lake(tmp_path, monkeypatch):
     cols = ["cusip", "security_id", "run", "obs_from", "obs_to", "n_obs", "available_at", "first_available_at", "symbol",
             "description"]
     _write(wd / "ftd_cusip_runs.parquet", {c: [r[i] for r in runs] for i, c in enumerate(cols)})
-    q = [  # period_q, cusip, value_sh, filers, name, option_title
-        (D(2019, 3, 31), "H1467J104", 100.0, 50, "CHUBB LIMITED", False),
-        (D(2019, 3, 31), "004432874", 5.0, 1, "Chubb Ltd", False),                 # ISIN fragment -> alias
-        (D(2019, 3, 31), "084670702", 200.0, 60, "BERKSHIRE HATHAWAY INC DEL CL B", False),
-        (D(2019, 3, 31), "084670108", 50.0, 40, "BERKSHIRE HATHAWAY INC DEL CL A", False),  # valid CUSIP: never aliased
-        (D(2019, 3, 31), "82509L107", 30.0, 20, "SHOPIFY INC CL A", False),
-        (D(2019, 3, 31), "09857LAN8", 10.0, 5, "BOOKING HOLDINGS INC", False),    # debt typed SH
-        (D(2022, 3, 31), "30303M102", 70.0, 30, "META PLATFORMS INC CL A", False),  # mapped by OpenFIGI only
+    q = [  # period_q, cusip, value_sh, filers, name, option_title, value_sh_option_title
+        (D(2019, 3, 31), "H1467J104", 100.0, 50, "CHUBB LIMITED", False, None),
+        (D(2019, 3, 31), "004432874", 5.0, 1, "Chubb Ltd", False, None),           # ISIN fragment -> alias
+        (D(2019, 3, 31), "084670702", 200.0, 60, "BERKSHIRE HATHAWAY INC DEL CL B", True, 20.0),  # one row titled CALL
+        (D(2019, 3, 31), "084670108", 50.0, 40, "BERKSHIRE HATHAWAY INC DEL CL A", False, None),  # never aliased
+        (D(2019, 3, 31), "82509L107", 30.0, 20, "SHOPIFY INC CL A", False, None),
+        (D(2019, 3, 31), "09857LAN8", 10.0, 5, "BOOKING HOLDINGS INC", False, None),  # debt typed SH
+        (D(2022, 3, 31), "30303M102", 70.0, 30, "META PLATFORMS INC CL A", False, None),  # mapped by OpenFIGI only
     ]
-    cols = ["period_q", "cusip", "value_sh", "filers", "name", "option_title"]
+    cols = ["period_q", "cusip", "value_sh", "filers", "name", "option_title", "value_sh_option_title"]
     _write(wd / "thirteenf_cusip_q.parquet", {c: [r[i] for r in q] for i, c in enumerate(cols)})
     _write(tmp_path / "security_master" / "figi.parquet",
            {"query_kind": ["cusip"], "cusip_field": ["30303M102"], "security_id": [4], "ticker": ["META"],
@@ -80,4 +80,5 @@ def test_cusip_history_rules(lake) -> None:
     cov = CH.measure()["2019-03-31"]
     assert cov["stage_pit_map"] == round(330 / 395, 5)
     assert cov["history_all"] == round(335 / 395, 5)                         # + the aliased fragment
-    assert cov["equity_only_history_all"] == round(335 / 385, 5)             # the debt row leaves the base
+    # the debt row and the CALL-titled part of BRK.B leave the base; the rest of BRK.B stays
+    assert cov["equity_only_history_all"] == round(315 / 365, 5)

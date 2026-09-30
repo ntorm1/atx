@@ -171,3 +171,26 @@ def test_link_table_v3_on_fixtures(table_lake) -> None:
     assert sc1 == [("A",)]                                         # FINRA issue name class (security master)
     ds = con.execute(f"SELECT DISTINCT dated_sources FROM read_parquet('{t}') WHERE security_id = 4").fetchall()
     assert ds == [(["cover_page"],)]
+
+
+def test_share_exchange_history_runs(tmp_path, monkeypatch) -> None:
+    import duckdb
+
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path))
+    sess = [dt.date(2021, 3, d) for d in (1, 2, 3, 4, 5)]
+    _write(tmp_path / "calendar.parquet", {"session_date": sess})
+    rows = [(d, 1, "XNYS" if d.day <= 3 else "XNAS", "common", False, False, False) for d in sess] + \
+           [(d, 2, "ARCX", "etf", True, False, False) for d in sess] + \
+           [(d, 3, "XNAS", "common", False, True, False) for d in sess[:2]]       # ADR, not every session
+    cols = ["session_date", "security_id", "exchange", "security_type", "is_etf", "is_adr", "is_fpi"]
+    data = {c: [r[i] for r in rows] for i, c in enumerate(cols)}
+    data |= {"is_adr_likely": [False] * len(rows), "is_lp": [False] * len(rows), "is_reit": [False] * len(rows)}
+    _write(tmp_path / "panel" / "year=2021" / "panel-03.parquet", data)
+    rec = V.codes()
+    got = duckdb.connect().execute(f"""
+        SELECT security_id, valid_from, valid_to, sessions, exchcd, shrcd, available_at
+        FROM read_parquet('{(tmp_path / 'security_master' / 'share_exchange_history.parquet').as_posix()}')
+        ORDER BY 1, 2""").fetchall()
+    assert [(r[0], r[3], r[4], r[5]) for r in got] == [(1, 3, 1, 11), (1, 2, 3, 11), (2, 5, 4, 73), (3, 2, 3, 31)]
+    assert got[1][1] == sess[3] and got[1][6] == dt.datetime(2021, 3, 3, 22)   # stamped d-1 22:00 UTC
+    assert rec["rows"] == 4

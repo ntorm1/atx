@@ -207,3 +207,83 @@ deletions have no source.**
 The vendor file carries ATM implied volatility at 5-504 day tenors only; the panel has 5, 10, 21, 42, 63, 126 and 252
 days, so the term slope can be computed. **25-delta put/call IV (skew), option volume, open interest by call/put and
 implied dividend are not in any atx-db source.** They need an options vendor feed.
+
+## v3 security master and symbology (tier1-v3 S2.2-S2.6)
+
+Code: `src/atx_db/alpha_panel/{listing_events,cusip_history,figi_lei,identity_v3}.py`. New files only; the v1
+files above are untouched until the controller swaps v3 in. Each output has its own manifest
+(`security_master/{listing_events,cusip_history,figi,lei,share_exchange_history}_manifest.json`,
+`identity/link_table_v3_manifest.json`) with code SHA-256, output SHA-256 and the SHA-256 of every input manifest.
+Measured numbers: `.superpowers/sdd/tier1-v3/task-ID-report.md`.
+
+### S2.2 listing events, listing dates, name history
+
+- `security_master/listing_events.parquet`: one row per (cik, accession) of a listing-related form, all years.
+  2009+ rows come from the `sec_filings` stage (resolved acceptance clocks); earlier rows from a streaming pass
+  over `data/cache/submissions.zip` (clock: filing date + 1 day 00:00 America/New_York). Classes:
+  `registration` (8-A12B/G, 10-12B/G, 20-FR12B/G, 40FR12B/G), `successor` (8-K12B, 8-K12G3, 8-K15D5),
+  `certification` (the exchange's CERT* approval), `offering` (S-1, S-11, F-1, SB-2, 424B4/424B1, EFFECT),
+  `adr` (F-6 family), `delisting` (25, 25-NSE), `deregistration` (15-12B/G, 15-15D, 15F-*).
+- `security_master/line_listing.parquet`, rule `line-listing-v1` (one row per vendor line; see the module
+  docstring): `sec_confirmed` (a listing event of the line's first-linked CIK within [first session - 180 d,
+  + 10 d], or an S-1/F-1 within 400 d before), `successor_of_line` (a same-CIK or same-ticker line ended within 10
+  days before: a vendor re-key; the date is inherited), `sec_registration_before_vendor` / `censored` (the first
+  session is a vendor coverage batch: 2012-03-26, 2016-01-04, 2016-08-09), else `vendor_first_session`.
+  `listing_type` (ipo / spin_off / successor / adr / exchange_registration), `delisting_date` with the matching
+  Form 25 / 15 when one exists. `listing_available_at` is never before the first session's 22:00 UTC.
+- `security_master/name_history.parquet`: SEC `formerNames` ranges plus the current name per CIK
+  (`available_at` = 22:00 UTC of the day the name took effect on EDGAR; dates from the 2026-09-19 archive,
+  `vintage_risk = 'snapshot_dates'`).
+- `security_master/filer_addresses.parquet`: snapshot business / mailing address, EIN, LEI field and state of
+  incorporation per filer (non-PIT), used by the LEI match.
+
+### S2.3 CUSIP history and ISINs
+
+`security_master/cusip_history.parquet`, rule `cusip-history-v1`: dated (cusip, security_id) runs with
+`obs_from/obs_to` (evidence) and `valid_from/valid_to` (extended to the neighbouring runs of the line, at most 730
+days beyond the evidence). Evidence `basis`: `ftd_symbol` (SEC fails-to-deliver rows mapped by the ftd stage,
+point in time), `nport_ticker` (fund-reported tickers, when the nport stage is published), `openfigi_ticker` /
+`openfigi_isin_fragment` (OpenFIGI snapshot: the CUSIP's US composite ticker on the last vendor session, clipped
+to the line's trading span; `vintage_risk = 'snapshot_non_pit'`) and `thirteenf_name_alias` (rule
+`thirteenf-name-alias-v1`: a 13F CUSIP field that fails the CUSIP check digit, e.g. an ISIN fragment such as
+Chubb's `004432874` = CH0044328745, takes the line of the unique mapped CUSIP with the same issuer-name stem that
+quarter; a valid CUSIP is never aliased). `isin` = `US`/`CA` + CUSIP + Luhn check digit (`CA` when the linked
+issuer is incorporated in a Canadian province); CINS numbers get none. `cusip_check_ok`, `issue_kind`
+(equity / debt / unverified).
+
+### S2.4 FIGI and LEI
+
+- `security_master/figi.parquet` (query grain) and `security_master/line_figi.parquet` (per line): OpenFIGI
+  mapping API, unauthenticated (25 requests / minute, 10 jobs / request), landed as served under
+  `data/raw/openfigi/` with `receipts.jsonl`. Passes: `cusip` (ID_CUSIP, exchCode US), `cusip_any` (no exchange
+  filter, for delisted CUSIPs: share-class FIGI), `isin_fragment`, `ticker` (current ticker of alive member lines
+  without a CUSIP).
+- `security_master/lei.parquet`: CIK -> LEI by `sec_submissions` (the EDGAR profile field; 45 filers carry it),
+  `isin_lei_map` (GLEIF ISIN-LEI relationship file on the derived ISINs), `nport_issuer_lei` (when published),
+  `name_address` (exact normalised legal name, current or former SEC names, corroborated by ZIP, city + region,
+  jurisdiction of incorporation or foreign city + country; unique both ways). GLEIF golden copy (LEI2, RR) and
+  ISIN-LEI files are CC0 open data, landed under `data/raw/gleif/` (zips deleted after parse; parsed Parquet and
+  receipts kept).
+
+### S2.5 link table v3
+
+`identity/link_table_v3.parquet`, rule `identity-link-table-v3`: tiers `strict` > `dated` > `name` > `backfill`
+per line-session (one CIK per line-day). The new `dated` tier (rule `filing-symbol-evidence-v1`, point in time):
+Form 3/4/5 `issuerTradingSymbol` (weight 1 per accession) and cover-page `dei:TradingSymbol` rows (weight 2) mapped
+to the vendor line as of the filing date; a session links to the CIK with the most weight in the last 120 days
+(then 400 days) when its 400-day weight is at least 2. The `name` tier is recomputed on every session without a
+strict link (v1 dropped backfill days). New columns: `linktype` (CCM style: `LC` strict, or dated with cover-page
+or listing-event corroboration or weight >= 4; `LU` otherwise), `linkprim` (`P` issuer primary, `J` other common /
+ADR class, `N` non-common line), `dated_sources`, `listing_event_match`; `share_class` = the vendor ticker's
+class suffix, else the class in the FINRA issue name (`security_master/finra_names.parquet`). `dated()` is
+resumable per year (`_tmp/identity_v3/dated_parts/`, keyed by the evidence SHA-256, code and panel-core files).
+Exports
+`export/identity-bridge-v3-{strict,pit,all}/` keep the v2 bridge contract; `pit` = strict + dated + name.
+`security_master/share_exchange_history.parquet`: CRSP-style `exchcd` / `shrcd` runs from the v2 panel's
+point-in-time security flags.
+
+### S2.6 corporate hierarchy
+
+`security_master/hierarchy.parquet`: GLEIF Level 2 accounting-consolidation parents of every matched LEI
+(`parent_level` direct / ultimate), with the parent's name, country, status, the parent's CIK when that LEI is
+itself matched, relationship status, periods and validation sources.
