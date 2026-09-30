@@ -3,6 +3,7 @@
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-impl/tools/test_trial_ledger_rules.py
 
 C-3 defect and re-run flags on a ledgered cell are refused, a defect found later is a defect line.
+C-4 rerun_of names an earlier cell line of the same kind; a window re-run's target is on another window.
 Synthetic NAV cells only (test_nav_summ.write_nav: calendar-day sessions from 2020-01-02, inside TRAIN).
 """
 from __future__ import annotations
@@ -95,3 +96,40 @@ def test_a_defect_found_later_is_a_defect_line(tmp_path):
         BI.defect_line(recs[0]["trial_id"], " ")
     assert json.loads(ledger.read_text(encoding="utf-8").splitlines()[3])["reason"] == \
         "role built without the delisting returns"
+
+
+# ------------------------------------------------------------------ C-4
+def test_rerun_of_must_name_an_earlier_cell_line_of_the_same_kind(tmp_path):
+    """Review C-4: `--rerun-of b0a --rerun-basis window` (a cell name), a typo or another kind's id made the line add 0
+    whatever it named (N one too low); each is refused now, and a window re-run's target must be on another window."""
+    c = cells(tmp_path, 6)
+    ledger = tmp_path / "trials.jsonl"
+    legacy = record(c[0], 0.9, window_id=None)                          # a v7 cell (no window_id)
+    v8 = record(c[1], 1.1)
+    universe = BI.ledger_record("universe", str(c[2]), c[2] / "summary.json", c[2] / f"daily_{SCEN}.csv", SCEN,
+                                NS.net_series(NS.load_daily(c[2], SCEN)), 0.2)
+    BI.ledger_append(ledger, [legacy, v8, universe], chain=True)
+    before = ledger.read_bytes()
+    tid = legacy["trial_id"]
+    typo = tid[:-1] + ("1" if tid[-1] != "1" else "2")
+    for target, basis, needle in (("b0a", "window", "is not the trial_id of an earlier construction cell line"),
+                                  (typo, "window", "is not the trial_id"),
+                                  (universe["trial_id"], "window", "is not the trial_id of an earlier construction"),
+                                  (v8["trial_id"], "window", f"was scored on {WID} already")):
+        with pytest.raises(ValueError, match=needle):
+            BI.ledger_append(ledger, [record(c[3], 1.0, rerun_of=target, rerun_basis=basis)], chain=True)
+        assert ledger.read_bytes() == before                            # refused before anything is written
+    with pytest.raises(SystemExit, match="rerun_of 'b0a' is not the trial_id"):        # nav_summ exits non-zero
+        NS.main([str(c[3]), "--ledger", str(ledger), "--protocol", "v8", "--origin", "prior", "--draws", "9",
+                 "--rerun-of", "b0a", "--rerun-basis", "window"])
+    ok = record(c[3], 1.0, rerun_of=legacy["trial_id"], rerun_basis="window")   # the legacy cell on the new window
+    BI.ledger_append(ledger, [ok], chain=True)
+    records = BI.ledger_read(ledger)
+    assert BI.trial_counts(records) == [1, 1, 1, 0] and BI.ledger_n(records, True) == 2
+    later = record(c[4], 1.2, rerun_of=ok["trial_id"], rerun_basis="window")      # its target's window again
+    with pytest.raises(ValueError, match="scored on"):
+        BI.ledger_append(ledger, [later], chain=True)
+    batch = [record(c[4], 0.7), record(c[5], 0.8, rerun_of="?", rerun_basis="returns")]
+    with pytest.raises(ValueError, match="rerun_of '\\?'"):                        # one refusal: nothing appended
+        BI.ledger_append(ledger, batch, chain=True)
+    assert len(BI.ledger_read(ledger)) == 4

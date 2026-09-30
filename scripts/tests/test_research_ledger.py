@@ -35,11 +35,12 @@ def nav_cell(root: Path, rel: str, seed: int) -> Path:
     return write_nav(root / rel, list(nets))
 
 
-def record(root: Path, rel: str, **kw) -> dict:
+def record(root: Path, rel: str, legacy: bool = False, **kw) -> dict:
+    """A v8 cell line (origin, window_id), or with ``legacy`` a v7 line (neither)."""
     d = root / rel
+    v8 = {} if legacy else {"origin": "prior", "research_window_id": BI.window_id()}
     return BI.ledger_record("construction", rel, d / "summary.json", d / f"daily_{SCEN}.csv", SCEN,
-                            NS.net_series(NS.load_daily(d, SCEN)), 0.5, origin="prior",
-                            research_window_id=BI.window_id(), **kw)
+                            NS.net_series(NS.load_daily(d, SCEN)), 0.5, **v8, **kw)
 
 
 def protocol(ledger: Path, root: Path) -> int:
@@ -70,8 +71,8 @@ def test_dsr_n_equals_trial_counts_with_defect_and_rerun_lines(tmp_path):
     ledger = root / "trials.jsonl"
     for k, rel in enumerate(("prior/a", "prior/b", "prior/c", "prior/d", "prior/e", "prior/f")):
         nav_cell(root, rel, k)
-    a, b, e = record(root, "prior/a"), record(root, "prior/b", defect="role built without the delisting returns"), \
-        record(root, "prior/e")
+    a, b, e = record(root, "prior/a", legacy=True), \
+        record(root, "prior/b", defect="role built without the delisting returns"), record(root, "prior/e")
     lines = [a, b,
              record(root, "prior/c", rerun_of=a["trial_id"], rerun_basis="window"),   # a on the longer window: 0
              record(root, "prior/d", rerun_of=b["trial_id"], rerun_basis="blind"),    # replaces invalid b: 1, b 0

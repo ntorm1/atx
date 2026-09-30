@@ -17,6 +17,8 @@
                   invalid, found after it was ledgered (research_cycle.py ledger-defect). A cell line whose trial_id is
                   ledgered already is skipped only when its defect / re-run flags equal the ledgered line's; flags that
                   would be dropped are refused (ledger_append raises, nav_summ exits non-zero).
+  re-run check    (review C-4) rerun_of must be the trial_id of an earlier cell line of the same kind; a window
+                  re-run's target is on another window_id (or has none).
   protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
                   series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
   hash chain      (v8, ledger-chain-v1) prev_sha256 = SHA-256 of the previous non-blank line's bytes (64 zeros for
@@ -758,7 +760,22 @@ def check_line(before: dict, rec: dict) -> bool:
             raise ValueError(f"ledger: defect_of {rec.get('defect_of')!r} is not the trial_id of a ledgered cell line")
         if target.get("defect"):
             raise ValueError(f"ledger: trial {rec['defect_of']} was ledgered invalid already")
+    if rec.get("rerun_of") is not None:
+        check_rerun(before, rec)
     return True
+
+
+def check_rerun(before: dict, rec: dict) -> None:
+    """Review C-4: ``rerun_of`` names the trial_id of an earlier cell line of the same kind (an era shard line or an
+    event line is no cell; a typo, a cell name or another kind's id is refused), and a window re-run re-scores that
+    cell on another research window: its target carries another window_id, or none (a legacy line)."""
+    target = before.get(rec["rerun_of"])
+    if target is None or is_event(target) or is_era_line(target) or target.get("kind") != rec.get("kind"):
+        raise ValueError(f"ledger: rerun_of {rec['rerun_of']!r} is not the trial_id of an earlier {rec.get('kind')} "
+                         "cell line in this ledger")
+    if rec.get("rerun_basis") == "window" and "window_id" in target and target["window_id"] == rec.get("window_id"):
+        raise ValueError(f"ledger: a window re-run re-scores a ledgered cell on another research window; trial "
+                         f"{rec['rerun_of']} was scored on {target['window_id']} already")
 
 
 CHAIN_GENESIS = "0" * 64
