@@ -61,9 +61,13 @@ def test_v71_library_byte_identical():
 
 
 def test_plan_rows_equal_static_validation():
-    """The K1 rows of the 48 v7.1 members equal the committed recipe's static-validation figures: the DSL SHA, the
-    prior bars and the extra fields of every member (lineage), the slots and nodes where the recipe records them per
-    candidate (v7.0 wave 1, v7.1 wave 2, sv_flow), and the library maxima; and the library validates against them."""
+    """Ruling E-19 (K1, the exe's --plan-only, is the checker of record; R2-f). Member by member, the K1 rows of the 48
+    v7.1 members equal the committed recipe's lineage in DSL SHA, prior bars (required lookback) and extra fields; the
+    library maxima (slots, nodes, prior bars) equal the recipe's static-validation maxima; each member's slot and node
+    figures are only required to be within the house budget (slots: the registry's max_slots or the member's recorded
+    exception; nodes: the registry sets no node budget, so positive and at most the recorded library maximum); and
+    generate_library.validate_plan accepts the plan. The recipe's per-member slot and node figures (the Python
+    checker's estimates) stay as committed: the v7.1 recipe must regenerate byte for byte."""
     plan = json.loads(PLAN.read_text(encoding="utf-8"))
     rows = G.plan_rows(plan)
     rec = v71_recipe_v1()
@@ -74,13 +78,14 @@ def test_plan_rows_equal_static_validation():
         assert r["dsl_sha256"] == ln["dsl_sha256"], ln["id"]
         assert r["required_lookback"] == ln["prior_bars"], ln["id"]
         assert sorted(r["extra_fields"]) == sorted(set(ln["fields"]) - BASE), ln["id"]
-    figures = dict(sv["v70"], **sv["v71"], sv_flow=sv["sv_flow"])
-    for cid, fig in figures.items():
-        assert (rows[cid]["num_slots"], rows[cid]["node_count"]) == (fig["estimated_peak_slots"], fig["dag_nodes"]), cid
     assert max(r["num_slots"] for r in rows.values()) == sv["max_estimated_peak_slots"]
     assert max(r["node_count"] for r in rows.values()) == sv["max_dag_nodes"]
     assert max(r["required_lookback"] for r in rows.values()) == sv["max_prior_bars"]
     reg, lib = G.load_registry(HERE), G.load_library(HERE, "v71")
+    house, exceptions = reg["house_budget"], {e["id"]: e for e in lib["budget_exceptions"]}
+    for cid, r in rows.items():                                  # E-19: within the house budget, not equal
+        assert r["num_slots"] <= exceptions.get(cid, {}).get("max_slots", house["max_slots"]), cid
+        assert 0 < r["node_count"] <= sv["max_dag_nodes"], cid
     blob = (HERE / "fund_industry_ic_v71.json").read_bytes()
     assert G.validate_plan(reg, lib, json.loads(blob), blob, plan) == []
 
