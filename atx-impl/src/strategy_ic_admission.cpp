@@ -218,7 +218,9 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   // Cache I/O and hashing stream it in place in 1MiB slices: no second copy.
   // The fresh Engine's initial1x1 pool is covered by the fixed slack. No surfaces,
   // execution context, per-candidate retained signals, or book position arrays.
-  if (!b.add(1,32ULL<<20) || !b.add(cells,72+8*lib.max_slots) || !b.add(composition,1) ||
+  // --no-composition builds no blend, so its composition plane is not admitted.
+  const u64 blend=cfg.no_composition?0:composition;
+  if (!b.add(1,32ULL<<20) || !b.add(cells,72+8*lib.max_slots) || !b.add(blend,1) ||
       !b.add(d,512) || !b.add(n,512))
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined role/VM/composition memory budget");
   // Extra fields: at most field_plan.capacity columns are ever resident (8B/cell

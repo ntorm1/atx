@@ -1,12 +1,18 @@
 # Task B-3 report: move-only split of the IC runner, K1 plan rows
 
 Lane B, worktree `C:/atx-wt/pool-10`, branch `feat/platform-v8-b-20260929`, base `ef11f462`.
-Nothing was built or run (lane rules). Two commits:
+Nothing was built or run (lane rules). Three commits:
 
 | commit | content |
 |---|---|
 | `f5f8754e` | move-only split + CMake lists + `dsl_vm_sources` pin repair |
-| (this report's commit) | K1 `candidates[]` plan rows + test + this report |
+| `0e95a072` | K1 `candidates[]` plan rows + test + this report |
+| `bdca4c3d` | build fix to the split: `cache_schema_v2` (used by `score_role`) moved to the header |
+
+`f5f8754e` alone does not compile (`score_role` names `cache_schema_v2`, left in the signal cache TU's anonymous
+namespace); `bdca4c3d` fixes it. A script then checked every name the split left in an anonymous namespace
+against every other TU (none other is used across TUs) and that each header-declared function is defined exactly
+once. **Identity runs for the move-only state use `bdca4c3d`** (or any later lane-B commit with the flags off).
 
 ## What was built
 
