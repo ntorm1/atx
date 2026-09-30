@@ -3024,3 +3024,299 @@ TEST(NavWarmStart, RefusesMoreThanTheRolesHistoryAndRecordsTheWarmStart) {
     EXPECT_EQ(rows[1].substr(0, 2), "5,") << id;
   }
 }
+
+// ---- v8 D-1: stage timers, the construction grid, books on a pool ----
+namespace {
+using GridFlags = std::vector<std::pair<std::string, std::string>>;
+struct GridVariantSpec {
+  std::string id;
+  GridFlags flags;
+};
+// `flags` with each override's value replaced (or the flag appended): the standalone
+// command line of a grid variant.
+std::vector<std::string> with_overrides(std::vector<std::string> flags, const GridFlags& set) {
+  for (const auto& [key, value] : set) {
+    const auto it = std::find(flags.begin(), flags.end(), key);
+    if (it != flags.end() && std::next(it) != flags.end()) {
+      *std::next(it) = value;
+    } else {
+      flags.push_back(key);
+      flags.push_back(value);
+    }
+  }
+  return flags;
+}
+// An atx.nav-construction-grid/v1 file; returns its SHA-256.
+std::string write_grid(const std::filesystem::path& path,
+                       const std::vector<GridVariantSpec>& variants) {
+  Json list = Json::array();
+  for (const auto& v : variants) {
+    Json flags = Json::object();
+    for (const auto& [key, value] : v.flags) flags[key] = value;
+    list.push_back(Json{{"id", v.id}, {"flags", std::move(flags)}});
+  }
+  return write_json(path, Json{{"schema", "atx.nav-construction-grid/v1"},
+                               {"variants", std::move(list)}});
+}
+// price-risk-v1 on the command line's default windows (beta 252 with 126 pairs, 50
+// names): 60 names over 220 sessions have exposures from decision 126 on.
+Panel neutral_panel() { return noisy_panel(220, 60, 5); }
+std::vector<std::string> neutral_flags() {
+  return joined(v5_flags, {"--neutralize", "price-risk-v1"});
+}
+std::vector<std::string> grid_flag(const std::filesystem::path& grid) {
+  return {"--construction-grid", grid.string()};
+}
+} // namespace
+
+// --stage-timers: summary.json gains stage_seconds, whose six stages partition the run's
+// wall time (their sum is within 5% of it) and whose wall is within 5% of a clock around
+// the whole command (timing noise gets three tries); the exposures stage is the session
+// ring's. Every other file, and the summary without that key, are the untimed run's.
+TEST(NavTimers, SumWithin5PctOfWall) {
+  const auto p = neutral_panel();
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  std::ostringstream out, err;
+  const auto plain = dir.path / "plain";
+  ASSERT_EQ(dispatch(nav_args(a, plain, neutral_flags()), out, err), 0) << err.str();
+  EXPECT_FALSE(read_json(plain / "summary.json").contains("stage_seconds"));
+  const std::array<const char*, 6> stages{"load", "exposures", "construction", "books",
+                                          "hash", "write"};
+  f64 best = 0; // reported wall / the clock around the command
+  for (int attempt = 0; attempt < 3 && best < .95; ++attempt) {
+    const auto timed = dir.path / ("timed" + std::to_string(attempt));
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_EQ(dispatch(nav_args(a, timed, joined(neutral_flags(), {"--stage-timers"})), out,
+                       err), 0) << err.str();
+    const f64 around =
+        std::chrono::duration<f64>(std::chrono::steady_clock::now() - started).count();
+    auto summary = read_json(timed / "summary.json");
+    ASSERT_TRUE(summary.contains("stage_seconds"));
+    const auto seconds = summary.at("stage_seconds");
+    f64 sum = 0;
+    for (const char* stage : stages) {
+      const f64 s = seconds.at(stage).get<f64>();
+      EXPECT_GE(s, 0.0) << stage;
+      sum += s;
+    }
+    const f64 wall = seconds.at("wall").get<f64>();
+    EXPECT_GT(seconds.at("exposures").get<f64>(), 0.0);
+    EXPECT_NEAR(sum, wall, .05 * wall);
+    EXPECT_LE(wall, around);
+    EXPECT_TRUE(seconds.at("definition").is_string());
+    best = std::max(best, wall / around);
+    summary.erase("stage_seconds");
+    EXPECT_EQ(summary, read_json(plain / "summary.json"));
+    EXPECT_EQ(file_names(timed), file_names(plain));
+    for (const auto& name : file_names(plain))
+      if (name != "summary.json")
+        EXPECT_TRUE(file_bytes(timed / name) == file_bytes(plain / name)) << name;
+  }
+  EXPECT_GE(best, .95);
+}
+
+// --construction-grid: one lockstep run of every variant over one pinned load publishes,
+// under <output>/<id>/, byte for byte the directory of the standalone run with the base
+// flags plus the variant's flags, then grid_manifest.json (the grid SHA, each variant's
+// flags and file SHAs). With the price exposures live (cadence, theta, leverage, dust and
+// exit rate varied, 3 books each) and on the v7.1 cell's shape (borrow fields, 5 books,
+// locate-in-aim, delta basis, liquidity cache). Books on a pool change no variant byte;
+// --stage-timers then go to the grid manifest only.
+TEST(ConstructionGrid, EachVariantEqualsItsStandaloneRun) {
+  std::ostringstream out, err;
+  {
+    const auto p = neutral_panel();
+    Directory dir; const auto a = write_artifact(dir.path, p);
+    const std::vector<GridVariantSpec> grid{
+        {"base", {}},
+        {"t10-c5", {{"--trade-fraction", ".1"}, {"--cadence", "5"}}},
+        {"l12-d2-x05", {{"--aim-leverage", "1.2"}, {"--dust-multiple", ".2"},
+                        {"--exit-rate", ".05"}}}};
+    const auto file = dir.path / "grid.json";
+    const auto grid_sha = write_grid(file, grid);
+    ASSERT_EQ(dispatch(nav_args(a, dir.path / "grid", joined(neutral_flags(), grid_flag(file))),
+                       out, err), 0) << err.str();
+    const auto manifest = read_json(dir.path / "grid" / "grid_manifest.json");
+    EXPECT_EQ(manifest.at("schema"), "atx.nav-grid-run/v1");
+    EXPECT_EQ(manifest.at("grid_sha256"), grid_sha);
+    EXPECT_EQ(manifest.at("books"), 9);
+    EXPECT_EQ(manifest.at("book_workers"), 1);
+    EXPECT_FALSE(manifest.contains("stage_seconds"));
+    ASSERT_EQ(manifest.at("variants").size(), grid.size());
+    std::vector<std::string> names{"grid_manifest.json"};
+    for (usize v = 0; v < grid.size(); ++v) {
+      const auto& spec = grid[v];
+      const auto alone = dir.path / ("alone-" + spec.id);
+      ASSERT_EQ(dispatch(nav_args(a, alone, with_overrides(neutral_flags(), spec.flags)), out,
+                         err), 0) << err.str();
+      expect_same_files(dir.path / "grid" / spec.id, alone);
+      const auto& entry = manifest.at("variants")[v];
+      EXPECT_EQ(entry.at("id"), spec.id);
+      EXPECT_EQ(entry.at("flags").size(), spec.flags.size());
+      EXPECT_EQ(entry.at("recipe_file_sha256"),
+                co::sha256_file((alone / "recipe.json").string()).value());
+      EXPECT_EQ(entry.at("summary_file_sha256"),
+                co::sha256_file((alone / "summary.json").string()).value());
+      names.push_back(spec.id);
+    }
+    std::sort(names.begin(), names.end());
+    EXPECT_EQ(file_names(dir.path / "grid"), names);
+    // The variants differ: the grid is not one run published three times.
+    EXPECT_FALSE(file_bytes(dir.path / "grid" / "base" / "summary.json") ==
+                 file_bytes(dir.path / "grid" / "t10-c5" / "summary.json"));
+    const auto pooled = dir.path / "pooled";
+    ASSERT_EQ(dispatch(nav_args(a, pooled, joined(joined(neutral_flags(), grid_flag(file)),
+                                                  {"--book-workers", "4", "--stage-timers"})),
+                       out, err), 0) << err.str();
+    for (const auto& spec : grid) expect_same_files(pooled / spec.id, dir.path / "grid" / spec.id);
+    const auto timed = read_json(pooled / "grid_manifest.json");
+    EXPECT_EQ(timed.at("book_workers"), 4);
+    EXPECT_GT(timed.at("stage_seconds").at("wall").get<f64>(), 0.0);
+    EXPECT_GT(timed.at("stage_seconds").at("exposures").get<f64>(), 0.0);
+  }
+  {
+    const auto p = publication_panel();
+    Fields f(p);
+    for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5); // name 0 special
+    Directory dir; const auto a = write_artifact(dir.path, p);
+    const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+    const std::vector<GridVariantSpec> grid{
+        {"t05", {{"--trade-fraction", ".05"}}},
+        {"l1247-c2", {{"--aim-leverage", "1.247"}, {"--cadence", "2"}}}};
+    const auto file = dir.path / "grid.json";
+    write_grid(file, grid);
+    ASSERT_EQ(dispatch(nav_args(a, dir.path / "grid", joined(v71_shape(pin), grid_flag(file))),
+                       out, err), 0) << err.str();
+    for (const auto& spec : grid) {
+      const auto alone = dir.path / ("alone-" + spec.id);
+      ASSERT_EQ(dispatch(nav_args(a, alone, with_overrides(v71_shape(pin), spec.flags)), out,
+                         err), 0) << err.str();
+      expect_same_files(dir.path / "grid" / spec.id, alone);
+      EXPECT_EQ(file_names(alone).size(), 12U); // recipe, summary, 5 books x 2 CSVs
+    }
+  }
+}
+
+// replay_nav_grid: every variant's books equal replay_nav_scenarios of that variant alone
+// (borrow fields, 5 scenarios, price-risk-v1 exposures live from decision 20, cadence,
+// theta, band and rule varied), on one thread and on a pool of books. Variants that
+// differ in a shared setting, too many variants, and per-name-v1 rates on a pool are
+// refused.
+TEST(ConstructionGrid, ApiVariantsEqualStandaloneReplaysOnAnyWorkerCount) {
+  const auto p = noisy_panel(90, 12, 21);
+  const auto f = random_fields(p, 4);
+  const auto in = with_fields(p, f);
+  const auto scenarios = st::nav_scenario_matrix(true);
+  auto base = config(scenarios[0], 1e6, construction_daily());
+  base.max_events = 1U << 14;
+  std::vector<st::NavReplayConfig> variants(4, base);
+  variants[1].target.cadence = 3; variants[1].target.trade_fraction = .5;
+  variants[2].target.cadence = 2; variants[2].target.band_multiple = 0;
+  auto aim = aim_partial_nav(.2, .1, 1.2);
+  aim.neutralize = base.target.neutralize; aim.price_risk = base.target.price_risk;
+  variants[3].target = aim;
+  for (const usize workers : {usize{1}, usize{4}}) {
+    auto run = variants;
+    for (auto& v : run) v.book_workers = workers;
+    const auto grid = st::replay_nav_grid(in, run, scenarios);
+    ASSERT_TRUE(grid) << grid.error().to_string();
+    ASSERT_EQ(grid->size(), variants.size());
+    for (usize v = 0; v < variants.size(); ++v) {
+      const auto single = st::replay_nav_scenarios(in, variants[v], scenarios);
+      ASSERT_TRUE(single) << single.error().to_string();
+      ASSERT_EQ((*grid)[v].size(), scenarios.size());
+      for (usize k = 0; k < scenarios.size(); ++k) {
+        const auto& x = (*grid)[v][k]; const auto& y = (*single)[k];
+        expect_same_result(x, y);
+        for (usize t = 0; t < x.days.size() && t < y.days.size(); ++t)
+          expect_same_financing(x.days[t], y.days[t]);
+      }
+    }
+  }
+  const auto refused = [&](const std::vector<st::NavReplayConfig>& grid) {
+    const auto r = st::replay_nav_grid(in, grid, scenarios);
+    return !r && r.error().code() == co::ErrorCode::InvalidArgument;
+  };
+  auto shared = variants;
+  shared[1].target.neutralize = st::TargetNeutralize::None;
+  EXPECT_TRUE(refused(shared));
+  EXPECT_TRUE(refused(std::vector<st::NavReplayConfig>(st::nav_max_grid_variants + 1, base)));
+  EXPECT_TRUE(refused({}));
+  auto per_name = variants[3];
+  per_name.rate = st::NavRateRule::PerNameV1;
+  EXPECT_FALSE(refused({per_name}));
+  per_name.book_workers = 2;
+  EXPECT_TRUE(refused({per_name}));
+}
+
+// --book-workers N: every published byte of the v7.1 cell's shape (5 books) is the one-worker
+// run's; the recipe does not record it. Bad counts are usage errors; per-name-v1 rates on a
+// pool are refused before any output.
+TEST(NavBookWorkers, PublishedBytesEqualOneWorker) {
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+  std::ostringstream out, err;
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "one", v71_shape(pin)), out, err), 0) << err.str();
+  for (const char* workers : {"1", "3", "64"}) {
+    const auto pooled = dir.path / (std::string("pool") + workers);
+    ASSERT_EQ(dispatch(nav_args(a, pooled, joined(v71_shape(pin), {"--book-workers", workers})),
+                       out, err), 0) << err.str();
+    expect_same_files(pooled, dir.path / "one");
+  }
+  for (const char* bad : {"0", "65", "x", "-1"})
+    EXPECT_EQ(dispatch(nav_args(a, dir.path / "bad", {"--book-workers", bad}), out, err), 2)
+        << bad;
+  EXPECT_EQ(dispatch(nav_args(a, dir.path / "rate", joined(v5_flags, {"--rate", "per-name-v1",
+                                                                      "--book-workers", "2"})),
+                     out, err), 1);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "bad"));
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "rate"));
+}
+
+// Grid refusals, all before any output: a missing file, a wrong schema, a non-string
+// value, an id outside [a-z0-9-], a duplicate id, a flag outside the construction set,
+// more than 16 variants (exit 1); a bad value, --emit-holdings, and --rate with a variant
+// whose --rule is not aim-partial-v5 (usage, exit 2); an existing output (exit 1).
+TEST(ConstructionGrid, RefusesBadGridsBeforeAnyOutput) {
+  const auto p = publication_panel();
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  std::ostringstream out, err;
+  const auto never = dir.path / "never";
+  const auto run = [&](const std::string& grid, const std::vector<std::string>& extra) {
+    return dispatch(nav_args(a, never, joined(joined(v5_flags, grid_flag(dir.path / grid)),
+                                              extra)), out, err);
+  };
+  write_grid(dir.path / "ok.json", {{"a", {{"--trade-fraction", ".2"}}}});
+  write_grid(dir.path / "dup.json", {{"a", {}}, {"a", {}}});
+  write_grid(dir.path / "key.json", {{"a", {{"--neutralize", "none"}}}});
+  write_grid(dir.path / "upper.json", {{"A", {}}});
+  write_grid(dir.path / "value.json", {{"a", {{"--trade-fraction", "x"}}}});
+  write_grid(dir.path / "rule.json", {{"a", {{"--rule", "baseline-v1"}}}});
+  std::vector<GridVariantSpec> many;
+  for (usize v = 0; v <= st::nav_max_grid_variants; ++v)
+    many.push_back({"v" + std::to_string(v), {}});
+  write_grid(dir.path / "many.json", many);
+  write_json(dir.path / "schema.json",
+             Json{{"schema", "atx.nav-construction-grid/v0"}, {"variants", Json::array()}});
+  write_json(dir.path / "number.json",
+             Json{{"schema", "atx.nav-construction-grid/v1"},
+                  {"variants", Json::array({Json{{"id", "a"},
+                                                 {"flags", Json{{"--trade-fraction", 0.2}}}}})}});
+  for (const char* grid : {"missing.json", "schema.json", "number.json", "upper.json",
+                           "dup.json", "key.json", "many.json"})
+    EXPECT_EQ(run(grid, {}), 1) << grid;
+  EXPECT_EQ(run("value.json", {}), 2);
+  EXPECT_EQ(run("ok.json", {"--emit-holdings", (dir.path / "holdings").string()}), 2);
+  EXPECT_EQ(run("rule.json", {"--rate", "fixed"}), 2);
+  EXPECT_FALSE(std::filesystem::exists(never));
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "holdings"));
+  ASSERT_TRUE(std::filesystem::create_directory(never));
+  EXPECT_EQ(run("ok.json", {}), 1);
+  EXPECT_TRUE(std::filesystem::is_empty(never));
+  ASSERT_TRUE(std::filesystem::remove(never));
+  ASSERT_EQ(run("ok.json", {}), 0) << err.str();
+  EXPECT_EQ(file_names(never), (std::vector<std::string>{"a", "grid_manifest.json"}));
+}

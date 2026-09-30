@@ -1,6 +1,7 @@
 #include "strategy_price_exposures.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <new>
@@ -114,6 +115,34 @@ void load_logs(const PriceExposureInput& in, usize session, std::span<f64> logs)
     logs[n + i] = priced ? std::log(raw) : kNaN;
   }
 }
+// Interval t (sessions t-1, t] from the two sessions' logs (prev: t-1, cur: t): each
+// instrument's valid adjusted simple return (NaN if invalid) goes to store(i, r) in index
+// order; returns the equal-weight market return of the valid ones (NaN if none). The one
+// kernel of the stateless block and the session ring, so both hold the same bits.
+template <class Store>
+[[nodiscard]] f64 interval_returns(const PriceExposureInput& in, usize t,
+                                   std::span<const f64> prev, std::span<const f64> cur,
+                                   Store&& store) {
+  const usize n = in.instruments, b = t * n, a = b - n;
+  f64 sum = 0;
+  usize count = 0;
+  for (usize i = 0; i < n; ++i) {
+    f64 r = kNaN;
+    if (!std::isnan(prev[i]) && !std::isnan(cur[i])) {
+      r = in.close[b + i] / in.close[a + i] - 1;
+      const f64 log_return = cur[i] - prev[i], raw_log_return = cur[n + i] - prev[n + i];
+      if (!std::isfinite(r) || std::abs(log_return) > kGuardAbsLog ||
+          std::abs(log_return) > std::abs(raw_log_return) + kGuardExcessLog)
+        r = kNaN;
+    }
+    store(i, r);
+    if (!std::isnan(r)) {
+      sum += r;
+      ++count;
+    }
+  }
+  return count ? sum / static_cast<f64>(count) : kNaN;
+}
 // Valid interval returns (instrument-major, stride w.intervals; NaN if invalid)
 // and the equal-weight market return per interval. Each session is logged once.
 void fill_returns(const PriceExposureInput& in, const Windows& w, PriceExposureScratch& s) {
@@ -122,28 +151,58 @@ void fill_returns(const PriceExposureInput& in, const Windows& w, PriceExposureS
   std::span<f64> prev(s.logs.data(), 2 * n), cur(s.logs.data() + 2 * n, 2 * n);
   load_logs(in, w.first - 1, prev);
   for (usize j = 0; j < rows; ++j) {
-    const usize b = (w.first + j) * n, a = b - n;
     load_logs(in, w.first + j, cur);
-    f64 sum = 0;
-    usize count = 0;
-    for (usize i = 0; i < n; ++i) {
-      f64 r = kNaN;
-      if (!std::isnan(prev[i]) && !std::isnan(cur[i])) {
-        r = in.close[b + i] / in.close[a + i] - 1;
-        const f64 log_return = cur[i] - prev[i], raw_log_return = cur[n + i] - prev[n + i];
-        if (!std::isfinite(r) || std::abs(log_return) > kGuardAbsLog ||
-            std::abs(log_return) > std::abs(raw_log_return) + kGuardExcessLog)
-          r = kNaN;
-      }
-      s.returns[i * rows + j] = r;
-      if (!std::isnan(r)) {
-        sum += r;
-        ++count;
-      }
-    }
-    s.market[j] = count ? sum / static_cast<f64>(count) : kNaN;
+    s.market[j] = interval_returns(in, w.first + j, prev, cur,
+                                   [&](usize i, f64 r) { s.returns[i * rows + j] = r; });
     std::swap(prev, cur);
   }
+}
+
+// ------------------------------------------------------------- session ring
+constexpr usize kNoInterval = kMaxUsize;
+[[nodiscard]] bool ring_serves(const PriceExposureRing& ring, const PriceExposureInput& in) {
+  return ring.bound && ring.close == in.close.data() && ring.raw_close == in.raw_close.data() &&
+         ring.present == in.present.data() && ring.dates == in.dates &&
+         ring.instruments == in.instruments;
+}
+// Sized for `block` intervals of n names; a new size drops every cached interval.
+[[nodiscard]] co::Status size_ring(PriceExposureRing& ring, usize n, usize block) {
+  if (ring.capacity == block) return co::Ok();
+  ring.capacity = 0; // unsized until every buffer is (a failed resize keeps no stale tag)
+  try {
+    ring.returns.assign(n * 2 * block, kNaN);
+    ring.market.assign(2 * block, kNaN);
+    ring.interval.assign(block, kNoInterval);
+    ring.logs.assign(4 * n, kNaN);
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "price exposures: ring allocation failed");
+  } catch (const std::length_error&) {
+    return co::Err(co::ErrorCode::OutOfRange, "price exposures: ring extent");
+  }
+  ring.capacity = block;
+  ring.has_logged = false;
+  return co::Ok();
+}
+// Interval t into its slot t % capacity, written twice (slot and slot + capacity) so any
+// window of at most capacity intervals is one contiguous run per name. Session t-1 is
+// logged again only when it is not the last session logged.
+void ring_interval(const PriceExposureInput& in, usize t, PriceExposureRing& ring) {
+  const usize n = in.instruments, cap = ring.capacity, slot = t % cap, stride = 2 * cap;
+  const std::span<f64> last(ring.logs.data() + ring.last * 2 * n, 2 * n);
+  const std::span<f64> next(ring.logs.data() + (1 - ring.last) * 2 * n, 2 * n);
+  if (!ring.has_logged || ring.logged + 1 != t) load_logs(in, t - 1, last);
+  load_logs(in, t, next);
+  f64* const returns = ring.returns.data();
+  const f64 market = interval_returns(in, t, last, next, [&](usize i, f64 r) {
+    returns[i * stride + slot] = r;
+    returns[i * stride + slot + cap] = r;
+  });
+  ring.market[slot] = market;
+  ring.market[slot + cap] = market;
+  ring.interval[slot] = t;
+  ring.last = 1 - ring.last;
+  ring.logged = t;
+  ring.has_logged = true;
 }
 // Dollar volume summed over sessions [first_session, d]; unusable sessions add 0.
 void sum_dollars(const PriceExposureInput& in, usize first_session, usize d,
@@ -494,23 +553,44 @@ struct Cholesky {
 }
 } // namespace
 
-co::Status compute_price_exposures(const PriceExposureInput& in, const PriceExposureConfig& cfg,
-                                   usize d, PriceExposureScratch& scratch,
-                                   std::span<f64> out, std::span<u8> ok) {
-  ATX_TRY_VOID(validate_config(cfg));
-  const usize block = std::max(cfg.beta_window, cfg.vol_window);
-  ATX_TRY_VOID(validate_input(in, d, block, out, ok));
-  const Windows w = windows_at(cfg, d);
-  ATX_TRY_VOID(check_presence(in, w.first_session, d));
-  ATX_TRY_VOID(reserve_scratch(scratch, in.instruments, block));
-  fill_returns(in, w, scratch);
-  const std::span<f64> dollars(scratch.dollars.data(), in.instruments);
+void enable_session_ring(PriceExposureScratch& scratch, const PriceExposureInput& panel) noexcept {
+  auto& ring = scratch.ring;
+  ring.close = panel.close.data();
+  ring.raw_close = panel.raw_close.data();
+  ring.present = panel.present.data();
+  ring.dates = panel.dates;
+  ring.instruments = panel.instruments;
+  ring.bound = true;
+  ring.capacity = 0; // the first served call sizes it, dropping any earlier contents
+  ring.has_logged = false;
+  ring.seconds = 0;
+}
+
+u64 session_ring_bytes(const PriceExposureConfig& cfg, usize instruments) noexcept {
+  const u64 block = std::max(cfg.beta_window, cfg.vol_window);
+  if (block < 2 || block > kMaxWindow) return 0;
+  return u64{instruments} * (2 * block + 4) * sizeof(f64) +
+         block * (2 * sizeof(f64) + sizeof(usize));
+}
+
+namespace {
+// The return block of one decision: name i's intervals [w.first, w.first + w.intervals)
+// start at returns + i * stride; the market's at market.
+struct ReturnBlock {
+  const f64* returns{};
+  usize stride{};
+  const f64* market{};
+};
+// Every instrument's (beta, vol, log_adv) and ok flag at d from the block and the ADV
+// window: the same operations for the stateless block and the ring.
+void write_exposures(const PriceExposureInput& in, const PriceExposureConfig& cfg, usize d,
+                     const Windows& w, const ReturnBlock& block, std::span<f64> dollars,
+                     std::span<f64> out, std::span<u8> ok) {
   if (w.adv_full) sum_dollars(in, d + 1 - cfg.adv_window, d, dollars);
   const usize vol_count = std::max<usize>(2, (cfg.vol_window + 1) / 2);
-  const std::span<const f64> market(scratch.market.data() + (w.intervals - w.beta_rows),
-                                    w.beta_rows);
+  const std::span<const f64> market(block.market + (w.intervals - w.beta_rows), w.beta_rows);
   for (usize i = 0; i < in.instruments; ++i) {
-    const std::span<const f64> r(scratch.returns.data() + i * w.intervals, w.intervals);
+    const std::span<const f64> r(block.returns + i * block.stride, w.intervals);
     const f64 beta = beta_of(r.last(w.beta_rows), market, cfg.min_return_pairs);
     const f64 vol = vol_of(r.last(w.vol_rows), vol_count);
     const f64 mean_dollars = w.adv_full ? dollars[i] / static_cast<f64>(cfg.adv_window) : 0;
@@ -520,6 +600,49 @@ co::Status compute_price_exposures(const PriceExposureInput& in, const PriceExpo
     out[i * kCols + kExposureLogAdv] = log_adv;
     ok[i] = static_cast<u8>(std::isfinite(beta) && std::isfinite(vol) && std::isfinite(log_adv));
   }
+}
+// The bound ring's decision d: computes only the window's intervals the ring lacks (in
+// ascending order, so each new session is logged once), then reads the window as one
+// contiguous mirrored run per name.
+[[nodiscard]] co::Status ring_exposures(const PriceExposureInput& in,
+                                        const PriceExposureConfig& cfg, usize d,
+                                        const Windows& w, usize block,
+                                        PriceExposureScratch& scratch, std::span<f64> out,
+                                        std::span<u8> ok) {
+  auto& ring = scratch.ring;
+  ATX_TRY_VOID(size_ring(ring, in.instruments, block));
+  ATX_TRY_VOID(grow(scratch.dollars, in.instruments));
+  for (usize t = w.first; t < w.first + w.intervals; ++t)
+    if (ring.interval[t % ring.capacity] != t) ring_interval(in, t, ring);
+  const usize start = w.first % ring.capacity;
+  const ReturnBlock view{ring.returns.data() + start, 2 * ring.capacity,
+                         ring.market.data() + start};
+  write_exposures(in, cfg, d, w, view, std::span<f64>(scratch.dollars.data(), in.instruments),
+                  out, ok);
+  return co::Ok();
+}
+} // namespace
+
+co::Status compute_price_exposures(const PriceExposureInput& in, const PriceExposureConfig& cfg,
+                                   usize d, PriceExposureScratch& scratch,
+                                   std::span<f64> out, std::span<u8> ok) {
+  ATX_TRY_VOID(validate_config(cfg));
+  const usize block = std::max(cfg.beta_window, cfg.vol_window);
+  ATX_TRY_VOID(validate_input(in, d, block, out, ok));
+  const Windows w = windows_at(cfg, d);
+  ATX_TRY_VOID(check_presence(in, w.first_session, d));
+  if (ring_serves(scratch.ring, in)) {
+    const auto started = std::chrono::steady_clock::now();
+    const auto status = ring_exposures(in, cfg, d, w, block, scratch, out, ok);
+    scratch.ring.seconds +=
+        std::chrono::duration<f64>(std::chrono::steady_clock::now() - started).count();
+    return status;
+  }
+  ATX_TRY_VOID(reserve_scratch(scratch, in.instruments, block));
+  fill_returns(in, w, scratch);
+  const ReturnBlock view{scratch.returns.data(), w.intervals, scratch.market.data()};
+  write_exposures(in, cfg, d, w, view, std::span<f64>(scratch.dollars.data(), in.instruments),
+                  out, ok);
   return co::Ok();
 }
 

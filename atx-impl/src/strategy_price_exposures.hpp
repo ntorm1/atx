@@ -8,7 +8,9 @@
 
 // Causal ex-ante price-risk exposures (trailing market beta, volatility, log
 // dollar ADV) and neutralization of one decision's desired target against them.
-// Deterministic: fixed loop order, no threads, no hidden state between calls.
+// Deterministic: fixed loop order, no threads, no hidden state between calls unless the
+// caller binds a session ring (enable_session_ring), whose cached values are the
+// stateless path's own bits.
 namespace atx::impl::strategy {
 // Column order of every row-major instruments x kPriceExposureCount matrix.
 inline constexpr atx::usize kPriceExposureCount = 3;
@@ -38,6 +40,34 @@ struct PriceExposureInput {
   std::span<const atx::u8> present;
 };
 
+// Opt-in session ring of compute_price_exposures (v8 D-1, review P-9). Unbound (the
+// default) it is empty and unused. Bound to one panel (enable_session_ring), every interval
+// (t-1, t] is computed once per bound panel -- each session logged once -- and kept, with
+// its equal-weight market return, in a mirrored ring of max(beta_window, vol_window)
+// intervals, so a decision computes only the intervals its window adds. An interval's
+// values are the stateless path's own expressions on the same two sessions (one kernel),
+// so exposures are bit-identical to a fresh scratch. Contract: while bound, the bound
+// panel's close, raw_close and present spans (data and geometry) do not change; a call on
+// any other panel runs the stateless path and leaves the ring as it is. Its size is
+// session_ring_bytes. Contents private to the implementation, except `seconds` (a clock
+// callers may read: observation only, never an input).
+struct PriceExposureRing {
+  const atx::f64* close{};
+  const atx::f64* raw_close{};
+  const atx::u8* present{};
+  atx::usize dates{}, instruments{};
+  bool bound{};
+  atx::usize capacity{};            // intervals kept; 0 = not sized for the current config
+  std::vector<atx::f64> returns;    // instrument-major, 2 x capacity mirrored slots per name
+  std::vector<atx::f64> market;     // 2 x capacity mirrored slots
+  std::vector<atx::usize> interval; // per slot: the interval held (none: max usize)
+  std::vector<atx::f64> logs;       // two sessions of (adjusted, raw) logs, instruments each
+  atx::usize last{};                // the half of logs holding session `logged`
+  atx::usize logged{};
+  bool has_logged{};
+  atx::f64 seconds{}; // wall time spent in compute_price_exposures while serving from it
+};
+
 // Working storage owned by the caller and reused across calls. Its contents are
 // private to the implementation: default-construct once per replay and pass it to
 // every call. Buffers only grow (to the largest geometry seen), so repeated calls
@@ -47,7 +77,16 @@ struct PriceExposureScratch {
   std::vector<atx::f64> market;  // equal-weight market return per interval
   std::vector<atx::f64> logs;    // previous/current session log adjusted and raw closes
   std::vector<atx::f64> dollars; // per-instrument dollar volume sum over the ADV window
+  PriceExposureRing ring;        // unbound unless enable_session_ring
 };
+// Binds scratch's session ring to `panel` (dropping its contents and zeroing its clock).
+// The caller keeps the panel's spans unchanged while the scratch serves it.
+void enable_session_ring(PriceExposureScratch& scratch, const PriceExposureInput& panel) noexcept;
+// Bytes a bound ring holds for `instruments` names under `cfg`: 2 x capacity + 4 f64 per
+// name plus 2 f64 and one tag per slot (0 for windows outside [2, 4096], which
+// compute_price_exposures refuses anyway).
+[[nodiscard]] atx::u64 session_ring_bytes(const PriceExposureConfig& cfg,
+                                          atx::usize instruments) noexcept;
 struct NeutralizeScratch {
   std::vector<atx::usize> rows;   // regressed row indices, ascending
   std::vector<atx::f64> z;        // rows x kPriceExposureCount clipped z-scores
