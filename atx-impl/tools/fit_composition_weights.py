@@ -158,6 +158,10 @@ import numpy as np  # noqa: E402
 ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
 if str(ENGINE_TOOLS) not in sys.path:
     sys.path.append(str(ENGINE_TOOLS))
+# This directory (engine_tools.py, horizon_stats.py) also when the fitter is loaded by path (spec_from_file_location).
+IMPL_TOOLS = Path(__file__).resolve().parent
+if str(IMPL_TOOLS) not in sys.path:
+    sys.path.append(str(IMPL_TOOLS))
 import code_fingerprint  # noqa: E402
 import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
