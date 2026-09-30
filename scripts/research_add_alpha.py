@@ -17,7 +17,8 @@
    else scripts/specs/PARENT.json) by name templates: every output name gets NAME for PARENT; the parent's cycle
    outputs become the reference inputs (admission, cell, combined signal, S2 daily CSV, orientations, daily IC); the
    parent's fields dir is pinned as built; the candidate cache and fit work dir are derived from the role; the gate lists
-   the new members (require any); marginal IC on the parent's combined signal; "receipts": "every-phase",
+   the new members (require any); marginal IC on the parent's combined signal with the parent's composition weights as
+   the theme regressors (inputs.reference_weights, the file the pool names); "receipts": "every-phase",
    "verdict": true, summ.dsr_n "ledger+1"; the OD-2 caps written into runner.phases when they apply;
 6. locks it (every pin computed from its file). A missing input leaves the spec unlocked (exit 3: `lock --write` later).
 
@@ -106,7 +107,8 @@ def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_
                    **keep, "baseline_fields": pin(fdm, dir=fd),
                    "reference_admission": pin(f"{outs['fit']}/admission.json"),
                    "reference_cell": pin(f"{outs['nav']}/summary.json", dir=outs["nav"]),
-                   "reference_combined": pin(f"{outs['w']}/train_combined.json")}
+                   "reference_combined": pin(f"{outs['w']}/train_combined.json"),
+                   "reference_weights": pin(f"{outs['fit']}/composition_weights.json")}   # the pool's weights
     if outs["s2"]:
         s["inputs"]["reference_daily"] = pin(f"{outs['nav']}/{outs['s2']}")
     s["inputs"].update(reference_orientations=pin(f"{outs['u']}/orientations.json"),
@@ -122,7 +124,7 @@ def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_
         if section in parent:
             s[section] = dict(parent[section], output=ren(parent[section]["output"]))
     s["marginal"] = {"output": ren(parent["marginal"]["output"]) if "marginal" in parent else
-                     f"{s['ic']['u_output']}-marginal", "pool": "reference_combined", "flags": ["--themes"]}
+                     f"{s['ic']['u_output']}-marginal", "pool": "reference_combined", "themes": "reference_weights"}
     s["gate"] = {"name": f"p1-{name}", "admitted": list(new_ids), "require": "any", "sign_agrees": True, "report": []}
     compare = [{"name": "parent-orientations", "after": "u", "mode": "json-rows", "array": "candidates", "key": "id",
                 "keys": "{input:baseline_library}", "a": "{input:reference_orientations}",

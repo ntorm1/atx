@@ -39,6 +39,11 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates)
   receipts        "every-phase": the direct phases (fields, check, monitor, summ) run through the bounded runner too
   ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields)
+  marginal        {output, pool (input key, default reference_combined), themes (input key of the pool's composition
+                  weights, e.g. reference_weights; optional), flags (--min-names N, --max-memory-mib N)}: the verb's
+                  whole argv is built from the spec (--candidate-cache, --library(-sha256), --pool(-sha256), --role,
+                  --themes, --fields, --output; --min-names defaults to the u pass's); a section it cannot be built
+                  from is refused when the spec loads, and the pool's role and weights bindings when it is planned
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -142,7 +147,15 @@ SEC_INPUTS = ("sec_identity_bridge",) + SEC_STAGE_INPUTS            # all four o
 HOLDINGS_INPUTS = ("thirteenf", "ftd", "regsho_threshold", "security_master", "short_volume_ext")  # --<key> DIR
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
-              "reference_orientations", "reference_daily_ic") + SEC_INPUTS + HOLDINGS_INPUTS + ("reuse_fields",)
+              "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
+    ("reuse_fields",)
+# F-2's marginal IC verb (atx-impl/src/strategy_marginal_ic.cpp, dispatch_marginal_ic / run_marginal_ic): every option
+# takes one value and a run without MARGINAL_REQUIRED is refused. The step builds MARGINAL_BUILT from the spec (paths and
+# pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
+# output); marginal.flags may set only MARGINAL_SPEC_FLAGS (unsigned integers; --min-names defaults to the u pass's).
+MARGINAL_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
+MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields")
+MARGINAL_SPEC_FLAGS = {"--min-names": (3, None), "--max-memory-mib": (32, 16384)}   # option: (min, max) as the verb
 OPERAND = re.compile(r"\{(input|out):([A-Za-z0-9_]+)\}")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
                 ("finra_short_volume", "--finra-short-volume"))
@@ -303,10 +316,8 @@ def validate_v8_keys(spec: dict) -> None:
         raise CycleError(f"spec receipts must be one of {', '.join(RECEIPT_MODES)}", EXIT_USAGE)
     if "verdict" in spec and type(spec["verdict"]) is not bool:
         raise CycleError("spec verdict must be true or false", EXIT_USAGE)
-    if "marginal" in spec and ("ic" not in spec or spec["marginal"].get("pool", "reference_combined")
-                               not in spec["inputs"]):
-        raise CycleError("spec marginal needs ic and inputs.<marginal.pool> (default reference_combined: the parent's "
-                         "combined signal)", EXIT_USAGE)
+    if "marginal" in spec:
+        validate_marginal(spec)
     if "ledger_copy" in spec.get("summ", {}) and not (isinstance(spec["summ"]["ledger_copy"], str) and
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
@@ -323,6 +334,44 @@ def validate_v8_keys(spec: dict) -> None:
     if "reuse_fields" in inputs and ("fields" not in spec or spec["fields"].get("manifest_sha256")):
         raise CycleError("spec inputs.reuse_fields needs a built fields section (not an as-built manifest_sha256)",
                          EXIT_USAGE)
+
+
+def option_value(flags: list, option: str) -> str | None:
+    """The value after `option` in a flag list (None when absent or last)."""
+    k = flags.index(option) if option in flags else -1
+    return flags[k + 1] if 0 <= k < len(flags) - 1 else None
+
+
+def validate_marginal(spec: dict) -> None:
+    """A marginal section the step can always turn into the verb's full argv (refused when the spec is loaded, so at
+    plan time, never half way through a run): the pool and the themes weights are pinned inputs, flags are value pairs
+    of MARGINAL_SPEC_FLAGS within the verb's ranges, and the step's own options are never repeated there."""
+    m, inputs = spec["marginal"], spec["inputs"]
+    if "ic" not in spec or m.get("pool", "reference_combined") not in inputs:
+        raise CycleError("spec marginal needs ic and inputs.<marginal.pool> (default reference_combined: the parent's "
+                         "combined signal)", EXIT_USAGE)
+    themes = m.get("themes")
+    if themes is not None and (not isinstance(themes, str) or themes not in inputs):
+        raise CycleError("spec marginal.themes must name the pinned input holding the pool's composition weights (e.g. "
+                         "reference_weights = the parent's fit output composition_weights.json: the verb's --themes "
+                         "takes that file and binds it by the pool's composition_weights_sha256)", EXIT_USAGE)
+    flags = m.get("flags", [])
+    if not isinstance(flags, list) or len(flags) % 2 or not all(isinstance(x, str) for x in flags):
+        raise CycleError("spec marginal.flags must be option/value pairs (strings); the verb's --themes takes the "
+                         "weights file: name its input in marginal.themes", EXIT_USAGE)
+    ic_names = option_value(spec["ic"].get("flags", []), "--min-names")
+    for key, value in zip(flags[::2], flags[1::2]):
+        if key in MARGINAL_BUILT:
+            raise CycleError(f"spec marginal.flags: {key} is built by the step from the spec (it builds "
+                             f"{', '.join(MARGINAL_BUILT)})", EXIT_USAGE)
+        low, high = MARGINAL_SPEC_FLAGS.get(key, (None, None))
+        if low is None or not value.isdigit() or int(value) < low or (high is not None and int(value) > high):
+            raise CycleError(f"spec marginal.flags: {key} {value!r} (allowed: "
+                             + ", ".join(f"{k} N >= {lo}" + (f" <= {hi}" if hi else "") for k, (lo, hi) in
+                                         MARGINAL_SPEC_FLAGS.items()) + ")", EXIT_USAGE)
+    if "--min-names" not in flags[::2] and ic_names is not None and not ic_names.isdigit():
+        raise CycleError(f"spec marginal: the u pass's --min-names {ic_names!r} is not a count (set marginal.flags "
+                         "--min-names)", EXIT_USAGE)
 
 
 def input_dir(item: dict) -> str:
@@ -739,7 +788,7 @@ class Cycle:
             card_out = step.output
             out.append(step)
         if "marginal" in s:
-            out.append(self.marginal_step(lib))
+            out.append(self.marginal_step(lib, fd))
         if "gate" in s:
             out.append(Step("gate", "internal", None, state="always",
                             note=f"admission read-out of {w_dir}/admission.json"))
@@ -792,21 +841,54 @@ class Cycle:
                          "construction is identical by construction")
         return step
 
-    def marginal_step(self, lib: str) -> Step:
-        """F-2's marginal IC verb (contract K6) over the u pass cache, residualised on the pool (the parent's combined
-        signal); skipped with a note when the IC exe does not offer it."""
-        m, ic_exe = self.spec["marginal"], self.spec["exes"]["ic"]
+    def marginal_step(self, lib: str, fd: str) -> Step:
+        """F-2's marginal IC verb (contract K6) over the u pass's candidate cache and fields dir, on this cycle's role:
+        each candidate's IC and its IC residualised on the pool (inputs.<marginal.pool>, the parent's combined signal)
+        and, with marginal.themes, on the pool's theme composites. The argv carries every option the verb requires
+        (MARGINAL_REQUIRED) and every pin the spec has; skipped with a note when the IC exe does not offer the verb."""
+        s, m = self.spec, self.spec["marginal"]
+        ic_exe, role_m = s["exes"]["ic"], self.ipath("role")
         m_out = self.out(m["output"])
         run_dir = f"{m_out}-run"
-        pool = self.ipath(m.get("pool", "reference_combined"))
-        argv = self.runner(run_dir, [ic_exe, lib, pool], "marginal") + [
-            ic_exe, "marginal", "--candidate-cache", self.cache_dir(), "--library", lib, "--pool", pool,
-            *m.get("flags", []), "--output", m_out]
+        pool_key, themes = m.get("pool", "reference_combined"), m.get("themes")
+        pool = self.ipath(pool_key)
+        self.check_marginal_bindings(pool_key, themes)
+        argv = [ic_exe, "marginal", "--candidate-cache", self.cache_dir(), "--library", lib, "--library-sha256",
+                self.pin("library"), "--pool", pool, "--pool-sha256", self.pin(pool_key), "--role", role_m]
+        binds = [ic_exe, lib, pool, role_m]
+        if themes:
+            argv += ["--themes", self.ipath(themes)]
+            binds.append(self.ipath(themes))
+        argv += ["--fields", fd]
+        flags = list(m.get("flags", []))
+        min_names = option_value(s["ic"]["flags"], "--min-names")
+        if "--min-names" not in flags[::2] and min_names is not None:   # the u pass's name floor
+            flags += ["--min-names", min_names]
+        argv = self.runner(run_dir, binds + [f"{fd}/manifest.json"], "marginal") + argv + flags + ["--output", m_out]
         if "marginal" not in self.capabilities():
             return Step("marginal", "skipped", argv, m_out, run_dir, None, "skipped",
                         "the IC exe offers no marginal verb (contract K6, lane F): skipped")
         return Step("marginal", "bounded", argv, m_out, run_dir, None, *self.single_state(
             m_out, run_dir, f"{m_out}/marginal_ic.json"))
+
+    def check_marginal_bindings(self, pool_key: str, themes: str | None) -> None:
+        """The verb's bindings of the files this spec pins, checked when the step is planned (exit 3 before any phase
+        runs): the pool manifest's role_manifest_sha256 is inputs.role's pin and, with themes, its
+        composition_weights_sha256 is the pin of inputs.<themes>. Skipped for a pool not on disk (hash-only)."""
+        rel = self.ipath(pool_key)
+        try:
+            doc = self.res.read_json(rel)
+        except ValueError as exc:
+            raise CycleError(f"marginal: pool {rel} is not a combined-signal manifest ({exc})", EXIT_PIN) from exc
+        if doc is None:
+            return
+        doc = doc if isinstance(doc, dict) else {}
+        if doc.get("role_manifest_sha256") != self.pin("role"):
+            raise CycleError(f"marginal: pool {rel} was blended on role {doc.get('role_manifest_sha256')}, not on "
+                             f"inputs.role {self.pin('role')} (the verb binds --role to the pool)", EXIT_PIN)
+        if themes and doc.get("composition_weights_sha256") != self.pin(themes):
+            raise CycleError(f"marginal: pool {rel} names composition weights {doc.get('composition_weights_sha256')}, "
+                             f"not inputs.{themes} {self.pin(themes)} (the verb binds --themes to the pool)", EXIT_PIN)
 
     def single_state(self, out: str, run_dir: str, marker: str) -> tuple[str, str]:
         """(state, note) of a single-attempt output: done iff its marker file exists; a partial output is a stop."""
