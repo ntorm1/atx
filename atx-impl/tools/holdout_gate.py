@@ -1,12 +1,21 @@
 """Hidden-block gate (platform v8 V-2): two bits about the frozen book on the hidden blocks, and nothing else.
 
 Usage:
-  holdout_gate.py --deploy MANIFEST --thresholds FILE --owner-ruling FILE
+  holdout_gate.py --deploy MANIFEST --thresholds FILE --owner-ruling FILE --ledger TRIALS
 
 Output (stdout, one line, exit 0): {"pass_2024": <bool>, "pass_2025_onward": <bool>}. No statistic, session count or
-file is ever printed or written. A refusal prints one reason on stderr (never a statistic) and exits 2 before any
-daily NAV series is read (the owner ruling is checked before anything else); an evaluation that fails after the series
-is opened prints a fixed message and exits 3.
+file is ever printed or written, except the one trial ledger line below. A refusal prints one reason on stderr (never
+a statistic) and exits 2 before any daily NAV series is read (the owner ruling is checked before anything else); an
+evaluation that fails after the series is opened prints a fixed message and exits 3.
+
+The ruling in the trial ledger (review C-11): after every check and before any NAV series is opened, the gate appends
+to the trial ledger (--ledger, build-equity/trials.jsonl) one chained ``validation`` line citing the ruling
+{kind validation, count 0, book, owner_ruling {path (relative to the ledger's directory), sha256 of the file's
+bytes}, owner, date, blocks, thresholds_sha256, deploy_manifest_sha256}; a second read under the same ruling bytes
+appends nothing (same trial_id). The gate refuses a ruling whose bytes differ from the SHA-256 that a validation line
+citing the same file records (the file was edited after a read under it). So every ruling -- and every thresholds
+file, which a ruling pins -- the gate reads under leaves its line: a bisection of the thresholds is in the ledger.
+A validation line is an event line (backtest_integrity.EVENT_KINDS): no cell, no series, it adds no trial.
 
 OD-1 makes this tool the only reader of sessions at or after the research seal, and only under an owner ruling. It is
 built and tested on synthetic NAV files; it is not run on real data in the v8 sprint.
@@ -37,6 +46,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 
@@ -51,6 +61,7 @@ RULING_SCHEMA = "atx.holdout-owner-ruling/v1"
 BITS = ("pass_2024", "pass_2025_onward")
 BLOCK_KEYS = {"2024": "read_twice_at_book_level", "2025_onward": "never_read"}   # ruling block -> window hidden key
 EXIT_REFUSED, EXIT_FAILED = 2, 3
+VALIDATION = BI.VALIDATION          # review C-11: the ledger line of a hidden-block read
 _SHA_CHARS = set("0123456789abcdef")
 
 
@@ -197,27 +208,88 @@ def evaluate(deploy: dict, thresholds: dict, blocks: dict) -> dict:
     return bits
 
 
-def prepare(deploy_path, thresholds_path, ruling_path) -> tuple[dict, dict, dict]:
-    """Every check, the owner ruling first; no NAV data is opened here. Returns (deploy, thresholds, blocks)."""
+def cited_path(ruling_path, ledger_path) -> str:
+    """The ruling's path as a validation line records it: relative to the ledger's directory, '/'-separated (absolute
+    when it is on another drive)."""
+    ruling, base = Path(ruling_path).resolve(), Path(ledger_path).resolve().parent
+    try:
+        return Path(os.path.relpath(ruling, base)).as_posix()
+    except ValueError:
+        return ruling.as_posix()
+
+
+def _path_key(cited: str, ledger_path) -> str:
+    """One spelling of a cited ruling path (case, separators and '..' normalised) for comparing two citations."""
+    return os.path.normcase(os.path.normpath(os.path.join(Path(ledger_path).resolve().parent, cited)))
+
+
+def _ledger(ledger_path) -> list[dict]:
+    if ledger_path is None:
+        raise Refusal("no trial ledger (--ledger FILE): a hidden-block read is recorded there (review C-11)")
+    try:
+        return BI.ledger_read(Path(ledger_path))
+    except (OSError, ValueError):
+        raise Refusal("the trial ledger cannot be read or its hash chain is broken") from None
+
+
+def validation_line(ruling: dict, ruling_sha: str, cited: str, deploy: dict) -> dict:
+    """The ledger line citing the ruling (kind validation, count 0: the record of a hidden-block read)."""
+    return {"schema": BI.LEDGER_SCHEMA, "kind": VALIDATION, "count": 0, "book": deploy["book"],
+            "owner_ruling": {"path": cited, "sha256": ruling_sha},
+            "owner": ruling["owner"], "date": ruling["date"], "blocks": sorted(ruling["blocks"]),
+            "thresholds_sha256": ruling["thresholds_sha256"], "deploy_manifest_sha256": ruling["deploy_manifest_sha256"],
+            "trial_id": BI.trial_id(VALIDATION, ruling_sha)}
+
+
+def check_cited(records: list[dict], ledger_path, line: dict) -> None:
+    """Refuse when a validation line cites the same ruling file with another SHA-256 (review C-11: the file was edited
+    after a read under it)."""
+    key, sha = _path_key(line["owner_ruling"]["path"], ledger_path), line["owner_ruling"]["sha256"]
+    for rec in records:
+        cite = rec.get("owner_ruling") if rec.get("kind") == VALIDATION else None
+        if isinstance(cite, dict) and _path_key(str(cite.get("path", "")), ledger_path) == key \
+                and cite.get("sha256") != sha:
+            raise Refusal(f"the owner ruling's bytes differ from the SHA-256 the trial ledger line citing it records "
+                          f"({str(cite.get('sha256'))[:16]}, now {sha[:16]}): an edited ruling is a new ruling file")
+
+
+def prepare(deploy_path, thresholds_path, ruling_path, ledger_path=None):
+    """Every check, the owner ruling first; no NAV data is opened here. Returns (deploy, thresholds, blocks, the
+    validation line to append before ``evaluate``)."""
     if ruling_path is None:
         raise Refusal("no owner ruling (--owner-ruling FILE); the hidden blocks are opened only under one (OD-1)")
-    ruling, _ = _read(Path(ruling_path), "owner ruling")
+    ruling, ruling_sha = _read(Path(ruling_path), "owner ruling")
     if deploy_path is None or thresholds_path is None:
         raise Refusal("--deploy MANIFEST and --thresholds FILE are both required")
     deploy_doc, deploy_sha = _read(Path(deploy_path), "deploy manifest")
     thresholds_doc, thresholds_sha = _read(Path(thresholds_path), "thresholds file")
     check_ruling(ruling, deploy_sha, thresholds_sha)
+    records = _ledger(ledger_path)
     thresholds = check_thresholds(thresholds_doc)
     deploy = check_deploy(deploy_doc, Path(deploy_path).resolve().parent)
+    line = validation_line(ruling, ruling_sha, cited_path(ruling_path, ledger_path), deploy)
+    check_cited(records, ledger_path, line)
     blocks = hidden_blocks()
     if not (Path(deploy["nav_dir"]) / "summary.json").is_file():
         raise Refusal("the deploy manifest's nav_dir has no summary.json")
-    return deploy, thresholds, blocks
+    return deploy, thresholds, blocks, line
 
 
-def gate(deploy_path, thresholds_path, ruling_path) -> dict:
-    """``prepare`` then ``evaluate``: {"pass_2024": bool, "pass_2025_onward": bool}."""
-    return evaluate(*prepare(deploy_path, thresholds_path, ruling_path))
+def record(ledger_path, line: dict) -> dict | None:
+    """Append the chained validation line (before any NAV series is opened); the line as written, or None when the
+    ledger cites these ruling bytes already."""
+    try:
+        appended, _ = BI.ledger_append(Path(ledger_path), [line], chain=True)
+    except (OSError, ValueError):
+        raise Refusal("the validation line could not be appended to the trial ledger") from None
+    return appended[0] if appended else None
+
+
+def gate(deploy_path, thresholds_path, ruling_path, ledger_path) -> dict:
+    """``prepare``, ``record`` then ``evaluate``: {"pass_2024": bool, "pass_2025_onward": bool}."""
+    deploy, thresholds, blocks, line = prepare(deploy_path, thresholds_path, ruling_path, ledger_path)
+    record(ledger_path, line)
+    return evaluate(deploy, thresholds, blocks)
 
 
 def main(argv=None) -> int:
@@ -225,9 +297,12 @@ def main(argv=None) -> int:
     ap.add_argument("--deploy", default=None, metavar="MANIFEST", help=f"deploy manifest ({DEPLOY_SCHEMA})")
     ap.add_argument("--thresholds", default=None, metavar="FILE", help=f"thresholds ({THRESHOLDS_SCHEMA})")
     ap.add_argument("--owner-ruling", default=None, metavar="FILE", help=f"owner ruling ({RULING_SCHEMA})")
+    ap.add_argument("--ledger", default=None, metavar="TRIALS",
+                    help="trial ledger (atx.trial-ledger/v1): the validation line citing the ruling is appended there")
     args = ap.parse_args(argv)
     try:
-        ready = prepare(args.deploy, args.thresholds, args.owner_ruling)
+        *ready, line = prepare(args.deploy, args.thresholds, args.owner_ruling, args.ledger)
+        record(args.ledger, line)
     except Refusal as exc:
         print(f"holdout_gate: refusing: {exc}", file=sys.stderr)
         return EXIT_REFUSED

@@ -74,7 +74,8 @@ LEDGER_SCHEMA = "atx.trial-ledger/v1"
 LEDGER_KINDS = ("admission", "composition", "construction", "universe", "data")
 ZERO_TRIAL_KINDS = ("protocol",)          # W0-3: the protocol line records the window change and adds no trial
 DEFECT = "defect"                         # review C-3: a defect event line marks a ledgered cell invalid afterwards
-EVENT_KINDS = ZERO_TRIAL_KINDS + (DEFECT,)  # event lines: no cell, no series, add no trial
+VALIDATION = "validation"                 # review C-11: holdout_gate's record of a hidden-block read (cites its ruling)
+EVENT_KINDS = ZERO_TRIAL_KINDS + (DEFECT, VALIDATION)  # event lines: no cell, no series, add no trial
 FLAG_KEYS = ("defect", "rerun_of", "rerun_basis")   # a cell line's v8 flags (never part of its trial_id)
 ORIGINS = ("prior", "grid", "mined")      # contract K5: the registry's origin class, copied into every ledger line
 RERUN_BASES = ("window", "blind", "returns")
@@ -963,10 +964,13 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
             lines.append(f"   {kind:12s} {0:5d}")
     zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r)]
     if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
-        out = [r for r in zero if r.get("rerun_basis") != "window" and r.get("kind") not in ZERO_TRIAL_KINDS]
+        reads = sum(1 for r in zero if r.get("kind") == VALIDATION)
+        out = [r for r in zero if r.get("rerun_basis") != "window" and r.get("kind") not in ZERO_TRIAL_KINDS
+               and r.get("kind") != VALIDATION]
         lines.append(f"   adding no trial: {len(zero)} line(s) ({len(out)} by the defect rule, "
                      f"{sum(1 for r in zero if r.get('rerun_basis') == 'window')} window re-run(s), "
-                     f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s))")
+                     f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s)"
+                     + (f", {reads} hidden-block validation read(s)" if reads else "") + ")")
     eras = [r for r in records if is_era_line(r)]
     if eras:  # task H-1: printed only when an era shard is ledgered
         lines.append(f"   era shard line(s): {len(eras)}, adding no trial (each pooled line counts its eras once: "

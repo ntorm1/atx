@@ -47,7 +47,8 @@ import research_tree  # noqa: E402
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
 PROTOCOL = "protocol"
 DEFECT = "defect"                       # review C-3: a defect event line (backtest_integrity.defect_line)
-NON_TRIAL_KINDS = (PROTOCOL, DEFECT)    # event lines, no cell and no trial: skipped by cells()
+VALIDATION = "validation"               # review C-11: holdout_gate's record of a hidden-block read
+NON_TRIAL_KINDS = (PROTOCOL, DEFECT, VALIDATION)    # event lines, no cell and no trial: skipped by cells()
 CELL_LESS_KINDS = ("admission",)        # review C-7: the cycle's admission lines name a candidate, not a NAV cell
 N_KIND = "construction"                 # the kind whose trials make N (nav_summ --dsr-ledger)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
