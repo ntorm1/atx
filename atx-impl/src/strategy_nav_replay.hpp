@@ -569,11 +569,17 @@ struct NavFieldsPin {
 // is not past the research seal, every manifest key but files and universe equals --role's, the
 // file sets and every extent are equal, every file SHA-256 is equal except close.f64,
 // raw_close.f64, volume.f64 and present.u8 (the payloads prepare_recent_research.py
-// --delisting-returns patches; sessions, ids and member.u8 are shared), and universe is absent
-// in both or pins the same id, base role (manifest, member), identity bridge, SIC events and
-// (when --role has one) delisting stage. Then, before the label payloads load, no role session
-// reaches the seal; they must extend --role's presence only (every --role-present cell at the
-// same close and raw close, bit for bit) with member & present & close > 0 equal to --role's.
+// --delisting-returns patches; sessions and ids are shared), and universe is absent in both or
+// pins the same id, base role (manifest, member), identity bridge, SIC events and (when --role
+// has one) delisting stage. member.u8 is shared, or differs only by the members a
+// --delisting-returns label role declares cleared on termination sessions
+// (universe.delisting.returns_applied true, universe.delisting.applied.
+// members_cleared_on_termination_session N > 0; then score_member_counts may differ too). Then,
+// before the label payloads load, no role session reaches the seal; they must extend --role's
+// presence only (every --role-present cell at the same close and raw close, bit for bit) with
+// member & present & close > 0 equal to --role's, and a member.u8 that differs must differ from
+// --role's on exactly the N declared cells, each one --role has absent and keeps a member (the
+// lagged membership) and the label role presents and clears.
 // The recipe gains label_role {manifest_sha256, rule} and the summary label_role
 // {manifest_sha256, label_only_present_cells, label_only_present_cells_scored, basis}; with
 // --label-role equal to --role every other byte is the run without it.

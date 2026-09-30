@@ -1514,11 +1514,16 @@ constexpr const char* label_role_declaration =
     "declared) not past the research seal; every manifest key but files and universe equal to "
     "--role's (dates, instruments, score window, source, projection, membership recipe); the "
     "same file set, every extent equal and every SHA-256 equal except close.f64, raw_close.f64, "
-    "volume.f64 and present.u8 (the payloads --delisting-returns patches: sessions, ids and "
-    "member.u8 are shared); universe absent in both, or the same id, base role (manifest, "
-    "member), identity-bridge and SIC-events pins and --role's delisting-stage pin when it has "
-    "one. Payloads: no role session at or after the seal; --role's presence extended only; "
-    "member & present & close > 0 equal to --role's on every cell";
+    "volume.f64 and present.u8 (the payloads --delisting-returns patches: sessions and ids are "
+    "shared); member.u8 shared, or differing only by the members the label role declares "
+    "cleared on termination sessions (universe.delisting.returns_applied true and "
+    "applied.members_cleared_on_termination_session N > 0, and then score_member_counts may "
+    "differ); universe absent in both, or the same id, base role (manifest, member), "
+    "identity-bridge and SIC-events pins and --role's delisting-stage pin when it has one. "
+    "Payloads: no role session at or after the seal; --role's presence extended only; member & "
+    "present & close > 0 equal to --role's on every cell; a differing member.u8 differs from "
+    "--role's on exactly the N declared cells, each one --role has absent and keeps a member "
+    "and the label role presents and clears";
 
 // Output label of a book: the trading id alone without fields (the legacy names),
 // "<trading>+<financing>" in the financing matrix.
@@ -3210,9 +3215,12 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "instruments, membership and base: every manifest key but files and universe "
                "equal, the same files and extents with equal SHA-256 except close, raw_close, "
                "volume and present, the same universe id and base-role, identity-bridge, "
-               "SIC-events and delisting-stage pins; it must not reach the research seal and "
-               "may only add presence to --role's, at its prices; recipe and summary record "
-               "label_role)]\n"
+               "SIC-events and delisting-stage pins; member.u8 (and score_member_counts) may "
+               "differ only by the members it declares cleared on termination sessions "
+               "(universe.delisting.applied.members_cleared_on_termination_session N), exactly "
+               "N cells --role has absent and keeps a member; it must not reach the research "
+               "seal and may only add presence to --role's, at its prices; recipe and summary "
+               "record label_role)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
