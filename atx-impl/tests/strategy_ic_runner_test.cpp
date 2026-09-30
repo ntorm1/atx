@@ -2540,4 +2540,161 @@ TEST(StrategyIcRunner, IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettin
   for (const auto* file:{"orientations.json","train_daily_ic.csv","validation_daily_ic.csv"})
     EXPECT_EQ(file_sha(dir.path/"changed"/file),file_sha(dir.path/"changed_uncached"/file)) << file;
 }
+// ---- Platform v8 B-1: --no-composition screening pass ----
+// A daily IC CSV without its `__combined__` rows: the member rows, in file order.
+std::string member_rows(const std::filesystem::path& path) {
+  std::ifstream in(path,std::ios::binary); std::string out;
+  for (std::string line;std::getline(in,line);)
+    if (!line.starts_with("__combined__,")) out+=line+'\n';
+  return out;
+}
+std::string text_of(const std::filesystem::path& path) {
+  const auto bytes=file_bytes(path); return std::string(bytes.begin(),bytes.end());
+}
+TEST(NoComposition, SkipsBlendAndCombinedRows) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  const auto full=run_named(dir,cfg,"full"); ASSERT_TRUE(full.ok) << full.error;
+  auto screen=cfg; screen.no_composition=true;
+  const auto run=run_named(dir,screen,"screen"); ASSERT_TRUE(run.ok) << run.error;
+  const auto summary=read_json(dir.path/"screen"/"summary.json");
+  const auto full_summary=read_json(dir.path/"full"/"summary.json");
+  EXPECT_EQ(summary.at("status"),"complete"); EXPECT_EQ(summary.at("composition"),"skipped");
+  EXPECT_FALSE(full_summary.contains("composition"));
+  // Not a method input: the recipe (which still records --save-combined) is unchanged.
+  EXPECT_EQ(file_sha(dir.path/"screen"/"recipe.json"),file_sha(dir.path/"full"/"recipe.json"));
+  EXPECT_EQ(summary.at("recipe_sha256"),full_summary.at("recipe_sha256"));
+  ASSERT_EQ(summary.at("roles").size(),2U);
+  for (const auto& role_result:summary.at("roles")) {
+    const auto name=role_result.at("role").get<std::string>();
+    EXPECT_EQ(role_result.at("combined_evaluations"),0) << name;
+    EXPECT_EQ(role_result.at("candidate_evaluations"),2) << name;
+    for (const auto* key:{"combined_ic","planned_target_proxy","combined_artifact"})
+      EXPECT_FALSE(role_result.contains(key)) << name << ' ' << key;
+    EXPECT_FALSE(role_result.at("stage_seconds").contains("composition")) << name;
+    for (const auto& candidate:role_result.at("candidates"))
+      EXPECT_FALSE(candidate.at("stage_seconds").contains("composition")) << name;
+    EXPECT_EQ(text_of(dir.path/"screen"/(name+"_daily_ic.csv")).find("__combined__"),std::string::npos) << name;
+    for (const std::string suffix:{"_planned_targets.csv","_combined.json","_combined.f64","_combined_member.u8",
+                                   "_combined_finite.u8","_combined_sessions.i64","_combined_ids.u64"})
+      EXPECT_FALSE(std::filesystem::exists(dir.path/"screen"/(name+suffix))) << name << suffix;
+  }
+  // The same config without the flag does blend, so each omission above is the flag's.
+  EXPECT_TRUE(full_summary.at("roles").at(0).contains("combined_ic"));
+  EXPECT_TRUE(std::filesystem::exists(dir.path/"full"/"train_combined.json"));
+  // Admission drops the composition plane.
+  EXPECT_LT(summary.at("roles").at(0).at("admitted_working_bytes").get<u64>(),
+            full_summary.at("roles").at(0).at("admitted_working_bytes").get<u64>());
+  // The plan reports the skip. Pinned weights shape only the blend: they refuse with
+  // the flag before any payload or output, in plan-only mode too.
+  auto plan_cfg=screen; plan_cfg.plan_only=true; std::ostringstream plan;
+  const auto planned=atx::impl::strategy::run_ic(plan_cfg,plan); ASSERT_TRUE(planned) << planned.error().to_string();
+  EXPECT_EQ(Json::parse(plan.str()).at("composition"),"skipped");
+  auto weighted=screen; ASSERT_TRUE(pin_weights(dir,weighted,{{"volume_level",.5},{"volume_rank",.5}}));
+  for (const bool plan_only:{true,false}) {
+    weighted.plan_only=plan_only; const auto refused=run_named(dir,weighted,"weighted");
+    EXPECT_FALSE(refused.ok);
+    EXPECT_NE(refused.error.find("--no-composition builds no blend"),std::string::npos) << refused.error;
+    EXPECT_TRUE(refused.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"weighted"));
+  }
+}
+TEST(NoComposition, MemberRowsByteIdenticalToDefault) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // A field candidate as well, so the field residency path runs under the flag.
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  cfg.workers=2; cfg.save_combined=true;
+  const auto full=run_named(dir,cfg,"full"); ASSERT_TRUE(full.ok) << full.error;
+  auto screen=cfg; screen.no_composition=true;
+  const auto run=run_named(dir,screen,"screen"); ASSERT_TRUE(run.ok) << run.error;
+  for (const auto* file:{"recipe.json","orientations.json"})
+    EXPECT_EQ(file_sha(dir.path/"screen"/file),file_sha(dir.path/"full"/file)) << file;
+  for (const std::string name:{"train","validation"})
+    EXPECT_EQ(text_of(dir.path/"screen"/(name+"_daily_ic.csv")),member_rows(dir.path/"full"/(name+"_daily_ic.csv")))
+        << name;
+  // Every candidate row (IC, coverage, signs) and the field accounting are equal;
+  // only timings, resources and the blend's own keys differ.
+  const auto a=read_json(dir.path/"full"/"summary.json"),b=read_json(dir.path/"screen"/"summary.json");
+  ASSERT_EQ(a.at("roles").size(),b.at("roles").size());
+  for (usize r=0;r<a.at("roles").size();++r) {
+    auto x=stable_role(a.at("roles").at(r),false),y=stable_role(b.at("roles").at(r),false);
+    for (auto* role_result:{&x,&y})
+      for (const auto* key:{"combined_ic","planned_target_proxy","combined_evaluations"}) role_result->erase(key);
+    EXPECT_EQ(x,y) << r;
+  }
+}
+// With the cache on, a candidate whose signal and IC result are both cached is not
+// loaded: every payload is tampered at equal size (a load would refuse on its
+// SHA256), yet the screening pass succeeds with the cold run's member outputs.
+TEST(NoComposition, HitWithIcResultIsNotLoaded) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto cold_summary=dir.path/"cold"/"summary.json";
+  for (const std::string name:{"train","validation"})
+    for (const std::string id:{"volume_level","volume_rank"}) {
+      const auto payload=cache_entry(cold_summary,name,id).payload;
+      auto bytes=file_bytes(payload); ASSERT_EQ(bytes.size(),D*N*sizeof(f64)) << id;
+      bytes[8*N*100]=static_cast<char>(bytes[8*N*100]^1); ASSERT_TRUE(write_bytes(payload,bytes));
+    }
+  auto screen=cfg; screen.no_composition=true;
+  const auto run=run_named(dir,screen,"screen"); ASSERT_TRUE(run.ok) << run.error;
+  EXPECT_NE(run.log.find("IC cache-hit volume_rank role=validation layout=v2 payload=not-loaded ic_result=hit"),
+            std::string::npos) << run.log;
+  EXPECT_EQ(run.log.find("IC cache-miss"),std::string::npos);
+  EXPECT_EQ(run.log.find("VM-complete"),std::string::npos);
+  const auto summary=read_json(dir.path/"screen"/"summary.json");
+  for (const auto& role_result:summary.at("roles")) {
+    EXPECT_EQ(role_result.at("verify_bytes"),0);
+    EXPECT_EQ(role_result.at("stage_seconds").at("cache_load"),0.0);
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),2);
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2);
+    EXPECT_EQ(role_result.at("candidate_cache").at("entries").size(),2U);
+  }
+  EXPECT_EQ(file_sha(dir.path/"screen"/"orientations.json"),file_sha(dir.path/"cold"/"orientations.json"));
+  for (const std::string name:{"train","validation"})
+    EXPECT_EQ(text_of(dir.path/"screen"/(name+"_daily_ic.csv")),member_rows(dir.path/"cold"/(name+"_daily_ic.csv")))
+        << name;
+  // The default pass needs the bytes for its blend: it loads them and refuses.
+  const auto blended=run_named(dir,cfg,"blended"); EXPECT_FALSE(blended.ok);
+  EXPECT_NE(blended.error.find("candidate cache payload SHA256 mismatch"),std::string::npos) << blended.error;
+  // Without its IC result the screening pass must score, so that candidate loads too.
+  const auto level=cache_entry(cold_summary,"train","volume_level").sidecar;
+  const auto subdirectory=read_json(cold_summary).at("roles").at(0).at("candidate_cache").at("ic_results")
+      .at("subdirectory").get<std::string>();
+  ASSERT_TRUE(std::filesystem::remove(level.parent_path()/subdirectory/level.filename()));
+  const auto rescore=run_named(dir,screen,"rescore"); EXPECT_FALSE(rescore.ok);
+  EXPECT_NE(rescore.error.find("candidate cache payload SHA256 mismatch: "+level_stem()+".f64"),std::string::npos)
+      << rescore.error;
+}
+// Review focus 4: two roles (here two score windows over the same sessions) share
+// one cache root. An entry of one role is a miss for the other, never a hit, and
+// the other role's outputs equal an uncached run's.
+TEST(StrategyIcRunner, CacheMissOnRoleChange) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.validation_manifest.clear(); cfg.validation_sha256.clear();
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto first=run_named(dir,cfg,"first"); ASSERT_TRUE(first.ok) << first.error;
+  const auto other=dir.path/"train_later";
+  std::filesystem::copy(dir.path/"train",other,std::filesystem::copy_options::recursive);
+  auto manifest=read_json(other/"manifest.json"); manifest["score_begin"]=400;
+  manifest["score_start_ns"]=manifest.at("score_end_ns").get<i64>()-80*day;
+  auto moved=cfg; moved.train_manifest=(other/"manifest.json").string();
+  ASSERT_TRUE(json_file(moved.train_manifest,manifest,moved.train_sha256));
+  ASSERT_NE(moved.train_sha256,cfg.train_sha256);
+  const auto second=run_named(dir,moved,"second"); ASSERT_TRUE(second.ok) << second.error;
+  EXPECT_EQ(second.log.find("IC cache-hit"),std::string::npos);
+  const auto cache=read_json(dir.path/"second"/"summary.json").at("roles").at(0).at("candidate_cache");
+  EXPECT_EQ(cache.at("hits"),0); EXPECT_EQ(cache.at("misses"),2);
+  EXPECT_EQ(cache.at("ic_results").at("hits"),0);
+  for (const auto& entry:cache.at("entries"))
+    EXPECT_NE(entry.at("sidecar").get<std::string>().find(moved.train_sha256),std::string::npos);
+  auto uncached=moved; uncached.candidate_cache_directory.clear();
+  const auto plain=run_named(dir,uncached,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  for (const auto* file:{"orientations.json","train_daily_ic.csv","train_planned_targets.csv"})
+    EXPECT_EQ(file_sha(dir.path/"second"/file),file_sha(dir.path/"plain"/file)) << file;
+  // The first role's entries are untouched and still serve it.
+  const auto again=run_named(dir,cfg,"again"); ASSERT_TRUE(again.ok) << again.error;
+  EXPECT_EQ(read_json(dir.path/"again"/"summary.json").at("roles").at(0).at("candidate_cache").at("hits"),2);
+}
 } // namespace

@@ -309,17 +309,23 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   std::unique_ptr<engine::parallel::DetPool> pool;
   if (cfg.workers>1) pool=std::make_unique<engine::parallel::DetPool>(cfg.workers);
   std::unique_ptr<al::Engine> vm;
-  ATX_TRY(auto close_id,role.panel.field_id("close")); const auto close=role.panel.field_all(close_id);
-  std::vector<u8> effective=role.decision_member;
-  for (usize d=0;d<role.panel.dates();++d) for (usize i=0;i<role.panel.instruments();++i) {
-    const auto k=d*role.panel.instruments()+i;
-    effective[k]=static_cast<u8>(effective[k] && role.panel.in_universe(d,i) && std::isfinite(close[k]) && close[k]>0);
+  // --no-composition (screening) builds no blend: neither the composition nor the
+  // effective membership that it and the saved artifact use.
+  std::vector<u8> effective; std::optional<IcComposition> composition;
+  if (!cfg.no_composition) {
+    ATX_TRY(auto close_id,role.panel.field_id("close")); const auto close=role.panel.field_all(close_id);
+    effective=role.decision_member;
+    for (usize d=0;d<role.panel.dates();++d) for (usize i=0;i<role.panel.instruments();++i) {
+      const auto k=d*role.panel.instruments()+i;
+      effective[k]=static_cast<u8>(effective[k] && role.panel.in_universe(d,i) && std::isfinite(close[k]) && close[k]>0);
+    }
+    std::vector<IcCompositionCandidate> candidates; candidates.reserve(lib.candidates.size());
+    for (const auto& c:lib.candidates) candidates.push_back({c.id,c.family});
+    IcCompositionConfig cc; cc.dates=role.panel.dates(); cc.instruments=role.panel.instruments();
+    cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
+    ATX_TRY(auto created,IcComposition::create(cc,candidates,effective,weights,themes));
+    composition.emplace(std::move(created));
   }
-  std::vector<IcCompositionCandidate> candidates; candidates.reserve(lib.candidates.size());
-  for (const auto& c:lib.candidates) candidates.push_back({c.id,c.family});
-  IcCompositionConfig cc; cc.dates=role.panel.dates(); cc.instruments=role.panel.instruments();
-  cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
-  ATX_TRY(auto composition,IcComposition::create(cc,candidates,effective,weights,themes));
   // One key per candidate (empty = cache off); directories are created on write.
   const bool signal_cache=!cache.keys.empty();
   // IC-result cache: on exactly when the signal cache is (its entries key on the
@@ -350,9 +356,32 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     progress<<"IC eval-start "<<spec.name<<' '<<(k+1)<<'/'<<lib.candidates.size()<<' '<<candidate.id
             <<" slots="<<candidate.program.num_slots<<'\n'<<std::flush;
     fields.enter(k,vm,progress);
-    ATX_TRY(auto acquired,candidate_signal(cfg,spec,role,fields,k,candidate,
-        signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
-        signal_buffer,meter,progress));
+    // A verified IC-result hit replaces evaluate_research_ic; a miss scores and,
+    // with the cache on, commits that result keyed on the exact signal bytes.
+    std::optional<CachedIc> cached_ic; std::filesystem::path ic_entry; bool ic_probed=false; f64 probe_seconds=0;
+    // --no-composition: nothing but IC reads the signal, and an IC entry is keyed on
+    // the payload SHA256 its sidecar records, so a signal hit whose IC result is
+    // cached too is never loaded (its bytes were verified when that entry was made).
+    if (cfg.no_composition && ic_scope && cache.hits[k]) {
+      const auto probe_started=std::chrono::steady_clock::now();
+      const auto& hit=*cache.hits[k];
+      ic_entry=hit.dir/ic_scope->directory/(hit.stem+".json");
+      ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,hit.payload_sha,scratch,
+          ic_options.active_horizons));
+      ic_probed=true;
+      probe_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-probe_started).count();
+    }
+    SignalTiming acquired;
+    if (cached_ic) {
+      release(signal_buffer); // no stale signal outlives its candidate
+      acquired.hit=true; acquired.entry=*cache.hits[k];
+      progress<<"IC cache-hit "<<candidate.id<<" role="<<spec.name<<" layout="<<(acquired.entry->legacy?"v1":"v2")
+              <<" payload=not-loaded ic_result=hit\n"<<std::flush;
+    } else {
+      ATX_TRY(acquired,candidate_signal(cfg,spec,role,fields,k,candidate,
+          signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
+          signal_buffer,meter,progress));
+    }
     const std::span<const f64> signal(signal_buffer);
     const auto vm_seconds=acquired.vm; total_vm_seconds+=vm_seconds;
     total_cache_load_seconds+=acquired.cache_load; total_cache_write_seconds+=acquired.cache_write;
@@ -366,17 +395,16 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"signal_key_sha256",key.signal_key}});
     }
     const auto ic_started=std::chrono::steady_clock::now();
-    // A verified IC-result hit replaces evaluate_research_ic; a miss scores and,
-    // with the cache on, commits that result keyed on the exact signal bytes.
-    std::optional<CachedIc> cached_ic; std::filesystem::path ic_entry;
     if (ic_scope) {
       if (!acquired.entry || !hash_valid(acquired.entry->payload_sha))
         return co::Err(co::ErrorCode::Internal,
             "IC runner: signal payload SHA256 missing for IC-result cache");
       // Beside the signal entry that served or stored the bytes: v1 <id>.json, v2 <id>.<dsl16>.json.
-      ic_entry=acquired.entry->dir/ic_scope->directory/(acquired.entry->stem+".json");
-      ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scratch,
-          ic_options.active_horizons));
+      if (!ic_probed) {
+        ic_entry=acquired.entry->dir/ic_scope->directory/(acquired.entry->stem+".json");
+        ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scratch,
+            ic_options.active_horizons));
+      }
     }
     ex::ResearchIcResult scored; IcSeries daily_series;
     if (cached_ic) {
@@ -389,7 +417,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
             daily_series,cfg.workers));
       }
     }
-    const auto ic_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-ic_started).count();
+    const auto ic_seconds=probe_seconds+
+        std::chrono::duration<f64>(std::chrono::steady_clock::now()-ic_started).count();
     total_ic_seconds+=ic_seconds;
     const auto& orientation=scored.screen.horizons[1].rank;
     const bool fit=orientation.valid_dates>0 && std::isfinite(orientation.mean) && orientation.mean!=0;
@@ -406,11 +435,13 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto sign=signs[k];
     // Pinned signs orient the blend only; every IC diagnostic keeps `sign`.
     const int blend_sign=blend_signs.empty()?sign:blend_signs[k];
-    const auto composition_started=std::chrono::steady_clock::now();
-    ATX_TRY_VOID(composition.add(k,signal,blend_sign,pool.get()));
-    const auto composition_seconds=std::chrono::duration<f64>(
-        std::chrono::steady_clock::now()-composition_started).count();
-    total_composition_seconds+=composition_seconds;
+    f64 composition_seconds=0;
+    if (composition) {
+      const auto composition_started=std::chrono::steady_clock::now();
+      ATX_TRY_VOID(composition->add(k,signal,blend_sign,pool.get()));
+      composition_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-composition_started).count();
+      total_composition_seconds+=composition_seconds;
+    }
     series(daily,candidate.id,role,daily_series,sign);
     auto summary=result_json(scored,sign);
     summary["id"]=candidate.id; summary["family"]=candidate.family;
@@ -421,7 +452,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto candidate_seconds=std::chrono::duration<f64>(
         std::chrono::steady_clock::now()-candidate_started).count();
     summary["wall_seconds"]=candidate_seconds;
-    summary["stage_seconds"]={{"vm",vm_seconds},{"ic",ic_seconds},{"composition",composition_seconds}};
+    summary["stage_seconds"]={{"vm",vm_seconds},{"ic",ic_seconds}};
+    if (composition) summary["stage_seconds"]["composition"]=composition_seconds;
     if (signal_cache) {
       summary["stage_seconds"]["cache_load"]=acquired.cache_load;
       summary["stage_seconds"]["cache_write"]=acquired.cache_write;
@@ -441,27 +473,36 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   // discarded candidate output. Combined IC/save need only the shared pool.
   // The extra columns are dropped too, VM first (it borrows them).
   fields.drop_all(vm); release(signal_buffer);
-  const auto finish_started=std::chrono::steady_clock::now();
-  ATX_TRY(auto combined,composition.finish());
-  total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
-  const auto combined_ic_started=std::chrono::steady_clock::now();
-  ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined.signal,labels,scratch,pool.get()));
-  total_ic_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-combined_ic_started).count();
-  series(daily,"__combined__",role,scratch_series(scratch),1);
-  std::ofstream targets(dir/(spec.name+"_planned_targets.csv"),std::ios::binary);
-  if (!targets) return co::Err(co::ErrorCode::IoError,"IC runner: target proxy output");
-  targets.imbue(std::locale::classic()); targets<<std::setprecision(17);
-  targets<<"decision_index,session_ns,planned_turnover,planned_gross,planned_net,contribution_fraction,eligible_names\n";
-  for (usize d=role.score_begin;d<role.score_end;++d)
-    targets<<d<<','<<role.session_keys[d]<<','<<combined.planned_turnover[d]<<','
-           <<combined.planned_gross[d]<<','<<combined.planned_net[d]<<','
-           <<combined.contribution_fraction[d]<<','<<combined.eligible_names[d]<<'\n';
-  targets.close(); daily.close(); ledger.close();
-  if (!targets || !daily || !ledger) return co::Err(co::ErrorCode::IoError,"IC runner: final output close");
+  // --no-composition stops at the member rows: no blend, `__combined__` rows,
+  // planned targets or saved artifact.
+  std::optional<IcCompositionResult> combined; Json combined_ic_json;
+  if (composition) {
+    const auto finish_started=std::chrono::steady_clock::now();
+    ATX_TRY(combined,composition->finish());
+    total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
+    const auto combined_ic_started=std::chrono::steady_clock::now();
+    ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined->signal,labels,scratch,pool.get()));
+    total_ic_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-combined_ic_started).count();
+    series(daily,"__combined__",role,scratch_series(scratch),1);
+    combined_ic_json=result_json(combined_ic,1);
+    std::ofstream targets(dir/(spec.name+"_planned_targets.csv"),std::ios::binary);
+    if (!targets) return co::Err(co::ErrorCode::IoError,"IC runner: target proxy output");
+    targets.imbue(std::locale::classic()); targets<<std::setprecision(17);
+    targets<<"decision_index,session_ns,planned_turnover,planned_gross,planned_net,contribution_fraction,eligible_names\n";
+    for (usize d=role.score_begin;d<role.score_end;++d)
+      targets<<d<<','<<role.session_keys[d]<<','<<combined->planned_turnover[d]<<','
+             <<combined->planned_gross[d]<<','<<combined->planned_net[d]<<','
+             <<combined->contribution_fraction[d]<<','<<combined->eligible_names[d]<<'\n';
+    targets.close();
+    if (!targets) return co::Err(co::ErrorCode::IoError,"IC runner: final output close");
+  }
+  daily.close(); ledger.close();
+  if (!daily || !ledger) return co::Err(co::ErrorCode::IoError,"IC runner: final output close");
   Json saved; f64 save_seconds=0;
-  if (cfg.save_combined) {
+  const bool save=combined && cfg.save_combined;
+  if (save) {
     const auto save_started=std::chrono::steady_clock::now();
-    ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined.signal,effective,frozen,recipe_sha,orientation_pin,
+    ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
         !blend_signs.empty(),!themes.empty()));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
@@ -471,13 +512,18 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       {"score_begin",role.score_begin},{"score_end",role.score_end}, {"wall_seconds",seconds},
       {"admitted_working_bytes",spec.bytes},{"ic_cache_bytes",labels.bytes()},{"ic_scratch_bytes",scratch.bytes()},
       {"workers",cfg.workers},{"stage_seconds",{{"load",load_seconds},{"label_preparation",label_seconds},
-          {"vm",total_vm_seconds},{"ic",total_ic_seconds},{"composition",total_composition_seconds}}},
-      {"candidate_evaluations",lib.candidates.size()},{"combined_evaluations",1},
-      {"candidates",std::move(summaries)},{"combined_ic",result_json(combined_ic,1)},
-      {"planned_target_proxy",{{"total_turnover",combined.total_planned_turnover},
-          {"deployment_turnover",combined.deployment_turnover},{"deployment_date",combined.deployment_date},
-          {"initial_deployment_included",true},{"actual_trades_or_costs",false}}}};
-  if (cfg.save_combined) {
+          {"vm",total_vm_seconds},{"ic",total_ic_seconds}}},
+      {"candidate_evaluations",lib.candidates.size()},{"combined_evaluations",combined?1:0},
+      {"candidates",std::move(summaries)}};
+  // Absent under --no-composition (the summary's top-level "composition": "skipped").
+  if (combined) {
+    result["stage_seconds"]["composition"]=total_composition_seconds;
+    result["combined_ic"]=std::move(combined_ic_json);
+    result["planned_target_proxy"]={{"total_turnover",combined->total_planned_turnover},
+        {"deployment_turnover",combined->deployment_turnover},{"deployment_date",combined->deployment_date},
+        {"initial_deployment_included",true},{"actual_trades_or_costs",false}};
+  }
+  if (save) {
     result["combined_artifact"]=std::move(saved);
     result["stage_seconds"]["save_combined"]=save_seconds;
   }
@@ -533,6 +579,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         (validation_only && cfg.validation_manifest.empty()) || (cfg.plan_only && cfg.cache_report) ||
         (cfg.candidate_cache_directory.empty() && (cfg.cache_report || !cfg.candidate_cache_legacy_fields.empty())))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: bounded config");
+    if (cfg.no_composition && !cfg.composition_weights_path.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --no-composition builds no blend, so "
+          "--composition-weights (which only weight the blend) is refused with it");
     ATX_TRY(auto lib,library(cfg));
     // Both new options are fully validated here, before any role payload.
     ATX_TRY(const auto pinned,composition_weights(cfg,lib));
@@ -587,6 +636,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       if (pinned_signs) plan["composition_signs"]="pinned-candidate-signs";
       if (!weights_record.is_null()) plan["composition_weights"]=weights_record;
       if (!definitions_check.empty()) plan["research_field_definitions_checked_against"]=definitions_check;
+      if (cfg.no_composition) plan["composition"]="skipped";
       if (fields_pinned(cfg)) {
         Json bound=Json::array();
         for (const auto& role:roles) if (!role.fields.sha.empty()) {
@@ -630,6 +680,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (!weights_record.is_null()) report["composition_weights"]=weights_record;
     if (!definitions_check.empty()) report["research_field_definitions_checked_against"]=definitions_check;
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
+    // Not a method input (recipe unchanged): the pass scored IC and orientations only.
+    if (cfg.no_composition) report["composition"]="skipped";
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
       signs=std::move(recovered.signs);
@@ -686,12 +738,17 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
       if (key=="--cache-report") { cfg.cache_report=true; continue; }
       if (key=="--save-combined") { cfg.save_combined=true; continue; }
+      if (key=="--no-composition") { cfg.no_composition=true; continue; }
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
                "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
                "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
-               "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA]\n"
+               "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
+               "[--no-composition]\n"
+               "  --no-composition: screening pass; member IC rows and orientations only (byte-identical to a full\n"
+               "    run's), no blend, __combined__ rows, planned targets or saved blend; with --candidate-cache a\n"
+               "    candidate whose signal and IC result are both cached is not loaded. Refuses --composition-weights.\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
                "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
                "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
