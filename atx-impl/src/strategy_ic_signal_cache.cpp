@@ -73,7 +73,7 @@ constexpr std::array<std::string_view,33> dsl_vm_sources{
     "atx-engine/src/data/strategy_data.cpp",
     "atx-engine/src/data/role_panel.cpp"};
 constexpr std::string_view dsl_vm_sources_sha256=
-    "afbae65d88537498d864afe4691eb685bfec0260f2ca5c0db9df5f8dd2a1a181";
+    "f24cfbbec5404cec34f785b89724f1d0525469823358b2374ac053e009cbf55c";
 // Entries written before this identity existed sit directly under DIR/<sha>/ with
 // no vm_identity key. They came from engine builds 429cbe43/6d85ac2a (clang-cl
 // 18.1.8, dev preset, no /arch) and no alpha, parallel or core source changed
