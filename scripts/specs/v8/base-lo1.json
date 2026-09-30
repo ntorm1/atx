@@ -1,7 +1,7 @@
 {
   "schema": "atx.research-cycle-spec/v1",
   "name": "v8-b0a-lo1",
-  "description": "Cell B0a (v8-prereg.md, W0-4; W0-2 runbook section 4 draft): the accepted v7.1 book on the new TRAIN window 2020-2023 (research-window-v2, seal 2024-01-01). Library v7.1 + v1 recipe held fixed; admission v4-prior-v1 and ew-theme-v1 refit on 2020-2023; construction aim-partial-v5 theta .05 dust .1 fixed, delta orders, exit .05, locate-in-aim, liquidity cache, price-risk-v1, L 1.247 fixed; cost S2. Role train-2020-2023-lo1 = linked-operating-v1 on the 4-year base (start 2018-06-01, factor-break-v1 repair at 2021-01-04) with identity-bridge-r4-v2 (seal 2024-01-01) and fundamental-events-v3 SIC. Fields v9 AS BUILT (63 fields, the v71 spec's fields.list; runbook R10, never built by the cycle). New window: no ref phase, no compare, no reference cell (the 2020-2022 overlap is checked outside the cycle, runbook R13, ruling W0-a). IC phases u and w 300 s / 2,560 MiB (OD-2, runner.phases); every other phase 180 s / 1,536 MiB. Fit and card share the incremental store base build-equity/fit-work (C-1). Monitor without holdings and bias inputs (Ruling W0-m). summ: nav_summ --protocol v8 over the ledger grid, dsr_n = ledger N + 1 (38 when B0a is first). Null pins are filled by `research_cycle.py lock scripts/specs/v8/base-lo1.json --write` after the runbook builds (R4, R5, R7, R10).",
+  "description": "Cell B0a (v8-prereg.md, W0-4; W0-2 runbook section 4 draft): the accepted v7.1 book on the new TRAIN window 2020-2023 (research-window-v2, seal 2024-01-01). Library v7.1 + v1 recipe held fixed; admission v4-prior-v1 and ew-theme-v1 refit on 2020-2023; construction aim-partial-v5 theta .05 dust .1 fixed, delta orders, exit .05, locate-in-aim, liquidity cache, price-risk-v1, L 1.247 fixed; cost S2. Role train-2020-2023-lo1 = linked-operating-v1 on the 4-year base (start 2018-06-01, factor-break-v1 repair at 2021-01-04) with identity-bridge-r4-v2 (seal 2024-01-01) and fundamental-events-v3 SIC. Fields v9 AS BUILT (63 fields, the v71 spec's fields.list; runbook R10, never built by the cycle). New window: no ref phase, no compare, no reference cell (the 2020-2022 overlap is checked outside the cycle, runbook R13, ruling W0-a). IC phases u and w 300 s / 2,560 MiB (OD-2, runner.phases), the card too (the report card on the 4-year role); every other phase 180 s / 1,536 MiB. Fit and card share the incremental store base build-equity/fit-work (C-1). Monitor without holdings and bias inputs (Ruling W0-m). summ: nav_summ --protocol v8 over the ledger grid, dsr_n = ledger N + 1 (38 when B0a is first). Null pins are filled by `research_cycle.py lock scripts/specs/v8/base-lo1.json --write` after the runbook builds (R4, R5, R7, R10).",
   "python": "C:/Program Files/Python312/python.exe",
   "env_path_prepend": [
     "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
@@ -14,7 +14,8 @@
     "min_free_mib": 512,
     "phases": {
       "u": {"seconds": 300, "max_rss_mib": 2560},
-      "w": {"seconds": 300, "max_rss_mib": 2560}
+      "w": {"seconds": 300, "max_rss_mib": 2560},
+      "card": {"seconds": 300, "max_rss_mib": 2560}
     }
   },
   "exes": {

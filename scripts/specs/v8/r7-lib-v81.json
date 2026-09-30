@@ -5,6 +5,7 @@
   "parent": null,
   "nominal_parent": "base-b0c.json",
   "requires": [
+    "R-7 runs as scripts/specs/v8/lib-v81.json, the spec `research_cycle.py add-alpha --parent <v80 if R-2 was accepted, else v71> --name v81 --parent-spec <the last accepted cell's spec> --fields <fields v11>` writes and locks, one call per member (task-A2-report.md); this template plans the cell only (one cell, one trial line: never run both).",
     "fields v11 as built (the parent's fields + F-1 ceq_iss_5y, coskew_60m + F3 gscore7_lowbm, k8_item402_63, eps_consist_4y, on the parent's role): set change.set fields = {output, manifest_sha256 null, list} (then `lock --write`); drop from the gate any member withdrawn at the freeze."
   ],
   "change": {

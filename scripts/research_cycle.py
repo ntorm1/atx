@@ -50,6 +50,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   or a "<fill:...>" value; lock pins the inputs the template adds or derives
   fields pin      fields.manifest_sha256 null (an as-built dir not yet locked): computed from the file at plan time
                   (UNLOCKED), written by `lock --write`
+  ic.w_flags      {"--opt": "value" | true | false} applied to ic.flags for the weighted (w) pass only (research_spec
+                  apply_flags), e.g. Ruling E-28's --max-memory-mib 3072 for a theme_standardise composition
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -163,6 +165,8 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
 # output); marginal.flags may set only MARGINAL_SPEC_FLAGS (unsigned integers; --min-names defaults to the u pass's).
 MARGINAL_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
 MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields")
+W_BUILT = ("--library", "--library-sha256", "--train", "--train-sha256", "--train-fields", "--train-fields-sha256",
+           "--output", "--candidate-cache", "--composition-weights", "--composition-weights-sha256")
 MARGINAL_SPEC_FLAGS = {"--min-names": (3, None), "--max-memory-mib": (32, 16384)}   # option: (min, max) as the verb
 OPERAND = re.compile(r"\{(input|out):([A-Za-z0-9_]+)\}")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
@@ -342,6 +346,17 @@ def validate_v8_keys(spec: dict) -> None:
         raise CycleError("spec verdict must be true or false", EXIT_USAGE)
     if "marginal" in spec:
         validate_marginal(spec)
+    w_flags = spec.get("ic", {}).get("w_flags")
+    if w_flags is not None and (not isinstance(w_flags, dict) or not all(
+            isinstance(k, str) and k.startswith("--") and k not in W_BUILT and (type(v) is bool or isinstance(v, str))
+            for k, v in w_flags.items())):
+        raise CycleError(f"spec ic.w_flags maps an option of the w pass only to a value, true or false (not one the "
+                         f"step builds: {', '.join(W_BUILT)})", EXIT_USAGE)
+    if w_flags:
+        try:
+            research_spec.apply_flags(spec["ic"]["flags"], w_flags, "ic.w_flags")
+        except research_spec.TemplateError as exc:
+            raise CycleError(f"spec {exc}", EXIT_USAGE) from exc
     if "ledger_copy" in spec.get("summ", {}) and not (isinstance(spec["summ"]["ledger_copy"], str) and
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
@@ -825,10 +840,11 @@ class Cycle:
             n, state, note = self.ic_attempt("w", base)
             wt_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
             weights = f"{w_dir}/composition_weights.json"
+            w_flags = research_spec.apply_flags(ic["flags"], ic.get("w_flags") or {}, "ic.w_flags")   # E-28
             argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights], "w") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", wt_out,
-                *ic["flags"], "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
+                *w_flags, "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
                 "--composition-weights-sha256", self.rt_sha(weights)]
             out.append(Step("w", "bounded", argv, wt_out, run_dir, n, state, note))
         n_out = ""

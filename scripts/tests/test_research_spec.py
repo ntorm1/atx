@@ -28,7 +28,8 @@ import research_add_alpha as RA  # noqa: E402
 V8 = HERE.parent / "specs" / "v8"
 V8_SPECS = sorted(p.name for p in V8.glob("*.json"))
 BASE_NULLS = {"inputs.role", "inputs.identity_bridge", "inputs.fund_events", "fields.manifest_sha256"}
-CHILD_NULLS = BASE_NULLS | {"inputs.reference_cell", "inputs.reference_admission"}      # derived from the parent
+CHILD_NULLS = BASE_NULLS | {"inputs.reference_cell", "inputs.reference_admission",       # derived from the parent
+                            "inputs.label_role"}                                          # B0c's (E-25), inherited
 LIB_NULLS = CHILD_NULLS | {"inputs.library", "inputs.recipe", "inputs.reference_combined", "inputs.reference_weights"}
 # every pin root fills (`lock --write` after the runbook builds and the parent cell), per spec, as planned today
 NULL_PINS = {"base-lo1.json": BASE_NULLS,
@@ -43,11 +44,22 @@ LIB_CHANGE = LIB_DOWN | {"inputs.library.path", "inputs.library.sha256", "inputs
                          "marginal.output", "marginal.pool", "marginal.themes", "gate.name", "gate.admitted",
                          "gate.require", "gate.sign_agrees", "gate.report"}
 # a template renames exactly the outputs downstream of its change, and changes nothing else
-EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"}, "r1-comp-v8.json": FIT_DOWN | {"fit.flags"},
+LABEL_ROLE = {"inputs.label_role.dir", "inputs.label_role.path", "inputs.label_role.sha256"}   # Ruling E-25
+W_3072 = {"runner.phases.w.max_rss_mib", "ic.w_flags.--max-memory-mib"}                          # Ruling E-28
+EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
+                    "r1-comp-v8.json": FIT_DOWN | {"fit.flags"} | W_3072,
                     "r2-lib-v80.json": LIB_CHANGE, "r3-aim-gain.json": FIT_DOWN | {"fit.flags"},
                     "r4-hold-band.json": {"nav.output", "nav.flags"}, "r5-adv-hold.json": {"nav.output", "nav.flags"},
                     "r6-spo-v3.json": {"nav.output", "nav.flags", "nav.rule"}, "r7-lib-v81.json": LIB_CHANGE}
 MISSING = object()
+
+
+@pytest.fixture(autouse=True)
+def label_role_input(monkeypatch):
+    """Ruling E-25: lane R45 adds inputs.label_role to research_cycle (INPUT_KEYS and the NAV step's --label-role
+    MANIFEST --label-role-sha256 SHA); until that merges the v8 specs are checked with the key registered here."""
+    if "label_role" not in RC.INPUT_KEYS:
+        monkeypatch.setattr(RC, "INPUT_KEYS", RC.INPUT_KEYS + ("label_role",))
 
 
 def flat(node, pre: str = "") -> dict:
@@ -147,8 +159,9 @@ def test_v8_base_specs_carry_the_ruled_settings():
     lo1, lo3 = RC.load_spec(V8 / "base-lo1.json"), RC.load_spec(V8 / "base-lo3.json")
     for s in (lo1, lo3):
         assert s["summ"]["dsr_n"] == "ledger+1" and s["summ"]["cells_from_ledger"] is True
-        assert s["runner"]["phases"] == {"u": {"seconds": 300, "max_rss_mib": 2560},
-                                         "w": {"seconds": 300, "max_rss_mib": 2560}}      # IC phases (OD-2)
+        assert s["runner"]["phases"] == {"u": {"seconds": 300, "max_rss_mib": 2560},       # IC phases (OD-2)
+                                         "w": {"seconds": 300, "max_rss_mib": 2560},
+                                         "card": {"seconds": 300, "max_rss_mib": 2560}}   # the card on 4 years
         assert s["fit"]["work_dir"] == "build-equity/fit-work"                            # C-1's store base
         assert RC.option_value(s["card"]["flags"], "--work-dir") == "build-equity/fit-work"
         assert s["fields"]["list"] == RC.load_spec(HERE.parent / "specs" / "v71.json")["fields"]["list"]
@@ -157,7 +170,40 @@ def test_v8_base_specs_carry_the_ruled_settings():
     assert (lo1["inputs"]["role"]["universe"], lo3["inputs"]["role"]["universe"]) == ("linked-operating-v1",
                                                                                       "linked-operating-v3")
     b0c = json.loads((V8 / "base-b0c.json").read_text(encoding="utf-8"))
-    assert b0c["change"]["flags"]["nav"]["--warm-start-sessions"] == "60" and b0c["requires"]   # E-10, D-0
+    assert b0c["change"]["flags"]["nav"] == {"--warm-start-sessions": "60", "--capacity-curve": True}   # D-0, E-29
+    assert b0c["change"]["inputs"] == {"label_role": {                                  # E-25: R15's role, locked later
+        "dir": "build-equity/train-2020-2023-lo1-dlret", "path": "build-equity/train-2020-2023-lo1-dlret/manifest.json",
+        "sha256": None}}
+    docs = {n: json.loads((V8 / n).read_text(encoding="utf-8")) for n in V8_SPECS}
+    assert {n for n, d in docs.items() if d.get("requires")} == {"r2-lib-v80.json", "r7-lib-v81.json"}   # add-alpha
+    assert all("lib-v8" in d["requires"][0] for n, d in docs.items() if d.get("requires"))
+
+
+def test_r1_runs_the_weighted_pass_under_3072_mib_and_its_children_inherit_it(tmp_path):
+    """Ruling E-28: ew-theme-std-v1 (and its aim variant) runs the w pass under 3,072 MiB (runner cap and the IC's own
+    --max-memory-mib); the u pass stays 2,560; a template on R-1 inherits both."""
+    for name, parent in (("r1-comp-v8.json", None), ("r3-aim-gain.json", "scripts/specs/v8/r1-comp-v8.json")):
+        path = V8 / name
+        if parent:
+            path = tmp_path / name
+            path.write_text(json.dumps(dict(json.loads((V8 / name).read_text(encoding="utf-8")), parent=parent)),
+                            encoding="utf-8")
+        root, spec = fake_root(tmp_path / f"root-{name[:2]}", RC.load_spec(path))
+        c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
+        assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
+        steps = {s.phase: s for s in c.steps()}
+        ic = {p: steps[p].argv[steps[p].argv.index("--") + 1:] for p in ("u", "w")}
+        assert [ic[p].count("--max-memory-mib") for p in ("u", "w")] == [1, 1]
+        assert (RC.option_value(ic["u"], "--max-memory-mib"), RC.option_value(ic["w"], "--max-memory-mib")) == (
+            "2560", "3072")
+        assert RC.option_value(spec["fit"]["flags"], "--composition") == (
+            "ew-theme-std-v1" if name.startswith("r1") else "ew-theme-std-aim-v1")
+    spec = RC.load_spec(V8 / "r1-comp-v8.json")
+    RC.validate_spec(dict(spec, ic=dict(spec["ic"], w_flags={"--save-combined": True, "--workers": "2"})))
+    for bad in ({"--output": "x"}, {"--workers": None}, "--max-memory-mib 3072", {"--max-memory-mib": True}):
+        with pytest.raises(RC.CycleError, match="w_flags") as e:
+            RC.validate_spec(dict(spec, ic=dict(spec["ic"], w_flags=bad)))
+        assert e.value.code == RC.EXIT_USAGE
 
 
 # ------------------------------------------------------------------ the template mechanism on the fake tools
