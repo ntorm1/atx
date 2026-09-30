@@ -794,6 +794,24 @@ std::string shared_file(const std::string& name) {
   if (name == "member.u8") return "the membership (member.u8)";
   return name;
 }
+// The members a label role declares cleared on its termination sessions (DELISTING_RETURN_RULE:
+// member[T] = 0 where the role's lagged membership kept an absent name): universe.delisting
+// returns_applied true and applied.members_cleared_on_termination_session N > 0; 0 otherwise.
+u64 declared_cleared(const Json& label) {
+  const Json* on = json_at(label, {"universe", "delisting", "returns_applied"});
+  const Json* n = json_at(label, {"universe", "delisting", "applied",
+                                  "members_cleared_on_termination_session"});
+  if (!on || !on->is_boolean() || !on->get<bool>() || !n || !n->is_number_integer() ||
+      n->get<i64>() <= 0)
+    return 0;
+  return static_cast<u64>(n->get<i64>());
+}
+// Whether the two manifests pin different member.u8 bytes (only a declared clearing may).
+bool member_differs(const Json& role, const Json& label) {
+  const Json* a = json_at(role, {"files", "member.u8", "sha256"});
+  const Json* b = json_at(label, {"files", "member.u8", "sha256"});
+  return a && b && *a != *b;
+}
 // The manifest rule of detail::check_label_role (`role`: --role's pinned manifest).
 co::Status check_label_manifests(const Json& role, const Json& label) {
   if (!role.is_object() || !label.is_object())
@@ -802,15 +820,26 @@ co::Status check_label_manifests(const Json& role, const Json& label) {
   if (label.contains("score_end_ns") && (!label.at("score_end_ns").is_number_integer() ||
                                          label.at("score_end_ns").get<i64>() > rw::kSealBeginNs))
     return label_refused(sealed_label());
+  // The membership: member.u8 is --role's, or differs by the members the label role declares
+  // cleared on termination sessions (verified cell by cell when the payloads load); only then
+  // may score_member_counts, its per-row count, differ.
+  const bool cleared = member_differs(role, label);
+  if (cleared && declared_cleared(label) == 0)
+    return label_refused("the membership (member.u8) differs from --role's (only the members a "
+                         "--delisting-returns role declares cleared on termination sessions, "
+                         "universe.delisting.applied.members_cleared_on_termination_session, may)");
+  const auto own = [cleared](const std::string& key) {
+    return key == "files" || key == "universe" || (cleared && key == "score_member_counts");
+  };
   for (const auto& item : role.items()) {
     const auto& key = item.key();
-    if (key == "files" || key == "universe") continue;
+    if (own(key)) continue;
     if (!label.contains(key) || label.at(key) != item.value())
       return label_refused("manifest key '" + key + "' differs from --role's (dates, instruments, "
                            "score window, source and base are shared)");
   }
   for (const auto& item : label.items())
-    if (item.key() != "files" && item.key() != "universe" && !role.contains(item.key()))
+    if (!own(item.key()) && !role.contains(item.key()))
       return label_refused("manifest key '" + item.key() + "' is not --role's");
   const Json* mine = json_at(role, {"files"});
   const Json* theirs = json_at(label, {"files"});
@@ -825,7 +854,7 @@ co::Status check_label_manifests(const Json& role, const Json& label) {
     const Json* b = json_at(theirs->at(name), {"bytes"});
     if (!a || !b || *a != *b)
       return label_refused(shared_file(name) + " extent differs from --role's");
-    if (label_patchable(name)) continue;
+    if (label_patchable(name) || (cleared && name == "member.u8")) continue;
     a = json_at(item.value(), {"sha256"});
     b = json_at(theirs->at(name), {"sha256"});
     if (!a || !b || *a != *b)
