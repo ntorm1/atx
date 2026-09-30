@@ -187,7 +187,8 @@ def _summary_signal_entries(ctx, ids, role_sha, dsl: dict, fields: dict | None) 
             sidecar, payload = (ctx.reg.path(e[k].replace('\\', '/')) for k in ('sidecar', 'payload'))
             m = _signal_meta(ctx, sidecar, role_sha)
             if (m is not None and m['candidate_id'] == e['id'] and m.get('payload_sha256') == e.get('payload_sha256')
-                    and payload.name == m['payload'] and payload.is_file() and _same_signal(m, dsl, fields)):
+                    and payload.name == m['payload'] and not ctx.reg.sealed(payload) and payload.is_file()
+                    and _same_signal(m, dsl, fields)):
                 out[e['id']] = (payload, m)
     return out
 
@@ -248,6 +249,8 @@ def an_sig_corr(ctx) -> dict:
     mms = []
     for i in ids:
         p, m = metas[i]
+        if ctx.reg.sealed(p):  # mapped, not read: the payload passes the Registry's seal check before any access
+            raise PermissionError(f'cache payload {ctx.reg.rel(p)}: refused (sealed)')
         if m.get('dates') != nd or m.get('instruments') != ni or p.stat().st_size != nd * ni * 8:
             raise ValueError(f'payload geometry mismatch for {i}')
         ctx.reg.files[ctx.reg.rel(p)] = {'status': 'memmap (sha256 = cache meta payload_sha256, not re-hashed)',
