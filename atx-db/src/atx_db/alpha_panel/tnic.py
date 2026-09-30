@@ -290,24 +290,38 @@ def _sic_map() -> dict[int, str | None]:
     return dict(zip(t.column("cik").to_pylist(), t.column("sic").to_pylist()))
 
 
-def _linked_filers(years: list[int]) -> dict[int, set[int]]:
-    """Per year, linked CIKs (link validity overlapping the year) with an original 10-K-family filing that year."""
+def _linked_filers(years: list[int]) -> tuple[dict[int, set[int]], str]:
+    """Per year, the gate's denominator: CIKs with an original 10-K-family filing that year that are linked (any tier)
+    to a ``member_equity`` panel line during that year (``basis = 'member_equity_linked'``, controller ruling
+    2026-09-30); without a panel, CIKs whose link-table validity overlaps the year (``'link_table'``)."""
     root = C.build_root()
     con = C.connect(memory="250MB", threads=1)
     fp = (root / "sec_filings" / "filings.parquet").as_posix()
     lt = (root / "identity" / "link_table.parquet").as_posix()
-    rows = con.execute(f"""
-        SELECT DISTINCT year(f.filing_date) AS y, f.cik FROM read_parquet('{fp}') f
-        WHERE f.form IN ({FT._quote_list(FT.FORMS_10K)}) AND year(f.filing_date) BETWEEN {min(years)} AND {max(years)}
-          AND EXISTS (SELECT 1 FROM read_parquet('{lt}') l WHERE l.cik = f.cik
-                      AND l.valid_from <= make_date(year(f.filing_date), 12, 31)
-                      AND l.valid_to >= make_date(year(f.filing_date), 1, 1))
-    """).fetchall()
+    panel = root / "panel"
+    lo, hi = min(years), max(years)
+    if any(panel.glob("year=*/panel-*.parquet")):
+        basis = "member_equity_linked"
+        con.register("member_links", FT.member_equity_links((lo, hi)))
+        linked = f"""
+            SELECT DISTINCT year(f.filing_date) AS y, f.cik FROM read_parquet('{fp}') f
+            JOIN member_links t ON t.cik = f.cik AND t.y = year(f.filing_date)
+            WHERE f.form IN ({FT._quote_list(FT.FORMS_10K)})"""
+    else:
+        basis = "link_table"
+        linked = f"""
+            SELECT DISTINCT year(f.filing_date) AS y, f.cik FROM read_parquet('{fp}') f
+            WHERE f.form IN ({FT._quote_list(FT.FORMS_10K)}) AND year(f.filing_date) BETWEEN {lo} AND {hi}
+              AND EXISTS (SELECT 1 FROM read_parquet('{lt}') l WHERE l.cik = f.cik
+                          AND l.valid_from <= make_date(year(f.filing_date), 12, 31)
+                          AND l.valid_to >= make_date(year(f.filing_date), 1, 1))"""
+    rows = con.execute(linked).fetchall()
     con.close()
     out: dict[int, set[int]] = {y: set() for y in years}
     for y, cik in rows:
-        out[int(y)].add(int(cik))
-    return out
+        if int(y) in out:
+            out[int(y)].add(int(cik))
+    return out, basis
 
 
 def build(last_year: int) -> dict[str, Any]:
@@ -316,7 +330,7 @@ def build(last_year: int) -> dict[str, Any]:
     print(json.dumps(tok), flush=True)
     sic = _sic_map()
     years = list(range(CALIBRATION_YEAR, last_year + 1))
-    linked = _linked_filers([y for y in years if y >= FIRST_YEAR] or [FIRST_YEAR])
+    linked, coverage_basis = _linked_filers([y for y in years if y >= FIRST_YEAR] or [FIRST_YEAR])
     out_dir = C.stage_dir(STAGE)
     (out_dir / "pairs").mkdir(exist_ok=True)
     prev_hist: np.ndarray | None = None
@@ -427,6 +441,7 @@ def build(last_year: int) -> dict[str, Any]:
     landing = {"docs_parts": len(FT._parts("docs")), "sections_parts": len(FT._parts("sections")),
                "receipts_sha256": C.sha256_file(FT.receipts_path()) if FT.receipts_path().exists() else None}
     payload = {"rule": RULE, "method": __doc__, "years": year_rows, "pair_rows": pair_counts,
+               "coverage_basis": coverage_basis,
                "firm_rows": len(firm_rows), "input_manifests_sha256": inputs, "landing": landing,
                "clock": "pair available_at = max(acceptance of the two 10-Ks); firms available_at = latest clock "
                         "among the firm and its peers (year-end aggregate)",
@@ -435,7 +450,8 @@ def build(last_year: int) -> dict[str, Any]:
                "built_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                "elapsed_s": round(time.time() - t0, 1)}
     C.write_stage_manifest(STAGE, SCHEMA, ("tnic", "filing_text"), payload)
-    return {"years": year_rows, "firm_rows": len(firm_rows), "elapsed_s": round(time.time() - t0, 1)}
+    return {"years": year_rows, "firm_rows": len(firm_rows), "coverage_basis": coverage_basis,
+            "elapsed_s": round(time.time() - t0, 1)}
 
 
 def main(argv: list[str] | None = None) -> int:

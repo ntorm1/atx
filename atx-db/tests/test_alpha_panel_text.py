@@ -288,6 +288,41 @@ def test_land_batches_receipts_parts_and_resume(tmp_path: Path, monkeypatch: pyt
     assert all({"url", "bytes", "sha256", "http_status", "fetched_at"} <= set(r) for r in receipts)
 
 
+def test_verify_integrity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import time as _time
+
+    monkeypatch.setenv("ATX_SEC_TEXT_ROOT", str(tmp_path))
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "sections").mkdir()
+    doc = {**_row("0000000001-24-000001"), "url": "u", "http_status": 200, "doc_bytes": 1, "sha256": "x",
+           "fetched_at": "t", "requests": 1, "error": None, "text_chars": 1, "doc_words": 1, "doc_sentences": 1,
+           "doc_complex_words": 0, "doc_fog": None, "headings": 0, "toc_headings": 0, "running_lines": 0,
+           "index_only": [], "sections_found": ["risk"], "parser": "t"}
+    sec = {**{k: doc[k] for k in ("accession", "cik", "ciks", "form", "filing_date", "report_date", "available_at")},
+           "section": "risk", "item": "1A", "method": "item", "flags": [], "n_chars": 3, "source": "primary",
+           "parser": "t", "text": "abc"}
+    for n in (1, 2):  # the same filing landed twice (two loops)
+        pq.write_table(pa.Table.from_pylist([doc], schema=FT.DOC_SCHEMA), tmp_path / "docs" / f"part-0000{n}.parquet")
+        pq.write_table(pa.Table.from_pylist([sec], schema=FT.SECTION_SCHEMA),
+                       tmp_path / "sections" / f"part-0000{n}.parquet")
+    (tmp_path / "docs" / "part-00003.parquet").write_bytes(b"not parquet")
+    stale = tmp_path / "sections" / "part-00004.parquet.partial"
+    stale.write_bytes(b"x")
+    os.utime(stale, (_time.time() - 3600, _time.time() - 3600))
+    FT.append_receipts([{"kind": "primary", "accession": "0000000001-24-000001", "http_status": 200, "error": None,
+                         "requests": 1}, {"kind": "primary", "accession": "0000000001-24-000009", "http_status": 200,
+                                          "error": None, "requests": 1}])
+    with FT.receipts_path().open("a", encoding="utf-8") as fh:
+        fh.write('{"kind": "primary", "acc\n')
+    out = FT.verify()
+    assert [c["part"] for c in out["corrupt"]] == ["docs/part-00003.parquet"]
+    assert out["partial_removed"] == ["part-00004.parquet.partial"] and not stale.exists()
+    assert out["docs_duplicate"] == 1 and out["section_rows_duplicate"] == 1 and out["section_rows_unique"] == 1
+    assert out["receipts_torn_lines"] == 1 and out["refetch_queue_200_without_docs"] == 1
+    assert out["parts"]["docs"] == {"files": 2, "rows": 2}
+
+
 def test_select_filings_member_scope_and_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "lake"
     monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(root))

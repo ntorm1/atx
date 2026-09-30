@@ -566,35 +566,48 @@ def _quote_list(items: Iterable[str]) -> str:
     return ", ".join("'" + s.replace("'", "''") + "'" for s in items)
 
 
-def target_ciks_sql(years: tuple[int, int] = MEMBER_YEARS) -> str:
-    """SQL for the CIKs linked (any tier) to a ``member_equity`` line in ``years``: the panel's own ``cik`` on
-    member_equity cells, plus every ``identity/link_table.parquet`` CIK of a line that is member_equity in the window."""
+def member_equity_links(years: tuple[int, int] = MEMBER_YEARS) -> pa.Table:
+    """(year, cik) of every CIK linked (any tier) to a ``member_equity`` panel line in ``years``: the panel's own
+    ``cik`` on member_equity cells plus every ``identity/link_table.parquet`` CIK of such a line. Reads the panel one
+    file at a time (the monthly files are wide; a single scan over all of them exceeds a small DuckDB budget)."""
     root = C.build_root()
-    panel = (root / "panel" / "year=*" / "panel-*.parquet").as_posix()
-    lt = (root / "identity" / "link_table.parquet").as_posix()
     lo, hi = years
-    return f"""
-    WITH m AS (SELECT DISTINCT security_id, cik FROM read_parquet('{panel}', union_by_name = true,
-                                                                  hive_partitioning = false)
-               WHERE member_equity AND session_date BETWEEN DATE '{lo}-01-01' AND DATE '{hi}-12-31')
-    SELECT DISTINCT cik FROM m WHERE cik IS NOT NULL
-    UNION
-    SELECT DISTINCT l.cik FROM read_parquet('{lt}') l JOIN (SELECT DISTINCT security_id FROM m) s USING (security_id)
-    WHERE l.cik IS NOT NULL"""
+    con = C.connect(memory="200MB", threads=1)
+    lines: set[tuple[int, int, int | None]] = set()
+    for f in sorted((root / "panel").glob("year=*/panel-*.parquet")):
+        y = int(f.parent.name.split("=")[1])
+        if not lo <= y <= hi:
+            continue
+        lines.update(con.execute(f"SELECT DISTINCT year(session_date), security_id, cik FROM read_parquet("
+                                 f"'{f.as_posix()}') WHERE member_equity").fetchall())
+    lt = (root / "identity" / "link_table.parquet").as_posix()
+    links: dict[int, set[int]] = {}
+    for sid, cik in con.execute(f"SELECT security_id, cik FROM read_parquet('{lt}') WHERE cik IS NOT NULL").fetchall():
+        links.setdefault(int(sid), set()).add(int(cik))
+    con.close()
+    pairs: set[tuple[int, int]] = set()
+    for y, sid, cik in lines:
+        if cik is not None:
+            pairs.add((int(y), int(cik)))
+        for c in links.get(int(sid), ()):
+            pairs.add((int(y), c))
+    ys, cs = zip(*sorted(pairs)) if pairs else ((), ())
+    return pa.table({"y": pa.array(ys, pa.int32()), "cik": pa.array(cs, pa.int64())})
 
 
 def select_filings(con: Any, start: dt.date = FILED_FROM) -> list[dict[str, Any]]:
     """Filings to land, one row per accession (co-registrant CIKs in ``ciks``), in landing order.
 
     Scope (controller ruling 2026-09-30): original 10-K family and 20-F filings from ``start`` of the CIKs linked to a
-    ``member_equity`` line in ``MEMBER_YEARS`` (``target_ciks_sql``). Priority 1: filed on or after ``PRIORITY_FROM``
+    ``member_equity`` line in ``MEMBER_YEARS`` (``member_equity_links``). Priority 1: filed on or after ``PRIORITY_FROM``
     (every filing and prior-year filing behind a score-window value), newest first; priority 2: the rest of 2018
     (the priors of 2019 values). ``available_at`` is the latest per-CIK clock of the accession (co-registrants).
     """
     root = C.build_root()
     fp = (root / "sec_filings" / "filings.parquet").as_posix()
+    con.register("member_links", member_equity_links())
     sql = f"""
-    WITH t AS ({target_ciks_sql()}),
+    WITH t AS (SELECT DISTINCT cik FROM member_links),
     f AS (SELECT f.* FROM read_parquet('{fp}') f JOIN t USING (cik)
           WHERE f.filing_date >= DATE '{start.isoformat()}' AND coalesce(f.primary_document, '') <> ''
             AND f.form IN ({_quote_list(FORMS_10K + FORMS_20F)}))
@@ -1015,6 +1028,62 @@ def run_exhibits(max_requests: int, threads: int, limit: int | None) -> dict[str
     return {"budget": budget, "requests_used_before": state["requests_used"], **out}
 
 
+def verify(stale_partial_s: float = 600.0) -> dict[str, Any]:
+    """Landing integrity: every part readable (an unreadable one is kept aside as ``.corrupt``), stale ``.partial``
+    files of killed writers removed, duplicate rows counted, torn receipt lines counted, and the refetch queue (a
+    200 primary receipt without a docs row) sized. Run before a relaunch; it never deletes a readable part."""
+    out: dict[str, Any] = {"parts": {}, "corrupt": [], "partial_removed": [], "partial_fresh": []}
+    now = time.time()
+    for kind in ("docs", "sections", "exhibits"):
+        d = raw_root() / kind
+        if not d.is_dir():
+            continue
+        for tmp in d.glob("*.partial"):
+            if now - tmp.stat().st_mtime > stale_partial_s:
+                tmp.unlink()
+                out["partial_removed"].append(tmp.name)
+            else:
+                out["partial_fresh"].append(tmp.name)
+        n_rows = 0
+        for p in _parts(kind):
+            try:
+                n_rows += pq.read_metadata(p).num_rows
+                pq.read_table(p, columns=["accession"])
+            except Exception as exc:  # noqa: BLE001 - any unreadable part is set aside and refetched
+                stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                os.replace(p, p.with_name(f"{p.name}.corrupt-{stamp}"))
+                out["corrupt"].append({"part": f"{kind}/{p.name}", "error": f"{type(exc).__name__}: {exc}"[:200]})
+        out["parts"][kind] = {"files": len(_parts(kind)), "rows": n_rows}
+    keys: dict[tuple[str, str, str], int] = {}
+    for p in _parts("sections"):
+        t = pq.read_table(p, columns=["accession", "section", "source"])
+        for a, s, src in zip(*(t.column(c).to_pylist() for c in ("accession", "section", "source"))):
+            keys[(a, s, src)] = keys.get((a, s, src), 0) + 1
+    doc_acc: dict[str, int] = {}
+    for p in _parts("docs"):
+        for a in pq.read_table(p, columns=["accession"]).column("accession").to_pylist():
+            doc_acc[a] = doc_acc.get(a, 0) + 1
+    path = receipts_path()
+    torn = 0
+    ok_primary: set[str] = set()
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                torn += 1
+                continue
+            if r.get("kind") == "primary" and r.get("http_status") == 200 and not r.get("error"):
+                ok_primary.add(r["accession"])
+    out.update({
+        "section_rows_unique": len(keys), "section_rows_duplicate": sum(n - 1 for n in keys.values() if n > 1),
+        "docs_unique": len(doc_acc), "docs_duplicate": sum(n - 1 for n in doc_acc.values() if n > 1),
+        "receipts_torn_lines": torn, "refetch_queue_200_without_docs": len(ok_primary - set(doc_acc))})
+    return out
+
+
 def status() -> dict[str, Any]:
     con = C.connect(memory="200MB", threads=1)
     rows = select_filings(con)
@@ -1034,7 +1103,7 @@ def status() -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m atx_db.alpha_panel.filing_text",
                                  description="Land 10-K / 20-F Item sections (see the module docstring).")
-    ap.add_argument("--phase", choices=("fetch", "exhibits", "status"), default="status")
+    ap.add_argument("--phase", choices=("fetch", "exhibits", "status", "verify"), default="status")
     ap.add_argument("--max-requests", type=int, default=REQUEST_BUDGET)
     ap.add_argument("--threads", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
@@ -1046,6 +1115,8 @@ def main(argv: list[str] | None = None) -> int:
         out = run_fetch(args.max_requests, args.threads, args.limit, args.max_priority, args.reland)
     elif args.phase == "exhibits":
         out = run_exhibits(args.max_requests, args.threads, args.limit)
+    elif args.phase == "verify":
+        out = verify()
     else:
         out = status()
     print(json.dumps(out, default=str, indent=1))
