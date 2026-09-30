@@ -136,18 +136,49 @@ class Module:
         return out
 
 
-def fingerprints(source: bytes, producers: dict, orchestration=frozenset()) -> dict:
+class Host:
+    """The source a field module is bound into (the builder) and the handles through which the module reads it:
+    ``h.X`` / ``self.h.X`` (attribute handles) and ``ns["X"]`` / ``ctx.ns["X"]`` (subscript handles)."""
+
+    def __init__(self, source: bytes, handles: tuple, orchestration=frozenset()):
+        self.module, self.handles, self.orchestration = Module(source), frozenset(handles), orchestration
+
+
+def _is_handle(node, handles) -> bool:
+    return ((isinstance(node, ast.Name) and node.id in handles) or
+            (isinstance(node, ast.Attribute) and node.attr in handles))
+
+
+def host_names(statements, handles) -> set:
+    """Names the statements read from the host through a handle: ``<handle>.X`` and ``<handle>["X"]``."""
+    names = set()
+    for stmt in statements:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Attribute) and _is_handle(n.value, handles):
+                names.add(n.attr)
+            elif (isinstance(n, ast.Subscript) and _is_handle(n.value, handles) and isinstance(n.slice, ast.Constant)
+                  and isinstance(n.slice.value, str)):
+                names.add(n.slice.value)
+    return names
+
+
+def fingerprints(source: bytes, producers: dict, orchestration=frozenset(), host: Host | None = None) -> dict:
     """{group: SHA-256 of its producing code} over one source: each group's entry names and every module-level
-    definition they reach by name. None for a group whose entry names the source lacks; ValueError when it does not
-    parse."""
+    definition they reach by name. With ``host`` (a field module bound into the builder) the hashed document also
+    holds the host closure of every host name the group's statements read through a handle. None for a group whose
+    entry names the source lacks; ValueError when a source does not parse."""
     module = Module(source)
     out = {}
     for group, entries in producers.items():
         if not module.has(entries):
             out[group] = None
             continue
-        closure = module.closure(module.reach(entries, orchestration))
-        out[group] = hashlib.sha256(canonical({"group": group, "closure": closure}).encode("utf-8")).hexdigest()
+        names = module.reach(entries, orchestration)
+        doc = {"group": group, "closure": module.closure(names)}
+        if host is not None:
+            wanted = sorted(host_names(module.statements(names), host.handles))
+            doc["host_closure"] = host.module.closure(host.module.reach(wanted, host.orchestration))
+        out[group] = hashlib.sha256(canonical(doc).encode("utf-8")).hexdigest()
     return out
 
 

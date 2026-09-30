@@ -646,9 +646,11 @@ class ByteIdentity(unittest.TestCase):
             alone = fx.run("alone", fields=SEC_RUN, module_options=SecFixture.options(stages))
             for name in sec.FIELDS:
                 self.assertEqual(alone["files"][f"{name}.f64"], with_sec["files"][f"{name}.f64"], name)
-            # --reuse never copies a SEC field (its group has no reuse roots): recomputed, identical bytes
+            # --reuse (v8 C-3) copies every SEC field of a directory built by this code (same producer, pins, formula)
             again = fx.run("again", fields=SEC_RUN, module_options=SecFixture.options(stages), reuse=fx.base / "alone")
-            self.assertEqual(set(again["reuse"]["computed"]), set(sec.FIELDS))
+            self.assertEqual(again["reuse"]["reused"], SEC_RUN)
+            self.assertEqual(again["reuse"]["computed"], [])
+            self.assertEqual(again["source_checks"]["sec"], alone["source_checks"]["sec"])
             for name in sec.FIELDS:
                 self.assertEqual(again["files"][f"{name}.f64"], alone["files"][f"{name}.f64"], name)
         self.assertEqual(tool.DEFAULT_FIELDS, ("si_shares", "si_dtc", "iv_atm_21d", "iv_atm_63d", "iv_atm_126d",
