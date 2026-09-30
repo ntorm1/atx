@@ -10,6 +10,8 @@ import pytest
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from atx_db.alpha_panel import fund_catalog as fcat
+from atx_db.alpha_panel import fund_items as fi
 from atx_db.alpha_panel import fundamentals as fu
 
 NUM_SCHEMA = pa.schema([("adsh", pa.string()), ("tag", pa.string()), ("version", pa.string()),
@@ -60,7 +62,7 @@ def test_class_sum_rules(tmp_path):
 
 
 PRE_SCHEMA = pa.schema([("adsh", pa.string()), ("stmt", pa.string()), ("inpth", pa.bool_()), ("tag", pa.string()),
-                        ("plabel", pa.string())])
+                        ("version", pa.string()), ("plabel", pa.string())])
 
 
 def test_pre_flags(tmp_path):
@@ -123,6 +125,78 @@ def test_catalog_pre_flags(tmp_path):
         con.close()
     assert got["a"] == (True, True, True, False, False)        # the custom 'Proceeds from term loan' line counts
     assert got["b"][0] is False and got["b"][4] is False
+
+
+# catalog-pre-v2 precision: subtotal and look-alike standard tags never set an item's flag (they blocked zero fills in
+# v10 drafts: the pre-tax tag "...BeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest" flagged xido and mii,
+# capex flagged acquisitions, OCI amortization flagged am); labels count only on custom (version = adsh) lines.
+PRECISION_CASES = [
+    # (stmt, tag, label, custom, column, expected flag)
+    ("IS", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+     "Income before income taxes", False, "xido_ttm", False),
+    ("IS", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+     "Income before income taxes", False, "mii_ttm", False),
+    ("IS", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+     "Income before income taxes", False, "esub_ttm", False),
+    ("CI", "ComprehensiveIncomeNetOfTaxAttributableToNoncontrollingInterest",
+     "Comprehensive income attributable to noncontrolling interests", False, "mii_ttm", False),
+    ("IS", "NetIncomeLossAttributableToNoncontrollingInterest", "Less: net income attributable to NCI", False,
+     "mii_ttm", True),
+    ("IS", "MyMinorityShare", "Net income attributable to non-controlling interests", True, "mii_ttm", True),
+    ("IS", "IncomeLossFromEquityMethodInvestments", "Equity in earnings of affiliates", False, "esub_ttm", True),
+    ("CI", "OtherComprehensiveIncomeLossAmortizationAdjustmentFromAOCIPensionAndOtherPostretirementBenefitPlansForNetPriorServiceCostCreditNetOfTax",
+     "Amortization of prior service credit", False, "am_ttm", False),
+    ("IS", "AmortizationOfIntangibleAssets", "Amortization of intangibles", False, "am_ttm", True),
+    ("IS", "IncomeTaxExpenseBenefit", "Provision for income taxes", False, "pcl_ttm", False),
+    ("IS", "ProvisionForLoanLossesExpensed", "Provision for loan losses", False, "pcl_ttm", True),
+    ("CF", "PaymentsToAcquirePropertyPlantAndEquipment", "Purchases of property and equipment", False, "aqc_ttm", False),
+    ("CF", "MyCapex", "Acquisition of property and equipment", True, "aqc_ttm", False),
+    ("CF", "PaymentsToAcquireBusinessesNetOfCashAcquired", "Acquisitions, net of cash acquired", False, "aqc_ttm", True),
+    ("CF", "MyDeals", "Acquisitions, net of cash acquired", True, "aqc_ttm", True),
+    ("CF", "PaymentsOfDebtIssuanceCosts", "Payments of debt issuance costs", False, "dltr_ttm", False),
+    ("CF", "RepaymentsOfLongTermDebt", "Repayment of borrowings", False, "dltr_ttm", True),
+    ("CF", "RepaymentsOfLongTermDebt", "Repayment of borrowings", False, "dltis_ttm", False),
+    ("CF", "ProceedsFromSaleOfLoansHeldForSale", "Proceeds from sales of loans held for sale", False, "dltis_ttm", False),
+    ("CF", "MyTermLoan", "Proceeds from term loan", True, "dltis_ttm", True),
+    ("CF", "AmortizationOfIntangibleAssets", "Amortization of intangible assets", False, "capxint_ttm", False),
+    ("CF", "InterestPaidNet", "Interest paid, net of amounts capitalized", False, "capxint_ttm", False),
+    ("CF", "ProceedsFromStockOptionsExercised", "Proceeds from exercise of stock options", False, "stkco_ttm", False),
+    ("CF", "MyOptionProceeds", "Proceeds from stock option exercises", True, "stkco_ttm", False),
+    ("CF", "ShareBasedCompensation", "Stock-based compensation", False, "stkco_ttm", True),
+    ("CF", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect",
+     "Net increase in cash", False, "exre_ttm", False),
+    ("CF", "ProceedsFromSaleOfAvailableForSaleSecuritiesDebt", "Proceeds from sales of marketable securities", False,
+     "sppiv_ttm", False),
+    ("BS", "OperatingLeaseLiabilityNoncurrent", "Operating lease liabilities", False, "rou", False),
+    ("BS", "OperatingLeaseLiabilityNoncurrent", "Operating lease liabilities", False, "llo", True),
+    ("BS", "LongTermDebtAndCapitalLeaseObligations", "Long-term debt", False, "llo", False),
+    ("BS", "DeferredIncomeTaxLiabilitiesNet", "Deferred income taxes", False, "txp", False),
+    ("BS", "AccruedIncomeTaxesCurrent", "Income taxes payable", False, "txp", True),
+    ("BS", "ShortTermInvestments", "Short-term investments", False, "ivao", False),
+    ("BS", "AdditionalPaidInCapitalCommonStock", "Additional paid-in capital", False, "cstk", False),
+    ("BS", "MyPartnersCapital", "Partners' capital", True, "cstk", True),
+    ("BS", "SelfInsuranceReserveCurrent", "Self insurance reserves", False, "acominc", False),
+    ("BS", "LiabilitiesAndStockholdersEquity", "Total liabilities, redeemable noncontrolling interests and equity", False,
+     "mibt", False),
+]
+
+
+def test_catalog_pre_flags_precision(tmp_path):
+    rows = [_pre(f"p{i}", stmt, tag, label, custom=custom) for i, (stmt, tag, label, custom, _, _) in enumerate(PRECISION_CASES)]
+    path = tmp_path / "pre.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=PRE_SCHEMA_V2), path)
+    cols = sorted({c for *_, c, _ in PRECISION_CASES})
+    con = duckdb.connect()
+    try:
+        sel = ", ".join(f'"{fi.CAT}{c}"' for c in cols)
+        got = {r[0]: dict(zip(cols, r[1:])) for r in con.execute(
+            f"SELECT adsh, {sel} FROM ({fu.pre_flags_sql(path.as_posix())})").fetchall()}
+    finally:
+        con.close()
+    for i, (stmt, tag, label, custom, col, want) in enumerate(PRECISION_CASES):
+        assert got[f"p{i}"][col] is want, (tag, label, col)
+        py = fcat.line_flag(fcat.BY_COL[col], stmt, tag, f"p{i}" if custom else "us-gaap/2023", f"p{i}", label)
+        assert py is want, ("python mirror", tag, label, col)
 
 
 def test_label_lines(tmp_path):

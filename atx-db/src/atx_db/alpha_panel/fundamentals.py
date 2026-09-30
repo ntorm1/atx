@@ -178,9 +178,11 @@ def input_manifests() -> dict[str, Any]:
 def catalog_manifest() -> dict[str, Any]:
     """The S4.2 catalog definition as published (per item: Compustat mnemonic, seed item, kind, chain, rules)."""
     return {"rule": fcat.__doc__, "label_rule": LABEL_RULE, "pre_rule": CATALOG_PRE_RULE,
+            "statement_tag_exclude": fcat.STMT_TAG_EXCLUDE,
             "structural_by_template": {k: sorted(v) for k, v in fi.CAT_STRUCTURAL.items()},
             "items": [{"col": it.col, "mnemonic": it.mnemonic, "seed_item_id": it.seed, "kind": it.kind,
-                       "chain": list(it.chain), "zero_statement": it.stmt, "zero_line_pattern": it.line,
+                       "chain": list(it.chain), "zero_statement": it.stmt, "zero_tag_pattern": it.tags,
+                       "zero_label_pattern": it.line, "zero_label_exclude": it.exclude,
                        "knowledge_zero": it.knowledge_zero, "sic_ranges": [list(r) for r in it.sic],
                        "note": it.note} for it in fcat.CATALOG]}
 
@@ -280,6 +282,21 @@ def pos_sum_sql(num_glob: str) -> str:
     """
 
 
+def _q(pattern: str) -> str:
+    """A regex as a SQL string literal."""
+    return "'" + pattern.replace("'", "''") + "'"
+
+
+def _catalog_flag_sql(it: fcat.CatItem) -> str:
+    """catalog-pre-v2 line flag of one item (mirrors ``fund_catalog.line_flag``)."""
+    label = "lower(coalesce(plabel, ''))"
+    custom = f"(version = adsh AND regexp_matches({label}, {_q(it.line)})"
+    custom += f" AND NOT regexp_matches({label}, {_q(it.exclude)}))" if it.exclude else ")"
+    return (f"bool_or(stmt IN ({', '.join(repr(x) for x in fcat.PRE_STMTS[it.stmt])}) "
+            f"AND NOT regexp_matches(lower(tag), {_q(fcat.STMT_TAG_EXCLUDE[it.stmt])}) "
+            f"AND (regexp_matches(lower(tag), {_q(it.tags)}) OR {custom}))")
+
+
 def pre_flags_sql(pre_glob: str) -> str:
     """Statement-line flags per accession over FSDS PRE parquet files (see ``PRE_RULE`` and ``CATALOG_PRE_RULE``)."""
     is_cols = ",\n".join(
@@ -287,10 +304,7 @@ def pre_flags_sql(pre_glob: str) -> str:
         + (f" AND NOT regexp_matches(lower(tag), '{PRE_REV_EXCLUDE}')" if name == "is_rev" else "")
         + f") AS {name}"
         for name, pat in PRE_PATTERNS.items() if name != "cf_capx")
-    cat_cols = "".join(
-        f",\n               bool_or(stmt IN ({', '.join(repr(x) for x in fcat.PRE_STMTS[it.stmt])}) AND "
-        f"regexp_matches(lower(tag) || ' ' || lower(coalesce(plabel, '')), '{it.line}')) AS \"{fi.CAT}{it.col}\""
-        for it in fcat.CATALOG if it.stmt)
+    cat_cols = "".join(f",\n               {_catalog_flag_sql(it)} AS \"{fi.CAT}{it.col}\"" for it in fcat.CATALOG if it.stmt)
     return f"""
         SELECT adsh, bool_or(stmt IN ('IS', 'CI')) AS has_is, bool_or(stmt = 'CF') AS has_cf,
                {is_cols},
@@ -320,8 +334,11 @@ LABEL_RULE = (
     "match (else none); mapped onto the accession's own Company Facts duration like pos-sum-v1; the last tier of the "
     "revenue, cost-of-revenue, gross-profit and operating-income chains (pseudo taxonomy lbl)")
 CATALOG_PRE_RULE = (
-    "catalog statement-line flags: has_bs = any BS line; c_<item> = a line of the item's statement (BS; IS or CI; "
-    "CF) whose 'lower(tag) lower(plabel)' matches the item's fund_catalog line pattern")
+    "catalog-pre-v2 statement-line flags: has_bs = any BS line; c_<item> = a line (not parenthetical) of the item's "
+    "statement (BS; IS or CI; CF) whose tag does not match the statement's fund_catalog.STMT_TAG_EXCLUDE (subtotals, "
+    "comprehensive income, supplemental disclosures) and either whose lower-case tag matches the item's tags pattern, "
+    "or whose tag is custom (version = adsh) and whose lower-case label matches the item's line pattern and not its "
+    "exclude pattern")
 
 
 def label_lines_sql(pre_glob: str, num_glob: str) -> str:
