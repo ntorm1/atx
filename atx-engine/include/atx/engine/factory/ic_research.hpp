@@ -32,6 +32,11 @@ public:
   [[nodiscard]] atx::usize instruments() const noexcept;
   [[nodiscard]] atx::usize first_date() const noexcept;
   [[nodiscard]] atx::u64 bytes() const noexcept;
+  // Platform v8 H-3 (read-only): the prepared labels of active horizon k, date-major rows
+  // [first_date(), first_date()+label_rows(k)) x instruments(), NaN where no label is defined:
+  // the exact values evaluate_research_ic correlates with. Empty for an inactive horizon.
+  [[nodiscard]] std::span<const atx::f64> labels(atx::usize horizon_index) const noexcept;
+  [[nodiscard]] atx::usize label_rows(atx::usize horizon_index) const noexcept;
 private:
   std::shared_ptr<const ic_screen_detail::Cache> data_;
   friend atx::core::Result<ResearchIcCache> prepare_research_ic(const alpha::Panel&,
@@ -78,4 +83,10 @@ private:
 [[nodiscard]] atx::core::Result<ResearchIcResult> evaluate_research_ic(
     std::span<const atx::f64>,const ResearchIcCache&,ResearchIcScratch&,
     parallel::DetPool* pool=nullptr);
+// The IC runner's research recipe for one scored window [begin, end) (platform v8 H-3, lifted
+// from its score_role so every research verb scores with the same recipe): the equivalence
+// screen, horizons 5/21/63 (pair with ResearchIcOptions{3,true,workers}), labels maturing
+// inside the window (maturity_end = end), and the label/scratch budget.
+[[nodiscard]] IcScreenConfig research_window_ic_config(atx::usize begin,atx::usize end,
+    atx::usize min_names,atx::usize min_dates,atx::u64 max_cache_bytes) noexcept;
 } // namespace atx::engine::factory

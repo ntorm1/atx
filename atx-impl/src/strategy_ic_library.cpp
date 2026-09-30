@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 #include "atx/engine/alpha/vm.hpp"
+#include "atx/engine/data/role_panel.hpp"
 
 namespace atx::impl::strategy::ic_detail {
 namespace {
@@ -195,25 +196,9 @@ co::Status check_field_extents(const Role& spec) {
   return co::Ok();
 }
 namespace {
-// The DSL panel: the role's base columns and the resident extras, all BORROWED
-// (no copy of any column), resolved by name. Only the 1B/cell presence mask is
-// owned, copied from the role panel, so LoadField NaNs extras exactly where it
-// NaNs the base fields. Must not outlive `base` or the extra columns.
-co::Result<al::Panel> dsl_panel(const al::Panel& base,std::vector<std::string> extra_names,
-                                std::vector<std::span<const f64>> extra_columns) {
-  const auto d=base.dates(),n=base.instruments();
-  std::vector<std::string> names; std::vector<std::span<const f64>> columns;
-  names.reserve(base.num_fields()+extra_names.size()); columns.reserve(base.num_fields()+extra_names.size());
-  for (usize f=0;f<base.num_fields();++f) {
-    names.push_back(base.field_name(f)); columns.push_back(base.field_all(static_cast<al::FieldId>(f)));
-  }
-  for (usize k=0;k<extra_names.size();++k) {
-    names.push_back(std::move(extra_names[k])); columns.push_back(extra_columns[k]);
-  }
-  std::vector<u8> presence(d*n);
-  for (usize t=0;t<d;++t) for (usize i=0;i<n;++i) presence[t*n+i]=static_cast<u8>(base.in_universe(t,i));
-  return al::Panel::create_borrowed(d,n,std::move(names),std::move(columns),std::move(presence));
-}
+// The DSL panel (the role's base columns and the resident extras, all borrowed) is
+// built by engine::data::overlay_panel (platform v8 H-3 moved dsl_panel there
+// verbatim so the miner shares it).
 std::optional<FileStamp> file_stamp(const std::filesystem::path& path) {
   std::error_code ec; const auto size=std::filesystem::file_size(path,ec);
   if (ec) return std::nullopt;
@@ -306,7 +291,7 @@ co::Result<const al::Panel*> FieldResidency::panel_for(usize k,const al::Panel& 
       for (usize f=0;f<columns_.size();++f) if (resident_.test(f)) {
         names.push_back(lib_.extra_fields[f]); columns.emplace_back(columns_[f]);
       }
-      ATX_TRY(auto panel,dsl_panel(base,std::move(names),std::move(columns)));
+      ATX_TRY(auto panel,engine::data::overlay_panel(base,std::move(names),std::move(columns)));
       panel_.emplace(std::move(panel));
     }
     out=&*panel_;

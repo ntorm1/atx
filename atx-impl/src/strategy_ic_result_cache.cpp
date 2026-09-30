@@ -38,7 +38,7 @@ constexpr std::array<std::string_view,10> ic_result_sources{
     "atx-engine/src/alpha/panel.cpp",
     "atx-engine/src/factory/ic_screen.cpp"};
 constexpr std::string_view ic_result_sources_sha256=
-    "5bc4775570d4e151b9843bee9e607331a87ccdf3b0d56b50bb4f2f470c691954";
+    "e7a40331a3f2f1a4268feece00d354961ae7ab8215a379733d5855f40f61579a";
 } // namespace
 // FP build flavor as for the VM, plus the IC kernel's SIMD width (its reduction
 // order): ic_screen.cpp reports its own compiled xsimd batch size.

@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/vm.hpp"
+#include "atx/engine/data/role_panel.hpp"
 #include "atx/engine/data/strategy_data.hpp"
 #include "atx/engine/factory/ic_research.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
@@ -132,24 +133,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   ATX_TRY(auto pin,co::sha256_file((dir/name).string()));
   return co::Ok(Json{{"manifest",name},{"manifest_sha256",pin},{"orientation_candidates_sha256",orientation_sha}});
 }
-co::Result<std::vector<u32>> guard_for(const engine::data::StrategyRoleData& role) {
-  const auto& p=role.panel; const auto d=p.dates(),n=p.instruments();
-  ATX_TRY(auto close_id,p.field_id("close")); ATX_TRY(auto raw_id,p.field_id("raw_close"));
-  const auto close=p.field_all(close_id),raw=p.field_all(raw_id);
-  std::vector<u32> out(d*n,0);
-  for (usize t=1;t<d;++t) for (usize i=0;i<n;++i) {
-    const auto a=(t-1)*n+i,b=t*n+i;
-    bool bad=false;
-    if (p.in_universe(t-1,i) && p.in_universe(t,i) &&
-        std::isfinite(close[a]) && std::isfinite(close[b]) && close[a]>0 && close[b]>0) {
-      const auto r=std::log(close[b])-std::log(close[a]); bad=std::abs(r)>1.5;
-      if (std::isfinite(raw[a]) && std::isfinite(raw[b]) && raw[a]>0 && raw[b]>0)
-        bad=bad || std::abs(r)>std::abs(std::log(raw[b])-std::log(raw[a]))+.10;
-    }
-    out[b]=out[a]+static_cast<u32>(bad);
-  }
-  return co::Ok(std::move(out));
-}
+// The research IC return guard is engine::data::research_return_guard (platform v8
+// H-3 moved guard_for there verbatim so the miner shares it).
 Json estimate_json(const ex::IcScreenEstimate& x,int sign) {
   const bool observed=x.valid_dates>0 && std::isfinite(x.mean);
   return {{"valid_dates",x.valid_dates},{"calendar_dates",x.calendar_dates},
@@ -294,11 +279,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   // Declared after `role` and before `pool`/`vm`: borrows the former and is
   // borrowed by the latter. Absent extras, the VM reads role.panel exactly as before.
   FieldResidency fields(lib,spec,role.panel.dates()*role.panel.instruments(),meter,std::move(verified));
-  ATX_TRY(auto guard,guard_for(role));
-  auto ic=ex::equivalence_ic_screen_config();
-  ic.horizons={5,21,63,0}; ic.min_names=cfg.min_names; ic.min_dates=cfg.min_dates;
-  ic.window_begin=role.score_begin; ic.window_end=role.score_end; ic.maturity_end=role.score_end;
-  ic.max_cache_bytes=cfg.max_working_bytes;
+  ATX_TRY(auto guard,engine::data::research_return_guard(role));
+  auto ic=ex::research_window_ic_config(role.score_begin,role.score_end,cfg.min_names,cfg.min_dates,
+      cfg.max_working_bytes);
   const ex::ResearchIcOptions ic_options{3,true,cfg.workers};
   const auto label_started=std::chrono::steady_clock::now();
   ATX_TRY(auto labels,ex::prepare_research_ic(role.panel,ic,ic_options,role.decision_member,guard,
