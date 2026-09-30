@@ -28,6 +28,29 @@ namespace atx::engine::factory {
   return cfg.rungs.size();
 }
 
+atx::core::Result<std::array<Rung, 3>> instrument_rungs(std::span<const atx::u32> strides) {
+  if (strides.empty() || strides.size() > 2U || strides[0] < 2U ||
+      (strides.size() == 2U && (strides[1] < 2U || strides[1] >= strides[0]))) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "instrument_rungs: 1 or 2 strictly decreasing instrument strides >= 2");
+  }
+  std::array<Rung, 3> out{{Rung{1, 1, 0}, Rung{1, 1, 0}, Rung{1, 1, 0}}};
+  for (atx::usize r = 0; r < strides.size(); ++r) {
+    out[r] = Rung{1, strides[r], 0};
+  }
+  return atx::core::Ok(out);
+}
+
+bool instrument_only(const FidelityCfg &cfg) noexcept {
+  const atx::usize n_low = first_full_rung(cfg);
+  for (atx::usize r = 0; r < n_low; ++r) {
+    if (cfg.rungs[r].date_stride != 1U || cfg.rungs[r].n_folds != 0U) {
+      return false;
+    }
+  }
+  return true;
+}
+
 [[nodiscard]] RaceResult race(std::span<const Genome> cands, const FidelityCfg &cfg,
                               const RungEvaluator &eval, atx::usize n_rungs,
                               parallel::DetPool *pool, bool promote_after_last) {

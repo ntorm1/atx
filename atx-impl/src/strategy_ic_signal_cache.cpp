@@ -38,7 +38,7 @@ constexpr int dsl_vm_semantics_version=1;
 // a semantic change bumps dsl_vm_semantics_version (clean cache miss); either way
 // the pin is re-set. The test also fails if a listed file includes an unlisted
 // atx/engine header, so the list cannot silently fall behind the closure.
-constexpr std::array<std::string_view,30> dsl_vm_sources{
+constexpr std::array<std::string_view,32> dsl_vm_sources{
     "atx-engine/include/atx/engine/alpha/bytecode.hpp",
     "atx-engine/include/atx/engine/alpha/cs_ops.hpp",
     "atx-engine/include/atx/engine/alpha/cs_radix.hpp",
@@ -60,6 +60,7 @@ constexpr std::array<std::string_view,30> dsl_vm_sources{
     "atx-engine/include/atx/engine/parallel/det_pool.hpp",
     "atx-engine/include/atx/engine/parallel/fwd.hpp",
     "atx-engine/include/atx/engine/data/strategy_data.hpp",
+    "atx-engine/include/atx/engine/data/role_panel.hpp",
     "atx-engine/src/alpha/bytecode.cpp",
     "atx-engine/src/alpha/dag.cpp",
     "atx-engine/src/alpha/lexer.cpp",
@@ -68,9 +69,10 @@ constexpr std::array<std::string_view,30> dsl_vm_sources{
     "atx-engine/src/alpha/registry.cpp",
     "atx-engine/src/alpha/subtree_cache.cpp",
     "atx-engine/src/alpha/typecheck.cpp",
-    "atx-engine/src/data/strategy_data.cpp"};
+    "atx-engine/src/data/strategy_data.cpp",
+    "atx-engine/src/data/role_panel.cpp"};
 constexpr std::string_view dsl_vm_sources_sha256=
-    "fa1e9d0fd6b4234fa61dc9c884159e7565b545a7f365f3c416cb38cf68980aab";
+    "ec50691894f3f1b3ac5a40deef2afe5bbcaaa043451403b9bcbe12f010b18afa";
 // Entries written before this identity existed sit directly under DIR/<sha>/ with
 // no vm_identity key. They came from engine builds 429cbe43/6d85ac2a (clang-cl
 // 18.1.8, dev preset, no /arch) and no alpha, parallel or core source changed

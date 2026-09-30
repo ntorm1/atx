@@ -145,6 +145,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/data/price_exposure_provider.cpp
     src/data/fundamental_clock_artifact.cpp
     src/data/strategy_data.cpp
+    # platform v8 H-3: role adapters lifted from the IC runner (DSL overlay panel, return guard)
+    src/data/role_panel.cpp
     src/factory/objective_ic.cpp
     src/eval/multiple_testing.cpp
     src/eval/lockbox_audit.cpp
@@ -199,6 +201,11 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/combine/orthogonalize.cpp src/combine/marginal_rank_ic.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    # v8 H-3: the role adapters moved out of the IC runner TUs, which run /O2 in Debug; keep
+    # the full-role return guard (four logs per cell) at the speed it had there.
+    set_property(SOURCE src/data/role_panel.cpp APPEND PROPERTY COMPILE_OPTIONS
+        /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/data/role_panel.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.

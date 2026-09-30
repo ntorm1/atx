@@ -24,9 +24,11 @@
 // sort with a total, value-based key. The result is independent of worker count
 // and of the order the evaluator calls complete.
 
+#include <algorithm> // std::max (strided_cells)
 #include <array>
 #include <functional>
 #include <span>
+#include <utility> // std::move (strided_cells)
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -98,5 +100,45 @@ struct RaceResult {
 [[nodiscard]] atx::core::Result<alpha::Panel> strided_panel(const alpha::Panel &panel,
                                                             atx::u32 date_stride,
                                                             atx::u32 inst_stride);
+
+// ---- platform v8 H-3: racing on instrument strides only -------------------------------------
+//
+// A date subset changes every time-series operator (delay(x, 1) becomes delay(x, stride)) and
+// lets a candidate be judged on dates it was not meant to see; an instrument subset changes only
+// the cross-sections. A research search therefore races on instrument strides alone.
+
+// The rung ladder for `strides` (1 or 2 strides, strictly decreasing, each >= 2): one low rung
+// per stride keeping every date, then the full-fidelity rung. Err otherwise.
+[[nodiscard]] atx::core::Result<std::array<Rung, 3>>
+instrument_rungs(std::span<const atx::u32> strides);
+
+// True iff every rung before the first full-fidelity rung keeps every date (date_stride == 1)
+// and keeps the run's CPCV folds (n_folds == 0).
+[[nodiscard]] bool instrument_only(const FidelityCfg &cfg) noexcept;
+
+// A strided copy of a date-major per-cell array (dates x instruments), in strided_panel's
+// geometry: dates {0, s_d, 2 s_d, ...} x instruments {0, s_i, 2 s_i, ...}. Err when `cells` is
+// not dates x instruments. A cumulative per-instrument series (a return guard) stays valid under
+// an instrument stride.
+template <class T>
+[[nodiscard]] atx::core::Result<std::vector<T>>
+strided_cells(std::span<const T> cells, atx::usize dates, atx::usize instruments,
+              atx::u32 date_stride, atx::u32 inst_stride) {
+  if (cells.size() != dates * instruments) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "strided_cells: cell count is not dates x instruments");
+  }
+  const atx::usize sd = std::max<atx::u32>(date_stride, 1U);
+  const atx::usize si = std::max<atx::u32>(inst_stride, 1U);
+  const atx::usize out_dates = (dates + sd - 1U) / sd;
+  const atx::usize out_insts = (instruments + si - 1U) / si;
+  std::vector<T> out(out_dates * out_insts);
+  for (atx::usize d = 0; d < out_dates; ++d) {
+    for (atx::usize j = 0; j < out_insts; ++j) {
+      out[d * out_insts + j] = cells[(d * sd) * instruments + j * si];
+    }
+  }
+  return atx::core::Ok(std::move(out));
+}
 
 } // namespace atx::engine::factory
