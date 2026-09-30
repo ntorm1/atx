@@ -458,6 +458,50 @@ struct Cholesky {
   for (usize k = 0; k < kParams; ++k) x[k] *= f.scale[k];
   return x;
 }
+// Q of the Householder QR of the m x kParams column-major `a`, in place: LAPACK dgeqr2
+// (dlarfg: beta = -sign(alpha) hypot(alpha, ||x||), tau = (beta - alpha) / beta, v = [1,
+// x / (alpha - beta)]; H = I when ||x|| = 0) then dorg2r (Q = H_0 H_1 H_2 H_3 [I; 0]), the
+// unblocked LAPACK path numpy.linalg.qr takes for four columns, operation for operation.
+void householder_q(std::span<f64> a, usize m) {
+  std::array<f64, kParams> tau{};
+  const auto col = [&](usize j) { return a.data() + j * m; };
+  for (usize j = 0; j < kParams; ++j) {
+    f64* const x = col(j);
+    f64 squares = 0;
+    for (usize i = j + 1; i < m; ++i) squares += x[i] * x[i];
+    const f64 norm = std::sqrt(squares);
+    if (norm == 0) continue; // tau_j = 0: H_j = I
+    const f64 alpha = x[j], beta = -std::copysign(std::hypot(alpha, norm), alpha);
+    tau[j] = (beta - alpha) / beta;
+    const f64 scale = 1 / (alpha - beta);
+    for (usize i = j + 1; i < m; ++i) x[i] *= scale;
+    x[j] = beta;
+    for (usize c = j + 1; c < kParams; ++c) { // H_j from the left on the later columns
+      f64* const y = col(c);
+      f64 w = y[j];
+      for (usize i = j + 1; i < m; ++i) w += x[i] * y[i];
+      w *= tau[j];
+      y[j] -= w;
+      for (usize i = j + 1; i < m; ++i) y[i] -= w * x[i];
+    }
+  }
+  for (usize j = kParams; j-- > 0;) {
+    f64* const v = col(j);
+    if (j + 1 < kParams) {
+      v[j] = 1;
+      for (usize c = j + 1; c < kParams; ++c) {
+        f64* const y = col(c);
+        f64 w = 0;
+        for (usize i = j; i < m; ++i) w += v[i] * y[i];
+        w *= tau[j];
+        for (usize i = j; i < m; ++i) y[i] -= w * v[i];
+      }
+    }
+    for (usize i = j + 1; i < m; ++i) v[i] *= -tau[j];
+    v[j] = 1 - tau[j];
+    for (usize i = 0; i < j; ++i) v[i] = 0;
+  }
+}
 // OLS residual of target on [1, z] over the used rows into s.residual; grouped: of
 // the within-slot demeaned target on [1, demeaned z] (assign_slots ran), with every
 // held row (hold[i] != 0 and target[i] == 0) reset to 0 after the demeaning. Touches
@@ -687,5 +731,68 @@ co::Status neutralize_price_risk_within_groups(const PriceExposureInput& in,
       (!hold_zero.empty() && hold_zero.size() != in.instruments))
     return co::Err(co::ErrorCode::InvalidArgument, "price risk: group geometry");
   return price_risk(in, cfg, d, target, member, group, hold_zero, scratch, stats);
+}
+
+co::Status session_interval_returns(const PriceExposureInput& in, usize t,
+                                    PriceExposureScratch& scratch, std::span<f64> out) {
+  const usize n = in.instruments;
+  if (!in.dates || !n || in.dates > kMaxUsize / n)
+    return co::Err(co::ErrorCode::InvalidArgument, "price returns: dimensions");
+  const usize cells = in.dates * n;
+  if (in.close.size() != cells || in.raw_close.size() != cells || in.present.size() != cells ||
+      out.size() != n || t == 0 || t >= in.dates)
+    return co::Err(co::ErrorCode::InvalidArgument, "price returns: geometry or interval");
+  ATX_TRY_VOID(check_presence(in, t - 1, t));
+  ATX_TRY_VOID(grow(scratch.logs, 4 * n));
+  const std::span<f64> prev(scratch.logs.data(), 2 * n), cur(scratch.logs.data() + 2 * n, 2 * n);
+  load_logs(in, t - 1, prev);
+  load_logs(in, t, cur);
+  static_cast<void>(interval_returns(in, t, prev, cur, [&](usize i, f64 r) { out[i] = r; }));
+  return co::Ok();
+}
+
+const char* basis_refusal_id(BasisRefusal refusal) noexcept {
+  switch (refusal) {
+  case BasisRefusal::None: return "";
+  case BasisRefusal::TooFewNames: return "too-few-usable-names";
+  case BasisRefusal::ConstantExposure: return "constant-exposure";
+  case BasisRefusal::IllConditioned: return "ill-conditioned-exposures";
+  }
+  return "unknown";
+}
+
+co::Result<BasisRefusal> neutralization_basis(std::span<const f64> exposures,
+                                              std::span<const usize> rows,
+                                              const PriceExposureConfig& cfg,
+                                              NeutralizeScratch& scratch, std::span<f64> basis) {
+  ATX_TRY_VOID(validate_config(cfg));
+  const usize n = exposures.size() / kCols, m = rows.size();
+  if (exposures.size() % kCols != 0 || m > n || basis.size() != m * kParams)
+    return co::Err(co::ErrorCode::InvalidArgument, "price basis: geometry");
+  for (usize r = 0; r < m; ++r) {
+    if (rows[r] >= n || (r > 0 && rows[r] <= rows[r - 1]))
+      return co::Err(co::ErrorCode::InvalidArgument, "price basis: rows must ascend in range");
+    for (usize k = 0; k < kCols; ++k)
+      if (!std::isfinite(exposures[rows[r] * kCols + k]))
+        return co::Err(co::ErrorCode::InvalidArgument, "price basis: non-finite used exposure");
+  }
+  if (m < cfg.min_names) return co::Ok(BasisRefusal::TooFewNames);
+  ATX_TRY_VOID(grow(scratch.z, m * kCols));
+  ATX_TRY_VOID(grow(scratch.qr, m * kParams));
+  const std::span<f64> z(scratch.z.data(), m * kCols);
+  for (usize k = 0; k < kCols; ++k)
+    if (!standardize(exposures, rows, k, cfg.clip_z, z))
+      return co::Ok(BasisRefusal::ConstantExposure);
+  Cholesky f;
+  if (!factor(normal_matrix(z, m), f)) return co::Ok(BasisRefusal::IllConditioned);
+  const std::span<f64> a(scratch.qr.data(), m * kParams); // column-major [1, z]
+  for (usize r = 0; r < m; ++r) {
+    a[r] = 1;
+    for (usize k = 0; k < kCols; ++k) a[(k + 1) * m + r] = z[r * kCols + k];
+  }
+  householder_q(a, m);
+  for (usize r = 0; r < m; ++r)
+    for (usize k = 0; k < kParams; ++k) basis[r * kParams + k] = a[k * m + r];
+  return co::Ok(BasisRefusal::None);
 }
 } // namespace atx::impl::strategy

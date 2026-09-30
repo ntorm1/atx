@@ -95,6 +95,8 @@ struct NeutralizeScratch {
   // slot the row count and the sums of the target and of every z column.
   std::vector<atx::usize> slot, slot_count;
   std::vector<atx::f64> slot_sum;
+  // neutralization_basis only (grown on first use): the rows x 4 column-major QR work.
+  std::vector<atx::f64> qr;
 };
 // compute_price_exposures + neutralize_target state for the one-call step below.
 struct PriceRiskScratch {
@@ -220,4 +222,35 @@ struct NeutralizeStats {
     std::span<atx::f64> target, std::span<const atx::u8> member,
     std::span<const atx::f64> group, PriceRiskScratch&, NeutralizeStats&,
     std::span<const atx::u8> hold_zero = {});
+
+// ---- the fitter's price-risk context (v8 D-2, contract K2) ----
+// Interval t = (t-1, t] of every instrument by compute_price_exposures' own kernel and
+// guard: the valid adjusted simple return, NaN when invalid, into out (instruments long).
+// Reads sessions t-1 and t only. Errors: InvalidArgument for span geometry, t outside
+// [1, dates) or a presence byte > 1 in those sessions; OutOfRange if scratch allocation fails.
+[[nodiscard]] atx::core::Status session_interval_returns(const PriceExposureInput&, atx::usize t,
+                                                         PriceExposureScratch&,
+                                                         std::span<atx::f64> out);
+// Why a decision has no neutralization basis: the refusals of neutralize_target, in its
+// order, named as fit_composition_weights.py names them (basis_refusal_id).
+enum class BasisRefusal : atx::u8 {
+  None = 0, TooFewNames = 1, ConstantExposure = 2, IllConditioned = 3
+};
+// "too-few-usable-names", "constant-exposure", "ill-conditioned-exposures"; "" for None.
+[[nodiscard]] const char* basis_refusal_id(BasisRefusal refusal) noexcept;
+// Orthonormal basis of the column space of X = [1, z_beta, z_vol, z_log_adv] over `rows`
+// (ascending instrument indices: the used rows), each z the exposure standardized over those
+// rows and clipped exactly as neutralize_target does. Refusals (Ok, no basis written), in
+// order: fewer than cfg.min_names rows; a constant exposure column; an ill-conditioned X'X
+// (neutralize_target's Jacobi-equilibrated Cholesky pivot test). Else basis (rows.size() x 4,
+// row-major) = Q of the Householder QR X = QR in LAPACK's convention (dgeqr2 + dorg2r:
+// H_j = I - tau_j v_j v_j', R_jj = -sign(X_jj) ||X_j:,j||), i.e. numpy.linalg.qr(X)[0] of
+// fit_composition_weights.py neutralization_basis to rounding. The OLS residual of any y on X
+// over the rows is y - Q Q'y. exposures: instruments x 3 row-major, finite on `rows`.
+// Errors: InvalidArgument for config or geometry (rows not ascending or out of range, a
+// non-finite exposure on a row, basis not rows.size() x 4); OutOfRange if scratch allocation
+// fails.
+[[nodiscard]] atx::core::Result<BasisRefusal> neutralization_basis(
+    std::span<const atx::f64> exposures, std::span<const atx::usize> rows,
+    const PriceExposureConfig& cfg, NeutralizeScratch& scratch, std::span<atx::f64> basis);
 } // namespace atx::impl::strategy
