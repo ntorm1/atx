@@ -47,6 +47,12 @@ Definitions (the runner's are those of strategy_ic_runner.cpp + atx-engine facto
                 every admitted member and each theme composite (mean of the members' rank / n, missing = 0);
                 pnl: Pearson of the daily book PnL over rows both finite (>= 250) with every admitted member and
                 each theme composite (mean of the members' PnL). max |rho| over the admitted members but itself.
+Store (v8 C-1, ``--work-dir W``, shared with the fitter): each candidate's invariant block (size / FF12 splits, decay,
+book pnl / turnover / coverage) lives in W/<role sha16>-<window id>/card/, keyed by its signal payload SHA-256 and the
+producer fingerprint of CARD_PRODUCERS; only the correlation block is recomputed. Output bytes do not depend on it.
+Report only (off by default, bytes unchanged when off): ``--coverage-flags`` (C-1), ``--ic-theta`` and
+``--marginal-ic`` (C-2: horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h); the K6 row); f_theta / f_theta_hac_t of
+the admission row are copied when the fitter wrote them. None of them gates, selects or weights anything.
 Numpy only (mega_report components for the pages); BLAS pinned to one thread.
 """
 from __future__ import annotations
@@ -72,6 +78,7 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fit_composition_weights as fcw  # noqa: E402
+import horizon_stats  # noqa: E402
 from mega_report import analysis as A  # noqa: E402
 from mega_report import components as C  # noqa: E402
 from mega_report import theme as TH  # noqa: E402
@@ -94,6 +101,14 @@ SIG_DIGITS = 10
 ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,96}")
 EXIT_OK, EXIT_REFUSED = 0, 1
 LEGACY_THEME_KEYS = ("theme", "family")
+# v8 C-1 store: the per-candidate invariant block (size / FF12 splits, decay, book pnl / turnover / coverage) is keyed by
+# the signal payload SHA-256 and the producer fingerprint of this code; only the correlation block is recomputed.
+CARD_KEY_SCHEMA = "atx.alpha-report-card-invariant/v1"
+CARD_PRODUCERS = ("rank_signal", "invariant_block", "decay_block", "row_decay", "block_json", "block_arrays",
+                  "Geometry", "size_groups", "ff12_groups", "GroupLabels")
+# v8 C-2, report only (v8-prereg rule 8): the marginal IC contract K6 (task F-2, marginal_ic.json), copied per card.
+K6_KEYS = ("ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t", "max_abs_rho", "max_rho_member")
+REPORT_ONLY_ADMISSION_KEYS = ("f_theta", "f_theta_hac_t")  # fitter --report-f-theta columns, copied when present
 
 
 class CardError(Exception):
@@ -302,6 +317,7 @@ class Inputs:
                     self.frozen_sign[o["id"]] = o["frozen_train_sign"]
         # research fields: size (me_company) and FF12 (grp_ff12), pinned by the runner summary
         self.size, self.ff12, self.fields_note = None, None, {}
+        self.field_pins = {"me_company": None, "grp_ff12": None}  # payload SHAs: part of the invariant block's key
         rf = summary["roles"][0].get("research_fields") or {}
         fsha = rf.get("manifest_sha256")
         if isinstance(fsha, dict):
@@ -323,6 +339,7 @@ class Inputs:
                 require(len(data) == size and int(rec["bytes"]) == size and sha256_bytes(data) == rec["sha256"],
                         f"research fields: {name}.f64 extent or SHA differs")
                 self.files[str(man_path.parent / f"{name}.f64")] = rec["sha256"]
+                self.field_pins[name] = rec["sha256"]
                 arr = np.frombuffer(data, dtype="<f8").reshape(self.role.dates, self.role.instruments)
                 setattr(self, "size" if name == "me_company" else "ff12", arr)
         else:
@@ -339,7 +356,36 @@ class Inputs:
                 "admission: TRAIN manifest differs from the pinned role")
         self.adm_rows = {r["id"]: r for r in self.admission.get("candidates", [])}
         self.admitted = [i for i in self.admission.get("admitted", []) if i in {c["id"] for c in self.cands}]
+        self.marginal = None  # K6 rows by id (--marginal-ic), report only
+        if getattr(args, "marginal_ic", None) is not None:
+            self.marginal, m_sha = load_marginal_ic(Path(args.marginal_ic), getattr(args, "marginal_ic_sha256", None))
+            self.files[str(args.marginal_ic)] = m_sha
         self.panel = self.role.payload()
+
+
+def load_marginal_ic(path: Path, pin: str | None) -> tuple[dict, str]:
+    """({id: {K6 keys}}, SHA-256) of a marginal_ic.json (contract K6: a list of rows, or {"candidates": [rows]}, each
+    {id, ic21, ic21_hac_t, marginal_ic21, marginal_hac_t, max_abs_rho, max_rho_member}; other keys are ignored)."""
+    data = path.read_bytes() if path.is_file() else b""
+    require(data, f"marginal IC: missing {path}")
+    sha = sha256_bytes(data)
+    require(pin is None or pin == sha, "marginal IC: SHA-256 pin differs")
+    try:
+        j = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise CardError(f"marginal IC: JSON parse: {exc}") from exc
+    rows = j.get("candidates") if isinstance(j, dict) else j
+    require(isinstance(rows, list), "marginal IC: expected a list of K6 rows or {candidates: [...]}")
+    out = {}
+    for r in rows:
+        require(isinstance(r, dict) and isinstance(r.get("id"), str) and all(k in r for k in K6_KEYS),
+                f"marginal IC: a row lacks id or one of the K6 keys {K6_KEYS}")
+        require(r["id"] not in out, f"marginal IC: duplicate row {r['id']}")
+        require(all(r[k] is None or (isinstance(r[k], (int, float)) and not isinstance(r[k], bool))
+                    for k in K6_KEYS[:5]) and (r["max_rho_member"] is None or isinstance(r["max_rho_member"], str)),
+                f"marginal IC: row {r['id']} has a non-numeric statistic or member")
+        out[r["id"]] = {k: r[k] for k in K6_KEYS}
+    return out, sha
 
 
 # ------------------------------------------------------------------------------------------------ geometry
@@ -417,9 +463,14 @@ def guard_prefix(close: np.ndarray, raw: np.ndarray, present: np.ndarray) -> np.
 
 
 # ------------------------------------------------------------------------------------------------ groups
-def size_groups(geo: Geometry, inputs: Inputs, panel: dict) -> tuple[np.ndarray, str]:
+def size_field_name(has_me_company: bool) -> str:
+    return "me_company" if has_me_company else "adv63_dollar_volume (me_company unavailable)"
+
+
+def size_groups(geo: Geometry, inputs, panel: dict) -> tuple[np.ndarray, str]:
+    name = size_field_name(inputs.size is not None)
     if inputs.size is not None:
-        size, name = geo.gather(inputs.size, 0), "me_company"
+        size = geo.gather(inputs.size, 0)
     else:  # ADV63 dollar volume over (d-62 .. d], unusable days add 0
         dollars = np.where(geo.present & np.isfinite(panel["raw_close"]) & (panel["raw_close"] > 0) &
                            np.isfinite(panel["volume"]) & (panel["volume"] >= 0),
@@ -427,7 +478,7 @@ def size_groups(geo: Geometry, inputs: Inputs, panel: dict) -> tuple[np.ndarray,
         cs = np.vstack([np.zeros((1, geo.n_all)), np.cumsum(dollars, axis=0)])
         adv = np.full((geo.d_all, geo.n_all), np.nan)
         adv[62:] = (cs[63:] - cs[:-63]) / 63.0
-        size, name = geo.gather(adv, 0), "adv63_dollar_volume (me_company unavailable)"
+        size = geo.gather(adv, 0)
     ok = np.isfinite(size) & (size > 0) & geo.colmask
     ranks, _ = centered_ranks(size, ok)
     n = ok.sum(axis=1, keepdims=True)
@@ -437,7 +488,7 @@ def size_groups(geo: Geometry, inputs: Inputs, panel: dict) -> tuple[np.ndarray,
     return np.where(ok, terc, -1).astype(np.int16), name
 
 
-def ff12_groups(geo: Geometry, inputs: Inputs) -> np.ndarray | None:
+def ff12_groups(geo: Geometry, inputs) -> np.ndarray | None:
     if inputs.ff12 is None:
         return None
     v = geo.gather(inputs.ff12, 0)
@@ -559,6 +610,132 @@ def theme_of(row: dict | None, cand: dict) -> str:
     return cand.get("family") or "unknown"
 
 
+# ------------------------------------------------------------------------------------------------ invariant block
+def rank_signal(geo: Geometry, signal: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(gathered signal, valid cells, centered ranks, value order) of one raw signal on the compressed grid."""
+    s = geo.gather(signal, 0)
+    valid = np.isfinite(s) & geo.colmask
+    xr, order = centered_ranks(s, valid)
+    return s, valid, xr, order
+
+
+def invariant_block(geo: Geometry, s: np.ndarray, valid: np.ndarray, xr: np.ndarray, order: np.ndarray,
+                    size_labels: GroupLabels, ff_labels: GroupLabels | None) -> dict:
+    """The size / FF12 splits and the daily book (pnl, turnover, coverage) of one candidate: functions of its signal,
+    the role and the pinned size / FF12 fields only, never of the other candidates or the admission table."""
+    out = {"size": size_labels.ic(s, valid, order),
+           "ff12": ff_labels.ic(s, valid, order) if ff_labels is not None else None}
+    elig = geo.colmask.sum(axis=1)
+    gross = np.abs(np.where(valid, xr, 0.0)).sum(axis=1)
+    qk = np.where(valid, xr, 0.0) / np.where(gross > 0, gross, 1.0)[:, None]
+    full = np.zeros((geo.t, geo.ever.size))
+    full[geo.cell_rows, geo.cell_pos] = qk[geo.colmask]  # instruments aligned by id across rows
+    live = gross > 0
+    pk = (qk * geo.r1).sum(axis=1)
+    mature = np.arange(geo.t) < geo.t - 2
+    out["pnl"] = np.where(live & mature, pk, np.nan)
+    out["turnover"] = np.full(geo.t, np.nan)
+    out["turnover"][1:] = np.abs(np.diff(full, axis=0)).sum(axis=1)
+    out["coverage"] = valid.sum(axis=1) / np.maximum(elig, 1)
+    return out
+
+
+def decay_block(daily: np.ndarray, specs: list) -> dict:
+    """One candidate's decay curve (mean lagged one-day rank IC and its valid dates, h = 1..63) and its cumulative
+    h = 5/21/63 daily series (runner_check), from its ``row_decay`` rows (rows x specs)."""
+    lag_idx = [j for j, (kind, _) in enumerate(specs) if kind == "lag"]
+    return {"decay_ic": np.array([np.nanmean(daily[:, j]) if np.isfinite(daily[:, j]).any() else np.nan
+                                  for j in lag_idx]),
+            "decay_n": [int(np.isfinite(daily[:, j]).sum()) for j in lag_idx],
+            "cum": {str(h): daily[:, specs.index(("cum", h))].copy() for h in RUNNER_HORIZONS}}
+
+
+ARRAY_KEYS = ("pnl", "turnover", "coverage", "decay_ic")
+
+
+def block_json(block: dict) -> dict:
+    """The stored form: arrays as lists with None for NaN (floats round-trip exactly)."""
+    out = {k: v for k, v in block.items() if k not in ARRAY_KEYS and k != "cum"}
+    for k in ARRAY_KEYS:
+        out[k] = [float(x) if math.isfinite(x) else None for x in block[k]]
+    out["cum"] = {h: [float(x) if math.isfinite(x) else None for x in v] for h, v in block["cum"].items()}
+    return out
+
+
+def block_arrays(j: dict) -> dict:
+    """The in-memory form of a stored block (the inverse of block_json)."""
+    out = {k: v for k, v in j.items() if k not in ARRAY_KEYS and k != "cum"}
+    for k in ARRAY_KEYS:
+        out[k] = np.array([np.nan if x is None else x for x in j[k]], dtype=np.float64)
+    out["cum"] = {h: np.array([np.nan if x is None else x for x in v], dtype=np.float64) for h, v in j["cum"].items()}
+    return out
+
+
+def block_valid(j: dict, t: int) -> bool:
+    try:
+        return (all(isinstance(j.get(k), list) and len(j[k]) == t for k in ("pnl", "turnover", "coverage")) and
+                isinstance(j.get("decay_ic"), list) and len(j["decay_ic"]) == len(DECAY_H) and
+                isinstance(j.get("decay_n"), list) and len(j["decay_n"]) == len(DECAY_H) and
+                isinstance(j.get("size"), dict) and (j.get("ff12") is None or isinstance(j["ff12"], dict)) and
+                isinstance(j.get("cum"), dict) and sorted(j["cum"]) == sorted(str(h) for h in RUNNER_HORIZONS) and
+                all(isinstance(v, list) and len(v) == t for v in j["cum"].values()))
+    except (TypeError, AttributeError):
+        return False
+
+
+class CardStore:
+    """Per-candidate invariant blocks under the fitter's store root ``<work>/<role sha16>-<window id>/card/``
+    (record_store kind ``card``). The key is the signal payload SHA-256 and the producer fingerprint of
+    CARD_PRODUCERS, plus the full role SHA-256, window id, the u pass's min_names and the pinned size / FF12 field
+    payloads: every input of the block. The correlation block is never stored. A cache: safe to delete."""
+
+    def __init__(self, root: Path, role: fcw.RoleManifest, min_names: int, fields: dict):
+        self.role, self.window = role, fcw.window_id()
+        self.records = fcw.record_store.RecordStore(Path(root) / f"{role.sha[:16]}-{self.window}")
+        self.base_key = {"schema": CARD_KEY_SCHEMA, "role_manifest_sha256": role.sha, "window_id": self.window,
+                         "producer_fingerprint": card_fingerprint(), "min_names": min_names, "fields": fields}
+
+    def key(self, payload_sha: str) -> dict:
+        return dict(self.base_key, payload_sha256=payload_sha)
+
+    def get(self, payload_sha: str) -> dict | None:
+        j = self.records.get("card", self.key(payload_sha))
+        return block_arrays(j) if j is not None and block_valid(j, self.role.score_end - self.role.score_begin) else None
+
+    def put(self, payload_sha: str, block: dict) -> None:
+        self.records.put("card", self.key(payload_sha), block_json(block))
+
+
+def card_fingerprint() -> str:
+    """Producer fingerprint of the invariant block (code_fingerprint over this file)."""
+    try:
+        return fcw.code_fingerprint.fingerprint(Path(__file__).resolve().read_bytes(), CARD_PRODUCERS)
+    except ValueError as exc:
+        raise CardError(f"card producer fingerprint: {exc}") from exc
+
+
+def horizon_block(m: np.ndarray) -> dict:
+    """Report only (v8 C-2, --ic-theta): ic_theta = sum_{h=1..63} theta (1 - theta)^(h-1) m(h) over the card's lagged
+    one-day rank IC m(h) (horizon_stats.ic_theta); None when some m(h) is undefined."""
+    return {"theta": horizon_stats.HORIZON_THETA, "h": [DECAY_H[0], DECAY_H[-1]],
+            "ic_theta": horizon_stats.ic_theta(m, DECAY_H, horizon_stats.HORIZON_THETA),
+            "weights_sum": float(horizon_stats.theta_weights(DECAY_H, horizon_stats.HORIZON_THETA).sum()),
+            "definition": "sum over h=1..63 of theta*(1-theta)^(h-1)*m(h), m = decay.ic (lagged one-day rank IC); "
+                          "truncated at 63, not renormalised; undefined if any m(h) is; report only"}
+
+
+def coverage_flag(coverage_by_year: dict) -> dict:
+    """Report-only flag of a candidate scored on thin coverage (review focus 6): the years whose mean coverage is below
+    the runner's 80% rule, and the years with no finite signal at all. The candidate is always carded."""
+    years = {y: v for y, v in coverage_by_year.items() if y != "all"}
+    empty = sorted(y for y, v in years.items() if v is None or v == 0)
+    low = sorted(y for y, v in years.items() if v is not None and v < MIN_COVERAGE)
+    return {"min_coverage": MIN_COVERAGE, "low": bool(low), "low_years": low, "empty_years": empty,
+            "rule": "coverage = finite-signal eligible / eligible per row, mean per year; low: a year's mean < "
+                    "min_coverage (the runner drops such rows from the IC); empty: no finite signal in a year"}
+
+
+# ------------------------------------------------------------------------------------------------ the build
 def build(args, log=None) -> tuple[dict[str, bytes], dict]:
     started = time.perf_counter()
     inputs = Inputs(args)
@@ -568,57 +745,53 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
     if log:
         log(f"card: inputs loaded candidates={k_n} rows={geo.t} width={geo.w} "
             f"seconds={time.perf_counter() - started:.1f}")
-    terc, size_name = size_groups(geo, inputs, inputs.panel)
-    size_labels = GroupLabels(geo, terc, 3, ["small", "mid", "large"])
-    ff = ff12_groups(geo, inputs)
-    ff_labels = GroupLabels(geo, ff, 12, [str(i) for i in range(1, 13)]) if ff is not None else None
-    inputs.size = inputs.ff12 = inputs.panel = None  # the geometry keeps close, presence and the guard only
-    R = np.full((geo.t, k_n, geo.w), np.nan, dtype=np.float32)
-    per: dict[str, dict] = {}
-    pnl = np.full((geo.t, k_n), np.nan)
-    turnover = np.full((geo.t, k_n), np.nan)
-    coverage = np.full((geo.t, k_n), np.nan)
-    elig = geo.colmask.sum(axis=1)
     entries = []
     for cand in cands:  # every entry is validated before any payload is read
         try:
             entries.append(inputs.layout.resolve(cand, inputs.role))
         except fcw.FitError as exc:
             raise CardError(str(exc)) from exc
+    work = getattr(args, "work_dir", None)
+    store = CardStore(work, inputs.role, inputs.min_names, inputs.field_pins) if work else None
+    blocks: list[dict | None] = [store.get(e["payload_sha256"]) if store else None for e in entries]
+    size_name, size_labels, ff_labels = size_field_name(inputs.size is not None), None, None
+    if any(b is None for b in blocks):  # the group label ranks feed invariant blocks only
+        terc, size_name = size_groups(geo, inputs, inputs.panel)
+        size_labels = GroupLabels(geo, terc, 3, ["small", "mid", "large"])
+        ff = ff12_groups(geo, inputs)
+        ff_labels = GroupLabels(geo, ff, 12, [str(i) for i in range(1, 13)]) if ff is not None else None
+    inputs.size = inputs.ff12 = inputs.panel = None  # the geometry keeps close, presence and the guard only
+    R = np.full((geo.t, k_n, geo.w), np.nan, dtype=np.float32)
 
-    def one(k: int) -> dict:
+    def one(k: int) -> dict | None:
         tick = time.perf_counter()
         try:
             signal = fcw.load_candidate_signal(entries[k], inputs.role)
         except fcw.FitError as exc:
             raise CardError(str(exc)) from exc
-        s = geo.gather(signal, 0)
+        s, valid, xr, order = rank_signal(geo, signal)
         del signal
-        valid = np.isfinite(s) & geo.colmask
-        xr, order = centered_ranks(s, valid)
-        R[:, k, :] = xr
-        info = {"payload_sha256": entries[k]["payload_sha256"],
-                "cache_entry": "base" if entries[k]["fields_manifest_sha256"] is None else "fields"}
-        info["size"] = size_labels.ic(s, valid, order)
-        info["ff12"] = ff_labels.ic(s, valid, order) if ff_labels is not None else None
-        # book, pnl, turnover, coverage
-        gross = np.abs(np.where(valid, xr, 0.0)).sum(axis=1)
-        qk = np.where(valid, xr, 0.0) / np.where(gross > 0, gross, 1.0)[:, None]
-        full = np.zeros((geo.t, geo.ever.size))
-        full[geo.cell_rows, geo.cell_pos] = qk[geo.colmask]  # instruments aligned by id across rows
-        live = gross > 0
-        pk = (qk * geo.r1).sum(axis=1)
-        mature = np.arange(geo.t) < geo.t - 2
-        pnl[:, k] = np.where(live & mature, pk, np.nan)
-        turnover[1:, k] = np.abs(np.diff(full, axis=0)).sum(axis=1)
-        coverage[:, k] = valid.sum(axis=1) / np.maximum(elig, 1)
+        R[:, k, :] = xr  # the correlation block reads every candidate's ranks
+        block = None if blocks[k] is not None else invariant_block(geo, s, valid, xr, order, size_labels, ff_labels)
         if log:
-            log(f"card: {k + 1}/{k_n} {cands[k]['id']} seconds={time.perf_counter() - tick:.2f}")
-        return info
+            log(f"card: {k + 1}/{k_n} {cands[k]['id']} {'reused' if block is None else 'computed'} "
+                f"seconds={time.perf_counter() - tick:.2f}")
+        return block
 
-    for cand, info in zip(cands, run_parallel(one, list(range(k_n)), args.workers)):
-        per[cand["id"]] = info
-    daily, specs = row_decay(geo, R, inputs.min_names, log, args.workers)
+    fresh = run_parallel(one, list(range(k_n)), args.workers)
+    missing = [k for k in range(k_n) if blocks[k] is None]
+    if missing:
+        daily, specs = row_decay(geo, R[:, missing, :] if len(missing) < k_n else R, inputs.min_names, log,
+                                 args.workers)
+        for n, k in enumerate(missing):
+            block = dict(fresh[k], **decay_block(daily[n], specs))
+            blocks[k] = block_arrays(block_json(block))  # the stored form: a hit and a recompute are the same values
+            if store:
+                store.put(entries[k]["payload_sha256"], block)
+        del daily
+    if log:
+        log(f"card: computed {len(missing)}, reused {k_n - len(missing)}")
+    pnl = np.column_stack([b["pnl"] for b in blocks]) if k_n else np.full((geo.t, 0), np.nan)
     # theme composites (admitted members only) for the correlations
     themes = {}
     for i in inputs.admitted:
@@ -659,15 +832,16 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
     # assemble
     files: dict[str, bytes] = {}
     index_rows = []
-    lag_idx = [j for j, (kind, _) in enumerate(specs) if kind == "lag"]
-    hs = np.array([specs[j][1] for j in lag_idx])
+    hs = np.array(DECAY_H)
     daily_lines = ["id,decision_index,session_ns,turnover,pnl,coverage"]
     for k, cand in enumerate(cands):
         cid = cand["id"]
         adm = inputs.adm_rows.get(cid)
+        block = blocks[k]
         card = {"schema": SCHEMA, "id": cid, "family": cand.get("family"), "theme": theme_of(adm, cand),
                 "tier": (adm or {}).get("tier"), "dsl_sha256": cand["dsl_sha256"],
-                "payload_sha256": per[cid]["payload_sha256"], "cache_entry": per[cid]["cache_entry"],
+                "payload_sha256": entries[k]["payload_sha256"],
+                "cache_entry": "base" if entries[k]["fields_manifest_sha256"] is None else "fields",
                 "runner_sign": cand.get("runner_sign"), "frozen_train_sign": inputs.frozen_sign.get(cid)}
         # runner's own series
         runner_h, ic_year = {}, {}
@@ -680,14 +854,13 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
         card["runner"] = {"min_names": inputs.min_names, "horizons": runner_h}
         card["ic_by_year"] = ic_year
         # decay
-        m = np.array([np.nanmean(daily[k, :, j]) if np.isfinite(daily[k, :, j]).any() else np.nan for j in lag_idx])
-        nd = [int(np.isfinite(daily[k, :, j]).sum()) for j in lag_idx]
-        fit = half_life_fit(m, hs)
-        card["decay"] = {"h": list(hs), "ic": list(m), "n_dates": nd, "fit": fit}
+        m = block["decay_ic"]
+        card["decay"] = {"h": list(hs), "ic": list(m), "n_dates": block["decay_n"], "fit": half_life_fit(m, hs)}
+        if getattr(args, "ic_theta", False):  # report only (C-2); without the switch the card bytes are unchanged
+            card["horizon"] = horizon_block(m)
         check = {}
         for h in RUNNER_HORIZONS:
-            j = specs.index(("cum", h))
-            mine = daily[k, :, j]
+            mine = block["cum"][str(h)]
             ses, vals = inputs.daily_ic.get((cid, h), (np.zeros(0, np.int64), np.zeros(0)))
             pos = np.searchsorted(geo.sessions, ses)
             ok_pos = (pos < geo.t) & (geo.sessions[np.minimum(pos, geo.t - 1)] == ses)
@@ -704,13 +877,13 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
             check[str(h)]["abs_mean_diff"] = abs(cm - rm) if cm is not None and rm is not None else None
         card["runner_check"] = check
         card["ic_by_size_tercile"] = {"horizon": ORIENTATION_H, "size_field": size_name, "min_names": GROUP_MIN_NAMES,
-                                      "groups": per[cid]["size"]}
+                                      "groups": block["size"]}
         card["ic_by_ff12"] = ({"horizon": ORIENTATION_H, "field": "grp_ff12", "min_names": GROUP_MIN_NAMES,
-                               "groups": per[cid]["ff12"]} if per[cid]["ff12"] is not None else
+                               "groups": block["ff12"]} if block["ff12"] is not None else
                               {"groups": None, "reason": inputs.fields_note.get("grp_ff12") or
                                inputs.fields_note.get("fields", "grp_ff12 unavailable")})
         # book
-        pk, tk, ck = pnl[:, k], turnover[:, k], coverage[:, k]
+        pk, tk, ck = block["pnl"], block["turnover"], block["coverage"]
         both = np.isfinite(pk) & np.isfinite(tk)
         mean_p = float(np.nanmean(pk)) if np.isfinite(pk).any() else None
         sd_p = float(np.nanstd(pk, ddof=1)) if np.isfinite(pk).sum() >= 2 else None
@@ -728,6 +901,8 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
                                                      if v["sd"] and v["mean"] is not None else None)
                                                  for y, v in by_year(pk, geo.years).items()}}
         card["coverage"] = {y: v["mean"] for y, v in by_year(ck, geo.years).items()}
+        if getattr(args, "coverage_flags", False):  # report only; without the switch the card bytes are unchanged
+            card["coverage_flag"] = coverage_flag(card["coverage"])
         # correlations
         corr = {}
         for kind, mat in (("signal", sig_corr), ("pnl", pnl_corr)):
@@ -748,11 +923,14 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
                 "tau": adm.get("tau"), "hac_t": adm.get("hac_t"), "train_sharpe": adm.get("train_sharpe",
                                                                                           adm.get("fit_sharpe")),
                 "s_k": adm.get("s_k"), "payload_matches_admission": adm.get("cache_payload_sha256") ==
-                per[cid]["payload_sha256"],
+                entries[k]["payload_sha256"],
                 "thresholds": {x: rules.get(x) for x in ("tau_limit", "cost_tau_limit", "veto_t", "rho_limit",
                                                          "min_train_days", "min_fit_days") if x in rules}}
+            card["admission"].update({x: adm[x] for x in REPORT_ONLY_ADMISSION_KEYS if x in adm})  # C-2, report only
         else:
             card["admission"] = {"status": "not-in-admission-table"}
+        if inputs.marginal is not None:  # K6 (--marginal-ic), report only
+            card["marginal_ic"] = inputs.marginal.get(cid) or {"status": "absent from marginal_ic.json"}
         files[f"card-{cid}.json"] = canonical(card)
         files[f"card-{cid}.html"] = card_html(card).encode("utf-8")
         index_rows.append(index_row(card))
@@ -778,7 +956,7 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
     files["manifest.json"] = canonical({"schema": "atx.alpha-report-card-manifest/v1",
                                         "files": {n: sha256_bytes(b) for n, b in sorted(files.items())}})
     summary = {"status": "complete", "output": str(args.output), "candidates": k_n,
-               "seconds": round(time.perf_counter() - started, 2)}
+               "computed": len(missing), "reused": k_n - len(missing), "seconds": round(time.perf_counter() - started, 2)}
     return files, summary
 
 
@@ -814,7 +992,12 @@ def index_row(card: dict) -> dict:
     wq, rh = card["worldquant"], card["runner"]["horizons"]
     fitd = card["decay"]["fit"] or {}
     ic21 = card["ic_by_year"][str(ORIENTATION_H)]["all"]
-    return {"id": card["id"], "theme": card["theme"], "status": card["admission"].get("status"),
+    extra = {"coverage_low": card["coverage_flag"]["low"]} if "coverage_flag" in card else {}  # --coverage-flags only
+    if "horizon" in card:  # --ic-theta only
+        extra["ic_theta"] = card["horizon"]["ic_theta"]
+    if "marginal_ic" in card:  # --marginal-ic only
+        extra["marginal_ic21"] = card["marginal_ic"].get("marginal_ic21")
+    return {**extra, "id": card["id"], "theme": card["theme"], "status": card["admission"].get("status"),
             "ic21": rh[str(ORIENTATION_H)]["mean"], "ir21": ic21["ir"], "half_life": fitd.get("half_life_days"),
             "turnover": wq["turnover"], "sharpe": wq["sharpe"], "fitness": wq["fitness"],
             "margin_bps": wq["margin_bps"], "coverage": card["coverage"].get("all"),
@@ -935,6 +1118,21 @@ def parse_args(argv):
     p.add_argument("--ids", default=None, help="comma-separated subset of candidate ids")
     p.add_argument("--workers", type=int, default=4, choices=range(1, 9), metavar="1..8",
                    help="threads over candidates and decision rows (output bytes do not depend on it)")
+    p.add_argument("--work-dir", type=Path, default=None,
+                   help="store base shared with the fitter (e.g. build-equity/fit-work): per-candidate invariant blocks "
+                        "in W/<role sha16>-<window id>/card/, keyed by the signal payload SHA-256 and the producer "
+                        "fingerprint; only the correlation block is recomputed; a cache (output bytes do not depend on "
+                        "it); stderr reports 'card: computed K, reused M'")
+    p.add_argument("--coverage-flags", action="store_true",
+                   help="report only: add coverage_flag to each card (years below the runner's 80%% coverage rule, "
+                        "years with no finite signal) and coverage_low to the index; off: bytes unchanged")
+    p.add_argument("--ic-theta", action="store_true",
+                   help="report only (v8 C-2): add horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h), theta .05, "
+                        "h 1..63, to each card and the index; off: bytes unchanged")
+    p.add_argument("--marginal-ic", type=Path, default=None,
+                   help="report only (v8 C-2): marginal_ic.json of the marginal IC verb (contract K6); its row is "
+                        "copied into each card as marginal_ic")
+    p.add_argument("--marginal-ic-sha256", default=None, help="pin of --marginal-ic (checked when given)")
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     return p.parse_args(argv)
 

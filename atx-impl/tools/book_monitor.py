@@ -242,14 +242,16 @@ class Inputs:
 
 def fit_records(work: Path, admission: dict | None, members: list[str]) -> tuple[dict | None, str | None]:
     """{member: f_unsigned array} from the fitter WorkStore records (any key layout), matched by candidate id,
-    cache payload SHA and TRAIN role; content SHA verified."""
+    cache payload SHA and TRAIN role; content SHA verified. The v8 store (fcw.stored_factor_series: records keyed by
+    payload SHA, matched to the admission's context digest) is read first."""
     if admission is None:
         return None, "--fit-work needs --admission"
     role = admission.get("inputs", {}).get("train_manifest_sha256")
     want = {r["id"]: r.get("cache_payload_sha256") for r in admission.get("candidates", []) if r["id"] in members}
-    found: dict[str, np.ndarray] = {}
+    found: dict[str, np.ndarray] = fcw.stored_factor_series(work, str(role), want,
+                                                            admission.get("inputs", {}).get("context_sha256"))
     base = work / str(role)
-    if not base.is_dir():
+    if not found and not base.is_dir():
         return None, f"no WorkStore for role {role} under {work}"
     for path in sorted(base.glob("*/factors/*.json")):
         try:
