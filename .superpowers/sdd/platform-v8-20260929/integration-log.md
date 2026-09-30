@@ -228,3 +228,194 @@ inputs.script_sha256, context_sha256") applies. Once accepted, later fitter edit
 - W0-1 not yet merged: C-1 `window_id()` uses its literal fallback, A-3 derived stores stop with exit 2, the
   e2e window test skips.
 - The IC runner's cache publish is not long-path aware: a deep root (over about 110 characters) fails at MAX_PATH.
+
+## integration 3 (2026-09-29): W0-1 and nine lane commits merged, pins, build and tests; STOPPED before Part 4
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `aca1a51a` with `git merge --no-ff 880faac7`
+left conflicted by the PM. Tag prefix v8-3. Stopped on the owner's instruction at the end of Part 3 (build and tests).
+
+### STOPPED HERE, remaining parts
+
+Parts 1, 2 and 3 are done. **Part 4 was not started: none of the identities a-g ran** (no bounded-runner run in this
+integration):
+- a. W0-1: D-0 NAV identity argv of integration 2 (12 files byte-identical except strings naming the window id).
+- b. C-1 ruling check: read the fitter to state what `inputs.context_sha256` hashes (code/config or data).
+- c. C-3: fields rebuild with `--reuse` from fields-v9 into a fresh dir; payload identity, reused/recomputed counts.
+- d. B-2: v7.1 u pass at `--workers 4` and at `--workers 12` (`--max-memory-mib 2560 --max-rss-mib 2560`), fresh
+  caches; orientations and daily IC identity; vm, ic, composition seconds.
+- e. D-1: v7.1 NAV identity with `--stage-timers` (summary.json gains the timers key).
+- f. F-0: lo1 role rebuilt with the options off; manifest identity except `universe.inputs.code.prepare_recent_research`.
+- g. E-1: research-build.ps1 as the last build of the session. Partly shown already: v8-3a, v8-3b and v8-3c were built
+  with `scripts/research-build.ps1 -Preset equity-dev` and each wrote `build-equity/mega-<tag>-receipt.json` with the
+  new keys `Tag`, `Script`, `BuildDir`, `Executables` (SHA-256 per target, only after exit 0). The "last build of the
+  session" condition belongs to whoever runs Part 4.
+
+### Part 1: W0-1 merge and the leftovers
+
+Merge `8a4a3edf` (lane W0E `880faac7`). Two textual conflicts, both import blocks, both sides kept:
+`prepare_research_fields.py` (`import code_fingerprint` from C-1 + `import research_window as rw` from W0-1) and
+`fit_composition_weights.py` (C-1's `sys.path` append, `code_fingerprint`, `record_store` + W0-1's
+`from engine_tools import research_window as rw`). The window constants auto-merged in the W0-1 form
+(`FIT_BEGIN_NS = rw.TRAIN_BEGIN_NS`, `TRAIN_END_NS = rw.TRAIN_END_NS`, `AIM_SEMANTICS` from `rw` dates,
+`TrainWindowError`); `HOLD_BEGIN_NS` (2022-01-01, the v3-admit-v1 split) stays, as W0-1 says.
+
+Leftovers removed:
+| commit | what |
+|---|---|
+| `588de0b6` | fitter `window_id()` returns `rw.WINDOW_ID`; lane C's `WINDOW_ID_FALLBACK` and the `ImportError` branch are gone. `strategy_live.hpp` deploy-manifest comment names `kResearchWindowId` / `kSealBeginDate` instead of spelling them |
+| `40d1a512` (merge resolution) | lane D's own `research_window.hpp` differed from W0-1's (no `kSealBeginDate`, no `static_assert`s, other comments): W0-1's header kept byte for byte |
+| `16bd52ca` | `strategy_exposures_verb.cpp` (D-2) refusal text spelled `seal (2024-01-01)`: now `kSealBeginDate` |
+| `ff90d14e` | `compare_window_overlap.py` (R1) `SEAL_FALLBACK_NS` literal and its `ImportError` branch removed; the seal is read through `engine_tools.research_window` (the atx-impl instance, as W0-1 prescribes); test renamed `test_seal_is_2024_01_01_from_the_window` |
+
+Kept on purpose (guarded, but no literal date): `backtest_integrity.research_window()` loads the same
+`research_window.py` by path when `engine_tools` is not importable (the old-path shim and `spec_from_file_location`
+callers have no atx-impl/tools on `sys.path`); `research_tree.window_id()` derives the id from the JSON and raises
+`LookupError` when the window source is absent.
+
+Grep gate (`2023-01-01|2025-01-01|1_672_531_200|1'735'689'600|2024-01-01` over atx-engine/tools, atx-engine/src/data,
+atx-impl/src/strategy_*, atx-impl/tools, scripts; run after all merges): **no production code line is left**. What is
+left:
+- history comment: `atx-engine/tools/conftest.py:5,8` (superseded seal 2025-01-01 and the current one);
+- docstring example in the window module itself: `atx-engine/tools/research_window.py:138`;
+- test fixtures bound to the superseded window by W0E's conftest: `test_build_fundamental_events.py:170,471`;
+  `test_prepare_research_fields_sec.py:43-44` (NYSE holiday list), `:608` (calendar range);
+- tests that pin the current window: `test_research_window.py:119,194,196`, `test_compare_window_overlap.py:1,236,397,404`.
+Other spellings (`1_704_067_200`, `1704067200`, `1672531200`, `1735689600`, `date(2023|2024|2025, 1, 1)`): none in
+production; one v1 fixture line `test_research_fields_price.py:122`.
+
+### Part 2: merges (SHAs, in order)
+
+| lane (tasks) | lane SHA | merge | conflicts |
+|---|---|---|---|
+| W0E (W0-1) | `880faac7` | `8a4a3edf` | two import blocks (Part 1) |
+| W0E (E-1 build script, E-4 seal check) | `40163643` | `a69d7ae6` | `mega_report/data.py` docstring: E-4 text kept, V-1's moved `atx-impl/tools/nav_summ.py` path kept |
+| EV (V-1 kit, V-2 holdout gate) | `a27e69fe` | `73cfc817` | `test_backtest_integrity.py` run line (same command, two wrappings) |
+| B (B-2 field caps, workers 16) | `6c7cb27e` | `7261c364` | none |
+| C (C-2 report-only columns, C-3 producer reuse) | `07be7eff` | `07e07d54` | import blocks: holdings (`re` W0-1 + `sys` C-3), fitter (`research_window` W0-1 + `horizon_stats` C-2) |
+| A (A-2 add-alpha, `--screen`; cache gc) | `59b89d07` | `09e9d1da` | none |
+| F (F-0 delisting on lo1, F-1 fields module) | `1e44f90a` | `33742f7a` | none |
+| D (D-1 timers, ring, grid; D-2 exposures) | `83375f5b` | `40d1a512` | `research_window.hpp` add/add: W0-1's kept |
+| R1 (compare_window_overlap tool) | `39bacec7` | `e62576b9` | none |
+| G (G-0 one trial count N, chained protocol line) | `ec206a59` | `a15673a5` | none (its EV and C-2 bases were already in) |
+
+Source pins (`5c280b64`), recomputed with a Python mirror of `expect_sources_pinned` (digest and include closure):
+- `dsl_vm_sources`: W0-1 changed `atx-engine/src/data/strategy_data.cpp` and made it include
+  `atx/engine/data/research_window.hpp`, an unlisted engine header. The list gains that header (30 -> 31 paths) and the
+  digest moves `fa1e9d0f...0aab` -> `afbae65d...a181`. No `dsl_vm_semantics_version` bump: the change only refuses roles
+  that reach the seal; no evaluated bit moves for a role that ends before it.
+- `ic_result_sources`: B-2's re-pin `5bc47755...1954` recomputes equal (this also validates the mirror). No change.
+Both pin tests pass (`VmSourcesPinnedToSemanticsVersion`, `IcSourcesPinnedToSemanticsVersion`).
+
+### Part 3: build and tests
+
+| tag | script | source | result |
+|---|---|---|---|
+| v8-3 | mega-build.ps1 | `5c280b64` clean | **exit 1**, 278 s, 81 TUs: `data_research_window_test.cpp(15)`: `'nlohmann/json.hpp' file not found` |
+| v8-3a | research-build.ps1 | `8b561077` clean | **exit 1**, 50 s: `strategy_role_fixture.hpp(21)` (via `strategy_data_test.cpp`): same |
+| v8-3b | research-build.ps1 | `159d265f` clean | ok, 54 s, 24 TUs, 10 links (CMake re-ran) |
+| v8-3c | research-build.ps1 | `464e9858` clean | ok, 24 s, 3 TUs, 8 links; `ConfiguredProvenance` stays `159d265f` (no reconfigure) |
+
+Targets (all four builds): atx-equity-strategy-ic, atx-equity-strategy-targets, atx-equity-strategy-risk,
+atx-engine-data-tests, atx-engine-combine-tests, atx-engine-factory-tests, atx-impl-strategy-ic-tests,
+atx-impl-strategy-target-tests, atx-impl-tests. Exes v8-3c: ic `3f43cef0...`, targets `6f277869...`, risk `f3b49c82...`.
+
+C++ (anchored first, then whole executables; data and combine tests are from v8-3b, unchanged by v8-3c):
+
+| run | result |
+|---|---|
+| data-tests `ResearchWindow.*:StrategyResearchRole.*` | 6/6 (ResearchWindow 4) |
+| ic-tests `FieldCaps.*:Workers.*` + `AdmissionReportsRequiredBytes` + both source-pin tests | 7/7 (FieldCaps 3, Workers 1) |
+| impl-tests `NavTimers.*:LogRing.*:ConstructionGrid.*:NavBookWorkers.*:Exposures.*:NavWarmStart.*:StrategyLive.*` + RiskVerb seal test | 33/33 (NavTimers 1, LogRing 1, ConstructionGrid 3, NavBookWorkers 1, Exposures 4, NavWarmStart 4, StrategyLive 18, RiskVerb 1) |
+| atx-engine-data-tests (all) | 298 run: 284 passed, 14 skipped |
+| atx-engine-combine-tests (all) | 215/215 |
+| atx-engine-factory-tests (all, v8-3c) | 377 run: 375 passed, **2 failed** (below) |
+| atx-impl-strategy-ic-tests (all, v8-3c) | 96/96 |
+| atx-impl-strategy-target-tests (all) | 187/187 |
+| atx-impl-tests (all, v8-3c) | 919 run: 913 passed, 5 skipped, 1 failed (the known `ConfigJsonNotInDiscoverDigest`) |
+| `ParallelLockstepGrid.*` | **not run**: the `parallel` test group is not configured in build-equity (`ATX_TEST_GROUPS=alpha;factory;learn;data;eval;combine;risk;book;library`), so `atx-engine-parallel-tests` does not exist; `lockstep_grid.hpp` is exercised through `ConstructionGrid.*` and `NavBookWorkers.*` |
+
+Failures:
+- `ResearchIc.ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggregateBudget` (factory-tests and
+  ic-tests, v8-3b): still expected 5 workers to refuse after B-2 raised the bound to 16. Fixed (`5a193dbc`): refuses
+  `max_research_ic_workers + 1`. Passes on v8-3c.
+- `FactoryOos.R3b_DigestUnchangedByPbo` (version_id 916304603 vs pin 4049056013) and
+  `FactoryOos.HoldoutEngineReuse_DigestUnchanged` (3123399341 vs pin 703512706): **not from this sprint.** The
+  sprint's whole engine diff against base `ef11f462` is seven files (marginal_rank_ic.{hpp,cpp} new, research_window.hpp
+  new, lockstep_grid.hpp new, strategy_data.cpp seal refusals, ic_research.hpp constant, ic_screen.cpp worker bound);
+  none is on the factory OOS library path. The factory group was not built in integrations 1 and 2. Left open (owner of
+  the factory goldens).
+- `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`: known, from before the sprint (integration 2).
+
+Python (`pytest -q -p no:cacheprovider`):
+
+| paths | result |
+|---|---|
+| atx-impl/strategies | 163 passed (6 failed before `8b561077`, see fixes) |
+| atx-engine/tools | 200 passed |
+| atx-impl/tools | 282 passed, 2 skipped |
+| scripts/tests with `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin` | 95 passed, 3 skipped (the three RESEARCH_CYCLE_LIVE_ROOT tests) |
+
+tiny_world end to end: the live test failed on one golden only, `admission_decisions_sha256`
+(`43206904...` -> `71b47e87...`). Cause, checked before re-recording: **W0-1** sets admission.json
+`rules.train_window_ns` to `[2020-01-01, 2024-01-01)` (upper bound was 2023-01-01, W0-1's report lists this byte
+change). With that one value put back to `1672531200000000000`, the new admission.json hashes to the old golden
+exactly; orientations `b2143918...` and primary daily `ca559404...` did not move (IC and NAV unchanged through every
+merge). Re-recorded in `5cc9eb0d` (exe ic `3f43cef0...`, nav `6f277869...`); the test then passes (5 passed).
+Note: `ATX_EQUITY_BIN` must be absolute; `build-equity/bin` resolves under the temp root and the runner stops with
+"executable was not found".
+
+Checks from the ledger:
+- IC `--help`: named `--no-composition` but **not `marginal`**, so lane A's `exe_capabilities` would always skip the
+  marginal phase. Fixed (`464e9858`, one usage line naming the verbs). On v8-3c `exe_capabilities` returns
+  `['marginal', 'no-composition']`.
+- K6 layout: the verb writes `marginal_ic.json` as `{..., "candidates": [rows]}` with row keys `id, ic21, ic21_hac_t,
+  marginal_ic21, marginal_hac_t, max_abs_rho, max_rho_member` (plus `max_rho_signed`, `dates`, ... which the card
+  ignores), statistics finite-or-null, member string-or-null: exactly what `alpha_report_card.load_marginal_ic` accepts
+  (static comparison of writer and reader; no real marginal run).
+- Real plan: `build-equity/v8-i3-plan-v71.json` = `atx-equity-strategy-ic --plan-only` of the v7.1 library on the
+  3-year role with fields-v9 (the u pass argv's pins, `--max-memory-mib 1536 --min-names 1000 --workers 4`; manifests
+  only). `test_plan_rows_equal_static_validation` with `ATX_V71_PLAN_JSON` **fails** (finding, expected values not
+  touched): 5 of 154 comparisons differ, every DSL SHA, lookback and extra-field list is equal, the maxima are equal
+  (8 slots, 37 nodes, 272 bars) and `generate_library.validate_plan` accepts the plan. The differing rows (exe vs
+  recipe static_validation): q5_eg nodes 29 vs 28; ftd_fail nodes 5 vs 4; ea_overdue nodes 9 vs 8; sv_flow nodes 7 vs
+  6; res_mom_ind slots 4 vs 5. The recipe figures are the Python checker's estimates; ruling R2-f makes K1 the checker
+  of record, so the test's per-candidate equality is stricter than the contract. Owner: lane A.
+
+Other findings (not fixed, not in the dispatch):
+- Lane A's `marginal_step` passes `--candidate-cache --library --pool [flags] --output` only; F-2's verb also requires
+  `--role MANIFEST`, and add-alpha writes `marginal.flags: ["--themes"]` with no value (the verb's `--themes` takes a
+  weights JSON). The marginal phase will refuse on its first real run until the spec or the step supplies `--role` and
+  the themes file. Owner: lane A with lane F.
+- The engine data test group did not compile before this integration either (`strategy_data_test.cpp` included
+  `<nlohmann/json.hpp>` without the include path); it was simply not built in integrations 1 and 2.
+
+### Fix commits (for lanes to merge root)
+
+| commit | lane (task) | what |
+|---|---|---|
+| `8a4a3edf` (merge resolution) | W0E / C | import blocks of the builder and the fitter |
+| `588de0b6` | C (C-1), W0E | fitter `window_id()` without the literal fallback; `strategy_live.hpp` comment |
+| `a69d7ae6` (merge resolution) | W0E (E-4) / EV (V-1) | mega_report docstring |
+| `07e07d54` (merge resolution) | C (C-2, C-3) / W0E | import blocks of holdings and the fitter |
+| `40d1a512` (merge resolution) | D / W0E | W0-1's `research_window.hpp` kept |
+| `16bd52ca` | D (D-2) | exposures seal refusal names `kSealBeginDate` |
+| `ff90d14e` | R1 (W0-2 tool) | overlap tool: seal through engine_tools, no literal fallback |
+| `5c280b64` | W0E (W0-1) | `dsl_vm_sources` re-pin (31 paths, `afbae65d...`) |
+| `cc62ff6f`, `159d265f` | W0E (W0-1) | engine tests CMake: JSON include path for `data_research_window_test.cpp` and `strategy_data_test.cpp` |
+| `8b561077` | W0E (W0-1), C (C-2) | fitter appends its own directory to `sys.path` (six atx-impl/strategies tests load it by path; `engine_tools` and `horizon_stats` failed to import) |
+| `5a193dbc` | B (B-2) | `ic_research_test.cpp` refuses `max_research_ic_workers + 1` |
+| `464e9858` | F (F-2) / A (A-2) | IC `--help` names the `marginal` verb |
+| `5cc9eb0d` | EV (E-3) | tiny_world goldens re-recorded (W0-1's `train_window_ns`) |
+
+### Open items
+
+- Part 4 (identities a-g), see "STOPPED HERE".
+- `FactoryOos.R3b_DigestUnchangedByPbo`, `FactoryOos.HoldoutEngineReuse_DigestUnchanged` (pre-sprint goldens) and
+  `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` fail; none from the sprint.
+- `ParallelLockstepGrid.*` needs the `parallel` group configured in build-equity (a configure change, not done here).
+- `test_plan_rows_equal_static_validation` against the real plan: 5 figure differences (lane A).
+- Marginal phase argv: `--role` and the themes file (lanes A, F).
+- `atx-impl-strategy-tests` also compiles `strategy_data_test.cpp` (changed by W0-1) and was not in the target list;
+  not rebuilt or run in this integration.
+- `build_provenance.cpp` is generated at configure time: v8-3c records `159d265f`, not its source `464e9858`.
+- C-1 admission.json ruling (integration 2 finding c1) waits for Part 4b.
