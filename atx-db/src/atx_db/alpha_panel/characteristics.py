@@ -52,7 +52,8 @@ from . import common as C
 STAGE = "characteristics"
 SCHEMA = "atx.alpha-panel.characteristics/v2"
 MODULES = ("characteristics", "char_registry", "common")
-NB = 16                       # line buckets: security_id % NB
+NB = 64                       # line buckets: security_id % NB (16 ran out of a 600 MB DuckDB budget)
+PART_FLUSH_ROWS = 65536       # partitioned COPY rows buffered before a flush (DuckDB default 524288)
 PANEL_START = dt.date(2018, 1, 2)
 MKT_ID = 549535               # SPY: market line for the monthly coskewness (2012+ in prices_history and panel)
 PIT_REL_TOL = 1e-9
@@ -183,13 +184,75 @@ def mkt_month_sql(daily_rel: str, cal_path: str) -> str:
     GROUP BY 1 HAVING count(x.r) = max(cm.n_month)"""
 
 
-def line_sql(inp: str, hist: str | None, mkt_month: str | None, cal_path: str,
-             extra_terms: dict[str, str] | None = None) -> str:
-    """Every time-series term of one set of lines (a bucket). ``inp`` / ``hist`` / ``mkt_month`` are relations
-    (``read_parquet(...)`` or views); ``extra_terms`` {name: window SQL over the final layer} is a test hook."""
+def next_sql(inp: str, cal_path: str) -> str:
+    """Next expected announcement per row: the smallest ``earn_next_expected_date`` seen on the line's rows t-300..t
+    that is after d and more than 30 days after the last reaction session (the current value projects the same
+    quarter NEXT year). Columns: security_id, session_date, next_exp."""
+    return f"""
+    WITH {cal_sql(cal_path)},
+    le AS (
+        SELECT i.security_id, i.session_date, c.sidx,
+               max(CASE WHEN i.earn_day_offset = 0 THEN i.session_date END) OVER (PARTITION BY i.security_id
+                   ORDER BY i.session_date ROWS UNBOUNDED PRECEDING) AS last_earn_date
+        FROM {inp} i JOIN cal c USING (session_date)
+    ),
+    ev AS (
+        SELECT i.security_id, i.earn_next_expected_date AS ned, min(c.sidx) AS first_sidx
+        FROM {inp} i JOIN cal c USING (session_date)
+        WHERE i.earn_next_expected_date IS NOT NULL GROUP BY 1, 2
+    )
+    SELECT le.security_id, le.session_date, min(ev.ned) AS next_exp
+    FROM le JOIN ev ON ev.security_id = le.security_id AND ev.first_sidx <= le.sidx AND ev.first_sidx >= le.sidx - 300
+         AND ev.ned > le.session_date
+         AND (le.last_earn_date IS NULL OR date_diff('day', le.last_earn_date, ev.ned) > 30)
+    GROUP BY 1, 2"""
+
+
+def long_sql(inp: str, hist: str | None, mkt_month: str | None, cal_path: str) -> str:
+    """Long-history terms over prices_history (before the panel) + panel returns: ``seas_2_5`` (years 2-5 same-window
+    returns, calendar-session RANGE frames) and ``coskew_60m`` (monthly, the 60 months ending with the last month
+    completed at d). Columns: security_id, session_date, seas_2_5, coskew_60m (panel sessions only)."""
     hist_rows = (f"SELECT security_id, session_date, CASE WHEN ret_guarded THEN NULL ELSE ret END AS r FROM {hist} "
                  f"WHERE session_date < DATE '{PANEL_START}' UNION ALL " if hist else "")
     mk = mkt_month or "(SELECT CAST(NULL AS BIGINT) AS month_idx, CAST(NULL AS DOUBLE) AS m_lr WHERE false)"
+    seas = []
+    for k in (2, 3, 4, 5):
+        a, b = 252 * k - 8, 252 * k - 28
+        seas += [f"sum(lr) OVER {_ws(a, b)} AS s{k}", f"count(lr) OVER {_ws(a, b)} AS n{k}"]
+    seas_avg = (" + ".join(f"coalesce(CASE WHEN n{k} = 21 THEN exp(s{k}) - 1 END, 0)" for k in (2, 3, 4, 5))
+                + ") / nullif(" + " + ".join(f"CAST(n{k} = 21 AS INTEGER)" for k in (2, 3, 4, 5)) + ", 0)")
+    wm = "(PARTITION BY security_id ORDER BY month_idx RANGE BETWEEN 59 PRECEDING AND CURRENT ROW)"
+    return f"""
+    WITH {cal_sql(cal_path)},
+    lh AS ({hist_rows}SELECT security_id, session_date, CASE WHEN ret_guarded THEN NULL ELSE ret END AS r FROM {inp}),
+    ld AS (SELECT lh.security_id, lh.session_date, c.sidx, c.month_idx, c.month_end,
+                  CASE WHEN lh.r > -1 THEN ln(1 + lh.r) END AS lr
+           FROM lh JOIN cal c USING (session_date)),
+    ls AS (SELECT security_id, session_date, month_idx, month_end, {', '.join(seas)} FROM ld),
+    lm AS (SELECT security_id, month_idx, sum(lr) AS mlr, count(lr) AS n FROM ld GROUP BY 1, 2),
+    lm3 AS (
+        SELECT l.security_id, l.month_idx,
+               CASE WHEN l.n = cm.n_month THEN exp(k.m_lr) - 1 END AS x,
+               CASE WHEN l.n = cm.n_month AND k.m_lr IS NOT NULL THEN exp(l.mlr) - 1 END AS y
+        FROM lm l JOIN cm USING (month_idx) LEFT JOIN {mk} k USING (month_idx)
+    ),
+    lm4 AS (SELECT security_id, month_idx, {', '.join(_moments('m_', 'x', 'y', wm))} FROM lm3),
+    lm5 AS (SELECT security_id, month_idx, {', '.join(_centred('m_', 'm_n >= 48'))} FROM lm4),
+    lm6 AS (SELECT security_id, month_idx, {_coskew('m_')} AS coskew_60m FROM lm5)
+    SELECT ls.security_id, ls.session_date, ({seas_avg} AS seas_2_5, lm6.coskew_60m
+    FROM ls LEFT JOIN lm6 ON lm6.security_id = ls.security_id
+         AND lm6.month_idx = CASE WHEN ls.month_end THEN ls.month_idx ELSE ls.month_idx - 1 END
+    WHERE ls.session_date >= DATE '{PANEL_START}'"""
+
+
+def line_sql(inp: str, hist: str | None, mkt_month: str | None, cal_path: str,
+             extra_terms: dict[str, str] | None = None, long_rel: str | None = None,
+             next_rel: str | None = None) -> str:
+    """Every time-series term of one set of lines (a bucket). ``inp`` / ``hist`` / ``mkt_month`` are relations
+    (``read_parquet(...)`` or views); ``long_rel`` / ``next_rel`` are the materialized results of ``long_sql`` /
+    ``next_sql`` (inlined when None); ``extra_terms`` {name: window SQL over the final layer} is a test hook."""
+    long_rel = long_rel or f"({long_sql(inp, hist, mkt_month, cal_path)})"
+    next_rel = next_rel or f"({next_sql(inp, cal_path)})"
     a_terms = [
         f"{_full(3)} AS f3", f"{_full(5)} AS f5", f"{_full(21)} AS f21", f"{_full(55)} AS f55",
         f"{_full(63)} AS f63", f"{_full(126)} AS f126", f"{_full(250)} AS f250", f"{_full(252)} AS f252",
@@ -243,12 +306,6 @@ def line_sql(inp: str, hist: str | None, mkt_month: str | None, cal_path: str,
     if extra_terms:
         extra = ", bx AS (SELECT *, " + ", ".join(f"{v} AS {k}" for k, v in extra_terms.items()) + " FROM b5)"
     last = "bx" if extra_terms else "b5"
-    seas = []
-    for k in (2, 3, 4, 5):
-        a, b = 252 * k - 8, 252 * k - 28
-        seas += [f"sum(lr) OVER {_ws(a, b)} AS s{k}", f"count(lr) OVER {_ws(a, b)} AS n{k}"]
-    seas_avg = (" + ".join(f"coalesce(CASE WHEN n{k} = 21 THEN exp(s{k}) - 1 END, 0)" for k in (2, 3, 4, 5))
-                + ") / nullif(" + " + ".join(f"CAST(n{k} = 21 AS INTEGER)" for k in (2, 3, 4, 5)) + ", 0)")
     return f"""
     WITH {cal_sql(cal_path)},
     p AS (
@@ -342,55 +399,25 @@ def line_sql(inp: str, hist: str | None, mkt_month: str | None, cal_path: str,
         FROM b3
     ),
     b5 AS (SELECT *, CASE WHEN f252 AND rs_n >= 200 AND rs_sd > 0 THEN rs_sum / rs_sd END AS resid_mom_12_1 FROM b4)
-    {extra},
-    -- next expected announcement: smallest earn_next_expected_date seen on rows t-300..t that is after d and more
-    -- than 30 days after the last reaction session (the current value projects the same quarter NEXT year)
-    le AS (
-        SELECT i.security_id, i.session_date, c.sidx,
-               max(CASE WHEN i.earn_day_offset = 0 THEN i.session_date END) OVER (PARTITION BY i.security_id
-                   ORDER BY i.session_date ROWS UNBOUNDED PRECEDING) AS last_earn_date
-        FROM {inp} i JOIN cal c USING (session_date)
-    ),
-    ev AS (
-        SELECT i.security_id, i.earn_next_expected_date AS ned, min(c.sidx) AS first_sidx
-        FROM {inp} i JOIN cal c USING (session_date)
-        WHERE i.earn_next_expected_date IS NOT NULL GROUP BY 1, 2
-    ),
-    nx AS (
-        SELECT le.security_id, le.session_date, min(ev.ned) AS next_exp
-        FROM le JOIN ev ON ev.security_id = le.security_id AND ev.first_sidx <= le.sidx AND ev.first_sidx >= le.sidx - 300
-             AND ev.ned > le.session_date
-             AND (le.last_earn_date IS NULL OR date_diff('day', le.last_earn_date, ev.ned) > 30)
-        GROUP BY 1, 2
-    ),
-    -- long history (prices_history before the panel): seasonality years 2-5 and monthly coskewness
-    lh AS ({hist_rows}SELECT security_id, session_date, CASE WHEN ret_guarded THEN NULL ELSE ret END AS r FROM {inp}),
-    ld AS (SELECT lh.security_id, lh.session_date, c.sidx, c.month_idx, c.month_end,
-                  CASE WHEN lh.r > -1 THEN ln(1 + lh.r) END AS lr
-           FROM lh JOIN cal c USING (session_date)),
-    ls AS (SELECT security_id, session_date, month_idx, month_end, {', '.join(seas)} FROM ld),
-    lm AS (SELECT security_id, month_idx, sum(lr) AS mlr, count(lr) AS n FROM ld GROUP BY 1, 2),
-    lm3 AS (
-        SELECT l.security_id, l.month_idx,
-               CASE WHEN l.n = cm.n_month THEN exp(k.m_lr) - 1 END AS x,
-               CASE WHEN l.n = cm.n_month AND k.m_lr IS NOT NULL THEN exp(l.mlr) - 1 END AS y
-        FROM lm l JOIN cm USING (month_idx) LEFT JOIN {mk} k USING (month_idx)
-    ),
-    lm4 AS (SELECT security_id, month_idx, {', '.join(_moments('m_', 'x', 'y', '(PARTITION BY security_id ORDER BY month_idx RANGE BETWEEN 59 PRECEDING AND CURRENT ROW)'))}
-            FROM lm3),
-    lm5 AS (SELECT security_id, month_idx, {', '.join(_centred('m_', 'm_n >= 48'))} FROM lm4),
-    lm6 AS (SELECT security_id, month_idx, {_coskew('m_')} AS coskew_60m FROM lm5),
-    lg AS (
-        SELECT ls.security_id, ls.session_date, ({seas_avg} AS seas_2_5, lm6.coskew_60m
-        FROM ls LEFT JOIN lm6 ON lm6.security_id = ls.security_id
-             AND lm6.month_idx = CASE WHEN ls.month_end THEN ls.month_idx ELSE ls.month_idx - 1 END
-        WHERE ls.session_date >= DATE '{PANEL_START}'
-    )
+    {extra}
     SELECT {last}.*, nx.next_exp, CAST(cn.sidx - {last}.sidx AS INTEGER) AS ea_gap, lg.seas_2_5, lg.coskew_60m
-    FROM {last} LEFT JOIN nx USING (security_id, session_date)
+    FROM {last} LEFT JOIN {next_rel} nx USING (security_id, session_date)
     LEFT JOIN cal cn ON cn.session_date = nx.next_exp
-    LEFT JOIN lg USING (security_id, session_date)
+    LEFT JOIN {long_rel} lg USING (security_id, session_date)
     """
+
+
+def line_query(con, inp: str, hist: str | None, mkt_month: str | None, cal_path: str,
+               features: Sequence[R.Feature], extra_terms: dict[str, str] | None = None,
+               tag: str = "lt") -> tuple[str, list[str]]:
+    """Materialize the long-history and next-announcement terms as tables ``{tag}_long`` / ``{tag}_next`` (on disk in
+    a file-backed connection: one window chain in memory at a time), then return the line query over them and the
+    columns the year pass keeps."""
+    con.execute(f"CREATE OR REPLACE TABLE {tag}_long AS {long_sql(inp, hist, mkt_month, cal_path)}")
+    con.execute(f"CREATE OR REPLACE TABLE {tag}_next AS {next_sql(inp, cal_path)}")
+    sql = line_sql(inp, hist, mkt_month, cal_path, extra_terms, long_rel=f"{tag}_long", next_rel=f"{tag}_next")
+    keep = list(dict.fromkeys(keep_columns(_line_columns(con, sql), features) + list(extra_terms or {})))
+    return sql, keep
 
 
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -492,6 +519,7 @@ def _copy_partitioned(con, sql: str, dest: Path, part: str, row_group_size: int 
     if partial.exists():
         shutil.rmtree(partial)
     partial.parent.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET partitioned_write_flush_threshold = {PART_FLUSH_ROWS}")
     con.execute(f"COPY ({sql}) TO '{partial.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY ({part}), "
                 f"ROW_GROUP_SIZE {row_group_size})")
     _replace_dir(partial, dest)
@@ -545,9 +573,9 @@ def line_bucket(con, b: int, years: Sequence[int], features: Sequence[R.Feature]
     hist_glob = _tmp(IN_DIR, "hist", f"b={b}")
     hist = _rp(hist_glob / "*.parquet") if list(hist_glob.glob("*.parquet")) else None
     mk = _tmp(LINE_DIR, "mkt_month.parquet")
-    sql = line_sql(inp, hist, _rp(mk) if mk.exists() else None, C.calendar_path().as_posix(), extra_terms)
-    keep = keep_columns(_line_columns(con, sql), features) + list(extra_terms or {})
-    cols = ", ".join(f'"{c}"' for c in dict.fromkeys(keep))
+    sql, keep = line_query(con, inp, hist, _rp(mk) if mk.exists() else None, C.calendar_path().as_posix(), features,
+                           extra_terms)
+    cols = ", ".join(f'"{c}"' for c in keep)
     dest = _tmp(LINE_DIR, f"b={b}")
     _copy_partitioned(con, f"SELECT {cols}, year(session_date) AS yr FROM ({sql}) "
                            f"WHERE session_date >= DATE '{min(years)}-01-01' AND session_date <= DATE '{max(years)}-12-31'",
@@ -691,8 +719,7 @@ def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[
                         f"{_rp(root / 'prices_history' / 'year=*' / '*.parquet')} WHERE security_id = {MKT_ID} "
                         f"AND session_date < DATE '{PANEL_START}' AND {cut}")
     con.execute(f"CREATE OR REPLACE TEMP TABLE pit_mkt AS {mkt_month_sql('(' + ' UNION ALL '.join(mk_parts) + ')', cal)}")
-    sql = line_sql("pit_in", hist, "pit_mkt", cal, extra_terms)
-    keep = list(dict.fromkeys(keep_columns(_line_columns(con, sql), feats) + list(extra_terms or {})))
+    sql, keep = line_query(con, "pit_in", hist, "pit_mkt", cal, feats, extra_terms, tag="pit")
     cols = ", ".join(f'"{c}"' for c in keep)
     con.execute(f"CREATE OR REPLACE TEMP TABLE pit_line AS SELECT {cols} FROM ({sql}) WHERE session_date = DATE '{d}'")
     others = [p for p in _tmp(LINE_DIR).glob(f"b=*/yr={d.year}/*.parquet") if p.parent.parent.name != f"b={bucket}"]
