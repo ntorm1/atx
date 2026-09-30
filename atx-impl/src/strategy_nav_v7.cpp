@@ -580,7 +580,8 @@ void append_help(std::ostream& out) {
          "clamp or a planned gross above 2 x --aim-leverage voids the run)]; registered "
          "S_prior 20, H 20, --adv-trade-p .01, beta .02: --gamma, --ic-book, --w-max, "
          "--adv-cap-q, --adv-trade-p, --target-vol, --spo-horizon, --alpha-horizon and "
-         "--spo-gross are refused; fixed rate only)]\n";
+         "--spo-gross are refused; [--hold-band B] [--adv-hold-q Q] shape desired as "
+         "aim-partial-v5 does (refused with spo-v1/v2); fixed rate only)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -715,6 +716,13 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       else throw std::invalid_argument("--spo-books all|primary");
     }
     if (o.spo_v1) {
+      // v8 E-26: the desired-target shaping (hold-band-v1, adv-hold-v1) passes through to the
+      // replay, whose shared construction forms spo-v3's aim with it; spo-v1/v2 refuse it.
+      if (spo_version != 3)
+        for (usize k = 1; k < args.size(); ++k)
+          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q")
+            throw std::invalid_argument(args[k] + " needs --rule spo-v3 (spo-v1/v2 refuse the "
+                                                  "desired-target shaping)");
       if (o.capacity)
         throw std::invalid_argument("spo-v1 does not run the capacity curve (--capacity-curve)");
       if (rate && *rate != "fixed") throw std::invalid_argument("spo-v1 needs the fixed rate");
@@ -813,7 +821,10 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
       out << "nav v7: " << spo::rule_name(engine->params()) << ' ' << t.solves << " solves, "
           << t.seconds << " s, mean "
           << (t.solves ? 1e3 * t.seconds / static_cast<f64>(t.solves) : 0.0) << " ms, max "
-          << 1e3 * t.max_seconds << " ms; gamma " << engine->calibration().gamma << '\n';
+          << 1e3 * t.max_seconds << " ms; gamma " << engine->calibration().gamma;
+      if (engine->params().version == 3) // the solves at the --spo-iters cap and their time
+        out << "; " << t.unconverged << " unconverged, " << t.unconverged_seconds << " s";
+      out << '\n';
     }
     out << "nav v7: extras written to " << dir.string() << '\n';
     return 0;

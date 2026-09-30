@@ -12,8 +12,11 @@
 //          |w_i - w0_i| <= p ADV_i / NAV  the trade limit (0 without ADV)
 //          w_i >= min(w0_i, 0)            where the book's locate rule guards the name
 //
-// w_aim = L x desired on the members (L = --aim-leverage): the accepted rule's aim. No alpha
-// vector is fitted (--spo-alpha implied-aim): the tracker trades for the aim's implied alpha
+// w_aim = L x desired on the members (L = --aim-leverage): the accepted rule's aim, desired
+// being the NAV replay's shared desired target (v8 E-26: with --hold-band B / --adv-hold-q Q
+// the hold band on the ranks and the ADV cap shape it exactly as they shape aim-partial-v5's,
+// detail::form_desired and its state; the tracker's own limits are unchanged, and gamma is
+// calibrated on the shaped aim). No alpha vector is fitted (--spo-alpha implied-aim): the tracker trades for the aim's implied alpha
 // gamma Sigma w_aim. Sigma = X F X' + D is atx-risk-v1 at the close of d (spo-v1's pinned
 // store; a daily specific variance above the ceiling is clamped and counted). gamma =
 // S_prior / sigma_aim with sigma_aim = sqrt(252 w_aim' Sigma w_aim) of the whole aim at the

@@ -45,7 +45,11 @@
 //                             clamp or a breach voids the run with the void on, the default).
 //                             Allowed: --risk-model(-sha256), --spo-iters, --spo-tol,
 //                             --spo-books, --specific-ceiling(-void); every other spo flag is
-//                             refused. --spo-alpha is refused with spo-v1/v2.
+//                             refused. --spo-alpha is refused with spo-v1/v2. v8 E-26: the
+//                             replay's --hold-band B / --adv-hold-q Q shape desired exactly as
+//                             aim-partial-v5's (the shared construction, detail::form_desired),
+//                             so the aim is L x the shaped desired and the rule id carries
+//                             +hold-band-B / +adv-hold-Q; both refused with spo-v1/v2.
 //   spo-v1 / spo-v2 / spo-v3 blocks are keyed "spo_v1" / "spo_v2" / "spo_v3" (recipe v7,
 //   summary v7, extras); the Engine's rule_* / rows_* members produce them.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
