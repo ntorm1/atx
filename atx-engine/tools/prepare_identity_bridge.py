@@ -23,7 +23,8 @@ every calendar date ``d`` before the seal, then compressed into date intervals:
 snapshot and never backfill history) is dropped after step 2 and before step 4 (so every ``J`` day
 has a ``P`` line; identical to r4 on every date before the snapshot). Versions with
 ``available_at >= seal`` are ignored and every interval is clipped to ``end_incl <= seal - 1 day``
-(seal default 2025-01-01: nothing known on or after it is used). Identity is labelled
+(seal default: the research seal of ``research_window.py``, ``SEAL_DATE``; nothing known on or after it
+is used, and a later ``--seal`` is refused). Identity is labelled
 ``rehearsal_identity=true`` (not an accepted identity).
 
 Output directory (new or empty; ``manifest.json`` is published last, exclusively and fsynced; no
@@ -89,16 +90,19 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the research window (the seal)
+
 SCHEMA = "atx.identity-bridge/v1"
 SOURCE_SCHEMA = "identity_links_v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 RULE = "r4-links-asof-v1"
 DEFAULT_SOURCE = Path(r"C:\atx\atx-db\data\research\identity_rehearsal\session8-phased-r4")
-DEFAULT_ROLES = (Path("build-equity/recent-fast-train-2020-2022-v2"),
-                 Path("build-equity/recent-fast-validation-2023-2024-v1"))
+# --check reads role sessions: only roles that end before the seal (the 2023-2024 validation role
+# reaches it and is refused, so it is no longer a default).
+DEFAULT_ROLES = (Path("build-equity/recent-fast-train-2020-2022-v2"),)
 PINNED_DATASETS = ("security_company_links", "security_permanent_ids")
 MARK = dt.time(22, 0)
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date (research_window.py); --seal may only be earlier
 KEEP_TIERS = frozenset({"high", "medium"})
 TIER_BYPASS_BASES = frozenset({"strict_dated", "current_ticker_verified"})
 EXCLUDED_BASES = frozenset({"current_ticker_verified"})
@@ -477,6 +481,7 @@ def read_role(directory: Path) -> dict:
     n_dates, n = int(m["dates"]), int(m["instruments"])
     if len(sessions) != n_dates or np.any(sessions % DAY_NS) or np.any(np.diff(sessions) <= 0):
         raise ValueError("role sessions are not strictly increasing midnight labels")
+    rw.refuse_sealed(int(sessions[-1]), f"role {directory} holds a session")
     ids = np.frombuffer(blobs["ids.u64"], dtype="<u8").astype(np.int64)
     if len(ids) != n or np.any(np.diff(ids) <= 0):
         raise ValueError("role ids are not strictly increasing")
@@ -582,7 +587,9 @@ def main(argv=None) -> int:
     mode.add_argument("--check", type=Path, metavar="BRIDGE_DIR", help="print role coverage of a published bridge")
     p.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="r4 identity export directory (read-only)")
     p.add_argument("--expect-source-sha256", help="required SHA-256 of the source manifest.json")
-    p.add_argument("--seal", type=dt.date.fromisoformat, default=SEAL, help="first excluded date (default 2025-01-01)")
+    p.add_argument("--seal", type=dt.date.fromisoformat, default=SEAL,
+                   help=f"first excluded date (default and latest allowed: the research seal {rw.SEAL_DATE}, "
+                        f"{rw.WINDOW_ID})")
     p.add_argument("--role", type=Path, action="append", help="role directory for --check (repeatable)")
     p.add_argument("--static-warehouse", type=Path, help="--check: warehouse.duckdb for the static-bridge diagnostic")
     a = p.parse_args(argv)
@@ -591,7 +598,7 @@ def main(argv=None) -> int:
         check(a.check, a.role or list(DEFAULT_ROLES), a.static_warehouse)
     else:
         if a.seal > SEAL:
-            raise SystemExit("--seal later than 2025-01-01 is not allowed")
+            raise SystemExit(f"--seal later than the research seal {rw.SEAL_DATE} ({rw.WINDOW_ID}) is not allowed")
         m = build(a.source, a.output, expect_sha256=a.expect_source_sha256, seal=a.seal)
         print(json.dumps({"published": str(a.output / "manifest.json"), "source_manifest_sha256":
                           m["source"]["manifest_sha256"], "counts": m["counts"], "stats": m["stats"]}, sort_keys=True))
