@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -24,12 +25,14 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/data/research_window.hpp" // v8 E-25: the seal a label role may not reach
 
 namespace atx::impl::strategy {
 namespace {
 using namespace atx;
 namespace co = atx::core;
 namespace eb = atx::engine::book;
+namespace rw = atx::engine::data;
 using Json = nlohmann::json;
 using Ranked = std::pair<f64, usize>;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
@@ -761,6 +764,183 @@ co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out,
   }
   return co::Ok();
 }
+// ---- v8 E-25: the NAV verb's label role (detail::check_label_role / load_label_role) ----
+// The payloads prepare_recent_research.py --delisting-returns patches (DELISTING_RETURN_RULE):
+// the only files a label role may change.
+bool label_patchable(const std::string& name) {
+  return name == "close.f64" || name == "raw_close.f64" || name == "volume.f64" ||
+         name == "present.u8";
+}
+auto label_refused(const std::string& why) {
+  return co::Err(co::ErrorCode::InvalidArgument, "nav replay: --label-role refused: " + why);
+}
+std::string sealed_label() {
+  return "it reaches the " + std::string(rw::kResearchWindowId) + " seal (" +
+         std::string(rw::kSealBeginDate) + ")";
+}
+// The value at `path` inside `j`; nullptr when a key is missing.
+const Json* json_at(const Json& j, std::initializer_list<const char*> path) {
+  const Json* at = &j;
+  for (const char* key : path) {
+    if (!at->is_object() || !at->contains(key)) return nullptr;
+    at = &at->at(key);
+  }
+  return at;
+}
+// A shared file by what it carries (the refusal names the axis).
+std::string shared_file(const std::string& name) {
+  if (name == "sessions.i64") return "the dates (sessions.i64)";
+  if (name == "ids.u64") return "the instruments (ids.u64)";
+  if (name == "member.u8") return "the membership (member.u8)";
+  return name;
+}
+// The members a label role declares cleared on its termination sessions (DELISTING_RETURN_RULE:
+// member[T] = 0 where the role's lagged membership kept an absent name): universe.delisting
+// returns_applied true and applied.members_cleared_on_termination_session N > 0; 0 otherwise.
+u64 declared_cleared(const Json& label) {
+  const Json* on = json_at(label, {"universe", "delisting", "returns_applied"});
+  const Json* n = json_at(label, {"universe", "delisting", "applied",
+                                  "members_cleared_on_termination_session"});
+  if (!on || !on->is_boolean() || !on->get<bool>() || !n || !n->is_number_integer() ||
+      n->get<i64>() <= 0)
+    return 0;
+  return static_cast<u64>(n->get<i64>());
+}
+// Whether the two manifests pin different member.u8 bytes (only a declared clearing may).
+bool member_differs(const Json& role, const Json& label) {
+  const Json* a = json_at(role, {"files", "member.u8", "sha256"});
+  const Json* b = json_at(label, {"files", "member.u8", "sha256"});
+  return a && b && *a != *b;
+}
+// The manifest rule of detail::check_label_role (`role`: --role's pinned manifest).
+co::Status check_label_manifests(const Json& role, const Json& label) {
+  if (!role.is_object() || !label.is_object())
+    return label_refused("a role manifest is not a JSON object");
+  // The seal first: a label role reaching it is refused whatever else it shares.
+  if (label.contains("score_end_ns") && (!label.at("score_end_ns").is_number_integer() ||
+                                         label.at("score_end_ns").get<i64>() > rw::kSealBeginNs))
+    return label_refused(sealed_label());
+  // The membership: member.u8 is --role's, or differs by the members the label role declares
+  // cleared on termination sessions (verified cell by cell when the payloads load); only then
+  // may score_member_counts, its per-row count, differ.
+  const bool cleared = member_differs(role, label);
+  if (cleared && declared_cleared(label) == 0)
+    return label_refused("the membership (member.u8) differs from --role's (only the members a "
+                         "--delisting-returns role declares cleared on termination sessions, "
+                         "universe.delisting.applied.members_cleared_on_termination_session, may)");
+  const auto own = [cleared](const std::string& key) {
+    return key == "files" || key == "universe" || (cleared && key == "score_member_counts");
+  };
+  for (const auto& item : role.items()) {
+    const auto& key = item.key();
+    if (own(key)) continue;
+    if (!label.contains(key) || label.at(key) != item.value())
+      return label_refused("manifest key '" + key + "' differs from --role's (dates, instruments, "
+                           "score window, source and base are shared)");
+  }
+  for (const auto& item : label.items())
+    if (!own(item.key()) && !role.contains(item.key()))
+      return label_refused("manifest key '" + item.key() + "' is not --role's");
+  const Json* mine = json_at(role, {"files"});
+  const Json* theirs = json_at(label, {"files"});
+  if (!mine || !theirs || !mine->is_object() || !theirs->is_object() ||
+      mine->size() != theirs->size())
+    return label_refused("its file set differs from --role's");
+  for (const auto& item : mine->items()) {
+    const auto& name = item.key();
+    if (!theirs->contains(name))
+      return label_refused("its file set differs from --role's (no " + name + ")");
+    const Json* a = json_at(item.value(), {"bytes"});
+    const Json* b = json_at(theirs->at(name), {"bytes"});
+    if (!a || !b || *a != *b)
+      return label_refused(shared_file(name) + " extent differs from --role's");
+    if (label_patchable(name) || (cleared && name == "member.u8")) continue;
+    a = json_at(item.value(), {"sha256"});
+    b = json_at(theirs->at(name), {"sha256"});
+    if (!a || !b || *a != *b)
+      return label_refused(shared_file(name) + " differs from --role's (only close, raw_close, "
+                           "volume and present may: the payloads --delisting-returns patches)");
+  }
+  const bool restricted = role.contains("universe");
+  if (restricted != label.contains("universe"))
+    return label_refused("base: one role carries a universe restriction and the other does not");
+  if (!restricted) return co::Ok();
+  const auto& u = role.at("universe");
+  const auto& v = label.at("universe");
+  const auto same = [&u, &v](std::initializer_list<const char*> path) {
+    const Json* a = json_at(u, path);
+    const Json* b = json_at(v, path);
+    return a && b && *a == *b;
+  };
+  if (!same({"id"})) return label_refused("base: universe.id differs from --role's");
+  if (!same({"base_role", "manifest_sha256"}) || !same({"base_role", "member_sha256"}))
+    return label_refused("base: universe.base_role differs from --role's");
+  if (!same({"inputs", "identity_bridge", "manifest_sha256"}))
+    return label_refused("base: universe.inputs.identity_bridge differs from --role's");
+  if (!same({"inputs", "sic_events", "manifest_sha256"}))
+    return label_refused("base: universe.inputs.sic_events differs from --role's");
+  if (json_at(u, {"inputs", "delisting", "manifest_sha256"}) &&
+      !same({"inputs", "delisting", "manifest_sha256"}))
+    return label_refused("base: universe.inputs.delisting differs from --role's");
+  return co::Ok();
+}
+// A cell of the blend geometry (date-major, ids.size() names, not empty) as a refusal names it.
+std::string label_cell(usize k, std::span<const u64> ids) {
+  return " (row " + std::to_string(k / ids.size()) + ", instrument " +
+         std::to_string(ids[k % ids.size()]) + ")";
+}
+// The two pinned manifests of a label role run: --role's and the label role's.
+struct LabelManifests {
+  Json role, label;
+};
+// Both manifests, pinned, then the manifest rule (detail::check_label_role).
+co::Result<LabelManifests> admitted_label_manifests(const TargetReplayRunConfig& cfg,
+                                                    const std::string& path,
+                                                    const std::string& sha256) {
+  if (cfg.role_path.empty() || cfg.role_sha256.empty() || path.empty() || sha256.empty())
+    return label_refused("--role and --label-role, each with its SHA-256, are required");
+  ATX_TRY(auto role, pinned_json(cfg.role_path, cfg.role_sha256));
+  auto label = pinned_json(path, sha256);
+  if (!label) return label_refused("its manifest: " + label.error().to_string());
+  ATX_TRY_VOID(check_label_manifests(role, *label));
+  return co::Ok(LabelManifests{std::move(role), std::move(*label)});
+}
+// The declared delisting-return clearing, cell by cell. Only when the manifests pin different
+// member.u8 (check_label_manifests admitted that only with a declared N > 0): --role's member.u8
+// (loaded against --role's own receipt) and the label's `member` (validated 0/1; `present` is
+// the label's presence) may differ only on a cell --role has absent and keeps a member (the
+// lagged membership) that the label role prices and clears (DELISTING_RETURN_RULE member[T] = 0),
+// and on exactly N cells. The effective membership (member & present & close > 0) is checked
+// against the blend on every cell by the caller.
+co::Status check_declared_clearing(const TargetReplayRunConfig& cfg,
+                                   const LabelManifests& manifests, std::span<const u8> member,
+                                   std::span<const u8> present,
+                                   const detail::LoadedSavedBlend& blend) {
+  if (!member_differs(manifests.role, manifests.label)) return co::Ok();
+  const usize cells = blend.present.size();
+  if (member.size() != cells || present.size() != cells || blend.ids.empty())
+    return label_refused("it needs --role's prices (the NAV load)");
+  std::vector<u8> kept;
+  ATX_TRY_VOID(payload(std::filesystem::path(cfg.role_path).parent_path(),
+                       manifests.role.at("files"), "member.u8", kept, cells));
+  u64 cleared = 0;
+  for (usize k = 0; k < cells; ++k) {
+    if (kept[k] == member[k]) continue;
+    if (kept[k] != 1 || member[k] != 0 || blend.present[k] != 0 || present[k] == 0)
+      return label_refused("the membership (member.u8) differs from --role's" +
+                           label_cell(k, blend.ids) +
+                           " outside a delisting-return clearing (only a member --role keeps on "
+                           "a cell it has absent and the label role prices may be cleared)");
+    ++cleared;
+  }
+  const u64 declared = declared_cleared(manifests.label);
+  if (cleared != declared)
+    return label_refused("the membership (member.u8) differs from --role's on " +
+                         std::to_string(cleared) + " cells and the label role declares " +
+                         std::to_string(declared) + " cleared (universe.delisting.applied."
+                         "members_cleared_on_termination_session)");
+  return co::Ok();
+}
 const char* rule_name(TargetReplayRule rule) {
   switch (rule) {
   case TargetReplayRule::BaselineTargetV1: return "baseline-target-v1";
@@ -1325,6 +1505,68 @@ co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, 
     return co::Err(co::ErrorCode::OutOfRange, "target replay: allocation failed");
   } catch (const std::exception& e) {
     return co::Err(co::ErrorCode::InvalidArgument, std::string("target replay: ") + e.what());
+  }
+}
+co::Status check_label_role(const TargetReplayRunConfig& cfg, const std::string& path,
+                            const std::string& sha256) {
+  try {
+    ATX_TRY_VOID(admitted_label_manifests(cfg, path, sha256));
+    return co::Ok();
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "nav replay: --label-role allocation failed");
+  } catch (const std::exception& e) {
+    return label_refused(std::string("its manifest: ") + e.what());
+  }
+}
+co::Result<LoadedLabelRole> load_label_role(const TargetReplayRunConfig& cfg,
+                                            const std::string& path, const std::string& sha256,
+                                            const LoadedSavedBlend& blend) {
+  try {
+    ATX_TRY(const auto manifests, admitted_label_manifests(cfg, path, sha256));
+    const usize n = blend.names, cells = blend.dates * blend.names;
+    if (!cells || blend.sessions.size() != blend.dates || blend.ids.size() != n ||
+        blend.close.size() != cells || blend.raw.size() != cells ||
+        blend.present.size() != cells || blend.member.size() != cells)
+      return label_refused("it needs --role's prices (the NAV load)");
+    // No label payload of a role reaching the seal is opened (the sessions are --role's: the
+    // manifests pin the same sessions.i64).
+    if (std::any_of(blend.sessions.begin(), blend.sessions.end(),
+                    [](i64 session) { return rw::is_sealed(session); }))
+      return label_refused(sealed_label());
+    const auto base = std::filesystem::path(path).parent_path();
+    const auto& files = manifests.label.at("files");
+    LoadedLabelRole out;
+    ATX_TRY_VOID(payload(base, files, "close.f64", out.close, cells));
+    ATX_TRY_VOID(payload(base, files, "raw_close.f64", out.raw, cells));
+    ATX_TRY_VOID(payload(base, files, "present.u8", out.present, cells));
+    std::vector<u8> member;
+    ATX_TRY_VOID(payload(base, files, "member.u8", member, cells));
+    const auto where = [&blend](usize k) { return label_cell(k, blend.ids); };
+    for (usize k = 0; k < cells; ++k) {
+      const bool shown = out.present[k] != 0;
+      const f64 close = out.close[k], raw = out.raw[k];
+      if (out.present[k] > 1 || member[k] > 1 ||
+          (shown ? (!std::isfinite(close) || close <= 0 || !std::isfinite(raw) || raw <= 0)
+                 : (!std::isnan(close) || !std::isnan(raw))))
+        return label_refused("its presence/price contract" + where(k));
+      if (blend.present[k] != 0 &&
+          (!shown || std::bit_cast<u64>(close) != std::bit_cast<u64>(blend.close[k]) ||
+           std::bit_cast<u64>(raw) != std::bit_cast<u64>(blend.raw[k])))
+        return label_refused("it differs from --role where --role is present" + where(k) +
+                             ": a label role only adds presence");
+      if (blend.member[k] != static_cast<u8>(member[k] != 0 && shown && close > 0))
+        return label_refused("its membership differs from --role's" + where(k));
+      if (!shown || blend.present[k] != 0) continue;
+      ++out.label_only_cells;
+      const usize row = k / n;
+      if (row >= blend.begin && row < blend.end) ++out.label_only_scored_cells;
+    }
+    ATX_TRY_VOID(check_declared_clearing(cfg, manifests, member, out.present, blend));
+    return co::Ok(std::move(out));
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "nav replay: --label-role allocation failed");
+  } catch (const std::exception& e) {
+    return label_refused(std::string("its manifest: ") + e.what());
   }
 }
 co::Status validate_replay_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {

@@ -189,9 +189,12 @@ struct Artifact {
 };
 // The combined blend, the price role (with volume) and the role fields
 // (atx.research-role-fields/v1 with code_sha256), every provenance pin `pin`. score_begin
-// (default 0) is the role's and the blend's (a warm start needs pre-score history).
+// (default 0) is the role's and the blend's (a warm start needs pre-score history). universe
+// (v8 E-25; default null: none) is the role manifest's universe block; role_member (default:
+// p.member) is the role's member.u8 (the blend keeps p.member).
 Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const Fields& f,
-                        usize score_begin = 0) {
+                        usize score_begin = 0, const Json& universe = Json(),
+                        const std::vector<u8>* role_member = nullptr) {
   std::vector<u8> finite(p.signal.size()); u64 finite_count = 0, members = 0;
   for (usize k = 0; k < finite.size(); ++k) {
     finite[k] = static_cast<u8>(std::isfinite(p.signal[k]));
@@ -210,7 +213,7 @@ Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const 
   role_files["close.f64"] = write_payload(dir / "close.f64", p.close);
   role_files["raw_close.f64"] = write_payload(dir / "raw_close.f64", p.raw);
   role_files["present.u8"] = write_payload(dir / "present.u8", p.present);
-  role_files["member.u8"] = write_payload(dir / "member.u8", p.member);
+  role_files["member.u8"] = write_payload(dir / "member.u8", role_member ? *role_member : p.member);
   role_files["volume.f64"] = write_payload(dir / "volume.f64", p.volume);
   Artifact a;
   a.role = Json{{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
@@ -221,6 +224,7 @@ Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const 
       {"common_stock_verified", false}, {"historical_vintage_verified", false},
       {"dates", p.d}, {"instruments", p.n}, {"score_begin", score_begin}, {"score_end", p.d},
       {"files", role_files}};
+  if (!universe.is_null()) a.role["universe"] = universe;
   a.cfg.role_path = (dir / "role.json").string();
   a.cfg.role_sha256 = write_json(a.cfg.role_path, a.role);
   const Json manifest{{"schema", "atx.dsl-combined-signal/v1"}, {"status", "complete"},
@@ -2259,4 +2263,574 @@ TEST(AdvHold, CapacityCurveCarriesTheCapInBothPasses) {
   ASSERT_EQ(nav_cli({"nav", "--help"}, help, quiet), 0);
   EXPECT_NE(help.str().find("the cap uses the run's initial NAV for every book, each "
                             "--capacity-curve book included"), std::string::npos);
+}
+
+// ---- v8 E-25 (Ruling E-25): nav --label-role, the role that MARKS the books ----
+namespace {
+// Name j of a panel ends at session t: absent in the decision role from t on (never present
+// again), and priced by the label role at t at close[t - 1] x (1 + r), raw likewise, volume 0,
+// membership unchanged (prepare_recent_research.py DELISTING_RETURN_RULE). j's signal is the top
+// rank while it is a member, so every book holds it long into t - 1.
+struct Termination {
+  usize t{}, j{};
+  f64 r{};
+};
+// {decision role, label role}.
+std::pair<Panel, Panel> terminated(Panel p, const Termination& e) {
+  for (usize t = 0; t < p.d; ++t)
+    if (p.member[p.k(t, e.j)]) p.signal[p.k(t, e.j)] = 1.0;
+  for (usize t = e.t; t < p.d; ++t) p.absent(t, e.j);
+  Panel label = p;
+  const usize at = p.k(e.t, e.j), before = p.k(e.t - 1, e.j);
+  label.present[at] = 1;
+  label.close[at] = p.close[before] * (1.0 + e.r);
+  label.raw[at] = p.raw[before] * (1.0 + e.r);
+  label.volume[at] = 0.0;
+  return {std::move(p), std::move(label)};
+}
+// The observed (first) book of `cfg`'s scenario over `decision`, MARKED by `label` when given.
+st::NavReplayResult replay_marked(const Panel& decision, const Panel* label, const Fields& f,
+                                  const st::NavReplayConfig& cfg, Recorder& recorder) {
+  st::NavReplayInput in{decision.target(), decision.volume, f.view()};
+  if (label) in.mark = st::NavMarkPrices{label->close, label->raw, label->present};
+  const std::array<st::NavScenario, 1> one{cfg.scenario};
+  auto out = st::replay_nav_scenarios(in, cfg, one, recorder, 0);
+  EXPECT_TRUE(out) << (out ? "" : out.error().to_string());
+  return out ? std::move(out->front()) : st::NavReplayResult{};
+}
+// The shared construction record of a decision (banded_names is the book's own plan).
+std::string construction_difference(const st::ConstructionDay& a, const st::ConstructionDay& b) {
+  if (a.rebalance != b.rebalance || a.neutralize != b.neutralize) return "construction outcome";
+  if (a.neutralize_used != b.neutralize_used || a.neutralize_excluded != b.neutralize_excluded ||
+      a.locate_zeroed != b.locate_zeroed || a.hold_moved != b.hold_moved ||
+      a.hold_kept != b.hold_kept || a.adv_clipped != b.adv_clipped)
+    return "construction counts";
+  if (bits(a.neutralize_excluded_share) != bits(b.neutralize_excluded_share) ||
+      bits(a.neutralize_amplification) != bits(b.neutralize_amplification))
+    return "construction values";
+  return "";
+}
+// The first field in which two rows differ, bit for bit ("" when none).
+std::string day_difference(const st::NavReplayDay& a, const st::NavReplayDay& b) {
+  using Day = st::NavReplayDay;
+  const std::array<std::pair<const char*, f64 Day::*>, 18> values{{
+      {"pretrade_nav", &Day::pretrade_nav}, {"posttrade_nav", &Day::posttrade_nav},
+      {"net_return", &Day::net_return}, {"gross_return", &Day::gross_return},
+      {"mark_pnl_dollars", &Day::mark_pnl_dollars}, {"writeoff_dollars", &Day::writeoff_dollars},
+      {"borrow_dollars", &Day::borrow_dollars}, {"traded_dollars", &Day::traded_dollars},
+      {"trade_cost_dollars", &Day::trade_cost_dollars},
+      {"unfilled_dollars", &Day::unfilled_dollars},
+      {"planned_turnover", &Day::planned_turnover}, {"planned_gross", &Day::planned_gross},
+      {"planned_net", &Day::planned_net}, {"long_dollars", &Day::long_dollars},
+      {"short_dollars", &Day::short_dollars},
+      {"blocked_short_dollars", &Day::blocked_short_dollars},
+      {"pretrade_gross_dollars", &Day::pretrade_gross_dollars},
+      {"long_financing_dollars", &Day::long_financing_dollars}}};
+  for (const auto& [name, field] : values)
+    if (bits(a.*field) != bits(b.*field)) return name;
+  const std::array<std::pair<const char*, usize Day::*>, 8> counts{{
+      {"fills", &Day::fills}, {"capped_fills", &Day::capped_fills},
+      {"blocked_absent", &Day::blocked_absent}, {"blocked_liquidity", &Day::blocked_liquidity},
+      {"held_names", &Day::held_names}, {"stale_names", &Day::stale_names},
+      {"decision_members", &Day::decision_members},
+      {"blocked_short_names", &Day::blocked_short_names}}};
+  for (const auto& [name, field] : counts)
+    if (a.*field != b.*field) return name;
+  if (a.session_index != b.session_index || a.decision != b.decision ||
+      a.rebalance != b.rebalance || a.executed != b.executed || a.member_tiers != b.member_tiers)
+    return "session flags";
+  if (a.construction.banded_names != b.construction.banded_names) return "banded_names";
+  return construction_difference(a.construction, b.construction);
+}
+std::string holding_difference(const st::NavHolding& a, const st::NavHolding& b) {
+  using Row = st::NavHolding;
+  if (a.index != b.index || a.instrument_id != b.instrument_id || a.member != b.member ||
+      a.stale != b.stale || a.tier != b.tier || a.tier_missing != b.tier_missing)
+    return "name, member, stale or tier";
+  if (a.fill != b.fill || a.order_placed != b.order_placed ||
+      a.locate_blocked != b.locate_blocked || a.order_working != b.order_working)
+    return "fill or order flags";
+  const std::array<std::pair<const char*, f64 Row::*>, 9> values{{
+      {"held_dollars", &Row::held_dollars}, {"held_weight", &Row::held_weight},
+      {"filled_dollars", &Row::filled_dollars}, {"fill_cost_dollars", &Row::fill_cost_dollars},
+      {"unfilled_dollars", &Row::unfilled_dollars}, {"desired", &Row::desired},
+      {"rule_weight", &Row::rule_weight}, {"target_weight", &Row::target_weight},
+      {"order_dollars", &Row::order_dollars}}};
+  for (const auto& [name, field] : values)
+    if (bits(a.*field) != bits(b.*field)) return name;
+  return "";
+}
+// Every session row t < upto the two observers reported is the same, name for name.
+void expect_same_sessions(const Recorder& a, const Recorder& b, usize upto) {
+  usize seen = 0;
+  for (const auto& [t, entry] : a.sessions) {
+    if (t >= upto) continue;
+    ASSERT_TRUE(b.sessions.count(t)) << "row " << t;
+    const auto& other = b.sessions.at(t);
+    EXPECT_EQ(day_difference(entry.first, other.first), "") << "row " << t;
+    ASSERT_EQ(entry.second.size(), other.second.size()) << "row " << t;
+    for (usize r = 0; r < entry.second.size(); ++r)
+      EXPECT_EQ(holding_difference(entry.second[r], other.second[r]), "")
+          << "row " << t << " name " << entry.second[r].index;
+    ++seen;
+  }
+  EXPECT_GT(seen, 0U);
+}
+std::string event_difference(const st::NavEvent& a, const st::NavEvent& b) {
+  if (a.kind != b.kind || a.short_side != b.short_side || a.run_length != b.run_length ||
+      a.session != b.session || a.instrument_id != b.instrument_id)
+    return "event key";
+  for (const auto field : {&st::NavEvent::exposure, &st::NavEvent::r_adj, &st::NavEvent::r_raw,
+                           &st::NavEvent::haircut, &st::NavEvent::pnl})
+    if (bits(a.*field) != bits(b.*field)) return "event value";
+  return "";
+}
+// The book's event of `kind` on instrument `id` (nullptr when none).
+const st::NavEvent* event_of(const st::NavReplayResult& r, st::NavEventKind kind, u64 id) {
+  for (const auto& e : r.events)
+    if (e.kind == kind && e.instrument_id == id) return &e;
+  return nullptr;
+}
+struct LabelPin {
+  std::string path, sha256;
+};
+// A label role in `dir` (a new directory): `a`'s role manifest with every role payload written
+// from `label` (a panel with the decision panel's sessions, ids and membership shares their
+// bytes), then `edit`. payloads false: the manifest alone, so a refusal that reads a payload
+// fails differently.
+template<class Edit>
+LabelPin write_label_role(const std::filesystem::path& dir, const Artifact& a, const Panel& label,
+                          Edit edit, bool payloads = true) {
+  if (!std::filesystem::create_directory(dir)) throw std::runtime_error("label role directory");
+  Json role = a.role;
+  if (payloads) {
+    auto& files = role.at("files");
+    files["sessions.i64"] = write_payload(dir / "sessions.i64", label.sessions);
+    files["ids.u64"] = write_payload(dir / "ids.u64", label.ids);
+    files["close.f64"] = write_payload(dir / "close.f64", label.close);
+    files["raw_close.f64"] = write_payload(dir / "raw_close.f64", label.raw);
+    files["present.u8"] = write_payload(dir / "present.u8", label.present);
+    files["member.u8"] = write_payload(dir / "member.u8", label.member);
+    files["volume.f64"] = write_payload(dir / "volume.f64", label.volume);
+  }
+  edit(role);
+  const auto path = dir / "manifest.json";
+  return {path.string(), write_json(path, role)};
+}
+std::vector<std::string> label_flags(const LabelPin& label) {
+  return {"--label-role", label.path, "--label-role-sha256", label.sha256};
+}
+// The NAV argv of a role pair on disk (160 sessions, score_begin 20): the financing matrix, no
+// neutralization (the book holds the planted name from the first sessions), a 20-session warm
+// start, then `extra`.
+std::vector<std::string> pair_args(const Artifact& a, const std::filesystem::path& out,
+                                   const std::vector<std::string>& extra = {}) {
+  std::vector<std::string> all{"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+      a.cfg.combined_sha256, "--role", a.cfg.role_path, "--role-sha256", a.cfg.role_sha256,
+      "--fields", a.fields.manifest_path, "--fields-sha256", a.fields.manifest_sha256,
+      "--output", out.string(), "--rule", "aim-partial-v5", "--cadence", "1",
+      "--trade-fraction", ".3", "--aim-leverage", "1.247", "--order-basis", "delta",
+      "--warm-start-sessions", "20", "--max-bytes", "1073741824"};
+  all.insert(all.end(), extra.begin(), extra.end());
+  return all;
+}
+} // namespace
+
+// Flag off is the replay's own MARK: the books MARKED by an explicit copy of the role's own close,
+// raw close and presence (other memory, the same bits) are every book of the unlabelled replay
+// bit for bit, every row, holding and event (S3's one-absence write-offs and reprints included);
+// a run without the flag records no label key anywhere, and the help states the rule. (The
+// recipe bytes of the flag-off verb are pinned by NavV6.OrderBasisTargetAndExitRateOneAreBit-
+// Identical; root compares the accepted v7.1 NAV argv, old exe vs new exe, file for file.)
+TEST(NavLabelRole, FlagOffIsByteIdentical) {
+  const auto p = market_panel(70, 12, 5, 2e5);
+  const Fields f(p, 9);
+  const auto cfg = v61_book(1e7);
+  const auto scenarios = st::nav_scenario_matrix(true);
+  const Panel own = p; // the role's own marks, copied
+  const st::NavReplayInput plain{p.target(), p.volume, f.view()};
+  const st::NavReplayInput marked{p.target(), p.volume, f.view(),
+                                  st::NavMarkPrices{own.close, own.raw, own.present}};
+  const auto a = st::replay_nav_scenarios(plain, cfg, scenarios);
+  const auto b = st::replay_nav_scenarios(marked, cfg, scenarios);
+  ASSERT_TRUE(a) << a.error().to_string();
+  ASSERT_TRUE(b) << b.error().to_string();
+  ASSERT_EQ(a->size(), b->size());
+  usize events = 0;
+  for (usize k = 0; k < a->size(); ++k) {
+    const auto& x = (*a)[k]; const auto& y = (*b)[k];
+    ASSERT_EQ(x.days.size(), y.days.size()) << k;
+    for (usize t = 0; t < x.days.size(); ++t)
+      EXPECT_EQ(day_difference(x.days[t], y.days[t]), "") << "book " << k << " row " << t;
+    ASSERT_EQ(x.events.size(), y.events.size()) << k;
+    for (usize e = 0; e < x.events.size(); ++e)
+      EXPECT_EQ(event_difference(x.events[e], y.events[e]), "") << "book " << k << " event " << e;
+    events += x.events.size();
+  }
+  EXPECT_GT(events, 0U); // name 3's absence run: gaps, and S3's write-off and reprint
+  Recorder seen_plain, seen_marked;
+  replay_marked(p, nullptr, f, cfg, seen_plain);
+  replay_marked(p, &own, f, cfg, seen_marked);
+  expect_same_sessions(seen_plain, seen_marked, p.d);
+  // The verb without the flag: no label key in the recipe, the summary or the holdings manifest.
+  PinBench bench;
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, bench.dir.path / "plain",
+                             {"--emit-holdings", (bench.dir.path / "held").string()}),
+                    out, err), 0) << err.str();
+  EXPECT_FALSE(read_json(bench.dir.path / "plain" / "recipe.json").contains("label_role"));
+  EXPECT_FALSE(read_json(bench.dir.path / "plain" / "summary.json").contains("label_role"));
+  EXPECT_FALSE(read_json(bench.dir.path / "held" / "manifest.json").contains("label_role"));
+  EXPECT_EQ(out.str().find("label role"), std::string::npos);
+  std::ostringstream help, quiet;
+  ASSERT_EQ(nav_cli({"nav", "--help"}, help, quiet), 0);
+  EXPECT_NE(help.str().find("--label-role ROLE/manifest.json --label-role-sha256 SHA"),
+            std::string::npos);
+  EXPECT_NE(help.str().find("may only add presence to --role's"), std::string::npos);
+}
+
+// --label-role equal to --role: with every composed option (warm start, hold band, ADV cap,
+// holdings stream, stage timers) each daily and events CSV and each holdings file is the
+// unlabelled run's byte for byte; the recipe and summary differ only by the label_role key (and
+// the summary by the recipe SHA it binds, and the clock's stage_seconds), the holdings manifest
+// only by that recipe SHA. With --capacity-curve both passes record the label role.
+TEST(NavLabelRole, SameRoleIsIdentity) {
+  PinBench bench;
+  const auto root = bench.dir.path;
+  const auto& a = bench.artifact;
+  const LabelPin same{a.cfg.role_path, a.cfg.role_sha256};
+  const auto composed = [&root](std::vector<std::string> extra, const char* holdings) {
+    std::vector<std::string> all{"--warm-start-sessions", "10", "--hold-band", ".1",
+                                 "--adv-hold-q", ".5", "--stage-timers", "--emit-holdings",
+                                 (root / holdings).string()};
+    all.insert(all.end(), extra.begin(), extra.end());
+    return all;
+  };
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(a, root / "plain", composed({}, "h-plain")), out, err), 0)
+      << err.str();
+  ASSERT_EQ(nav_cli(nav_args(a, root / "same", composed(label_flags(same), "h-same")), out, err),
+            0) << err.str();
+  usize compared = 0;
+  for (const auto& e : std::filesystem::directory_iterator(root / "plain")) {
+    const auto name = e.path().filename().string();
+    if (name == "recipe.json" || name == "summary.json") continue;
+    EXPECT_TRUE(file_bytes(root / "plain" / name) == file_bytes(root / "same" / name)) << name;
+    ++compared;
+  }
+  EXPECT_EQ(compared, 10U); // five books: daily and events
+  auto recipe = read_json(root / "same" / "recipe.json");
+  ASSERT_TRUE(recipe.contains("label_role"));
+  EXPECT_EQ(recipe.at("label_role").at("manifest_sha256"), a.cfg.role_sha256);
+  EXPECT_NE(recipe.at("label_role").at("rule").get<std::string>().find("Ruling E-25"),
+            std::string::npos);
+  recipe.erase("label_role");
+  EXPECT_EQ(recipe, read_json(root / "plain" / "recipe.json"));
+  auto summary = read_json(root / "same" / "summary.json");
+  auto plain = read_json(root / "plain" / "summary.json");
+  const auto label = summary.at("label_role");
+  EXPECT_EQ(label.at("manifest_sha256"), a.cfg.role_sha256);
+  EXPECT_EQ(label.at("label_only_present_cells"), 0);
+  EXPECT_EQ(label.at("label_only_present_cells_scored"), 0);
+  EXPECT_NE(summary.at("recipe_sha256"), plain.at("recipe_sha256"));
+  for (auto* s : {&summary, &plain}) {
+    s->erase("recipe_sha256");
+    s->erase("stage_seconds");
+  }
+  summary.erase("label_role");
+  EXPECT_EQ(summary, plain);
+  for (const char* file : {"holdings.f64", "holdings_index.json", "holdings_days.csv"})
+    EXPECT_TRUE(file_bytes(root / "h-plain" / file) == file_bytes(root / "h-same" / file)) << file;
+  auto held = read_json(root / "h-same" / "manifest.json");
+  auto held_plain = read_json(root / "h-plain" / "manifest.json");
+  EXPECT_EQ(held.at("nav_recipe_sha256"),
+            read_json(root / "same" / "summary.json").at("recipe_sha256"));
+  held.erase("nav_recipe_sha256"); held_plain.erase("nav_recipe_sha256");
+  EXPECT_EQ(held, held_plain);
+  EXPECT_NE(out.str().find("label role " + a.cfg.role_sha256), std::string::npos);
+  // --capacity-curve: the v7 pass forwards the flag, so both passes are MARKED and recorded.
+  std::vector<std::string> curve = label_flags(same);
+  curve.emplace_back("--capacity-curve");
+  ASSERT_EQ(nav_cli(nav_args(a, root / "curve", curve), out, err), 0) << err.str();
+  for (const auto& dir : {root / "curve", root / "curve" / "capacity"}) {
+    EXPECT_EQ(read_json(dir / "recipe.json").at("label_role").at("manifest_sha256"),
+              a.cfg.role_sha256) << dir;
+    EXPECT_EQ(read_json(dir / "summary.json").at("label_role").at("manifest_sha256"),
+              a.cfg.role_sha256) << dir;
+  }
+}
+
+// A termination the label role prices (close[L] x (1 + r) at T = L + 1; --role has the name
+// absent from T on) reaches the P&L by exactly the hand-computed h (close_T / close_L) - h (the
+// planted name is the last index, so it is the mark's last addend) and no decision input:
+// (1) at the final session every decision, target, order and holding row is the unlabelled
+// book's bit for bit; (2) mid-window every row before T is, EXECUTE at T fills the same dollars
+// (the name's order stays blocked: tradability is --role's), and at every later decision the
+// shared construction record, members, tier census, tiers and desired weights are the unlabelled
+// book's (the book's own NAV and weights carry the realized return from T on: the return
+// series B0c changes); the terminal exit is at the label's mark (the K-session write-off of the
+// realized dollars one session later); (3) on disk, through the verb, a role pair built here:
+// every book's daily rows before T are the unlabelled run's bytes, row T is not, and the recipe
+// and summary record the label role and its one label-only cell.
+TEST(NavLabelRole, TerminalReturnReachesThePnlAndNoDecisionInput) {
+  const auto base = market_panel(70, 12, 5, 2e5);
+  const Fields f(base, 9);
+  const auto cfg = v61_book(1e7); // S2: stale_exit_sessions 5
+  const usize j = base.n - 1;
+  const f64 r = -0.3;
+  { // (1) T = the final session
+    const usize T = base.d - 1, L = T - 1;
+    const auto roles = terminated(base, {T, j, r});
+    const Panel& decision = roles.first; const Panel& label = roles.second;
+    Recorder off_seen, on_seen;
+    const auto off = replay_marked(decision, nullptr, f, cfg, off_seen);
+    const auto on = replay_marked(decision, &label, f, cfg, on_seen);
+    ASSERT_EQ(off.days.size(), base.d);
+    ASSERT_EQ(on.days.size(), base.d);
+    const f64 h = held_at(off_seen, L, base.n)[j];
+    ASSERT_GT(h, 0) << "the planted name is held long into L";
+    const f64 next = h * (label.close[label.k(T, j)] / decision.close[decision.k(L, j)]);
+    EXPECT_NEAR(next - h, h * r, 1e-9 * h);
+    for (usize t = 0; t < T; ++t) EXPECT_EQ(day_difference(off.days[t], on.days[t]), "") << t;
+    EXPECT_EQ(off_seen.sessions.size(), on_seen.sessions.size());
+    expect_same_sessions(off_seen, on_seen, base.d);
+    const auto& x = off.days[T]; const auto& y = on.days[T];
+    EXPECT_EQ(bits(y.mark_pnl_dollars), bits(x.mark_pnl_dollars + (next - h)));
+    EXPECT_NE(bits(y.pretrade_nav), bits(x.pretrade_nav));
+    EXPECT_EQ(x.stale_names, y.stale_names + 1); // without the label: stale at its L mark
+    const u64 id = decision.ids[j];
+    EXPECT_NE(event_of(off, st::NavEventKind::UnresolvedAtEnd, id), nullptr);
+    EXPECT_EQ(event_of(on, st::NavEventKind::UnresolvedAtEnd, id), nullptr);
+  }
+  { // (2) mid-window
+    const usize T = 50, L = T - 1;
+    const auto roles = terminated(base, {T, j, r});
+    const Panel& decision = roles.first; const Panel& label = roles.second;
+    Recorder off_seen, on_seen;
+    const auto off = replay_marked(decision, nullptr, f, cfg, off_seen);
+    const auto on = replay_marked(decision, &label, f, cfg, on_seen);
+    ASSERT_EQ(off.days.size(), base.d);
+    ASSERT_EQ(on.days.size(), base.d);
+    for (usize t = 0; t < T; ++t) EXPECT_EQ(day_difference(off.days[t], on.days[t]), "") << t;
+    expect_same_sessions(off_seen, on_seen, T);
+    const f64 h = held_at(off_seen, L, base.n)[j];
+    ASSERT_GT(h, 0) << "the planted name is held long into L";
+    const f64 next = h * (label.close[label.k(T, j)] / decision.close[decision.k(L, j)]);
+    const auto& x = off.days[T]; const auto& y = on.days[T];
+    EXPECT_EQ(bits(y.mark_pnl_dollars), bits(x.mark_pnl_dollars + (next - h)));
+    EXPECT_EQ(bits(x.traded_dollars), bits(y.traded_dollars));
+    EXPECT_EQ(x.fills, y.fills);
+    EXPECT_EQ(x.blocked_absent, y.blocked_absent);
+    usize names = 0, decisions = 0;
+    for (usize t = T; t + 2 < base.d; ++t) {
+      const auto& dx = off.days[t]; const auto& dy = on.days[t];
+      EXPECT_EQ(construction_difference(dx.construction, dy.construction), "") << t;
+      EXPECT_EQ(dx.rebalance, dy.rebalance) << t;
+      EXPECT_EQ(dx.decision_members, dy.decision_members) << t;
+      EXPECT_EQ(dx.member_tiers, dy.member_tiers) << t;
+      EXPECT_EQ(dx.member_missing_predictors, dy.member_missing_predictors) << t;
+      std::map<usize, const st::NavHolding*> theirs;
+      for (const auto& row : on_seen.sessions.at(t).second) theirs[row.index] = &row;
+      for (const auto& row : off_seen.sessions.at(t).second) {
+        const auto it = theirs.find(row.index);
+        if (it == theirs.end()) continue;
+        EXPECT_EQ(bits(row.desired), bits(it->second->desired)) << t << " name " << row.index;
+        EXPECT_EQ(row.member, it->second->member) << t << " name " << row.index;
+        EXPECT_EQ(row.tier, it->second->tier) << t << " name " << row.index;
+        EXPECT_EQ(row.tier_missing, it->second->tier_missing) << t << " name " << row.index;
+        ++names;
+      }
+      decisions += dx.rebalance ? 1U : 0U;
+    }
+    EXPECT_GT(decisions, 5U);
+    EXPECT_GT(names, 100U);
+    // The terminal exit: K = 5 absences write off h at T + 4 without the label, the realized
+    // next at T + 5 with it.
+    const u64 id = decision.ids[j];
+    const auto* gone = event_of(off, st::NavEventKind::WriteOff, id);
+    const auto* marked = event_of(on, st::NavEventKind::WriteOff, id);
+    ASSERT_NE(gone, nullptr);
+    ASSERT_NE(marked, nullptr);
+    EXPECT_EQ(gone->session, decision.sessions[T + 4]);
+    EXPECT_EQ(bits(gone->exposure), bits(h));
+    EXPECT_EQ(marked->session, decision.sessions[T + 5]);
+    EXPECT_EQ(bits(marked->exposure), bits(next));
+  }
+  // (3) Through the verb: a 160-session role pair on disk (financing matrix, no neutralization so
+  // the book holds the name from the first sessions).
+  Directory dir;
+  const auto panel = market_panel(160, 60, 17, 3e7);
+  const Fields fields(panel, 23);
+  const usize T = 120;
+  const auto roles = terminated(panel, {T, panel.n - 1, -0.55});
+  const auto decision_dir = dir.path / "decision";
+  ASSERT_TRUE(std::filesystem::create_directory(decision_dir));
+  const auto a = write_artifact(decision_dir, roles.first, fields, 20);
+  const auto label = write_label_role(dir.path / "label", a, roles.second, [](Json&) {});
+  const auto args = [&](const char* name, bool labelled) {
+    return pair_args(a, dir.path / name,
+                     labelled ? label_flags(label) : std::vector<std::string>{});
+  };
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(args("off", false), out, err), 0) << err.str();
+  ASSERT_EQ(nav_cli(args("on", true), out, err), 0) << err.str();
+  usize books = 0;
+  for (const auto& e : std::filesystem::directory_iterator(dir.path / "off")) {
+    const auto name = e.path().filename().string();
+    if (name.rfind("daily_", 0) != 0) continue;
+    const auto x = lines(dir.path / "off" / name), y = lines(dir.path / "on" / name);
+    ASSERT_EQ(x.size(), y.size()) << name;
+    usize before = 0;
+    bool at_t = false;
+    for (usize row = 1; row < x.size(); ++row) {
+      i64 t = -1;
+      ASSERT_TRUE(parse_i64(x[row].substr(0, x[row].find(',')), t)) << name << ' ' << row;
+      if (t < static_cast<i64>(T)) {
+        EXPECT_EQ(x[row], y[row]) << name << " row " << t;
+        ++before;
+      } else if (t == static_cast<i64>(T)) {
+        EXPECT_NE(x[row], y[row]) << name << " row " << t;
+        at_t = true;
+      }
+    }
+    EXPECT_EQ(before, T - 20) << name;
+    EXPECT_TRUE(at_t) << name;
+    ++books;
+  }
+  EXPECT_EQ(books, 5U);
+  EXPECT_FALSE(read_json(dir.path / "off" / "summary.json").contains("label_role"));
+  EXPECT_EQ(read_json(dir.path / "on" / "recipe.json").at("label_role").at("manifest_sha256"),
+            label.sha256);
+  const auto recorded = read_json(dir.path / "on" / "summary.json").at("label_role");
+  EXPECT_EQ(recorded.at("manifest_sha256"), label.sha256);
+  EXPECT_EQ(recorded.at("label_only_present_cells"), 1);
+  EXPECT_EQ(recorded.at("label_only_present_cells_scored"), 1);
+}
+
+// Refused by name, before any payload of the label role is read (the manifest-level cases below
+// write the manifest alone) and before the output exists: a label role that does not share
+// --role's dates (the sessions file or the dates key), instruments, membership, extents, source
+// or base (universe), or reaches the research seal; then, from its payloads, one that changes a
+// price where --role is present. The flag pair goes together (usage error), and a wrong pin is
+// refused as the label role's.
+TEST(NavLabelRole, RefusesMismatchedAxes) {
+  PinBench bench;
+  const auto root = bench.dir.path;
+  const auto& a = bench.artifact;
+  usize cases = 0;
+  const auto refused = [&](const LabelPin& label, const std::string& expected) {
+    const auto out_dir = root / ("refused-" + std::to_string(cases++));
+    std::ostringstream out, err;
+    EXPECT_EQ(nav_cli(nav_args(a, out_dir, label_flags(label)), out, err), 1) << expected;
+    EXPECT_NE(err.str().find("--label-role refused: "), std::string::npos) << err.str();
+    EXPECT_NE(err.str().find(expected), std::string::npos) << expected << ": " << err.str();
+    EXPECT_FALSE(std::filesystem::exists(out_dir)) << expected;
+  };
+  const auto manifest_only = [&](const char* name, auto edit) {
+    return write_label_role(root / name, a, bench.panel, edit, false);
+  };
+  const std::string other(64, 'd');
+  refused(manifest_only("ids", [&](Json& m) { m["files"]["ids.u64"]["sha256"] = other; }),
+          "the instruments (ids.u64) differs from --role's");
+  refused(manifest_only("sessions",
+                        [&](Json& m) { m["files"]["sessions.i64"]["sha256"] = other; }),
+          "the dates (sessions.i64) differs from --role's");
+  refused(manifest_only("member", [&](Json& m) { m["files"]["member.u8"]["sha256"] = other; }),
+          "the membership (member.u8) differs from --role's");
+  refused(manifest_only("dates", [&](Json& m) { m["dates"] = bench.panel.d + 1; }),
+          "manifest key 'dates' differs from --role's");
+  refused(manifest_only("source", [&](Json& m) { m["source_sha256"] = other; }),
+          "manifest key 'source_sha256' differs from --role's");
+  refused(manifest_only("extent", [](Json& m) { m["files"]["close.f64"]["bytes"] = 8; }),
+          "close.f64 extent differs from --role's");
+  refused(manifest_only("universe",
+                        [](Json& m) { m["universe"] = Json{{"id", "linked-operating-v1"}}; }),
+          "base: one role carries a universe restriction");
+  refused(manifest_only("seal", [](Json& m) {
+            m["score_end_ns"] = st::research_seal_exclusive_ns + day_ns;
+          }),
+          "reaches the " + std::string(st::research_seal_policy) + " seal (" +
+              st::research_seal_session + ")");
+  Panel moved = bench.panel;
+  moved.close[moved.k(100, 3)] *= 1.01;
+  refused(write_label_role(root / "moved", a, moved, [](Json&) {}),
+          "it differs from --role where --role is present (row 100, instrument " +
+              std::to_string(bench.panel.ids[3]) + "): a label role only adds presence");
+  const auto good = write_label_role(root / "good", a, bench.panel, [](Json&) {});
+  auto wrong = good;
+  wrong.sha256 = other;
+  refused(wrong, "its manifest");
+  std::ostringstream out, err;
+  const auto lone = root / "lone";
+  EXPECT_EQ(nav_cli(nav_args(a, lone, {"--label-role", good.path}), out, err), 2);
+  EXPECT_NE(err.str().find("--label-role and --label-role-sha256 go together"), std::string::npos)
+      << err.str();
+  EXPECT_FALSE(std::filesystem::exists(lone));
+  // The control: the same role pair written in full runs.
+  EXPECT_EQ(nav_cli(nav_args(a, root / "good-run", label_flags(good)), out, err), 0)
+      << err.str();
+}
+
+// A --delisting-returns label role clears the member --role keeps on a termination session (the
+// lagged membership: prepare_recent_research.py DELISTING_RETURN_RULE member[T] = 0), so its
+// member.u8 differs from --role's while member & present & close > 0 does not. Admitted only when
+// declared (universe.delisting.applied.members_cleared_on_termination_session N) and only on
+// exactly N cells, each one --role has absent and keeps a member and the label role presents and
+// clears: N = 1 runs and records its one label-only cell; undeclared is refused from the
+// manifests; N = 2, and a further difference on a cell absent in both roles, from the payloads;
+// every refusal before the output exists.
+TEST(NavLabelRole, AdmitsOnlyTheDeclaredDelistingClearing) {
+  Directory dir;
+  const auto panel = market_panel(160, 60, 17, 3e7);
+  const Fields fields(panel, 23);
+  const usize T = 120, j = panel.n - 1;
+  const auto roles = terminated(panel, {T, j, -0.55});
+  const Panel& decision = roles.first;
+  std::vector<u8> lagged = decision.member; // --role keeps j a member at T, absent there
+  lagged[decision.k(T, j)] = 1;
+  const Json universe{{"id", "linked-operating-v1"},
+      {"base_role", {{"manifest_sha256", pin}, {"member_sha256", pin}}},
+      {"inputs", {{"identity_bridge", {{"manifest_sha256", pin}}},
+                  {"sic_events", {{"manifest_sha256", pin}}},
+                  {"delisting", {{"manifest_sha256", pin}}}}},
+      {"delisting", {{"returns_applied", false}}}};
+  const auto decision_dir = dir.path / "decision";
+  ASSERT_TRUE(std::filesystem::create_directory(decision_dir));
+  const auto a = write_artifact(decision_dir, decision, fields, 20, universe, &lagged);
+  const auto declares = [](u64 cleared) {
+    return [cleared](Json& m) {
+      auto& d = m.at("universe").at("delisting");
+      d["returns_applied"] = true;
+      d["applied"] = Json{{"terminations", 1},
+                          {"members_cleared_on_termination_session", cleared}};
+    };
+  };
+  usize cases = 0;
+  const auto refused = [&](const LabelPin& label, const std::string& expected) {
+    const auto out_dir = dir.path / ("refused-" + std::to_string(cases++));
+    std::ostringstream out, err;
+    EXPECT_EQ(nav_cli(pair_args(a, out_dir, label_flags(label)), out, err), 1) << expected;
+    EXPECT_NE(err.str().find("--label-role refused: "), std::string::npos) << err.str();
+    EXPECT_NE(err.str().find(expected), std::string::npos) << expected << ": " << err.str();
+    EXPECT_FALSE(std::filesystem::exists(out_dir)) << expected;
+  };
+  const std::string differs = "the membership (member.u8) differs from --role's";
+  refused(write_label_role(dir.path / "undeclared", a, roles.second, [](Json&) {}),
+          differs + " (only the members a --delisting-returns role declares cleared");
+  refused(write_label_role(dir.path / "two", a, roles.second, declares(2U)),
+          differs + " on 1 cells and the label role declares 2 cleared");
+  Panel stray = roles.second; // a further difference where both roles are absent
+  stray.member[stray.k(T + 1, j)] = 1;
+  refused(write_label_role(dir.path / "stray", a, stray, declares(2U)),
+          differs + " (row " + std::to_string(T + 1) + ", instrument " +
+              std::to_string(decision.ids[j]) + ") outside a delisting-return clearing");
+  const auto one = write_label_role(dir.path / "one", a, roles.second, declares(1U));
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(pair_args(a, dir.path / "on", label_flags(one)), out, err), 0) << err.str();
+  const auto recorded = read_json(dir.path / "on" / "summary.json").at("label_role");
+  EXPECT_EQ(recorded.at("manifest_sha256"), one.sha256);
+  EXPECT_EQ(recorded.at("label_only_present_cells"), 1);
+  const auto rule = read_json(dir.path / "on" / "recipe.json").at("label_role").at("rule");
+  EXPECT_NE(rule.get<std::string>().find("members_cleared_on_termination_session"),
+            std::string::npos);
 }

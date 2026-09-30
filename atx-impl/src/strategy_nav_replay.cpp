@@ -252,6 +252,10 @@ struct Ctx {
   bool sqrt_model{};
   f64 long_rate{};                  // TieredSwapV1: long spread, annual fraction
   std::array<f64, 4> short_rate{}; // TieredSwapV1: short spread + fee, by BorrowTier value
+  // v8 E-25: the prices MARK reads (mark_flat, carry_absent's presence test, realize): the
+  // label role's with --label-role, else x's own close, raw_close and present (the same spans,
+  // so the same reads). DECIDE and EXECUTE read x only.
+  NavMarkPrices mark{};
 };
 // --emit-holdings: the observed book's per-name outcomes of the current session, written
 // beside (never read by) the book's arithmetic. EXECUTE fields are cleared every session;
@@ -384,6 +388,25 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
         : x.member[k] != 0;
     if (bad)
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: price/volume/presence contract");
+  }
+  // v8 E-25: label marks (all three or none) extend x's presence only, at x's own close and
+  // raw close bit for bit wherever x is present; a label-only cell is priced finite > 0.
+  const auto& m = in.mark;
+  if (!m.present.empty() || !m.close.empty() || !m.raw_close.empty()) {
+    if (m.present.size() != cells || m.close.size() != cells || m.raw_close.size() != cells)
+      return co::Err(co::ErrorCode::InvalidArgument, "nav replay: label marks geometry");
+    for (usize k = 0; k < cells; ++k) {
+      const bool shown = m.present[k] != 0;
+      const bool bad = m.present[k] > 1 ||
+          (x.present[k] != 0
+               ? (!shown || std::bit_cast<u64>(m.close[k]) != std::bit_cast<u64>(x.close[k]) ||
+                  std::bit_cast<u64>(m.raw_close[k]) != std::bit_cast<u64>(x.raw_close[k]))
+               : (shown && (!std::isfinite(m.close[k]) || m.close[k] <= 0 ||
+                            !std::isfinite(m.raw_close[k]) || m.raw_close[k] <= 0)));
+      if (bad)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "nav replay: label marks must extend the role's presence at its prices");
+    }
   }
   const auto& f = in.financing;
   const bool tiers = !f.shares_out.empty();
@@ -545,23 +568,24 @@ co::Status push_event(const Ctx& c, Book& b, NavEventKind kind, usize t, usize i
 }
 
 // A flat name only remembers its observable marks. A reprint after a write-off is
-// reported with its forgone return versus the haircut and never touches NAV.
+// reported with its forgone return versus the haircut and never touches NAV. MARK reads
+// c.mark (v8 E-25: the label role's prices with --label-role, else x's own).
 co::Status mark_flat(const Ctx& c, Book& b, usize t, usize i) {
-  const auto& x = c.x; auto& s = b.names; const usize k = t * x.instruments + i;
-  if (!x.present[k]) {
+  const auto& m = c.mark; auto& s = b.names; const usize k = t * c.x.instruments + i;
+  if (!m.present[k]) {
     if (s.written_off[i]) ++s.absent[i];
     return co::Ok();
   }
   if (s.written_off[i]) {
     const f64 exposure = s.written_exposure[i], eta = s.written_haircut[i];
-    const f64 r_adj = x.close[k] / s.mark[i] - 1, r_raw = x.raw_close[k] / s.raw_mark[i] - 1;
+    const f64 r_adj = m.close[k] / s.mark[i] - 1, r_raw = m.raw_close[k] / s.raw_mark[i] - 1;
     const f64 forgone = exposure * (r_adj - eta);
     add(b.result.reappeared, exposure, forgone);
     ATX_TRY_VOID(push_event(c, b, NavEventKind::ReappearedAfterWriteOff, t, i,
                             {s.absent[i], exposure, r_adj, r_raw, eta, forgone}));
     s.written_off[i] = 0; s.absent[i] = 0;
   }
-  s.mark[i] = x.close[k]; s.raw_mark[i] = x.raw_close[k];
+  s.mark[i] = m.close[k]; s.raw_mark[i] = m.raw_close[k];
   return co::Ok();
 }
 // Held and absent at mark t: carry at the stale mark (orders stay blocked) until
@@ -580,10 +604,11 @@ co::Status carry_absent(const Ctx& c, Book& b, usize t, usize i, f64& writeoff) 
   s.written_off[i] = 1; s.written_exposure[i] = h; s.written_haircut[i] = eta;
   return co::Ok();
 }
-// Held and present: realize the true (cumulative, if a gap preceded) adjusted return.
+// Held and present: realize the true (cumulative, if a gap preceded) adjusted return, at
+// c.mark's prices (v8 E-25: a label role's terminal return is realized here).
 co::Status realize(const Ctx& c, Book& b, usize t, usize i, f64& pnl, NavReplayDay& day) {
-  const auto& x = c.x; auto& s = b.names; const usize k = t * x.instruments + i;
-  const f64 h = s.held[i], close = x.close[k], raw = x.raw_close[k];
+  const auto& m = c.mark; auto& s = b.names; const usize k = t * c.x.instruments + i;
+  const f64 h = s.held[i], close = m.close[k], raw = m.raw_close[k];
   const f64 next = h * (close / s.mark[i]);
   if (!std::isfinite(next))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: holding mark overflow");
@@ -658,7 +683,10 @@ co::Status mark_session(const Ctx& c, Book& b, const BorrowTiers& tiers, usize t
   f64 pnl = 0, writeoff = 0;
   for (usize i = 0; i < n; ++i) {
     if (s.held[i] == 0) { ATX_TRY_VOID(mark_flat(c, b, t, i)); continue; }
-    if (!x.present[t * n + i]) { ATX_TRY_VOID(carry_absent(c, b, t, i, writeoff)); continue; }
+    if (!c.mark.present[t * n + i]) {
+      ATX_TRY_VOID(carry_absent(c, b, t, i, writeoff));
+      continue;
+    }
     ATX_TRY_VOID(realize(c, b, t, i, pnl, day));
   }
   // Subtracting a zero long leg is exact: flat books keep the legacy arithmetic.
@@ -1502,6 +1530,33 @@ constexpr const char* warm_start_declaration =
     "only; row score_begin is the base row (its fills and decision are scored), return rows "
     "are [score_begin+1, end); a deployment in the warm-up is not a scored deployment; the "
     "cadence phase stays relative to score_begin";
+constexpr const char* label_role_declaration =
+    "v8 E-25 (Ruling E-25): the books are MARKED by the pinned label role: MARK at t reads its "
+    "present, close and raw_close (drift and gap P&L, the guard, stale carry, the K-session "
+    "write-off, reprints), so a termination it prices (prepare_recent_research.py "
+    "delisting-return-on-termination-v1: present at T = L+1 at close[L] x (1 + r)) realizes r "
+    "at T and is then carried and written off at that mark; financing accrues on the marked "
+    "dollars as always. Every other input is --role's: the signal and membership, the "
+    "construction (tied ranks, hold band, ADV cap, neutralization exposures), the borrow tiers, "
+    "the liquidity and ADV windows (volume) and execution tradability (present): no label value "
+    "enters a decision input or a trade limit, and no order fills on a label-only cell (an "
+    "imputed price, volume 0, its cause classifiable after T); every fill is on a session where "
+    "--role is present, where the label close is --role's bit for bit. The book's own NAV and "
+    "drifted weights, which DECIDE reads, include every realized return, a terminal one "
+    "included. Admission, from the two pinned manifests before any payload: score_end_ns (when "
+    "declared) not past the research seal; every manifest key but files and universe equal to "
+    "--role's (dates, instruments, score window, source, projection, membership recipe); the "
+    "same file set, every extent equal and every SHA-256 equal except close.f64, raw_close.f64, "
+    "volume.f64 and present.u8 (the payloads --delisting-returns patches: sessions and ids are "
+    "shared); member.u8 shared, or differing only by the members the label role declares "
+    "cleared on termination sessions (universe.delisting.returns_applied true and "
+    "applied.members_cleared_on_termination_session N > 0, and then score_member_counts may "
+    "differ); universe absent in both, or the same id, base role (manifest, member), "
+    "identity-bridge and SIC-events pins and --role's delisting-stage pin when it has one. "
+    "Payloads: no role session at or after the seal; --role's presence extended only; member & "
+    "present & close > 0 equal to --role's on every cell; a differing member.u8 differs from "
+    "--role's on exactly the N declared cells, each one --role has absent and keeps a member "
+    "and the label role presents and clears";
 
 // Output label of a book: the trading id alone without fields (the legacy names),
 // "<trading>+<financing>" in the financing matrix.
@@ -1532,10 +1587,11 @@ Json scenario_recipe(const NavScenario& s, bool primary, bool tiered) {
       {"terminal_haircut_long", s.adverse_terminal ? nav_adverse_long_return : 0.0},
       {"terminal_haircut_short", s.adverse_terminal ? nav_adverse_short_return : 0.0}};
 }
-// fields: the pinned borrow-field binding, or null without --fields.
+// fields: the pinned borrow-field binding, or null without --fields. label: the summary's
+// label_role record (v8 E-25), or null without --label-role.
 Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
                 const std::vector<NavScenario>& scenarios, const NavTurnoverLimits& limits,
-                const Json& fields) {
+                const Json& fields, const Json& label) {
   const bool tiered = !fields.is_null();
   Json list = Json::array();
   for (usize k = 0; k < scenarios.size(); ++k)
@@ -1590,6 +1646,10 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
     j["warm_start_sessions"] = base.warm_start_sessions;
     j["warm_start_rule"] = warm_start_declaration;
   }
+  // v8 E-25: only with --label-role (the recipe without it is unchanged byte for byte).
+  if (!label.is_null())
+    j["label_role"] = Json{{"manifest_sha256", label.at("manifest_sha256")},
+                           {"rule", label_role_declaration}};
   v7::extend_recipe(j); // L4 hook: identity unless extended or a reserved cost-v2 id
   return j;
 }
@@ -1984,6 +2044,7 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
 struct RoleGeometry {
   usize names{}, sessions{}; // instruments; score_end - score_begin
   usize score_begin{};       // the pre-score history a warm start may use
+  usize dates{};             // the role's rows (a label role's marks are charged per cell)
 };
 co::Result<RoleGeometry> role_geometry(const TargetReplayRunConfig& cfg) {
   ATX_TRY(auto role, pinned_document(cfg.role_path, cfg.role_sha256, max_role_manifest_bytes,
@@ -1993,29 +2054,45 @@ co::Result<RoleGeometry> role_geometry(const TargetReplayRunConfig& cfg) {
   if (!dates || dates > max_dates || !names || names > max_names || begin >= end || end > dates)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: role geometry");
   return co::Ok(RoleGeometry{static_cast<usize>(names), static_cast<usize>(end - begin),
-                             static_cast<usize>(begin)});
+                             static_cast<usize>(begin), static_cast<usize>(dates)});
 }
 struct AdmittedRun {
   detail::LoadedSavedBlend blend;
   LoadedFields fields;
+  detail::LoadedLabelRole label; // v8 E-25: empty without --label-role
 };
 // Admission and load of one pinned run, shared by run_nav_replay and the decide path:
 // the workspace reserve of `books` books at the pinned role's own geometry (manifest
 // only), then the fields (pinned and role-checked) and the blend charged against what
-// remains, so input + all results fit one budget.
+// remains, so input + all results fit one budget. `label` (v8 E-25, --label-role): its
+// manifest is checked against --role's before any payload is read, its marks are charged
+// before the fields, and they load (checked against the blend) last.
 co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
                                        const NavReplayConfig& base, const NavFieldsPin& fields,
-                                       usize books, bool holdings) {
+                                       usize books, bool holdings,
+                                       const NavLabelRolePin& label = {}) {
   const bool tiered = !fields.manifest_path.empty();
+  const bool labelled = !label.manifest_path.empty();
   ATX_TRY(const auto geometry, role_geometry(cfg));
   // A warm start longer than the pinned role's pre-score history is refused before any
   // payload is read (the replay's own input check repeats it).
   ATX_TRY_VOID(check_warm_start(base.warm_start_sessions, geometry.score_begin));
+  // v8 E-25: the label role against --role, from the two pinned manifests alone.
+  if (labelled)
+    ATX_TRY_VOID(detail::check_label_role(cfg, label.manifest_path, label.manifest_sha256));
   const u64 reserve = nav_workspace_reserve_bytes(base, books, tiered, geometry.names,
                                                   geometry.sessions, holdings);
   if (cfg.target.max_working_bytes <= reserve)
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: budget below NAV workspace reserve");
   u64 remaining = cfg.target.max_working_bytes - reserve;
+  if (labelled) {
+    const u64 marks = u64{geometry.dates} * geometry.names * detail::label_role_cell_bytes +
+                      detail::label_role_metadata_bytes;
+    if (remaining <= marks)
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "nav replay: budget below the label role's marks");
+    remaining -= marks;
+  }
   AdmittedRun out;
   if (tiered) {
     // Pinned and role-checked before the blend is loaded or anything is written.
@@ -2029,6 +2106,10 @@ co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
   if (out.blend.names != geometry.names || out.blend.end - out.blend.begin != geometry.sessions ||
       (tiered && out.fields.shares_out.size() != out.blend.signal.size()))
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: fields/blend geometry");
+  if (labelled) {
+    ATX_TRY(out.label, detail::load_label_role(cfg, label.manifest_path, label.manifest_sha256,
+                                               out.blend));
+  }
   return co::Ok(std::move(out));
 }
 } // namespace
@@ -2197,7 +2278,11 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
   // The NAV volume is authoritative, also for price-risk neutralization.
   TargetReplayInput x = in.target;
   x.volume = in.volume;
-  const NavReplayInput input{x, in.volume, in.financing};
+  const NavReplayInput input{x, in.volume, in.financing, in.mark};
+  // v8 E-25: what every book's MARK reads: the label marks, else x's own spans (the reads of
+  // the replay without them, so every output is unchanged).
+  const NavMarkPrices marks = in.mark.present.empty()
+      ? NavMarkPrices{x.close, x.raw_close, x.present} : in.mark;
   try {
     std::vector<NavReplayConfig> configs;
     configs.reserve(books);
@@ -2238,6 +2323,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
         ctx.short_rate[tier_warm] = (f.short_spread_bps + f.warm_bps) * 1e-4;
         ctx.short_rate[tier_special] = (f.short_spread_bps + f.special_bps) * 1e-4;
       }
+      ctx.mark = marks;
       ctxs.push_back(ctx);
     }
     std::unique_ptr<par::DetPool> pool;
@@ -2492,6 +2578,7 @@ struct NavRun {
   const Json& warm_start;           // the summary's warm_start record; null without one
   StageTimes* times;                // --stage-timers: the clock (null: untimed)
   bool summary_timers;              // write stage_seconds into summary.json (single runs)
+  const Json& label;                // v8 E-25: the summary's label_role record; null without
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
 // accepted the input (warm_start_sessions <= decision_begin). The role rows of the first
@@ -2518,6 +2605,17 @@ Json score_begin_gross(const NavRun& run, bool tiered) {
         days.empty() ? Json(nullptr) : finite_or_null(days.front().gross_leverage);
   }
   return gross;
+}
+// The summary's label_role record (v8 E-25); null without --label-role. The recipe binds the
+// manifest SHA-256 and the rule.
+Json label_record(const NavLabelRolePin& pin, const detail::LoadedLabelRole& label) {
+  if (pin.manifest_path.empty()) return Json(nullptr);
+  return Json{{"manifest_sha256", pin.manifest_sha256},
+              {"label_only_present_cells", label.label_only_cells},
+              {"label_only_present_cells_scored", label.label_only_scored_cells},
+              {"basis", "cells present in the label role and absent in --role, over every role "
+                        "row and over rows [score_begin, score_end); the rule is the recipe's "
+                        "label_role.rule"}};
 }
 // construction.v5 of one book over its decision rows: the rule's plan (pre locate
 // rule) gross, net and held share of the decision's members.
@@ -2575,7 +2673,7 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
   const auto dir = std::filesystem::path(cfg.output_directory);
   if (!std::filesystem::create_directory(dir))
     return co::Err(co::ErrorCode::AlreadyExists, "nav replay: output must not exist");
-  const auto method = nav_recipe(cfg, run.base, run.scenarios, run.limits, run.fields);
+  const auto method = nav_recipe(cfg, run.base, run.scenarios, run.limits, run.fields, run.label);
   const auto method_text = method.dump();
   ATX_TRY(auto method_sha, timed_digest(run.times, [&] { return co::sha256_hex(method_text); }));
   ATX_TRY_VOID(write_json(dir / "recipe.json", method));
@@ -2611,6 +2709,7 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     warm["score_begin_gross_leverage"] = score_begin_gross(run, tiered); // review A-3
     summary["warm_start"] = std::move(warm);
   }
+  if (!run.label.is_null()) summary["label_role"] = run.label; // v8 E-25, only when on
   v7::extend_summary(summary); // L4 hook: identity unless extended
   if (run.times && run.summary_timers) { // v8 --stage-timers: the one key a clock writes
     summary["stage_seconds"] = run.times->json();
@@ -2780,7 +2879,8 @@ private:
 co::Status publish_holdings(const NavRun& run, const HoldingsEmitter& csv,
                             std::ostream& progress) {
   const bool tiered = !run.fields.is_null();
-  const auto method = nav_recipe(run.cfg, run.base, run.scenarios, run.limits, run.fields);
+  const auto method = nav_recipe(run.cfg, run.base, run.scenarios, run.limits, run.fields,
+                                 run.label);
   ATX_TRY(auto method_sha, co::sha256_hex(method.dump()));
   const auto& dir = csv.directory();
   ATX_TRY(auto files, csv.files());
@@ -2834,7 +2934,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 namespace {
 // The run-level contract of the nav verb (run_nav_replay and run_nav_grid).
 co::Status check_run(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
-                     const NavFieldsPin& fields) {
+                     const NavFieldsPin& fields, const NavLabelRolePin& label) {
   if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
   if (cfg.target.one_way_bps != 0 || cfg.target.annual_borrow_bps != 0)
@@ -2849,6 +2949,9 @@ co::Status check_run(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& 
   if (neutralize_by_industry(cfg.target.neutralize) && fields.manifest_path.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: the industry ids need --fields (grp_ff12)");
+  if (label.manifest_path.empty() != label.manifest_sha256.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: --label-role and --label-role-sha256 go together");
   return co::Ok();
 }
 // The book config every scenario of a nav run starts from: the target and the options.
@@ -2996,7 +3099,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
   try {
     StageTimes times; // --stage-timers: the clock starts at entry
     StageTimes* const timed = emit.stage_timers ? &times : nullptr;
-    ATX_TRY_VOID(check_run(cfg, limits, fields));
+    ATX_TRY_VOID(check_run(cfg, limits, fields, execution.label_role));
     const bool tiered = !fields.manifest_path.empty();
     const auto scenarios = v7::run_scenarios(nav_scenario_matrix(tiered)); // L4 hook
     const auto base = run_base(cfg.target, rate, execution);
@@ -3010,14 +3113,17 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                        "nav replay: --output and --emit-holdings must differ and not exist");
     }
     // Admission (the reserve at the pinned role's own geometry, then the fields and the
-    // loader against the rest) and the pinned load.
-    ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, scenarios.size(), holdings));
+    // loader against the rest) and the pinned load (v8 E-25: with the label role's marks).
+    ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, scenarios.size(), holdings,
+                                          execution.label_role));
     times.loaded = StageTimes::Clock::now();
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
+    const auto& marks = admitted.label; // empty without --label-role: MARK reads the role
     auto view = blend.view();
     view.industry = loaded.industry; // empty unless an industry id
     const NavReplayInput input{view, blend.volume,
-                               NavFinancingFields{loaded.shares_out, loaded.si_shares}};
+                               NavFinancingFields{loaded.shares_out, loaded.si_shares},
+                               NavMarkPrices{marks.close, marks.raw, marks.present}};
     // All scenarios in lockstep: the desired target (and its price exposures) and
     // the borrow tiers are formed once per decision for every scenario book. With
     // --emit-holdings the primary book is observed (read only) while it runs.
@@ -3043,10 +3149,15 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     // publish_nav creates the output directory (Ok without an extension).
     ATX_TRY_VOID(v7::capture(scenarios, results, summaries));
     const Json warm = warm_start_record(base, view);
+    const Json label = label_record(execution.label_role, marks);
     const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
-                     loaded.binding, warm, timed, true};
+                     loaded.binding, warm, timed, true, label};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
+    if (!label.is_null())
+      progress << "nav replay: label role " << execution.label_role.manifest_sha256
+               << " marks the books (" << marks.label_only_cells
+               << " label-only present cells)\n";
     if (base.book_workers > 1)
       progress << "nav replay: scenario books on " << base.book_workers << " workers\n";
     if (!warm.is_null())
@@ -3067,7 +3178,7 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
   try {
     StageTimes times;
     StageTimes* const timed = emit.stage_timers ? &times : nullptr;
-    ATX_TRY_VOID(check_run(cfg, limits, fields));
+    ATX_TRY_VOID(check_run(cfg, limits, fields, execution.label_role));
     if (!emit.holdings_directory.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav grid: --emit-holdings is a single-run option");
@@ -3088,13 +3199,16 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
     auto first = cfg;
     first.target = targets.front();
     const usize books = configs.size() * scenarios.size();
-    ATX_TRY(auto admitted, admit_and_load(first, configs.front(), fields, books, false));
+    ATX_TRY(auto admitted, admit_and_load(first, configs.front(), fields, books, false,
+                                          execution.label_role));
     times.loaded = StageTimes::Clock::now();
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
+    const auto& marks = admitted.label; // v8 E-25: empty without --label-role
     auto view = blend.view();
     view.industry = loaded.industry;
     const NavReplayInput input{view, blend.volume,
-                               NavFinancingFields{loaded.shares_out, loaded.si_shares}};
+                               NavFinancingFields{loaded.shares_out, loaded.si_shares},
+                               NavMarkPrices{marks.close, marks.raw, marks.present}};
     ATX_TRY(const auto results, replay_books(input, configs, scenarios, Observer{},
                                              timed ? &times.replay : nullptr));
     times.replayed = StageTimes::Clock::now();
@@ -3105,6 +3219,7 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
         summaries[v].push_back(std::move(summary));
       }
     const Json warm = warm_start_record(base, view);
+    const Json label = label_record(execution.label_role, marks);
     if (!std::filesystem::create_directory(root))
       return co::Err(co::ErrorCode::AlreadyExists, "nav grid: output must not exist");
     Json published = Json::array();
@@ -3115,7 +3230,7 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
       own.output_directory = (root / variant.id).string();
       // The variant summaries carry no stage_seconds: they stay the standalone bytes.
       const NavRun run{own, limits, configs[v], scenarios, results[v], summaries[v],
-                       blend.manifest_json, loaded.binding, warm, timed, false};
+                       blend.manifest_json, loaded.binding, warm, timed, false, label};
       ATX_TRY_VOID(publish_nav(run, progress));
       const auto dir = root / variant.id;
       ATX_TRY(auto recipe_sha, timed_digest(timed, [&] {
@@ -3147,6 +3262,7 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
           Json{{"rule", leverage_groups_declaration}, {"groups", std::move(ids)}};
     }
     if (timed) manifest["stage_seconds"] = times.json();
+    if (!label.is_null()) manifest["label_role_sha256"] = execution.label_role.manifest_sha256;
     progress << "nav grid: " << configs.size() << " variants x " << scenarios.size()
              << " scenario books published under " << root.string() << '\n';
     return write_json(root / "grid_manifest.json", manifest);
@@ -3204,7 +3320,21 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--construction-grid GRID.json (atx.nav-construction-grid/v1 variants over "
                "--rule --cadence --trade-fraction --monthly-budget --band-multiple "
                "--dust-multiple --aim-leverage --exit-rate: one lockstep run; "
-               "<output>/<id>/ = the standalone run, grid_manifest.json last)]\n"
+               "<output>/<id>/ = the standalone run, grid_manifest.json last)] "
+               "[--label-role ROLE/manifest.json --label-role-sha256 SHA (v8 E-25: the books "
+               "are MARKED - P&L, NAV, stale carry, write-off - by this role's close, raw_close "
+               "and present, e.g. a --delisting-returns build; signals, fields, membership, "
+               "construction, tiers, liquidity and execution stay on --role, and no order fills "
+               "on a cell only the label role prices. Refused unless it shares --role's dates, "
+               "instruments, membership and base: every manifest key but files and universe "
+               "equal, the same files and extents with equal SHA-256 except close, raw_close, "
+               "volume and present, the same universe id and base-role, identity-bridge, "
+               "SIC-events and delisting-stage pins; member.u8 (and score_member_counts) may "
+               "differ only by the members it declares cleared on termination sessions "
+               "(universe.delisting.applied.members_cleared_on_termination_session N), exactly "
+               "N cells --role has absent and keeps a member; it must not reach the research "
+               "seal and may only add presence to --role's, at its prices; recipe and summary "
+               "record label_role)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -3231,6 +3361,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--fields-sha256") fields.manifest_sha256 = value;
       else if (key == "--emit-holdings") emit.holdings_directory = value;
       else if (key == "--construction-grid") grid_path = value;
+      else if (key == "--label-role") execution.label_role.manifest_path = value; // v8 E-25
+      else if (key == "--label-role-sha256") execution.label_role.manifest_sha256 = value;
       else if (key == "--holdings-format") {
         // Accepted without --emit-holdings: the v7 capacity pass drops --emit-holdings
         // and forwards every other flag (strategy_nav_v7.cpp).
@@ -3272,6 +3404,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       throw std::invalid_argument("--role and --role-sha256 are required in nav mode");
     if (fields.manifest_path.empty() != fields.manifest_sha256.empty())
       throw std::invalid_argument("--fields and --fields-sha256 go together");
+    if (execution.label_role.manifest_path.empty() !=
+        execution.label_role.manifest_sha256.empty())
+      throw std::invalid_argument("--label-role and --label-role-sha256 go together");
     // The rate belongs to aim-partial-v5, its parameters to --rate per-name-v1. A grid
     // checks every variant's own rule (its --rule overrides the base's), as its
     // standalone command line would be checked.
@@ -3353,9 +3488,10 @@ co::Result<NavDeployLoad> load_nav_deploy(const TargetReplayRunConfig& cfg,
                      "nav deploy: the industry ids need the fields (grp_ff12)");
     ATX_TRY_VOID(validate_nav_config(base));
     ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, 1, false));
-    // The recipe run_nav_replay publishes for the same (cfg, base, limits, fields).
+    // The recipe run_nav_replay publishes for the same (cfg, base, limits, fields), without a
+    // label role (v8 E-25: a --label-role run records one, so it is never a deploy pin).
     const auto method = nav_recipe(cfg, base, nav_scenario_matrix(tiered), limits,
-                                   admitted.fields.binding);
+                                   admitted.fields.binding, Json(nullptr));
     ATX_TRY(auto digest, co::sha256_hex(method.dump()));
     NavDeployLoad out;
     out.blend = std::move(admitted.blend);

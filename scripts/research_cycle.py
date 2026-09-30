@@ -167,7 +167,10 @@ HOLDINGS_INPUTS = ("thirteenf", "ftd", "regsho_threshold", "security_master", "s
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
               "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
-    ("reuse_fields",)
+    ("reuse_fields", "label_role")
+# label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): the nav phase MARKS its books
+# with it (nav --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner receipt); signals, fields and
+# every decision input stay on inputs.role, and the ref phase (an identity against the unlabelled parent) never gets it.
 # F-2's marginal IC verb (atx-impl/src/strategy_marginal_ic.cpp, dispatch_marginal_ic / run_marginal_ic): every option
 # takes one value and a run without MARGINAL_REQUIRED is refused. The step builds MARGINAL_BUILT from the spec (paths and
 # pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
@@ -1044,10 +1047,14 @@ class Cycle:
         k = self.attempts.get("nav", 1) if phase == "nav" else 1
         run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
         flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
-        argv = self.runner(run_dir, [s["exes"]["nav"], comb, fdm], phase) + [
+        binds, label = [s["exes"]["nav"], comb, fdm], []
+        if phase == "nav" and "label_role" in s["inputs"]:  # v8 E-25: the label role marks the cell's books
+            binds.append(self.ipath("label_role"))
+            label = ["--label-role", self.ipath("label_role"), "--label-role-sha256", self.pin("label_role")]
+        argv = self.runner(run_dir, binds, phase) + [
             s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m,
             "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
-            "--rule", nav["rule"], *flags]
+            "--rule", nav["rule"], *flags, *label]
         if self.res.exists(f"{n_out}/summary.json"):
             state, note = "done", ""
         elif self.res.exists_dir(n_out) or self.res.exists_dir(run_dir):
