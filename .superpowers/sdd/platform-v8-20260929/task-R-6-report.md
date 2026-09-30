@@ -9,6 +9,8 @@ Every claim about behaviour below is from reading the code, or from a numpy port
 | `d695cbd8` | part 1: `atx::engine::book::solve_tracking` (the generic solver) + `TargetTracking.*` gtests |
 | `a7a26df1` | step 0: merge of root `feat/platform-v8-20260929` (41ac94fd, integration 3) into the lane; no conflict |
 | `3a59c5bc` | part 2: the atx-impl rule `--rule spo-v3 --spo-alpha implied-aim` + `SpoV3.*` gtests (section 5) |
+| `bf1593bc` | step 0 of E-26: merge of root (integration 4 in progress, contains `3a59c5bc` via `5c6efcd4`); no conflict |
+| `3bb1dea4` | Ruling E-26: spo-v3 aim shaped by `--hold-band` / `--adv-hold-q`; v1/v2 refuse them (section 9) |
 
 ## 1. Warm-start side files (`75774cd8`, PM instruction)
 
@@ -368,3 +370,132 @@ gross_shadow, turnover_shadow, trade_cost_shadow, tracking_error_shadow, aim_cor
 6. Iteration count and runtime at 1,850 names are still unmeasured (part 1, risk 3).
 7. Cosmetic: the `summary.json` `v7.extras` string still reads "spo_diagnostics.csv (spo-v1/v2)" under v3. It was
    kept so the v1/v2 bytes stay identical.
+
+## 9. Ruling E-26: the aim takes the hold band and the ADV cap (`3bb1dea4`)
+
+### What was already true, and what changed
+
+- The hook rewrites `--rule spo-v3` to `--rule aim-partial-v5` for the replay, and passes every non-v7 token through.
+  So `--hold-band B` and `--adv-hold-q Q` already reached the replay's config. The replay's shared construction
+  (`form_desired_target` -> `detail::form_desired(..., &shared.state)`) forms `shared.desired` once per decision.
+  `plan_weights` hands that same vector to `v7::plan`, and then to `Engine::plan`. So:
+  - The kernel calls, the state carry (`detail::DesiredState` on `shared.state`) and the order are aim-partial-v5's:
+    hold band on the ranks, demean, gross 1, locate zeroing, neutralization, ADV cap.
+  - `w_aim = L x desired` in `plan_tracking`, as before.
+  - No desired-target code was written or duplicated, and no extraction was needed.
+- The rule id and recipe record the shaping the same way the aim-partial path does. `construction_rule_id` appends
+  `+hold-band-B` (only for B > 0) and `+adv-hold-Q`. The hook's relabel swaps only the `aim-partial-v5` prefix, giving
+  `spo-v3+hold-band-0.1+adv-hold-0.05`. The replay's own `hold_band` / `adv_hold` recipe and summary blocks are
+  written unchanged.
+- **The gap:** spo-v1/v2 also accepted both flags silently, which shaped their alpha source. They now refuse them in
+  `parse_nav_v7_args`: `--hold-band needs --rule spo-v3 (spo-v1/v2 refuse the desired-target shaping)`. The refusal
+  holds for any value (0 included) and in any argv position.
+- The tracker's constraints are untouched. No holding cap enters the solver; the 1% ADV trade limit and the locate
+  mask stay as registered. gamma is calibrated on the aim the tracker receives. So a shaped cell's gamma is
+  `S_prior / sigma(L x shaped desired)` at its first decision.
+- `Engine::last_aim()` returns the aim of the latest decision. It is in memory only, never published, and exists as a
+  test seam: `plan_tracking`'s local `aim` became that member, with the same expressions.
+- `Timing` gains `unconverged` / `unconverged_seconds`. They are printed on the spo-v3 console line only, and are
+  not a file byte. See section 10.
+- **Flags absent:** the rule's CSV and its JSON blocks (parameters, calibration, summary, tripwire, declaration) are
+  unchanged, and so is the rule id. The only engine changes are the in-memory member and the console counters, so
+  every spo-v3 published byte is unchanged. The help text and header comments grew; they are not run outputs.
+
+### Tests (`strategy_spo_v3_test.cpp`)
+
+- `SpoV3.AimIncludesHoldBandAndAdvCapWhenDeclared` (Role(40,12,53), b .1, Q .05, dust 0 so the reference reports
+  every member at the first decision):
+  - The plain aim-partial-v5 replay (no extension, `replay_nav_scenarios` with a holdings sink) gives the reference
+    desired per decision.
+  - The spo-v3 replay records `last_aim()` after each DECIDE.
+  - On every rebalance decision: `bits(aim_i) == bits(L x desired_i)` for every member, each of which must be
+    reported. Nonmembers have `+0.0`.
+  - The two runs' construction records agree day by day (`hold_kept`, `hold_moved`, `adv_clipped`,
+    `adv_clipped_mass`). The test also asserts that both mechanisms bind (`hold_kept > 0`, `adv_clipped > 0`).
+- `SpoV3.ShapingFlagsAbsentIsByteIdentical`:
+  - Flags absent vs the identity declaration (b = 0, Q = 0): the CSV, all JSON blocks, the declaration and every
+    received aim must be bit-identical.
+  - No shaping key appears in the rule's own blocks.
+  - Declared shaping changes the CSV. The rule id is `spo-v3` when absent and at b = 0, and
+    `spo-v3+hold-band-0.1+adv-hold-0.05` against aim-partial's `aim-partial-v5+hold-band-0.1+adv-hold-0.05`.
+- `SpoV3.ShapingFlagsPassThroughAndSpoV1V2RefuseThem`:
+  - spo-v3 passes both tokens through in order.
+  - spo-v1 and spo-v2 refuse each flag, for value 0 and .1, before or after `--rule`.
+  - Without the flags, both parse as before.
+- **Root:** `build atx-impl-strategy-target-tests`, then `--gtest_filter=SpoV3.*:SpoPin.*:SpoHook.*`.
+- **Watch point** (not compiled): `Recorder` overrides `NavHoldingsSink::session` with `[[nodiscard]]`, as
+  `strategy_live_test.cpp`'s sink does without it.
+- If the "member not reported" assert fires on the first decision, the fixture has a member with desired exactly 0.
+  That member is unreported because its plan is 0. It is not a shaping defect.
+
+### Cross-lane edits (E-26)
+
+None. The files touched are all R6's own: `strategy_spo.{hpp,cpp}`, `strategy_spo_v3.hpp` (comment only),
+`strategy_nav_v7.{hpp,cpp}` and `strategy_spo_v3_test.cpp`. R45's `detail::form_desired` / `DesiredState` are called
+through the existing replay path and were not edited.
+
+## 10. Concern 2: a beta band that one session's trade limits cannot reach (from the code)
+
+### What the solver returns (`solve_tracking`, `target_tracking.cpp`)
+
+1. **Why it runs to the cap.** The loop stops only when `primal <= tol && dual <= tol` (registered 1e-9), or when
+   `iterations == max_iterations` (registered 2,000).
+   - Each iterate `x` is projected onto both bands (`limit_multipliers`).
+   - `z` is always clamped to the name's box: `[max(locate floor, w0 - t), w0 + t]`. An empty box collapses to
+     `w0 -/+ t`.
+   - When the box set cannot reach the band (for beta: `max_box beta'w < lo` or `min_box beta'w > hi`), `x` and `z`
+     cannot meet. The primal residual stays at the gap and the solve runs all 2,000 iterations.
+2. **What it returns:**
+   - `w` = the last `z`, then `restore_limits`. That runs at most 16 passes of the 2-row minimum-norm correction over
+     the names strictly inside their box and off their kinks, each pass clipped back to the box. It stops early at
+     violation <= 1e-12 or when no name can move.
+   - `converged = false`, `limits_met = false`, `limit_violation = max(|net excess|, |beta excess|)`,
+     `iterations = 2000`, plus the residuals and multipliers. The terms are computed on the returned `w`.
+3. **What the engine does with it.** `plan_tracking` takes it as the plan: nothing is refused and nothing voids. The
+   row records `converged` / `limits_met` / `limit_violation` / `net` / `abs_beta`. The summary and the tripwire's
+   `report_only` count `unconverged` and `limits_unmet` per book.
+
+### Is the book feasible for the limits that can be met?
+
+- **Per-name limits:** always met exactly. Every name stays inside its trade limit and above its locate floor: `z` is
+  clamped and the restoration clips.
+- **The net band: not guaranteed.** The restoration corrects net and beta jointly, and nothing restores net alone.
+  When beta is out of reach, the joint step pushes names to their box edges, and whatever net excess is left after
+  16 passes, or after "no name can move", stays. So an infeasible-beta decision can also leave `|net| > 0`.
+- Root can see which band failed from the row's `net` and `abs_beta` columns.
+- **Side effect on the next decision.** Each capped iteration adds the persistent gap to the scaled dual
+  (`u += relaxed - z`). That dual is carried warm to the book's next decision (`book.dual = rho u`). A 2,000-iteration
+  infeasible solve therefore hands the next decision an inflated dual, which can lengthen that decision's solve.
+  - How much is data-dependent. Root sees it as high `iterations` on the row after an unconverged row.
+
+### Early exit: not implemented
+
+It cannot be made byte-neutral.
+
+- Any exit before the cap changes that decision's returned `w` (a different last `z`, and a restoration starting from
+  it) and its carried dual. Through the book, it then changes every later decision, including later solves that do
+  converge. That breaks "every spo-v3 byte unchanged" on any run that contains an infeasible decision, and the
+  fixture runs contain some.
+- A sound design, if the PM wants one (it needs a ruling and a re-baseline):
+  - Before the ADMM, compute the box range of `1'w` and `beta'w` in O(n).
+  - When a band misses that range by more than the convergence slack (`tol x sum|beta_i|`, and `n x tol` for net,
+    plus a rounding margin), skip the ADMM, restore from the clamped current book, and cold-start the dual.
+  - It never fires on a solve that would converge, because convergence implies the gap is at most
+    `tol x sum|beta_i|` plus rounding.
+  - Two related changes need the same ruling:
+    - Restore net alone when the joint restoration fails.
+    - Reset the dual after an unconverged solve.
+
+### A cheap runtime bound for root, available now
+
+1. **Console** (new in `3bb1dea4`, not a file byte): `nav v7: spo-v3 N solves, S s, mean m ms, max M ms; gamma g;
+   U unconverged, T s`. `T` is the wall time spent in capped solves, and `U x M` bounds it before a rerun.
+2. **Files** (unchanged bytes, already there):
+   - `summary.json` `v7.spo_v3_books.<book>`: `unconverged`, `limits_unmet`, `mean_iterations`.
+   - `v7_extras.json` tripwire `report_only.<book>`: `unconverged`, `limits_unmet`.
+   - `spo_diagnostics.csv` per row: `iterations`, `converged`, `limits_met`, `limit_violation`, `net`, `abs_beta`.
+3. **Before judging the cell:** read `unconverged / decisions` and `limits_unmet / decisions` for the primary book. A
+   high share means the cell mostly reports capped, band-infeasible solves; judge it with that stated.
+4. `--spo-iters N` is allowed under spo-v3 and caps the time per solve. It is a declared parameter (in the parameters
+   block), and it changes the bytes of capped decisions and of everything after them. So it defines a different cell:
+   use it for a timing probe only, never for the registered run.
