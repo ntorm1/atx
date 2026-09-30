@@ -1341,3 +1341,11 @@ from . import pitch3 as _P3  # noqa: E402
 
 BLOCKS.update(_P3.BLOCKS)
 ANALYSES.update(_P3.ANALYSES)
+
+# platform v8: year tables, cell ladder, cumulative test and freeze gate, diagnostics G-1..G-3, traded-horizon member
+# columns, Appendix A trial accounting, OD-1 disclosure, literature contradictions -- config key ``v8``, in v8.py.
+# New names only: a config without v8_* blocks renders exactly as before.
+from . import v8 as _V8  # noqa: E402
+
+BLOCKS.update(_V8.BLOCKS)
+ANALYSES.update(_V8.ANALYSES)
