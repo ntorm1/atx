@@ -2493,9 +2493,12 @@ TEST(NavLabelRole, FlagOffIsByteIdentical) {
 // holdings stream, stage timers) each daily and events CSV and each holdings file is the
 // unlabelled run's byte for byte; the recipe and summary differ only by the label_role key (and
 // the summary by the recipe SHA it binds, and the clock's stage_seconds), the holdings manifest
-// only by that recipe SHA. With --capacity-curve both passes record the label role.
+// only by that recipe SHA. With --capacity-curve both passes record the label role. The role
+// scores from row 140 so the 10 warm-up rows have the book's price-risk exposures (126 return
+// pairs) and build a book (review A-3 refuses an inert warm start), as in
+// StrategyLive.RecipePinBackwardCompatibleWithNewConstructionFields.
 TEST(NavLabelRole, SameRoleIsIdentity) {
-  PinBench bench;
+  PinBench bench(140);
   const auto root = bench.dir.path;
   const auto& a = bench.artifact;
   const LabelPin same{a.cfg.role_path, a.cfg.role_sha256};
