@@ -20,14 +20,15 @@ COMMON = '''
 """Fake stage publisher: one Parquet output and a contract manifest (input bindings unless legacy)."""
 import hashlib, json, os, sys
 from pathlib import Path
-import pyarrow as pa, pyarrow.parquet as pq
 
 
 def publish(name, inputs, legacy=False):
     root = Path(os.environ["ATX_ALPHA_PANEL_ROOT"])
     out = root / name
     out.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"k": [int(os.environ.get("FAKE_V", "1"))], "available_at": pa.array([0], pa.timestamp("us"))}), out / "data.parquet")
+    # the orchestrator only reads manifests and code, so the "Parquet" payload is plain bytes: no pyarrow import
+    # keeps each fake stage subprocess at interpreter-startup cost
+    (out / "data.parquet").write_bytes(("k=" + os.environ.get("FAKE_V", "1")).encode())
     src = Path(sys.modules["__main__"].__file__)
     blob = src.read_bytes()
     man = {"schema": "atx.test/v1", "status": "complete", "stage": name,
