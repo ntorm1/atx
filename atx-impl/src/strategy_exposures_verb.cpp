@@ -72,7 +72,8 @@ void write_f64(std::ofstream& file, std::span<const f64> values) {
 co::Status sealed(std::string_view what) {
   return co::Err(co::ErrorCode::InvalidArgument,
                  std::string("exposures: ") + std::string(what) + " reaches the " +
-                     std::string(ed::kResearchWindowId) + " seal (2024-01-01)");
+                     std::string(ed::kResearchWindowId) + " seal (" +
+                     std::string(ed::kSealBeginDate) + ")");
 }
 Json file_entry(const std::string& sha, u64 bytes, Json shape, const char* layout) {
   return Json{{"bytes", bytes}, {"sha256", sha}, {"dtype", "<f8"}, {"shape", std::move(shape)},
