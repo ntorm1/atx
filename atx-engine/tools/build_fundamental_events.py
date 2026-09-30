@@ -2,14 +2,16 @@
 
 Output contract: ``fundamental_events_schema.md`` in this directory (``atx.fundamental-events/v1``).
 Rulings: v4 pre-registration section R2 (FSDS ``accepted_utc`` clock with a labelled FC1 fallback,
-latest-clock-wins restatements, seal < 2025-01-01, values modeled/unaccepted).
+latest-clock-wins restatements, a seal, values modeled/unaccepted). The seal is the research seal of
+``research_window.py`` (``SEAL_DATE``): nothing filed or accepted on or after it is read.
 
 Sources (read-only, pinned by SHA-256):
 
 * CF-R: the accepted CompanyFacts extraction (``batch-NNNN.parquet`` + ``manifest.json``), one CIK range per
   batch; only us-gaap facts of the periodic forms, in USD or shares, filed before the seal are read.
-* FSDS v2 SUB quarters 2009q2..2024q4 (``fsds-staging-manifest.json`` pins each file): the accession
-  acceptance clock and the SIC code as of each filing. No later quarter is opened.
+* FSDS v2 SUB quarters 2009q2..``LAST_SUB_QUARTER`` (the quarter holding the day before the seal;
+  ``fsds-staging-manifest.json`` pins each file): the accession acceptance clock and the SIC code as of each
+  filing. No later quarter is opened.
 * The CIK scope list (T19 identity bridge; text, CSV or parquet with a ``cik`` column).
 * Concept map: ``atx_db.statement_map_seed`` (canonical metric -> concepts by ``concept_priority``, with the
   total-over-component ``PRECEDENCE_OVERRIDES``), imported
@@ -55,6 +57,7 @@ for _p in (str(ATX_DB_SRC), str(TOOLS_DIR)):
         sys.path.insert(0, _p)
 
 import export_fundamental_fields as eff  # noqa: E402  pure period arithmetic (sue, share-pair rule)
+import research_window as rw  # noqa: E402  the research window (the seal)
 from atx_db import statement_map_seed as sms  # noqa: E402  read-only concept map
 
 SCHEMA = "atx.fundamental-events/v1"
@@ -65,12 +68,12 @@ SCOPE_FILE = "cik_scope.txt"
 TOOL_VERSION = "fundamental-events-v1"
 
 EPOCH = dt.date(1970, 1, 1)
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date (research_window.py)
 EMIT_FROM = dt.date(2014, 6, 1)
 US_PER_DAY = 86_400_000_000
 FC1_OFFSET_US = 46 * 3_600_000_000
 FIRST_SUB_QUARTER = "2009q2"
-LAST_SUB_QUARTER = "2024q4"
+LAST_SUB_QUARTER = "{}q{}".format(*rw.last_quarter_before_seal())  # the seal: no later SUB quarter is opened
 DEFAULT_CF_MANIFEST_SHA256 = "50e018e1c26046f3eb3ec27d2f246c8492e60baddbc911ebfda50320f24ac186"
 DEFAULT_FSDS_MANIFEST_SHA256 = "2cad6134efd312d7ad9ca84bbc274fdf360e10e581b38aa88a29f1040bebc628"
 
@@ -967,7 +970,7 @@ def sub_quarters(fsds_dir: Path, expected_sha: str) -> tuple[str, list]:
     out = []
     for quarter in sorted(quarters):
         if not FIRST_SUB_QUARTER <= quarter <= LAST_SUB_QUARTER:
-            continue  # the seal: no SUB quarter after 2024q4 is opened
+            continue  # the seal: no SUB quarter after LAST_SUB_QUARTER is opened
         sub = quarters[quarter]["tables"]["sub"]
         out.append({"quarter": quarter, "file": str(sub["path"]).replace("\\", "/"),
                     "sha256": str(sub["parquet_sha256"])})
@@ -987,7 +990,7 @@ def _parse_sic(value) -> int | None:
 
 
 def build_clock_tables(fsds_dir: Path, quarters: list, scope: set[int]) -> tuple[pa.Table, pa.Table, dict]:
-    """Accession clock table (all filers, SUB <= 2024q4) and the in-scope SIC event table."""
+    """Accession clock table (all filers, SUB <= LAST_SUB_QUARTER) and the in-scope SIC event table."""
     best: dict[str, tuple] = {}
     duplicates = 0
     null_accepted = 0

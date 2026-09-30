@@ -17,8 +17,10 @@ candidates), ``.fields_directory`` (ROOT/<fields manifest sha>, candidates readi
 fields) and ``.vm_identity``. Sidecars are checked as the runner's ``cached_payload_sha`` does.
 A v2 runner's summary also lists ``.entries[]`` (id, layout v1|v2, sidecar, payload, SHAs): each
 candidate is then read from its named entry, v2 ``<id>.<dsl16>.{f64,json}`` or v1 read in place.
-Nothing after 2022-12-31 is read: the role must end by 2023-01-01T00:00Z, every cache sidecar must
-name the ``train`` role, and the summary must describe a TRAIN-only run.
+TRAIN is the research window's (``atx-engine/tools/research_window.py``: decision sessions in [TRAIN_BEGIN_DATE,
+TRAIN_END_DATE), read through ``engine_tools.py``). Nothing on or after the TRAIN end is read: the role must end by
+it (a refusal names the window id and its seal), every cache sidecar must name the ``train`` role, and the summary
+must describe a TRAIN-only run.
 
 Per scored decision d in [score_begin, score_end - 2), candidate k:
   1. Exposures at d as ``strategy_price_exposures.cpp`` (price-risk-v1) defines them:
@@ -35,7 +37,7 @@ Per scored decision d in [score_begin, score_end - 2), candidate k:
      is excluded and there is no drift.
 
 Screen v3-admit-v1 (declared by root before any v3 measurement). FIT is decision sessions in
-[2020-01-01, 2022-01-01) and HOLD is [2022-01-01, 2023-01-01). Statistics use live (finite) days.
+[TRAIN begin, 2022-01-01) and HOLD is [2022-01-01, TRAIN end). Statistics use live (finite) days.
   orientation  s_k = sign(mean f_k over FIT). A disagreement with the runner's sign is reported.
   checks       insufficient (< 250 live FIT days), turnover (tau_k > 0.70), unstable
                (not (FIT Sharpe of s_k f_k > 0 and HOLD mean of s_k f_k > 0)). Every failed check is
@@ -53,7 +55,7 @@ v4 (``--orientation prior --screen v4-prior-v1 --composition ew-theme-v1``, the 
 declared in the v4 pre-registration R3/R4 before any v4 TRAIN read). Every candidate carries ``theme``,
 ``tier`` and ``prior_sign`` (library candidate keys and/or the pinned ``--recipe`` per-candidate list
 ``candidates``/``lineage``; both sources must agree). TRAIN is every decision session in
-[2020-01-01, 2023-01-01); statistics use live (finite) days.
+[TRAIN begin, TRAIN end) of the research window; statistics use live (finite) days.
   orientation  s_k = prior_sign = +1 (the sign is embedded in the DSL: higher value = long); no sign is
                estimated or flipped; prior_sign 0 -> reject_no_prior (weight 0); -1 is refused.
   checks       insufficient (< 250 live TRAIN days), turnover (tau_k > 0.70), veto (Newey-West HAC t of
@@ -155,6 +157,7 @@ if str(ENGINE_TOOLS) not in sys.path:
     sys.path.append(str(ENGINE_TOOLS))
 import code_fingerprint  # noqa: E402
 import record_store  # noqa: E402
+from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -231,15 +234,15 @@ FACTOR_SEMANTICS = ("unsigned-centered-tied-rank;used-rows-finite-signal;ols-res
 SEMANTICS_TAG = hashlib.sha256(f"{CONTEXT_SEMANTICS}|{FACTOR_SEMANTICS}".encode()).hexdigest()[:16]
 AIM_SCHEMA = "atx.fit-candidate-aim/v1"
 AIM_SEMANTICS = ("z=centered-tied-rank-over-used&finite-signal;standardized-mean0-population-sd;min50;all-tied->NaN;"
-                 "TRAIN-decisions[2020-01-01,2023-01-01)-only;c_j(d)=sum(z_d*z_d-j)/n_both,n_both>=50;"
+                 f"TRAIN-decisions[{rw.TRAIN_BEGIN_DATE},{rw.TRAIN_END_DATE})-only;c_j(d)=sum(z_d*z_d-j)/n_both,n_both>=50;"
                  "rho_j=mean_d-finite(c_j);lags0-21,28-126/7;interp-linear;NaN->0;g=theta*sum_0..126(1-theta)^j*rho;"
                  "clip[0.05,1];halves=TRAIN-decision-split-floor(n/2):d<h|d-j>=h;coverage=live/used-rows;v1")
 AIM_TAG = hashlib.sha256(AIM_SEMANTICS.encode()).hexdigest()[:16]
 OUTPUT_WEIGHTS, OUTPUT_ADMISSION, OUTPUT_ADMISSION_CSV = (
     "composition_weights.json", "admission.json", "admission.csv")
-FIT_BEGIN_NS = 1_577_836_800_000_000_000  # 2020-01-01T00:00Z
-HOLD_BEGIN_NS = 1_640_995_200_000_000_000  # 2022-01-01T00:00Z
-TRAIN_END_NS = 1_672_531_200_000_000_000  # 2023-01-01T00:00Z, exclusive: TRAIN is 2020-2022
+FIT_BEGIN_NS = rw.TRAIN_BEGIN_NS           # TRAIN begin (research_window.py)
+HOLD_BEGIN_NS = 1_640_995_200_000_000_000  # 2022-01-01T00:00Z: the v3-admit-v1 FIT/HOLD split
+TRAIN_END_NS = rw.TRAIN_END_NS             # TRAIN end, exclusive (research_window.py)
 DAY_NS = 86_400_000_000_000
 METADATA_LIMIT = 1 << 20  # runner's metadata_text() bound; the weights file must fit too
 SUMMARY_LIMIT = 16 << 20  # a runner summary.json grows with the library; bounded-runner bind cap
@@ -277,6 +280,17 @@ class FitError(Exception):
 def require(condition, message: str) -> None:
     if not condition:
         raise FitError(message)
+
+
+class TrainWindowError(FitError, rw.SealError):
+    """A role reaching past TRAIN: a FitError refusal that is also a research_window.SealError (a ValueError)."""
+
+
+def require_train(condition, what: str) -> None:
+    """Refuse (``TrainWindowError``) unless ``condition``; the message names TRAIN, the window id and the seal."""
+    if not condition:
+        raise TrainWindowError(f"{what} (TRAIN ends {rw.TRAIN_END_DATE}T00:00Z, exclusive; {rw.WINDOW_ID}, "
+                               f"research seal {rw.SEAL_DATE})")
 
 
 def is_hash(value) -> bool:
@@ -463,16 +477,16 @@ class RoleManifest:
         require(0 < d <= 4096 and 0 < n <= 20000, "role: dimensions")
         require(0 <= self.score_begin < self.score_end == d, "role: score window")
         require(self.score_end - 2 - self.score_begin >= 2, "role: fewer than two scored decisions")
-        # TRAIN only: nothing on or after 2023-01-01 may be scored or read.
-        require(0 < start_ns < end_ns <= TRAIN_END_NS,
-                "role: not TRAIN-only (score_end_ns after 2023-01-01T00:00Z)")
+        # TRAIN only: nothing on or after the TRAIN end (research_window.py) may be scored or read.
+        require(0 < start_ns < end_ns, "role: score window instants")
+        require_train(end_ns <= TRAIN_END_NS, "role: not TRAIN-only (score_end_ns after the TRAIN end)")
         self._files, self._base = j["files"], Path(manifest).parent
         self.sessions = self._read("sessions.i64", "<i8", d)
         self.ids = self._read("ids.u64", "<u8", n)
         s = self.sessions
         require(s[0] > 0 and bool(np.all(np.diff(s) > 0)) and int(s[-1]) < end_ns and
                 bool(np.all(s % DAY_NS == 0)), "role: session axis")
-        require(int(s[-1]) < TRAIN_END_NS, "role: session after 2022-12-31")
+        require_train(int(s[-1]) < TRAIN_END_NS, "role: a session on or after the TRAIN end")
         require(int(np.searchsorted(s, start_ns, side="left")) == self.score_begin, "role: score boundary")
         require(self.ids[0] != 0 and bool(np.all(self.ids[1:] > self.ids[:-1])), "role: instrument axis")
         self.begin, self.end = self.score_begin, self.score_end - 2  # scored decisions with a d+2 label
