@@ -748,6 +748,8 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
                "[--no-composition]\n"
+               "  verbs: marginal (marginal IC of each candidate against a saved blend, contract K6; see\n"
+               "    `atx-equity-strategy-ic marginal --help`); ic (this option list, also the default).\n"
                "  --no-composition: screening pass; member IC rows and orientations only (byte-identical to a full\n"
                "    run's), no blend, __combined__ rows, planned targets or saved blend; with --candidate-cache a\n"
                "    candidate whose signal and IC result are both cached is not loaded. Refuses --composition-weights.\n"
