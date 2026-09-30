@@ -7,8 +7,9 @@
 Run from the root the u pass ran in (the runner summary's cache and fields paths are relative to it). Reads the
 u pass (summary.json, orientations.json, recipe.json, train_daily_ic.csv, train_candidates.jsonl), every
 candidate's cached raw signal (the summary's candidate_cache entries, validated and SHA-verified by
-fit_composition_weights.CacheLayout), the pinned TRAIN role (fit_composition_weights.RoleManifest: TRAIN-only
-seal, nothing on or after 2023-01-01), the size and FF12 fields of the pinned research fields manifest, and the
+fit_composition_weights.CacheLayout), the pinned TRAIN role (fit_composition_weights.RoleManifest: TRAIN-only, nothing
+on or after the TRAIN end of research_window.py; a role reaching it raises TrainWindowError, a ValueError naming the
+window id and the seal), the size and FF12 fields of the pinned research fields manifest, and the
 admission table. Writes a new directory (published atomically, never overwritten): card-<id>.json and
 card-<id>.html per candidate, index.json / index.html (candidates ranked by WorldQuant fitness), daily_sleeve.csv
 (per-candidate daily turnover / PnL / coverage, the monitor's TRAIN reference) and manifest.json (inputs and file

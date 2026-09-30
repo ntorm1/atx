@@ -284,8 +284,9 @@ atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
     const alpha::Panel& panel, const IcScreenConfig& config, const ResearchIcOptions& options,
     std::span<const atx::u8> member, std::span<const atx::u32> bad,
     std::string_view price_field) {
-  if (options.workers == 0 || options.workers > 4)
-    return Err(ErrorCode::InvalidArgument, "IC research: workers must be explicit 1..4");
+  static_assert(max_research_ic_workers == 16, "keep the refusal text in step with the bound");
+  if (options.workers == 0 || options.workers > max_research_ic_workers)
+    return Err(ErrorCode::InvalidArgument, "IC research: workers must be explicit 1..16");
   const auto valid = validate(panel, config, member, bad,options.active_horizons);
   if (!valid) return Err(valid.error());
   auto data = std::make_shared<Cache>();

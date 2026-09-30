@@ -45,7 +45,8 @@ presence). The default field list is the point-in-time fields only; the others (
 ``mktcap_lagged``, ``size_grp``) are produced only when named in ``--fields``. Implied volatility
 outside the declared domain ``IV_DOMAIN`` becomes NaN (never clamped) and is counted per field.
 
-Everything available on or after 2025-01-01 is excluded; the role itself must end before it.
+Everything available on or after the research seal (``research_window.py`` ``SEAL_DATE``) is excluded; the role
+itself must end before it.
 Row groups of the vendor file mix all dates: only needed columns are decoded, rows are filtered to
 the role ids/dates before any statistic. No warehouse access. Outputs are exclusive and
 deterministic (no wall-clock value in any output byte).
@@ -93,12 +94,13 @@ import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
 import code_fingerprint  # noqa: E402  (same directory: the AST closure fingerprints --reuse keys on)
+import research_window as rw  # same directory: the research window (TRAIN and the seal)
 
 SCHEMA = "atx.research-role-fields/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 DAY_NS = 86_400_000_000_000
 EPOCH = dt.date(1970, 1, 1)
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date (research_window.py)
 FINRA_MAX_STALE_DAYS = 45
 FINRA_HEADER = b"security_id,available_at,value"
 FINRA_REPUBLICATION_SETTLEMENT_BEFORE = dt.date(2021, 6, 1)
@@ -263,7 +265,7 @@ FIELDS = {
         "units": "indicator: 1 when line_types.security_type is common or common_unverified (the research universe's eligible types), 0 for every other type (ETF, ADR, fund, unknown, ...)",
         "clock": "static-line-classification;NOT-point-in-time",
         "staleness": "constant across sessions; NaN only when the line has no line_types row",
-        "caveats": ["classification uses a 2026-09-18 Nasdaq Trader directory snapshot (listed lines) and whole-history vendor earnings evidence (delisted lines): information after 2025-01-01 by construction; use as a coarse ETF/fund filter, not as a PIT signal",
+        "caveats": ["classification uses a 2026-09-18 Nasdaq Trader directory snapshot (listed lines) and whole-history vendor earnings evidence (delisted lines): information after " + rw.SEAL_DATE + " by construction; use as a coarse ETF/fund filter, not as a PIT signal",
                     "ADR is typed 0"]},
     "mkt_ret": {
         "group": "role", "source_columns": ["close.f64", "raw_close.f64", "present.u8", "member.u8"], "point_in_time": True,
@@ -665,9 +667,9 @@ class Role:
             raise ValueError("role ids are not strictly increasing positive i64 securityIDs")
         self.days = sessions // DAY_NS
         self.ids = ids.astype(np.int64)
-        # The roles end 2024; assert it rather than trust it.
+        # The roles end before the research seal; assert it rather than trust it.
         if int(self.days[-1]) >= day_of(SEAL):
-            raise ValueError("role contains a session on or after 2025-01-01; refusing (sealed)")
+            raise rw.SealError(rw.seal_message("role contains a session"))
         self.member = np.frombuffer(blobs["member.u8"], dtype="u1").reshape(self.n_dates, self.n)
         years = self.days.astype("datetime64[D]").astype("datetime64[Y]").astype(np.int64) + 1970
         self.years = years
@@ -1367,7 +1369,7 @@ def lake_fields(names, lake: Path, role: Role, output: Path, budget: Budget):
         formations = set()
         for year in range(first_year, int(role.years[-1]) + 1):
             if year >= SEAL.year:
-                raise ValueError("spine year on or after 2025 requested")
+                raise rw.SealError(rw.seal_message(f"spine year {year} requested"))
             rel = f"spine_monthly/year={year}/part-0.parquet"
             if rel not in listed:
                 if listed_years and year < listed_years[0]:
@@ -1574,7 +1576,7 @@ SIC_STAGE_MAPPING = (
     "Facts CIK. sic2 / ff12 / ff49 are not used: groups come from this builder's own SIC mapping table (the stage "
     "labels are compared with it and the disagreeing rows counted). Consumer rule unchanged: the linked CIK's latest row "
     "(max clock, tie by accession) with clock < the mark of session t-L, age = date(t) - UTC date(clock) <= 550 days; "
-    "rows with clock on or after 2025-01-01 and sic outside [100, 9999] are dropped (counted)")
+    f"rows with clock on or after {rw.SEAL_DATE} and sic outside [100, 9999] are dropped (counted)")
 BRIDGE_KINDS = ("P", "J")                              # any other primary value (N, ...) is dropped and counted
 BRIDGE_EXCLUDED_BASES = ("current_ticker_verified",)   # T18: starts at the 2026 snapshot, never backfills history
 STALENESS_DAYS_ALLOWED = (FUND_STALE_DAYS, FUND_STALE_DAYS_ANNUAL)  # v4-prereg R2: 200 / 400 only
@@ -2586,7 +2588,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
                  "clock_recipe": role.manifest.get("clock_recipe")},
         "instrument_namespace": "spiderrock.securityID",
         "seal": {"exclusive_end": SEAL.isoformat(),
-                 "rule": "every source row available on or after 2025-01-01 is dropped before use; role sessions asserted < 2025-01-01"},
+                 "rule": f"every source row available on or after {SEAL.isoformat()} is dropped before use; role sessions "
+                         f"asserted < {SEAL.isoformat()}"},
         "cell_rule": "NaN where the field is not visible at the session decision or the source is absent",
         "coverage_basis": "member.u8 cells of the role (member cells with a finite value / member cells)",
         "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role close clock), before the 23:00 UTC decision",
@@ -3168,6 +3171,11 @@ def main(argv=None):
 # register() wraps run() and main() in this namespace; nothing changes unless one of its fields is requested.
 import research_fields_holdings as _holdings  # noqa: E402  (same directory, as prepare_recent_research imports this)
 _holdings.register(globals())
+# Platform v8 F-1 registry hook: the price and long-lookback fields of research_fields_price.py, an opt-in FIELD_MODULES
+# module like research_fields_sec.py (registry after every field above); nothing changes unless one is requested.
+import research_fields_price as _price  # noqa: E402  (same directory; it does not import this module)
+FIELD_MODULES.append(_price.bind(globals()))
+ALL_FIELDS.update(_price.FIELDS)
 
 if __name__ == "__main__":
     main()

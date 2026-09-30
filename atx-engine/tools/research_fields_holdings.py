@@ -13,7 +13,8 @@ unchanged (prepare_research_fields.REUSE_MODULE_RULE); every other holdings fiel
 
 Sources (atx-db alpha panel v1 stages, read-only; each pinned by the SHA-256 of its ``manifest.json``, which must be a
 complete manifest of the declared schema with the declared clock and staleness rules; every file read is hash-checked
-against that manifest from the exact bytes parsed; nothing available on or after 2025-01-01 is used):
+against that manifest from the exact bytes parsed; nothing available on or after the research seal, ``research_window.py``
+``SEAL_DATE``, is used):
 * ``thirteenf/`` (D1): ``filings.parquet``, ``filing_checks.parquet``, ``cusip_map_pit.parquet``, ``agg_asof45.parquet``
   and the ``parts/source=*/holdings.parquet`` data sets of the effective filings.
 * ``ftd/`` (D3a): ``year=YYYY/ftd.parquet``.
@@ -34,6 +35,7 @@ import functools
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 import numpy as np
@@ -41,11 +43,13 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the research window (the seal)
+
 GROUP = "holdings"
 EPOCH = dt.date(1970, 1, 1)
 DAY_NS = 86_400_000_000_000
 MARK_NS = 22 * 3_600_000_000_000
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date (research_window.py)
 SEAL_NS = (SEAL - EPOCH).days * DAY_NS
 NEVER = np.iinfo(np.int64).max
 BEFORE_ALL = np.iinfo(np.int64).min
@@ -250,6 +254,13 @@ def quarter_end(d: dt.date) -> dt.date:
     month = ((d.month - 1) // 3) * 3 + 3
     nxt = dt.date(d.year + (month == 12), month % 12 + 1, 1)
     return nxt - dt.timedelta(days=1)
+
+
+def source_part_is_sealed(part: str) -> bool:
+    """True for a 13F ``parts/source=YYYYqN`` data set (the filings of calendar quarter N of YYYY) that begins on or
+    after the research seal; a part name of another shape is not dated and is not refused here."""
+    m = re.fullmatch(r"(\d{4})q([1-4])", part)
+    return m is not None and rw.partition_is_sealed(int(m[1]), int(m[2]))
 
 
 def prev_quarter_end(q: dt.date) -> dt.date:
@@ -472,8 +483,10 @@ class Stage:
         return pq.read_table(pa.BufferReader(self.blob(rel)), columns=list(columns))
 
     def years(self, pattern: str, lo: int, hi: int) -> list:
-        """Manifest-listed ``pattern.format(year)`` files for lo..hi that exist in the stage."""
-        return [pattern.format(y) for y in range(lo, hi + 1) if pattern.format(y) in self.manifest["files"]]
+        """Manifest-listed ``pattern.format(year)`` files for lo..hi that exist in the stage. A year that begins on or
+        after the research seal holds only sealed rows: its file is never listed, so it is never opened."""
+        return [pattern.format(y) for y in range(lo, hi + 1)
+                if pattern.format(y) in self.manifest["files"] and not rw.partition_is_sealed(y)]
 
     def sources(self) -> list:
         return [self.manifest_source] + sorted(self.read, key=lambda x: x["path"])
@@ -640,6 +653,9 @@ def build_13f(ctx: Ctx, names, stage: Stage):
             ksid = cm_sid[cm]
             rows = {"filer": [], "sid": [], "shares": [], "value": []}
             for part in sorted(set(src_all[mine].tolist())):
+                if source_part_is_sealed(part):  # filed on or after the seal: never opened
+                    st["holdings_parts_not_read_sealed"] = st.get("holdings_parts_not_read_sealed", 0) + 1
+                    continue
                 path, ident = stage.verified_path(f"parts/source={part}/holdings.parquet")
                 pf = pq.ParquetFile(path)
                 for batch in pf.iter_batches(batch_size=65_536, columns=["accession", "cusip", "shares", "sshprnamt_type",

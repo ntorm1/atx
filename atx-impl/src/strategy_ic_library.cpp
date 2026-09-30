@@ -61,42 +61,45 @@ co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
   return co::Ok(Json::parse(text));
 }
 namespace {
-// See FieldPlan. At most 64 candidates' worth of scans per field: O(n^2 f) with
-// n <= 256 candidates and f <= 64 fields.
+// See FieldPlan. O(n^2 f) scans with n <= 256 candidates and f <= max_extra_fields
+// (metadata only). The same operations as the former u64 masks, bit for bit, so a
+// library of <= 64 extras plans exactly as before.
 co::Result<FieldPlan> field_plan(const std::vector<Candidate>& candidates,const std::vector<std::string>& extras) {
   FieldPlan plan;
-  if (extras.size()>64) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: at most 64 extra fields");
+  if (extras.size()>max_extra_fields)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: at most "+std::to_string(max_extra_fields)+
+        " extra fields (the library references "+std::to_string(extras.size())+")");
   const usize n=candidates.size(),f=extras.size();
   for (const auto& c:candidates) {
-    u64 mask=0;
+    FieldMask mask;
     for (const auto& name:c.extra_fields) {
       const auto at=std::lower_bound(extras.begin(),extras.end(),name);
       if (at==extras.end() || *at!=name) return co::Err(co::ErrorCode::Internal,"IC runner: field plan index");
-      mask|=u64{1}<<static_cast<unsigned>(at-extras.begin());
+      mask.set(static_cast<usize>(at-extras.begin()));
     }
-    plan.needs.push_back(mask); plan.capacity=std::max(plan.capacity,static_cast<usize>(std::popcount(mask)));
+    plan.needs.push_back(mask); plan.capacity=std::max(plan.capacity,mask.count());
   }
   const auto next_use=[&](usize from,usize field) {
-    for (usize t=from;t<n;++t) if ((plan.needs[t]>>field)&1U) return t;
+    for (usize t=from;t<n;++t) if (plan.needs[t].test(field)) return t;
     return n;
   };
-  u64 resident=0;
+  FieldMask resident;
   for (usize k=0;k<n;++k) {
-    for (usize g=0;g<f;++g) if (((resident>>g)&1U) && next_use(k,g)==n) resident&=~(u64{1}<<g);
+    for (usize g=0;g<f;++g) if (resident.test(g) && next_use(k,g)==n) resident.reset(g);
     for (usize g=0;g<f;++g) {
-      if (!((plan.needs[k]>>g)&1U) || ((resident>>g)&1U)) continue;
-      if (static_cast<usize>(std::popcount(resident))>=plan.capacity) {
+      if (!plan.needs[k].test(g) || resident.test(g)) continue;
+      if (resident.count()>=plan.capacity) {
         // A victim exists: fewer than `capacity` needed fields are resident yet.
         usize victim=f,farthest=0;
         for (usize h=0;h<f;++h) {
-          if (!((resident>>h)&1U) || ((plan.needs[k]>>h)&1U)) continue;
+          if (!resident.test(h) || plan.needs[k].test(h)) continue;
           const auto t=next_use(k,h);
           if (victim==f || t>farthest) { victim=h; farthest=t; }
         }
         if (victim==f) return co::Err(co::ErrorCode::Internal,"IC runner: field plan eviction");
-        resident&=~(u64{1}<<victim);
+        resident.reset(victim);
       }
-      resident|=u64{1}<<g; ++plan.loads;
+      resident.set(g); ++plan.loads;
     }
     plan.planned.push_back(resident);
   }
@@ -245,10 +248,10 @@ co::Result<std::string> hash_payload(const std::filesystem::path& path,u64 bytes
 // the fields some cache miss will load) is hashed before the role payload opens,
 // so a tampered field refuses first. `verified[f]` records the file stamp it was
 // verified under (unchanged across the read), which its loads then trust.
-co::Status verify_fields(const Role& spec,u64 needed,HashMeter& meter,
+co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& meter,
                          std::vector<std::optional<FileStamp>>& verified) {
   for (usize f=0;f<spec.fields.load.size();++f) {
-    if (!((needed>>f)&1U)) continue;
+    if (!needed.test(f)) continue;
     const auto& field=spec.fields.load[f];
     const auto before=file_stamp(field.path);
     ATX_TRY(auto sha,hash_payload(field.path,field.bytes,meter,"research field payload"));
@@ -261,10 +264,10 @@ co::Status verify_fields(const Role& spec,u64 needed,HashMeter& meter,
   return co::Ok();
 }
 void FieldResidency::enter(usize k,std::unique_ptr<al::Engine>& vm,std::ostream& progress) {
-  const u64 drop=resident_&~lib_.field_plan.planned[k];
-  if (!drop) return;
+  const FieldMask drop=resident_&~lib_.field_plan.planned[k];
+  if (drop.none()) return;
   vm.reset(); panel_.reset();
-  for (usize f=0;f<columns_.size();++f) if ((drop>>f)&1U) {
+  for (usize f=0;f<columns_.size();++f) if (drop.test(f)) {
     release(columns_[f]);
     progress<<"IC field-release role="<<spec_.name<<" field="<<lib_.extra_fields[f]<<'\n';
   }
@@ -272,11 +275,11 @@ void FieldResidency::enter(usize k,std::unique_ptr<al::Engine>& vm,std::ostream&
 }
 co::Result<const al::Panel*> FieldResidency::panel_for(usize k,const al::Panel& base,const std::string& candidate,
     std::unique_ptr<al::Engine>& vm,std::ostream& progress) {
-  const u64 missing=lib_.field_plan.needs[k]&~resident_;
-  if (missing) {
+  const FieldMask missing=lib_.field_plan.needs[k]&~resident_;
+  if (missing.any()) {
     vm.reset(); panel_.reset();
     for (usize f=0;f<columns_.size();++f) {
-      if (!((missing>>f)&1U)) continue;
+      if (!missing.test(f)) continue;
       const auto& field=spec_.fields.load[f]; const auto started=std::chrono::steady_clock::now();
       const auto before=file_stamp(field.path);
       const bool trusted=before && verified_[f] && *verified_[f]==*before;
@@ -290,17 +293,17 @@ co::Result<const al::Panel*> FieldResidency::panel_for(usize k,const al::Panel& 
       if (std::any_of(columns_[f].begin(),columns_[f].end(),[](f64 v) { return std::isinf(v); }))
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field value is infinite: "+field.name);
       const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
-      seconds_+=seconds; ++loads_; resident_|=u64{1}<<f;
+      seconds_+=seconds; ++loads_; resident_.set(f);
       progress<<"IC field-load role="<<spec_.name<<" field="<<field.name<<" candidate="<<candidate
               <<" seconds="<<seconds<<" hashed="<<(trusted?0:1)<<'\n'<<std::flush;
     }
-    peak_=std::max(peak_,static_cast<usize>(std::popcount(resident_)));
+    peak_=std::max(peak_,resident_.count());
   }
   const al::Panel* out=&base;
-  if (resident_) {
+  if (resident_.any()) {
     if (!panel_) {
       std::vector<std::string> names; std::vector<std::span<const f64>> columns;
-      for (usize f=0;f<columns_.size();++f) if ((resident_>>f)&1U) {
+      for (usize f=0;f<columns_.size();++f) if (resident_.test(f)) {
         names.push_back(lib_.extra_fields[f]); columns.emplace_back(columns_[f]);
       }
       ATX_TRY(auto panel,dsl_panel(base,std::move(names),std::move(columns)));
@@ -313,6 +316,6 @@ co::Result<const al::Panel*> FieldResidency::panel_for(usize k,const al::Panel& 
 void FieldResidency::drop_all(std::unique_ptr<al::Engine>& vm) noexcept {
   vm.reset(); panel_.reset();
   for (auto& column:columns_) release(column);
-  resident_=0;
+  resident_.reset();
 }
 } // namespace atx::impl::strategy::ic_detail

@@ -6,6 +6,7 @@
 #include <string>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/data/research_window.hpp"
 
 namespace atx::impl::strategy {
 // ---- the daily decide path (v7 B1 manifest, B2 decide, B6 locates, B9 health) ----
@@ -24,8 +25,8 @@ namespace atx::impl::strategy {
 //        liquidity_cache, rate ("fixed"), daily_turnover_mean_max, daily_turnover_p95_max,
 //        max_working_bytes, recipe_sha256 (the NAV run's summary.json recipe_sha256)},
 //   executables {"atx-equity-strategy-targets": sha, "atx-equity-strategy-ic": sha},
-//   source.git_sha (40 hex), seal {policy "research-seal-v1", exclusive_session
-//   "2025-01-01"}, owner_gate (null, or {owner, ruling, date}),
+//   source.git_sha (40 hex), seal {policy (the research window id, kResearchWindowId),
+//   exclusive_session (its seal date, kSealBeginDate)}, owner_gate (null, or {owner, ruling, date}),
 //   health {gross_leverage [lo, hi], abs_net_leverage_max, planned_turnover_max,
 //           names_without_locate_max}.
 // Paths are used as given (relative to the working directory, as every CLI here).
@@ -41,13 +42,13 @@ namespace atx::impl::strategy {
 // and the executable SHA already binds the code.
 inline constexpr const char* book_deploy_schema = "atx.book-deploy/v1";
 inline constexpr const char* book_decision_schema = "atx.book-decision/v1";
-// The research seal: exclusive 2025-01-01 UTC, the instant of kSeal in
-// atx-engine/src/data/strategy_data.cpp (unchanged here). Every session at or past it is
-// refused; with an owner_gate record it is STILL refused: live sessions are an owner
-// gate and are not enabled in this build.
-inline constexpr const char* research_seal_policy = "research-seal-v1";
-inline constexpr const char* research_seal_session = "2025-01-01";
-inline constexpr atx::i64 research_seal_exclusive_ns = 1'735'689'600'000'000'000LL;
+// The research seal: the research window of atx/engine/data/research_window.hpp (the seal
+// read_strategy_role enforces). Every session at or past it is refused; with an owner_gate
+// record it is STILL refused: live sessions are an owner gate and are not enabled in this
+// build. The two texts point into the header's string literals, so they are NUL-terminated.
+inline constexpr const char* research_seal_policy = atx::engine::data::kResearchWindowId.data();
+inline constexpr const char* research_seal_session = atx::engine::data::kSealBeginDate.data();
+inline constexpr atx::i64 research_seal_exclusive_ns = atx::engine::data::kSealBeginNs;
 inline constexpr bool live_sessions_enabled = false;
 
 struct DecideConfig {

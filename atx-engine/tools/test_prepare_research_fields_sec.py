@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 
 import prepare_research_fields as tool
 import research_fields_sec as sec
+import research_window as rw
 import test_prepare_research_fields as base
 import test_prepare_research_fields_sv as svt
 
@@ -435,6 +436,18 @@ class SecFields(unittest.TestCase):
             np.testing.assert_array_equal(self.got(name), self.expected[name], err_msg=name)
             self.assertTrue(np.isfinite(self.got(name)).any(), name)   # the fixture exercises every field
 
+    def test_insider_sealed_quarter_present_on_disk_is_never_opened(self):
+        # W0-1: a filing quarter that begins on or after the research seal holds only sealed rows. The fixture writes
+        # and lists the seal year's q1 inside the 31-day read margin after the role's last session: it is not opened.
+        sealed = f"transactions/year={rw.SEAL.year}/{rw.SEAL.year}q1.parquet"
+        self.assertTrue(rw.partition_is_sealed(rw.SEAL.year, 1))
+        self.assertTrue((self.fx.stages / "insider" / sealed).is_file())
+        checks = self.manifest["source_checks"]["sec"]["insider"]
+        self.assertEqual(checks["files_not_read_sealed"], 1)
+        listed = sum(1 for k in json.loads((self.fx.stages / "insider" / "manifest.json").read_text())["files"]
+                     if k.startswith("transactions/"))
+        self.assertEqual(checks["files_read"], listed - checks["files_not_read_after_role"] - 1)
+
     def test_pit_acceptance_after_22_utc_is_not_usable_next_session(self):
         # 1001's release accepted 2024-10-29 22:30 UTC: still the July release on 10-30, the new one from 10-31
         self.assertEqual(self.at_("ea_delay_days", "2024-10-30", 101), 3.0)
@@ -525,7 +538,9 @@ class SecFields(unittest.TestCase):
         self.assertEqual(checks["calendar"]["role_sessions_not_in_rule"], 2)   # the fixture keeps 11-28 and 12-25
         self.assertEqual(checks["earnings_calendar"]["lookback_truncated_rows"], 0)
         self.assertEqual(checks["insider"]["files_not_read_after_role"], 1)    # 2025q2 (2025q1: within 31 days)
-        self.assertEqual(checks["insider"]["rows_sealed"], 1)
+        # 2025q1 begins at the seal this fixture binds (conftest.py): it is never opened, so its sealed row is not read
+        self.assertEqual(checks["insider"]["files_not_read_sealed"], 1)
+        self.assertEqual(checks["insider"]["rows_sealed"], 0)
         self.assertEqual(checks["insider"]["dropped_form_not_original_4"], 2)
         self.assertEqual(checks["insider"]["dropped_not_director_or_officer"], 1)
         self.assertEqual(checks["insider"]["dropped_code_direction_mismatch"], 1)

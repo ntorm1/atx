@@ -172,3 +172,5 @@ if(ATX_BUILD_TESTS)
 endif()
 # Lane 9: real-data DSL alpha mining stage (equity-mine)
 target_sources(atx-impl-core PRIVATE src/stage_equity_mine.cpp)
+# platform v8 D-2: the `exposures` verb (contract K2) of atx-equity-strategy-targets
+target_sources(atx-impl-core PRIVATE src/strategy_exposures_verb.cpp)
