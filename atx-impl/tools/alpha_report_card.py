@@ -48,6 +48,12 @@ Definitions (the runner's are those of strategy_ic_runner.cpp + atx-engine facto
                 every admitted member and each theme composite (mean of the members' rank / n, missing = 0);
                 pnl: Pearson of the daily book PnL over rows both finite (>= 250) with every admitted member and
                 each theme composite (mean of the members' PnL). max |rho| over the admitted members but itself.
+Store (v8 C-1, ``--work-dir W``, shared with the fitter): each candidate's invariant block (size / FF12 splits, decay,
+book pnl / turnover / coverage) lives in W/<role sha16>-<window id>/card/, keyed by its signal payload SHA-256 and the
+producer fingerprint of CARD_PRODUCERS; only the correlation block is recomputed. Output bytes do not depend on it.
+Report only (off by default, bytes unchanged when off): ``--coverage-flags`` (C-1), ``--ic-theta`` and
+``--marginal-ic`` (C-2: horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h); the K6 row); f_theta / f_theta_hac_t of
+the admission row are copied when the fitter wrote them. None of them gates, selects or weights anything.
 Numpy only (mega_report components for the pages); BLAS pinned to one thread.
 """
 from __future__ import annotations
@@ -73,6 +79,7 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fit_composition_weights as fcw  # noqa: E402
+import horizon_stats  # noqa: E402
 from mega_report import analysis as A  # noqa: E402
 from mega_report import components as C  # noqa: E402
 from mega_report import theme as TH  # noqa: E402
@@ -100,6 +107,9 @@ LEGACY_THEME_KEYS = ("theme", "family")
 CARD_KEY_SCHEMA = "atx.alpha-report-card-invariant/v1"
 CARD_PRODUCERS = ("rank_signal", "invariant_block", "decay_block", "row_decay", "block_json", "block_arrays",
                   "Geometry", "size_groups", "ff12_groups", "GroupLabels")
+# v8 C-2, report only (v8-prereg rule 8): the marginal IC contract K6 (task F-2, marginal_ic.json), copied per card.
+K6_KEYS = ("ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t", "max_abs_rho", "max_rho_member")
+REPORT_ONLY_ADMISSION_KEYS = ("f_theta", "f_theta_hac_t")  # fitter --report-f-theta columns, copied when present
 
 
 class CardError(Exception):
@@ -347,7 +357,36 @@ class Inputs:
                 "admission: TRAIN manifest differs from the pinned role")
         self.adm_rows = {r["id"]: r for r in self.admission.get("candidates", [])}
         self.admitted = [i for i in self.admission.get("admitted", []) if i in {c["id"] for c in self.cands}]
+        self.marginal = None  # K6 rows by id (--marginal-ic), report only
+        if getattr(args, "marginal_ic", None) is not None:
+            self.marginal, m_sha = load_marginal_ic(Path(args.marginal_ic), getattr(args, "marginal_ic_sha256", None))
+            self.files[str(args.marginal_ic)] = m_sha
         self.panel = self.role.payload()
+
+
+def load_marginal_ic(path: Path, pin: str | None) -> tuple[dict, str]:
+    """({id: {K6 keys}}, SHA-256) of a marginal_ic.json (contract K6: a list of rows, or {"candidates": [rows]}, each
+    {id, ic21, ic21_hac_t, marginal_ic21, marginal_hac_t, max_abs_rho, max_rho_member}; other keys are ignored)."""
+    data = path.read_bytes() if path.is_file() else b""
+    require(data, f"marginal IC: missing {path}")
+    sha = sha256_bytes(data)
+    require(pin is None or pin == sha, "marginal IC: SHA-256 pin differs")
+    try:
+        j = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise CardError(f"marginal IC: JSON parse: {exc}") from exc
+    rows = j.get("candidates") if isinstance(j, dict) else j
+    require(isinstance(rows, list), "marginal IC: expected a list of K6 rows or {candidates: [...]}")
+    out = {}
+    for r in rows:
+        require(isinstance(r, dict) and isinstance(r.get("id"), str) and all(k in r for k in K6_KEYS),
+                f"marginal IC: a row lacks id or one of the K6 keys {K6_KEYS}")
+        require(r["id"] not in out, f"marginal IC: duplicate row {r['id']}")
+        require(all(r[k] is None or (isinstance(r[k], (int, float)) and not isinstance(r[k], bool))
+                    for k in K6_KEYS[:5]) and (r["max_rho_member"] is None or isinstance(r["max_rho_member"], str)),
+                f"marginal IC: row {r['id']} has a non-numeric statistic or member")
+        out[r["id"]] = {k: r[k] for k in K6_KEYS}
+    return out, sha
 
 
 # ------------------------------------------------------------------------------------------------ geometry
@@ -429,7 +468,7 @@ def size_field_name(has_me_company: bool) -> str:
     return "me_company" if has_me_company else "adv63_dollar_volume (me_company unavailable)"
 
 
-def size_groups(geo: Geometry, inputs: Inputs, panel: dict) -> tuple[np.ndarray, str]:
+def size_groups(geo: Geometry, inputs, panel: dict) -> tuple[np.ndarray, str]:
     name = size_field_name(inputs.size is not None)
     if inputs.size is not None:
         size = geo.gather(inputs.size, 0)
@@ -450,7 +489,7 @@ def size_groups(geo: Geometry, inputs: Inputs, panel: dict) -> tuple[np.ndarray,
     return np.where(ok, terc, -1).astype(np.int16), name
 
 
-def ff12_groups(geo: Geometry, inputs: Inputs) -> np.ndarray | None:
+def ff12_groups(geo: Geometry, inputs) -> np.ndarray | None:
     if inputs.ff12 is None:
         return None
     v = geo.gather(inputs.ff12, 0)
@@ -676,6 +715,16 @@ def card_fingerprint() -> str:
         raise CardError(f"card producer fingerprint: {exc}") from exc
 
 
+def horizon_block(m: np.ndarray) -> dict:
+    """Report only (v8 C-2, --ic-theta): ic_theta = sum_{h=1..63} theta (1 - theta)^(h-1) m(h) over the card's lagged
+    one-day rank IC m(h) (horizon_stats.ic_theta); None when some m(h) is undefined."""
+    return {"theta": horizon_stats.HORIZON_THETA, "h": [DECAY_H[0], DECAY_H[-1]],
+            "ic_theta": horizon_stats.ic_theta(m, DECAY_H, horizon_stats.HORIZON_THETA),
+            "weights_sum": float(horizon_stats.theta_weights(DECAY_H, horizon_stats.HORIZON_THETA).sum()),
+            "definition": "sum over h=1..63 of theta*(1-theta)^(h-1)*m(h), m = decay.ic (lagged one-day rank IC); "
+                          "truncated at 63, not renormalised; undefined if any m(h) is; report only"}
+
+
 def coverage_flag(coverage_by_year: dict) -> dict:
     """Report-only flag of a candidate scored on thin coverage (review focus 6): the years whose mean coverage is below
     the runner's 80% rule, and the years with no finite signal at all. The candidate is always carded."""
@@ -808,6 +857,8 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
         # decay
         m = block["decay_ic"]
         card["decay"] = {"h": list(hs), "ic": list(m), "n_dates": block["decay_n"], "fit": half_life_fit(m, hs)}
+        if getattr(args, "ic_theta", False):  # report only (C-2); without the switch the card bytes are unchanged
+            card["horizon"] = horizon_block(m)
         check = {}
         for h in RUNNER_HORIZONS:
             mine = block["cum"][str(h)]
@@ -876,8 +927,11 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
                 entries[k]["payload_sha256"],
                 "thresholds": {x: rules.get(x) for x in ("tau_limit", "cost_tau_limit", "veto_t", "rho_limit",
                                                          "min_train_days", "min_fit_days") if x in rules}}
+            card["admission"].update({x: adm[x] for x in REPORT_ONLY_ADMISSION_KEYS if x in adm})  # C-2, report only
         else:
             card["admission"] = {"status": "not-in-admission-table"}
+        if inputs.marginal is not None:  # K6 (--marginal-ic), report only
+            card["marginal_ic"] = inputs.marginal.get(cid) or {"status": "absent from marginal_ic.json"}
         files[f"card-{cid}.json"] = canonical(card)
         files[f"card-{cid}.html"] = card_html(card).encode("utf-8")
         index_rows.append(index_row(card))
@@ -940,6 +994,10 @@ def index_row(card: dict) -> dict:
     fitd = card["decay"]["fit"] or {}
     ic21 = card["ic_by_year"][str(ORIENTATION_H)]["all"]
     extra = {"coverage_low": card["coverage_flag"]["low"]} if "coverage_flag" in card else {}  # --coverage-flags only
+    if "horizon" in card:  # --ic-theta only
+        extra["ic_theta"] = card["horizon"]["ic_theta"]
+    if "marginal_ic" in card:  # --marginal-ic only
+        extra["marginal_ic21"] = card["marginal_ic"].get("marginal_ic21")
     return {**extra, "id": card["id"], "theme": card["theme"], "status": card["admission"].get("status"),
             "ic21": rh[str(ORIENTATION_H)]["mean"], "ir21": ic21["ir"], "half_life": fitd.get("half_life_days"),
             "turnover": wq["turnover"], "sharpe": wq["sharpe"], "fitness": wq["fitness"],
@@ -1069,6 +1127,13 @@ def parse_args(argv):
     p.add_argument("--coverage-flags", action="store_true",
                    help="report only: add coverage_flag to each card (years below the runner's 80%% coverage rule, "
                         "years with no finite signal) and coverage_low to the index; off: bytes unchanged")
+    p.add_argument("--ic-theta", action="store_true",
+                   help="report only (v8 C-2): add horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h), theta .05, "
+                        "h 1..63, to each card and the index; off: bytes unchanged")
+    p.add_argument("--marginal-ic", type=Path, default=None,
+                   help="report only (v8 C-2): marginal_ic.json of the marginal IC verb (contract K6); its row is "
+                        "copied into each card as marginal_ic")
+    p.add_argument("--marginal-ic-sha256", default=None, help="pin of --marginal-ic (checked when given)")
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     return p.parse_args(argv)
 

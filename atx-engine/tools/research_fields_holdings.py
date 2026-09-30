@@ -7,7 +7,9 @@ When some are, the builder computes the other fields, and the ``publish`` step o
 this module writes its ``<field>.f64`` payloads into the same exclusive output directory, appends its manifest entries
 (registry order, after the builder's) and ``source_checks.holdings``, and only then is the manifest published. A run
 that requests only holdings fields carries the builder's cheapest field (``mkt_ret``) and drops it before publication.
-Holdings fields are always computed: ``--reuse`` applies to the builder's own fields only.
+With ``--reuse`` (v8 C-3) a holdings field is copied from the prior directory when its producing code (``PRODUCERS``
+kind closure plus the builder code it reads through ``ns``), stage manifest pins, formula and dependencies are
+unchanged (prepare_research_fields.REUSE_MODULE_RULE); every other holdings field is computed.
 
 Sources (atx-db alpha panel v1 stages, read-only; each pinned by the SHA-256 of its ``manifest.json``, which must be a
 complete manifest of the declared schema with the declared clock and staleness rules; every file read is hash-checked
@@ -34,6 +36,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 
 import numpy as np
 import pyarrow as pa
@@ -63,6 +66,11 @@ STAGES = {
 }
 KIND_STAGES = {"13f": ("thirteenf",), "ftd": ("ftd",), "regsho": ("regsho_threshold", "security_master"),
                "svx": ("short_volume_ext",)}
+# v8 C-3 --reuse (prepare_research_fields.reuse_module_fields): each kind's producing code is its builder function and
+# every module-level definition it reaches, plus the builder code it reads through ``ns`` / ``ctx.ns``.
+PRODUCERS = {"13f": ("build_13f",), "ftd": ("build_ftd",), "regsho": ("build_regsho",), "svx": ("build_svx",)}
+HOST_HANDLES = ("ns",)
+KIND_CHECK_KEY = {"13f": "thirteenf", "ftd": "ftd", "regsho": "regsho_threshold", "svx": "short_volume_ext"}
 STAGE_KWARGS = tuple(k for s in STAGES for k in (s, s + "_sha256"))
 
 VISIBILITY_RULE = ("a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous "
@@ -1063,6 +1071,26 @@ def requested(fields) -> list:
     return [x for x in HOLD_FIELDS if x in fields]
 
 
+# -- --reuse interface (v8 C-3) --------------------------------------------------------------------------------------
+def producer_group(name: str) -> str:
+    return HOLD_FIELDS[name]["kind"]
+
+
+def field_spec(name: str) -> dict:
+    return HOLD_FIELDS[name]
+
+
+def reuse_inputs(name: str, inputs: dict) -> dict:
+    """This run's stage manifest pins of a holdings field (the --reuse source check; a manifest pins every file)."""
+    return {k: str(inputs.get(k + "_sha256") or "").lower() for k in KIND_STAGES[HOLD_FIELDS[name]["kind"]]}
+
+
+def entry_inputs(entry: dict) -> dict:
+    """The same pins as a manifest entry of a holdings field records them."""
+    pins = entry.get("stage_manifest_sha256")
+    return dict(pins) if isinstance(pins, dict) else {}
+
+
 def validate(fields, selected_other, inputs: dict):
     mine = requested(fields)
     for x in mine:
@@ -1086,12 +1114,18 @@ def open_stages(names, inputs: dict) -> dict:
     return stages
 
 
-def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifest: dict, budget, stages: dict):
-    """Compute ``names`` into ``output`` and extend ``manifest`` (entries, files, source_checks.holdings)."""
+def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifest: dict, budget, stages: dict,
+              reused=None, prior_checks=None):
+    """Compute ``names`` into ``output`` and extend ``manifest`` (entries, files, source_checks.holdings).
+
+    ``reused`` ({name: (entry, files pin)}, from --reuse) are already in ``output`` and are appended as they are; a
+    kind whose fields are all reused carries its check from ``prior_checks`` (the prior source_checks.holdings)."""
     _release()  # whatever the builder's own groups left in the pools
+    reused, prior_checks = reused or {}, prior_checks or {}
+    todo = [x for x in names if x not in reused]
     role = ns["Role"](role_dir, role_sha256)
     so = None
-    if any("shares_out" in HOLD_FIELDS[x].get("requires", []) for x in names):
+    if any("shares_out" in HOLD_FIELDS[x].get("requires", []) for x in todo):
         pin = manifest["files"].get("shares_out.f64")
         path = Path(output) / "shares_out.f64"
         before = _identity(path)
@@ -1102,7 +1136,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
     ctx = Ctx(ns, role, output, budget, so)
     writers, extras, sources, checks = {}, {}, {}, {}
     kinds = {}
-    for x in names:
+    for x in todo:
         kinds.setdefault(HOLD_FIELDS[x]["kind"], []).append(x)
     if "13f" in kinds:
         w, st, ex = build_13f(ctx, kinds["13f"], stages["thirteenf"])
@@ -1140,12 +1174,25 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
             sources[x] = stages["short_volume_ext"].sources() + role_src
         _release()
         budget.report("holdings-svx-complete")
-    for x in names:
+    for x in todo:
         if "shares_out" in HOLD_FIELDS[x].get("requires", []):
             sources[x] = sources[x] + [so_source]
+    for kind in dict.fromkeys(HOLD_FIELDS[x]["kind"] for x in names):
+        key = KIND_CHECK_KEY[kind]
+        if kind not in kinds and key in prior_checks:  # every field of the kind reused: its prior check stands
+            checks[key] = prior_checks[key]
+    checks = {k: checks[k] for k in KIND_CHECK_KEY.values() if k in checks}  # kind order, as a full compute
     ns["Role"](role_dir, role_sha256)  # the axes did not change underneath
-    code = ns["code_identity"](Path(__file__).resolve())
+    code = ns["module_code_identity"](sys.modules[__name__])  # = code_identity(this file), v8 C-3
     for x in names:
+        if x in reused:
+            entry, pin = reused[x]
+            if x in manifest["files"] or entry["file"] in manifest["files"] or any(e["name"] == x
+                                                                                  for e in manifest["fields"]):
+                raise ValueError(f"{x}: already in the manifest")
+            manifest["files"][entry["file"]] = pin
+            manifest["fields"].append(entry)
+            continue
         spec, wr = HOLD_FIELDS[x], writers[x]
         size = wr.path.stat().st_size
         if size != role.n_dates * role.n * 8:
@@ -1173,6 +1220,14 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
         "stages": {k: s.check() for k, s in stages.items()}, **checks}
     del ctx, so  # release the shares_out map before the manifest is published
     budget.report("holdings-complete", fields=len(names), peak_rss_mib=budget.peak >> 20)
+
+
+def _drop_from_reuse(block: dict, name: str) -> None:
+    """Remove the carried field from the builder's --reuse block (it leaves no trace in the manifest)."""
+    for k in ("reused", "computed"):
+        block[k] = [x for x in block[k] if x != name]
+    for k in ("not_reused", "producing_code_sha256_lf"):
+        block[k].pop(name, None)
 
 
 def register(ns: dict):
@@ -1206,7 +1261,26 @@ def register(ns: dict):
                     value["fields"] = [e for e in value["fields"] if e["name"] != "mkt_ret"]
                     value["files"].pop("mkt_ret.f64")
                     (Path(output) / "mkt_ret.f64").unlink()
-                build_all(ns, mine, Path(role_dir), role_sha256, Path(output), value, budget, stages)
+                    if isinstance(value.get("reuse"), dict):
+                        _drop_from_reuse(value["reuse"], "mkt_ret")
+                reused, prior_checks = {}, {}
+                if kw.get("reuse") is not None:  # v8 C-3: the builder's reuse block exists (value["reuse"])
+                    role = ns["Role"](Path(role_dir), role_sha256)
+                    reused, reasons, prior = ns["reuse_module_fields"](
+                        sys.modules[__name__], Path(kw["reuse"]), kw.get("reuse_sha256"), role, mine, Path(output),
+                        budget, options=inputs, reused_names=set(value["reuse"]["reused"]),
+                        hardlink=bool(kw.get("reuse_hardlink", False)))
+                    prior_checks = prior.get(GROUP) if isinstance(prior.get(GROUP), dict) else {}
+                    order = [e["name"] for e in value["fields"]] + mine
+                    block = value["reuse"]
+                    for kind, key in KIND_CHECK_KEY.items():
+                        names = [x for x in mine if HOLD_FIELDS[x]["kind"] == kind]
+                        if names:
+                            ns["merge_module_reuse"](block, order, names, reused, reasons, group=f"{GROUP}.{key}",
+                                                     prior_check=prior_checks.get(key))
+                    block.pop("_source_checks", None)  # build_all carries the prior checks of fully reused kinds
+                build_all(ns, mine, Path(role_dir), role_sha256, Path(output), value, budget, stages, reused,
+                          prior_checks)
             return base_publish(path, value)
 
         ns["publish"] = publish
