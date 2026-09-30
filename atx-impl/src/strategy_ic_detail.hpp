@@ -43,6 +43,7 @@ inline constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-mem
 // ew-theme-v6 (v4-prereg v6 revision V6-W): the only admitted theme_redistribution rule.
 inline constexpr const char* theme_redistribution_rule="within-theme-v1";
 inline constexpr const char* fields_schema="atx.research-role-fields/v1";
+inline constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";
 inline constexpr usize io_chunk=1U<<20;
 inline constexpr const char* ic_price_field="close";
 // FP-relevant build flavor of the IC runner TUs (strategy_ic_runner.cpp instantiates
