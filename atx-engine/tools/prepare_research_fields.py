@@ -68,8 +68,6 @@ produced the payload (never this builder unless it is the same code); the manife
 from __future__ import annotations
 
 import argparse
-import ast
-import copy
 import csv
 import datetime as dt
 import gzip
@@ -88,6 +86,8 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
+
+import code_fingerprint  # noqa: E402  (same directory: the AST closure fingerprints --reuse keys on)
 
 SCHEMA = "atx.research-role-fields/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
@@ -2683,101 +2683,12 @@ def legacy_origin(entry: dict, name: str) -> dict:
     return {}
 
 
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
-           ast.GeneratorExp)
-
-
-def _bound_names(stmt) -> set:
-    """Module-level names a top-level statement binds or mutates (a store, an item/attribute store or a method call
-    on the name); nested scopes (defs, lambdas, comprehensions) bind their own names."""
-    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return {stmt.name}
-    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
-        return {(a.asname or a.name).split(".")[0] for a in stmt.names}
-    names, todo = set(), [stmt]
-    while todo:
-        n = todo.pop()
-        if isinstance(n, _SCOPES):
-            continue
-        base = None
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-            names.add(n.id)
-        elif isinstance(n, (ast.Subscript, ast.Attribute)) and isinstance(n.ctx, ast.Store):
-            base = n.value
-        elif isinstance(n, ast.Expr) and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Attribute):
-            base = n.value.func.value
-        while isinstance(base, (ast.Subscript, ast.Attribute)):
-            base = base.value
-        if isinstance(base, ast.Name):
-            names.add(base.id)
-        todo.extend(ast.iter_child_nodes(n))
-    return names
-
-
-def _free_names(stmt) -> set:
-    """Names a top-level statement reads (for a def or class: minus the names bound inside it)."""
-    loads = {n.id for n in ast.walk(stmt) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return loads
-    local = set()
-    for n in ast.walk(stmt):
-        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
-            local.add(n.id)
-        elif isinstance(n, ast.arg):
-            local.add(n.arg)
-        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not stmt:
-            local.add(n.name)
-        elif isinstance(n, (ast.Import, ast.ImportFrom)):
-            local.update((a.asname or a.name).split(".")[0] for a in n.names)
-        elif isinstance(n, ast.ExceptHandler) and n.name:
-            local.add(n.name)
-    return loads - local
-
-
-def _code_dump(stmt) -> str:
-    """The statement's AST without docstrings (no positions: comments and formatting do not count)."""
-    node = copy.deepcopy(stmt)
-    for n in ast.walk(node):
-        if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body
-                and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)
-                and isinstance(n.body[0].value.value, str)):
-            n.body = n.body[1:] or [ast.Pass()]
-    return ast.dump(node)
-
-
 def producer_fingerprints(source: bytes) -> dict:
     """{field group: SHA-256 of its producing code} of a builder source (R1 M-6): the group's FIELD_PRODUCERS and
     every module-level definition (function, class, constant, import) they reach by name, each as its AST without
-    docstrings. None for a group whose builder functions the source lacks; ValueError when it does not parse."""
-    try:
-        tree = ast.parse(source.decode("utf-8"))
-    except (SyntaxError, UnicodeDecodeError, ValueError) as e:
-        raise ValueError(f"builder source does not parse ({type(e).__name__})") from None
-    bindings, dumps = {}, {}
-    for stmt in tree.body:
-        for name in _bound_names(stmt):
-            bindings.setdefault(name, []).append(stmt)
-    out = {}
-    for group, entries in FIELD_PRODUCERS.items():
-        if any(e not in bindings for e in entries):
-            out[group] = None
-            continue
-        seen, todo = set(), list(entries)
-        while todo:
-            name = todo.pop()
-            if name in seen or name in PRODUCER_ORCHESTRATION or name not in bindings:
-                continue
-            seen.add(name)
-            for stmt in bindings[name]:
-                todo.extend(_free_names(stmt))
-        closure = []
-        for name in sorted(seen):
-            for stmt in bindings[name]:
-                if id(stmt) not in dumps:
-                    dumps[id(stmt)] = _code_dump(stmt)
-            closure.append([name, [dumps[id(s)] for s in bindings[name]]])
-        out[group] = sha_bytes(canonical({"group": group, "closure": closure}).encode("utf-8"))
-    return out
+    docstrings (code_fingerprint.fingerprints). None for a group whose builder functions the source lacks; ValueError
+    when it does not parse."""
+    return code_fingerprint.fingerprints(source, FIELD_PRODUCERS, PRODUCER_ORCHESTRATION)
 
 
 def inputs_sha256(entry: dict, role_sha256: str) -> str:
