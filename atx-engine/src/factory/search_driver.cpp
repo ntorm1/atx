@@ -9,6 +9,7 @@
 #include <memory>        // std::unique_ptr, std::make_unique
 #include <optional>      // std::optional (per-child single-writer reproduce slots, Tier 5)
 #include <span>          // std::span
+#include <string>        // std::string (v8 H-3 refusal / functor errors)
 #include <unordered_map> // std::unordered_map (score_j_of_ptr: Genome* -> j)
 #include <unordered_set> // std::unordered_set (seen_this_gen dedup)
 #include <utility>       // std::move
@@ -55,6 +56,128 @@ namespace {
   mix(std::bit_cast<atx::u64>(cfg.confidence_multiplier));
   mix(cfg.max_cache_bytes);
   return value;
+}
+
+// S-quality parsimony (objectives[kObjParsimony] = -node count), shared by every score path.
+void set_parsimony(CachedScore &score, const Genome &g) {
+  score.objectives[kObjParsimony] = -static_cast<atx::f64>(g.ast.nodes().size());
+  score.n_objectives =
+      static_cast<atx::u8>(std::max<atx::usize>(score.n_objectives, kObjParsimony + 1U));
+}
+
+// ---- platform v8 H-3: cross-section mask and signal-fitness path ---------------------------
+
+// Why the v8 H-3 members of `cfg` cannot run; empty when accepted. With the defaults (no mask,
+// no functor) this returns after two emptiness checks, so the legacy path is untouched.
+[[nodiscard]] std::string signal_path_refusal(const SearchConfig &cfg, const alpha::Panel &panel,
+                                              bool weak_panel, const combine::AlphaStore &pool,
+                                              bool checkpointing, bool injected_ic_cache,
+                                              bool execution_context) {
+  const std::span<const atx::u8> mask = cfg.cross_section_mask;
+  if (!mask.empty()) {
+    if (mask.size() != panel.cells() ||
+        std::any_of(mask.begin(), mask.end(), [](atx::u8 v) { return v > 1U; })) {
+      return "cross_section_mask must be empty or panel cells() flags in {0, 1}";
+    }
+    if (weak_panel) {
+      return "cross_section_mask has the search panel's geometry; a weak panel would run unmasked";
+    }
+  }
+  if (cfg.signal_fitness == nullptr) {
+    return {};
+  }
+  const FitnessCfg &f = cfg.fitness;
+  if (f.objective_rule != FitnessObjectiveRule::LegacyV1 ||
+      f.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1 || execution_context ||
+      f.execution_context != nullptr) {
+    return "signal fitness replaces the residual and execution objectives";
+  }
+  if (pool.n_alphas() != 0 || weak_panel) {
+    return "signal fitness scores the signal alone: no pool, no weak panel";
+  }
+  if (cfg.ic_screen.rule != IcScreenRule::DisabledV1 || injected_ic_cache) {
+    return "signal fitness screens itself: the IC screen must be DisabledV1";
+  }
+  if (cfg.output_dedup || cfg.deflate_selection || cfg.capacity_objective ||
+      cfg.turnover_objective) {
+    return "signal fitness refuses output dedup, deflation and capacity/turnover objectives";
+  }
+  if (checkpointing) {
+    return "signal fitness runs take no progress sink and no resume";
+  }
+  if (f.cpcv.rule != eval::CpcvRule::ObservationV1) {
+    return "signal fitness uses no CPCV plan (DateV2 refused)";
+  }
+  if (cfg.fidelity.enabled && !instrument_only(cfg.fidelity)) {
+    return "signal fitness races on instrument strides only (date_stride 1, n_folds 0)";
+  }
+  return {};
+}
+
+// Copies the run's eligibility mask into `engine`, strided to `rung`'s sub-panel of `panel`
+// (the full rung copies it as is). An empty mask leaves the engine untouched.
+[[nodiscard]] atx::core::Status apply_mask(alpha::Engine &engine, std::span<const atx::u8> mask,
+                                           const alpha::Panel &panel, const Rung &rung) {
+  if (mask.empty()) {
+    return atx::core::Ok();
+  }
+  if (rung.full()) {
+    return engine.set_cross_section_mask(std::vector<atx::u8>(mask.begin(), mask.end()));
+  }
+  ATX_TRY(auto strided, strided_cells(mask, panel.dates(), panel.instruments(),
+                                      rung.date_stride, rung.inst_stride));
+  return engine.set_cross_section_mask(std::move(strided));
+}
+
+// The full-pass score of a representative on the signal-fitness path. The slot keeps the
+// unscored sentinel for an empty signal set or a non-finite score; a functor Err goes to `error`.
+void score_signal(const Genome &g, const alpha::SignalSet &signals, const SearchConfig &cfg,
+                  atx::usize wid, CachedScore &slot, std::string &error) {
+  if (signals.alphas.empty()) {
+    return;
+  }
+  auto scored = cfg.signal_fitness->score(g, signals.alphas.front().values, SignalLevel{}, wid);
+  if (!scored) {
+    error = scored.error().to_string();
+    return;
+  }
+  if (scored->rejected) {
+    slot = ic_rejected_score();
+    return;
+  }
+  if (!std::isfinite(scored->raw) || scored->n_objectives > kMaxObjectives) {
+    return;
+  }
+  CachedScore full{};
+  full.raw = scored->raw;
+  full.objectives = scored->objectives;
+  full.n_objectives = scored->n_objectives;
+  if (cfg.enable_parsimony) {
+    set_parsimony(full, g);
+  }
+  slot = std::move(full);
+}
+
+// A racing rung's score of `g` on the signal-fitness path: evaluate on the rung's engine, then
+// the functor's raw. NaN (a rung rejection) for a compile or VM failure, a rejected or
+// non-finite score, and a functor Err (the race's evaluator carries a score only).
+[[nodiscard]] atx::f64 signal_rung_score(const Genome &g, alpha::Engine &engine,
+                                         SignalFitness &fitness, const SignalLevel &level,
+                                         atx::usize wid) {
+  constexpr atx::f64 kReject = std::numeric_limits<atx::f64>::quiet_NaN();
+  auto prog = alpha::compile(g.ast, g.analysis);
+  if (!prog.has_value()) {
+    return kReject;
+  }
+  auto ss = engine.evaluate(*prog);
+  if (!ss.has_value() || ss->alphas.empty()) {
+    return kReject;
+  }
+  auto scored = fitness.score(g, ss->alphas.front().values, level, wid);
+  if (!scored || scored->rejected || !std::isfinite(scored->raw)) {
+    return kReject;
+  }
+  return scored->raw;
 }
 } // namespace
 
@@ -110,6 +233,18 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                                              const ExecutionObjectiveContext *execution_context) {
   SearchResult res;
   res.seed = input.master_seed;
+  // v8 H-3: this run's op-swap catalogue (the default cfg rebuilds the constructor's exactly),
+  // then the preconditions of the mask and the signal-fitness path (none on the default path).
+  catalog_ = OpCatalog{lib_, input.op_catalog};
+  if (auto refusal = signal_path_refusal(input, panel_, weak_panel_ != nullptr, pool,
+                                         sink != nullptr || resume != nullptr,
+                                         prepared_ic_screen != nullptr,
+                                         execution_context != nullptr);
+      !refusal.empty()) {
+    res.signal_path_invalid = true;
+    res.signal_path_error = std::move(refusal);
+    return res;
+  }
   const bool residual_on = input.fitness.objective_rule == FitnessObjectiveRule::ResidualHacIcV2;
   const auto fail_residual = [&](std::string message) {
     res.residual_invalid = true; res.residual_error = std::move(message);
@@ -269,6 +404,19 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       fail_execution("execution context plus worker scratch exceeds budget"); return res;
     }
   }
+  // v8 H-3: the functor sizes its worker state for this pool and learns the racing rungs
+  // (serial, before any candidate work).
+  if (cfg.signal_fitness != nullptr) {
+    const atx::usize n_low = cfg.fidelity.enabled ? first_full_rung(cfg.fidelity) : 0U;
+    const auto bound = cfg.signal_fitness->bind(
+        SignalFitnessBinding{det_pool.n_workers(), panel_.dates(), panel_.instruments(),
+                             std::span<const Rung>{cfg.fidelity.rungs.data(), n_low}});
+    if (!bound) {
+      res.signal_path_invalid = true;
+      res.signal_path_error = bound.error().to_string();
+      return res;
+    }
+  }
 
   std::optional<IcScreenCache> owned_ic_cache;
   const std::optional<atx::u64> ic_identity =
@@ -319,6 +467,13 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   engines.reserve(det_pool.n_workers());
   for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
     engines.push_back(std::make_unique<alpha::Engine>(panel_));
+    // v8 H-3: no-op without a cross_section_mask (validated by signal_path_refusal).
+    const auto masked = apply_mask(*engines.back(), cfg.cross_section_mask, panel_, Rung{});
+    if (!masked) {
+      res.signal_path_invalid = true;
+      res.signal_path_error = masked.error().to_string();
+      return res;
+    }
   }
 
   // S4.2 behavioral archive: a per-RUN ring of past-elite descriptors (declared
@@ -502,7 +657,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res,
                                  ic_cache, ic_scratch, residual_scratch);
-    if (res.execution_invalid || res.residual_invalid) return res;
+    if (res.execution_invalid || res.residual_invalid || res.signal_path_invalid) return res;
 
     // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
     // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
@@ -886,6 +1041,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   const bool residual_on = cfg.fitness.objective_rule == FitnessObjectiveRule::ResidualHacIcV2;
   std::vector<std::string> execution_errors(execution_on ? n_fresh : 0);
   std::vector<std::string> residual_errors(residual_on ? n_fresh : 0);
+  // v8 H-3 signal-fitness path: one functor Err slot per fresh candidate (canonical slot k).
+  const bool signal_on = cfg.signal_fitness != nullptr;
+  std::vector<std::string> signal_errors(signal_on ? n_fresh : 0);
 
   // One stateless Scheduler for the merged parallel region's Tier 1 LPT
   // dispatch order. Default-constructed: the single-node fallback topology, NO
@@ -945,6 +1103,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   std::vector<ResidualCandidateScore> residual_slot(residual_on ? n_to_score : 0);
   if (residual_on)
     std::fill(score_slot.begin(), score_slot.end(), residual_unavailable_score());
+  // A representative the functor never scores (compile/VM failure) stays an unscored trial.
+  if (signal_on)
+    std::fill(score_slot.begin(), score_slot.end(), unscored_score());
   // Disjoint per-representative decisions: 0 untested, 1 keep, 2 reject, 3 error.
   // Only the serial merge updates counters and persistent rejection identities.
   std::vector<atx::u8> ic_status(ic_cache != nullptr ? n_to_score : 0U, atx::u8{0});
@@ -1038,6 +1199,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     }
     const std::vector<atx::u64> rejected =
         fidelity_reject(*race_candidates, cfg, gen_fit, det_pool, res);
+    // v8 H-3: every racing rejection's identity (sorted at the merge below).
+    res.fidelity_rejected_hashes.insert(res.fidelity_rejected_hashes.end(), rejected.begin(),
+                                        rejected.end());
     if (!rejected.empty()) {
       const std::unordered_set<atx::u64> rej(rejected.begin(), rejected.end());
       for (atx::usize j = 0; j < n_to_score; ++j) {
@@ -1108,6 +1272,11 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     // Phase 3's own eval would fail to a default score.
     if (it != score_j_of_ptr.end() && ss.has_value()) {
       const atx::usize j = it->second;
+      if (signal_on) {
+        // v8 H-3: the functor replaces pool_aware_fitness on the same SignalSet.
+        score_signal(*to_score[j], *ss, cfg, wid, score_slot[j], signal_errors[k]);
+        return;
+      }
       if (ic_cache != nullptr && ic_status[j] == atx::u8{0} && !ss->alphas.empty()) {
         auto screened = screen_ic(ss->alphas.front().values, *ic_cache, ic_scratch[wid]);
         ic_status[j] = !screened ? atx::u8{3}
@@ -1162,10 +1331,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       // objectives). Errored genomes get a node-count value too, but cannot be
       // ADMITTED (factory drops un-evaluable candidates), so no perverse incentive.
       if (cfg.enable_parsimony) {
-        score_slot[j].objectives[kObjParsimony] =
-            -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
-        score_slot[j].n_objectives = static_cast<atx::u8>(
-            std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+        set_parsimony(score_slot[j], *to_score[j]);
       }
       // R4 — deflated-Sharpe selection pressure (Pieces 2 + 3), opt-in.
       //
@@ -1202,6 +1368,12 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     if (!error.empty()) {
       res.residual_invalid = true; res.residual_error = error;
       return {}; // hard config/binding/scratch failure, no partial admission
+    }
+  }
+  for (const auto &error : signal_errors) {
+    if (!error.empty()) {
+      res.signal_path_invalid = true; res.signal_path_error = error;
+      return {}; // first canonical functor Err; no admission from this generation
     }
   }
 
@@ -1247,10 +1419,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
           // Structural objective is per-genome: recompute parsimony from THIS
           // genome's node count instead of inheriting the owner's.
           if (cfg.enable_parsimony) {
-            score_slot[j].objectives[kObjParsimony] =
-                -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
-            score_slot[j].n_objectives = static_cast<atx::u8>(
-                std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+            set_parsimony(score_slot[j], *to_score[j]);
           }
         }
         ++res.fingerprint_hits;
@@ -1270,6 +1439,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     if (score_slot[j].origin == ScoreOrigin::IcRejected) {
       res.ic_rejected_hashes.push_back(hash);
     }
+    if (score_slot[j].origin == ScoreOrigin::Unscored) {
+      res.unscored_hashes.push_back(hash);
+    }
     canon.insert(hash);
     fitness_cache.emplace(hash, std::move(score_slot[j]));
     res.all_scored.push_back(to_score[j]->clone());
@@ -1280,6 +1452,12 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   res.ic_rejected_hashes.erase(
       std::unique(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end()),
       res.ic_rejected_hashes.end());
+  // v8 H-3 identity lists (empty on the legacy path except the racing rejections).
+  std::sort(res.unscored_hashes.begin(), res.unscored_hashes.end());
+  std::sort(res.fidelity_rejected_hashes.begin(), res.fidelity_rejected_hashes.end());
+  res.fidelity_rejected_hashes.erase(
+      std::unique(res.fidelity_rejected_hashes.begin(), res.fidelity_rejected_hashes.end()),
+      res.fidelity_rejected_hashes.end());
 
   // Assemble output in population order (every hash is now present in
   // fitness_cache after the merge above; cached hits reuse the stored score).
@@ -2104,6 +2282,10 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
     rung_engines[r].reserve(det_pool.n_workers());
     for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
       rung_engines[r].push_back(std::make_unique<alpha::Engine>(*rp[r]));
+      // v8 H-3: the run's eligibility, strided like the rung panel (no-op without a mask).
+      if (!apply_mask(*rung_engines[r].back(), cfg.cross_section_mask, panel_, fc.rungs[r])) {
+        return {}; // fail-open like an unbuildable sub-panel (the mask was validated in run)
+      }
     }
   }
   CpcvCache rung_cpcv{}; // thread-safe; shared by every rung evaluation below
@@ -2125,8 +2307,8 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
   // no_pool, policy_, sim_, gen_fit copy); worker `wid` touches only
   // rung_engines[r][wid] (disjoint single owner); rung_cpcv serializes its own
   // cold inserts behind its mutex.
-  const RungEvaluator eval = [&](const Genome &g, atx::usize r, const Rung &rung,
-                                 atx::usize wid) -> atx::f64 {
+  const RungEvaluator legacy_eval = [&](const Genome &g, atx::usize r, const Rung &rung,
+                                        atx::usize wid) -> atx::f64 {
     FitnessCfg f = gen_fit;
     if (f.cpcv.rule == eval::CpcvRule::DateV2) f.cpcv_session_stride = rung.date_stride;
     f.capacity_objective = false;
@@ -2142,7 +2324,16 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
     }
     return rep->raw;
   };
-  const RaceResult rr = race(cands, fc, eval, n_low, &det_pool, /*promote_after_last=*/true);
+  // v8 H-3: on the signal-fitness path the functor scores the rung signal instead
+  // (same reentrancy: worker `wid` touches only rung_engines[r][wid] and its own
+  // functor state).
+  const RungEvaluator signal_eval = [&](const Genome &g, atx::usize r, const Rung &rung,
+                                        atx::usize wid) -> atx::f64 {
+    return signal_rung_score(g, *rung_engines[r][wid], *cfg.signal_fitness,
+                             SignalLevel{r, rung.inst_stride, false}, wid);
+  };
+  const RaceResult rr = race(cands, fc, cfg.signal_fitness != nullptr ? signal_eval : legacy_eval,
+                             n_low, &det_pool, /*promote_after_last=*/true);
   res.fidelity_evals += rr.n_evals;
   if (rr.survivors.empty()) {
     return {}; // fail-open: never starve the full pass

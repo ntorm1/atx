@@ -1,14 +1,16 @@
 #include "atx/engine/factory/op_catalog.hpp"
 
+#include <algorithm>
 #include <optional>
+#include <string_view>
 
 #include "atx/engine/alpha/registry.hpp"
 
 namespace atx::engine::factory {
 
-OpCatalog::OpCatalog(const alpha::Library &lib) {
+OpCatalog::OpCatalog(const alpha::Library &lib, const OpCatalogCfg &cfg) {
   static_cast<void>(lib); // built-ins enumerated from the static table below
-  build();
+  build(cfg);
 }
 
 [[nodiscard]] std::optional<const OpSig *>
@@ -76,12 +78,30 @@ OpCatalog::sample_compatible_opcode(Shape shape, DType dtype, atx::usize arity, 
   return std::nullopt; // unreachable: k < alternatives
 }
 
-void OpCatalog::build() {
+void OpCatalog::build(const OpCatalogCfg &cfg) {
+  const auto offered = [&cfg](std::string_view name) {
+    return std::none_of(cfg.deny.begin(), cfg.deny.end(), [name](const std::string &denied) {
+      return std::string_view{denied} == name;
+    });
+  };
   // Walk the static built-in table. Record ops are EXCLUDED (their result is a
   // named pin tuple, not a swappable single-value slot). Group-aware ops are
   // kept (their bucket is still (cat,dtype,arity)); analyze rejects a bad arg.
+  // The default cfg (no deny, no literature rows) files exactly the pre-v8 rows
+  // in the same order.
   for (const OpSig &sig : alpha::detail::builtin_ops()) {
-    add_op(sig);
+    if (offered(sig.name)) {
+      add_op(sig);
+    }
+  }
+  // v8 H-3: the literature rows after the built-ins, so every built-in keeps its
+  // bucket position (a sampled index still means the same op).
+  if (cfg.literature_ops) {
+    for (const OpSig &sig : alpha::detail::literature_ops()) {
+      if (offered(sig.name)) {
+        add_op(sig);
+      }
+    }
   }
   // User ops registered into the borrowed Library beyond the built-ins are not
   // enumerable (no iterator). Tests that need extra ops register them and rely
