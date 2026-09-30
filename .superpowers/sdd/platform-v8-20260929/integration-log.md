@@ -792,3 +792,120 @@ No real-data run. Inputs were the unit-test fixtures (synthetic) and one read of
 - Lane A2 sent no report with its merge (commit messages only).
 - `ParallelLockstepGrid.*` still needs the `parallel` group configured in build-equity.
 - `build_provenance.cpp` is generated at configure time: v8-4e records `5c6efcd4`, not its source `d5e5510a`.
+
+## integration 4 part B (2026-09-30), STOPPED HERE
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `2633af17` (clean). Tag prefix v8-5.
+**OWNER STOP** (relayed by the PM) arrived after the merges, the v8-5 build and the gtests, while the Python sets were
+running (let finish, not killed). No identity run and no real-data run was started in this dispatch.
+
+### Merges (in order)
+
+| # | lane (tasks) | lane SHA | merge | conflicts |
+|---|---|---|---|---|
+| 1 | F3 (F-C `gscore7_lowbm`, F-D `eps_consist_4y`, report) | `fc8ff96c` | `68d78dc3` | none (3 files) |
+| 2 | H1 (H-1 era shards tooling) | `cf757c97` | `c23f1b43` | 2, below |
+| 3 | REPORT (`mega_report/v8.py`, v8 pitch config, scorecard template) | `a9a244f6` | `a572d63f` | none (7 files) |
+| 4 | R6 (Ruling E-26: spo-v1/v2 refuse `--hold-band` / `--adv-hold-q`, spo-v3 records the shaping) | `f60a524e` | `37e84d81` | none |
+
+H1 resolutions (both sides kept):
+- `atx-impl/tools/fit_composition_weights.py`, before `files[OUTPUT_WEIGHTS] = canonical_bytes(document)`: root's R-1
+  `if args.composition == composition_rules.STD_RULE_ID: composition_rules.attach_std(document, std)`, then H1's
+  `if pool is not None: document["provenance"]["pool"] = pool["block"]`. Both precede the bytes and the per-era copies.
+- `scripts/research_cycle.py` docstring: A2's `marginal` entry, then H1's `roles` entry (H1's spacing kept).
+- Union check (scratch script, `git diff -U0` +/- line multisets): for both files, merged-vs-root equals H1's own diff
+  since the merge base `1e66a7e1` (150 and 133 lines) and merged-vs-H1 equals root's diff since that base (110 and 9
+  lines). The auto-merged `nav_summ.py`, `backtest_integrity.py`, `cycle_verdict.py`, `research_ledger.py`,
+  `run_bounded_research.py` had no root change since `1e66a7e1`, so they are H1's bytes.
+- Not resolved by the merge (design, H1 open risk): the pooled fit (`--era`) refuses `ew-theme-aim-v1` but knows
+  nothing of `ew-theme-std-v1`; std and pool now meet in one function untested together.
+
+R6: `atx-impl/tests/strategy_spo_v3_test.cpp` auto-merged; root's fix `d5e5510a` (4 lines) is kept and the union check
+holds (R6 242 lines, root 4 lines).
+
+### Build (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | result |
+|---|---|---|
+| **v8-5** | `37e84d81` clean (DirtyEntries 0) | ok, exit 0, 51.4 s, 16 TUs, 6 links; no `/W4 /WX` slip; `ConfiguredProvenance` stays `5c6efcd4` (no reconfigure) |
+
+Targets: atx-equity-strategy-ic, atx-equity-strategy-targets, atx-equity-strategy-risk, atx-impl-strategy-target-tests,
+atx-impl-tests. Executables (receipt `build-equity/mega-v8-5-receipt.json`):
+- ic `4b4ffb7b0bc24e7735f9608548ee4b60ff32cfe5fecfb5d006976342a556d68f` (relinked on the new atx-impl-core);
+- targets `0d0a6921252dac26e30b95f0ef3847728502387a178b817ceae1cf128a40a8f1`;
+- risk `f45e887041a8e66f8283c38e0a7ebb53607778f78df66202f056315997100392`;
+- target-tests `114cc971961d6716551c01e44f928c3cafb5cf0ad49461eacffebbbe3d26b185`, impl-tests
+  `70906534b8f5817279ff5704aa29be725c1eea15a4bd9dd484bb56fc84fb11ba`.
+
+### Tests
+
+C++ (v8-5):
+
+| exe | filter | result |
+|---|---|---|
+| atx-impl-strategy-target-tests | `Spo*:NavV7Hook.*:HoldBand.*:AdvHold.*` | 62 run: 61 passed, 1 skipped: HoldBand 10, AdvHold 6, NavV7Hook 11, SpoSolver 7, SpoAlpha 1, SpoCalibration 2, SpoRisk 2, SpoHook 11, SpoTripwire 2, SpoPin 2, SpoV3 8 (5 + R6's 3 E-26 tests) |
+| atx-impl-tests | same | 62 run: 61 passed, 1 skipped |
+| atx-impl-strategy-target-tests | whole exe | 223 run: 222 passed, 1 skipped |
+
+- The skip is `SpoV3.V1AndV2DigestsUnchanged` (v2 placeholder 0). SpoPin v1 pins pass unchanged
+  (`weights=0xda6b6871e7e267c5`, `replay=0xaabdbb72f99a6e13`). v8-5 prints `[spo-v3-pin] v2
+  weights=0xb039820b40d5cf24 (40 diagnostics rows) replay=0xd24b61721a7c698c (30 days)`, the same as the R6 part 2
+  head in part A (E-26 left the flag-free v2 path unchanged); still **not** pins.
+- spo-v2 pin capture: **not done, no worktree-free way**. The digest is computed by test code linked against the
+  library, and the only library this dispatch may build is post-R6. `research-build.ps1` keeps one `bin` per build
+  dir (no per-tag archive), so no pre-R6 test exe survives (v8-4a's was relinked at v8-4d). The skip stays.
+
+Python (`pytest -q -p no:cacheprovider`, `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin`, v8-5 exes):
+
+| paths | result | s |
+|---|---|---|
+| atx-impl/strategies | 163 passed | 34 |
+| atx-engine/tools | 240 passed (6 subtests) = part A 214 + `test_era_pool` 17 + `test_research_fields_v8_quarters` 9 | 96 |
+| atx-impl/tools | 452 passed, 2 skipped = part A 314 + `test_nav_summ_pool` 8 + `test_fit_composition_weights_pool` 16 + `test_era_data_audit` 18 + `test_mega_report_v8` 38 + `test_mega_report_v8_render` 58 | 109 |
+| scripts/tests | 121 passed, 3 skipped = part A 97 + `test_research_cycle_roles` 24 | 42 |
+
+- tiny_world: `test_cycle_e2e_goldens_redundant_copy_and_idempotent_rerun` PASSED (re-checked alone with `-rs -v`:
+  5/5 in `test_cycle_e2e.py`); **no golden moved**, `git status` clean after every set.
+
+### Identities: none run
+
+Planned argv, prepared read-only for the next integrator (nothing executed):
+- i1: the argv of `v8-i3p4-a-run/receipt.json` (v7.1 NAV cell) with `--output build-equity/v8-i4b-i1-nav`, compare
+  the 12 files to `mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`. **An accepted holdings export exists**:
+  `build-equity/v7-w4-holdings` (f64, `atx.nav-holdings/v2`, from `v7-w4-nav-on-run`: v6.1 combined
+  `mega-v61w-train-ew-1`, fields-v7, source `8921dc2c`). So the holdings identity is old-vs-new: rerun that receipt's
+  argv with the v8-5 exe into new directories, compare the NAV dir to `v7-w4-nav-on` and the export to
+  `v7-w4-holdings` (`holdings.f64`, `holdings_index.json`, `holdings_days.csv`, `manifest.json`); then the csv layout
+  on the v7.1 argv (`v7-l3-holdings`, the csv export, no longer holds its `holdings.csv`: only `holdings_days.csv` and
+  the manifest). Both argv carry `--max-bytes 1073741824`: watch for a `NavHolding` +16 B refusal.
+- i2-i7: argv as in the dispatch and the lane reports (R-4 `--hold-band 0`, R-5 `--adv-hold-q 1e9`, R-1
+  `composition_rules.py identity-weights` then the `mega-v71w-train-ew-run1` argv, H-3 warm u pass: H-3 offers no
+  read-only cache mode, so point `--candidate-cache` at `v8-i3p4-d-w4-cache` and compare to `v8-i3p4-d-w4-u`, C-3
+  step 2 with `--reuse v8-i3p4-c-fields2` expecting reused 49 / computed 14 (F-B moved the `sec` group fingerprint,
+  F-3 report), spo-v2 cell argv from the W1b report step 4, not located yet).
+- i8 (E-1): satisfied by this dispatch's last and only build: the v8-5 receipt carries `Tag` v8-5, `Script`
+  `scripts/research-build.ps1`, `BuildDir` `C:\atx-wt\pool-2\build-equity` and `Executables` (the three exe SHAs
+  above). **PASS.**
+
+### Fixes
+
+None. No compile or test failure; no fix commit.
+
+### Hidden-data record
+
+No real-data run. Read: lane reports, receipts (argv only), the two holdings manifests' top-level `files` / `format` /
+`schema` keys (v7 TRAIN exports) and directory names under `build-equity` filtered to exclude validation, val,
+holdout, 2023-2024, 2024 and 2025. Tests used synthetic fixtures and tiny_world. **No disclosure.**
+
+### Not started (owner stop)
+
+- Identities i1-i7 (above).
+- REPORT's E-4 step 3 re-render (not in this dispatch either).
+
+### Open items
+
+- spo-v2 pin: needs a pre-R6 build (another tree); the test skips.
+- H1 x R-1: the pooled fit does not refuse or support `ew-theme-std-v1` (H1 open risk; a PM decision before any
+  pooled read with a v8 composition).
+- Carried: `ConfigJsonNotInDiscoverDigest` (known), `ParallelLockstepGrid` group unconfigured, build provenance records
+  `5c6efcd4` for v8-5 (source `37e84d81`).
