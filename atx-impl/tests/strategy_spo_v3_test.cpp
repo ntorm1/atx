@@ -49,19 +49,23 @@ std::shared_ptr<const sp::RiskStore> clean_model(const Directory& dir, const Rol
 }
 
 // The observed book's rebalance decisions (a NavHoldingsSink): per session index, every
-// reported name's shared desired target (NaN: not reported) and, given the spo engine, the aim
+// reported name's shared desired target (NaN: not reported), every name's held weight (what
+// its DECIDE read; 0: not reported, as the stream declares) and, given the spo engine, the aim
 // its tracker received at that decision (Engine::last_aim, read right after the book's DECIDE).
 class Recorder final : public st::NavHoldingsSink {
 public:
   explicit Recorder(usize names) : n_(names) {}
   const sp::Engine* engine{};
-  std::map<usize, std::vector<f64>> desired, aim;
+  std::map<usize, std::vector<f64>> desired, held, aim;
   [[nodiscard]] co::Status session(const st::NavReplayDay& day,
                                    std::span<const st::NavHolding> names) override {
     if (!day.decision || !day.rebalance) return co::Ok();
     auto& row = desired[day.session_index];
     row.assign(n_, std::numeric_limits<f64>::quiet_NaN());
     for (const auto& h : names) row[h.index] = h.desired;
+    auto& book = held[day.session_index];
+    book.assign(n_, 0.0);
+    for (const auto& h : names) book[h.index] = h.held_weight;
     if (engine != nullptr) {
       const auto received = engine->last_aim();
       aim[day.session_index].assign(received.begin(), received.end());
@@ -141,6 +145,20 @@ st::NavReplayConfig undusted_config() {
   return cfg;
 }
 u64 bits(f64 x) { return std::bit_cast<u64>(x); }
+// Pearson correlation as the engine computes it (NaN below 3 pairs or without dispersion).
+f64 pearson(std::span<const f64> a, std::span<const f64> b) {
+  const usize n = std::min(a.size(), b.size());
+  if (n < 3) return std::numeric_limits<f64>::quiet_NaN();
+  f64 ma = 0, mb = 0;
+  for (usize i = 0; i < n; ++i) { ma += a[i]; mb += b[i]; }
+  ma /= static_cast<f64>(n); mb /= static_cast<f64>(n);
+  f64 ab = 0, aa = 0, bb = 0;
+  for (usize i = 0; i < n; ++i) {
+    const f64 x = a[i] - ma, y = b[i] - mb;
+    ab += x * y; aa += x * x; bb += y * y;
+  }
+  return aa > 0 && bb > 0 ? ab / std::sqrt(aa * bb) : std::numeric_limits<f64>::quiet_NaN();
+}
 
 // No trading cost, no borrow and no binding limit (ADV 1e15, beta band +-1, every name a
 // member with a risk row, from flat, no fixed position): the tracking optimum is the aim
@@ -309,13 +327,15 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     }
     by_book[r.book].push_back(&r);
   }
-  // One CSV row per scored (decision, book); 41 columns.
+  // One CSV row per scored (decision, book); 42 columns (review A-4 added
+  // aim_correlation_traded after aim_correlation).
   EXPECT_EQ(static_cast<usize>(std::count(run.csv.begin(), run.csv.end(), '\n')),
             run.rows.size() + 1);
   const std::string header = run.csv.substr(0, run.csv.find('\n'));
-  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 40);
+  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 41);
   for (const char* column : {",tracking_error,", ",tracking_error_current,", ",aim_correlation,",
-                             ",at_trade_limit,", ",trade_limit_share,", ",gross_bound_breached,",
+                             ",aim_correlation_traded,", ",at_trade_limit,",
+                             ",trade_limit_share,", ",gross_bound_breached,",
                              ",tracking_error_shadow,", ",aim_correlation_shadow"})
     EXPECT_NE(header.find(column), std::string::npos) << column;
   // The per-book report: summary and tripwire record agree with the rows.
@@ -431,6 +451,73 @@ TEST(SpoV3, WarmStartCalibratesOnTheFirstScoredDecision) {
   EXPECT_FALSE(flat.calibration_json.contains("warm_up"));
   EXPECT_EQ(warmed.calibration_json.at("session"), role.sessions[begin]);
   EXPECT_TRUE(warmed.captured);
+}
+
+// Review A-4: Ruling E-14's criterion reads the traded book, not the plan. Each row's
+// aim_correlation_traded is the correlation of the holdings its DECIDE read (the observed
+// book's held weights, which the holdings stream reports as the plan's current weights bit for
+// bit) with the aim the tracker received, over every name either holds: recomputed here from
+// the stream. From flat (the first decision) it is NaN; on later decisions it differs from the
+// plan's aim_correlation (fills trail the plan under the 1% ADV trade limit, and the book
+// drifts). The report carries both, and its criterion is the traded mean against .9.
+TEST(SpoV3, CriterionReadsTheTradedBook) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  Recorder recorder(role.n);
+  const Replay run = replay_v3(role, risk, sp::v3_params(), nav_config(), &recorder);
+  ASSERT_FALSE(run.rows.empty());
+  std::map<i64, usize> row_of;
+  for (usize t = 0; t < role.d; ++t) row_of[role.sessions[t]] = t;
+  usize compared = 0, differ = 0;
+  f64 sum = 0, lowest = 2.0;
+  for (const auto& r : run.rows) {
+    const usize t = row_of.at(r.session);
+    ASSERT_EQ(recorder.held.count(t), 1U) << t;
+    ASSERT_EQ(recorder.aim.count(t), 1U) << t;
+    const auto& held = recorder.held.at(t);
+    const auto& aim = recorder.aim.at(t);
+    ASSERT_EQ(aim.size(), role.n) << t;
+    std::vector<f64> traded, aimed;
+    for (usize i = 0; i < role.n; ++i) {
+      if (aim[i] == 0 && held[i] == 0) continue;
+      traded.push_back(held[i]);
+      aimed.push_back(aim[i]);
+    }
+    const f64 expected = pearson(traded, aimed);
+    if (std::isnan(expected)) {
+      EXPECT_TRUE(std::isnan(r.aim_correlation_traded)) << t;
+      continue;
+    }
+    EXPECT_NEAR(r.aim_correlation_traded, expected, 1e-12) << t;
+    ++compared;
+    sum += r.aim_correlation_traded;
+    lowest = std::min(lowest, r.aim_correlation_traded);
+    if (std::isfinite(r.aim_correlation) &&
+        std::abs(r.aim_correlation_traded - r.aim_correlation) > 1e-9)
+      ++differ;
+  }
+  EXPECT_TRUE(std::isnan(run.rows.front().aim_correlation_traded)); // the book is flat
+  ASSERT_GT(compared, 0U);
+  EXPECT_GT(differ, 0U) << "the traded book never differs from the plan";
+  // The report (one book): both correlations; the criterion reads the traded mean.
+  ASSERT_EQ(run.summary.size(), 1U);
+  const auto& entry = run.summary.begin().value();
+  EXPECT_EQ(entry.at("aim_correlation_traded").at("n"), compared);
+  EXPECT_NEAR(entry.at("aim_correlation_traded").at("mean").get<f64>(),
+              sum / static_cast<f64>(compared), 1e-12);
+  EXPECT_EQ(entry.at("aim_correlation_traded").at("min").get<f64>(), lowest);
+  EXPECT_TRUE(entry.contains("aim_correlation")); // the plan's, as before
+  const auto& criterion = entry.at("aim_correlation_criterion");
+  EXPECT_EQ(criterion.at("reads"), "aim_correlation_traded.mean");
+  EXPECT_EQ(criterion.at("threshold").get<f64>(), sp::v3_aim_correlation_min);
+  EXPECT_EQ(sp::v3_aim_correlation_min, 0.9);
+  const f64 value = criterion.at("value").get<f64>();
+  EXPECT_EQ(value, entry.at("aim_correlation_traded").at("mean").get<f64>());
+  EXPECT_EQ(criterion.at("met").get<bool>(), value >= 0.9);
+  EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_criterion"),
+            criterion);
 }
 
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta

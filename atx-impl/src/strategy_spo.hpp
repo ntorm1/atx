@@ -321,6 +321,11 @@ struct TrackingRow {
   atx::f64 tracking_error{}, tracking_error_current{};
   // Pearson correlation of the planned and the aim weights over the optimized names.
   atx::f64 aim_correlation{};
+  // Review A-4, the Ruling E-14 criterion's input: Pearson correlation of the traded book (the
+  // holdings DECIDE read at d, after the fills, caps, blocks and drift of earlier decisions;
+  // nonmember exits and unpriced members included) and the aim, over every name either
+  // holds (NaN from a flat book).
+  atx::f64 aim_correlation_traded{};
   // The solver's terms (per session, NAV fractions): objective = (gamma/2) tracking variance
   // over the problem + amortized_cost + borrow; trade_cost = amortized_cost x H (unamortized).
   atx::f64 objective{}, trade_cost{}, amortized_cost{}, borrow{};

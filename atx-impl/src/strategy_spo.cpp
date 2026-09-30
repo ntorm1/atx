@@ -1441,6 +1441,15 @@ TrackingRow Engine::Impl::tracking_row(const BookDecision& in, const tt::Trackin
   row.tracking_error = tracking_error(r, next, aim, gap);
   row.tracking_error_current = tracking_error(r, current, aim, gap);
   row.aim_correlation = correlation(sol.w, p.target);
+  // Review A-4: the traded book DECIDE read (filled, capped, blocked, drifted) against the
+  // aim over every name either holds; the E-14 criterion reads this, not the plan's.
+  std::vector<f64> held, aimed;
+  for (usize i = 0; i < aim.size(); ++i) {
+    if (aim[i] == 0 && current[i] == 0) continue;
+    held.push_back(current[i]);
+    aimed.push_back(aim[i]);
+  }
+  row.aim_correlation_traded = correlation(held, aimed);
   row.objective = sol.terms.objective; row.amortized_cost = sol.terms.trade_cost;
   row.trade_cost = sol.terms.trade_cost * horizon; row.borrow = sol.terms.borrow;
   f64 aim_gross = 0, beta = 0;
