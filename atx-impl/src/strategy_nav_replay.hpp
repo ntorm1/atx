@@ -397,8 +397,10 @@ public:
 // bit-identical to replay_nav_scenarios(in, variants[v], scenarios)[k]. The variants may
 // differ only in the target construction keys of nav_grid_variant_flags (rule, cadence,
 // trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage, exit_rate);
-// any other difference is InvalidArgument. 1 <= variants <= nav_max_grid_variants; the
-// workspace budget is charged for every book.
+// any other difference (the v8 hold_band and adv_hold_q included) is InvalidArgument, and
+// with a hold band every variant has the base's cadence (the band's state advances on the
+// shared cadence decisions). 1 <= variants <= nav_max_grid_variants; the workspace budget is
+// charged for every book.
 inline constexpr atx::usize nav_max_grid_variants = 16;
 [[nodiscard]] atx::core::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,

@@ -2069,12 +2069,14 @@ bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b)
 // Grid variants agree on everything but nav_grid_variant_flags' target keys (rule,
 // cadence, trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage,
 // exit_rate) and the scenario: the shared construction, the shared liquidity windows and
-// the book-independent settings are then one.
+// the book-independent settings are then one. The v8 construction options (hold band, ADV
+// cap) shape the shared desired target, so they are shared too.
 bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
   const auto& s = a.target; const auto& t = b.target;
   return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
          s.neutralize_max_amplification == t.neutralize_max_amplification &&
          s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
+         s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q &&
          s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
          s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
          a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
@@ -2101,6 +2103,14 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav grid: variants may differ only in rule, cadence, trade fraction, "
                      "monthly budget, band, dust, aim leverage and exit rate");
+  // v8 hold-band-v1: the band's state advances on every shared cadence decision, i.e. on the
+  // union of the variants' cadence days; a variant would then carry a state its standalone
+  // run never forms, so a hold-band grid has one cadence.
+  if (hold_band_on(base.target))
+    for (const auto& variant : variants)
+      if (variant.target.cadence != base.target.cadence)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "nav grid: with --hold-band every variant has the base cadence");
   // Books on a pool: the per-name-v1 rates share one buffer, and a v7 hook is
   // thread-local (a worker would silently run without it).
   if (base.book_workers > 1 &&

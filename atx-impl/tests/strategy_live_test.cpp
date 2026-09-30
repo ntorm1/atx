@@ -1752,6 +1752,53 @@ TEST(HoldBand, DecideVerbCarriesState) {
   EXPECT_NE(half.error().to_string().find("go together"), std::string::npos);
 }
 
+// v8 R-4/R-5 in a construction grid (lane D's lockstep): the hold band and the ADV cap shape the
+// shared desired target, so every variant carries the base's; the band's state advances on the
+// shared cadence decisions (the union of the variants' cadences), so a hold-band grid has one
+// cadence. A grid that keeps both is each variant's standalone replay bit for bit.
+TEST(HoldBand, GridSharesTheBandAndOneCadence) {
+  const auto p = market_panel(70, 12, 5, 2e5);
+  const Fields f(p, 9);
+  const st::NavReplayInput in{p.target(), p.volume, f.view()};
+  auto base = v61_book(1e7);
+  base.target.hold_band = 0.1;
+  const std::array<st::NavScenario, 1> one{base.scenario};
+  const auto refused = [&](const std::vector<st::NavReplayConfig>& grid) {
+    const auto r = st::replay_nav_grid(in, grid, one);
+    return !r && r.error().code() == co::ErrorCode::InvalidArgument;
+  };
+  auto slower = base;
+  slower.target.cadence = 2;
+  EXPECT_TRUE(refused({base, slower}));
+  auto unbanded = base;
+  unbanded.target.hold_band.reset();
+  EXPECT_TRUE(refused({base, unbanded}));
+  auto capped = base;
+  capped.target.adv_hold_q = 0.1;
+  EXPECT_TRUE(refused({base, capped}));
+  auto faster = base;
+  faster.target.trade_fraction = 0.5;
+  const std::vector<st::NavReplayConfig> grid{base, faster};
+  const auto run = st::replay_nav_grid(in, grid, one);
+  ASSERT_TRUE(run) << run.error().to_string();
+  ASSERT_EQ(run->size(), grid.size());
+  usize kept = 0;
+  for (usize v = 0; v < grid.size(); ++v) {
+    const auto alone = st::replay_nav_scenarios(in, grid[v], one);
+    ASSERT_TRUE(alone) << alone.error().to_string();
+    const auto& a = (*run)[v].front().days;
+    const auto& b = alone->front().days;
+    ASSERT_EQ(a.size(), b.size());
+    for (usize t = 0; t < a.size(); ++t) {
+      EXPECT_EQ(bits(a[t].pretrade_nav), bits(b[t].pretrade_nav)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].planned_gross), bits(b[t].planned_gross)) << v << ' ' << t;
+      EXPECT_EQ(a[t].construction.hold_kept, b[t].construction.hold_kept) << v << ' ' << t;
+      kept += a[t].construction.hold_kept;
+    }
+  }
+  EXPECT_GT(kept, 0U); // the band acts in the grid
+}
+
 // ---- v8 R-5: adv-hold-v1 (ADV holding cap) ----
 namespace {
 // One decision of a flat book (the desired target does not depend on the holdings) and the caps
