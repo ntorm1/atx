@@ -33,6 +33,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
                   construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
                   research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
+  admission lines (review C-7) the gate of a v8 cycle with a ledger first appends one chained admission line per
+                  listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
   summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
                   "verdict": true spec, or --protocol v8 in summ.extra) always runs nav_summ --protocol v8 (seed
                   20260929, 4,999 draws) and, with a ledger, --origin summ.origin; a verdict spec's summ also passes
@@ -137,6 +139,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cycle_admission  # noqa: E402
 import research_ledger  # noqa: E402
 import research_tree  # noqa: E402
 from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
@@ -1504,6 +1507,7 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
+            admission_trials(cycle, w_dir, log)
             try:
                 gate(cycle, w_dir, log)
             except CycleError:
@@ -1560,6 +1564,18 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
     log("== screen complete: w, nav, monitor and summ run with the full `run`" if cycle.screen else
         "== cycle complete")
     return EXIT_OK
+
+
+def admission_trials(cycle, w_dir: str, log) -> None:
+    """Review C-7: the gate of a v8 cycle with a ledger of record (--ledger, else summ.ledger) first ledgers the
+    admission trials it reads, one chained line per listed candidate (cycle_admission.py); a v7 cycle writes none."""
+    rel = cycle.ledger or (cycle.spec.get("summ") or {}).get("ledger")
+    if not rel or summ_protocol(cycle.spec) != SUMM_V8:
+        return
+    try:
+        cycle_admission.ledger_admissions(cycle, rel, w_dir, log)
+    except ValueError as exc:
+        raise CycleError(f"HARD-STOP [gate]: admission trials not ledgered: {exc}") from exc
 
 
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:

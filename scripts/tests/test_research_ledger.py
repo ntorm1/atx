@@ -126,6 +126,53 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
         assert RC.main(args) == 2
 
 
+def test_the_gate_ledgers_the_admission_trials(tmp_path):
+    """Review C-7: v8 Appendix A printed "admission trials this sprint 0" on every result (no writer). The gate of a
+    v8 cycle with a ledger appends one chained admission line per listed candidate; a resumed gate or the full run
+    after --screen adds nothing; research_ledger.cells skips the lines and N is unchanged; a v7 cycle writes none."""
+    import test_research_cycle as T
+    summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl", "origin": "grid"}
+    root, sp = T.screen_root(tmp_path / "v8", summ=summ, verdict=True)
+    ledger = root / "trials.jsonl"
+    ledger.write_text(T.cell_line("prior/a") + T.cell_line("prior/b"), encoding="utf-8")
+    old = BI.appendix_a_v8(BI.ledger_read(ledger))
+    n_before = cycle_n(root, sp)
+    log: list[str] = []
+    assert RC.run_cycle(cycle_of(root, sp, screen=True, capabilities=T.CAPS), log=log.append,
+                        clean=lambda r: True) == RC.EXIT_OK
+    records = BI.ledger_read(ledger)
+    assert [r["kind"] for r in records] == ["construction", "construction", "admission"]
+    line = records[-1]
+    assert (line["candidate"], line["origin"], line["status"], line["window_id"], line["count"]) == (
+        "new_alpha", "grid", "admitted", BI.window_id(), 1)
+    text = ledger.read_text(encoding="utf-8").splitlines()
+    assert line["prev_sha256"] == BI.chain_head(text[:2]) and line["pins"]["role_sha256"] == \
+        RC.sha256_file(root / "role" / "manifest.json")
+    assert "1 admission trial line(s) appended, 0 already ledgered" in " ".join(log)
+    assert "admission trials this sprint 0;" in old
+    assert "admission trials this sprint 1;" in BI.appendix_a_v8(records)           # C-7: 0 -> 1 on this fixture
+    assert research_ledger.cells(ledger) == ["prior/a", "prior/b"] and cycle_n(root, sp) == n_before == 3
+    v = json.loads((root / "build-equity" / "cycle-synthetic" / "cycle_verdict.json").read_text())
+    assert v["ledger"] == {"path": "trials.jsonl", "head": BI.line_sha256(text[2]), "lines": 3}
+    assert T.run(root, sp, capabilities=T.CAPS) == RC.EXIT_OK                        # the full run: gate again
+    assert len(BI.ledger_read(ledger)) == 3
+    # the alpha registry's origin class wins over summ.origin (contract K5)
+    root2, sp2 = T.screen_root(tmp_path / "reg", summ=summ, verdict=True)
+    reg = root2 / "atx-impl" / "strategies" / "alphas" / "registry.json"
+    reg.parent.mkdir(parents=True)
+    reg.write_text(json.dumps({"alphas": [{"id": "new_alpha", "origin": "mined"}]}), encoding="utf-8")
+    (root2 / "trials.jsonl").write_text(T.cell_line("prior/a"), encoding="utf-8")
+    assert RC.run_cycle(cycle_of(root2, sp2, screen=True, capabilities=T.CAPS), log=lambda s: None,
+                        clean=lambda r: True) == RC.EXIT_OK
+    assert BI.ledger_read(root2 / "trials.jsonl")[-1]["origin"] == "mined"
+    # a v7 cycle (no verdict, no --protocol v8) ledgers no admission trial
+    root3, sp3 = T.screen_root(tmp_path / "v7", summ={"script": "scripts/summ.py", "dsr_n": 29,
+                                                      "ledger": "trials.jsonl"})
+    (root3 / "trials.jsonl").write_text(T.cell_line("prior/a"), encoding="utf-8")
+    assert T.run(root3, sp3, capabilities=T.CAPS) == RC.EXIT_OK
+    assert [r["kind"] for r in BI.ledger_read(root3 / "trials.jsonl")] == ["construction"]
+
+
 def test_protocol_line_is_chained_when_written(tmp_path):
     root = tmp_path
     ledger = root / "trials.jsonl"
