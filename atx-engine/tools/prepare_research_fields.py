@@ -3171,6 +3171,11 @@ def main(argv=None):
 # register() wraps run() and main() in this namespace; nothing changes unless one of its fields is requested.
 import research_fields_holdings as _holdings  # noqa: E402  (same directory, as prepare_recent_research imports this)
 _holdings.register(globals())
+# Platform v8 F-1 registry hook: the price and long-lookback fields of research_fields_price.py, an opt-in FIELD_MODULES
+# module like research_fields_sec.py (registry after every field above); nothing changes unless one is requested.
+import research_fields_price as _price  # noqa: E402  (same directory; it does not import this module)
+FIELD_MODULES.append(_price.bind(globals()))
+ALL_FIELDS.update(_price.FIELDS)
 
 if __name__ == "__main__":
     main()
