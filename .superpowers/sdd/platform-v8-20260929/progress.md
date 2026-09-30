@@ -449,3 +449,26 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   or cell on 2020-2023; validation reads 2 (before v8); 2025+ never read. No disclosure this session.
 - Pitch determination (status 2, section 9): a v8 pitch with improved metrics is NOT justified: no v8 metric exists.
 - Status: docs/plans/2026-09-30-platform-v8-status-2.md.
+
+## 2026-09-30 PM session 3 (root head 81abfa12; code 237486fe; build v8-5)
+- Goal prompt: docs/plans/2026-09-30-platform-v8-next-goal-prompt.md (8 steps). Owner approved every recommendation
+  in the plan, handoff 1 and status 2. Model: Opus 5.5 for every lane and reader; PM coordinates only.
+- Ruling PM3-1 (fix-lane split): the Wave 1 fix work runs as two lanes with disjoint file ownership -- FIX-C
+  (pool 3, branch feat/platform-v8-fixc-20260930 from 81abfa12: C-1, C-2, C-9, C-10, C-3..C-7, C-13, C-11, C-12,
+  E-33) and FIX-AB (pool 7, feat/platform-v8-fixab-20260930: B-2, B-3, B-4, A-2, A-3, A-4, A-1, B-1) -- the C
+  findings are Python research tooling, the A/B findings C++ and field builders; parallel halves the wall clock --
+  cost if wrong: one textual conflict for the integrator.
+- Ruling PM3-2 (pools): lease-worktree shows every pool leased by dead heartbeat owners of 2026-09-25..27 sessions;
+  sessions 1-2 used pools 3,4,7,8,9,10,11 directly and every tree is clean at its lane head; this session does the
+  same -- no live owner exists -- cost if wrong: none observed; a real owner would show a live keeper.
+- Ruling PM3-3 (review part 2): the cut-short Wave 1 review completes as three read-only readers on root at
+  81abfa12: T (every test file), N (files never read), P (everything merged after 7af37e9d); briefs in
+  review-w1-part2-brief.md; outputs review-w1-T.md, review-w1-N.md, review-w1-P.md -- same method as part 1 --
+  cost if wrong: duplicated findings, deduplicated at the fix lane.
+- Ruling E-35 (era fit and v8 compositions; open decision of status 2): the pooled (era) fit must support
+  `ew-theme-std-v1` and `ew-theme-std-aim-v1` before any OD-3 history read; today it refuses the aim variant and
+  ignores the std variant, and a V8-F that descends from an accepted R-1 would carry one of them. Implemented in a
+  lane after A2 merges (integration 5), tested on synthetic data, no era read -- B0c's lineage will carry a v8
+  composition whenever R-1 is accepted, and the OD-3 read is on the critical path at the freeze gate -- cost if
+  wrong: one lane-day unused if R-1 is rejected.
+- Dispatched: FIX-C (pool 3), FIX-AB (pool 7), R45 finish E-25 (pool 11), readers T, N, P (root, read-only).
