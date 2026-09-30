@@ -622,3 +622,173 @@ with `--out build-equity/v8-i3p4-f-role`. Manifest `19383422...` (accepted `3e79
 - F-0: the lo1 manifest cannot stay byte-identical after W0-1: seal text and counters, plus both code identities.
 - B-2: 12 workers are slower than 4 on this host (vm and composition).
 - g (E-1 "last build of the session"): not in this dispatch.
+
+## integration 4 part A (2026-09-30)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `4647d325` (clean). Tag prefix v8-4.
+Scope: merges, pins, build, Ruling E-22a, tests. No identity run and no real-data run in this dispatch.
+
+### Merges (in order)
+
+| # | lane (tasks) | lane SHA | merge | conflicts |
+|---|---|---|---|---|
+| 1 | R1 (R-1 `ew-theme-std-v1`) | `ec2dfd16` | `168b6578` | `fit_composition_weights.py` import block: root's path block (ENGINE_TOOLS, IMPL_TOOLS, `code_fingerprint`, `record_store`, `rw`, `horizon_stats`) kept, then R1's `import composition_rules` (same directory, importable through IMPL_TOOLS) |
+| 2 | R45 (R-4 hold band, R-5 ADV cap + tests, E-16, grid fix `dca2165a`) | `8fa1005f` (PM note: `1e4a50c8` + docs) | `30a2a950` | none |
+| 3 | G (book diagnostics) | `fea9b6e9` | `94f953eb` | none |
+| 4 | R6 (warm-up exclusion, engine `solve_tracking`) | `a7a26df1` | `0a399c4c` | none (engine CMake auto-merged: `target_tracking.cpp` and R45's `target_shaping.cpp` both listed) |
+| 5 | F3 (F-1 reuse fix E-21, F-A `grp_ff12f49`, F-B `k8_item402_63`) | `0687e82f` | `b5243c5d` | none |
+| 6 | REPORT (E-11 seal exemption, memmap seal check) | `ec47b8ce` | `a6bbf8c7` | none |
+| 7 | H3 (H-3 mining glue part 1) | `95859cc9` | `bf4d28a4` | `atx-engine/CMakeLists.txt` Debug `/O2` blocks: R6's `target_tracking.cpp` and H3's `role_panel.cpp`, both kept |
+| 8 | H1 (report only) | `1e66a7e1` | `3c1d0e01` | none |
+| 9 | A2 (marginal step argv, E-19 plan-rows test) | `d55ad8e1` | `30b80cf6` | none |
+| 4b | R6 (R-6 part 2, spo-v3 rule; PM note) | `23d663b4` | `5c6efcd4` | `atx-impl/tests/CMakeLists.txt` target-tests list: R6's two spo-v3 tests and R45's `book_target_shaping_test.cpp`, all kept |
+
+Checks after the merges:
+- `research_window.hpp`: byte-identical to root's W0-1 file (`git diff 4647d325 HEAD` empty; H3 had imported the same bytes).
+- F-1 reuse interface (after merge 5): complete in `atx-engine/tools/research_fields_price.py` (lane commit `eca04c18`):
+  `HOST_HANDLES = ("h",)`, `producer_group`, `field_spec`, `reuse_inputs`, `entry_inputs`; entries record `producer`
+  (no `producer_code` left). Nothing to complete.
+- R1 / H3 both edit `strategy_ic_runner.cpp`: no overlap (R1 threads the theme rule; H3 moves the guard and the IC
+  config to the engine). IC `--help` still names the `marginal` verb and `--no-composition`.
+- No lane A2 report arrived with the merge (lane commit messages only); `task-A-2-report.md` is the earlier one.
+
+### Source pins (`3287922a`)
+
+Recomputed with a Python mirror of `expect_sources_pinned` (digest + closure). The mirror reproduces root's
+`afbae65d...a181` and `5bc47755...1954` on `4647d325` before any use.
+- `dsl_vm_sources`: 33 paths = root's 31 (W0-1's `data/research_window.hpp` already listed) + H3's
+  `atx-engine/include/atx/engine/data/role_panel.hpp` and `atx-engine/src/data/role_panel.cpp`. After the merges the
+  list was 33 paths with root's old digest. New digest `f24cfbbec5404cec34f785b89724f1d0525469823358b2374ac053e009cbf55c`
+  (H3's lane value `ec506918...` was computed on its 32-path list without W0-1's header). Closure clean.
+- `ic_result_sources`: 10 paths; H3's lane re-pin `e7a40331a3f2f1a4268feece00d354961ae7ab8215a379733d5855f40f61579a`
+  (ic_research.hpp label accessors, ic_screen.cpp `research_window_ic_config`) recomputes equal: no change.
+- No semantics bump. `overlay_panel` and `research_return_guard` are the runner's `dsl_panel` and `guard_for` moved
+  verbatim (read side by side: same statements, `co::`/`al::` spelled `core::`/`alpha::`); `research_window_ic_config`
+  sets the same seven fields as the five deleted lines of `score_role`; the label accessors are read-only. The guard
+  has no multiply-add to contract. The signal-cache key never hashes sources and the IC-result key hashes the guard
+  and config by value, so an unexpected change would miss, never hit stale.
+- R1's `combine/group_rerank.hpp` is in the IC runner TUs' include closure but in neither list: it is composition,
+  which no cache stores (same as `combine/marginal_rank_ic.hpp`).
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`)
+
+Targets (all except b and c): atx-equity-strategy-ic, atx-equity-strategy-targets, atx-equity-strategy-risk,
+atx-engine-data-tests, atx-engine-combine-tests, atx-engine-factory-tests, atx-engine-book-tests,
+atx-impl-strategy-ic-tests, atx-impl-strategy-target-tests, atx-impl-strategy-tests, atx-impl-tests.
+
+| tag | source | result |
+|---|---|---|
+| v8-4 | `3287922a` clean | **exit 1**, 88 s, 19 TUs: `strategy_target_replay.cpp(561)`: call to `form_desired` is ambiguous (fix `21b498d9`) |
+| v8-4a | `21b498d9` clean | ok, 243 s, 79 TUs, 12 links (all 11 targets) |
+| v8-4b | `21b498d9` + 1 dirty (E-22a probe) | ok, 14 s, 1 TU; factory-tests only |
+| v8-4c | `c41d401e` clean | ok, 1 TU; factory-tests only (`f4ad1ae2...`) |
+| v8-4d | `5c6efcd4` clean (R6 part 2 merged) | ok, 63 s, 17 TUs, 8 links; configure re-ran (provenance `5c6efcd4`) |
+| **v8-4e** | `d5e5510a` clean | ok, 38 s, 3 TUs, 8 links; `ConfiguredProvenance` stays `5c6efcd4` (no reconfigure) |
+
+v8-4e executables: ic `44552200707baed9b5ffa24daa6272c8c0a3630630be5f09ee09a46f1d7a1077`, targets
+`38489b90c8dfc7feac7442bb421452f6742d99e26a4f481600316c04aeb945c2`, risk
+`b9e22d8502e1cf20d3eb9d51d99b04df361a328a0cb4ee38880ded74216df322`; engine test exes unchanged since v8-4a/4c
+(data `141bfbfd...`, combine `56d2d547...`, factory `f4ad1ae2...`, book `cfad97bb...`).
+
+The lanes' uncompiled C++ produced one compile error in total (R45, v8-4); R6 part 2, H3, R1 and the engine kernels
+compiled clean under `/W4 /WX`.
+
+### Ruling E-22a (FactoryOos)
+
+- Probe (v8-4b, not committed): `lib::CorrIndexRule::LegacyBandsV1` as the 4th argument of `Library::open` in
+  `R3b_DigestUnchangedByPbo` (1 call) and `HoldoutEngineReuse_DigestUnchanged` (2 calls). **Both passed against the
+  old pins** 4049056013 and 703512706 (and the unchanged digest and admitted pins).
+- Edit reverted (tree clean), then re-pinned (`c41d401e`): 916304603 and 3123399341, each with a comment citing
+  a187e2fe and the v8-4b confirmation. v8-4c: both pass; factory-tests whole 377/377.
+
+### Tests
+
+C++, anchored first (exe of the build named):
+
+| exe (build) | filter | result |
+|---|---|---|
+| strategy-ic-tests (v8-4d) | `CompositionV8.*:StrategyIcRunner.*:StrategyIcComposition.*` | 61/61, CompositionV8 5 (all five of R-1), both tripwires `VmSourcesPinnedToSemanticsVersion`, `IcSourcesPinnedToSemanticsVersion` pass |
+| strategy-ic-tests (v8-4e) | H-3's `StrategyIcRunner.*:NoComposition.*:FieldCaps.*:Workers.*:StrategyIcComposition.*:IcScreen.*:ResearchIc.*:MarginalIc.*:CombineMarginalRankIc.*` | 101/101 (= the whole exe) |
+| combine-tests (v8-4d) | `GroupRerank.*` | 5/5 |
+| book-tests (v8-4d) | `BookTargetShaping.*:TargetTracking.*` | 19/19 (10, 9) |
+| factory-tests (v8-4e = v8-4c exe) | H-3's `FactoryFidelity*:FactorySearch*:ResearchIc*:IcScreen*` | 45/45 |
+| strategy-target-tests (v8-4d) | `HoldBand.*:AdvHold.*:BookTargetShaping.*:StrategyLive.*:NavV7Hook.*:Spo*` | 88 run: 85 passed, 1 skipped, **2 failed** (fixed, below) |
+| strategy-target-tests (v8-4e) | same | 88 run: **87 passed, 1 skipped**: HoldBand 10, AdvHold 6, BookTargetShaping 10, StrategyLive 19, NavV7Hook 11, Spo* 32 (SpoSolver 7, SpoAlpha 1, SpoCalibration 2, SpoRisk 2, SpoHook 11, SpoTripwire 2, SpoPin 2, SpoV3 5) |
+| strategy-target-tests (v8-4e) | R-5's rest `StrategyTargetReplay.*:TargetReplayV5.*:TargetReplayV6.*:StrategyNavReplay.*:NavWarmStart.*:NavV5.*:NavV6.*:ConstructionGrid.*:NavBookWorkers.*:NavTimers.*` | 75/75 |
+
+R6 part 2 requirements (PM note):
+1. SpoPin v1 digests pass unchanged: `[spo-pin] weights=0xda6b6871e7e267c5`, `replay=0xaabdbb72f99a6e13` (pins
+   untouched by the merge; `strategy_spo_pin_test.cpp` only moved its procedures to `strategy_spo_digest.hpp`).
+2. `SpoV3.V1AndV2DigestsUnchanged` passes its v1 checks and SKIPS (v2 placeholder 0). The capture protocol needs a
+   build of a pre-R6 tree: not done (open item). For the record only, the R6 head prints
+   `[spo-v3-pin] v2 weights=0xb039820b40d5cf24 (40 diagnostics rows) replay=0xd24b61721a7c698c (30 days)`; these
+   are **not** pins, the pre-R6 build must print them first.
+3. SpoV3 runtimes (v8-4e): ZeroCostNoLimits 65 ms, GrossCapIsSlackOnFixture 220 ms, ReportsTrackingError 202 ms,
+   Parse 2 ms, V1AndV2 214 ms (skip). No fixture solve near the 2,000-iteration cap in wall time.
+
+Whole executables:
+
+| exe | build | result |
+|---|---|---|
+| atx-engine-data-tests | v8-4d (= v8-4e exe) | 298 run: 284 passed, 14 skipped |
+| atx-engine-combine-tests | v8-4d (= v8-4e exe) | 220/220 |
+| atx-engine-factory-tests | v8-4d (= v8-4c = v8-4e exe) | 377/377 (FactoryOos green after E-22a) |
+| atx-engine-book-tests | v8-4d (= v8-4e exe) | 147/147 |
+| atx-impl-strategy-ic-tests | v8-4e | 101/101 |
+| atx-impl-strategy-target-tests | v8-4e | 220 run: 219 passed, 1 skipped (SpoV3 v2 placeholder) |
+| atx-impl-strategy-tests | v8-4e | 45/45 |
+| atx-impl-tests | v8-4e | 947 run: 940 passed, 6 skipped, 1 failed: the known `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` |
+
+Python (`pytest -q -p no:cacheprovider`; no `.py` file changed after `21b498d9`):
+
+| paths | result |
+|---|---|
+| atx-impl/strategies | 163 passed |
+| atx-engine/tools | 214 passed (6 subtests) |
+| atx-impl/tools, `ATX_EQUITY_BIN` absolute, v8-4e | 314 passed, 2 skipped (`ATX_EQUITY_TARGETS_EXE`, `ATX_EQUITY_ROOT` unset) |
+| `test_exposures_export.py` with `ATX_EQUITY_TARGETS_EXE` = v8-4e targets | 3 passed (the skipped verb test included; synthetic role) |
+| scripts/tests, `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin`, v8-4e | 97 passed, 3 skipped (the three RESEARCH_CYCLE_LIVE_ROOT tests) |
+
+- `test_dsr_n_equals_trial_counts_with_defect_and_rerun_lines`: passed.
+- tiny_world end to end (`test_cycle_e2e_goldens_redundant_copy_and_idempotent_rerun`, live on v8-4e): **passed, no
+  golden moved**, nothing re-recorded.
+- E-19 (A2): `test_plan_rows_equal_static_validation` with `ATX_V71_PLAN_JSON=build-equity/v8-i3-plan-v71.json`
+  (integration 3's saved `--plan-only` JSON, read only): passes (3 plan tests passed). Integration 3's 5 per-member
+  slot and node differences are now checked against the house budget, not for equality; DSL SHA, lookback, extra
+  fields and the three maxima still must be equal, per the ruling.
+- R-5 note: `NavHolding` +16 B. No test refused on a workspace budget; identity runs with a tight `--max-bytes` were
+  not in this dispatch.
+
+### Fixes (for lanes to merge root)
+
+| commit | lane (task) | file | reason |
+|---|---|---|---|
+| `168b6578` (merge resolution) | R1 (R-1) / W0E, C | `atx-impl/tools/fit_composition_weights.py` | import block, both sides |
+| `bf4d28a4` (merge resolution) | H3 / R6 | `atx-engine/CMakeLists.txt` | two Debug `/O2` blocks, both kept |
+| `5c6efcd4` (merge resolution) | R6 part 2 / R45 | `atx-impl/tests/CMakeLists.txt` | target-tests list, all three sources kept |
+| `3287922a` | H3 (H-3) | `atx-impl/src/strategy_ic_signal_cache.cpp` | `dsl_vm_sources` digest for the merged 33-path list (the commit title also names W0-1's header, which root had already listed; only the role_panel lift moved the digest) |
+| `21b498d9` | R45 (R-4) | `atx-impl/src/strategy_target_replay.cpp` | v8-4 compile error: `detail::DesiredState*` brings `detail::form_desired` in by ADL, the unqualified call in `replay_targets` was ambiguous; qualified as the detail forwarder does |
+| `c41d401e` | E-22a | `atx-engine/tests/factory/factory_oos_test.cpp` | two `kPinnedVersionId` re-pinned, comments cite a187e2fe |
+| `09bb1ad4` | R45 (R-5, grid fix `dca2165a`) | `atx-impl/src/strategy_nav_replay.cpp` | `replay_books` compared the base variant with itself; `same_shared` now includes `adv_hold_q`, so a NaN Q was refused with the grid message before `validate_nav_config` (`AdvHold.RefusedOutsideTheNavPathAndWhenMalformed`). Loop starts at the second variant; every non-NaN configuration and every multi-variant grid refuses as before |
+| `d5e5510a` | R6 (R-6 part 2) | `atx-impl/tests/strategy_spo_v3_test.cpp` | `SpoV3.ZeroCostNoLimitsReturnsAimTo1e8` fed a demeaned uniform signal (gross about 5) as the desired target, so L x desired crossed the 2 x L bound; the fixture now scales to gross 1 like every real desired target. No production code changed |
+
+No design error found.
+
+### Hidden-data record
+
+No real-data run. Inputs were the unit-test fixtures (synthetic) and one read of integration 3's plan JSON for the
+2020-2022 role (a `--plan-only` output: DSL SHAs, lookbacks, slot and node counts, no statistic). Nothing dated
+2024-01-01 or later was opened. **No disclosure.**
+
+### Open items
+
+- spo-v2 pin capture for `SpoV3.V1AndV2DigestsUnchanged` (section 6 step 4 of `task-R-6-report.md`) needs a build of a
+  pre-R6 tree; the test skips until then.
+- Part B identities from the lane reports, none run here: R-1 identity cell (rerank false), R-4/R-5 flag-off NAV and
+  holdings identities (the `NavHolding` +16 B reserve included), R-6 flag-off identities (a) v7.1 and (b) spo-v2, H-3
+  warm v7.1 u pass (48 cache and 48 IC hits), C-3 step 2 (`--reuse` from `v8-i3p4-c-fields2`, expect 63 reused),
+  REPORT's E-4 step 3 re-render, E-1 "last build of the session".
+- `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`: known, pre-sprint.
+- Lane A2 sent no report with its merge (commit messages only).
+- `ParallelLockstepGrid.*` still needs the `parallel` group configured in build-equity.
+- `build_provenance.cpp` is generated at configure time: v8-4e records `5c6efcd4`, not its source `d5e5510a`.
