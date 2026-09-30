@@ -83,7 +83,7 @@ def make_lake(root: Path, seed: int = 7) -> dict:
         beta = 1.0 if sid == SPY else 0.5 + (sid % 5) * 0.3
         eps = rng.normal(0, 0.015, n) * (0 if sid == SPY else 1)
         lr = beta * fac + eps
-        start = D(2017, 6, 1) if sid == 20 else (D(2018, 1, 2) if sid == 21 else cal[0])
+        start = D(2017, 6, 1) if sid == 20 else (D(2018, 3, 1) if sid == 21 else cal[0])
         close = 50 * np.exp(np.cumsum(lr))
         ovn = rng.normal(0, 0.004, n)
         vol = rng.lognormal(12, 0.5, n)
@@ -340,7 +340,7 @@ def test_momentum_reversal_and_volatility_match_reference(built):
 
 def test_risk_features_match_reference(built):
     n = 0
-    for sid in (16, 18, GUARD_LINE):
+    for sid in (16, 18, GUARD_LINE, 21):  # 21 starts 2018-03-01: its first row has no ret but a mkt_ret
         ln = _line(built, sid)
         s, r, m, dts = ln["sidx"].to_numpy(), _r(ln), ln["mkt_ret"].to_numpy(float), list(ln["session_date"])
         dref, cref = {}, {}

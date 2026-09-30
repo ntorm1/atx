@@ -255,10 +255,11 @@ def line_sql(inp: str, hist: str | None, mkt_month: str | None, cal_path: str,
         SELECT i.*, cal.sidx,
                CASE WHEN ret_guarded THEN NULL ELSE ret END AS r,
                mkt_ret AS m,
-               CASE WHEN NOT ret_guarded AND mkt_ret IS NOT NULL THEN mkt_ret END AS cx,
-               CASE WHEN NOT ret_guarded AND mkt_ret IS NOT NULL THEN ret END AS cy,
-               CASE WHEN NOT ret_guarded AND mkt_ret < 0 THEN mkt_ret END AS dx,
-               CASE WHEN NOT ret_guarded AND mkt_ret < 0 THEN ret END AS dy,
+               -- (r, m) pairs: both present, else both NULL (the moment windows must see the same rows)
+               CASE WHEN NOT ret_guarded AND ret IS NOT NULL AND mkt_ret IS NOT NULL THEN mkt_ret END AS cx,
+               CASE WHEN NOT ret_guarded AND ret IS NOT NULL AND mkt_ret IS NOT NULL THEN ret END AS cy,
+               CASE WHEN NOT ret_guarded AND ret IS NOT NULL AND mkt_ret < 0 THEN mkt_ret END AS dx,
+               CASE WHEN NOT ret_guarded AND ret IS NOT NULL AND mkt_ret < 0 THEN ret END AS dy,
                CASE WHEN close > 0 AND raw_close > 0 AND shares_out > 0 THEN shares_out * raw_close / close END AS adj_shares,
                CASE WHEN shares_out > 0 THEN si_shares / shares_out END AS si_ratio_raw,
                CASE WHEN sv_total_volume > 0 THEN sv_short_volume / sv_total_volume END AS svr_1,
@@ -653,8 +654,21 @@ def _eq_sql(a: str, b: str) -> str:
             f"(abs({a} - {b}) <= {PIT_REL_TOL} * greatest(abs({a}), abs({b})) OR abs({a} - {b}) <= {PIT_ABS_TOL})))")
 
 
+def pit_source(con, bucket: int, dmax: dt.date, *, nb: int = NB, table: str = "pit_src") -> str:
+    """Materialize the bucket's line-pass input read from the PUBLISHED panel and borrow_proxy stages (not the
+    build's extracts), rows ``session_date <= dmax`` only; ``pit_check(source=...)`` cuts it at each d."""
+    root = C.build_root()
+    cut = f"session_date <= DATE '{dmax}'"
+    pan = f"(SELECT * FROM {_rp(root / 'panel' / 'year=*' / '*.parquet')} WHERE security_id % {nb} = {bucket} AND {cut})"
+    bp = (f"(SELECT * FROM {_rp(root / 'borrow_proxy' / 'year=*' / '*.parquet')} "
+          f"WHERE security_id % {nb} = {bucket} AND {cut})") if list((root / "borrow_proxy").glob("year=*/*.parquet")) else None
+    con.execute(f"CREATE OR REPLACE TABLE {table} AS {input_sql(pan, bp)}")
+    return table
+
+
 def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[R.Feature] | None = None,
-              extra_terms: dict[str, str] | None = None, max_examples: int = 3) -> dict[str, Any]:
+              extra_terms: dict[str, str] | None = None, max_examples: int = 3,
+              source: str | None = None) -> dict[str, Any]:
     """Recompute bucket ``bucket`` at decision session ``d`` from panel / borrow_proxy / prices_history rows with
     ``session_date <= d`` only (read from the published stages, not the build's extracts), then compare every feature
     with the built stage at d: equal (|diff| <= 1e-9 relative, or <= 1e-12) or both NULL.
@@ -665,14 +679,11 @@ def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[
     root = C.build_root()
     cal = C.calendar_path().as_posix()
     cut = f"session_date <= DATE '{d}'"
-    pan = f"(SELECT * FROM {_rp(root / 'panel' / 'year=*' / '*.parquet')} WHERE security_id % {nb} = {bucket} AND {cut})"
-    bp_files = list((root / "borrow_proxy").glob("year=*/*.parquet"))
-    bp = (f"(SELECT * FROM {_rp(root / 'borrow_proxy' / 'year=*' / '*.parquet')} "
-          f"WHERE security_id % {nb} = {bucket} AND {cut})") if bp_files else None
+    src = source or pit_source(con, bucket, d, nb=nb)
     hist_files = list((root / "prices_history").glob("year=*/*.parquet"))
     hist = (f"(SELECT * FROM {_rp(root / 'prices_history' / 'year=*' / '*.parquet')} "
             f"WHERE security_id % {nb} = {bucket} AND {cut})") if hist_files else None
-    con.execute(f"CREATE OR REPLACE TEMP TABLE pit_in AS {input_sql(pan, bp)}")
+    con.execute(f"CREATE OR REPLACE TEMP VIEW pit_in AS SELECT * FROM {src} WHERE {cut}")
     mk_parts = [f"SELECT session_date, security_id, ret, ret_guarded FROM {_rp(root / 'panel' / 'year=*' / '*.parquet')} "
                 f"WHERE security_id = {MKT_ID} AND {cut}"]
     if hist_files:
@@ -719,10 +730,13 @@ def run_pit(sessions: Sequence[dt.date], buckets: Sequence[int], *, nb: int = NB
     con = C.connect(memory=memory, threads=threads, db_file="characteristics_pit.duckdb")
     results = []
     try:
-        for d in sessions:
-            for b in buckets:
+        for b in buckets:
+            t0 = time.perf_counter()
+            src = pit_source(con, b, max(sessions), nb=nb)
+            print("pit source bucket", b, round(time.perf_counter() - t0, 1), "s", flush=True)
+            for d in sessions:
                 t0 = time.perf_counter()
-                r = pit_check(con, b, d, nb=nb)
+                r = pit_check(con, b, d, nb=nb, source=src)
                 r["elapsed_s"] = round(time.perf_counter() - t0, 1)
                 results.append(r)
                 print(json.dumps({k: r[k] for k in ("bucket", "session", "rows_recomputed", "rows_built", "pass",
