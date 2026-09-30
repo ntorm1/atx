@@ -10,7 +10,12 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/panel_pipeline.cpp
     src/stage_data_provenance.cpp
     src/strategy_runner.cpp
+    # IC runner (platform v8 B-3 split; shared internals in strategy_ic_detail.hpp)
     src/strategy_ic_runner.cpp
+    src/strategy_ic_library.cpp
+    src/strategy_ic_admission.cpp
+    src/strategy_ic_signal_cache.cpp
+    src/strategy_ic_result_cache.cpp
     src/strategy_ic_composition.cpp
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
@@ -85,10 +90,14 @@ set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEAD
 # it with the public clang driver option. LLVM ignores the inherited /RTC1.
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+        src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
+        src/strategy_ic_result_cache.cpp
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
         src/strategy_spo.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+        src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
+        src/strategy_ic_result_cache.cpp
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
         src/strategy_spo.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
