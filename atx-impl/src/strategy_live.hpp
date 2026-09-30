@@ -24,6 +24,11 @@ namespace atx::impl::strategy {
 //        band_multiple, monthly_budget, exit_rate, order_basis, locate_in_aim,
 //        liquidity_cache, rate ("fixed"), daily_turnover_mean_max, daily_turnover_p95_max,
 //        max_working_bytes, recipe_sha256 (the NAV run's summary.json recipe_sha256)},
+//   optional nav keys (v8; absent = off = 0, and the NAV recipe recomputed without them
+//        hashes exactly as before: each enters the recipe only when on): warm_start_sessions
+//        (the nav verb's --warm-start-sessions K, an unsigned integer <= 4096), hold_band
+//        (--hold-band B, v8 R-4; B = 0 hashes as absent), adv_hold_q (--adv-hold-q Q, v8 R-5;
+//        0 = off; decision.json then records the cap pass under adv_hold),
 //   executables {"atx-equity-strategy-targets": sha, "atx-equity-strategy-ic": sha},
 //   source.git_sha (40 hex), seal {policy (the research window id, kResearchWindowId),
 //   exclusive_session (its seal date, kSealBeginDate)}, owner_gate (null, or {owner, ruling, date}),
@@ -100,10 +105,14 @@ struct DecideOutcome {
 // - a CSV with columns instrument_id and held_dollars (any order, other columns ignored);
 //   with a session_ns column only rows of the as-of session are read (so a replay's v1
 //   holdings.csv is a positions file); nav_post, target_weight and shares columns are read
-//   when present (shares: the broker's share count, used by the share orders);
+//   when present (shares: the broker's share count, used by the share orders); v8 R-4:
+//   rank_set and desired_prev (both or neither; "nan" = unset) carry the hold-band state
+//   into the decision, a name without a row or a file without them is unset;
 // - an f64 holdings directory of `nav --emit-holdings` (or its holdings_index.json): the
 //   as-of session's rows (held_dollars, target_weight) and nav_post, every file SHA
-//   verified; a session the replay did not report is refused.
+//   verified; a session the replay did not report is refused. The export of a hold-band book
+//   (b > 0, v8 E-16) also carries rank_set and desired_prev (in holdings.csv too), the state
+//   the replay's DECIDE read at that session, so --check-replay matches a hold-band book.
 // Every id must be a role instrument, at most once; dollars finite.
 // Locates CSV (optional): instrument_id,locate with locate 0|1; a name not listed or
 // listed 0 has no locate: it may not open or grow a short (the locate-in-aim mask and
@@ -120,6 +129,9 @@ struct DecideOutcome {
 //   expected_holdings.csv: instrument_id,shares,current_shares,order_shares,
 //     reference_price,notional (the book after the sent orders fill; reconcile's
 //     --expected).
+//   targets.csv with the hold band declared (v8 R-4, b > 0): two trailing columns
+//     rank_set,desired_prev (the state after the decision) and a row for every name with a
+//     set rank, so its state columns are the next decide's positions columns.
 // Returns the outcome once decision.json is written; any refusal is an error and writes
 // nothing (the directory is created only after every check and the decision).
 [[nodiscard]] atx::core::Result<DecideOutcome> run_decide(const DecideConfig& cfg,

@@ -26,12 +26,25 @@ static_assert(std::endian::native == std::endian::little,
               "holdings.f64 is little-endian binary64: a big-endian host needs a byte swap");
 static_assert(std::numeric_limits<f64>::is_iec559);
 constexpr usize buffer_values = (1U << 20) / sizeof(f64); // 1 MiB
-constexpr u64 row_bytes = row_width * sizeof(f64);
 constexpr u64 max_json_bytes = 64ULL << 20;
 constexpr u64 max_rows = 1ULL << 40;
 constexpr u64 exact_integer_max = 1ULL << 53;
 constexpr const char* session_columns =
     "session_index,session_ns,nav_post_bits,decision,first_row,rows";
+constexpr const char* hold_state_declaration =
+    "v8 E-16 (hold band declared, b > 0): rank_set and desired_prev are the hold-band state "
+    "DECIDE at the session read (the state entering its construction; nan = unset), so decide "
+    "--positions carries the book's band; a name holding a set rank has a row";
+
+u64 row_bytes(usize width) { return u64{width} * sizeof(f64); }
+// The data columns: the row_width names, then the state names of a hold-band book.
+Json column_json(bool hold_state) {
+  Json names = Json::array();
+  for (const char* name : column_names) names.push_back(name);
+  if (hold_state)
+    for (const char* name : hold_column_names) names.push_back(name);
+  return names;
+}
 
 std::string hex(std::span<const std::byte> bytes) {
   constexpr const char* digits = "0123456789abcdef";
@@ -97,23 +110,26 @@ struct Index {
   std::vector<SessionEntry> sessions;
   std::string data_sha256;
   u64 rows{}, bytes{};
+  usize width{row_width};
+  bool hold_state{}; // v8 E-16: the rows carry the hold-band state columns
 };
 co::Result<Index> parse_index(const std::string& text) {
   const Json j = Json::parse(text);
   if (!j.is_object() || j.value("schema", std::string{}) != index_schema)
     return bad_index(std::string("schema must be ") + index_schema);
   const auto& data = j.at("data");
-  Json names = Json::array();
-  for (const char* name : column_names) names.push_back(name);
-  if (data.at("file") != data_file || data.at("dtype") != "<f8" ||
-      data.at("layout") != "row-major" || data.at("row_width") != row_width ||
-      data.at("columns") != names)
-    return bad_index("data layout differs from this build's");
   Index out;
+  out.hold_state = data.at("columns") == column_json(true);
+  out.width = out.hold_state ? hold_row_width : row_width;
+  if (data.at("file") != data_file || data.at("dtype") != "<f8" ||
+      data.at("layout") != "row-major" || data.at("row_width") != out.width ||
+      (!out.hold_state && data.at("columns") != column_json(false)))
+    return bad_index("data layout differs from this build's");
   out.rows = data.at("rows").get<u64>();
   out.bytes = data.at("bytes").get<u64>();
   out.data_sha256 = data.at("sha256").get<std::string>();
-  if (out.rows > max_rows || out.bytes != out.rows * row_bytes || out.data_sha256.size() != 64)
+  if (out.rows > max_rows || out.bytes != out.rows * row_bytes(out.width) ||
+      out.data_sha256.size() != 64)
     return bad_index("data rows, bytes or sha256");
   const auto& ids = j.at("instrument_ids");
   if (!ids.is_array() || ids.empty()) return bad_index("instrument_ids");
@@ -151,9 +167,11 @@ co::Result<std::pair<std::filesystem::path, std::string>> index_of(const std::st
                    "holdings: holdings_index.json differs from the manifest's SHA-256");
   return co::Ok(std::pair{given, std::move(text)});
 }
-co::Result<NavHolding> unpack(const Row& r, usize session, std::span<const u64> ids,
+// One row of `width` values (row_width, or hold_row_width with the hold-band state).
+co::Result<NavHolding> unpack(std::span<const f64> r, usize session, std::span<const u64> ids,
                               f64 nav_post) {
   const auto bad = co::Err(co::ErrorCode::InvalidArgument, "holdings: row malformed");
+  if (r.size() != row_width && r.size() != hold_row_width) return bad;
   u64 row_session = 0, name = 0, flags = 0;
   if (!exact_index(r[col_session], u64{session} + 1, row_session) || row_session != session ||
       !exact_index(r[col_name], ids.size(), name) ||
@@ -180,13 +198,21 @@ co::Result<NavHolding> unpack(const Row& r, usize session, std::span<const u64> 
   h.locate_blocked = (flags & flag_locate_blocked) != 0;
   h.order_working = (flags & flag_order_working) != 0;
   h.order_dollars = r[col_order];
+  if (r.size() == hold_row_width) { // v8 E-16: both unset (NaN) or both finite, as written
+    h.rank_set = r[col_rank_set]; h.desired_prev = r[col_desired_prev];
+    const bool unset = std::isnan(h.rank_set);
+    if (unset != std::isnan(h.desired_prev) ||
+        (!unset && (!std::isfinite(h.rank_set) || !std::isfinite(h.desired_prev))))
+      return bad;
+  }
   return co::Ok(h);
 }
-co::Result<std::vector<f64>> read_rows(const std::filesystem::path& file, u64 first, u64 rows) {
-  std::vector<f64> values(static_cast<usize>(rows * row_width));
+co::Result<std::vector<f64>> read_rows(const std::filesystem::path& file, u64 first, u64 rows,
+                                       usize width) {
+  std::vector<f64> values(static_cast<usize>(rows * width));
   if (!rows) return co::Ok(std::move(values));
   std::ifstream in(file, std::ios::binary);
-  in.seekg(static_cast<std::streamoff>(first * row_bytes));
+  in.seekg(static_cast<std::streamoff>(first * row_bytes(width)));
   // SAFETY: f64 is trivially copyable and the file is little-endian binary64 on a
   // little-endian IEEE host (static_asserts above); char aliasing is permitted.
   in.read(reinterpret_cast<char*>(values.data()),
@@ -208,15 +234,26 @@ Row pack(usize session, const NavHolding& h) noexcept {
              h.held_dollars, h.filled_dollars, h.fill_cost_dollars, h.unfilled_dollars,
              h.desired, h.rule_weight, h.target_weight, h.order_dollars};
 }
+HoldRow pack_hold(usize session, const NavHolding& h) noexcept {
+  const Row base = pack(session, h);
+  HoldRow out{};
+  std::copy(base.begin(), base.end(), out.begin());
+  out[col_rank_set] = h.rank_set; out[col_desired_prev] = h.desired_prev;
+  return out;
+}
 
-co::Status BinaryAppender::open(const std::filesystem::path& path) {
+co::Status BinaryAppender::open(const std::filesystem::path& path, usize width) {
+  if (width != row_width && width != hold_row_width)
+    return co::Err(co::ErrorCode::Internal, "holdings: row width");
+  width_ = width;
   file_.open(path, std::ios::binary);
   if (!file_) return co::Err(co::ErrorCode::IoError, "holdings: holdings.f64 output");
   buffer_.reserve(buffer_values);
   return co::Ok();
 }
-co::Status BinaryAppender::append(const Row& row) {
-  if (buffer_.size() + row_width > buffer_values) ATX_TRY_VOID(flush());
+co::Status BinaryAppender::append(std::span<const f64> row) {
+  if (row.size() != width_) return co::Err(co::ErrorCode::Internal, "holdings: row width");
+  if (buffer_.size() + width_ > buffer_values) ATX_TRY_VOID(flush());
   buffer_.insert(buffer_.end(), row.begin(), row.end());
   ++rows_;
   return co::Ok();
@@ -237,15 +274,15 @@ co::Result<BinaryAppender::Closed> BinaryAppender::close() {
   file_.close();
   if (!file_) return co::Err(co::ErrorCode::IoError, "holdings: holdings.f64 close");
   ATX_TRY(const auto digest, sha_.finalize());
-  return co::Ok(Closed{hex(digest), rows_ * row_bytes, rows_});
+  return co::Ok(Closed{hex(digest), rows_ * row_bytes(width_), rows_});
 }
 
 co::Result<std::string> write_index(const std::filesystem::path& path,
                                     std::span<const u64> ids,
                                     std::span<const SessionEntry> sessions,
-                                    const BinaryAppender::Closed& data) {
-  Json names = Json::array();
-  for (const char* name : column_names) names.push_back(name);
+                                    const BinaryAppender::Closed& data, bool hold_state) {
+  const Json names = column_json(hold_state);
+  const usize width = hold_state ? hold_row_width : row_width;
   Json table = Json::array(), navs = Json::array();
   u64 next = 0;
   for (const auto& s : sessions) {
@@ -259,9 +296,9 @@ co::Result<std::string> write_index(const std::filesystem::path& path,
   }
   if (next != data.rows)
     return co::Err(co::ErrorCode::Internal, "holdings: session table does not tile the rows");
-  const Json index{{"schema", index_schema},
+  Json index{{"schema", index_schema},
       {"data", {{"file", data_file}, {"dtype", "<f8"}, {"layout", "row-major"},
-                {"row_width", row_width}, {"columns", names}, {"rows", data.rows},
+                {"row_width", width}, {"columns", names}, {"rows", data.rows},
                 {"bytes", data.bytes}, {"sha256", data.sha256}}},
       {"flags", {{"member", flag_member}, {"stale", flag_stale},
                  {"order_placed", flag_order_placed}, {"locate_blocked", flag_locate_blocked},
@@ -279,6 +316,7 @@ co::Result<std::string> write_index(const std::filesystem::path& path,
       {"instrument_ids", std::vector<u64>(ids.begin(), ids.end())},
       {"session_columns", session_columns}, {"sessions", table},
       {"nav_post", navs}};
+  if (hold_state) index["hold_state"] = hold_state_declaration; // absent: the pre-v8 bytes
   std::ofstream file(path, std::ios::binary);
   if (!file) return co::Err(co::ErrorCode::IoError, "holdings: index output");
   const std::string text = index.dump(1) + "\n";
@@ -310,15 +348,15 @@ co::Result<SessionRead> read_session(const std::string& path, i64 session_ns) {
                      "holdings: the as-of session is not in the holdings (the replay reports "
                      "decision and execution sessions only)");
     const usize ordinal = static_cast<usize>(it - table.begin());
-    ATX_TRY(const auto values, read_rows(data, it->first_row, it->rows));
+    const usize width = index.width;
+    ATX_TRY(const auto values, read_rows(data, it->first_row, it->rows, width));
     SessionRead out;
     out.session = *it;
+    out.hold_state = index.hold_state;
     out.names.reserve(static_cast<usize>(it->rows));
+    const std::span<const f64> all(values);
     for (usize r = 0; r < it->rows; ++r) {
-      Row row{};
-      std::copy_n(values.begin() + static_cast<std::ptrdiff_t>(r * row_width), row_width,
-                  row.begin());
-      ATX_TRY(auto h, unpack(row, ordinal, index.ids, it->nav_post));
+      ATX_TRY(auto h, unpack(all.subspan(r * width, width), ordinal, index.ids, it->nav_post));
       if (!out.names.empty() && h.index <= out.names.back().index)
         return co::Err(co::ErrorCode::InvalidArgument,
                        "holdings: names must ascend within a session");

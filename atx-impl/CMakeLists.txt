@@ -35,6 +35,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_risk_verb.cpp
     # platform v7 W1: spo-v1, the cost-aware single-period optimiser (FISTA, factor risk)
     src/strategy_spo.cpp
+    # platform v8 R-6: spo-v3, target tracking (its published blocks; the engine's solver)
+    src/strategy_spo_v3.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -95,13 +97,13 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
         src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
         src/strategy_ic_result_cache.cpp
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
-        src/strategy_spo.cpp
+        src/strategy_spo.cpp src/strategy_spo_v3.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
         src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
         src/strategy_ic_result_cache.cpp
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
-        src/strategy_spo.cpp
+        src/strategy_spo.cpp src/strategy_spo_v3.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 

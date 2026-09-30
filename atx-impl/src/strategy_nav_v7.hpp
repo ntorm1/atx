@@ -37,11 +37,25 @@
 //                             v7_transfer_coefficient.csv and v7_extras.json (status "void")
 //                             and the verb exits 3. --emit-holdings (which streams NAV during
 //                             the replay) is refused with the void on.
-//   spo-v1 / spo-v2 blocks are keyed "spo_v1" / "spo_v2" (recipe v7, summary v7, extras).
+//   --rule spo-v3 [--spo-alpha implied-aim]   target tracking toward the aim (platform v8
+//                             R-6, strategy_spo_v3.hpp): no alpha vector, gamma = S_prior /
+//                             sigma_aim (S_prior 20, Ruling E-14), H 20, trade limit .01 ADV,
+//                             beta .02, no holding cap, gross above 2 x --aim-leverage a
+//                             breach; its own spo_diagnostics.csv columns and tripwire (a
+//                             clamp or a breach voids the run with the void on, the default).
+//                             Allowed: --risk-model(-sha256), --spo-iters, --spo-tol,
+//                             --spo-books, --specific-ceiling(-void); every other spo flag is
+//                             refused. --spo-alpha is refused with spo-v1/v2.
+//   spo-v1 / spo-v2 / spo-v3 blocks are keyed "spo_v1" / "spo_v2" / "spo_v3" (recipe v7,
+//   summary v7, extras); the Engine's rule_* / rows_* members produce them.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
 // the replay's own summary.json.
+// Warm start (v8 D-0, --warm-start-sessions K): the decisions before the role's
+// decision_begin plan the books but are not scored, so every v7 side file (the transfer
+// coefficients, spo_diagnostics.csv, the spo summary blocks) and the spo tripwire cover
+// decisions d >= decision_begin only. K = 0: every decision is scored, bytes unchanged.
 //
 // Threading: the installed extension is thread-local; a replay runs on one thread.
 
@@ -66,7 +80,7 @@ struct NavV7Options {
   bool capacity{}; // --capacity-curve
   bool aim_v6{};   // --rule aim-partial-v6
   cost_v2::AimV6Params v6{};
-  bool spo_v1{};   // --rule spo-v1 or spo-v2 (spo_params.version tells which)
+  bool spo_v1{};   // --rule spo-v1, spo-v2 or spo-v3 (spo_params.version tells which)
   spo::SpoParams spo_params{};
   std::shared_ptr<const spo::RiskStore> spo_risk; // opened by dispatch_nav_v7
 };
@@ -125,7 +139,7 @@ struct NavV7Command {
   NavV7Options options;
   std::vector<std::string> args;
   std::string output;
-  std::string risk_model, risk_model_sha256; // --rule spo-v1 only
+  std::string risk_model, risk_model_sha256; // the spo rules only
 };
 [[nodiscard]] atx::core::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv);
 
@@ -150,8 +164,10 @@ extension_cost_model(const NavScenario& scenario);
                                      std::span<const atx::u8> tier = {},
                                      std::span<const atx::u8> no_locate = {});
 // After the replay and before anything is published: records the books and reads the spo
-// specific-ceiling tripwire (spo::ceiling_tripwire). An error voids the run: the replay
-// returns it before its output directory exists. Ok without an extension (identity).
+// tripwire (spo::Engine::rows_tripwire: spo-v1/v2 the specific-ceiling tripwire, spo-v3 its
+// own) over the scored decisions (a warm-up decision leaves no spo row). An error voids the
+// run: the replay returns it before its output directory exists. Ok without an extension
+// (identity).
 [[nodiscard]] atx::core::Status capture(std::span<const NavScenario> scenarios,
                                         std::span<const NavReplayResult> results,
                                         std::span<const NavSummary> summaries);

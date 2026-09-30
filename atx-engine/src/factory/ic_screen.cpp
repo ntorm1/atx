@@ -516,6 +516,14 @@ IcScreenConfig equivalence_ic_screen_config() noexcept {
   cfg.confidence_multiplier = 3.5;
   return cfg;
 }
+IcScreenConfig research_window_ic_config(usize begin,usize end,usize min_names,usize min_dates,
+                                         atx::u64 max_cache_bytes) noexcept {
+  auto ic=equivalence_ic_screen_config();
+  ic.horizons={5,21,63,0}; ic.min_names=min_names; ic.min_dates=min_dates;
+  ic.window_begin=begin; ic.window_end=end; ic.maturity_end=end;
+  ic.max_cache_bytes=max_cache_bytes;
+  return ic;
+}
 
 namespace {
 IcScreenResult classify_estimates(const std::array<IcScreenHorizon, 4>& estimates,
@@ -583,6 +591,12 @@ usize ResearchIcCache::dates() const noexcept { return data_?data_->dates:0; }
 usize ResearchIcCache::instruments() const noexcept { return data_?data_->instruments:0; }
 usize ResearchIcCache::first_date() const noexcept { return data_?data_->config.window_begin:0; }
 atx::u64 ResearchIcCache::bytes() const noexcept { return data_?data_->bytes:0; }
+std::span<const f64> ResearchIcCache::labels(usize k) const noexcept {
+  return data_ && k<data_->options.active_horizons?std::span<const f64>{data_->labels[k]}:std::span<const f64>{};
+}
+usize ResearchIcCache::label_rows(usize k) const noexcept {
+  return data_ && k<data_->options.active_horizons?data_->active[k]:0;
+}
 ResearchIcScratch::ResearchIcScratch()=default;
 ResearchIcScratch::~ResearchIcScratch()=default;
 ResearchIcScratch::ResearchIcScratch(ResearchIcScratch&&) noexcept=default;

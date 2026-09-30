@@ -1,4 +1,6 @@
 """SEC-derived point-in-time research fields (platform v7, lane W5a): earnings calendar (D2), Form 4 (D11), 8-K (D12).
+Platform v8 F-B adds ``k8_item402_63`` (item 4.02 non-reliance within 63 sessions) to the same 8-K pass: a second item
+mask beside the material-item mask; every other field's bytes and the other source checks are unchanged.
 
 An opt-in field module of ``prepare_research_fields.py``: the builder's ``FIELD_MODULES`` hook binds it to the builder's
 own namespace (``bind(globals())``), appends ``FIELDS`` to its registry after every existing field, and calls
@@ -72,6 +74,8 @@ INS_SKIP_MARGIN_DAYS = 31        # a filing quarter starting > 31 days after the
 K8_COUNT_WINDOW = 63
 K8_MATERIAL_WINDOW = 21
 K8_MATERIAL_ITEMS = ("1.01", "2.01", "2.05", "2.06", "4.02", "5.02")
+K8_ITEM402 = "4.02"              # non-reliance on previously issued financial statements (platform v8 F-B)
+K8_ITEM402_WINDOW = 63
 K8_PRESENCE_DAYS = 365
 NYSE_SPECIAL_CLOSURES = ("2001-09-11", "2001-09-12", "2001-09-13", "2001-09-14", "2004-06-11", "2007-01-02",
                          "2012-10-29", "2012-10-30", "2018-12-05", "2025-01-09")
@@ -112,7 +116,7 @@ K8_CAVEATS = [
 EA_NAMES = ("ea_days_to_expected", "ea_days_since", "ea_window_pre5", "ea_window_post3", "ea_delay_days",
             "ea_time_of_day")
 INS_NAMES = ("ins_net_buy_ratio", "ins_n_buyers", "ins_n_sellers", "ins_opportunistic_net", "ins_cluster_buy")
-K8_NAMES = ("k8_count_63", "k8_item_material_21", "k8_days_since_any")
+K8_NAMES = ("k8_count_63", "k8_item_material_21", "k8_days_since_any", "k8_item402_63")
 EA_FRESH = (f"no visible primary announcement, or the latest one's session_date is more than {EA_STALE_DAYS} days "
             "before the session -> NaN")
 INS_PRESENT = (f"NaN unless the issuer has a visible insider transaction row (any form, code or owner) with "
@@ -221,6 +225,12 @@ _spec("k8_item_material_21", ["sec_filings"], "indicator: 1 when a material-item
 _spec("k8_days_since_any", ["sec_filings"], "sessions since the latest original 8-K's event session (>= 1)",
       "t minus the event session (first session whose 22:00 UTC mark follows the acceptance) of the CIK's latest "
       "visible original 8-K", K8_PRESENT, K8_CAVEATS, "sec-k8-days-since-any-v1", _K8_LAG, "stage from 2009", _K8_COLS)
+# platform v8 F-B (library v8 R7-7): registered after every v7 field, so their registry order is unchanged
+_spec("k8_item402_63", ["sec_filings"], "indicator: 1 when an item 4.02 8-K became usable in 63 sessions",
+      f"1 if an original 8-K of the CIK with item {K8_ITEM402} (non-reliance on previously issued financial "
+      f"statements) became usable within the last {K8_ITEM402_WINDOW} sessions (usable from session e: counted at t "
+      f"for e <= t < e + {K8_ITEM402_WINDOW}), else 0", K8_PRESENT, K8_CAVEATS, "sec-k8-item402-63-v1", _K8_LAG,
+      "stage from 2009", _K8_COLS)
 del _spec
 
 
@@ -735,7 +745,7 @@ class SecFieldModule:
         blob, src = self._verified(directory, m, "eight_k_items.parquet", budget)
         st = {"rows_total": 0, "rows_amendment": 0, "rows_not_8k_form": 0, "rows_sealed": 0, "rows_after_role": 0,
               "rows_unlinked_cik": 0}
-        parts = {k: [] for k in ("c", "acc", "a", "mat")}
+        parts = {k: [] for k in ("c", "acc", "a", "mat", "i402")}
         for batch in self._batches(blob, _K8_COLS, "eight_k_items.parquet"):
             tb = pa.Table.from_batches([batch])
             st["rows_total"] += tb.num_rows
@@ -760,16 +770,18 @@ class SecFieldModule:
             parts["c"].append(pos[keep])
             parts["acc"].append(accession_keys(h.column_of(tb, "accession")))
             parts["a"].append(avail[keep])
-            parts["mat"].append(pc.is_in(h.as_text(h.column_of(tb, "item")),
-                                         value_set=pa.array(list(K8_MATERIAL_ITEMS))).to_numpy(zero_copy_only=False))
+            item = h.as_text(h.column_of(tb, "item"))
+            parts["mat"].append(pc.is_in(item, value_set=pa.array(list(K8_MATERIAL_ITEMS))).to_numpy(zero_copy_only=False))
+            parts["i402"].append(pc.equal(item, K8_ITEM402).to_numpy(zero_copy_only=False))
             budget.check("sec-8k-batch")
         del blob
         cat = lambda xs, dtype: np.concatenate(xs).astype(dtype) if xs else np.empty(0, dtype)
         c, acc, a, mat = cat(parts["c"], np.int64), cat(parts["acc"], np.int64), cat(parts["a"], np.int64), \
             cat(parts["mat"], np.bool_)
+        i402 = cat(parts["i402"], np.bool_)
         # one row per (cik, accession): items share the filing's clock
         o = np.lexsort((acc, c))
-        c, acc, a, mat = c[o], acc[o], a[o], mat[o]
+        c, acc, a, mat, i402 = c[o], acc[o], a[o], mat[o], i402[o]
         new = np.ones(len(c), dtype=bool)
         new[1:] = (c[1:] != c[:-1]) | (acc[1:] != acc[:-1])
         first = np.flatnonzero(new)
@@ -778,21 +790,25 @@ class SecFieldModule:
             st["accessions_with_item_clock_disagreement"] = int(np.count_nonzero(~clock_ok))
             a_f = np.maximum.reduceat(a, first)   # the later clock if items disagree (conservative)
             mat_f = np.logical_or.reduceat(mat, first)
+            i402_f = np.logical_or.reduceat(i402, first)
         else:
-            a_f, mat_f = np.empty(0, np.int64), np.empty(0, bool)
+            a_f, mat_f, i402_f = np.empty(0, np.int64), np.empty(0, bool), np.empty(0, bool)
             st["accessions_with_item_clock_disagreement"] = 0
         c_f, acc_f = c[first], acc[first]
         st["accessions_used"] = int(len(first))
         st["accessions_used_material"] = int(np.count_nonzero(mat_f))
         g = np.lexsort((acc_f, a_f))
-        c_f, a_f, mat_f = c_f[g], a_f[g], mat_f[g]
+        c_f, a_f, mat_f, i402_f = c_f[g], a_f[g], mat_f[g], i402_f[g]
         usable = cal.usable_from(a_f)
         n = len(ciks)
         ones = np.ones(len(c_f), dtype=np.int64)
         k8 = {"latest": Latest(usable, c_f, n), "event": usable - 1, "avail": a_f,
               "count": Windowed(usable, usable + K8_COUNT_WINDOW, c_f, ones, n, np.int64),
               "material": Windowed(usable[mat_f], usable[mat_f] + K8_MATERIAL_WINDOW, c_f[mat_f], ones[mat_f], n,
-                                   np.int64)}
+                                   np.int64),
+              "item402": Windowed(usable[i402_f], usable[i402_f] + K8_ITEM402_WINDOW, c_f[i402_f], ones[i402_f], n,
+                                  np.int64),
+              "item402_accessions": int(np.count_nonzero(i402_f))}
         return k8, [man_src, src], st, {"sec_filings": man_src["sha256"]}
 
     # -- orchestration -------------------------------------------------------------------------------------------
@@ -834,6 +850,8 @@ class SecFieldModule:
                 pa.default_memory_pool().release_unused()   # decoded Arrow buffers are dead once the arrays are built
                 budget.report(f"sec-{key}-loaded", **{k: v for k, v in s.items() if k.endswith("used")
                                                       or k in ("trade_rows", "accessions_used", "files_read")})
+        if "k8_item402_63" in want:   # v8 F-B: its count only when requested, so the other SEC checks stay unchanged
+            st["sec_filings"]["accessions_used_item402"] = k8["item402_accessions"]
         need_so = bool(want & {"ins_net_buy_ratio", "ins_opportunistic_net"})
         reasons = {x: {"not_primary_link": 0, "absent_or_stale": 0, "out_of_rule": 0} for x in names}
         domain_nan = {"ins_net_buy_ratio": 0, "ins_opportunistic_net": 0}
@@ -928,6 +946,8 @@ class SecFieldModule:
                     rows["k8_count_63"] = (np.where(present, cnt.astype(np.float64), np.nan), present)
                     rows["k8_item_material_21"] = (np.where(present, (mat > 0).astype(np.float64), np.nan), present)
                     rows["k8_days_since_any"] = (np.where(present, since, np.nan), present)
+                    i402 = k8["item402"].at(u)[safe]
+                    rows["k8_item402_63"] = (np.where(present, (i402 > 0).astype(np.float64), np.nan), present)
                 for x in names:
                     row, base = rows[x]
                     writers[x].write(row)

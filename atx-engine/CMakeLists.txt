@@ -3,6 +3,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/book/claims_state.cpp
     src/book/replay.cpp
     src/book/security_transition.cpp
+    # platform v8 R-6: target tracking (spo-v3's solver; ADMM on the factor structure)
+    src/book/target_tracking.cpp
     src/factory/canonical.cpp
     src/factory/crossover.cpp
     src/factory/factory.cpp
@@ -145,6 +147,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/data/price_exposure_provider.cpp
     src/data/fundamental_clock_artifact.cpp
     src/data/strategy_data.cpp
+    # platform v8 H-3: role adapters lifted from the IC runner (DSL overlay panel, return guard)
+    src/data/role_panel.cpp
     src/factory/objective_ic.cpp
     src/eval/multiple_testing.cpp
     src/eval/lockbox_audit.cpp
@@ -159,6 +163,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/risk/hybrid_factor_model.cpp
     src/risk/cost_terms.cpp
     src/book/replay_cost.cpp
+    # v8 R-4/R-5: desired-target shaping kernels (hold band, capped pro rata redistribution)
+    src/book/target_shaping.cpp
     src/cost/cost_surface.cpp
     src/cost/spread_estimators.cpp
     src/cost/borrow_tiers.cpp
@@ -199,6 +205,17 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/combine/orthogonalize.cpp src/combine/marginal_rank_ic.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    # v8 R-6: the NAV replay solves one tracking problem per rebalance decision and book
+    # (~1,500 solves of ~100 ADMM iterations over ~1,850 names per TRAIN cell).
+    set_property(SOURCE src/book/target_tracking.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/book/target_tracking.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    # v8 H-3: the role adapters moved out of the IC runner TUs, which run /O2 in Debug; keep
+    # the full-role return guard (four logs per cell) at the speed it had there.
+    set_property(SOURCE src/data/role_panel.cpp APPEND PROPERTY COMPILE_OPTIONS
+        /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/data/role_panel.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.

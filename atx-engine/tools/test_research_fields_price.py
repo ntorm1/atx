@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 import numpy as np
 import pyarrow as pa
@@ -416,7 +417,8 @@ class PriceFields(unittest.TestCase):
         e = {x["name"]: x for x in m["fields"]}
         for name in PRICE_FIELDS:
             self.assertTrue(e[name]["point_in_time"])
-            self.assertEqual(e[name]["producer_code"]["module"], "research_fields_price.py")
+            self.assertEqual(e[name]["producer"]["module"], "research_fields_price.py")
+            self.assertEqual(e[name]["producer"]["code_sha256_lf"], tool.module_code_identity(price)["code_sha256_lf"])
             self.assertEqual(e[name]["formula_sha256"], tool.formula_id(name, tool.spec_definition(name, 1)))
         self.assertEqual(m["source_checks"]["price"]["source"]["duplicate_keys_quarantined"], 1)
         self.assertEqual(m["source_checks"]["price"]["source"]["rows_off_calendar"], 1)
@@ -449,12 +451,82 @@ class PriceFields(unittest.TestCase):
             self.assertEqual((self.base / "cli-out" / f"{name}.f64").read_bytes(),
                              (self.base / "api" / f"{name}.f64").read_bytes())
 
+    def test_reuse_with_price_fields(self):
+        """Ruling E-21: a --reuse build that includes F-1 fields runs through the C-3 interface (it used to raise
+        AttributeError after creating the output), copies unchanged payloads byte for byte and recomputes only what
+        the prior lacks or what its producing code changed; a module without the interface is refused before any
+        output exists."""
+        case = Case(self.base, world())
+        full = case.run("full", PRICE_FIELDS)
+        case.run("part", ["ceq_iss_5y", "vol_126"])
+        mixed = case.run("mixed", PRICE_FIELDS, reuse=self.base / "part")
+        block = mixed["reuse"]
+        self.assertEqual((block["reused"], block["computed"]),
+                         (["ceq_iss_5y", "vol_126"], ["ret_overnight", "ret_intraday", "coskew_60m"]))
+        self.assertEqual(block["not_reused"]["coskew_60m"], "absent from the prior manifest")
+        self.assertEqual(mixed["files"], full["files"])        # reused and recomputed payloads equal a fresh build
+        again = case.run("again", PRICE_FIELDS, reuse=self.base / "mixed")
+        self.assertEqual((again["reuse"]["reused"], again["reuse"]["computed"], again["reuse"]["not_reused"]),
+                         (PRICE_FIELDS, [], {}))
+        for name in PRICE_FIELDS:
+            self.assertEqual((self.base / "again" / f"{name}.f64").read_bytes(),
+                             (self.base / "full" / f"{name}.f64").read_bytes(), name)
+            e = dict(next(x for x in again["fields"] if x["name"] == name))
+            rec = e.pop("reused_from")
+            self.assertEqual(e, next(x for x in full["fields"] if x["name"] == name), name)   # the entry verbatim
+            self.assertEqual(rec["producer"]["module"], "research_fields_price.py", name)
+            self.assertEqual(rec["inputs"], {}, name)
+        chained = case.run("chained", PRICE_FIELDS, reuse=self.base / "again")   # the origin's producer is kept
+        self.assertEqual(chained["reuse"]["reused"], PRICE_FIELDS)
+        # one producer edit (coskew_rows) recomputes only its group; the module blob is in git's object store
+        path = Path(price.__file__)
+        original = path.read_bytes().replace(b"\r\n", b"\n")
+        head = b"def coskew_rows(h, panel: dict, mu: np.ndarray, role, output: Path, budget) -> dict:"
+        self.assertEqual(original.count(head), 1)
+        edited = original.replace(head, head[:-len(b") -> dict:")] + b", _edited=None) -> dict:")
+        blobs = {tool.code_identity_of(original)["code_git_blob_sha1"]: original}
+        real_source, real_blob = tool.module_source, tool.git_blob
+        with unittest.mock.patch.object(tool, "module_source", lambda m: edited if m is price else real_source(m)), \
+                unittest.mock.patch.object(tool, "git_blob", lambda sha1: blobs.get(sha1) or real_blob(sha1)):
+            one = case.run("one", PRICE_FIELDS, reuse=self.base / "again")
+        self.assertEqual(one["reuse"]["computed"], ["coskew_60m"])
+        self.assertIn("group price_coskew", one["reuse"]["not_reused"]["coskew_60m"])
+        self.assertEqual(one["files"], full["files"])
+        # a prior written before E-21 (entries with producer_code, no producer): recomputed, never guessed
+        legacy = self.base / "legacy"
+        legacy.mkdir()
+        for name in ("ceq_iss_5y.f64", "vol_126.f64"):
+            (legacy / name).write_bytes((self.base / "part" / name).read_bytes())
+        m = json.loads((self.base / "part" / "manifest.json").read_text(encoding="utf-8"))
+        for e in m["fields"]:
+            e["producer_code"] = e.pop("producer")
+        (legacy / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+        old = case.run("old", ["ceq_iss_5y", "vol_126"], reuse=legacy)
+        self.assertEqual(old["reuse"]["computed"], ["ceq_iss_5y", "vol_126"])
+        self.assertIn("producing code not recoverable", old["reuse"]["not_reused"]["vol_126"])
+        # the interface is checked before the output directory is created
+        saved = price.HOST_HANDLES
+        del price.HOST_HANDLES
+        try:
+            with self.assertRaisesRegex(ValueError, r"research_fields_price.py lacks the reuse interface "
+                                                    r"\(HOST_HANDLES\)"):
+                case.run("refused", ["vol_126"], reuse=self.base / "full")
+        finally:
+            price.HOST_HANDLES = saved
+        self.assertFalse((self.base / "refused").exists())
+        for name in price.FIELDS:
+            self.assertEqual(price.producer_group(name), price.FIELDS[name]["group"])
+            self.assertIs(price.field_spec(name), price.FIELDS[name])
+
     def test_producers_cover_every_field(self):
         self.assertEqual(sorted({s["group"] for s in price.FIELDS.values()}), sorted(price.PRODUCERS))
         for group, entries in price.PRODUCERS.items():
             for fn in entries:
                 self.assertTrue(callable(getattr(price, fn)), (group, fn))
-        self.assertEqual(list(tool.ALL_FIELDS)[-len(price.FIELDS):], list(price.FIELDS))
+        names = list(tool.ALL_FIELDS)   # one block after every builder and SEC field (later modules follow it)
+        start = names.index(next(iter(price.FIELDS)))
+        self.assertEqual(names[start:start + len(price.FIELDS)], list(price.FIELDS))
+        self.assertTrue(set(names[:start]) >= set(tool.FIELDS) | set(tool.ISSUER_FIELDS) | set(sec.FIELDS))
         self.assertTrue(all(tool.ALL_FIELDS[x]["point_in_time"] for x in price.FIELDS))
         self.assertFalse(set(price.FIELDS) & set(tool.DEFAULT_FIELDS))   # opt-in: the default build is unchanged
 
