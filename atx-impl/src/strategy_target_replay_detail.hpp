@@ -50,6 +50,39 @@ struct LoadedSavedBlend {
 // volume contract, and charges 8 more admitted bytes per cell.
 [[nodiscard]] atx::core::Result<LoadedSavedBlend> load_saved_blend(
     const TargetReplayRunConfig& cfg, bool with_volume);
+// v8 E-25 (nav --label-role, Ruling E-25): a label role marks the NAV books while every decision
+// input stays on cfg's role. check_label_role reads the two pinned manifests only (cfg.role_path
+// / role_sha256 and `path` / `sha256`; no payload) and refuses, by name ("nav replay:
+// --label-role refused: ..."), a label role whose score_end_ns (when declared) is past the
+// research seal (atx/engine/data/research_window.hpp), whose manifest keys other than files and
+// universe differ from the role's, whose file set or any extent differs, whose file SHA-256
+// differs except close.f64, raw_close.f64, volume.f64 and present.u8 (sessions: the dates,
+// ids: the instruments, member.u8: the membership), or whose universe block is not absent in
+// both or the same id, base role (manifest, member), identity-bridge and SIC-events pins (and
+// the role's delisting-stage pin when it has one).
+[[nodiscard]] atx::core::Status check_label_role(const TargetReplayRunConfig& cfg,
+                                                 const std::string& path,
+                                                 const std::string& sha256);
+// The label role's marks, owned (date-major, blend geometry): close, raw close and presence.
+// label_only_cells counts the cells present here and absent in the role (all rows);
+// label_only_scored_cells those in rows [begin, end).
+struct LoadedLabelRole {
+  std::vector<atx::f64> close, raw;
+  std::vector<atx::u8> present;
+  atx::usize label_only_cells{}, label_only_scored_cells{};
+};
+// check_label_role, then (before any label payload is opened) no session of `blend` (the
+// role's, loaded with prices) at or after the seal; then close.f64, raw_close.f64, present.u8
+// and member.u8 against the label manifest's receipts (SHA-256 and extent), refusing a
+// presence/price contract breach, a --role-present cell that is absent or at another close or
+// raw close (bits), or member & present & close > 0 differing from blend.member.
+[[nodiscard]] atx::core::Result<LoadedLabelRole> load_label_role(
+    const TargetReplayRunConfig& cfg, const std::string& path, const std::string& sha256,
+    const LoadedSavedBlend& blend);
+// What a label role's load holds beside the blend: per cell its close, raw close, presence and
+// the member mask it verifies; and the two pinned manifests' text and parse.
+inline constexpr atx::u64 label_role_cell_bytes = 2 * sizeof(atx::f64) + 2;
+inline constexpr atx::u64 label_role_metadata_bytes = 8ULL << 20;
 // The target replay's own recipe/geometry/axes/support validation and budget.
 [[nodiscard]] atx::core::Status validate_replay_input(const TargetReplayInput& in,
                                                       const TargetReplayConfig& cfg);

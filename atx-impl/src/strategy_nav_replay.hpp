@@ -183,14 +183,22 @@ struct NavReplayConfig {
   // shared rate buffer) and while a v7 extension is installed (its hook is thread-local).
   atx::usize book_workers{1};
 };
+// v8 E-25 (Ruling E-25; CLI --label-role ROLE/manifest.json --label-role-sha256 SHA): the
+// pinned label role that MARKS the books (run_nav_replay below states the rule). Both empty
+// (the default): --role marks them, every output byte unchanged.
+struct NavLabelRolePin {
+  std::string manifest_path, manifest_sha256;
+};
 // The v6 execution options of a run_nav_replay call (copied into its NavReplayConfig;
 // CLI --order-basis target|delta, --locate-in-aim, --liquidity-cache; v8
-// --warm-start-sessions K, --book-workers N).
+// --warm-start-sessions K, --book-workers N). label_role (v8 E-25) is a load binding of the
+// run, never copied into the NavReplayConfig.
 struct NavExecutionOptions {
   NavOrderBasis order_basis{NavOrderBasis::Target};
   bool locate_in_aim{}, liquidity_cache{};
   atx::usize warm_start_sessions{};
   atx::usize book_workers{1};
+  NavLabelRolePin label_role{};
 };
 // The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
 // --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
@@ -205,16 +213,27 @@ struct NavRateOptions {
 struct NavFinancingFields {
   std::span<const atx::f64> shares_out, si_shares;
 };
+// v8 E-25: the prices that MARK the books: MARK's presence test, drift and gap returns, the
+// guard, stale carry, the K-session write-off and reprints. Empty (the default): the target's
+// own close, raw_close and present, every output bit for bit. Otherwise all three at the
+// input's geometry, extending the target's presence only: every target-present cell is present
+// here at the same close and raw close, bit for bit, and a cell present only here has a finite
+// close and raw close > 0. DECIDE and EXECUTE never read them.
+struct NavMarkPrices {
+  std::span<const atx::f64> close, raw_close;
+  std::span<const atx::u8> present;
+};
 // Borrowed for the synchronous call. Prices and volume are required; members must
 // be present. Present cells: close/raw finite > 0, volume finite >= 0. volume is
 // authoritative (it also feeds price-risk neutralization); target.volume is ignored.
 // target.industry (grp_ff12 ids) is required by, and only read by, the industry ids.
 // A TieredSwapV1 scenario requires the financing fields; with them every book also
-// reports its short dollars by tier.
+// reports its short dollars by tier. mark (v8 E-25): the label marks, or empty.
 struct NavReplayInput {
   TargetReplayInput target;
   std::span<const atx::f64> volume;
   NavFinancingFields financing{};
+  NavMarkPrices mark{};
 };
 
 // Borrow tier of every name at decision d, from rows <= d only (formed once per
@@ -542,6 +561,22 @@ struct NavFieldsPin {
 // first_decision_session_ns, scoring_begins_session_ns} to the summary; it is refused
 // (InvalidArgument, before any payload is loaded) when K exceeds the pinned role's
 // score_begin. NavExecutionOptions{} is exactly the five-argument overload.
+// execution.label_role (v8 E-25, Ruling E-25): the books are MARKED by the pinned label role
+// (its close, raw_close and present: NavMarkPrices) while every decision input stays on --role:
+// signal, membership, fields, construction, borrow tiers, liquidity and ADV windows (volume) and
+// execution tradability (present). Refused (InvalidArgument, by name, from the two pinned
+// manifests before any payload is loaded) unless the label role's score_end_ns (when declared)
+// is not past the research seal, every manifest key but files and universe equals --role's, the
+// file sets and every extent are equal, every file SHA-256 is equal except close.f64,
+// raw_close.f64, volume.f64 and present.u8 (the payloads prepare_recent_research.py
+// --delisting-returns patches; sessions, ids and member.u8 are shared), and universe is absent
+// in both or pins the same id, base role (manifest, member), identity bridge, SIC events and
+// (when --role has one) delisting stage. Then, before the label payloads load, no role session
+// reaches the seal; they must extend --role's presence only (every --role-present cell at the
+// same close and raw close, bit for bit) with member & present & close > 0 equal to --role's.
+// The recipe gains label_role {manifest_sha256, rule} and the summary label_role
+// {manifest_sha256, label_only_present_cells, label_only_present_cells_scored, basis}; with
+// --label-role equal to --role every other byte is the run without it.
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
@@ -585,7 +620,8 @@ struct NavEmitOptions {
 // v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
 // the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR
 // [--holdings-format f64|csv]. v8: --warm-start-sessions K, --book-workers N, the valueless
-// --stage-timers, and --construction-grid GRID.json (run_nav_grid).
+// --stage-timers, --construction-grid GRID.json (run_nav_grid), and --label-role PATH
+// --label-role-sha256 SHA (E-25, together or neither: NavExecutionOptions::label_role).
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 
@@ -597,8 +633,9 @@ struct NavEmitOptions {
 // (exclusive): <output>/<id>/ byte for byte the directory the standalone nav run with the
 // variant's flags publishes, then <output>/grid_manifest.json LAST (atx.nav-grid-run/v1:
 // the grid file SHA, each variant's flags and file SHAs; stage_seconds with --stage-timers,
-// which then stay out of the variant summaries). Refused with --emit-holdings and while a
-// v7 extension is installed.
+// which then stay out of the variant summaries; label_role_sha256 with --label-role, whose
+// load is the grid's one load). Refused with --emit-holdings and while a v7 extension is
+// installed.
 [[nodiscard]] atx::core::Status run_nav_grid(const TargetReplayRunConfig& cfg,
                                              const NavTurnoverLimits& limits,
                                              const NavFieldsPin& fields,
