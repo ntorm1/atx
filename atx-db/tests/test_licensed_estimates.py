@@ -128,7 +128,7 @@ def test_aliases_accept_factset_style_headers(run, tmp_path: Path) -> None:
 def test_substitute_points_at_guidance() -> None:
     sub = licensed.get("estimates").substitute()
     assert sub.stage == "events/guidance.parquet" and sub.owner.startswith("EVT") and "cik" in sub.keys
-    assert sub.columns["mean"] == "mid"
+    assert sub.columns["mean"] == "mid" and sub.columns["measure_code"] == "measure"
 
 
 def test_ported_v2_maps_match() -> None:

@@ -41,7 +41,8 @@ So a vendor as-of backfill can never reach the past: its rows are visible only f
 names the clock that won: `vendor_pit` (a vendor timestamp), `publication_lag` (a documented schedule), `floor` (a
 documented conservative floor for a missing time), `delivery`, `structure_guard` (GICS, §2.3). A consumer sees a row
 at decision session d iff `available_at < 22:00 UTC of d-1` (plan §3), plus, for dated spells (GICS, index
-membership), `effective_from <= d < effective_to`.
+membership), `effective_from <= d <= effective_to` (inclusive, NULL = open; the MKT index stages use the same
+convention).
 
 **Vintages.** Revisions, restatements and new versions are new rows; nothing is overwritten. Each table declares a
 unique `key` and a vintage `series` (the key without the snapshot).
@@ -74,7 +75,7 @@ wins, and two or more distinct lines in that tier make the row `ambiguous`:
 | `vendor_native` | the vendor carries the TickerHistory3 securityID (SpiderRock products) |
 | `cusip_dated` | a CUSIP interval (first 8 characters) contains `id_date` |
 | `cusip_undated` | a CUSIP interval lies within 400 days of `id_date` (observed intervals, snapshot-dependent: labelled apart) |
-| `ticker_dated` | a ticker interval (canonical form: `.`, `/`, `-`, whitespace stripped, case-sensitive) contains `id_date` |
+| `ticker_dated` | a ticker interval (canonical form: `.`, `/`, `-`, whitespace stripped, case-sensitive) contains `id_date`; a vendor ticker with a separator (`NE.WT`, `T.PC`) never matches a history ticker without one (`NEWT`, `TPC`), while `BRKB` still matches `BRK.B` |
 | `unmapped` / `ambiguous` | kept, `security_id` NULL (no survivorship by identity) |
 
 `cik` comes from the link-table interval containing `id_date` (a gap of up to 10 days is bridged; ties go to the latest
@@ -103,8 +104,8 @@ Measures: `EPS` with PDF `P` -> `EPS_BASIC`, `D` -> `EPS_DILUTED`, no PDF -> `EP
 `SAL` -> `REVENUE`, `NET` -> `NET_INCOME`, `OPR` -> `OPERATING_INCOME`, others as delivered. Staleness declared:
 consensus 45 d, detail 105 d, recommendations and targets 365 d.
 
-Substitute: `events/guidance.parquet` (lane EVT, S6.4): management guidance ranges from 8-K EX-99 releases for
-consensus; the panel's time-series `sue` for the consensus surprise. No free substitute for detail, recommendations
+Substitute: `events/guidance.parquet` (lane EVT, S6.4; `measure`, `period_type`, `period_end`, `low` / `high` / `mid`):
+management guidance ranges from 8-K EX-99 releases for consensus; the panel's time-series `sue` for the consensus surprise. No free substitute for detail, recommendations
 or targets.
 
 Reused from v2 `atx_db/estimates/` (ported, so this package does not import the retired warehouse; a test pins them
@@ -137,7 +138,7 @@ Product: S&P/MSCI GICS Direct history (or a Compustat `co_hgic`-style extract re
 `effective_from_vendor`, `structure_ok`.
 
 PIT rule `gics-pit-v1`: a spell "code X from F" is known at its publication (SNAPSHOTDATE 23:59:59 ET; changes are
-announced before F) and applies to sessions `F <= d < effective_to`; without a publication date it is known at F
+announced before F) and applies to sessions `F <= d <= effective_to` (INDTHRU, inclusive); without a publication date it is known at F
 00:00 ET (`floor`). **Structure guard** against the classic GICS backfill (today's code applied to years before its
 structure existed): a code used before its structure start has `effective_from` clipped to that start
 (`structure_guard`, `vintage_risk`); a code used after its discontinuation fails `structure_ok` (reported). Seed
@@ -148,8 +149,8 @@ Entertainment group 5020 from 2018-10-01; Transaction & Payment Processing 40201
 The vendor price file (TickerHistory3) has a `GICS` column, but it is empty in every lake prices row 2018-2026
 (0 non-null of 21.9M rows, measured 2026-09-29), so there is no free GICS history to load.
 
-Substitute: `classification/` (lane MKT, S7.1): SIC -> NAICS (approximate) and Fama-French industries per CIK at the
-filing clock; text industries (lane TXT, S7.2) for peer sets.
+Substitute: `classification/issuer_industry.parquet` (lane MKT, S7.1): SIC -> NAICS 2022 (approximate) and Fama-French
+5-49 industries per CIK at the SIC event clock; text industries (lane TXT, S7.2) for peer sets.
 
 ### 2.4 Index constituents and weights (`indexes.py`, stage `licensed_indexes/`)
 
@@ -157,13 +158,14 @@ Product: S&P DJI (500/400/600/1500) and FTSE Russell (1000/2000/3000) constituen
 
 | table | key | PIT rule (`index-pit-v1`) |
 |---|---|---|
-| `constituents` | index, CUSIP, ticker, effective_from, snapshot | a membership spell is known at its **announcement** (date + time ET; 23:59:59 ET without a time) and applies to `effective_from <= d < effective_to`; without an announcement it is known at the effective date's 09:30 ET open (`floor`). Spells of delisted names are kept with their end date |
+| `constituents` | index, CUSIP, ticker, effective_from, snapshot | a membership spell is known at its **announcement** (date + time ET; 23:59:59 ET without a time) and applies to `effective_from <= d <= effective_to`; without an announcement it is known at the effective date's 09:30 ET open (`floor`). Spells of delisted names are kept with their end date |
 | `weights` | index, CUSIP, ticker, date | the close file of D (snapshot D 16:00 ET) is visible at **D 23:59:59 ET** (evening delivery); weights normalized to fractions per (index, date) and checked to sum to 1 |
 
 A provider history that drops dead names or re-keys them to today's identifiers surfaces as `unmapped` /
 `cusip_undated` rows in the validation stats.
 
-Substitute: `indexes/` (lane MKT, S3.6): rule-based Russell 1000/2000/3000 proxies, S&P 500 change list from public
+Substitute: `indexes/constituents.parquet` and the daily `indexes/membership/` (lane MKT, S3.6): rule-based Russell
+1000/2000/3000 proxies, S&P 500 change list from public
 releases where terms allow, CRSP-style VW/EW market returns.
 
 ### 2.5 Earnings-call transcripts (`transcripts.py`, stage `licensed_transcripts/`)
@@ -179,13 +181,85 @@ weeks later. Components inherit their version's clocks and identifiers.
 
 Substitute: none (plan §1.2). The nearest free text, the 8-K EX-99 earnings release, is a press release, not a call.
 
+### 2.6 Options (S8.2): what exists, the free stage, and the license need
+
+**What option data the repository keeps (measured 2026-09-29).**
+
+* **atx-vol** was removed from the tree on 2026-09-19 (commit `e4bdcf54`, "clean up"); `C:/atx/CLAUDE.md` still
+  describes it. Its surface store (SurfaceDb) was built per session from an OPRA quote hive: `C:/atx-data/opra-hive`
+  (616-name universe, 15:55 ET boards; per its ledger the 2024-2025 partitions were SPY-only) and `C:/atx-data/opra-all`
+  (10 full-OPRA sessions, 2026-08-10..21). `C:/atx-data` is now empty. What remains: `C:/atx-scratch/opra-hive-tail`
+  (3 sessions, 2026-07-29..31, 36 MB) and `C:/atx-scratch/surface-db/sp100-2026` (85 MB). **No per-security surface
+  history exists.**
+* `C:/Users/natha/Downloads/ORATS_SMV_Strikes_20240103.zip`: one ORATS strikes day (per strike: call/put volume and OI,
+  bid/mid/ask IV, smoothed SMV vol, delta). Useful to cross-check a purchased product on 2024-01-03; not a history.
+* **The panel's `iv_atm_*`** come from the prices stage, which reads the vendor file (SpiderRock TickerHistory3)
+  columns `atmCenI_{5,10,21,42,63,126,252}d`: ATM implied volatility with the implied earnings move removed
+  ("censored"), NULL outside [0.02, 5.0], at trading-day tenors (21 d = 30 calendar days). TickerHistory3 also carries
+  `atmCenI` at 84-504 d, `atmCenH_*` (historical-earnings censored), `iEMove` / `hEMove` (implied / historical earnings
+  move), `wkD1`/`shD1`/`qtrD1`/`lnD1` (ATM slopes) and `expiryCount`. It has **no delta-bucketed IV, no option volume
+  and no open interest** (vendor dictionary; schema checked).
+
+**Free stage `options/`** (`alpha_panel/options.py`, `python -m atx_db.alpha_panel.options`): one row per
+(session_date, security_id) with a vendor ATM IV: `iv_atm_{21,63,126,252}d`, `term_slope_63_21`, `term_slope_252_21`
+(= the panel characteristic `iv_term_slope`, Vasquez 2017), `atm_source = 'tickerhistory3'`; the licensed columns
+`iv_call_25d_30d`, `iv_put_25d_30d`, `skew_25d_30d`, `call_volume`, `put_volume`, `call_oi`, `put_oi` stay NULL
+(`skew_source = 'none'`) until the adapter below loads a purchase (`--licensed <licensed_options dir>`, full outer
+join on (security_id, session_date)). Clock rule `options-clock-v1`: `atm_available_at` = session date 22:00
+America/Chicago, the vendor's documented US delivery of its end-of-day surface products (T+0; SurfaceFixedTermHist
+carries the same `atmCenI_*` fields), i.e. 03:00/04:00 UTC the next day, so a session's values are usable from the
+second following session; `available_at` = the later of that and the licensed clock.
+
+Built 2026-09-29 (43 s, 0.32 GiB peak under the guard): 10,656,780 rows, 9,036 lines, 2018-01-02..2026-09-18, 236 MB,
+no duplicate (session, security) key, no NULL clock. Coverage over the panel's `member_equity` cells (manifest
+`coverage`; the panel was being rebuilt during the run, so 2026 reflects January only):
+
+| year | member cells | optionable (vendor ATM IV) | term slope, of optionable cells | term slope, of optionable lines | skew / volume / OI |
+|---|---|---|---|---|---|
+| 2018 | 451,143 | 96.2% | 99.9% | 99.96% | 0 |
+| 2019 | 576,186 | 96.6% | 99.9% | 100% | 0 |
+| 2020 | 580,695 | 95.7% | 99.9% | 99.9% | 0 |
+| 2021 | 610,584 | 97.2% | 99.9% | 100% | 0 |
+| 2022 | 584,009 | 98.4% | 99.9% | 100% | 0 |
+| 2023 | 575,461 | 98.2% | 99.9% | 99.9% | 0 |
+| 2024 | 573,063 | 97.9% | 99.8% | 100% | 0 |
+| 2025 | 553,772 | 97.9% | 99.6% | 100% | 0 |
+
+So the free part meets the S8.2 line (≥ 95% of optionable member lines) for the ATM level and term slope only; the
+25-delta skew, option volume and open interest are 0% and need the license below.
+
+**Clock note for the panel (not changed here).** The panel exports `iv_atm_*` with clock `vendor-eod-same-date`
+(`export_impl.py`), i.e. usable at the next session. The vendor documents US delivery of its EOD surface history at
+22:00 CT on the trading date (03:00/04:00 UTC next day), after the 22:00 UTC cutoff of the next session, so under the
+delivery clock the values are usable one session later than the panel assumes. A live surface feed at the close
+would support the panel's convention; the history file alone does not.
+
+**License need.** The same vendor sells the missing fields, keyed by the same `securityID` (so identity is
+`vendor_native`, no mapping loss):
+
+| product (SpiderRock history, Parquet on S3) | fields needed | history in product | depth to buy |
+|---|---|---|---|
+| `OptionEODFeaturesHist` (one row per underlier and day) | `callVolume`, `putVolume`, `callOI`, `putOI` (OI one day delayed), `atmI_21d`, `atmI_252d`, `delta20Skew21D`, `vSlope_21d` | US from 2014-01-02 | 2019-01 onward (D7: one year before the 2020 score window); 2014 onward if 5-year volume/OI lookbacks are wanted |
+| `SurfaceFixedGridHist` (per underlier, day and fixed term 5-504 trading days) | `volATM` and the nine call-delta vols `volD40`..`volU40` (10-90 delta) at terms 21 and 252 | US from 2010-01-04 | 2019-01 onward; terms 21 and 252 suffice |
+
+Both are delivered at 22:00 CT on the trading date. Derivation in `licensed/options.py`: 25-delta call IV = mean of
+the 20- and 30-delta call vols, 25-delta put IV = mean of the 70- and 80-delta call vols (put delta = call delta - 1,
+carry ignored), both on the 21-trading-day term; skew = put - call; term slope = ATM(252) - ATM(21). Column spellings
+and the grid's delta convention come from the public dictionaries and must be confirmed at purchase (the mock follows
+them). Alternatives with the same fields: OptionMetrics IvyDB US (Volatility Surface at delta ±25 / 30 days; Option
+Volume with volume and OI by call/put; `secid` -> CUSIP, mapped by `licensed-id-v1`), ORATS Core history.
+
+Adapter: `licensed/options.py` (`options_daily`: key vendor id, ticker, session; PIT rule `options-pit-v1`:
+snapshot = `srCloseTime` (~5 minutes before the close), `available_at` = trading date 22:00 America/Chicago).
+Mock: `OptionEODFeaturesHist_2024.parquet` + `SurfaceFixedGridHist_2024.parquet` in the vendor layout.
+
 ## 3. Purchase decision points (D3, revisit before S8.3)
 
 | # | product | history / cadence | unlocks | acceptance on real data | until then |
 |---|---|---|---|---|---|
 | 1 | I/B/E/S (or FactSet) Estimates: detail, summary, actuals, recommendations, targets | 2015+ (5-year revision lookback for the 2020+ score window), daily | consensus surprise, revisions, dispersion, recommendation changes: the largest missing alpha family | contract tests pass; `mapped_share` ≥ 0.98 on consensus; no fatal check | guidance (EVT S6.4), time-series SUE |
 | 2 | Securities lending daily file (S&P Global / DataLend) | 2019+ (D7), daily | borrow fee, utilization, short-side constraints for the short book | contract tests pass; ≥ 95% of member_equity cells from 2020 | `borrow_proxy/` |
-| 3 | Options EOD features + delta grid (SpiderRock, same securityID) | 2019+ (2014+ for 5-year volume/OI lookbacks), daily | 25-delta skew, option volume, open interest by call/put | see the Options section | `options/` ATM term structure |
+| 3 | Options EOD features + delta grid (SpiderRock, same securityID) | 2019+ (2014+ for 5-year volume/OI lookbacks), daily | 25-delta skew, option volume, open interest by call/put | contract tests pass; skew, volume and OI on ≥ 95% of optionable member lines per year (the `options/` manifest coverage) | `options/` ATM term structure |
 | 4 | Official index constituents + weights (S&P 500, Russell 3000) | 2019+, daily | benchmark-relative risk, index-event studies | contract tests pass; weights sum to 1 per date | rule-based proxies (MKT S3.6) |
 | 5 | GICS Direct history with publication dates | 2015+ | GICS itself (risk-model or mandate need) | contract tests pass; `structure_ok` 100% after the guard | SIC / NAICS / FF / text industries |
 | 6 | Earnings-call transcripts with version creation times | 2019+ | call text features only | contract tests pass | none |

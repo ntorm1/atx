@@ -43,7 +43,7 @@ def test_spell_without_announcement_is_floor_at_open(run) -> None:
 def test_delisted_member_kept_with_end_date(run) -> None:
     u, _, cons, _ = run
     r = next(r for r in cons if r["security_id"] == u.lines[2].security_id)
-    assert r["effective_to"] == dt.date(2022, 7, 1)
+    assert r["effective_to"] == dt.date(2022, 6, 30)  # inclusive last member day
     unk = [r for r in cons if r["cusip"] == UNKNOWN_CUSIP]
     assert unk and unk[0]["link_tier"] == "unmapped"
 
@@ -61,4 +61,5 @@ def test_weights_normalized_and_evening_clock(run) -> None:
 
 def test_substitute_is_index_proxies() -> None:
     sub = X.ADAPTER.substitute()
-    assert sub.stage == "indexes" and sub.owner.startswith("MKT")
+    assert sub.stage == "indexes/constituents.parquet" and sub.owner.startswith("MKT")
+    assert {"index_id", "effective_from", "effective_to", "weight"} <= set(sub.columns.values())

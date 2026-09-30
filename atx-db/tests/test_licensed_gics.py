@@ -68,4 +68,5 @@ def test_discontinued_code_after_its_end_fails_structure(tmp_path) -> None:
 
 def test_substitute_is_classification() -> None:
     sub = G.ADAPTER.substitute()
-    assert sub.stage == "classification" and sub.owner.startswith("MKT") and sub.keys == ("cik",)
+    assert sub.stage == "classification/issuer_industry.parquet" and sub.owner.startswith("MKT")
+    assert sub.keys == ("cik", "available_at") and sub.columns["gics_sub_industry"] == "naics2022"

@@ -252,6 +252,7 @@ def aliased_select(con: duckdb.DuckDBPyConnection, files: list[Path], columns: t
     if all(f.suffix.lower() == ".parquet" for f in files):
         reader = f"read_parquet({paths}, union_by_name = true, filename = true)"
     else:
+        # DuckDB's default max_line_size (2 MB) bounds one transcript component; its read buffer is 16x that
         reader = f"read_csv({paths}, all_varchar = true, header = true, union_by_name = true, filename = true)"
     names = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall() if r[0] != "filename"]
     chosen: dict[str, str] = {}

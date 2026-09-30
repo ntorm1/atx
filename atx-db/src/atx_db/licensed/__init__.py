@@ -16,6 +16,7 @@ ADAPTERS = {
     "gics": "atx_db.licensed.gics",
     "indexes": "atx_db.licensed.indexes",
     "transcripts": "atx_db.licensed.transcripts",
+    "options": "atx_db.licensed.options",
 }
 
 

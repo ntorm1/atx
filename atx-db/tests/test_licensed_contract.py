@@ -65,7 +65,8 @@ def test_identity_tiers_and_cik() -> None:
         cusips=[("037833100", 1, D(2019, 1, 2), D(2022, 12, 30)), ("11111110X", 2, D(2019, 1, 2), D(2026, 6, 30)),
                 ("22222220Y", 3, D(2019, 1, 2), D(2026, 6, 30)), ("22222220Y", 4, D(2019, 1, 2), D(2026, 6, 30))],
         tickers=[("AAPL", 1, D(2019, 1, 2), D(2026, 6, 30)), ("BRK.B", 5, D(2019, 1, 2), D(2026, 6, 30)),
-                 ("DUP", 6, D(2020, 1, 2), D(2020, 12, 31)), ("DUP", 7, D(2020, 6, 1), D(2021, 12, 31))],
+                 ("DUP", 6, D(2020, 1, 2), D(2020, 12, 31)), ("DUP", 7, D(2020, 6, 1), D(2021, 12, 31)),
+                 ("NEWT", 8, D(2019, 1, 2), D(2026, 6, 30))],
         links=[(1, 320193, D(2019, 1, 2), D(2020, 12, 31), "strict"), (1, 320193, D(2021, 1, 11), D(2026, 6, 30), "name"),
                (5, 1067983, D(2019, 1, 2), D(2026, 6, 30), "backfill")])
     out = _resolve(res, [
@@ -78,6 +79,8 @@ def test_identity_tiers_and_cik() -> None:
         ("22222220Y", None, None, D(2024, 1, 2)),     # two lines carry the CUSIP
         (None, "AAPL", None, D(2021, 1, 5)),          # ticker; CIK link gap of 5 days bridged
         (None, "AAPL", None, D(2018, 6, 1)),          # outside every history
+        (None, "NE.WT", None, D(2024, 1, 2)),         # a suffixed vendor ticker never matches an unsuffixed line
+        (None, "BRKB", None, D(2024, 1, 2)),          # the FINRA direction still matches BRK.B
     ])
     assert out[0][:2] == (99, "vendor_native")
     assert out[1][:4] == (1, "cusip_dated", 320193, "name")
@@ -87,6 +90,7 @@ def test_identity_tiers_and_cik() -> None:
     assert out[5][:2] == (None, "ambiguous") and out[6][:2] == (None, "ambiguous")
     assert out[7][:4] == (1, "ticker_dated", 320193, "strict")
     assert out[8][:2] == (None, "unmapped")
+    assert out[9][:2] == (None, "unmapped") and out[10][:2] == (5, "ticker_dated")
 
 
 def test_receipts_default_to_backfill_and_check_sha(tmp_path: Path) -> None:

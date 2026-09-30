@@ -18,7 +18,9 @@ in that tier make the row ``ambiguous`` (kept, no ``security_id``):
 2. ``cusip_dated``: a CUSIP interval contains ``id_date``;
 3. ``cusip_undated``: a CUSIP interval lies within 400 days of ``id_date`` (the histories are observed intervals, not
    validity intervals; snapshot-dependent, so labelled apart like the link table's ``backfill``);
-4. ``ticker_dated``: a ticker interval contains ``id_date`` (ticker reuse makes this the weakest tier);
+4. ``ticker_dated``: a ticker interval contains ``id_date`` (ticker reuse makes this the weakest tier); a vendor
+   ticker with a class/suffix separator (``NE.WT``, ``T.PC``) never matches a history ticker without one (``NEWT``,
+   ``TPC``), while ``BRKB`` still matches ``BRK.B`` (the FINRA direction);
 5. else ``unmapped``.
 
 ``cik`` comes from the link-table interval containing ``id_date`` (a gap of up to 10 days after an interval is
@@ -39,13 +41,14 @@ import pyarrow.parquet as pq
 from .contract import LAKE_ROOT, connect
 
 UNDATED_WINDOW_DAYS = 400
+SEP_RE = r"[./\s-]"  # class / suffix separators in a ticker
 CIK_GAP_DAYS = 10
 TIER_ORDER = ("cusip_dated", "cusip_undated", "ticker_dated")
 
 CUSIP_SCHEMA = pa.schema([("cusip8", pa.string()), ("security_id", pa.int64()), ("valid_from", pa.date32()),
                           ("valid_to", pa.date32()), ("basis", pa.string())])
 TICKER_SCHEMA = pa.schema([("ticker_key", pa.string()), ("security_id", pa.int64()), ("valid_from", pa.date32()),
-                           ("valid_to", pa.date32()), ("basis", pa.string())])
+                           ("valid_to", pa.date32()), ("basis", pa.string()), ("has_sep", pa.bool_())])
 LINK_SCHEMA = pa.schema([("security_id", pa.int64()), ("cik", pa.int64()), ("valid_from", pa.date32()),
                          ("valid_to", pa.date32()), ("link_tier", pa.string())])
 
@@ -70,12 +73,13 @@ class IdentityResolver:
                           "valid_from": [r[2] for r in cusips], "valid_to": [r[3] for r in cusips],
                           "basis": ["rows"] * len(cusips)}, schema=CUSIP_SCHEMA)
             con.register("tk_in", pa.table({"t": [r[0] for r in tickers]}))
-            keys = [r[0] for r in con.execute("SELECT lic_ticker_key(t) FROM tk_in").fetchall()]
+            got = con.execute(f"SELECT lic_ticker_key(t), regexp_matches(t, '{SEP_RE}') FROM tk_in").fetchall()
+            keys, seps = [r[0] for r in got], [r[1] for r in got]
         finally:
             con.close()
         t = pa.table({"ticker_key": keys, "security_id": [r[1] for r in tickers],
                       "valid_from": [r[2] for r in tickers], "valid_to": [r[3] for r in tickers],
-                      "basis": ["rows"] * len(tickers)}, schema=TICKER_SCHEMA)
+                      "basis": ["rows"] * len(tickers), "has_sep": seps}, schema=TICKER_SCHEMA)
         link = pa.table({"security_id": [r[0] for r in links], "cik": [r[1] for r in links],
                          "valid_from": [r[2] for r in links], "valid_to": [r[3] for r in links],
                          "link_tier": [r[4] for r in links]}, schema=LINK_SCHEMA)
@@ -117,12 +121,14 @@ class IdentityResolver:
             tv3 = sm / "ticker_history.parquet"
             if tv3.exists() and {"ticker", "security_id", "valid_from", "valid_to"} <= set(pq.read_schema(tv3).names):
                 note(sm / "manifest.json")
-                tsql = (f"SELECT lic_ticker_key(ticker), security_id, valid_from, valid_to, 'ticker_history' "
+                tsql = (f"SELECT lic_ticker_key(ticker), security_id, valid_from, valid_to, 'ticker_history', "
+                        f"regexp_matches(ticker, '{SEP_RE}') "
                         f"FROM read_parquet('{tv3.as_posix()}') WHERE security_id IS NOT NULL")
             else:
                 note(root / "prices" / "manifest.json")
                 glob = (root / "prices" / "year=*" / "prices.parquet").as_posix()
-                tsql = (f"SELECT lic_ticker_key(ticker), security_id, min(session_date), max(session_date), 'prices' "
+                tsql = (f"SELECT lic_ticker_key(ticker), security_id, min(session_date), max(session_date), 'prices', "
+                        f"bool_or(regexp_matches(ticker, '{SEP_RE}')) "
                         f"FROM read_parquet('{glob}', hive_partitioning = false) "
                         f"WHERE ticker IS NOT NULL AND security_id > 0 GROUP BY 1, 2")
             lt = root / "identity" / "link_table.parquet"
@@ -158,6 +164,7 @@ class IdentityResolver:
             UNION ALL
             SELECT s._rid, 3, h.security_id FROM {src} s JOIN lic_ticker h
               ON h.ticker_key = lic_ticker_key(s.ticker) AND s.id_date BETWEEN h.valid_from AND h.valid_to
+             AND (h.has_sep OR NOT regexp_matches(s.ticker, '{SEP_RE}'))
             WHERE s.native_security_id IS NULL
         """)
         tiers = "[" + ", ".join(f"'{t}'" for t in TIER_ORDER) + "]"

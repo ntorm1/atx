@@ -8,7 +8,7 @@ sector/group/industry codes are the 2/4/6-digit prefixes of GSUBIND.
 PIT rule ``gics-pit-v1``: a spell "code X from F" is known at its publication (SNAPSHOTDATE 23:59:59 America/New_York;
 reclassifications are announced before F) and applies to sessions d >= F; without a publication date it is known
 at F 00:00 ET (``floor``, ``vintage_risk``). Consumers need both ``available_at < cutoff(d)`` and
-``effective_from <= d < effective_to``. Vendor histories restated to today's structure (the classic GICS backfill:
+``effective_from <= d <= effective_to`` (inclusive, the Compustat INDTHRU convention; NULL = open). Vendor histories restated to today's structure (the classic GICS backfill:
 Alphabet in Communication Services before that sector's Media & Entertainment group existed) are caught by the
 structure guard: a code used before its structure start has ``effective_from`` clipped to that start
 (``clock_basis = structure_guard``, ``vintage_risk``); a code used after its discontinuation fails
@@ -110,8 +110,8 @@ class GicsAdapter(Adapter):
 
     def substitute(self) -> Substitute:
         return Substitute(
-            stage="classification", owner="MKT (S7.1)", keys=("cik",),
-            columns={"gics_sector": "ff12", "gics_industry": "ff49", "gics_sub_industry": "naics"},
+            stage="classification/issuer_industry.parquet", owner="MKT (S7.1)", keys=("cik", "available_at"),
+            columns={"gics_sector": "ff12", "gics_industry": "ff49", "gics_sub_industry": "naics2022"},
             note=("SIC -> NAICS (approximate) and Fama-French 5-49 industries per issuer, dated at the filing clock; "
                   "text industries (TNIC-style, lane TXT S7.2) for peer sets."))
 

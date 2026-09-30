@@ -308,8 +308,8 @@ class EstimatesAdapter(Adapter):
     def substitute(self) -> Substitute:
         return Substitute(
             stage="events/guidance.parquet", owner="EVT (S6.4)", keys=("cik", "available_at"),
-            columns={"measure_code": "measure_code", "period_end": "period_end", "low": "low", "high": "high",
-                     "mean": "mid"},
+            columns={"measure_code": "measure", "period_type": "period_type", "period_end": "period_end",
+                     "low": "low", "high": "high", "mean": "mid"},
             note=("Management guidance ranges parsed from 8-K EX-99 releases stand in for consensus; the time-series "
                   "SUE (panel `sue`) stands in for the consensus surprise. No free substitute for detail, "
                   "recommendations or price targets."))

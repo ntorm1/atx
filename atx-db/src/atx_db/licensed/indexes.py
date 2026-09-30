@@ -8,7 +8,7 @@ CLOSE_PRICE, WEIGHT as a fraction or in percent). S&P DJI SDL and FTSE Russell f
 PIT rule ``index-pit-v1``:
 
 * ``constituents``: a spell is known at its announcement (ANNOUNCE_DATE + ANNOUNCE_TIME ET; 23:59:59 ET when the
-  time is missing) and applies to sessions ``effective_from <= d < effective_to``. Without an announcement it is
+  time is missing) and applies to sessions ``effective_from <= d <= effective_to`` (inclusive; NULL = open). Without an announcement it is
   known at the effective date's 09:30 ET open (``floor``, ``vintage_risk``). Consumers need both conditions, so an
   announced addition is usable for event studies before it is a member.
 * ``weights``: the close file of date D (``vendor_snapshot_at`` = D 16:00 ET) is visible at D 23:59:59 ET
@@ -49,7 +49,7 @@ CONSTITUENTS = TableSpec(
     raw_columns=("vendor_security_id", "cusip", "ticker", "index_id", "effective_from", "effective_to",
                  "announce_date", "announce_time"),
     aliases=CONS_ALIASES, stale_days=None,
-    pit_rule="known at announcement (else effective_from 09:30 ET, floor); member for effective_from <= d < effective_to",
+    pit_rule="known at announcement (else effective_from 09:30 ET, floor); member for effective_from <= d <= effective_to (inclusive)",
 )
 WEIGHTS = TableSpec(
     name="weights",
@@ -118,12 +118,13 @@ class IndexesAdapter(Adapter):
                     SELECT effective_from, lag(coalesce(effective_to, DATE '9999-12-31'))
                            OVER (PARTITION BY index_id, security_id ORDER BY effective_from) AS prev_to
                     FROM t_constituents WHERE security_id IS NOT NULL)
-                WHERE effective_from < prev_to""").fetchone()[0], fatal=False)
+                WHERE effective_from <= prev_to""").fetchone()[0], fatal=False)
 
     def substitute(self) -> Substitute:
         return Substitute(
-            stage="indexes", owner="MKT (S3.6)", keys=("security_id",),
-            columns={"index_id": "index_id", "effective_from": "effective_from", "weight": "weight"},
+            stage="indexes/constituents.parquet", owner="MKT (S3.6)", keys=("security_id", "cik", "available_at"),
+            columns={"index_id": "index_id", "effective_from": "effective_from", "effective_to": "effective_to",
+                     "weight": "weight"},
             note=("Rule-based Russell 1000/2000/3000 proxies (public methodology: rank day, bands) and an S&P 500 "
                   "change list from public releases where terms allow; CRSP-style VW/EW market returns."))
 
@@ -134,7 +135,7 @@ class IndexesAdapter(Adapter):
         raw_dir.mkdir(parents=True, exist_ok=True)
         spells = []
         for ln in u.lines[:8]:  # S&P 500-style: members from the start, the delisted line leaves
-            end = ln.last + dt.timedelta(days=1) if ln.last < dt.date(2026, 6, 30) else None
+            end = ln.last if ln.last < dt.date(2026, 6, 30) else None
             spells.append(["SP500", ln.cusip_on(ln.first), ln.ticker_on(ln.first), ln.first.isoformat(),
                            end.isoformat() if end else None, None, None])
         add = u.lines[9]  # an announced addition: public 2024-06-07 17:15 ET, effective 2024-06-24
@@ -145,7 +146,7 @@ class IndexesAdapter(Adapter):
             for ln in u.lines[10:15]:
                 if ln.alive(eff):
                     spells.append(["R2000", ln.cusip_on(eff), ln.ticker_on(eff), eff.isoformat(),
-                                   (dt.date(y + 1, 6, 24) if y == 2023 else dt.date(y + 1, 6, 30)).isoformat(),
+                                   (dt.date(y + 1, 6, 28) if y == 2023 else dt.date(y + 1, 6, 27)).isoformat(),
                                    f"{y}-06-{'09' if y == 2023 else '07'}", "18:00:00"])
         spells.append(["R2000", UNKNOWN_CUSIP, UNKNOWN_TICKER, "2024-07-01", None, "2024-06-07", "18:00:00"])
         cp = csv_write(raw_dir / "index_constituents.csv",
