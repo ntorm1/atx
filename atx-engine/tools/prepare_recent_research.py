@@ -72,8 +72,10 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the research window (the seal)
+
 DAY_NS = 86_400_000_000_000
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date: no projection or role reaches it (research_window.py)
 COLUMNS = ("tradingDate", "securityID", "close", "volume", "cumulReturnFactor")
 CACHE_SCHEMA = "atx.recent-research-projection/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
@@ -103,7 +105,7 @@ LINKED_OPERATING_RULE = (
 UNIVERSE_PIT = (
     "every input is visible by the session's 22:00 UTC mark: bridge rows by available_at (T19: <= start 22:00), their "
     "class_status is the visible version's, SIC rows by accepted_utc one session earlier; nothing after the mark and "
-    "nothing on or after 2025-01-01 is used; the decision at t 23:00 sees only the mark-t membership")
+    f"nothing on or after {rw.SEAL_DATE} is used; the decision at t 23:00 sees only the mark-t membership")
 UNIVERSE_LIMITS = [
     "ADR lines of a linked, filing foreign issuer with common class evidence stay (V6-U drops ADRs without an issuer link)",
     "identity is the r4 rehearsal bridge (rehearsal_identity, scope_complete false): unbridged operating stocks drop",
@@ -151,7 +153,7 @@ DELISTING_MARK_RULE = (
     "within [first, last] role session; termination_session = the role session after L (null when L is not a role "
     "session or is the last one); attributes are the stage's cause (delist_code), imputed dlret (delist_return, null "
     "where absent), dlret_if_performance, cause_basis, exchange and available_at (the classification clock, which may "
-    "follow the termination session by up to 30 days); rows available on or after 2025-01-01 are dropped")
+    f"follow the termination session by up to 30 days); rows available on or after {rw.SEAL_DATE} are dropped")
 DELISTING_RETURN_RULE = (
     "delisting-return-on-termination-v1 (--delisting-returns; default off): for a marked termination with a non-null "
     "delist_return r whose line is present at L and at no role session after L, the termination session T = L + 1 "
@@ -241,8 +243,10 @@ def prepare_cache(source: Path, output: Path, begin: str, end: str, limits: Limi
                   batch_rows=65536):
     """Filter five columns vectorially, spill to a PRIVATE bounded DuckDB, sort once."""
     first, last = dt.date.fromisoformat(begin), dt.date.fromisoformat(end)
-    if not first < last <= SEAL or not 1024 <= batch_rows <= 65536:
-        raise ValueError("projection needs ordered dates ending no later than2025 and bounded batch")
+    if not first < last or not 1024 <= batch_rows <= 65536:
+        raise ValueError("projection needs ordered dates and a bounded batch")
+    if last > SEAL:
+        raise rw.SealError(rw.seal_message(f"projection through {last - dt.timedelta(days=1)} holds sessions"))
     captured = source.stat()
     pf = pq.ParquetFile(source)
     check_source_schema(pf.schema_arrow)
@@ -367,6 +371,9 @@ def cache_receipt(directory: Path, limits: Limits):
     p = directory / "accepted.parquet"
     if m.get("schema") != CACHE_SCHEMA or m.get("status") != "complete":
         raise ValueError("unpublished projection cannot be resumed")
+    # A projection reaching the research seal holds sealed rows: refuse it before its payload is read.
+    if day(m["end_exclusive"]) > day(SEAL):
+        raise rw.SealError(rw.seal_message(f"projection {directory} (end_exclusive {m['end_exclusive']}) holds sessions"))
     stat = p.stat()
     identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
     if stat.st_size != m["accepted"]["bytes"] or sha_file(p, limits) != m["accepted"]["sha256"]:
@@ -680,7 +687,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
         raise ValueError("--check-fields and --check-fields-sha256 go together")
     budget = prf.Budget(max_rss_mib=limits.memory_bytes >> 20,
                         max_seconds=max(1.0, min(7200.0, limits.deadline - time.monotonic())))
-    role = prf.Role(base, base_sha256)  # pin, schema, namespace, axes, member bytes, < 2025 seal
+    role = prf.Role(base, base_sha256)  # pin, schema, namespace, axes, member bytes, before the seal
     m = role.manifest
     if m.get("universe") is not None:
         raise ValueError("base role already carries a universe restriction")
@@ -921,7 +928,8 @@ def main():
     p.add_argument("mode", choices=("project", "role"))
     p.add_argument("--source", type=Path); p.add_argument("--cache", type=Path)
     p.add_argument("--out", required=True, type=Path)
-    p.add_argument("--start", default="2018-06-01"); p.add_argument("--end", default="2025-01-01")
+    p.add_argument("--start", default="2018-06-01")
+    p.add_argument("--end", default=rw.SEAL_DATE, help="exclusive end (default: the research seal)")
     p.add_argument("--score-start", default="2020-01-01")
     p.add_argument("--top-n", type=int, default=3000); p.add_argument("--max-union", type=int, default=8000)
     p.add_argument("--memory-mib", type=int, default=768); p.add_argument("--disk-mib", type=int, default=12288)

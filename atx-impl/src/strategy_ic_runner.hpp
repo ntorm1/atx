@@ -13,9 +13,16 @@ struct IcRunnerConfig {
   std::string output_directory;
   atx::u64 max_working_bytes{512ULL<<20};
   atx::usize min_names{20},min_dates{128};
-  atx::usize workers{1}; // 1 is the existing serial baseline; explicit2..4 share one VM pool
+  atx::usize workers{1}; // 1 is the existing serial baseline; explicit 2..16 share one VM pool
   bool save_combined{false}; // exact blend+support artifact, no reevaluation or portfolio simulation
   bool plan_only{false}; // pinned metadata/DSL compilation only; no role payloads
+  // Screening pass (platform v8 B-1): score every candidate's IC and TRAIN orientation
+  // but build no blend: no IcComposition, no `__combined__` daily rows, no planned
+  // targets and no combined artifact (a --save-combined request is skipped; the
+  // recipe still records it, so orientations.json is byte-identical to a full run).
+  // With --candidate-cache, a candidate whose signal and IC result are both cached is
+  // never loaded. Not a method input; refuses --composition-weights.
+  bool no_composition{false};
   // Optional reusable raw DSL signals under ROOT = DIR[/<vm-identity>] (the
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1).
   // Content-keyed layout (atx.dsl-candidate-signal/v2, written by this runner):

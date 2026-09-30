@@ -62,7 +62,7 @@ def test_plan_live_root_equals_the_fixture():
 def test_v61_states_pins_and_phase_order(tmp_path):
     c = v61_cycle(tmp_path)
     steps = c.steps()
-    assert [s.phase for s in steps] == [p for p in RC.PHASES if p not in ("card", "monitor", "ref")]  # W3: v61-ops
+    assert [s.phase for s in steps] == [p for p in RC.PHASES if p not in ("card", "monitor", "ref", "marginal")]  # W3
     assert {s.phase: s.state for s in steps} == {"fields": "done", "check": "always", "u": "done", "fit": "done",
                                                  "gate": "always", "w": "done", "nav": "done", "summ": "always"}
     pins = json.loads((FIX / "v61_pins.json").read_text())
@@ -198,6 +198,14 @@ if b == "error":
     receipt("process-error", 1); sys.exit(1)
 if b == "incomplete":
     (out / "stdout.log").write_text('{"status": "incomplete", "partial": true}'); receipt("process-error", 3); sys.exit(1)
+for rel, text in beh.get("touch", {}).get(out.name, []):   # v8 A-3: a file written while this phase runs
+    Path(rel).parent.mkdir(parents=True, exist_ok=True)
+    Path(rel).write_text(text)
+if len(cmd) > 1 and Path(cmd[1]).name in ("fields.py", "check.py", "summ.py", "monitor.py"):  # v8: every-phase
+    import subprocess
+    code = subprocess.run(cmd).returncode
+    receipt("completed" if code == 0 else "process-error", code)
+    sys.exit(0 if code == 0 else 1)
 child = Path(cmd[cmd.index("--output") + 1])
 child.mkdir(parents=True, exist_ok=True)
 if "card.py" in " ".join(cmd):
@@ -210,6 +218,10 @@ elif "fit.py" in " ".join(cmd):
 elif "nav" in cmd:
     (child / "summary.json").write_text(json.dumps({"status": "complete", "primary_scenario": "s2"}))
     (child / "daily_s2.csv").write_text(beh.get("daily", {}).get(child.name, "net_return\n0.001\n"))
+elif "marginal" in cmd:                                     # v8 A-2: the IC exe's marginal verb (contract K6)
+    (child / "marginal_ic.json").write_text(json.dumps({"candidates": [
+        {"id": "new_alpha", "ic21": 0.012, "ic21_hac_t": 2.1, "marginal_ic21": 0.008, "marginal_hac_t": 1.6,
+         "max_abs_rho": 0.31, "max_rho_member": "old"}]}))
 else:
     (child / "summary.json").write_text(json.dumps({"status": "complete" if b != "incomplete-output" else "partial"}))
     (child / "orientations.json").write_text("{}")
@@ -458,7 +470,7 @@ def test_v61_ops_plan_adds_the_card_after_fit_and_the_monitor_after_nav(tmp_path
     known = json.loads((FIX / "v61_pins.json").read_text(encoding="utf-8"))
     c = RC.Cycle(RC.load_spec(V61_OPS), RC.Resolver(tmp_path, known), spec_path=V61_OPS)
     steps = c.steps()
-    assert [s.phase for s in steps] == [p for p in RC.PHASES if p != "ref"]  # L8's ref phase: identity specs only
+    assert [s.phase for s in steps] == [p for p in RC.PHASES if p not in ("ref", "marginal")]  # L8 ref: identity specs
     lines = RC.plan_lines(c, lines_only=True)
     base = (FIX / "v61_train_dry.txt").read_text(encoding="utf-8").splitlines()
     card, monitor = (next(s for s in steps if s.phase == p) for p in ("card", "monitor"))
@@ -637,7 +649,7 @@ def test_v70_plan_dry_run_resolves_every_input_pin(tmp_path):
         assert item["sha256"] == known[item["path"]], key
     assert all(how == "locked (hash-only)" for _, _, how in c.pins.values())
     steps = {s.phase: s for s in c.steps()}
-    assert list(steps) == [p for p in RC.PHASES if p != "ref"]
+    assert list(steps) == [p for p in RC.PHASES if p not in ("ref", "marginal")]  # v8 marginal: add-alpha specs
     assert {p: s.state for p, s in steps.items()} == {
         "fields": "done", "check": "always", "u": "pending", "fit": "pending", "card": "pending", "gate": "always",
         "w": "pending", "nav": "pending", "monitor": "pending", "summ": "always"}
@@ -820,7 +832,7 @@ def test_v71_spec_is_v70_with_the_declared_changes_only():
     assert v71["gate"] == {"name": "p1-v71", "admitted": WAVE2, "require": "any", "sign_agrees": True,
                            "report": ["mom_12_1", "si_ratio", "dtc", "sv_flow", "iv_rv_spread", "ear", "sue", "droe"]}
     assert v71["nav"] == dict(v70["nav"], output=V71_CELL)                       # the reference construction
-    assert v71["summ"] == {"script": v70["summ"]["script"], "dsr_n": 35, "cells_from_ledger": True,
+    assert v71["summ"] == {"script": v70["summ"]["script"], "dsr_n": "ledger+1", "cells_from_ledger": True,  # v8 A-3
                            "extra": v70["summ"]["extra"], "ledger": v70["summ"]["ledger"],
                            "ledger_kind": "construction"}
 
@@ -884,12 +896,16 @@ def test_v71_plan_dry_run_resolves_every_pin_and_the_identity_phases(tmp_path):
 
 def test_v71_ledger_grid_follows_the_ledger_and_dsr_n_is_the_one_key(tmp_path):
     write_ledger(tmp_path, v70_grid() + [LO3_CELL])  # another cell ledgered before v7.1 runs (e.g. U-lo3)
+    declared = RC.load_spec(V71)
+    declared["summ"]["dsr_n"] = 35                   # an integer N (the v7 rule): a stale one stops and names the value
     with pytest.raises(RC.CycleError) as e:
-        v71_cycle(tmp_path).steps()
+        v71_cycle(tmp_path, declared).steps()
     assert e.value.code == RC.EXIT_PIN and "lists 35 prior cells" in str(e.value)
     assert "set summ.dsr_n to 36" in str(e.value)
+    ledger_n = next(s for s in v71_cycle(tmp_path).steps() if s.phase == "summ").argv  # v8 A-3: "ledger+1"
     spec = RC.load_spec(V71)
-    spec["summ"]["dsr_n"] = 36                       # root's one-key change
+    spec["summ"]["dsr_n"] = 36                       # root's one-key change (v7)
+    assert next(s for s in v71_cycle(tmp_path, spec).steps() if s.phase == "summ").argv == ledger_n
     summ = next(s for s in v71_cycle(tmp_path, spec).steps() if s.phase == "summ").argv
     r = summ.index("--reference")
     assert summ[r + 2:summ.index("--dsr-n")] == v70_grid() + [LO3_CELL, V71_CELL]
@@ -1123,3 +1139,675 @@ def test_stop_after_a_compare_step(tmp_path):
     assert run(root, sp, log, stop_after="u-compare") == RC.EXIT_OK
     assert calls(root)[-1] == "U-run1" and log[-1] == "== stopped after u-compare (--stop-after)"
     assert "u-compare" in RC.STOP_PHASES and "ref" in RC.PHASES
+
+
+# ---------------------------------------------------------------- platform v8 A-3: cycle plumbing
+import subprocess  # noqa: E402
+
+import research_tree  # noqa: E402
+
+V1 = "C:/atx/atx-db/data/alpha_panel/v1"
+L9_PINS = {  # the stage pins of the L9 report (manifest.json SHA-256 under V1): plain strings in hash-only mode
+    "sec_identity_bridge": ("export/identity-bridge-v2-pit",
+                            "09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01"),
+    "earnings_calendar": ("earnings_calendar", "9a4a976b03d0ad04672796f01abc129d0d09e3db23d62ddf57aea68ae3c7d769"),
+    "insider": ("insider", "dcd3f1aa4ba6e266c03ef78568ca131c1336f51ade477f03faff2e88a62ba061"),
+    "sec_filings": ("sec_filings", "5190fe99e4c2f1f13218d966a67d06995d51b7a31a73151dad2686e829aed693"),
+    "thirteenf": ("thirteenf", "8974170f64b4a002cc1b131449c2abf0c7daaab23d4a256992afbdfc4105ffb0"),
+    "ftd": ("ftd", "a76d69bed49829d9e14216f1abe2ef76b480c16c576fa49ae63fa2a28050f945"),
+    "regsho_threshold": ("regsho_threshold", "68f431f006d9a78bb26eb7d690f4f3d2a00aaee39e41f33a6474aba9e25ad694"),
+    "security_master": ("security_master", "3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a"),
+    "short_volume_ext": ("short_volume_ext", "7007a13c226a1730d0ef778d7201bf7c1d0e97ed61d4c12af32c1c4567444928"),
+}
+REUSE_LO3 = ("build-equity/recent-fast-train-2020-2022-v2-lo3-fields-v7",
+             "2f14e20e3ff36b3a2d1fedaedc910f66465c5e308cc0138bd3d12923f1376e31")
+
+
+def l9_spec(**fields_over) -> tuple[dict, dict]:
+    """A fields spec with the ten L9 stage inputs (hash-only pins) and its known-pins map."""
+    known = {"lib.json": "a" * 64, "role/manifest.json": "b" * 64, f"{REUSE_LO3[0]}/manifest.json": REUSE_LO3[1]}
+    inputs = {"library": {"path": "lib.json", "sha256": None},
+              "role": {"dir": "role", "path": "role/manifest.json", "sha256": None}}
+    for key, (rel, sha) in L9_PINS.items():
+        inputs[key] = {"dir": f"{V1}/{rel}", "path": f"{V1}/{rel}/manifest.json", "sha256": sha}
+        known[f"{V1}/{rel}/manifest.json"] = sha
+    inputs["reuse_fields"] = {"dir": REUSE_LO3[0], "path": f"{REUSE_LO3[0]}/manifest.json", "sha256": REUSE_LO3[1]}
+    fields = dict({"builder": "b.py", "output": "F", "list": ["ea_days_since", "inst_best_ideas"]}, **fields_over)
+    return minimal_spec(inputs=inputs, fields=fields), known
+
+
+def test_stage_inputs_map_to_flags(tmp_path):
+    spec, known = l9_spec(reuse_hardlink=True)
+    argv = RC.Cycle(spec, RC.Resolver(tmp_path, known)).fields_step("F", "F/manifest.json", "b" * 64).argv
+    pin = {k: sha for k, (_, sha) in L9_PINS.items()}
+    k = argv.index("--sec-stages")
+    assert argv[k:k + 12] == [
+        "--sec-stages", V1, "--sec-identity-bridge", f"{V1}/export/identity-bridge-v2-pit",
+        "--sec-identity-bridge-sha256", pin["sec_identity_bridge"],
+        "--earnings-calendar-sha256", pin["earnings_calendar"], "--insider-sha256", pin["insider"],
+        "--sec-filings-sha256", pin["sec_filings"]]
+    k = argv.index("--thirteenf")
+    assert argv[k:k + 20] == [x for key in RC.HOLDINGS_INPUTS for x in (
+        f"--{key.replace('_', '-')}", f"{V1}/{key}", f"--{key.replace('_', '-')}-sha256", pin[key])]
+    assert argv[k + 20:] == ["--max-rss-mib", "1536", "--max-seconds", "1800", "--reuse", REUSE_LO3[0],
+                             "--reuse-sha256", REUSE_LO3[1], "--reuse-hardlink"]
+    assert len([x for x in argv if x.endswith("-sha256")]) == 11      # role + bridge + 3 SEC + 5 holdings + reuse
+    plain = RC.Cycle(dict(spec, fields=dict(spec["fields"], reuse_hardlink=False)), RC.Resolver(tmp_path, known))
+    assert plain.fields_step("F", "F/manifest.json", "b" * 64).argv[-1] == REUSE_LO3[1]   # no --reuse-hardlink
+    with pytest.raises(RC.CycleError) as e:                               # the spec pins the reuse dir already
+        RC.Cycle(spec, RC.Resolver(tmp_path, known), reuse_fields="other")
+    assert e.value.code == RC.EXIT_USAGE
+
+
+@pytest.mark.parametrize("change, why", [
+    (lambda s: s["inputs"].pop("insider"), "come together"),                         # three of the four SEC inputs
+    (lambda s: s["inputs"].pop("sec_identity_bridge"), "come together"),
+    (lambda s: s["inputs"]["insider"].update(dir=f"{V1}/form4"), "one alpha-panel root"),  # not named insider
+    (lambda s: s["inputs"]["sec_filings"].update(dir="C:/elsewhere/sec_filings"), "one alpha-panel root"),
+    (lambda s: s["fields"].update(manifest_sha256="0" * 64), "reuse_fields needs a built fields section"),
+])
+def test_stage_inputs_are_validated(change, why):
+    spec, _ = l9_spec()
+    change(spec)
+    with pytest.raises(RC.CycleError) as e:
+        RC.validate_spec(spec)
+    assert e.value.code == RC.EXIT_USAGE and why in str(e.value)
+
+
+def git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+
+
+def committed_root(tmp_path: Path, **spec_over) -> tuple[Path, Path]:
+    """make_root as a git work tree: a tracked sprint-dir file and a tracked atx-impl source, all committed."""
+    root, sp = make_root(tmp_path, **spec_over)
+    (root / ".superpowers" / "sdd" / "x").mkdir(parents=True)
+    (root / ".superpowers" / "sdd" / "x" / "progress.md").write_text("a\n")
+    (root / "atx-impl").mkdir()
+    (root / "atx-impl" / "code.cpp").write_text("int x;\n")
+    git(root, "init", "-q")
+    for key, value in (("core.autocrlf", "false"), ("user.email", "t@t"), ("user.name", "t")):
+        git(root, "config", key, value)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "fixture")
+    return root, sp
+
+
+def test_clean_check_pathspec(tmp_path):
+    root, sp = committed_root(tmp_path / "a")
+    behave(root, touch={"U-run1": [[".superpowers/sdd/x/progress.md", "a lane report landed\n"],
+                                   [".superpowers/sdd/x/task-Z-report.md", "new\n"]]})
+    log = []
+    assert RC.run_cycle(cycle_of(root, sp), log=log.append) == RC.EXIT_OK     # the real (scoped) git check
+    assert "N-run" in calls(root) and "== cycle complete" in log
+    listed = [x for x in log if x.startswith("# dirty outside the code pathspec")]
+    assert any(".superpowers/sdd/x/progress.md" in x for x in listed)       # listed, never a stop
+    blocking, ignored = research_tree.dirty_paths(root)
+    assert blocking == [] and ".superpowers/sdd/x/progress.md" in ignored
+    root2, sp2 = committed_root(tmp_path / "b")
+    behave(root2, touch={"U-run1": [["atx-impl/code.cpp", "int y;\n"]]})   # a code edit mid-run
+    with pytest.raises(RC.CycleError, match=r"not clean in the code pathspec: atx-impl/code.cpp") as e:
+        RC.run_cycle(cycle_of(root2, sp2), log=lambda s: None)
+    assert e.value.code == RC.EXIT_STOP and calls(root2)[-1] == "U-run1" and "W-run1" not in calls(root2)
+    (root2 / "scripts" / "new_tool.py").write_text("")                      # an untracked file under scripts/ too
+    assert research_tree.dirty_paths(root2)[0] == ["atx-impl/code.cpp", "scripts/new_tool.py"]
+
+
+def test_dsr_n_from_ledger(tmp_path):
+    summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "cells_from_ledger": True, "ledger": "trials.jsonl",
+            "extra": ["--psr"]}
+    root, sp = make_root(tmp_path, summ=summ)
+    write_ledger_at = lambda cells: (root / "trials.jsonl").write_text(
+        "".join(json.dumps({"kind": "construction", "cell": c}) + "\n" for c in cells))
+    write_ledger_at(["prior/a", "prior/b"])
+    planned = next(s for s in cycle_of(root, sp).steps() if s.phase == "summ").argv
+    assert planned[planned.index("--dsr-n") + 1] == "3"
+    write_ledger_at(["prior/a", "prior/b", "prior/c"])                   # another cell ledgered between plan and run
+    assert run(root, sp) == RC.EXIT_OK                                     # the cycle continues ...
+    assert calls(root)[-1] == ("summ --weights out/W/composition_weights.json --reference ref-cell prior/a prior/b "
+                               "prior/c out/N --dsr-n 4 --psr --ledger trials.jsonl --ledger-kind construction")
+    root2, sp2 = make_root(tmp_path / "plain", summ=dict(summ, cells_from_ledger=None))  # N only, no grid
+    spec2 = json.loads(sp2.read_text())
+    spec2["summ"].pop("cells_from_ledger")
+    sp2.write_text(json.dumps(spec2))
+    (root2 / "trials.jsonl").write_text(json.dumps({"cell": "prior/a"}) + "\n" + json.dumps({"cell": "out/N"}) + "\n")
+    s = next(x for x in cycle_of(root2, sp2).steps() if x.phase == "summ").argv
+    assert s[s.index("--dsr-n") + 1] == "2" and s[-1] == "out/N"        # this cycle's own line is not a prior cell
+    for bad in ({"script": "s", "dsr_n": "ledger+1"}, {"script": "s", "dsr_n": "ledger+1", "ledger": "L",
+                                                       "cells": ["a"]}):
+        with pytest.raises(RC.CycleError) as e:
+            RC.validate_spec(dict(json.loads(sp.read_text()), summ=bad))
+        assert e.value.code == RC.EXIT_USAGE and "ledger+1" in str(e.value)
+
+
+def test_every_phase_has_receipt(tmp_path):
+    root, sp = ops_root(tmp_path, receipts="every-phase")
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    steps = {s.phase: s for s in cycle_of(root, sp).steps()}
+    cyc = "build-equity/cycle-synthetic"
+    run_dirs = {"fields": "out/F-run", "check": f"{cyc}/check-run1", "u": "out/U-run1", "fit": "out/W-run1",
+                "card": "out/C-run", "w": "out/WT-run1", "nav": "out/N-run", "monitor": "out/M-run",
+                "summ": f"{cyc}/summ-run1"}
+    for phase, rd in run_dirs.items():
+        r = json.loads((root / rd / "receipt.json").read_text())
+        assert (r["outcome"], r["exit_code"]) == ("completed", 0), phase
+    assert {p: s.kind for p, s in steps.items() if p != "gate"} == {p: "bounded" for p in run_dirs}
+    assert calls(root)[:3] == ["F-run", "fields ", "check-run1"] and "summ-run1" in calls(root)
+    v = json.loads((root / cyc / "cycle_verdict.json").read_text())
+    assert [p["name"] for p in v["phases"]] == list(run_dirs)
+    assert all(p["seconds"] == 1.5 and p["peak_mib"] == 1 for p in v["phases"])   # read from the receipts
+    assert run(root, sp) == RC.EXIT_OK                     # resume: the always-run phases take fresh receipt dirs
+    assert (root / cyc / "check-run2" / "receipt.json").is_file() and (root / cyc / "summ-run2").is_dir()
+    for bad in ({"receipts": "some"}, {"runner": dict(json.loads(sp.read_text())["runner"], phases={"zz": {}})}):
+        with pytest.raises(RC.CycleError):
+            RC.validate_spec(dict(json.loads(sp.read_text()), **bad))
+
+
+def test_ref_skipped_when_fields_unchanged(tmp_path):
+    root, sp = l8_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    pin = RC.sha256_file(root / "fields-base" / "manifest.json")    # the parent's fields, as built
+    spec["fields"] = {"output": "fields-base", "manifest_sha256": pin, "list": ["fa"]}
+    sp.write_text(json.dumps(spec))
+    behave(root, ic_files=GOOD_U)
+    steps = {s.phase: s for s in cycle_of(root, sp).steps()}
+    assert (steps["ref"].state, steps["ref-compare"].state) == ("skipped", "skipped")
+    assert "equals the parent's" in steps["ref"].note
+    assert not any(x.startswith("REF-") or "REF" in x for x in RC.plan_lines(cycle_of(root, sp), lines_only=True))
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    assert "REF-run" not in calls(root) and calls(root)[:2] == ["check", "U-run1"]
+    assert any(x.startswith("== ref: skipped (fields manifest fields-base/manifest.json equals") for x in log)
+    assert any(x.startswith("== ref-compare: skipped") for x in log)
+    root2, sp2 = l8_root(tmp_path / "changed")                        # fields differ from the parent's: ref runs
+    assert next(s for s in cycle_of(root2, sp2).steps() if s.phase == "ref").state == "pending"
+
+
+def test_no_git_only_outside_repo(tmp_path):
+    if research_tree.repo_root_of(tmp_path) is not None:
+        pytest.skip("the temporary directory is itself inside a git repository")
+    inside = tmp_path / "repo"
+    (inside / ".git").mkdir(parents=True)
+    root_in, sp_in = make_root(inside)
+    with pytest.raises(RC.CycleError) as e:
+        cycle_of(root_in, sp_in, no_git=True)
+    assert e.value.code == RC.EXIT_USAGE and "only for a root outside any git repository" in str(e.value)
+    root, sp = make_root(tmp_path / "plain")
+    c = cycle_of(root, sp, no_git=True)
+    u = next(s for s in c.steps() if s.phase == "u").argv
+    assert u[:5] == [sys.executable, "scripts/runner.py", "--root", str(root), "--no-git"]   # K3 to the runner
+    assert RC.run_cycle(c, log=lambda s: None, clean=lambda r: False) == RC.EXIT_OK        # no tree to check
+    assert "--no-git" not in next(s for s in cycle_of(root, sp).steps() if s.phase == "u").argv
+    spec = json.loads(sp.read_text())                                  # a tool absent under the root: the repo copy
+    spec["runner"]["script"] = "scripts/run_bounded_research.py"
+    sp.write_text(json.dumps(spec))
+    u = next(s for s in cycle_of(root, sp, no_git=True).steps() if s.phase == "u").argv
+    assert u[1] == (research_tree.REPO / "scripts" / "run_bounded_research.py").as_posix()
+    assert next(s for s in cycle_of(root, sp).steps() if s.phase == "u").argv[1] == "scripts/run_bounded_research.py"
+    runner = str(research_tree.REPO / "scripts" / "run_bounded_research.py")
+    base = ["--seconds", "60", "--max-rss-mib", "512", "--min-free-mib", "64", "--", sys.executable, "-c",
+            "print('bounded')"]
+    done = subprocess.run([sys.executable, runner, "--root", str(root), "--no-git", "--output",
+                           str(root / "out" / "probe-run"), *base], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    r = json.loads((root / "out" / "probe-run" / "receipt.json").read_text())
+    assert (r["outcome"], r["source_sha"], r["dirty_outside_pathspec"]) == ("completed", None, [])
+    assert r["git"].startswith("none (--no-git")
+    done = subprocess.run([sys.executable, runner, "--root", str(root_in), "--no-git", "--output",
+                           str(root_in / "out" / "probe-run"), *base], capture_output=True, text=True)
+    assert done.returncode == 2 and "only for a root outside any git repository" in done.stderr
+    assert not (root_in / "out" / "probe-run").exists()
+
+
+def test_build_key_resolves_exe_dir(tmp_path):
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    spec.pop("exes")
+    rel = dict(spec, build="equity-rel")
+    c = RC.Cycle(rel, RC.Resolver(root))
+    assert c.spec["exes"] == {"ic": "build-equity-rel/bin/atx-equity-strategy-ic.exe",
+                              "nav": "build-equity-rel/bin/atx-equity-strategy-targets.exe"}
+    assert c.spec["env_path_prepend"] == ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]
+    assert c.env()["PATH"].startswith(str(Path("C:/atx-cache/vcpkg_installed/x64-windows/bin")) + os.pathsep)
+    steps = {s.phase: s for s in c.steps()}
+    u, nav = steps["u"].argv, steps["nav"].argv
+    assert u[u.index("--") + 1] == "build-equity-rel/bin/atx-equity-strategy-ic.exe"
+    assert nav[nav.index("--") + 1:nav.index("--") + 3] == ["build-equity-rel/bin/atx-equity-strategy-targets.exe",
+                                                             "nav"]
+    dbg = RC.Cycle(dict(spec, build="equity", exes={"ic": "my-ic.exe", "nav": "x/nav.exe"}), RC.Resolver(root))
+    assert dbg.spec["exes"] == {"ic": "build-equity/bin/my-ic.exe", "nav": "x/nav.exe"}   # a bare name, a path
+    assert dbg.spec["env_path_prepend"][0].endswith("debug/bin")
+    pinned = RC.Cycle(dict(rel, env_path_prepend=["D:/dlls"]), RC.Resolver(root))
+    assert pinned.spec["env_path_prepend"] == ["D:/dlls"]                   # an explicit DLL path wins
+    for bad in (dict(spec, build="release"), spec):                       # unknown build; neither build nor exes
+        with pytest.raises(RC.CycleError) as e:
+            RC.validate_spec(bad)
+        assert e.value.code == RC.EXIT_USAGE
+
+
+def test_runner_phase_caps_follow_the_od2_rule_and_the_spec(tmp_path):
+    root, sp = make_root(tmp_path)
+    caps = lambda c, phase: (lambda a: (a[a.index("--seconds") + 1], a[a.index("--max-rss-mib") + 1]))(
+        next(s for s in c.steps() if s.phase == phase).argv)
+    (root / "role" / "manifest.json").write_text(json.dumps({"universe": {"id": "u-v1"}, "dates": 1155,
+                                                             "score_begin": 399, "score_end": 1155}))
+    c = cycle_of(root, sp)                                              # the 3-year role: every phase 180 s / 1,536
+    assert {p: caps(c, p) for p in ("u", "fit", "w", "nav")} == {p: ("180", "1536") for p in ("u", "fit", "w", "nav")}
+    (root / "role" / "manifest.json").write_text(json.dumps({"universe": {"id": "u-v1"}, "dates": 1405,
+                                                             "score_begin": 399, "score_end": 1405}))
+    c = cycle_of(root, sp)                                              # OD-2: the IC passes on a 4-year role
+    assert (caps(c, "u"), caps(c, "w"), caps(c, "fit"), caps(c, "nav")) == (
+        ("300", "2560"), ("300", "2560"), ("180", "1536"), ("180", "1536"))
+    spec = json.loads(sp.read_text())
+    spec["runner"]["phases"] = {"fit": {"seconds": 240}, "u": {"max_rss_mib": 2048}}    # the spec's data wins
+    sp.write_text(json.dumps(spec))
+    c = cycle_of(root, sp)
+    assert (caps(c, "fit"), caps(c, "u"), caps(c, "w")) == (("240", "1536"), ("180", "2048"), ("300", "2560"))
+    c = cycle_of(root, sp, runner_overrides=RC.parse_runner_overrides(["max_rss_mib=64"]))  # the CLI wins over all
+    assert (caps(c, "u"), caps(c, "fit")) == (("180", "64"), ("240", "64"))
+
+
+def test_out_root_places_outputs_and_derives_shared_stores(tmp_path, monkeypatch):
+    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    spec["out_root"] = "research"
+    spec["ic"].pop("cache")
+    spec["fit"].pop("work_dir")
+    sp.write_text(json.dumps(spec))
+    role16 = RC.sha256_file(root / "role" / "manifest.json")[:16]
+    for suffix in (None, "r2"):
+        steps = {s.phase: s for s in cycle_of(root, sp, suffix=suffix).steps()}
+        tail = f"-{suffix}" if suffix else ""
+        assert steps["fields"].output == f"research/out/F{tail}" and steps["u"].output == f"research/out/U{tail}-1"
+        assert steps["nav"].output == f"research/out/N{tail}"
+        u, fit = steps["u"].argv, steps["fit"].argv
+        assert u[-1] == f"research/candidate-cache/{role16}-research-window-v2"     # shared: never suffixed
+        assert fit[fit.index("--work-dir") + 1] == f"research/fit-work/{role16}-research-window-v2"
+    assert run(root, sp) == RC.EXIT_OK and (root / "research" / "out" / "N" / "summary.json").is_file()
+    assert (root / "research" / "cycle-synthetic" / "cycle_verdict.json").is_file()
+
+    def absent():
+        raise LookupError("no research window")
+    monkeypatch.setattr(RC, "window_id", absent)
+    with pytest.raises(RC.CycleError) as e:
+        cycle_of(root, sp).steps()
+    assert e.value.code == RC.EXIT_USAGE and "cannot be derived" in str(e.value)
+    with pytest.raises(RC.CycleError, match="root-relative"):
+        RC.validate_spec(dict(spec, out_root="C:/elsewhere"))
+
+
+def test_protocol_line_not_counted_in_dsr_n(tmp_path):
+    import research_ledger
+    summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "cells_from_ledger": True, "ledger": "trials.jsonl"}
+    root, sp = make_root(tmp_path, summ=summ)
+    ledger = root / "trials.jsonl"
+    ledger.write_text("".join(json.dumps({"schema": "atx.trial-ledger/v1", "kind": "construction", "cell": c,
+                                          "count": 1, "trial_id": c[-1] * 16}, sort_keys=True) + "\n"
+                              for c in ("prior/a", "prior/b")))
+    window = root / "research_window.json"
+    window.write_text('{"schema": "atx.research-window/v2"}\n')
+    argv = ["ledger-protocol", "--ledger", "trials.jsonl", "--owner-ruling", "expand TRAIN to include 2023",
+            "--date", "2026-09-29", "--window-id", "research-window-v2", "--research-window", "research_window.json",
+            "--root", str(root)]
+    assert RC.main(argv) == 0 and RC.main(argv) == 0                  # the second call appends nothing
+    lines = [json.loads(x) for x in ledger.read_text().splitlines()]
+    assert len(lines) == 3 and lines[:2] == [json.loads(x) for x in ledger.read_text().splitlines()[:2]]
+    p = lines[2]
+    assert {k: p[k] for k in ("schema", "kind", "count", "window_id", "owner_ruling", "date")} == {
+        "schema": "atx.trial-ledger/v1", "kind": "protocol", "count": 0, "window_id": "research-window-v2",
+        "owner_ruling": "expand TRAIN to include 2023", "date": "2026-09-29"}
+    assert p["research_window_sha256"] == RC.sha256_file(window) and "cell" not in p and len(p["trial_id"]) == 16
+    assert ledger.read_text().splitlines()[2] == json.dumps(p, sort_keys=True, separators=(",", ":"))
+    s = next(x for x in cycle_of(root, sp).steps() if x.phase == "summ").argv
+    assert s[s.index("--reference") + 2:s.index("--dsr-n") + 2] == ["prior/a", "prior/b", "out/N", "--dsr-n", "3"]
+    spec = json.loads(sp.read_text())                                  # an integer N: the protocol line is no trial
+    spec["summ"]["dsr_n"] = 3
+    assert next(x for x in RC.Cycle(spec, RC.Resolver(root)).steps() if x.phase == "summ").argv == s
+    assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]
+    with ledger.open("a") as f:
+        f.write(json.dumps({"kind": "construction", "count": 1}) + "\n")     # a trial line without a cell
+    with pytest.raises(RC.CycleError, match="line 4 has no cell"):
+        cycle_of(root, sp).steps()
+    for bad in (["--date", "29/09/2026"], ["--research-window", "nope.json"]):
+        args = list(argv)
+        args[args.index(bad[0]) + 1] = bad[1]
+        assert RC.main(args) == 2
+
+
+def test_ledger_copied_after_summ(tmp_path):
+    summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl",
+            "ledger_copy": "sprint/trials.jsonl"}
+    root, sp = make_root(tmp_path, summ=summ)
+    (root / "trials.jsonl").write_text(json.dumps({"cell": "prior/a"}) + "\n")
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    assert (root / "sprint" / "trials.jsonl").read_bytes() == (root / "trials.jsonl").read_bytes()
+    assert any(x.startswith("   ledger copied: ") for x in log)
+    with pytest.raises(RC.CycleError, match="ledger_copy"):
+        RC.validate_spec(dict(json.loads(sp.read_text()), summ={"script": "s", "dsr_n": 3, "ledger_copy": "x"}))
+
+
+# ---------------------------------------------------------------- platform v8 A-2: run --screen, verdict, add-alpha
+import re  # noqa: E402
+import shutil  # noqa: E402
+
+import research_add_alpha as RA  # noqa: E402
+
+STRATEGIES = HERE.parents[1] / "atx-impl" / "strategies"
+CAPS = frozenset({"no-composition", "marginal"})
+
+
+def screen_root(tmp_path: Path, **over) -> tuple[Path, Path]:
+    """ops_root plus a marginal section on the parent's combined signal and --save-combined in the IC flags."""
+    root, sp = ops_root(tmp_path, marginal={"output": "out/MIC", "pool": "reference_combined", "flags": ["--themes"]},
+                        **over)
+    (root / "ref-w" / "train_combined.json").write_text('{"ref": 1}')
+    spec = json.loads(sp.read_text())
+    spec["inputs"]["reference_combined"] = {"path": "ref-w/train_combined.json", "sha256": None}
+    spec["ic"]["flags"] = spec["ic"]["flags"] + ["--save-combined"]
+    sp.write_text(json.dumps(spec))
+    return root, sp
+
+
+def test_screen_stops_before_w(tmp_path):
+    root, sp = screen_root(tmp_path)
+    log = []
+    c = cycle_of(root, sp, screen=True, capabilities=CAPS)
+    assert RC.run_cycle(c, log=log.append, clean=lambda r: True) == RC.EXIT_OK
+    assert calls(root) == ["fields ", "check", "U-run1", "W-run1", "C-run", "MIC-run"]   # u -> fit -> card -> marginal
+    steps = {s.phase: s for s in cycle_of(root, sp, screen=True, capabilities=CAPS).steps()}
+    u = steps["u"].argv
+    assert "--no-composition" in u and "--save-combined" not in u                     # B-1, when the exe offers it
+    m = steps["marginal"].argv
+    assert m[m.index("--") + 1:] == ["bin/ic.exe", "marginal", "--candidate-cache", "out/CC", "--library",
+                                     "lib/lib.json", "--pool", "ref-w/train_combined.json", "--themes", "--output",
+                                     "out/MIC"]
+    assert {p: steps[p].state for p in ("w", "nav", "monitor", "summ")} == dict.fromkeys(("w", "nav", "monitor",
+                                                                                          "summ"), "skipped")
+    assert log.index("== marginal") < log.index("gate p1 PASS") < log.index("== w: skipped (screen: runs with the "
+                                                                              "full `run`)")
+    assert any(x.startswith("gate p1 new_alpha: status admitted") for x in log)            # the admission rows
+    assert any(x.startswith("marginal new_alpha: ic21 0.012 (HAC t 2.1); marginal ic21 0.008") for x in log)
+    assert log[-1] == "== screen complete: w, nav, monitor and summ run with the full `run`"
+    v = json.loads((root / "build-equity" / "cycle-synthetic" / "cycle_verdict.json").read_text())
+    assert v["mode"] == "screen" and [r["id"] for r in v["admission"]] == ["new_alpha"]
+    assert v["marginal"][0]["max_rho_member"] == "old" and not {"paired", "dsr", "pbo"} & set(v)
+    assert [p["name"] for p in v["phases"]] == ["fields", "check", "u", "fit", "card", "marginal"]
+    assert RC.plan_lines(cycle_of(root, sp, screen=True, capabilities=CAPS), lines_only=True)[-1] == RC.fmt_argv(m)
+    n = len(calls(root))                                                  # the full run continues from the screen
+    assert run(root, sp, capabilities=CAPS) == RC.EXIT_OK
+    assert calls(root)[n:n + 3] == ["check", "WT-run1", "N-run"] and calls(root)[-1].startswith("summ ")
+    root2, sp2 = screen_root(tmp_path / "old-exe")                       # an exe without B-1 / F-2: skipped, no stop
+    log2 = []
+    assert RC.run_cycle(cycle_of(root2, sp2, screen=True, capabilities=frozenset()), log=log2.append,
+                        clean=lambda r: True) == RC.EXIT_OK
+    assert "MIC-run" not in calls(root2) and "WT-run1" not in calls(root2)
+    u2 = next(s for s in cycle_of(root2, sp2, screen=True, capabilities=frozenset()).steps() if s.phase == "u").argv
+    assert "--no-composition" not in u2 and "--save-combined" in u2
+    assert "== marginal: skipped (the IC exe offers no marginal verb (contract K6, lane F): skipped)" in log2
+    v2 = json.loads((root2 / "build-equity" / "cycle-synthetic" / "cycle_verdict.json").read_text())
+    assert v2["marginal"] == [] and "no marginal verb" in v2["marginal_note"]
+
+
+FAKE_SUMM_JSON = r'''
+import json, sys
+from pathlib import Path
+a = sys.argv[1:]
+with open("calls.log", "a") as f:
+    f.write("summ " + " ".join(a) + "\n")
+if "--json" in a:
+    Path(a[a.index("--json") + 1]).write_text(json.dumps([
+        {"dir": "prior\\a", "paired": {"dsr": -1.0}},
+        {"dir": "out\\N", "paired": {"dsr": 0.05, "memmel_se": 0.1, "cbb_ci95": [-0.1, 0.2], "lw": {"p_value": 0.4}},
+         "deflated": {"n": 2, "dsr": 0.7}, "deflated_effective_n": {"dsr": 0.8}}]))
+if "--pbo-json" in a:
+    Path(a[a.index("--pbo-json") + 1]).write_text(json.dumps({"pbo": 0.25}))
+'''
+
+
+def test_verdict_schema(tmp_path):
+    summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "cells_from_ledger": True, "ledger": "trials.jsonl",
+            "extra": ["--psr", "--pbo"]}
+    root, sp = screen_root(tmp_path, summ=summ, verdict=True)
+    (root / "scripts" / "summ.py").write_text(FAKE_SUMM_JSON)
+    (root / "trials.jsonl").write_text(json.dumps({"kind": "construction", "cell": "prior/a"}) + "\n")
+    assert run(root, sp, capabilities=CAPS) == RC.EXIT_OK
+    cyc = "build-equity/cycle-synthetic"
+    assert calls(root)[-1].endswith(f"--dsr-n 2 --psr --pbo --json {cyc}/summ.json --pbo-json {cyc}/pbo.json "
+                                    "--ledger trials.jsonl --ledger-kind construction")
+    v = json.loads((root / cyc / "cycle_verdict.json").read_text())
+    assert set(v) == {"schema", "cycle", "mode", "spec_sha256", "admission", "marginal", "phases", "paired", "dsr",
+                      "pbo"}
+    assert (v["schema"], v["cycle"], v["mode"], v["spec_sha256"]) == ("atx.cycle-verdict/v1", "synthetic", "run",
+                                                                      RC.sha256_file(sp))
+    assert v["paired"] == {"dsr": 0.05, "se": 0.1, "cbb_ci": [-0.1, 0.2], "lw_p": 0.4}   # this cycle's NAV dir row
+    assert v["dsr"] == {"n": 2, "cell_count": 0.7, "effective_n": 0.8} and v["pbo"] == 0.25
+    assert [r["id"] for r in v["admission"]] == ["new_alpha"] and v["marginal"][0]["marginal_hac_t"] == 1.6
+    assert [p["name"] for p in v["phases"]] == ["fields", "check", "u", "fit", "card", "marginal", "w", "nav",
+                                                "monitor", "summ"]
+    assert all(set(p) == {"name", "seconds", "peak_mib"} and p["seconds"] > 0 for p in v["phases"])
+    assert {p["name"]: p["peak_mib"] for p in v["phases"]}["u"] == 1                        # from the receipt
+    assert {p["name"]: p["peak_mib"] for p in v["phases"]}["summ"] is None                  # a direct phase
+    for bad in ({"verdict": "yes"}, {"marginal": {"output": "M", "pool": "nope"}}):
+        with pytest.raises(RC.CycleError):
+            RC.validate_spec(dict(json.loads(sp.read_text()), **bad))
+
+
+# ------------------------------------------------------------------ add-alpha
+V70_OUT = {"fields": FIELDS_V7, "u": "build-equity/mega-v70-train-u-1", "w": "build-equity/mega-v70w-train-ew-1",
+           "fit": "build-equity/mega-weights-v70-ew", "nav": V70_CELL}
+FAKE_IC_PLAN = r'''
+import hashlib, json, re, sys
+from pathlib import Path
+a = sys.argv[1:]
+if "--help" in a:
+    print("equity-strategy-ic --library JSON ... [--no-composition]\n  equity-strategy-ic marginal --candidate-cache DIR")
+    sys.exit(0)
+lib = json.loads(Path(a[a.index("--library") + 1]).read_text())
+declared = {f["name"] for f in lib["fields"]} - {"close", "raw_close", "volume"}
+rows = [{"id": c["id"], "dsl_sha256": hashlib.sha256(c["dsl"].encode()).hexdigest(),
+         "num_slots": 9 if c["id"].startswith("wide_") else 3, "required_lookback": 20,
+         "extra_fields": sorted(set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", c["dsl"])) & declared), "node_count": 5}
+        for c in lib["candidates"]]
+print(json.dumps({"mode": "metadata-only-no-payload", "candidates": rows,
+                  "library_sha256": a[a.index("--library-sha256") + 1]}))
+'''
+
+
+def v71_entry(cid: str) -> dict:
+    lib = json.loads((STRATEGIES / "fund_industry_ic_v71.json").read_text(encoding="utf-8"))
+    return next(c for c in lib["candidates"] if c["id"] == cid)
+
+
+def entry_text(blob: bytes, cid: str) -> bytes:
+    """The encoded candidate object of `cid` (indent 4) in a library file."""
+    m = re.search(rb'\n    \{\n      "id": "' + cid.encode() + rb'",\n.*?\n    \}', blob, re.S)
+    assert m is not None, cid
+    return m.group(0)
+
+
+def add_alpha_root(tmp_path: Path) -> Path:
+    """A root with the registry minus the four wave-2 alphas, the legacy parent v7.0 (library, recipe), the v70 spec
+    and the parent cycle's outputs the child pins (files with made-up content)."""
+    root = tmp_path / "root"
+    s = root / "atx-impl" / "strategies"
+    (s / "alphas").mkdir(parents=True)
+    (s / "libraries").mkdir()
+    reg = json.loads((STRATEGIES / "alphas" / "registry.json").read_text(encoding="utf-8"))
+    reg["alphas"] = [a for a in reg["alphas"] if a["id"] not in WAVE2]
+    (s / "alphas" / "registry.json").write_bytes(RA.G.encode_data(reg))
+    for name in ("fund_industry_ic_v70.json", "fund_industry_ic_v70.recipe.json"):
+        shutil.copyfile(STRATEGIES / name, s / name)
+    (root / "scripts" / "specs").mkdir(parents=True)
+    shutil.copyfile(V70, root / "scripts" / "specs" / "v70.json")
+    files = {"build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json":
+             json.dumps({"universe": {"id": "linked-operating-v1"}, "dates": 1155, "score_begin": 399}),
+             f"{FIELDS_V7}/manifest.json": json.dumps({"fields": [{"name": "be"}]}),
+             f"{V70_OUT['u']}/summary.json": json.dumps({"status": "complete"}),
+             f"{V70_OUT['u']}/orientations.json": "{}", f"{V70_OUT['u']}/train_daily_ic.csv": "id,h,v\n",
+             f"{V70_OUT['w']}/summary.json": json.dumps({"status": "complete"}),
+             f"{V70_OUT['w']}/train_combined.json": "{}", f"{V70_OUT['fit']}/admission.json": "{}",
+             f"{V70_CELL}/summary.json": json.dumps({"primary_scenario": "modeled-1bn-stale5-v1+swap-fin-v1"}),
+             f"{V70_CELL}/{S2_CSV}": "net_return\n"}
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    return root
+
+
+def add_argv(root: Path, cid: str, name: str = "v71a", **over) -> list[str]:
+    c = dict(v71_entry(cid), **over)
+    return ["add-alpha", "--id", c["id"], "--dsl", c["dsl"], "--theme", c["theme"], "--tier", c["tier"],
+            "--prior-sign", str(c["prior_sign"]), "--citation", c["citation"], "--origin", "prior", "--parent", "v70",
+            "--name", name, "--root", str(root)]
+
+
+def k1_plan(tmp_path: Path, ids: list[str]) -> Path:
+    """The recorded K1 rows (atx-impl/strategies/alphas/fixtures) of the given members, as a plan of another library."""
+    fixture = json.loads((STRATEGIES / "alphas" / "fixtures" / "v71_plan_k1.json").read_text(encoding="utf-8"))
+    rows = {r["id"]: r for r in fixture["candidates"]}
+    path = tmp_path / f"plan-{len(ids)}.json"
+    path.write_text(json.dumps({"mode": "metadata-only-no-payload", "candidates": [rows[i] for i in ids]}))
+    return path
+
+
+def test_add_alpha_entry_byte_identical_to_committed(tmp_path):
+    root = add_alpha_root(tmp_path)
+    s = root / "atx-impl" / "strategies"
+    v70_ids = [c["id"] for c in json.loads((s / "fund_industry_ic_v70.json").read_text())["candidates"]]
+    plan = k1_plan(tmp_path, v70_ids + ["ftd_fail"])
+    assert RC.main(add_argv(root, "ftd_fail") + ["--plan-json", str(plan)]) == RC.EXIT_OK
+    blob = (s / "fund_industry_ic_v71a.json").read_bytes()
+    committed = (STRATEGIES / "fund_industry_ic_v71.json").read_bytes()
+    assert entry_text(blob, "ftd_fail") == entry_text(committed, "ftd_fail")      # the new entry, byte for byte
+    parent = (s / "fund_industry_ic_v70.json").read_bytes()
+    region = lambda b: b.split(b'"candidates": [\n', 1)[1]                        # noqa: E731
+    assert region(blob).startswith(region(parent)[:-len(b"\n  ]\n}\n")] + b",\n")  # the 44 parent entries unchanged
+    reg = json.loads((s / "alphas" / "registry.json").read_text(encoding="utf-8"))
+    a = next(x for x in reg["alphas"] if x["id"] == "ftd_fail")
+    assert (a["origin"], a["added_in"], a["prior_sign_source"], a["notes"]["formula"]) == ("prior", "v71a",
+                                                                                          a["citation"], None)
+    lib = json.loads((s / "libraries" / "v71a.json").read_text(encoding="utf-8"))
+    assert lib["id"] == "fund_industry_ic_v71a" and lib["parent"] == "v70" and lib["members"] == v70_ids + ["ftd_fail"]
+    assert [(e["id"], set(e) - {"id", "basis"}) for e in lib["budget_exceptions"]] == [
+        ("q5_eg", {"max_extra_fields"}), ("qmj_safety", {"max_slots"})]       # inherited from the legacy v7.0 recipe
+    rec = json.loads((s / "fund_industry_ic_v71a.recipe.v2.json").read_text(encoding="utf-8"))
+    assert rec["generation"]["new_members"] == ["ftd_fail"] and rec["parent"]["sha256"] == RC.sha256_file(
+        STRATEGIES / "fund_industry_ic_v70.json")
+    assert "`ftd_fail`" in (s / "libraries" / "v71a.prereg.md").read_text(encoding="utf-8")
+    sp = root / "scripts" / "specs" / "v8" / "lib-v71a.json"
+    spec = RC.load_spec(sp)
+    assert all(item["sha256"] for item in spec["inputs"].values())              # locked
+    assert spec["inputs"]["library"]["path"] == "atx-impl/strategies/fund_industry_ic_v71a.json"
+    assert spec["inputs"]["baseline_library"]["path"] == "atx-impl/strategies/fund_industry_ic_v70.json"
+    assert spec["inputs"]["reference_combined"]["path"] == f"{V70_OUT['w']}/train_combined.json"
+    assert spec["inputs"]["reference_daily"]["path"] == f"{V70_CELL}/{S2_CSV}"
+    assert spec["inputs"]["baseline_fields"]["path"] == f"{FIELDS_V7}/manifest.json"
+    assert spec["fields"] == {"output": FIELDS_V7, "manifest_sha256": RC.sha256_file(root / FIELDS_V7 / "manifest.json"),
+                              "list": RC.load_spec(V70)["fields"]["list"]}
+    assert (spec["ic"]["u_output"], spec["ic"]["w_output"], spec["nav"]["output"], spec["fit"]["output"]) == (
+        "build-equity/mega-v71a-train-u", "build-equity/mega-v71aw-train-ew", V70_CELL.replace("v70u", "v71au"),
+        "build-equity/mega-weights-v71a-ew")
+    assert "cache" not in spec["ic"] and "work_dir" not in spec["fit"] and "static_check" not in spec
+    assert spec["gate"] == {"name": "p1-v71a", "admitted": ["ftd_fail"], "require": "any", "sign_agrees": True,
+                            "report": []}
+    assert (spec["summ"]["dsr_n"], spec["summ"]["cells_from_ledger"], "cells" in spec["summ"]) == ("ledger+1", True,
+                                                                                                   False)
+    assert (spec["receipts"], spec["verdict"], spec["marginal"]["pool"]) == ("every-phase", True, "reference_combined")
+    assert [c["name"] for c in spec["compare"]] == ["ref-s2-daily", "parent-orientations", "parent-train-daily-ic"]
+    assert "phases" not in spec["runner"]                                        # a 3-year role: no OD-2 caps
+    reg_bytes = (s / "alphas" / "registry.json").read_bytes()
+    assert RC.main(add_argv(root, "ftd_fail") + ["--plan-json", str(plan)]) == RC.EXIT_OK   # identical: reused
+    assert (s / "alphas" / "registry.json").read_bytes() == reg_bytes
+    assert json.loads((s / "libraries" / "v71a.json").read_text())["members"].count("ftd_fail") == 1
+
+
+def test_add_alpha_refusals_write_nothing(tmp_path):
+    root = add_alpha_root(tmp_path)
+    s = root / "atx-impl" / "strategies"
+    v70_ids = [c["id"] for c in json.loads((s / "fund_industry_ic_v70.json").read_text())["candidates"]]
+    plan = k1_plan(tmp_path, v70_ids + ["ftd_fail"])
+    before = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+    for argv in (add_argv(root, "ftd_fail", theme="event_driven"),                  # unknown theme
+                 add_argv(root, "ftd_fail", tier="Z"),
+                 [x if x != "prior" else "guess" for x in add_argv(root, "ftd_fail")],   # K5 origin
+                 add_argv(root, "ftd_fail", dsl=v71_entry("sue")["dsl"]),          # the DSL of a registered alpha
+                 add_argv(root, "sue", name="v71b")):                               # already a member of v7.0
+        assert RC.main(argv + ["--plan-json", str(plan)]) == RC.EXIT_USAGE, argv
+    short = k1_plan(tmp_path, v70_ids)                                               # no row for the new member
+    assert RC.main(add_argv(root, "ftd_fail") + ["--plan-json", str(short)]) == RC.EXIT_USAGE
+    assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) == before
+    assert RC.main(add_argv(root, "ftd_fail") + ["--plan-json", str(plan)]) == RC.EXIT_OK
+    changed = add_argv(root, "ftd_fail", citation="another paper")                   # an id is never redefined
+    assert RC.main(changed + ["--plan-json", str(plan)]) == RC.EXIT_USAGE
+    spec = RC.load_spec(root / "scripts" / "specs" / "v8" / "lib-v71a.json")
+    (root / f"{spec['ic']['u_output']}-1").mkdir(parents=True)                       # the cycle has started
+    plan2 = k1_plan(tmp_path, v70_ids + ["ftd_fail", "ea_overdue"])
+    assert RC.main(add_argv(root, "ea_overdue") + ["--plan-json", str(plan2)]) == RC.EXIT_USAGE
+    assert RA.next_name("v71") == "v72" and RA.next_name("v7-lo3") == "v7-lo4"
+
+
+def test_add_alpha_validates_through_the_exe_plan(tmp_path):
+    root = add_alpha_root(tmp_path)
+    (root / "bin").mkdir()
+    (root / "bin" / "fake_ic.py").write_text(FAKE_IC_PLAN)
+    (root / "bin" / "ic.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_ic.py" %*\n')
+    assert RC.exe_capabilities("bin/ic.cmd", root) == CAPS and RC.exe_capabilities("bin/none.exe", root) == frozenset()
+    spec = json.loads((root / "scripts" / "specs" / "v70.json").read_text())
+    spec["exes"]["ic"] = "bin/ic.cmd"
+    (root / "scripts" / "specs" / "v70.json").write_text(json.dumps(spec))
+    (root / "build-equity" / "recent-fast-train-2020-2022-v2-lo1" / "manifest.json").write_text(json.dumps(
+        {"universe": {"id": "linked-operating-v1"}, "dates": 1405, "score_begin": 399}))   # the 4-year role
+    assert RC.main(add_argv(root, "ins_opp")) == RC.EXIT_OK                          # the exe's --plan-only rows
+    child = RC.load_spec(root / "scripts" / "specs" / "v8" / "lib-v71a.json")
+    assert child["runner"]["phases"] == {"u": {"seconds": 300, "max_rss_mib": 2560},
+                                         "w": {"seconds": 300, "max_rss_mib": 2560}}   # OD-2, written as spec data
+    lib = json.loads((root / "atx-impl" / "strategies" / "fund_industry_ic_v71a.json").read_text())
+    assert lib["families"][-1]["id"] == "ownership_flow"                             # a new theme enters with ins_opp
+    wide = add_argv(root, "ea_overdue", name="v71c", id="wide_overdue", dsl="rank((-1 * ea_days_to_expected))")
+    assert RC.main(wide) == RC.EXIT_USAGE                                             # 9 slots > 7: refused
+    assert not (root / "atx-impl" / "strategies" / "libraries" / "v71c.json").exists()
+
+
+# ---------------------------------------------------------------- PM addition: cache gc
+def test_cache_gc_keeps_referenced_stores_and_never_touches_state(tmp_path, monkeypatch):
+    import research_gc
+    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    spec["ic"]["cache"], spec["fit"]["work_dir"] = "build-equity/mega-candidate-cache-v2", "build-equity/mega-fit-work-v2"
+    sp.write_text(json.dumps(spec))
+    derived = dict(spec, name="derived", ic={k: v for k, v in spec["ic"].items() if k != "cache"},
+                   fit={k: v for k, v in spec["fit"].items() if k != "work_dir"})
+    sp2 = tmp_path / "derived.json"
+    sp2.write_text(json.dumps(derived))
+    role16 = RC.sha256_file(root / "role" / "manifest.json")[:16]
+    kept = ["mega-candidate-cache-v2", "mega-fit-work-v2", f"candidate-cache/{role16}-research-window-v2",
+            f"fit-work/{role16}-research-window-v2"]
+    unreferenced = ["mega-candidate-cache-v1", "mega-fit-work-v1-r7", "candidate-cache/0123456789abcdef-research-window-v1"]
+    for rel in kept + unreferenced:
+        (root / "build-equity" / rel / ("a" * 64)).mkdir(parents=True)
+        (root / "build-equity" / rel / ("a" * 64) / "x.f64").write_bytes(b"\0" * 2048)
+    state = {"trials.jsonl": "{}\n", "mega-nav-x/summary.json": "{}", "recent-role/manifest.json": "{}",
+             "mega-candidate-cache-odd/receipt.json": "{}"}           # the last looks like a store but holds a receipt
+    for rel, text in state.items():
+        (root / "build-equity" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / "build-equity" / rel).write_text(text)
+    log = []
+    rep = research_gc.gc([sp, sp2], root, ["build-equity"], apply=False, log=log.append)
+    assert sorted(rep["keep"]) == sorted(f"build-equity/{r}" for r in kept)
+    assert sorted(rep["gc"]) == sorted(f"build-equity/{r}" for r in unreferenced)
+    assert rep["skip"] == ["build-equity/mega-candidate-cache-odd"] and rep["deleted"] == []
+    assert any(x.startswith("keep  build-equity/mega-candidate-cache-v2") and "(referenced by synthetic)" in x
+               for x in log)
+    assert log[-1].startswith("== 3 unreferenced store dirs, 0.0 MiB (dry run")
+    assert all((root / "build-equity" / r).is_dir() for r in kept + unreferenced)   # a dry run deletes nothing
+    assert RC.main(["cache", "gc", "--keep-referenced-by", str(sp), str(sp2), "--root", str(root), "--apply"]) == 0
+    assert all((root / "build-equity" / r).is_dir() for r in kept) and not any(
+        (root / "build-equity" / r).exists() for r in unreferenced)
+    assert all((root / "build-equity" / r).is_file() for r in state)                 # ledger, NAV, role, receipt kept
+    with pytest.raises(SystemExit) as e:                                             # a keep list is required
+        RC.main(["cache", "gc", "--root", str(root)])
+    assert e.value.code == RC.EXIT_USAGE

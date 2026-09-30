@@ -664,9 +664,15 @@ class Refusals(unittest.TestCase):
         self.assertFalse(out.exists())
 
     def test_post_train_role_refused(self):
-        p = synthetic_panel(dates=200, score_begin=150, start="2022-08-01")  # runs into 2023
+        # runs past the TRAIN end of the research window (research_window.py) into the sealed sample
+        start = str(np.datetime64(fcw.rw.TRAIN_END_DATE) - np.timedelta64(150, "D"))
+        p = synthetic_panel(dates=200, score_begin=150, start=start)
         fx = Fixture(self.root / "late", p, synthetic_signals(p))
         self.refuse(fx, "TRAIN-only")
+        with self.assertRaises(fcw.rw.SealError) as caught:   # also a ValueError naming the window and the seal
+            fcw.fit(fx.args(self.root / "refused-seal"))
+        self.assertIn(fcw.rw.WINDOW_ID, str(caught.exception))
+        self.assertIn(fcw.rw.SEAL_DATE, str(caught.exception))
 
     def test_non_train_cache_entry_refused(self):
         fx = Fixture(self.root / "val", self.p, self.signals, sidecar_role="validation")
@@ -1844,6 +1850,26 @@ class CostScreenEndToEnd(unittest.TestCase):
             self.assertFalse(out.exists())
 
 
+@contextlib.contextmanager
+def superseded_window(module):
+    """Bind this fitter to research-seal-v1, the window the git-history fitters hard-code (TRAIN end 2023: the
+    admission windows and the aim semantics). W0-1 made the window a read of research_window.py and changed nothing
+    else, so the byte-identity tests below compare the two fitters on the same window. Other modules run as they are."""
+    if module is not fcw:
+        yield
+        return
+    old = fcw.rw.superseded()
+    here = f"[{fcw.rw.TRAIN_BEGIN_DATE},{fcw.rw.TRAIN_END_DATE})"
+    assert here in fcw.AIM_SEMANTICS
+    semantics = fcw.AIM_SEMANTICS.replace(here, f"[{old['TRAIN_BEGIN_DATE']},{old['TRAIN_END_DATE']})")
+    with contextlib.ExitStack() as stack:
+        for name, value in (("FIT_BEGIN_NS", old["TRAIN_BEGIN_NS"]), ("TRAIN_END_NS", old["TRAIN_END_NS"]),
+                            ("AIM_SEMANTICS", semantics),
+                            ("AIM_TAG", hashlib.sha256(semantics.encode()).hexdigest()[:16])):
+            stack.enter_context(unittest.mock.patch.object(fcw, name, value))
+        yield
+
+
 class PriorV1BytesUnchanged(unittest.TestCase):
     """T27 edit: v4-prior-v1 emits the pre-T27 bytes except the embedded script SHA (git-history fitter)."""
 
@@ -1870,8 +1896,9 @@ class PriorV1BytesUnchanged(unittest.TestCase):
             got = {}
             for tag, module in (("new", fcw), ("old", pre)):
                 out, work = root / f"v4-{tag}", root / f"work-{tag}"
-                code, _ = module.fit(module.parse_args(fx.argv(out, "v4-prior-v1", [
-                    "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
+                with superseded_window(module):
+                    code, _ = module.fit(module.parse_args(fx.argv(out, "v4-prior-v1", [
+                        "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
                 self.assertEqual(code, 0)
                 adm = (out / fcw.OUTPUT_ADMISSION).read_bytes()
                 derived = {module.SCRIPT_SHA256: b"<script>", json.loads(adm)["inputs"]["context_sha256"]: b"<context>",
@@ -1917,7 +1944,8 @@ class DefaultBytesUnchanged(unittest.TestCase):
                 got = {}
                 for tag, module in (("new", fcw), ("old", pre)):
                     out, work = root / f"{name}-{tag}", root / f"work-{name}-{tag}"
-                    code, _ = module.fit(module.parse_args(fx.argv(out, screen, [*extra, "--work-dir", str(work)])))
+                    with superseded_window(module):
+                        code, _ = module.fit(module.parse_args(fx.argv(out, screen, [*extra, "--work-dir", str(work)])))
                     self.assertEqual(code, 0)
                     doc = json.loads((out / (fcw.OUTPUT_WEIGHTS if screen == "none" else fcw.OUTPUT_ADMISSION)).read_bytes())
                     context = (doc.get("provenance") or doc["inputs"])["context_sha256"]  # digest binds the script SHA
@@ -2322,7 +2350,7 @@ class V1BytesUnchangedByAim(unittest.TestCase):
                 got = {}
                 for tag, module in (("new", fcw), ("old", pre)):
                     out, work = root / f"{screen}-{tag}", root / f"work-{screen}-{tag}"
-                    with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                    with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249), superseded_window(module):
                         code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
                             "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
                     self.assertEqual(code, 0, screen)
@@ -2661,7 +2689,8 @@ class V1BytesUnchangedByV6(unittest.TestCase):
             spec = importlib.util.spec_from_file_location("fcw_v6_base", root / "old" / "fit_composition_weights_v6_base.py")
             base = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(base)
-            self.assertEqual((base.SEMANTICS_TAG, base.AIM_TAG), (fcw.SEMANTICS_TAG, fcw.AIM_TAG))
+            with superseded_window(fcw):   # the aim tag names the TRAIN window; W0-1 changed only the window
+                self.assertEqual((base.SEMANTICS_TAG, base.AIM_TAG), (fcw.SEMANTICS_TAG, fcw.AIM_TAG))
             panel, signals, ids, extra = v6_world()
             fx = Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
                          candidate_extra=extra)
@@ -2670,7 +2699,7 @@ class V1BytesUnchangedByV6(unittest.TestCase):
                 got = {}
                 for tag, module in (("new", fcw), ("old", base)):
                     out, work = root / f"{screen}-{composition}-{tag}", root / f"work-{screen}-{composition}-{tag}"
-                    with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                    with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249), superseded_window(module):
                         code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
                             "--orientation", "prior", "--composition", composition, "--work-dir", str(work)])))
                     self.assertEqual(code, 0, (screen, composition))
@@ -2751,7 +2780,7 @@ class OwnershipFlowTheme(unittest.TestCase):
             got = {}
             for tag, module in (("new", fcw), ("old", base)):
                 out, work = self.root / f"{screen}-{tag}", self.root / f"work-{screen}-{tag}"
-                with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249), superseded_window(module):
                     code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
                         "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
                 self.assertEqual(code, 0, screen)
