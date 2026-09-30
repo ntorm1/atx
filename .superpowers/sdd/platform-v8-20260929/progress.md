@@ -92,3 +92,63 @@ Standing rules: as platform-20260928, with the owner change below.
   notes are unresearched, not rejected. Effect sizes in the plan are estimates.
 - Next: owner reviews the plan and rules on OD-2. Then Wave 0 (W0-1 window constants, W0-2 role and fields, W0-3
   pre-registration, W0-4 baseline cells) beside Wave 1 platform lanes.
+
+## 2026-09-29 W0-2 runbook received (w0-2-runbook.md, w0-2-runbook-open-questions.md)
+
+Rulings on the runbook's open questions. All declared before any build or read on the 4-year window.
+
+- Ruling W0-d (Q1, regsho stage republished): pin the live regsho_threshold manifest; the ".02 coverage" acceptance is
+  waived for `regsho_threshold_days63` and its coverage difference is reported -- no v7.1 candidate reads the field and
+  atx-db is another session's tree -- cost if wrong: one field rebuilt later.
+- Ruling W0-e (Q5, Q6): rebuild the r4 identity bridge with seal 2024-01-01 and fundamental events v3 on the sealed CIK
+  scope, for both roles -- the old scope used link evidence dated 2024, which is now hidden -- cost if wrong: lo3
+  fundamental coverage shifts slightly; the overlap report shows it.
+- Ruling W0-f (Q8): the pre-registration quotes max compiled slots 8 (it reproduces the recorded admission bytes).
+  Estimated IC-pass admission on the 4-year role: 1,952 MiB at about 6,100 instruments; bound 2,540 MiB at 8,000.
+- Ruling W0-a, extended (Q9, Q10): the overlap is reported per field and per candidate. A difference whose cause is
+  identified and documented (instrument-union dependence of `me_company` and `sv_ratio126`; summation order over a
+  wider row) is disclosed with its size and does not stop the re-base -- every v8 paired comparison is between two
+  cells on the same 4-year role, so old 3-year values are not a comparator -- cost if wrong: continuity with the v7
+  ledger is weaker than stated; the scorecard says so. A difference with no identified cause still stops the re-base.
+- Ruling W0-g (Q11): the factor-break repair rule v1 is applied mechanically to the longer window. New flagged sessions
+  or changed repairs are reported in the overlap report -- the rule predates the window and is not tuned -- cost if
+  wrong: one role rebuild.
+- Ruling W0-h (Q13, Q15): until A-3 lands, specs carry integer `dsr_n` (38, 39, 40). PBO, effective N and cross-trial
+  variance over cells of unequal windows are the "legacy" figures of OD-4 and gate nothing.
+- Ruling W0-i (Q16): role, projection and fields builds on the 4-year window run under 600 s and 2,560 MiB -- same
+  reasoning as OD-2; these are data preparation, not trials -- cost if wrong: none for inference.
+- Ruling W0-j (Q18): if B0a (lo1) wins, B0c is built on lo1 with delisting returns. The role builder gets the delisting
+  option for linked-operating-v1 (lane F) -- terminal returns are a property of the return series, not of the universe
+  rule -- cost if wrong: if the option cannot be added cleanly, B0c runs on lo3 and the ledger says B0c changed two
+  things at once.
+- Ruling W0-k (Q24, Q25): counters of refused sealed rows in manifests are metadata and are accepted. Whole-file SHA
+  pinning of a multi-year stage hashes bytes without parsing them and is compliant.
+- Ruling W0-l (Q27): the optional bridge `--check` against the atx-db warehouse is skipped -- root never touches atx-db.
+- Ruling W0-m (Q29, Q30): B0 cells run the monitor without holdings and bias inputs; lo3 fields with no 3-year
+  reference are reported, not gated.
+- Q32 confirmed: `HOLD_BEGIN_NS` drives screen v3-admit-v1 only; untouched.
+- Q33 is an owner decision: validation-window artifacts that hold 2024 data stay on disk untouched. Nothing is deleted.
+- Deferred minor (Q26): `prepare_identity_bridge.py` DEFAULT_ROLES names a validation role; root always passes `--role`.
+
+Disclosure (Q34): the runbook agent's first manifest filter printed per-year row coverage counts for 2009-2026 from the
+atx-db earnings_calendar and sec_filings manifests, including 2024-2026. These are data coverage counts, not returns,
+IC or any statistic of a signal. Nothing uses them. No other hidden-window content was opened.
+
+Routed to lanes: second seal constant and sealed-partition guards (W0E); `backtest_integrity.py` TRAIN end and protocol
+ledger lines (EV); protocol lines in `research_cycle.py`, per-phase caps, `cache gc` (A); delisting option on lo1 (F).
+
+Disk: 69.9 GiB free; W0-2 plus B0a, B0b needs about 16 GiB, B0c about 7 GiB. No deletion needed now. Superseded
+candidate caches up to v6.1 hold about 25.6 GiB; deletion is left to the owner.
+
+## 2026-09-29 lane D ruling (D-0)
+- Lane D: at `score_begin` each book is resized to initial NAV and every reported quantity restarts there; row
+  `score_begin` is the base row and return rows start at `score_begin + 1`. K = 0 is byte-identical. Commit 168278f2.
+
+## 2026-09-29 integration 1 (B-3)
+- Merged f5f8754e, 0e95a072, bdca4c3d (lane B, B-3). Build v8-1b clean. atx-impl-strategy-ic-tests 75/75.
+- Move check: every function body verbatim. dsl_vm_sources pin 29 -> 30 entries (adds lit_ops.hpp); neither pin is part of a cache key.
+- K1 changes `--plan-only` JSON: `candidates` is now an array, the count moved to `candidate_count`.
+- Identity run v8-b3-id-u-run1: time-limit at 300 s on a cold cache under host memory pressure, 39 of 48 done. The 39 signal
+  payloads are byte-identical to the v7.1 cache; train_daily_ic.csv is a byte prefix of the accepted file. Identity is
+  not closed; the re-run on the populated cache closes it (integration 2).
+- Lane commits waiting: EV d6083b33 425d16db; D 168278f2; B be51d529; F c560b8c8; C cfa18014; A fa61c67f ea7cba01.
