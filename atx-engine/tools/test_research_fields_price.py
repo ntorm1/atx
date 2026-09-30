@@ -475,7 +475,8 @@ class PriceFields(unittest.TestCase):
             rec = e.pop("reused_from")
             self.assertEqual(e, next(x for x in full["fields"] if x["name"] == name), name)   # the entry verbatim
             self.assertEqual(rec["producer"]["module"], "research_fields_price.py", name)
-            self.assertEqual(rec["inputs"], {}, name)
+            pinned = price.FIELDS[name]["group"] in price.CALENDAR_GROUPS   # review B-1: the rule calendar
+            self.assertEqual(rec["inputs"], {"session_calendar": price.session_calendar()} if pinned else {}, name)
         chained = case.run("chained", PRICE_FIELDS, reuse=self.base / "again")   # the origin's producer is kept
         self.assertEqual(chained["reuse"]["reused"], PRICE_FIELDS)
         # one producer edit (coskew_rows) recomputes only its group; the module blob is in git's object store
@@ -517,6 +518,43 @@ class PriceFields(unittest.TestCase):
         for name in price.FIELDS:
             self.assertEqual(price.producer_group(name), price.FIELDS[name]["group"])
             self.assertIs(price.field_spec(name), price.FIELDS[name])
+
+    def test_reuse_pins_the_session_calendar(self):
+        """Review B-1: the fields on the extended axis read the NYSE rule calendar before the role, which lives in
+        research_fields_sec.py and which no producer fingerprint of this module covers. Their entries record its
+        digest (session_calendar) and --reuse compares it: one closure added to the rule calendar inside the pre-role
+        history (an edit of the SEC module only) recomputes them, while vol_126 (role rows only) is still copied; the
+        unchanged calendar copies every field."""
+        case = Case(self.base, world())
+        full = case.run("full", PRICE_FIELDS)
+        pin = price.session_calendar()
+        self.assertEqual((pin["rule"], pin["first"]), ("nyse-rule-v1", "1970-01-01"))
+        self.assertEqual(pin["last"], (price.rw.SEAL - dt.timedelta(days=1)).isoformat())
+        on_axis = [x for x in PRICE_FIELDS if price.FIELDS[x]["group"] in price.CALENDAR_GROUPS]
+        self.assertEqual(on_axis, ["ret_overnight", "ret_intraday", "ceq_iss_5y", "coskew_60m"])
+        entries = {x["name"]: x for x in full["fields"]}
+        for name in PRICE_FIELDS:
+            if name in on_axis:
+                self.assertEqual(entries[name]["session_calendar"], pin, name)
+                self.assertEqual(price.entry_inputs(entries[name]), price.reuse_inputs(name, {}), name)
+            else:
+                self.assertNotIn("session_calendar", entries[name], name)
+                self.assertEqual(price.reuse_inputs(name, {}), {}, name)
+        pre_role = sessions(TH_FIRST, ROLE_FIRST - dt.timedelta(days=1))[-5]   # a rule session the axis reads
+        closures = sec.NYSE_SPECIAL_CLOSURES + (pre_role.isoformat(),)
+        with unittest.mock.patch.object(sec, "NYSE_SPECIAL_CLOSURES", closures):
+            moved_pin = price.session_calendar()
+            self.assertNotEqual(moved_pin["sha256"], pin["sha256"])
+            self.assertEqual(moved_pin["sessions"], pin["sessions"] - 1)
+            moved = case.run("moved", PRICE_FIELDS, reuse=self.base / "full")
+        block = moved["reuse"]
+        self.assertEqual((block["reused"], block["computed"]), (["vol_126"], on_axis))
+        for name in on_axis:
+            self.assertIn("inputs differ", block["not_reused"][name], name)
+            e = next(x for x in moved["fields"] if x["name"] == name)
+            self.assertEqual(e["session_calendar"], moved_pin, name)
+        same = case.run("same", PRICE_FIELDS, reuse=self.base / "full")
+        self.assertEqual((same["reuse"]["reused"], same["reuse"]["computed"]), (PRICE_FIELDS, []))
 
     def test_producers_cover_every_field(self):
         self.assertEqual(sorted({s["group"] for s in price.FIELDS.values()}), sorted(price.PRODUCERS))
