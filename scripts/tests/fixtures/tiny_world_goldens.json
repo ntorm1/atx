@@ -1,0 +1,13 @@
+{
+  "schema": "atx.tiny-world-goldens/v1",
+  "note": "Golden output digests of research_cycle.py run on the tiny_world fixture (scripts/specs/tiny.json, seed 7). Null until root records them after a build: python scripts/tests/test_cycle_e2e.py --record --bin <dir of atx-equity-strategy-ic.exe>. orientations_json_sha256 and primary_daily_csv_sha256 are file SHA-256s; admission_decisions_sha256 is the SHA-256 of admission.json's canonical JSON without its inputs block (that block pins the u pass summary.json, whose wall_seconds and cache hit counts change on every run, and the fitter's own script SHA-256).",
+  "seed": 7,
+  "spec": "scripts/specs/tiny.json",
+  "outputs": {
+    "orientations_json_sha256": null,
+    "admission_decisions_sha256": null,
+    "primary_daily_csv_sha256": null
+  },
+  "primary_scenario": null,
+  "recorded": null
+}

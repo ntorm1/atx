@@ -1,0 +1,123 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "tiny",
+  "description": "tiny_world end-to-end canary (platform v8 E-3): the synthetic world of scripts/tests/fixtures/tiny_world.py (656 weekday sessions x 64 names, score_begin 384; fields shares_out, si_shares, tiny_signal; library tiny_world_v1: planted_a and planted_b carry a planted rank IC of .05 at h 21, noise_c is independent of every return, copy_b is planted_b's ranks under another spelling and must be rejected as redundant). This file is the TEMPLATE: tiny_world.build(ROOT) writes ROOT/tiny.json with the scripts made absolute (this checkout), the executables under ATX_EQUITY_BIN and python = the calling interpreter, and verifies its input pins against the locked pins below (a deliberate generator change copies the four SHAs that `python scripts/tests/fixtures/tiny_world.py <new dir>` prints into inputs.library, inputs.recipe, inputs.role and fields.manifest_sha256, then re-records scripts/tests/fixtures/tiny_world_goldens.json). Run: research_cycle.py run ROOT/tiny.json --root ROOT --no-git (ROOT outside the repository). Phases: fields (as built, pinned), u, fit (v4-prior-v1 / ew-theme-v1, the production screen), card, gate (both planted members admitted with the prior sign), w, nav (the v7.1 reference construction flags, max-bytes 256 MiB). Nothing here is a trial.",
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 60,
+    "max_rss_mib": 512,
+    "min_free_mib": 256
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "tiny_world_v1.json",
+      "sha256": "e62f80cace992371743da94ecc6fd1b4cb3495113a6edcc04e3dfa8ddd77aae9"
+    },
+    "recipe": {
+      "path": "tiny_world_v1.recipe.json",
+      "sha256": "1c9294dc025e02b1c7a3f256a28893ea0882d976183dae82a731c29d4830ba3d"
+    },
+    "role": {
+      "dir": "role",
+      "path": "role/manifest.json",
+      "sha256": "2b34283c0c488effdc6f4e2b2ba3da875effd6449b25269270218f7d18bf6c31"
+    }
+  },
+  "fields": {
+    "output": "fields",
+    "manifest_sha256": "dbcacd2e79eff39f2d8367ebb89aad3e3e151350782a5bce9c4bcb60665e8971",
+    "list": [
+      "shares_out",
+      "si_shares",
+      "tiny_signal"
+    ]
+  },
+  "ic": {
+    "u_output": "tiny-u",
+    "w_output": "tiny-w",
+    "cache": "tiny-cache",
+    "flags": [
+      "--max-memory-mib",
+      "256",
+      "--min-names",
+      "50",
+      "--workers",
+      "4",
+      "--save-combined"
+    ]
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "tiny-weights",
+    "work_dir": "tiny-fit-work",
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-v1"
+    ],
+    "max_seconds": 60,
+    "max_passes": 3
+  },
+  "card": {
+    "script": "atx-impl/tools/alpha_report_card.py",
+    "output": "tiny-cards",
+    "flags": [
+      "--workers",
+      "2"
+    ]
+  },
+  "gate": {
+    "name": "tiny-planted",
+    "admitted": [
+      "planted_a",
+      "planted_b"
+    ],
+    "require": "all",
+    "sign_agrees": true,
+    "report": [
+      "noise_c",
+      "copy_b"
+    ]
+  },
+  "nav": {
+    "output": "tiny-nav",
+    "rule": "aim-partial-v5",
+    "leverage": "1.247",
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "268435456",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache"
+    ]
+  }
+}
