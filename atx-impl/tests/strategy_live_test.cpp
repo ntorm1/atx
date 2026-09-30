@@ -188,8 +188,10 @@ struct Artifact {
   st::NavFieldsPin fields;
 };
 // The combined blend, the price role (with volume) and the role fields
-// (atx.research-role-fields/v1 with code_sha256), every provenance pin `pin`.
-Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const Fields& f) {
+// (atx.research-role-fields/v1 with code_sha256), every provenance pin `pin`. score_begin
+// (default 0) is the role's and the blend's (a warm start needs pre-score history).
+Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const Fields& f,
+                        usize score_begin = 0) {
   std::vector<u8> finite(p.signal.size()); u64 finite_count = 0, members = 0;
   for (usize k = 0; k < finite.size(); ++k) {
     finite[k] = static_cast<u8>(std::isfinite(p.signal[k]));
@@ -217,13 +219,13 @@ Artifact write_artifact(const std::filesystem::path& dir, const Panel& p, const 
       {"volume_basis", "raw-share-volume"},
       {"clock_recipe", "modeled-session+22h-mark+23h-decision-v1"},
       {"common_stock_verified", false}, {"historical_vintage_verified", false},
-      {"dates", p.d}, {"instruments", p.n}, {"score_begin", 0}, {"score_end", p.d},
+      {"dates", p.d}, {"instruments", p.n}, {"score_begin", score_begin}, {"score_end", p.d},
       {"files", role_files}};
   a.cfg.role_path = (dir / "role.json").string();
   a.cfg.role_sha256 = write_json(a.cfg.role_path, a.role);
   const Json manifest{{"schema", "atx.dsl-combined-signal/v1"}, {"status", "complete"},
       {"role", "train"}, {"layout", "date-major-little-endian"}, {"dates", p.d},
-      {"instruments", p.n}, {"score_begin", 0}, {"score_end", p.d},
+      {"instruments", p.n}, {"score_begin", score_begin}, {"score_end", p.d},
       {"role_manifest_sha256", a.cfg.role_sha256}, {"source_sha256", pin},
       {"library_sha256", pin}, {"train_manifest_sha256", pin}, {"run_recipe_sha256", pin},
       {"orientation_candidates_sha256", pin}, {"orientations_artifact_sha256", nullptr},
@@ -1495,4 +1497,80 @@ TEST(StrategyLive, CadenceAnchorPinIsChecked) {
   std::ostringstream progress;
   const auto outcome = st::run_decide(cfg, progress);
   EXPECT_TRUE(outcome) << (outcome ? "" : outcome.error().to_string());
+}
+
+namespace {
+// A 160 x 60 book with 20 sessions of pre-score history (a warm start needs them) and a flat
+// positions file: every decide below is one verified_load (all pins and the recomputed NAV
+// recipe) plus one decision at row 150 of a manifest pinned to one of its NAV runs.
+struct PinBench {
+  Directory dir;
+  Panel panel = market_panel(160, 60, 17, 3e7);
+  Fields fields{panel, 23};
+  Artifact artifact = write_artifact(dir.path, panel, fields, 20);
+  usize runs = 0;
+  PinBench() {
+    std::ofstream positions(dir.path / "flat.csv", std::ios::binary);
+    positions << "instrument_id,held_dollars\n";
+  }
+  // The recipe_sha256 of a NAV run with the book flags plus `extra`.
+  std::string nav_recipe(const std::string& name, std::vector<std::string> extra) {
+    std::ostringstream out, err;
+    const auto status = nav_cli(nav_args(artifact, dir.path / name, std::move(extra)), out, err);
+    EXPECT_EQ(status, 0) << name << ": " << err.str();
+    return read_json(dir.path / name / "summary.json").at("recipe_sha256").get<std::string>();
+  }
+  // run_decide on the deploy manifest pinned to `recipe`, its nav block edited by `edit`.
+  template<class Edit> co::Result<st::DecideOutcome> decide(const std::string& recipe, Edit edit) {
+    auto m = deploy_manifest(artifact, recipe);
+    edit(m.at("nav"));
+    const auto tag = std::to_string(runs++);
+    const auto path = dir.path / ("deploy-" + tag + ".json");
+    write_json(path, m);
+    st::DecideConfig cfg;
+    cfg.deploy_path = path.string();
+    cfg.asof = date_of(panel.sessions[150]);
+    cfg.positions_path = (dir.path / "flat.csv").string();
+    cfg.output_directory = (dir.path / ("decide-" + tag)).string();
+    cfg.flat_book = true; cfg.nav = 1e9;
+    cfg.executable_sha256 = exe_pin; cfg.build_source_sha = std::string(40, 'b');
+    cfg.allow_stale = true;
+    std::ostringstream progress;
+    return st::run_decide(cfg, progress);
+  }
+};
+std::string outcome_text(const co::Result<st::DecideOutcome>& r) {
+  return r ? std::string("verified") : r.error().to_string();
+}
+bool recipe_mismatch(const co::Result<st::DecideOutcome>& r) {
+  return !r && r.error().to_string().find("pin mismatch nav.recipe_sha256") != std::string::npos;
+}
+} // namespace
+
+// PM (v8): the deploy manifest's optional nav keys (warm_start_sessions, D-0). Absent, or at
+// the off value, the recomputed NAV recipe hashes exactly as before, so a manifest pinned to a
+// NAV run without the flag still verifies; on, the key is part of the pin both ways (a run
+// with the flag needs the key, a run without it refuses the key); a malformed key is refused
+// by name.
+TEST(StrategyLive, RecipePinBackwardCompatibleWithNewConstructionFields) {
+  PinBench bench;
+  const auto plain = bench.nav_recipe("nav-plain", {});
+  const auto warm = bench.nav_recipe("nav-warm", {"--warm-start-sessions", "5"});
+  EXPECT_NE(plain, warm);
+  const auto none = [](Json&) {};
+  EXPECT_EQ(outcome_text(bench.decide(plain, none)), "verified");
+  EXPECT_EQ(outcome_text(bench.decide(plain, [](Json& nav) { nav["warm_start_sessions"] = 0; })),
+            "verified");
+  EXPECT_EQ(outcome_text(bench.decide(warm, [](Json& nav) { nav["warm_start_sessions"] = 5; })),
+            "verified");
+  EXPECT_TRUE(recipe_mismatch(bench.decide(warm, none)));
+  EXPECT_TRUE(recipe_mismatch(bench.decide(plain, [](Json& nav) {
+    nav["warm_start_sessions"] = 5;
+  })));
+  for (const Json& bad : {Json("5"), Json(-1), Json(5000), Json(2.5)}) {
+    const auto refused = bench.decide(warm, [&bad](Json& nav) { nav["warm_start_sessions"] = bad; });
+    ASSERT_FALSE(refused) << bad.dump();
+    EXPECT_NE(refused.error().to_string().find("nav.warm_start_sessions"), std::string::npos)
+        << refused.error().to_string();
+  }
 }

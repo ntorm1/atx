@@ -42,6 +42,7 @@ constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr i64 day_ns = 86'400'000'000'000LL;
 constexpr u64 max_manifest_bytes = 1ULL << 20, max_fields_manifest_bytes = 16ULL << 20;
 constexpr usize max_cadence = 4096;
+constexpr u64 max_warm_start = 4096; // the nav verb's --warm-start-sessions bound
 constexpr const char* targets_exe = "atx-equity-strategy-targets";
 constexpr const char* ic_exe = "atx-equity-strategy-ic";
 constexpr const char* tc_definition =
@@ -240,6 +241,18 @@ co::Status parse_rule(const Json& nav, TargetReplayConfig& t) {
   t.max_working_bytes = bytes;
   return co::Ok();
 }
+// Optional nav keys added after atx.book-deploy/v1 was frozen (v8). Absent means off (0),
+// and each enters the recomputed NAV recipe only when on, so a manifest without them pins the
+// recipe exactly as before; present, the key must be well formed and becomes part of the pin.
+co::Status parse_optional_nav(const Json& nav, Deploy& out) {
+  if (nav.contains("warm_start_sessions")) { // v8 D-0: nav --warm-start-sessions K
+    u64 sessions = 0;
+    if (!unsigned_integer(nav, "warm_start_sessions", sessions) || sessions > max_warm_start)
+      return nav_missing("warm_start_sessions");
+    out.base.warm_start_sessions = static_cast<usize>(sessions);
+  }
+  return co::Ok();
+}
 // nav: the construction and NAV flags of the deployed (primary) book, as the nav verb
 // takes them; the scenario is the NAV run's primary (S2 x swap-fin-v1 with the fields).
 co::Status parse_nav(const Json& m, Deploy& out) {
@@ -263,6 +276,7 @@ co::Status parse_nav(const Json& m, Deploy& out) {
     return nav_missing("daily_turnover_mean_max");
   if (!number(nav, "daily_turnover_p95_max", out.limits.daily_p95_max))
     return nav_missing("daily_turnover_p95_max");
+  ATX_TRY_VOID(parse_optional_nav(nav, out));
   out.base.order_basis = basis == "delta" ? NavOrderBasis::Delta : NavOrderBasis::Target;
   out.base.target = out.run.target;
   out.base.scenario = nav_scenario_matrix(true)[nav_primary_scenario_index];

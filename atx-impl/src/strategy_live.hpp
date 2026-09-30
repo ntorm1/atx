@@ -23,6 +23,9 @@ namespace atx::impl::strategy {
 //        band_multiple, monthly_budget, exit_rate, order_basis, locate_in_aim,
 //        liquidity_cache, rate ("fixed"), daily_turnover_mean_max, daily_turnover_p95_max,
 //        max_working_bytes, recipe_sha256 (the NAV run's summary.json recipe_sha256)},
+//   optional nav keys (v8; absent = off = 0, and the NAV recipe recomputed without them
+//        hashes exactly as before: each enters the recipe only when on): warm_start_sessions
+//        (the nav verb's --warm-start-sessions K, an unsigned integer <= 4096),
 //   executables {"atx-equity-strategy-targets": sha, "atx-equity-strategy-ic": sha},
 //   source.git_sha (40 hex), seal {policy "research-seal-v1", exclusive_session
 //   "2025-01-01"}, owner_gate (null, or {owner, ruling, date}),
