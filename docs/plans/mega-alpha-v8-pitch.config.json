@@ -7,10 +7,49 @@
   "sessions_per_year": 252,
   "cell_prefix": "mega-nav-",
   "scenarios": [
-    {"key": "S2", "id": "modeled-1bn-stale5-v1+swap-fin-v1", "label": "S2 modeled $1bn", "short": "S2", "token": "s2"}
+    {"key": "S2", "id": "modeled-1bn-stale5-v1+swap-fin-v1", "label": "S2 modeled $1bn", "short": "S2", "token": "s2"},
+    {"key": "S1", "id": "linear-6bps-stale5-v1+swap-fin-v1", "label": "S1 linear 6 bps", "short": "S1", "token": "s1"},
+    {"key": "tiers", "id": "modeled-1bn-stale5-v1+engine-tiers-v1", "label": "S2 x engine-tiers", "short": "engine-tiers",
+     "token": "tiers"},
+    {"key": "flat300", "id": "modeled-1bn-stale5-v1+flat-300-v0", "label": "S2 x flat-300", "short": "flat-300",
+     "token": "flat"},
+    {"key": "S3", "id": "modeled-1bn-terminal-adverse-v1+swap-fin-v1", "label": "S3 terminal-adverse", "short": "S3",
+     "token": "s3"}
   ],
   "primary_scenario": "S2",
   "verdict_badges": {"rules": []},
+  "final": "v8-r7",
+  "groups": [
+    {"key": "v8-final", "label": "V8-F (pitched)", "token": "g-final"},
+    {"key": "v8-baseline", "label": "B0c baseline", "token": "g-v5-reference"}
+  ],
+  "cells": [
+    {"dir": "build-equity/mega-nav-v8-r7", "label": "V8-F (R-7 library v8.1)", "group": "v8-final"},
+    {"dir": "build-equity/mega-nav-v8-b0c", "label": "B0c baseline", "group": "v8-baseline"}
+  ],
+  "writeoff_kind": "write-off",
+  "equity": {"scenarios": ["S2", "S1", "tiers", "flat300", "S3"],
+             "extra": [{"cell": "v8-b0c", "label": "B0c baseline", "short": "B0c", "scenario": "S2", "color": "s1",
+                        "dash": "6 4", "width": 1.8}]},
+  "rolling": {"window": 63, "scenario": "S2",
+              "cells": [{"cell": "v8-r7", "label": "V8-F", "short": "V8-F", "color": "s2", "width": 2.2, "emph": true},
+                        {"cell": "v8-b0c", "label": "B0c baseline", "short": "B0c", "color": "s1", "width": 1.4}]},
+  "turnover": {"groups": ["v8-final", "v8-baseline"]},
+  "analysis": {"u_pass": "build-equity/mega-v8-r7-train-u", "role": "build-equity/train-2020-2023-lo1",
+               "candidate_cache": "build-equity/mega-candidate-cache-v8-lo1",
+               "fields_manifest": "build-equity/train-2020-2023-lo1-fields-v9/manifest.json",
+               "ic_corr_horizon": 5, "sig_corr_stride": 1, "drawdowns": 5, "compare_cell": "v8-b0c"},
+  "alphas": {"library": "atx-impl/strategies/fund_industry_ic_v81.json",
+             "recipe": "atx-impl/strategies/fund_industry_ic_v81.recipe.v2.json",
+             "roles": [{"key": "lo1", "label": "lo1 (V8-F)", "primary": true,
+                        "admission": "build-equity/mega-weights-v8-r7-ew/admission.json",
+                        "weights": "build-equity/mega-weights-v8-r7-ew/composition_weights.json"}]},
+  "capacity_curve": {"label": "the V8-F book", "dir": "build-equity/mega-nav-v8-r7-stress",
+                     "extras": "build-equity/mega-nav-v8-r7-stress/v7_extras.json",
+                     "summary": "build-equity/mega-nav-v8-r7-stress/summary.json", "sr_threshold": 1.0,
+                     "primary": {"label": "S2", "scenario": "modeled-1bn-stale5-v1+swap-fin-v1", "token": "s2"},
+                     "beside": [{"label": "S2-KO", "scenario": "modeled-1bn-ko-v1+swap-fin-v1", "token": "flat"},
+                                {"label": "S2-FIM", "scenario": "modeled-1bn-fim-v1+swap-fin-v1", "token": "tiers"}]},
   "v8": {
     "summ": "build-equity/mega-nav-v8-summ.json",
     "bundle": "build-equity/mega-nav-v8-bundle-b0c-v8f.json",
@@ -144,6 +183,11 @@
       "paragraphs": [
         "The v8 literature review reversed or updated several v6 and v7 recommendations. The table lists each case with its source; the figures are from the literature, not measurements on the book."
       ]
+    },
+    "book": {
+      "paragraphs": [
+        "The v7 pitch's book-level sections, run on the final cell (V8-F) over TRAIN 2020-2023: equity curve, drawdowns, returns, costs and turnover, capacity, exposures and signal correlation. Each section checks every file it reads first and names the one it lacks."
+      ]
     }
   },
   "callouts": {
@@ -179,6 +223,22 @@
       "v8_member_horizon"]},
     {"id": "literature", "num": "4", "title": "Contradictions with the v6 and v7 literature", "blocks": [
       "v8_contradictions"]},
-    {"id": "appendix", "num": "5", "title": "Appendix: input files", "blocks": ["t_files"]}
+    {"id": "book", "num": "5", "title": "The final book (V8-F): returns, costs, capacity, exposures", "blocks": [
+      {"type": "h3", "text": "Equity curve and returns"},
+      {"type": "v8_book", "block": "fig_equity"}, {"type": "v8_book", "block": "t_drawdowns"},
+      {"type": "v8_book", "block": "fig_returns"}, {"type": "v8_book", "block": "fig_rolling"},
+      {"type": "v8_book", "block": "t_retstats"}, {"type": "v8_book", "block": "t_stress"},
+      {"type": "h3", "text": "Costs, turnover and capacity"},
+      {"type": "v8_book", "block": "t_cost_model"}, {"type": "v8_book", "block": "t_financing"},
+      {"type": "v8_book", "block": "costdec"}, {"type": "v8_book", "block": "t_attrib"},
+      {"type": "v8_book", "block": "fig_cost_drag"}, {"type": "v8_book", "block": "fig_turnover"},
+      {"type": "v8_book", "block": "capacity_curve"},
+      {"type": "h3", "text": "Exposures and execution"},
+      {"type": "v8_book", "block": "fig_exposure"}, {"type": "v8_book", "block": "fig_fills"},
+      {"type": "h3", "text": "Signal correlation of the final library"},
+      {"type": "v8_book", "block": "fig_corr", "kind": "signal"}, {"type": "v8_book", "block": "fig_corr", "kind": "ic"},
+      {"type": "v8_book", "block": "fig_corr", "kind": "theme", "source": "sig_corr"},
+      {"type": "v8_book", "block": "t_theme_corr"}]},
+    {"id": "appendix", "num": "6", "title": "Appendix: input files", "blocks": ["t_files"]}
   ]
 }

@@ -394,6 +394,64 @@ def test_ladder_paired_file_of_another_cell_is_refused(root):
     assert "bundle final is 'mega-nav-v8-r9', expected 'mega-nav-v8-r1'" in na['v8_ladder']
 
 
+def _checks(root: Path, cfg: dict) -> list[tuple[str, str]]:
+    ctx = make_ctx(root, cfg)
+    return V.ladder_checks(ctx, V.ladder_rows(ctx)[0])
+
+
+def test_ladder_checks_final_must_be_the_last_accepted_cell(root):
+    cfg = cfg_for()
+    world(root, cfg)
+    assert _checks(root, cfg) == []
+    assert _checks(root, cfg_for(final='B0c')) == [('v8.final', "'B0c' is not the last accepted cell of the ladder "
+                                                                "('R-1')")]
+    rej = cfg_for()
+    rej['v8']['cells'][1]['verdict'] = 'REJECTED (dSR < 0)'
+    assert _checks(root, rej) == [('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
+    kind = cfg_for()
+    kind['v8']['cells'][1].update(verdict='kept', verdict_kind='accepted')  # an explicit kind overrides the text
+    assert _checks(root, kind) == []
+
+
+def test_ladder_checks_a_read_paired_test_needs_a_verdict(root):
+    cfg = cfg_for()
+    world(root, cfg)
+    cfg['v8']['cells'][1]['verdict'] = 'pending run'
+    assert _checks(root, cfg) == [
+        ('v8.cells[R-1].verdict', "its paired test b/paired-r1.json was read but the verdict is still pending "
+                                  "('pending run')"),
+        ('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
+    del cfg['v8']['cells'][1]['verdict']
+    assert _checks(root, cfg)[0] == ('v8.cells[R-1].verdict', 'its paired test b/paired-r1.json was read but the '
+                                                              'verdict is missing')
+    (root / 'b/paired-r1.json').unlink()  # no paired JSON: the missing verdict is not a consistency error
+    assert [w for w, _ in _checks(root, cfg)] == ['v8.final']
+
+
+def test_ladder_checks_the_top_level_final(root):
+    cfg = cfg_for()
+    world(root, cfg)
+    cfg['cells'] = [{'dir': 'b/mega-nav-v8-r1', 'label': 'V8-F'}, {'dir': 'b/mega-nav-v8-b0c', 'label': 'B0c'}]
+    cfg['final'] = 'v8-r1'
+    assert _checks(root, cfg) == []
+    cfg['final'] = 'v8-b0c'
+    assert _checks(root, cfg) == [('final', "'v8-b0c' is b/mega-nav-v8-b0c, not the cell of v8.final 'R-1' "
+                                            "(b/mega-nav-v8-r1)")]
+    cfg['final'] = 'v8-r2'
+    assert _checks(root, cfg) == [('final', "'v8-r2' is not among the configured cells")]
+
+
+def test_ladder_refusals_render_above_the_table_and_count_as_unavailable(root):
+    cfg = cfg_for(final='B0c')
+    world(root, cfg)
+    html = build(root, cfg)
+    sec = section(html, 'cells')
+    na = [(n, m) for n, m in unavailable(html) if n == 'v8_ladder']
+    assert na == [('v8_ladder', "v8_ladder: refused (v8.final: 'B0c' is not the last accepted cell of the ladder "
+                                "('R-1'))")]
+    assert sec.index('v8_ladder: refused') < sec.index('id="t-v8-ladder"')
+
+
 # ============================================================================================ cumulative test, gate
 def test_freeze_gate_items_order_and_states():
     pd = V.paired_of(bundle_doc('f', 'b', dsr=0.25, p1=0.04))

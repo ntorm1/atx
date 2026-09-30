@@ -26,10 +26,22 @@ Each input has exactly one owning block (``inputs``): a missing, refused or malf
 block, its owner's, naming the path. A block that borrows an input (the ladder and the freeze gate read ``v8.summ``)
 shows n/a with a note instead. Content seal: a year or a session at or after the research seal inside a document is
 refused (ValueError), so nothing sealed is rendered even from a file whose name passed the path check.
+
+The ladder refuses, with a visible block of the unavailable class (counted by the CLI), a ``v8.final`` that is not the
+last accepted cell of the ladder, a top-level ``final`` (page header, book sections) that is not v8.final's cell, and a
+cell whose paired test was read but whose verdict is missing or still pending.
+
+``v8_book`` (layout ``{"type": "v8_book", "block": NAME, ...}``) runs one of the v7 pitch's book-level blocks
+(``BOOK_BLOCKS``: equity curve, drawdowns, returns, costs, turnover, capacity curve, exposures, signal correlation) on
+the top-level ``final`` cell after checking every file that block reads (``book_inputs``, derived from the config as
+the block derives it): a missing, sealed or content-sealed file renders that block's unavailable block naming the path.
 """
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
+import json
 import re
 
 import backtest_integrity as BI  # atx-impl/tools is on sys.path for every mega_report entry
@@ -43,6 +55,11 @@ from . import pitch3 as P3
 BLOCK_YEAR, BLOCK_LADDER, BLOCK_BUNDLE, BLOCK_DIAG = 'v8_year_table', 'v8_ladder', 'v8_bundle', 'v8_diagnostics'
 BLOCK_MEMBER, BLOCK_TRIALS, BLOCK_OD1, BLOCK_CONTRA = ('v8_member_horizon', 'v8_trial_accounting', 'v8_od1',
                                                      'v8_contradictions')
+BLOCK_BOOK = 'v8_book'
+# the v7 pitch's book-level blocks that v8_book runs on the final cell (report.BLOCKS / pitch.BLOCKS names)
+BOOK_BLOCKS = ('fig_equity', 't_drawdowns', 'fig_returns', 'fig_rolling', 't_retstats', 't_stress', 't_cost_model',
+               't_financing', 'costdec', 't_attrib', 'fig_cost_drag', 'fig_turnover', 'capacity_curve', 'fig_exposure',
+               'fig_fills', 'fig_corr', 't_theme_corr')
 SCHEMAS = {'diagnostics': ('atx.book-diagnostics/v1',), 'card_index': ('atx.alpha-report-card-index/v1',),
            'admission': ('atx.dsl-admission/v1',)}
 DIAG_IDS = ('G-1a', 'G-1b', 'G-1c', 'G-2a', 'G-2b', 'G-2c', 'G-3a', 'G-3b', 'G-3c', 'G-3d')
@@ -75,6 +92,12 @@ def unavailable(block: str, src: str, reason: str | None = None) -> str:
     msg = f'{src}: {reason}' if reason else f'{src}: missing'
     return (f'<div class="unavailable" data-block="{C.esc(block)}">{C.esc(block)}: not available '
             f'({C.esc(msg[:320])})</div>')
+
+
+def refused(block: str, what: str, reason: str) -> str:
+    """A visible consistency error, in the unavailable block's markup so the CLI counts it."""
+    return (f'<div class="unavailable" data-block="{C.esc(block)}">{C.esc(block)}: refused '
+            f'({C.esc(f"{what}: {reason}"[:320])})</div>')
 
 
 def _note(text: str) -> str:
@@ -474,6 +497,7 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
         if c.get('paired'):
             rel = _rel(c['paired'])
             doc, err = P3._try(ctx, c['paired'], f"paired test {c.get('key')}")
+            row.update(paired_read=doc is not None, paired_src=rel)
             try:
                 pd = paired_of(doc, _base(c.get('dir')), _base(par.get('dir'))) if doc is not None else None
             except ValueError as e:
@@ -493,10 +517,50 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
     return rows, unav, notes, srcs
 
 
+def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
+    """(config key, reason) of every consistency error of the ladder: a cell whose paired test was read but whose
+    verdict is missing or still pending; ``v8.final`` not the last accepted cell; a top-level ``final`` (page header,
+    book sections) that is not v8.final's cell."""
+    v8 = _v8(ctx)
+    rules = ctx.verdict_rules()
+    kinds = {r['key']: r.get('verdict_kind') or C.verdict_kind(r.get('verdict'), rules) for r in rows}
+    out = []
+    for r in rows:
+        k = kinds[r['key']]
+        if r.get('paired_read') and k in (None, 'pending'):
+            state = 'missing' if k is None else f"still pending ({r.get('verdict')!r})"
+            out.append((f"v8.cells[{r['key']}].verdict",
+                        f"its paired test {r.get('paired_src')} was read but the verdict is {state}"))
+    final = v8.get('final')
+    accepted = [r['key'] for r in rows if kinds[r['key']] == 'accepted']
+    if not accepted:
+        out.append(('v8.final', f'{final!r} is not the last accepted cell: no cell of the ladder is accepted'))
+    elif final != accepted[-1]:
+        out.append(('v8.final', f'{final!r} is not the last accepted cell of the ladder ({accepted[-1]!r})'))
+    fc = next((c for c in _cells(v8) if c.get('key') == final), None)
+    top = ctx.cfg.get('final')
+    if top is not None:
+        if ctx.final is None:
+            out.append(('final', f'{top!r} is not among the configured cells'))
+        elif fc is not None and _base(ctx.final.rel_dir) != _base(fc.get('dir')):
+            out.append(('final', f"{top!r} is {ctx.final.rel_dir}, not the cell of v8.final {final!r} "
+                                 f"({fc.get('dir')})"))
+    return out
+
+
+def guard_final_daily(ctx) -> None:
+    """The page header quotes the session span of the top-level final cell's primary daily CSV: that file passes the
+    content seal first (``input_status``; a sealed file is dropped and the header shows n/a)."""
+    if ctx.final is not None and ctx.primary is not None:
+        input_status(ctx, f"{ctx.final.rel_dir}/daily_{ctx.primary['id']}.csv")
+
+
 def blk_ladder(ctx, spec) -> str:
     rows, unav, notes, srcs = ladder_rows(ctx)
-    return ''.join(unav) + render_cell_ladder({'rows': rows, 'notes': notes, 'rules': ctx.verdict_rules()},
-                                              '; '.join(srcs) or C.NA_TEXT, num=ctx.next_tab())
+    guard_final_daily(ctx)
+    errs = ''.join(refused(BLOCK_LADDER, what, why) for what, why in ladder_checks(ctx, rows))
+    return errs + ''.join(unav) + render_cell_ladder({'rows': rows, 'notes': notes, 'rules': ctx.verdict_rules()},
+                                                     '; '.join(srcs) or C.NA_TEXT, num=ctx.next_tab())
 
 
 # ============================================================================================ cumulative test, gate
@@ -973,6 +1037,212 @@ def blk_contradictions(ctx, spec) -> str:
     return render_contradictions(rows, f'{P3._src(ctx, _rel(lit))}, section "{heading}"', num=ctx.next_tab())
 
 
+# ============================================================================================ book-level blocks
+def _book_cell(ctx, name: str):
+    c = ctx.by.get(name)
+    if c is None:
+        raise KeyError(f'cell {name!r} not among the configured cells')
+    return c
+
+
+def _sid(ctx, key: str) -> str:
+    sc = ctx.sc.get(key)
+    if sc is None:
+        raise KeyError(f'scenario {key!r} not configured')
+    return sc['id']
+
+
+def book_inputs(ctx, spec) -> list[str]:
+    """Every file the book-level block ``spec['block']`` reads (a directory ends in '/'), derived from the config as
+    the block derives it, for the top-level ``final`` cell; KeyError on a config the block cannot run on."""
+    name = spec.get('block')
+    f = ctx.final
+    if f is None:
+        raise KeyError(f"final cell {ctx.cfg.get('final')!r} not among the configured cells")
+    if ctx.primary is None:
+        raise KeyError(f'primary scenario {ctx.pkey!r} not configured')
+    pk, pid = ctx.pkey, ctx.primary['id']
+    ac = ctx.cfg.get('analysis') or {}
+    scen_ids = [s['id'] for s in ctx.scen]
+
+    def daily(c, sid):
+        return f'{c.rel_dir}/daily_{sid}.csv'
+
+    def summary(c):
+        return f'{c.rel_dir}/summary.json'
+
+    def an(key):
+        if not ac.get(key):
+            raise KeyError(f'config analysis.{key} not set')
+        return str(ac[key]).rstrip('/')
+
+    def alphas():  # report.Alphas reads the library, the recipe and every role's admission and weights
+        al = ctx.cfg.get('alphas') or {}
+        if not al.get('library'):
+            raise KeyError('config alphas.library not set')
+        out = [al['library']] + ([al['recipe']] if al.get('recipe') else [])
+        for r in al.get('roles') or []:
+            out += [r[k] for k in ('admission', 'weights') if r.get(k)]
+        return out
+
+    def ic():
+        w = [f"{str(ac['w_pass']).rstrip('/')}/train_daily_ic.csv"] if ac.get('w_pass') else []
+        return [f"{an('u_pass')}/train_daily_ic.csv", *w, *alphas()]
+
+    def signal():
+        out = [f"{an('candidate_cache')}/", f"{an('role')}/manifest.json", f"{an('role')}/member.u8", summary(f)]
+        out += [f"{str(ac['u_pass']).rstrip('/')}/summary.json"] if ac.get('u_pass') else []
+        out += [ac['fields_manifest']] if ac.get('fields_manifest') else []
+        return out + alphas()
+    if name == 'fig_equity':
+        ec = ctx.cfg.get('equity') or {}
+        out = [daily(f, _sid(ctx, k)) for k in ec.get('scenarios') or [s['key'] for s in ctx.scen]]
+        out += [daily(_book_cell(ctx, ex['cell']), _sid(ctx, ex.get('scenario', pk))) for ex in ec.get('extra') or []]
+    elif name in ('t_drawdowns', 'fig_exposure', 'fig_fills'):
+        out = [daily(f, pid)]
+    elif name == 'fig_returns':
+        out = [daily(f, pid), summary(f)]
+    elif name == 'fig_rolling':
+        rc = ctx.cfg.get('rolling') or {}
+        if not rc.get('window'):
+            raise KeyError('config rolling.window not set')
+        sid = _sid(ctx, rc.get('scenario', pk))
+        out = [daily(_book_cell(ctx, it['cell']), sid) for it in rc.get('cells') or []]
+    elif name == 't_retstats':
+        out = [daily(f, pid)] + ([daily(_book_cell(ctx, ac['compare_cell']), pid)] if ac.get('compare_cell') else [])
+    elif name == 't_stress':
+        out = [summary(f)] + [p for sid in scen_ids for p in (daily(f, sid), f'{f.rel_dir}/events_{sid}.csv')]
+    elif name == 't_cost_model':
+        out = [f'{f.rel_dir}/recipe.json']
+    elif name == 't_financing':
+        out = [summary(f)]
+    elif name in ('costdec', 't_attrib', 'fig_cost_drag'):
+        out = [daily(f, sid) for sid in scen_ids]
+    elif name == 'fig_turnover':
+        groups = (ctx.cfg.get('turnover') or {}).get('groups') or []
+        out = [daily(c, pid) for c in ctx.cells if c.group in groups]
+    elif name == 'capacity_curve':
+        cc = P3._conf(ctx, 'capacity_curve')
+        d = str(cc.get('dir', '')).rstrip('/')
+        out = [_rel(cc.get('extras') or f'{d}/v7_extras.json'), _rel(cc.get('summary') or f'{d}/summary.json')]
+        out += [f"{d}/daily_{b['scenario']}.csv" for b in [cc.get('primary'), *(cc.get('beside') or [])]
+                if isinstance(b, dict) and b.get('scenario')]
+    elif name == 'fig_corr':
+        kind = spec.get('kind', 'ic')
+        src = spec.get('source', 'sig_corr') if kind == 'theme' else ('sig_corr' if kind == 'signal' else 'ic_corr')
+        out = signal() if src == 'sig_corr' else ic()
+    elif name == 't_theme_corr':
+        out = ic() + signal()
+    else:
+        raise KeyError(f"v8_book: block {name!r} is not one of {', '.join(BOOK_BLOCKS)}")
+    return list(dict.fromkeys(out))
+
+
+def _csv_last_session(text: str):
+    """The largest ``session_ns`` of a CSV with that column (None without it)."""
+    rows = csv.reader(io.StringIO(text))
+    header = next(rows, None) or []
+    if 'session_ns' not in header:
+        return None
+    i, best = header.index('session_ns'), None
+    for r in rows:
+        try:
+            v = int(r[i])
+        except (ValueError, IndexError):
+            continue
+        best = v if best is None or v > best else best
+    return best
+
+
+def _calendar_years(doc) -> list:
+    out, stack = [], [doc]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k == 'calendar_year_returns' and isinstance(v, list):
+                    out += [y.get('year') for y in v if isinstance(y, dict)]
+                else:
+                    stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return out
+
+
+def _content_seal(rel: str, data: bytes) -> None:
+    """ValueError when a CSV has a session, or a JSON document a session or a calendar year, at or after the seal."""
+    if rel.endswith('.csv'):
+        last = _csv_last_session(data.decode('utf-8', errors='replace'))
+        if last is not None and RW.is_sealed(last):
+            raise ValueError(RW.seal_message(f'{rel}: a session'))
+    elif rel.endswith('.json'):
+        doc = json.loads(data.decode('utf-8', errors='replace'))
+        refuse_sealed_sessions(doc, rel)
+        refuse_sealed_years(_calendar_years(doc), rel)
+
+
+def _input_status(ctx, rel: str) -> str | None:
+    if rel.endswith('/'):
+        d = rel.rstrip('/')
+        if ctx.reg.sealed(d):
+            return 'refused (sealed)'
+        return None if ctx.reg.path(d).is_dir() else 'missing (directory)'
+    data = ctx.reg.read_bytes(rel)
+    if data is None:
+        return (ctx.reg.files.get(P3._key(ctx, rel)) or {}).get('status', 'missing')
+    try:
+        _content_seal(rel, data)
+    except json.JSONDecodeError:
+        ctx.reg.files[P3._key(ctx, rel)]['status'] = 'unparseable json'
+        return 'unparseable json'
+    except ValueError as e:
+        for c in ctx.cells:  # a daily CSV the header or a block would parse later is dropped
+            pre = f'{c.rel_dir}/daily_'
+            if rel.startswith(pre) and rel.endswith('.csv'):
+                sid = rel[len(pre):-4]
+                c._daily[sid] = None
+                ctx._full[(c.name, sid)] = None
+        return f'refused (sealed content): {e}'
+    return None
+
+
+def input_status(ctx, rel: str) -> str | None:
+    """None when ``rel`` passed the path seal, exists and passes the content seal; else the reason (cached per build).
+    Files are read through the Registry (hashed into the manifest); a directory is only seal-checked and stat-ed."""
+    cache = ctx.analyses.setdefault('_v8_inputs', {})
+    if rel not in cache:
+        cache[rel] = _input_status(ctx, rel)
+    return cache[rel]
+
+
+def blk_book(ctx, spec) -> str:
+    """A v7 book-level block on the final cell, after checking every file it reads (``book_inputs``): the first input
+    not available is named (others counted), as the v8 blocks name theirs."""
+    name = spec.get('block')
+    if name not in BOOK_BLOCKS:
+        raise KeyError(f"v8_book: block {name!r} is not one of {', '.join(BOOK_BLOCKS)}")
+    try:
+        need = book_inputs(ctx, spec)
+    except (KeyError, ValueError) as e:
+        return unavailable(name, 'config', f'{type(e).__name__}: {e}')
+    bad = [(rel, why) for rel in need for why in [input_status(ctx, rel)] if why]
+    if bad:
+        rel, why = bad[0]
+        more = [r for r, _ in bad[1:]]
+        if more:
+            why += (f"; also not available: {', '.join(more[:3])}"
+                    + (f' and {len(more) - 3} more' if len(more) > 3 else ''))
+        return unavailable(name, rel, why)
+    from . import pitch as P  # imported here: pitch imports this module
+    from . import report as R
+    inner = {k: v for k, v in spec.items() if k != 'block'}
+    inner['type'] = name
+    try:
+        return P.BLOCKS[name](ctx, inner) if name in P.BLOCKS else R.BLOCKS[name](ctx)
+    except Exception as e:  # noqa: BLE001 - as report.build: a block never stops the build
+        return R._na_block(name, e)
+
+
 # ============================================================================================ inputs, registration
 def inputs(cfg: dict) -> list[tuple[str, str, str]]:
     """(owner block, config key, path) of every v8 input the config names: the list the PM fills, and the one input
@@ -1000,4 +1270,4 @@ def inputs(cfg: dict) -> list[tuple[str, str, str]]:
 ANALYSES = {'v8_summ': an_summ, 'v8_bundle': an_bundle, 'v8_diag': an_diag, 'v8_ledger': an_ledger}
 BLOCKS = {BLOCK_YEAR: blk_year_table, BLOCK_LADDER: blk_ladder, BLOCK_BUNDLE: blk_bundle, BLOCK_DIAG: blk_diagnostics,
           BLOCK_MEMBER: blk_member_horizon, BLOCK_TRIALS: blk_trial_accounting, BLOCK_OD1: blk_od1,
-          BLOCK_CONTRA: blk_contradictions}
+          BLOCK_CONTRA: blk_contradictions, BLOCK_BOOK: blk_book}
