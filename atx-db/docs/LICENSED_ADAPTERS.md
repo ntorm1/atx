@@ -210,20 +210,21 @@ America/Chicago, the vendor's documented US delivery of its end-of-day surface p
 carries the same `atmCenI_*` fields), i.e. 03:00/04:00 UTC the next day, so a session's values are usable from the
 second following session; `available_at` = the later of that and the licensed clock.
 
-Built 2026-09-29 (43 s, 0.32 GiB peak under the guard): 10,656,780 rows, 9,036 lines, 2018-01-02..2026-09-18, 236 MB,
-no duplicate (session, security) key, no NULL clock. Coverage over the panel's `member_equity` cells (manifest
-`coverage`; the panel was being rebuilt during the run, so 2026 reflects January only):
+Built 2026-09-30 against panel v2 (71 s, 0.35 GiB peak under the guard): 10,656,780 rows, 9,036 lines,
+2018-01-02..2026-09-18, 236 MB, no duplicate (session, security) key, no NULL clock. Coverage over the panel's
+`member_equity` cells (manifest `coverage`):
 
 | year | member cells | optionable (vendor ATM IV) | term slope, of optionable cells | term slope, of optionable lines | skew / volume / OI |
 |---|---|---|---|---|---|
 | 2018 | 451,143 | 96.2% | 99.9% | 99.96% | 0 |
 | 2019 | 576,186 | 96.6% | 99.9% | 100% | 0 |
 | 2020 | 580,695 | 95.7% | 99.9% | 99.9% | 0 |
-| 2021 | 610,584 | 97.2% | 99.9% | 100% | 0 |
+| 2021 | 611,044 | 97.2% | 99.9% | 100% | 0 |
 | 2022 | 584,009 | 98.4% | 99.9% | 100% | 0 |
 | 2023 | 575,461 | 98.2% | 99.9% | 99.9% | 0 |
 | 2024 | 573,063 | 97.9% | 99.8% | 100% | 0 |
 | 2025 | 553,772 | 97.9% | 99.6% | 100% | 0 |
+| 2026 (to 09-18) | 389,602 | 98.0% | 99.7% | 100% | 0 |
 
 So the free part meets the S8.2 line (≥ 95% of optionable member lines) for the ATM level and term slope only; the
 25-delta skew, option volume and open interest are 0% and need the license below.
