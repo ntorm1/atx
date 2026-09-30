@@ -267,7 +267,6 @@ MIN_PIVOT, RELATIVE_SD_FLOOR, MIN_RESIDUAL_FRACTION = 1e-8, 1e-12, 1e-9
 FACTOR_PRODUCERS = ("factor_record", "Context", "PricePanel", "neutralization_basis", "centered_tied_ranks")
 CONTEXT_PRODUCERS = ("Context",)
 AIM_PRODUCERS = ("aim_record", "Context")
-WINDOW_ID_FALLBACK = "research-window-v2"  # research_window.WINDOW_ID (task W0-1); see window_id()
 # Alpha registry (task A-1, atx.alpha-registry/v1): when present, its themes table is the admissible theme list.
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "strategies" / "alphas" / "registry.json"
 REGISTRY_SCHEMA = "atx.alpha-registry/v1"
@@ -319,11 +318,7 @@ def unique_json(data: bytes, what: str):
 
 def window_id() -> str:
     """The research window id (contract K4) that names the store root: ``research_window.WINDOW_ID`` (task W0-1)."""
-    try:
-        from engine_tools import research_window
-    except ImportError:  # W0-1 not merged into this branch yet; root removes this fallback after the merge
-        return WINDOW_ID_FALLBACK
-    return research_window.WINDOW_ID
+    return rw.WINDOW_ID
 
 
 @functools.lru_cache(maxsize=None)
