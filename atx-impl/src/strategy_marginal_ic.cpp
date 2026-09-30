@@ -23,6 +23,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/combine/marginal_rank_ic.hpp"
 #include "atx/engine/data/strategy_data.hpp"
 
@@ -74,7 +75,7 @@ co::Result<std::string> read_text(const fs::path& path, std::string_view what) {
   if (!in) return co::Err(fail(co::ErrorCode::IoError, std::string(what) + " read: " + path.string()));
   return co::Ok(std::move(text));
 }
-struct Pinned { Json json; std::string sha; };
+struct Pinned { Json json; std::string sha, text; };
 // `pin` empty: the SHA256 is computed and recorded, not checked.
 co::Result<Pinned> pinned_json(const fs::path& path, const std::string& pin, std::string_view what) {
   ATX_TRY(auto text, read_text(path, what));
@@ -84,7 +85,7 @@ co::Result<Pinned> pinned_json(const fs::path& path, const std::string& pin, std
   auto j = Json::parse(text, nullptr, false);
   if (j.is_discarded() || !j.is_object())
     return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " is not a JSON object: " + path.string()));
-  return co::Ok(Pinned{std::move(j), std::move(sha)});
+  return co::Ok(Pinned{std::move(j), std::move(sha), std::move(text)});
 }
 
 // ---- inputs -------------------------------------------------------------------
@@ -161,10 +162,15 @@ co::Result<std::vector<Candidate>> read_library(const MarginalIcConfig& cfg, std
 
 // The pool's weighted members grouped into theme composites T_j = sum_{k in j} s_k w_k r_k over
 // the members' centred ranks r_k (fixed denominator: an unranked member adds 0), which is the
-// no-redistribution blend split by theme. Theme names come from the weights file's
-// theme_redistribution block when present, else from the library rows.
+// no-redistribution blend split by theme. Theme names come from the weights file's theme block
+// (theme_standardise or theme_redistribution, read by the IC runner's ic_weights_themes, so the
+// grouping is the blend's own; review B-2), else from the library rows. Under theme_standardise
+// with rerank true each T_j is the blend's theme term instead: its centred tied re-rank over the
+// member names with a present member of j (rerank_theme_rows).
 struct Themes {
   std::string path, sha;
+  std::string block;                    // the weights file's theme block; empty: library themes
+  bool rerank{false};                   // theme_standardise with rerank true
   std::vector<std::string> names;       // first appearance in library order
   std::vector<usize> theme_of;          // per library candidate; npos: not a weighted member
   std::vector<f64> signed_weight;       // per library candidate: s_k w_k (0 off the book)
@@ -191,10 +197,9 @@ co::Result<Themes> read_themes(const MarginalIcConfig& cfg, const Pool& pool, co
       !j.contains("signs") || !j.at("signs").is_object())
     return co::Err(fail(co::ErrorCode::InvalidArgument, "themes: weights schema, pool library binding or signs block"));
   const Json& signs = j.at("signs");
-  const Json* named = nullptr;
-  if (j.contains("theme_redistribution") && j.at("theme_redistribution").is_object() &&
-      j.at("theme_redistribution").contains("themes") && j.at("theme_redistribution").at("themes").is_object())
-    named = &j.at("theme_redistribution").at("themes");
+  const auto grouping = ic_weights_themes(pinned.text);
+  if (!grouping) return co::Err(fail(co::ErrorCode::InvalidArgument, "themes: " + grouping.error().message()));
+  t.block = grouping->block; t.rerank = grouping->rerank;
   std::map<std::string, usize> index;
   for (usize k = 0; k < lib.size(); ++k) index.emplace(lib[k].id, k);
   for (const auto& item : j.at("weights").items()) {
@@ -219,7 +224,14 @@ co::Result<Themes> read_themes(const MarginalIcConfig& cfg, const Pool& pool, co
     }
     if (t.signed_weight[k] == 0.0) continue;
     auto name = lib[k].theme;
-    if (named && named->contains(lib[k].id) && named->at(lib[k].id).is_string()) name = named->at(lib[k].id).get<std::string>();
+    if (!t.block.empty()) {
+      // The runner refuses a weighted member without a theme in the block, so no pool has one.
+      const auto listed = grouping->themes.find(lib[k].id);
+      if (listed == grouping->themes.end())
+        return co::Err(fail(co::ErrorCode::InvalidArgument, "themes: weighted member " + lib[k].id +
+            " has no theme in the weights file's " + t.block + " block"));
+      name = listed->second;
+    }
     const auto at = std::find(t.names.begin(), t.names.end(), name);
     t.theme_of[k] = static_cast<usize>(at - t.names.begin());
     if (at == t.names.end()) t.names.push_back(name);
@@ -426,6 +438,29 @@ struct Series { std::vector<f64> raw, marginal; usize spanned{}; };
 struct Streams {
   RowReader pool; std::vector<RowReader> candidates; std::vector<u8> member;
 };
+// ew-theme-std-v1 with rerank true (review B-2): theme j's row becomes the blend's theme term,
+// the centred tied re-rank of sum_{k in j} s_k w_k r_k over the member names where a member of
+// j is ranked, with the IC composition's kernel and accumulation order (library order,
+// combine/group_rerank.hpp). Member names without a ranked member of j keep 0 (neutral, as in
+// the blend) and nonmembers NaN, as the caller initialised `theme_rows`. Unit scale: the
+// blend's factor W_theme would not change the residual. `plane` holds one row (n values).
+co::Status rerank_theme_rows(const Themes& themes, std::span<const u8> member,
+                             const std::vector<std::vector<f64>>& ranks, std::vector<f64>& plane,
+                             std::vector<std::vector<f64>>& theme_rows,
+                             std::vector<std::pair<f64, usize>>& scratch) {
+  const usize n = member.size();
+  for (usize j = 0; j < theme_rows.size(); ++j) {
+    std::fill(plane.begin(), plane.end(), quiet_nan);
+    for (usize k = 0; k < ranks.size(); ++k) {
+      if (themes.theme_of[k] != j) continue;
+      for (usize i = 0; i < n; ++i)
+        if (member[i] != 0 && std::isfinite(ranks[k][i]))
+          cb::accumulate_group_cell(plane[i], themes.signed_weight[k] * ranks[k][i]);
+    }
+    ATX_TRY_VOID(cb::add_group_rerank(plane, n, 0U, 1U, 1.0, theme_rows[j], scratch));
+  }
+  return co::Ok();
+}
 // Per decision row: every candidate's centred rank over the pool's members, the theme
 // composites, then one kernel call per candidate and one pairwise-correlation update.
 co::Status stream_rows(const MarginalIcConfig& cfg, const Pool& pool, const std::vector<Candidate>& lib,
@@ -434,7 +469,8 @@ co::Status stream_rows(const MarginalIcConfig& cfg, const Pool& pool, const std:
   const usize n = pool.names, k_n = lib.size(), j_n = themes.names.size();
   std::vector<std::vector<f64>> raw(k_n, std::vector<f64>(n)), ranks(k_n, std::vector<f64>(n));
   std::vector<std::vector<f64>> theme_rows(j_n, std::vector<f64>(n));
-  std::vector<f64> composite(n);
+  // `plane`: one row of rerank_theme_rows (inside the admission's fixed 32 MiB slack).
+  std::vector<f64> composite(n), plane(themes.rerank ? n : 0U);
   // Row views are taken once: none of these buffers is resized while streaming.
   std::vector<std::span<const f64>> regressors, rank_rows;
   regressors.emplace_back(composite);
@@ -452,11 +488,16 @@ co::Status stream_rows(const MarginalIcConfig& cfg, const Pool& pool, const std:
     }
     for (auto& row_values : theme_rows)
       for (usize i = 0; i < n; ++i) row_values[i] = member[i] != 0 ? 0.0 : quiet_nan;
-    for (usize k = 0; k < k_n; ++k) {
-      if (themes.theme_of[k] == npos) continue;
-      auto& target = theme_rows[themes.theme_of[k]];
-      for (usize i = 0; i < n; ++i)
-        if (member[i] != 0 && std::isfinite(ranks[k][i])) target[i] += themes.signed_weight[k] * ranks[k][i];
+    if (themes.rerank) {
+      // `sorted` is free again: every candidate row above is already ranked.
+      ATX_TRY_VOID(rerank_theme_rows(themes, member, ranks, plane, theme_rows, sorted));
+    } else {
+      for (usize k = 0; k < k_n; ++k) {
+        if (themes.theme_of[k] == npos) continue;
+        auto& target = theme_rows[themes.theme_of[k]];
+        for (usize i = 0; i < n; ++i)
+          if (member[i] != 0 && std::isfinite(ranks[k][i])) target[i] += themes.signed_weight[k] * ranks[k][i];
+      }
     }
     const std::span<const f64> label(labels.values.data() + row * n, n);
     for (usize k = 0; k < k_n; ++k) {
@@ -513,7 +554,11 @@ Json method_json(const MarginalIcConfig& cfg, const Themes& themes) {
       {"horizon", horizon}, {"execution_delay", execution_delay},
       {"candidate", "centred-tied-rank over the pool's member names with a finite signal"},
       {"regressors", std::move(regressors)},
-      {"theme_composite", "sum over weighted members of sign*weight*centred-rank; unranked member adds 0; NaN off members"},
+      {"theme_composite", themes.rerank
+          ? "ew-theme-std-v1 theme term: centred tied re-rank of the sum over the theme's weighted members of "
+            "sign*weight*centred-rank, over member names with a ranked theme member; 0 on other member names; "
+            "NaN off members (unit scale)"
+          : "sum over weighted members of sign*weight*centred-rank; unranked member adds 0; NaN off members"},
       {"residual", "per date OLS on [1, regressors] over names with finite candidate and regressors "
                    "(combine::residualize_signal, complete orthogonal decomposition)"},
       {"ic", "paired names: finite residual and label; marginal = Pearson(residual, label rank), "
@@ -600,6 +645,13 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     Json theme_members = Json::object();
     for (usize k = 0; k < lib.size(); ++k)
       if (themes.theme_of[k] != npos) theme_members[themes.names[themes.theme_of[k]]].push_back(lib[k].id);
+    Json themes_input = themes.path.empty() ? Json(nullptr)
+        : Json{{"path", themes.path}, {"sha256", themes.sha}, {"members", std::move(theme_members)}};
+    // Keys added only for an ew-theme-std-v1 file, so outputs without one keep their bytes.
+    if (themes.block == "theme_standardise") {
+      themes_input["grouping"] = themes.block;
+      themes_input["rerank"] = themes.rerank;
+    }
     Json inputs{{"pool", {{"path", cfg.pool_path}, {"sha256", pool.sha}, {"role_manifest_sha256", pool.role_sha},
                           {"library_sha256", pool.library_sha},
                           {"composition_weights_sha256", pool.weights_sha.empty() ? Json(nullptr) : Json(pool.weights_sha)}}},
@@ -607,8 +659,7 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
         {"role", {{"path", cfg.role_manifest}, {"manifest_sha256", pool.role_sha}}},
         {"candidate_cache", {{"directory", cfg.candidate_cache_directory}, {"build_vm_identity", identity},
                              {"layout", std::string(signal_schema)}}},
-        {"themes", themes.path.empty() ? Json(nullptr)
-                                       : Json{{"path", themes.path}, {"sha256", themes.sha}, {"members", std::move(theme_members)}}},
+        {"themes", std::move(themes_input)},
         {"fields", cfg.fields_directory.empty() ? Json(nullptr)
                                                 : Json{{"directory", cfg.fields_directory}, {"manifest_sha256", fields_sha}}}};
     Json out{{"schema", std::string(output_schema)}, {"status", "complete"}, {"contract", "K6"},
@@ -646,7 +697,8 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
                "  ic21_hac_t, marginal_ic21, marginal_hac_t (Bartlett lag 21), max_abs_rho, max_rho_member.\n"
                "  --pool: a --save-combined manifest; --role must be its role (bound by SHA256).\n"
                "  --themes: the pool's composition weights (bound by the pool's composition_weights_sha256);\n"
-               "    adds one theme composite per weighted theme (<= 10). --fields: the fields manifest whose\n"
+               "    adds one theme composite per weighted theme (<= 10), grouped by the file's theme block\n"
+               "    (re-ranked under ew-theme-std-v1 rerank). --fields: the fields manifest whose\n"
                "    payload SHA256s pick among cache entries of one candidate.\n";
         return 0;
       }

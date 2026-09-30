@@ -1,5 +1,6 @@
 #pragma once
 #include <iosfwd>
+#include <map>
 #include <string>
 #include <vector>
 #include "atx/core/error.hpp"
@@ -82,5 +83,20 @@ struct IcCacheVmIdentity {
 // Same shape for the IC-result cache: its semantics version, identity (compiler,
 // FP flavor, IC SIMD width) and the engine IC scoring sources pinned against it.
 [[nodiscard]] IcCacheVmIdentity ic_result_cache_identity();
+// The theme grouping a composition weights document pins for the blend, read with the
+// same block checks as the runner's composition (platform v8 review B-2: the marginal
+// verb groups the book by these themes, not by the library rows). The blocks are the
+// exclusive `theme_standardise` (ew-theme-std-v1) and `theme_redistribution`
+// (ew-theme-v6). `block` names the one present, empty when neither is (then `themes` is
+// empty). `rerank` is true exactly for theme_standardise with rerank true: the blend
+// re-ranks each theme composite before adding it. `themes`: candidate id -> theme name
+// ([a-z0-9_]{1,64}) as the block lists it. Err (InvalidArgument) on text that is not a
+// JSON object, duplicate keys, both blocks, or a block of the wrong shape.
+struct IcWeightsThemes {
+  std::string block;
+  bool rerank{false};
+  std::map<std::string,std::string> themes;
+};
+[[nodiscard]] atx::core::Result<IcWeightsThemes> ic_weights_themes(const std::string& weights_text);
 [[nodiscard]] int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err);
 } // namespace atx::impl::strategy

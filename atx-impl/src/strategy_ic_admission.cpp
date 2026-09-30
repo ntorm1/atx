@@ -420,6 +420,11 @@ co::Result<std::vector<int>> composition_signs(const Json& j,const Library& lib,
   }
   return co::Ok(std::move(signs));
 }
+bool theme_name(const std::string& s) {
+  return !s.empty() && s.size()<=64 && std::all_of(s.begin(),s.end(),[](char c) {
+    return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_';
+  });
+}
 // A block's `themes` object {id: theme} (theme_redistribution and theme_standardise
 // alike): known ids, names [a-z0-9_]{1,64}, a theme for every positive-weight candidate
 // and 1..32 themes, `block` naming the block in that last refusal. Indices follow first
@@ -428,11 +433,6 @@ co::Status theme_indices(const Json& rows,const Library& lib,const std::vector<f
                          std::vector<usize>& index,usize& count) {
   std::set<std::string> ids;
   for (const auto& c:lib.candidates) ids.insert(c.id);
-  const auto theme_name=[](const std::string& s) {
-    return !s.empty() && s.size()<=64 && std::all_of(s.begin(),s.end(),[](char c) {
-      return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_';
-    });
-  };
   for (auto it=rows.begin();it!=rows.end();++it) {
     if (!ids.contains(it.key()))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme for unknown candidate: "+it.key());
@@ -457,6 +457,24 @@ co::Status theme_indices(const Json& rows,const Library& lib,const std::vector<f
   count=names.size();
   return co::Ok();
 }
+// Shapes of the two theme blocks; composition_themes, composition_standardise and
+// ic_weights_themes (the marginal verb's reader) all check a block through these.
+co::Status redistribution_block(const Json& block) {
+  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_redistribution_rule ||
+      !block.contains("composition") || block.at("composition")!=theme_redistribution_composition ||
+      !block.contains("themes") || !block.at("themes").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_redistribution must be {rule: within-theme-v1, "
+        "composition: ew-theme-v6, themes: {id: theme}}");
+  return co::Ok();
+}
+co::Status standardise_block(const Json& block) {
+  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_standardise_rule ||
+      !block.contains("rerank") || !block.at("rerank").is_boolean() ||
+      !block.contains("themes") || !block.at("themes").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise must be {rule: ew-theme-std-v1, "
+        "rerank: true|false, themes: {id: theme}}");
+  return co::Ok();
+}
 // Optional top-level `theme_redistribution` (fitter ew-theme-v6, v4-prereg v6 revision
 // V6-W): exactly {"rule":"within-theme-v1","composition":"ew-theme-v6","themes":{id:
 // theme}} with themes as theme_indices checks them. Absent: pinned.themes stays empty and
@@ -465,11 +483,7 @@ co::Status theme_indices(const Json& rows,const Library& lib,const std::vector<f
 co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pinned) {
   if (!j.contains("theme_redistribution")) return co::Ok();
   const auto& block=j.at("theme_redistribution");
-  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_redistribution_rule ||
-      !block.contains("composition") || block.at("composition")!=theme_redistribution_composition ||
-      !block.contains("themes") || !block.at("themes").is_object())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_redistribution must be {rule: within-theme-v1, "
-        "composition: ew-theme-v6, themes: {id: theme}}");
+  ATX_TRY_VOID(redistribution_block(block));
   return theme_indices(block.at("themes"),lib,pinned.values,"theme_redistribution",pinned.themes,pinned.theme_count);
 }
 // Optional top-level `theme_standardise` (fitter ew-theme-std-v1, platform v8 R-1):
@@ -481,11 +495,7 @@ co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pi
 co::Status composition_standardise(const Json& j,const Library& lib,PinnedWeights& pinned) {
   if (!j.contains("theme_standardise")) return co::Ok();
   const auto& block=j.at("theme_standardise");
-  if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_standardise_rule ||
-      !block.contains("rerank") || !block.at("rerank").is_boolean() ||
-      !block.contains("themes") || !block.at("themes").is_object())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise must be {rule: ew-theme-std-v1, "
-        "rerank: true|false, themes: {id: theme}}");
+  ATX_TRY_VOID(standardise_block(block));
   std::vector<usize> index; usize count=0;
   ATX_TRY_VOID(theme_indices(block.at("themes"),lib,pinned.values,"theme_standardise",index,count));
   const bool rerank=block.at("rerank").get<bool>();
@@ -618,3 +628,30 @@ co::Result<std::string> frozen_field_definitions(const Library& lib,const Frozen
   return co::Ok(std::string("frozen-TRAIN-artifact"));
 }
 } // namespace atx::impl::strategy::ic_detail
+
+namespace atx::impl::strategy {
+atx::core::Result<IcWeightsThemes> ic_weights_themes(const std::string& weights_text) {
+  namespace co=atx::core;
+  namespace id=ic_detail;
+  ATX_TRY(auto j,id::unique_key_json(weights_text));
+  if (!j.is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights are not a JSON object");
+  const bool redistribute=j.contains("theme_redistribution"),standardise=j.contains("theme_standardise");
+  if (redistribute && standardise)
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "IC runner: theme_redistribution and theme_standardise are exclusive");
+  IcWeightsThemes out;
+  if (!redistribute && !standardise) return co::Ok(std::move(out));
+  out.block=standardise?"theme_standardise":"theme_redistribution";
+  const auto& block=j.at(out.block);
+  ATX_TRY_VOID(standardise?id::standardise_block(block):id::redistribution_block(block));
+  out.rerank=standardise && block.at("rerank").get<bool>();
+  const auto& rows=block.at("themes");
+  for (auto it=rows.begin();it!=rows.end();++it) {
+    if (!it->is_string() || !id::theme_name(it->get<std::string>()))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme name must match [a-z0-9_]{1,64}: "+it.key());
+    out.themes.emplace(it.key(),it->get<std::string>());
+  }
+  return co::Ok(std::move(out));
+}
+} // namespace atx::impl::strategy

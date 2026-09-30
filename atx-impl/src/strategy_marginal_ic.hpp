@@ -9,7 +9,9 @@ namespace atx::impl::strategy {
 // anything the book does not already have? Per decision date of the pool's role, every library
 // candidate's centred rank (over the pool's member names) is residualised on the book composite
 // (the pool's saved combined signal) and, with a themes file, on the theme composites of the
-// pool's weighted members (at most 11 regressors, plus the intercept). Against the runner's h 21
+// pool's weighted members (at most 11 regressors, plus the intercept), grouped by the weights
+// file's own theme block when it has one and re-ranked as the blend re-ranks them under
+// ew-theme-std-v1 (review B-2). Against the runner's h 21
 // label: marginal_ic21 = correlation of that residual with the label's ranks, ic21 = the
 // candidate's Spearman rank IC on the same names, each with a Bartlett HAC t at lag 21 (engine
 // combine/marginal_rank_ic.hpp). max_abs_rho is the largest |mean daily correlation of centred

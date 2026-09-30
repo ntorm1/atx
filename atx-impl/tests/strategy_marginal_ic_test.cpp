@@ -133,16 +133,37 @@ struct World {
   }
 };
 
+// ew-theme-std-v1 weights (review B-2): the library adds pool_c (Rc, the ranks of fresh noise)
+// and probe = .25 Ra + .25 Rc; a v2 weights file with a theme_standardise block groups
+// {pool_a, pool_c} as t_one and {pool_b} as t_two, although the library rows name the themes
+// alpha, delta and beta. With rerank the book's t_one term is the re-rank of .25 Ra + .25 Rc,
+// which is exactly probe's rank; plain (rerank false) is the rule's identity switch.
+enum class Block { none, rerank, plain };
+struct Entry { std::string id, family, dsl; std::vector<f64> signal; };
+
 struct Fixture {
   Directory dir;
   st::MarginalIcConfig cfg;
   std::string role_sha, library_sha, weights_sha, pool_sha;
   fs::path cache_entry_dir;
+  Block block{Block::none};
+  std::vector<Entry> entries; // library order
   bool ok{};
-  explicit Fixture(Mode mode) {
+  explicit Fixture(Mode mode, Block theme_block = Block::none) : block(theme_block) {
     if (dir.path.empty()) return;
     const World world(mode);
-    ok = write_role(world) && write_library() && write_weights() && write_cache(world) && write_pool(world);
+    entries = {{"pool_a", "alpha", "close", world.a}, {"pool_b", "beta", "volume", world.w},
+               {"cand", "gamma", "rank(close)", world.cand}};
+    if (block != Block::none) {
+      Rng g{8117U};
+      auto c = draws(g, D * N);
+      const auto rc = World::ranks(c);
+      std::vector<f64> probe(D * N);
+      for (usize x = 0; x < D * N; ++x) probe[x] = 0.25 * world.ra[x] + 0.25 * rc[x];
+      entries.push_back({"pool_c", "delta", "rank(volume)", std::move(c)});
+      entries.push_back({"probe", "epsilon", "close + volume", std::move(probe)});
+    }
+    ok = write_role(world) && write_library() && write_weights() && write_cache() && write_pool(world);
     cfg.candidate_cache_directory = (dir.path / "cache").string();
     cfg.library_path = (dir.path / "library.json").string();
     cfg.pool_path = (dir.path / "pool" / "train_combined.json").string();
@@ -181,43 +202,50 @@ struct Fixture {
         {"common_stock_verified", false}, {"historical_vintage_verified", false},
         {"declared_output_bytes", D * N * 26 + D * 8 + N * 8}, {"files", files}}, role_sha);
   }
-  static Json row(const char* id, const char* family, const char* dsl) {
-    return {{"id", id}, {"family", family}, {"theme", family}, {"dsl", dsl}, {"sign_policy", "train-rank-ic21"},
+  static Json row(const Entry& e) {
+    return {{"id", e.id}, {"family", e.family}, {"theme", e.family}, {"dsl", e.dsl}, {"sign_policy", "train-rank-ic21"},
             {"horizons", {5, 21, 63}}, {"prior_sign", 1}};
   }
-  static std::string dsl_of(const std::string& id) {
-    return id == "pool_a" ? "close" : (id == "pool_b" ? "volume" : "rank(close)");
-  }
   bool write_library() {
+    Json families = Json::array(), candidates = Json::array();
+    for (const auto& e : entries) { families.push_back(Json{{"id", e.family}}); candidates.push_back(row(e)); }
     return json_file(dir.path / "library.json", {{"schema", "atx.dsl-ic-library/v1"}, {"id", "synthetic-marginal"},
         {"fields", Json::array({{{"name", "close"}}, {{"name", "raw_close"}}, {{"name", "volume"}}})},
-        {"families", Json::array({{{"id", "alpha"}}, {{"id", "beta"}}, {{"id", "gamma"}}})},
-        {"candidates", Json::array({row("pool_a", "alpha", "close"), row("pool_b", "beta", "volume"),
-                                    row("cand", "gamma", "rank(close)")})}}, library_sha);
+        {"families", std::move(families)}, {"candidates", std::move(candidates)}}, library_sha);
   }
   bool write_weights() {
-    return json_file(dir.path / "weights.json", {{"schema", "atx.dsl-composition-weights/v1"},
+    if (block == Block::none)
+      return json_file(dir.path / "weights.json", {{"schema", "atx.dsl-composition-weights/v1"},
+          {"library_sha256", library_sha}, {"train_manifest_sha256", role_sha},
+          {"weights", {{"pool_a", 0.5}, {"pool_b", 0.5}, {"cand", 0.0}}}, {"signs", {{"pool_a", 1}, {"pool_b", 1}}}},
+          weights_sha);
+    const Json themes{{"pool_a", "t_one"}, {"pool_c", "t_one"}, {"pool_b", "t_two"}};
+    return json_file(dir.path / "weights.json", {{"schema", "atx.dsl-composition-weights/v2"},
         {"library_sha256", library_sha}, {"train_manifest_sha256", role_sha},
-        {"weights", {{"pool_a", 0.5}, {"pool_b", 0.5}, {"cand", 0.0}}}, {"signs", {{"pool_a", 1}, {"pool_b", 1}}}},
+        {"weights", {{"pool_a", 0.25}, {"pool_b", 0.5}, {"cand", 0.0}, {"pool_c", 0.25}, {"probe", 0.0}}},
+        {"signs", {{"pool_a", 1}, {"pool_b", 1}, {"pool_c", 1}}},
+        {"theme_standardise", {{"rule", "ew-theme-std-v1"}, {"rerank", block == Block::rerank}, {"themes", themes}}}},
         weights_sha);
   }
-  bool write_entry(const std::string& id, const std::vector<f64>& signal) {
-    auto dsl_sha = core::sha256_hex(dsl_of(id)); if (!dsl_sha) return false;
-    const auto stem = id + "." + dsl_sha->substr(0, 16);
+  bool write_entry(const Entry& e) {
+    auto dsl_sha = core::sha256_hex(e.dsl); if (!dsl_sha) return false;
+    const auto stem = e.id + "." + dsl_sha->substr(0, 16);
     Json files;
-    if (!payload(cache_entry_dir, files, stem + ".f64", signal)) return false;
+    if (!payload(cache_entry_dir, files, stem + ".f64", e.signal)) return false;
     std::string unused;
     return json_file(cache_entry_dir / (stem + ".json"), {{"schema", "atx.dsl-candidate-signal/v2"},
-        {"candidate_id", id}, {"dsl_sha256", *dsl_sha}, {"role_manifest_sha256", role_sha}, {"dates", D},
+        {"candidate_id", e.id}, {"dsl_sha256", *dsl_sha}, {"role_manifest_sha256", role_sha}, {"dates", D},
         {"instruments", N}, {"bytes", D * N * sizeof(f64)},
         {"layout", "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"}, {"payload", stem + ".f64"},
         {"payload_sha256", files[stem + ".f64"]["sha256"]}, {"field_payload_sha256", Json::object()},
         {"vm_identity", "synthetic"}}, unused);
   }
-  bool write_cache(const World& world) {
+  bool write_cache() {
     cache_entry_dir = dir.path / "cache" / role_sha;
     std::error_code ec; fs::create_directories(cache_entry_dir, ec);
-    return !ec && write_entry("pool_a", world.a) && write_entry("pool_b", world.w) && write_entry("cand", world.cand);
+    if (ec) return false;
+    for (const auto& e : entries) if (!write_entry(e)) return false;
+    return true;
   }
   bool write_pool(const World& world) {
     const auto pool = dir.path / "pool";
@@ -339,5 +367,40 @@ TEST(MarginalIc, RefusesInputsNotBoundToThePool) {
   const auto missing = st::run_marginal_ic(cfg, progress);
   ASSERT_FALSE(missing); EXPECT_EQ(missing.error().code(), core::ErrorCode::NotFound);
   EXPECT_FALSE(fs::exists(f.cfg.output_directory));
+}
+
+// Review B-2: an ew-theme-std-v1 weights file groups the book by its theme_standardise block
+// (t_one, t_two), not by the library rows (alpha, delta, beta). With rerank each theme regressor
+// is the blend's re-ranked theme term, so the marginal statistic is taken inside the theme:
+// probe, the raw t_one composite, is spanned on every date, as pool_b (alone in t_two) is.
+// Without the re-rank (the rule's identity switch) t_one is linear in the member ranks, and
+// probe's rank of that sum is not.
+TEST(MarginalIc, StandardisedThemesComeFromTheWeightsBlock) {
+  for (const Block block : {Block::rerank, Block::plain}) {
+    Fixture f(Mode::Planted, block); ASSERT_TRUE(f.ok);
+    f.cfg.themes_path = (f.dir.path / "weights.json").string();
+    std::ostringstream progress;
+    const auto status = st::run_marginal_ic(f.cfg, progress);
+    ASSERT_TRUE(status) << status.error().to_string();
+    const auto out = read_json(fs::path(f.cfg.output_directory) / "marginal_ic.json");
+    EXPECT_EQ(out.at("method").at("regressors"), Json::array({"book_composite", "theme:t_one", "theme:t_two"}));
+    Json members = Json::object();
+    members["t_one"] = Json::array({"pool_a", "pool_c"}); members["t_two"] = Json::array({"pool_b"});
+    const auto& themes = out.at("inputs").at("themes");
+    EXPECT_EQ(themes.at("members"), members);
+    EXPECT_EQ(themes.at("grouping"), "theme_standardise");
+    EXPECT_EQ(themes.at("rerank").get<bool>(), block == Block::rerank);
+    const auto& probe = candidate(out, "probe");
+    const auto composite = out.at("method").at("theme_composite").get<std::string>();
+    if (block == Block::rerank) {
+      EXPECT_EQ(probe.at("spanned_dates"), rows);
+      EXPECT_EQ(real(probe, "marginal_ic21"), 0.0);
+      EXPECT_EQ(candidate(out, "pool_b").at("spanned_dates"), rows);
+      EXPECT_TRUE(composite.starts_with("ew-theme-std-v1 theme term")) << composite;
+    } else {
+      EXPECT_EQ(probe.at("spanned_dates"), 0U);
+      EXPECT_TRUE(composite.starts_with("sum over weighted members")) << composite;
+    }
+  }
 }
 } // namespace
