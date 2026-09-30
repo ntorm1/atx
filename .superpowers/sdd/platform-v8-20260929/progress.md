@@ -472,3 +472,55 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   composition whenever R-1 is accepted, and the OD-3 read is on the critical path at the freeze gate -- cost if
   wrong: one lane-day unused if R-1 is rejected.
 - Dispatched: FIX-C (pool 3), FIX-AB (pool 7), R45 finish E-25 (pool 11), readers T, N, P (root, read-only).
+- R45 E-25 finished 9cc0d3cb (check 08c9ac7b, text 8bb2ee3d, test 44451659; pool 11). Never compiled. After merge:
+  integrator wires FIX-AB's B-3 refusal into `check_label_manifests(role, label)` on `role` only
+  (strategy_target_replay.cpp). Open: label role `score_member_counts` unchecked against payloads (NAV never reads it).
+- Review part 2, area P done (review-w1-P.md; 28 rows): I 0, M 3, m 8. P-1 history-read ledger line (label ERA, no
+  era_of) counted as a TRAIN cell by dsr_variance / cells / ledger_net_series; P-2 pitch config and scorecard omit
+  registered criteria (R-6 E-14 and tripwire and E-31; R-5 S3 not lower; R-7 turnover not higher); P-3 ladder_checks
+  never compares recorded verdict with the computed rule nor parent = last accepted. All three go to fix lane 2.
+- Review part 2, area T done (review-w1-T.md; 34 rows): I 0, M 4, m 9. T-1 ew-theme-std-v1 C++ fixture cannot
+  fail a wrong rule 1 (degenerate ranks, signs, equal weights); T-2 gscore7_lowbm tests cannot tell which session's
+  me_company is read (uniform mutation; a t+1 look-ahead passes); T-3 spo-v2 pin still placeholder 0 (test skips;
+  root captures the pin at integration 5); T-4 no independent reference for the spo-v3 solver (multi-name optimum,
+  external_gap, gamma annualisation unpinned). T-1, T-2, T-4 go to fix lane 2 (tests strengthened, code untouched).
+- Review part 2, area N done (review-w1-N.md; 18 rows): I 0, M 3, m 5. N-1 holdings fields (ftd_shares_ratio21,
+  regsho_threshold_days63, sv_offexchange_share126) depend on the seal but the reuse inputs never bind it; N-2 spo-v3
+  refuses --capacity-curve (E-29 needs the 4x report on every R cell) and theta has no effect on spo-v3 (R-9
+  undefined there); N-3 plan R-7 acceptance gates on K6 marginal IC while prereg rule 8 says marginal IC gates
+  nothing; the card loads K6 unbound to role / window / library with an optional pin.
+- Ruling E-36 (N-3, declared before any read): pre-registration rule 8 governs -- marginal IC gates nothing and
+  selects nothing at cell acceptance. The plan's R-7 marginal-IC text is read as the entry screen (which candidates
+  enter the cell, as for R-2), not as the acceptance rule. R-7's acceptance is rule 5: paired S2 net dSR > 0 against
+  its parent, mechanics, and its mechanical criterion "turnover not higher" (the scorecard criterion of P-2). The
+  card binds K6 to role, window, pool and library and its pin becomes mandatory (fix lane 2) -- the prereg file is
+  the registration of record and the more specific text -- cost if wrong: R-7 may accept a member a K6 gate would
+  have refused; one cell, disclosed on the card.
+- Ruling E-37 (N-2, declared before any read): spo-v3 accepts --capacity-curve as a report-only pass (E-29; the
+  primary series unchanged); R-9 (theta) is defined only on a parent whose rule reads theta; if the accepted parent
+  at R-9 time is spo-v3, R-9 is skipped as undefined (it is optional in the registration) and the ledger says so
+  -- theta is a v7 rule parameter with no meaning in the tracker -- cost if wrong: R-9 unrun; it is optional.
+- Ruling PM3-4 (fix lane 2 and the era lane): the part-2 I/M findings are fixed by two lanes branched from root
+  after integration 5 part A (FIX-C, FIX-AB, R45, A2 merged): lane ERA = E-35 + P-1 (pool 3); lane FIX-2 = P-2,
+  P-3, T-1, T-2, T-4, N-1, N-2, N-3 card binding (pool 7); they run beside the H3 integration and the identities
+  and merge before Wave 0 -- branching from the merged head avoids conflicts with the in-flight fix lanes --
+  cost if wrong: Wave 0 starts one lane-turn later.
+- FIX-C done d0d081f2 (pool 3; C-1 337ed421, C-2 9ddffedd, C-9/10 6aa72350, C-3 396e3e94, C-4 c0e90ab7, C-5
+  c211624f, C-6 0aa411a9, C-7 1e82e212, C-13 af9f4d76, C-11 91c5dc5b, C-12 51aa3202, E-33 448bdc85). scripts/tests
+  130 passed 4 skipped; atx-impl/tools 463 passed 2 skipped. Synthetic output moves: C-1 DSR .42 -> .91 (SR0 1.10 ->
+  .33); C-7 admission 0 -> 1; C-9 zero cells now false. Cross-lane for integration 5: A2 specs must set summ.origin,
+  keep --origin out of extra, give verdict specs summ.ledger; H3 mining verb must write `campaign_line`.
+  holdout_gate now requires --ledger. Minors C-14..C-22 untouched.
+- FIX-AB done dd677d3b (pool 7; B-2 c7c16599, B-3 dd9cbcf2, B-4 931c655a, A-2 f1a928f9, A-3 8e5ea802, A-4 98b0a0e8,
+  A-1 f425e4ec, B-1 b900b387; history rewritten locally, unpushed). Verdicts: B-4 CONFIRMED (73-row manifest
+  605,601 B of 1 MiB; widest 927,292 B; bound now 16 MiB); B-2 CONFIRMED partly (no theme re-rank in the marginal
+  verb; the grouping mismatch does not occur for generated libraries); A-2 part 1 CONFIRMED (gamma at first warm-up
+  decision), part 2 NOT A DEFECT on real risk stores, fixed anyway (warm-up moves as aim-partial-v5, reads no risk
+  row). Pins: dsl_vm_sources_sha256 re-pinned ad6c4ca7 (B-3 refusal, no semantics bump). pytest 36 passed.
+- Ruling PM3-5 (B-1 and the reuse identity): B-1 pins the NYSE rule calendar digest into the price fields' reuse
+  inputs, so the first `--reuse` recomputes ret_overnight, ret_intraday, ceq_iss_5y, coskew_60m once. Identity 6
+  (field reuse step 2) therefore expects 45 reused and 18 recomputed with those four payloads byte-identical to
+  their previous payloads; the integrator records both counts -- the fingerprint widened, the values did not --
+  cost if wrong: one identity re-run.
+- Integration 5 part A dispatched: merge FIX-C d0d081f2, FIX-AB dd677d3b, R45 9cc0d3cb, A2 79440cfa; build v8-6;
+  suites; wire B-3 into check_label_manifests(role); A2 spec keys per FIX-C.
