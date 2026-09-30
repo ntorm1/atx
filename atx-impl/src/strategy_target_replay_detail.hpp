@@ -21,8 +21,14 @@ namespace atx::impl::strategy::detail {
 // Construction state of the desired target across the rebalance decisions of one replay (or
 // supplied by the decide path), shared by every book. Owned by the caller of form_desired.
 // hold: hold-band-v1 (v8 R-4) per-name state; empty until the kernel first runs.
+// adv_dollars, nav: adv-hold-v1 (v8 R-5) inputs of the decision, filled by the NAV replay before
+// form_desired (one raw-dollar ADV per name, read where the desired weight is nonzero; the
+// run's NAV); caps: the pass's scratch.
 struct DesiredState {
   atx::engine::book::HoldBandState hold;
+  std::vector<atx::f64> adv_dollars;
+  atx::f64 nav{};
+  std::vector<atx::f64> caps;
 };
 // One externally pinned saved blend plus its bound price role, owned. Date-major.
 // volume is empty unless requested; present => finite >= 0 raw shares, absent => NaN.
@@ -86,9 +92,11 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // member with no_short[i] != 0 whose aim is 0 there (the zeroed shorts, and an exact-0
 // tied-rank aim) is reset to 0 after the group demeaning, before the OLS.
 // state (v8): hold-band-v1 reads and advances state->hold between the tied ranks and the
-// demean (out.hold_moved / hold_kept / hold_first_set); InvalidArgument without a state when
-// the hold band is on. With the hold band off the state is not read and the arithmetic is the
-// pre-v8 construction's, operation for operation.
+// demean (out.hold_moved / hold_kept / hold_first_set); adv-hold-v1 caps the desired target
+// after the post-processing of a rebalance that proceeds, from state->adv_dollars and
+// state->nav (out.adv_*). InvalidArgument without a state (or its ADV row and NAV) when an
+// option needs it. With both off the state is not read and the arithmetic is the pre-v8
+// construction's, operation for operation.
 [[nodiscard]] atx::core::Result<bool> form_desired(
     const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
     std::vector<std::pair<atx::f64, atx::usize>>& row, std::vector<atx::f64>& desired,
@@ -98,8 +106,8 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // only then do recipes, CSVs and summaries carry construction keys/columns (the
 // default path emits none).
 [[nodiscard]] bool construction_active(const TargetReplayConfig& cfg);
-// "<rule>[+neutral-<id>][+band-<X>][+hold-band-<B>]" (id: price-risk-v1 | price-risk-ind-v1 |
-// price-risk-ind-v2; X, B: shortest round-trip decimal; B only when > 0).
+// "<rule>[+neutral-<id>][+band-<X>][+hold-band-<B>][+adv-hold-<Q>]" (id: price-risk-v1 |
+// price-risk-ind-v1 | price-risk-ind-v2; X, B, Q: shortest round-trip decimal; B only when > 0).
 [[nodiscard]] std::string construction_rule_id(const TargetReplayConfig& cfg);
 // Construction recipe keys as a JSON object text; empty when not active.
 [[nodiscard]] std::string construction_recipe_json(const TargetReplayConfig& cfg);

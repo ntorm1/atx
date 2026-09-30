@@ -26,7 +26,8 @@ namespace atx::impl::strategy {
 //   optional nav keys (v8; absent = off = 0, and the NAV recipe recomputed without them
 //        hashes exactly as before: each enters the recipe only when on): warm_start_sessions
 //        (the nav verb's --warm-start-sessions K, an unsigned integer <= 4096), hold_band
-//        (--hold-band B, v8 R-4; B = 0 hashes as absent),
+//        (--hold-band B, v8 R-4; B = 0 hashes as absent), adv_hold_q (--adv-hold-q Q, v8 R-5;
+//        0 = off; decision.json then records the cap pass under adv_hold),
 //   executables {"atx-equity-strategy-targets": sha, "atx-equity-strategy-ic": sha},
 //   source.git_sha (40 hex), seal {policy "research-seal-v1", exclusive_session
 //   "2025-01-01"}, owner_gate (null, or {owner, ruling, date}),

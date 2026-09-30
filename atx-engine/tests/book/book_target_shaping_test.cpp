@@ -179,4 +179,118 @@ TEST(BookTargetShaping, HoldBandRefusesBadInputWithoutChangingAnything) {
   EXPECT_TRUE(eb::apply_hold_band(rank, row, std::vector<u8>{1, 0, 1}, 0.1, ok));
 }
 
+// ---- cap_pro_rata_one_pass (R-5, adv-hold-v1) ----
+
+f64 side_gross(const std::vector<f64> &w, f64 sign) {
+  f64 g = 0.0;
+  for (const f64 x : w) {
+    g += (sign > 0.0 ? x > 0.0 : x < 0.0) ? std::abs(x) : 0.0;
+  }
+  return g;
+}
+
+// No name above its cap (the large-Q identity): nothing is touched, bit for bit.
+TEST(BookTargetShaping, CapWithoutBreachIsUntouchedBitForBit) {
+  Rng g{11U};
+  std::vector<f64> w(50U);
+  for (auto &x : w) {
+    x = g.uni() - 0.5;
+  }
+  w[7] = 0.0;
+  const std::vector<f64> before = w;
+  std::vector<f64> caps(w.size(), 1e9);
+  caps[3] = std::numeric_limits<f64>::infinity();
+  caps[7] = kNaN; // a zero weight's cap is never read
+  const auto stats = eb::cap_pro_rata_one_pass(w, caps);
+  ASSERT_TRUE(stats) << stats.error().to_string();
+  for (usize i = 0U; i < w.size(); ++i) {
+    EXPECT_EQ(bits(w[i]), bits(before[i])) << i;
+  }
+  for (const auto *s : {&stats->longs, &stats->shorts}) {
+    EXPECT_EQ(s->clipped, 0U);
+    EXPECT_EQ(s->clipped_mass, 0.0);
+    EXPECT_EQ(s->unplaced_mass, 0.0);
+    EXPECT_EQ(s->residual_names, 0U);
+    EXPECT_EQ(s->residual_mass, 0.0);
+  }
+}
+
+// Clipped names sit at their cap and the clipped mass goes to the same side's unclipped names in
+// proportion to their weight: each side's gross is preserved; the other side is untouched.
+TEST(BookTargetShaping, CapClipsAndSpreadsProRataInsideTheSide) {
+  std::vector<f64> w{0.5, 0.3, 0.2, -0.6, -0.4, 0.0};
+  const std::vector<f64> caps{0.4, 1.0, 1.0, 0.5, 1.0, 0.0};
+  const f64 longs = side_gross(w, 1.0), shorts = side_gross(w, -1.0);
+  const auto stats = eb::cap_pro_rata_one_pass(w, caps);
+  ASSERT_TRUE(stats) << stats.error().to_string();
+  EXPECT_EQ(w[0], 0.4);
+  EXPECT_DOUBLE_EQ(w[1], 0.3 * (1.0 + 0.1 / 0.5)); // E .1 over U .5
+  EXPECT_DOUBLE_EQ(w[2], 0.2 * (1.0 + 0.1 / 0.5));
+  EXPECT_EQ(w[3], -0.5);
+  EXPECT_DOUBLE_EQ(w[4], -0.4 * (1.0 + 0.1 / 0.4));
+  EXPECT_EQ(bits(w[5]), bits(0.0));
+  EXPECT_NEAR(side_gross(w, 1.0), longs, 1e-15);
+  EXPECT_NEAR(side_gross(w, -1.0), shorts, 1e-15);
+  EXPECT_EQ(stats->longs.clipped, 1U);
+  EXPECT_NEAR(stats->longs.clipped_mass, 0.1, 1e-15);
+  EXPECT_EQ(stats->shorts.clipped, 1U);
+  EXPECT_NEAR(stats->shorts.clipped_mass, 0.1, 1e-15);
+  EXPECT_EQ(stats->longs.residual_names + stats->shorts.residual_names, 0U);
+  EXPECT_EQ(stats->longs.unplaced_mass + stats->shorts.unplaced_mass, 0.0);
+}
+
+// One pass only: a name the spreading lifts above its own cap stays there and is reported as
+// residual breach (names, summed and largest excess), never clipped again.
+TEST(BookTargetShaping, CapResidualBreachIsReportedNotRepassed) {
+  std::vector<f64> w{0.5, 0.45, 0.05};
+  const std::vector<f64> caps{0.4, 0.5, 1.0};
+  const auto stats = eb::cap_pro_rata_one_pass(w, caps);
+  ASSERT_TRUE(stats) << stats.error().to_string();
+  const f64 scale = 1.0 + 0.1 / 0.5;
+  EXPECT_EQ(w[0], 0.4);
+  EXPECT_DOUBLE_EQ(w[1], 0.45 * scale); // .54 > .5: left above its cap
+  EXPECT_DOUBLE_EQ(w[2], 0.05 * scale);
+  EXPECT_EQ(stats->longs.clipped, 1U);
+  EXPECT_EQ(stats->longs.residual_names, 1U);
+  EXPECT_NEAR(stats->longs.residual_mass, 0.45 * scale - 0.5, 1e-15);
+  EXPECT_NEAR(stats->longs.residual_max, 0.45 * scale - 0.5, 1e-15);
+  EXPECT_NEAR(side_gross(w, 1.0), 1.0, 1e-15);
+}
+
+// Every name of a side clipped: the mass has nowhere to go (unplaced) and the side shrinks; a zero
+// cap gives +0, never -0.
+TEST(BookTargetShaping, CapUnplacedMassWhenTheWholeSideIsClipped) {
+  std::vector<f64> w{0.5, 0.5, -0.3, -0.7};
+  const std::vector<f64> caps{0.2, 0.3, 0.0, 2.0};
+  const auto stats = eb::cap_pro_rata_one_pass(w, caps);
+  ASSERT_TRUE(stats) << stats.error().to_string();
+  EXPECT_EQ(w[0], 0.2);
+  EXPECT_EQ(w[1], 0.3);
+  EXPECT_EQ(stats->longs.clipped, 2U);
+  EXPECT_NEAR(stats->longs.unplaced_mass, 0.5, 1e-15);
+  EXPECT_NEAR(side_gross(w, 1.0), 0.5, 1e-15);
+  EXPECT_EQ(bits(w[2]), bits(0.0)); // cap 0: +0
+  EXPECT_DOUBLE_EQ(w[3], -0.7 * (1.0 + 0.3 / 0.7));
+  EXPECT_NEAR(side_gross(w, -1.0), 1.0, 1e-15);
+  EXPECT_EQ(stats->shorts.unplaced_mass, 0.0);
+}
+
+TEST(BookTargetShaping, CapRefusesBadInputWithoutChangingAnything) {
+  const auto refused = [](std::vector<f64> w, std::vector<f64> caps) {
+    const std::vector<f64> before = w;
+    const auto result = eb::cap_pro_rata_one_pass(w, caps);
+    bool unchanged = true;
+    for (usize i = 0U; i < w.size(); ++i) {
+      unchanged = unchanged && bits(w[i]) == bits(before[i]);
+    }
+    return !result && unchanged;
+  };
+  EXPECT_TRUE(refused({0.5, -0.5}, {0.1}));        // width
+  EXPECT_TRUE(refused({0.5, kNaN}, {0.1, 0.1}));    // weight NaN
+  EXPECT_TRUE(refused({0.5, -0.5}, {0.1, kNaN}));   // NaN cap on a weight
+  EXPECT_TRUE(refused({0.5, -0.5}, {0.1, -0.1}));   // negative cap
+  std::vector<f64> ok{0.5, 0.0};
+  EXPECT_TRUE(eb::cap_pro_rata_one_pass(ok, std::vector<f64>{0.1, kNaN})); // zero weight: unread
+}
+
 } // namespace atx_test_v8_book_target_shaping

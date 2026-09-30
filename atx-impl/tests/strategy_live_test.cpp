@@ -1742,3 +1742,171 @@ TEST(HoldBand, DecideVerbCarriesState) {
   ASSERT_FALSE(half);
   EXPECT_NE(half.error().to_string().find("go together"), std::string::npos);
 }
+
+// ---- v8 R-5: adv-hold-v1 (ADV holding cap) ----
+namespace {
+// One decision of a flat book (the desired target does not depend on the holdings) and the caps
+// adv-hold-v1 applies there: Q x the execution ADV of the fill session d + 1 / (L x NAV), the
+// replay's own expression (+inf with the cap off).
+struct CapCheck {
+  st::detail::NavDecision dec;
+  std::vector<f64> caps;
+};
+CapCheck capped_decision(const st::NavReplayInput& in, const st::NavReplayConfig& cfg, usize d) {
+  const usize n = in.target.instruments;
+  CapCheck out{{}, std::vector<f64>(n, std::numeric_limits<f64>::infinity())};
+  auto dec = st::detail::nav_decide(in, cfg, d, std::vector<f64>(n, 0.0), cfg.initial_nav);
+  EXPECT_TRUE(dec) << d << ": " << (dec ? "" : dec.error().to_string());
+  const auto adv = st::detail::execution_adv(in, cfg, d + 1);
+  EXPECT_TRUE(adv) << (adv ? "" : adv.error().to_string());
+  if (!dec || !adv) return out;
+  out.dec = std::move(*dec);
+  if (cfg.target.adv_hold_q > 0)
+    for (usize i = 0; i < n; ++i)
+      out.caps[i] = cfg.target.adv_hold_q * (*adv)[i] /
+                    (cfg.target.aim_leverage * cfg.initial_nav);
+  return out;
+}
+// A 12-name book whose ADV (about $1e7) is near its NAV ($1e7): at Q = .1 the cap binds on the
+// larger rank weights and the pro rata spreading lifts some names above their own cap.
+struct CapBench {
+  Panel panel = market_panel(70, 12, 5, 2e5);
+  Fields fields{panel, 9};
+  st::NavReplayInput input() const { return {panel.target(), panel.volume, fields.view()}; }
+};
+} // namespace
+
+// After the one pass every weighted name is at or below its cap, except the residual breach the
+// decision reports: its names, summed excess and largest excess are exactly what is left above
+// the caps (recomputed from the execution ADV).
+TEST(AdvHold, NoNameAboveCapAfterOnePassOrReported) {
+  const CapBench bench;
+  const auto in = bench.input();
+  auto cfg = v61_book(1e7);
+  cfg.target.adv_hold_q = 0.1;
+  usize rows = 0, clipped = 0;
+  for (usize d = 25; d <= 65; d += 5) {
+    const auto c = capped_decision(in, cfg, d);
+    if (!c.dec.rebalance) continue;
+    ++rows;
+    usize over = 0;
+    f64 mass = 0, worst = 0;
+    for (usize i = 0; i < bench.panel.n; ++i) {
+      if (c.dec.desired[i] == 0) continue;
+      const f64 excess = std::abs(c.dec.desired[i]) - c.caps[i];
+      if (!(excess > 0)) continue;
+      ++over; mass += excess; worst = std::max(worst, excess);
+    }
+    const auto& k = c.dec.construction;
+    EXPECT_EQ(over, k.adv_residual_names) << d;
+    EXPECT_NEAR(mass, k.adv_residual_mass, 1e-15) << d;
+    EXPECT_EQ(bits(worst), bits(k.adv_residual_max)) << d;
+    clipped += k.adv_clipped;
+  }
+  EXPECT_GT(rows, 3U);
+  EXPECT_GT(clipped, 0U); // the cap binds on this book
+}
+
+// The cap acts on the projected target: clipped names sit exactly at their cap, every unclipped
+// name of a side is scaled by one common factor, signs and zeros are kept, and each side's
+// gross (hence the net) is the projection's.
+TEST(AdvHold, SideGrossPreserved) {
+  const CapBench bench;
+  const auto in = bench.input();
+  const auto off = v61_book(1e7);
+  auto on = off;
+  on.target.adv_hold_q = 0.1;
+  usize compared = 0, clipped = 0;
+  for (usize d = 25; d <= 65; d += 5) {
+    const auto a = capped_decision(in, off, d);
+    const auto b = capped_decision(in, on, d);
+    if (!a.dec.rebalance) continue;
+    ASSERT_TRUE(b.dec.rebalance) << d;
+    const f64 unplaced = b.dec.construction.adv_unplaced_mass;
+    std::array<f64, 2> before{}, after{}, factor{0.0, 0.0};
+    for (usize i = 0; i < bench.panel.n; ++i) {
+      const f64 w0 = a.dec.desired[i], w1 = b.dec.desired[i];
+      if (w0 == 0) {
+        EXPECT_EQ(bits(w1), bits(w0)) << d << ' ' << i;
+        continue;
+      }
+      EXPECT_GT(w0 * w1, 0) << d << ' ' << i;
+      const usize side = w0 > 0 ? 0U : 1U;
+      before[side] += std::abs(w0); after[side] += std::abs(w1);
+      const f64 cap = b.caps[i];
+      if (std::abs(w0) > cap) {
+        EXPECT_EQ(bits(std::abs(w1)), bits(cap)) << d << ' ' << i;
+        ++clipped;
+      } else if (factor[side] == 0) {
+        factor[side] = w1 / w0;
+      } else {
+        EXPECT_NEAR(w1 / w0, factor[side], 1e-14) << d << ' ' << i;
+      }
+    }
+    // Only a side with every name clipped (unplaced mass) may shrink, by exactly that mass.
+    EXPECT_NEAR(after[0] + after[1] + unplaced, before[0] + before[1], 1e-12) << d;
+    if (unplaced == 0) {
+      EXPECT_NEAR(after[0], before[0], 1e-12) << d;
+      EXPECT_NEAR(after[1], before[1], 1e-12) << d;
+    }
+    ++compared;
+  }
+  EXPECT_GT(compared, 3U);
+  EXPECT_GT(clipped, 0U);
+}
+
+// A Q no name reaches is the accepted construction byte for byte in every daily and events CSV
+// (the recipe and summary add only the adv-hold keys, with no clip and no breach recorded).
+TEST(AdvHold, LargeQIsByteIdentical) {
+  PinBench bench;
+  bench.nav_recipe("plain", {});
+  bench.nav_recipe("large", {"--adv-hold-q", "1e9"});
+  const auto root = bench.dir.path;
+  usize compared = 0;
+  for (const auto& e : std::filesystem::directory_iterator(root / "plain")) {
+    const auto name = e.path().filename().string();
+    if (name == "recipe.json" || name == "summary.json") continue;
+    EXPECT_TRUE(file_bytes(root / "plain" / name) == file_bytes(root / "large" / name)) << name;
+    ++compared;
+  }
+  EXPECT_GE(compared, 4U);
+  const auto plain = read_json(root / "plain" / "recipe.json");
+  auto large = read_json(root / "large" / "recipe.json");
+  EXPECT_EQ(large.at("rule"), plain.at("rule").get<std::string>() + "+adv-hold-1e+09");
+  EXPECT_EQ(large.at("adv_hold_q"), 1e9);
+  EXPECT_TRUE(large.at("adv_hold_rule").is_string());
+  large.erase("adv_hold_q"); large.erase("adv_hold_rule"); large["rule"] = plain.at("rule");
+  EXPECT_EQ(large, plain);
+  const auto summary = read_json(root / "large" / "summary.json");
+  ASSERT_FALSE(summary.at("scenarios").empty());
+  for (const auto& s : summary.at("scenarios")) {
+    const auto& cap = s.at("construction").at("adv_hold");
+    EXPECT_GT(cap.at("decisions").get<usize>(), 0U);
+    EXPECT_EQ(cap.at("clipped_names_total"), 0);
+    EXPECT_EQ(cap.at("residual_breach").at("names_total"), 0);
+  }
+}
+
+// The deploy key nav.adv_hold_q: 0 hashes as absent, Q > 0 is part of the pin both ways, and the
+// decision records its cap pass in decision.json (adv_hold).
+TEST(AdvHold, DeployPinAndDecisionRecord) {
+  PinBench bench;
+  const auto plain = bench.nav_recipe("nav-plain", {});
+  const auto capped = bench.nav_recipe("nav-adv", {"--adv-hold-q", ".1"});
+  EXPECT_NE(plain, capped);
+  EXPECT_EQ(bench.nav_recipe("nav-adv0", {"--adv-hold-q", "0"}), plain);
+  EXPECT_EQ(outcome_text(bench.decide(plain, [](Json& nav) { nav["adv_hold_q"] = 0.0; })),
+            "verified");
+  EXPECT_TRUE(recipe_mismatch(bench.decide(capped, [](Json&) {})));
+  EXPECT_TRUE(recipe_mismatch(bench.decide(plain, [](Json& nav) { nav["adv_hold_q"] = 0.1; })));
+  EXPECT_EQ(outcome_text(bench.decide(capped, [](Json& nav) { nav["adv_hold_q"] = 0.1; })),
+            "verified");
+  const auto decision =
+      read_json(bench.dir.path / ("decide-" + std::to_string(bench.runs - 1)) / "decision.json");
+  EXPECT_EQ(decision.at("adv_hold").at("q"), 0.1);
+  EXPECT_EQ(decision.at("adv_hold").at("nav"), 1e9);
+  EXPECT_TRUE(decision.at("adv_hold").contains("residual_names"));
+  const auto malformed = bench.decide(capped, [](Json& nav) { nav["adv_hold_q"] = "0.1"; });
+  ASSERT_FALSE(malformed);
+  EXPECT_NE(malformed.error().to_string().find("nav.adv_hold_q"), std::string::npos);
+}

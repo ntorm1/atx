@@ -257,6 +257,9 @@ co::Status parse_optional_nav(const Json& nav, Deploy& out) {
     if (!number(nav, "hold_band", band)) return nav_missing("hold_band");
     out.run.target.hold_band = band;
   }
+  if (nav.contains("adv_hold_q")) { // v8 R-5: nav --adv-hold-q Q (0 = off hashes as absent)
+    if (!number(nav, "adv_hold_q", out.run.target.adv_hold_q)) return nav_missing("adv_hold_q");
+  }
   return co::Ok();
 }
 // nav: the construction and NAV flags of the deployed (primary) book, as the nav verb
@@ -1300,6 +1303,15 @@ Json hold_band_json(const Record& r) {
       {"state_out", "targets.csv rank_set,desired_prev: the state after this decision, the "
                     "next decide's positions columns"}};
 }
+// v8 R-5: the decision's ADV holding cap pass (desired-weight units; 0 without a rebalance).
+Json adv_hold_json(const Record& r) {
+  const auto& c = r.facts.dec.construction;
+  return Json{{"q", r.deploy.base.target.adv_hold_q}, {"nav", r.deploy.base.initial_nav},
+      {"clipped_names", c.adv_clipped}, {"clipped_mass", c.adv_clipped_mass},
+      {"unplaced_mass", c.adv_unplaced_mass}, {"residual_names", c.adv_residual_names},
+      {"residual_mass", c.adv_residual_mass}, {"residual_max", c.adv_residual_max},
+      {"rule", "the NAV run's recipe adv_hold_rule (NAV = its initial_nav)"}};
+}
 Json decision_summary(const Record& r) {
   const auto& in = r.inputs; const auto& published = r.published;
   Json summary{{"schema", book_decision_schema}, {"status", "complete"},
@@ -1334,6 +1346,7 @@ Json decision_summary(const Record& r) {
         {"basis", "bitwise target weight vs the positions file's target_weight at the as-of "
                   "(an absent name is +0)"}};
   if (hold_band_declared(r.deploy.base.target)) summary["hold_band"] = hold_band_json(r);
+  if (adv_hold_on(r.deploy.base.target)) summary["adv_hold"] = adv_hold_json(r);
   return summary;
 }
 void report(std::ostream& progress, const Record& r) {

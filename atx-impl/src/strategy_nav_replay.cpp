@@ -730,9 +730,19 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
 // false when the guard skips the rebalance (current weights kept, forced exits
 // still apply); `out` receives the decision's construction record. With
 // locate-in-aim, shared.no_short (the special tier at d) zeroes negative aims first.
-co::Result<bool> form_desired_target(const TargetReplayInput& x, const TargetReplayConfig& target,
+// v8 adv-hold-v1: the cap's inputs are every member's raw-dollar ADV the EXECUTE of this
+// decision's fills reads (window_liquidity at session d + 1: rows <= d) and the run's NAV.
+co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                      usize d, Construction& shared, ConstructionDay& out) {
-  return detail::form_desired(x, target, d, shared.row, shared.desired, shared.price, out,
+  if (cfg.target.adv_hold_q > 0) {
+    auto& adv = shared.state.adv_dollars;
+    adv.assign(x.instruments, nan);
+    for (usize i = 0; i < x.instruments; ++i)
+      if (x.member[d * x.instruments + i])
+        adv[i] = window_liquidity(x, x.volume, cfg, d + 1, i).adv;
+    shared.state.nav = cfg.initial_nav;
+  }
+  return detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
                               shared.no_short, &shared.state);
 }
 // Engine predictors of name i as of decision d (row d fields and prices, presence
@@ -797,7 +807,7 @@ bool short_guarded(const BorrowTiers& tiers, std::span<const u8> no_locate, usiz
 // target (form_desired_target). Returns the effective rebalance (false when the guard
 // skips it); `construction` receives the decision's record.
 co::Result<bool> decide_construction(const TargetReplayInput& x, const NavFinancingFields& fields,
-                                     const TargetReplayConfig& target, usize d, bool cadence,
+                                     const NavReplayConfig& cfg, usize d, bool cadence,
                                      std::span<const u8> no_locate, Construction& shared,
                                      BorrowTiers& tiers, TierCensus& census,
                                      ConstructionDay& construction) {
@@ -808,7 +818,7 @@ co::Result<bool> decide_construction(const TargetReplayInput& x, const NavFinanc
     shared.no_short[i] = short_guarded(tiers, no_locate, i) ? u8{1} : u8{0};
   bool rebalance = cadence;
   if (rebalance) {
-    ATX_TRY(rebalance, form_desired_target(x, target, d, shared, construction));
+    ATX_TRY(rebalance, form_desired_target(x, cfg, d, shared, construction));
   }
   construction.rebalance = rebalance;
   return co::Ok(rebalance);
@@ -1120,7 +1130,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       TierCensus census;
       ConstructionDay construction;
       const bool cadence = cadence_day(t, begin, target.cadence);
-      ATX_TRY(const bool rebalance, decide_construction(x, fields, target, t, cadence, {},
+      ATX_TRY(const bool rebalance, decide_construction(x, fields, base, t, cadence, {},
                                                         shared, tiers, census, construction));
       for (usize k = 0; k < count; ++k) {
         ATX_TRY_VOID(plan_decision(ctxs[k], *books[k], shared, tiers, cache, t, rebalance,
@@ -2584,7 +2594,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "ignored without --emit-holdings)]] "
                "[--warm-start-sessions 0 (K > 0: decide and trade from score_begin - K, "
                "score from score_begin; K <= the role's score_begin)] "
-               "[--hold-band B (aim-partial-v5; v8 hold-band-v1 rank hysteresis, B in [0, 1])]\n"
+               "[--hold-band B (aim-partial-v5; v8 hold-band-v1 rank hysteresis, B in [0, 1])] "
+               "[--adv-hold-q Q (aim-partial-v5; v8 adv-hold-v1 holding cap Q x ADV, 0 = off)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -2636,6 +2647,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--exit-rate") cfg.target.exit_rate = real();
       else if (key == "--hold-band") cfg.target.hold_band = real(); // v8 R-4 hold-band-v1
+      else if (key == "--adv-hold-q") cfg.target.adv_hold_q = real(); // v8 R-5 adv-hold-v1
       else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
@@ -2784,7 +2796,7 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
     BorrowTiers tiers(n, tiered);
     TierCensus census;
     out.cadence = (d - x.decision_begin) % cfg.target.cadence == 0;
-    ATX_TRY(out.rebalance, decide_construction(x, in.financing, cfg.target, d, out.cadence,
+    ATX_TRY(out.rebalance, decide_construction(x, in.financing, cfg, d, out.cadence,
                                                no_locate, shared, tiers, census,
                                                out.construction));
     out.current.resize(n); out.target.resize(n); out.rule.resize(n);

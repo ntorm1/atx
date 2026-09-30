@@ -85,7 +85,21 @@ struct TargetReplayConfig {
   // kernel still runs and carries its state); only b > 0 writes recipe, rule-id and summary
   // keys.
   std::optional<atx::f64> hold_band{};
+  // adv-hold-v1 (v8 R-5, ADV holding cap; aim-partial-v5, NAV replay and decide only). 0
+  // (default): off, every output unchanged. Q > 0: on every rebalance that proceeds, after the
+  // post-processing (the projection), |desired_i| <= Q ADV_i / (aim_leverage NAV) with ADV_i
+  // the raw-dollar ADV the execution trade limit reads for this decision's fills (session
+  // d + 1: rows [d + 1 - w, d + 1), the NAV replay's liquidity window) and NAV the run's
+  // initial_nav; the clipped mass is spread pro rata over the same side's unclipped names,
+  // one pass (engine::book::cap_pro_rata_one_pass), and the residual breach is reported. A
+  // pass that clips nothing leaves the desired target bit for bit. Writes recipe, rule-id and
+  // summary keys.
+  atx::f64 adv_hold_q{};
 };
+// adv-hold-v1 is on (Q > 0).
+[[nodiscard]] constexpr bool adv_hold_on(const TargetReplayConfig& c) noexcept {
+  return c.adv_hold_q > 0;
+}
 // hold-band-v1 is on (the kernel runs) / declared (b > 0: recipe, rule id and summary keys).
 [[nodiscard]] constexpr bool hold_band_on(const TargetReplayConfig& c) noexcept {
   return c.hold_band.has_value();
@@ -130,6 +144,12 @@ struct ConstructionDay {
   // hold-band-v1 (v8 R-4): members whose desired took the fresh rank (first set included) and
   // members that kept their previous desired value. 0 unless the kernel ran; no CSV column.
   atx::usize hold_moved{}, hold_kept{}, hold_first_set{};
+  // adv-hold-v1 (v8 R-5), both sides summed, in desired-weight units (x aim_leverage x NAV for
+  // dollars): names clipped to their cap and the mass clipped, the mass no unclipped name could
+  // take, and the residual breach after the one pass (names, summed and largest excess over
+  // the cap). 0 unless the cap pass ran; no CSV column.
+  atx::usize adv_clipped{}, adv_residual_names{};
+  atx::f64 adv_clipped_mass{}, adv_unplaced_mass{}, adv_residual_mass{}, adv_residual_max{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input
