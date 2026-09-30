@@ -19,7 +19,9 @@
    parent's fields dir is pinned as built; the candidate cache and fit work dir are derived from the role; the gate lists
    the new members (require any); marginal IC on the parent's combined signal with the parent's composition weights as
    the theme regressors (inputs.reference_weights, the file the pool names); "receipts": "every-phase",
-   "verdict": true, summ.dsr_n "ledger+1"; the OD-2 caps written into runner.phases when they apply;
+   "verdict": true, summ.dsr_n "ledger+1", summ.origin = the new members' origin class (the most searched of them;
+   review C-2: the cell is scored under nav_summ --protocol v8, the parent's summ.extra kept); the OD-2 caps written
+   into runner.phases when they apply;
 6. locks it (every pin computed from its file). A missing input leaves the spec unlocked (exit 3: `lock --write` later).
 
 Nothing is written when the registration, the library, the plan or the spec template fails (exit 2). A library that
@@ -87,9 +89,16 @@ def parent_outputs(spec: dict, root: Path) -> dict:
             "w": f"{w_base}-{c.ic_attempt('w', w_base)[0]}", "fit": c.out(spec["fit"]["output"]), "nav": nav, "s2": s2}
 
 
+def wave_origin(origins: list[str]) -> str:
+    """The origin class of a library wave's cell (contract K5): its members' class, or the most searched of their
+    classes (mined over grid over prior) when they differ."""
+    return max(origins, key=G.ORIGINS.index)
+
+
 def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_rel: str, parent_lib_rel: str,
-                new_ids: list[str], outs: dict, root: Path) -> dict:
-    """The child cycle spec: the parent's with every output renamed by the name template (see the module doc)."""
+                new_ids: list[str], outs: dict, root: Path, origin: str = "prior") -> dict:
+    """The child cycle spec: the parent's with every output renamed by the name template (see the module doc).
+    ``origin`` is the cell's origin class (summ.origin, review C-2: nav_summ --origin of its ledger line)."""
     ren = lambda text: G.rename(text, parent_name, name)  # noqa: E731
     s = copy.deepcopy(parent)
     s["name"] = name
@@ -141,6 +150,12 @@ def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_
     if "summ" in s and s["summ"].get("ledger"):
         s["summ"] = {k: v for k, v in dict(s["summ"], dsr_n=RC.DSR_FROM_LEDGER, cells_from_ledger=True).items()
                      if k != "cells"}
+    if "summ" in s:   # review C-2: the cell's K5 class; the parent's extra (its --protocol v8, seed, draws) is kept
+        extra = list(s["summ"].get("extra", []))
+        if "--origin" in extra:
+            k = extra.index("--origin")
+            del extra[k:k + 2]
+        s["summ"] = dict(s["summ"], extra=extra, origin=origin)
     s["receipts"], s["verdict"] = "every-phase", True
     base = RC.Cycle(s, RC.Resolver(root), verify=False)
     caps = {p: base.phase_caps(p) for p in ("u", "w")}
@@ -231,8 +246,10 @@ def add_alpha(a) -> int:
     if problems:
         raise AddAlphaError("K1 static validation failed: " + "; ".join(problems))
     lib_name, recipe_name = G.output_names(lib)
+    alphas = {x["id"]: x for x in reg["alphas"]}
     spec = derive_spec(parent_spec, a.parent, name, f"{STRATEGIES}/{lib_name}", f"{STRATEGIES}/{recipe_name}",
-                       f"{STRATEGIES}/{parent_file}", new_ids, outs, root)
+                       f"{STRATEGIES}/{parent_file}", new_ids, outs, root,
+                       origin=wave_origin([alphas[i]["origin"] for i in new_ids]))
     RC.validate_spec(spec)
     # every check passed: write
     (strategies / G.REGISTRY_PATH).write_bytes(G.encode_data(reg))
@@ -240,7 +257,6 @@ def add_alpha(a) -> int:
     G.library_file(strategies, name).write_bytes(G.encode_data(lib))
     (strategies / lib_name).write_bytes(library_bytes)
     (strategies / recipe_name).write_bytes(G.encode(G.build_recipe(reg, lib, library_bytes, strategies)))
-    alphas = {x["id"]: x for x in reg["alphas"]}
     spec_rel = f"{SPECS_V8}/lib-{name}.json"
     (root / prereg_rel).write_text(stub(name, lib, a.parent, f"{STRATEGIES}/{parent_file}", [alphas[i] for i in new_ids],
                                         spec_rel), encoding="utf-8", newline="\n")

@@ -12,6 +12,8 @@
                            (research_gc.py: stores no listed spec uses; deleted only with --apply)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
+                           (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell)
 
 Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
   --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's
@@ -31,7 +33,16 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
                   construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
                   research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
-  build           "equity" | "equity-rel": resolves exes (defaults or bare names) and env_path_prepend (BUILDS)
+  resume          (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec and argv
+                  SHA-256); a done NAV is scored only when its spec digest (else its argv digest, from the binding or
+                  its receipt's command) matches the current spec: a mismatch is a pin stop (exit 3) naming both
+  admission lines (review C-7) the gate of a v8 cycle with a ledger first appends one chained admission line per
+                  listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
+  summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
+                  "verdict": true spec, or --protocol v8 in summ.extra) always runs nav_summ --protocol v8 (seed
+                  20260929, 4,999 draws) and, with a ledger, --origin summ.origin; a verdict spec's summ also passes
+                  --dsr-ledger <the ledger> and the verdict's DSR is nav_summ's deflated_ledger (review C-1)
+  build          "equity" | "equity-rel": resolves exes (defaults or bare names) and env_path_prepend (BUILDS)
   out_root        a root-relative dir every relative output name is placed under; ic.cache and fit.work_dir, when
                   omitted, derive to <out_root or build-equity>/{candidate-cache,fit-work}/<role sha16>-<window id>
                   (shared, content-keyed; never suffixed)
@@ -131,9 +142,11 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cycle_admission  # noqa: E402
+import cycle_resume  # noqa: E402
 import research_ledger  # noqa: E402
 import research_tree  # noqa: E402
-from cycle_verdict import SUMM_JSON, PBO_JSON, step_key, write_verdict as _write_verdict  # noqa: E402
+from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
 
 SCHEMA = "atx.research-cycle-spec/v1"
 PHASES = ("fields", "check", "ref", "u", "fit", "card", "marginal", "gate", "w", "nav", "monitor", "summ")
@@ -166,6 +179,7 @@ OPERAND = re.compile(r"\{(input|out):([A-Za-z0-9_]+)\}")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
                 ("finra_short_volume", "--finra-short-volume"))
 DSR_FROM_LEDGER = "ledger+1"           # summ.dsr_n: resolved at scoring time from the trial ledger
+SUMM_V8 = "v8"                         # nav_summ --protocol v8: seed 20260929, 4,999 draws, origin + window_id lines
 DEFAULT_OUT_ROOT = "build-equity"      # derived cache / fit roots and the cycle dir when the spec has no out_root
 RECEIPT_MODES = ("every-phase",)       # spec "receipts": the direct phases run through the bounded runner too
 CAP_KEYS = ("seconds", "max_rss_mib", "min_free_mib")
@@ -327,6 +341,7 @@ def validate_v8_keys(spec: dict) -> None:
     if "ledger_copy" in spec.get("summ", {}) and not (isinstance(spec["summ"]["ledger_copy"], str) and
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
+    validate_summ_protocol(spec)
     inputs = spec["inputs"]
     sec = [k for k in SEC_INPUTS if k in inputs]
     if sec and len(sec) != len(SEC_INPUTS):
@@ -346,6 +361,30 @@ def option_value(flags: list, option: str) -> str | None:
     """The value after `option` in a flag list (None when absent or last)."""
     k = flags.index(option) if option in flags else -1
     return flags[k + 1] if 0 <= k < len(flags) - 1 else None
+
+
+def summ_protocol(spec: dict) -> str | None:
+    """"v8" when the spec's scoring step runs under the v8 pre-registration (review C-2): a verdict spec ("verdict":
+    true, a v8 key) or "--protocol v8" in summ.extra. None otherwise: the v7 argv, unchanged."""
+    extra = spec.get("summ", {}).get("extra", [])
+    return SUMM_V8 if spec.get("verdict") is True or option_value(extra, "--protocol") == SUMM_V8 else None
+
+
+def validate_summ_protocol(spec: dict) -> None:
+    """summ.origin (contract K5 class of the cell, nav_summ --origin) and a verdict spec's protocol (review C-2)."""
+    sm = spec.get("summ")
+    if not isinstance(sm, dict):
+        return
+    extra = sm.get("extra", [])
+    if "origin" in sm:
+        origins = research_ledger.backtest_integrity().ORIGINS
+        if sm["origin"] not in origins:
+            raise CycleError(f"spec summ.origin must be one of {', '.join(origins)} (contract K5)", EXIT_USAGE)
+        if "--origin" in extra:
+            raise CycleError("spec summ: the origin is summ.origin or --origin in summ.extra, not both", EXIT_USAGE)
+    if spec.get("verdict") is True and option_value(extra, "--protocol") not in (None, SUMM_V8):
+        raise CycleError("spec verdict: a verdict cell is scored under nav_summ --protocol v8 (the v8 "
+                         "pre-registration); summ.extra asks for another protocol", EXIT_USAGE)
 
 
 def validate_marginal(spec: dict) -> None:
@@ -933,18 +972,39 @@ class Cycle:
         if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
             argv += [*cells] + ([] if pool else [n_out])
         argv += ["--dsr-n", str(self.dsr_n(ledger_n)), *sm.get("extra", [])]
+        ledger = self.ledger or sm.get("ledger")
+        if summ_protocol(s) == SUMM_V8:
+            argv += self.v8_summ_flags(ledger)
         if s.get("verdict"):
             argv += ["--json", f"{self.cycle_dir()}/{SUMM_JSON}"]
             if "--pbo" in sm.get("extra", []):
                 argv += ["--pbo-json", f"{self.cycle_dir()}/{PBO_JSON}"]
-        ledger = self.ledger or sm.get("ledger")
         if ledger:
             argv += ["--ledger", ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
+        if s.get("verdict"):   # review C-1: the verdict's DSR is the ledger's (N and V[SR] of v8-prereg item 3)
+            if not ledger:
+                raise CycleError("spec verdict: the verdict's DSR needs the sprint ledger of record (summ.ledger or "
+                                 "--ledger) for nav_summ --dsr-ledger (v8-prereg item 3)", EXIT_USAGE)
+            argv += ["--dsr-ledger", ledger]
         if pool:
             argv += ["--pool", *[nav for _, nav, _ in pool], "--pool-ids", ",".join(i for i, _, _ in pool)]
         elif not cells:
             argv.append(n_out)
         return self.always_step("summ", argv, [self.tool(sm["script"])], "nav_summ vs the reference cell")
+
+    def v8_summ_flags(self, ledger: str | None) -> list[str]:
+        """Review C-2: a v8 scoring step always carries nav_summ --protocol v8 (the pre-registered bootstrap seed and
+        draw count, the year table, origin + window_id + chain in the ledger line), added unless summ.extra has it;
+        with a ledger also --origin summ.origin (contract K5), which nav_summ requires there."""
+        sm = self.spec["summ"]
+        extra = sm.get("extra", [])
+        out = [] if option_value(extra, "--protocol") == SUMM_V8 else ["--protocol", SUMM_V8]
+        if ledger and "--origin" not in extra:
+            if not sm.get("origin"):
+                raise CycleError("spec summ: a v8 scoring step ledgers the cell with its origin class: set summ.origin "
+                                 "(prior | grid | mined, contract K5)", EXIT_USAGE)
+            out += ["--origin", sm["origin"]]
+        return out
 
     def dsr_n(self, ledger_n: int | None) -> int:
         """summ.dsr_n: the declared integer, or "ledger+1" = the ledger's N (research_ledger.ledger_n: the defect-rule
@@ -1449,8 +1509,14 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
+            if st.phase == "nav":           # review C-13: scored only when made from this spec
+                try:
+                    log(f"   binding: {cycle_resume.check_binding(cycle, st)}")
+                except cycle_resume.ResumeError as exc:
+                    raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
+            admission_trials(cycle, w_dir, log)
             try:
                 gate(cycle, w_dir, log)
             except CycleError:
@@ -1496,6 +1562,8 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
+            if st.phase == "nav":           # review C-13: what a later resume checks before scoring it
+                cycle_resume.write_binding(cycle, st)
             if st.phase == "summ":
                 copy_ledger(cycle, log)
         # --stop-after PHASE stops after the last step of that phase (every era's, in a roles: cycle)
@@ -1509,12 +1577,40 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
     return EXIT_OK
 
 
+def admission_trials(cycle, w_dir: str, log) -> None:
+    """Review C-7: the gate of a v8 cycle with a ledger of record (--ledger, else summ.ledger) first ledgers the
+    admission trials it reads, one chained line per listed candidate (cycle_admission.py); a v7 cycle writes none."""
+    rel = cycle.ledger or (cycle.spec.get("summ") or {}).get("ledger")
+    if not rel or summ_protocol(cycle.spec) != SUMM_V8:
+        return
+    try:
+        cycle_admission.ledger_admissions(cycle, rel, w_dir, log)
+    except ValueError as exc:
+        raise CycleError(f"HARD-STOP [gate]: admission trials not ledgered: {exc}") from exc
+
+
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
-    return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log)
+    try:
+        return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log,
+                              ledger_state(cycle))
+    except ValueError as exc:     # review C-1: no verdict DSR from a cell count; C-6: a broken ledger chain
+        raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
+
+
+def ledger_state(cycle) -> dict | None:
+    """{path, head, lines} of the sprint ledger of record (--ledger, else summ.ledger) when it exists: the chain head
+    (backtest_integrity.ledger_head, the chain verified) every verdict records (review C-6). None without one."""
+    rel = cycle.ledger or (cycle.spec.get("summ") or {}).get("ledger")
+    if not rel or not cycle.res.path(rel).is_file():
+        return None
+    bi = research_ledger.backtest_integrity()
+    p = cycle.res.path(rel)
+    return {"path": rel, "head": bi.ledger_head(p), "lines": len(bi.ledger_read(p))}
 
 
 def copy_ledger(cycle: Cycle, log) -> None:
-    """summ.ledger_copy: the trial ledger copied (e.g. into the sprint directory) after the cycle's summ."""
+    """summ.ledger_copy: the trial ledger copied (e.g. into the sprint directory) after the cycle's summ, with its chain
+    head logged (review C-6)."""
     sm = cycle.spec["summ"]
     if not sm.get("ledger_copy"):
         return
@@ -1523,7 +1619,11 @@ def copy_ledger(cycle: Cycle, log) -> None:
         raise CycleError(f"HARD-STOP [summ]: summ.ledger_copy: no ledger at {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)
-    log(f"   ledger copied: {src} -> {sm['ledger_copy']} (sha256 {sha256_file(dst)})")
+    try:
+        head = research_ledger.backtest_integrity().ledger_head(dst)
+    except ValueError as exc:
+        raise CycleError(f"HARD-STOP [summ]: summ.ledger_copy: {exc}") from exc
+    log(f"   ledger copied: {src} -> {sm['ledger_copy']} (sha256 {sha256_file(dst)}, chain head {head})")
 
 
 # ------------------------------------------------------------------ lock
@@ -1576,6 +1676,8 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
         return research_ledger.main(argv[1:])
+    if argv[:1] == ["ledger-defect"]:        # review C-3: a ledgered cell found invalid afterwards
+        return research_ledger.defect_main(argv[1:])
     if argv[:2] == ["cache", "gc"]:          # unreferenced candidate caches and fit work dirs: research_gc.py
         import research_gc  # noqa: PLC0415  (imports this module)
         return research_gc.main(argv[2:])

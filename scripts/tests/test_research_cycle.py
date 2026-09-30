@@ -9,6 +9,7 @@ RESEARCH_CYCLE_LIVE_ROOT=C:/atx-wt/pool-2 to also resolve the plan against the r
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -788,10 +789,17 @@ def v71_known() -> dict:
     return known
 
 
+def cell_line(cell: str) -> str:
+    """A legacy (v7, unchained) construction line of the trial ledger with the keys the readers use."""
+    tid = hashlib.sha256(cell.encode()).hexdigest()[:16]
+    return json.dumps({"schema": "atx.trial-ledger/v1", "kind": "construction", "count": 1, "cell": cell,
+                       "trial_id": tid}, sort_keys=True) + "\n"
+
+
 def write_ledger(root: Path, cells: list[str]) -> None:
     p = root / "build-equity" / "trials.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("".join(json.dumps({"kind": "construction", "cell": c}) + "\n" for c in cells), encoding="utf-8")
+    p.write_text("".join(cell_line(c) for c in cells), encoding="utf-8")
 
 
 def v70_grid() -> list[str]:
@@ -1265,8 +1273,7 @@ def test_dsr_n_from_ledger(tmp_path):
     summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "cells_from_ledger": True, "ledger": "trials.jsonl",
             "extra": ["--psr"]}
     root, sp = make_root(tmp_path, summ=summ)
-    write_ledger_at = lambda cells: (root / "trials.jsonl").write_text(
-        "".join(json.dumps({"kind": "construction", "cell": c}) + "\n" for c in cells))
+    write_ledger_at = lambda cells: (root / "trials.jsonl").write_text("".join(cell_line(c) for c in cells))
     write_ledger_at(["prior/a", "prior/b"])
     planned = next(s for s in cycle_of(root, sp).steps() if s.phase == "summ").argv
     assert planned[planned.index("--dsr-n") + 1] == "3"
@@ -1488,11 +1495,15 @@ def test_ledger_copied_after_summ(tmp_path):
     summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl",
             "ledger_copy": "sprint/trials.jsonl"}
     root, sp = make_root(tmp_path, summ=summ)
-    (root / "trials.jsonl").write_text(json.dumps({"cell": "prior/a"}) + "\n")
+    (root / "trials.jsonl").write_text(cell_line("prior/a"))
     log = []
     assert run(root, sp, log) == RC.EXIT_OK
     assert (root / "sprint" / "trials.jsonl").read_bytes() == (root / "trials.jsonl").read_bytes()
-    assert any(x.startswith("   ledger copied: ") for x in log)
+    head = hashlib.sha256((("0" * 64) + hashlib.sha256(cell_line("prior/a").rstrip("\n").encode()).hexdigest())
+                          .encode()).hexdigest()                                  # review C-6: the fold of line 1
+    assert any(x.startswith("   ledger copied: ") and x.endswith(f", chain head {head})") for x in log)
+    v = json.loads((root / "build-equity" / "cycle-synthetic" / "cycle_verdict.json").read_text())
+    assert v["ledger"] == {"path": "trials.jsonl", "head": head, "lines": 1}     # every verdict records the head
     with pytest.raises(RC.CycleError, match="ledger_copy"):
         RC.validate_spec(dict(json.loads(sp.read_text()), summ={"script": "s", "dsr_n": 3, "ledger_copy": "x"}))
 
@@ -1665,7 +1676,9 @@ if "--json" in a:
     Path(a[a.index("--json") + 1]).write_text(json.dumps([
         {"dir": "prior\\a", "paired": {"dsr": -1.0}},
         {"dir": "out\\N", "paired": {"dsr": 0.05, "memmel_se": 0.1, "cbb_ci95": [-0.1, 0.2], "lw": {"p_value": 0.4}},
-         "deflated": {"n": 2, "dsr": 0.7}, "deflated_effective_n": {"dsr": 0.8}}]))
+         "deflated": {"n": 2, "dsr": 0.7}, "deflated_effective_n": {"dsr": 0.8},
+         "deflated_ledger": {"n": 2, "dsr": 0.93, "variance_sr": 1e-4, "cells": 2, "window_id": "research-window-v2",
+                             "legacy_dsr": 0.6, "legacy_cells": 3}}]))
 if "--pbo-json" in a:
     Path(a[a.index("--pbo-json") + 1]).write_text(json.dumps({"pbo": 0.25}))
 '''
@@ -1673,21 +1686,26 @@ if "--pbo-json" in a:
 
 def test_verdict_schema(tmp_path):
     summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "cells_from_ledger": True, "ledger": "trials.jsonl",
-            "extra": ["--psr", "--pbo"]}
+            "extra": ["--psr", "--pbo"], "origin": "prior"}
     root, sp = screen_root(tmp_path, summ=summ, verdict=True)
     (root / "scripts" / "summ.py").write_text(FAKE_SUMM_JSON)
-    (root / "trials.jsonl").write_text(json.dumps({"kind": "construction", "cell": "prior/a"}) + "\n")
+    (root / "trials.jsonl").write_text(cell_line("prior/a"))
     assert run(root, sp, capabilities=CAPS) == RC.EXIT_OK
     cyc = "build-equity/cycle-synthetic"
-    assert calls(root)[-1].endswith(f"--dsr-n 2 --psr --pbo --json {cyc}/summ.json --pbo-json {cyc}/pbo.json "
-                                    "--ledger trials.jsonl --ledger-kind construction")
+    assert calls(root)[-1].endswith(f"--dsr-n 2 --psr --pbo --protocol v8 --origin prior --json {cyc}/summ.json "
+                                    f"--pbo-json {cyc}/pbo.json --ledger trials.jsonl --ledger-kind construction "
+                                    "--dsr-ledger trials.jsonl")                  # review C-1 / C-2
     v = json.loads((root / cyc / "cycle_verdict.json").read_text())
     assert set(v) == {"schema", "cycle", "mode", "spec_sha256", "admission", "marginal", "phases", "paired", "dsr",
-                      "pbo"}
+                      "pbo", "ledger"}
     assert (v["schema"], v["cycle"], v["mode"], v["spec_sha256"]) == ("atx.cycle-verdict/v1", "synthetic", "run",
                                                                       RC.sha256_file(sp))
     assert v["paired"] == {"dsr": 0.05, "se": 0.1, "cbb_ci": [-0.1, 0.2], "lw_p": 0.4}   # this cycle's NAV dir row
-    assert v["dsr"] == {"n": 2, "cell_count": 0.7, "effective_n": 0.8} and v["pbo"] == 0.25
+    assert v["dsr"] == {"n": 2, "cell_count": 0.93, "effective_n": 0.8, "variance_sr": 1e-4, "variance_cells": 2,
+                        "window_id": "research-window-v2", "source": "nav_summ --dsr-ledger (deflated_ledger)",
+                        "legacy": {"dsr": 0.6, "cells": 3, "note": "legacy variance (ledger lines without a "
+                                                                    "window_id): reported, gates nothing"}}
+    assert v["pbo"] == 0.25                                        # review C-1: never the cell-count row's 0.7
     assert [r["id"] for r in v["admission"]] == ["new_alpha"] and v["marginal"][0]["marginal_hac_t"] == 1.6
     assert [p["name"] for p in v["phases"]] == ["fields", "check", "u", "fit", "card", "marginal", "w", "nav",
                                                 "monitor", "summ"]
@@ -1927,3 +1945,30 @@ def test_cache_gc_keeps_referenced_stores_and_never_touches_state(tmp_path, monk
     with pytest.raises(SystemExit) as e:                                             # a keep list is required
         RC.main(["cache", "gc", "--root", str(root)])
     assert e.value.code == RC.EXIT_USAGE
+
+
+def test_cache_gc_keeps_a_referenced_store_however_the_paths_are_spelled(tmp_path, monkeypatch):
+    """Review C-12: --under ./build-equity, build-equity\\, an absolute path, a '..' detour or (Windows) another case
+    used to name no referenced store, so --apply deleted them all; a spec's store spelled with './', a trailing slash or
+    another case is the same store too."""
+    import research_gc
+    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    cache = "./BUILD-EQUITY/mega-candidate-cache-v2/" if os.name == "nt" else "./build-equity//mega-candidate-cache-v2/"
+    spec["ic"]["cache"], spec["fit"]["work_dir"] = cache, "build-equity/sub/../mega-fit-work-v2"
+    sp.write_text(json.dumps(spec))
+    kept, unreferenced = ["mega-candidate-cache-v2", "mega-fit-work-v2"], ["mega-candidate-cache-v1"]
+    for rel in kept + unreferenced:
+        (root / "build-equity" / rel / "s").mkdir(parents=True)
+        (root / "build-equity" / rel / "s" / "x.f64").write_bytes(b"\0" * 64)
+    (root / "sub").mkdir()
+    spellings = ["build-equity", "./build-equity", "build-equity/", str(root / "build-equity"),
+                 "sub/../build-equity"] + (["build-equity\\", "Build-Equity"] if os.name == "nt" else [])
+    for under in spellings:                                    # listed as spelled; Windows compares case-folded
+        rep = research_gc.gc([sp], root, [under], apply=False, log=lambda s: None)
+        assert [[os.path.normcase(x) for x in rep[k]] for k in ("keep", "gc")] == \
+            [[os.path.normcase(f"build-equity/{r}") for r in rels] for rels in (kept, unreferenced)], under
+    rep = research_gc.gc([sp], root, spellings, apply=True, log=lambda s: None)       # one listing, however spelled
+    assert rep["deleted"] == ["build-equity/mega-candidate-cache-v1"] and len(rep["keep"]) == 2
+    assert all((root / "build-equity" / r / "s" / "x.f64").is_file() for r in kept)

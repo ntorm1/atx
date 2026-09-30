@@ -11,7 +11,7 @@ One N, one append (PM ruling 2026-09-29, lane G task 1): both go through the val
 atx-impl/tools/backtest_integrity.py (``backtest_integrity()`` below, loaded as the nav_summ shim loads the moved
 tools: that directory on sys.path, imported by name, on first use only).
   N       ``summ.dsr_n: "ledger+1"`` resolves to ``backtest_integrity.ledger_n``: the construction trials by the defect
-          rule (``trial_counts``: protocol lines, window re-runs, invalid and blind-replaced cells add 0) plus 1 when
+          rule (``trial_counts``: event lines, window and blind re-runs, unreplaced invalid cells add 0) plus 1 when
           the scored cell has no line yet -- the N nav_summ --dsr-ledger prints. The scored cell is matched as
           nav_summ matches it (the trial_id of its primary daily CSV) once its NAV output exists, by its cell name
           before that (plan time).
@@ -25,6 +25,11 @@ tools: that directory on sys.path, imported by name, on first use only).
 appends one protocol line {schema, kind, count 0, window_id, owner_ruling, date, research_window_sha256, trial_id,
 prev_sha256}; the window id defaults to the W0-1 window's, the window file to atx-impl/strategies/research_window.json.
 The same line is never appended twice (same trial_id).
+
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
+
+appends one chained defect line (review C-3; backtest_integrity.defect_line): the cell ledgered as TID is invalid
+(v8-prereg item 7). Refused when TID is not a ledgered cell line or is invalid already.
 """
 from __future__ import annotations
 
@@ -41,7 +46,10 @@ import research_tree  # noqa: E402
 
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
 PROTOCOL = "protocol"
-NON_TRIAL_KINDS = (PROTOCOL,)           # ledger lines that are no trial: skipped by cells()
+DEFECT = "defect"                       # review C-3: a defect event line (backtest_integrity.defect_line)
+VALIDATION = "validation"               # review C-11: holdout_gate's record of a hidden-block read
+NON_TRIAL_KINDS = (PROTOCOL, DEFECT, VALIDATION)    # event lines, no cell and no trial: skipped by cells()
+CELL_LESS_KINDS = ("admission", "mining-campaign")  # C-7 admission lines name a candidate; E-33 campaign lines a registry
 N_KIND = "construction"                 # the kind whose trials make N (nav_summ --dsr-ledger)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 TOOLS = research_tree.REPO / "atx-impl" / "tools"
@@ -78,12 +86,14 @@ def read_lines(path: Path) -> list[tuple[int, dict]]:
 
 
 def cells(path: Path) -> list[str]:
-    """The ledgered cells in ledger order (protocol lines skipped); a trial line without a cell is an error. Era shard
-    and pooled era lines (task H-1) are skipped too: they are not grid NAV dirs of the research window."""
+    """The ledgered cells in ledger order (protocol, defect and validation lines skipped); a trial line without a cell
+    is an error, except a cell-less admission line (review C-7: a screened candidate, no NAV dir) or mining campaign
+    line (Ruling E-33: a campaign registry, no NAV dir). Era shard and pooled era lines
+    (task H-1) are skipped too: they are not grid NAV dirs of the research window."""
     out = []
     bi = None
     for k, rec in read_lines(path):
-        if rec.get("kind") in NON_TRIAL_KINDS:
+        if rec.get("kind") in NON_TRIAL_KINDS or (rec.get("kind") in CELL_LESS_KINDS and "cell" not in rec):
             continue
         if "era_of" in rec or "eras" in rec:
             bi = bi or backtest_integrity()
@@ -169,6 +179,31 @@ def append(path: Path, rec: dict) -> dict | None:
     line as written, or None when it was already present."""
     appended, _ = backtest_integrity().ledger_append(Path(path), [rec], chain=True)
     return appended[0] if appended else None
+
+
+def defect_main(argv=None) -> int:
+    """research_cycle.py ledger-defect: one chained defect line (review C-3) for a cell ledgered already."""
+    ap = argparse.ArgumentParser(prog="research_cycle.py ledger-defect",
+                                 description="append a defect line: the ledgered cell TRIAL_ID is invalid "
+                                             "(v8-prereg item 7; its blind re-run may then replace it)")
+    ap.add_argument("--ledger", required=True, help="the trial ledger (root-relative or absolute)")
+    ap.add_argument("--trial-id", required=True, help="the invalid cell's trial_id")
+    ap.add_argument("--reason", required=True)
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD the defect was found (optional)")
+    ap.add_argument("--root", type=Path, default=research_tree.REPO)
+    a = ap.parse_args(argv)
+    try:
+        if a.date is not None:
+            dt.date.fromisoformat(a.date)
+        bi = backtest_integrity()
+        rec = bi.defect_line(a.trial_id, a.reason, a.date)
+        ledger = Path(a.ledger) if Path(a.ledger).is_absolute() else a.root / a.ledger
+        appended, _ = bi.ledger_append(ledger, [rec], chain=True)
+    except ValueError as exc:  # a malformed date, an unknown or invalid target, a broken chain
+        print(f"research_cycle ledger-defect: {exc}", file=sys.stderr)
+        return 2
+    print(("appended" if appended else "already present (not appended)") + f": {json.dumps(rec, sort_keys=True)}")
+    return 0
 
 
 def main(argv=None) -> int:

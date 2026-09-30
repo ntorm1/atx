@@ -3,11 +3,14 @@
   {schema, cycle, mode, spec_sha256,
    admission[]   the admission.json rows of the gate's listed candidates (every row without a gate),
    marginal[]    the marginal_ic.json rows (contract K6) of the same ids; marginal_note when the phase was skipped,
-   paired{dsr, se, cbb_ci, lw_p}, dsr{n, cell_count, effective_n}, pbo
+   paired{dsr, se, cbb_ci, lw_p}, dsr{n, cell_count, effective_n, ...}, pbo
                  only after a full run whose summ wrote nav_summ --json / --pbo-json into the cycle dir (spec
-                 "verdict": true),
+                 "verdict": true); dsr is the pre-registered DSR (v8-prereg item 3, review C-1): nav_summ
+                 --dsr-ledger's ``deflated_ledger`` (N and V[SR] from the sprint ledger of record, never from a cell
+                 count), the legacy-variance DSR beside it (gates nothing); a summ row without it is refused,
    phases[{name, seconds, peak_mib}]  from each phase's bounded-runner receipt, else the cycle's own wall clock
-                 (peak_mib null) for a direct phase run by this invocation}
+                 (peak_mib null) for a direct phase run by this invocation,
+   ledger{path, head, lines}  the sprint ledger of record's chain head when the cycle has a ledger (review C-6)}
 
 The cycle is duck-typed (research_cycle.Cycle, or research_roles.RolesCycle): spec, res, screen, steps(), receipt(),
 cycle_dir(). A step of one era of a roles: cycle (task H-1) is keyed ``phase:role`` (``step_key``) in the phase rows;
@@ -21,6 +24,10 @@ from pathlib import Path
 VERDICT = "cycle_verdict.json"
 VERDICT_SCHEMA = "atx.cycle-verdict/v1"
 SUMM_JSON, PBO_JSON = "summ.json", "pbo.json"     # nav_summ --json / --pbo-json targets in the cycle dir
+
+
+class VerdictError(ValueError):
+    """A verdict that cannot be written as pre-registered (research_cycle.py turns it into a hard stop)."""
 
 
 def step_key(st) -> str:
@@ -60,15 +67,35 @@ def scoring_blocks(res, cycle_dir: str, nav_out: str) -> dict:
     mine = [r for r in summ if isinstance(r, dict) and Path(str(r.get("dir", ""))).as_posix() == Path(nav_out).as_posix()]
     row = mine[-1] if mine else summ[-1]
     p = row.get("paired") or {}
-    dq, de = row.get("deflated") or {}, row.get("deflated_effective_n") or {}
     pbo = res.read_json(f"{cycle_dir}/{PBO_JSON}")
     return {"paired": {"dsr": p.get("dsr"), "se": p.get("memmel_se"), "cbb_ci": p.get("cbb_ci95"),
                        "lw_p": (p.get("lw") or {}).get("p_value")},
-            "dsr": {"n": dq.get("n"), "cell_count": dq.get("dsr"), "effective_n": de.get("dsr")},
+            "dsr": dsr_block(row),
             "pbo": pbo.get("pbo") if isinstance(pbo, dict) else None}
 
 
-def verdict(cycle, timings: dict, spec_sha256: str | None) -> dict:
+def dsr_block(row: dict) -> dict:
+    """The verdict's DSR (review C-1): nav_summ --dsr-ledger's ``deflated_ledger`` of the row, i.e. N = the ledger's
+    trial count and V[SR] = the cross-trial variance of the cells ledgered on the research window (v8-prereg item 3).
+    ``cell_count`` is that DSR; the legacy-variance DSR is reported beside it and gates nothing. The DSR of
+    ``deflated`` (V from the listed dirs, or Lo's single-cell variance) is never read: a row without
+    ``deflated_ledger`` raises VerdictError."""
+    dl = row.get("deflated_ledger")
+    if not isinstance(dl, dict):
+        raise VerdictError(f"summ row {row.get('dir')!r} has no deflated_ledger: the verdict DSR is computed only from "
+                           "the sprint ledger of record (nav_summ --dsr-ledger; v8-prereg item 3), never from a cell "
+                           "count")
+    de = row.get("deflated_effective_n") or {}
+    return {"n": dl.get("n"), "cell_count": dl.get("dsr"), "effective_n": de.get("dsr"),
+            "variance_sr": dl.get("variance_sr"), "variance_cells": dl.get("cells"), "window_id": dl.get("window_id"),
+            "legacy": {"dsr": dl.get("legacy_dsr"), "cells": dl.get("legacy_cells"),
+                       "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"},
+            "source": "nav_summ --dsr-ledger (deflated_ledger)"}
+
+
+def verdict(cycle, timings: dict, spec_sha256: str | None, ledger: dict | None = None) -> dict:
+    """The verdict document; ``ledger`` = {path, head, lines} of the sprint ledger of record when the cycle has one
+    (review C-6: the chain head as this cycle left it, so a later edit of the ledger's tail is detected)."""
     s, res = cycle.spec, cycle.res
     steps = {step_key(st): st for st in cycle.steps()}
     ids = s["gate"]["admitted"] if "gate" in s else None
@@ -86,13 +113,15 @@ def verdict(cycle, timings: dict, spec_sha256: str | None) -> dict:
     navs = [st for st in steps.values() if st.phase == "nav"]
     if not cycle.screen and s.get("verdict") and navs:
         doc.update(scoring_blocks(res, cycle.cycle_dir(), navs[-1].output))
+    if ledger is not None:
+        doc["ledger"] = ledger
     return doc
 
 
-def write_verdict(cycle, timings: dict, spec_sha256: str | None, log) -> dict:
+def write_verdict(cycle, timings: dict, spec_sha256: str | None, log, ledger: dict | None = None) -> dict:
     path = cycle.res.path(f"{cycle.cycle_dir()}/{VERDICT}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc = verdict(cycle, timings, spec_sha256)
+    doc = verdict(cycle, timings, spec_sha256, ledger)
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
     for r in doc["marginal"]:
         log(f"marginal {r.get('id')}: ic21 {r.get('ic21')} (HAC t {r.get('ic21_hac_t')}); marginal ic21 "

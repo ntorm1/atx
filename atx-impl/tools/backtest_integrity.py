@@ -1,7 +1,8 @@
 """Backtest-integrity statistics for nav_summ (platform v7, lane L2; pure Python + numpy, no scipy/sklearn).
 
   trial ledger    atx.trial-ledger/v1 JSON lines (R5.1): one line per cell/run with its kind (admission, composition,
-                  construction, universe, data), cell dir, pins, window, daily net series path + SHA-256 and S2 net SR.
+                  construction, universe, data; mining-campaign is a campaign line, below), cell dir, pins, window,
+                  daily net series path + SHA-256 and S2 net SR.
                   Appends are idempotent on (kind, daily series SHA-256): an identity re-run (the same daily net
                   series under any cell name, e.g. a research_cycle --suffix re-run) never adds a trial.
                   Only TRAIN series (every session before the research window's TRAIN end, read from
@@ -9,15 +10,30 @@
   v8 fields       (platform v8 V-1; optional, so every older line stays valid and its trial_id rule is unchanged)
                   origin (contract K5: prior | grid | mined), window_id (the research window the series was scored
                   on), defect {invalid, reason}, rerun_of (a trial_id) with rerun_basis window | blind | returns.
-  trial count     (v8-prereg items 2 and 7) a line adds its count to N except: kind protocol (W0-3) and window
-                  re-runs (a ledgered cell re-run on a longer window) add 0; an invalid cell (defect) and a cell
-                  replaced by a blind re-run add 0, unless a re-run decided because its returns looked wrong names it
-                  (then both are trials). Without the v8 fields every line adds its count, as before.
+  trial count     (v8-prereg items 2 and 7) a line adds its count to N except: kind protocol (W0-3), window
+                  re-runs (a ledgered cell re-run on a longer window) and blind re-runs add 0; an invalid cell (defect)
+                  adds 0 unless a re-run names it. A re-run never lowers N (review C-5): the replaced invalid cell
+                  stays counted and its blind re-run adds 0; a re-run decided because the returns looked wrong is a
+                  new trial beside it. Without the v8 fields every line adds its count, as before.
+  defect line     (review C-3) kind defect, count 0, defect_of = a ledgered cell's trial_id, reason: that cell is
+                  invalid, found after it was ledgered (research_cycle.py ledger-defect). A cell line whose trial_id is
+                  ledgered already is skipped only when its defect / re-run flags equal the ledgered line's; flags that
+                  would be dropped are refused (ledger_append raises, nav_summ exits non-zero).
+  re-run check    (review C-4) rerun_of must be the trial_id of an earlier cell line of the same kind; a window
+                  re-run's target is on another window_id (or has none); (review C-5) a blind or returns re-run's
+                  target is invalid on an earlier line (its defect flag or a defect line).
   protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
                   series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
-  hash chain      (v8, ledger-chain-v1) prev_sha256 = SHA-256 of the previous non-blank line's bytes (64 zeros for
-                  the first); ledger_read verifies every link, so an edited or removed line, a protocol line
-                  included, breaks the next chained line. Lines written without prev_sha256 are accepted as before.
+  validation line (review C-11; written by holdout_gate.py) kind validation, count 0: a hidden-block read, citing
+                  the owner ruling's path and SHA-256. An event line like protocol and defect.
+  campaign line   (Ruling E-33; campaign_line) kind mining-campaign, count 0, origin mined: a mining campaign's
+                  registry {path, chain_head, count}. It adds 0 to every N (the construction N included); its
+                  registry count is the campaign's own budget (pre-registration rule 10) and is printed beside N.
+  hash chain      (v8; review C-6) a running head from 64 zeros: a legacy (unchained) line folds into it in its stored
+                  form, a chained line's prev_sha256 must equal it and the line's own SHA-256 becomes the head. So the
+                  first chained line pins every legacy line before it (the 37 v7 cells), an edited, inserted or
+                  removed line before the last chained line breaks the chain, and an unchained line after a chained
+                  one is refused. ledger_head is recorded by every cycle verdict and ledger copy (the tail).
   DSR variance   (v8-prereg item 3, OD-4) N = the construction trial count; V[SR] = sample variance of the
                   per-session S2 net SRs of the construction lines scored on the current window (re-runs and new
                   cells; invalid or replaced lines left out); the legacy variance (lines without a window_id, the
@@ -61,8 +77,13 @@ ANNUAL = 252
 EULER_GAMMA = 0.5772156649015329
 DEFAULT_SEED = 20260927
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
-LEDGER_KINDS = ("admission", "composition", "construction", "universe", "data")
+MINING_CAMPAIGN = "mining-campaign"       # Ruling E-33: a mined campaign's line; adds 0, carries its registry count
+LEDGER_KINDS = ("admission", "composition", "construction", "universe", "data", MINING_CAMPAIGN)
 ZERO_TRIAL_KINDS = ("protocol",)          # W0-3: the protocol line records the window change and adds no trial
+DEFECT = "defect"                         # review C-3: a defect event line marks a ledgered cell invalid afterwards
+VALIDATION = "validation"                 # review C-11: holdout_gate's record of a hidden-block read (cites its ruling)
+EVENT_KINDS = ZERO_TRIAL_KINDS + (DEFECT, VALIDATION)  # event lines: no cell, no series, add no trial
+FLAG_KEYS = ("defect", "rerun_of", "rerun_basis")   # a cell line's v8 flags (never part of its trial_id)
 ORIGINS = ("prior", "grid", "mined")      # contract K5: the registry's origin class, copied into every ledger line
 RERUN_BASES = ("window", "blind", "returns")
 PRIOR_VALIDATION_READS = "2 (2023-2024)"  # v8-prereg item 1 disclosure (history before v8), not a window constant
@@ -615,6 +636,8 @@ def check_record_fields(kind: str, count: int, origin: str | None = None, rerun_
     """The refusals of a ledger line's kind, count and v8 fields (ledger_record, ledger_pool_records)."""
     if kind not in LEDGER_KINDS:
         raise ValueError(f"ledger: kind must be one of {', '.join(LEDGER_KINDS)}")
+    if kind == MINING_CAMPAIGN:
+        raise ValueError(f"ledger: a {MINING_CAMPAIGN} line records a campaign, not a NAV cell (campaign_line)")
     if not isinstance(count, int) or count < 1:
         raise ValueError("ledger: count must be a positive integer")
     if origin is not None and origin not in ORIGINS:
@@ -708,6 +731,108 @@ def trial_id(kind: str, series_sha256: str) -> str:
     return hashlib.sha256(json.dumps([kind, series_sha256], separators=(",", ":")).encode()).hexdigest()[:16]
 
 
+def defect_line(target: str, reason: str, date: str | None = None) -> dict:
+    """A defect event line (review C-3): the ledgered cell whose trial_id is ``target`` is invalid (v8-prereg item 7),
+    found after it was ledgered. kind defect, count 0, no cell and no series; its trial_id is (defect, target), so a
+    cell has at most one. ledger_append refuses a target that is not a ledgered cell line or is invalid already."""
+    if not (isinstance(target, str) and target):
+        raise ValueError("ledger: a defect line names the trial_id of a ledgered cell")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise ValueError("ledger: a defect needs a reason")
+    rec = {"schema": LEDGER_SCHEMA, "kind": DEFECT, "count": 0, "defect_of": target, "reason": reason}
+    if date is not None:
+        rec["date"] = date
+    rec["trial_id"] = trial_id(DEFECT, target)
+    return rec
+
+
+def is_event(rec: dict) -> bool:
+    """An event line (protocol, defect, validation): no cell, adds no trial, skipped by every cell listing."""
+    return rec.get("kind") in EVENT_KINDS
+
+
+def campaign_line(campaign: str, registry_path: str, registry_head: str, registry_count: int, *,
+                  research_window_id: str | None = None, date: str | None = None, note: str | None = None) -> dict:
+    """A mining campaign's ledger line (Ruling E-33; plan: the campaign registry's chain head copied to the cycle
+    ledger). kind mining-campaign, origin mined, count 0: it adds no trial to any N of the ledger, the construction N
+    included (a mined member that enters a construction cell is counted by that cell's line). It carries its own
+    registry count, ``registry.count``: the candidates the campaign tried, its own budget (pre-registration rule 10,
+    the mined-v1 Bonferroni count). Its trial_id is (mining-campaign, registry chain head)."""
+    if not (isinstance(campaign, str) and campaign.strip()):
+        raise ValueError("ledger: a mining campaign needs a name")
+    if not (isinstance(registry_head, str) and len(registry_head) == 64 and set(registry_head) <= set("0123456789abcdef")):
+        raise ValueError("ledger: a mining campaign names its registry's chain head (a SHA-256 hex digest)")
+    if not isinstance(registry_count, int) or isinstance(registry_count, bool) or registry_count < 1:
+        raise ValueError("ledger: a mining campaign's registry count is a positive integer")
+    rec = {"schema": LEDGER_SCHEMA, "kind": MINING_CAMPAIGN, "count": 0, "campaign": campaign, "origin": "mined",
+           "registry": {"path": str(registry_path).replace("\\", "/"), "chain_head": registry_head,
+                        "count": registry_count}}
+    rec.update(ledger_record_fields(note=note, research_window_id=research_window_id))
+    if date is not None:
+        rec["date"] = date
+    rec["trial_id"] = trial_id(MINING_CAMPAIGN, registry_head)
+    return rec
+
+
+def is_campaign(rec: dict) -> bool:
+    """A mining campaign line (Ruling E-33): no cell, adds no trial; its registry count is its own budget."""
+    return rec.get("kind") == MINING_CAMPAIGN
+
+
+def campaign_registry_count(records: list[dict]) -> int:
+    """The registry counts of the ledger's mining campaign lines, summed (never part of N)."""
+    return sum(int((r.get("registry") or {}).get("count", 0)) for r in records if is_campaign(r))
+
+
+def check_line(before: dict, rec: dict) -> bool:
+    """Whether ``rec`` is new against the lines before it (``before``: trial_id -> line); raises ValueError when it
+    cannot be appended as asked. Review C-3: a line whose trial_id is ledgered already is skipped only when it asks for
+    nothing the ledgered line lacks; a defect or re-run flag that would be dropped is refused, and so is a second
+    defect line of a cell. A defect line must name a ledgered cell line that is not invalid yet."""
+    tid = rec["trial_id"]
+    old = before.get(tid)
+    if old is not None:
+        flags = {k: rec.get(k) for k in FLAG_KEYS}
+        if any(v is not None for v in flags.values()) and flags != {k: old.get(k) for k in FLAG_KEYS}:
+            raise ValueError(f"ledger: {rec.get('cell')} is already ledgered as trial {tid} without these flags "
+                             f"({', '.join(f'{k}={v!r}' for k, v in flags.items() if v is not None)}): they would be "
+                             "dropped. A defect found later is a defect line (research_cycle.py ledger-defect "
+                             f"--trial-id {tid} --reason ...); a re-run is a new cell line naming --rerun-of")
+        if rec.get("kind") == DEFECT and rec.get("reason") != old.get("reason"):
+            raise ValueError(f"ledger: trial {rec.get('defect_of')} has a defect line already")
+        return False
+    if rec.get("kind") == DEFECT:
+        target = before.get(rec.get("defect_of"))
+        if target is None or is_event(target) or is_campaign(target):
+            raise ValueError(f"ledger: defect_of {rec.get('defect_of')!r} is not the trial_id of a ledgered cell line")
+        if target.get("defect"):
+            raise ValueError(f"ledger: trial {rec['defect_of']} was ledgered invalid already")
+    if rec.get("rerun_of") is not None:
+        check_rerun(before, rec)
+    return True
+
+
+def check_rerun(before: dict, rec: dict) -> None:
+    """Review C-4: ``rerun_of`` names the trial_id of an earlier cell line of the same kind (an era shard line or an
+    event line is no cell; a typo, a cell name or another kind's id is refused), and a window re-run re-scores that
+    cell on another research window: its target carries another window_id, or none (a legacy line).
+
+    Review C-5: a blind or returns re-run (the defect rule, v8-prereg item 7) names an invalid cell, invalid on an
+    earlier line (its own defect flag or a defect line): a valid cell is never replaced (item 5: no retry)."""
+    target = before.get(rec["rerun_of"])
+    if target is None or is_event(target) or is_era_line(target) or target.get("kind") != rec.get("kind"):
+        raise ValueError(f"ledger: rerun_of {rec['rerun_of']!r} is not the trial_id of an earlier {rec.get('kind')} "
+                         "cell line in this ledger")
+    if rec.get("rerun_basis") == "window" and "window_id" in target and target["window_id"] == rec.get("window_id"):
+        raise ValueError(f"ledger: a window re-run re-scores a ledgered cell on another research window; trial "
+                         f"{rec['rerun_of']} was scored on {target['window_id']} already")
+    if rec.get("rerun_basis") in ("blind", "returns") and not target.get("defect") and \
+            trial_id(DEFECT, rec["rerun_of"]) not in before:
+        raise ValueError(f"ledger: a {rec['rerun_basis']} re-run replaces an invalid cell (v8-prereg item 7); trial "
+                         f"{rec['rerun_of']} has no defect on an earlier line (research_cycle.py ledger-defect "
+                         f"--trial-id {rec['rerun_of']} --reason ... first)")
+
+
 CHAIN_GENESIS = "0" * 64
 
 
@@ -720,82 +845,116 @@ def _ledger_lines(p: Path) -> list[tuple[int, str]]:
     return [(n, line) for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if line.strip()]
 
 
-def ledger_read(path: Path) -> list[dict]:
-    """Every ledger line, schema-checked, with the hash chain verified.
+def fold_head(head: str, line: str) -> str:
+    """The chain head after an unchained (legacy) line: SHA-256 of the previous head and the line's own SHA-256, so
+    the head covers every line from the first, each hashed in its stored form (review C-6)."""
+    return hashlib.sha256((head + line_sha256(line)).encode()).hexdigest()
 
-    Chain (v8, ledger-chain-v1): a line that carries ``prev_sha256`` must name the SHA-256 of the previous non-blank
-    line's bytes (``line_sha256``; the first line names 64 zeros). Every line takes part, the ``protocol`` line
-    included. Lines without the key (every line written before v8) are accepted as they are: their rule is unchanged."""
-    p = Path(path)
-    if not p.exists():
-        return []
-    out, prev = [], CHAIN_GENESIS
+
+def chain_head(lines: list[str]) -> str:
+    """The chain head after the given non-blank line texts, in order (the head of a ledger holding exactly them)."""
+    head = CHAIN_GENESIS
+    for line in lines:
+        head = line_sha256(line) if "prev_sha256" in json.loads(line) else fold_head(head, line)
+    return head
+
+
+def _walk(p: Path) -> tuple[list[dict], str]:
+    """(every line, schema-checked and chain-verified; the chain head after the last line). See ``ledger_read``."""
+    out, head, chained = [], CHAIN_GENESIS, 0
     for n, line in _ledger_lines(p):
         rec = json.loads(line)
         if rec.get("schema") != LEDGER_SCHEMA:
             raise ValueError(f"ledger {p}:{n}: schema {rec.get('schema')!r} is not {LEDGER_SCHEMA}")
         link = rec.get("prev_sha256")
-        if link is not None and link != prev:
-            raise ValueError(f"ledger {p}:{n}: hash chain broken: prev_sha256 {str(link)[:16]} is not the SHA-256 of "
-                             f"the previous line ({prev[:16]})")
-        prev = line_sha256(line)
+        if link is None:
+            if chained:
+                raise ValueError(f"ledger {p}:{n}: an unchained line after the chained line {chained}: every line "
+                                 "after the first chained one carries prev_sha256")
+            head = fold_head(head, line)
+        elif link != head:
+            raise ValueError(f"ledger {p}:{n}: hash chain broken: prev_sha256 {str(link)[:16]} is not the chain head "
+                             f"of the lines before it ({head[:16]})")
+        else:
+            chained = chained or n
+            head = line_sha256(line)
         out.append(rec)
-    return out
+    return out, head
+
+
+def ledger_read(path: Path) -> list[dict]:
+    """Every ledger line, schema-checked, with the hash chain verified.
+
+    Chain (v8; review C-6): the chain head starts at 64 zeros; an unchained (legacy, pre-v8) line folds into it
+    (``fold_head``: its bytes as stored), a chained line must name the head of every line before it in
+    ``prev_sha256`` and becomes the head (``line_sha256`` of its bytes). So the first chained line pins every legacy
+    line before it, each chained line pins the whole prefix, and an edited, inserted or removed line anywhere before
+    the last chained line breaks the chain. A line without ``prev_sha256`` after a chained one is refused. A ledger
+    chained from its first line reads exactly as under ledger-chain-v1 (prev = the previous line's SHA-256)."""
+    p = Path(path)
+    return _walk(p)[0] if p.exists() else []
 
 
 def ledger_head(path: Path) -> str:
-    """The chain head: the SHA-256 of the ledger's last non-blank line (64 zeros for an empty or absent ledger)."""
+    """The chain head of the ledger (64 zeros for an empty or absent one), after verifying it: the SHA-256 of the last
+    line when it is chained, else the fold of every line (review C-6: a verdict and a ledger copy record it, so an
+    edit of the tail is detected against the recorded head)."""
     p = Path(path)
-    lines = _ledger_lines(p) if p.exists() else []
-    return line_sha256(lines[-1][1]) if lines else CHAIN_GENESIS
+    return _walk(p)[1] if p.exists() else CHAIN_GENESIS
 
 
 def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tuple[list[dict], list[dict]]:
     """Append records not already present (same trial_id); returns (appended, skipped). Never rewrites a line.
 
     ``chain`` (and any ledger whose last line is already chained) writes ``prev_sha256`` into every appended line;
-    without it the lines are written exactly as before v8."""
-    existing = ledger_read(path)                     # verifies the chain before anything is appended
-    have = {r.get("trial_id") for r in existing}
+    without it the lines are written exactly as before v8. Every record is checked against the lines before it
+    (``check_line``) before anything is written: one refusal (ValueError) appends nothing."""
+    p = Path(path)
+    existing, prev = _walk(p) if p.exists() else ([], CHAIN_GENESIS)   # verifies the chain before anything is appended
+    before = {r.get("trial_id"): r for r in existing}
     chained = chain or bool(existing and "prev_sha256" in existing[-1])
-    appended, skipped = [], []
+    appended: list[dict] = []
+    skipped: list[dict] = []
     for rec in records:
-        (skipped if rec["trial_id"] in have else appended).append(rec)
-        have.add(rec["trial_id"])
+        (appended if check_line(before, rec) else skipped).append(rec)
+        before.setdefault(rec["trial_id"], rec)
     if appended:
-        prev = ledger_head(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with Path(path).open("a", encoding="utf-8", newline="\n") as f:
             for k, rec in enumerate(appended):
                 if chained:
                     rec = appended[k] = dict(rec, prev_sha256=prev)
                 text = json.dumps(rec, sort_keys=True, separators=(",", ":"))
-                prev = line_sha256(text)
+                prev = line_sha256(text) if chained else fold_head(prev, text)
                 f.write(text + "\n")
     return appended, skipped
 
 
-def _invalid(rec: dict) -> bool:
-    return bool((rec.get("defect") or {}).get("invalid"))
+def invalid_ids(records: list[dict]) -> set:
+    """The trial_ids of the invalid cells: ledgered with ``defect``, or named by a defect line (review C-3)."""
+    own = {r.get("trial_id") for r in records if (r.get("defect") or {}).get("invalid") and not is_event(r)}
+    return own | {r.get("defect_of") for r in records if r.get("kind") == DEFECT}
 
 
 def trial_counts(records: list[dict]) -> list[int]:
     """The trials each ledger line adds to N (v8-prereg item 2 and item 7, the defect rule), in ledger order.
 
-    A line adds its ``count`` (default 1) except: a ``protocol`` line and a window re-run (``rerun_basis`` window: a
-    ledgered cell re-run on a longer window) add 0; an invalid cell (``defect``) and a cell replaced by a blind re-run
-    (``rerun_basis`` blind: decided without seeing returns) add 0, unless a re-run decided because its returns looked
-    wrong (``rerun_basis`` returns) names it, in which case it stays a trial and the re-run is a new one. Lines without
-    the v8 fields add their count, exactly as ``ledger_counts`` summed them before v8. An era shard line (``era_of``,
-    task H-1) adds 0: its pooled line is the trial."""
-    seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
-    replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
+    A line adds its ``count`` (default 1) except: an event line (``protocol``, ``defect``), a window re-run
+    (``rerun_basis`` window: a ledgered cell re-run on a longer window) and a blind re-run (``rerun_basis`` blind:
+    decided without seeing returns) add 0; an invalid cell (``defect``, or named by a defect line) adds 0 unless a
+    re-run names it. A re-run never lowers N (review C-5): the replaced cell stays counted and its blind re-run adds 0
+    (one trial for the pair), while a re-run decided because the returns looked wrong (``rerun_basis`` returns) is a
+    new trial beside it. Lines without the v8 fields add their count, exactly as ``ledger_counts`` summed them before
+    v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial. A mining campaign line (Ruling
+    E-33) adds 0: its registry count is the campaign's own budget, never part of a ledger N."""
+    rerun = {r.get("rerun_of") for r in records if r.get("rerun_basis") in ("blind", "returns")}
+    invalid = invalid_ids(records)
     out = []
     for rec in records:
         tid = rec.get("trial_id")
-        if rec.get("kind") in ZERO_TRIAL_KINDS or rec.get("rerun_basis") == "window" or is_era_line(rec):
+        if is_event(rec) or rec.get("rerun_basis") in ("window", "blind") or is_era_line(rec) or is_campaign(rec):
             out.append(0)
-        elif tid not in seen and (_invalid(rec) or tid in replaced):
+        elif tid in invalid and tid not in rerun:
             out.append(0)
         else:
             out.append(int(rec.get("count", 1)))
@@ -804,7 +963,7 @@ def trial_counts(records: list[dict]) -> list[int]:
 
 def ledger_n(records: list[dict], scored_in_ledger: bool, kind: str = "construction") -> int:
     """The N that gates (PM ruling 2026-09-29; v8-prereg Appendix A rules 2 and 7): the ``kind`` trials of the ledger
-    by ``trial_counts`` (the defect rule: protocol lines, window re-runs, invalid and blind-replaced cells add 0), plus
+    by ``trial_counts`` (the defect rule: event lines, window and blind re-runs, unreplaced invalid cells add 0), plus
     1 for the scored cell when it has no ``kind`` line in the ledger yet. nav_summ --dsr-ledger and research_cycle.py
     (summ.dsr_n "ledger+1") both read N here, so the two print the same N. A line without a kind (a layout
     ledger_record never writes) is read as a ``kind`` line."""
@@ -813,18 +972,22 @@ def ledger_n(records: list[dict], scored_in_ledger: bool, kind: str = "construct
 
 
 def excluded_lines(records: list[dict]) -> list[dict]:
-    """The lines the defect rule takes out of N (invalid cells and cells replaced by a blind re-run)."""
+    """The cell lines whose result the defect rule leaves out of V[SR]: invalid cells and cells replaced by a blind
+    re-run, unless a returns re-run names them. Of these, only the invalid cells no re-run names are out of N too
+    (``trial_counts``: a replaced cell stays counted for its blind re-run, review C-5)."""
     seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
     replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
-    return [r for r in records if r.get("trial_id") not in seen and (_invalid(r) or r.get("trial_id") in replaced)]
+    invalid = invalid_ids(records)
+    return [r for r in records if not is_event(r) and r.get("trial_id") not in seen and
+            (r.get("trial_id") in invalid or r.get("trial_id") in replaced)]
 
 
 def ledger_counts(records: list[dict]) -> dict:
     """Trials by kind and window: {kind: {window key: trials}} (``trial_counts`` per line; default 1 each). Protocol
-    lines are events, not trials: they are skipped."""
+    and defect lines are events, not trials: they are skipped, and so are mining campaign lines (Ruling E-33)."""
     out: dict = {}
     for rec, trials in zip(records, trial_counts(records)):
-        if rec.get("kind") in ZERO_TRIAL_KINDS or is_era_line(rec):
+        if is_event(rec) or is_era_line(rec) or is_campaign(rec):
             continue
         w = rec.get("window") or {}
         key = f"{w.get('label', '?')} {w.get('first_session', '?')}..{w.get('last_session', '?')}"
@@ -838,16 +1001,25 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
     total = sum(sum(v.values()) for v in counts.values())
     lines = [f"Appendix A (trial ledger {path}): {total} trials in {len(records)} ledger lines"]
     for kind in LEDGER_KINDS:
+        if kind == MINING_CAMPAIGN:
+            continue                        # printed below, only when a campaign is ledgered (Ruling E-33)
         for window, n in sorted((counts.get(kind) or {}).items()):
             lines.append(f"   {kind:12s} {n:5d}  [{window}]")
         if kind not in counts:
             lines.append(f"   {kind:12s} {0:5d}")
-    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r)]
+    campaigns = [r for r in records if is_campaign(r)]
+    if campaigns:
+        lines.append(f"   {MINING_CAMPAIGN} {0:5d}  ({len(campaigns)} campaign line(s), registry count "
+                     f"{campaign_registry_count(records)}: the campaigns' own budget, not in N)")
+    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r) and not is_campaign(r)]
     if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
-        out = excluded_lines(records)
+        reads = sum(1 for r in zero if r.get("kind") == VALIDATION)
+        out = [r for r in zero if r.get("rerun_basis") != "window" and r.get("kind") not in ZERO_TRIAL_KINDS
+               and r.get("kind") != VALIDATION]
         lines.append(f"   adding no trial: {len(zero)} line(s) ({len(out)} by the defect rule, "
                      f"{sum(1 for r in zero if r.get('rerun_basis') == 'window')} window re-run(s), "
-                     f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s))")
+                     f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s)"
+                     + (f", {reads} hidden-block validation read(s)" if reads else "") + ")")
     eras = [r for r in records if is_era_line(r)]
     if eras:  # task H-1: printed only when an era shard is ledgered
         lines.append(f"   era shard line(s): {len(eras)}, adding no trial (each pooled line counts its eras once: "
@@ -905,7 +1077,7 @@ def ledger_net_series(records: list[dict], load) -> tuple[list[str], list[dict]]
     names, series = [], []
     for rec in records:
         s = rec.get("series")
-        if rec.get("kind") in ZERO_TRIAL_KINDS or is_era_line(rec) or not s or not s.get("path"):
+        if is_event(rec) or is_era_line(rec) or not s or not s.get("path"):
             continue
         if sha256_file(Path(s["path"])) != s["sha256"]:
             raise ValueError(f"ledger: series {s['path']} no longer matches its ledgered SHA-256")

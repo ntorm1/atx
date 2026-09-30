@@ -202,7 +202,7 @@ def test_origin_class_in_ledger_line(tmp_path, capsys, monkeypatch):
     assert [r.get("origin") for r in rows] == [None, "grid", "grid"]
     assert [r.get("window_id") for r in rows] == [None, BI.window_id(), BI.window_id()]
     text = Path(ledger).read_text(encoding="utf-8").splitlines()
-    assert rows[1]["prev_sha256"] == BI.line_sha256(text[0]) and rows[2]["prev_sha256"] == BI.line_sha256(text[1])
+    assert rows[1]["prev_sha256"] == BI.chain_head(text[:1]) and rows[2]["prev_sha256"] == BI.line_sha256(text[1])
     # trial_id rule unchanged: the v8 fields never enter it
     for d, r in zip(dirs, rows):
         assert r["trial_id"] == BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{SCEN}.csv"))
@@ -262,25 +262,29 @@ def test_variance_from_rerun_cells(tmp_path, capsys):
 
 
 def test_defect_rule_appendix_a(tmp_path):
-    """Appendix A rule 7: an invalid cell is logged and leaves N; a blind re-run replaces it (one trial); a re-run
-    decided because the returns looked wrong keeps both as trials."""
+    """Appendix A rule 7: an invalid cell is logged and leaves N; a blind re-run replaces it (one trial: the replaced
+    cell stays counted, the re-run adds 0, review C-5); a re-run decided because the returns looked wrong keeps both
+    as trials. A cell found invalid after it was ledgered is marked by a defect line (review C-3)."""
     wid = BI.window_id()
     c = noise_cells(tmp_path, 6)
     bad = record(c[0], 0.4, research_window_id=wid, origin="prior", defect="stale fields manifest")
     blind = record(c[1], 0.7, research_window_id=wid, origin="prior", rerun_of=bad["trial_id"], rerun_basis="blind")
-    looked = record(c[2], 0.2, research_window_id=wid, origin="grid")
+    looked = record(c[2], 0.2, research_window_id=wid, origin="grid", defect="fills priced at the wrong close")
     after = record(c[3], 0.9, research_window_id=wid, origin="grid", rerun_of=looked["trial_id"],
                    rerun_basis="returns")
     replaced = record(c[4], 0.3, research_window_id=wid, origin="mined")
+    found = BI.defect_line(replaced["trial_id"], "borrow fee table misread")
     blind2 = record(c[5], 0.5, research_window_id=wid, origin="mined", rerun_of=replaced["trial_id"],
                     rerun_basis="blind")
-    recs = [bad, blind, looked, after, replaced, blind2]
-    assert BI.trial_counts(recs) == [0, 1, 1, 1, 0, 1]
-    assert [r["trial_id"] for r in BI.excluded_lines(recs)] == [bad["trial_id"], replaced["trial_id"]]
+    ledger = tmp_path / "t.jsonl"
+    BI.ledger_append(ledger, [bad, blind, looked, after, replaced, found, blind2], chain=True)
+    recs = BI.ledger_read(ledger)
+    assert BI.trial_counts(recs) == [1, 0, 1, 1, 1, 0, 0]
+    assert [r["trial_id"] for r in BI.excluded_lines(recs)] == [bad["trial_id"], replaced["trial_id"]]   # out of V
     assert bad["defect"] == {"invalid": True, "reason": "stale fields manifest"}
     text = BI.appendix_a(recs, "t.jsonl")
-    assert text[0] == "Appendix A (trial ledger t.jsonl): 4 trials in 6 ledger lines"
-    assert text[-1] == "   adding no trial: 2 line(s) (2 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
+    assert text[0] == "Appendix A (trial ledger t.jsonl): 4 trials in 7 ledger lines"
+    assert text[-1] == "   adding no trial: 3 line(s) (3 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
     # the v8 block: every window date from research_window.py
     rw = BI.research_window()
     v8 = BI.appendix_a_v8(recs)
@@ -298,7 +302,14 @@ def test_protocol_line_is_chained_but_not_counted(tmp_path, capsys):
     cells = noise_cells(tmp_path, 3)
     ledger = tmp_path / "trials.jsonl"
     BI.ledger_append(ledger, [record(cells[0], 0.5), record(cells[1], 0.8)], chain=True)
-    proto = lane_a_protocol_line(ledger, "ab" * 32)          # lane A's writer: unchained, no cell
+    unchained = tmp_path / "unchained.jsonl"                 # the pre-A-3 writer (unchained) after chained lines:
+    unchained.write_bytes(ledger.read_bytes())               # refused since review C-6
+    lane_a_protocol_line(unchained, "ab" * 32)
+    with pytest.raises(ValueError, match="an unchained line after the chained line 1"):
+        BI.ledger_read(unchained)
+    proto = lane_a_protocol_line(tmp_path / "proto.jsonl", "ab" * 32)
+    (tmp_path / "proto.jsonl").unlink()
+    BI.ledger_append(ledger, [proto], chain=True)            # lane A's writer today (research_ledger.append): chained
     wid = BI.window_id()
     BI.ledger_append(ledger, [record(cells[2], 1.1, research_window_id=wid, origin="prior")], chain=True)
     lines = ledger.read_text(encoding="utf-8").splitlines()
@@ -355,6 +366,8 @@ def test_protocol_line_is_chained_but_not_counted(tmp_path, capsys):
     lane_a_protocol_line(old, "cd" * 32)
     BI.ledger_append(old, [record(cells[2], 1.1)], chain=True)
     assert BI.trial_counts(BI.ledger_read(old)) == [1, 1, 0, 1]
+    old_lines = old.read_text(encoding="utf-8").splitlines()
+    assert json.loads(old_lines[3])["prev_sha256"] == BI.chain_head(old_lines[:3])   # pins all three (review C-6)
 
 
 # ------------------------------------------------------------------ seal, v8 defaults, shim
