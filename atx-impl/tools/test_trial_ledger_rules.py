@@ -6,6 +6,7 @@ C-3 defect and re-run flags on a ledgered cell are refused, a defect found later
 C-4 rerun_of names an earlier cell line of the same kind; a window re-run's target is on another window.
 C-5 a blind (or returns) re-run needs a defect of its target on an earlier line; a re-run never lowers N.
 C-6 the hash chain covers the legacy (unchained) lines from the first line of the ledger.
+E-33 a mining-campaign line adds 0 to N and carries its own registry count.
 Synthetic NAV cells only (test_nav_summ.write_nav: calendar-day sessions from 2020-01-02, inside TRAIN).
 """
 from __future__ import annotations
@@ -232,3 +233,41 @@ def test_a_blind_rerun_needs_a_defect_and_never_lowers_n(tmp_path):
     records = BI.ledger_read(ledger)
     assert sum(BI.trial_counts(records)) == sum(trial_counts_before_c5(records)) == 1
     assert BI.trial_counts(records) != trial_counts_before_c5(records)                # attribution only
+
+
+# ------------------------------------------------------------------ Ruling E-33
+def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count(tmp_path):
+    """Ruling E-33: mining-campaign is a ledger kind; its line adds 0 to the construction N (and to every other N) and
+    carries its own registry count (the campaign's budget, pre-registration rule 10), printed beside N."""
+    assert BI.MINING_CAMPAIGN in BI.LEDGER_KINDS
+    c = cells(tmp_path, 2)
+    ledger = tmp_path / "trials.jsonl"
+    BI.ledger_append(ledger, [record(c[0], 0.6)], chain=True)
+    v7_text = BI.appendix_a(BI.ledger_read(ledger), "t")
+    camp = BI.campaign_line("mined-q1", "build-equity/mine/q1/registry.jsonl", "ab" * 32, 1000,
+                            research_window_id=WID, date="2026-10-02")
+    assert camp == {"schema": BI.LEDGER_SCHEMA, "kind": "mining-campaign", "count": 0, "campaign": "mined-q1",
+                    "origin": "mined", "registry": {"path": "build-equity/mine/q1/registry.jsonl",
+                                                    "chain_head": "ab" * 32, "count": 1000},
+                    "window_id": WID, "date": "2026-10-02", "trial_id": BI.trial_id("mining-campaign", "ab" * 32)}
+    BI.ledger_append(ledger, [camp, record(c[1], 0.9)], chain=True)
+    records = BI.ledger_read(ledger)
+    assert BI.trial_counts(records) == [1, 0, 1]
+    assert BI.ledger_n(records, True) == 2 and BI.ledger_n(records, True, kind="mining-campaign") == 0
+    assert BI.campaign_registry_count(records) == 1000
+    assert list(BI.ledger_counts(records)) == ["construction"]                          # not a trial of any kind
+    assert BI.dsr_variance(records, WID)["cells"] == 2                                   # nor a cell of V[SR]
+    text = BI.appendix_a(records, "t")
+    assert text[0] == "Appendix A (trial ledger t): 2 trials in 3 ledger lines"
+    assert "   mining-campaign     0  (1 campaign line(s), registry count 1000: the campaigns' own budget, not in N)" \
+        in text and not any(x.startswith("   adding no trial") for x in text)
+    assert not any("mining-campaign" in x for x in v7_text)                              # no line without a campaign
+    with pytest.raises(ValueError, match="records a campaign, not a NAV cell"):          # never a NAV cell's kind
+        BI.ledger_record("mining-campaign", str(c[0]), c[0] / "summary.json", c[0] / f"daily_{SCEN}.csv", SCEN,
+                         NS.net_series(NS.load_daily(c[0], SCEN)), 0.6)
+    with pytest.raises(ValueError, match="is not the trial_id of a ledgered cell line"):  # no defect of a campaign
+        BI.ledger_append(ledger, [BI.defect_line(camp["trial_id"], "budget overrun")], chain=True)
+    for args, needle in ((("", "r", "ab" * 32, 5), "needs a name"), (("m", "r", "xyz", 5), "chain head"),
+                         (("m", "r", "ab" * 32, 0), "positive integer")):
+        with pytest.raises(ValueError, match=needle):
+            BI.campaign_line(*args)

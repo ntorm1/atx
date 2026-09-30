@@ -1,7 +1,8 @@
 """Backtest-integrity statistics for nav_summ (platform v7, lane L2; pure Python + numpy, no scipy/sklearn).
 
   trial ledger    atx.trial-ledger/v1 JSON lines (R5.1): one line per cell/run with its kind (admission, composition,
-                  construction, universe, data), cell dir, pins, window, daily net series path + SHA-256 and S2 net SR.
+                  construction, universe, data; mining-campaign is a campaign line, below), cell dir, pins, window,
+                  daily net series path + SHA-256 and S2 net SR.
                   Appends are idempotent on (kind, daily series SHA-256): an identity re-run (the same daily net
                   series under any cell name, e.g. a research_cycle --suffix re-run) never adds a trial.
                   Only TRAIN series (every session before the research window's TRAIN end, read from
@@ -23,6 +24,11 @@
                   target is invalid on an earlier line (its defect flag or a defect line).
   protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
                   series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
+  validation line (review C-11; written by holdout_gate.py) kind validation, count 0: a hidden-block read, citing
+                  the owner ruling's path and SHA-256. An event line like protocol and defect.
+  campaign line   (Ruling E-33; campaign_line) kind mining-campaign, count 0, origin mined: a mining campaign's
+                  registry {path, chain_head, count}. It adds 0 to every N (the construction N included); its
+                  registry count is the campaign's own budget (pre-registration rule 10) and is printed beside N.
   hash chain      (v8; review C-6) a running head from 64 zeros: a legacy (unchained) line folds into it in its stored
                   form, a chained line's prev_sha256 must equal it and the line's own SHA-256 becomes the head. So the
                   first chained line pins every legacy line before it (the 37 v7 cells), an edited, inserted or
@@ -71,7 +77,8 @@ ANNUAL = 252
 EULER_GAMMA = 0.5772156649015329
 DEFAULT_SEED = 20260927
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
-LEDGER_KINDS = ("admission", "composition", "construction", "universe", "data")
+MINING_CAMPAIGN = "mining-campaign"       # Ruling E-33: a mined campaign's line; adds 0, carries its registry count
+LEDGER_KINDS = ("admission", "composition", "construction", "universe", "data", MINING_CAMPAIGN)
 ZERO_TRIAL_KINDS = ("protocol",)          # W0-3: the protocol line records the window change and adds no trial
 DEFECT = "defect"                         # review C-3: a defect event line marks a ledgered cell invalid afterwards
 VALIDATION = "validation"                 # review C-11: holdout_gate's record of a hidden-block read (cites its ruling)
@@ -629,6 +636,8 @@ def check_record_fields(kind: str, count: int, origin: str | None = None, rerun_
     """The refusals of a ledger line's kind, count and v8 fields (ledger_record, ledger_pool_records)."""
     if kind not in LEDGER_KINDS:
         raise ValueError(f"ledger: kind must be one of {', '.join(LEDGER_KINDS)}")
+    if kind == MINING_CAMPAIGN:
+        raise ValueError(f"ledger: a {MINING_CAMPAIGN} line records a campaign, not a NAV cell (campaign_line)")
     if not isinstance(count, int) or count < 1:
         raise ValueError("ledger: count must be a positive integer")
     if origin is not None and origin not in ORIGINS:
@@ -738,8 +747,41 @@ def defect_line(target: str, reason: str, date: str | None = None) -> dict:
 
 
 def is_event(rec: dict) -> bool:
-    """An event line (protocol, defect): no cell, adds no trial, skipped by every cell listing."""
+    """An event line (protocol, defect, validation): no cell, adds no trial, skipped by every cell listing."""
     return rec.get("kind") in EVENT_KINDS
+
+
+def campaign_line(campaign: str, registry_path: str, registry_head: str, registry_count: int, *,
+                  research_window_id: str | None = None, date: str | None = None, note: str | None = None) -> dict:
+    """A mining campaign's ledger line (Ruling E-33; plan: the campaign registry's chain head copied to the cycle
+    ledger). kind mining-campaign, origin mined, count 0: it adds no trial to any N of the ledger, the construction N
+    included (a mined member that enters a construction cell is counted by that cell's line). It carries its own
+    registry count, ``registry.count``: the candidates the campaign tried, its own budget (pre-registration rule 10,
+    the mined-v1 Bonferroni count). Its trial_id is (mining-campaign, registry chain head)."""
+    if not (isinstance(campaign, str) and campaign.strip()):
+        raise ValueError("ledger: a mining campaign needs a name")
+    if not (isinstance(registry_head, str) and len(registry_head) == 64 and set(registry_head) <= set("0123456789abcdef")):
+        raise ValueError("ledger: a mining campaign names its registry's chain head (a SHA-256 hex digest)")
+    if not isinstance(registry_count, int) or isinstance(registry_count, bool) or registry_count < 1:
+        raise ValueError("ledger: a mining campaign's registry count is a positive integer")
+    rec = {"schema": LEDGER_SCHEMA, "kind": MINING_CAMPAIGN, "count": 0, "campaign": campaign, "origin": "mined",
+           "registry": {"path": str(registry_path).replace("\\", "/"), "chain_head": registry_head,
+                        "count": registry_count}}
+    rec.update(ledger_record_fields(note=note, research_window_id=research_window_id))
+    if date is not None:
+        rec["date"] = date
+    rec["trial_id"] = trial_id(MINING_CAMPAIGN, registry_head)
+    return rec
+
+
+def is_campaign(rec: dict) -> bool:
+    """A mining campaign line (Ruling E-33): no cell, adds no trial; its registry count is its own budget."""
+    return rec.get("kind") == MINING_CAMPAIGN
+
+
+def campaign_registry_count(records: list[dict]) -> int:
+    """The registry counts of the ledger's mining campaign lines, summed (never part of N)."""
+    return sum(int((r.get("registry") or {}).get("count", 0)) for r in records if is_campaign(r))
 
 
 def check_line(before: dict, rec: dict) -> bool:
@@ -761,7 +803,7 @@ def check_line(before: dict, rec: dict) -> bool:
         return False
     if rec.get("kind") == DEFECT:
         target = before.get(rec.get("defect_of"))
-        if target is None or is_event(target):
+        if target is None or is_event(target) or is_campaign(target):
             raise ValueError(f"ledger: defect_of {rec.get('defect_of')!r} is not the trial_id of a ledgered cell line")
         if target.get("defect"):
             raise ValueError(f"ledger: trial {rec['defect_of']} was ledgered invalid already")
@@ -903,13 +945,14 @@ def trial_counts(records: list[dict]) -> list[int]:
     re-run names it. A re-run never lowers N (review C-5): the replaced cell stays counted and its blind re-run adds 0
     (one trial for the pair), while a re-run decided because the returns looked wrong (``rerun_basis`` returns) is a
     new trial beside it. Lines without the v8 fields add their count, exactly as ``ledger_counts`` summed them before
-    v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial."""
+    v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial. A mining campaign line (Ruling
+    E-33) adds 0: its registry count is the campaign's own budget, never part of a ledger N."""
     rerun = {r.get("rerun_of") for r in records if r.get("rerun_basis") in ("blind", "returns")}
     invalid = invalid_ids(records)
     out = []
     for rec in records:
         tid = rec.get("trial_id")
-        if is_event(rec) or rec.get("rerun_basis") in ("window", "blind") or is_era_line(rec):
+        if is_event(rec) or rec.get("rerun_basis") in ("window", "blind") or is_era_line(rec) or is_campaign(rec):
             out.append(0)
         elif tid in invalid and tid not in rerun:
             out.append(0)
@@ -941,10 +984,10 @@ def excluded_lines(records: list[dict]) -> list[dict]:
 
 def ledger_counts(records: list[dict]) -> dict:
     """Trials by kind and window: {kind: {window key: trials}} (``trial_counts`` per line; default 1 each). Protocol
-    and defect lines are events, not trials: they are skipped."""
+    and defect lines are events, not trials: they are skipped, and so are mining campaign lines (Ruling E-33)."""
     out: dict = {}
     for rec, trials in zip(records, trial_counts(records)):
-        if is_event(rec) or is_era_line(rec):
+        if is_event(rec) or is_era_line(rec) or is_campaign(rec):
             continue
         w = rec.get("window") or {}
         key = f"{w.get('label', '?')} {w.get('first_session', '?')}..{w.get('last_session', '?')}"
@@ -958,11 +1001,17 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
     total = sum(sum(v.values()) for v in counts.values())
     lines = [f"Appendix A (trial ledger {path}): {total} trials in {len(records)} ledger lines"]
     for kind in LEDGER_KINDS:
+        if kind == MINING_CAMPAIGN:
+            continue                        # printed below, only when a campaign is ledgered (Ruling E-33)
         for window, n in sorted((counts.get(kind) or {}).items()):
             lines.append(f"   {kind:12s} {n:5d}  [{window}]")
         if kind not in counts:
             lines.append(f"   {kind:12s} {0:5d}")
-    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r)]
+    campaigns = [r for r in records if is_campaign(r)]
+    if campaigns:
+        lines.append(f"   {MINING_CAMPAIGN} {0:5d}  ({len(campaigns)} campaign line(s), registry count "
+                     f"{campaign_registry_count(records)}: the campaigns' own budget, not in N)")
+    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r) and not is_campaign(r)]
     if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
         reads = sum(1 for r in zero if r.get("kind") == VALIDATION)
         out = [r for r in zero if r.get("rerun_basis") != "window" and r.get("kind") not in ZERO_TRIAL_KINDS

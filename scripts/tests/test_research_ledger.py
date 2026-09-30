@@ -120,6 +120,11 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
     assert records[-1]["kind"] == "defect" and records[-1]["defect_of"] == b["trial_id"] and "prev_sha256" in records[-1]
     assert BI.trial_counts(records) == [1, 0, 0] and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]      # the cell listing skips the event line
+    BI.ledger_append(ledger, [BI.campaign_line("mined-q1", "mine/registry.jsonl", "cd" * 32, 250),   # Ruling E-33
+                              {"schema": BI.LEDGER_SCHEMA, "kind": "validation", "count": 0,       # review C-11
+                               "owner_ruling": {"path": "r.json", "sha256": "ef" * 32}, "trial_id": "v" * 16}],
+                     chain=True)
+    assert research_ledger.cells(ledger) == ["prior/a", "prior/b"] and cycle_n(root, sp) == 2      # neither adds
     for bad in (["--trial-id", "0" * 16], ["--date", "01/10/2026"], ["--reason", " "]):
         args = list(argv)
         args[args.index(bad[0]) + 1] = bad[1]

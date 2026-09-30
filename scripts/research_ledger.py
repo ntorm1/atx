@@ -49,7 +49,7 @@ PROTOCOL = "protocol"
 DEFECT = "defect"                       # review C-3: a defect event line (backtest_integrity.defect_line)
 VALIDATION = "validation"               # review C-11: holdout_gate's record of a hidden-block read
 NON_TRIAL_KINDS = (PROTOCOL, DEFECT, VALIDATION)    # event lines, no cell and no trial: skipped by cells()
-CELL_LESS_KINDS = ("admission",)        # review C-7: the cycle's admission lines name a candidate, not a NAV cell
+CELL_LESS_KINDS = ("admission", "mining-campaign")  # C-7 admission lines name a candidate; E-33 campaign lines a registry
 N_KIND = "construction"                 # the kind whose trials make N (nav_summ --dsr-ledger)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 TOOLS = research_tree.REPO / "atx-impl" / "tools"
@@ -86,8 +86,9 @@ def read_lines(path: Path) -> list[tuple[int, dict]]:
 
 
 def cells(path: Path) -> list[str]:
-    """The ledgered cells in ledger order (protocol and defect lines skipped); a trial line without a cell is an error,
-    except a cell-less admission line (review C-7: a screened candidate, no NAV dir). Era shard and pooled era lines
+    """The ledgered cells in ledger order (protocol, defect and validation lines skipped); a trial line without a cell
+    is an error, except a cell-less admission line (review C-7: a screened candidate, no NAV dir) or mining campaign
+    line (Ruling E-33: a campaign registry, no NAV dir). Era shard and pooled era lines
     (task H-1) are skipped too: they are not grid NAV dirs of the research window."""
     out = []
     bi = None
