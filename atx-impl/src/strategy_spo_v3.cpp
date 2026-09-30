@@ -190,13 +190,15 @@ Json tracking_parameters_json(const SpoParams& p, f64 horizon, f64 gross_bound) 
 }
 
 Json tracking_calibration_json(const SpoParams& p, const Calibration& c) {
-  return Json{{"done", c.done}, {"session", c.session},
-              {"rule", "gamma = S_prior / sigma_aim, sigma_aim = sqrt(252 w_aim' Sigma w_aim) of "
-                       "the whole aim (its names with a risk row) at the first rebalance "
-                       "decision"},
-              {"sharpe_prior", finite_or_null(p.sharpe_prior)},
-              {"sigma_aim", finite_or_null(c.aim_vol)}, {"aim_gross", finite_or_null(c.aim_gross)},
-              {"gamma", finite_or_null(c.gamma)}, {"names", c.names}};
+  Json j{{"done", c.done}, {"session", c.session},
+         {"rule", "gamma = S_prior / sigma_aim, sigma_aim = sqrt(252 w_aim' Sigma w_aim) of "
+                  "the whole aim (its names with a risk row) at the first rebalance "
+                  "decision"},
+         {"sharpe_prior", finite_or_null(p.sharpe_prior)},
+         {"sigma_aim", finite_or_null(c.aim_vol)}, {"aim_gross", finite_or_null(c.aim_gross)},
+         {"gamma", finite_or_null(c.gamma)}, {"names", c.names}};
+  if (c.warm_up) j["warm_up"] = warm_up_calibration_text; // review A-2; absent without one
+  return j;
 }
 
 std::string tracking_csv(std::span<const TrackingRow> rows) {

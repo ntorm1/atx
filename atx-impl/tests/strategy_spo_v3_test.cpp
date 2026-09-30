@@ -1,7 +1,8 @@
 // spo-v3 (platform v8 R-6): target tracking toward the aim through the spo engine and the v7
 // hook -- the aim itself without costs or limits (a direct Engine::plan), the gross sanity
 // bound slack on the fixture and its breach voiding the run, the tracking error, trade-limit
-// share and aim correlation with their per-book report, the CLI refusals of the registered
+// share and aim correlation with their per-book report, gamma on the first scored decision
+// under a warm start (review A-2), the CLI refusals of the registered
 // constants, and (v8 E-26) the aim shaped by --hold-band / --adv-hold-q exactly as the
 // aim-partial-v5 path shapes desired. The spo-v1 / spo-v2 digest guard is
 // strategy_spo_v3_pin_test.cpp.
@@ -74,7 +75,8 @@ private:
 
 // A replay of the fixture (nav_config: S1, S2, S3, cadence 1, theta .25, L 1.2, NAV 1e8, or
 // `cfg`) under spo-v3 through the v7 hook, with what the extension would publish; with a
-// recorder, its primary book alone (replay_nav_scenarios, bit-identical) observed.
+// recorder, its primary book alone (replay_nav_scenarios, bit-identical) observed. The role's
+// first scored row is `decision_begin` (0: the fixture's own).
 struct Replay {
   std::vector<sp::TrackingRow> rows;
   usize legacy_rows{}; // spo-v1/v2 rows (none under spo-v3)
@@ -87,7 +89,9 @@ struct Replay {
 };
 Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
                  const sp::SpoParams& params, const st::NavReplayConfig& cfg = nav_config(),
-                 Recorder* recorder = nullptr) {
+                 Recorder* recorder = nullptr, usize decision_begin = 0) {
+  auto input = role.nav();
+  input.target.decision_begin = decision_begin;
   v7::NavV7Options o;
   o.spo_v1 = true;
   o.spo_params = params;
@@ -100,13 +104,13 @@ Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
     return out;
   }
   if (recorder == nullptr) {
-    auto result = st::replay_nav(role.nav(), cfg);
+    auto result = st::replay_nav(input, cfg);
     EXPECT_TRUE(result) << result.error().to_string();
     if (result) out.result = std::move(*result);
   } else {
     recorder->engine = engine;
     const std::array<st::NavScenario, 1> primary{cfg.scenario};
-    auto results = st::replay_nav_scenarios(role.nav(), cfg, primary, *recorder, 0);
+    auto results = st::replay_nav_scenarios(input, cfg, primary, *recorder, 0);
     EXPECT_TRUE(results) << results.error().to_string();
     if (results && results->size() == 1) out.result = std::move(results->front());
   }
@@ -353,6 +357,80 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     EXPECT_EQ(report.at(book).at("trade_limit_share"), entry.at("trade_limit_share")) << book;
   }
   EXPECT_EQ(run.tripwire.at("status"), "clear");
+}
+
+// Review A-2 (v8 D-0 warm start): the warm-up decisions move the book as aim-partial-v5 and read
+// no risk row, and gamma is calibrated on the first scored decision. On a risk store with no
+// forecast before decision_begin (every earlier row unforecast, where a read refuses) the warm
+// start runs: its calibration is the flat start's at decision_begin bit for bit (the same aim
+// and slice), its rows are exactly the flat start's scored decisions, the book it scores from
+// is the plain aim-partial-v5 warm start's (not flat), and its calibration block names the
+// warm-up (the flat start's has no such key).
+TEST(SpoV3, WarmStartCalibratesOnTheFirstScoredDecision) {
+  constexpr usize begin = 12, warm = 8;
+  const Role role(40, 12, 53);
+  std::vector<u8> forecast(role.d, u8{1});
+  for (usize d = 0; d < begin; ++d) forecast[d] = 0;
+  const Directory dir;
+  const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 3);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  ASSERT_TRUE(store) << store.error().to_string();
+  const auto risk = std::make_shared<const sp::RiskStore>(std::move(*store));
+  const auto params = sp::v3_params();
+  const auto flat_cfg = nav_config();
+  auto warm_cfg = flat_cfg;
+  warm_cfg.warm_start_sessions = warm;
+  const Replay flat = replay_v3(role, risk, params, flat_cfg, nullptr, begin);
+  const Replay warmed = replay_v3(role, risk, params, warm_cfg, nullptr, begin);
+  ASSERT_FALSE(flat.rows.empty());
+  ASSERT_FALSE(warmed.rows.empty());
+  // gamma of the first scored decision, not of row begin - K (unforecast: it would refuse).
+  const auto& c = warmed.calibration;
+  ASSERT_TRUE(c.done);
+  EXPECT_TRUE(c.warm_up);
+  EXPECT_FALSE(flat.calibration.warm_up);
+  EXPECT_EQ(c.session, role.sessions[begin]);
+  EXPECT_EQ(flat.calibration.session, role.sessions[begin]);
+  EXPECT_EQ(bits(c.gamma), bits(flat.calibration.gamma));
+  EXPECT_EQ(bits(c.aim_vol), bits(flat.calibration.aim_vol));
+  EXPECT_EQ(c.names, flat.calibration.names);
+  // Rows: the scored decisions only, the flat start's.
+  ASSERT_EQ(warmed.rows.size(), flat.rows.size());
+  for (usize k = 0; k < warmed.rows.size(); ++k) {
+    EXPECT_EQ(warmed.rows[k].session, flat.rows[k].session) << k;
+    EXPECT_EQ(warmed.rows[k].book, flat.rows[k].book) << k;
+    EXPECT_GE(warmed.rows[k].session, role.sessions[begin]) << k;
+    EXPECT_EQ(bits(warmed.rows[k].gamma), bits(c.gamma)) << k;
+  }
+  EXPECT_EQ(warmed.rows.front().session, role.sessions[begin]);
+  // The warm-up built the book the scored window starts from (the flat start's is empty).
+  ASSERT_FALSE(warmed.result.days.empty());
+  ASSERT_FALSE(flat.result.days.empty());
+  EXPECT_EQ(warmed.result.days.front().session, role.sessions[begin]);
+  EXPECT_GT(warmed.result.days.front().pretrade_gross_dollars, 0.0);
+  EXPECT_EQ(flat.result.days.front().pretrade_gross_dollars, 0.0);
+  EXPECT_NE(bits(warmed.rows.front().tracking_error_current),
+            bits(flat.rows.front().tracking_error_current));
+  // That book is the plain aim-partial-v5 warm start's (no extension), bit for bit: row
+  // score_begin's book entering it, its EXECUTE of the last warm-up orders and its gross.
+  auto input = role.nav();
+  input.target.decision_begin = begin;
+  const auto plain = st::replay_nav(input, warm_cfg);
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  ASSERT_FALSE(plain->days.empty());
+  const auto& a = plain->days.front();
+  const auto& b = warmed.result.days.front();
+  EXPECT_EQ(a.session_index, b.session_index);
+  EXPECT_EQ(bits(a.pretrade_gross_dollars), bits(b.pretrade_gross_dollars));
+  EXPECT_EQ(bits(a.traded_dollars), bits(b.traded_dollars));
+  EXPECT_EQ(bits(a.gross_leverage), bits(b.gross_leverage));
+  // The calibration block: the warm-up is named only when there was one.
+  ASSERT_TRUE(warmed.calibration_json.contains("warm_up"));
+  EXPECT_EQ(warmed.calibration_json.at("warm_up").get<std::string>(),
+            std::string(sp::warm_up_calibration_text));
+  EXPECT_FALSE(flat.calibration_json.contains("warm_up"));
+  EXPECT_EQ(warmed.calibration_json.at("session"), role.sessions[begin]);
+  EXPECT_TRUE(warmed.captured);
 }
 
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta
