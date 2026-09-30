@@ -1,0 +1,15 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r5-adv-hold",
+  "description": "Cell R-5 (plan section 9, N 45): ADV holding cap adv-hold-v1 (lane R45, task-R-5-report.md): after the projection |desired_i| <= Q ADV_i / (L NAV), Q = .10, the clipped mass redistributed pro rata inside its side in one pass, the residual breach reported; ADV = the execution ADV of the fill session (Ruling R5-a); NAV = the run's initial NAV for every capacity book (Ruling R5-b, E-15). The change: nav --adv-hold-q .1 with --capacity-curve (a no-op when the parent carries it, as B0c does). NAV-only: u, fit, card and w are the parent's. Identity cell first: --adv-hold-q 1e9 (daily and events CSVs byte-identical). Acceptance: net Sharpe at 4x NAV higher AND net Sharpe at 1x not lower by more than one paired SE AND S3 not lower.",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-r5-advq.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+    },
+    "flags": {
+      "nav": {"--adv-hold-q": ".1", "--capacity-curve": true}
+    }
+  }
+}

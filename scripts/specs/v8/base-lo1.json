@@ -1,0 +1,114 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "v8-b0a-lo1",
+  "description": "Cell B0a (v8-prereg.md, W0-4; W0-2 runbook section 4 draft): the accepted v7.1 book on the new TRAIN window 2020-2023 (research-window-v2, seal 2024-01-01). Library v7.1 + v1 recipe held fixed; admission v4-prior-v1 and ew-theme-v1 refit on 2020-2023; construction aim-partial-v5 theta .05 dust .1 fixed, delta orders, exit .05, locate-in-aim, liquidity cache, price-risk-v1, L 1.247 fixed; cost S2. Role train-2020-2023-lo1 = linked-operating-v1 on the 4-year base (start 2018-06-01, factor-break-v1 repair at 2021-01-04) with identity-bridge-r4-v2 (seal 2024-01-01) and fundamental-events-v3 SIC. Fields v9 AS BUILT (63 fields, the v71 spec's fields.list; runbook R10, never built by the cycle). New window: no ref phase, no compare, no reference cell (the 2020-2022 overlap is checked outside the cycle, runbook R13, ruling W0-a). IC phases u and w 300 s / 2,560 MiB (OD-2, runner.phases), the card too (the report card on the 4-year role); every other phase 180 s / 1,536 MiB. Fit and card share the incremental store base build-equity/fit-work (C-1). Monitor without holdings and bias inputs (Ruling W0-m). summ: nav_summ --protocol v8 over the ledger grid, dsr_n = ledger N + 1 (38 when B0a is first). Null pins are filled by `research_cycle.py lock scripts/specs/v8/base-lo1.json --write` after the runbook builds (R4, R5, R7, R10).",
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 180,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512,
+    "phases": {
+      "u": {"seconds": 300, "max_rss_mib": 2560},
+      "w": {"seconds": 300, "max_rss_mib": 2560},
+      "card": {"seconds": 300, "max_rss_mib": 2560}
+    }
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v71.json",
+      "sha256": "787c802ed1cdf7cfc507500b014525c3d4dff148f44e77ebd8368c0a686c2259"
+    },
+    "recipe": {
+      "path": "atx-impl/strategies/fund_industry_ic_v71.recipe.json",
+      "sha256": "7f8a264312d47487d2a9f7e0e92ecd76defb22ce2822ec319805f9ad0dffb271"
+    },
+    "role": {
+      "dir": "build-equity/train-2020-2023-lo1",
+      "path": "build-equity/train-2020-2023-lo1/manifest.json",
+      "universe": "linked-operating-v1",
+      "sha256": null
+    },
+    "identity_bridge": {
+      "dir": "build-equity/identity-bridge-r4-v2",
+      "path": "build-equity/identity-bridge-r4-v2/manifest.json",
+      "sha256": null
+    },
+    "fund_events": {
+      "dir": "build-equity/fundamental-events-v3",
+      "path": "build-equity/fundamental-events-v3/manifest.json",
+      "sha256": null
+    }
+  },
+  "fields": {
+    "output": "build-equity/train-2020-2023-lo1-fields-v9",
+    "manifest_sha256": null,
+    "list": [
+      "si_shares", "si_dtc", "iv_atm_21d", "iv_atm_63d", "iv_atm_126d", "earn_recent", "shares_out", "mkt_ret",
+      "be", "at", "at_lag4", "lt", "che", "debt", "sale_ttm", "gp_ttm", "oi_ttm", "ni_ttm", "ni_q", "ni_q_lag4",
+      "be_lag1q", "be_lag1q_lag4", "cfo_ttm", "capx_ttm", "xrd_ttm", "dvc_ttm", "prstkc_ttm", "sstk_ttm", "txt_q",
+      "txt_q_lag4", "shrs_q", "shrs_q_lag4", "noa", "noa_lag4", "sue", "fscore", "me_company", "grp_sic2", "grp_ff12",
+      "grp_ff49", "sv_ratio126", "ea_days_to_expected", "ea_days_since", "ea_window_pre5", "ea_window_post3",
+      "ea_delay_days", "ea_time_of_day", "ins_net_buy_ratio", "ins_n_buyers", "ins_n_sellers", "ins_opportunistic_net",
+      "ins_cluster_buy", "k8_count_63", "k8_item_material_21", "k8_days_since_any", "inst_own_share",
+      "inst_breadth_chg", "inst_own_chg_q", "inst_best_ideas", "inst_n_holders", "ftd_shares_ratio21",
+      "regsho_threshold_days63", "sv_offexchange_share126"
+    ]
+  },
+  "ic": {
+    "u_output": "build-equity/mega-v8-b0a-train-u",
+    "w_output": "build-equity/mega-v8-b0aw-train-ew",
+    "cache": "build-equity/mega-candidate-cache-v8-lo1",
+    "flags": ["--max-memory-mib", "2560", "--min-names", "1000", "--workers", "4", "--save-combined"]
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "build-equity/mega-weights-v8-b0a-ew",
+    "work_dir": "build-equity/fit-work",
+    "flags": ["--orientation", "prior", "--screen", "v4-prior-v1", "--composition", "ew-theme-v1"],
+    "max_seconds": 150,
+    "max_passes": 3
+  },
+  "card": {
+    "script": "atx-impl/tools/alpha_report_card.py",
+    "output": "build-equity/mega-cards-v8-b0a",
+    "flags": ["--workers", "4", "--work-dir", "build-equity/fit-work"]
+  },
+  "gate": {
+    "name": "b0a-readout",
+    "admitted": [],
+    "report": ["ins_opp", "inst_best_ideas", "ftd_fail", "ea_overdue", "mom_12_1", "si_ratio", "dtc", "sv_flow",
+               "iv_rv_spread", "ear", "sue", "droe"]
+  },
+  "nav": {
+    "output": "build-equity/mega-nav-v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "rule": "aim-partial-v5",
+    "leverage": "1.247",
+    "flags": ["--cadence", "1", "--trade-fraction", ".05", "--dust-multiple", ".1", "--aim-leverage", "{leverage}",
+              "--daily-turnover-mean-max", ".20", "--daily-turnover-p95-max", ".30", "--neutralize", "price-risk-v1",
+              "--max-bytes", "1073741824", "--order-basis", "delta", "--exit-rate", ".05", "--locate-in-aim",
+              "--liquidity-cache"]
+  },
+  "monitor": {
+    "script": "atx-impl/tools/book_monitor.py",
+    "output": "build-equity/mega-monitor-v8-b0a",
+    "flags": []
+  },
+  "summ": {
+    "script": "atx-impl/tools/nav_summ.py",
+    "dsr_n": "ledger+1",
+    "cells_from_ledger": true,
+    "extra": ["--protocol", "v8", "--effective-n", "dirs", "--psr", "--pbo"],
+    "ledger": "build-equity/trials.jsonl",
+    "ledger_kind": "construction"
+  },
+  "verdict": true
+}

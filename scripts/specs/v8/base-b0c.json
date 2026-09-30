@@ -1,0 +1,19 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-b0c",
+  "description": "Cell B0c (v8-prereg.md, W0-4; Ruling E-10): the v8 baseline whatever its sign. Parent = the winner of B0a / B0b (root sets parent to base-lo1.json or base-lo3.json once both are read; planned on base-lo1.json until then). Signals, fields, admission and weights are the winner's: a NAV-only change, so u, fit, card and w are the parent's outputs (resumed as done) and only nav runs anew. Changes: terminal (delisting) returns in the NAV replay's labels only (Ruling E-25: inputs.label_role, the winner's role rebuilt with --delisting --delisting-returns by runbook R15, reaches the NAV verb as --label-role MANIFEST --label-role-sha256 SHA through lane R45's nav step; the pin is null until `lock --write` after R15; when B0b wins root re-points label_role to build-equity/train-2020-2023-lo3-dlret), and the warm start --warm-start-sessions 60 (lane D, D-0: decide from score_begin - 60, score from score_begin). Also --capacity-curve (Ruling E-29, confirmed: report only, a second pass at NAV x .5..8 into <output>/capacity; the primary series and every scored file are unchanged) so that every R cell can report net Sharpe at 4x NAV against its parent (plan section 9; R-3 and R-5 acceptance). Paired reference: the parent's cell (derived). dsr_n = ledger N + 1 (40 after B0a, B0b).",
+  "parent": null,
+  "nominal_parent": "base-lo1.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+    },
+    "inputs": {
+      "label_role": {"dir": "build-equity/train-2020-2023-lo1-dlret",
+                     "path": "build-equity/train-2020-2023-lo1-dlret/manifest.json", "sha256": null}
+    },
+    "flags": {
+      "nav": {"--warm-start-sessions": "60", "--capacity-curve": true}
+    }
+  }
+}

@@ -60,6 +60,14 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   single-role cycle; two or more run fields, u, w and nav per era (outputs -<id>, receipts
                   --role-id), and check, the pooled fit (--era / --era-id), gate and the pooled summ (nav_summ --pool)
                   on the anchor (the last role); steps are named phase:<id>
+  templates      a SPEC of schema atx.research-cycle-template/v1 is a cell written as its parent's spec plus the
+                  registered change (research_spec.py: parent, nominal_parent, requires, change, locked); plan works on
+                  the nominal parent while parent is null; run refuses a null parent, an open "requires" up the chain,
+                  or a "<fill:...>" value; lock pins the inputs the template adds or derives
+  fields pin      fields.manifest_sha256 null (an as-built dir not yet locked): computed from the file at plan time
+                  (UNLOCKED), written by `lock --write`
+  ic.w_flags      {"--opt": "value" | true | false} applied to ic.flags for the weighted (w) pass only (research_spec
+                  apply_flags), e.g. Ruling E-28's --max-memory-mib 3072 for a theme_standardise composition
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -106,7 +114,8 @@ compare   ``compare`` (optional list) adds identity checks after a named phase: 
           keys, exact numbers); b may add objects of other keys). The compared keys are a's keys, or, with the
           operand "keys" (a library JSON, e.g. {input:baseline_library}), its candidate ids -- the parent's member
           rows, so a series of another key in both files (the IC runner's __combined__ book) is not compared; a
-          must hold every one of them
+          must hold every one of them. "keys_in" (a second library JSON, with "keys") keeps the keys it also lists
+          (add-alpha --replaces: the parent's members the child still holds)
 
 Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, SIC events (the
 atx-db fundamentals stage manifest: the grp_* fields' --sic-events), baseline fields, reference admission, reference
@@ -145,6 +154,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_admission  # noqa: E402
 import cycle_resume  # noqa: E402
 import research_ledger  # noqa: E402
+import research_spec  # noqa: E402
 import research_tree  # noqa: E402
 from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
 
@@ -177,6 +187,8 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
 # output); marginal.flags may set only MARGINAL_SPEC_FLAGS (unsigned integers; --min-names defaults to the u pass's).
 MARGINAL_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
 MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields")
+W_BUILT = ("--library", "--library-sha256", "--train", "--train-sha256", "--train-fields", "--train-fields-sha256",
+           "--output", "--candidate-cache", "--composition-weights", "--composition-weights-sha256")
 MARGINAL_SPEC_FLAGS = {"--min-names": (3, None), "--max-memory-mib": (32, 16384)}   # option: (min, max) as the verb
 OPERAND = re.compile(r"\{(input|out):([A-Za-z0-9_]+)\}")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
@@ -231,13 +243,28 @@ def find_spec(arg: str) -> Path:
     raise CycleError(f"spec not found: {arg}", EXIT_USAGE)
 
 
-def load_spec(path: Path) -> dict:
+def load_spec(path: Path, _seen: tuple = ()) -> dict:
+    """A cycle spec, validated; a template (research_spec.py: a cell as its parent's spec plus the registered change)
+    is resolved first, its parent chain loaded the same way (a cycle of parents is refused)."""
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise CycleError(f"spec {path}: {exc}", EXIT_USAGE) from exc
+    if research_spec.is_template(spec):
+        here = Path(path).resolve()
+        if here in _seen:
+            raise CycleError(f"spec {path}: template parents form a cycle", EXIT_USAGE)
+        try:
+            spec = research_spec.resolve(spec, Path(path), lambda p: load_spec(p, _seen + (here,)), research_tree.REPO)
+        except research_spec.TemplateError as exc:
+            raise CycleError(str(exc), EXIT_USAGE) from exc
     validate_spec(spec)
     return spec
+
+
+def as_built(fields: dict | None) -> bool:
+    """A fields section pinning an AS-BUILT dir: manifest_sha256 present (a digest, or null until `lock --write`)."""
+    return isinstance(fields, dict) and "manifest_sha256" in fields
 
 
 def validate_spec(spec: dict) -> None:
@@ -266,12 +293,13 @@ def validate_spec(spec: dict) -> None:
             raise CycleError(f"spec {section} needs {', '.join(keys)}", EXIT_USAGE)
     validate_v8_keys(spec)
     f = spec.get("fields")
-    if f is not None and not f.get("manifest_sha256") and not all(k in f for k in ("builder", "list")):
+    if f is not None and not as_built(f) and not all(k in f for k in ("builder", "list")):
         raise CycleError("spec fields needs builder and list (a built fields dir) or manifest_sha256 (as built)",
                          EXIT_USAGE)
-    if f is not None and "manifest_sha256" in f and (not isinstance(f["manifest_sha256"], str) or
-                                                     len(f["manifest_sha256"]) != 64):
-        raise CycleError("spec fields.manifest_sha256 must be a SHA-256 hex digest", EXIT_USAGE)
+    if as_built(f) and f["manifest_sha256"] is not None and (not isinstance(f["manifest_sha256"], str) or
+                                                             len(f["manifest_sha256"]) != 64):
+        raise CycleError("spec fields.manifest_sha256 must be a SHA-256 hex digest (null until `lock --write`)",
+                         EXIT_USAGE)
     if "ref" in spec:
         ref = spec["ref"]
         if "nav" not in spec or ref["combined"] not in spec["inputs"] or ref["output"] == spec["nav"]["output"]:
@@ -341,6 +369,17 @@ def validate_v8_keys(spec: dict) -> None:
         raise CycleError("spec verdict must be true or false", EXIT_USAGE)
     if "marginal" in spec:
         validate_marginal(spec)
+    w_flags = spec.get("ic", {}).get("w_flags")
+    if w_flags is not None and (not isinstance(w_flags, dict) or not all(
+            isinstance(k, str) and k.startswith("--") and k not in W_BUILT and (type(v) is bool or isinstance(v, str))
+            for k, v in w_flags.items())):
+        raise CycleError(f"spec ic.w_flags maps an option of the w pass only to a value, true or false (not one the "
+                         f"step builds: {', '.join(W_BUILT)})", EXIT_USAGE)
+    if w_flags:
+        try:
+            research_spec.apply_flags(spec["ic"]["flags"], w_flags, "ic.w_flags")
+        except research_spec.TemplateError as exc:
+            raise CycleError(f"spec {exc}", EXIT_USAGE) from exc
     if "ledger_copy" in spec.get("summ", {}) and not (isinstance(spec["summ"]["ledger_copy"], str) and
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
@@ -355,7 +394,7 @@ def validate_v8_keys(spec: dict) -> None:
         if any(d.name != k for d, k in zip(dirs, SEC_STAGE_INPUTS)) or len({d.parent.as_posix() for d in dirs}) != 1:
             raise CycleError("spec inputs: earnings_calendar, insider and sec_filings must be the directories of those "
                              "names under one alpha-panel root (--sec-stages)", EXIT_USAGE)
-    if "reuse_fields" in inputs and ("fields" not in spec or spec["fields"].get("manifest_sha256")):
+    if "reuse_fields" in inputs and ("fields" not in spec or as_built(spec["fields"])):
         raise CycleError("spec inputs.reuse_fields needs a built fields section (not an as-built manifest_sha256)",
                          EXIT_USAGE)
 
@@ -468,7 +507,9 @@ def validate_compare(spec: dict) -> None:
         if "keys" in c and (c["mode"] == "file" or not isinstance(c["keys"], str) or not c["keys"]):
             raise CycleError(f"spec compare {c['name']}: keys (a library JSON path) is for the row modes only",
                              EXIT_USAGE)
-        for side in [s for s in ("a", "b", "keys") if s in c]:
+        if "keys_in" in c and ("keys" not in c or not isinstance(c["keys_in"], str) or not c["keys_in"]):
+            raise CycleError(f"spec compare {c['name']}: keys_in (a library JSON path) narrows keys", EXIT_USAGE)
+        for side in [s for s in ("a", "b", "keys", "keys_in") if s in c]:
             for kind, key in OPERAND.findall(c[side]):
                 ok = key in spec["inputs"] if kind == "input" else key in OUT_PHASES and phase_present(spec, key)
                 if not ok:
@@ -578,7 +619,7 @@ class Cycle:
                  screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
-        if reuse_fields and spec.get("fields", {}).get("manifest_sha256"):
+        if reuse_fields and as_built(spec.get("fields")):
             raise CycleError("--reuse-fields: the spec pins an as-built fields dir (fields.manifest_sha256); nothing "
                              "is built", EXIT_USAGE)
         if reuse_fields and "reuse_fields" in spec["inputs"]:
@@ -807,7 +848,7 @@ class Cycle:
         fd = ""                                  # validate_spec: ic and the static check need fields
         if "fields" in s:
             f_out = s["fields"]["output"]
-            if s["fields"].get("manifest_sha256"):  # a pinned input dir: never placed, suffixed or rebuilt
+            if as_built(s["fields"]):  # a pinned input dir: never placed, suffixed or rebuilt
                 fd = f_out
             else:
                 fd = self.placed(f_out) if self.keep_fields else self.out(f_out)
@@ -859,10 +900,11 @@ class Cycle:
             n, state, note = self.ic_attempt("w", base)
             wt_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
             weights = f"{w_dir}/{self.weights_name}"
+            w_flags = research_spec.apply_flags(ic["flags"], ic.get("w_flags") or {}, "ic.w_flags")   # E-28
             argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights], "w") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", wt_out,
-                *ic["flags"], "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
+                *w_flags, "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
                 "--composition-weights-sha256", self.rt_sha(weights)]
             out.append(Step("w", "bounded", argv, wt_out, run_dir, n, state, note))
         n_out = ""
@@ -1028,7 +1070,7 @@ class Cycle:
         done = []
         for st in steps:
             done.append(st)
-            mine = [dict(c, **{s: operand(c[s]) for s in ("a", "b", "keys") if s in c})
+            mine = [dict(c, **{s: operand(c[s]) for s in ("a", "b", "keys", "keys_in") if s in c})
                     for c in items if c["after"] == st.phase]
             if mine:
                 note = "identity: " + "; ".join(f"{c['name']} [{c['mode']}]" for c in mine) + " (a miss hard-stops)"
@@ -1089,12 +1131,13 @@ class Cycle:
 
     def fields_step(self, fd: str, fdm: str, role_sha: str) -> Step:
         f, s = self.spec["fields"], self.spec
-        pin = f.get("manifest_sha256")
-        if pin:  # as built: an input, never (re)built by the cycle
-            got = self.res.sha(fdm)
+        if as_built(f):  # as built: an input, never (re)built by the cycle
+            pin, got = f["manifest_sha256"], self.res.sha(fdm)
             if got is None:
                 state, note = "failed", (f"pinned fields manifest missing: {fdm} (as built; the cycle never builds a "
                                          "pinned fields dir)")
+            elif pin is None:
+                state, note = "done", f"as built, manifest sha256 {got} (UNLOCKED: computed now; run `lock --write`)"
             elif got != pin:
                 raise CycleError(f"PIN MISMATCH fields: {fdm} is {got}, spec pins {pin}", EXIT_PIN)
             else:
@@ -1232,10 +1275,10 @@ class Cycle:
 # ------------------------------------------------------------------ internal checks
 def fields_check(cycle: Cycle, fdm: str, log=print) -> None:
     f = cycle.spec["fields"]
-    if f.get("manifest_sha256") and "list" in f:  # as built: the pinned manifest's rows are the declared list
+    if as_built(f) and "list" in f:  # as built: the pinned manifest's rows are the declared list
         doc = cycle.res.read_json(fdm) or {}
         names = [row.get("name") for row in doc.get("fields", [])]
-        log(f"fields check: pinned {fdm} sha256 {f['manifest_sha256']}: {len(names)} rows"
+        log(f"fields check: pinned {fdm} sha256 {f['manifest_sha256'] or cycle.res.sha(fdm)}: {len(names)} rows"
             f"{' == the spec list' if names == f['list'] else ' DIFFER from the spec list'}")
         if names != f["list"]:
             raise CycleError("fields check FAILED (the pinned manifest's field rows differ from fields.list)")
@@ -1352,6 +1395,9 @@ def compare_files(res: Resolver, c: dict) -> str:
             raise miss(f"sha256 {sa} != {sb}")
         return f"bit for bit ({pa.stat().st_size} bytes, sha256 {sa})"
     members = compare_keys(res, c["keys"]) if c.get("keys") else None
+    if members is not None and c.get("keys_in"):
+        also = set(compare_keys(res, c["keys_in"]))
+        members = [m for m in members if m in also]
     if mode == "csv-rows":
         la, lb = _lines(pa.read_bytes()), _lines(pb.read_bytes())
         if not la or not lb or la[0] != lb[0]:
@@ -1415,7 +1461,7 @@ def header(cycle: Cycle) -> list[str]:
              f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
-    return lines
+    return lines + research_spec.header_lines(cycle.spec, cycle.spec_path, research_tree.REPO)
 
 
 def plan_lines(cycle: Cycle, lines_only: bool = False) -> list[str]:
@@ -1494,6 +1540,9 @@ def execute(argv: list[str], root: Path, env: dict, capture: bool) -> subprocess
 def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executor=execute,
               clean=git_scoped) -> int:
     root = cycle.res.root
+    refusal = research_spec.run_refusal(cycle.spec, cycle.spec_path, research_tree.REPO)
+    if refusal:                               # a template's null parent, open precondition or value to fill
+        raise CycleError(refusal, EXIT_PIN)
     clean = None if cycle.no_git else clean   # K3: a root outside any repository has no tree to check
     seen: set = set()
     check_clean(cycle, clean, log, seen)
@@ -1635,13 +1684,27 @@ def copy_ledger(cycle: Cycle, log) -> None:
 
 # ------------------------------------------------------------------ lock
 def lock(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[str]]:
+    """The spec with every input pin (and a null as-built fields.manifest_sha256) computed from its file; a template
+    gets the pins of the inputs it adds or derives (research_spec.lock_template), its parent keeps its own."""
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     if "roles" in spec:                    # H-1: the inputs and every role's role and fields pins
         import research_roles  # noqa: PLC0415  (imports this module)
         return research_roles.lock(spec, root, relock)
-    validate_spec(spec)
     res = Resolver(root)
+    if research_spec.is_template(spec):
+        try:
+            return research_spec.lock_template(spec, load_spec(spec_path), res.sha, relock)
+        except research_spec.TemplateError as exc:
+            raise CycleError(str(exc), EXIT_PIN) from exc
+    validate_spec(spec)
     notes: list[str] = []
+    f = spec.get("fields")
+    if as_built(f) and f["manifest_sha256"] is None:
+        got = res.sha(f"{f['output']}/manifest.json")
+        if got is None:
+            raise CycleError(f"lock: fields manifest missing: {f['output']}/manifest.json", EXIT_PIN)
+        f["manifest_sha256"] = got
+        notes.append(f"locked fields: {f['output']}/manifest.json {got}")
     for key, item in spec["inputs"].items():
         lock_pin(res, item, "sha256", item["path"], key, relock, notes)
     return spec, notes

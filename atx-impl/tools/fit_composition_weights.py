@@ -206,6 +206,9 @@ PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
 COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
 PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_RULE_ID,),  # v8 R-1 registration
                                     COMPOSITIONS + (composition_rules.STD_RULE_ID,))
+PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,),  # v8 R-3, Ruling E-27
+                                    COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
+AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -1828,7 +1831,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     entries = [layout.resolve(c, role) for c in library]
     shas = [e["payload_sha256"] for e in entries]
     records, computed, reused, aims = ensure_records(args, role, library, entries, layout.vm_identity, started, log,
-                                                     aim=args.composition == AIM_RULE_ID)
+                                                     aim=args.composition in AIM_RULES)
 
     ids = [c["id"] for c in library]
     factors = np.array([[np.nan if v is None else v for v in r["f_unsigned"]] for r in records], dtype=np.float64)
@@ -2019,9 +2022,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     """
     ids = [c["id"] for c in library]
     screen = args.screen
-    aim = args.composition == AIM_RULE_ID
+    aim = args.composition in AIM_RULES  # ew-theme-aim-v1, or ew-theme-std-aim-v1 (v8 R-3: gains on the R-1 rule)
     v6 = args.composition == V6_RULE_ID  # only ew-theme-v6 writes theme_redistribution / provenance.v6
-    require(aim == (aims is not None), "fit: aim records exist exactly for --composition ew-theme-aim-v1")
+    require(aim == (aims is not None), "fit: aim records exist exactly for --composition ew-theme-aim-v1 / "
+                                       "ew-theme-std-aim-v1")
     v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
@@ -2122,7 +2126,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                        "factor series", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                        seconds=round(time.perf_counter() - started, 2))
         return EXIT_NO_WEIGHTS, summary
-    if aim:
+    if args.composition == AIM_RULE_ID:
         weights, theme_table = ew_theme_aim_weights([themes[k] for k in active],
                                                     [aims[k]["gain"] for k in active])  # type: ignore[index]
         composition_text = ("w_k=(g_k/(T*n_theme(k)))/sum_m(g_m/(T*n_theme(m))) over admitted non-degenerate k "
@@ -2150,9 +2154,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                            "dropped themes", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                            seconds=round(time.perf_counter() - started, 2))
             return EXIT_NO_WEIGHTS, summary
-    elif args.composition == composition_rules.STD_RULE_ID:  # v8 R-1: the rule lives in composition_rules.py
+    elif args.composition in composition_rules.STD_RULES:  # v8 R-1 (and R-3's gains): rules in composition_rules.py
         std = composition_rules.ew_theme_std([ids[k] for k in active], [themes[k] for k in active],
-                                             [tiers[k] for k in active], error=FitError)
+                                             [tiers[k] for k in active], error=FitError,
+                                             gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
     else:
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
@@ -2220,7 +2225,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             "themes": {row["id"]: row["theme_v6"] for row in weight_rows if row["weight"] > 0}}
         document["provenance"]["v6"] = v6_provenance(v6_detail, theme_table, admission_sha, args, inputs,
                                                      priors["recipe_sha256"])
-    if args.composition == composition_rules.STD_RULE_ID:  # schema v2, theme_standardise block, provenance.std
+    if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
         composition_rules.attach_std(document, std)
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]

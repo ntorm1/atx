@@ -1,0 +1,30 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r7-lib-v81",
+  "description": "Cell R-7 (plan section 9, N 47; up to 5 admission trials, 3 withdrawn at 0: tax_book, night_day, nt_late): library v8.1 = the parent's library (v8.0 if R-2 was accepted, else v7.1) + comp_eq_iss_5y, coskew_60m, gscore_lowbm, nonreliance_402, earn_consistency (library-v8-draft.md sections 3 and 6, E6-E10; a member whose field is absent at the freeze is withdrawn before any read). The change: inputs.library and inputs.recipe are the v8.1 files; fields v11 (see requires); every output renamed (u, fit, card, marginal, w, nav, monitor); gate p1-v81 (require any); marginal IC (K6) on the parent's combined signal with the parent's weights as theme regressors. Acceptance: wave accepted whole: dSR > 0 AND mechanics AND turnover not higher AND at least half of the admitted new members with marginal IC HAC t above 0 (marginal_ic.json marginal_hac_t).",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "requires": [
+    "R-7 runs as scripts/specs/v8/lib-v81.json, the spec `research_cycle.py add-alpha --parent <v80 if R-2 was accepted, else v71> --name v81 --parent-spec <the last accepted cell's spec> --fields <fields v11>` writes and locks, one call per member (task-A2-report.md); this template plans the cell only (one cell, one trial line: never run both).",
+    "fields v11 as built (the parent's fields + F-1 ceq_iss_5y, coskew_60m + F3 gscore7_lowbm, k8_item402_63, eps_consist_4y, on the parent's role): set change.set fields = {output, manifest_sha256 null, list} (then `lock --write`); drop from the gate any member withdrawn at the freeze."
+  ],
+  "change": {
+    "set": {
+      "ic.u_output": "build-equity/mega-v8-r7-v81-train-u",
+      "ic.w_output": "build-equity/mega-v8-r7-v81w-train-ew",
+      "fit.output": "build-equity/mega-weights-v8-r7-v81-ew",
+      "card.output": "build-equity/mega-cards-v8-r7-v81",
+      "nav.output": "build-equity/mega-nav-v8-r7-v81-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "monitor.output": "build-equity/mega-monitor-v8-r7-v81",
+      "marginal": {"output": "build-equity/mega-v8-r7-v81-marginal", "pool": "reference_combined",
+                   "themes": "reference_weights"},
+      "gate": {"name": "p1-v81", "admitted": ["comp_eq_iss_5y", "coskew_60m", "gscore_lowbm", "nonreliance_402",
+                                              "earn_consistency"],
+               "require": "any", "sign_agrees": true, "report": []}
+    },
+    "inputs": {
+      "library": {"path": "atx-impl/strategies/fund_industry_ic_v81.json", "sha256": null},
+      "recipe": {"path": "atx-impl/strategies/fund_industry_ic_v81.recipe.v2.json", "sha256": null}
+    }
+  }
+}

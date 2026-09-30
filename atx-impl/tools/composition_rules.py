@@ -31,6 +31,14 @@ their current weights. Infeasible (no other theme can absorb an excess) is refus
 Identity cell (R-1 step 3): ``identity-weights`` grafts ``theme_standardise`` {rerank: false} onto an accepted
 ew-theme-v1 weights file (schema -> v2, weights and signs untouched), so the runner's blend must equal the accepted
 ew-theme-v1 blend byte for byte: re-rank off, cap off and tier shares off (equal within-theme weights).
+
+``ew-theme-std-aim-v1`` (platform v8 R-3 on an R-1 parent, Ruling E-27): the persistence gains g_k of ew-theme-aim-v1
+(theta .05, as coded in fit_composition_weights.aim_gain, clipped to [.05, 1]) multiply the tier weights inside each
+theme, renormalised inside the theme so each theme keeps 1/T: w_k = (1/T) * score_k * g_k / sum_{theme(k)} score * g;
+then the member cap 1/(2T) as in rule 4. Fitter only: the weights file is an ew-theme-std-v1 file (the same
+``theme_standardise`` block, rule "ew-theme-std-v1", which the IC runner applies unchanged) whose member weights carry
+the gains; provenance.rule names ew-theme-std-aim-v1 and provenance.std records the gains. Gains of 1 give the
+ew-theme-std-v1 weights bit for bit. On an ew-theme-v1 parent R-3 stays ew-theme-aim-v1 (its bytes unchanged).
 """
 from __future__ import annotations
 
@@ -45,6 +53,8 @@ import sys
 import numpy as np
 
 STD_RULE_ID = "ew-theme-std-v1"
+STD_AIM_RULE_ID = "ew-theme-std-aim-v1"   # R-3 on the R-1 rule (Ruling E-27); the runner block stays STD_RULE_ID
+STD_RULES = (STD_RULE_ID, STD_AIM_RULE_ID)
 WEIGHTS_SCHEMA_V1 = "atx.dsl-composition-weights/v1"
 WEIGHTS_SCHEMA_V2 = "atx.dsl-composition-weights/v2"
 REGISTRY_SCHEMA = "atx.alpha-registry/v1"
@@ -72,6 +82,18 @@ COMPOSITION_TEXT = (
     "mean or covariance estimation")
 FIT_SERIES = ("none (prior tier-score theme weights; no TRAIN statistic); diagnostic uses s_k*f over ALL TRAIN scored "
               "decisions, flat decisions 0, without the per-date theme re-rank")
+AIM_RULE_TEXT = ("R-3 (Ruling E-27): the persistence gains g_k (theta .05 as coded, clipped [.05, 1]) multiply the tier "
+                 "weights inside each theme, renormalised inside the theme so each theme keeps 1/T; the member cap "
+                 "1/(2T) applies after")
+STD_AIM_TEXT = (
+    "ew-theme-std-aim-v1: w_k=(1/T)*score_k*g_k/sum_{theme(k)} score*g (tier scores after the v8 re-grades; "
+    "g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], rho_k from TRAIN rank autocorrelation), then "
+    "member cap 1/(2T) with the excess pro rata to the other themes' uncapped members (repeated to a fixed point); "
+    "T=themes with >=1 admitted non-degenerate member; per date the IC runner applies theme_standardise "
+    "(ew-theme-std-v1) to these weights; no mean or covariance estimation")
+STD_AIM_FIT_SERIES = ("none (prior tier-score theme weights scaled within theme by TRAIN signal-rank persistence "
+                      "gains); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0, without the "
+                      "per-date theme re-rank")
 
 
 class RuleError(ValueError):
@@ -190,10 +212,15 @@ class StdFit:
 
 
 def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_path: Path | None = None,
-                 error: type[Exception] = RuleError) -> StdFit:
-    """ew-theme-std-v1 weights over the members that take part (admitted, non-degenerate), in input order."""
+                 error: type[Exception] = RuleError, gains: list[float] | None = None) -> StdFit:
+    """ew-theme-std-v1 weights over the members that take part (admitted, non-degenerate), in input order; with
+    ``gains`` (the members' aim gains, same order) ew-theme-std-aim-v1: each tier score times its gain inside the
+    theme (each theme still 1/T before the cap). Gains of 1 give the ew-theme-std-v1 weights bit for bit."""
     _require(len(ids) == len(themes) == len(prior_tiers) and ids, "ew-theme-std-v1: members, themes and tiers differ "
                                                                   "in length or are empty", error)
+    _require(gains is None or (len(gains) == len(ids) and all(
+        isinstance(g, (int, float)) and not isinstance(g, bool) and math.isfinite(g) and g > 0 for g in gains)),
+             f"{STD_AIM_RULE_ID}: one finite positive aim gain per member", error)
     registry = load_registry(registry_path, error)
     source_tiers, tier_source = resolve_tiers(ids, prior_tiers, registry)
     tiers, regrades = apply_regrades(ids, source_tiers, error=error)
@@ -201,7 +228,7 @@ def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_
     unscored = [f"{i}:{t}" for i, t in zip(ids, tiers) if t not in table]
     _require(not unscored, f"ew-theme-std-v1: tiers without a declared score {sorted(table)}: {unscored}", error)
     scores = [float(table[t]) for t in tiers]
-    uncapped = tier_weights(themes, scores)
+    uncapped = tier_weights(themes, scores if gains is None else [s * float(g) for s, g in zip(scores, gains)])
     present = sorted(set(themes))
     cap = 1.0 / (2 * len(present))
     weights, passes = member_cap(uncapped, themes, cap, error)
@@ -218,11 +245,15 @@ def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_
             "within_theme_weights": {ids[k]: float(weights[k]) / mass for k in members},
             "member_weights": {ids[k]: float(weights[k]) for k in members},
             "capped_members": [ids[k] for k in members if k in capped]}
+        if gains is not None:                        # R-3: the fitter's summary reads aim_theme_weight
+            theme_table[t].update(aim_gains={ids[k]: float(gains[k]) for k in members}, aim_theme_weight=mass)
     block = {"rule": STD_RULE_ID, "rerank": True, "themes": {ids[k]: themes[k] for k in range(len(ids))
                                                              if weights[k] > 0}}
     provenance = {
-        "rule": STD_RULE_ID, "registration": "task-R-1-brief.md (platform v8 R-1), declared before any read",
-        "rule_text": list(RULE_TEXT),
+        "rule": STD_RULE_ID if gains is None else STD_AIM_RULE_ID,
+        "registration": "task-R-1-brief.md (platform v8 R-1), declared before any read" + (
+            "" if gains is None else "; R-3 aim gains on top: Ruling E-27 (platform v8 A2 follow-up)"),
+        "rule_text": list(RULE_TEXT) + ([] if gains is None else [AIM_RULE_TEXT]),
         "tier_source": ("registry" if registry is not None else "library-recipe tier field (registry absent)"),
         "registry_path": None if registry is None else registry["path"],
         "registry_sha256": None if registry is None else registry["sha256"],
@@ -240,7 +271,13 @@ def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_
                    "of present w_k*s_k*rank_k re-ranked (centred tied) over names with a present member, times "
                    "W_theme=sum of the theme's w_k (strategy_ic_composition.cpp IcThemeRule::standardise)"),
         "module_sha256": module_sha256()}
-    return StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance, ids=list(ids))
+    if gains is None:
+        return StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance, ids=list(ids))
+    provenance.update(aim_gains=dict(zip(ids, map(float, gains))),
+                      aim_rule=("the gains multiply the tier scores inside each theme (renormalised within the theme, "
+                                "each theme 1/T before the cap); the runner block stays ew-theme-std-v1"))
+    return StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance, ids=list(ids),
+                  text=STD_AIM_TEXT, fit_series=STD_AIM_FIT_SERIES)
 
 
 def attach_std(document: dict, fit: StdFit) -> dict:
