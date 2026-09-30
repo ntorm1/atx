@@ -271,7 +271,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   // referenced: nothing is read.
   const auto verify_started=std::chrono::steady_clock::now();
   ATX_TRY_VOID(check_field_extents(spec));
-  u64 needed=0;
+  FieldMask needed;
   for (usize k=0;k<lib.candidates.size();++k)
     if (cache.hits.empty() || !cache.hits[k]) needed|=lib.field_plan.needs[k];
   HashMeter meter; std::vector<std::optional<FileStamp>> verified(lib.extra_fields.size());
@@ -281,7 +281,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     progress<<"IC fields-verified role="<<spec.name<<" fields=";
     for (usize k=0;k<spec.fields.load.size();++k) progress<<(k?",":"")<<spec.fields.load[k].name;
     progress<<" resident_capacity="<<lib.field_plan.capacity<<" planned_loads="<<lib.field_plan.loads
-            <<" hashed="<<std::popcount(needed)<<" seconds="<<verify_seconds<<'\n'<<std::flush;
+            <<" hashed="<<needed.count()<<" seconds="<<verify_seconds<<'\n'<<std::flush;
   }
   const auto role_started=std::chrono::steady_clock::now();
   ATX_TRY(auto role,engine::data::read_strategy_role(spec.path,cfg.max_working_bytes));
@@ -569,7 +569,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     const bool validation_only=!cfg.orientations_path.empty();
     const bool metadata_only=cfg.plan_only || cfg.cache_report;
     if ((!metadata_only && cfg.output_directory.empty()) || cfg.max_working_bytes<(32ULL<<20) || cfg.max_working_bytes>(16ULL<<30) ||
-        cfg.min_names<3 || cfg.min_dates<8 || cfg.min_dates>4096 || cfg.workers<1 || cfg.workers>4 ||
+        cfg.min_names<3 || cfg.min_dates<8 || cfg.min_dates>4096 || cfg.workers<1 ||
+        cfg.workers>ex::max_research_ic_workers ||
         cfg.validation_manifest.empty()!=cfg.validation_sha256.empty() ||
         cfg.orientations_path.empty()!=cfg.orientations_sha256.empty() ||
         cfg.composition_weights_path.empty()!=cfg.composition_weights_sha256.empty() ||
@@ -623,7 +624,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (cfg.plan_only) {
       // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count.
       Json plan{{"mode","metadata-only-no-payload"},{"candidate_count",lib.candidates.size()},
-          {"candidates",candidate_plan_rows(lib)},{"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
+          {"candidates",candidate_plan_rows(lib)},{"max_working_bytes",cfg.max_working_bytes},
+          {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
       for (const auto& role:roles) plan["roles"].push_back({{"role",role.name},
           {"manifest_sha256",role.sha},{"required_bytes",role.bytes}});
@@ -741,7 +743,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--no-composition") { cfg.no_composition=true; continue; }
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
-               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
+               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..16 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
                "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
