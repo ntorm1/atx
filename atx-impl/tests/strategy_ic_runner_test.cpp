@@ -17,6 +17,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/alpha/bytecode.hpp"
 #include "strategy_ic_runner.hpp"
 
 namespace {
@@ -140,7 +141,8 @@ TEST(StrategyIcRunner, PlanOnlyPinsMetadataAndNeverLoadsPayload) {
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
   std::ostringstream progress; EXPECT_TRUE(atx::impl::strategy::run_ic(cfg,progress));
   EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
-  const auto plan=Json::parse(progress.str()); EXPECT_EQ(plan.at("candidates"),2);
+  const auto plan=Json::parse(progress.str()); EXPECT_EQ(plan.at("candidate_count"),2);
+  EXPECT_EQ(plan.at("candidates").size(),2U);
   EXPECT_GE(plan.at("max_compiled_slots").get<usize>(),1U);
   cfg.train_sha256=std::string(64,'0');
   EXPECT_FALSE(atx::impl::strategy::run_ic(cfg,progress));
@@ -1753,9 +1755,54 @@ TEST(StrategyIcRunner, RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields) {
   std::ostringstream plan; status=atx::impl::strategy::run_ic(cfg,plan);
   ASSERT_TRUE(status) << status.error().to_string();
   const auto result=Json::parse(plan.str());
-  EXPECT_EQ(result.at("candidates"),library.at("candidates").size());
+  EXPECT_EQ(result.at("candidate_count"),library.at("candidates").size());
   EXPECT_EQ(result.at("research_fields").at("loaded"),Json::array({"mkt_ret"}));
   EXPECT_EQ(result.at("research_fields").at("roles").size(),2U);
+}
+// Contract K1 (platform v8 B-3): --plan-only prints one `candidates` row per library
+// member, in library order, with exactly {id, dsl_sha256, num_slots, required_lookback,
+// extra_fields, node_count}; the numbers are the compiled program's (checked here
+// against an independent compile of the same DSL) and no payload is opened.
+TEST(StrategyIcRunner, PlanOnlyPrintsCandidateRows) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_mean","ts_mean(si_shares, 5) / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  cfg.plan_only=true; std::ostringstream plan_log;
+  const auto status=atx::impl::strategy::run_ic(cfg,plan_log); ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  const auto plan=Json::parse(plan_log.str());
+  EXPECT_EQ(plan.at("candidate_count"),3);
+  const auto& rows=plan.at("candidates"); ASSERT_TRUE(rows.is_array()); ASSERT_EQ(rows.size(),3U);
+  const std::vector<std::tuple<std::string,std::string,Json>> expected{
+      {"volume_level","volume",Json::array()},{"volume_rank","rank(volume)",Json::array()},
+      {"si_mean","ts_mean(si_shares, 5) / volume",Json::array({"si_shares"})}};
+  const engine::alpha::Library operators;
+  u64 max_slots=0,max_lookback=0;
+  for (usize k=0;k<expected.size();++k) {
+    const auto& [id,dsl,extra]=expected[k]; const auto& row=rows.at(k);
+    std::set<std::string> keys;
+    for (auto it=row.begin();it!=row.end();++it) keys.insert(it.key());
+    EXPECT_EQ(keys,(std::set<std::string>{"id","dsl_sha256","num_slots","required_lookback","extra_fields",
+                                          "node_count"})) << id;
+    EXPECT_EQ(row.at("id"),id);
+    auto dsl_sha=core::sha256_hex(dsl); ASSERT_TRUE(dsl_sha); EXPECT_EQ(row.at("dsl_sha256"),*dsl_sha) << id;
+    EXPECT_EQ(row.at("extra_fields"),extra) << id;
+    auto ast=engine::alpha::parse_expr(dsl,operators); ASSERT_TRUE(ast) << id;
+    auto analysis=engine::alpha::analyze(*ast); ASSERT_TRUE(analysis) << id;
+    auto program=engine::alpha::compile(*ast,*analysis); ASSERT_TRUE(program) << id;
+    const auto slots=static_cast<u64>(program->num_slots),lookback=static_cast<u64>(program->required_lookback);
+    EXPECT_EQ(row.at("num_slots").get<u64>(),slots) << id;
+    EXPECT_EQ(row.at("required_lookback").get<u64>(),lookback) << id;
+    EXPECT_EQ(row.at("node_count").get<u64>(),static_cast<u64>(program->unique_nodes)) << id;
+    max_slots=std::max(max_slots,slots); max_lookback=std::max(max_lookback,lookback);
+  }
+  // A lone field load is one DAG node, reads no extra field and needs no history.
+  EXPECT_EQ(rows.at(0).at("node_count"),1); EXPECT_EQ(rows.at(0).at("required_lookback"),0);
+  EXPECT_GT(rows.at(2).at("required_lookback").get<u64>(),0U);
+  // The library maxima the runner charges are the rows' maxima.
+  EXPECT_EQ(plan.at("max_compiled_slots").get<u64>(),max_slots);
+  EXPECT_EQ(plan.at("required_lookback").get<u64>(),max_lookback);
 }
 TEST(StrategyIcRunner, FrozenTrainResumeBindsResearchFieldPins) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));

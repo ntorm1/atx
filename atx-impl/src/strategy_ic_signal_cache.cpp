@@ -117,7 +117,6 @@ std::string vm_identity() {
 // serial VM (vm.hpp S3-3 contract), pinned on raw payload bytes by the
 // worker-parity fixture.
 namespace {
-constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";
 constexpr const char* signal_key_schema="atx.dsl-candidate-signal-key/v2";
 } // namespace
 co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,HashMeter* meter) {

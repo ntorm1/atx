@@ -165,6 +165,20 @@ co::Result<Library> library(const IcRunnerConfig& cfg) {
   ATX_TRY(out.field_plan,field_plan(out.candidates,out.extra_fields));
   return co::Ok(std::move(out));
 }
+// Contract K1 (platform v8): the --plan-only `candidates` rows, read by the alpha
+// registry as its static validation. One row per candidate in library order, each
+// value taken from the compiled program the VM runs: num_slots (peak live slots,
+// the <= 64 cap above), required_lookback (prior bars), extra_fields (the sorted
+// non-base fields it reads) and node_count (unique DAG nodes after CSE,
+// Program::unique_nodes; the generators' dag_nodes).
+Json candidate_plan_rows(const Library& lib) {
+  Json rows=Json::array();
+  for (const auto& c:lib.candidates)
+    rows.push_back({{"id",c.id},{"dsl_sha256",c.dsl_sha},{"num_slots",c.program.num_slots},
+        {"required_lookback",c.program.required_lookback},{"extra_fields",c.extra_fields},
+        {"node_count",c.program.unique_nodes}});
+  return rows;
+}
 void release(std::vector<f64>& buffer) noexcept { std::vector<f64>().swap(buffer); }
 // Every referenced field file is stat'ed before the role payload is opened, so a
 // truncated field refuses first (verify_fields hashes only what misses load).
