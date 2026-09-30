@@ -133,7 +133,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_ledger  # noqa: E402
 import research_tree  # noqa: E402
-from cycle_verdict import SUMM_JSON, PBO_JSON, step_key, write_verdict as _write_verdict  # noqa: E402
+from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
 
 SCHEMA = "atx.research-cycle-spec/v1"
 PHASES = ("fields", "check", "ref", "u", "fit", "card", "marginal", "gate", "w", "nav", "monitor", "summ")
@@ -940,6 +940,11 @@ class Cycle:
         ledger = self.ledger or sm.get("ledger")
         if ledger:
             argv += ["--ledger", ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
+        if s.get("verdict"):   # review C-1: the verdict's DSR is the ledger's (N and V[SR] of v8-prereg item 3)
+            if not ledger:
+                raise CycleError("spec verdict: the verdict's DSR needs the sprint ledger of record (summ.ledger or "
+                                 "--ledger) for nav_summ --dsr-ledger (v8-prereg item 3)", EXIT_USAGE)
+            argv += ["--dsr-ledger", ledger]
         if pool:
             argv += ["--pool", *[nav for _, nav, _ in pool], "--pool-ids", ",".join(i for i, _, _ in pool)]
         elif not cells:
@@ -1510,7 +1515,10 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
 
 
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
-    return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log)
+    try:
+        return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log)
+    except VerdictError as exc:           # review C-1: no verdict DSR from a cell count
+        raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
 
 
 def copy_ledger(cycle: Cycle, log) -> None:

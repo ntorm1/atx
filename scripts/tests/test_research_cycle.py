@@ -1665,7 +1665,9 @@ if "--json" in a:
     Path(a[a.index("--json") + 1]).write_text(json.dumps([
         {"dir": "prior\\a", "paired": {"dsr": -1.0}},
         {"dir": "out\\N", "paired": {"dsr": 0.05, "memmel_se": 0.1, "cbb_ci95": [-0.1, 0.2], "lw": {"p_value": 0.4}},
-         "deflated": {"n": 2, "dsr": 0.7}, "deflated_effective_n": {"dsr": 0.8}}]))
+         "deflated": {"n": 2, "dsr": 0.7}, "deflated_effective_n": {"dsr": 0.8},
+         "deflated_ledger": {"n": 2, "dsr": 0.93, "variance_sr": 1e-4, "cells": 2, "window_id": "research-window-v2",
+                             "legacy_dsr": 0.6, "legacy_cells": 3}}]))
 if "--pbo-json" in a:
     Path(a[a.index("--pbo-json") + 1]).write_text(json.dumps({"pbo": 0.25}))
 '''
@@ -1680,14 +1682,18 @@ def test_verdict_schema(tmp_path):
     assert run(root, sp, capabilities=CAPS) == RC.EXIT_OK
     cyc = "build-equity/cycle-synthetic"
     assert calls(root)[-1].endswith(f"--dsr-n 2 --psr --pbo --json {cyc}/summ.json --pbo-json {cyc}/pbo.json "
-                                    "--ledger trials.jsonl --ledger-kind construction")
+                                    "--ledger trials.jsonl --ledger-kind construction --dsr-ledger trials.jsonl")
     v = json.loads((root / cyc / "cycle_verdict.json").read_text())
     assert set(v) == {"schema", "cycle", "mode", "spec_sha256", "admission", "marginal", "phases", "paired", "dsr",
                       "pbo"}
     assert (v["schema"], v["cycle"], v["mode"], v["spec_sha256"]) == ("atx.cycle-verdict/v1", "synthetic", "run",
                                                                       RC.sha256_file(sp))
     assert v["paired"] == {"dsr": 0.05, "se": 0.1, "cbb_ci": [-0.1, 0.2], "lw_p": 0.4}   # this cycle's NAV dir row
-    assert v["dsr"] == {"n": 2, "cell_count": 0.7, "effective_n": 0.8} and v["pbo"] == 0.25
+    assert v["dsr"] == {"n": 2, "cell_count": 0.93, "effective_n": 0.8, "variance_sr": 1e-4, "variance_cells": 2,
+                        "window_id": "research-window-v2", "source": "nav_summ --dsr-ledger (deflated_ledger)",
+                        "legacy": {"dsr": 0.6, "cells": 3, "note": "legacy variance (ledger lines without a "
+                                                                    "window_id): reported, gates nothing"}}
+    assert v["pbo"] == 0.25                                        # review C-1: never the cell-count row's 0.7
     assert [r["id"] for r in v["admission"]] == ["new_alpha"] and v["marginal"][0]["marginal_hac_t"] == 1.6
     assert [p["name"] for p in v["phases"]] == ["fields", "check", "u", "fit", "card", "marginal", "w", "nav",
                                                 "monitor", "summ"]
