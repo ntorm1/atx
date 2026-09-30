@@ -288,31 +288,49 @@ def _q(pattern: str) -> str:
     return "'" + pattern.replace("'", "''") + "'"
 
 
-def _catalog_flag_sql(it: fcat.CatItem) -> str:
-    """catalog-pre-v2 line flag of one item (mirrors ``fund_catalog.line_flag``)."""
-    label = "lower(coalesce(plabel, ''))"
-    custom = f"(version = adsh AND regexp_matches({label}, {_q(it.line)})"
-    custom += f" AND NOT regexp_matches({label}, {_q(it.exclude)}))" if it.exclude else ")"
-    return (f"bool_or(stmt IN ({', '.join(repr(x) for x in fcat.PRE_STMTS[it.stmt])}) "
-            f"AND NOT regexp_matches(lower(tag), {_q(fcat.STMT_TAG_EXCLUDE[it.stmt])}) "
-            f"AND (regexp_matches(lower(tag), {_q(it.tags)}) OR {custom}))")
+def _catalog_line_sql(it: fcat.CatItem) -> str:
+    """catalog-pre-v2 line flag of one item over a line shape (stmt, ltag, custom, llab) (mirrors
+    ``fund_catalog.line_flag``)."""
+    custom = f"(custom AND regexp_matches(llab, {_q(it.line)})"
+    custom += f" AND NOT regexp_matches(llab, {_q(it.exclude)}))" if it.exclude else ")"
+    return (f"(stmt IN ({', '.join(repr(x) for x in fcat.PRE_STMTS[it.stmt])}) "
+            f"AND NOT regexp_matches(ltag, {_q(fcat.STMT_TAG_EXCLUDE[it.stmt])}) "
+            f"AND (regexp_matches(ltag, {_q(it.tags)}) OR {custom}))")
 
 
 def pre_flags_sql(pre_glob: str) -> str:
-    """Statement-line flags per accession over FSDS PRE parquet files (see ``PRE_RULE`` and ``CATALOG_PRE_RULE``)."""
-    is_cols = ",\n".join(
-        f"bool_or(stmt IN ('IS', 'CI') AND regexp_matches(lower(tag), '{pat}')"
-        + (f" AND NOT regexp_matches(lower(tag), '{PRE_REV_EXCLUDE}')" if name == "is_rev" else "")
+    """Statement-line flags per accession over FSDS PRE parquet files (see ``PRE_RULE`` and ``CATALOG_PRE_RULE``).
+
+    The regexes run once per distinct line shape (stmt, lower(tag), custom, custom label) and join back to the
+    lines (the label matters only on custom-tag lines)."""
+    is_names = [name for name in PRE_PATTERNS if name != "cf_capx"]
+    line_is = ",\n".join(
+        f"(stmt IN ('IS', 'CI') AND regexp_matches(ltag, {_q(pat)})"
+        + (f" AND NOT regexp_matches(ltag, {_q(PRE_REV_EXCLUDE)})" if name == "is_rev" else "")
         + f") AS {name}"
         for name, pat in PRE_PATTERNS.items() if name != "cf_capx")
-    cat_cols = "".join(f",\n               {_catalog_flag_sql(it)} AS \"{fi.CAT}{it.col}\"" for it in fcat.CATALOG if it.stmt)
+    cat_names = [f'"{fi.CAT}{it.col}"' for it in fcat.CATALOG if it.stmt]
+    line_cat = "".join(f",\n               {_catalog_line_sql(it)} AS {n}"
+                       for it, n in zip((it for it in fcat.CATALOG if it.stmt), cat_names))
+    agg_is = ",\n               ".join(f"bool_or(f.{n}) AS {n}" for n in is_names)
+    agg_cat = "".join(f",\n               bool_or(f.{n}) AS {n}" for n in cat_names)
     return f"""
-        SELECT adsh, bool_or(stmt IN ('IS', 'CI')) AS has_is, bool_or(stmt = 'CF') AS has_cf,
-               {is_cols},
-               bool_or(stmt = 'CF' AND regexp_matches(lower(tag), '{PRE_PATTERNS["cf_capx"]}')) AS cf_capx,
-               bool_or(stmt = 'BS') AS has_bs{cat_cols}
-        FROM read_parquet('{pre_glob}') WHERE NOT coalesce(inpth, false)
-        GROUP BY adsh
+        WITH p AS (
+            SELECT adsh, stmt, lower(tag) AS ltag, coalesce(version = adsh, false) AS custom,
+                   CASE WHEN version = adsh THEN lower(coalesce(plabel, '')) ELSE '' END AS llab
+            FROM read_parquet('{pre_glob}') WHERE NOT coalesce(inpth, false)),
+        f AS (
+            SELECT stmt, ltag, custom, llab,
+               {line_is},
+               (stmt = 'CF' AND regexp_matches(ltag, {_q(PRE_PATTERNS["cf_capx"])})) AS cf_capx{line_cat}
+            FROM (SELECT DISTINCT stmt, ltag, custom, llab FROM p))
+        SELECT p.adsh, bool_or(p.stmt IN ('IS', 'CI')) AS has_is, bool_or(p.stmt = 'CF') AS has_cf,
+               {agg_is},
+               bool_or(f.cf_capx) AS cf_capx,
+               bool_or(p.stmt = 'BS') AS has_bs{agg_cat}
+        FROM p JOIN f ON p.stmt IS NOT DISTINCT FROM f.stmt AND p.ltag IS NOT DISTINCT FROM f.ltag
+                     AND p.custom = f.custom AND p.llab = f.llab
+        GROUP BY p.adsh
     """
 
 
@@ -396,6 +414,27 @@ def cached_copy(con: Any, sql: str, dest: Path, receipt: dict[str, Any], key: st
     return n
 
 
+def per_quarter(con: Any, key: str, make_sql: Any, dest: Path, receipt: dict[str, Any], **kw: Any) -> int:
+    """Run a per-accession FSDS step one quarter at a time (an accession's SUB, PRE and NUM rows share one quarter
+    file), each part cached by ``cached_copy`` under ``_work/<key>/``, then union the parts into ``dest`` (its
+    fingerprint covers every part's fingerprint)."""
+    parts_dir = work_dir() / key
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    parts: list[Path] = []
+    fps: list[str] = []
+    for pre in sorted((common.FSDS_DIR / "pre").glob("*.parquet")):
+        num = common.FSDS_DIR / "num" / pre.name
+        if not num.exists():
+            raise FileNotFoundError(f"FSDS num file missing for {pre.name}")
+        part = parts_dir / pre.name
+        cached_copy(con, make_sql(pre.as_posix(), num.as_posix()), part, receipt, f"{key}/{pre.stem}", **kw)
+        parts.append(part)
+        fps.append(part.with_name(part.name + ".sha256").read_text().strip())
+    listing = ", ".join(f"'{p.as_posix()}'" for p in parts)
+    sql = f"/* parts {hashlib.sha256('|'.join(fps).encode()).hexdigest()} */ SELECT * FROM read_parquet([{listing}])"
+    return cached_copy(con, sql, dest, receipt, key, **kw)
+
+
 def prepare() -> dict[str, Any]:
     receipt: dict[str, Any] = {}
     con = common.connect(memory=DUCKDB_MEM, threads=2)
@@ -429,12 +468,10 @@ def prepare() -> dict[str, Any]:
         with common.timed(receipt, "pos_sums"):
             receipt["pos_sum_rows"] = cached_copy(con, pos_sum_sql(num_glob), pos_sums_path(), receipt, "pos_sums")
         with common.timed(receipt, "pre_flags"):
-            pre_glob = (common.FSDS_DIR / "pre" / "*.parquet").as_posix()
-            receipt["pre_flag_rows"] = cached_copy(con, pre_flags_sql(pre_glob), pre_flags_path(), receipt,
-                                                   "pre_flags", row_group_size=32768)
+            receipt["pre_flag_rows"] = per_quarter(con, "pre_flags", lambda pre, num: pre_flags_sql(pre),
+                                                   pre_flags_path(), receipt, row_group_size=32768)
         with common.timed(receipt, "label_lines"):
-            receipt["label_line_rows"] = cached_copy(con, label_lines_sql(pre_glob, num_glob), label_lines_path(),
-                                                     receipt, "label_lines")
+            receipt["label_line_rows"] = per_quarter(con, "label_lines", label_lines_sql, label_lines_path(), receipt)
             receipt["label_lines_by_concept"] = dict(con.execute(
                 f"SELECT concept, count(*) FROM read_parquet('{label_lines_path().as_posix()}') GROUP BY 1").fetchall())
         with common.timed(receipt, "scope"):

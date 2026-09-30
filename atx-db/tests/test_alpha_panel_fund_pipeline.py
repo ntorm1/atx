@@ -87,3 +87,43 @@ def test_prepare_step_cache(tmp_path):
         assert fu.cached_copy(con, "SELECT 5 AS a", dest, r3, "x") == 1 and r3["cached"] == []
     finally:
         con.close()
+
+
+def test_per_quarter_matches_global(monkeypatch, tmp_path):
+    """per_quarter (one FSDS quarter file at a time, cached parts, union) equals the query over the whole glob."""
+    import duckdb
+
+    fsds = tmp_path / "fsds"
+    schema = pa.schema([("adsh", pa.string()), ("stmt", pa.string()), ("inpth", pa.bool_()), ("tag", pa.string()),
+                        ("version", pa.string()), ("plabel", pa.string())])
+    lines = {"2020q1": [("a", "BS", "TreasuryStockValue", "us-gaap/2019", "Treasury stock"),
+                        ("a", "CF", "MyLoan", "a", "Proceeds from term loan")],
+             "2020q2": [("b", "IS", "NetIncomeLoss", "us-gaap/2019", "Net income"),
+                        ("b", "CF", "PaymentsToAcquireBusinessesNetOfCashAcquired", "us-gaap/2019", "Acquisitions")]}
+    for q, rows in lines.items():
+        for sub in ("pre", "num"):
+            (fsds / sub).mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_pylist([{"adsh": a, "stmt": s, "inpth": False, "tag": t, "version": v, "plabel": lab}
+                                             for a, s, t, v, lab in rows], schema=schema), fsds / "pre" / f"{q}.parquet")
+        pq.write_table(pa.table({"adsh": ["x"]}), fsds / "num" / f"{q}.parquet")
+    monkeypatch.setattr(common, "FSDS_DIR", fsds)
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path / "lake"))
+    monkeypatch.setenv("ATX_FUND_STAGE", "fund_pq")
+    con = duckdb.connect()
+    try:
+        r: dict = {}
+        dest = tmp_path / "flags.parquet"
+        assert fu.per_quarter(con, "pre_flags", lambda pre, num: fu.pre_flags_sql(pre), dest, r) == 2
+        got = {row["adsh"]: row for row in pq.read_table(dest).to_pylist()}
+        whole = {row[0]: row for row in con.execute(
+            f"SELECT adsh, c_tstk, c_dltis_ttm, c_aqc_ttm, has_is FROM ({fu.pre_flags_sql((fsds / 'pre' / '*.parquet').as_posix())})"
+        ).fetchall()}
+        for a, row in whole.items():
+            assert (a, row[1], row[2], row[3], row[4]) == (a, got[a]["c_tstk"], got[a]["c_dltis_ttm"], got[a]["c_aqc_ttm"],
+                                                           got[a]["has_is"])
+        assert got["a"]["c_tstk"] and got["a"]["c_dltis_ttm"] and got["b"]["c_aqc_ttm"]
+        r2: dict = {}
+        fu.per_quarter(con, "pre_flags", lambda pre, num: fu.pre_flags_sql(pre), dest, r2)
+        assert sorted(r2["cached"]) == ["pre_flags", "pre_flags/2020q1", "pre_flags/2020q2"]
+    finally:
+        con.close()
