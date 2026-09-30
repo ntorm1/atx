@@ -18,6 +18,10 @@
 // Every NavHolding field is recoverable bit for bit: held_weight = held_dollars /
 // nav_post (the replay's own expression), side = sign(held_dollars), planned_trade_weight
 // and planned_trade_dollars as the v1 CSV declares them.
+// v8 E-16: a hold-band book (b > 0 declared) writes hold_row_width values per row, the
+// row_width above then rank_set and desired_prev (NavHolding's hold-band state, NaN =
+// unset); the index names the columns, so the reader takes either layout. Without a declared
+// band every byte is the layout above.
 
 #include <array>
 #include <filesystem>
@@ -54,10 +58,17 @@ inline constexpr atx::u32 flag_member = 1U, flag_stale = 2U, flag_order_placed =
 inline constexpr atx::u32 flag_locate_blocked = 8U, flag_order_working = 16U;
 inline constexpr atx::u32 tier_shift = 8U, tier_missing_shift = 16U, fill_shift = 24U;
 inline constexpr atx::u32 max_tier = 3U, max_fill = 4U;
+// v8 E-16: the hold-band state columns a hold-band book appends to every row.
+inline constexpr atx::usize hold_row_width = row_width + 2;
+inline constexpr atx::usize col_rank_set = row_width, col_desired_prev = row_width + 1;
+inline constexpr std::array<const char*, 2> hold_column_names{"rank_set", "desired_prev"};
 
 using Row = std::array<atx::f64, row_width>;
+using HoldRow = std::array<atx::f64, hold_row_width>;
 // `session` is the row's ordinal in the session table; h.index its role index.
 [[nodiscard]] Row pack(atx::usize session, const NavHolding& h) noexcept;
+// pack(), then h.rank_set and h.desired_prev (a hold-band book's row).
+[[nodiscard]] HoldRow pack_hold(atx::usize session, const NavHolding& h) noexcept;
 
 // One entry of the session table.
 struct SessionEntry {
@@ -69,11 +80,14 @@ struct SessionEntry {
 };
 
 // Buffered writer of holdings.f64 (a fixed 1 MiB buffer; no other allocation) with the
-// file's SHA-256 accumulated as it is written, so the file is never re-read.
+// file's SHA-256 accumulated as it is written, so the file is never re-read. Every row has
+// the `width` given to open (row_width, or hold_row_width for a hold-band book); a row of
+// another width is an Internal error.
 class BinaryAppender {
 public:
-  [[nodiscard]] atx::core::Status open(const std::filesystem::path& path);
-  [[nodiscard]] atx::core::Status append(const Row& row);
+  [[nodiscard]] atx::core::Status open(const std::filesystem::path& path,
+                                       atx::usize width = row_width);
+  [[nodiscard]] atx::core::Status append(std::span<const atx::f64> row);
   struct Closed {
     std::string sha256;
     atx::u64 bytes{}, rows{};
@@ -87,24 +101,30 @@ private:
   std::ofstream file_;
   atx::core::Sha256 sha_;
   atx::u64 rows_{};
+  atx::usize width_{row_width};
 };
 
 // Writes holdings_index.json and returns its SHA-256. `ids` is the role's instrument
-// order; `sessions` must tile [0, data.rows) in order.
+// order; `sessions` must tile [0, data.rows) in order. hold_state: the rows are
+// hold_row_width wide (the index names the two state columns and declares them); false
+// writes the row_width index byte for byte as before v8.
 [[nodiscard]] atx::core::Result<std::string> write_index(
     const std::filesystem::path& path, std::span<const atx::u64> ids,
-    std::span<const SessionEntry> sessions, const BinaryAppender::Closed& data);
+    std::span<const SessionEntry> sessions, const BinaryAppender::Closed& data,
+    bool hold_state = false);
 
 // One session of an f64 holdings layout. `path` is the emitted holdings directory
 // (manifest.json atx.nav-holdings/v2 with status complete, binding the index SHA) or its
 // holdings_index.json. holdings.f64 must match the index's size and SHA-256 and the
 // session table must tile it; the session must be in the table (a session the replay did
 // not report is refused, never read as a flat book). Rows come back in file order with
-// every NavHolding field (index = the name's position in `ids`).
+// every NavHolding field (index = the name's position in `ids`); rank_set and desired_prev
+// only from a hold-band layout (hold_state), NaN otherwise.
 struct SessionRead {
   SessionEntry session;
   std::vector<atx::u64> ids;      // the index's instrument ids
   std::vector<NavHolding> names;
+  bool hold_state{};              // v8 E-16: the rows carry the hold-band state columns
 };
 [[nodiscard]] atx::core::Result<SessionRead> read_session(const std::string& path,
                                                           atx::i64 session_ns);

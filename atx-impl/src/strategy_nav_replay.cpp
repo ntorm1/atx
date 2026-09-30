@@ -66,6 +66,9 @@ constexpr u64 rate_name_bytes = 3 * sizeof(f64);
 // --emit-holdings only: the observed book's per-name trace (four f64 and a status byte)
 // and one reported row per name in the session buffer.
 constexpr u64 holdings_name_bytes = 4 * sizeof(f64) + 1 + sizeof(NavHolding);
+// --emit-holdings with a declared hold band (v8 E-16): the snapshot of the band's state
+// (rank_set, desired_prev) entering each session's construction.
+constexpr u64 hold_trace_name_bytes = 2 * sizeof(f64);
 // Borrow-tier clocks (role clock_recipe modeled-session+22h-mark+23h-decision-v1):
 // every field cell of row d is visible by the session-date 22:00 UTC mark.
 constexpr i64 fields_mark_ns = 22 * hour_ns, decision_clock_ns = 23 * hour_ns;
@@ -216,6 +219,11 @@ struct Construction {
   std::vector<f64> desired;
   std::vector<u8> no_short; // locate-in-aim only: 1 = special tier at the decision
   PriceRiskScratch price;   // grows only when neutralizing
+  detail::DesiredState state; // v8 (R-4 hold band): carried across decisions; empty when off
+  // v8 E-16 (--emit-holdings with a declared hold band only): the band's state entering this
+  // session's construction, i.e. what DECIDE at the session reads; empty otherwise.
+  bool emit_hold{};
+  bk::HoldBandState hold_in;
 };
 // Borrow tiers of the latest decision, shared by every book of a lockstep replay.
 // They are rate-independent (the engine's flag count only); each book maps a tier to
@@ -744,10 +752,20 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
 // false when the guard skips the rebalance (current weights kept, forced exits
 // still apply); `out` receives the decision's construction record. With
 // locate-in-aim, shared.no_short (the special tier at d) zeroes negative aims first.
-co::Result<bool> form_desired_target(const TargetReplayInput& x, const TargetReplayConfig& target,
+// v8 adv-hold-v1: the cap's inputs are every member's raw-dollar ADV the EXECUTE of this
+// decision's fills reads (window_liquidity at session d + 1: rows <= d) and the run's NAV.
+co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                      usize d, Construction& shared, ConstructionDay& out) {
-  return detail::form_desired(x, target, d, shared.row, shared.desired, shared.price, out,
-                              shared.no_short);
+  if (cfg.target.adv_hold_q > 0) {
+    auto& adv = shared.state.adv_dollars;
+    adv.assign(x.instruments, nan);
+    for (usize i = 0; i < x.instruments; ++i)
+      if (x.member[d * x.instruments + i])
+        adv[i] = window_liquidity(x, x.volume, cfg, d + 1, i).adv;
+    shared.state.nav = cfg.initial_nav;
+  }
+  return detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
+                              shared.no_short, &shared.state);
 }
 // Engine predictors of name i as of decision d (row d fields and prices, presence
 // rows <= d); not available when any is missing or out of its declared domain.
@@ -811,7 +829,7 @@ bool short_guarded(const BorrowTiers& tiers, std::span<const u8> no_locate, usiz
 // target (form_desired_target). Returns the effective rebalance (false when the guard
 // skips it); `construction` receives the decision's record.
 co::Result<bool> decide_construction(const TargetReplayInput& x, const NavFinancingFields& fields,
-                                     const TargetReplayConfig& target, usize d, bool cadence,
+                                     const NavReplayConfig& cfg, usize d, bool cadence,
                                      std::span<const u8> no_locate, Construction& shared,
                                      BorrowTiers& tiers, TierCensus& census,
                                      ConstructionDay& construction) {
@@ -822,7 +840,7 @@ co::Result<bool> decide_construction(const TargetReplayInput& x, const NavFinanc
     shared.no_short[i] = short_guarded(tiers, no_locate, i) ? u8{1} : u8{0};
   bool rebalance = cadence;
   if (rebalance) {
-    ATX_TRY(rebalance, form_desired_target(x, target, d, shared, construction));
+    ATX_TRY(rebalance, form_desired_target(x, cfg, d, shared, construction));
   }
   construction.rebalance = rebalance;
   return co::Ok(rebalance);
@@ -995,16 +1013,23 @@ co::Status report_unresolved(const Ctx& c, Book& b, usize t) {
 // Bitwise nonzero: -0.0 counts, so a reported row set is exact (a plan of -0 is state).
 bool nonzero_bits(f64 x) { return std::bit_cast<u64>(x) != 0; }
 // --emit-holdings: the observed book's names with any state at the end of session t
-// (a decision or execution session), in index order, to the sink. Reads only.
+// (a decision or execution session), in index order, to the sink. Reads only. With a
+// declared hold band (v8 E-16, shared.emit_hold) a set rank in the state DECIDE at t read
+// (shared.hold_in; empty before the band first ran: every name unset) is state too, and
+// every row carries that state.
 co::Status emit_holdings(const TargetReplayInput& x, const Book& b, const Construction& shared,
                          const BorrowTiers& tiers, const NavReplayDay& day, usize t,
                          std::vector<NavHolding>& rows, NavHoldingsSink& sink) {
   const auto& s = b.names; const auto& trace = *b.trace; const usize n = x.instruments;
+  const auto& hold = shared.hold_in;
+  const bool band = shared.emit_hold && hold.rank_set.size() == n && hold.desired_prev.size() == n;
   rows.clear();
   for (usize i = 0; i < n; ++i) {
     const auto fill = static_cast<NavFillStatus>(trace.fill[i]);
     const bool planned = day.decision && nonzero_bits(s.planned[i]);
-    if (!nonzero_bits(s.held[i]) && !planned && !s.active[i] && fill == NavFillStatus::None)
+    const bool ranked = band && std::isfinite(hold.rank_set[i]);
+    if (!nonzero_bits(s.held[i]) && !planned && !s.active[i] && fill == NavFillStatus::None &&
+        !ranked)
       continue;
     NavHolding h;
     h.index = i; h.instrument_id = x.instrument_ids[i];
@@ -1020,6 +1045,7 @@ co::Status emit_holdings(const TargetReplayInput& x, const Book& b, const Constr
     h.locate_blocked = day.decision && s.planned[i] != trace.rule[i];
     h.order_working = s.active[i] != 0;
     h.order_dollars = s.active[i] ? s.order[i] : nan;
+    if (band) { h.rank_set = hold.rank_set[i]; h.desired_prev = hold.desired_prev[i]; }
     rows.push_back(h);
   }
   return sink.session(day, rows);
@@ -1185,6 +1211,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   if (observer.sink) {
     books[observer.book]->trace = std::make_unique<Trace>(x.instruments);
     holdings.reserve(x.instruments);
+    shared.emit_hold = hold_band_declared(target); // v8 E-16: the export carries the band
   }
   std::vector<NavReplayDay> days(count);
   for (usize t = start; t < end; ++t) {
@@ -1201,6 +1228,9 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       return open_book(x, ctxs[k], *books[k], tiers, cache, s, days[k]);
     }));
     SharedDecision decided;
+    // v8 E-16: the band's state DECIDE at t reads, before this session's construction
+    // advances it (copied into reused storage; --emit-holdings with a declared band only).
+    if (shared.emit_hold) shared.hold_in = shared.state.hold;
     if (s.decision) {
       const bool cadence = std::any_of(ctxs.begin(), ctxs.end(), [&](const Ctx& c) {
         return cadence_day(t, begin, c.cfg.target.cadence);
@@ -1208,7 +1238,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       const auto started = stages ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
       ATX_TRY(decided.rebalance,
-              decide_construction(x, fields, target, t, cadence, {}, shared, tiers,
+              decide_construction(x, fields, base, t, cadence, {}, shared, tiers,
                                   decided.census, decided.construction));
       if (stages) stages->construction += seconds_since(started);
     }
@@ -2034,10 +2064,11 @@ std::vector<NavScenario> nav_scenario_matrix(bool tiered) {
 u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool tiered,
                                 usize names, usize sessions, bool holdings) {
   const bool cached = liquidity_cached(base);
+  const u64 hold_trace = hold_band_declared(base.target) ? hold_trace_name_bytes : 0;
   return publication_slack_bytes + u64{books} * fixed_workspace_bytes +
          u64{names} * (u64{books} * per_name_bytes + shared_name_bytes +
                        (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0) +
-                       (holdings ? holdings_name_bytes : 0)) +
+                       (holdings ? holdings_name_bytes + hold_trace : 0)) +
          detail::construction_scratch_bytes(base.target, names) + ring_bytes(base.target, names) +
          u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
 }
@@ -2058,12 +2089,14 @@ bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b)
 // Grid variants agree on everything but nav_grid_variant_flags' target keys (rule,
 // cadence, trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage,
 // exit_rate) and the scenario: the shared construction, the shared liquidity windows and
-// the book-independent settings are then one.
+// the book-independent settings are then one. The v8 construction options (hold band, ADV
+// cap) shape the shared desired target, so they are shared too.
 bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
   const auto& s = a.target; const auto& t = b.target;
   return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
          s.neutralize_max_amplification == t.neutralize_max_amplification &&
          s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
+         s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q &&
          s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
          s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
          a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
@@ -2090,6 +2123,14 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav grid: variants may differ only in rule, cadence, trade fraction, "
                      "monthly budget, band, dust, aim leverage and exit rate");
+  // v8 hold-band-v1: the band's state advances on every shared cadence decision, i.e. on the
+  // union of the variants' cadence days; a variant would then carry a state its standalone
+  // run never forms, so a hold-band grid has one cadence.
+  if (hold_band_on(base.target))
+    for (const auto& variant : variants)
+      if (variant.target.cadence != base.target.cadence)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "nav grid: with --hold-band every variant has the base cadence");
   // Books on a pool: the per-name-v1 rates share one buffer, and a v7 hook is
   // thread-local (a worker would silently run without it).
   if (base.book_workers > 1 &&
@@ -2505,6 +2546,14 @@ constexpr const char* holdings_declaration =
     "DECIDE (nan when none); decision fields are nan on the final execution-only session; "
     "holdings_days.csv: one row per session, neutralize_skipped = a cadence rebalance the "
     "neutralization guard skipped (ERROR: the book kept its weights)";
+// Only with a declared hold band (v8 E-16); without one the manifest has no such key.
+constexpr const char* hold_band_state_declaration =
+    "v8 E-16, hold band declared (b > 0): every row carries rank_set and desired_prev, the "
+    "hold-band state DECIDE at t read (the state entering session t's construction; on the "
+    "final execution-only session the state after the last decision; nan = unset), and a name "
+    "holding a set rank is a name with state (a row even when flat); holdings.csv appends the "
+    "two columns, holdings.f64 rows are 13 values (holdings_index.json names the columns); "
+    "decide --positions reads them, so decide --check-replay at t reproduces the book";
 bool neutralize_skipped(NeutralizeOutcome outcome) {
   return outcome != NeutralizeOutcome::NotAttempted && outcome != NeutralizeOutcome::Applied;
 }
@@ -2512,24 +2561,30 @@ const char* side_label(f64 held) { return held > 0 ? "long" : held < 0 ? "short"
 // Streams the per-name rows (f64: buffered binary rows + a session table, the default;
 // csv: the v1 holdings.csv) and holdings_days.csv, one session at a time (O(names) memory
 // plus the 1 MiB binary buffer and one table entry per session, within the publication
-// slack of the workspace reserve).
+// slack of the workspace reserve). hold_state (a declared hold band, v8 E-16): every row
+// also carries the name's rank_set and desired_prev; off, every byte is the pre-v8 layout.
 class HoldingsEmitter final : public NavHoldingsSink {
 public:
   co::Status open(const std::filesystem::path& dir, NavHoldingsFormat format,
-                  std::span<const u64> ids) {
+                  std::span<const u64> ids, bool hold_state) {
     if (!std::filesystem::create_directory(dir))
       return co::Err(co::ErrorCode::AlreadyExists,
                      "nav replay: --emit-holdings directory must not exist");
-    dir_ = dir; format_ = format; ids_ = ids;
+    dir_ = dir; format_ = format; ids_ = ids; hold_ = hold_state;
     days_.open(dir / holdings::days_file, std::ios::binary);
     if (!days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings output");
     days_.imbue(std::locale::classic()); days_ << std::setprecision(17);
     days_ << holdings_days_columns << '\n';
-    if (format_ == NavHoldingsFormat::F64) return binary_.open(dir / holdings::data_file);
+    if (format_ == NavHoldingsFormat::F64)
+      return binary_.open(dir / holdings::data_file,
+                          hold_ ? holdings::hold_row_width : holdings::row_width);
     names_.open(dir / "holdings.csv", std::ios::binary);
     if (!names_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings output");
     names_.imbue(std::locale::classic()); names_ << std::setprecision(17);
-    names_ << detail::holdings_csv_columns() << '\n';
+    names_ << detail::holdings_csv_columns();
+    if (hold_)
+      for (const char* column : holdings::hold_column_names) names_ << ',' << column;
+    names_ << '\n';
     return co::Ok();
   }
   co::Status session(const NavReplayDay& d, std::span<const NavHolding> names) override {
@@ -2537,7 +2592,8 @@ public:
     if (format_ == NavHoldingsFormat::F64) {
       const usize ordinal = table_.size();
       for (const auto& h : names) {
-        ATX_TRY_VOID(binary_.append(holdings::pack(ordinal, h)));
+        if (hold_) ATX_TRY_VOID(binary_.append(holdings::pack_hold(ordinal, h)));
+        else ATX_TRY_VOID(binary_.append(holdings::pack(ordinal, h)));
         placed += h.order_placed ? 1U : 0U;
       }
       table_.push_back({d.session_index, d.session, d.posttrade_nav, d.decision, rows,
@@ -2575,7 +2631,8 @@ public:
       return co::Ok();
     }
     ATX_TRY(data_, binary_.close());
-    ATX_TRY(index_sha_, holdings::write_index(dir_ / holdings::index_file, ids_, table_, data_));
+    ATX_TRY(index_sha_,
+            holdings::write_index(dir_ / holdings::index_file, ids_, table_, data_, hold_));
     return co::Ok();
   }
   // The published files and their SHA-256 (the binary rows' digest was taken as written).
@@ -2589,6 +2646,7 @@ public:
   }
   [[nodiscard]] const std::filesystem::path& directory() const { return dir_; }
   [[nodiscard]] NavHoldingsFormat format() const { return format_; }
+  [[nodiscard]] bool hold_state() const { return hold_; }
   u64 rows{};
   usize sessions{}, decisions{}, skipped_rebalances{};
 
@@ -2606,10 +2664,16 @@ private:
     write_value(f, d.decision ? h.target_weight - h.held_weight : nan); f << ',';
     f << (h.order_placed ? h.order_dollars - h.held_dollars : 0.0) << ',' << h.order_placed
       << ',' << h.locate_blocked << ',' << h.order_working << ',';
-    write_value(f, h.order_dollars); f << '\n';
+    write_value(f, h.order_dollars);
+    if (hold_) {
+      f << ','; write_value(f, h.rank_set);
+      f << ','; write_value(f, h.desired_prev);
+    }
+    f << '\n';
   }
   std::filesystem::path dir_;
   NavHoldingsFormat format_{NavHoldingsFormat::F64};
+  bool hold_{}; // v8 E-16: a declared hold band's state columns
   std::span<const u64> ids_; // the role order (borrowed from the loaded blend)
   std::ofstream names_, days_;
   holdings::BinaryAppender binary_;
@@ -2641,6 +2705,7 @@ co::Status publish_holdings(const NavRun& run, const HoldingsEmitter& csv,
         {"rows", "holdings.f64 (layout in holdings_index.json) carries every holdings.csv "
                  "column of v1: the stored ones exactly, the derived ones by the declared "
                  "expressions"}};
+  if (csv.hold_state()) manifest["hold_band_state"] = hold_band_state_declaration; // v8 E-16
   v7::extend_holdings(manifest); // L4 hook: identity unless extended
   progress << "nav replay holdings " << book << ": " << csv.rows << " rows over "
            << csv.sessions << " sessions\n";
@@ -2856,7 +2921,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     std::vector<NavReplayResult> results;
     HoldingsEmitter csv;
     if (holdings) {
-      ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids));
+      ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids,
+                            hold_band_declared(base.target)));
       ATX_TRY(results, replay_observed(input, base, scenarios,
                                        Observer{&csv, nav_primary_scenario_index}, stages));
       ATX_TRY_VOID(csv.close());
@@ -3014,6 +3080,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "ignored without --emit-holdings)]] "
                "[--warm-start-sessions 0 (K > 0: decide and trade from score_begin - K, "
                "score from score_begin; K <= the role's score_begin)] "
+               "[--hold-band B (aim-partial-v5; v8 hold-band-v1 rank hysteresis, B in [0, 1])] "
+               "[--adv-hold-q Q (aim-partial-v5; v8 adv-hold-v1 holding cap Q x ADV, 0 = off; "
+               "the cap uses the run's initial NAV for every book, each --capacity-curve book "
+               "included)] "
                "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
                "bit-identical; fixed rate only)] [--stage-timers (summary.json "
                "stage_seconds: load, exposures, construction, books, hash, write)] "
@@ -3058,7 +3128,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
         const auto x = integer();
         if (x < 1 || x > max_book_workers) throw std::invalid_argument("--book-workers 1..64");
         execution.book_workers = static_cast<usize>(x);
-      } else if (key == "--warm-start-sessions") {
+      } else if (key == "--hold-band") cfg.target.hold_band = real(); // v8 R-4 hold-band-v1
+      else if (key == "--adv-hold-q") cfg.target.adv_hold_q = real(); // v8 R-5 adv-hold-v1
+      else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
         execution.warm_start_sessions = static_cast<usize>(x);
@@ -3187,7 +3259,8 @@ co::Result<NavDeployLoad> load_nav_deploy(const TargetReplayRunConfig& cfg,
 
 co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConfig& cfg, usize d,
                                    std::span<const f64> held, f64 nav_post,
-                                   std::span<const u8> no_locate) {
+                                   std::span<const u8> no_locate,
+                                   const atx::engine::book::HoldBandState* hold) {
   try {
     // As replay_nav_scenarios: the NAV volume is authoritative, also for price risk.
     TargetReplayInput x = in.target;
@@ -3215,10 +3288,11 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
                      "nav decide: one finite position per name, NAV > 0, locate mask geometry");
     NavDecision out;
     Construction shared(n, cfg.locate_in_aim);
+    if (hold) shared.state.hold = *hold; // v8 R-4: the book's hold-band state entering d
     BorrowTiers tiers(n, tiered);
     TierCensus census;
     out.cadence = (d - x.decision_begin) % cfg.target.cadence == 0;
-    ATX_TRY(out.rebalance, decide_construction(x, in.financing, cfg.target, d, out.cadence,
+    ATX_TRY(out.rebalance, decide_construction(x, in.financing, cfg, d, out.cadence,
                                                no_locate, shared, tiers, census,
                                                out.construction));
     out.current.resize(n); out.target.resize(n); out.rule.resize(n);
@@ -3239,6 +3313,7 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
       if (x.member[d * n + i]) out.sigma[i] = window_liquidity(x, in.volume, cfg, d, i).sigma;
     out.desired = std::move(shared.desired); out.no_short = std::move(shared.no_short);
     out.tier = std::move(tiers.tier); out.tier_missing = std::move(tiers.missing);
+    out.hold = std::move(shared.state.hold);
     return co::Ok(std::move(out));
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav decide: allocation failed");

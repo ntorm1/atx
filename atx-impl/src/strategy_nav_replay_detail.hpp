@@ -41,6 +41,9 @@ struct NavDecision {
   atx::f64 blocked_short_dollars{};
   std::array<atx::usize, 3> member_tiers{}; // GC, warm, special
   atx::usize member_missing_predictors{};
+  // v8 R-4 hold-band-v1: the state after this decision (the input state advanced on a cadence
+  // decision, passed through otherwise); empty with the hold band off.
+  atx::engine::book::HoldBandState hold;
 };
 // `cfg` is ONE book's config (base + its scenario; the decide path uses the primary).
 // held: one finite dollar amount per name; nav_post finite > 0; d in
@@ -49,11 +52,13 @@ struct NavDecision {
 // and the locate block (the replay passes none). Refuses rate per-name-v1 and
 // monthly-budget-v2: they carry book state (pre-trade NAV, month-to-date plan) that
 // positions do not. Everything else is the replay's contract (validate_nav_input).
-[[nodiscard]] atx::core::Result<NavDecision> nav_decide(const NavReplayInput& in,
-                                                       const NavReplayConfig& cfg, atx::usize d,
-                                                       std::span<const atx::f64> held,
-                                                       atx::f64 nav_post,
-                                                       std::span<const atx::u8> no_locate = {});
+// hold (v8 R-4): the hold-band state entering d (the previous decision's NavDecision::hold, or
+// a state file's; nullptr or empty vectors: every name unset). Read only with the hold band on;
+// with the replay's state entering d the decision is the replay's bit for bit.
+[[nodiscard]] atx::core::Result<NavDecision> nav_decide(
+    const NavReplayInput& in, const NavReplayConfig& cfg, atx::usize d,
+    std::span<const atx::f64> held, atx::f64 nav_post, std::span<const atx::u8> no_locate = {},
+    const atx::engine::book::HoldBandState* hold = nullptr);
 
 // A pinned role, blend and (optional) fields set loaded exactly as run_nav_replay admits
 // and loads them (one book's workspace reserve), plus the compact recipe digest the NAV
