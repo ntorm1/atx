@@ -347,3 +347,68 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 | H3 | 4 | feat/platform-v8-h3-20260929 | mining verb parts 2-3 (fixture only) |
 | H1 | 3 | feat/platform-v8-h1-20260929 | era shards tooling (E-17) |
 | A2 | 8 | feat/platform-v8-a2-20260930 | marginal step argv; E-19 test; v8 spec drafts |
+
+## 2026-09-30 rulings after lanes A2, R45, R6, REPORT reported (declared before any read on 2020-2023)
+- Ruling E-25 (B0c label role): the NAV verb gains `--label-role MANIFEST --label-role-sha256 SHA`: signals, fields and
+  decisions stay bound to the winner's role; prices and returns that mark the book come from the label role (the same
+  base, same dates, instruments and membership, built with delisting returns; anything else refused). Spec input
+  `inputs.label_role`. Flag off is byte-identical -- E-10 isolates the return correction from the signals, and the
+  NAV verb binds one role today -- cost if wrong: B0c mixes two changes or slips one lane-day.
+- Ruling E-26 (spo-v3 under an accepted R-4 / R-5): `w_aim = L x desired` of the accepted rule includes the hold band
+  and the ADV cap when those cells were accepted; spo-v3 therefore accepts `--hold-band` and `--adv-hold-q` for the
+  desired target (the tracker's own limits unchanged) -- the registration says "the accepted rule" -- cost if wrong:
+  R-6 tracks an aim without the accepted shaping and the cell confounds two changes.
+- Ruling E-27 (R-3 on R-1 weights): the persistence gains g_k multiply the member weights of the parent's composition
+  (tier weights inside each theme under ew-theme-std-v1), renormalised inside the theme so each theme keeps 1 / T; the
+  member cap 1 / (2T) is applied after; id `ew-theme-std-aim-v1` when the parent is R-1, `ew-theme-aim-v1` otherwise
+  -- "applied on top of the R-1 weights" (plan R-3) -- cost if wrong: gains shift weight across themes and R-3 is not
+  separable from R-1.
+- Ruling E-28 (w-pass memory with the theme block): phases whose composition is ew-theme-std-v1 (or its aim variant)
+  run under 3,072 MiB (runner and `--max-memory-mib`), 300 s -- admission about 2,606 MiB at n 6,100; mechanical, not
+  statistical; measured RSS is about 82% of admission -- cost if wrong: the runner refuses on the free-memory floor;
+  then workers 1 or a quiet host.
+- Ruling E-29 (capacity curve on B0c): confirmed, report only; the primary series and scored files are unchanged --
+  every R cell reports 4x against its parent (plan section 9) -- cost if wrong: seconds.
+- A2 concerns accepted as work items: add-alpha with a v8 parent spec; `cache gc` must keep a derived child of a
+  named store base; `_f49` ids join the R-2 gate when the fields dir with `grp_ff12f49` exists.
+
+## 2026-09-30 lane results (session 2)
+- R45 done 8fa1005f (R-5 tests, E-16 state in the holdings export, grid fix dca2165a). Then re-tasked: E-25 label role.
+- R6 part 2 done 23d663b4 (spo-v3, S_prior 20). v2 digest pin is a placeholder (capture needs a build). Re-tasked: E-26.
+- REPORT tasks 2-4 done 72ac06d4; follow-up (legacy blocks, header, final check) running.
+- A2 done 115b8877 (marginal argv; E-19 test passes on the real plan; v8 specs and templates). Re-tasked: add-alpha
+  with a v8 parent, cache gc, R-3 gains (E-27), caps (E-28).
+- H1 done cf757c97 (era_pool, pooled fitter / nav_summ / ledger, roles loop, era_data_audit; 83 new tests; no era
+  read). Open: the pooled fit refuses ew-theme-aim-v1 (and knows nothing of ew-theme-std-v1): an OD-3 read of a V8-F
+  that carries a v8 composition needs a follow-up after A2's R-3 commit. TickerHistory3 coverage of mid-2012
+  unverified. Whether B0c's era run is ledgered is a PM decision at OD-3 time.
+- F3 done fc8ff96c (E-21 fix eca04c18; F-B 0687e82f; F-C 1444310f; F-D 0f32d581; 147 field tests pass). Expected
+  `--reuse`: fields v10 from the rebuilt v9 reuses 49 and computes 21; v11 from v10 reuses 70, computes 3. v10 has 70
+  manifest rows, v11 73 (B-2's cap 1,024 is merged). F-D is defined from about mid-2019 (events start 2014).
+- Ruling E-30 (F-C / F-D lane choices, accepted as the registration before any build): fiscal quarters matched within
+  +-20 days, ties to the later quarter; peer medians per measure; tercile boundary inclusive of ties; "sign differs"
+  read strictly (a zero is not a differing sign) -- chosen blind by the lane, one variant per hypothesis -- cost if
+  wrong: a B- / C+ member is slightly mis-specified against its paper.
+- REPORT follow-up done bf3de0dc / a9a244f6 (legacy book blocks as section 5, header, `final` check; 384 tool tests).
+- R6 E-26 done 3bb1dea4 / f60a524e: spo-v3 already took the shaped desired target through the shared `form_desired`;
+  the rule id records the shaping; spo-v1 / v2 now refuse both flags (they accepted them silently). Flags absent: no
+  spo-v3 byte changes.
+- Ruling E-31 (R-6 unconverged solves, declared before the cell): no early exit is added in v8 (any exit changes the
+  book and the carried dual of every later decision). On the R-6 run the convergence counts (`unconverged`,
+  `limits_unmet`, mean iterations) and the tripwire are read before any return. `limits_unmet > 0` on scored
+  decisions of the primary book is a mechanics defect: the run is invalid, the fix is decided without seeing returns
+  and the rerun replaces it with no new trial (pre-registration rule 7) -- a book that misses its net or beta limit is
+  not the registered problem -- cost if wrong: one lane-day for the infeasibility handling.
+
+## 2026-09-30 integration 4 part A closed (log section "integration 4 part A"; head 7af37e9d)
+- Merged R1 ec2dfd16, R45 8fa1005f, G fea9b6e9, R6 23d663b4 (parts 1 and 2), F3 0687e82f (F-A, E-21 fix, F-B),
+  REPORT ec47b8ce, H3 95859cc9 (part 1), H1 1e66a7e1 (report), A2 d55ad8e1. Last good build v8-4e (11 targets).
+- Pins: `dsl_vm_sources` 33 paths, digest f24cfbbe...; `ic_result_sources` unchanged; no semantics bump (verbatim move).
+- E-22a: with LegacyBandsV1 the old FactoryOos pins came back; re-pinned (c41d401e); factory 377/377.
+- C++: data 284 passed 14 skipped; combine 220; book 147; ic 101; strategy 45; target 219 passed 1 skipped; impl 940
+  passed, 6 skipped, 1 failed (known ConfigJsonNotInDiscoverDigest). Python: strategies 163, engine tools 214, impl
+  tools 314 (2 skipped), scripts 97 (3 skipped). tiny_world passes, no golden moved. DSR N test passes (handoff 5.8).
+- Open: spo-v2 digest pin needs a pre-R6 build (test skips); part B identities; ParallelLockstepGrid group not
+  configured; build provenance records 5c6efcd4 for v8-4e.
+- Next: integration 4 part B (merge F3 fc8ff96c, H1 cf757c97, REPORT a9a244f6, R6 f60a524e; build v8-5; identities)
+  beside the Wave 1 adversarial review at the fixed commit 7af37e9d (three read-only reviewers by area, one review).
