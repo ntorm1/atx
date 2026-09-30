@@ -1945,3 +1945,30 @@ def test_cache_gc_keeps_referenced_stores_and_never_touches_state(tmp_path, monk
     with pytest.raises(SystemExit) as e:                                             # a keep list is required
         RC.main(["cache", "gc", "--root", str(root)])
     assert e.value.code == RC.EXIT_USAGE
+
+
+def test_cache_gc_keeps_a_referenced_store_however_the_paths_are_spelled(tmp_path, monkeypatch):
+    """Review C-12: --under ./build-equity, build-equity\\, an absolute path, a '..' detour or (Windows) another case
+    used to name no referenced store, so --apply deleted them all; a spec's store spelled with './', a trailing slash or
+    another case is the same store too."""
+    import research_gc
+    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    cache = "./BUILD-EQUITY/mega-candidate-cache-v2/" if os.name == "nt" else "./build-equity//mega-candidate-cache-v2/"
+    spec["ic"]["cache"], spec["fit"]["work_dir"] = cache, "build-equity/sub/../mega-fit-work-v2"
+    sp.write_text(json.dumps(spec))
+    kept, unreferenced = ["mega-candidate-cache-v2", "mega-fit-work-v2"], ["mega-candidate-cache-v1"]
+    for rel in kept + unreferenced:
+        (root / "build-equity" / rel / "s").mkdir(parents=True)
+        (root / "build-equity" / rel / "s" / "x.f64").write_bytes(b"\0" * 64)
+    (root / "sub").mkdir()
+    spellings = ["build-equity", "./build-equity", "build-equity/", str(root / "build-equity"),
+                 "sub/../build-equity"] + (["build-equity\\", "Build-Equity"] if os.name == "nt" else [])
+    for under in spellings:                                    # listed as spelled; Windows compares case-folded
+        rep = research_gc.gc([sp], root, [under], apply=False, log=lambda s: None)
+        assert [[os.path.normcase(x) for x in rep[k]] for k in ("keep", "gc")] == \
+            [[os.path.normcase(f"build-equity/{r}") for r in rels] for rels in (kept, unreferenced)], under
+    rep = research_gc.gc([sp], root, spellings, apply=True, log=lambda s: None)       # one listing, however spelled
+    assert rep["deleted"] == ["build-equity/mega-candidate-cache-v1"] and len(rep["keep"]) == 2
+    assert all((root / "build-equity" / r / "s" / "x.f64").is_file() for r in kept)

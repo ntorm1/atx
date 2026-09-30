@@ -10,6 +10,10 @@ or the root derived from its role pin when the spec omits them; no --suffix); an
 and deleted only with --apply. A candidate holding research state at its top level (a receipt, a run start, a summary,
 a manifest, a ledger, a daily CSV) is never deleted. Ledgers, receipts, roles, fields dirs and NAV cells are never
 candidates. Sizes add file sizes: hard-linked copies (cp -al seeds) count in full, so the space freed can be smaller.
+
+Review C-12: a candidate and a spec's store are compared as absolute paths under the root with '.', '..', separators,
+a trailing slash and (on Windows) case normalised, so --under ./build-equity, build-equity\\ or an absolute path keeps
+exactly the stores the canonical spelling keeps. Candidates are listed root-relative ('/'-separated), each once.
 """
 from __future__ import annotations
 
@@ -28,32 +32,54 @@ DERIVED_STORES = ("candidate-cache", "fit-work")
 PROTECTED = re.compile(r"(receipt|start|summary|manifest)\.json|trials\.jsonl|daily_.*\.csv")
 
 
+def path_key(root: Path, path) -> str:
+    """One spelling of a store path (review C-12), for comparing a candidate with the specs' stores: absolute under
+    the root (a relative path is taken from the root), '.' and '..' resolved, separators and a trailing slash
+    normalised, case folded where the file system folds it (os.path.normcase: Windows)."""
+    return os.path.normcase(os.path.normpath(os.path.join(os.path.abspath(root), str(path))))
+
+
+def shown(root: Path, path) -> str:
+    """How a store path is listed: root-relative and '/'-separated under the root, else absolute."""
+    base = os.path.abspath(root)
+    full = os.path.normpath(os.path.join(base, str(path)))
+    try:
+        rel = os.path.relpath(full, base)
+    except ValueError:                      # another drive
+        return Path(full).as_posix()
+    return Path(full).as_posix() if rel == os.pardir or rel.startswith(os.pardir + os.sep) else Path(rel).as_posix()
+
+
 def referenced(specs: list[Path], root: Path) -> dict[str, list[str]]:
-    """{store dir (root-relative, posix): [spec names]} of the stores the specs' cycles use."""
+    """{store dir (``path_key``): [spec names]} of the stores the specs' cycles use."""
     out: dict[str, list[str]] = {}
     for path in specs:
         spec = RC.load_spec(path)
         c = RC.Cycle(spec, RC.Resolver(root), verify=False)
         dirs = ([c.cache_dir()] if "ic" in spec else []) + ([c.fit_work_dir()] if "fit" in spec else [])
         for d in dirs:
-            out.setdefault(Path(d).as_posix().rstrip("/"), []).append(spec["name"])
+            out.setdefault(path_key(root, d), []).append(spec["name"])
     return out
 
 
 def candidates(root: Path, under: list[str]) -> list[str]:
-    out = []
+    """The candidate store dirs under each --under dir (``shown`` spelling), each once however --under is spelled."""
+    out, seen = [], set()
     for base in under:
-        top = root / base
+        top = Path(os.path.normpath(os.path.join(os.path.abspath(root), base)))
         if not top.is_dir():
             continue
         for child in sorted(top.iterdir()):
             if not child.is_dir() or child.is_symlink():
                 continue
-            rel = f"{base.rstrip('/')}/{child.name}"
             if child.name in DERIVED_STORES:
-                out += [f"{rel}/{g.name}" for g in sorted(child.iterdir()) if g.is_dir() and not g.is_symlink()]
-            elif STORE_NAME.search(child.name):
-                out.append(rel)
+                found = [g for g in sorted(child.iterdir()) if g.is_dir() and not g.is_symlink()]
+            else:
+                found = [child] if STORE_NAME.search(child.name) else []
+            for g in found:
+                if path_key(root, g) not in seen:
+                    seen.add(path_key(root, g))
+                    out.append(shown(root, g))
     return out
 
 
@@ -79,9 +105,9 @@ def gc(specs: list[Path], root: Path, under: list[str], apply: bool, log=print) 
     for rel in candidates(root, under):
         path = root / rel
         mib = size_of(path) / (1 << 20)
-        if rel in keep:
+        if path_key(root, rel) in keep:
             report["keep"].append(rel)
-            log(f"keep  {rel}  {mib:,.1f} MiB  (referenced by {', '.join(keep[rel])})")
+            log(f"keep  {rel}  {mib:,.1f} MiB  (referenced by {', '.join(keep[path_key(root, rel)])})")
             continue
         why = protected(path)
         if why:
