@@ -34,8 +34,10 @@ two parquet SHA-256s listed in the manifest. `manifest.json` absent means the ar
   - else FC1 = `filed` 00:00 UTC + 46 h (`clock_basis = "cf_fc1"`).
 - A fact enters the producer's knowledge at its accession's clock. Restatements are **latest-clock-wins**: a
   restated value enters at the restating filing's clock and is never backdated.
-- **Seal:** no accession with clock >= 2025-01-01T00:00:00Z contributes anything; no FSDS SUB quarter after
-  2024q4 is read; CF-R rows with `filed_date >= 2025-01-01` are dropped at the parquet read.
+- **Seal:** the research seal `SEAL` of `research_window.py` (`atx-impl/strategies/research_window.json`
+  `seal_begin`; research-window-v2 since 2026-09-29, research-seal-v1 before). No accession with clock >= `SEAL`
+  00:00 UTC contributes anything; no FSDS SUB quarter after `LAST_SUB_QUARTER` (the quarter of the day before the
+  seal) is read; CF-R rows with `filed_date >= SEAL` are dropped at the parquet read.
 - **Consumer visibility rule (T21, declared by §R2):** a row is visible at session `d` iff
   `accepted_utc < d 22:00 UTC` (the role close mark), and it is usable from the next session
   (`--fund-lag-sessions 1`).
@@ -44,7 +46,7 @@ two parquet SHA-256s listed in the manifest. `manifest.json` absent means the ar
 
 One row per in-scope CIK and per accession of form 10-K, 10-K/A, 10-Q, 10-Q/A, 10-KT, 10-KT/A, 10-QT, 10-QT/A,
 20-F, 20-F/A, 40-F, 40-F/A (us-gaap facts only) that contributed at least one retained fact, whose clock is in
-[2014-06-01, 2025-01-01). Earlier accessions update the knowledge state but emit no row. Each row is a complete
+[2014-06-01, `SEAL`). Earlier accessions update the knowledge state but emit no row. Each row is a complete
 snapshot of everything known about the CIK at that clock, **anchored at the fiscal period `period_end`**.
 
 **Consumer selection rule (row-level, latest-clock-wins):** for a CIK and mark, take the latest visible row
@@ -160,7 +162,7 @@ Consumer rule (T21): latest row with `accepted_utc` < mark; stale (NaN group) wh
 ## 5. `manifest.json`
 
 `schema = "atx.fundamental-events/v1"`, `status = "complete"`, `values_label = "modeled_unaccepted"`,
-`rehearsal_identity = true`, `seal = "2025-01-01"`, `emit_from = "2014-06-01"`; `files` (name ->
+`rehearsal_identity = true`, `seal` (the `SEAL` date, ISO), `emit_from = "2014-06-01"`; `files` (name ->
 `{sha256, bytes, rows}`) for `fundamental_events.parquet` and `sic_events.parquet`; `items` (ordered list of the
 28 item names) and `item_units`; `inputs` (CF-R dir, manifest SHA, archive SHA and every batch parquet SHA; FSDS
 dir, manifest SHA and every SUB quarter SHA read; CIK list path, SHA and count); `code_sha256` (this tool,

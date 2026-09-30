@@ -335,21 +335,23 @@ co::Result<Deploy> read_deploy(const std::string& path) {
   return co::Ok(std::move(out));
 }
 // The seal block must be this build's policy; a session at or past the seal is refused,
-// with or without an owner gate (live sessions are not enabled here; kSeal unchanged).
+// with or without an owner gate (live sessions are not enabled here; the seal is unchanged).
 co::Status check_seal(const Deploy& deploy, i64 asof) {
   const auto& seal = deploy.m.at("seal");
+  const std::string window =
+      std::string(research_seal_policy) + ", exclusive " + std::string(research_seal_session);
   if (seal.at("policy") != research_seal_policy ||
       seal.at("exclusive_session") != research_seal_session)
-    return mismatch("seal", "this build: research-seal-v1, exclusive 2025-01-01");
+    return mismatch("seal", "this build: " + window);
   if (asof < research_seal_exclusive_ns) return co::Ok();
   if (!deploy.owner_gate)
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "decide: the as-of session is at or past the research seal (2025-01-01) "
-                   "and the manifest carries no owner_gate");
+                   "decide: the as-of session is at or past the research seal (" + window +
+                       ") and the manifest carries no owner_gate");
   if constexpr (!live_sessions_enabled)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "decide: owner_gate recorded, but live sessions past the research seal are "
-                   "not enabled in this build (kSeal unchanged)");
+                   "not enabled in this build (the seal is unchanged)");
   return co::Ok();
 }
 co::Status check_executable(const Deploy& deploy, const std::string& running) {

@@ -6,6 +6,10 @@
   research_cycle.py run    SPEC [same options] [--stop-after PHASE]
   research_cycle.py status SPEC [same options]
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
+  research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
+                              --parent v71 [--name v72] [--plan-json PATH] [--root R]   (research_add_alpha.py)
+  research_cycle.py cache gc --keep-referenced-by SPEC [SPEC ...] [--under DIR] [--root R] [--apply]
+                           (research_gc.py: stores no listed spec uses; deleted only with --apply)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
 
@@ -24,8 +28,9 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   share one parent -> --sec-stages), thirteenf, ftd, regsho_threshold, security_master, short_volume_ext
                   (--<key> DIR --<key>-sha256 PIN) and reuse_fields (--reuse DIR --reuse-sha256 PIN, --reuse-hardlink
                   with fields.reuse_hardlink) reach the fields builder
-  summ.dsr_n      "ledger+1" resolves at scoring time to (prior ledger cells) + 1, protocol lines (window changes,
-                  research_ledger.py) skipped; summ.ledger_copy copies the ledger (into the sprint dir) after summ
+  summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
+                  construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
+                  research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
   build           "equity" | "equity-rel": resolves exes (defaults or bare names) and env_path_prepend (BUILDS)
   out_root        a root-relative dir every relative output name is placed under; ic.cache and fit.work_dir, when
                   omitted, derive to <out_root or build-equity>/{candidate-cache,fit-work}/<role sha16>-<window id>
@@ -472,7 +477,7 @@ class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
-                 screen: bool = False, capabilities=None):
+                 screen: bool = False, capabilities=None, verify: bool = True):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and spec.get("fields", {}).get("manifest_sha256"):
@@ -494,7 +499,8 @@ class Cycle:
         self.no_git, self.screen = no_git, screen
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
-        self.pins = self.verify_inputs()
+        # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
+        self.pins = self.verify_inputs() if verify else {}
 
     # -------------------------------------------------------------- names and pins
     def out(self, name: str) -> str:
@@ -520,7 +526,11 @@ class Cycle:
             wid = window_id()
         except LookupError as exc:
             raise CycleError(f"spec omits the {kind} root and it cannot be derived: {exc}", EXIT_USAGE) from exc
-        return f"{self.out_base().rstrip('/')}/{kind}/{self.pin('role')[:16]}-{wid}"
+        role = self.pin("role") if "role" in self.pins else (      # verify=False: the spec's pin, else the file's
+            self.spec["inputs"]["role"].get("sha256") or self.res.sha(self.ipath("role")))
+        if not role:
+            raise CycleError(f"spec omits the {kind} root and the role pin is unknown", EXIT_USAGE)
+        return f"{self.out_base().rstrip('/')}/{kind}/{role[:16]}-{wid}"
 
     def cache_dir(self) -> str:
         ic = self.spec["ic"]
@@ -814,11 +824,11 @@ class Cycle:
         if "reference_cell" in s["inputs"]:
             argv += ["--reference", self.idir("reference_cell")]
         from_ledger = sm.get("cells_from_ledger") or sm["dsr_n"] == DSR_FROM_LEDGER
-        prior = self.ledger_cells(n_out) if from_ledger else None
+        prior, ledger_n = self.ledger_cells(n_out) if from_ledger else (None, None)
         cells = prior if sm.get("cells_from_ledger") else (sm.get("cells") or [])
         if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
             argv += [*cells, n_out]
-        argv += ["--dsr-n", str(self.dsr_n(prior)), *sm.get("extra", [])]
+        argv += ["--dsr-n", str(self.dsr_n(ledger_n)), *sm.get("extra", [])]
         if s.get("verdict"):
             argv += ["--json", f"{self.cycle_dir()}/{SUMM_JSON}"]
             if "--pbo" in sm.get("extra", []):
@@ -830,10 +840,11 @@ class Cycle:
             argv.append(n_out)
         return self.always_step("summ", argv, [self.tool(sm["script"])], "nav_summ vs the reference cell")
 
-    def dsr_n(self, prior: list[str] | None) -> int:
-        """summ.dsr_n: the declared integer, or "ledger+1" = the prior ledger cells + 1 (resolved at scoring time)."""
+    def dsr_n(self, ledger_n: int | None) -> int:
+        """summ.dsr_n: the declared integer, or "ledger+1" = the ledger's N (research_ledger.ledger_n: the defect-rule
+        construction trials + 1 for this cell when not yet ledgered, nav_summ's N; resolved at scoring time)."""
         n = self.spec["summ"]["dsr_n"]
-        return len(prior) + 1 if n == DSR_FROM_LEDGER else n
+        return ledger_n if n == DSR_FROM_LEDGER else n
 
     def with_compares(self, steps: list[Step]) -> list[Step]:
         """The spec's compare items as one internal "<after>-compare" step right after each named phase (skipped with
@@ -879,10 +890,10 @@ class Cycle:
             state, note = "pending", "" if phase == "nav" else "reference construction on this cycle's fields"
         return Step(phase, "bounded", argv, n_out, run_dir, k, state, note)
 
-    def ledger_cells(self, n_out: str) -> list[str]:
-        """summ.cells_from_ledger / dsr_n "ledger+1": every trial line's cell, in ledger order, this cycle's own cell
-        excluded (protocol lines are no trial: research_ledger); an integer dsr_n must be their count + 1 (cross-cell
-        N = trial lines + 1)."""
+    def ledger_cells(self, n_out: str) -> tuple[list[str], int]:
+        """summ.cells_from_ledger / dsr_n "ledger+1": (every trial line's cell, in ledger order, this cycle's own cell
+        excluded (protocol lines are no trial: research_ledger), the ledger's N); N is backtest_integrity.ledger_n
+        (the defect rule, + 1 for this cell when not yet ledgered: nav_summ's N) and an integer dsr_n must equal it."""
         sm = self.spec["summ"]
         rel = self.ledger or sm["ledger"]
         p = self.res.path(rel)
@@ -890,16 +901,16 @@ class Cycle:
             raise CycleError(f"summ.cells_from_ledger: no trial ledger at {rel}", EXIT_PIN)
         try:
             cells = research_ledger.cells(p)
+            n = research_ledger.ledger_n(p, n_out, self.res.path(n_out))
         except research_ledger.LedgerError as exc:
             raise CycleError(f"summ.cells_from_ledger: {exc}", EXIT_PIN) from exc
         prior = [c for c in cells if c != n_out]
         if len(set(prior)) != len(prior):
             raise CycleError(f"summ.cells_from_ledger: {rel} lists a cell twice", EXIT_PIN)
-        if sm["dsr_n"] != DSR_FROM_LEDGER and len(prior) + 1 != sm["dsr_n"]:
+        if sm["dsr_n"] != DSR_FROM_LEDGER and n != sm["dsr_n"]:
             raise CycleError(f"summ.cells_from_ledger: {rel} lists {len(prior)} prior cells, so cross-cell N = "
-                             f"{len(prior) + 1}, but the spec declares summ.dsr_n {sm['dsr_n']}: set summ.dsr_n to "
-                             f"{len(prior) + 1}", EXIT_PIN)
-        return prior
+                             f"{n}, but the spec declares summ.dsr_n {sm['dsr_n']}: set summ.dsr_n to {n}", EXIT_PIN)
+        return prior, n
 
     def fields_step(self, fd: str, fdm: str, role_sha: str) -> Step:
         f, s = self.spec["fields"], self.spec
@@ -1432,6 +1443,12 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
         return research_ledger.main(argv[1:])
+    if argv[:2] == ["cache", "gc"]:          # unreferenced candidate caches and fit work dirs: research_gc.py
+        import research_gc  # noqa: PLC0415  (imports this module)
+        return research_gc.main(argv[2:])
+    if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock
+        import research_add_alpha  # noqa: PLC0415  (imports this module)
+        return research_add_alpha.main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("verb", choices=("plan", "run", "status", "lock"))

@@ -7,11 +7,14 @@ When some are, the builder computes the other fields, and the ``publish`` step o
 this module writes its ``<field>.f64`` payloads into the same exclusive output directory, appends its manifest entries
 (registry order, after the builder's) and ``source_checks.holdings``, and only then is the manifest published. A run
 that requests only holdings fields carries the builder's cheapest field (``mkt_ret``) and drops it before publication.
-Holdings fields are always computed: ``--reuse`` applies to the builder's own fields only.
+With ``--reuse`` (v8 C-3) a holdings field is copied from the prior directory when its producing code (``PRODUCERS``
+kind closure plus the builder code it reads through ``ns``), stage manifest pins, formula and dependencies are
+unchanged (prepare_research_fields.REUSE_MODULE_RULE); every other holdings field is computed.
 
 Sources (atx-db alpha panel v1 stages, read-only; each pinned by the SHA-256 of its ``manifest.json``, which must be a
 complete manifest of the declared schema with the declared clock and staleness rules; every file read is hash-checked
-against that manifest from the exact bytes parsed; nothing available on or after 2025-01-01 is used):
+against that manifest from the exact bytes parsed; nothing available on or after the research seal, ``research_window.py``
+``SEAL_DATE``, is used):
 * ``thirteenf/`` (D1): ``filings.parquet``, ``filing_checks.parquet``, ``cusip_map_pit.parquet``, ``agg_asof45.parquet``
   and the ``parts/source=*/holdings.parquet`` data sets of the effective filings.
 * ``ftd/`` (D3a): ``year=YYYY/ftd.parquet``.
@@ -32,17 +35,21 @@ import functools
 import hashlib
 import json
 from pathlib import Path
+import re
+import sys
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the research window (the seal)
+
 GROUP = "holdings"
 EPOCH = dt.date(1970, 1, 1)
 DAY_NS = 86_400_000_000_000
 MARK_NS = 22 * 3_600_000_000_000
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date (research_window.py)
 SEAL_NS = (SEAL - EPOCH).days * DAY_NS
 NEVER = np.iinfo(np.int64).max
 BEFORE_ALL = np.iinfo(np.int64).min
@@ -59,6 +66,11 @@ STAGES = {
 }
 KIND_STAGES = {"13f": ("thirteenf",), "ftd": ("ftd",), "regsho": ("regsho_threshold", "security_master"),
                "svx": ("short_volume_ext",)}
+# v8 C-3 --reuse (prepare_research_fields.reuse_module_fields): each kind's producing code is its builder function and
+# every module-level definition it reaches, plus the builder code it reads through ``ns`` / ``ctx.ns``.
+PRODUCERS = {"13f": ("build_13f",), "ftd": ("build_ftd",), "regsho": ("build_regsho",), "svx": ("build_svx",)}
+HOST_HANDLES = ("ns",)
+KIND_CHECK_KEY = {"13f": "thirteenf", "ftd": "ftd", "regsho": "regsho_threshold", "svx": "short_volume_ext"}
 STAGE_KWARGS = tuple(k for s in STAGES for k in (s, s + "_sha256"))
 
 VISIBILITY_RULE = ("a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous "
@@ -242,6 +254,13 @@ def quarter_end(d: dt.date) -> dt.date:
     month = ((d.month - 1) // 3) * 3 + 3
     nxt = dt.date(d.year + (month == 12), month % 12 + 1, 1)
     return nxt - dt.timedelta(days=1)
+
+
+def source_part_is_sealed(part: str) -> bool:
+    """True for a 13F ``parts/source=YYYYqN`` data set (the filings of calendar quarter N of YYYY) that begins on or
+    after the research seal; a part name of another shape is not dated and is not refused here."""
+    m = re.fullmatch(r"(\d{4})q([1-4])", part)
+    return m is not None and rw.partition_is_sealed(int(m[1]), int(m[2]))
 
 
 def prev_quarter_end(q: dt.date) -> dt.date:
@@ -464,8 +483,10 @@ class Stage:
         return pq.read_table(pa.BufferReader(self.blob(rel)), columns=list(columns))
 
     def years(self, pattern: str, lo: int, hi: int) -> list:
-        """Manifest-listed ``pattern.format(year)`` files for lo..hi that exist in the stage."""
-        return [pattern.format(y) for y in range(lo, hi + 1) if pattern.format(y) in self.manifest["files"]]
+        """Manifest-listed ``pattern.format(year)`` files for lo..hi that exist in the stage. A year that begins on or
+        after the research seal holds only sealed rows: its file is never listed, so it is never opened."""
+        return [pattern.format(y) for y in range(lo, hi + 1)
+                if pattern.format(y) in self.manifest["files"] and not rw.partition_is_sealed(y)]
 
     def sources(self) -> list:
         return [self.manifest_source] + sorted(self.read, key=lambda x: x["path"])
@@ -632,6 +653,9 @@ def build_13f(ctx: Ctx, names, stage: Stage):
             ksid = cm_sid[cm]
             rows = {"filer": [], "sid": [], "shares": [], "value": []}
             for part in sorted(set(src_all[mine].tolist())):
+                if source_part_is_sealed(part):  # filed on or after the seal: never opened
+                    st["holdings_parts_not_read_sealed"] = st.get("holdings_parts_not_read_sealed", 0) + 1
+                    continue
                 path, ident = stage.verified_path(f"parts/source={part}/holdings.parquet")
                 pf = pq.ParquetFile(path)
                 for batch in pf.iter_batches(batch_size=65_536, columns=["accession", "cusip", "shares", "sshprnamt_type",
@@ -1047,6 +1071,26 @@ def requested(fields) -> list:
     return [x for x in HOLD_FIELDS if x in fields]
 
 
+# -- --reuse interface (v8 C-3) --------------------------------------------------------------------------------------
+def producer_group(name: str) -> str:
+    return HOLD_FIELDS[name]["kind"]
+
+
+def field_spec(name: str) -> dict:
+    return HOLD_FIELDS[name]
+
+
+def reuse_inputs(name: str, inputs: dict) -> dict:
+    """This run's stage manifest pins of a holdings field (the --reuse source check; a manifest pins every file)."""
+    return {k: str(inputs.get(k + "_sha256") or "").lower() for k in KIND_STAGES[HOLD_FIELDS[name]["kind"]]}
+
+
+def entry_inputs(entry: dict) -> dict:
+    """The same pins as a manifest entry of a holdings field records them."""
+    pins = entry.get("stage_manifest_sha256")
+    return dict(pins) if isinstance(pins, dict) else {}
+
+
 def validate(fields, selected_other, inputs: dict):
     mine = requested(fields)
     for x in mine:
@@ -1070,12 +1114,18 @@ def open_stages(names, inputs: dict) -> dict:
     return stages
 
 
-def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifest: dict, budget, stages: dict):
-    """Compute ``names`` into ``output`` and extend ``manifest`` (entries, files, source_checks.holdings)."""
+def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifest: dict, budget, stages: dict,
+              reused=None, prior_checks=None):
+    """Compute ``names`` into ``output`` and extend ``manifest`` (entries, files, source_checks.holdings).
+
+    ``reused`` ({name: (entry, files pin)}, from --reuse) are already in ``output`` and are appended as they are; a
+    kind whose fields are all reused carries its check from ``prior_checks`` (the prior source_checks.holdings)."""
     _release()  # whatever the builder's own groups left in the pools
+    reused, prior_checks = reused or {}, prior_checks or {}
+    todo = [x for x in names if x not in reused]
     role = ns["Role"](role_dir, role_sha256)
     so = None
-    if any("shares_out" in HOLD_FIELDS[x].get("requires", []) for x in names):
+    if any("shares_out" in HOLD_FIELDS[x].get("requires", []) for x in todo):
         pin = manifest["files"].get("shares_out.f64")
         path = Path(output) / "shares_out.f64"
         before = _identity(path)
@@ -1086,7 +1136,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
     ctx = Ctx(ns, role, output, budget, so)
     writers, extras, sources, checks = {}, {}, {}, {}
     kinds = {}
-    for x in names:
+    for x in todo:
         kinds.setdefault(HOLD_FIELDS[x]["kind"], []).append(x)
     if "13f" in kinds:
         w, st, ex = build_13f(ctx, kinds["13f"], stages["thirteenf"])
@@ -1124,12 +1174,25 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
             sources[x] = stages["short_volume_ext"].sources() + role_src
         _release()
         budget.report("holdings-svx-complete")
-    for x in names:
+    for x in todo:
         if "shares_out" in HOLD_FIELDS[x].get("requires", []):
             sources[x] = sources[x] + [so_source]
+    for kind in dict.fromkeys(HOLD_FIELDS[x]["kind"] for x in names):
+        key = KIND_CHECK_KEY[kind]
+        if kind not in kinds and key in prior_checks:  # every field of the kind reused: its prior check stands
+            checks[key] = prior_checks[key]
+    checks = {k: checks[k] for k in KIND_CHECK_KEY.values() if k in checks}  # kind order, as a full compute
     ns["Role"](role_dir, role_sha256)  # the axes did not change underneath
-    code = ns["code_identity"](Path(__file__).resolve())
+    code = ns["module_code_identity"](sys.modules[__name__])  # = code_identity(this file), v8 C-3
     for x in names:
+        if x in reused:
+            entry, pin = reused[x]
+            if x in manifest["files"] or entry["file"] in manifest["files"] or any(e["name"] == x
+                                                                                  for e in manifest["fields"]):
+                raise ValueError(f"{x}: already in the manifest")
+            manifest["files"][entry["file"]] = pin
+            manifest["fields"].append(entry)
+            continue
         spec, wr = HOLD_FIELDS[x], writers[x]
         size = wr.path.stat().st_size
         if size != role.n_dates * role.n * 8:
@@ -1157,6 +1220,14 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
         "stages": {k: s.check() for k, s in stages.items()}, **checks}
     del ctx, so  # release the shares_out map before the manifest is published
     budget.report("holdings-complete", fields=len(names), peak_rss_mib=budget.peak >> 20)
+
+
+def _drop_from_reuse(block: dict, name: str) -> None:
+    """Remove the carried field from the builder's --reuse block (it leaves no trace in the manifest)."""
+    for k in ("reused", "computed"):
+        block[k] = [x for x in block[k] if x != name]
+    for k in ("not_reused", "producing_code_sha256_lf"):
+        block[k].pop(name, None)
 
 
 def register(ns: dict):
@@ -1190,7 +1261,26 @@ def register(ns: dict):
                     value["fields"] = [e for e in value["fields"] if e["name"] != "mkt_ret"]
                     value["files"].pop("mkt_ret.f64")
                     (Path(output) / "mkt_ret.f64").unlink()
-                build_all(ns, mine, Path(role_dir), role_sha256, Path(output), value, budget, stages)
+                    if isinstance(value.get("reuse"), dict):
+                        _drop_from_reuse(value["reuse"], "mkt_ret")
+                reused, prior_checks = {}, {}
+                if kw.get("reuse") is not None:  # v8 C-3: the builder's reuse block exists (value["reuse"])
+                    role = ns["Role"](Path(role_dir), role_sha256)
+                    reused, reasons, prior = ns["reuse_module_fields"](
+                        sys.modules[__name__], Path(kw["reuse"]), kw.get("reuse_sha256"), role, mine, Path(output),
+                        budget, options=inputs, reused_names=set(value["reuse"]["reused"]),
+                        hardlink=bool(kw.get("reuse_hardlink", False)))
+                    prior_checks = prior.get(GROUP) if isinstance(prior.get(GROUP), dict) else {}
+                    order = [e["name"] for e in value["fields"]] + mine
+                    block = value["reuse"]
+                    for kind, key in KIND_CHECK_KEY.items():
+                        names = [x for x in mine if HOLD_FIELDS[x]["kind"] == kind]
+                        if names:
+                            ns["merge_module_reuse"](block, order, names, reused, reasons, group=f"{GROUP}.{key}",
+                                                     prior_check=prior_checks.get(key))
+                    block.pop("_source_checks", None)  # build_all carries the prior checks of fully reused kinds
+                build_all(ns, mine, Path(role_dir), role_sha256, Path(output), value, budget, stages, reused,
+                          prior_checks)
             return base_publish(path, value)
 
         ns["publish"] = publish

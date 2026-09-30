@@ -9,17 +9,23 @@
 #include <functional>
 #include <limits>
 #include <span>
+#include <string_view>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/data/research_window.hpp"
 
 namespace atx::engine::data {
 namespace {
 using Json = nlohmann::json;
 constexpr i64 kDay = 86'400'000'000'000LL;
-constexpr i64 kSeal = 1'735'689'600'000'000'000LL; // exclusive 2025-01-01
 constexpr u64 kManifestLimit = 1ULL << 20;
+// research_window.hpp: nothing at or after the seal is read; the refusal names the window.
+std::string seal_refusal(std::string_view what) {
+  return "strategy role: " + std::string(what) + " at or after the research seal " +
+         std::string(kSealBeginDate) + " (" + std::string(kResearchWindowId) + ")";
+}
 bool hash_valid(std::string_view s) {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -98,8 +104,10 @@ core::Result<StrategyRoleData> read_strategy_role(const std::string& path, u64 m
     out.score_begin = j.at("score_begin").get<usize>(); out.score_end = j.at("score_end").get<usize>();
     const auto start = j.at("score_start_ns").get<i64>(), end = j.at("score_end_ns").get<i64>();
     if (out.score_begin < 383 || out.score_begin >= out.score_end || out.score_end != d ||
-        start <= 0 || end <= start || end > kSeal)
-      return core::Err(core::ErrorCode::InvalidArgument, "strategy role: warmup/score/seal contract");
+        start <= 0 || end <= start)
+      return core::Err(core::ErrorCode::InvalidArgument, "strategy role: warmup/score contract");
+    if (end > kSealBeginNs)
+      return core::Err(core::ErrorCode::InvalidArgument, seal_refusal("score end"));
     out.source_sha256 = j.at("source_sha256").get<std::string>();
     out.membership_recipe = j.at("membership_recipe").get<std::string>();
     out.clock_recipe = j.at("clock_recipe").get<std::string>();
@@ -127,8 +135,10 @@ core::Result<StrategyRoleData> read_strategy_role(const std::string& path, u64 m
       return core::Err(core::ErrorCode::InvalidArgument, "strategy role: invalid axes/score boundary");
     out.mark_times_ns.reserve(d); out.decision_times_ns.reserve(d);
     for (const auto session : out.session_keys) {
-      if (session % kDay != 0 || session >= kSeal)
-        return core::Err(core::ErrorCode::InvalidArgument, "strategy role: non-session/unsealed axis");
+      if (session % kDay != 0)
+        return core::Err(core::ErrorCode::InvalidArgument, "strategy role: non-session axis");
+      if (is_sealed(session))
+        return core::Err(core::ErrorCode::InvalidArgument, seal_refusal("session"));
       out.mark_times_ns.push_back(session + 22 * kDay / 24);
       out.decision_times_ns.push_back(session + 23 * kDay / 24);
     }

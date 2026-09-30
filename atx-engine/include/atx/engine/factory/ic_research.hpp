@@ -2,11 +2,14 @@
 #include "atx/engine/factory/ic_screen.hpp"
 namespace atx::engine::parallel { class DetPool; }
 namespace atx::engine::factory {
+// Explicit research IC worker bound (platform v8 B-2: 4 -> 16). Rows are per-date
+// independent, so every count in 1..max gives the same bits.
+inline constexpr atx::usize max_research_ic_workers = 16;
 // Separate research boundary: old IcScreenConfig/API/layout remain unchanged.
 struct ResearchIcOptions {
   atx::usize active_horizons{3}; // active ordered prefix of config.horizons, 1..4
   bool require_endpoint_presence{true}; // source observation, NOT future membership
-  atx::usize workers{1}; // explicit 1..4; row scratch only, never extra dense caches
+  atx::usize workers{1}; // 1..max_research_ic_workers; row scratch only, no extra dense caches
 };
 struct ResearchIcCoverage {
   atx::usize mature_dates{}, structural_tail_dates{};
