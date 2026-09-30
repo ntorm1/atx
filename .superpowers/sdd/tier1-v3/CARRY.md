@@ -44,3 +44,19 @@ Durable decisions and facts that every lane carries. One line per item; newest l
   `data/staging/companyfacts/ee099c7394a357f1`, `data/staging/fsds-v2/{num,pre,sub,tag}`,
   `data/research/identity_rehearsal/session8-phased-r4`, `C:/Users/natha/Downloads/TickerHistory3.parquet`,
   `C:/atx/data/finra_*`, `data/raw/*` landings.
+- Ruling C-1 (controller, 2026-09-29 22:58Z): the guard is strict FIFO and the S0.1 panel jobs hold 1.6 GiB for about
+  an hour, starving small jobs. A job may run WITHOUT the guard only if it (a) opens no DuckDB connection, (b) is a
+  network landing or a pure-pyarrow/stdlib transform writing < 200 MB, and (c) has a measured or bounded peak
+  ≤ 0.25 GiB (stream, never load a whole large file). Record "unguarded per C-1" plus the measured peak (e.g.
+  psutil / tracemalloc) in the report. Every DuckDB job and everything else stays guarded.
+- Fact 2026-09-30: consumer dependencies on atx-db data (never delete): `data/alpha_panel/v1/**`, `data/raw/finra_short_volume`,
+  `data/research/lake/price-wave-0ed96b2696f1-5b596288cf23` (prepare_research_fields `--lake` default; rebuild with
+  `scripts/research_price_wave.py`), `data/research/identity_rehearsal/session8-phased-r4` (prepare_identity_bridge).
+- Fact 2026-09-30: `atx_db/lake.py` (v2) exists; a package named `atx_db/lake/` shadows it. The v3 lake platform
+  package is `atx_db/stagelake/`.
+- Open (owner): panel `iv_atm_*` uses clock `vendor-eod-same-date`, but SpiderRock delivers EOD history at 22:00 CT
+  (03:00-04:00 UTC next day), after the 22:00 UTC d-1 mark: IV fields may be one session early (LIC report).
+- Ruling C-1 REVOKED (2026-09-30 01:30Z): unguarded runs exceeded the 0.25 GiB bound (FUND: 673/454/323/349 MB) and,
+  with other lanes' unguarded fetchers, drove host commit below the guard stop line, killing guarded builds
+  (FUND ×6, borrow_proxy ×7+). Every job runs under the guard. Lesson: the host budget is VS Code (~5.5 GB) +
+  Claude processes (~3.5 GB) + other sessions; ≤ 4 concurrent lanes with data jobs, not 9.

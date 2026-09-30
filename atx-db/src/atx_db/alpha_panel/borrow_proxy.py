@@ -54,7 +54,8 @@ def build() -> dict[str, Any]:
     t0 = time.perf_counter()
     receipt: dict[str, Any] = {"label": LABEL}
     root = C.build_root()
-    con = S.connect("borrow")
+    # file-backed, one thread: the per-year ASOF chain over the full SI / 13F / FTD runs overflowed 381 MiB in memory
+    con = S.connect("borrow", memory="560MB", threads=1, db_file="borrow.duckdb")
     tmp = S.tmp_dir("borrow")
     si = (root / "short_interest" / "si.parquet").as_posix()
     agg = (root / "thirteenf" / "agg_asof45.parquet").as_posix()
@@ -115,8 +116,12 @@ def build() -> dict[str, Any]:
                count(DISTINCT market) AS threshold_markets_visible
         FROM vis_lists2 GROUP BY 1""")
     out = C.stage_dir(STAGE)
+    # resumable per year: a year file written after the current panel manifest is reused (the guard can stop this
+    # build for host headroom; each input here is at least as old as the panel manifest)
+    panel_mtime = (root / "panel" / "manifest.json").stat().st_mtime
     for f in out.glob("year=*/borrow_proxy.parquet"):
-        f.unlink()
+        if f.stat().st_mtime <= panel_mtime:
+            f.unlink()
     years = [r[0] for r in con.execute("SELECT DISTINCT year(session_date) FROM sess ORDER BY 1").fetchall()]
     per_year: dict[str, Any] = {}
     for y in years:
@@ -188,7 +193,10 @@ def build() -> dict[str, Any]:
             ORDER BY g5.session_date, g5.security_id
         """
         dest = out / f"year={y}" / "borrow_proxy.parquet"
-        n = C.copy_to_parquet(con, sql, dest)
+        if dest.exists():
+            n = con.execute(f"SELECT count(*) FROM read_parquet('{dest.as_posix()}')").fetchone()[0]
+        else:
+            n = C.copy_to_parquet(con, sql, dest)
         d = dest.as_posix()
         r = con.execute(f"""
             SELECT count(*) FILTER (WHERE member_equity),
