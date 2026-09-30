@@ -557,8 +557,9 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
       if (day.calendar_month != month) { month = day.calendar_month; spent = 0; }
       bool rebalance = (d - in.decision_begin) % cfg.cadence == 0;
       if (rebalance) {
-        ATX_TRY(rebalance,
-                form_desired(in, cfg, d, row, desired, price, day.construction, {}, &state));
+        // Qualified: the detail::DesiredState argument brings detail::form_desired in by ADL.
+        ATX_TRY(rebalance, ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, price,
+                                                               day.construction, {}, &state));
       }
       day.construction.rebalance = rebalance;
       ATX_TRY_VOID(update_weights(in, cfg, d, rebalance, spent, desired, current, day));
