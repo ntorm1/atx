@@ -17,7 +17,7 @@ The database is written under ``<dest dir>/_catalog_build/<dest name>`` and move
 its own name, so building under the final name keeps rebuilds byte-identical); consumers open it
 ``read_only=True``. ``--dump`` prints the canonical dump (sorted DDL, view SQL, comments, table rows) and its SHA.
 
-    python -m atx_db.lake catalog [--root R] [--out data/catalog.duckdb] [--dump]
+    python -m atx_db.stagelake catalog [--root R] [--out data/catalog.duckdb] [--dump]
 """
 
 from __future__ import annotations
@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import registry
     from .contract import default_root
 
-    ap = argparse.ArgumentParser(prog="python -m atx_db.lake catalog", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m atx_db.stagelake catalog", description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=CATALOG)
     ap.add_argument("--dump", action="store_true", help="print the canonical dump SHA-256 (and write <out>.dump.txt)")

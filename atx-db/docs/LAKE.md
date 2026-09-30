@@ -1,19 +1,19 @@
 # Lake platform: registry, verify, catalog, orchestrator
 
-`atx_db.lake` (tier1-v3 S1) turns the alpha_panel stage directories under `data/alpha_panel/v1` (override
+`atx_db.stagelake` (tier1-v3 S1) turns the alpha_panel stage directories under `data/alpha_panel/v1` (override
 `ATX_ALPHA_PANEL_ROOT`) into one registered, checkable, queryable lake (ruling D1: the Parquet lake is the system of
 record; `data/catalog.duckdb` is the rebuildable serving layer). Stage code keeps using `alpha_panel.common`
 (`stage_dir`, `connect`, `copy_to_parquet`, `write_stage_manifest`).
 
 ```powershell
 cd C:\atx\atx-db; $env:PYTHONPATH = "C:\atx\atx-db\src"
-.venv\Scripts\python.exe -m atx_db.lake list                          # registry
-.venv\Scripts\python.exe -m atx_db.lake verify [--stage S] [--no-hash] [--json out.json]
-.venv\Scripts\python.exe -m atx_db.lake plan   [--only a,b | --from S]   # = orchestrate --dry-run
+.venv\Scripts\python.exe -m atx_db.stagelake list                          # registry
+.venv\Scripts\python.exe -m atx_db.stagelake verify [--stage S] [--no-hash] [--json out.json]
+.venv\Scripts\python.exe -m atx_db.stagelake plan   [--only a,b | --from S]   # = orchestrate --dry-run
 ..\.superpowers\sdd\tier1-parity\run_memory_guarded.py --job-gb 0.4 --wait-minutes 60 -- `
-    .venv\Scripts\python.exe -m atx_db.lake catalog [--dump]           # DuckDB: always guarded
+    .venv\Scripts\python.exe -m atx_db.stagelake catalog [--dump]           # DuckDB: always guarded
 ..\.superpowers\sdd\tier1-parity\run_memory_guarded.py --job-gb 0.2 --allow-nested-guards --wait-minutes 60 -- `
-    .venv\Scripts\python.exe -m atx_db.lake run [--fetch] [--max-gb 0.8]  # each stage in its own guard
+    .venv\Scripts\python.exe -m atx_db.stagelake run [--fetch] [--max-gb 0.8]  # each stage in its own guard
 ```
 
 `verify`, `plan` and the parity scorecard read files with pyarrow/hashlib only (no DuckDB); their measured peaks are
@@ -35,7 +35,7 @@ a shared directory such as `identity/link_table_manifest.json`). The manifest ca
 `write_stage_manifest` writes the first four; add the binding with the helper:
 
 ```python
-from atx_db.lake import bind_inputs
+from atx_db.stagelake import bind_inputs
 C.write_stage_manifest(STAGE, SCHEMA, MODULES, {..., "input_manifests_sha256": bind_inputs("prices", "identity_table")})
 ```
 
@@ -43,7 +43,7 @@ Every Parquet row carries `available_at` (UTC; naive TIMESTAMP means UTC). A leg
 such (`clock_utc`, `session_date` = 22:00 UTC of that date, `dissemination_date` + 22 h, `trade_date` + 1 day) and
 `verify` warns on it.
 
-## Registry (`lake/registry.py`)
+## Registry (`stagelake/registry.py`)
 
 One data-only entry per manifest: `name, lane, schema, module, args, fetch, inputs, outputs, manifest, staleness,
 vintage, guard_gb, code, built_by, planned, doc`. Outputs are root-relative globs (`ftd/year=*/ftd.parquet`,
@@ -54,7 +54,7 @@ Vintage policies: `event` (immutable rows with their own clock), `vintage` (vers
 version per key), `interval` (dated validity intervals), `snapshot` (history restated from one source snapshot,
 `vintage_risk`), `daily` (one row per session and line, known at the session's 22:00 UTC mark), `static` (no clock).
 
-Registering a stage needs no edit under `lake/`: declare a literal in the stage module (parsed, never imported):
+Registering a stage needs no edit under `stagelake/`: declare a literal in the stage module (parsed, never imported):
 
 ```python
 LAKE_STAGES = [
@@ -100,7 +100,7 @@ con.sql("SELECT * FROM corporate_actions_as_of(TIMESTAMP '2021-01-01 00:00')")
 * `COMMENT ON` every view (stage, schema, clock, vintage policy, staleness, manifest SHA-256), macro and documented
   column (`registry.COLUMN_DOCS` plus each output's `columns`).
 
-## Orchestrator (S1.4, `lake/orchestrate.py`)
+## Orchestrator (S1.4, `stagelake/orchestrate.py`)
 
 A stage is due when it has no manifest, when a module it recorded (or its registry `code` list) changed (LF-normalised
 SHA-256; platform modules such as `common.py` only with `--strict-platform`), when an input manifest differs from the

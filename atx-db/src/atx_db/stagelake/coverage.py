@@ -80,7 +80,7 @@ def coverage_report(root: Path, stages: Iterable[Stage]) -> str:
     if not (manifests or orphans or absent):
         return ""
     lines = ["Lake registry coverage gaps under " + root.as_posix() + ".",
-             "Register each stage with one data-only entry: either in atx_db/lake/registry.py STAGES (lane PLAT) or",
+             "Register each stage with one data-only entry: either in atx_db/stagelake/registry.py STAGES (lane PLAT) or",
              "as a module-level literal in your stage module (discovered by parsing, never imported):",
              "    LAKE_STAGES = [ {...}, ]", ""]
     claimed: set[str] = set()

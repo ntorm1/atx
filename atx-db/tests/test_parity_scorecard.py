@@ -8,13 +8,13 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from atx_db.parity import catalog as C
-from atx_db.parity.scorecard import Lake, measure_row, render
+from atx_db.parityscore import catalog as C
+from atx_db.parityscore.scorecard import Lake, measure_row, render
 
 
 def test_committed_catalog_is_current_and_covers_plan_and_spec() -> None:
     rows = C.load()
-    assert C.to_csv(C.build_rows()) == C.CSV_PATH.read_text(encoding="utf-8"), "run python -m atx_db.parity.catalog"
+    assert C.to_csv(C.build_rows()) == C.CSV_PATH.read_text(encoding="utf-8"), "run python -m atx_db.parityscore.catalog"
     assert tuple(rows[0]) == C.COLUMNS
     domains = C.plan_domains()
     assert len(domains) == 20

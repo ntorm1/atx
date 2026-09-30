@@ -2,7 +2,7 @@
 
 A *stage* is one producer of files under the build root (``alpha_panel.common.build_root()``, default
 ``data/alpha_panel/v1``, override ``ATX_ALPHA_PANEL_ROOT``) that publishes one manifest last. The registry
-(:mod:`atx_db.lake.registry`) holds one :class:`Stage` per manifest; ``lake verify``, the catalog, the orchestrator
+(:mod:`atx_db.stagelake.registry`) holds one :class:`Stage` per manifest; ``lake verify``, the catalog, the orchestrator
 and the parity scorecard all read it.
 
 Manifest contract (``alpha_panel.common.write_stage_manifest`` writes it):

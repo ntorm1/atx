@@ -1,4 +1,4 @@
-"""Parity scorecard (task S0.3): render ``docs/PARITY_SCORECARD.md`` from ``parity/catalog.csv`` and the measured
+"""Parity scorecard (task S0.3): render ``docs/PARITY_SCORECARD.md`` from ``parityscore/catalog.csv`` and the measured
 coverage published in the stage lake. Every number is read verbatim from a file and printed with its basis and
 source; a row with no published measurement shows ``not measured``. Nothing is estimated.
 
@@ -11,7 +11,7 @@ Measurements, per catalog row:
   filing events with a clock in ``--year``;
 * domain rows: the stage manifests' own coverage figures (``HEADLINES``).
 
-    python -m atx_db.parity.scorecard [--root R] [--out docs/PARITY_SCORECARD.md] [--year 2025]
+    python -m atx_db.parityscore.scorecard [--root R] [--out docs/PARITY_SCORECARD.md] [--year 2025]
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ def render(rows: list[dict[str, str]], lake: Lake, year: str, today: str) -> str
     lines = [
         "# Parity scorecard",
         "",
-        f"Generated {today} by `python -m atx_db.parity.scorecard` from `src/atx_db/parity/catalog.csv` "
+        f"Generated {today} by `python -m atx_db.parityscore.scorecard` from `src/atx_db/parityscore/catalog.csv` "
         f"({len(rows)} rows: plan section 1.1 domains, design-spec items, seed items, CRSP and panel fields) and the "
         f"stage lake `{lake.root.as_posix()}`. Measurement year {year}; TRAIN window 2020-01-01..2022-12-31. Every "
         "number is read from the file named in its row; `not measured` means no published measurement exists. "
@@ -234,7 +234,7 @@ def render(rows: list[dict[str, str]], lake: Lake, year: str, today: str) -> str
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    ap = argparse.ArgumentParser(prog="python -m atx_db.parity.scorecard", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m atx_db.parityscore.scorecard", description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, default=None)
     ap.add_argument("--catalog", type=Path, default=CSV_PATH)
     ap.add_argument("--out", type=Path, default=OUT)

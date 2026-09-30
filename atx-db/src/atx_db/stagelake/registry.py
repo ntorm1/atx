@@ -1,6 +1,6 @@
-"""Stage registry: one entry per published manifest of the lake (data only; see :mod:`atx_db.lake.contract`).
+"""Stage registry: one entry per published manifest of the lake (data only; see :mod:`atx_db.stagelake.contract`).
 
-Registering a stage (one entry, data only), either here (lane PLAT) or, without touching ``lake/``, as a module-level
+Registering a stage (one entry, data only), either here (lane PLAT) or, without touching ``stagelake/``, as a module-level
 literal in the stage's own module, which :func:`load` discovers by parsing (never importing) the source::
 
     LAKE_STAGES = [
@@ -327,7 +327,7 @@ def discover(src_root: Path = SRC_ROOT, package: str = "atx_db", errors: list[st
     found: list[Stage] = []
     base = src_root / package
     for path in sorted(base.rglob("*.py")):
-        if "lake" in path.relative_to(base).parts[:1]:
+        if "stagelake" in path.relative_to(base).parts[:1]:
             continue
         try:
             text = path.read_text(encoding="utf-8")

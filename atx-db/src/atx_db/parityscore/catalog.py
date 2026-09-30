@@ -1,7 +1,7 @@
 """Parity catalog (task S0.3): every domain and item of the tier-1 parity contract, with its reference-vendor field
 names, the lake stage and column that carry it, the measurement basis, the target and the sprint.
 
-Sources (parsed at generation time; the generated ``parity/catalog.csv`` is committed):
+Sources (parsed at generation time; the generated ``parityscore/catalog.csv`` is committed):
 
 * plan section 1.1 domain matrix (``docs/superpowers/plans/2026-09-28-tier1-v3-parity-warehouse.md``): one
   ``(domain)`` row per domain;
@@ -15,8 +15,8 @@ Columns: ``domain, item, compustat_field, crsp_field, factset_field, source, sta
 plus ``reference`` (the tier-1 reference text) and ``origin`` (where the row comes from). ``column`` lists lake
 columns separated by ``|``; an empty ``stage`` means nothing in the lake carries the item yet.
 
-    python -m atx_db.parity.catalog            # rewrite parity/catalog.csv
-    python -m atx_db.parity.catalog --check    # exit 1 when the committed csv is out of date
+    python -m atx_db.parityscore.catalog            # rewrite parityscore/catalog.csv
+    python -m atx_db.parityscore.catalog --check    # exit 1 when the committed csv is out of date
 """
 
 from __future__ import annotations
@@ -373,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     text = to_csv(build_rows())
     if "--check" in args:
         current = CSV_PATH.read_text(encoding="utf-8") if CSV_PATH.exists() else ""
-        print("up to date" if current == text else "parity/catalog.csv is out of date: python -m atx_db.parity.catalog")
+        print("up to date" if current == text else "parityscore/catalog.csv is out of date: python -m atx_db.parityscore.catalog")
         return 0 if current == text else 1
     CSV_PATH.write_text(text, encoding="utf-8", newline="\n")
     print(f"{CSV_PATH}: {text.count(chr(10)) - 1} rows")

@@ -16,8 +16,8 @@ memory guard (``run_memory_guarded.py --job-gb <registry guard_gb>``), stops at 
 stage succeeds writes the binding sidecar (input manifest SHAs taken at launch, code SHAs, the new manifest SHA),
 so legacy stages without ``input_manifests_sha256`` become incremental after one orchestrated run.
 
-    python -m atx_db.lake.orchestrate --dry-run [--only a,b | --from S] [--strict-platform] [--json OUT]
-    python -m atx_db.lake.orchestrate --run [--fetch] [--max-gb 0.4] [--only ...]
+    python -m atx_db.stagelake.orchestrate --dry-run [--only a,b | --from S] [--strict-platform] [--json OUT]
+    python -m atx_db.stagelake.orchestrate --run [--fetch] [--max-gb 0.4] [--only ...]
 """
 
 from __future__ import annotations
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from . import registry
 
-    ap = argparse.ArgumentParser(prog="python -m atx_db.lake.orchestrate", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m atx_db.stagelake.orchestrate", description=__doc__.splitlines()[0])
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--run", action="store_true")

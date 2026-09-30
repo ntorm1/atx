@@ -1,4 +1,4 @@
-"""``python -m atx_db.lake {list,verify,catalog,plan,run} ...`` (see docs/LAKE.md)."""
+"""``python -m atx_db.stagelake {list,verify,catalog,plan,run} ...`` (see docs/LAKE.md)."""
 
 from __future__ import annotations
 

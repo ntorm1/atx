@@ -6,10 +6,10 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from atx_db.lake.contract import Output, Stage, validate
-from atx_db.lake.coverage import coverage_report
-from atx_db.lake.testing import bind, publish, write_table
-from atx_db.lake.verify import StageResult, verify
+from atx_db.stagelake.contract import Output, Stage, validate
+from atx_db.stagelake.coverage import coverage_report
+from atx_db.stagelake.testing import bind, publish, write_table
+from atx_db.stagelake.verify import StageResult, verify
 
 NOW = dt.datetime(2026, 9, 29, 12, tzinfo=dt.UTC)
 TS = [dt.datetime(2024, 1, 2, 21), dt.datetime(2024, 1, 3, 21)]

@@ -9,8 +9,8 @@ import sys
 import textwrap
 from pathlib import Path
 
-from atx_db.lake.contract import SRC_ROOT, Output, Stage, validate
-from atx_db.lake.orchestrate import execute, plan
+from atx_db.stagelake.contract import SRC_ROOT, Output, Stage, validate
+from atx_db.stagelake.orchestrate import execute, plan
 
 # src1 -> mid -> leaf1 ; src1 -> leaf2 ; src2 -> leaf3 ; legacy (reads src2, records no binding)
 GRAPH = {"src1": (), "src2": (), "mid": ("src1",), "leaf1": ("mid",), "leaf2": ("src1",), "leaf3": ("src2",),

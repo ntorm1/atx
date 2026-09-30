@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from atx_db.lake import registry
-from atx_db.lake.contract import Output, RegistryError, Stage, downstream, glob_match, validate
-from atx_db.lake.coverage import coverage_report
+from atx_db.stagelake import registry
+from atx_db.stagelake.contract import Output, RegistryError, Stage, downstream, glob_match, validate
+from atx_db.stagelake.coverage import coverage_report
 
 LIVE_ROOT = Path(__file__).resolve().parents[1] / "data" / "alpha_panel" / "v1"
 

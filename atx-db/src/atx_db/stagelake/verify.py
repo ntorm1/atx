@@ -18,7 +18,7 @@ Per stage, against its manifest and the registry entry:
 Status per stage: FAIL > STALE > WARN > OK; ``PLANNED`` for a registered stage not yet published. The root check
 adds FAIL ``unregistered_manifest`` / ``unregistered_file`` for manifests and Parquet files no entry covers.
 
-    python -m atx_db.lake verify [--stage S ...] [--root R] [--no-hash] [--json OUT]
+    python -m atx_db.stagelake verify [--stage S ...] [--root R] [--no-hash] [--json OUT]
 
 Exit code 1 when any FAIL, 2 when STALE (no FAIL), else 0.
 """
@@ -290,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     from .contract import default_root
     from .coverage import coverage_report
 
-    ap = argparse.ArgumentParser(prog="python -m atx_db.lake verify", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m atx_db.stagelake verify", description=__doc__.splitlines()[0])
     ap.add_argument("--stage", action="append", default=None, help="stage name (repeatable); default: all")
     ap.add_argument("--root", type=Path, default=None)
     ap.add_argument("--no-hash", action="store_true", help="check sizes only, skip SHA-256")

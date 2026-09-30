@@ -9,9 +9,9 @@ from pathlib import Path
 
 import duckdb
 
-from atx_db.lake.catalog import build, canonical_dump
-from atx_db.lake.contract import Output, Stage, validate
-from atx_db.lake.testing import publish, write_table
+from atx_db.stagelake.catalog import build, canonical_dump
+from atx_db.stagelake.contract import Output, Stage, validate
+from atx_db.stagelake.testing import publish, write_table
 
 D = dt.datetime
 

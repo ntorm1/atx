@@ -1,6 +1,6 @@
 # Parity scorecard
 
-Generated 2026-09-29 by `python -m atx_db.parity.scorecard` from `src/atx_db/parity/catalog.csv` (370 rows: plan section 1.1 domains, design-spec items, seed items, CRSP and panel fields) and the stage lake `C:/atx/atx-db/data/alpha_panel/v1`. Measurement year 2025; TRAIN window 2020-01-01..2022-12-31. Every number is read from the file named in its row; `not measured` means no published measurement exists. Nothing is estimated.
+Generated 2026-09-29 by `python -m atx_db.parityscore.scorecard` from `src/atx_db/parityscore/catalog.csv` (370 rows: plan section 1.1 domains, design-spec items, seed items, CRSP and panel fields) and the stage lake `C:/atx/atx-db/data/alpha_panel/v1`. Measurement year 2025; TRAIN window 2020-01-01..2022-12-31. Every number is read from the file named in its row; `not measured` means no published measurement exists. Nothing is estimated.
 
 Sources read (SHA-256 prefix):
 
