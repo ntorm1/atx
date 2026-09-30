@@ -17,8 +17,10 @@ import test_prepare_research_fields_sec as sect
 import test_prepare_research_fields_sv as svt
 import test_research_fields_holdings as holdt
 
-# the 63-field recipe: the default and issuer fields, sv_ratio126, every SEC field and every holdings field
-RECIPE = list(tool.DEFAULT_FIELDS) + list(tool.ISSUER_FIELDS) + ["sv_ratio126"] + list(sec.FIELDS) + list(hold.HOLD_FIELDS)
+# the 63-field recipe: the default and issuer fields, sv_ratio126, every v7 SEC field and every holdings field (the v8
+# F-B field k8_item402_63 is opt-in and not in the fields-v9 recipe)
+SEC_V9 = [x for x in sec.FIELDS if x != "k8_item402_63"]
+RECIPE = list(tool.DEFAULT_FIELDS) + list(tool.ISSUER_FIELDS) + ["sv_ratio126"] + SEC_V9 + list(hold.HOLD_FIELDS)
 HOLD_WRITERS = (("thirteenf", holdt.write_thirteenf), ("ftd", holdt.write_ftd), ("regsho_threshold", holdt.write_regsho),
                 ("security_master", holdt.write_security_master), ("short_volume_ext", holdt.write_svx))
 
@@ -85,7 +87,7 @@ class ModuleReuse(unittest.TestCase):
             rec = e.pop("reused_from")
             self.assertEqual(e, entry(self.full, name), name)
             self.assertEqual(rec["payload_sha256"], self.full["files"][f"{name}.f64"]["sha256"], name)
-        for name in list(sec.FIELDS) + list(hold.HOLD_FIELDS):   # module fields name their module producer
+        for name in SEC_V9 + list(hold.HOLD_FIELDS):   # module fields name their module producer
             rec = entry(again, name)["reused_from"]
             module = "research_fields_sec.py" if name in sec.FIELDS else "research_fields_holdings.py"
             self.assertEqual(rec["producer"]["module"], module, name)

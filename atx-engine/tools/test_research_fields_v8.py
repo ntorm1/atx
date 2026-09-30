@@ -1,9 +1,12 @@
-"""research_fields_v8 (platform v8 F-3): grp_ff12f49 on a synthetic role, bridge and SIC table only.
+"""Platform v8 lane F3 fields on synthetic data dated 2020-2021 only: grp_ff12f49 (research_fields_v8.py) and
+k8_item402_63 (research_fields_sec.py's 8-K pass).
 
 The world: a role of the weekdays 2021-03-01 .. 2021-06-30 (five lines), a pinned identity bridge and an
 atx.fundamental-events/v1 SIC table whose rows walk every FF12 Money / FF49 case (Banks, Insur, RlEst, the REIT SIC
 6798 in Fin, a Money SIC without an FF49 industry), a non-Money SIC change, an unmapped FF49 (SIC 9999), a late link
-and the 550-day staleness. Every field is built through the builder's run() (the FIELD_MODULES hook)."""
+and the 550-day staleness; an atx.alpha-panel.sec-filings/v1 stage whose 8-K rows walk the item 4.02 cases (the
+63-session window, a 22:30 UTC acceptance, an amendment, a non-8-K form, a window that ends before the role, a late
+link, a sealed row). Every field is built through the builder's run() (the FIELD_MODULES hook)."""
 import contextlib
 import datetime as dt
 import io
@@ -12,6 +15,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -19,7 +23,9 @@ import prepare_research_fields as tool
 import research_fields_holdings as hold
 import research_fields_sec as sec
 import research_fields_v8 as v8
+import research_window as rw
 import test_prepare_research_fields as base
+import test_prepare_research_fields_sec as sect
 
 SESSIONS = [d for d in (dt.date(2021, 3, 1) + dt.timedelta(days=i) for i in range(122)) if d.weekday() < 5]
 UTC = dt.timezone.utc
@@ -223,6 +229,173 @@ class Ff12f49(unittest.TestCase):
         for m in (sec, hold):   # SEC reads spec_definition (hence ALL_FIELDS) through its handle
             self.assertEqual(tool.module_fingerprints(m, tool.module_source(m), with_hook),
                              tool.module_fingerprints(m, tool.module_source(m), without), m.__name__)
+
+
+# ---- F-B k8_item402_63 ---------------------------------------------------------------------------------------------
+K8 = [  # (cik, accession, form, items, available_at)
+    (1001, "0000001001-20-000010", "8-K", ("7.01",), base.at(2020, 12, 1, 15)),               # presence only
+    (1001, "0000001001-21-000011", "8-K", ("4.02", "9.01"), base.at(2021, 3, 15, 14)),         # usable 03-16
+    (2002, "0000002002-21-000010", "8-K", ("2.02",), base.at(2021, 1, 20, 21)),
+    (2002, "0000002002-21-000011", "8-K", ("4.02",), base.at(2021, 4, 20, 22, 30)),            # 22:30 UTC: usable 04-22
+    (3003, "0000003003-21-000010", "8-K", ("4.01",), base.at(2021, 3, 3, 14)),                 # another item: 0
+    (3003, "0000003003-21-000011", "8-K/A", ("4.02",), base.at(2021, 4, 5, 14)),               # amendment: ignored
+    (3003, "0000003003-21-000012", "10-Q", ("4.02",), base.at(2021, 5, 5, 14)),                # not an 8-K form
+    (4004, "0000004004-20-000010", "8-K", ("4.02",), base.at(2020, 11, 2, 14)),                # window ends pre-role
+    (5005, "0000005005-21-000010", "8-K", ("4.02",), base.at(2021, 3, 20, 14)),                # Saturday; linked 04-01
+    (1001, "0000001001-99-000010", "8-K", ("4.02",), AFTER_SEAL),                              # sealed: never used
+]
+K8_V7 = ["k8_count_63", "k8_item_material_21", "k8_days_since_any"]
+
+
+def ext_calendar():
+    """The SEC module's session axis written out: NYSE rule sessions outside the role, the role's own inside."""
+    lo, hi = SESSIONS[0], SESSIONS[-1]
+    rule = [dt.date(1970, 1, 1) + dt.timedelta(days=int(x))
+            for x in sec.nyse_sessions(lo - dt.timedelta(days=500), hi + dt.timedelta(days=30))]
+    return sorted({d for d in rule if not lo <= d <= hi} | set(SESSIONS))
+
+
+CAL = ext_calendar()
+
+
+def oracle_402(rows, seal):
+    """k8_item402_63 cell by cell from its definition (SEC clock, presence, 63-session window, LINK_RULE)."""
+    out = np.full((len(SESSIONS), len(base.IDS)), np.nan)
+    for t, d in enumerate(SESSIONS):
+        i = CAL.index(d)
+        usable = lambda av, j: av < seal and av < base.mark(CAL[j - 1])  # noqa: E731
+        for c, sid in enumerate(base.IDS):
+            links = [(cik, kind) for s, cik, start, end, avail, kind, _, _ in BRIDGE
+                     if s == sid and start <= d and (end is None or d <= end) and avail <= base.mark(d)]
+            if not links or links[0][1] != "P":
+                continue
+            filings = {acc: (av, items) for cik, acc, form, items, av in rows
+                       if cik == links[0][0] and form.startswith("8-K") and not form.endswith("/A")}
+            seen = [v for v in filings.values() if usable(v[0], i)]
+            if not seen or max(v[0] for v in seen) < base.mark(CAL[i - 1]) - dt.timedelta(days=365):
+                continue
+            out[t, c] = float(any("4.02" in items and not usable(av, i - 63) for av, items in seen))
+    return out
+
+
+class SecFiling402Fixture(V8Fixture):
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.stages, self.pin = self.write_stage("alpha_panel", K8)
+
+    def write_stage(self, name, rows):
+        stages = self.base / name
+        return stages, sect.write_stage(stages / "sec_filings", sec.STAGES["sec_filings"][1],
+                                        {"eight_k_items.parquet": sect.eightk_table(rows)})
+
+    def options(self, stages=None, pin=None):
+        return {"sec_stages": stages or self.stages, "sec_filings_sha256": pin or self.pin,
+                "sec_identity_bridge": self.bridge, "sec_identity_bridge_sha256": self.bridge_sha}
+
+    def run402(self, out, fields=K8_V7 + ["k8_item402_63"], **kw):
+        return self.run(out, fields=fields, module_options=kw.pop("module_options", self.options()), **kw)
+
+
+class K8Item402(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.fx = SecFiling402Fixture(Path(cls.temp.name))
+        cls.manifest = cls.fx.run402("k8")
+        cls.got = cls.fx.field("k8", "k8_item402_63")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def test_values_equal_the_definition(self):
+        np.testing.assert_array_equal(self.got, oracle_402(K8, base.at(2099, 1, 1)))
+        a, b, c, d, e = range(5)
+        t0 = t_of("2021-03-16")                                           # accepted 03-15 14:00: usable 03-16
+        self.assertEqual(self.got[t0 - 1, a], 0.0)
+        self.assertTrue(np.all(self.got[t0:t0 + 63, a] == 1.0))           # e <= t < e + 63
+        self.assertEqual(self.got[t0 + 63, a], 0.0)                       # the 64th session: out of the window
+        self.assertEqual(self.got[t_of("2021-04-21"), b], 0.0)            # 22:30 UTC on 04-20: not on 04-21
+        self.assertEqual(self.got[t_of("2021-04-22"), b], 1.0)
+        self.assertTrue(np.all(np.isnan(self.got[:t_of("2021-03-04"), c])))   # its first 8-K: usable from 03-04
+        self.assertTrue(np.all(self.got[t_of("2021-03-04"):, c] == 0.0))  # 4.01, the 8-K/A and the 10-Q never count
+        self.assertTrue(np.all(self.got[:, d] == 0.0))                    # 2020-11 window ended before the role
+        self.assertTrue(np.all(np.isnan(self.got[:t_of("2021-04-01"), e])))   # not linked before 04-01
+        self.assertEqual(self.got[t_of("2021-04-01"), e], 1.0)            # usable since 03-23, still in its window
+        entry_ = entry(self.manifest, "k8_item402_63")
+        self.assertEqual((entry_["formula_id"], entry_["lag_sessions"], entry_["point_in_time"]),
+                         ("sec-k8-item402-63-v1", 1, True))
+        self.assertEqual(entry_["producer"]["module"], "research_fields_sec.py")
+        self.assertEqual(entry_["stage_manifests"]["sec_filings"]["sha256"], self.fx.pin)
+        self.assertEqual(self.manifest["source_checks"]["sec"]["sec_filings"]["accessions_used_item402"], 4)
+
+    def test_field_at_t_unchanged_when_rows_after_t_mutate(self):
+        cut_mark = base.mark(SESSIONS[CUT])
+        swap = {("4.02",): ("8.01",), ("8.01",): ("4.02",)}
+        mutated = [(c, acc, form, swap.get(items, ("4.02",)) if av >= cut_mark else items, av)
+                   for c, acc, form, items, av in K8]                     # every row at or after the t mark changes
+        mutated += [(4004, "0000004004-21-000050", "8-K", ("4.02",), cut_mark),            # exactly at the mark
+                    (3003, "0000003003-21-000050", "8-K", ("4.02",), cut_mark + dt.timedelta(hours=1)),
+                    (1001, "0000001001-21-000050", "8-K", ("5.02",), base.mark(SESSIONS[CUT + 3]))]
+        stages, pin = self.fx.write_stage("alpha_panel_mutated", mutated)
+        self.fx.run402("mutated", module_options=self.fx.options(stages, pin))
+        row = len(base.IDS) * 8
+        for name in K8_V7 + ["k8_item402_63"]:
+            before = (self.fx.base / "k8" / f"{name}.f64").read_bytes()
+            after = (self.fx.base / "mutated" / f"{name}.f64").read_bytes()
+            self.assertEqual(after[:(CUT + 1) * row], before[:(CUT + 1) * row], name)   # rows 0..t bit-identical
+        got = self.fx.field("mutated", "k8_item402_63")
+        self.assertNotEqual(got[CUT + 1:].tobytes(), self.got[CUT + 1:].tobytes())
+        self.assertEqual(got[CUT + 1, 3], 0.0)                            # a clock exactly at the t mark is after t:
+        self.assertEqual(got[CUT + 2, 3], 1.0)                            # usable from t + 2 (event session t + 1)
+        self.assertEqual((got[CUT + 1, 2], got[CUT + 2, 2]), (0.0, 1.0))  # one hour after the mark: the same
+        np.testing.assert_array_equal(got, oracle_402(mutated, base.at(2099, 1, 1)))
+
+    def test_existing_k8_payloads_and_checks_unchanged(self):
+        alone = self.fx.run402("v7-only", fields=K8_V7)
+        for name in K8_V7:
+            self.assertEqual(alone["files"][f"{name}.f64"], self.manifest["files"][f"{name}.f64"], name)
+            self.assertEqual(entry(alone, name), entry(self.manifest, name), name)
+        with_402 = dict(self.manifest["source_checks"]["sec"])
+        with_402["sec_filings"] = {k: v for k, v in with_402["sec_filings"].items() if k != "accessions_used_item402"}
+        self.assertEqual(alone["source_checks"]["sec"], with_402)         # the new count only when requested
+        self.assertEqual([e["name"] for e in self.manifest["fields"]], K8_V7 + ["k8_item402_63"])
+        self.assertEqual(list(sec.FIELDS)[-1], "k8_item402_63")           # registered after every v7 SEC field
+        # --reuse: a prior without the field copies the v7 fields and computes the new one; a self reuse copies all
+        mixed = self.fx.run402("mixed", reuse=self.fx.base / "v7-only")
+        self.assertEqual((mixed["reuse"]["reused"], mixed["reuse"]["computed"]), (K8_V7, ["k8_item402_63"]))
+        self.assertEqual(mixed["files"], self.manifest["files"])
+        again = self.fx.run402("again", reuse=self.fx.base / "k8")
+        self.assertEqual((again["reuse"]["reused"], again["reuse"]["computed"]), (K8_V7 + ["k8_item402_63"], []))
+        self.assertEqual(again["source_checks"]["sec"], self.manifest["source_checks"]["sec"])
+        self.assertEqual(sec.reuse_inputs("k8_item402_63", self.fx.options()),
+                         sec.entry_inputs(entry(self.manifest, "k8_item402_63")))
+
+    def test_amendment_and_other_forms_excluded(self):
+        plain = [r for r in K8 if r[2] == "8-K"]
+        stages, pin = self.fx.write_stage("alpha_panel_plain", plain)
+        m = self.fx.run402("plain", module_options=self.fx.options(stages, pin))
+        self.assertEqual(m["files"]["k8_item402_63.f64"], self.manifest["files"]["k8_item402_63.f64"])
+        only_amended = [r for r in K8 if r[0] != 3003] + [
+            (3003, "0000003003-21-000011", "8-K/A", ("4.02",), base.at(2021, 4, 5, 14))]
+        stages, pin = self.fx.write_stage("alpha_panel_amended", only_amended)
+        self.fx.run402("amended", module_options=self.fx.options(stages, pin))
+        self.assertTrue(np.all(np.isnan(self.fx.field("amended", "k8_item402_63")[:, 2])))   # no 8-K filer presence
+
+    def test_seal_from_the_research_window(self):
+        self.assertEqual(tool.SEAL, rw.SEAL)                              # the builder's seal is research_window's
+        self.assertEqual(tool.SEAL_NS, (rw.SEAL - dt.date(1970, 1, 1)).days * base.DAY_NS)
+        self.assertEqual(self.manifest["source_checks"]["sec"]["sec_filings"]["rows_sealed"], 1)
+        self.assertEqual(self.manifest["source_checks"]["sec"]["sec_filings"]["accessions_used"],
+                         len({(r[0], r[1]) for r in K8 if r[2].startswith("8-K") and not r[2].endswith("/A")}) - 1)
+        seal = base.mark(SESSIONS[30])                                    # a seal inside the role: nothing at or
+        with mock.patch.object(tool, "SEAL_NS", int(seal.timestamp()) * 10 ** 9):   # after it is ever used
+            m = self.fx.run402("sealed-early")
+        got = self.fx.field("sealed-early", "k8_item402_63")
+        np.testing.assert_array_equal(got, oracle_402(K8, seal))
+        self.assertEqual(got[t_of("2021-04-22"), 1], 0.0)                 # 2002's 04-20 filing is sealed
+        self.assertEqual(m["source_checks"]["sec"]["sec_filings"]["rows_sealed"],
+                         sum(1 for r in K8 if r[2] == "8-K" and r[4] >= seal for _ in r[3]))
 
 
 if __name__ == "__main__":
