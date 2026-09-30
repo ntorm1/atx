@@ -2,6 +2,7 @@
 
 #include <array>
 #include <iosfwd>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -352,7 +353,8 @@ enum class NavFillStatus : atx::u8 {
 };
 // One name of the observed book at the end of session t (after MARK, EXECUTE, DECIDE).
 // A name is reported when any of held, the decision's plan (bitwise, so -0 counts), a
-// working order or an EXECUTE outcome is nonzero. held_* is what DECIDE at t read:
+// working order or an EXECUTE outcome is nonzero, or (a declared hold band) it holds a set
+// hold-band rank. held_* is what DECIDE at t read:
 // held_weight = held_dollars / post-trade NAV_t, the same expression as the plan's current
 // weight, so decide --asof t fed these dollars and that NAV reproduces target_weight.
 struct NavHolding {
@@ -371,6 +373,11 @@ struct NavHolding {
   bool locate_blocked{};    // the locate block changed the rule's plan
   bool order_working{};     // a working order is active after DECIDE
   atx::f64 order_dollars{}; // its decision-NAV dollars (NaN when none)
+  // v8 E-16, hold band declared (b > 0) only: the name's hold-band state DECIDE at t read (the
+  // state entering t's construction; NaN = unset), so decide --positions carries the band. A
+  // name holding a set rank is then reported even when it has no other state. NaN otherwise.
+  atx::f64 rank_set{std::numeric_limits<atx::f64>::quiet_NaN()};
+  atx::f64 desired_prev{std::numeric_limits<atx::f64>::quiet_NaN()};
 };
 // Receives the observed book once per decision or execution session t, after the book
 // closed t (`day` is that book's NavReplayDay row); `names` ascend by index. An error
@@ -498,8 +505,9 @@ struct NavFieldsPin {
 // score_end - score_begin rows per book, read from the pinned role manifest.
 // run_nav_replay refuses (OutOfRange) when max_working_bytes <= this reserve and
 // charges the fields and the saved-blend loader against the rest. `holdings`
-// (--emit-holdings) adds the observed book's per-name trace and row buffer; false is
-// the reserve without it, byte for byte.
+// (--emit-holdings) adds the observed book's per-name trace and row buffer (and, with a
+// declared hold band, v8 E-16, the snapshot of the band's state); false is the reserve
+// without it, byte for byte.
 [[nodiscard]] atx::u64 nav_workspace_reserve_bytes(const NavReplayConfig& base,
                                                    atx::usize books, bool tiered,
                                                    atx::usize names, atx::usize sessions,

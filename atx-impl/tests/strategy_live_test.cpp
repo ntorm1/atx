@@ -1669,17 +1669,30 @@ TEST(HoldBand, NavDecideChainReproducesReplay) {
 
 // v8 R-4 at the CLI: the decide verb reads the hold-band state from the positions file's
 // rank_set/desired_prev columns and writes the state after the decision into targets.csv.
-// A holdings file without the columns (the f64 layout here) loads every name unset, so the
-// first decision sets every member; fed back as the next session's positions columns the
-// state carries: nothing is re-set, and every member either kept its state or moved its rank
-// by more than the band.
+// A positions file without the columns (a broker file: the replay's holdings of 150 as
+// instrument_id,held_dollars) loads every name unset, so the first decision sets every member;
+// fed back as the next session's positions columns the state carries: nothing is re-set, and
+// every member either kept its state or moved its rank by more than the band. (Since E-16 the
+// hold-band run's own export carries the state: HoldBand.CheckReplayMatchesEmittedHoldings.)
 TEST(HoldBand, DecideVerbCarriesState) {
   Directory dir;
   auto fx = make_fixture(dir.path, {"--hold-band", ".1"});
   fx.deploy["nav"]["hold_band"] = 0.1;
   write_json(fx.deploy_path, fx.deploy);
   std::ostringstream progress;
-  const auto first = decide_config(fx, 150, dir.path / "decide-150");
+  const auto held150 = st::holdings::read_session(fx.holdings_dir.string(),
+                                                  fx.panel.sessions[150]);
+  ASSERT_TRUE(held150) << held150.error().to_string();
+  {
+    std::ofstream positions(dir.path / "positions-150.csv", std::ios::binary);
+    positions.imbue(std::locale::classic()); positions << std::setprecision(17);
+    positions << "instrument_id,held_dollars\n";
+    for (const auto& h : held150->names)
+      positions << h.instrument_id << ',' << h.held_dollars << '\n';
+  }
+  auto first = decide_config(fx, 150, dir.path / "decide-150");
+  first.positions_path = (dir.path / "positions-150.csv").string();
+  first.nav = held150->session.nav_post;
   ASSERT_TRUE(st::run_decide(first, progress));
   const auto s150 = read_json(dir.path / "decide-150" / "decision.json");
   const usize members = s150.at("decision").at("members").get<usize>();
@@ -1797,6 +1810,129 @@ TEST(HoldBand, GridSharesTheBandAndOneCadence) {
     }
   }
   EXPECT_GT(kept, 0U); // the band acts in the grid
+}
+
+// Ruling E-16: the holdings export of a hold-band NAV run (b > 0 declared) carries the band's
+// state DECIDE read at each session (rank_set, desired_prev: the state entering the session's
+// construction) in both layouts, and a name holding a set rank has a row; decide reads it, so
+// decide --check-replay from the export reproduces the replay's targets bit for bit at every
+// session tried, from either layout. Emitting it changes no NAV output. Without the state
+// columns the same session re-sets every member and no longer matches.
+TEST(HoldBand, CheckReplayMatchesEmittedHoldings) {
+  Directory dir;
+  auto fx = make_fixture(dir.path, {"--hold-band", ".1"});
+  fx.deploy["nav"]["hold_band"] = 0.1;
+  write_json(fx.deploy_path, fx.deploy);
+  const auto csv = dir.path / "holdings-csv";
+  {
+    std::ostringstream out, err;
+    ASSERT_EQ(nav_cli(nav_args(fx.artifact, dir.path / "nav-csv",
+                               {"--hold-band", ".1", "--emit-holdings", csv.string(),
+                                "--holdings-format", "csv"}), out, err), 0) << err.str();
+    ASSERT_EQ(nav_cli(nav_args(fx.artifact, dir.path / "nav-plain", {"--hold-band", ".1"}), out,
+                      err), 0) << err.str();
+  }
+  usize nav_files = 0;
+  for (const auto& e : std::filesystem::directory_iterator(fx.nav_dir)) {
+    ++nav_files;
+    EXPECT_TRUE(file_bytes(e.path()) ==
+                file_bytes(dir.path / "nav-plain" / e.path().filename())) << e.path().filename();
+  }
+  EXPECT_GT(nav_files, 0U);
+  // The layouts name the state columns; both manifests declare them.
+  const auto data = read_json(fx.holdings_dir / "holdings_index.json").at("data");
+  EXPECT_EQ(data.at("row_width"), st::holdings::hold_row_width);
+  EXPECT_EQ(data.at("columns").at(st::holdings::col_rank_set), "rank_set");
+  EXPECT_EQ(data.at("columns").at(st::holdings::col_desired_prev), "desired_prev");
+  EXPECT_EQ(std::filesystem::file_size(fx.holdings_dir / "holdings.f64"),
+            data.at("rows").get<u64>() * st::holdings::hold_row_width * sizeof(f64));
+  EXPECT_EQ(lines(csv / "holdings.csv").front(),
+            std::string(st::detail::holdings_csv_columns()) + ",rank_set,desired_prev");
+  for (const auto& emitted : {fx.holdings_dir, csv})
+    EXPECT_TRUE(read_json(emitted / "manifest.json").contains("hold_band_state")) << emitted;
+  const std::vector<std::pair<std::string, std::string>> sources{
+      {"f64", fx.holdings_dir.string()}, {"csv", (csv / "holdings.csv").string()}};
+  usize kept_at = 0; // a session where the replay kept some member's desired value
+  for (const usize d : {usize{150}, usize{151}, usize{170}, usize{190}}) {
+    for (const auto& [label, path] : sources) {
+      auto cfg = decide_config(fx, d, dir.path / ("decide-" + label + "-" + std::to_string(d)));
+      cfg.positions_path = path; cfg.check_replay = true;
+      std::ostringstream progress;
+      const auto outcome = st::run_decide(cfg, progress);
+      ASSERT_TRUE(outcome) << label << ' ' << d << ": " << outcome.error().to_string();
+      EXPECT_TRUE(outcome->parity_checked);
+      EXPECT_EQ(outcome->parity_names, fx.panel.n);
+      EXPECT_EQ(outcome->parity_mismatches, 0U) << label << ' ' << d;
+      const auto hold =
+          read_json(std::filesystem::path(cfg.output_directory) / "decision.json").at("hold_band");
+      EXPECT_NE(hold.at("state_in").get<std::string>().find("rank_set,desired_prev"),
+                std::string::npos) << label << ' ' << d;
+      EXPECT_GT(hold.at("names_set_in").get<usize>(), 0U) << label << ' ' << d;
+      if (!kept_at && hold.at("kept").get<usize>() > 0) kept_at = d;
+    }
+  }
+  ASSERT_GT(kept_at, 0U); // the band held some member at a session tried
+  // The same session from the export's positions and targets without the state columns: every
+  // member re-set, so the band's kept members move and the replay's targets are not reproduced.
+  const auto held = st::holdings::read_session(fx.holdings_dir.string(),
+                                               fx.panel.sessions[kept_at]);
+  ASSERT_TRUE(held) << held.error().to_string();
+  {
+    std::ofstream positions(dir.path / "stateless.csv", std::ios::binary);
+    positions.imbue(std::locale::classic()); positions << std::setprecision(17);
+    positions << "instrument_id,held_dollars,nav_post,target_weight\n";
+    for (const auto& h : held->names)
+      positions << h.instrument_id << ',' << h.held_dollars << ',' << held->session.nav_post
+                << ',' << h.target_weight << '\n';
+  }
+  auto stateless = decide_config(fx, kept_at, dir.path / "decide-stateless");
+  stateless.positions_path = (dir.path / "stateless.csv").string();
+  stateless.check_replay = true;
+  std::ostringstream progress;
+  const auto unmatched = st::run_decide(stateless, progress);
+  ASSERT_TRUE(unmatched) << unmatched.error().to_string();
+  EXPECT_GT(unmatched->parity_mismatches, 0U);
+}
+
+// E-16 identity: without a declared band (flag off, or --hold-band 0: b = 0 runs the kernel but
+// declares nothing) the holdings export is the pre-E-16 layout byte for byte: in both formats
+// the same files with the same bytes, 11-value f64 rows under the v1 column names, the v1
+// holdings.csv header and no hold_band_state key.
+TEST(HoldBand, EmittedHoldingsUnchangedWithoutADeclaredBand) {
+  PinBench bench;
+  const auto root = bench.dir.path;
+  Json v1_columns = Json::array();
+  for (const char* column : st::holdings::column_names) v1_columns.push_back(column);
+  for (const char* layout : {"f64", "csv"}) {
+    const std::string format = layout;
+    const auto off = root / ("holdings-off-" + format);
+    const auto zero = root / ("holdings-zero-" + format);
+    bench.nav_recipe("nav-off-" + format,
+                     {"--emit-holdings", off.string(), "--holdings-format", format});
+    bench.nav_recipe("nav-zero-" + format, {"--hold-band", "0", "--emit-holdings", zero.string(),
+                                            "--holdings-format", format});
+    std::vector<std::string> names;
+    for (const auto& e : std::filesystem::directory_iterator(off))
+      names.push_back(e.path().filename().string());
+    EXPECT_EQ(names.size(), format == "f64" ? 4U : 3U) << format;
+    EXPECT_EQ(names.size(), static_cast<usize>(std::distance(
+                                std::filesystem::directory_iterator(zero),
+                                std::filesystem::directory_iterator{}))) << format;
+    for (const auto& name : names)
+      EXPECT_TRUE(file_bytes(off / name) == file_bytes(zero / name)) << format << ' ' << name;
+    EXPECT_FALSE(read_json(off / "manifest.json").contains("hold_band_state")) << format;
+    if (format == "f64") {
+      const auto index = read_json(off / "holdings_index.json");
+      const auto& data = index.at("data");
+      EXPECT_EQ(data.at("row_width"), st::holdings::row_width);
+      EXPECT_EQ(data.at("columns"), v1_columns);
+      EXPECT_FALSE(index.contains("hold_state"));
+      EXPECT_EQ(std::filesystem::file_size(off / "holdings.f64"),
+                data.at("rows").get<u64>() * st::holdings::row_width * sizeof(f64));
+    } else {
+      EXPECT_EQ(lines(off / "holdings.csv").front(), st::detail::holdings_csv_columns());
+    }
+  }
 }
 
 // ---- v8 R-5: adv-hold-v1 (ADV holding cap) ----

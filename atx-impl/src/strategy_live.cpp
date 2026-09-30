@@ -546,7 +546,9 @@ Positions empty_positions(usize names) {
   out.rank_set.assign(names, nan); out.desired_prev.assign(names, nan);
   return out;
 }
-// The f64 holdings layout (v7 W4): the as-of session's rows, every file SHA verified.
+// The f64 holdings layout (v7 W4): the as-of session's rows, every file SHA verified. A
+// hold-band book's export (v8 E-16) also carries the band's state DECIDE read at the as-of
+// (every name with a set rank has a row; a name without a row is unset).
 co::Result<Positions> read_f64_positions(const std::string& path, std::span<const u64> ids,
                                          i64 asof) {
   ATX_TRY(const auto read, holdings::read_session(path, asof));
@@ -554,6 +556,7 @@ co::Result<Positions> read_f64_positions(const std::string& path, std::span<cons
   out.layout = "f64";
   out.has_nav = true; out.nav = read.session.nav_post;
   out.has_expected = true;
+  out.has_hold_state = read.hold_state;
   for (const auto& h : read.names) {
     ATX_TRY(const usize i, name_index(ids, std::to_string(h.instrument_id), "positions"));
     if (out.seen[i]) return co::Err(co::ErrorCode::InvalidArgument, "decide: duplicate position");
@@ -562,6 +565,7 @@ co::Result<Positions> read_f64_positions(const std::string& path, std::span<cons
     out.seen[i] = 1; out.held[i] = h.held_dollars; ++out.rows;
     out.expected[i] = h.target_weight;
     if (!std::isfinite(h.target_weight)) out.has_expected = false; // execution-only session
+    if (read.hold_state) { out.rank_set[i] = h.rank_set; out.desired_prev[i] = h.desired_prev; }
   }
   if (!out.rows) out.has_expected = false;
   return co::Ok(std::move(out));
@@ -1297,9 +1301,10 @@ Json hold_band_json(const Record& r) {
     return static_cast<usize>(
         std::count_if(ranks.begin(), ranks.end(), [](f64 v) { return std::isfinite(v); }));
   };
-  return Json{{"band", *r.deploy.base.target.hold_band},
-      {"state_in", p.has_hold_state ? "positions rank_set,desired_prev columns"
-                                    : "none (no state columns): every name unset"},
+  const char* state_in = !p.has_hold_state ? "none (no state columns): every name unset"
+      : std::string_view{p.layout} == "f64" ? "holdings.f64 rank_set,desired_prev columns"
+                                            : "positions rank_set,desired_prev columns";
+  return Json{{"band", *r.deploy.base.target.hold_band}, {"state_in", state_in},
       {"names_set_in", count_set(p.rank_set)}, {"names_set_out", count_set(dec.hold.rank_set)},
       {"moved", c.hold_moved}, {"kept", c.hold_kept}, {"first_set", c.hold_first_set},
       {"state_out", "targets.csv rank_set,desired_prev: the state after this decision, the "

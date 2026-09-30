@@ -110,7 +110,9 @@ struct DecideOutcome {
 //   into the decision, a name without a row or a file without them is unset;
 // - an f64 holdings directory of `nav --emit-holdings` (or its holdings_index.json): the
 //   as-of session's rows (held_dollars, target_weight) and nav_post, every file SHA
-//   verified; a session the replay did not report is refused.
+//   verified; a session the replay did not report is refused. The export of a hold-band book
+//   (b > 0, v8 E-16) also carries rank_set and desired_prev (in holdings.csv too), the state
+//   the replay's DECIDE read at that session, so --check-replay matches a hold-band book.
 // Every id must be a role instrument, at most once; dollars finite.
 // Locates CSV (optional): instrument_id,locate with locate 0|1; a name not listed or
 // listed 0 has no locate: it may not open or grow a short (the locate-in-aim mask and
