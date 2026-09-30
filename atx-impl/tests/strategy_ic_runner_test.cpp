@@ -17,6 +17,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/alpha/bytecode.hpp"
 #include "strategy_ic_runner.hpp"
 
 namespace {
@@ -140,7 +141,8 @@ TEST(StrategyIcRunner, PlanOnlyPinsMetadataAndNeverLoadsPayload) {
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
   std::ostringstream progress; EXPECT_TRUE(atx::impl::strategy::run_ic(cfg,progress));
   EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
-  const auto plan=Json::parse(progress.str()); EXPECT_EQ(plan.at("candidates"),2);
+  const auto plan=Json::parse(progress.str()); EXPECT_EQ(plan.at("candidate_count"),2);
+  EXPECT_EQ(plan.at("candidates").size(),2U);
   EXPECT_GE(plan.at("max_compiled_slots").get<usize>(),1U);
   cfg.train_sha256=std::string(64,'0');
   EXPECT_FALSE(atx::impl::strategy::run_ic(cfg,progress));
@@ -222,9 +224,10 @@ TEST(StrategyIcRunner, WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload) 
   EXPECT_GT(parallel.at("roles").at(0).at("required_bytes").get<u64>(),
             serial.at("roles").at(0).at("required_bytes").get<u64>());
   // Invalid explicit counts refuse in configuration preflight, before the
-  // deliberately missing payload or output-directory creation can be reached.
+  // deliberately missing payload or output-directory creation can be reached
+  // (the bound is 16 since platform v8 B-2).
   cfg.plan_only=false;
-  for (const usize workers:{usize{0},usize{5}}) {
+  for (const usize workers:{usize{0},usize{17}}) {
     cfg.workers=workers; std::ostringstream progress;
     auto status=atx::impl::strategy::run_ic(cfg,progress);
     ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("bounded config"),std::string::npos);
@@ -1753,9 +1756,54 @@ TEST(StrategyIcRunner, RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields) {
   std::ostringstream plan; status=atx::impl::strategy::run_ic(cfg,plan);
   ASSERT_TRUE(status) << status.error().to_string();
   const auto result=Json::parse(plan.str());
-  EXPECT_EQ(result.at("candidates"),library.at("candidates").size());
+  EXPECT_EQ(result.at("candidate_count"),library.at("candidates").size());
   EXPECT_EQ(result.at("research_fields").at("loaded"),Json::array({"mkt_ret"}));
   EXPECT_EQ(result.at("research_fields").at("roles").size(),2U);
+}
+// Contract K1 (platform v8 B-3): --plan-only prints one `candidates` row per library
+// member, in library order, with exactly {id, dsl_sha256, num_slots, required_lookback,
+// extra_fields, node_count}; the numbers are the compiled program's (checked here
+// against an independent compile of the same DSL) and no payload is opened.
+TEST(StrategyIcRunner, PlanOnlyPrintsCandidateRows) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_mean","ts_mean(si_shares, 5) / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  cfg.plan_only=true; std::ostringstream plan_log;
+  const auto status=atx::impl::strategy::run_ic(cfg,plan_log); ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  const auto plan=Json::parse(plan_log.str());
+  EXPECT_EQ(plan.at("candidate_count"),3);
+  const auto& rows=plan.at("candidates"); ASSERT_TRUE(rows.is_array()); ASSERT_EQ(rows.size(),3U);
+  const std::vector<std::tuple<std::string,std::string,Json>> expected{
+      {"volume_level","volume",Json::array()},{"volume_rank","rank(volume)",Json::array()},
+      {"si_mean","ts_mean(si_shares, 5) / volume",Json::array({"si_shares"})}};
+  const engine::alpha::Library operators;
+  u64 max_slots=0,max_lookback=0;
+  for (usize k=0;k<expected.size();++k) {
+    const auto& [id,dsl,extra]=expected[k]; const auto& row=rows.at(k);
+    std::set<std::string> keys;
+    for (auto it=row.begin();it!=row.end();++it) keys.insert(it.key());
+    EXPECT_EQ(keys,(std::set<std::string>{"id","dsl_sha256","num_slots","required_lookback","extra_fields",
+                                          "node_count"})) << id;
+    EXPECT_EQ(row.at("id"),id);
+    auto dsl_sha=core::sha256_hex(dsl); ASSERT_TRUE(dsl_sha); EXPECT_EQ(row.at("dsl_sha256"),*dsl_sha) << id;
+    EXPECT_EQ(row.at("extra_fields"),extra) << id;
+    auto ast=engine::alpha::parse_expr(dsl,operators); ASSERT_TRUE(ast) << id;
+    auto analysis=engine::alpha::analyze(*ast); ASSERT_TRUE(analysis) << id;
+    auto program=engine::alpha::compile(*ast,*analysis); ASSERT_TRUE(program) << id;
+    const auto slots=static_cast<u64>(program->num_slots),lookback=static_cast<u64>(program->required_lookback);
+    EXPECT_EQ(row.at("num_slots").get<u64>(),slots) << id;
+    EXPECT_EQ(row.at("required_lookback").get<u64>(),lookback) << id;
+    EXPECT_EQ(row.at("node_count").get<u64>(),static_cast<u64>(program->unique_nodes)) << id;
+    max_slots=std::max(max_slots,slots); max_lookback=std::max(max_lookback,lookback);
+  }
+  // A lone field load is one DAG node, reads no extra field and needs no history.
+  EXPECT_EQ(rows.at(0).at("node_count"),1); EXPECT_EQ(rows.at(0).at("required_lookback"),0);
+  EXPECT_GT(rows.at(2).at("required_lookback").get<u64>(),0U);
+  // The library maxima the runner charges are the rows' maxima.
+  EXPECT_EQ(plan.at("max_compiled_slots").get<u64>(),max_slots);
+  EXPECT_EQ(plan.at("required_lookback").get<u64>(),max_lookback);
 }
 TEST(StrategyIcRunner, FrozenTrainResumeBindsResearchFieldPins) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
@@ -2492,5 +2540,361 @@ TEST(StrategyIcRunner, IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettin
   const auto uncached=run_named(dir,other,"changed_uncached"); ASSERT_TRUE(uncached.ok) << uncached.error;
   for (const auto* file:{"orientations.json","train_daily_ic.csv","validation_daily_ic.csv"})
     EXPECT_EQ(file_sha(dir.path/"changed"/file),file_sha(dir.path/"changed_uncached"/file)) << file;
+}
+// ---- Platform v8 B-1: --no-composition screening pass ----
+// A daily IC CSV without its `__combined__` rows: the member rows, in file order.
+std::string member_rows(const std::filesystem::path& path) {
+  std::ifstream in(path,std::ios::binary); std::string out;
+  for (std::string line;std::getline(in,line);)
+    if (!line.starts_with("__combined__,")) out+=line+'\n';
+  return out;
+}
+std::string text_of(const std::filesystem::path& path) {
+  const auto bytes=file_bytes(path); return std::string(bytes.begin(),bytes.end());
+}
+TEST(NoComposition, SkipsBlendAndCombinedRows) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  const auto full=run_named(dir,cfg,"full"); ASSERT_TRUE(full.ok) << full.error;
+  auto screen=cfg; screen.no_composition=true;
+  const auto run=run_named(dir,screen,"screen"); ASSERT_TRUE(run.ok) << run.error;
+  const auto summary=read_json(dir.path/"screen"/"summary.json");
+  const auto full_summary=read_json(dir.path/"full"/"summary.json");
+  EXPECT_EQ(summary.at("status"),"complete"); EXPECT_EQ(summary.at("composition"),"skipped");
+  EXPECT_FALSE(full_summary.contains("composition"));
+  // Not a method input: the recipe (which still records --save-combined) is unchanged.
+  EXPECT_EQ(file_sha(dir.path/"screen"/"recipe.json"),file_sha(dir.path/"full"/"recipe.json"));
+  EXPECT_EQ(summary.at("recipe_sha256"),full_summary.at("recipe_sha256"));
+  ASSERT_EQ(summary.at("roles").size(),2U);
+  for (const auto& role_result:summary.at("roles")) {
+    const auto name=role_result.at("role").get<std::string>();
+    EXPECT_EQ(role_result.at("combined_evaluations"),0) << name;
+    EXPECT_EQ(role_result.at("candidate_evaluations"),2) << name;
+    for (const auto* key:{"combined_ic","planned_target_proxy","combined_artifact"})
+      EXPECT_FALSE(role_result.contains(key)) << name << ' ' << key;
+    EXPECT_FALSE(role_result.at("stage_seconds").contains("composition")) << name;
+    for (const auto& candidate:role_result.at("candidates"))
+      EXPECT_FALSE(candidate.at("stage_seconds").contains("composition")) << name;
+    EXPECT_EQ(text_of(dir.path/"screen"/(name+"_daily_ic.csv")).find("__combined__"),std::string::npos) << name;
+    for (const std::string suffix:{"_planned_targets.csv","_combined.json","_combined.f64","_combined_member.u8",
+                                   "_combined_finite.u8","_combined_sessions.i64","_combined_ids.u64"})
+      EXPECT_FALSE(std::filesystem::exists(dir.path/"screen"/(name+suffix))) << name << suffix;
+  }
+  // The same config without the flag does blend, so each omission above is the flag's.
+  EXPECT_TRUE(full_summary.at("roles").at(0).contains("combined_ic"));
+  EXPECT_TRUE(std::filesystem::exists(dir.path/"full"/"train_combined.json"));
+  // Admission drops the composition plane.
+  EXPECT_LT(summary.at("roles").at(0).at("admitted_working_bytes").get<u64>(),
+            full_summary.at("roles").at(0).at("admitted_working_bytes").get<u64>());
+  // The plan reports the skip. Pinned weights shape only the blend: they refuse with
+  // the flag before any payload or output, in plan-only mode too.
+  auto plan_cfg=screen; plan_cfg.plan_only=true; std::ostringstream plan;
+  const auto planned=atx::impl::strategy::run_ic(plan_cfg,plan); ASSERT_TRUE(planned) << planned.error().to_string();
+  EXPECT_EQ(Json::parse(plan.str()).at("composition"),"skipped");
+  auto weighted=screen; ASSERT_TRUE(pin_weights(dir,weighted,{{"volume_level",.5},{"volume_rank",.5}}));
+  for (const bool plan_only:{true,false}) {
+    weighted.plan_only=plan_only; const auto refused=run_named(dir,weighted,"weighted");
+    EXPECT_FALSE(refused.ok);
+    EXPECT_NE(refused.error.find("--no-composition builds no blend"),std::string::npos) << refused.error;
+    EXPECT_TRUE(refused.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"weighted"));
+  }
+}
+TEST(NoComposition, MemberRowsByteIdenticalToDefault) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // A field candidate as well, so the field residency path runs under the flag.
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  cfg.workers=2; cfg.save_combined=true;
+  const auto full=run_named(dir,cfg,"full"); ASSERT_TRUE(full.ok) << full.error;
+  auto screen=cfg; screen.no_composition=true;
+  const auto run=run_named(dir,screen,"screen"); ASSERT_TRUE(run.ok) << run.error;
+  for (const auto* file:{"recipe.json","orientations.json"})
+    EXPECT_EQ(file_sha(dir.path/"screen"/file),file_sha(dir.path/"full"/file)) << file;
+  for (const std::string name:{"train","validation"})
+    EXPECT_EQ(text_of(dir.path/"screen"/(name+"_daily_ic.csv")),member_rows(dir.path/"full"/(name+"_daily_ic.csv")))
+        << name;
+  // Every candidate row (IC, coverage, signs) and the field accounting are equal;
+  // only timings, resources and the blend's own keys differ.
+  const auto a=read_json(dir.path/"full"/"summary.json"),b=read_json(dir.path/"screen"/"summary.json");
+  ASSERT_EQ(a.at("roles").size(),b.at("roles").size());
+  for (usize r=0;r<a.at("roles").size();++r) {
+    auto x=stable_role(a.at("roles").at(r),false),y=stable_role(b.at("roles").at(r),false);
+    for (auto* role_result:{&x,&y})
+      for (const auto* key:{"combined_ic","planned_target_proxy","combined_evaluations"}) role_result->erase(key);
+    EXPECT_EQ(x,y) << r;
+  }
+}
+// With the cache on, a candidate whose signal and IC result are both cached is not
+// loaded: every payload is tampered at equal size (a load would refuse on its
+// SHA256), yet the screening pass succeeds with the cold run's member outputs.
+TEST(NoComposition, HitWithIcResultIsNotLoaded) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto cold_summary=dir.path/"cold"/"summary.json";
+  for (const std::string name:{"train","validation"})
+    for (const std::string id:{"volume_level","volume_rank"}) {
+      const auto payload=cache_entry(cold_summary,name,id).payload;
+      auto bytes=file_bytes(payload); ASSERT_EQ(bytes.size(),D*N*sizeof(f64)) << id;
+      bytes[8*N*100]=static_cast<char>(bytes[8*N*100]^1); ASSERT_TRUE(write_bytes(payload,bytes));
+    }
+  auto screen=cfg; screen.no_composition=true;
+  const auto run=run_named(dir,screen,"screen"); ASSERT_TRUE(run.ok) << run.error;
+  EXPECT_NE(run.log.find("IC cache-hit volume_rank role=validation layout=v2 payload=not-loaded ic_result=hit"),
+            std::string::npos) << run.log;
+  EXPECT_EQ(run.log.find("IC cache-miss"),std::string::npos);
+  EXPECT_EQ(run.log.find("VM-complete"),std::string::npos);
+  const auto summary=read_json(dir.path/"screen"/"summary.json");
+  for (const auto& role_result:summary.at("roles")) {
+    EXPECT_EQ(role_result.at("verify_bytes"),0);
+    EXPECT_EQ(role_result.at("stage_seconds").at("cache_load"),0.0);
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),2);
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2);
+    EXPECT_EQ(role_result.at("candidate_cache").at("entries").size(),2U);
+  }
+  EXPECT_EQ(file_sha(dir.path/"screen"/"orientations.json"),file_sha(dir.path/"cold"/"orientations.json"));
+  for (const std::string name:{"train","validation"})
+    EXPECT_EQ(text_of(dir.path/"screen"/(name+"_daily_ic.csv")),member_rows(dir.path/"cold"/(name+"_daily_ic.csv")))
+        << name;
+  // The default pass needs the bytes for its blend: it loads them and refuses.
+  const auto blended=run_named(dir,cfg,"blended"); EXPECT_FALSE(blended.ok);
+  EXPECT_NE(blended.error.find("candidate cache payload SHA256 mismatch"),std::string::npos) << blended.error;
+  // Without its IC result the screening pass must score, so that candidate loads too.
+  const auto level=cache_entry(cold_summary,"train","volume_level").sidecar;
+  const auto subdirectory=read_json(cold_summary).at("roles").at(0).at("candidate_cache").at("ic_results")
+      .at("subdirectory").get<std::string>();
+  ASSERT_TRUE(std::filesystem::remove(level.parent_path()/subdirectory/level.filename()));
+  const auto rescore=run_named(dir,screen,"rescore"); EXPECT_FALSE(rescore.ok);
+  EXPECT_NE(rescore.error.find("candidate cache payload SHA256 mismatch: "+level_stem()+".f64"),std::string::npos)
+      << rescore.error;
+}
+// Review focus 4: two roles (here two score windows over the same sessions) share
+// one cache root. An entry of one role is a miss for the other, never a hit, and
+// the other role's outputs equal an uncached run's.
+TEST(StrategyIcRunner, CacheMissOnRoleChange) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.validation_manifest.clear(); cfg.validation_sha256.clear();
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto first=run_named(dir,cfg,"first"); ASSERT_TRUE(first.ok) << first.error;
+  const auto other=dir.path/"train_later";
+  std::filesystem::copy(dir.path/"train",other,std::filesystem::copy_options::recursive);
+  auto manifest=read_json(other/"manifest.json"); manifest["score_begin"]=400;
+  manifest["score_start_ns"]=manifest.at("score_end_ns").get<i64>()-80*day;
+  auto moved=cfg; moved.train_manifest=(other/"manifest.json").string();
+  ASSERT_TRUE(json_file(moved.train_manifest,manifest,moved.train_sha256));
+  ASSERT_NE(moved.train_sha256,cfg.train_sha256);
+  const auto second=run_named(dir,moved,"second"); ASSERT_TRUE(second.ok) << second.error;
+  EXPECT_EQ(second.log.find("IC cache-hit"),std::string::npos);
+  const auto cache=read_json(dir.path/"second"/"summary.json").at("roles").at(0).at("candidate_cache");
+  EXPECT_EQ(cache.at("hits"),0); EXPECT_EQ(cache.at("misses"),2);
+  EXPECT_EQ(cache.at("ic_results").at("hits"),0);
+  for (const auto& entry:cache.at("entries"))
+    EXPECT_NE(entry.at("sidecar").get<std::string>().find(moved.train_sha256),std::string::npos);
+  auto uncached=moved; uncached.candidate_cache_directory.clear();
+  const auto plain=run_named(dir,uncached,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  for (const auto* file:{"orientations.json","train_daily_ic.csv","train_planned_targets.csv"})
+    EXPECT_EQ(file_sha(dir.path/"second"/file),file_sha(dir.path/"plain"/file)) << file;
+  // The first role's entries are untouched and still serve it.
+  const auto again=run_named(dir,cfg,"again"); ASSERT_TRUE(again.ok) << again.error;
+  EXPECT_EQ(read_json(dir.path/"again"/"summary.json").at("roles").at(0).at("candidate_cache").at("hits"),2);
+}
+// ---- Platform v8 B-2: field caps (manifest rows 1,024; referenced fields 256) and workers 16 ----
+// Pads a fields directory's manifest to `rows` rows with unreferenced entries shaped
+// like its first row (pad_0000, ...; payload SHAs no file backs: never opened) and re-pins it.
+bool pad_manifest(const std::string& directory,usize rows,std::string& pin) {
+  const auto path=std::filesystem::path(directory)/"manifest.json";
+  auto manifest=read_json(path); const auto first=manifest.at("fields").at(0);
+  const std::string sha(64,'a');
+  while (manifest.at("fields").size()<rows) {
+    const auto name="pad_"+std::to_string(10000+manifest.at("fields").size()).substr(1);
+    auto row=first; row["name"]=name; row["file"]=name+".f64"; row["sha256"]=sha;
+    manifest["fields"].push_back(row);
+    manifest["files"][name+".f64"]={{"bytes",D*N*sizeof(f64)},{"sha256",sha}};
+  }
+  return json_file(path,manifest,pin);
+}
+// `count` extra fields x000.. read ten per candidate (sums), in one new family.
+bool wide_library(atx::impl::strategy::IcRunnerConfig& cfg,const std::string& prefix,usize count,
+                  std::vector<std::string>& names) {
+  names.clear(); std::vector<std::pair<std::string,std::string>> candidates;
+  for (usize k=0;k<count;++k) names.push_back(prefix+std::to_string(1000+k).substr(1));
+  for (usize first=0;first<count;first+=10) {
+    std::string dsl;
+    for (usize k=first;k<std::min(count,first+10);++k) dsl+=(k>first?" + ":"")+names[k];
+    candidates.emplace_back("wide"+std::to_string(first/10),dsl);
+  }
+  return field_library(cfg,names,candidates);
+}
+TEST(FieldCaps, Admits200RowManifestWith40Referenced) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::vector<std::string> names; ASSERT_TRUE(wide_library(cfg,"f",40,names));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",names));
+  ASSERT_TRUE(pad_manifest(cfg.train_fields_directory,200,cfg.train_fields_sha256));
+  ASSERT_TRUE(pad_manifest(cfg.validation_fields_directory,200,cfg.validation_fields_sha256));
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  for (const auto& role_result:summary.at("roles")) {
+    const auto& fields=role_result.at("research_fields");
+    EXPECT_EQ(fields.at("loaded").size(),40U);
+    EXPECT_EQ(fields.at("resident_capacity"),10); EXPECT_EQ(fields.at("planned_loads"),40);
+    EXPECT_EQ(fields.at("field_loads"),40); EXPECT_EQ(fields.at("peak_resident_fields"),10);
+  }
+  // The row cap is 1,024: a 1,024-row manifest plans, a 1,025-row one refuses before any payload.
+  auto plan_cfg=cfg; plan_cfg.plan_only=true;
+  ASSERT_TRUE(pad_manifest(plan_cfg.train_fields_directory,1024,plan_cfg.train_fields_sha256));
+  std::ostringstream plan; const auto admitted=atx::impl::strategy::run_ic(plan_cfg,plan);
+  EXPECT_TRUE(admitted) << admitted.error().to_string();
+  ASSERT_TRUE(pad_manifest(plan_cfg.train_fields_directory,1025,plan_cfg.train_fields_sha256));
+  std::ostringstream refused_log; const auto refused=atx::impl::strategy::run_ic(plan_cfg,refused_log);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("train fields manifest field list (1..1024 rows)"),std::string::npos)
+      << refused.error().to_string();
+  EXPECT_TRUE(refused_log.str().empty());
+}
+// 256 referenced fields (bits 0..255 of the FieldMask) score end to end; a 257th refuses
+// when the library compiles, before any manifest, role or output.
+TEST(FieldCaps, RefusesLibraryReferencing257Fields) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.validation_manifest.clear(); cfg.validation_sha256.clear();
+  const auto base_library=read_json(cfg.library_path); const auto base_sha=cfg.library_sha256;
+  std::vector<std::string> names; ASSERT_TRUE(wide_library(cfg,"x",257,names));
+  auto over=cfg; over.plan_only=true; std::ostringstream log;
+  const auto status=atx::impl::strategy::run_ic(over,log); ASSERT_FALSE(status);
+  EXPECT_NE(status.error().to_string().find("at most 256 extra fields (the library references 257)"),
+            std::string::npos) << status.error().to_string();
+  EXPECT_TRUE(log.str().empty());
+  const auto run_over=run_named(dir,cfg,"over"); EXPECT_FALSE(run_over.ok);
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"over"));
+  std::string restored; ASSERT_TRUE(json_file(cfg.library_path,base_library,restored)); ASSERT_EQ(restored,base_sha);
+  cfg.library_sha256=base_sha;
+  ASSERT_TRUE(wide_library(cfg,"x",256,names));
+  cfg.train_fields_directory=(dir.path/"wide-train").string();
+  ASSERT_TRUE(fields_dir(cfg.train_fields_directory,cfg.train_manifest,cfg.train_sha256,names,cfg.train_fields_sha256));
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  const auto& fields=summary.at("roles").at(0).at("research_fields");
+  EXPECT_EQ(fields.at("loaded").size(),256U); EXPECT_EQ(fields.at("resident_capacity"),10);
+  EXPECT_EQ(fields.at("planned_loads"),256); EXPECT_EQ(fields.at("field_loads"),256);
+  EXPECT_EQ(summary.at("roles").at(0).at("candidate_evaluations"),2+26);
+  // The last candidate reads bits 250..255: it was loaded and scored like the first.
+  EXPECT_NE(run.log.find("IC field-load role=train field=x255 candidate=wide25"),std::string::npos);
+}
+// The v7.1 library's field plan, the only structure the mask change touches, is the
+// one the receipted v7.1 u pass printed (mega-v71-train-u-run1: resident_capacity=6
+// planned_loads=54 over 40 referenced fields).
+TEST(FieldCaps, V71FieldPlanUnchanged) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const auto source=std::filesystem::path{ATX_IMPL_TESTS_DIR}.parent_path()/"strategies"/"fund_industry_ic_v71.json";
+  const auto bytes=file_bytes(source); ASSERT_FALSE(bytes.empty()) << source;
+  const std::string text(bytes.begin(),bytes.end()); const auto library=Json::parse(text);
+  cfg.library_path=source.string(); auto digest=core::sha256_hex(text); ASSERT_TRUE(digest); cfg.library_sha256=*digest;
+  // Metadata only: widen the warm-up so the library's longest lookback fits.
+  for (const auto& path:{cfg.train_manifest,cfg.validation_manifest}) {
+    auto j=read_json(path); j["score_begin"]=450;
+    j["score_start_ns"]=j.at("score_end_ns").get<i64>()-30*day;
+    std::string pin; ASSERT_TRUE(json_file(path,j,pin));
+    if (path==cfg.train_manifest) cfg.train_sha256=pin; else cfg.validation_sha256=pin;
+  }
+  std::vector<std::string> extras;
+  for (const auto& field:library.at("fields")) {
+    const auto name=field.at("name").get<std::string>();
+    if (name!="close" && name!="raw_close" && name!="volume") extras.push_back(name);
+  }
+  ASSERT_EQ(extras.size(),40U);
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",extras));
+  cfg.plan_only=true; std::ostringstream plan;
+  const auto status=atx::impl::strategy::run_ic(cfg,plan); ASSERT_TRUE(status) << status.error().to_string();
+  const auto fields=Json::parse(plan.str()).at("research_fields");
+  EXPECT_EQ(fields.at("loaded").size(),40U);
+  EXPECT_EQ(fields.at("resident_capacity"),6); EXPECT_EQ(fields.at("planned_loads"),54);
+}
+// Workers 4, 8 and 16 give the same bytes: daily IC, planned targets, the saved blend
+// and its masks, orientations and every role statistic; only the recipe's two worker
+// keys (and timings/resources) differ.
+TEST(Workers, OutputsByteIdenticalAt4And8And16) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  cfg.save_combined=true; cfg.max_working_bytes=512ULL<<20;
+  const auto out=[&](usize workers) { return dir.path/("w"+std::to_string(workers)); };
+  for (const usize workers:{usize{4},usize{8},usize{16}}) {
+    cfg.workers=workers;
+    const auto run=run_named(dir,cfg,"w"+std::to_string(workers)); ASSERT_TRUE(run.ok) << workers << ": " << run.error;
+  }
+  const auto recipe=[&](usize workers) {
+    auto j=read_json(out(workers)/"recipe.json");
+    EXPECT_EQ(j.at("vm_workers"),workers); EXPECT_EQ(j.at("research_ic_workers"),workers);
+    j.erase("vm_workers"); j.erase("research_ic_workers"); return j;
+  };
+  const auto roles=[&](usize workers) {
+    const auto summary=read_json(out(workers)/"summary.json"); Json stable=Json::array();
+    for (const auto& role_result:summary.at("roles")) stable.push_back(stable_role(role_result,false));
+    return stable;
+  };
+  std::vector<std::string> files{"train_daily_ic.csv","validation_daily_ic.csv","train_planned_targets.csv",
+                                 "validation_planned_targets.csv"};
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8"})
+      files.push_back(role_name+suffix);
+  const auto reference_recipe=recipe(4); const auto reference_roles=roles(4);
+  const auto reference_signs=read_json(out(4)/"orientations.json").at("candidates");
+  for (const usize workers:{usize{8},usize{16}}) {
+    EXPECT_EQ(recipe(workers),reference_recipe) << workers;
+    EXPECT_EQ(roles(workers),reference_roles) << workers;
+    EXPECT_EQ(read_json(out(workers)/"orientations.json").at("candidates"),reference_signs) << workers;
+    for (const auto& file:files) {
+      const auto expected=file_sha(out(4)/file); ASSERT_FALSE(expected.empty()) << file;
+      EXPECT_EQ(file_sha(out(workers)/file),expected) << workers << ' ' << file;
+    }
+  }
+}
+// Review focus 3: --plan-only reports each role's required bytes; the per-worker
+// envelope is as coded, so 16 workers need exactly 12 envelopes more than 4; below
+// the requirement the run refuses before any payload, naming the bytes. OD-2: the
+// CLI admits --max-memory-mib 2560 (bound 16,384) and --workers 16 (bound 16).
+TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  cfg.max_working_bytes=512ULL<<20;
+  const auto plan=[&](atx::impl::strategy::IcRunnerConfig plan_cfg) {
+    plan_cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(plan_cfg,log);
+    EXPECT_TRUE(status) << status.error().to_string();
+    return status?Json::parse(log.str()):Json();
+  };
+  cfg.workers=4; const auto four=plan(cfg);
+  cfg.workers=16; const auto sixteen=plan(cfg);
+  ASSERT_FALSE(four.is_null()); ASSERT_FALSE(sixteen.is_null());
+  EXPECT_EQ(sixteen.at("workers"),16); EXPECT_EQ(sixteen.at("max_working_bytes"),512ULL<<20);
+  const u64 envelope=(8ULL<<20)+(64ULL<<10)+N*(1024+64+16)+D*64;
+  ASSERT_EQ(sixteen.at("roles").size(),2U);
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(sixteen.at("roles").at(r).at("required_bytes").get<u64>()-
+              four.at("roles").at(r).at("required_bytes").get<u64>(),12*envelope) << r;
+  const auto required=sixteen.at("roles").at(0).at("required_bytes").get<u64>();
+  auto tight=cfg; tight.max_working_bytes=required-1;
+  for (const bool plan_only:{true,false}) {
+    tight.plan_only=plan_only; const auto run=run_named(dir,tight,"tight");
+    EXPECT_FALSE(run.ok);
+    EXPECT_NE(run.error.find("required_bytes="+std::to_string(required)),std::string::npos) << run.error;
+    EXPECT_TRUE(run.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"tight"));
+  }
+  const auto cli=[&](const std::string& mib,const std::string& workers,std::string& out) {
+    std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
+        cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--validation",
+        cfg.validation_manifest,"--validation-sha256",cfg.validation_sha256,"--min-names","3","--min-dates","8",
+        "--workers",workers,"--max-memory-mib",mib,"--plan-only"};
+    std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+    std::ostringstream stdout_log,stderr_log;
+    const int code=atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),stdout_log,stderr_log);
+    out=stdout_log.str(); return code;
+  };
+  std::string printed;
+  ASSERT_EQ(cli("2560","16",printed),0);
+  const auto admitted=Json::parse(printed);
+  EXPECT_EQ(admitted.at("max_working_bytes"),2560ULL<<20); EXPECT_EQ(admitted.at("workers"),16);
+  EXPECT_EQ(cli("16385","16",printed),2); // the CLI's memory bound
+  EXPECT_EQ(cli("2560","17",printed),1);  // bounded config
 }
 } // namespace

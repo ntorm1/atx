@@ -4,7 +4,24 @@
                   construction, universe, data), cell dir, pins, window, daily net series path + SHA-256 and S2 net SR.
                   Appends are idempotent on (kind, daily series SHA-256): an identity re-run (the same daily net
                   series under any cell name, e.g. a research_cycle --suffix re-run) never adds a trial.
-                  Only TRAIN series (every session before 2023-01-01) are accepted; anything later is refused.
+                  Only TRAIN series (every session before the research window's TRAIN end, read from
+                  atx-engine/tools/research_window.py) are accepted; anything later is refused.
+  v8 fields       (platform v8 V-1; optional, so every older line stays valid and its trial_id rule is unchanged)
+                  origin (contract K5: prior | grid | mined), window_id (the research window the series was scored
+                  on), defect {invalid, reason}, rerun_of (a trial_id) with rerun_basis window | blind | returns.
+  trial count     (v8-prereg items 2 and 7) a line adds its count to N except: kind protocol (W0-3) and window
+                  re-runs (a ledgered cell re-run on a longer window) add 0; an invalid cell (defect) and a cell
+                  replaced by a blind re-run add 0, unless a re-run decided because its returns looked wrong names it
+                  (then both are trials). Without the v8 fields every line adds its count, as before.
+  protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
+                  series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
+  hash chain      (v8, ledger-chain-v1) prev_sha256 = SHA-256 of the previous non-blank line's bytes (64 zeros for
+                  the first); ledger_read verifies every link, so an edited or removed line, a protocol line
+                  included, breaks the next chained line. Lines written without prev_sha256 are accepted as before.
+  DSR variance   (v8-prereg item 3, OD-4) N = the construction trial count; V[SR] = sample variance of the
+                  per-session S2 net SRs of the construction lines scored on the current window (re-runs and new
+                  cells; invalid or replaced lines left out); the legacy variance (lines without a window_id, the
+                  2020-2022 cells) is reported beside it and gates nothing.
   effective N     ONC clustering (Lopez de Prado & Lewis 2019, QF 19(9); code as Lopez de Prado 2020, "Machine
                   Learning for Asset Managers", snippets 4.1-4.2) of the trials' daily net series on their common
                   sessions: distance sqrt((1 - rho) / 2), k-means over its rows for k = 2..N-1 with n_init seeded
@@ -36,6 +53,7 @@ import itertools
 import json
 import math
 from pathlib import Path
+import sys
 
 import numpy as np
 
@@ -44,10 +62,58 @@ EULER_GAMMA = 0.5772156649015329
 DEFAULT_SEED = 20260927
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
 LEDGER_KINDS = ("admission", "composition", "construction", "universe", "data")
-TRAIN_END_EXCLUSIVE = dt.date(2023, 1, 1)  # the TRAIN window is 2020-2022; 2023+ is validation / reserved
+ZERO_TRIAL_KINDS = ("protocol",)          # W0-3: the protocol line records the window change and adds no trial
+ORIGINS = ("prior", "grid", "mined")      # contract K5: the registry's origin class, copied into every ledger line
+RERUN_BASES = ("window", "blind", "returns")
+PRIOR_VALIDATION_READS = "2 (2023-2024)"  # v8-prereg item 1 disclosure (history before v8), not a window constant
 DAY_NS = 86_400_000_000_000
 PBO_BLOCKS = 16
 PBO_MIN_CELLS = 4
+ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
+
+
+def research_window():
+    """The ``research_window`` module (task W0-1, atx-engine/tools): the one source of TRAIN and the seal.
+
+    Loaded as W0-1 prescribes for atx-impl tools, ``from engine_tools import research_window``: a private instance
+    (``atx_impl_engine_tools_research_window``) that a test harness rebinding the atx-engine/tools instance cannot
+    change. Before engine_tools.py is on the branch, the same private instance is loaded here the same way."""
+    try:
+        from engine_tools import research_window as rw
+        return rw
+    except ImportError:
+        pass
+    import importlib.util
+    private = "atx_impl_engine_tools_research_window"
+    if private in sys.modules:
+        return sys.modules[private]
+    spec = importlib.util.spec_from_file_location(private, ENGINE_TOOLS / "research_window.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {ENGINE_TOOLS / 'research_window.py'} (task W0-1)")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[private] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[private]
+        raise
+    return module
+
+
+def window_id() -> str:
+    """The research window's id (``atx.research-window/v2`` -> ``research-window-v2``)."""
+    rw = research_window()
+    wid = getattr(rw, "WINDOW_ID", None)
+    return wid if wid else rw.load()["schema"].split(".", 1)[1].replace("/", "-")
+
+
+def refuse_sealed(sessions, what: str) -> None:
+    """Raise (the window's SealError, a ValueError) when any session (ns) is at or after the research seal."""
+    rw = research_window()
+    if len(sessions) and rw.is_sealed(int(max(sessions))):
+        error = getattr(rw, "SealError", ValueError)
+        raise error(f"{what}: a session at or after the research seal {rw.SEAL_DATE} ({window_id()}); refusing "
+                    "(sealed)")
 
 
 # ------------------------------------------------------------------ normal distribution (no scipy)
@@ -467,13 +533,16 @@ def session_date(ns: int) -> dt.date:
 
 
 def window_of(sessions: list[int]) -> dict:
-    """The series window; refuses any session on or after 2023-01-01 (the ledger records TRAIN trials only)."""
+    """The series window; refuses any session outside the research window's TRAIN [begin, end) (the ledger records
+    TRAIN trials only; a series ending before the TRAIN end, e.g. a 2020-2022 cell, is a TRAIN series)."""
     if not sessions:
         raise ValueError("ledger: empty net series")
+    rw = research_window()
     first, last = session_date(min(sessions)), session_date(max(sessions))
-    if last >= TRAIN_END_EXCLUSIVE:
-        raise ValueError(f"ledger: series ends {last.isoformat()} (>= {TRAIN_END_EXCLUSIVE.isoformat()}); only TRAIN "
-                         "series are ledgered by this tool")
+    if max(sessions) >= rw.TRAIN_END_NS or min(sessions) < rw.TRAIN_BEGIN_NS:
+        span = f"[{session_date(rw.TRAIN_BEGIN_NS).isoformat()}, {session_date(rw.TRAIN_END_NS).isoformat()})"
+        raise ValueError(f"ledger: series spans {first.isoformat()}..{last.isoformat()}, outside TRAIN {span} of "
+                         f"{window_id()}; only TRAIN series are ledgered by this tool")
     return {"label": "TRAIN", "first_session": first.isoformat(), "last_session": last.isoformat(),
             "sessions": len(sessions)}
 
@@ -489,12 +558,24 @@ def summary_pins(summary: dict) -> dict:
 
 
 def ledger_record(kind: str, cell: str, summary_path: Path, daily_path: Path, scenario: str, nets: dict,
-                  net_sharpe, *, count: int = 1, note: str | None = None, run: dict | None = None) -> dict:
-    """One ledger line for a NAV cell (its primary/selected scenario's daily net series)."""
+                  net_sharpe, *, count: int = 1, note: str | None = None, run: dict | None = None,
+                  origin: str | None = None, research_window_id: str | None = None, rerun_of: str | None = None,
+                  rerun_basis: str | None = None, defect: str | None = None) -> dict:
+    """One ledger line for a NAV cell (its primary/selected scenario's daily net series).
+
+    The v8 keyword fields are written only when given (a line without them is byte-identical to the v7 layout):
+    ``origin`` (K5), ``research_window_id`` (key ``window_id``), ``rerun_of`` + ``rerun_basis`` and
+    ``defect`` (the invalid-cell reason). None of them enters ``trial_id``."""
     if kind not in LEDGER_KINDS:
         raise ValueError(f"ledger: kind must be one of {', '.join(LEDGER_KINDS)}")
     if not isinstance(count, int) or count < 1:
         raise ValueError("ledger: count must be a positive integer")
+    if origin is not None and origin not in ORIGINS:
+        raise ValueError(f"ledger: origin must be one of {', '.join(ORIGINS)} (contract K5), got {origin!r}")
+    if (rerun_of is None) != (rerun_basis is None) or (rerun_basis is not None and rerun_basis not in RERUN_BASES):
+        raise ValueError(f"ledger: rerun_of and rerun_basis ({', '.join(RERUN_BASES)}) go together")
+    if defect is not None and not (isinstance(defect, str) and defect.strip()):
+        raise ValueError("ledger: a defect needs a reason")
     summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
     series_sha = sha256_file(daily_path)
     window = window_of(list(nets))
@@ -508,49 +589,145 @@ def ledger_record(kind: str, cell: str, summary_path: Path, daily_path: Path, sc
         rec["note"] = note
     if run:
         rec["recorded_by"] = run
-    # identity: the kind and the series bytes (a byte-identical re-run under another cell name is the same trial)
-    rec["trial_id"] = hashlib.sha256(json.dumps([kind, series_sha], separators=(",", ":")).encode()).hexdigest()[:16]
+    if origin is not None:
+        rec["origin"] = origin
+    if research_window_id is not None:
+        rec["window_id"] = research_window_id
+    if rerun_of is not None:
+        rec["rerun_of"], rec["rerun_basis"] = rerun_of, rerun_basis
+    if defect is not None:
+        rec["defect"] = {"invalid": True, "reason": defect}
+    rec["trial_id"] = trial_id(kind, series_sha)
     return rec
 
 
+def trial_id(kind: str, series_sha256: str) -> str:
+    """A ledger line's identity: the kind and the series bytes (a byte-identical re-run under another cell name is the
+    same trial). The v8 fields never enter it."""
+    return hashlib.sha256(json.dumps([kind, series_sha256], separators=(",", ":")).encode()).hexdigest()[:16]
+
+
+CHAIN_GENESIS = "0" * 64
+
+
+def line_sha256(line: str) -> str:
+    """SHA-256 of one ledger line's UTF-8 bytes without its line end (a CRLF checkout hashes as the LF original)."""
+    return hashlib.sha256(line.rstrip("\r\n").encode("utf-8")).hexdigest()
+
+
+def _ledger_lines(p: Path) -> list[tuple[int, str]]:
+    return [(n, line) for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if line.strip()]
+
+
 def ledger_read(path: Path) -> list[dict]:
+    """Every ledger line, schema-checked, with the hash chain verified.
+
+    Chain (v8, ledger-chain-v1): a line that carries ``prev_sha256`` must name the SHA-256 of the previous non-blank
+    line's bytes (``line_sha256``; the first line names 64 zeros). Every line takes part, the ``protocol`` line
+    included. Lines without the key (every line written before v8) are accepted as they are: their rule is unchanged."""
     p = Path(path)
     if not p.exists():
         return []
-    out = []
-    for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
+    out, prev = [], CHAIN_GENESIS
+    for n, line in _ledger_lines(p):
         rec = json.loads(line)
         if rec.get("schema") != LEDGER_SCHEMA:
             raise ValueError(f"ledger {p}:{n}: schema {rec.get('schema')!r} is not {LEDGER_SCHEMA}")
+        link = rec.get("prev_sha256")
+        if link is not None and link != prev:
+            raise ValueError(f"ledger {p}:{n}: hash chain broken: prev_sha256 {str(link)[:16]} is not the SHA-256 of "
+                             f"the previous line ({prev[:16]})")
+        prev = line_sha256(line)
         out.append(rec)
     return out
 
 
-def ledger_append(path: Path, records: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Append records not already present (same trial_id); returns (appended, skipped). Never rewrites a line."""
-    have = {r.get("trial_id") for r in ledger_read(path)}
+def ledger_head(path: Path) -> str:
+    """The chain head: the SHA-256 of the ledger's last non-blank line (64 zeros for an empty or absent ledger)."""
+    p = Path(path)
+    lines = _ledger_lines(p) if p.exists() else []
+    return line_sha256(lines[-1][1]) if lines else CHAIN_GENESIS
+
+
+def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tuple[list[dict], list[dict]]:
+    """Append records not already present (same trial_id); returns (appended, skipped). Never rewrites a line.
+
+    ``chain`` (and any ledger whose last line is already chained) writes ``prev_sha256`` into every appended line;
+    without it the lines are written exactly as before v8."""
+    existing = ledger_read(path)                     # verifies the chain before anything is appended
+    have = {r.get("trial_id") for r in existing}
+    chained = chain or bool(existing and "prev_sha256" in existing[-1])
     appended, skipped = [], []
     for rec in records:
         (skipped if rec["trial_id"] in have else appended).append(rec)
         have.add(rec["trial_id"])
     if appended:
+        prev = ledger_head(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with Path(path).open("a", encoding="utf-8", newline="\n") as f:
-            for rec in appended:
-                f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
+            for k, rec in enumerate(appended):
+                if chained:
+                    rec = appended[k] = dict(rec, prev_sha256=prev)
+                text = json.dumps(rec, sort_keys=True, separators=(",", ":"))
+                prev = line_sha256(text)
+                f.write(text + "\n")
     return appended, skipped
 
 
-def ledger_counts(records: list[dict]) -> dict:
-    """Trials by kind and window: {kind: {window key: count}} (count field summed; default 1)."""
-    out: dict = {}
+def _invalid(rec: dict) -> bool:
+    return bool((rec.get("defect") or {}).get("invalid"))
+
+
+def trial_counts(records: list[dict]) -> list[int]:
+    """The trials each ledger line adds to N (v8-prereg item 2 and item 7, the defect rule), in ledger order.
+
+    A line adds its ``count`` (default 1) except: a ``protocol`` line and a window re-run (``rerun_basis`` window: a
+    ledgered cell re-run on a longer window) add 0; an invalid cell (``defect``) and a cell replaced by a blind re-run
+    (``rerun_basis`` blind: decided without seeing returns) add 0, unless a re-run decided because its returns looked
+    wrong (``rerun_basis`` returns) names it, in which case it stays a trial and the re-run is a new one. Lines without
+    the v8 fields add their count, exactly as ``ledger_counts`` summed them before v8."""
+    seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
+    replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
+    out = []
     for rec in records:
+        tid = rec.get("trial_id")
+        if rec.get("kind") in ZERO_TRIAL_KINDS or rec.get("rerun_basis") == "window":
+            out.append(0)
+        elif tid not in seen and (_invalid(rec) or tid in replaced):
+            out.append(0)
+        else:
+            out.append(int(rec.get("count", 1)))
+    return out
+
+
+def ledger_n(records: list[dict], scored_in_ledger: bool, kind: str = "construction") -> int:
+    """The N that gates (PM ruling 2026-09-29; v8-prereg Appendix A rules 2 and 7): the ``kind`` trials of the ledger
+    by ``trial_counts`` (the defect rule: protocol lines, window re-runs, invalid and blind-replaced cells add 0), plus
+    1 for the scored cell when it has no ``kind`` line in the ledger yet. nav_summ --dsr-ledger and research_cycle.py
+    (summ.dsr_n "ledger+1") both read N here, so the two print the same N. A line without a kind (a layout
+    ledger_record never writes) is read as a ``kind`` line."""
+    n = sum(c for rec, c in zip(records, trial_counts(records)) if rec.get("kind", kind) == kind)
+    return n + (0 if scored_in_ledger else 1)
+
+
+def excluded_lines(records: list[dict]) -> list[dict]:
+    """The lines the defect rule takes out of N (invalid cells and cells replaced by a blind re-run)."""
+    seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
+    replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
+    return [r for r in records if r.get("trial_id") not in seen and (_invalid(r) or r.get("trial_id") in replaced)]
+
+
+def ledger_counts(records: list[dict]) -> dict:
+    """Trials by kind and window: {kind: {window key: trials}} (``trial_counts`` per line; default 1 each). Protocol
+    lines are events, not trials: they are skipped."""
+    out: dict = {}
+    for rec, trials in zip(records, trial_counts(records)):
+        if rec.get("kind") in ZERO_TRIAL_KINDS:
+            continue
         w = rec.get("window") or {}
         key = f"{w.get('label', '?')} {w.get('first_session', '?')}..{w.get('last_session', '?')}"
         out.setdefault(rec["kind"], {}).setdefault(key, 0)
-        out[rec["kind"]][key] += int(rec.get("count", 1))
+        out[rec["kind"]][key] += trials
     return out
 
 
@@ -563,17 +740,64 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
             lines.append(f"   {kind:12s} {n:5d}  [{window}]")
         if kind not in counts:
             lines.append(f"   {kind:12s} {0:5d}")
+    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0]
+    if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
+        out = excluded_lines(records)
+        lines.append(f"   adding no trial: {len(zero)} line(s) ({len(out)} by the defect rule, "
+                     f"{sum(1 for r in zero if r.get('rerun_basis') == 'window')} window re-run(s), "
+                     f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s))")
     return lines
+
+
+def appendix_a_v8(records: list[dict]) -> str:
+    """The v8 Appendix A block (v8-prereg, 'on every result'): construction trials by the defect rule, this window's
+    admission trials, and the window statement, every window date taken from the research window."""
+    rw, wid = research_window(), window_id()
+    counts = trial_counts(records)
+    n = sum(c for r, c in zip(records, counts) if r.get("kind") == "construction")
+    k = sum(c for r, c in zip(records, counts) if r.get("kind") == "admission" and r.get("window_id") == wid)
+    first = session_date(rw.TRAIN_BEGIN_NS).year
+    last = session_date(rw.TRAIN_END_NS - DAY_NS).year
+    sealed = session_date(rw.SEAL_NS).year
+    never = (rw.load().get("hidden") or {}).get("never_read") or [None]
+    never_year = dt.date.fromisoformat(never[0]).year if never[0] else None
+    tail = f"; {never_year}+ never read" if never_year else ""
+    return (f"TRAIN construction cells {n}; admission trials this sprint {k}; window {wid} ({first}-{last}); "
+            f"hidden {sealed}+ unread in this sprint; validation reads before v8: {PRIOR_VALIDATION_READS}{tail}.")
+
+
+def dsr_variance(records: list[dict], research_window_id: str, kind: str = "construction") -> dict:
+    """OD-4 / v8-prereg item 3: N and the cross-trial variance of the deflated Sharpe ratio from the ledger.
+
+    N = the ``kind`` trials by ``trial_counts``. V[SR] = sample variance (ddof 1) of the per-session S2 net SRs
+    (``s2_net_sr`` / sqrt(252)) of the ``kind`` lines scored on ``research_window_id`` (the ledgered cells re-run on it
+    and the new cells), the defect rule's excluded lines left out; None below two such lines. The legacy variance over
+    the ``kind`` lines without a window_id (the cells ledgered before the window change) is reported beside it."""
+    counts = trial_counts(records)
+    out_ids = {r.get("trial_id") for r in excluded_lines(records)}
+
+    def srs(select) -> list[float]:
+        return [float(r["s2_net_sr"]) / math.sqrt(ANNUAL) for r in records
+                if r.get("kind") == kind and select(r) and r.get("trial_id") not in out_ids
+                and isinstance(r.get("s2_net_sr"), (int, float)) and math.isfinite(r["s2_net_sr"])]
+    cur = srs(lambda r: r.get("window_id") == research_window_id)
+    old = srs(lambda r: "window_id" not in r)
+    return {"n": sum(c for r, c in zip(records, counts) if r.get("kind") == kind), "window_id": research_window_id,
+            "variance_sr": float(np.var(cur, ddof=1)) if len(cur) >= 2 else None, "cells": len(cur),
+            "variance_source": f"sample variance (ddof 1) of {len(cur)} per-session S2 net SRs ledgered on "
+                               f"{research_window_id} (re-runs and new cells; defect-rule exclusions left out)",
+            "legacy_variance_sr": float(np.var(old, ddof=1)) if len(old) >= 2 else None, "legacy_cells": len(old)}
 
 
 def ledger_net_series(records: list[dict], load) -> tuple[list[str], list[dict]]:
     """(cell names, net series) of the ledger lines with a series, in ledger order; ``load(record)`` -> nets map.
+    Protocol lines (no cell, no series) are skipped.
 
     The series file must still hash to the ledgered SHA-256 (a changed file is refused, never silently used)."""
     names, series = [], []
     for rec in records:
         s = rec.get("series")
-        if not s or not s.get("path"):
+        if rec.get("kind") in ZERO_TRIAL_KINDS or not s or not s.get("path"):
             continue
         if sha256_file(Path(s["path"])) != s["sha256"]:
             raise ValueError(f"ledger: series {s['path']} no longer matches its ledgered SHA-256")

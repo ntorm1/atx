@@ -6,7 +6,7 @@ before it is opened (``path_is_sealed``: validation / holdout / VAL, or a date-s
 of the research window or later; hash-named parts are ignored; the path is taken relative to the registry root;
 tracked documents under ``DOCUMENT_ROOTS`` are exempt from the year rule only, ruling E-11). A file the report maps
 instead of reading (a memmapped cache payload) passes the same check through ``Registry.sealed`` first.
-Derived statistics mirror ``studies/nav_summ.py`` (return rows = return_observation
+Derived statistics mirror ``atx-impl/tools/nav_summ.py`` (return rows = return_observation
 == 1 and not the first CSV row; Sharpe = mean / sd(ddof 1) x sqrt(sessions per year); tau_t over executed sessions
 with positive pre-trade gross, deployment session excluded; Memmel (2003) SE; Lo (2002) single-cell DSR null).
 """

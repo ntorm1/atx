@@ -112,21 +112,25 @@ declared before any v6 TRAIN read; the rule text is binding): the admitted non-d
       The file's schema is ``atx.dsl-composition-weights/v2`` (the runner accepts v2 iff the block is present).
   Only ``ew-theme-v6`` writes these keys: ``ew-theme-v1`` and ``ew-theme-aim-v1`` bytes are unchanged (schema v1).
 
-Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
-record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
-Records are keyed by the work key (``atx.fit-work-key/v1``: semantics tag, TRAIN role manifest SHA, VM
-identity, screen id, DSL SHA and the candidate's field payload SHAs, i.e. the summary entry's
-``field_payload_sha256`` map; a field candidate of a v1 runner summary, which lists no map, falls back to
-the fields manifest SHA), stored as ``<work>/<train-sha>/<semantics-tag>/factors/k-<key>.json``, so an
-unchanged candidate is reused when other fields or other candidates change. A record is also bound to its
-cache payload SHA, the VM identity, the context digest and this script's SHA-256, so any edit of this file
-recomputes everything. stderr reports ``fit: computed K, reused M``. ``--max-seconds``
+Incremental (v8 C-1): with ``--work-dir W`` the per-day price-risk context and each candidate's unsigned factor
+record (f_k, tau_k, live counts) are persisted under one store per role and research window,
+``W/<role sha16>-<window id>/`` (``WorkStore``), shared by every library fitted on that role: pass the same W
+(``build-equity/fit-work``) to every cycle. A record is keyed by the signal payload SHA-256 and the producer
+fingerprint (AST closure of factor_record, Context, PricePanel, neutralization_basis, centered_tied_ranks; comments,
+docstrings and formatting do not count), plus the full role SHA, window id and semantics tag; it carries its key and
+is verified on read (record_store). So a candidate of another library, screen or VM build with the same signal bytes
+is reused, and only an edit of the producing code recomputes. The context lives under its own producer fingerprint.
+The store is a cache: deleting it never changes an output byte. stderr reports ``fit: computed K, reused M``.
+Alpha themes are read from the registry (atx-impl/strategies/alphas/registry.json) when it exists. ``--max-seconds``
 and ``--max-new-candidates`` stop cleanly between candidates with exit code 3 and publish nothing; a
 rerun computes only what is missing. Outputs are byte-identical whichever path produced them.
 ``ew-theme-aim-v1`` adds a per-candidate aim record (rho at the exact lags, g, half-sample gains, per-decision
 coverage) next to the factor record, bound the same way (script SHA-256, context digest, cache payload); the
 other compositions never read or write it. The exit-3 JSON on stdout (``status: incomplete``) is the
 partial-pass marker: rerun the same command to resume.
+Report only (v8 C-2): ``--report-f-theta`` adds ``f_theta`` / ``f_theta_hac_t`` to every admission row (the factor
+return of the theta-averaged sleeve book, theta .05, horizon_stats.theta_book_returns, over live TRAIN decisions, and
+its Newey-West t) and a ``report_only`` block; they are computed after every verdict and nothing reads them back.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -139,6 +143,7 @@ for _var in ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "OMP_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
 import argparse  # noqa: E402
+import functools  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
@@ -149,7 +154,18 @@ import time  # noqa: E402
 
 import numpy as np  # noqa: E402
 
+# Generic machinery shared with the field builder (atx-engine/tools): AST producer fingerprints and the record store.
+ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
+if str(ENGINE_TOOLS) not in sys.path:
+    sys.path.append(str(ENGINE_TOOLS))
+# This directory (engine_tools.py, horizon_stats.py) also when the fitter is loaded by path (spec_from_file_location).
+IMPL_TOOLS = Path(__file__).resolve().parent
+if str(IMPL_TOOLS) not in sys.path:
+    sys.path.append(str(IMPL_TOOLS))
+import code_fingerprint  # noqa: E402
+import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
+import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -215,8 +231,8 @@ CACHE_SCHEMA_V2 = "atx.dsl-candidate-signal/v2"
 SIGNAL_KEY_SCHEMA = "atx.dsl-candidate-signal-key/v2"
 CACHE_LAYOUT = "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"
 VM_EVAL_MODE = "ResearchFast;full-historical-asof-member-mask"
-FACTOR_SCHEMA = "atx.fit-candidate-factor/v1"
-WORK_KEY_SCHEMA = "atx.fit-work-key/v1"
+FACTOR_SCHEMA = "atx.fit-candidate-factor/v1"  # pre-v8 WorkStore records (book_monitor still reads that layout)
+FACTOR_KEY_SCHEMA, AIM_KEY_SCHEMA = "atx.fit-candidate-factor/v2", "atx.fit-candidate-aim/v2"  # v8 store record keys
 CONTEXT_SCHEMA = "atx.fit-price-risk-context/v1"
 # Bump these when anything that changes the context or a factor record changes: old work is ignored.
 CONTEXT_SEMANTICS = ("price-risk-v1;beta252-min126-all-instrument-market;vol63-min32;ladv63;"
@@ -242,7 +258,7 @@ SUMMARY_LIMIT = 16 << 20  # a runner summary.json grows with the library; bounde
 # sidecars recorded by exactly these engine builds; every other identity lives in DIR/<identity>/.
 LEGACY_VM_IDENTITY = "dslvm1_clang18.1"
 LEGACY_ENGINE_SHAS = ("429cbe43d275a49ad3cae89dfa8aa591846a2e4f", "6d85ac2a8b7aca6f28cea0e651cdcfc55d77aa29")
-# Any edit to this file changes this SHA; cached contexts/records bound to another one are recomputed.
+# This file's SHA-256: provenance in the outputs only. Store records bind the producer fingerprints below instead.
 SCRIPT_SHA256 = hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
 TAU_LIMIT, RHO_LIMIT = 0.70, 0.70
 MIN_FIT_DAYS, MIN_COMMON_DAYS = 250, 250
@@ -254,6 +270,15 @@ MIN_RETURN_PAIRS, MIN_NAMES, CLIP_Z = 126, 50, 5.0
 VOL_MIN_COUNT = max(2, (VOL_WINDOW + 1) // 2)
 GUARD_ABS_LOG, GUARD_EXCESS_LOG = 1.5, 0.10
 MIN_PIVOT, RELATIVE_SD_FLOOR, MIN_RESIDUAL_FRACTION = 1e-8, 1e-12, 1e-9
+# v8 C-1 store: one root per role and research window, shared by every library; a record is keyed by the signal payload
+# SHA-256 and the producer fingerprint (AST closure) of the code that computes it, never by this file's SHA-256.
+FACTOR_PRODUCERS = ("factor_record", "Context", "PricePanel", "neutralization_basis", "centered_tied_ranks")
+HORIZON_PRODUCERS = ("theta_book_returns",)  # in horizon_stats.py: its code is part of every factor record's key
+CONTEXT_PRODUCERS = ("Context",)
+AIM_PRODUCERS = ("aim_record", "Context")
+# Alpha registry (task A-1, atx.alpha-registry/v1): when present, its themes table is the admissible theme list.
+REGISTRY_PATH = Path(__file__).resolve().parents[1] / "strategies" / "alphas" / "registry.json"
+REGISTRY_SCHEMA = "atx.alpha-registry/v1"
 
 
 class FitError(Exception):
@@ -298,6 +323,49 @@ def unique_json(data: bytes, what: str):
         return json.loads(data.decode("utf-8"), object_pairs_hook=pairs)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FitError(f"{what}: JSON parse: {exc}") from exc
+
+
+def window_id() -> str:
+    """The research window id (contract K4) that names the store root: ``research_window.WINDOW_ID`` (task W0-1)."""
+    return rw.WINDOW_ID
+
+
+@functools.lru_cache(maxsize=None)
+def producer_fingerprint(funcs: tuple) -> str:
+    """SHA-256 of the normalised AST of ``funcs`` in this file and every module-level definition they reach by name
+    (``code_fingerprint``, as prepare_research_fields.py keys its field groups): comments, docstrings and formatting do
+    not count; any code, constant or import the producers reach does."""
+    try:
+        return code_fingerprint.fingerprint(Path(__file__).resolve().read_bytes(), tuple(funcs))
+    except ValueError as exc:
+        raise FitError(f"producer fingerprint: {exc}") from exc
+
+
+@functools.lru_cache(maxsize=None)
+def horizon_fingerprint() -> str:
+    """The producer fingerprint of HORIZON_PRODUCERS in horizon_stats.py (a factor record reads that module's code)."""
+    try:
+        return code_fingerprint.fingerprint(Path(horizon_stats.__file__).resolve().read_bytes(), HORIZON_PRODUCERS)
+    except ValueError as exc:
+        raise FitError(f"horizon_stats fingerprint: {exc}") from exc
+
+
+def prior_themes() -> tuple[tuple, str]:
+    """(admissible prior-metadata themes, their source): the alpha registry's ``themes`` table (task A-1) when the
+    registry file exists, else the in-file list V4_THEMES + V7_APPENDED_THEMES."""
+    if not REGISTRY_PATH.is_file():
+        return PRIOR_THEMES, "in-file list"
+    j = unique_json(REGISTRY_PATH.read_bytes(), "alpha registry")
+    themes = j.get("themes") if isinstance(j, dict) else None
+    require(isinstance(j, dict) and j.get("schema") == REGISTRY_SCHEMA and isinstance(themes, dict) and themes and
+            all(isinstance(t, str) and t for t in themes), f"alpha registry: {REGISTRY_PATH} is not an "
+                                                            f"{REGISTRY_SCHEMA} document with a themes table")
+    return tuple(themes), f"registry {REGISTRY_PATH.name}"
+
+
+def appended_themes(themes: tuple) -> tuple:
+    """The admissible themes beyond the v4 list, in their declared order (themes_preregistered appends the used ones)."""
+    return tuple(t for t in themes if t not in V4_THEMES)
 
 
 # ---------------------------------------------------------------- pinned inputs
@@ -368,6 +436,7 @@ def load_priors(library_path: Path, library_sha: str, recipe_path: Path | None, 
                 require(row["id"] not in by_id, f"recipe: duplicate per-candidate row {row['id']}")
                 by_id[row["id"]] = row
             sources.append(("recipe", by_id))
+    known, known_source = prior_themes()
     themes, tiers, prior_signs, used = [], [], [], set()
     for c in library:
         vals = {}
@@ -382,9 +451,9 @@ def load_priors(library_path: Path, library_sha: str, recipe_path: Path | None, 
                     used.add(name)
         missing = [key for key in PRIOR_KEYS if key not in vals]
         require(not missing, f"prior metadata: {c['id']} lacks {missing}")
-        require(isinstance(vals["theme"], str) and vals["theme"] in PRIOR_THEMES,
+        require(isinstance(vals["theme"], str) and vals["theme"] in known,
                 f"prior metadata: theme of {c['id']} is not a pre-registered v4 theme {V4_THEMES} or appended "
-                f"theme {V7_APPENDED_THEMES}")
+                f"theme {appended_themes(known)} ({known_source})")
         sign = vals["prior_sign"]
         require(type(sign) is int and sign in (1, 0, -1), f"prior metadata: prior_sign of {c['id']}")
         require(sign != -1, f"prior metadata: prior_sign -1 for {c['id']}; v4 embeds the prior sign in the DSL (+1)")
@@ -398,7 +467,7 @@ def load_priors(library_path: Path, library_sha: str, recipe_path: Path | None, 
     rank = [TIER_GRADES.index(t) if isinstance(t, str) else t for t in tiers]
     return {"themes": themes, "tiers": tiers, "tier_rank": rank, "prior_signs": prior_signs,
             "source": "+".join(n for n in ("library", "recipe") if n in used), "recipe_sha256": recipe_sha
-            if recipe_path is not None else None,
+            if recipe_path is not None else None, "appended_themes": appended_themes(known),
             "tier_order": list(TIER_GRADES) if isinstance(tiers[0], str) else "integer-ascending"}
 
 
@@ -650,27 +719,6 @@ def signal_key_sha256(vm_identity: str, role: "RoleManifest", dsl_sha: str, fiel
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def work_key_text(role_sha: str, vm_identity: str, screen: str, dsl_sha: str, entry: dict) -> str:
-    """The WorkStore key of one candidate's records (``atx.fit-work-key/v1``, one ``\\n``-terminated line each).
-
-    The content key of the signal (role, VM identity, DSL, the field payloads it reads) plus the screen id and
-    the semantics tag. A field candidate of a v1 runner summary lists no field payload map, so its key carries
-    the fields manifest SHA instead (coarser: any fields change recomputes it)."""
-    lines = [WORK_KEY_SCHEMA, f"semantics_tag={SEMANTICS_TAG}", f"role_manifest_sha256={role_sha}",
-             f"vm_identity={vm_identity}", f"screen={screen}", f"dsl_sha256={dsl_sha}"]
-    fields = entry.get("field_payload_sha256")
-    text = "".join(f"{line}\n" for line in lines)
-    if fields is None:
-        require(is_hash(entry.get("fields_manifest_sha256")), f"work key: {entry.get('id')} has no field payload "
-                                                              "map and no fields manifest")
-        return text + f"fields_manifest_sha256={entry['fields_manifest_sha256']}\n"
-    return text + field_lines(fields)
-
-
-def work_key_sha256(role_sha: str, vm_identity: str, screen: str, dsl_sha: str, entry: dict) -> str:
-    return hashlib.sha256(work_key_text(role_sha, vm_identity, screen, dsl_sha, entry).encode()).hexdigest()
-
-
 def load_candidate_signal(entry: dict, role: "RoleManifest") -> np.ndarray:
     """The verified raw (unoriented) VM signal, date-major (dates, instruments)."""
     cid, size = entry["id"], role.dates * role.instruments * 8
@@ -840,8 +888,9 @@ class Context:
     """Per-decision neutralization bases and forward returns, shared by every candidate.
 
     ``digest`` is the SHA-256 of the canonical metadata. That metadata holds the per-array SHA-256s,
-    the role manifest SHA, the window and the refused decisions. A factor record names the digest of
-    the context it was computed under.
+    the role manifest SHA, the window and the refused decisions: a pure content digest. A factor record
+    names the digest of the context it was computed under; the code that built a stored context is
+    bound by the store path (WorkStore.context_dir, the CONTEXT_PRODUCERS fingerprint).
     """
 
     ARRAYS = (("columns", "<i8"), ("used", "u1"), ("basis", "<f8"), ("forward", "<f8"), ("used_rows", "<i8"))
@@ -853,7 +902,6 @@ class Context:
         self.basis, self.forward, self.used_rows = arrays["basis"], arrays["forward"], arrays["used_rows"]
         if meta is None:
             meta = {"schema": CONTEXT_SCHEMA, "semantics": CONTEXT_SEMANTICS, "role_manifest_sha256": role_sha,
-                    "script_sha256": SCRIPT_SHA256,
                     "decision_begin": begin, "decision_end_exclusive": end, "refused": refused,
                     "arrays": {name: {"dtype": dtype, "shape": list(arrays[name].shape),
                                       "sha256": hashlib.sha256(self._bytes(name, dtype)).hexdigest()}
@@ -938,7 +986,8 @@ class Context:
         try:
             meta = json.loads((directory / "context.json").read_bytes())
             if (meta.get("schema") != CONTEXT_SCHEMA or meta.get("semantics") != CONTEXT_SEMANTICS or
-                    meta.get("script_sha256") != SCRIPT_SHA256 or meta.get("role_manifest_sha256") != role.sha or meta.get("decision_begin") != role.begin or
+                    "script_sha256" in meta or meta.get("role_manifest_sha256") != role.sha or
+                    meta.get("decision_begin") != role.begin or
                     meta.get("decision_end_exclusive") != role.end or not isinstance(meta.get("refused"), list)):
                 return None
             arrays = {}
@@ -990,27 +1039,24 @@ def seal(body: dict) -> dict:
     return out
 
 
-def factor_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm_identity: str) -> dict:
-    """The candidate's unsigned factor series (None on flat days), tau and live count."""
+def factor_record(context: Context, signal: np.ndarray) -> dict:
+    """The candidate's unsigned factor series (None on flat days), tau and live count: a function of the context and
+    the signal bytes only (the store keys it by the signal payload SHA-256 and FACTOR_PRODUCERS)."""
     q, live = context.book(signal, 1)
     f = context.factor_returns(q)
-    return seal({
-        "schema": FACTOR_SCHEMA, "context_semantics": CONTEXT_SEMANTICS, "factor_semantics": FACTOR_SEMANTICS,
-        "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
-        "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
-        "work_key_sha256": entry["work_key_sha256"], "field_payload_sha256": entry["field_payload_sha256"],
-        "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
-        "decisions": int(len(f)), "f_unsigned": [float(x) if ok else None for x, ok in zip(f, live)],
-        "tau": standalone_turnover(q), "live_decisions": int(live.sum()),
-        "context_refused": context.refused, "context_used_rows_unrefused": context.used_rows_summary()})
+    f_theta, live_theta = horizon_stats.theta_book_returns(q, context.forward)  # report only (C-2): never gates
+    return {"context_sha256": context.digest, "decisions": int(len(f)),
+            "f_unsigned": [float(x) if ok else None for x, ok in zip(f, live)],
+            "tau": standalone_turnover(q), "live_decisions": int(live.sum()),
+            "context_refused": context.refused, "context_used_rows_unrefused": context.used_rows_summary(),
+            "f_theta_unsigned": [float(x) if ok else None for x, ok in zip(f_theta, live_theta)]}
 
 
 def _floats_or_none(values) -> list:
     return [float(x) if math.isfinite(x) else None for x in values]
 
 
-def aim_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm_identity: str,
-               train_mask: np.ndarray) -> dict:
+def aim_record(context: Context, signal: np.ndarray, train_mask: np.ndarray) -> dict:
     """The candidate's ew-theme-aim-v1 inputs (R4'): rho at the exact lags, g, half-sample gains, coverage.
 
     ``train_mask`` flags the context decisions inside TRAIN; every other decision's ranks are NaN. Only
@@ -1025,35 +1071,22 @@ def aim_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm
     z[~np.asarray(train_mask, dtype=bool)] = np.nan
     profile = aim_profile(z, train_mask)
     del z
-    return seal({
-        "schema": AIM_SCHEMA, "aim_semantics": AIM_SEMANTICS, "context_semantics": CONTEXT_SEMANTICS,
-        "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
-        "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
-        "work_key_sha256": entry["work_key_sha256"], "field_payload_sha256": entry["field_payload_sha256"],
-        "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
-        "decisions": int(context.end - context.begin), "theta": AIM_THETA, "lags": list(AIM_LAGS),
-        "rho": _floats_or_none(profile["rho"]), "rho_half": [_floats_or_none(r) for r in profile["rho_half"]],
-        "gain": profile["gain"], "gain_unclipped": profile["gain_unclipped"], "gain_half": profile["gain_half"],
-        "rank_decisions": profile["rank_decisions"], "half_split_decision": profile["half_split_decision"],
-        "coverage": [float(x) for x in coverage]})
+    return {"context_sha256": context.digest, "decisions": int(context.end - context.begin), "theta": AIM_THETA,
+            "lags": list(AIM_LAGS), "rho": _floats_or_none(profile["rho"]),
+            "rho_half": [_floats_or_none(r) for r in profile["rho_half"]], "gain": profile["gain"],
+            "gain_unclipped": profile["gain_unclipped"], "gain_half": profile["gain_half"],
+            "rank_decisions": profile["rank_decisions"], "half_split_decision": profile["half_split_decision"],
+            "coverage": [float(x) for x in coverage]}
 
 
-def aim_record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
+def aim_record_valid(j, role: RoleManifest) -> bool:
+    """Shape and type checks of a stored aim record body (its key and content SHA are checked by the record store)."""
     try:
-        if not isinstance(j, dict):
-            return False
-        body = {k: v for k, v in j.items() if k != "content_sha256"}
         t = role.end - role.begin
         rho, halves, cov, half = j.get("rho"), j.get("rho_half"), j.get("coverage"), j.get("gain_half")
         opt = lambda xs: isinstance(xs, list) and len(xs) == len(AIM_LAGS) and all(  # noqa: E731
             v is None or type(v) is float for v in xs)
-        return (j.get("content_sha256") == hashlib.sha256(canonical_compact(body)).hexdigest() and
-                j.get("schema") == AIM_SCHEMA and j.get("aim_semantics") == AIM_SEMANTICS and
-                j.get("context_semantics") == CONTEXT_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
-                j.get("role_manifest_sha256") == role.sha and
-                j.get("cache_payload_sha256") == entry["payload_sha256"] and
-                j.get("work_key_sha256") == entry["work_key_sha256"] and
-                j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
+        return (is_hash(j.get("context_sha256")) and
                 j.get("decisions") == t and j.get("theta") == AIM_THETA and j.get("lags") == AIM_LAGS and
                 opt(rho) and isinstance(halves, list) and len(halves) == 2 and all(opt(h) for h in halves) and
                 type(j.get("gain")) is float and AIM_GAIN_MIN <= j["gain"] <= 1.0 and
@@ -1061,77 +1094,95 @@ def aim_record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bo
                 all(type(g) is float for g in half) and type(j.get("rank_decisions")) is int and
                 type(j.get("half_split_decision")) is int and isinstance(cov, list) and len(cov) == t and
                 all(type(v) is float for v in cov))
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, AttributeError):
         return False
 
 
-def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
+def record_valid(j, role: RoleManifest) -> bool:
+    """Shape and type checks of a stored factor record body (its key and content SHA are checked by the store)."""
     try:
-        if not isinstance(j, dict):
-            return False
-        body = {k: v for k, v in j.items() if k != "content_sha256"}
-        f = j.get("f_unsigned")
-        return (j.get("content_sha256") == hashlib.sha256(canonical_compact(body)).hexdigest() and
-                j.get("schema") == FACTOR_SCHEMA and j.get("context_semantics") == CONTEXT_SEMANTICS and
-                j.get("factor_semantics") == FACTOR_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
-                j.get("role_manifest_sha256") == role.sha and
-                j.get("cache_payload_sha256") == entry["payload_sha256"] and
-                j.get("work_key_sha256") == entry["work_key_sha256"] and
-                j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
-                j.get("decisions") == role.end - role.begin and isinstance(f, list) and len(f) == role.end - role.begin
-                and all(v is None or type(v) is float for v in f) and type(j.get("tau")) is float and
-                type(j.get("live_decisions")) is int)
-    except (ValueError, TypeError):
+        f, t = j.get("f_unsigned"), role.end - role.begin
+        g = j.get("f_theta_unsigned")
+        return (is_hash(j.get("context_sha256")) and j.get("decisions") == t and isinstance(f, list) and
+                len(f) == t and all(v is None or type(v) is float for v in f) and type(j.get("tau")) is float and
+                isinstance(g, list) and len(g) == t and all(v is None or type(v) is float for v in g) and
+                type(j.get("live_decisions")) is int and isinstance(j.get("context_refused"), list) and
+                isinstance(j.get("context_used_rows_unrefused"), dict))
+    except (ValueError, TypeError, AttributeError):
         return False
 
 
 class WorkStore:
-    """Persistent incremental state: ``<work>/<train-sha>/<semantics-tag>/{context,factors}``.
+    """Persistent incremental state shared by every library fitted on one role and research window (v8 C-1).
 
-    Records are named by their work key: ``factors/k-<work key sha256>.json`` (``work_key_text``). Records of
-    the pre-v7 layout (``factors/<payload sha>[.f-<fields sha>].json``) are never read."""
+    Root ``<work>/<role sha16>-<window id>/``: ``context/<CONTEXT_PRODUCERS fingerprint>/`` holds the price-risk
+    context; the record store (record_store.RecordStore) holds kinds ``factor`` and ``aim``. A record's key is the
+    signal payload SHA-256 and the producer fingerprint of the code that computes it (FACTOR_PRODUCERS,
+    AIM_PRODUCERS), plus the full role SHA-256, the window id, the semantics tag and, for aim records, the TRAIN
+    window: the same signal in another library, another screen or another VM build is a hit; another role, window or
+    producing code is a miss. A record carries its key and is verified on read. The store is a cache: deleting any
+    part of it at any time only costs a recompute, and a hit and a recompute give the same record."""
 
-    def __init__(self, root: Path, role: RoleManifest, vm_identity: str):
-        self.role, self.vm_identity = role, vm_identity
-        self.base = Path(root) / role.sha / SEMANTICS_TAG
-        self.factors = self.base / "factors"
-        self.context_dir = self.base / "context"
-        self.aims = self.base / f"aim-{AIM_TAG}"  # ew-theme-aim-v1 only; other compositions never touch it
+    def __init__(self, root: Path, role: RoleManifest, window: str | None = None):
+        self.role, self.window = role, window if window is not None else window_id()
+        self.base = Path(root) / f"{role.sha[:16]}-{self.window}"
+        self.records = record_store.RecordStore(self.base)
+        self.context_dir = self.base / "context" / producer_fingerprint(CONTEXT_PRODUCERS)
 
-    def _path(self, work_key: str, directory: Path | None = None) -> Path:
-        require(is_hash(work_key), "work store: malformed work key")
-        return (directory or self.factors) / f"k-{work_key}.json"
+    def key(self, entry: dict, kind: str) -> dict:
+        key = {"schema": FACTOR_KEY_SCHEMA if kind == "factor" else AIM_KEY_SCHEMA, "semantics_tag": SEMANTICS_TAG,
+               "role_manifest_sha256": self.role.sha, "window_id": self.window,
+               "cache_payload_sha256": entry["payload_sha256"],
+               "producer_fingerprint": producer_fingerprint(FACTOR_PRODUCERS if kind == "factor" else AIM_PRODUCERS)}
+        if kind == "aim":
+            key.update(aim_tag=AIM_TAG, train_window_ns=[FIT_BEGIN_NS, TRAIN_END_NS])
+        else:
+            key["horizon_fingerprint"] = horizon_fingerprint()
+        return key
 
     def get(self, entry: dict) -> dict | None:
-        try:
-            j = json.loads(self._path(entry["work_key_sha256"]).read_bytes())
-        except (OSError, ValueError):
-            return None
-        return j if record_valid(j, entry, self.role, self.vm_identity) else None
+        j = self.records.get("factor", self.key(entry, "factor"))
+        return j if j is not None and record_valid(j, self.role) else None
 
     def get_aim(self, entry: dict) -> dict | None:
-        try:
-            j = json.loads(self._path(entry["work_key_sha256"], self.aims).read_bytes())
-        except (OSError, ValueError):
-            return None
-        return j if aim_record_valid(j, entry, self.role, self.vm_identity) else None
+        j = self.records.get("aim", self.key(entry, "aim"))
+        return j if j is not None and aim_record_valid(j, self.role) else None
 
-    def put(self, record: dict, directory: Path | None = None) -> None:
-        directory = directory or self.factors
-        directory.mkdir(parents=True, exist_ok=True)
-        path = self._path(record["work_key_sha256"], directory)
-        partial = path.with_name(path.name + f".partial-{os.getpid()}")
-        write_synced(partial, canonical_compact(record))
-        os.replace(partial, path)
+    def put(self, entry: dict, record: dict) -> None:
+        self.records.put("factor", self.key(entry, "factor"), record)
 
-    def put_aim(self, record: dict) -> None:
-        self.put(record, self.aims)
+    def put_aim(self, entry: dict, record: dict) -> None:
+        self.records.put("aim", self.key(entry, "aim"), record)
 
     def load_context(self) -> Context | None:
         return Context.load(self.context_dir, self.role)
 
     def save_context(self, context: Context) -> None:
         context.save(self.context_dir)
+
+
+def stored_factor_series(work: Path, role_sha: str, payloads: dict, context_sha: str | None = None) -> dict:
+    """{id: unsigned factor series} from the v8 store under ``work`` for the role ``role_sha`` (any window, any
+    producer), matched by cache payload SHA-256 (``payloads``: id -> SHA) and, when given, by the context digest the
+    fit recorded (admission.json inputs.context_sha256). Records are verified by the record store; the first match in
+    path order wins."""
+    by_payload: dict = {}
+    for base in sorted(Path(work).glob(f"{role_sha[:16]}-*")):
+        for path in sorted((base / "factor").glob("*.json")):
+            try:
+                key = json.loads(path.read_bytes()).get("key")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if not (isinstance(key, dict) and key.get("schema") == FACTOR_KEY_SCHEMA and
+                    key.get("role_manifest_sha256") == role_sha):
+                continue
+            body = record_store.RecordStore(base).get("factor", key)
+            if (body is None or not isinstance(body.get("f_unsigned"), list) or
+                    (context_sha is not None and body.get("context_sha256") != context_sha)):
+                continue
+            by_payload.setdefault(key.get("cache_payload_sha256"), body["f_unsigned"])
+    return {cid: np.array([math.nan if v is None else v for v in by_payload[sha]], dtype=float)
+            for cid, sha in payloads.items() if sha in by_payload}
 
 
 def standalone_turnover(q: np.ndarray) -> float:
@@ -1350,6 +1401,33 @@ def newey_west_t(x: np.ndarray, lag: int = NW_LAG) -> float | None:
     return float(x.mean()) / math.sqrt(lrv / n)
 
 
+F_THETA_COLUMNS = ("f_theta", "f_theta_hac_t")
+
+
+def f_theta_columns(record: dict, sign: int, train_mask: np.ndarray) -> dict:
+    """Report only (v8 C-2, --report-f-theta): mean and Newey-West t of s_k * f_theta over live TRAIN decisions, the
+    factor return of the theta-averaged sleeve book (horizon_stats.theta_book_returns); None for s_k = 0. Computed
+    after every verdict is final; no check, order or weight reads it."""
+    if sign == 0:
+        return {"f_theta": None, "f_theta_hac_t": None}
+    g = np.array([np.nan if v is None else v for v in record["f_theta_unsigned"]], dtype=np.float64)
+    x = sign * g[np.isfinite(g) & np.asarray(train_mask, dtype=bool)]
+    return {"f_theta": float(x.mean()) if x.size else None, "f_theta_hac_t": newey_west_t(x)}
+
+
+def f_theta_report() -> dict:
+    """admission.json ``report_only`` block written with --report-f-theta."""
+    return {"f_theta": {
+        "theta": horizon_stats.HORIZON_THETA,
+        "book": "b(d)=(1-theta)*b(d-1)+theta*q_k(d), b=0 before the first scored decision; q_k the unsigned "
+                "neutralized gross-1 standalone book of the factor record",
+        "series": "f_theta(d)=sum_i b(d)_i*r_i(d+2) (the factor record's forward return); flat b -> not live",
+        "columns": {"f_theta": "mean of s_k*f_theta over live TRAIN decisions",
+                    "f_theta_hac_t": f"Newey-West t (Bartlett, lag {NW_LAG}, autocovariances / n) of the same series"},
+        "window_ns": [FIT_BEGIN_NS, TRAIN_END_NS],
+        "use": "report only: gates nothing, selects nothing, weights nothing (v8-prereg rule 8)"}}
+
+
 def screen_v4(factors: np.ndarray, taus: list[float], ids: list[str], train_mask: np.ndarray,
               tier_rank: list[int], prior_signs: list[int], cost_tau_limit: float | None = None) -> list[dict]:
     """v4-prior-v1 decisions for factor rows oriented by the DSL (s_k = +1; NaN = flat day).
@@ -1554,12 +1632,10 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
     """Every candidate's factor record (and, with ``aim``, its aim record) under one context.
 
     Returns (records, computed now, reused, aim records or None). Without ``aim`` this is exactly the
-    pre-v5 path: no aim record is read, computed or written.
+    pre-v5 path: no aim record is read, computed or written. Records are keyed by the signal payload
+    SHA-256 and the producer fingerprint (WorkStore), so ``vm_identity`` and the screen do not enter them.
     """
-    screen = getattr(args, "screen", "none")
-    for e, cand in zip(entries, library):  # the records' key: content key of the signal + screen (work_key_text)
-        e["work_key_sha256"] = work_key_sha256(role.sha, vm_identity, screen, cand["dsl_sha256"], e)
-    store = WorkStore(args.work_dir, role, vm_identity) if args.work_dir else None
+    store = WorkStore(args.work_dir, role) if args.work_dir else None
     records: list[dict | None] = [store.get(e) if store else None for e in entries]
     aims: list[dict | None] | None = ([store.get_aim(e) if store else None for e in entries] if aim else None)
     digests = {r["context_sha256"] for r in records if r is not None}
@@ -1594,13 +1670,13 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
         tick = time.perf_counter()
         signal = load_candidate_signal(entries[k], role)
         if stale(records[k]):
-            records[k] = factor_record(context, signal, entries[k], library[k], vm_identity)
+            records[k] = factor_record(context, signal)
             if store:
-                store.put(records[k])  # type: ignore[arg-type]
+                store.put(entries[k], records[k])  # type: ignore[arg-type]
         if aims is not None and stale(aims[k]):
-            aims[k] = aim_record(context, signal, entries[k], library[k], vm_identity, train_mask)
+            aims[k] = aim_record(context, signal, train_mask)
             if store:
-                store.put_aim(aims[k])  # type: ignore[arg-type]
+                store.put_aim(entries[k], aims[k])  # type: ignore[arg-type]
         del signal
         computed += 1
         slowest = max(slowest, time.perf_counter() - tick)
@@ -1660,6 +1736,8 @@ def fit(args, log=None) -> tuple[int, dict]:
     decision_sessions = role.sessions[role.begin:role.end]
     fit_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < HOLD_BEGIN_NS)
     hold_mask = (decision_sessions >= HOLD_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    report_f_theta = getattr(args, "report_f_theta", False)
     script_sha = SCRIPT_SHA256
     inputs = {"library_sha256": args.library_sha256, "train_manifest_sha256": args.train_sha256,
               "role_source_sha256": role.source_sha256, "orientations_sha256": args.orientations_sha256,
@@ -1691,6 +1769,8 @@ def fit(args, log=None) -> tuple[int, dict]:
                                "hold_sharpe": row["hold_sharpe"], "max_abs_rho": row["max_abs_rho"],
                                "max_abs_rho_with": row["max_abs_rho_with"], "low_overlap_with": row["low_overlap_with"],
                                "cache_payload_sha256": shas[k]})
+            if report_f_theta:  # report only, after the verdicts
+                candidates[-1].update(f_theta_columns(records[k], row["s_k"], train_mask))
         admitted_order = sorted(eligible, key=lambda k: rows[k]["admission_rank"])
         admission = {
             "schema": ADMISSION_SCHEMA, "screen": SCREEN_ID,
@@ -1710,8 +1790,10 @@ def fit(args, log=None) -> tuple[int, dict]:
             "admitted": [ids[k] for k in admitted_order],
             "sign_conflicts": [c["id"] for c in candidates if not c["sign_agrees"]],
             "candidates": candidates}
+        if report_f_theta:
+            admission["report_only"] = f_theta_report()
         files[OUTPUT_ADMISSION] = canonical_bytes(admission)
-        files[OUTPUT_ADMISSION_CSV] = admission_csv(candidates)
+        files[OUTPUT_ADMISSION_CSV] = admission_csv(candidates, CSV_COLUMNS + (F_THETA_COLUMNS if report_f_theta else ()))
         admission_sha = hashlib.sha256(files[OUTPUT_ADMISSION]).hexdigest()
         status_of = {k: ("fitted" if r["status"] == "admitted" else r["status"]) for k, r in enumerate(rows)}
     else:
@@ -1832,6 +1914,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
     train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    report_f_theta = getattr(args, "report_f_theta", False)
     inputs = dict(inputs, recipe_sha256=priors["recipe_sha256"], prior_metadata_source=priors["source"])
     rows = screen_v4(factors, taus, ids, train_mask, priors["tier_rank"], prior_signs,
                      cost_tau_limit=V42_COST_TAU_LIMIT if v2 else None)
@@ -1849,6 +1932,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                            "low_overlap_with": row["low_overlap_with"], "cache_payload_sha256": shas[k]})
         if v2:
             candidates[-1]["tau_over_cost_limit"] = row["tau"] > V42_COST_TAU_LIMIT
+        if report_f_theta:  # report only, after the verdicts
+            candidates[-1].update(f_theta_columns(records[k], row["s_k"], train_mask))
     admitted_order = sorted((k for k, r in enumerate(rows) if r["status"] == "admitted"),
                             key=lambda k: rows[k]["admission_rank"])
     hac = {"estimator": "newey-west", "kernel": "bartlett", "lag": NW_LAG, "autocovariance_divisor": "n",
@@ -1879,8 +1964,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             cost_tau_limit=V42_COST_TAU_LIMIT,
             cost_screen="standalone TRAIN tau_k > cost_tau_limit -> reject_turnover_cost (v4.2 R3': cost consistency "
                         "at $1bn; structural, not performance); checked after turnover, before veto")
+    if report_f_theta:
+        admission["report_only"] = f_theta_report()
     files = {OUTPUT_ADMISSION: canonical_bytes(admission),
-             OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS)}
+             OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS + (F_THETA_COLUMNS if report_f_theta
+                                                                               else ()))}
     admission_sha = hashlib.sha256(files[OUTPUT_ADMISSION]).hexdigest()
 
     zero_filled = np.where(np.isnan(factors), 0.0, factors)
@@ -1971,7 +2059,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             "composition": composition_text,
             "themes": theme_table, "themes_present": sorted(theme_table),
             "themes_declared": sorted(set(themes)),
-            "themes_preregistered": list(V4_THEMES) + [t for t in V7_APPENDED_THEMES if t in themes],
+            "themes_preregistered": list(V4_THEMES) + [t for t in priors["appended_themes"] if t in themes],
             "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
             "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
             "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
@@ -2130,14 +2218,19 @@ def parse_args(argv):
     p.add_argument("--recipe-sha256", default=None)
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     p.add_argument("--work-dir", type=Path, default=None,
-                   help="persistent incremental state (context + per-candidate factor records keyed by the work key: "
-                        "role, VM identity, screen, DSL SHA and field payload SHAs; aim records for ew-theme-aim-v1); "
-                        "stderr reports 'fit: computed K, reused M'")
+                   help="store base shared by every library (e.g. build-equity/fit-work): state lives in "
+                        "W/<role sha16>-<window id>/ (context + per-candidate factor records keyed by the signal payload "
+                        "SHA-256 and the producer fingerprint; aim records for ew-theme-aim-v1); a cache, safe to "
+                        "delete; stderr reports 'fit: computed K, reused M'")
     p.add_argument("--max-seconds", type=float, default=None,
                    help="soft budget: stop cleanly before a candidate that would overrun it (exit 3, stdout "
                         "{status: incomplete, partial: true}; completed candidates persist, rerun resumes)")
     p.add_argument("--max-new-candidates", type=int, default=None,
                    help="compute at most N missing candidates this run (exit 3 if more remain)")
+    p.add_argument("--report-f-theta", action="store_true",
+                   help="report only (v8 C-2): add f_theta and f_theta_hac_t (factor return of the theta-averaged "
+                        "sleeve book, theta .05, and its Newey-West t) to every admission row and a report_only block; "
+                        "no check, order or weight reads them; off: admission bytes unchanged")
     return p.parse_args(argv)
 
 

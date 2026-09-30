@@ -1,6 +1,6 @@
 """Synthetic postimplementation fixtures for nav_summ.py (T31: netting ratio, construction stats, paired dSR).
 
-Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider .superpowers/sdd/mega-alpha-20260926/studies/test_nav_summ.py
+Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-impl/tools/test_nav_summ.py
 
 No real data: every NAV dir is written here (summary.json + a daily CSV carrying only the columns nav_summ reads,
 named as strategy_nav_replay.cpp writes them).

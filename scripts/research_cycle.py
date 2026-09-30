@@ -2,10 +2,43 @@
 """One research cycle driven by a spec file (platform v7 lane L2): replaces the hand-copied vNN_train.sh ladders.
 
   research_cycle.py plan   SPEC [--root R] [--suffix S [--keep-fields]] [--attempt PHASE=N ...] [--reuse-fields DIR]
-                                [--ledger PATH] [--runner-override KEY=VALUE ...] [--lines-only]
+                                [--ledger PATH] [--runner-override KEY=VALUE ...] [--lines-only] [--no-git] [--screen]
   research_cycle.py run    SPEC [same options] [--stop-after PHASE]
   research_cycle.py status SPEC [same options]
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
+  research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
+                              --parent v71 [--name v72] [--plan-json PATH] [--root R]   (research_add_alpha.py)
+  research_cycle.py cache gc --keep-referenced-by SPEC [SPEC ...] [--under DIR] [--root R] [--apply]
+                           (research_gc.py: stores no listed spec uses; deleted only with --apply)
+  research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
+                           (research_ledger.py: a window-change line that is no trial; count 0, no cell)
+
+Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
+  --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's
+                  marginal verb, contract K6, when offered), gate; then stop before w and write cycle_verdict.json
+                  (admission and marginal rows, per-phase seconds and peak MiB) into the cycle dir
+                  <out_root or build-equity>/cycle-<name>[-suffix]/; a full run writes it too (with the paired dSR,
+                  DSR N and PBO blocks read from nav_summ --json / --pbo-json when the spec sets "verdict": true)
+  --no-git        (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
+                  --root R --no-git, and a relative tool path (runner, builder, fit, card, monitor, summ scripts) that
+                  is absent under R resolves to this worktree's copy
+  clean check     scoped to the code pathspec (research_tree.CODE_PATHSPEC), before every executed phase; dirty paths
+                  outside it (lane reports under .superpowers/) are listed, never a stop
+  stage inputs    sec_identity_bridge + earnings_calendar + insider + sec_filings (all four or none; the three stage dirs
+                  share one parent -> --sec-stages), thirteenf, ftd, regsho_threshold, security_master, short_volume_ext
+                  (--<key> DIR --<key>-sha256 PIN) and reuse_fields (--reuse DIR --reuse-sha256 PIN, --reuse-hardlink
+                  with fields.reuse_hardlink) reach the fields builder
+  summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
+                  construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
+                  research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
+  build           "equity" | "equity-rel": resolves exes (defaults or bare names) and env_path_prepend (BUILDS)
+  out_root        a root-relative dir every relative output name is placed under; ic.cache and fit.work_dir, when
+                  omitted, derive to <out_root or build-equity>/{candidate-cache,fit-work}/<role sha16>-<window id>
+                  (shared, content-keyed; never suffixed)
+  runner.phases   {phase: {seconds, max_rss_mib, min_free_mib}} per-phase caps over the runner's; absent, the OD-2 rule
+                  table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates)
+  receipts        "every-phase": the direct phases (fields, check, monitor, summ) run through the bounded runner too
+  ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields)
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -82,11 +115,18 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import research_ledger  # noqa: E402
+import research_tree  # noqa: E402
+from cycle_verdict import SUMM_JSON, PBO_JSON, write_verdict as _write_verdict  # noqa: E402
 
 SCHEMA = "atx.research-cycle-spec/v1"
-PHASES = ("fields", "check", "ref", "u", "fit", "card", "gate", "w", "nav", "monitor", "summ")
+PHASES = ("fields", "check", "ref", "u", "fit", "card", "marginal", "gate", "w", "nav", "monitor", "summ")
 COMPARE_SUFFIX = "-compare"            # the internal identity step after phase P is "P-compare"
 STOP_PHASES = PHASES + tuple(p + COMPARE_SUFFIX for p in PHASES)
 COMPARE_MODES = ("file", "csv-rows", "json-rows")
@@ -97,12 +137,32 @@ FIT_INCOMPLETE = 3                     # fit_composition_weights.py: "incomplete
 MAX_ATTEMPTS = 9
 GATE_REQUIRE = ("all", "any")          # gate.require: every listed candidate admitted, or at least one
 REQUIRED = {"schema", "name", "python", "runner", "inputs"}
+SEC_STAGE_INPUTS = ("earnings_calendar", "insider", "sec_filings")   # dirs <ROOT>/<key>/ -> --sec-stages ROOT
+SEC_INPUTS = ("sec_identity_bridge",) + SEC_STAGE_INPUTS            # all four or none (L9 design)
+HOLDINGS_INPUTS = ("thirteenf", "ftd", "regsho_threshold", "security_master", "short_volume_ext")  # --<key> DIR
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
-              "reference_orientations", "reference_daily_ic")
+              "reference_orientations", "reference_daily_ic") + SEC_INPUTS + HOLDINGS_INPUTS + ("reuse_fields",)
 OPERAND = re.compile(r"\{(input|out):([A-Za-z0-9_]+)\}")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
                 ("finra_short_volume", "--finra-short-volume"))
+DSR_FROM_LEDGER = "ledger+1"           # summ.dsr_n: resolved at scoring time from the trial ledger
+DEFAULT_OUT_ROOT = "build-equity"      # derived cache / fit roots and the cycle dir when the spec has no out_root
+RECEIPT_MODES = ("every-phase",)       # spec "receipts": the direct phases run through the bounded runner too
+CAP_KEYS = ("seconds", "max_rss_mib", "min_free_mib")
+# spec "build": the exe dir and the DLL dirs (env_path_prepend) of each research build tree (platform review P-4)
+BUILDS = {
+    "equity": {"bin": "build-equity/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+                                                   "C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
+    "equity-rel": {"bin": "build-equity-rel/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
+}
+EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
+# Default per-phase runner caps, applied when the spec's runner.phases does not name the phase. OD-2 (owner ruling
+# E-1, 2026-09-29): the IC passes get 2,560 MiB and 300 s on a role longer than 1,200 dates (the 3-year role has
+# 1,155, the 4-year role about 1,405); every other phase keeps the runner's own caps.
+RUNNER_PHASE_RULES = (
+    {"phases": ("u", "w"), "when": {"role_dates_over": 1200}, "caps": {"seconds": 300, "max_rss_mib": 2560}},
+)
 
 
 class CycleError(Exception):
@@ -160,13 +220,15 @@ def validate_spec(spec: dict) -> None:
     r = spec["runner"]
     if not all(k in r for k in ("script", "seconds", "max_rss_mib", "min_free_mib")):
         raise CycleError("spec runner needs script, seconds, max_rss_mib, min_free_mib", EXIT_USAGE)
-    need = {"fields": ("output",), "static_check": ("script",), "ic": ("u_output", "cache", "flags"),
-            "fit": ("script", "output", "work_dir", "flags"), "gate": ("admitted",), "nav": ("output", "rule", "flags"),
+    validate_runner_phases(r.get("phases"))
+    need = {"fields": ("output",), "static_check": ("script",), "ic": ("u_output", "flags"),
+            "fit": ("script", "output", "flags"), "gate": ("admitted",), "nav": ("output", "rule", "flags"),
             "summ": ("script", "dsr_n"), "card": ("script", "output"), "monitor": ("script", "output"),
-            "ref": ("output", "combined")}
+            "ref": ("output", "combined"), "marginal": ("output",)}
     for section, keys in need.items():
         if section in spec and not all(k in spec[section] for k in keys):
             raise CycleError(f"spec {section} needs {', '.join(keys)}", EXIT_USAGE)
+    validate_v8_keys(spec)
     f = spec.get("fields")
     if f is not None and not f.get("manifest_sha256") and not all(k in f for k in ("builder", "list")):
         raise CycleError("spec fields needs builder and list (a built fields dir) or manifest_sha256 (as built)",
@@ -184,7 +246,8 @@ def validate_spec(spec: dict) -> None:
     if ("fit" in spec and "ic" not in spec) or ("gate" in spec and "fit" not in spec) or \
             (("ic" in spec or "static_check" in spec) and "fields" not in spec):
         raise CycleError("spec: fit needs ic; gate needs fit; ic and static_check need fields", EXIT_USAGE)
-    if ("ic" in spec and "ic" not in spec.get("exes", {})) or ("nav" in spec and "nav" not in spec.get("exes", {})):
+    exes = effective_exes(spec)
+    if ("ic" in spec and "ic" not in exes) or ("nav" in spec and "nav" not in exes):
         raise CycleError("spec exes needs ic (for ic) and nav (for nav)", EXIT_USAGE)
     for key in ("role", "library"):
         if "ic" in spec and key not in spec["inputs"]:
@@ -203,6 +266,9 @@ def validate_spec(spec: dict) -> None:
     if "cells_from_ledger" in sm and (sm["cells_from_ledger"] is not True or "cells" in sm or not sm.get("ledger")):
         raise CycleError("spec summ.cells_from_ledger must be true, excludes summ.cells and needs summ.ledger",
                          EXIT_USAGE)
+    if sm.get("dsr_n") == DSR_FROM_LEDGER and (not sm.get("ledger") or "cells" in sm):
+        raise CycleError(f"spec summ.dsr_n \"{DSR_FROM_LEDGER}\" needs summ.ledger and excludes summ.cells",
+                         EXIT_USAGE)
     validate_compare(spec)
     cells = sm.get("cells")
     if cells is not None:
@@ -213,6 +279,67 @@ def validate_spec(spec: dict) -> None:
         if len(cells) + 1 != spec["summ"]["dsr_n"]:
             raise CycleError(f"spec summ.cells lists {len(cells)} prior cells + this one, dsr_n is "
                              f"{spec['summ']['dsr_n']}: the listed grid must be the declared N trials", EXIT_USAGE)
+
+
+def validate_runner_phases(phases) -> None:
+    if phases is None:
+        return
+    if not isinstance(phases, dict) or not all(p in PHASES and isinstance(c, dict) and c and set(c) <= set(CAP_KEYS)
+                                               and all(type(v) in (int, float) and v > 0 for v in c.values())
+                                               for p, c in phases.items()):
+        raise CycleError(f"spec runner.phases must map a phase to caps {{{', '.join(CAP_KEYS)}}} (positive numbers)",
+                         EXIT_USAGE)
+
+
+def validate_v8_keys(spec: dict) -> None:
+    """The platform v8 spec keys: build, out_root, receipts, verdict, marginal, the stage inputs, reuse_fields."""
+    if "build" in spec and spec["build"] not in BUILDS:
+        raise CycleError(f"spec build must be one of {', '.join(BUILDS)}", EXIT_USAGE)
+    if "out_root" in spec and (not isinstance(spec["out_root"], str) or not spec["out_root"] or
+                               Path(spec["out_root"]).is_absolute()):
+        raise CycleError("spec out_root must be a root-relative directory (the bounded runner writes only inside "
+                         "its root)", EXIT_USAGE)
+    if spec.get("receipts", RECEIPT_MODES[0]) not in RECEIPT_MODES:
+        raise CycleError(f"spec receipts must be one of {', '.join(RECEIPT_MODES)}", EXIT_USAGE)
+    if "verdict" in spec and type(spec["verdict"]) is not bool:
+        raise CycleError("spec verdict must be true or false", EXIT_USAGE)
+    if "marginal" in spec and ("ic" not in spec or spec["marginal"].get("pool", "reference_combined")
+                               not in spec["inputs"]):
+        raise CycleError("spec marginal needs ic and inputs.<marginal.pool> (default reference_combined: the parent's "
+                         "combined signal)", EXIT_USAGE)
+    if "ledger_copy" in spec.get("summ", {}) and not (isinstance(spec["summ"]["ledger_copy"], str) and
+                                                        spec["summ"].get("ledger")):
+        raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
+    inputs = spec["inputs"]
+    sec = [k for k in SEC_INPUTS if k in inputs]
+    if sec and len(sec) != len(SEC_INPUTS):
+        raise CycleError(f"spec inputs: the SEC stage inputs {', '.join(SEC_INPUTS)} come together (missing "
+                         f"{', '.join(k for k in SEC_INPUTS if k not in inputs)})", EXIT_USAGE)
+    if sec:
+        dirs = [Path(input_dir(inputs[k])) for k in SEC_STAGE_INPUTS]
+        if any(d.name != k for d, k in zip(dirs, SEC_STAGE_INPUTS)) or len({d.parent.as_posix() for d in dirs}) != 1:
+            raise CycleError("spec inputs: earnings_calendar, insider and sec_filings must be the directories of those "
+                             "names under one alpha-panel root (--sec-stages)", EXIT_USAGE)
+    if "reuse_fields" in inputs and ("fields" not in spec or spec["fields"].get("manifest_sha256")):
+        raise CycleError("spec inputs.reuse_fields needs a built fields section (not an as-built manifest_sha256)",
+                         EXIT_USAGE)
+
+
+def input_dir(item: dict) -> str:
+    """A pinned input's directory: its dir key, else the parent of its path."""
+    return item.get("dir") or str(Path(item["path"]).parent).replace("\\", "/")
+
+
+def effective_exes(spec: dict) -> dict:
+    """spec exes with the build key applied: a missing exe defaults to the build's bin dir, a bare name goes in it."""
+    exes = dict(spec.get("exes") or {})
+    b = BUILDS.get(spec.get("build"))
+    if b is None:
+        return exes
+    for key, name in EXE_NAMES.items():
+        value = exes.get(key, name)
+        exes[key] = value if "/" in value or "\\" in value else f"{b['bin']}/{value}"
+    return exes
 
 
 def phase_present(spec: dict, phase: str) -> bool:
@@ -333,27 +460,104 @@ class Step:
         return self.state == "done"
 
 
+def exe_capabilities(exe: str, root: Path, env: dict | None = None) -> frozenset:
+    """What the IC exe offers beyond the v7 CLI, read from its --help text: "no-composition" (B-1's u-pass flag) and
+    "marginal" (F-2's marginal IC verb, contract K6). A missing or failing exe offers nothing (never a hard stop)."""
+    p = Path(exe) if Path(exe).is_absolute() else Path(root) / exe
+    try:
+        done = subprocess.run([str(p), "--help"], cwd=root, env=env, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    text = (done.stdout or "") + (done.stderr or "")
+    return frozenset(name for name, found in (("no-composition", "--no-composition" in text),
+                                              ("marginal", re.search(r"\bmarginal\b", text) is not None)) if found)
+
+
 class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
-                 keep_fields: bool = False, runner_overrides: dict | None = None):
+                 keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
+                 screen: bool = False, capabilities=None, verify: bool = True):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and spec.get("fields", {}).get("manifest_sha256"):
             raise CycleError("--reuse-fields: the spec pins an as-built fields dir (fields.manifest_sha256); nothing "
                              "is built", EXIT_USAGE)
+        if reuse_fields and "reuse_fields" in spec["inputs"]:
+            raise CycleError("--reuse-fields: the spec pins inputs.reuse_fields already", EXIT_USAGE)
+        if no_git and research_tree.no_git_refusal(res.root):
+            raise CycleError(research_tree.no_git_refusal(res.root), EXIT_USAGE)
         spec = json.loads(json.dumps(spec))
         spec["runner"].update(runner_overrides or {})
+        if "build" in spec:
+            spec["exes"] = effective_exes(spec)
+            spec.setdefault("env_path_prepend", list(BUILDS[spec["build"]]["path"]))
         self.spec, self.res, self.suffix, self.keep_fields = spec, res, suffix, keep_fields
         self.runner_overrides = dict(runner_overrides or {})
         self.attempts = dict(attempts or {})
         self.reuse_fields, self.ledger, self.spec_path = reuse_fields, ledger, spec_path
+        self.no_git, self.screen = no_git, screen
+        self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
-        self.pins = self.verify_inputs()
+        # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
+        self.pins = self.verify_inputs() if verify else {}
 
     # -------------------------------------------------------------- names and pins
     def out(self, name: str) -> str:
+        """An output name: placed under out_root (when set, for a relative name), then suffixed."""
+        name = self.placed(name)
         return f"{name}-{self.suffix}" if self.suffix else name
+
+    def placed(self, name: str) -> str:
+        root = self.spec.get("out_root")
+        return f"{root.rstrip('/')}/{name}" if root and not Path(name).is_absolute() else name
+
+    def out_base(self) -> str:
+        return self.spec.get("out_root") or DEFAULT_OUT_ROOT
+
+    def cycle_dir(self) -> str:
+        """Where the cycle's own files go: the always-run phases' receipts and cycle_verdict.json."""
+        name = f"{self.out_base().rstrip('/')}/cycle-{self.spec['name']}"
+        return f"{name}-{self.suffix}" if self.suffix else name
+
+    def derived_root(self, kind: str) -> str:
+        """A shared, content-keyed store derived from the role pin and the research window (never suffixed)."""
+        try:
+            wid = window_id()
+        except LookupError as exc:
+            raise CycleError(f"spec omits the {kind} root and it cannot be derived: {exc}", EXIT_USAGE) from exc
+        role = self.pin("role") if "role" in self.pins else (      # verify=False: the spec's pin, else the file's
+            self.spec["inputs"]["role"].get("sha256") or self.res.sha(self.ipath("role")))
+        if not role:
+            raise CycleError(f"spec omits the {kind} root and the role pin is unknown", EXIT_USAGE)
+        return f"{self.out_base().rstrip('/')}/{kind}/{role[:16]}-{wid}"
+
+    def cache_dir(self) -> str:
+        ic = self.spec["ic"]
+        return self.out(ic["cache"]) if "cache" in ic else self.derived_root("candidate-cache")
+
+    def fit_work_dir(self) -> str:
+        fit = self.spec["fit"]
+        return self.out(fit["work_dir"]) if "work_dir" in fit else self.derived_root("fit-work")
+
+    def tool(self, rel: str) -> str:
+        """A spec script path; with --no-git a relative one absent under the root is this worktree's copy."""
+        if self.no_git and not Path(rel).is_absolute() and not self.res.path(rel).exists() and \
+                (research_tree.REPO / rel).is_file():
+            return (research_tree.REPO / rel).as_posix()
+        return rel
+
+    def capabilities(self) -> frozenset:
+        if self._capabilities is None:
+            self._capabilities = exe_capabilities(self.spec["exes"]["ic"], self.res.root, self.env())
+        return frozenset(self._capabilities)
+
+    def env(self) -> dict:
+        env = dict(os.environ)
+        pre = self.spec.get("env_path_prepend") or []
+        if pre:
+            env["PATH"] = os.pathsep.join([str(Path(p)) for p in pre] + [env.get("PATH", "")])
+        return env
 
     def verify_inputs(self) -> dict:
         """{key: (path, sha, how)}; a locked pin must equal the file's SHA-256 (else exit 3)."""
@@ -385,20 +589,64 @@ class Cycle:
         return self.spec["inputs"][key]["path"]
 
     def idir(self, key: str) -> str:
-        item = self.spec["inputs"][key]
-        return item.get("dir") or str(Path(item["path"]).parent).replace("\\", "/")
+        return input_dir(self.spec["inputs"][key])
 
     def rt_sha(self, rel: str) -> str:
         """An intermediate pin: the SHA-256 of a file an earlier phase wrote (placeholder until it exists)."""
         return self.res.sha(rel) or placeholder(rel)
 
-    def runner(self, run_dir: str, binds: list[str]) -> list[str]:
+    def role_counts(self) -> dict:
+        """{role_dates, scored_sessions} from the role manifest ("dates", "score_begin", "score_end"); {} when the
+        manifest is not on disk (hash-only mode) or lacks them."""
+        doc = self.res.read_json(self.ipath("role")) if "role" in self.spec["inputs"] else None
+        if not isinstance(doc, dict) or type(doc.get("dates")) is not int:
+            return {}
+        out = {"role_dates": doc["dates"]}
+        if type(doc.get("score_begin")) is int:
+            out["scored_sessions"] = doc.get("score_end", doc["dates"]) - doc["score_begin"]
+        return out
+
+    def phase_caps(self, phase: str) -> dict:
+        """The runner caps of one phase: the runner's own, then the spec's runner.phases entry (else the first
+        matching RUNNER_PHASE_RULES rule), then the command line's --runner-override (which wins)."""
         r = self.spec["runner"]
-        argv = [self.py, r["script"], "--seconds", str(r["seconds"]), "--max-rss-mib", str(r["max_rss_mib"]),
-                "--min-free-mib", str(r["min_free_mib"]), "--output", run_dir]
+        caps = {k: r[k] for k in CAP_KEYS}
+        spec_caps = (r.get("phases") or {}).get(phase)
+        if spec_caps is None:
+            counts = None
+            for rule in RUNNER_PHASE_RULES:
+                if phase not in rule["phases"]:
+                    continue
+                counts = self.role_counts() if counts is None else counts
+                if all(counts.get(key[:-len("_over")], -1) > limit for key, limit in rule["when"].items()):
+                    spec_caps = rule["caps"]
+                    break
+        caps.update(spec_caps or {})
+        caps.update({k: v for k, v in self.runner_overrides.items() if k in CAP_KEYS})
+        return caps
+
+    def runner(self, run_dir: str, binds: list[str], phase: str | None = None) -> list[str]:
+        r = self.spec["runner"]
+        caps = self.phase_caps(phase) if phase else {k: r[k] for k in CAP_KEYS}
+        argv = [self.py, self.tool(r["script"])]
+        if self.no_git:
+            argv += ["--root", str(self.res.root), "--no-git"]
+        argv += ["--seconds", str(caps["seconds"]), "--max-rss-mib", str(caps["max_rss_mib"]),
+                 "--min-free-mib", str(caps["min_free_mib"]), "--output", run_dir]
         for b in binds:
             argv += ["--bind", b]
         return argv + ["--"]
+
+    def always_run_dir(self, phase: str) -> str:
+        """A fresh receipt dir of an always-run phase (check, summ): <cycle dir>/<phase>-run<k>, k the first unused."""
+        base = f"{self.cycle_dir()}/{phase}-run"
+        k = 1
+        while self.res.exists_dir(f"{base}{k}"):
+            k += 1
+        return f"{base}{k}"
+
+    def every_phase(self) -> bool:
+        return self.spec.get("receipts") == "every-phase"
 
     # -------------------------------------------------------------- phase states
     def receipt(self, run_dir: str | None) -> dict | None:
@@ -449,33 +697,37 @@ class Cycle:
         lib, lib_sha = self.ipath("library"), self.pin("library")
         fd = ""                                  # validate_spec: ic and the static check need fields
         if "fields" in s:
-            as_built = bool(s["fields"].get("manifest_sha256"))  # a pinned input dir: never suffixed or rebuilt
-            fd = s["fields"]["output"] if self.keep_fields or as_built else self.out(s["fields"]["output"])
+            f_out = s["fields"]["output"]
+            if s["fields"].get("manifest_sha256"):  # a pinned input dir: never placed, suffixed or rebuilt
+                fd = f_out
+            else:
+                fd = self.placed(f_out) if self.keep_fields else self.out(f_out)
         fdm = f"{fd}/manifest.json" if fd else ""
         if "fields" in s:
             out.append(self.fields_step(fd, fdm, role_sha))
         if "static_check" in s:
             sc = s["static_check"]
-            argv = [self.py, sc["script"], "--manifest", fdm, "--library", lib, "--baseline",
+            argv = [self.py, self.tool(sc["script"]), "--manifest", fdm, "--library", lib, "--baseline",
                     self.ipath("baseline_library"), *sc.get("args", [])]
             if sc.get("expect_added"):
                 argv += ["--expect-added", ",".join(sc["expect_added"])]
-            out.append(Step("check", "direct", argv, state="always", note="library static check"))
+            out.append(self.always_step("check", argv, [self.tool(sc["script"])], "library static check"))
         if "ref" in s:
-            ref = s["ref"]
-            nav = dict(s["nav"], **{k: ref[k] for k in ("rule", "leverage", "flags") if k in ref})
-            out.append(self.nav_step("ref", self.out(ref["output"]), self.ipath(ref["combined"]),
-                                     self.pin(ref["combined"]), nav, fdm, role_m, role_sha))
+            out.append(self.ref_step(fdm, role_m, role_sha))
         u_out = ""
         if "ic" in s:
             ic = s["ic"]
             base = self.out(ic["u_output"])
             n, state, note = self.ic_attempt("u", base)
             u_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
-            argv = self.runner(run_dir, [s["exes"]["ic"], lib, role_m, fdm]) + [
+            flags = list(ic["flags"])
+            if self.screen and "no-composition" in self.capabilities() and "--no-composition" not in flags:
+                # B-1: a screen skips the u-pass blend nobody reads (and so has no combined signal to save)
+                flags = [x for x in flags if x != "--save-combined"] + ["--no-composition"]
+            argv = self.runner(run_dir, [s["exes"]["ic"], lib, role_m, fdm], "u") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", u_out,
-                *ic["flags"], "--candidate-cache", self.out(ic["cache"])]
+                *flags, "--candidate-cache", self.cache_dir()]
             out.append(Step("u", "bounded", argv, u_out, run_dir, n, state, note))
         w_dir = ""
         if "fit" in s:
@@ -486,6 +738,8 @@ class Cycle:
             step = self.card_step(u_out, w_dir, role_m, role_sha)
             card_out = step.output
             out.append(step)
+        if "marginal" in s:
+            out.append(self.marginal_step(lib))
         if "gate" in s:
             out.append(Step("gate", "internal", None, state="always",
                             note=f"admission read-out of {w_dir}/admission.json"))
@@ -496,10 +750,10 @@ class Cycle:
             n, state, note = self.ic_attempt("w", base)
             wt_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
             weights = f"{w_dir}/composition_weights.json"
-            argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights]) + [
+            argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights], "w") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", wt_out,
-                *ic["flags"], "--candidate-cache", self.out(ic["cache"]), "--composition-weights", weights,
+                *ic["flags"], "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
                 "--composition-weights-sha256", self.rt_sha(weights)]
             out.append(Step("w", "bounded", argv, wt_out, run_dir, n, state, note))
         n_out = ""
@@ -510,26 +764,91 @@ class Cycle:
         if "monitor" in s:
             out.append(self.monitor_step(u_out, w_dir, card_out))
         if "summ" in s:
-            sm = s["summ"]
-            argv = [self.py, sm["script"]]
-            if w_dir:
-                argv += ["--weights", f"{w_dir}/composition_weights.json"]
-            if "reference_cell" in s["inputs"]:
-                argv += ["--reference", self.idir("reference_cell")]
-            cells = self.ledger_cells(n_out) if sm.get("cells_from_ledger") else (sm.get("cells") or [])
-            if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
-                argv += [*cells, n_out]
-            argv += ["--dsr-n", str(sm["dsr_n"]), *sm.get("extra", [])]
-            ledger = self.ledger or sm.get("ledger")
-            if ledger:
-                argv += ["--ledger", ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
-            if not cells:
-                argv.append(n_out)
-            out.append(Step("summ", "direct", argv, state="always", note="nav_summ vs the reference cell"))
-        return self.with_compares(out)
+            out.append(self.summ_step(w_dir, n_out))
+        steps = self.with_compares(out)
+        if self.screen:  # u -> fit -> card -> marginal -> gate; the identity NAV and the cell wait for the full run
+            for st in steps:
+                if st.phase in ("ref", "ref" + COMPARE_SUFFIX, "w", "nav", "monitor", "summ") or \
+                        (st.phase.endswith(COMPARE_SUFFIX) and st.phase[:-len(COMPARE_SUFFIX)] in ("w", "nav")):
+                    st.kind, st.state, st.note = "skipped", "skipped", "screen: runs with the full `run`"
+        return steps
+
+    def always_step(self, phase: str, argv: list[str], binds: list[str], note: str) -> Step:
+        """An always-run process phase (check, summ): direct, or bounded with a fresh receipt dir (every-phase)."""
+        if not self.every_phase():
+            return Step(phase, "direct", argv, state="always", note=note)
+        run_dir = self.always_run_dir(phase)
+        return Step(phase, "bounded", self.runner(run_dir, binds, phase) + argv, None, run_dir, None, "always", note)
+
+    def ref_step(self, fdm: str, role_m: str, role_sha: str) -> Step:
+        s, ref = self.spec, self.spec["ref"]
+        nav = dict(s["nav"], **{k: ref[k] for k in ("rule", "leverage", "flags") if k in ref})
+        step = self.nav_step("ref", self.out(ref["output"]), self.ipath(ref["combined"]), self.pin(ref["combined"]),
+                             nav, fdm, role_m, role_sha)
+        if "baseline_fields" in s["inputs"] and step.state != "done" and \
+                self.res.sha(fdm) == self.pin("baseline_fields"):
+            step.kind, step.state = "skipped", "skipped"
+            step.note = (f"fields manifest {fdm} equals the parent's (inputs.baseline_fields): the reference "
+                         "construction is identical by construction")
+        return step
+
+    def marginal_step(self, lib: str) -> Step:
+        """F-2's marginal IC verb (contract K6) over the u pass cache, residualised on the pool (the parent's combined
+        signal); skipped with a note when the IC exe does not offer it."""
+        m, ic_exe = self.spec["marginal"], self.spec["exes"]["ic"]
+        m_out = self.out(m["output"])
+        run_dir = f"{m_out}-run"
+        pool = self.ipath(m.get("pool", "reference_combined"))
+        argv = self.runner(run_dir, [ic_exe, lib, pool], "marginal") + [
+            ic_exe, "marginal", "--candidate-cache", self.cache_dir(), "--library", lib, "--pool", pool,
+            *m.get("flags", []), "--output", m_out]
+        if "marginal" not in self.capabilities():
+            return Step("marginal", "skipped", argv, m_out, run_dir, None, "skipped",
+                        "the IC exe offers no marginal verb (contract K6, lane F): skipped")
+        return Step("marginal", "bounded", argv, m_out, run_dir, None, *self.single_state(
+            m_out, run_dir, f"{m_out}/marginal_ic.json"))
+
+    def single_state(self, out: str, run_dir: str, marker: str) -> tuple[str, str]:
+        """(state, note) of a single-attempt output: done iff its marker file exists; a partial output is a stop."""
+        if self.res.exists(marker):
+            return "done", ""
+        if self.res.exists_dir(out) or self.res.exists_dir(run_dir):
+            return "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
+        return "pending", ""
+
+    def summ_step(self, w_dir: str, n_out: str) -> Step:
+        s, sm = self.spec, self.spec["summ"]
+        argv = [self.py, self.tool(sm["script"])]
+        if w_dir:
+            argv += ["--weights", f"{w_dir}/composition_weights.json"]
+        if "reference_cell" in s["inputs"]:
+            argv += ["--reference", self.idir("reference_cell")]
+        from_ledger = sm.get("cells_from_ledger") or sm["dsr_n"] == DSR_FROM_LEDGER
+        prior, ledger_n = self.ledger_cells(n_out) if from_ledger else (None, None)
+        cells = prior if sm.get("cells_from_ledger") else (sm.get("cells") or [])
+        if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
+            argv += [*cells, n_out]
+        argv += ["--dsr-n", str(self.dsr_n(ledger_n)), *sm.get("extra", [])]
+        if s.get("verdict"):
+            argv += ["--json", f"{self.cycle_dir()}/{SUMM_JSON}"]
+            if "--pbo" in sm.get("extra", []):
+                argv += ["--pbo-json", f"{self.cycle_dir()}/{PBO_JSON}"]
+        ledger = self.ledger or sm.get("ledger")
+        if ledger:
+            argv += ["--ledger", ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
+        if not cells:
+            argv.append(n_out)
+        return self.always_step("summ", argv, [self.tool(sm["script"])], "nav_summ vs the reference cell")
+
+    def dsr_n(self, ledger_n: int | None) -> int:
+        """summ.dsr_n: the declared integer, or "ledger+1" = the ledger's N (research_ledger.ledger_n: the defect-rule
+        construction trials + 1 for this cell when not yet ledgered, nav_summ's N; resolved at scoring time)."""
+        n = self.spec["summ"]["dsr_n"]
+        return ledger_n if n == DSR_FROM_LEDGER else n
 
     def with_compares(self, steps: list[Step]) -> list[Step]:
-        """The spec's compare items as one internal "<after>-compare" step right after each named phase."""
+        """The spec's compare items as one internal "<after>-compare" step right after each named phase (skipped with
+        it when that phase is skipped)."""
         items = self.spec.get("compare") or []
         if not items:
             return steps
@@ -544,7 +863,12 @@ class Cycle:
                     for c in items if c["after"] == st.phase]
             if mine:
                 note = "identity: " + "; ".join(f"{c['name']} [{c['mode']}]" for c in mine) + " (a miss hard-stops)"
-                done.append(Step(st.phase + COMPARE_SUFFIX, "compare", None, state="always", note=note, checks=mine))
+                if st.state == "skipped":
+                    done.append(Step(st.phase + COMPARE_SUFFIX, "skipped", None, state="skipped",
+                                     note=f"{st.phase} skipped: {note}", checks=mine))
+                else:
+                    done.append(Step(st.phase + COMPARE_SUFFIX, "compare", None, state="always", note=note,
+                                     checks=mine))
         return done
 
     def nav_step(self, phase: str, n_out: str, comb: str, comb_sha: str, nav: dict, fdm: str, role_m: str,
@@ -554,7 +878,7 @@ class Cycle:
         k = self.attempts.get("nav", 1) if phase == "nav" else 1
         run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
         flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
-        argv = self.runner(run_dir, [s["exes"]["nav"], comb, fdm]) + [
+        argv = self.runner(run_dir, [s["exes"]["nav"], comb, fdm], phase) + [
             s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m,
             "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
             "--rule", nav["rule"], *flags]
@@ -566,33 +890,27 @@ class Cycle:
             state, note = "pending", "" if phase == "nav" else "reference construction on this cycle's fields"
         return Step(phase, "bounded", argv, n_out, run_dir, k, state, note)
 
-    def ledger_cells(self, n_out: str) -> list[str]:
-        """summ.cells_from_ledger: every ledger line's cell, in ledger order, this cycle's own cell excluded; the
-        declared dsr_n must be their count + 1 (cross-cell N = ledger lines + 1)."""
+    def ledger_cells(self, n_out: str) -> tuple[list[str], int]:
+        """summ.cells_from_ledger / dsr_n "ledger+1": (every trial line's cell, in ledger order, this cycle's own cell
+        excluded (protocol lines are no trial: research_ledger), the ledger's N); N is backtest_integrity.ledger_n
+        (the defect rule, + 1 for this cell when not yet ledgered: nav_summ's N) and an integer dsr_n must equal it."""
         sm = self.spec["summ"]
         rel = self.ledger or sm["ledger"]
         p = self.res.path(rel)
         if not p.is_file():
             raise CycleError(f"summ.cells_from_ledger: no trial ledger at {rel}", EXIT_PIN)
-        cells = []
-        for k, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                cell = json.loads(line).get("cell")
-            except (ValueError, AttributeError) as exc:
-                raise CycleError(f"summ.cells_from_ledger: {rel} line {k} is not a JSON object", EXIT_PIN) from exc
-            if not isinstance(cell, str) or not cell:
-                raise CycleError(f"summ.cells_from_ledger: {rel} line {k} has no cell", EXIT_PIN)
-            cells.append(cell)
+        try:
+            cells = research_ledger.cells(p)
+            n = research_ledger.ledger_n(p, n_out, self.res.path(n_out))
+        except research_ledger.LedgerError as exc:
+            raise CycleError(f"summ.cells_from_ledger: {exc}", EXIT_PIN) from exc
         prior = [c for c in cells if c != n_out]
         if len(set(prior)) != len(prior):
             raise CycleError(f"summ.cells_from_ledger: {rel} lists a cell twice", EXIT_PIN)
-        if len(prior) + 1 != sm["dsr_n"]:
+        if sm["dsr_n"] != DSR_FROM_LEDGER and n != sm["dsr_n"]:
             raise CycleError(f"summ.cells_from_ledger: {rel} lists {len(prior)} prior cells, so cross-cell N = "
-                             f"{len(prior) + 1}, but the spec declares summ.dsr_n {sm['dsr_n']}: set summ.dsr_n to "
-                             f"{len(prior) + 1}", EXIT_PIN)
-        return prior
+                             f"{n}, but the spec declares summ.dsr_n {sm['dsr_n']}: set summ.dsr_n to {n}", EXIT_PIN)
+        return prior, n
 
     def fields_step(self, fd: str, fdm: str, role_sha: str) -> Step:
         f, s = self.spec["fields"], self.spec
@@ -607,8 +925,8 @@ class Cycle:
             else:
                 state, note = "done", f"as built, manifest sha256 {pin} (pinned)"
             return Step("fields", "pinned", None, fd, None, None, state, note)
-        argv = [self.py, f["builder"], "--role", self.idir("role"), "--role-sha256", role_sha, "--output", fd,
-                "--fields", ",".join(f["list"])]
+        argv = [self.py, self.tool(f["builder"]), "--role", self.idir("role"), "--role-sha256", role_sha, "--output",
+                fd, "--fields", ",".join(f["list"])]
         for key, flag in SOURCE_FLAGS:
             if key in f.get("sources", {}):
                 argv += [flag, f["sources"][key]]
@@ -619,10 +937,15 @@ class Cycle:
             argv += ["--fund-events", self.idir("fund_events"), "--fund-events-sha256", self.pin("fund_events")]
         if "sic_events" in s["inputs"]:  # U2: the grp_* SIC table = the role's (atx-db fundamentals stage manifest)
             argv += ["--sic-events", self.idir("sic_events"), "--sic-events-sha256", self.pin("sic_events")]
+        argv += self.stage_flags()
         if "fund_lag_sessions" in f:
             argv += ["--fund-lag-sessions", str(f["fund_lag_sessions"])]
         argv += ["--max-rss-mib", str(f.get("max_rss_mib", 1536)), "--max-seconds", str(f.get("max_seconds", 1800))]
-        if self.reuse_fields:
+        if "reuse_fields" in s["inputs"]:  # a pinned prior fields dir (L9 design)
+            argv += ["--reuse", self.idir("reuse_fields"), "--reuse-sha256", self.pin("reuse_fields")]
+            if f.get("reuse_hardlink"):
+                argv.append("--reuse-hardlink")
+        elif self.reuse_fields:
             rel = f"{self.reuse_fields.rstrip('/')}/manifest.json"
             sha = self.res.sha(rel)
             if sha is None:
@@ -634,35 +957,57 @@ class Cycle:
             state, note = "failed", f"partial fields dir exists (never overwritten): {fd}; use a fresh --suffix"
         else:
             state, note = "pending", ""
+        if self.every_phase():
+            run_dir = f"{fd}-run"
+            if state == "pending" and self.res.exists_dir(run_dir):
+                state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
+            return Step("fields", "bounded", self.runner(run_dir, [self.tool(f["builder"]), self.ipath("role")], "fields") + argv,
+                        fd, run_dir, None, state, note)
         return Step("fields", "direct", argv, fd, None, None, state, note)
+
+    def stage_flags(self) -> list[str]:
+        """The L9 stage inputs as fields-builder flags: the four SEC inputs (--sec-stages = the three stage dirs'
+        common parent, --sec-identity-bridge, and one pin per stage) and the five holdings stages (--<key> DIR
+        --<key>-sha256 PIN), in INPUT_KEYS order."""
+        inputs, argv = self.spec["inputs"], []
+        if "sec_identity_bridge" in inputs:
+            argv += ["--sec-stages", str(Path(self.idir(SEC_STAGE_INPUTS[0])).parent).replace("\\", "/"),
+                     "--sec-identity-bridge", self.idir("sec_identity_bridge"), "--sec-identity-bridge-sha256",
+                     self.pin("sec_identity_bridge")]
+            for key in SEC_STAGE_INPUTS:
+                argv += [f"--{key.replace('_', '-')}-sha256", self.pin(key)]
+        for key in HOLDINGS_INPUTS:
+            if key in inputs:
+                flag = f"--{key.replace('_', '-')}"
+                argv += [flag, self.idir(key), f"{flag}-sha256", self.pin(key)]
+        return argv
 
     def card_step(self, u_out: str, w_dir: str, role_m: str, role_sha: str) -> Step:
         c = self.spec["card"]
         c_out = self.out(c["output"])
         run_dir = f"{c_out}-run"
         adm = f"{w_dir}/admission.json"
-        argv = self.runner(run_dir, [c["script"], role_m, f"{u_out}/summary.json", adm]) + [
-            self.py, c["script"], "--u-pass", u_out, "--train", role_m, "--train-sha256", role_sha, "--admission", adm,
-            "--admission-sha256", self.rt_sha(adm), *c.get("flags", []), "--output", c_out]
-        if self.res.exists(f"{c_out}/index.json"):
-            state, note = "done", ""
-        elif self.res.exists_dir(c_out) or self.res.exists_dir(run_dir):
-            state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
-        else:
-            state, note = "pending", ""
-        return Step("card", "bounded", argv, c_out, run_dir, None, state, note)
+        argv = self.runner(run_dir, [self.tool(c["script"]), role_m, f"{u_out}/summary.json", adm], "card") + [
+            self.py, self.tool(c["script"]), "--u-pass", u_out, "--train", role_m, "--train-sha256", role_sha,
+            "--admission", adm, "--admission-sha256", self.rt_sha(adm), *c.get("flags", []), "--output", c_out]
+        return Step("card", "bounded", argv, c_out, run_dir, None, *self.single_state(c_out, run_dir,
+                                                                                      f"{c_out}/index.json"))
 
     def monitor_step(self, u_out: str, w_dir: str, card_out: str) -> Step:
-        m, fit = self.spec["monitor"], self.spec["fit"]
+        m = self.spec["monitor"]
         m_out = self.out(m["output"])
-        argv = [self.py, m["script"], "--baseline", "--daily-ic", f"{u_out}/train_daily_ic.csv", "--admission",
-                f"{w_dir}/admission.json", "--fit-work", self.out(fit["work_dir"])]
+        argv = [self.py, self.tool(m["script"]), "--baseline", "--daily-ic", f"{u_out}/train_daily_ic.csv",
+                "--admission", f"{w_dir}/admission.json", "--fit-work", self.fit_work_dir()]
         if card_out:
             argv += ["--sleeve-daily", f"{card_out}/daily_sleeve.csv"]
         for key, flag in (("holdings_days", "--holdings-days"), ("bias", "--bias"), ("decide", "--decide")):
             if m.get(key):
                 argv += [flag, m[key]]
         argv += [*m.get("flags", []), "--output", m_out]
+        if self.every_phase():
+            run_dir = f"{m_out}-run"
+            return Step("monitor", "bounded", self.runner(run_dir, [self.tool(m["script"])], "monitor") + argv, m_out, run_dir,
+                        None, *self.single_state(m_out, run_dir, f"{m_out}/monitor.json"))
         if self.res.exists(f"{m_out}/monitor.json"):
             state, note = "done", ""
         elif self.res.exists_dir(m_out):
@@ -695,13 +1040,13 @@ class Cycle:
             state, note = "failed", f"fit still incomplete after {max_passes} passes"
         else:
             state, note = "pending", "" if j == 1 else f"resume pass {j} (previous pass exited {FIT_INCOMPLETE})"
-        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm]) + [
-            self.py, fit["script"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
+        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm], "fit") + [
+            self.py, self.tool(fit["script"]), "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
             role_sha, "--orientations", o, "--orientations-sha256", self.rt_sha(o), "--runner-summary", sm,
             "--runner-summary-sha256", self.rt_sha(sm), *fit["flags"]]
         if "recipe" in s["inputs"]:
             argv += ["--recipe", self.ipath("recipe"), "--recipe-sha256", self.pin("recipe")]
-        argv += ["--work-dir", self.out(fit["work_dir"])]
+        argv += ["--work-dir", self.fit_work_dir()]
         if "max_seconds" in fit:
             argv += ["--max-seconds", str(fit["max_seconds"])]
         argv += ["--output", w_dir]
@@ -890,7 +1235,8 @@ def header(cycle: Cycle) -> list[str]:
     spec_sha = sha256_file(cycle.spec_path) if cycle.spec_path else None
     lines = [f"# research_cycle {cycle.spec['name']}: spec {cycle.spec_path} sha256 {spec_sha}; root {cycle.res.root}; "
              f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
-             f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"]
+             f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
+             f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
     return lines
@@ -905,7 +1251,7 @@ def plan_lines(cycle: Cycle, lines_only: bool = False) -> list[str]:
             out.append(f"# phase {st.phase} [{st.kind}; {st.state}{'; ' + st.note if st.note else ''}]{where}{rd}")
             for c in st.checks:
                 out.append(f"#   compare {c['name']} [{c['mode']}]: {c['a']} vs {c['b']}")
-        if st.argv:
+        if st.argv and st.kind != "skipped":
             out.append(fmt_argv(st.argv))
     return out
 
@@ -933,12 +1279,36 @@ def status_lines(cycle: Cycle) -> list[str]:
     return out
 
 
-def git_clean(root: Path) -> bool:
+def window_id() -> str:
+    return research_tree.window_id()
+
+
+def git_scoped(root: Path) -> tuple[list[str], list[str]]:
+    """(blocking, ignored) dirty paths: inside the code pathspec, outside it. Git failing is a blocking entry."""
     try:
-        done = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True)
-    except (OSError, subprocess.CalledProcessError):
-        return False
-    return not done.stdout.strip()
+        return research_tree.dirty_paths(root)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return [f"<git status failed: {exc}>"], []
+
+
+def git_clean(root: Path) -> bool:
+    return not git_scoped(root)[0]
+
+
+def check_clean(cycle: Cycle, clean, log, seen: set) -> None:
+    """The clean-tree rule before a phase runs: `clean(root)` returns (blocking, ignored) or a bool."""
+    if clean is None:
+        return
+    got = clean(cycle.res.root)
+    blocking, ignored = (([] if got else ["<dirty>"]), []) if isinstance(got, bool) else got
+    if blocking:
+        raise CycleError(f"tree at {cycle.res.root} is not clean in the code pathspec: {', '.join(blocking[:8])}: "
+                         "commit first (the bounded runner refuses a dirty tree)")
+    new = [p for p in ignored if p not in seen]
+    if new:
+        seen.update(new)
+        log(f"# dirty outside the code pathspec (listed, not a stop): {', '.join(new[:12])}"
+            f"{' ...' if len(new) > 12 else ''}")
 
 
 def execute(argv: list[str], root: Path, env: dict, capture: bool) -> subprocess.CompletedProcess:
@@ -946,16 +1316,15 @@ def execute(argv: list[str], root: Path, env: dict, capture: bool) -> subprocess
 
 
 def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executor=execute,
-              clean=git_clean) -> int:
+              clean=git_scoped) -> int:
     root = cycle.res.root
-    if not clean(root):
-        raise CycleError(f"tree at {root} is not clean: commit first (the bounded runner refuses a dirty tree)")
-    env = dict(os.environ)
-    pre = cycle.spec.get("env_path_prepend") or []
-    if pre:
-        env["PATH"] = os.pathsep.join([str(Path(p)) for p in pre] + [env.get("PATH", "")])
+    clean = None if cycle.no_git else clean   # K3: a root outside any repository has no tree to check
+    seen: set = set()
+    check_clean(cycle, clean, log, seen)
+    env = cycle.env()
     for line in header(cycle):
         log(line)
+    timings: dict = {}                  # phase -> wall seconds of a direct phase run by this invocation
     phase_idx = 0
     while True:
         steps = cycle.steps()           # re-resolved after every phase: later pins come from the files just written
@@ -964,13 +1333,19 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
         st = steps[phase_idx]
         if st.state == "failed":
             raise CycleError(f"HARD-STOP [{st.phase}]: {st.note}")
-        if st.done:
+        if st.state == "skipped":
+            log(f"== {st.phase}: skipped ({st.note})")
+        elif st.done:
             log(f"== {st.phase}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(cycle, f"{st.output}/manifest.json", log)
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
-            gate(cycle, w_dir, log)
+            try:
+                gate(cycle, w_dir, log)
+            except CycleError:
+                write_verdict(cycle, timings, log)  # a failed gate still records the admission rows
+                raise
         elif st.kind == "compare":
             compare(cycle, st, log)
         else:
@@ -978,9 +1353,14 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 raise CycleError(f"HARD-STOP [{st.phase}]: an upstream pin is unresolved (upstream output missing)")
             if st.output and st.state == "pending" and st.phase != "fit" and cycle.res.exists_dir(st.output):
                 raise CycleError(f"HARD-STOP [{st.phase}]: output {st.output} exists (never overwritten)")
+            check_clean(cycle, clean, log, seen)
+            if st.phase == "summ" and cycle.spec.get("verdict"):
+                cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
             log(f"== {st.phase}" + (f" (attempt {st.attempt})" if st.attempt else ""))
             log(fmt_argv(st.argv))
+            started = time.monotonic()
             done = executor(st.argv, root, env, st.kind == "bounded")
+            timings[st.phase] = {"seconds": time.monotonic() - started, "run_dir": st.run_dir}
             if st.kind == "bounded":
                 r = cycle.receipt(st.run_dir)
                 if r is None:
@@ -1002,16 +1382,37 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 if st.kind == "direct" and done.returncode != 0:
                     raise CycleError(f"HARD-STOP [{st.phase}]: exit {done.returncode}")
             post = cycle.steps()[phase_idx]
-            if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor") and not post.done:
+            if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor", "marginal") and not post.done:
                 raise CycleError(f"HARD-STOP [{st.phase}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(cycle, f"{st.output}/manifest.json", log)
+            if st.phase == "summ":
+                copy_ledger(cycle, log)
         if stop_after == st.phase:
             log(f"== stopped after {st.phase} (--stop-after)")
             return EXIT_OK
         phase_idx += 1
-    log("== cycle complete")
+    write_verdict(cycle, timings, log)
+    log("== screen complete: w, nav, monitor and summ run with the full `run`" if cycle.screen else
+        "== cycle complete")
     return EXIT_OK
+
+
+def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
+    return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log)
+
+
+def copy_ledger(cycle: Cycle, log) -> None:
+    """summ.ledger_copy: the trial ledger copied (e.g. into the sprint directory) after the cycle's summ."""
+    sm = cycle.spec["summ"]
+    if not sm.get("ledger_copy"):
+        return
+    src, dst = cycle.res.path(cycle.ledger or sm["ledger"]), cycle.res.path(sm["ledger_copy"])
+    if not src.is_file():
+        raise CycleError(f"HARD-STOP [summ]: summ.ledger_copy: no ledger at {src}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    log(f"   ledger copied: {src} -> {sm['ledger_copy']} (sha256 {sha256_file(dst)})")
 
 
 # ------------------------------------------------------------------ lock
@@ -1039,6 +1440,15 @@ def lock(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[
 
 # ------------------------------------------------------------------ CLI
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
+        return research_ledger.main(argv[1:])
+    if argv[:2] == ["cache", "gc"]:          # unreferenced candidate caches and fit work dirs: research_gc.py
+        import research_gc  # noqa: PLC0415  (imports this module)
+        return research_gc.main(argv[2:])
+    if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock
+        import research_add_alpha  # noqa: PLC0415  (imports this module)
+        return research_add_alpha.main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("verb", choices=("plan", "run", "status", "lock"))
@@ -1054,6 +1464,8 @@ def main(argv=None) -> int:
     ap.add_argument("--stop-after", choices=STOP_PHASES, default=None)
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
     ap.add_argument("--write", action="store_true", help="lock: write the pins back into SPEC")
+    ap.add_argument("--no-git", action="store_true", help="K3: a --root outside any git repository (test roots)")
+    ap.add_argument("--screen", action="store_true", help="u, fit, card, marginal, gate; stop before w")
     a = ap.parse_args(argv)
     try:
         spec_path = find_spec(a.spec)
@@ -1072,7 +1484,8 @@ def main(argv=None) -> int:
             raise CycleError("--suffix must be a non-empty name without separators or spaces", EXIT_USAGE)
         cycle = Cycle(load_spec(spec_path), Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
                       reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
-                      runner_overrides=parse_runner_overrides(a.runner_override))
+                      runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
+                      screen=a.screen)
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK

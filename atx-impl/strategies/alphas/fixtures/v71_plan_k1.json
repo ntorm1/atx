@@ -1,0 +1,551 @@
+{
+  "_fixture": "hand-written from contract K1 (B-3 not merged): dsl_sha256, required_lookback (= prior_bars) and extra_fields from the v7.1 recipe lineage; num_slots / node_count from its per-candidate figures (static_validation v70, v71, sv_flow), placeholders 4 / 12 for the 39 earlier members",
+  "mode": "metadata-only-no-payload",
+  "candidates": [
+    {
+      "id": "value_composite",
+      "dsl_sha256": "5a611ce6ec50066442ba982967eb984d822710c243db1e8f4d4767f44e723fdb",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "be",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "bm",
+      "dsl_sha256": "77d03bd2b6037431cb7ca61c39fba579980f1c0068d0b7e047f6eeb7b6322696",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "be",
+        "grp_ff12",
+        "me_company"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "ep",
+      "dsl_sha256": "1008a66639abd8b97dcf8941603ddc25a8761434d54d15ebbe6d23618b49a1d9",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "cfp",
+      "dsl_sha256": "df82d0c0b2f594f626e94ea26d1e7719674c0ff107daacef10c61f9f4e19beaf",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "fcfp",
+      "dsl_sha256": "78755e702842cda0124d0d3cc0f87b84656ffe9d4ed3459d3124bb85e7324d0a",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "capx_ttm",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "ebit_ev",
+      "dsl_sha256": "0bfa4a67bb70551a89a26a600fc02267ecb724108fb920f6805cee75e9b77ccc",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "che",
+        "debt",
+        "grp_ff12",
+        "me_company",
+        "oi_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "net_payout",
+      "dsl_sha256": "0de7136873939cf187fd2510e32edc75a40e7629615858990821e0b94c02bc02",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "dvc_ttm",
+        "grp_ff12",
+        "me_company",
+        "prstkc_ttm",
+        "sstk_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "sp",
+      "dsl_sha256": "b580ed819ae324eef88609d551471a493f299819adf90520d757f98b6ab059e7",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "grp_ff12",
+        "me_company",
+        "sale_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "rd_me",
+      "dsl_sha256": "bcedc098d64f331cf2c0719bccea2fb91ba777f959b7ca53d3f2df8088d05075",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "grp_ff12",
+        "me_company",
+        "xrd_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "gpa",
+      "dsl_sha256": "a67a5691f8aea5f172752a79c2768cc5908d3317552d0baaf073ac5f24df4ac0",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at",
+        "gp_ttm",
+        "grp_ff12"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "opbe",
+      "dsl_sha256": "1ff820cb588190898e41ba6444fd9b4c0ce79d511eb93e34d939ca210503ba0f",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "be",
+        "grp_ff12",
+        "oi_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "cbop",
+      "dsl_sha256": "8ab5971b51e471e9a1aed959c9bde68aac266b5bd86036f5954d08077b61031c",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at",
+        "cfo_ttm",
+        "grp_ff12",
+        "xrd_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "roe_q",
+      "dsl_sha256": "fea12f1f59565b4ec97e64df93219bbc3228348daa4bb8a78cdc5974a4f99be7",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "be_lag1q",
+        "grp_ff12",
+        "ni_q"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "roa",
+      "dsl_sha256": "fcd1f798342235a802733141d8be82b23e109b3d9151af412e4bdd2527278645",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at",
+        "grp_ff12",
+        "ni_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "accruals",
+      "dsl_sha256": "ee77bcd8f1adce746514f3047e384fa6925d758b8629d237d49d7e4dd3c1e6c7",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at",
+        "at_lag4",
+        "cfo_ttm",
+        "grp_ff12",
+        "ni_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "fscore",
+      "dsl_sha256": "67d1f50140676f30cac7621fc43007601d44cb99a5994eb2c77101350d80de6e",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "fscore",
+        "grp_ff12"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "asset_growth",
+      "dsl_sha256": "5a931a5cf97108e7e3c5994597bd406a01816b27a50a17cb303b58bcdcce7d05",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at",
+        "at_lag4",
+        "grp_ff12"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "noa",
+      "dsl_sha256": "5b9c49fb33b6b73c64cbc6ccac8b269f05c51cb94ba6ee7dfce55925c3c5e8e5",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at_lag4",
+        "grp_ff12",
+        "noa"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "issuance_xbrl",
+      "dsl_sha256": "9ce73869fbbec055df54939ec2d4262454d24dd2c64c21f411195d4baf029642",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "grp_ff12",
+        "shrs_q",
+        "shrs_q_lag4"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "issuance_vendor",
+      "dsl_sha256": "ff4ac4adac6298e4d1211ad467159ab8f8f2214182201c0319fba24bee9338e7",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [
+        "grp_ff12",
+        "shares_out"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "sue",
+      "dsl_sha256": "5b37b44c8fcc65827ab8201af0b78fbdad97f77ade04bf929d57d2f26ab34bdb",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "sue"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "droe",
+      "dsl_sha256": "ed250f74abdf4bf88d0f333a469ce8660bcd52ee426b973d4b6a323d2b2e8686",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "be_lag1q",
+        "be_lag1q_lag4",
+        "ni_q",
+        "ni_q_lag4"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "chtax",
+      "dsl_sha256": "1a71c16e1bfb09580d5ad30247797bcf8c84b0a161f51b49f0b166d22a113cde",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at_lag4",
+        "txt_q",
+        "txt_q_lag4"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "ear",
+      "dsl_sha256": "9d38cd38ddb1e76bd43a9287375663fbe0f28ef467738a60d2ae1d3c39fead57",
+      "num_slots": 4,
+      "required_lookback": 148,
+      "extra_fields": [
+        "earn_recent",
+        "mkt_ret"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "res_mom_12_1",
+      "dsl_sha256": "8aafaffe1e4a5446a5163d8262fd7ec92266590d0d217e13138b5ab544b9439d",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [
+        "mkt_ret"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "mom_12_1",
+      "dsl_sha256": "d6906c60dbabeb3581025807a5f674981e538867081b26634bf02023f09832d9",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [],
+      "node_count": 12
+    },
+    {
+      "id": "ind_mom_12_1",
+      "dsl_sha256": "8260a5a0dc907297e96927429685617ad3385fec387f6faf05b4b8d0f85ee025",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "within_ind_mom",
+      "dsl_sha256": "2eac2b0c6a0348a2e49f77873d4c50623bc643262159569298a982c3a6676c15",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "high_52w",
+      "dsl_sha256": "3fd5372bbc084061ba9bfa05f7c7875d3e43ed28a2f241a05e2b816635f5e77e",
+      "num_slots": 4,
+      "required_lookback": 271,
+      "extra_fields": [],
+      "node_count": 12
+    },
+    {
+      "id": "bac",
+      "dsl_sha256": "a760b8a09e10d13f5233216a5a1d5c84a465bb3861bd2cc403d3ffb36e14a3f9",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [
+        "mkt_ret"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "smax",
+      "dsl_sha256": "f1a0e0f07c27a752cb6777e800866d01f57f133be72f48047be2a2957a3a3aa4",
+      "num_slots": 4,
+      "required_lookback": 272,
+      "extra_fields": [],
+      "node_count": 12
+    },
+    {
+      "id": "si_ratio",
+      "dsl_sha256": "22d70e1aeef635cc505774888a43e625d2ef28b7b1bb66589759c6030aae2fe9",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "shares_out",
+        "si_shares"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "dtc",
+      "dsl_sha256": "1f11ac6a4cc8c632f35dc6f889ab76cc579cd9ca7f3a006042f44ac570624d8d",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "si_dtc"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "si_change",
+      "dsl_sha256": "8e0a405634f50fd57a280357a5882026be54d7f1a6f095627ffa333d98ab44b4",
+      "num_slots": 4,
+      "required_lookback": 21,
+      "extra_fields": [
+        "shares_out",
+        "si_shares"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "ind_adj_rev_5",
+      "dsl_sha256": "d8670a1639dc65f9c7b6b9ef9629cad62bed98a579ac723da8fa03260cc2ce22",
+      "num_slots": 4,
+      "required_lookback": 5,
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "seasonality_same_month",
+      "dsl_sha256": "4aceab7f23fe8fb97a60c1bd66e9082a7c86f609a889199ae208647b1c737527",
+      "num_slots": 4,
+      "required_lookback": 252,
+      "extra_fields": [],
+      "node_count": 12
+    },
+    {
+      "id": "iv_rv_spread",
+      "dsl_sha256": "70d32c54cbdbe4fc3e709d1b4e9039b88237ef67bfa7545429e1eeae5d7d37f7",
+      "num_slots": 4,
+      "required_lookback": 21,
+      "extra_fields": [
+        "iv_atm_21d"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "opex_at",
+      "dsl_sha256": "0ae8780153db7eed1f8fe905a46f31f3402d6ae5a4361e8ae2882688785a0159",
+      "num_slots": 4,
+      "required_lookback": 20,
+      "extra_fields": [
+        "at",
+        "grp_ff12",
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "node_count": 12
+    },
+    {
+      "id": "sv_flow",
+      "dsl_sha256": "4f4651fb4c1972dba284f994bcf75399f2ca5cc041b48fa83d63306d246c56de",
+      "num_slots": 4,
+      "required_lookback": 0,
+      "extra_fields": [
+        "grp_ff12",
+        "sv_ratio126"
+      ],
+      "node_count": 6
+    },
+    {
+      "id": "qmj_safety",
+      "dsl_sha256": "8b9586cecc179e5bdac784cb63359434f32e81edb1f91ca0629df67e2fc79997",
+      "num_slots": 8,
+      "required_lookback": 272,
+      "extra_fields": [
+        "at",
+        "be_lag1q",
+        "debt",
+        "mkt_ret",
+        "ni_q"
+      ],
+      "node_count": 37
+    },
+    {
+      "id": "nincr",
+      "dsl_sha256": "3b0c33a5f87b887f67fee284b91bb6785309ff3fb40d10aad398164aaa363b38",
+      "num_slots": 7,
+      "required_lookback": 272,
+      "extra_fields": [
+        "ni_q",
+        "ni_q_lag4"
+      ],
+      "node_count": 26
+    },
+    {
+      "id": "q5_eg",
+      "dsl_sha256": "bd3fc6a6fe25f91ec2bb9177f5de2e98005b6c5e78c73a873e9a7f23c4346612",
+      "num_slots": 6,
+      "required_lookback": 272,
+      "extra_fields": [
+        "at",
+        "be_lag1q",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company",
+        "ni_q"
+      ],
+      "node_count": 28
+    },
+    {
+      "id": "smax5",
+      "dsl_sha256": "7eec92bff4d0be02f980afb1d85d1df998ac457abaf99d05603faccae0876857",
+      "num_slots": 6,
+      "required_lookback": 41,
+      "extra_fields": [],
+      "node_count": 18
+    },
+    {
+      "id": "res_mom_ind",
+      "dsl_sha256": "d318cf2c71267d5804a3a1759575a521415496298086a01b319786c2642968af",
+      "num_slots": 5,
+      "required_lookback": 272,
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "node_count": 17
+    },
+    {
+      "id": "ins_opp",
+      "dsl_sha256": "905f7497f9d33f90beaa5c45ce5e9080b0afa390514bde581b8c8fd720089c14",
+      "num_slots": 2,
+      "required_lookback": 0,
+      "extra_fields": [
+        "ins_opportunistic_net"
+      ],
+      "node_count": 2
+    },
+    {
+      "id": "inst_best_ideas",
+      "dsl_sha256": "b22cbc3d02d0914dcb4d2a31f5f1586ab4a252dd52b1856227a51e1175cd476f",
+      "num_slots": 3,
+      "required_lookback": 20,
+      "extra_fields": [
+        "inst_best_ideas"
+      ],
+      "node_count": 4
+    },
+    {
+      "id": "ftd_fail",
+      "dsl_sha256": "c58ac3b5a885805a6f5ff92abb3cf1fcc4aad4262ce03db9aeb745cf423ff9b8",
+      "num_slots": 3,
+      "required_lookback": 0,
+      "extra_fields": [
+        "ftd_shares_ratio21"
+      ],
+      "node_count": 4
+    },
+    {
+      "id": "ea_overdue",
+      "dsl_sha256": "eb2062118a5ca0ad3dbb011b1e60859bbb43b8b372a8dee466289c5b409f9c47",
+      "num_slots": 4,
+      "required_lookback": 0,
+      "extra_fields": [
+        "ea_days_to_expected"
+      ],
+      "node_count": 8
+    }
+  ],
+  "max_compiled_slots": 8,
+  "required_lookback": 272,
+  "workers": 4,
+  "library_sha256": "787c802ed1cdf7cfc507500b014525c3d4dff148f44e77ebd8368c0a686c2259",
+  "roles": []
+}

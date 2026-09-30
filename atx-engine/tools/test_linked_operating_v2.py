@@ -224,8 +224,9 @@ class LinkedOperatingV2(unittest.TestCase):
                   "--identity-bridge-sha256", self.bridge_sha, "--sic-events", str(self.base / "events"),
                   "--sic-events-sha256", self.sic_sha]
         for argv in (common + ["--universe", "linked-operating-v2"],
-                     common + ["--universe", "linked-operating-v1", "--delisting", str(self.base / "delisting"),
-                               "--delisting-sha256", self.del_sha],
+                     # v8 F-0: v1 accepts the stage (test_lo1_delisting) but still needs it for the returns
+                     common + ["--universe", "linked-operating-v1", "--delisting-returns",
+                               str(self.base / "delisting")],
                      common + ["--universe", "linked-operating-v2", "--delisting", str(self.base / "delisting"),
                                "--delisting-sha256", self.del_sha, "--delisting-returns", str(self.base / "events")]):
             with patch.object(sys, "argv", ["prepare_recent_research.py", *argv]), \

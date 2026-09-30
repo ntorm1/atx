@@ -151,6 +151,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/combine/signal_combiner.cpp
     src/combine/signal_cube.cpp
     src/combine/orthogonalize.cpp
+    src/combine/marginal_rank_ic.cpp
     src/risk/model_validation.cpp
     src/risk/qp_solver.cpp
     src/risk/qp_factor_admm.cpp
@@ -192,6 +193,12 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/factory/ic_screen.cpp APPEND PROPERTY COMPILE_OPTIONS
         /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/factory/ic_screen.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    # v8 F-2: the marginal-IC read-out runs one residualisation (Eigen COD) and three rank
+    # passes per candidate and date over a full role; /Od Eigen makes that a many-minute run.
+    set_property(SOURCE src/combine/orthogonalize.cpp src/combine/marginal_rank_ic.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/combine/orthogonalize.cpp src/combine/marginal_rank_ic.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.

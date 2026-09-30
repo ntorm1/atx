@@ -46,6 +46,9 @@ set(_atx_research_window_json
 set_source_files_properties(data/data_research_window_test.cpp PROPERTIES
     SKIP_PRECOMPILE_HEADERS ON
     COMPILE_DEFINITIONS "ATX_RESEARCH_WINDOW_JSON=\"${_atx_research_window_json}\"")
+# Both files include strategy_role_fixture.hpp, which needs JSON's include path (source-local, as the engine's).
+set_property(SOURCE data/data_research_window_test.cpp data/strategy_data_test.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+    "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
 
 option(ATX_RISK_SECTOR_ASAN "Build the scoped W0-R04 native AddressSanitizer gate" OFF)
 if(ATX_RISK_SECTOR_ASAN)

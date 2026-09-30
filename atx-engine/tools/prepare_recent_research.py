@@ -47,6 +47,12 @@ definition; carried rows are the SIC in force and are used; the stage's FF label
 unchanged: a row is visible at session t when its clock is before date(t-1) 22:00 UTC and is used while date(t) minus its
 UTC date is <= 550 days. The grp_* fields must be built from the same table (``prepare_research_fields --sic-events``);
 ``--check-fields`` then also requires the fields' grp_ff12 to name this stage manifest.
+
+``linked-operating-v1`` also accepts ``--delisting`` / ``--delisting-sha256`` / ``--delisting-returns`` (platform v8
+F-0; optional there, required by v2 / v3): the same stage, ``DELISTING_MARK_RULE`` and ``DELISTING_RETURN_RULE`` as v2 /
+v3. The marks are keyed by the stage's security_id on the role axis and the patches read only the base payloads, so they
+do not depend on the universe rule; only the per-role read-outs (kept_member_at_last_session, members cleared on the
+termination session) follow the v1 membership. Without ``--delisting`` the v1 output is unchanged.
 """
 from __future__ import annotations
 
@@ -660,8 +666,9 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
                   fields_sha256: str | None = None, universe: str = LINKED_OPERATING_UNIVERSE,
                   delisting: Path | None = None, delisting_sha256: str | None = None, delisting_returns: bool = False):
     """``--universe linked-operating-v1`` / ``-v2`` / ``-v3``: a new role = the base role with member.u8 restricted (see
-    module doc); v2 and v3 also mark delisting terminations and, with ``delisting_returns``, apply their imputed
-    returns; v3 reads SIC from the atx-db fundamentals stage (``sic_events`` = the stage directory)."""
+    module doc); with ``delisting`` (required by v2 and v3, optional for v1) it also marks delisting terminations and,
+    with ``delisting_returns``, applies their imputed returns; v3 reads SIC from the atx-db fundamentals stage
+    (``sic_events`` = the stage directory)."""
     import prepare_research_fields as prf  # same directory: the fields' own link / SIC semantics
     if universe not in LINKED_UNIVERSES:
         raise ValueError(f"restrict_role implements {', '.join(LINKED_UNIVERSES)} only")
@@ -669,12 +676,11 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     v3 = universe == LINKED_OPERATING_V3_UNIVERSE                                   # + the stage SIC table
     if v3:
         sic_events = prf.sic_stage_dir(sic_events)
-    if (delisting is None) != (delisting_sha256 is None) or v2 != (delisting is not None):
-        raise ValueError(f"--delisting and --delisting-sha256 go together, with {LINKED_OPERATING_V2_UNIVERSE} / "
-                         f"{LINKED_OPERATING_V3_UNIVERSE} only")
-    if delisting_returns and not v2:
-        raise ValueError(f"--delisting-returns applies to {LINKED_OPERATING_V2_UNIVERSE} / "
-                         f"{LINKED_OPERATING_V3_UNIVERSE} only")
+    if (delisting is None) != (delisting_sha256 is None) or (v2 and delisting is None):
+        raise ValueError(f"--delisting and --delisting-sha256 go together (required by {LINKED_OPERATING_V2_UNIVERSE} "
+                         f"/ {LINKED_OPERATING_V3_UNIVERSE}, optional for {LINKED_OPERATING_UNIVERSE})")
+    if delisting_returns and delisting is None:
+        raise ValueError("--delisting-returns needs the --delisting stage it applies")
     if prf.GRP_STALE_DAYS != UNIVERSE_SIC_STALE_DAYS:
         raise ValueError("prepare_research_fields.GRP_STALE_DAYS changed; the universe SIC staleness is declared 550")
     if (fields is None) != (fields_sha256 is None):
@@ -749,7 +755,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
                                    sic_events_sha256 if v3 else None)
     del visible_all, not_common, link, primary
     delist, patched = None, {}
-    if v2:  # marked (and applied) before the output directory exists: a refusal leaves nothing behind
+    if delisting is not None:  # marked (and applied) before the output directory exists: a refusal leaves nothing
         delist, patched = _delisting(prf, delisting, delisting_sha256, role, base, kept, delisting_returns, budget)
         if patched:  # members cleared on applied termination sessions (counted in universe.delisting.applied)
             kept_counts = [int(x) for x in kept.astype(np.int64).sum(axis=1)]
@@ -816,7 +822,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
         "dropped_member_share": share,
         "dropped_member_share_definition": "per session: 1 - kept members / base members (null: no base member)",
     }
-    if v2:
+    if delist is not None:  # v2 / v3 always; v1 only with --delisting (absent: the v1 manifest is unchanged)
         result["universe"]["inputs"]["delisting"] = delist.pop("inputs")
         result["universe"]["delisting"] = delist
     if v3:
@@ -942,7 +948,8 @@ def main():
     p.add_argument("--check-fields", type=Path, help="optional: the base role's fields directory to cross-check")
     p.add_argument("--check-fields-sha256")
     p.add_argument("--delisting", type=Path,
-                   help=f"{LINKED_OPERATING_V2_UNIVERSE} / {LINKED_OPERATING_V3_UNIVERSE}: atx-db delisting stage directory")
+                   help=f"atx-db delisting stage directory: required by {LINKED_OPERATING_V2_UNIVERSE} / "
+                        f"{LINKED_OPERATING_V3_UNIVERSE}, optional for {LINKED_OPERATING_UNIVERSE} (the same marks)")
     p.add_argument("--delisting-sha256")
     p.add_argument("--delisting-returns", type=Path,
                    help="apply the imputed delisting returns of this delisting stage (must be the --delisting stage; "
@@ -967,11 +974,12 @@ def main():
         if any(x is None for x in linked[:6]):
             p.error(f"--universe {a.universe} requires --base-role/--identity-bridge/--sic-events and "
                     "their -sha256 pins")
-        if a.universe == LINKED_OPERATING_UNIVERSE and any(x is not None for x in v2_args):
-            p.error(f"--delisting/--delisting-returns need --universe {LINKED_OPERATING_V2_UNIVERSE} or "
-                    f"{LINKED_OPERATING_V3_UNIVERSE}")
         if a.universe != LINKED_OPERATING_UNIVERSE and (a.delisting is None or a.delisting_sha256 is None):
             p.error(f"--universe {a.universe} requires --delisting and --delisting-sha256")
+        if (a.delisting is None) != (a.delisting_sha256 is None):
+            p.error("--delisting and --delisting-sha256 go together")
+        if a.delisting_returns is not None and a.delisting is None:
+            p.error("--delisting-returns needs --delisting and --delisting-sha256 (the stage it applies)")
         if a.delisting_returns is not None and delisting_dir(a.delisting_returns) != delisting_dir(a.delisting):
             p.error("--delisting-returns must name the --delisting stage")
         restrict_role(a.base_role, a.base_role_sha256, a.out, limits, bridge=a.identity_bridge,

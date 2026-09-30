@@ -25,8 +25,8 @@ namespace atx::impl::strategy {
 //        liquidity_cache, rate ("fixed"), daily_turnover_mean_max, daily_turnover_p95_max,
 //        max_working_bytes, recipe_sha256 (the NAV run's summary.json recipe_sha256)},
 //   executables {"atx-equity-strategy-targets": sha, "atx-equity-strategy-ic": sha},
-//   source.git_sha (40 hex), seal {policy (the research window id, "research-window-v2"),
-//   exclusive_session (its seal date, "2024-01-01")}, owner_gate (null, or {owner, ruling, date}),
+//   source.git_sha (40 hex), seal {policy (the research window id, kResearchWindowId),
+//   exclusive_session (its seal date, kSealBeginDate)}, owner_gate (null, or {owner, ruling, date}),
 //   health {gross_leverage [lo, hi], abs_net_leverage_max, planned_turnover_max,
 //           names_without_locate_max}.
 // Paths are used as given (relative to the working directory, as every CLI here).

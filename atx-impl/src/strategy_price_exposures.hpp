@@ -8,7 +8,9 @@
 
 // Causal ex-ante price-risk exposures (trailing market beta, volatility, log
 // dollar ADV) and neutralization of one decision's desired target against them.
-// Deterministic: fixed loop order, no threads, no hidden state between calls.
+// Deterministic: fixed loop order, no threads, no hidden state between calls unless the
+// caller binds a session ring (enable_session_ring), whose cached values are the
+// stateless path's own bits.
 namespace atx::impl::strategy {
 // Column order of every row-major instruments x kPriceExposureCount matrix.
 inline constexpr atx::usize kPriceExposureCount = 3;
@@ -38,6 +40,34 @@ struct PriceExposureInput {
   std::span<const atx::u8> present;
 };
 
+// Opt-in session ring of compute_price_exposures (v8 D-1, review P-9). Unbound (the
+// default) it is empty and unused. Bound to one panel (enable_session_ring), every interval
+// (t-1, t] is computed once per bound panel -- each session logged once -- and kept, with
+// its equal-weight market return, in a mirrored ring of max(beta_window, vol_window)
+// intervals, so a decision computes only the intervals its window adds. An interval's
+// values are the stateless path's own expressions on the same two sessions (one kernel),
+// so exposures are bit-identical to a fresh scratch. Contract: while bound, the bound
+// panel's close, raw_close and present spans (data and geometry) do not change; a call on
+// any other panel runs the stateless path and leaves the ring as it is. Its size is
+// session_ring_bytes. Contents private to the implementation, except `seconds` (a clock
+// callers may read: observation only, never an input).
+struct PriceExposureRing {
+  const atx::f64* close{};
+  const atx::f64* raw_close{};
+  const atx::u8* present{};
+  atx::usize dates{}, instruments{};
+  bool bound{};
+  atx::usize capacity{};            // intervals kept; 0 = not sized for the current config
+  std::vector<atx::f64> returns;    // instrument-major, 2 x capacity mirrored slots per name
+  std::vector<atx::f64> market;     // 2 x capacity mirrored slots
+  std::vector<atx::usize> interval; // per slot: the interval held (none: max usize)
+  std::vector<atx::f64> logs;       // two sessions of (adjusted, raw) logs, instruments each
+  atx::usize last{};                // the half of logs holding session `logged`
+  atx::usize logged{};
+  bool has_logged{};
+  atx::f64 seconds{}; // wall time spent in compute_price_exposures while serving from it
+};
+
 // Working storage owned by the caller and reused across calls. Its contents are
 // private to the implementation: default-construct once per replay and pass it to
 // every call. Buffers only grow (to the largest geometry seen), so repeated calls
@@ -47,7 +77,16 @@ struct PriceExposureScratch {
   std::vector<atx::f64> market;  // equal-weight market return per interval
   std::vector<atx::f64> logs;    // previous/current session log adjusted and raw closes
   std::vector<atx::f64> dollars; // per-instrument dollar volume sum over the ADV window
+  PriceExposureRing ring;        // unbound unless enable_session_ring
 };
+// Binds scratch's session ring to `panel` (dropping its contents and zeroing its clock).
+// The caller keeps the panel's spans unchanged while the scratch serves it.
+void enable_session_ring(PriceExposureScratch& scratch, const PriceExposureInput& panel) noexcept;
+// Bytes a bound ring holds for `instruments` names under `cfg`: 2 x capacity + 4 f64 per
+// name plus 2 f64 and one tag per slot (0 for windows outside [2, 4096], which
+// compute_price_exposures refuses anyway).
+[[nodiscard]] atx::u64 session_ring_bytes(const PriceExposureConfig& cfg,
+                                          atx::usize instruments) noexcept;
 struct NeutralizeScratch {
   std::vector<atx::usize> rows;   // regressed row indices, ascending
   std::vector<atx::f64> z;        // rows x kPriceExposureCount clipped z-scores
@@ -56,6 +95,8 @@ struct NeutralizeScratch {
   // slot the row count and the sums of the target and of every z column.
   std::vector<atx::usize> slot, slot_count;
   std::vector<atx::f64> slot_sum;
+  // neutralization_basis only (grown on first use): the rows x 4 column-major QR work.
+  std::vector<atx::f64> qr;
 };
 // compute_price_exposures + neutralize_target state for the one-call step below.
 struct PriceRiskScratch {
@@ -181,4 +222,35 @@ struct NeutralizeStats {
     std::span<atx::f64> target, std::span<const atx::u8> member,
     std::span<const atx::f64> group, PriceRiskScratch&, NeutralizeStats&,
     std::span<const atx::u8> hold_zero = {});
+
+// ---- the fitter's price-risk context (v8 D-2, contract K2) ----
+// Interval t = (t-1, t] of every instrument by compute_price_exposures' own kernel and
+// guard: the valid adjusted simple return, NaN when invalid, into out (instruments long).
+// Reads sessions t-1 and t only. Errors: InvalidArgument for span geometry, t outside
+// [1, dates) or a presence byte > 1 in those sessions; OutOfRange if scratch allocation fails.
+[[nodiscard]] atx::core::Status session_interval_returns(const PriceExposureInput&, atx::usize t,
+                                                         PriceExposureScratch&,
+                                                         std::span<atx::f64> out);
+// Why a decision has no neutralization basis: the refusals of neutralize_target, in its
+// order, named as fit_composition_weights.py names them (basis_refusal_id).
+enum class BasisRefusal : atx::u8 {
+  None = 0, TooFewNames = 1, ConstantExposure = 2, IllConditioned = 3
+};
+// "too-few-usable-names", "constant-exposure", "ill-conditioned-exposures"; "" for None.
+[[nodiscard]] const char* basis_refusal_id(BasisRefusal refusal) noexcept;
+// Orthonormal basis of the column space of X = [1, z_beta, z_vol, z_log_adv] over `rows`
+// (ascending instrument indices: the used rows), each z the exposure standardized over those
+// rows and clipped exactly as neutralize_target does. Refusals (Ok, no basis written), in
+// order: fewer than cfg.min_names rows; a constant exposure column; an ill-conditioned X'X
+// (neutralize_target's Jacobi-equilibrated Cholesky pivot test). Else basis (rows.size() x 4,
+// row-major) = Q of the Householder QR X = QR in LAPACK's convention (dgeqr2 + dorg2r:
+// H_j = I - tau_j v_j v_j', R_jj = -sign(X_jj) ||X_j:,j||), i.e. numpy.linalg.qr(X)[0] of
+// fit_composition_weights.py neutralization_basis to rounding. The OLS residual of any y on X
+// over the rows is y - Q Q'y. exposures: instruments x 3 row-major, finite on `rows`.
+// Errors: InvalidArgument for config or geometry (rows not ascending or out of range, a
+// non-finite exposure on a row, basis not rows.size() x 4); OutOfRange if scratch allocation
+// fails.
+[[nodiscard]] atx::core::Result<BasisRefusal> neutralization_basis(
+    std::span<const atx::f64> exposures, std::span<const atx::usize> rows,
+    const PriceExposureConfig& cfg, NeutralizeScratch& scratch, std::span<atx::f64> basis);
 } // namespace atx::impl::strategy
