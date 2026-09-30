@@ -243,7 +243,25 @@ def test_apply_flags_operations():
     assert RS.apply_flags(base, {"--z": None}, "s") == base + ["--z", "<fill:s --z>"]                # root fills
     with pytest.raises(RS.TemplateError, match="takes a value"):
         RS.apply_flags(base, {"--a": True}, "s")
+    assert RS.apply_flags(base, {"--a": {"1": "7", "2": "8"}}, "s") == ["--a", "7", "--flag", "--b", "x"]  # by parent
+    for ops in ({"--a": {"3": "7"}}, {"--flag": {"1": "7"}}, {"--z": {"1": "7"}}, {"--a": {"1": True}}):
+        with pytest.raises(RS.TemplateError, match="maps the parent's value"):
+            RS.apply_flags(base, ops, "s")
     assert RS.fills({"x": ["<fill:s --z>", "y"], "z": {"w": "<fill:t>"}}) == ["<fill:s --z>", "<fill:t>"]
+
+
+def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
+    """Ruling E-27: R-3's gains go on top of the parent's composition: ew-theme-std-aim-v1 on an R-1 parent,
+    ew-theme-aim-v1 (bytes unchanged) on an ew-theme-v1 parent; both are fitter compositions."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
+    assert "requires" not in doc
+    for parent, want in (("base-b0c.json", "ew-theme-aim-v1"), ("r1-comp-v8.json", "ew-theme-std-aim-v1")):
+        path = tmp_path / f"r3-on-{parent}"
+        path.write_text(json.dumps(dict(doc, parent=f"scripts/specs/v8/{parent}")), encoding="utf-8")
+        spec = RC.load_spec(path)
+        assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
 
 
 def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):

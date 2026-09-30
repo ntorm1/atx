@@ -9,10 +9,13 @@ research_cycle.py loads a template like any SPEC (plan, run, status, lock). A te
    "change": {"unset": [key, ...],        dotted keys removed from the parent's spec
               "set": {key: value},        dotted keys replaced or added (e.g. "nav.output", "gate")
               "inputs": {key: item},      pinned inputs added or replaced (sha256 null until `lock --write`)
-              "flags": {section: {"--opt": "value" | true | false | null}}},
+              "flags": {section: {"--opt": "value" | true | false | null | {"parent value": "value"}}}},
                                           in <section>.flags: set the option's value (appended when absent) / add
                                           the bare flag / remove the option and its value / root fills it (null: a
-                                          "<fill:...>" placeholder; run refuses while one is left)
+                                          "<fill:...>" placeholder; run refuses while one is left) / the value by
+                                          the parent's value (a parent value the map lacks is refused; e.g. R-3's
+                                          --composition ew-theme-v1 -> ew-theme-aim-v1, ew-theme-std-v1 ->
+                                          ew-theme-std-aim-v1)
    "locked": {key: {"path", "sha256"}}}   `lock --write`: the pins of the inputs the template derives
 
 Resolution, in order: the parent spec (a path is looked up next to the template, then from the repository root, then
@@ -114,6 +117,12 @@ def apply_flags(flags: list, ops: dict, where: str) -> list:
             raise TemplateError(f"template flags {where}: {opt!r} is not an option")
         k = out.index(opt) if opt in out else -1
         has_value = 0 <= k < len(out) - 1 and not str(out[k + 1]).startswith("--")
+        if isinstance(value, dict):                  # the value by the parent's value
+            current = out[k + 1] if has_value else None
+            if current not in value or not isinstance(value[current], str):
+                raise TemplateError(f"template flags {where}: {opt} maps the parent's value, but the parent has "
+                                    f"{current!r} (mapped: {sorted(value)})")
+            value = value[current]
         if value is False:
             if k >= 0:
                 del out[k:k + (2 if has_value else 1)]
@@ -131,7 +140,8 @@ def apply_flags(flags: list, ops: dict, where: str) -> list:
             else:
                 out.insert(k + 1, text)
         else:
-            raise TemplateError(f"template flags {where}: {opt} must map to a string, true, false or null")
+            raise TemplateError(f"template flags {where}: {opt} must map to a string, true, false, null or a map of "
+                                "the parent's value to a string")
     return out
 
 

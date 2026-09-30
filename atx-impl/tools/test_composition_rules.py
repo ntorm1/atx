@@ -171,6 +171,42 @@ class RegistryAndFit(unittest.TestCase):
         self.assertEqual(doc["theme_standardise"]["rule"], "ew-theme-std-v1")
         json.dumps(doc, allow_nan=False)  # the fitter's canonical_bytes accepts it
 
+    def test_aim_gain_composes_with_theme_std(self):
+        """R-3 on the R-1 rule (Ruling E-27): the aim gains multiply the tier weights inside each theme, renormalised
+        so each theme keeps 1/T; the member cap 1/(2T) applies after the gains; gains of 1 are ew-theme-std-v1 bit for
+        bit; the runner block stays ew-theme-std-v1's."""
+        none = self.tmp / "none.json"
+        ids = ["v1", "v2", "v3", "m1", "m2", "o1", "o2"]
+        themes = ["value"] * 3 + ["momentum"] * 2 + ["options"] * 2
+        tiers = ["A", "B+", "C+", "B", "B", "B", "C+"]
+        std = cr.ew_theme_std(ids, themes, tiers, registry_path=none)
+        ones = cr.ew_theme_std(ids, themes, tiers, registry_path=none, gains=[1.0] * len(ids))
+        self.assertEqual(ones.weights.tobytes(), std.weights.tobytes())                 # bit for bit
+        self.assertEqual((ones.block, ones.provenance["weights_before_cap"]), (std.block, std.provenance[
+            "weights_before_cap"]))
+        gains = [1.0, 0.2, 0.5, 0.05, 1.0, 0.3, 0.9]
+        fit = cr.ew_theme_std(ids, themes, tiers, registry_path=none, gains=gains)
+        self.assertEqual((fit.block, fit.provenance["rule"]), (std.block, "ew-theme-std-aim-v1"))
+        self.assertEqual(fit.provenance["aim_gains"], dict(zip(ids, gains)))
+        before, scores, g = fit.provenance["weights_before_cap"], fit.provenance["member_scores"], dict(zip(ids, gains))
+        for t in set(themes):                                   # theme shares stay 1/T; within: score x gain
+            members = [i for i, u in zip(ids, themes) if u == t]
+            self.assertAlmostEqual(sum(before[i] for i in members), 1 / 3, places=15, msg=t)
+            total = sum(scores[i] * g[i] for i in members)
+            for i in members:
+                self.assertAlmostEqual(before[i], scores[i] * g[i] / (3 * total), places=15, msg=i)
+        want = ref_cap(before, dict(zip(ids, themes)), 1 / 6)                          # then the cap
+        for k, i in enumerate(ids):
+            self.assertAlmostEqual(fit.weights[k], want[i], places=15, msg=i)
+        self.assertAlmostEqual(float(fit.weights.sum()), 1.0, places=15)
+        self.assertIn("m1", std.provenance["capped_members"])                           # the cap sees the gains:
+        self.assertNotIn("m1", fit.provenance["capped_members"])                        # m1 (gain .05) falls below it
+        self.assertEqual(fit.theme_table["momentum"]["aim_gains"], {"m1": 0.05, "m2": 1.0})
+        self.assertNotIn("aim_gains", std.theme_table["momentum"])                      # ew-theme-std-v1 unchanged
+        for bad in ([1.0] * 6, [0.0] + [1.0] * 6, [float("nan")] + [1.0] * 6):
+            with self.assertRaises(cr.RuleError):
+                cr.ew_theme_std(ids, themes, tiers, registry_path=none, gains=bad)
+
     def test_unscored_tier_and_bad_inputs_refused(self):
         none = self.tmp / "none.json"
         with self.assertRaises(cr.RuleError) as caught:
@@ -199,6 +235,9 @@ class FitterEndToEnd(unittest.TestCase):
         with unittest.mock.patch.object(cr, "REGISTRY_PATH", cls.root / "no-registry.json"):
             cls.v1_code, _ = fcw.fit(cls.fx.args(cls.root / "v1", **tfw.V4_ARGS))
             cls.code, cls.summary = fcw.fit(cls.fx.args(cls.root / "std", **STD_ARGS))
+            cls.aim_code, cls.aim_summary = fcw.fit(cls.fx.args(cls.root / "aim", **tfw.AIM_ARGS))
+            cls.std_aim_code, cls.std_aim_summary = fcw.fit(cls.fx.args(cls.root / "std-aim", **dict(
+                STD_ARGS, composition="ew-theme-std-aim-v1")))
         cls.v1_bytes = {p.name: p.read_bytes() for p in (cls.root / "v1").iterdir()}
         cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "std").iterdir()}
         cls.v1 = json.loads(cls.v1_bytes[fcw.OUTPUT_WEIGHTS])
@@ -231,6 +270,32 @@ class FitterEndToEnd(unittest.TestCase):
         self.assertEqual(self.doc["provenance"]["std"]["capped_members"], sorted(["medium", "slow_a_clone"],
                                                                                  key=order.index))
         self.assertEqual(self.bytes[fcw.OUTPUT_WEIGHTS], fcw.canonical_bytes(self.doc))
+
+    def test_std_aim_fit_is_the_std_rule_on_the_aim_gains(self):
+        """--composition ew-theme-std-aim-v1: the same admission; member weights = ew_theme_std with the members' aim
+        gains (the ew-theme-aim-v1 fit's gains, same records); the runner block and schema are ew-theme-std-v1's."""
+        self.assertEqual((self.std_aim_code, self.aim_code), (fcw.EXIT_OK, fcw.EXIT_OK))
+        out = self.root / "std-aim"
+        doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        aim = json.loads((self.root / "aim" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual((out / fcw.OUTPUT_ADMISSION).read_bytes(), self.bytes[fcw.OUTPUT_ADMISSION])
+        self.assertEqual((doc["schema"], doc["theme_standardise"]), (self.doc["schema"], self.doc["theme_standardise"]))
+        self.assertEqual((doc["provenance"]["rule"], self.std_aim_summary["composition"]),
+                         ("ew-theme-std-aim-v1", "ew-theme-std-aim-v1"))
+        gains = aim["provenance"]["aim"]["gain"]
+        self.assertEqual(doc["provenance"]["aim"]["gain"], gains)                     # the same gains (report block)
+        members = [i for i in self.ids if self.doc["weights"][i] > 0]
+        rows = {c["id"]: c for c in self.adm["candidates"]}
+        with unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+            want = cr.ew_theme_std(members, [rows[i]["theme"] for i in members], [rows[i]["tier"] for i in members],
+                                   gains=[gains[i] for i in members])
+        self.assertEqual(doc["weights"], {i: float(dict(zip(members, want.weights)).get(i, 0.0)) for i in self.ids})
+        self.assertEqual(doc["provenance"]["std"]["aim_gains"], {i: gains[i] for i in members})
+        self.assertNotEqual(doc["weights"], self.doc["weights"])                      # the gains moved weight
+        self.assertEqual(self.std_aim_summary["aim_theme_weights"],
+                         {t: e["theme_weight"] for t, e in sorted(doc["provenance"]["themes"].items())})
+        self.assertNotIn("aim", self.doc["provenance"])                              # ew-theme-std-v1 unchanged
+        self.assertNotIn("aim_gains", self.doc["provenance"]["std"])
 
     def test_document_is_what_the_runner_reads(self):
         # strategy_ic_admission.cpp: schema v2 iff one theme block; theme_standardise {rule, rerank bool, themes}
