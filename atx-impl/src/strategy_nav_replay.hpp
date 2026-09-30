@@ -160,12 +160,27 @@ struct NavReplayConfig {
   // instead of once per book. The same arithmetic, so every output is bit-identical
   // (asserted by the tests); only work and 24 bytes per name of admission change.
   bool liquidity_cache{};
+  // Warm start (v8 D-0, review C-7), K sessions: every book decides and trades from role
+  // row decision_begin - K (never before row 0: K <= decision_begin, else InvalidArgument)
+  // under this config's own rules, costs and financing. The MARK of row decision_begin
+  // closes the warm-up; each book is then resized to initial_nav (holdings, cash, working
+  // orders, delta anchors and written-off exposures scaled by one factor) and every
+  // reported quantity restarts there: rows, events, buckets, participation, rate
+  // statistics and accounting checks cover rows >= decision_begin only. Row
+  // decision_begin is the scored base row (its warm-up MARK is not reported; its fills
+  // and decision are), return rows are [decision_begin + 1, decision_end), and a
+  // deployment during the warm-up leaves deployment_index before the first row. The
+  // cadence phase stays relative to decision_begin. 0 (default): the flat start, every
+  // output bit for bit.
+  atx::usize warm_start_sessions{};
 };
 // The v6 execution options of a run_nav_replay call (copied into its NavReplayConfig;
-// CLI --order-basis target|delta, --locate-in-aim, --liquidity-cache).
+// CLI --order-basis target|delta, --locate-in-aim, --liquidity-cache; v8
+// --warm-start-sessions K).
 struct NavExecutionOptions {
   NavOrderBasis order_basis{NavOrderBasis::Target};
   bool locate_in_aim{}, liquidity_cache{};
+  atx::usize warm_start_sessions{};
 };
 // The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
 // --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
@@ -213,9 +228,10 @@ struct NavBorrowTiers {
                                                                 atx::usize d);
 
 // One row per session t in [decision_begin, decision_end). Row decision_begin
-// carries only the first decision. Return fields are relative to the previous
-// row's pre-trade NAV: net = gross - trade_cost - borrow - long_financing, where
-// trade cost is the PREVIOUS session's fills (costs of fills at t land in the
+// carries only the first decision (under a warm start: the base row, with the fills of
+// the last warm-up decision and its own decision, no mark). Return fields are relative
+// to the previous row's pre-trade NAV: net = gross - trade_cost - borrow - long_financing,
+// where trade cost is the PREVIOUS session's fills (costs of fills at t land in the
 // return of t+1) and borrow is the whole short financing leg (flat rate, or short
 // spread + tier fee). rebalance is effective (a cadence decision not skipped by the
 // neutralize guard).
@@ -302,7 +318,9 @@ struct NavReplayResult {
   atx::u64 participation_fills{};
   atx::f64 participation_p95{}, participation_max{}; // p95: 0.01-decade histogram upper edge
   atx::f64 max_return_identity_error{}, max_cash_book_error{};
-  atx::usize deployment_index{}; // decision_end sentinel when nothing ever filled
+  // The first session with a nonzero fill; decision_end sentinel when nothing ever filled.
+  // Under a warm start it precedes decision_begin when the book deployed in the warm-up.
+  atx::usize deployment_index{};
   NavConstructionStats construction{}; // aim-partial-v5 per-name rate statistics
 };
 [[nodiscard]] atx::core::Result<NavReplayResult> replay_nav(const NavReplayInput& in,
@@ -481,8 +499,11 @@ struct NavFieldsPin {
 // With the v6 execution options: Delta adds order_basis / order_basis_rule to the recipe
 // and order_basis to the summary; locate-in-aim adds locate_in_aim / locate_in_aim_rule
 // to the recipe and locate_in_aim {zeroed_special_short_aims} to the summary; the
-// liquidity cache adds nothing (every output byte is unchanged). NavExecutionOptions{}
-// is exactly the five-argument overload.
+// liquidity cache adds nothing (every output byte is unchanged). A warm start K > 0 adds
+// warm_start_sessions / warm_start_rule to the recipe and warm_start {sessions,
+// first_decision_session_ns, scoring_begins_session_ns} to the summary; it is refused
+// (InvalidArgument, before any payload is loaded) when K exceeds the pinned role's
+// score_begin. NavExecutionOptions{} is exactly the five-argument overload.
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
@@ -518,7 +539,7 @@ struct NavEmitOptions {
 // --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
 // v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
 // the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR
-// [--holdings-format f64|csv].
+// [--holdings-format f64|csv]. v8: --warm-start-sessions K.
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 } // namespace atx::impl::strategy
