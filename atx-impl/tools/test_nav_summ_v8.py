@@ -262,25 +262,29 @@ def test_variance_from_rerun_cells(tmp_path, capsys):
 
 
 def test_defect_rule_appendix_a(tmp_path):
-    """Appendix A rule 7: an invalid cell is logged and leaves N; a blind re-run replaces it (one trial); a re-run
-    decided because the returns looked wrong keeps both as trials."""
+    """Appendix A rule 7: an invalid cell is logged and leaves N; a blind re-run replaces it (one trial: the replaced
+    cell stays counted, the re-run adds 0, review C-5); a re-run decided because the returns looked wrong keeps both
+    as trials. A cell found invalid after it was ledgered is marked by a defect line (review C-3)."""
     wid = BI.window_id()
     c = noise_cells(tmp_path, 6)
     bad = record(c[0], 0.4, research_window_id=wid, origin="prior", defect="stale fields manifest")
     blind = record(c[1], 0.7, research_window_id=wid, origin="prior", rerun_of=bad["trial_id"], rerun_basis="blind")
-    looked = record(c[2], 0.2, research_window_id=wid, origin="grid")
+    looked = record(c[2], 0.2, research_window_id=wid, origin="grid", defect="fills priced at the wrong close")
     after = record(c[3], 0.9, research_window_id=wid, origin="grid", rerun_of=looked["trial_id"],
                    rerun_basis="returns")
     replaced = record(c[4], 0.3, research_window_id=wid, origin="mined")
+    found = BI.defect_line(replaced["trial_id"], "borrow fee table misread")
     blind2 = record(c[5], 0.5, research_window_id=wid, origin="mined", rerun_of=replaced["trial_id"],
                     rerun_basis="blind")
-    recs = [bad, blind, looked, after, replaced, blind2]
-    assert BI.trial_counts(recs) == [0, 1, 1, 1, 0, 1]
-    assert [r["trial_id"] for r in BI.excluded_lines(recs)] == [bad["trial_id"], replaced["trial_id"]]
+    ledger = tmp_path / "t.jsonl"
+    BI.ledger_append(ledger, [bad, blind, looked, after, replaced, found, blind2], chain=True)
+    recs = BI.ledger_read(ledger)
+    assert BI.trial_counts(recs) == [1, 0, 1, 1, 1, 0, 0]
+    assert [r["trial_id"] for r in BI.excluded_lines(recs)] == [bad["trial_id"], replaced["trial_id"]]   # out of V
     assert bad["defect"] == {"invalid": True, "reason": "stale fields manifest"}
     text = BI.appendix_a(recs, "t.jsonl")
-    assert text[0] == "Appendix A (trial ledger t.jsonl): 4 trials in 6 ledger lines"
-    assert text[-1] == "   adding no trial: 2 line(s) (2 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
+    assert text[0] == "Appendix A (trial ledger t.jsonl): 4 trials in 7 ledger lines"
+    assert text[-1] == "   adding no trial: 3 line(s) (3 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
     # the v8 block: every window date from research_window.py
     rw = BI.research_window()
     v8 = BI.appendix_a_v8(recs)

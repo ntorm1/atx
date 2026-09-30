@@ -11,7 +11,7 @@ One N, one append (PM ruling 2026-09-29, lane G task 1): both go through the val
 atx-impl/tools/backtest_integrity.py (``backtest_integrity()`` below, loaded as the nav_summ shim loads the moved
 tools: that directory on sys.path, imported by name, on first use only).
   N       ``summ.dsr_n: "ledger+1"`` resolves to ``backtest_integrity.ledger_n``: the construction trials by the defect
-          rule (``trial_counts``: protocol lines, window re-runs, invalid and blind-replaced cells add 0) plus 1 when
+          rule (``trial_counts``: event lines, window and blind re-runs, unreplaced invalid cells add 0) plus 1 when
           the scored cell has no line yet -- the N nav_summ --dsr-ledger prints. The scored cell is matched as
           nav_summ matches it (the trial_id of its primary daily CSV) once its NAV output exists, by its cell name
           before that (plan time).

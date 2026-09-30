@@ -9,16 +9,18 @@
   v8 fields       (platform v8 V-1; optional, so every older line stays valid and its trial_id rule is unchanged)
                   origin (contract K5: prior | grid | mined), window_id (the research window the series was scored
                   on), defect {invalid, reason}, rerun_of (a trial_id) with rerun_basis window | blind | returns.
-  trial count     (v8-prereg items 2 and 7) a line adds its count to N except: kind protocol (W0-3) and window
-                  re-runs (a ledgered cell re-run on a longer window) add 0; an invalid cell (defect) and a cell
-                  replaced by a blind re-run add 0, unless a re-run decided because its returns looked wrong names it
-                  (then both are trials). Without the v8 fields every line adds its count, as before.
+  trial count     (v8-prereg items 2 and 7) a line adds its count to N except: kind protocol (W0-3), window
+                  re-runs (a ledgered cell re-run on a longer window) and blind re-runs add 0; an invalid cell (defect)
+                  adds 0 unless a re-run names it. A re-run never lowers N (review C-5): the replaced invalid cell
+                  stays counted and its blind re-run adds 0; a re-run decided because the returns looked wrong is a
+                  new trial beside it. Without the v8 fields every line adds its count, as before.
   defect line     (review C-3) kind defect, count 0, defect_of = a ledgered cell's trial_id, reason: that cell is
                   invalid, found after it was ledgered (research_cycle.py ledger-defect). A cell line whose trial_id is
                   ledgered already is skipped only when its defect / re-run flags equal the ledgered line's; flags that
                   would be dropped are refused (ledger_append raises, nav_summ exits non-zero).
   re-run check    (review C-4) rerun_of must be the trial_id of an earlier cell line of the same kind; a window
-                  re-run's target is on another window_id (or has none).
+                  re-run's target is on another window_id (or has none); (review C-5) a blind or returns re-run's
+                  target is invalid on an earlier line (its defect flag or a defect line).
   protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
                   series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
   hash chain      (v8, ledger-chain-v1) prev_sha256 = SHA-256 of the previous non-blank line's bytes (64 zeros for
@@ -768,7 +770,10 @@ def check_line(before: dict, rec: dict) -> bool:
 def check_rerun(before: dict, rec: dict) -> None:
     """Review C-4: ``rerun_of`` names the trial_id of an earlier cell line of the same kind (an era shard line or an
     event line is no cell; a typo, a cell name or another kind's id is refused), and a window re-run re-scores that
-    cell on another research window: its target carries another window_id, or none (a legacy line)."""
+    cell on another research window: its target carries another window_id, or none (a legacy line).
+
+    Review C-5: a blind or returns re-run (the defect rule, v8-prereg item 7) names an invalid cell, invalid on an
+    earlier line (its own defect flag or a defect line): a valid cell is never replaced (item 5: no retry)."""
     target = before.get(rec["rerun_of"])
     if target is None or is_event(target) or is_era_line(target) or target.get("kind") != rec.get("kind"):
         raise ValueError(f"ledger: rerun_of {rec['rerun_of']!r} is not the trial_id of an earlier {rec.get('kind')} "
@@ -776,6 +781,11 @@ def check_rerun(before: dict, rec: dict) -> None:
     if rec.get("rerun_basis") == "window" and "window_id" in target and target["window_id"] == rec.get("window_id"):
         raise ValueError(f"ledger: a window re-run re-scores a ledgered cell on another research window; trial "
                          f"{rec['rerun_of']} was scored on {target['window_id']} already")
+    if rec.get("rerun_basis") in ("blind", "returns") and not target.get("defect") and \
+            trial_id(DEFECT, rec["rerun_of"]) not in before:
+        raise ValueError(f"ledger: a {rec['rerun_basis']} re-run replaces an invalid cell (v8-prereg item 7); trial "
+                         f"{rec['rerun_of']} has no defect on an earlier line (research_cycle.py ledger-defect "
+                         f"--trial-id {rec['rerun_of']} --reason ... first)")
 
 
 CHAIN_GENESIS = "0" * 64
@@ -856,21 +866,21 @@ def invalid_ids(records: list[dict]) -> set:
 def trial_counts(records: list[dict]) -> list[int]:
     """The trials each ledger line adds to N (v8-prereg item 2 and item 7, the defect rule), in ledger order.
 
-    A line adds its ``count`` (default 1) except: an event line (``protocol``, ``defect``) and a window re-run
-    (``rerun_basis`` window: a ledgered cell re-run on a longer window) add 0; an invalid cell (``defect``, or named by a
-    defect line) and a cell replaced by a blind re-run (``rerun_basis`` blind: decided without seeing returns) add 0,
-    unless a re-run decided because its returns looked wrong (``rerun_basis`` returns) names it, in which case it stays
-    a trial and the re-run is a new one. Lines without the v8 fields add their count, exactly as ``ledger_counts`` summed
-    them before v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial."""
-    seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
-    replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
+    A line adds its ``count`` (default 1) except: an event line (``protocol``, ``defect``), a window re-run
+    (``rerun_basis`` window: a ledgered cell re-run on a longer window) and a blind re-run (``rerun_basis`` blind:
+    decided without seeing returns) add 0; an invalid cell (``defect``, or named by a defect line) adds 0 unless a
+    re-run names it. A re-run never lowers N (review C-5): the replaced cell stays counted and its blind re-run adds 0
+    (one trial for the pair), while a re-run decided because the returns looked wrong (``rerun_basis`` returns) is a
+    new trial beside it. Lines without the v8 fields add their count, exactly as ``ledger_counts`` summed them before
+    v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial."""
+    rerun = {r.get("rerun_of") for r in records if r.get("rerun_basis") in ("blind", "returns")}
     invalid = invalid_ids(records)
     out = []
     for rec in records:
         tid = rec.get("trial_id")
-        if is_event(rec) or rec.get("rerun_basis") == "window" or is_era_line(rec):
+        if is_event(rec) or rec.get("rerun_basis") in ("window", "blind") or is_era_line(rec):
             out.append(0)
-        elif tid not in seen and (tid in invalid or tid in replaced):
+        elif tid in invalid and tid not in rerun:
             out.append(0)
         else:
             out.append(int(rec.get("count", 1)))
@@ -879,7 +889,7 @@ def trial_counts(records: list[dict]) -> list[int]:
 
 def ledger_n(records: list[dict], scored_in_ledger: bool, kind: str = "construction") -> int:
     """The N that gates (PM ruling 2026-09-29; v8-prereg Appendix A rules 2 and 7): the ``kind`` trials of the ledger
-    by ``trial_counts`` (the defect rule: protocol lines, window re-runs, invalid and blind-replaced cells add 0), plus
+    by ``trial_counts`` (the defect rule: event lines, window and blind re-runs, unreplaced invalid cells add 0), plus
     1 for the scored cell when it has no ``kind`` line in the ledger yet. nav_summ --dsr-ledger and research_cycle.py
     (summ.dsr_n "ledger+1") both read N here, so the two print the same N. A line without a kind (a layout
     ledger_record never writes) is read as a ``kind`` line."""
@@ -888,7 +898,9 @@ def ledger_n(records: list[dict], scored_in_ledger: bool, kind: str = "construct
 
 
 def excluded_lines(records: list[dict]) -> list[dict]:
-    """The lines the defect rule takes out of N (invalid cells and cells replaced by a blind re-run)."""
+    """The cell lines whose result the defect rule leaves out of V[SR]: invalid cells and cells replaced by a blind
+    re-run, unless a returns re-run names them. Of these, only the invalid cells no re-run names are out of N too
+    (``trial_counts``: a replaced cell stays counted for its blind re-run, review C-5)."""
     seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
     replaced = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "blind"}
     invalid = invalid_ids(records)
@@ -921,7 +933,7 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
             lines.append(f"   {kind:12s} {0:5d}")
     zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r)]
     if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
-        out = excluded_lines(records) + [r for r in records if r.get("kind") == DEFECT]   # with the defect lines
+        out = [r for r in zero if r.get("rerun_basis") != "window" and r.get("kind") not in ZERO_TRIAL_KINDS]
         lines.append(f"   adding no trial: {len(zero)} line(s) ({len(out)} by the defect rule, "
                      f"{sum(1 for r in zero if r.get('rerun_basis') == 'window')} window re-run(s), "
                      f"{sum(1 for r in zero if r.get('kind') in ZERO_TRIAL_KINDS)} protocol line(s))")
