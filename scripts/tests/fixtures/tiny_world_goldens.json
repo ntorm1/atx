@@ -4,10 +4,20 @@
   "seed": 7,
   "spec": "scripts/specs/tiny.json",
   "outputs": {
-    "orientations_json_sha256": null,
-    "admission_decisions_sha256": null,
-    "primary_daily_csv_sha256": null
+    "orientations_json_sha256": "b2143918708ceb0088ee462fd0e4e49e3e9de3fa51ccd224c0d0d2a78235f4f6",
+    "admission_decisions_sha256": "43206904e6e56b4235567384680b3f428d6fcaa09667b05a5cddcbb1e20782e8",
+    "primary_daily_csv_sha256": "ca559404644af92e795ea718005d45c4c1d821f8b84f83a340abf02f7febe067"
   },
-  "primary_scenario": null,
-  "recorded": null
+  "primary_scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+  "recorded": {
+    "git_head": "492c12081c4455ffc21afbd182f573fc93b8a657",
+    "bin": "C:/atx-wt/pool-2/build-equity/bin",
+    "exe_sha256": {
+      "ic": "7a56699b32291a66f4d121cf9334d6f62aacb5cbf39403ae7b6b0e2899d5e5b1",
+      "nav": "1bd5a37b29a193429acd4821a2ba0b69af6225173baa8f36c42dd5061fa79b0b"
+    },
+    "python": "3.12.2",
+    "numpy": "1.26.4",
+    "first_run_seconds": 13.3
+  }
 }
