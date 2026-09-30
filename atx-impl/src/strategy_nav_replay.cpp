@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -304,7 +305,7 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
       cfg.liquidity_window > max_dates || cfg.min_vol_pairs < 2 ||
       cfg.min_vol_pairs > cfg.liquidity_window || !cfg.max_events ||
       cfg.max_events > max_event_cap || cfg.target.one_way_bps != 0 ||
-      cfg.target.annual_borrow_bps != 0)
+      cfg.target.annual_borrow_bps != 0 || cfg.warm_start_sessions > max_dates)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: invalid recipe (target-replay cost/borrow must be zero)");
   // Trading rate: per-name-v1 is aim-partial-v5 only; a fixed rate carries no rate
@@ -332,6 +333,14 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
                    "construction (--neutralize) and the borrow fields");
   return co::Ok();
 }
+// A warm start of K sessions decides from role row score_begin - K: never before row 0.
+co::Status check_warm_start(usize sessions, usize score_begin) {
+  if (sessions <= score_begin) return co::Ok();
+  return co::Err(co::ErrorCode::InvalidArgument,
+                 "nav replay: --warm-start-sessions " + std::to_string(sessions) +
+                     " exceeds the role's pre-score history (score_begin = " +
+                     std::to_string(score_begin) + " sessions)");
+}
 co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& cfg,
                               usize books) {
   ATX_TRY_VOID(validate_nav_config(cfg));
@@ -342,6 +351,7 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
       x.decision_end - x.decision_begin < 3)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: prices+volume required and at least three window sessions");
+  ATX_TRY_VOID(check_warm_start(cfg.warm_start_sessions, x.decision_begin));
   if (neutralize_by_industry(cfg.target.neutralize) && x.industry.size() != cells)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: the industry ids need the grp_ff12 field (--fields)");
@@ -1004,8 +1014,42 @@ struct Observer {
   NavHoldingsSink* sink{};
   usize book{};
 };
-// Sessions [begin, end): MARK (t > begin) -> EXECUTE (begin < t <= end-2) ->
-// DECIDE (t < end-2). Row t reads data at rows <= t only. The scenario books run in
+// A cadence decision: (t - begin) % cadence == 0, extended before begin (warm start) so
+// the rebalance calendar of the scored rows never depends on the warm-up length.
+bool cadence_day(usize t, usize begin, usize cadence) {
+  return t >= begin ? (t - begin) % cadence == 0 : (begin - t) % cadence == 0;
+}
+// A fresh row t (every other field is filled by the session's MARK/EXECUTE/DECIDE).
+NavReplayDay open_day(const TargetReplayInput& x, usize t, bool return_observation) {
+  NavReplayDay day;
+  day.session_index = t; day.session = x.session_keys[t];
+  day.calendar_month = detail::calendar_month(day.session);
+  day.return_observation = return_observation;
+  return day;
+}
+// Warm start: the scoring boundary, after the warm-up MARK of row decision_begin. The book
+// is resized to initial_nav (one factor on every dollar state: holdings, cash, working
+// orders, delta anchors and written-off exposures; weights and marks are unchanged) and
+// every reported accumulator restarts, so the result holds scored quantities only.
+// deployment_index keeps a warm-up deployment (it then precedes the first row).
+void start_scoring(const Ctx& c, Book& b) {
+  const f64 scale = c.cfg.initial_nav / b.nav_pre;
+  auto& s = b.names;
+  for (auto* dollars : {&s.held, &s.order, &s.anchor, &s.written_exposure})
+    for (f64& v : *dollars) v *= scale;
+  b.cash *= scale; b.nav_pre = c.cfg.initial_nav;
+  auto& r = b.result;
+  r.events.clear();
+  for (auto* bucket : {&r.gap_run_1, &r.gap_run_2_4, &r.gap_run_5_plus, &r.written_off,
+                       &r.reappeared, &r.unresolved, &r.guarded})
+    *bucket = NavBucket{};
+  r.guard_sensitivity = 0; r.max_return_identity_error = 0; r.max_cash_book_error = 0;
+  b.participation = ParticipationHistogram{};
+  b.rates = RateStatistics{}; b.rates.reset(c.cfg.rate_min, c.cfg.rate_max);
+}
+// Sessions [begin - K, end) (K = warm_start_sessions; 0 without a warm start): MARK
+// (t > begin - K) -> EXECUTE (begin - K < t <= end-2) -> DECIDE (t < end-2); rows t >=
+// begin are reported. Row t reads data at rows <= t only. The scenario books run in
 // lockstep: each book performs exactly its own single-book sequence (mark, execute,
 // decide, close) on its own state; only the decision's desired target and borrow
 // tiers (and, with rate per-name-v1, the session's liquidity windows) are formed once
@@ -1017,9 +1061,12 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const Observer& observer = {}) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   const auto& target = ctxs.front().cfg.target; // identical for every book
-  // The rate, order basis, locate-in-aim and cache (like the target) are the base
-  // config's, identical for every book.
+  // The rate, order basis, locate-in-aim, cache and warm start (like the target) are the
+  // base config's, identical for every book.
   const auto& base = ctxs.front().cfg;
+  const usize warm = base.warm_start_sessions, start = begin - warm; // validated: warm <= begin
+  // A flat start's row begin+1 marks an empty book; a warm book earns from row begin+1.
+  const usize first_return = begin + (warm ? 1U : 2U);
   const bool delta_basis = base.order_basis == NavOrderBasis::Delta;
   std::vector<std::unique_ptr<Book>> books;
   books.reserve(count);
@@ -1041,8 +1088,9 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     holdings.reserve(x.instruments);
   }
   std::vector<NavReplayDay> days(count);
-  for (usize t = begin; t < end; ++t) {
-    const bool execution = t > begin && t + 2 <= end, decision = t + 2 < end;
+  for (usize t = start; t < end; ++t) {
+    const bool execution = t > start && t + 2 <= end, decision = t + 2 < end;
+    const bool scored = t >= begin, boundary = warm && t == begin;
     const bool rate_decision = per_name && decision;
     if (cache.on() && (execution || rate_decision))
       fill_liquidity(ctxs.front(), books, t, execution, rate_decision, cache);
@@ -1050,11 +1098,12 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       const auto& c = ctxs[k]; auto& b = *books[k]; auto& day = days[k];
       auto& r = b.result;
       if (b.trace) b.trace->clear();
-      day = NavReplayDay{};
-      day.session_index = t; day.session = x.session_keys[t];
-      day.calendar_month = detail::calendar_month(day.session);
-      day.return_observation = t >= begin + 2;
-      if (t > begin) ATX_TRY_VOID(mark_session(c, b, tiers, t, day));
+      day = open_day(x, t, t >= first_return);
+      if (t > start) ATX_TRY_VOID(mark_session(c, b, tiers, t, day));
+      if (boundary) { // the warm-up MARK is not a scored row: the base row starts here
+        start_scoring(c, b);
+        day = open_day(x, t, false);
+      }
       day.pretrade_nav = b.nav_pre;
       day.pretrade_gross_dollars = gross_dollars(b.names);
       if (execution) {
@@ -1069,7 +1118,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     if (decision) {
       TierCensus census;
       ConstructionDay construction;
-      const bool cadence = (t - begin) % target.cadence == 0;
+      const bool cadence = cadence_day(t, begin, target.cadence);
       ATX_TRY(const bool rebalance, decide_construction(x, fields, target, t, cadence, {},
                                                         shared, tiers, census, construction));
       for (usize k = 0; k < count; ++k) {
@@ -1083,6 +1132,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       auto& b = *books[k];
       ATX_TRY_VOID(close_day(ctxs[k], b, days[k]));
       if (t + 1 == end) ATX_TRY_VOID(report_unresolved(ctxs[k], b, t));
+      if (!scored) continue; // warm-up rows are never reported
       if (b.trace && (decision || execution))
         ATX_TRY_VOID(emit_holdings(x, b, shared, tiers, days[k], t, holdings, *observer.sink));
       b.result.days.push_back(days[k]);
@@ -1298,6 +1348,17 @@ constexpr const char* locate_in_aim_declaration =
     "run (the construction is shared); each book's block_special_shorts rule still applies "
     "after the target rule as a safety net; requires the borrow fields and a neutralizing "
     "construction";
+constexpr const char* warm_start_declaration =
+    "v8 D-0 (review C-7): every book decides and trades from role row score_begin - K (K = "
+    "warm_start_sessions <= score_begin: never before the role's first row) under every rule, "
+    "cost and financing of this recipe; the MARK of session score_begin closes the warm-up "
+    "and is not reported; each book is then resized to initial_nav (holdings, cash, working "
+    "orders, delta anchors and written-off exposures scaled by one factor; weights "
+    "unchanged) and every reported quantity restarts: rows, events, missing/guard buckets, "
+    "participation, rate statistics and accounting checks cover sessions >= score_begin "
+    "only; row score_begin is the base row (its fills and decision are scored), return rows "
+    "are [score_begin+1, end); a deployment in the warm-up is not a scored deployment; the "
+    "cadence phase stays relative to score_begin";
 
 // Output label of a book: the trading id alone without fields (the legacy names),
 // "<trading>+<financing>" in the financing matrix.
@@ -1380,6 +1441,11 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
   }
   if (base.locate_in_aim) {
     j["locate_in_aim"] = true; j["locate_in_aim_rule"] = locate_in_aim_declaration;
+  }
+  // v8 warm start: keys only when on (the flat-start recipe is unchanged byte for byte).
+  if (base.warm_start_sessions) {
+    j["warm_start_sessions"] = base.warm_start_sessions;
+    j["warm_start_rule"] = warm_start_declaration;
   }
   v7::extend_recipe(j); // L4 hook: identity unless extended or a reserved cost-v2 id
   return j;
@@ -1774,6 +1840,7 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
 // loader later requires the blend's dates, instruments and score window to equal it.
 struct RoleGeometry {
   usize names{}, sessions{}; // instruments; score_end - score_begin
+  usize score_begin{};       // the pre-score history a warm start may use
 };
 co::Result<RoleGeometry> role_geometry(const TargetReplayRunConfig& cfg) {
   ATX_TRY(auto role, pinned_document(cfg.role_path, cfg.role_sha256, max_role_manifest_bytes,
@@ -1782,7 +1849,8 @@ co::Result<RoleGeometry> role_geometry(const TargetReplayRunConfig& cfg) {
   const auto begin = role.at("score_begin").get<u64>(), end = role.at("score_end").get<u64>();
   if (!dates || dates > max_dates || !names || names > max_names || begin >= end || end > dates)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: role geometry");
-  return co::Ok(RoleGeometry{static_cast<usize>(names), static_cast<usize>(end - begin)});
+  return co::Ok(RoleGeometry{static_cast<usize>(names), static_cast<usize>(end - begin),
+                             static_cast<usize>(begin)});
 }
 struct AdmittedRun {
   detail::LoadedSavedBlend blend;
@@ -1797,6 +1865,9 @@ co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
                                        usize books, bool holdings) {
   const bool tiered = !fields.manifest_path.empty();
   ATX_TRY(const auto geometry, role_geometry(cfg));
+  // A warm start longer than the pinned role's pre-score history is refused before any
+  // payload is read (the replay's own input check repeats it).
+  ATX_TRY_VOID(check_warm_start(base.warm_start_sessions, geometry.score_begin));
   const u64 reserve = nav_workspace_reserve_bytes(base, books, tiered, geometry.names,
                                                   geometry.sessions, holdings);
   if (cfg.target.max_working_bytes <= reserve)
@@ -2110,7 +2181,18 @@ struct NavRun {
   const std::vector<NavSummary>& summaries;
   const std::string& manifest_json; // the pinned combined manifest
   const Json& fields;               // borrow-field binding; null without --fields
+  const Json& warm_start;           // the summary's warm_start record; null without one
 };
+// The summary's warm_start record; null without a warm start. Called after the replay
+// accepted the input (warm_start_sessions <= decision_begin).
+Json warm_start_record(const NavReplayConfig& base, const TargetReplayInput& x) {
+  const usize k = base.warm_start_sessions;
+  if (!k) return Json(nullptr);
+  return Json{{"sessions", k},
+              {"first_decision_session_ns", x.session_keys[x.decision_begin - k]},
+              {"scoring_begins_session_ns", x.session_keys[x.decision_begin]},
+              {"rule", "recipe warm_start_rule"}};
+}
 // construction.v5 of one book over its decision rows: the rule's plan (pre locate
 // rule) gross, net and held share of the decision's members.
 Json aim_partial_json(const TargetReplayConfig& target, const NavReplayResult& result) {
@@ -2196,6 +2278,7 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     summary["locate_in_aim"] = Json{{"zeroed_special_short_aims", zeroed},
         {"basis", "member-decisions whose negative tied-rank aim was set to 0 (special tier)"}};
   }
+  if (!run.warm_start.is_null()) summary["warm_start"] = run.warm_start; // v8, only when on
   v7::extend_summary(summary); // L4 hook: identity unless extended
   return write_json(dir / "summary.json", summary);
 }
@@ -2410,6 +2493,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     base.rate_min = rate.rate_min; base.rate_max = rate.rate_max;
     base.order_basis = execution.order_basis; base.locate_in_aim = execution.locate_in_aim;
     base.liquidity_cache = execution.liquidity_cache;
+    base.warm_start_sessions = execution.warm_start_sessions;
     const bool holdings = !emit.holdings_directory.empty();
     if (holdings) {
       const auto nav_dir = std::filesystem::path(cfg.output_directory);
@@ -2448,10 +2532,15 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     // L4 hook: records the books; spo's specific-ceiling tripwire voids the run here, before
     // publish_nav creates the output directory (Ok without an extension).
     ATX_TRY_VOID(v7::capture(scenarios, results, summaries));
+    const Json warm = warm_start_record(base, view);
     const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
-                     loaded.binding};
+                     loaded.binding, warm};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
+    if (!warm.is_null())
+      progress << "nav replay: warm start of " << base.warm_start_sessions
+               << " sessions, first decision session_ns "
+               << warm.at("first_decision_session_ns").get<i64>() << '\n';
     ATX_TRY_VOID(publish_nav(run, progress));
     return holdings ? publish_holdings(run, csv, progress) : co::Ok();
   } catch (const std::exception& e) {
@@ -2491,7 +2580,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--liquidity-cache] [--emit-holdings NEWDIR (primary book per-name "
                "holdings, streamed; manifest.json last) [--holdings-format f64|csv (f64: "
                "holdings.f64 + holdings_index.json, the default; csv: the v1 holdings.csv; "
-               "ignored without --emit-holdings)]]\n"
+               "ignored without --emit-holdings)]] "
+               "[--warm-start-sessions 0 (K > 0: decide and trade from score_begin - K, "
+               "score from score_begin; K <= the role's score_begin)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -2542,7 +2633,11 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--exit-rate") cfg.target.exit_rate = real();
-      else if (key == "--order-basis") {
+      else if (key == "--warm-start-sessions") {
+        const auto x = integer();
+        if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
+        execution.warm_start_sessions = static_cast<usize>(x);
+      } else if (key == "--order-basis") {
         if (value == "target") execution.order_basis = NavOrderBasis::Target;
         else if (value == "delta") execution.order_basis = NavOrderBasis::Delta;
         else throw std::invalid_argument("unknown --order-basis (target|delta)");

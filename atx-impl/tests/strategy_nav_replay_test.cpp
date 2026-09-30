@@ -2810,3 +2810,217 @@ TEST(NavV6, IndustryNeutralizeRunsWithTheFieldAndIsRefusedWithout) {
                       "--neutralize", "price-risk-ind-v1"}, o, e), 1); // needs --fields
   EXPECT_FALSE(std::filesystem::exists(dir.path / "never"));
 }
+
+// ---- v8 D-0: warm start (review C-7) ----
+namespace {
+// write_artifact with the score window [begin, d): the role and the combined manifest both
+// carry score_begin (the loader requires them equal), the manifest re-pinned to the role.
+Artifact artifact_from(const std::filesystem::path& dir, const Panel& p, usize begin) {
+  auto a = write_artifact(dir, p);
+  a.role["score_begin"] = begin;
+  a.cfg.role_sha256 = write_json(a.cfg.role_path, a.role);
+  a.manifest["score_begin"] = begin;
+  a.manifest["role_manifest_sha256"] = a.cfg.role_sha256;
+  a.cfg.combined_sha256 = write_json(a.cfg.combined_path, a.manifest);
+  return a;
+}
+// The v7.1 cell's construction flags on the fixture (aim-partial-v5 of v5_flags, the borrow
+// fields, price-risk-v1, delta basis, exit rate, locate-in-aim, liquidity cache): 5 books.
+std::vector<std::string> v71_shape(const st::NavFieldsPin& pin) {
+  return joined(v5_flags, {"--fields", pin.manifest_path, "--fields-sha256", pin.manifest_sha256,
+                           "--neutralize", "price-risk-v1", "--order-basis", "delta",
+                           "--exit-rate", ".05", "--locate-in-aim", "--liquidity-cache"});
+}
+} // namespace
+
+// --warm-start-sessions 0 is the flat start: every published file byte for byte as the same
+// run without the flag (baseline, the v5 flags, and the v7.1-cell shape with its 5 books),
+// the pinned pre-change recipe SHAs hold, and no warm-start key appears.
+TEST(NavWarmStart, FlagOffIsByteIdentical) {
+  EXPECT_EQ(st::NavReplayConfig{}.warm_start_sessions, 0U);
+  EXPECT_EQ(st::NavExecutionOptions{}.warm_start_sessions, 0U);
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5); // name 0 special
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+  const std::vector<std::string> off{"--warm-start-sessions", "0"};
+  std::ostringstream out, err;
+  const std::vector<std::pair<std::string, std::vector<std::string>>> runs{
+      {"base", {}}, {"v5", v5_flags}, {"cell", v71_shape(pin)}};
+  for (const auto& [name, flags] : runs) {
+    ASSERT_EQ(dispatch(nav_args(a, dir.path / name, flags), out, err), 0) << err.str();
+    ASSERT_EQ(dispatch(nav_args(a, dir.path / (name + "0"), joined(flags, off)), out, err), 0)
+        << err.str();
+    expect_same_files(dir.path / name, dir.path / (name + "0"));
+    EXPECT_FALSE(read_json(dir.path / name / "recipe.json").contains("warm_start_sessions"));
+    EXPECT_FALSE(read_json(dir.path / name / "summary.json").contains("warm_start"));
+  }
+  EXPECT_EQ(file_names(dir.path / "cell0").size(), 12U); // recipe, summary, 5 books x 2 CSVs
+  EXPECT_EQ(co::sha256_file((dir.path / "base0" / "recipe.json").string()).value(),
+            "73cb45f1182f659b1b66bf5adc17bc0539a95c987d191c10c00f846c6c8017c0");
+  EXPECT_EQ(co::sha256_file((dir.path / "v50" / "recipe.json").string()).value(),
+            "d53f0c09018244862e8974579e8a87184310778786b08545041c605f725fc71a");
+}
+
+// Constant prices and aim, zero costs: aim-partial-v5 at theta .05 (the v7.1 rate) plans
+// gross L (1 - .95^(j+1)) at its j-th decision. The flat start holds nothing on its first
+// scored row and .05 L after it (review C-7). A 60-session warm start enters its first
+// scored row with 60 decisions filled, L (1 - .95^60) = .954 L: within 5% of the steady
+// state. The warm book's row set is the scored window: a base row at the initial NAV
+// (no mark, its fills and decision kept), one more return row, the deployment in the
+// warm-up (so no scored deployment).
+TEST(NavWarmStart, GrossAtFirstScoredSessionWithin5PctOfSteadyState) {
+  Panel p(200, 8); p.by_name({1, 2, 3, 4, 5, 6, 7, 8}); p.begin = 100;
+  constexpr f64 leverage = 1.247;
+  constexpr usize warm_sessions = 60;
+  const auto flat_cfg = config(flat(0, 0), 1e9, aim_partial_nav(.05, 0, leverage));
+  auto warm_cfg = flat_cfg; warm_cfg.warm_start_sessions = warm_sessions;
+  const auto cold = st::replay_nav(p.nav(), flat_cfg);
+  const auto warm = st::replay_nav(p.nav(), warm_cfg);
+  ASSERT_TRUE(cold) << cold.error().to_string();
+  ASSERT_TRUE(warm) << warm.error().to_string();
+  ASSERT_EQ(cold->days.size(), p.d - p.begin);
+  ASSERT_EQ(warm->days.size(), p.d - p.begin);
+  f64 steady = 0; // the flat start's last 10 rows: at least 90 decisions filled
+  for (usize k = cold->days.size() - 10; k < cold->days.size(); ++k)
+    steady += cold->days[k].gross_leverage / 10.0;
+  EXPECT_NEAR(steady, leverage, .01 * leverage);
+  const auto& first = warm->days.front();
+  EXPECT_EQ(first.session_index, p.begin);
+  EXPECT_NEAR(first.gross_leverage, leverage * (1 - std::pow(.95, 60.0)), 1e-9);
+  EXPECT_NEAR(first.gross_leverage / steady, 1.0, .05);
+  EXPECT_EQ(cold->days.front().gross_leverage, 0.0);
+  EXPECT_LT(cold->days[1].gross_leverage, .1 * steady);
+  // The base row: initial NAV, no reported mark, its fills and decision scored.
+  EXPECT_FALSE(first.return_observation);
+  EXPECT_TRUE(warm->days[1].return_observation);
+  EXPECT_FALSE(cold->days[1].return_observation);
+  EXPECT_EQ(first.pretrade_nav, 1e9);
+  EXPECT_EQ(first.net_return, 0.0);
+  EXPECT_EQ(first.mark_pnl_dollars, 0.0);
+  EXPECT_TRUE(first.executed);
+  EXPECT_TRUE(first.decision);
+  EXPECT_GT(first.traded_dollars, 0.0);
+  EXPECT_EQ(warm->deployment_index, p.begin - warm_sessions + 1);
+  EXPECT_EQ(cold->deployment_index, p.begin + 1);
+  const auto warm_summary = st::summarize_nav(*warm);
+  const auto cold_summary = st::summarize_nav(*cold);
+  ASSERT_TRUE(warm_summary) << warm_summary.error().to_string();
+  ASSERT_TRUE(cold_summary) << cold_summary.error().to_string();
+  EXPECT_EQ(warm_summary->observations, p.d - p.begin - 1);
+  EXPECT_EQ(cold_summary->observations, p.d - p.begin - 2);
+  EXPECT_FALSE(warm_summary->deployed);
+  EXPECT_TRUE(cold_summary->deployed);
+}
+
+// Same rules and costs: a book warm-started K sessions before `begin` is, until the MARK
+// of `begin`, the flat-start book of begin - K; from there on it is that book resized to
+// the initial NAV. With scale-free costs (flat bps, flat financing, uncapped) every return,
+// turnover and weight of rows after the boundary equals the earlier flat start's to
+// rounding, the dollars are its dollars times the boundary factor, and the events after
+// the boundary are its events. The boundary MARK's events are not reported.
+TEST(NavWarmStart, RowsAfterTheBoundaryAreTheEarlierStartResized) {
+  Panel p(60, 8); randomize_rows(p, 7, 0);
+  constexpr usize begin = 20, warm_sessions = 10;
+  st::TargetReplayConfig rule; rule.cadence = 1; rule.trade_fraction = .5;
+  auto cfg = config(flat(6, 300), 1e6, rule);
+  cfg.liquidity_window = 5; cfg.min_vol_pairs = 3;
+  p.begin = begin - warm_sessions;
+  const auto early = st::replay_nav(p.nav(), cfg);
+  p.begin = begin;
+  auto warm_cfg = cfg; warm_cfg.warm_start_sessions = warm_sessions;
+  const auto warm = st::replay_nav(p.nav(), warm_cfg);
+  ASSERT_TRUE(early) << early.error().to_string();
+  ASSERT_TRUE(warm) << warm.error().to_string();
+  ASSERT_EQ(warm->days.size(), p.d - begin);
+  const auto at = [&](usize t) -> const st::NavReplayDay& {
+    return early->days[t - (begin - warm_sessions)];
+  };
+  const f64 scale = 1e6 / at(begin).pretrade_nav;
+  const auto close_to = [](f64 a, f64 b, f64 rel) {
+    return std::abs(a - b) <= rel * std::max(1.0, std::abs(b));
+  };
+  for (usize t = begin; t < p.d; ++t) {
+    const auto& w = warm->days[t - begin]; const auto& e = at(t);
+    EXPECT_EQ(w.session_index, t);
+    EXPECT_TRUE(close_to(w.posttrade_nav, e.posttrade_nav * scale, 1e-12)) << t;
+    EXPECT_TRUE(close_to(w.gross_leverage, e.gross_leverage, 1e-12)) << t;
+    EXPECT_TRUE(close_to(w.net_leverage, e.net_leverage, 1e-12)) << t;
+    EXPECT_TRUE(close_to(w.one_way_turnover, e.one_way_turnover, 1e-12)) << t;
+    EXPECT_TRUE(close_to(w.planned_turnover, e.planned_turnover, 1e-12)) << t;
+    EXPECT_EQ(w.fills, e.fills) << t;
+    EXPECT_EQ(w.held_names, e.held_names) << t;
+    if (t == begin) continue; // the base row: its mark belongs to the warm-up
+    EXPECT_TRUE(w.return_observation) << t;
+    EXPECT_TRUE(close_to(w.net_return, e.net_return, 1e-12)) << t;
+    EXPECT_TRUE(close_to(w.trade_cost_return, e.trade_cost_return, 1e-12)) << t;
+    EXPECT_TRUE(close_to(w.borrow_return, e.borrow_return, 1e-12)) << t;
+  }
+  const i64 boundary = p.sessions[begin];
+  std::vector<st::NavEvent> later;
+  for (const auto& e : early->events) if (e.session > boundary) later.push_back(e);
+  EXPECT_FALSE(later.empty());
+  ASSERT_EQ(warm->events.size(), later.size()); // none at the boundary itself
+  for (usize k = 0; k < later.size(); ++k) {
+    EXPECT_EQ(warm->events[k].kind, later[k].kind) << k;
+    EXPECT_EQ(warm->events[k].instrument_id, later[k].instrument_id) << k;
+    EXPECT_TRUE(close_to(warm->events[k].exposure, later[k].exposure * scale, 1e-12)) << k;
+  }
+}
+
+// K may use the whole pre-score history (K = score_begin starts at row 0) and no more: the
+// API refuses K > decision_begin; the pinned run refuses it before any payload or output
+// with a message naming the role's history; the published warm run records K in the recipe
+// and the summary, keeps the daily schema and reports scored rows only.
+TEST(NavWarmStart, RefusesMoreThanTheRolesHistoryAndRecordsTheWarmStart) {
+  Panel p(40, 8); randomize_rows(p, 11, 0); p.begin = 20;
+  auto cfg = config(flat(6, 300), 1e6, st::TargetReplayConfig{});
+  cfg.liquidity_window = 5; cfg.min_vol_pairs = 3;
+  cfg.warm_start_sessions = 21;
+  const auto refused = st::replay_nav(p.nav(), cfg);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  cfg.warm_start_sessions = 20;
+  const auto whole = st::replay_nav(p.nav(), cfg);
+  ASSERT_TRUE(whole) << whole.error().to_string();
+  EXPECT_EQ(whole->days.size(), p.d - p.begin);
+  EXPECT_LT(whole->deployment_index, p.begin);
+
+  const auto q = publication_panel(); // 9 sessions; score window [5, 9)
+  Directory dir; const auto a = artifact_from(dir.path, q, 5);
+  std::ostringstream out, err;
+  EXPECT_EQ(dispatch(nav_args(a, dir.path / "long", {"--warm-start-sessions", "6"}), out, err), 1);
+  EXPECT_NE(err.str().find("exceeds the role's pre-score history"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "long"));
+  for (const auto* bad : {"-1", "5000", "x"})
+    EXPECT_EQ(dispatch(nav_args(a, dir.path / "bad", {"--warm-start-sessions", bad}), out, err), 2)
+        << bad;
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "bad"));
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "cold", {}), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "warm", {"--warm-start-sessions", "5"}), out, err), 0)
+      << err.str();
+  const auto recipe = read_json(dir.path / "warm" / "recipe.json");
+  EXPECT_EQ(recipe.at("warm_start_sessions"), 5);
+  EXPECT_TRUE(recipe.at("warm_start_rule").is_string());
+  auto keys = sorted_keys(read_json(dir.path / "cold" / "recipe.json"));
+  keys.emplace_back("warm_start_rule"); keys.emplace_back("warm_start_sessions");
+  std::sort(keys.begin(), keys.end());
+  EXPECT_EQ(sorted_keys(recipe), keys);
+  const auto summary = read_json(dir.path / "warm" / "summary.json");
+  EXPECT_EQ(summary.at("recipe_sha256"), co::sha256_hex(recipe.dump()).value());
+  EXPECT_EQ(summary.at("warm_start").at("sessions"), 5);
+  EXPECT_EQ(summary.at("warm_start").at("first_decision_session_ns"), q.sessions[0]);
+  EXPECT_EQ(summary.at("warm_start").at("scoring_begins_session_ns"), q.sessions[5]);
+  const auto cold_summary = read_json(dir.path / "cold" / "summary.json");
+  for (usize k = 0; k < summary.at("scenarios").size(); ++k) {
+    const auto& s = summary.at("scenarios")[k];
+    const auto id = s.at("scenario").get<std::string>();
+    EXPECT_EQ(s.at("observations"), q.d - 5 - 1) << id;
+    EXPECT_EQ(cold_summary.at("scenarios")[k].at("observations"), q.d - 5 - 2) << id;
+    const auto rows = lines(dir.path / "warm" / ("daily_" + id + ".csv"));
+    ASSERT_EQ(rows.size(), q.d - 5 + 1) << id; // header + scored rows
+    EXPECT_EQ(rows.front(), first_line(dir.path / "cold" / ("daily_" + id + ".csv"))) << id;
+    EXPECT_EQ(rows[1].substr(0, 2), "5,") << id;
+  }
+}
