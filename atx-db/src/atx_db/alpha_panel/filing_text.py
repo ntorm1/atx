@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gc
 import hashlib
 import html
 import json
@@ -40,7 +41,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,11 +57,11 @@ FORMS_10K = ("10-K", "10-K405", "10-KSB", "10-KSB40", "10-KT", "10-KT405")
 FORMS_20F = ("20-F",)
 FILED_FROM = dt.date(2018, 1, 1)
 ARCHIVES = "https://www.sec.gov/Archives/edgar/data"
-MAX_DOC_BYTES = 50 * 1024 * 1024
+MAX_DOC_BYTES = 40 * 1024 * 1024
 #: Documents above this size are parsed one at a time (the parse holds ~3 copies of the document).
 BIG_DOC_BYTES = 12 * 1024 * 1024
 REQUEST_BUDGET = 60_000
-BATCH_FILINGS = 200
+BATCH_FILINGS = 100
 PARQUET_ZSTD_LEVEL = 6
 #: A table whose digits exceed this share of its digits + letters is a numeric table and is dropped.
 NUMERIC_TABLE_SHARE = 0.15
@@ -73,7 +74,9 @@ RUNNING_MIN_REPEATS = 4
 RUNNING_MAX_CHARS = 120
 #: A section below this many characters whose text says "incorporated by reference" is flagged ``by_reference``.
 BY_REFERENCE_MAX_CHARS = 4000
-PARSER_VERSION = "filing-text-sections-v1"
+#: v1: the first 1,200 landed filings (2018-01..02); v2: "Item 1.A", "Item I", "Our Business", "Combined MD&A",
+#: 20-F "Information on the Partnership" headings.
+PARSER_VERSION = "filing-text-sections-v2"
 
 SECTION_ITEMS: dict[str, dict[str, str]] = {
     "10-K": {"business": "1", "risk": "1A", "mdna": "7"},
@@ -163,8 +166,12 @@ def html_to_text(raw: bytes) -> str:
 # ---------------------------------------------------------------------------------------------------------
 
 ITEM_RE = re.compile(
-    r"^(?:part\s+(?:iv|i{1,3})\b[\s,.:;-]*)?items?\s*(\d{1,2})\s*(?:\(?([a-k])\)?(?![a-z]))?\s*[.:\-)]?\s*(.*)$",
+    r"^(?:part\s+(?:iv|i{1,3}|[1-4])\b[\s,.:;-]*)?items?\s*(\d{1,2}|i{1,3}(?![a-z]))\s*(?:\.?\s*\(?([a-k])\)?(?![a-z]))?"
+    r"\s*[.:\-)]?\s*(.*)$",
     re.I)
+#: A title may open with one of these words ("Item 1. Our Business", "Item 7. Combined Management's Discussion").
+_TITLE_PREFIX = r"(?:(?:our|the|combined|company'?s|registrant'?s)\s+)?"
+_ROMAN = {"i": 1, "ii": 2, "iii": 3}
 _SPLIT_ITEM_RE = re.compile(r"^(?:part\s+(?:iv|i{1,3})[\s,.:;-]*)?items?\s*[.:]?$", re.I)
 _GENERIC_TITLE_RE = re.compile(
     r"^(?:and\s+\d|&\s*\d|\[?\(?(?:removed\s+and\s+)?reserved|not\s+applicable|none\b|omitted|intentionally)")
@@ -202,11 +209,12 @@ ITEMS_20F: dict[str, tuple[int, str]] = {
     "1": (10, r"identity"),
     "2": (20, r"offer\s+statistics"),
     "3": (30, r"key\s+information"),
-    "4": (40, r"information\s+(?:on|of|about)\s+the\s+company|company\s+information"),
+    "4": (40, r"information\s+(?:on|of|about)\s+(?:the\s+)?(?:company|partnership|group|registrant|issuer|trust|bank)"
+              r"|company\s+information"),
     "4A": (41, r"unresolved"),
     "5": (50, r"operating\s+and\s+financial|financial\s+review"),
     "6": (60, r"directors"),
-    "7": (70, r"major\s+shareholders"),
+    "7": (70, r"major\s+(?:share|unit)?holders"),
     "8": (80, r"financial\s+information"),
     "9": (90, r"the\s+offer|offer\s+and\s+listing"),
     "10": (100, r"additional\s+information"),
@@ -231,7 +239,7 @@ TITLE_LINES: dict[str, dict[str, str]] = {
                 r"\s+and\s+financial\s+condition)?|md\s*&\s*a",
     },
     "20-F": {
-        "business": r"information\s+(?:on|of|about)\s+the\s+company|business\s+overview",
+        "business": r"information\s+(?:on|of|about)\s+(?:the\s+)?(?:company|partnership|group)|business\s+overview",
         "risk": r"risk\s+factors",
         "mdna": r"operating\s+and\s+financial\s+review(?:\s+and\s+prospects)?",
     },
@@ -288,7 +296,7 @@ class Heading:
 def item_key(number: str, letter: str | None, family: str) -> tuple[str, str | None] | None:
     """(item key, sub-item letter) for a heading's number and optional letter; None if not an item of the form."""
     items = _items_for(family)
-    num = str(int(number))
+    num = str(int(number)) if number.isdigit() else str(_ROMAN[number.lower()])
     if letter:
         k = f"{num}{letter.upper()}"
         if k in items:
@@ -305,7 +313,7 @@ def _title_ok(key: str, title: str, family: str) -> bool:
         return True
     if _GENERIC_TITLE_RE.match(t):
         return True
-    return re.match(_items_for(family)[key][1], t) is not None
+    return re.match(_TITLE_PREFIX + "(?:" + _items_for(family)[key][1] + ")", t) is not None
 
 
 def _line_offsets(lines: list[str]) -> list[int]:
@@ -735,7 +743,7 @@ def receipts_path() -> Path:
 
 
 def append_receipts(lines: list[dict[str, Any]]) -> None:
-    """Append receipts (fsynced) before the batch's parts are written: a kill can only cause a refetch."""
+    """Append receipts (fsynced) as filings complete, before the batch's parts: a kill can only cause a refetch."""
     if not lines:
         return
     path = receipts_path()
@@ -800,12 +808,16 @@ def _run_batches(todo: list[dict[str, Any]], worker: Any, limiter: CountingLimit
                 break
             results: list[dict[str, Any]] = []
             stop = None
-            for fut in [ex.submit(worker, r, limiter) for r in chunk]:
+            for fut in as_completed([ex.submit(worker, r, limiter) for r in chunk]):
                 try:
-                    results.append(fut.result())
+                    res = fut.result()
                 except BudgetExhausted:
                     stop = "budget"
-            append_receipts([x for r in results for x in (r["receipts"] if "receipts" in r else [r["receipt"]])])
+                    continue
+                results.append(res)
+                # receipts as each filing completes: a killed batch loses no request count (its filings refetch)
+                append_receipts(res["receipts"] if "receipts" in res else [res["receipt"]])
+            results.sort(key=lambda r: r["receipt"]["accession"] if "receipt" in r else r["receipts"][0]["accession"])
             seq = _next_seq()
             _write_part("sections", seq, [s for r in results for s in r["sections"]], SECTION_SCHEMA)
             _write_part(extra_kind, seq, [r[extra_key] for r in results if r[extra_key] is not None], extra_schema)
@@ -813,6 +825,9 @@ def _run_batches(todo: list[dict[str, Any]], worker: Any, limiter: CountingLimit
             summary["ok"] += sum(r[extra_key] is not None for r in results)
             summary["failed"] += sum(r[extra_key] is None for r in results)
             summary["sections"] += sum(len(r["sections"]) for r in results)
+            del results
+            gc.collect()
+            pa.default_memory_pool().release_unused()  # keep the guard's committed-memory cap honest
             el = time.time() - t0
             print(json.dumps({"batch": summary["batches"], "ok": summary["ok"], "failed": summary["failed"],
                               "requests": limiter.count, "elapsed_s": round(el, 1),
@@ -827,13 +842,30 @@ def _run_batches(todo: list[dict[str, Any]], worker: Any, limiter: CountingLimit
     return summary
 
 
-def run_fetch(max_requests: int, threads: int, limit: int | None, max_priority: int) -> dict[str, Any]:
+def incomplete_older_parser() -> set[str]:
+    """Landed accessions parsed by an older parser that found fewer than all three sections (re-landed)."""
+    out: set[str] = set()
+    for p in _parts("docs"):
+        for r in pq.read_table(p, columns=["accession", "parser", "sections_found"]).to_pylist():
+            if r["parser"] != PARSER_VERSION and len(r["sections_found"] or []) < 3:
+                out.add(r["accession"])
+    for p in _parts("docs"):  # already re-landed by the current parser
+        for r in pq.read_table(p, columns=["accession", "parser"]).to_pylist():
+            if r["parser"] == PARSER_VERSION:
+                out.discard(r["accession"])
+    return out
+
+
+def run_fetch(max_requests: int, threads: int, limit: int | None, max_priority: int,
+              reland: bool = False) -> dict[str, Any]:
     from .. import sec_http
-    con = C.connect(memory="200MB", threads=1)
+    con = C.connect(memory="150MB", threads=1)
     rows = [r for r in select_filings(con) if r["priority"] <= max_priority]
     con.close()
     state = landing_state()
     skip = state["landed"] | state["failed"]
+    if reland:
+        skip -= incomplete_older_parser()
     todo = [r for r in rows if r["accession"] not in skip]
     if limit is not None:
         todo = todo[:limit]
@@ -983,9 +1015,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--threads", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--max-priority", type=int, default=2)
+    ap.add_argument("--reland", action="store_true",
+                    help="also re-land filings an older parser version left without all three sections")
     args = ap.parse_args(argv)
     if args.phase == "fetch":
-        out = run_fetch(args.max_requests, args.threads, args.limit, args.max_priority)
+        out = run_fetch(args.max_requests, args.threads, args.limit, args.max_priority, args.reland)
     elif args.phase == "exhibits":
         out = run_exhibits(args.max_requests, args.threads, args.limit)
     else:

@@ -134,6 +134,16 @@ def test_packed_short_body_items_are_not_a_toc() -> None:
     assert len(heads) == 8 and not any(h.toc for h in heads)
 
 
+def test_heading_variants() -> None:
+    lines = ["PART 1", "ITEM I. BUSINESS", "x", "Item 1.A. Risk Factors", "x", "ITEM 1. OUR BUSINESS", "x",
+             "Item 7. Combined Management's Discussion and Analysis", "x", "Item 4.A. Executive Officers", "x",
+             "Item 7 of this report describes our results", "x"]
+    got = [(h.line, h.key) for h in FT.find_items(lines, "10-K")]
+    assert got == [(1, "1"), (3, "1A"), (5, "1"), (7, "7"), (9, "4A")]
+    f20 = ["ITEM 4. INFORMATION ON THE PARTNERSHIP", "x", "Item 3. D. Risk Factors", "x", "ITEM 16.A. AUDIT", "x"]
+    assert [(h.key, h.sub) for h in FT.find_items(f20, "20-F")] == [("4", None), ("3", "D"), ("16A", None)]
+
+
 def test_item_key_20f_sub_items() -> None:
     assert FT.item_key("3", "D", "20-F") == ("3", "D")
     assert FT.item_key("16", "K", "20-F") == ("16K", None)
