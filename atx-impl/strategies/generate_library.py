@@ -143,6 +143,27 @@ def load_registry(root: Path = HERE) -> dict:
     return validate_registry(load_json(Path(root) / REGISTRY_PATH))
 
 
+IDENTITY_KEYS = ("dsl", "theme", "tier", "prior_sign", "citation")   # what makes two registrations the same alpha
+
+
+def register_alpha(reg: dict, entry: dict) -> bool:
+    """Add one alpha to the registry (True), or accept an identical registration of an existing id (False). An id is
+    never redefined and a DSL never registered twice under two ids."""
+    validate_alpha(reg, entry)
+    have = next((a for a in reg["alphas"] if a["id"] == entry["id"]), None)
+    if have is not None:
+        diff = [k for k in IDENTITY_KEYS if have[k] != entry[k]]
+        if diff:
+            raise LibraryError(f"alpha {entry['id']} is registered with another {', '.join(diff)}: a registered alpha "
+                               "is immutable, register the new definition under a new id")
+        return False
+    twin = next((a["id"] for a in reg["alphas"] if a["dsl"] == entry["dsl"]), None)
+    if twin is not None:
+        raise LibraryError(f"alpha {entry['id']}: the same DSL is registered as {twin}")
+    reg["alphas"].append(entry)
+    return True
+
+
 def tier_rank(reg: dict, tier: str) -> int:
     return list(reg["tier_scores"]).index(tier) + 1
 
@@ -200,6 +221,49 @@ def parent_library(root: Path, parent: str | None) -> tuple[str, list[str]] | No
     if not legacy.is_file():
         raise LibraryError(f"parent {parent}: no libraries/{parent}.json and no legacy {legacy.name}")
     return legacy.name, [c["id"] for c in load_json(legacy)["candidates"]]
+
+
+LEGACY_EXCEPTIONS = (("max_extras_per_candidate_exceptions", "max_extras_exception_basis", "max_extra_fields"),
+                     ("max_estimated_peak_slots_exceptions", "max_estimated_peak_slots_exception_basis", "max_slots"))
+
+
+def parent_exceptions(root: Path, parent: str | None, members: list[str]) -> list[dict]:
+    """The budget exceptions a child library inherits for its members: its parent library file's, else those the
+    legacy parent's recipe recorded (static_validation, e.g. v7.0's q5_eg and qmj_safety)."""
+    if parent is None:
+        return []
+    if library_file(root, parent).is_file():
+        return [e for e in load_library(root, parent)["budget_exceptions"] if e["id"] in members]
+    recipe = Path(root) / f"{LEGACY_PREFIX}{parent}.recipe.json"
+    sv = (load_json(recipe).get("static_validation") or {}) if recipe.is_file() else {}
+    return [{"id": cid, limit: n, "basis": sv.get(basis) or f"legacy {recipe.name}"}
+            for key, basis, limit in LEGACY_EXCEPTIONS for cid, n in (sv.get(key) or {}).items() if cid in members]
+
+
+def rename(text: str, old: str, new: str) -> str:
+    """The name template: every token `old` (not inside a longer name or number) becomes `new`; unchanged text is an
+    error (a derived name must differ from its parent's)."""
+    out = re.sub(rf"(?<![A-Za-z0-9]){re.escape(old)}(?![0-9])", new, text)
+    if out == text:
+        raise LibraryError(f"name template: {text!r} does not contain the parent name {old!r}")
+    return out
+
+
+def child_library(root: Path, parent: str, name: str, add: list[str], prereg: str) -> dict:
+    """The definition of library `name` = parent's members + `add` (appended in order); an existing libraries/NAME.json
+    of the same parent gains the new members (a second add-alpha into one wave)."""
+    if library_file(root, name).is_file():
+        lib = load_library(root, name)
+        if lib["parent"] != parent:
+            raise LibraryError(f"libraries/{name}.json exists with parent {lib['parent']!r}, not {parent!r}")
+        return dict(lib, members=lib["members"] + [m for m in add if m not in lib["members"]])
+    parent_file, parent_members = parent_library(root, parent)
+    dup = [m for m in add if m in parent_members]
+    if dup:
+        raise LibraryError(f"{', '.join(dup)} already a member of {parent}")
+    members = parent_members + list(add)
+    return dict(id=rename(Path(parent_file).stem, parent, name), parent=parent, members=members,
+                budget_exceptions=parent_exceptions(root, parent, members), prereg=prereg)
 
 
 def build_library(reg: dict, lib: dict) -> dict:
@@ -293,9 +357,11 @@ def plan_rows(plan) -> dict[str, dict]:
     return out
 
 
-def validate_plan(reg: dict, lib: dict, library_doc: dict, library_bytes: bytes, plan) -> list[str]:
-    """Problems of a library against the exe's plan (empty: valid). Every member has a row with sha256(dsl), fits the
-    house budget (or its exception), reads declared registry fields only, and the token match agrees with the exe."""
+def validate_plan(reg: dict, lib: dict, library_doc: dict, library_bytes: bytes, plan,
+                  budget_ids: set | None = None) -> list[str]:
+    """Problems of a library against the exe's plan (empty: valid). Every member has a row with sha256(dsl), reads
+    declared registry fields only, and the token match agrees with the exe; the members in `budget_ids` (default all)
+    also fit the house budget or their recorded exception (add-alpha budgets the new members only)."""
     rows = plan_rows(plan)
     problems = []
     if isinstance(plan, dict) and plan.get("library_sha256") not in (None, sha256(library_bytes)):
@@ -312,7 +378,7 @@ def validate_plan(reg: dict, lib: dict, library_doc: dict, library_bytes: bytes,
             continue
         if row["dsl_sha256"] != sha256(c["dsl"].encode()):
             problems.append(f"{cid}: plan dsl_sha256 {row['dsl_sha256']} is not sha256 of the registry DSL")
-        for key, what in BUDGET.items():
+        for key, what in (BUDGET.items() if budget_ids is None or cid in budget_ids else ()):
             limit = exceptions.get(cid, {}).get(key, house[key])
             if measure[key](row) > limit:
                 problems.append(f"{cid}: {measure[key](row)} {what} > {limit} "

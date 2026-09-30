@@ -6,6 +6,8 @@
   research_cycle.py run    SPEC [same options] [--stop-after PHASE]
   research_cycle.py status SPEC [same options]
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
+  research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
+                              --parent v71 [--name v72] [--plan-json PATH] [--root R]   (research_add_alpha.py)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
 
@@ -472,7 +474,7 @@ class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
-                 screen: bool = False, capabilities=None):
+                 screen: bool = False, capabilities=None, verify: bool = True):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and spec.get("fields", {}).get("manifest_sha256"):
@@ -494,7 +496,8 @@ class Cycle:
         self.no_git, self.screen = no_git, screen
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
-        self.pins = self.verify_inputs()
+        # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
+        self.pins = self.verify_inputs() if verify else {}
 
     # -------------------------------------------------------------- names and pins
     def out(self, name: str) -> str:
@@ -520,7 +523,11 @@ class Cycle:
             wid = window_id()
         except LookupError as exc:
             raise CycleError(f"spec omits the {kind} root and it cannot be derived: {exc}", EXIT_USAGE) from exc
-        return f"{self.out_base().rstrip('/')}/{kind}/{self.pin('role')[:16]}-{wid}"
+        role = self.pin("role") if "role" in self.pins else (      # verify=False: the spec's pin, else the file's
+            self.spec["inputs"]["role"].get("sha256") or self.res.sha(self.ipath("role")))
+        if not role:
+            raise CycleError(f"spec omits the {kind} root and the role pin is unknown", EXIT_USAGE)
+        return f"{self.out_base().rstrip('/')}/{kind}/{role[:16]}-{wid}"
 
     def cache_dir(self) -> str:
         ic = self.spec["ic"]
@@ -1432,6 +1439,9 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
         return research_ledger.main(argv[1:])
+    if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock
+        import research_add_alpha  # noqa: PLC0415  (imports this module)
+        return research_add_alpha.main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("verb", choices=("plan", "run", "status", "lock"))
