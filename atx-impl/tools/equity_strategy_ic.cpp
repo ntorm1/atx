@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string_view>
 #include "strategy_ic_runner.hpp"
+#include "strategy_marginal_ic.hpp"
 namespace {
 // `atx-equity-strategy-ic [VERB] OPTIONS...`. A first argument naming a verb below
 // routes to it, with argv shifted so the handler sees the verb as argv[0] and its
@@ -10,6 +11,7 @@ using VerbMain=int (*)(int,char**,std::ostream&,std::ostream&);
 struct Verb { std::string_view name; VerbMain run; };
 constexpr Verb verbs[]{
     {"ic",&atx::impl::strategy::dispatch_ic},
+    {"marginal",&atx::impl::strategy::dispatch_marginal_ic},
 };
 } // namespace
 int main(int argc,char** argv) {
