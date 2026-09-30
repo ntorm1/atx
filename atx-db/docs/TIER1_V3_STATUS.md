@@ -13,7 +13,9 @@ long/short book, score window the last 6 years.
   zips (parsed copy kept), identity scratch. One deletion was wrong: `data/research/lake` held the consumer's default
   `--lake` snapshot (see Owner actions).
 - **S0.1 (mega-alpha v7 chain):** Reg SHO with the NYSE family, panel v2 2018-2026 and the borrow proxy are built.
-  Section 5 metrics and the lo1 aligned export were running at the stop; the consumer acceptance load has not run.
+  Section 5 metrics then failed (02:38 UTC, DuckDB `OutOfMemoryException` in `metrics.measure` at the 1 GiB cap;
+  needs the borrow_proxy treatment: file-backed DuckDB, one thread), so the lo1 aligned export never ran and the
+  consumer acceptance load has not run.
 - **Platform (S1) is done:** stage registry (35 stages), `lake verify`, byte-identical `catalog.duckdb` (59 views,
   51 `_as_of` macros), registry-driven orchestrator, parity catalog + scorecard v0. Package names are
   `atx_db.stagelake` and `atx_db.parityscore` (the plan's `lake/` and `parity/` would shadow v2 modules).
@@ -65,7 +67,7 @@ french), `classification/`, `market/market_shares*`, `identity/link_table_v3.par
 
 ## Resume order for alpha value
 
-1. S0.1 tail (if the in-flight run failed): `bash .superpowers/sdd/tier1-v3/receipts/s0.1-chain.sh` with
+1. S0.1 tail: fix the metrics OOM (above), then `bash .superpowers/sdd/tier1-v3/receipts/s0.1-chain.sh` with
    `SKIP_MANIFEST=1 SKIP_BORROW=1`, then the consumer acceptance load (commands in
    `ALPHA_PANEL_REQUEST_V7_RESPONSE.md`, last section).
 2. FUND: `fundamentals build-all` with `ATX_FUND_STAGE=fundamentals_v10`, validate, export v2 → swap into the panel
