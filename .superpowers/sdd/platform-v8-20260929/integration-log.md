@@ -93,3 +93,138 @@ hit, confirmed by the identical entry paths above.
   a PM dispatch.
 - Stale configure provenance (`7527a063` baked into the v8-1b binaries and the 39 new cache sidecars); a
   reconfigure before the next recorded run would fix it.
+
+## integration 2 (2026-09-29): B-3 identity closed; lanes EV, B, C, A, F, D merged; tiny_world goldens
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `93119ffb`. Tag prefix v8-2.
+
+### Part 1: B-3 identity (before any merge, HEAD `93119ffb`, exe `12d0738c...` from v8-1b)
+
+Same argv as integration 1, cache `build-equity/v8-cache-b3` (39 of 48 entries), runner
+`build-equity/v8-b3-id-u-run2`, tool `build-equity/v8-b3-id-u-2`, caps 300 s / 1536 MiB / min free 512.
+Receipt: **completed**, 175.8 s, exit 0, peak tree RSS 1,162 MiB, min free 1,064 MiB. 39 hits, 9 misses; the cache now
+holds 48 signal and 48 IC-result entries.
+
+| file vs `build-equity/mega-v71-train-u-1/` | result |
+|---|---|
+| orientations.json, recipe.json, train_daily_ic.csv, train_planned_targets.csv | byte-identical |
+| train_combined.{f64,json}, train_combined_{finite,member}.u8, train_combined_ids.u64, train_combined_sessions.i64 | byte-identical |
+| summary.json | equal after the drops below |
+| train_candidates.jsonl | equal after the drops below (all 96 records) |
+
+Fields dropped (any depth) for the two JSON files: timings `wall_seconds`, `stage_seconds`, `hash_seconds`; cache
+counts `signal_cache`, `ic_result_cache` (per candidate hit/miss), `hits`, `misses` (also `ic_results.*`),
+`vm_evaluations`, `verify_bytes`, `research_fields.field_loads`, `loaded_bytes`, `peak_resident_fields` (fields
+are only loaded for cache misses). In summary.json the cache directory prefix `build-equity/v8-cache-b3` was
+rewritten to `build-equity/mega-candidate-cache-v71` before comparing (`candidate_cache.directory`,
+`fields_directory`, `entries[].payload`, `entries[].sidecar`); every entry key, payload SHA and field SHA is equal.
+**The B-3 move-only split is identity-clean on the v7.1 u pass.**
+
+### Part 2: merges (SHAs, in order)
+
+| lane | lane SHA | merge |
+|---|---|---|
+| EV (E-3 tiny_world + ctest; V-1 part 1 move) | `425d16db` | `4f708e2d` |
+| B (B-1 `--no-composition`) | `be51d529` | `143bcd74` |
+| C (C-1 fit and card stores) | `cfa18014` | `1bd3f1ae` |
+| A (A-3 cycle plumbing, A-1 registry/generator) | `ea7cba01` | `2ed4e02a` |
+| F (F-2 marginal IC verb + engine kernel) | `c560b8c8` | `4f594031` |
+| D (D-0 NAV warm start) | `168278f2` | `492c1208` |
+
+One textual conflict, `atx-impl/tools/equity_strategy_ic.cpp` (B-1 verb table vs F-2 `if` branch), resolved in
+the merge commit `4f594031` the way B-1's report specifies: `{"marginal",&atx::impl::strategy::dispatch_marginal_ic},`
+as a second verb-table row plus the include; the default path is unchanged.
+
+V-1 move: `nav_summ.py`, `backtest_integrity.py` and their tests moved to `atx-impl/tools` (nav_summ byte-identical,
+713 lines). Lane EV left a shim at the old studies path, so the six pinned specs (`v61`, `v61-ops`, `v70`, `v70-lo3`,
+`v71`, `v7u-lo3`) keep `summ.script` at the old path on purpose (their plan lines are pinned by the fixture identity
+tests), and `test_research_cycle.py` (STUDIES import) and `studies/v6_scorecard.py` (spec_from_file_location) load
+the moved module through the shim. `tiny.json` has no summ step. Left for root: only stale docstring paths, fixed in
+`755bdd2b`.
+
+### Part 3: build and tests
+
+| tag | source | result |
+|---|---|---|
+| v8-2 | `492c1208` clean | ok, 165 TUs, 10 links, 1,479 s, jobs 3; CMake re-ran (glob + CMakeLists changes), provenance `492c1208` |
+
+Targets: atx-equity-strategy-ic, atx-equity-strategy-targets, atx-impl-strategy-ic-tests,
+atx-impl-strategy-target-tests, atx-impl-strategy-tests, atx-impl-tests, atx-engine-combine-tests.
+No compile or link error in any lane.
+
+C++ (anchored first, then whole executables):
+
+| run | result |
+|---|---|
+| ic-tests `NoComposition.*:StrategyIcRunner.CacheMissOnRoleChange:MarginalIc.*:CombineMarginalRankIc.*` | 16/16 |
+| impl-tests `NavWarmStart.*` | 4/4 |
+| combine-tests `CombineMarginalRankIc.*:CombineOrthogonalize.*` | 14/14 |
+| atx-impl-strategy-ic-tests (all) | 91/91 |
+| atx-impl-strategy-target-tests (all) | 181/181 |
+| atx-impl-strategy-tests (all) | 45/45 |
+| atx-engine-combine-tests (all) | 215/215 |
+| atx-impl-tests (all) | 904 run: 898 passed, 5 skipped, **1 failed** |
+| `ctest -N -L atx_equity_strategy` | 317 listed (= 91 + 181 + 45) |
+
+The one failure, `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`, is not from this sprint:
+`stage_discover.cpp` writes a `config_json=` line into `_manifest.txt` since `d060cd81` (2026-09-26, in base
+`ef11f462`), and the test asserts the manifest is equal across config_json-only differences. No lane touched
+`stage_discover.cpp` or the test. Left open (owner: whoever owns discover; not an integration slip).
+
+Python (`pytest -q -p no:cacheprovider`):
+
+| paths | result |
+|---|---|
+| atx-impl/strategies + atx-engine/tools | 336 passed |
+| atx-impl/tools | 224 passed |
+| scripts/tests (ATX_EQUITY_BIN unset) | 85 passed, 5 skipped (research_window absent (W0-1), live e2e without BIN, 3 RESEARCH_CYCLE_LIVE_ROOT) |
+| scripts/tests/test_cycle_e2e.py with `ATX_EQUITY_BIN=build-equity/bin` | 4 passed, 1 skipped (research_window) |
+
+tiny_world end to end: `test_cycle_e2e.py --record` passed on the first run (copy_b `reject_redundant` with
+planted_b, planted_a/b admitted, gate PASS, first run 13.3 s). Goldens committed in `69176abc`: orientations
+`b2143918...`, admission decisions `43206904...`, primary daily `ca559404...`, scenario
+`modeled-1bn-stale5-v1+swap-fin-v1`, exe ic `7a56699b...`, nav `1bd5a37b...`. The pytest live test then failed:
+under pytest's `tmp_path` the cache publish path `<root>/tiny-cache/<role sha>/fp_*/ic1_*/<id>.<key>.json`
+exceeds Windows MAX_PATH ("The system cannot find the path specified", u exit 1); `--record` roots are short
+(`%TEMP%/tiny-world-*`). Fixed in the test (`7de7f712`): the live test uses the same `fresh_root()` and removes it.
+Then it passes; a second cycle in the recorded root prints `== <phase>: done` for fields, u, fit, card, w, nav,
+executes none and exits 0.
+
+### Part 4: identity on TRAIN (3-year role lo1, 2020-2022), bounded runner, clean tree `69176abc`
+
+Exes from v8-2: ic `7a56699b...`, targets `1bd5a37b...`. Caps 300 s / 1536 MiB / min free 512. Every receipt
+`completed`, exit 0, `git: clean in the code pathspec`.
+
+| check | dirs | wall / peak | result |
+|---|---|---|---|
+| a. B-1 `--no-composition`, cache v8-cache-b3 | `v8-i2-b1-run1` / `v8-i2-b1-1` | 8.8 s / 394 MiB | **PASS**: orientations.json `95f15e08...` and recipe.json byte-identical; train_daily_ic.csv byte-identical to the reference minus its 2,176 `__combined__` lines (9,204,707 bytes); summary `composition: skipped`; 48/48 `payload=not-loaded ic_result=hit`, 0 VM, verify_bytes 0; stage seconds load 1.42, labels 1.44, ic 0.87, vm 0 |
+| b. D-0 NAV v7.1 cell, no warm-start flag | `v8-i2-nav-run1` / `v8-i2-nav-1` | 49.0 s / 347 MiB | **PASS**: all 12 files byte-identical (5 daily, 5 events, recipe.json, summary.json) |
+| c1. C-1 fit, fresh store `v8-i2-fitstore` | `v8-i2-fit-run1` / `v8-i2-fit-1` | 41.6 s / 346 MiB | `fit: computed 48, reused 0`. admission.csv byte-identical. **admission.json NOT byte-identical**: first difference line 1353, byte 41287, `inputs.context_sha256` (`edb8afdf...` -> `6edcef8e...`); the only other difference is `inputs.script_sha256`. composition_weights.json differs only in `provenance.{admission,context,script}_sha256` (first difference line 4, byte 133) |
+| c2. same command again | `v8-i2-fit-run2` / `v8-i2-fit-2` | 1.3 s | `fit: computed 0, reused 48`; all three files byte-identical to c1 |
+| c3. card, `--work-dir v8-i2-fitstore`, accepted admission | `v8-i2-card-run1` / `v8-i2-card-1` | 30.3 s / 995 MiB | **PASS**: `card: computed 48, reused 0`; all 100 files byte-identical to `mega-cards-v71` |
+| c4. card again | `v8-i2-card-run2` / `v8-i2-card-2` | 13.8 s | **PASS**: `card: computed 0, reused 48`; 100 files byte-identical |
+| d. A-1 `generate_library.py --library v71 --check` | `v8-i2-lib-run1` | 0.3 s | **PASS**: `fund_industry_ic_v71.json 787c802e... 39317 bytes`, slim recipe `69e95298...` |
+
+Finding (c1): the fit's admission.json is not byte-identical to the accepted v7.1 file. The two changed values
+are the ones lane C declared: `script_sha256` (fit_composition_weights.py changed) and `context_sha256` (C-1 made
+the context digest a pure content digest that no longer binds the script SHA). Every decision, statistic and the
+CSV are equal. Expected hashes were not touched; the PM rules whether the W3 precedent ("equal after dropping
+inputs.script_sha256, context_sha256") applies. Once accepted, later fitter edits keep `context_sha256` stable.
+
+### Fix commits (for lanes to merge root)
+
+| commit | lane | what |
+|---|---|---|
+| `4f594031` (merge resolution) | B / F | `equity_strategy_ic.cpp`: marginal verb as a verb-table row |
+| `7de7f712` | EV (E-3) | `test_cycle_e2e.py`: live test root under the system temp dir (MAX_PATH) |
+| `69176abc` | EV (E-3) | tiny_world goldens recorded |
+| `755bdd2b` | EV (V-1) | moved tests' run lines and mega_report docstring name `atx-impl/tools` |
+
+### Open items
+
+- `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` fails (from before the sprint, see above).
+- C-1 admission.json identity needs a PM ruling (finding c1).
+- A-1's real-plan check (`ATX_V71_PLAN_JSON` from `--plan-only` on the lo1 role) was not run (not dispatched).
+- W0-1 not yet merged: C-1 `window_id()` uses its literal fallback, A-3 derived stores stop with exit 2, the
+  e2e window test skips.
+- The IC runner's cache publish is not long-path aware: a deep root (over about 110 characters) fails at MAX_PATH.
