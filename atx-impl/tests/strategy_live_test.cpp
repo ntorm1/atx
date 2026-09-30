@@ -311,7 +311,8 @@ Json deploy_manifest(const Artifact& a, const std::string& recipe_sha) {
       {"executables", {{"atx-equity-strategy-targets", exe_pin},
                        {"atx-equity-strategy-ic", pin}}},
       {"source", {{"git_sha", std::string(40, 'b')}}},
-      {"seal", {{"policy", "research-seal-v1"}, {"exclusive_session", "2025-01-01"}}},
+      {"seal", {{"policy", st::research_seal_policy},
+                {"exclusive_session", st::research_seal_session}}},
       {"owner_gate", nullptr},
       {"health", {{"gross_leverage", Json::array({0.0, 3.0})}, {"abs_net_leverage_max", 0.5},
                   {"planned_turnover_max", 3.0}, {"names_without_locate_max", 1000}}}};
@@ -766,14 +767,15 @@ TEST(StrategyLive, DeployManifestRefusesEveryMismatchedPin) {
 }
 
 // B1 seal: a session past the research seal is refused without an owner_gate, and still
-// refused with one (live sessions are not enabled in this build; kSeal is unchanged); a
-// malformed owner_gate is refused. Nothing is written.
+// refused with one (live sessions are not enabled in this build; the seal is unchanged); a
+// malformed owner_gate is refused. Nothing is written. The seal is research_window.hpp's.
 TEST(StrategyLive, SessionPastTheSealIsRefusedWithOrWithoutOwnerGate) {
   Directory dir;
   const auto fx = make_fixture(dir.path);
-  EXPECT_EQ(st::research_seal_exclusive_ns,
-            static_cast<i64>(std::chrono::sys_days{std::chrono::year{2025} / 1 / 1}
-                                 .time_since_epoch().count()) * day_ns);
+  constexpr i64 seal = atx::engine::data::kSealBeginNs;
+  EXPECT_EQ(st::research_seal_exclusive_ns, seal);
+  EXPECT_EQ(std::string(st::research_seal_session), date_of(seal));
+  EXPECT_EQ(std::string(st::research_seal_policy), "research-window-v2");
   EXPECT_FALSE(st::live_sessions_enabled);
   const auto refused = [&](const Json& m, const std::string& asof, const std::string& label) {
     const auto path = dir.path / ("deploy-" + label + ".json");
@@ -785,11 +787,18 @@ TEST(StrategyLive, SessionPastTheSealIsRefusedWithOrWithoutOwnerGate) {
     EXPECT_FALSE(std::filesystem::exists(cfg.output_directory)) << label;
     return outcome ? std::string("decided") : outcome.error().to_string();
   };
-  EXPECT_NE(refused(fx.deploy, "2025-01-02", "sealed").find("no owner_gate"), std::string::npos);
-  EXPECT_NE(refused(fx.deploy, "2025-01-01", "boundary").find("research seal"), std::string::npos);
+  const std::string after_seal = date_of(seal + day_ns);
+  EXPECT_NE(refused(fx.deploy, after_seal, "sealed").find("no owner_gate"), std::string::npos);
+  EXPECT_NE(refused(fx.deploy, date_of(seal), "boundary").find("research seal"),
+            std::string::npos);
   auto gated = fx.deploy;
   gated["owner_gate"] = {{"owner", "owner"}, {"ruling", "U-live-1"}, {"date", "2026-09-28"}};
-  EXPECT_NE(refused(gated, "2025-01-02", "gated").find("not enabled in this build"),
+  EXPECT_NE(refused(gated, after_seal, "gated").find("not enabled in this build"),
+            std::string::npos);
+  // A deploy manifest written under the superseded research-seal-v1 is refused by name.
+  auto superseded = fx.deploy;
+  superseded["seal"] = {{"policy", "research-seal-v1"}, {"exclusive_session", "2025-01-01"}};
+  EXPECT_NE(refused(superseded, date_of(fx.panel.sessions[150]), "v1").find("pin mismatch seal"),
             std::string::npos);
   auto malformed = fx.deploy;
   malformed["owner_gate"] = {{"owner", "owner"}};

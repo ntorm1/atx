@@ -753,3 +753,55 @@ TEST(StrategyPriceNeutralizeV6, HeldZeroAimsAreResetAfterTheGroupDemeaning) {
               co::ErrorCode::InvalidArgument);
   expect_bits(refused, s.target);
 }
+
+// v8 D-1 session ring (review P-9): a scratch bound to one panel logs each session once
+// and keeps every interval return; its exposures are the stateless window recompute's
+// bits (a fresh scratch per decision) in any decision order: ascending through the
+// clipped start, cadence jumps, a jump past the whole ring, backward jumps; across a
+// config change that resizes the ring; on another panel (served statelessly, the ring
+// kept); and after a rebind. An absent row and a guarded split sit inside the windows.
+TEST(LogRing, ExposuresBitIdenticalToWindowRecompute) {
+  Panel p = noisy_panel(170, 9, 17);
+  const usize hole = p.at(50, 2);
+  p.present[hole] = 0;
+  p.close[hole] = p.raw[hole] = p.volume[hole] = missing;
+  for (usize t = 70; t < p.dates; ++t) p.close[p.at(t, 4)] *= 2.0; // adjusted-only split
+  const auto cfg = small_config(); // beta 40, vol 20: a ring of 40 intervals
+  st::PriceExposureScratch ring;
+  EXPECT_FALSE(ring.ring.bound);
+  st::enable_session_ring(ring, p.input());
+  const auto check = [&](const Panel& panel, const st::PriceExposureConfig& c, usize d) {
+    st::PriceExposureScratch fresh;
+    const auto expected = exposures_at(panel, c, d, fresh);
+    const auto actual = exposures_at(panel, c, d, ring);
+    expect_bits(actual.out, expected.out);
+    EXPECT_EQ(actual.ok, expected.ok) << d;
+  };
+  for (usize d = 0; d < 60; ++d) check(p, cfg, d); // clipped windows, then full ones
+  EXPECT_EQ(ring.ring.capacity, 40U);
+  EXPECT_EQ(ring.ring.logged, 59U); // the last session logged is the last decision's
+  for (usize d = 60; d < 130; d += 7) check(p, cfg, d); // cadence jumps
+  const std::array<usize, 8> jumps{169, 20, 100, 41, 168, 3, 90, 91}; // past the ring, back
+  for (const usize d : jumps) check(p, cfg, d);
+  auto wide = cfg;
+  wide.vol_window = 60; // block 60: the ring is resized and refilled
+  for (const usize d : std::array<usize, 4>{150, 80, 81, 169}) check(p, wide, d);
+  EXPECT_EQ(ring.ring.capacity, 60U);
+  auto narrow = cfg;
+  narrow.beta_window = 30; narrow.min_return_pairs = 15; // block 30
+  for (const usize d : std::array<usize, 3>{60, 61, 100}) check(p, narrow, d);
+  const Panel other = noisy_panel(170, 9, 23);
+  check(other, narrow, 120); // not the bound panel: stateless
+  EXPECT_EQ(ring.ring.close, p.close.data());
+  check(p, narrow, 101);
+  st::enable_session_ring(ring, other.input());
+  EXPECT_EQ(ring.ring.capacity, 0U);
+  EXPECT_EQ(ring.ring.seconds, 0.0);
+  for (usize d = 100; d < 112; ++d) check(other, cfg, d);
+  EXPECT_GE(ring.ring.seconds, 0.0);
+  EXPECT_EQ(st::session_ring_bytes(cfg, 9),
+            u64{9} * (2 * 40 + 4) * sizeof(f64) + 40 * (2 * sizeof(f64) + sizeof(usize)));
+  auto bad = cfg;
+  bad.beta_window = 5000; // block above 4096: refused by compute_price_exposures
+  EXPECT_EQ(st::session_ring_bytes(bad, 9), 0U);
+}
