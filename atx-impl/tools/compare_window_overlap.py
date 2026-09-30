@@ -19,10 +19,16 @@ interleave with the old ones.
                    per id.
 
 Cell rule: equal = identical IEEE-754 bit patterns, or NaN on both sides (any payload). An unequal cell adds to
-``unequal_cells``; its absolute difference enters ``max_abs_diff`` when neither side is NaN (inf when an infinity is
-involved). A finite old value with no aligned new cell (an instrument, session or key the new window lacks) counts as
-``old_cells_missing_in_new``. ``bit_identical`` = no unequal cell and no missing old value. New-only instruments,
+``unequal_cells``; NaN on one side only is a mismatch (``nan_mismatch_cells``, a value appeared or vanished); its
+absolute and relative differences enter ``max_abs_diff`` / ``max_rel_diff`` when neither side is NaN (inf when an
+infinity is involved). A finite old value with no aligned new cell (an instrument, session or key the new window lacks)
+counts as ``old_cells_missing_in_new``. ``bit_identical`` = at least one cell compared, no unequal cell and no missing
+old value; otherwise ``reason`` says why (review C-9: zero cells compared is never identical). New-only instruments,
 sessions and keys are expected (the union grows) and only counted.
+
+Ruling W0-a (review C-10): ``totals.w0a_class`` = identical (bit_identical) / below-tolerance (every difference a
+finite value change with max_abs_diff < W0A_TOLERANCE) / stop (anything else: a NaN mismatch, a missing old cell, a key
+not compared, no cell compared, or a difference >= the tolerance). max_rel_diff is reported beside it, gating nothing.
 
 Seal: the seal comes from atx-engine/tools/research_window.py (task W0-1), read through ``engine_tools.py``; no date
 is written here. A role session, CSV row or --before on or after the seal is refused before any payload is opened. ``--before YYYY-MM-DD`` compares sessions strictly before that date.
@@ -64,9 +70,12 @@ SIDECAR_LIMIT = 1 << 20           # the runner's metadata_text bound for a cache
 SCAN_DEPTH = 4                    # ROOT/<vm identity>/<role sha>/fp_<fk16>/
 IC_RESULT_DIR = re.compile(r"ic\d+_[0-9a-f]{16}")  # IC-result entries beside signal entries (never signals)
 HASH_CHUNK = 8 << 20
-CELL_RULE = ("equal iff identical IEEE-754 bits or NaN on both sides; max_abs_diff over unequal cells with no NaN side "
-             "(inf when an infinity is involved); a finite old value without an aligned new cell is "
-             "old_cells_missing_in_new; bit_identical = no unequal cell and no missing old value")
+CELL_RULE = ("equal iff identical IEEE-754 bits or NaN on both sides; NaN on one side only is an unequal cell "
+             "(nan_mismatch_cells); max_abs_diff / max_rel_diff over unequal cells with no NaN side (inf when an "
+             "infinity is involved); a finite old value without an aligned new cell is old_cells_missing_in_new; "
+             "bit_identical = at least one cell compared, no unequal cell and no missing old value")
+W0A_TOLERANCE = 1e-9              # v8-prereg ruling W0-a: a difference below 1e-9 is disclosed, a larger one stops
+W0A_CLASSES = ("identical", "below-tolerance", "stop")
 MAPPING = ("signal entries are matched by candidate id: each cache is scanned for signal sidecars (schema v1/v2) whose "
            "role_manifest_sha256 is that side's role; the ids compared are the old run's (--old-run) or every id of the "
            "old cache on the old role; with --old-run/--new-run a side's entry is the one whose payload_sha256 the run's "
@@ -210,6 +219,7 @@ class CellStats:
     def __init__(self):
         self.cells = self.unequal = self.nan_mismatch = self.missing = self.new_only_finite = 0
         self.max_abs: float | None = None
+        self.max_rel: float | None = None
         self.first = None
 
     def add(self, old: np.ndarray, new: np.ndarray, row_labels, col_labels) -> None:
@@ -224,19 +234,36 @@ class CellStats:
         self.nan_mismatch += int(np.count_nonzero(unequal & (old_nan != new_nan)))
         valued = unequal & ~old_nan & ~new_nan
         if valued.any():
-            with np.errstate(invalid="ignore", over="ignore"):
-                diff = np.abs(old[valued] - new[valued])
+            a, b = old[valued], new[valued]
+            with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+                diff = np.abs(a - b)
+                scale = np.maximum(np.abs(a), np.abs(b))
+                rel = np.where(scale > 0, diff / np.where(scale > 0, scale, 1.0), 0.0)   # +0 vs -0: no difference
             diff = np.where(np.isnan(diff), np.inf, diff)
+            rel = np.where(np.isnan(rel), np.inf, rel)
             self.max_abs = max(self.max_abs or 0.0, float(diff.max()))
+            self.max_rel = max(self.max_rel or 0.0, float(rel.max()))
         if self.first is None:
             r, c = divmod(int(np.argmax(unequal.reshape(-1))), old.shape[1])
             self.first = (row_labels[r], col_labels[c])
 
+    def reason(self) -> str | None:
+        """Why the key is not bit-identical (None when it is): no cell compared, unequal cells, missing old cells."""
+        out = []
+        if self.cells == 0:
+            out.append("no cell compared (no common session and instrument)")
+        if self.unequal:
+            out.append(f"{self.unequal} unequal cell(s), {self.nan_mismatch} of them NaN against a value")
+        if self.missing:
+            out.append(f"{self.missing} finite old cell(s) missing in new")
+        return "; ".join(out) or None
+
     def row(self, key: str, first) -> dict:
+        why = self.reason()
         return {"key": key, "status": "compared", "cells_compared": self.cells, "unequal_cells": self.unequal,
-                "nan_mismatch_cells": self.nan_mismatch, "max_abs_diff": jnum(self.max_abs), "first_diff": first,
-                "old_cells_missing_in_new": self.missing, "new_only_finite_cells": self.new_only_finite,
-                "bit_identical": self.unequal == 0 and self.missing == 0}
+                "nan_mismatch_cells": self.nan_mismatch, "max_abs_diff": jnum(self.max_abs),
+                "max_rel_diff": jnum(self.max_rel), "first_diff": first, "old_cells_missing_in_new": self.missing,
+                "new_only_finite_cells": self.new_only_finite, "bit_identical": why is None, "reason": why}
 
 
 def finite_count(block: np.ndarray) -> int:
@@ -263,8 +290,8 @@ def compare_panel(old: np.ndarray, new: np.ndarray, al: Alignment, key: str) -> 
 
 def missing_row(key: str, status: str) -> dict:
     return {"key": key, "status": status, "cells_compared": 0, "unequal_cells": 0, "nan_mismatch_cells": 0,
-            "max_abs_diff": None, "first_diff": None, "old_cells_missing_in_new": None, "new_only_finite_cells": None,
-            "bit_identical": False}
+            "max_abs_diff": None, "max_rel_diff": None, "first_diff": None, "old_cells_missing_in_new": None,
+            "new_only_finite_cells": None, "bit_identical": False, "reason": f"not compared: {status}"}
 
 
 # ---------------------------------------------------------------- kind: field
@@ -479,19 +506,56 @@ def daily_ic_rows(args, seal_ns: int, before_ns: int | None) -> tuple[list[dict]
 
 
 # ---------------------------------------------------------------- report
+def worst_of(rows: list[dict], key: str):
+    """The largest of the rows' ``key`` values ("inf" wins), None when no row has one."""
+    values = [r[key] for r in rows if r.get(key) is not None]
+    return None if not values else ("inf" if "inf" in values else max(values))
+
+
+def w0a_class(t: dict) -> str:
+    """Ruling W0-a's reading of the totals (review C-10): identical, below-tolerance (only finite value changes, the
+    largest below W0A_TOLERANCE) or stop (a NaN mismatch, a missing old cell, a key not compared, no cell compared, or
+    a difference at or above the tolerance)."""
+    if t["bit_identical"]:
+        return "identical"
+    worst = t["max_abs_diff"]
+    if (t["keys_compared"] < t["keys"] or t["cells_compared"] == 0 or t["keys_without_cells"] or
+            t["nan_mismatch_cells"] or t["old_cells_missing_in_new"] or worst is None or worst == "inf" or
+            worst >= W0A_TOLERANCE):
+        return "stop"
+    return "below-tolerance"
+
+
 def totals(rows: list[dict]) -> dict:
     compared = [r for r in rows if r["status"] == "compared"]
-    diffs = [r["max_abs_diff"] for r in compared if r["max_abs_diff"] is not None]
-    worst = None if not diffs else ("inf" if "inf" in diffs else max(diffs))
     first = next(({"key": r["key"], **r["first_diff"]} for r in rows if r["first_diff"] is not None), None)
-    return {"keys": len(rows), "keys_compared": len(compared),
-            "cells_compared": sum(r["cells_compared"] for r in compared),
-            "unequal_cells": sum(r["unequal_cells"] for r in compared),
-            "nan_mismatch_cells": sum(r["nan_mismatch_cells"] for r in compared),
-            "max_abs_diff": worst, "first_diff": first,
-            "old_cells_missing_in_new": sum(r["old_cells_missing_in_new"] for r in compared),
-            "new_only_finite_cells": sum(r["new_only_finite_cells"] for r in compared),
-            "bit_identical": bool(rows) and all(r["bit_identical"] for r in rows)}
+    t = {"keys": len(rows), "keys_compared": len(compared),
+         "cells_compared": sum(r["cells_compared"] for r in compared),
+         "unequal_cells": sum(r["unequal_cells"] for r in compared),
+         "nan_mismatch_cells": sum(r["nan_mismatch_cells"] for r in compared),
+         "max_abs_diff": worst_of(compared, "max_abs_diff"), "max_rel_diff": worst_of(compared, "max_rel_diff"),
+         "first_diff": first,
+         "old_cells_missing_in_new": sum(r["old_cells_missing_in_new"] for r in compared),
+         "new_only_finite_cells": sum(r["new_only_finite_cells"] for r in compared),
+         "keys_without_cells": sum(1 for r in compared if r["cells_compared"] == 0)}
+    why = []
+    if not rows:
+        why.append("no key to compare")
+    if len(compared) < len(rows):
+        why.append(f"{len(rows) - len(compared)} key(s) not compared")
+    if rows and t["cells_compared"] == 0:
+        why.append("no cell compared (no common session and instrument)")
+    elif t["keys_without_cells"]:
+        why.append(f"{t['keys_without_cells']} key(s) with no cell compared")
+    if t["unequal_cells"]:
+        why.append(f"{t['unequal_cells']} unequal cell(s), {t['nan_mismatch_cells']} of them NaN against a value")
+    if t["old_cells_missing_in_new"]:
+        why.append(f"{t['old_cells_missing_in_new']} finite old cell(s) missing in new")
+    t["bit_identical"] = not why and all(r["bit_identical"] for r in rows)
+    t["reason"] = "; ".join(why) or (None if t["bit_identical"] else "a key is not bit-identical")
+    t["w0a_class"] = w0a_class(t)
+    t["w0a_tolerance"] = W0A_TOLERANCE
+    return t
 
 
 def compare(args) -> dict:
@@ -542,8 +606,10 @@ def main(argv=None) -> int:
     t = report["totals"]
     print(json.dumps({"kind": args.kind, "bit_identical": t["bit_identical"], "max_abs_diff": t["max_abs_diff"],
                       "unequal_cells": t["unequal_cells"], "cells_compared": t["cells_compared"],
-                      "old_cells_missing_in_new": t["old_cells_missing_in_new"],
-                      "differing_keys": len(report["differing_keys"]), "out": str(args.out)}, sort_keys=True))
+                      "nan_mismatch_cells": t["nan_mismatch_cells"], "max_rel_diff": t["max_rel_diff"],
+                      "old_cells_missing_in_new": t["old_cells_missing_in_new"], "w0a_class": t["w0a_class"],
+                      "reason": t["reason"], "differing_keys": len(report["differing_keys"]), "out": str(args.out)},
+                     sort_keys=True))
     return 0
 
 

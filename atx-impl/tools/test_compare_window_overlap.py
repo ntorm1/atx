@@ -241,6 +241,87 @@ class FieldKind(Base):
         self.assertEqual(code, 2)
         self.assertIn("after the seal", err)
 
+    def test_zero_cells_compared_is_never_identical(self):
+        """Review C-9: a cutoff on or before the first common session, or roles sharing no instrument (old cells all
+        NaN), compare no cell: bit_identical is false with a reason, and W0-a reads stop."""
+        old_dir, new_dir = self.fields(names=("x", "y"))
+        code, rep, err = run(["--kind", "field", "--old", old_dir, "--new", new_dir, "--out", self.out(), "--per-key",
+                              "--before", OLD_SESSIONS[0]])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(rep["alignment"]["common_sessions"], 0)
+        for r in rep["rows"]:
+            self.assertEqual((r["cells_compared"], r["unequal_cells"], r["old_cells_missing_in_new"]), (0, 0, 0))
+            self.assertFalse(r["bit_identical"])
+            self.assertTrue(r["reason"].startswith("no cell compared"))
+        t = rep["totals"]
+        self.assertFalse(t["bit_identical"])
+        self.assertIn("no cell compared", t["reason"])
+        self.assertEqual(t["w0a_class"], "stop")
+        self.assertEqual(rep["differing_keys"], ["x", "y"])
+        # no common instrument, the old values all NaN: nothing is missing, nothing is compared
+        role = self.tmp / "role_disjoint"
+        ids = [1, 2, 3]
+        write_role(role, NEW_SESSIONS, ids)
+        old_nan = self.tmp / "old_nan"
+        write_fields(old_nan, self.old_role, {"x": np.full((len(OLD_SESSIONS), len(OLD_IDS)), np.nan)})
+        write_fields(self.tmp / "new_disjoint", role, {"x": panel(NEW_SESSIONS, ids)})
+        out = self.out()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = cwo.main([str(a) for a in ("--kind", "field", "--old", old_nan, "--new", self.tmp / "new_disjoint",
+                                              "--out", out)])
+        self.assertEqual(code, 0)
+        rep = json.loads(out.read_text())
+        self.assertEqual((rep["alignment"]["common_instruments"], rep["totals"]["cells_compared"]), (0, 0))
+        self.assertFalse(rep["totals"]["bit_identical"])
+        line = json.loads(stdout.getvalue())
+        self.assertEqual((line["bit_identical"], line["w0a_class"]), (False, "stop"))
+        self.assertIn("no cell compared", line["reason"])
+
+    def test_nan_against_value_is_a_mismatch_and_nan_against_nan_a_match(self):
+        """Review C-10: a value that appears or vanishes (NaN on one side) is an unequal cell and a W0-a stop even
+        with no finite difference; NaN on both sides (any payload) is equal; W0-a separates 1e-12 noise from a stop."""
+        r, c_old, c_new = OLD_SESSIONS.index("2021-01-05"), OLD_IDS.index(20), NEW_IDS.index(20)
+        r2, c2_old, c2_new = OLD_SESSIONS.index("2021-01-13"), OLD_IDS.index(10), NEW_IDS.index(10)
+        r3, c3_old, c3_new = OLD_SESSIONS.index("2021-01-08"), OLD_IDS.index(30), NEW_IDS.index(30)
+
+        def case(nan_nan=False, nan_value=False, noise=0.0):
+            old, new = panel(OLD_SESSIONS, OLD_IDS), panel(NEW_SESSIONS, NEW_IDS)
+            if nan_nan:
+                old[r, c_old] = np.nan
+                new[r, c_new] = np.array([0x7FF8_0000_0000_0001], dtype="<u8").view("<f8")[0]
+            if nan_value:
+                old[r2, c2_old], new[r2, c2_new] = 3.0, np.nan
+            if noise:
+                self.assertTrue(math.isfinite(old[r3, c3_old]))
+                new[r3, c3_new] = old[r3, c3_old] + noise
+            old_dir, new_dir = self.fields(new_panel=new, old_panel=old)
+            stdout = io.StringIO()
+            out = self.out()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(cwo.main([str(a) for a in ("--kind", "field", "--old", old_dir, "--new", new_dir,
+                                                            "--out", out)]), 0)
+            return json.loads(out.read_text())["totals"], json.loads(stdout.getvalue()), old[r3, c3_old]
+
+        t, line, _ = case(nan_nan=True)                                        # NaN against NaN: a match
+        self.assertTrue(t["bit_identical"])
+        self.assertEqual((t["unequal_cells"], t["nan_mismatch_cells"], t["w0a_class"], t["reason"]),
+                         (0, 0, "identical", None))
+        t, line, _ = case(nan_nan=True, nan_value=True)                        # NaN against a value: a mismatch
+        self.assertFalse(t["bit_identical"])
+        self.assertEqual((t["unequal_cells"], t["nan_mismatch_cells"], t["max_abs_diff"]), (1, 1, None))
+        self.assertEqual(t["w0a_class"], "stop")                               # never read on max_abs_diff alone
+        self.assertEqual((line["nan_mismatch_cells"], line["w0a_class"]), (1, "stop"))
+        self.assertIn("NaN against a value", t["reason"])
+        t, line, value = case(noise=1e-12)                                     # finite noise below the tolerance
+        self.assertEqual((t["unequal_cells"], t["nan_mismatch_cells"], t["w0a_class"]), (1, 0, "below-tolerance"))
+        self.assertAlmostEqual(t["max_rel_diff"], abs(t["max_abs_diff"]) / abs(value), places=18)
+        t, _, _ = case(nan_value=True, noise=1e-12)                            # noise plus a vanished value
+        self.assertEqual((t["w0a_class"], t["nan_mismatch_cells"]), ("stop", 1))
+        self.assertLess(t["max_abs_diff"], cwo.W0A_TOLERANCE)                  # what the old reading saw
+        t, _, _ = case(noise=1e-6)
+        self.assertEqual(t["w0a_class"], "stop")
+
     def test_role_must_be_the_bound_one_and_output_never_overwritten(self):
         old_dir, new_dir = self.fields()
         code, _, err = run(["--kind", "field", "--old", old_dir, "--new", new_dir, "--out", self.out(),
