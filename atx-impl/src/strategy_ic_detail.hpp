@@ -218,6 +218,7 @@ co::Result<std::string> metadata_text(const std::string& path);
 co::Result<std::string> pinned_text(const std::string& path,const std::string& pin);
 co::Result<Json> pinned_json(const std::string& path,const std::string& pin);
 co::Result<Library> library(const IcRunnerConfig& cfg);
+Json candidate_plan_rows(const Library& lib);
 void release(std::vector<f64>& buffer) noexcept;
 co::Status check_field_extents(const Role& spec);
 co::Status verify_fields(const Role& spec,u64 needed,HashMeter& meter,

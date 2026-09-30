@@ -572,8 +572,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<listing.dump(2)<<'\n'; return co::Ok();
     }
     if (cfg.plan_only) {
-      Json plan{{"mode","metadata-only-no-payload"},{"candidates",lib.candidates.size()},
-          {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
+      // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count.
+      Json plan{{"mode","metadata-only-no-payload"},{"candidate_count",lib.candidates.size()},
+          {"candidates",candidate_plan_rows(lib)},{"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
       for (const auto& role:roles) plan["roles"].push_back({{"role",role.name},
           {"manifest_sha256",role.sha},{"required_bytes",role.bytes}});
