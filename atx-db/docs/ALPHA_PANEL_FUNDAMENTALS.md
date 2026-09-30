@@ -15,6 +15,84 @@ Companion to `docs/ALPHA_PANEL.md` (stage contract). Code:
 | F: spot checks AAPL / MSFT / JPM / NVDA on per-CIK debug runs | done (values match raw facts) |
 | F: v3/v4 full runs + validate exposed split-ledger gaps (merger inside the split window, reverse merger, XBRL scale errors, mixed share sources) | fixed in v5 |
 | F: full batch run v5, finalize, validate, guard receipts attached to `fundamentals/manifest.json` | done |
+| F v10 (tier1-v3 lane FUND, S4.1-S4.3, S4.6, S4.7): code, fixture tests, build into `fundamentals_v10/`, `export/fundamental-events-v2`, `validation/fundamentals.json` | see "Stage F v10" |
+
+## Stage F v10 (`fundamentals_v10/`, rule `fund-events-pit-v3`, code `fundamentals-v10`)
+
+The sections after this one describe the v5 build (published as `fundamentals/`, the v9 panel
+input). v10 keeps every v5 rule and adds the rules below. Code: `fundamentals.py`,
+`fund_items.py`, `fund_extract.py` (`fund-extract-v3`), `fund_fx.py`, `fund_catalog.py`,
+`fund_asof.py`, `fund_export.py`, `fund_validate.py`. Full rule texts are in
+`fundamentals_v10/manifest.json` (`rule_text`, `currency_rule`, `fx_rule`, `catalog`).
+
+### Build (publishing gate)
+
+`ATX_FUND_STAGE` names the output stage (default `fundamentals`); the extract work dir follows
+it (`<stage>/_work/cf`). v10 is built beside v9 and swapped in by the controller:
+
+```powershell
+# every command under run_memory_guarded.py (--job-gb 0.6), PYTHONPATH=atx-db/src
+$env:ATX_FUND_STAGE = "fundamentals_v10"; $env:ATX_FUND_DUCKDB_MEM = "350MB"; $env:ATX_FUND_DUCKDB_MEM_BATCH = "250MB"
+python -m atx_db.alpha_panel.fund_extract run              # companyfacts.zip -> fundamentals_v10/_work/cf (85 batches)
+python -m atx_db.alpha_panel.fundamentals build-all        # prepare -> batches -> finalize (resumable per batch)
+python -m atx_db.alpha_panel.fund_validate all             # -> <lake>/validation/fundamentals.json
+$env:ATX_FUND_EXPORT = "fundamental-events-v2"
+python -m atx_db.alpha_panel.fund_export build; python -m atx_db.alpha_panel.fund_export verify
+```
+
+### New rules
+
+* **S4.1 cross-concept quarters and TTM.** A discrete quarter may come from a longer period of
+  one concept minus the year-to-date of another concept of the same tier from the same start
+  (Visa-style `Revenues` FY with `RevenueFromContract...` 9M), else minus the discrete quarters
+  chaining back to that start, else two contiguous stub periods (predecessor/successor). TTM
+  keeps the v9 paths first (fiscal-year fact, four single-concept quarters, YTD arithmetic
+  within one concept) and only then admits cross-concept quarters and the cross-concept YTD
+  path; `sale`, `gp`, `oi` finally chain four item-level quarters of any fallback level
+  (`*_src = quarters_mixed`). A derived value exists from its latest component's clock;
+  `quarterly_history` recomputes every quarter end a filing's periods can feed (300 days).
+* **S4.3 FX (ruling D4, `fund-fx-h10-v1`).** Non-USD filers in a currency of
+  `reference/fx_daily.parquet` (FRED H.10, 25 currencies) are computed in the reporting
+  currency and converted: balances at the last rate on or before the balance date (at most 10
+  days older), TTM flows at the mean of the 365 days ending at `period_end`, quarter flows at
+  the 91-day mean (rates on at least 50% of the window's weekdays). `currency` stays the
+  reporting currency; `fx_converted`, `fx_rate`, `fx_rate_avg_q`, `fx_rate_avg_ttm` describe the
+  conversion; `available_at = max(filing clock, available_at of every rate used)`. Uncovered
+  currencies keep the v9 USD-facts-only rule.
+* **S4.2 catalog (`catalog.parquet`, 81 Compustat-analog items).** `fund_catalog.CATALOG` names
+  per item the Compustat mnemonic, the `seeds/fundamental_items.csv` item, the kind (stock,
+  TTM flow, per-share, weighted-average shares, derived) and the concept chain (us-gaap, then
+  ifrs-full). Zero rule: a line item with no fact within 460 days is 0 (listed in
+  `catalog_zero_filled`) when the filing's own FSDS PRE statement exists without an item line
+  (`catalog-pre-v2`: tag pattern on any line, label pattern only on custom-tag lines, subtotal /
+  comprehensive-income / supplemental tags excluded), or -- items whose absence is common and
+  unambiguous (treasury stock, acquisitions, debt issuance, discontinued operations, ...) --
+  when no PRE exists and the statement is evidenced by `at` / `ni_ttm` / `cfo_ttm`.
+  `cat-nil-zero-v1`: a filing that reports a catalog line item for the comparative period but
+  not for its own period showed a blank cell, so 0 enters the knowledge (v9 chain concepts
+  excluded). Derived: `intano`, `dlc`, `dltt`, `txditc`, `ceq`, `teq`, `lse`, `wcap`,
+  `xopr_ttm`, `txt_ttm`, `lco` (= lct - ap - dlc - txp), `dv_ttm`, and fallbacks for `pi`, `ib`,
+  `nicon`, `epspi`, `epsfi`. Industry items (bank, insurer) are structural NaN outside their SIC
+  ranges; current-asset/liability components are structural where `act`/`lct` are.
+  `catalog.parquet` is keyed by (cik, accession) and kept out of `events.parquet` (the panel
+  reads every events column).
+* **S4.2(c) FSDS PRE label fallback (`lbl-label-v1`).** Custom-tag income-statement lines
+  (FSDS `version` = accession) labelled revenue / cost of revenue / gross profit / operating
+  income feed the last tier of those chains (pseudo taxonomy `lbl`).
+* **S4.6 vintages.** `is_amendment` (form `/A`), `is_restated` / `restated_items` (the filing
+  changed a value an earlier filing reported for the same concept and period by more than
+  0.5% on a watched chain), `nonreliance_402_at` (latest 8-K Item 4.02 within 365 days, from
+  `sec_filings/eight_k_items.parquet`). Events are new rows (vintages); `fund_asof` builds the
+  as-of views: `events_as_of_sql(stage, t)` (rows with `available_at < t`, optionally the latest
+  per CIK), `history_as_of_sql`, `vintages_sql` (first-reported vs latest value per CIK, period
+  and item) and DuckDB macros `fund_events_asof`, `fund_events_latest_asof`,
+  `fund_history_asof`, `fund_vintages`. The cutoff rebuild in the validation uses them.
+* **Export `fundamental-events-v2`** follows `atx.fundamental-events/v1`: `accepted_utc` =
+  `available_at` (the FX-aware clock), `filing_accepted_utc` = the filing clock, catalog items
+  joined, items NaN-filled, the new descriptors carried.
+
+Panel note: the panel as-of join should use `available_at` (>= `clock_utc`; equal for USD
+filers).
 
 ## Stage I: `identity/links.parquet`
 
