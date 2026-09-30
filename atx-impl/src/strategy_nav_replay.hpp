@@ -4,6 +4,7 @@
 #include <iosfwd>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "strategy_target_replay.hpp"
 
@@ -173,14 +174,22 @@ struct NavReplayConfig {
   // cadence phase stays relative to decision_begin. 0 (default): the flat start, every
   // output bit for bit.
   atx::usize warm_start_sessions{};
+  // Books on a deterministic pool (v8 D-1): each session's per-book phases (MARK and
+  // EXECUTE; then DECIDE, close and report) run on book_workers threads around the shared
+  // decision, which stays on the calling thread. Every book's arithmetic is its own and the
+  // shared state is read-only inside a phase, so every output is bit-identical to 1 (the
+  // default: sequential, today's loop). 1..64; above 1 refused with rate per-name-v1 (one
+  // shared rate buffer) and while a v7 extension is installed (its hook is thread-local).
+  atx::usize book_workers{1};
 };
 // The v6 execution options of a run_nav_replay call (copied into its NavReplayConfig;
 // CLI --order-basis target|delta, --locate-in-aim, --liquidity-cache; v8
-// --warm-start-sessions K).
+// --warm-start-sessions K, --book-workers N).
 struct NavExecutionOptions {
   NavOrderBasis order_basis{NavOrderBasis::Target};
   bool locate_in_aim{}, liquidity_cache{};
   atx::usize warm_start_sessions{};
+  atx::usize book_workers{1};
 };
 // The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
 // --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
@@ -381,6 +390,24 @@ public:
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
     NavHoldingsSink& sink, atx::usize observed);
 
+// Construction grid (v8 D-1): every variant runs every scenario, all variants x scenarios
+// books in lockstep over the one input with ONE shared construction per decision (the
+// desired target and its price exposures, the borrow tiers, the liquidity windows), formed
+// on every session that is a cadence decision of some variant. results[v][k] is
+// bit-identical to replay_nav_scenarios(in, variants[v], scenarios)[k]. The variants may
+// differ only in the target construction keys of nav_grid_variant_flags (rule, cadence,
+// trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage, exit_rate);
+// any other difference is InvalidArgument. 1 <= variants <= nav_max_grid_variants; the
+// workspace budget is charged for every book.
+inline constexpr atx::usize nav_max_grid_variants = 16;
+[[nodiscard]] atx::core::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
+    const NavReplayInput& in, std::span<const NavReplayConfig> variants,
+    std::span<const NavScenario> scenarios);
+// The CLI flags a grid variant may set (each parsed exactly as on the nav command line).
+inline constexpr std::array<std::string_view, 8> nav_grid_variant_flags{
+    "--rule", "--cadence", "--trade-fraction", "--monthly-budget", "--band-multiple",
+    "--dust-multiple", "--aim-leverage", "--exit-rate"};
+
 struct NavMonth {
   atx::u32 month{};
   atx::usize execution_sessions{}, traded_sessions{}, decision_sessions{};
@@ -462,7 +489,8 @@ struct NavFieldsPin {
 
 // Workspace a pinned run reserves before it loads any payload (v6 C4): publication
 // slack, every book's fixed workspace, per-name state, days and events (at the
-// max_events cap), the shared construction (with its neutralization scratch), the
+// max_events cap), the shared construction (with its neutralization scratch and, when
+// neutralizing, the price-exposure session ring of v8 D-1), the
 // borrow tiers (tiered) and the shared liquidity cache (rate per-name-v1 or
 // base.liquidity_cache), at the ACTUAL geometry: `names` instruments and `sessions` =
 // score_end - score_begin rows per book, read from the pinned role manifest.
@@ -522,9 +550,16 @@ struct NavFieldsPin {
 //       atx.nav-holdings/v2; every holdings.csv column recoverable bit for bit.
 //   Csv: holdings.csv, manifest atx.nav-holdings/v1, byte for byte the L3 output.
 enum class NavHoldingsFormat : atx::u8 { F64 = 0, Csv = 1 };
+// stage_timers (v8 D-1, CLI --stage-timers): summary.json gains stage_seconds {load,
+// exposures, construction, books, hash, write, wall, definition}; the six stages partition
+// wall (entry to the summary.json write). Off (default): no stage_seconds key, so
+// summary.json stays reproducible byte for byte (the clocks read in the replay are
+// observation only: no published value depends on them); every other file is unchanged
+// either way.
 struct NavEmitOptions {
   std::string holdings_directory;
   NavHoldingsFormat format{NavHoldingsFormat::F64};
+  bool stage_timers{};
 };
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
@@ -539,7 +574,27 @@ struct NavEmitOptions {
 // --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
 // v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
 // the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR
-// [--holdings-format f64|csv]. v8: --warm-start-sessions K.
+// [--holdings-format f64|csv]. v8: --warm-start-sessions K, --book-workers N, the valueless
+// --stage-timers, and --construction-grid GRID.json (run_nav_grid).
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
+
+// --construction-grid (v8 D-1): the nav run of `cfg` (every other flag as parsed) for every
+// variant of the grid file, all variants in one lockstep replay (replay_nav_grid) over one
+// pinned load. Grid file: {"schema": "atx.nav-construction-grid/v1", "variants": [{"id":
+// "<a-z0-9->", "flags": {"--trade-fraction": ".05", ...}}]}: each variant overrides only
+// nav_grid_variant_flags, with string values parsed as on the command line. Output
+// (exclusive): <output>/<id>/ byte for byte the directory the standalone nav run with the
+// variant's flags publishes, then <output>/grid_manifest.json LAST (atx.nav-grid-run/v1:
+// the grid file SHA, each variant's flags and file SHAs; stage_seconds with --stage-timers,
+// which then stay out of the variant summaries). Refused with --emit-holdings and while a
+// v7 extension is installed.
+[[nodiscard]] atx::core::Status run_nav_grid(const TargetReplayRunConfig& cfg,
+                                             const NavTurnoverLimits& limits,
+                                             const NavFieldsPin& fields,
+                                             const NavRateOptions& rate,
+                                             const NavExecutionOptions& execution,
+                                             const NavEmitOptions& emit,
+                                             const std::string& grid_path,
+                                             std::ostream& progress);
 } // namespace atx::impl::strategy
