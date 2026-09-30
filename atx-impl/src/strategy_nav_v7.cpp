@@ -315,7 +315,11 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
                                            std::vector<f64>& planned, TargetReplayDay& out,
                                            std::span<const f64> rates, std::span<const u8> tier,
                                            std::span<const u8> no_locate) {
-  const bool v6 = options.aim_v6, observe = pass == NavV7Pass::Main;
+  // A warm-start decision (v8 D-0: d before the role's decision_begin) plans the book but is
+  // not scored: it leaves no transfer-coefficient record. Without a warm start every
+  // decision the replay makes has d >= decision_begin, so nothing changes.
+  const bool v6 = options.aim_v6;
+  const bool observe = pass == NavV7Pass::Main && d >= x.decision_begin;
   if ((v6 || engine) && !rates.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
                    "aim-partial-v6 / spo-v1: the per-name rate is not part of the rule "

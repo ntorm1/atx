@@ -1241,7 +1241,10 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   row.alpha_shadow = alpha_shadow; row.gross_shadow = shadow_day.gross;
   row.turnover_shadow = shadow_day.turnover; row.trade_cost_shadow = cost_shadow;
   row.exante_vol_shadow = std::sqrt(sessions_per_year * book_variance(r, book.shadow));
-  rows.push_back(std::move(row));
+  // A warm-start decision (v8 D-0: d before the role's decision_begin) plans the book and
+  // moves the shadow, but is not scored: no row, so spo_diagnostics.csv, the summary and
+  // the tripwire cover scored decisions only. Without a warm start every d is scored.
+  if (d >= x.decision_begin) rows.push_back(std::move(row));
   planned = std::move(next);
   return co::Ok();
 }

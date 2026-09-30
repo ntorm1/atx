@@ -1322,4 +1322,75 @@ TEST(SpoTripwire, AVoidRunExitsThreeWithDiagnosticsAndNoNavOrReturnFile) {
     EXPECT_FALSE(std::filesystem::exists(dir.path / "taken" / "v7_extras.json"));
   }
 }
+
+// ---- v8 D-0 warm start ------------------------------------------------------------------------
+// --warm-start-sessions K decides and trades from decision_begin - K and scores from
+// decision_begin. The v7 side records (transfer coefficients, spo diagnostics rows, the
+// tripwire's input) cover the scored decisions only: exactly the sessions a flat start at
+// decision_begin records. A specific-variance clamp inside the warm-up leaves spo-v2's
+// tripwire clear; the same clamp on scored decisions still voids the run.
+TEST(NavV7Hook, SideFilesExcludeWarmUp) {
+  constexpr usize begin = 10, warm = 10;
+  const Role role(30, 12, 71);
+  const std::vector<u8> forecast(role.d, u8{1});
+  const auto corrupt_rows = [&](usize first) { // name 3 on rows first..first+4
+    std::vector<std::pair<usize, f64>> cells;
+    for (usize d = first; d < first + 5; ++d) cells.emplace_back(d * role.n + 3, 1e12);
+    return cells;
+  };
+  const Directory clean_dir, warmup_dir, scored_dir;
+  const auto open = [&](const Directory& dir, std::span<const std::pair<usize, f64>> cells) {
+    const auto sha =
+        write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 9, cells);
+    auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+    EXPECT_TRUE(store) << store.error().to_string();
+    return store ? std::make_shared<const sp::RiskStore>(std::move(*store)) : nullptr;
+  };
+  const auto clean = open(clean_dir, {});
+  const auto in_warmup = open(warmup_dir, corrupt_rows(3));
+  const auto in_scored = open(scored_dir, corrupt_rows(begin + 2));
+  ASSERT_TRUE(clean && in_warmup && in_scored);
+  struct Run {
+    std::vector<i64> tc, rows;
+    usize capped{};
+    bool captured{};
+  };
+  const auto run = [&](const std::shared_ptr<const sp::RiskStore>& risk, usize k) {
+    v7::NavV7Options o;
+    o.spo_v1 = true;
+    o.spo_params = sp::v2_params();
+    o.spo_params.w_max = 0.5; // the vol target is reachable (SpoV2CalibratesToTheVolTarget...)
+    o.spo_risk = risk;
+    const v7::ScopedNavExtension extension(o);
+    auto input = role.nav();
+    input.target.decision_begin = begin;
+    auto cfg = nav_config();
+    cfg.warm_start_sessions = k;
+    const auto result = st::replay_nav(input, cfg);
+    EXPECT_TRUE(result) << result.error().to_string();
+    Run out;
+    for (const auto& r : extension.tc_records()) out.tc.push_back(r.session);
+    for (const auto& r : extension.spo_engine()->rows()) {
+      out.rows.push_back(r.session);
+      out.capped += r.capped_specific;
+    }
+    out.captured = static_cast<bool>(v7::capture({}, {}, {}));
+    return out;
+  };
+  const Run flat = run(clean, 0), warmed = run(clean, warm);
+  ASSERT_FALSE(flat.rows.empty());
+  ASSERT_FALSE(flat.tc.empty());
+  EXPECT_EQ(flat.rows.front(), role.sessions[begin]);
+  for (const i64 s : warmed.tc) EXPECT_GE(s, role.sessions[begin]);
+  for (const i64 s : warmed.rows) EXPECT_GE(s, role.sessions[begin]);
+  EXPECT_EQ(warmed.tc, flat.tc);     // the scored decisions, not the warm-up's
+  EXPECT_EQ(warmed.rows, flat.rows);
+  EXPECT_TRUE(flat.captured && warmed.captured);
+  const Run quiet = run(in_warmup, warm), loud = run(in_scored, warm);
+  EXPECT_EQ(quiet.rows, flat.rows);
+  EXPECT_EQ(quiet.capped, 0U);  // the warm-up clamps were not recorded ...
+  EXPECT_TRUE(quiet.captured);  // ... so the tripwire is clear
+  EXPECT_GT(loud.capped, 0U);
+  EXPECT_FALSE(loud.captured); // a scored clamp still voids the run
+}
 } // namespace
