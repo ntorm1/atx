@@ -13,7 +13,7 @@ struct IcRunnerConfig {
   std::string output_directory;
   atx::u64 max_working_bytes{512ULL<<20};
   atx::usize min_names{20},min_dates{128};
-  atx::usize workers{1}; // 1 is the existing serial baseline; explicit2..4 share one VM pool
+  atx::usize workers{1}; // 1 is the existing serial baseline; explicit 2..16 share one VM pool
   bool save_combined{false}; // exact blend+support artifact, no reevaluation or portfolio simulation
   bool plan_only{false}; // pinned metadata/DSL compilation only; no role payloads
   // Screening pass (platform v8 B-1): score every candidate's IC and TRAIN orientation
