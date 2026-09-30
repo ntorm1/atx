@@ -8,6 +8,8 @@
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
   research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
                               --parent v71 [--name v72] [--plan-json PATH] [--root R]   (research_add_alpha.py)
+  research_cycle.py cache gc --keep-referenced-by SPEC [SPEC ...] [--under DIR] [--root R] [--apply]
+                           (research_gc.py: stores no listed spec uses; deleted only with --apply)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
 
@@ -1439,6 +1441,9 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
         return research_ledger.main(argv[1:])
+    if argv[:2] == ["cache", "gc"]:          # unreferenced candidate caches and fit work dirs: research_gc.py
+        import research_gc  # noqa: PLC0415  (imports this module)
+        return research_gc.main(argv[2:])
     if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock
         import research_add_alpha  # noqa: PLC0415  (imports this module)
         return research_add_alpha.main(argv[1:])

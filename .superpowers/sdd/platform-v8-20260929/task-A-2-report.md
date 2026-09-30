@@ -105,3 +105,21 @@ bare list; B-1's `--no-composition` and F-2's `marginal` detected from `--help`.
   [--themes] --output DIR`); if lane F adds pins (e.g. `--library-sha256`), `marginal.flags` in the spec can carry them,
   or the step needs a line of code.
 - Derived stores need W0-1 (see A-3): an add-alpha spec cannot run on a branch without it.
+
+## PM addition 3: `cache gc` (separate commit after A-2)
+
+`research_cycle.py cache gc --keep-referenced-by SPEC [SPEC ...] [--under DIR ...] [--root R] [--apply]`
+(`scripts/research_gc.py`, about 110 lines). Candidates are only store dirs under each `--under` dir (default
+`build-equity`): a direct child whose name contains `candidate-cache` or `fit-work` (the v7 per-version stores such as
+`mega-candidate-cache-v61-r7`) and each child of the derived stores `candidate-cache/` and `fit-work/`. A candidate is
+kept when a listed spec's cycle uses it (`Cycle.cache_dir()` / `fit_work_dir()` without suffix: `ic.cache`,
+`fit.work_dir`, or the root derived from the role pin); a candidate holding research state at its top level
+(`receipt.json`, `start.json`, `summary.json`, `manifest.json`, `trials.jsonl`, `daily_*.csv`) is never deleted; the
+rest is listed with its size (MiB of file sizes: `cp -al` seeds count in full) and deleted only with `--apply`.
+Ledgers, receipts, roles, fields dirs and NAV cells are never candidates (name pattern). Test:
+`test_cache_gc_keeps_referenced_stores_and_never_touches_state` (dry run deletes nothing; `--apply` removes exactly the
+three unreferenced stores; the ledger, a NAV cell, a role and a receipt-holding store stay; the keep list is required).
+
+Root usage, for example: `research_cycle.py cache gc --keep-referenced-by scripts/specs/v71.json
+scripts/specs/v70-lo3.json scripts/specs/v8/base-lo1.json scripts/specs/v8/base-lo3.json` (dry run first; a spec
+omitting its stores needs W0-1 to derive them).

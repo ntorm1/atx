@@ -1769,3 +1769,45 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path):
     wide = add_argv(root, "ea_overdue", name="v71c", id="wide_overdue", dsl="rank((-1 * ea_days_to_expected))")
     assert RC.main(wide) == RC.EXIT_USAGE                                             # 9 slots > 7: refused
     assert not (root / "atx-impl" / "strategies" / "libraries" / "v71c.json").exists()
+
+
+# ---------------------------------------------------------------- PM addition: cache gc
+def test_cache_gc_keeps_referenced_stores_and_never_touches_state(tmp_path, monkeypatch):
+    import research_gc
+    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    spec["ic"]["cache"], spec["fit"]["work_dir"] = "build-equity/mega-candidate-cache-v2", "build-equity/mega-fit-work-v2"
+    sp.write_text(json.dumps(spec))
+    derived = dict(spec, name="derived", ic={k: v for k, v in spec["ic"].items() if k != "cache"},
+                   fit={k: v for k, v in spec["fit"].items() if k != "work_dir"})
+    sp2 = tmp_path / "derived.json"
+    sp2.write_text(json.dumps(derived))
+    role16 = RC.sha256_file(root / "role" / "manifest.json")[:16]
+    kept = ["mega-candidate-cache-v2", "mega-fit-work-v2", f"candidate-cache/{role16}-research-window-v2",
+            f"fit-work/{role16}-research-window-v2"]
+    unreferenced = ["mega-candidate-cache-v1", "mega-fit-work-v1-r7", "candidate-cache/0123456789abcdef-research-window-v1"]
+    for rel in kept + unreferenced:
+        (root / "build-equity" / rel / ("a" * 64)).mkdir(parents=True)
+        (root / "build-equity" / rel / ("a" * 64) / "x.f64").write_bytes(b"\0" * 2048)
+    state = {"trials.jsonl": "{}\n", "mega-nav-x/summary.json": "{}", "recent-role/manifest.json": "{}",
+             "mega-candidate-cache-odd/receipt.json": "{}"}           # the last looks like a store but holds a receipt
+    for rel, text in state.items():
+        (root / "build-equity" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / "build-equity" / rel).write_text(text)
+    log = []
+    rep = research_gc.gc([sp, sp2], root, ["build-equity"], apply=False, log=log.append)
+    assert sorted(rep["keep"]) == sorted(f"build-equity/{r}" for r in kept)
+    assert sorted(rep["gc"]) == sorted(f"build-equity/{r}" for r in unreferenced)
+    assert rep["skip"] == ["build-equity/mega-candidate-cache-odd"] and rep["deleted"] == []
+    assert any(x.startswith("keep  build-equity/mega-candidate-cache-v2") and "(referenced by synthetic)" in x
+               for x in log)
+    assert log[-1].startswith("== 3 unreferenced store dirs, 0.0 MiB (dry run")
+    assert all((root / "build-equity" / r).is_dir() for r in kept + unreferenced)   # a dry run deletes nothing
+    assert RC.main(["cache", "gc", "--keep-referenced-by", str(sp), str(sp2), "--root", str(root), "--apply"]) == 0
+    assert all((root / "build-equity" / r).is_dir() for r in kept) and not any(
+        (root / "build-equity" / r).exists() for r in unreferenced)
+    assert all((root / "build-equity" / r).is_file() for r in state)                 # ledger, NAV, role, receipt kept
+    with pytest.raises(SystemExit) as e:                                             # a keep list is required
+        RC.main(["cache", "gc", "--root", str(root)])
+    assert e.value.code == RC.EXIT_USAGE
