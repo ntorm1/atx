@@ -1675,14 +1675,15 @@ if "--pbo-json" in a:
 
 def test_verdict_schema(tmp_path):
     summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "cells_from_ledger": True, "ledger": "trials.jsonl",
-            "extra": ["--psr", "--pbo"]}
+            "extra": ["--psr", "--pbo"], "origin": "prior"}
     root, sp = screen_root(tmp_path, summ=summ, verdict=True)
     (root / "scripts" / "summ.py").write_text(FAKE_SUMM_JSON)
     (root / "trials.jsonl").write_text(json.dumps({"kind": "construction", "cell": "prior/a"}) + "\n")
     assert run(root, sp, capabilities=CAPS) == RC.EXIT_OK
     cyc = "build-equity/cycle-synthetic"
-    assert calls(root)[-1].endswith(f"--dsr-n 2 --psr --pbo --json {cyc}/summ.json --pbo-json {cyc}/pbo.json "
-                                    "--ledger trials.jsonl --ledger-kind construction --dsr-ledger trials.jsonl")
+    assert calls(root)[-1].endswith(f"--dsr-n 2 --psr --pbo --protocol v8 --origin prior --json {cyc}/summ.json "
+                                    f"--pbo-json {cyc}/pbo.json --ledger trials.jsonl --ledger-kind construction "
+                                    "--dsr-ledger trials.jsonl")                  # review C-1 / C-2
     v = json.loads((root / cyc / "cycle_verdict.json").read_text())
     assert set(v) == {"schema", "cycle", "mode", "spec_sha256", "admission", "marginal", "phases", "paired", "dsr",
                       "pbo"}

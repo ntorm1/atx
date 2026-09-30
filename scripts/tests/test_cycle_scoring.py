@@ -82,12 +82,12 @@ def test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value(t
     SR0 1.10 annual and DSR .42; the pre-registered cross-trial variance (SD .15 annual over the ledgered cells)
     gives SR0 .33 and DSR .91. The verdict carries the second."""
     prior = [1.15] * 20 + [0.85] * 20            # with this cell's 1.0: 41 SRs, mean 1.0, sample SD .15 exactly
-    root, sp = scoring_root(tmp_path, sr_annual=1.0, t=1006, prior_srs=prior,
-                            summ_extra=["--protocol", "v8", "--origin", "prior", "--draws", "99"])
+    root, sp = scoring_root(tmp_path, sr_annual=1.0, t=1006, prior_srs=prior, summ_extra=["--draws", "99"])
     argv, rows = run_summ(root, sp, monkeypatch)
     capsys.readouterr()
     k = argv.index("--dsr-ledger")
     assert argv[k + 1] == "trials.jsonl" and argv[argv.index("--ledger") + 1] == "trials.jsonl"
+    assert argv[argv.index("--protocol") + 1] == "v8" and argv[argv.index("--origin") + 1] == "prior"   # C-2
     assert argv[argv.index("--dsr-n") + 1] == "41"                              # ledger N + 1 (plan time)
     row = next(r for r in rows if Path(r["dir"]).as_posix() == "out/N")
     m = row["net_moments"]
@@ -107,6 +107,92 @@ def test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value(t
     assert blocks["dsr"]["cell_count"] == dl["dsr"] and blocks["dsr"]["n"] == 41
     assert blocks["dsr"]["variance_sr"] == dl["variance_sr"] and blocks["dsr"]["variance_cells"] == 41
     assert abs(blocks["dsr"]["cell_count"] - lo["dsr"]) > 0.4                   # the convention decided the gate
+
+
+def summ_argv(root: Path, sp: Path, **kw) -> list[str]:
+    return next(s for s in cycle_of(root, sp, **kw).steps() if s.phase == "summ").argv
+
+
+def test_v8_summ_step_carries_the_protocol_and_the_origin(tmp_path):
+    """Review C-2: every summ step under a v8 spec (a verdict spec, or --protocol v8 in summ.extra) runs nav_summ
+    --protocol v8 (seed 20260929, 4,999 draws) and, with a ledger, --origin summ.origin; a v7 spec's argv is
+    unchanged."""
+    cyc = "build-equity/cycle-synthetic"
+    head = [sys.executable, "scripts/summ.py", "--weights", "out/W/composition_weights.json", "--reference", "ref-cell",
+            "--dsr-n", "29"]
+    root, sp = make_root(tmp_path / "v8", summ={"script": "scripts/summ.py", "dsr_n": 29, "ledger": "L.jsonl",
+                                                "origin": "grid"}, verdict=True)
+    assert summ_argv(root, sp) == head + ["--protocol", "v8", "--origin", "grid", "--json", f"{cyc}/summ.json",
+                                          "--ledger", "L.jsonl", "--ledger-kind", "construction", "--dsr-ledger",
+                                          "L.jsonl", "out/N"]
+    a2 = ["--protocol", "v8", "--effective-n", "dirs", "--psr", "--pbo"]           # lane A2's base specs
+    root, sp = make_root(tmp_path / "a2", summ={"script": "scripts/summ.py", "dsr_n": 29, "ledger": "L.jsonl",
+                                                "origin": "prior", "extra": a2}, verdict=True)
+    assert summ_argv(root, sp) == head + a2 + ["--origin", "prior", "--json", f"{cyc}/summ.json", "--pbo-json",
+                                               f"{cyc}/pbo.json", "--ledger", "L.jsonl", "--ledger-kind",
+                                               "construction", "--dsr-ledger", "L.jsonl", "out/N"]
+    root, sp = make_root(tmp_path / "extra", summ={"script": "scripts/summ.py", "dsr_n": 29, "extra": a2[:2],
+                                                   "origin": "mined"})
+    assert summ_argv(root, sp) == head + ["--protocol", "v8", "out/N"]               # no ledger: no --origin
+    assert summ_argv(root, sp, ledger="L.jsonl") == head + ["--protocol", "v8", "--origin", "mined", "--ledger",
+                                                            "L.jsonl", "--ledger-kind", "construction", "out/N"]
+    root, sp = make_root(tmp_path / "v7", summ={"script": "scripts/summ.py", "dsr_n": 29, "ledger": "L.jsonl"})
+    assert summ_argv(root, sp) == head + ["--ledger", "L.jsonl", "--ledger-kind", "construction", "out/N"]  # v7
+    bare = make_root(tmp_path / "noorigin", summ={"script": "scripts/summ.py", "dsr_n": 29, "ledger": "L.jsonl"},
+                     verdict=True)
+    with pytest.raises(RC.CycleError, match="set summ.origin") as e:                  # v8 + ledger needs K5
+        summ_argv(*bare)
+    assert e.value.code == RC.EXIT_USAGE
+    spec = json.loads(sp.read_text())
+    for summ, verdict, needle in (({"origin": "lucky"}, None, "summ.origin must be one of"),
+                                  ({"origin": "prior", "extra": ["--origin", "grid"]}, None, "not both"),
+                                  ({"extra": ["--protocol", "v7"]}, True, "--protocol v8")):
+        bad = dict(spec, summ=dict(spec["summ"], **summ))
+        if verdict:
+            bad["verdict"] = verdict
+        with pytest.raises(RC.CycleError, match=needle) as e:
+            RC.validate_spec(bad)
+        assert e.value.code == RC.EXIT_USAGE
+
+
+def test_add_alpha_from_a_v8_parent_inherits_the_v8_protocol(tmp_path):
+    """Review C-2: a spec add-alpha derives from a v8 parent keeps --protocol v8 (so nav_summ's pre-registered seed
+    20260929 and 4,999 draws), drops the parent's --origin for the new members' class in summ.origin, and its summ
+    step ledgers the cell with that origin."""
+    import test_research_cycle as T
+    root = T.add_alpha_root(tmp_path)
+    parent_path = root / "scripts" / "specs" / "v70.json"
+    parent = json.loads(parent_path.read_text())
+    parent["verdict"] = True
+    parent["summ"]["extra"] = ["--protocol", "v8", "--origin", "prior", "--effective-n", "dirs", "--psr", "--pbo"]
+    parent_path.write_text(json.dumps(parent))
+    RC.validate_spec(parent)
+    s = root / "atx-impl" / "strategies"
+    v70_ids = [c["id"] for c in json.loads((s / "fund_industry_ic_v70.json").read_text())["candidates"]]
+    plan = T.k1_plan(tmp_path, v70_ids + ["ftd_fail"])
+    grid = ["build-equity/mega-nav-v5-ew-t.05-d.1-fixed", T.V70_CELL]
+    (root / "build-equity" / "trials.jsonl").write_text("".join(json.dumps(ledger_line(k, 1.0, None) | {"cell": c},
+                                                                           sort_keys=True) + "\n"
+                                                                for k, c in enumerate(grid)), encoding="utf-8")
+    add = T.add_argv(root, "ftd_fail")
+    add[add.index("--origin") + 1] = "grid"                                          # the new member's K5 class
+    assert RC.main(add + ["--plan-json", str(plan)]) == RC.EXIT_OK
+    child = RC.load_spec(root / "scripts" / "specs" / "v8" / "lib-v71a.json")
+    assert child["verdict"] is True and child["summ"]["origin"] == "grid"
+    assert child["summ"]["extra"] == ["--protocol", "v8", "--effective-n", "dirs", "--psr", "--pbo"]
+    c = RC.Cycle(child, RC.Resolver(root), capabilities=T.CAPS)
+    w_dir, n_out = c.out(child["fit"]["output"], keyed=False), c.out(child["nav"]["output"])
+    argv = c.summ_step(w_dir, n_out).argv
+    k = argv.index("--dsr-n")
+    cyc = c.cycle_dir()
+    assert argv[k:] == ["--dsr-n", "3", "--protocol", "v8", "--effective-n", "dirs", "--psr", "--pbo", "--origin", "grid",
+                        "--json", f"{cyc}/summ.json", "--pbo-json", f"{cyc}/pbo.json", "--ledger",
+                        "build-equity/trials.jsonl", "--ledger-kind", "construction", "--dsr-ledger",
+                        "build-equity/trials.jsonl"]
+    assert argv[argv.index("--reference") + 2:k] == grid + [n_out]
+    assert "--seed" not in argv and "--draws" not in argv                            # nav_summ's v8 defaults apply
+    assert (NS.V8_SEED, NS.V8_DRAWS) == (20260929, 4999)
+    assert T.RA.wave_origin(["prior", "grid", "prior"]) == "grid" and T.RA.wave_origin(["prior", "mined"]) == "mined"
 
 
 def test_verdict_refuses_a_dsr_without_the_ledger(tmp_path):
