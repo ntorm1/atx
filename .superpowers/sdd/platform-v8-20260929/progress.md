@@ -412,3 +412,40 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   configured; build provenance records 5c6efcd4 for v8-4e.
 - Next: integration 4 part B (merge F3 fc8ff96c, H1 cf757c97, REPORT a9a244f6, R6 f60a524e; build v8-5; identities)
   beside the Wave 1 adversarial review at the fixed commit 7af37e9d (three read-only reviewers by area, one review).
+
+## 2026-09-30 lane H3 done (339c07b1; engine part 2 2beb83c2, atx-impl part 3 12fc27a9; not compiled, fixture not run)
+- Built: pluggable signal-fitness hook in the search driver (default off, golden digests pinned at 1 and 4 workers),
+  eligibility mask, catalogue options, research-IC fitness; shared research-role loader; `atx-equity-strategy-mine`
+  (two stages, V3 trial registry, rule mined-v1), target `atx-impl-strategy-mine-tests`.
+- Ruling E-32 (mined-v1 confirm statistic): the confirm read's "HAC t 2.0" is the marginal IC HAC t on the confirm
+  window with the sign frozen from discover -- the same statistic as the promotion hurdle; a raw-IC confirm would pass
+  a spanned signal -- cost if wrong: the confirm is stricter than the plan meant; it binds only under OD-7.
+- Ruling E-33 (ledger kind): `mining-campaign` joins `LEDGER_KINDS`; a campaign line adds 0 to the construction N and
+  carries its own registry count (pre-registration rule 10: mined campaigns have their own budget) -- cost if wrong:
+  N understated by the promoted members' cell, which is still counted when a mined member enters a construction cell.
+  Work item for the fix lane. No campaign runs in v8 (OD-7 tooling only).
+- Open for a real campaign (OD-7): memory admission of the mine verb is an estimate (8 VM slots per cell).
+
+## 2026-09-30 STOP at owner instruction (PM session 2); status 2 written
+- Owner: "stop here and write a detailed status markdown file, then determine if there is enough progress to justify
+  a v8 pitch with improved metrics". All six running agents stopped at a clean boundary; every tree clean.
+- Root head 237486fe. Integration 4 part B stopped after its merges, build and tests: F3 fc8ff96c, H1 cf757c97,
+  REPORT a9a244f6, R6 f60a524e merged; build v8-5 clean (ic 4b4ffb7b..., targets 0d0a6921..., risk f45e8870...);
+  target-tests 222 passed 1 skipped; Python strategies 163, engine tools 240, impl tools 452 (2 skipped), scripts 121
+  (3 skipped); tiny_world passes, no golden moved. Identities i1-i7 NOT started; i8 (E-1 receipt) passes.
+- Unmerged lane heads: R45 126a5f5f (E-25 label role; wip ec7356a4, payload check of cleared members and its test
+  remain), A2 79440cfa (add-alpha on a v8 parent, cache gc, ew-theme-std-aim-v1, templates), H3 339c07b1 (mining verb
+  parts 2-3; never compiled).
+- Wave 1 adversarial review (three read-only readers on the most capable model, fixed commit 7af37e9d) stopped
+  early: PARTIAL coverage, no test file read. Findings: I 1, M 20, m 23, in review-w1-A.md, review-w1-B.md,
+  review-w1-C.md (this directory). Not fixed. The I finding (C-1): the cycle's verdict and headline DSR do not use
+  the pre-registered cross-trial variance (`--dsr-ledger` never passed). Must be fixed before any cell verdict.
+  C-9 / C-10 (overlap tool can report `bit_identical: true` on zero cells; NaN-vs-value ignored) must be fixed
+  before the W0-a overlap reports.
+- Ruling E-34 (review C-8, declared before any read): the freeze gate's "bootstrap p < .10" is one-sided, as coded
+  in nav_summ since the v7 bundles -- the registered hypothesis dSR > 0 is directional -- cost if wrong: the gate is
+  twice as loose as a two-sided reading; the scorecard prints both p values.
+- Trial accounting unchanged: TRAIN construction cells 37; admission trials this sprint 0; no role, field, IC pass
+  or cell on 2020-2023; validation reads 2 (before v8); 2025+ never read. No disclosure this session.
+- Pitch determination (status 2, section 9): a v8 pitch with improved metrics is NOT justified: no v8 metric exists.
+- Status: docs/plans/2026-09-30-platform-v8-status-2.md.
