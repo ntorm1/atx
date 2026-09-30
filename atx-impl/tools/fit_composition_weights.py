@@ -17,8 +17,10 @@ candidates), ``.fields_directory`` (ROOT/<fields manifest sha>, candidates readi
 fields) and ``.vm_identity``. Sidecars are checked as the runner's ``cached_payload_sha`` does.
 A v2 runner's summary also lists ``.entries[]`` (id, layout v1|v2, sidecar, payload, SHAs): each
 candidate is then read from its named entry, v2 ``<id>.<dsl16>.{f64,json}`` or v1 read in place.
-Nothing after 2022-12-31 is read: the role must end by 2023-01-01T00:00Z, every cache sidecar must
-name the ``train`` role, and the summary must describe a TRAIN-only run.
+TRAIN is the research window's (``atx-engine/tools/research_window.py``: decision sessions in [TRAIN_BEGIN_DATE,
+TRAIN_END_DATE), read through ``engine_tools.py``). Nothing on or after the TRAIN end is read: the role must end by
+it (a refusal names the window id and its seal), every cache sidecar must name the ``train`` role, and the summary
+must describe a TRAIN-only run.
 
 Per scored decision d in [score_begin, score_end - 2), candidate k:
   1. Exposures at d as ``strategy_price_exposures.cpp`` (price-risk-v1) defines them:
@@ -35,7 +37,7 @@ Per scored decision d in [score_begin, score_end - 2), candidate k:
      is excluded and there is no drift.
 
 Screen v3-admit-v1 (declared by root before any v3 measurement). FIT is decision sessions in
-[2020-01-01, 2022-01-01) and HOLD is [2022-01-01, 2023-01-01). Statistics use live (finite) days.
+[TRAIN begin, 2022-01-01) and HOLD is [2022-01-01, TRAIN end). Statistics use live (finite) days.
   orientation  s_k = sign(mean f_k over FIT). A disagreement with the runner's sign is reported.
   checks       insufficient (< 250 live FIT days), turnover (tau_k > 0.70), unstable
                (not (FIT Sharpe of s_k f_k > 0 and HOLD mean of s_k f_k > 0)). Every failed check is
@@ -53,7 +55,7 @@ v4 (``--orientation prior --screen v4-prior-v1 --composition ew-theme-v1``, the 
 declared in the v4 pre-registration R3/R4 before any v4 TRAIN read). Every candidate carries ``theme``,
 ``tier`` and ``prior_sign`` (library candidate keys and/or the pinned ``--recipe`` per-candidate list
 ``candidates``/``lineage``; both sources must agree). TRAIN is every decision session in
-[2020-01-01, 2023-01-01); statistics use live (finite) days.
+[TRAIN begin, TRAIN end) of the research window; statistics use live (finite) days.
   orientation  s_k = prior_sign = +1 (the sign is embedded in the DSL: higher value = long); no sign is
                estimated or flipped; prior_sign 0 -> reject_no_prior (weight 0); -1 is refused.
   checks       insufficient (< 250 live TRAIN days), turnover (tau_k > 0.70), veto (Newey-West HAC t of
@@ -126,6 +128,9 @@ rerun computes only what is missing. Outputs are byte-identical whichever path p
 coverage) next to the factor record, bound the same way (script SHA-256, context digest, cache payload); the
 other compositions never read or write it. The exit-3 JSON on stdout (``status: incomplete``) is the
 partial-pass marker: rerun the same command to resume.
+Report only (v8 C-2): ``--report-f-theta`` adds ``f_theta`` / ``f_theta_hac_t`` to every admission row (the factor
+return of the theta-averaged sleeve book, theta .05, horizon_stats.theta_book_returns, over live TRAIN decisions, and
+its Newey-West t) and a ``report_only`` block; they are computed after every verdict and nothing reads them back.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -153,8 +158,14 @@ import numpy as np  # noqa: E402
 ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
 if str(ENGINE_TOOLS) not in sys.path:
     sys.path.append(str(ENGINE_TOOLS))
+# This directory (engine_tools.py, horizon_stats.py) also when the fitter is loaded by path (spec_from_file_location).
+IMPL_TOOLS = Path(__file__).resolve().parent
+if str(IMPL_TOOLS) not in sys.path:
+    sys.path.append(str(IMPL_TOOLS))
 import code_fingerprint  # noqa: E402
 import record_store  # noqa: E402
+from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
+import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -231,15 +242,15 @@ FACTOR_SEMANTICS = ("unsigned-centered-tied-rank;used-rows-finite-signal;ols-res
 SEMANTICS_TAG = hashlib.sha256(f"{CONTEXT_SEMANTICS}|{FACTOR_SEMANTICS}".encode()).hexdigest()[:16]
 AIM_SCHEMA = "atx.fit-candidate-aim/v1"
 AIM_SEMANTICS = ("z=centered-tied-rank-over-used&finite-signal;standardized-mean0-population-sd;min50;all-tied->NaN;"
-                 "TRAIN-decisions[2020-01-01,2023-01-01)-only;c_j(d)=sum(z_d*z_d-j)/n_both,n_both>=50;"
+                 f"TRAIN-decisions[{rw.TRAIN_BEGIN_DATE},{rw.TRAIN_END_DATE})-only;c_j(d)=sum(z_d*z_d-j)/n_both,n_both>=50;"
                  "rho_j=mean_d-finite(c_j);lags0-21,28-126/7;interp-linear;NaN->0;g=theta*sum_0..126(1-theta)^j*rho;"
                  "clip[0.05,1];halves=TRAIN-decision-split-floor(n/2):d<h|d-j>=h;coverage=live/used-rows;v1")
 AIM_TAG = hashlib.sha256(AIM_SEMANTICS.encode()).hexdigest()[:16]
 OUTPUT_WEIGHTS, OUTPUT_ADMISSION, OUTPUT_ADMISSION_CSV = (
     "composition_weights.json", "admission.json", "admission.csv")
-FIT_BEGIN_NS = 1_577_836_800_000_000_000  # 2020-01-01T00:00Z
-HOLD_BEGIN_NS = 1_640_995_200_000_000_000  # 2022-01-01T00:00Z
-TRAIN_END_NS = 1_672_531_200_000_000_000  # 2023-01-01T00:00Z, exclusive: TRAIN is 2020-2022
+FIT_BEGIN_NS = rw.TRAIN_BEGIN_NS           # TRAIN begin (research_window.py)
+HOLD_BEGIN_NS = 1_640_995_200_000_000_000  # 2022-01-01T00:00Z: the v3-admit-v1 FIT/HOLD split
+TRAIN_END_NS = rw.TRAIN_END_NS             # TRAIN end, exclusive (research_window.py)
 DAY_NS = 86_400_000_000_000
 METADATA_LIMIT = 1 << 20  # runner's metadata_text() bound; the weights file must fit too
 SUMMARY_LIMIT = 16 << 20  # a runner summary.json grows with the library; bounded-runner bind cap
@@ -262,9 +273,9 @@ MIN_PIVOT, RELATIVE_SD_FLOOR, MIN_RESIDUAL_FRACTION = 1e-8, 1e-12, 1e-9
 # v8 C-1 store: one root per role and research window, shared by every library; a record is keyed by the signal payload
 # SHA-256 and the producer fingerprint (AST closure) of the code that computes it, never by this file's SHA-256.
 FACTOR_PRODUCERS = ("factor_record", "Context", "PricePanel", "neutralization_basis", "centered_tied_ranks")
+HORIZON_PRODUCERS = ("theta_book_returns",)  # in horizon_stats.py: its code is part of every factor record's key
 CONTEXT_PRODUCERS = ("Context",)
 AIM_PRODUCERS = ("aim_record", "Context")
-WINDOW_ID_FALLBACK = "research-window-v2"  # research_window.WINDOW_ID (task W0-1); see window_id()
 # Alpha registry (task A-1, atx.alpha-registry/v1): when present, its themes table is the admissible theme list.
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "strategies" / "alphas" / "registry.json"
 REGISTRY_SCHEMA = "atx.alpha-registry/v1"
@@ -277,6 +288,17 @@ class FitError(Exception):
 def require(condition, message: str) -> None:
     if not condition:
         raise FitError(message)
+
+
+class TrainWindowError(FitError, rw.SealError):
+    """A role reaching past TRAIN: a FitError refusal that is also a research_window.SealError (a ValueError)."""
+
+
+def require_train(condition, what: str) -> None:
+    """Refuse (``TrainWindowError``) unless ``condition``; the message names TRAIN, the window id and the seal."""
+    if not condition:
+        raise TrainWindowError(f"{what} (TRAIN ends {rw.TRAIN_END_DATE}T00:00Z, exclusive; {rw.WINDOW_ID}, "
+                               f"research seal {rw.SEAL_DATE})")
 
 
 def is_hash(value) -> bool:
@@ -305,11 +327,7 @@ def unique_json(data: bytes, what: str):
 
 def window_id() -> str:
     """The research window id (contract K4) that names the store root: ``research_window.WINDOW_ID`` (task W0-1)."""
-    try:
-        from engine_tools import research_window
-    except ImportError:  # W0-1 not merged into this branch yet; root removes this fallback after the merge
-        return WINDOW_ID_FALLBACK
-    return research_window.WINDOW_ID
+    return rw.WINDOW_ID
 
 
 @functools.lru_cache(maxsize=None)
@@ -321,6 +339,15 @@ def producer_fingerprint(funcs: tuple) -> str:
         return code_fingerprint.fingerprint(Path(__file__).resolve().read_bytes(), tuple(funcs))
     except ValueError as exc:
         raise FitError(f"producer fingerprint: {exc}") from exc
+
+
+@functools.lru_cache(maxsize=None)
+def horizon_fingerprint() -> str:
+    """The producer fingerprint of HORIZON_PRODUCERS in horizon_stats.py (a factor record reads that module's code)."""
+    try:
+        return code_fingerprint.fingerprint(Path(horizon_stats.__file__).resolve().read_bytes(), HORIZON_PRODUCERS)
+    except ValueError as exc:
+        raise FitError(f"horizon_stats fingerprint: {exc}") from exc
 
 
 def prior_themes() -> tuple[tuple, str]:
@@ -463,16 +490,16 @@ class RoleManifest:
         require(0 < d <= 4096 and 0 < n <= 20000, "role: dimensions")
         require(0 <= self.score_begin < self.score_end == d, "role: score window")
         require(self.score_end - 2 - self.score_begin >= 2, "role: fewer than two scored decisions")
-        # TRAIN only: nothing on or after 2023-01-01 may be scored or read.
-        require(0 < start_ns < end_ns <= TRAIN_END_NS,
-                "role: not TRAIN-only (score_end_ns after 2023-01-01T00:00Z)")
+        # TRAIN only: nothing on or after the TRAIN end (research_window.py) may be scored or read.
+        require(0 < start_ns < end_ns, "role: score window instants")
+        require_train(end_ns <= TRAIN_END_NS, "role: not TRAIN-only (score_end_ns after the TRAIN end)")
         self._files, self._base = j["files"], Path(manifest).parent
         self.sessions = self._read("sessions.i64", "<i8", d)
         self.ids = self._read("ids.u64", "<u8", n)
         s = self.sessions
         require(s[0] > 0 and bool(np.all(np.diff(s) > 0)) and int(s[-1]) < end_ns and
                 bool(np.all(s % DAY_NS == 0)), "role: session axis")
-        require(int(s[-1]) < TRAIN_END_NS, "role: session after 2022-12-31")
+        require_train(int(s[-1]) < TRAIN_END_NS, "role: a session on or after the TRAIN end")
         require(int(np.searchsorted(s, start_ns, side="left")) == self.score_begin, "role: score boundary")
         require(self.ids[0] != 0 and bool(np.all(self.ids[1:] > self.ids[:-1])), "role: instrument axis")
         self.begin, self.end = self.score_begin, self.score_end - 2  # scored decisions with a d+2 label
@@ -1017,10 +1044,12 @@ def factor_record(context: Context, signal: np.ndarray) -> dict:
     the signal bytes only (the store keys it by the signal payload SHA-256 and FACTOR_PRODUCERS)."""
     q, live = context.book(signal, 1)
     f = context.factor_returns(q)
+    f_theta, live_theta = horizon_stats.theta_book_returns(q, context.forward)  # report only (C-2): never gates
     return {"context_sha256": context.digest, "decisions": int(len(f)),
             "f_unsigned": [float(x) if ok else None for x, ok in zip(f, live)],
             "tau": standalone_turnover(q), "live_decisions": int(live.sum()),
-            "context_refused": context.refused, "context_used_rows_unrefused": context.used_rows_summary()}
+            "context_refused": context.refused, "context_used_rows_unrefused": context.used_rows_summary(),
+            "f_theta_unsigned": [float(x) if ok else None for x, ok in zip(f_theta, live_theta)]}
 
 
 def _floats_or_none(values) -> list:
@@ -1073,8 +1102,10 @@ def record_valid(j, role: RoleManifest) -> bool:
     """Shape and type checks of a stored factor record body (its key and content SHA are checked by the store)."""
     try:
         f, t = j.get("f_unsigned"), role.end - role.begin
+        g = j.get("f_theta_unsigned")
         return (is_hash(j.get("context_sha256")) and j.get("decisions") == t and isinstance(f, list) and
                 len(f) == t and all(v is None or type(v) is float for v in f) and type(j.get("tau")) is float and
+                isinstance(g, list) and len(g) == t and all(v is None or type(v) is float for v in g) and
                 type(j.get("live_decisions")) is int and isinstance(j.get("context_refused"), list) and
                 isinstance(j.get("context_used_rows_unrefused"), dict))
     except (ValueError, TypeError, AttributeError):
@@ -1105,6 +1136,8 @@ class WorkStore:
                "producer_fingerprint": producer_fingerprint(FACTOR_PRODUCERS if kind == "factor" else AIM_PRODUCERS)}
         if kind == "aim":
             key.update(aim_tag=AIM_TAG, train_window_ns=[FIT_BEGIN_NS, TRAIN_END_NS])
+        else:
+            key["horizon_fingerprint"] = horizon_fingerprint()
         return key
 
     def get(self, entry: dict) -> dict | None:
@@ -1366,6 +1399,33 @@ def newey_west_t(x: np.ndarray, lag: int = NW_LAG) -> float | None:
     if not (math.isfinite(lrv) and lrv > 0):
         return None
     return float(x.mean()) / math.sqrt(lrv / n)
+
+
+F_THETA_COLUMNS = ("f_theta", "f_theta_hac_t")
+
+
+def f_theta_columns(record: dict, sign: int, train_mask: np.ndarray) -> dict:
+    """Report only (v8 C-2, --report-f-theta): mean and Newey-West t of s_k * f_theta over live TRAIN decisions, the
+    factor return of the theta-averaged sleeve book (horizon_stats.theta_book_returns); None for s_k = 0. Computed
+    after every verdict is final; no check, order or weight reads it."""
+    if sign == 0:
+        return {"f_theta": None, "f_theta_hac_t": None}
+    g = np.array([np.nan if v is None else v for v in record["f_theta_unsigned"]], dtype=np.float64)
+    x = sign * g[np.isfinite(g) & np.asarray(train_mask, dtype=bool)]
+    return {"f_theta": float(x.mean()) if x.size else None, "f_theta_hac_t": newey_west_t(x)}
+
+
+def f_theta_report() -> dict:
+    """admission.json ``report_only`` block written with --report-f-theta."""
+    return {"f_theta": {
+        "theta": horizon_stats.HORIZON_THETA,
+        "book": "b(d)=(1-theta)*b(d-1)+theta*q_k(d), b=0 before the first scored decision; q_k the unsigned "
+                "neutralized gross-1 standalone book of the factor record",
+        "series": "f_theta(d)=sum_i b(d)_i*r_i(d+2) (the factor record's forward return); flat b -> not live",
+        "columns": {"f_theta": "mean of s_k*f_theta over live TRAIN decisions",
+                    "f_theta_hac_t": f"Newey-West t (Bartlett, lag {NW_LAG}, autocovariances / n) of the same series"},
+        "window_ns": [FIT_BEGIN_NS, TRAIN_END_NS],
+        "use": "report only: gates nothing, selects nothing, weights nothing (v8-prereg rule 8)"}}
 
 
 def screen_v4(factors: np.ndarray, taus: list[float], ids: list[str], train_mask: np.ndarray,
@@ -1676,6 +1736,8 @@ def fit(args, log=None) -> tuple[int, dict]:
     decision_sessions = role.sessions[role.begin:role.end]
     fit_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < HOLD_BEGIN_NS)
     hold_mask = (decision_sessions >= HOLD_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    report_f_theta = getattr(args, "report_f_theta", False)
     script_sha = SCRIPT_SHA256
     inputs = {"library_sha256": args.library_sha256, "train_manifest_sha256": args.train_sha256,
               "role_source_sha256": role.source_sha256, "orientations_sha256": args.orientations_sha256,
@@ -1707,6 +1769,8 @@ def fit(args, log=None) -> tuple[int, dict]:
                                "hold_sharpe": row["hold_sharpe"], "max_abs_rho": row["max_abs_rho"],
                                "max_abs_rho_with": row["max_abs_rho_with"], "low_overlap_with": row["low_overlap_with"],
                                "cache_payload_sha256": shas[k]})
+            if report_f_theta:  # report only, after the verdicts
+                candidates[-1].update(f_theta_columns(records[k], row["s_k"], train_mask))
         admitted_order = sorted(eligible, key=lambda k: rows[k]["admission_rank"])
         admission = {
             "schema": ADMISSION_SCHEMA, "screen": SCREEN_ID,
@@ -1726,8 +1790,10 @@ def fit(args, log=None) -> tuple[int, dict]:
             "admitted": [ids[k] for k in admitted_order],
             "sign_conflicts": [c["id"] for c in candidates if not c["sign_agrees"]],
             "candidates": candidates}
+        if report_f_theta:
+            admission["report_only"] = f_theta_report()
         files[OUTPUT_ADMISSION] = canonical_bytes(admission)
-        files[OUTPUT_ADMISSION_CSV] = admission_csv(candidates)
+        files[OUTPUT_ADMISSION_CSV] = admission_csv(candidates, CSV_COLUMNS + (F_THETA_COLUMNS if report_f_theta else ()))
         admission_sha = hashlib.sha256(files[OUTPUT_ADMISSION]).hexdigest()
         status_of = {k: ("fitted" if r["status"] == "admitted" else r["status"]) for k, r in enumerate(rows)}
     else:
@@ -1848,6 +1914,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
     train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    report_f_theta = getattr(args, "report_f_theta", False)
     inputs = dict(inputs, recipe_sha256=priors["recipe_sha256"], prior_metadata_source=priors["source"])
     rows = screen_v4(factors, taus, ids, train_mask, priors["tier_rank"], prior_signs,
                      cost_tau_limit=V42_COST_TAU_LIMIT if v2 else None)
@@ -1865,6 +1932,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                            "low_overlap_with": row["low_overlap_with"], "cache_payload_sha256": shas[k]})
         if v2:
             candidates[-1]["tau_over_cost_limit"] = row["tau"] > V42_COST_TAU_LIMIT
+        if report_f_theta:  # report only, after the verdicts
+            candidates[-1].update(f_theta_columns(records[k], row["s_k"], train_mask))
     admitted_order = sorted((k for k, r in enumerate(rows) if r["status"] == "admitted"),
                             key=lambda k: rows[k]["admission_rank"])
     hac = {"estimator": "newey-west", "kernel": "bartlett", "lag": NW_LAG, "autocovariance_divisor": "n",
@@ -1895,8 +1964,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             cost_tau_limit=V42_COST_TAU_LIMIT,
             cost_screen="standalone TRAIN tau_k > cost_tau_limit -> reject_turnover_cost (v4.2 R3': cost consistency "
                         "at $1bn; structural, not performance); checked after turnover, before veto")
+    if report_f_theta:
+        admission["report_only"] = f_theta_report()
     files = {OUTPUT_ADMISSION: canonical_bytes(admission),
-             OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS)}
+             OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS + (F_THETA_COLUMNS if report_f_theta
+                                                                               else ()))}
     admission_sha = hashlib.sha256(files[OUTPUT_ADMISSION]).hexdigest()
 
     zero_filled = np.where(np.isnan(factors), 0.0, factors)
@@ -2155,6 +2227,10 @@ def parse_args(argv):
                         "{status: incomplete, partial: true}; completed candidates persist, rerun resumes)")
     p.add_argument("--max-new-candidates", type=int, default=None,
                    help="compute at most N missing candidates this run (exit 3 if more remain)")
+    p.add_argument("--report-f-theta", action="store_true",
+                   help="report only (v8 C-2): add f_theta and f_theta_hac_t (factor return of the theta-averaged "
+                        "sleeve book, theta .05, and its Newey-West t) to every admission row and a report_only block; "
+                        "no check, order or weight reads them; off: admission bytes unchanged")
     return p.parse_args(argv)
 
 

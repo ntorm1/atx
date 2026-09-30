@@ -10,6 +10,7 @@
 //   strategy_ic_result_cache.cpp  IC identity + source pin, IC-result cache
 //   strategy_ic_runner.cpp        score_role, outputs, run_ic, dispatch_ic
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <filesystem>
 #include <iosfwd>
@@ -46,6 +47,14 @@ inline constexpr const char* fields_schema="atx.research-role-fields/v1";
 inline constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";
 inline constexpr usize io_chunk=1U<<20;
 inline constexpr const char* ic_price_field="close";
+// Field caps (platform v8 B-2). A pinned fields manifest may list up to 1,024 rows
+// (only declared extras are bound, only referenced ones loaded); a library may
+// reference up to 256 distinct extra fields, one FieldMask bit each.
+inline constexpr usize max_field_manifest_rows=1024;
+inline constexpr usize max_extra_fields=256;
+// Bit f = Library::extra_fields[f]. In-memory only: no mask is ever written to a
+// manifest, cache sidecar or summary, so no on-disk format depends on its width.
+using FieldMask=std::bitset<max_extra_fields>;
 // FP-relevant build flavor of the IC runner TUs (strategy_ic_runner.cpp instantiates
 // the header-only VM; every strategy_ic_*.cpp shares one flag set in
 // atx-impl/CMakeLists.txt, so these inline variables have one definition):
@@ -78,7 +87,7 @@ inline constexpr std::string_view vm_fp_flavor=""
 // ---- Library, roles, pinned inputs ------------------------------------------
 // extra_fields: the sorted non-base fields this compiled program loads.
 struct Candidate { std::string id,family,dsl_sha; al::Program program; std::vector<std::string> extra_fields; };
-// Extra-field residency schedule (bit f = Library::extra_fields[f], <= 64 fields).
+// Extra-field residency schedule (FieldMask bit f = Library::extra_fields[f]).
 // Candidates run in library order because the blend accumulates in that order, so
 // at most `capacity` columns are resident: the most extras any one candidate reads.
 // needs[k] = candidate k's fields; planned[k] = the resident set while k runs, by
@@ -86,7 +95,7 @@ struct Candidate { std::string id,family,dsl_sha; al::Program program; std::vect
 // a load at capacity evicts the resident field read farthest ahead, lowest index
 // on ties). It depends on the library alone, so admission counts `capacity`
 // columns rather than the union of referenced fields.
-struct FieldPlan { usize capacity{},loads{}; std::vector<u64> needs,planned; };
+struct FieldPlan { usize capacity{},loads{}; std::vector<FieldMask> needs,planned; };
 // declared_extra: every declared non-base field; extra_fields: the sorted union
 // the compiled programs reference -- the only extra columns ever loaded.
 struct Library {
@@ -200,7 +209,7 @@ private:
   const Library& lib_; const Role& spec_; usize cells_; HashMeter& meter_;
   std::vector<std::vector<f64>> columns_; // index = Library::extra_fields index; empty = not resident
   std::vector<std::optional<FileStamp>> verified_; // stamp at the verified load; nullopt = never hashed
-  u64 resident_{};
+  FieldMask resident_{};
   std::optional<al::Panel> panel_;
   usize loads_{},peak_{}; f64 seconds_{};
 };
@@ -222,7 +231,7 @@ co::Result<Library> library(const IcRunnerConfig& cfg);
 Json candidate_plan_rows(const Library& lib);
 void release(std::vector<f64>& buffer) noexcept;
 co::Status check_field_extents(const Role& spec);
-co::Status verify_fields(const Role& spec,u64 needed,HashMeter& meter,
+co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& meter,
                          std::vector<std::optional<FileStamp>>& verified);
 // ---- strategy_ic_admission.cpp -----------------------------------------------
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false);

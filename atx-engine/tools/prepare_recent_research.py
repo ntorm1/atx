@@ -47,6 +47,12 @@ definition; carried rows are the SIC in force and are used; the stage's FF label
 unchanged: a row is visible at session t when its clock is before date(t-1) 22:00 UTC and is used while date(t) minus its
 UTC date is <= 550 days. The grp_* fields must be built from the same table (``prepare_research_fields --sic-events``);
 ``--check-fields`` then also requires the fields' grp_ff12 to name this stage manifest.
+
+``linked-operating-v1`` also accepts ``--delisting`` / ``--delisting-sha256`` / ``--delisting-returns`` (platform v8
+F-0; optional there, required by v2 / v3): the same stage, ``DELISTING_MARK_RULE`` and ``DELISTING_RETURN_RULE`` as v2 /
+v3. The marks are keyed by the stage's security_id on the role axis and the patches read only the base payloads, so they
+do not depend on the universe rule; only the per-role read-outs (kept_member_at_last_session, members cleared on the
+termination session) follow the v1 membership. Without ``--delisting`` the v1 output is unchanged.
 """
 from __future__ import annotations
 
@@ -66,8 +72,10 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the research window (the seal)
+
 DAY_NS = 86_400_000_000_000
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date: no projection or role reaches it (research_window.py)
 COLUMNS = ("tradingDate", "securityID", "close", "volume", "cumulReturnFactor")
 CACHE_SCHEMA = "atx.recent-research-projection/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
@@ -97,7 +105,7 @@ LINKED_OPERATING_RULE = (
 UNIVERSE_PIT = (
     "every input is visible by the session's 22:00 UTC mark: bridge rows by available_at (T19: <= start 22:00), their "
     "class_status is the visible version's, SIC rows by accepted_utc one session earlier; nothing after the mark and "
-    "nothing on or after 2025-01-01 is used; the decision at t 23:00 sees only the mark-t membership")
+    f"nothing on or after {rw.SEAL_DATE} is used; the decision at t 23:00 sees only the mark-t membership")
 UNIVERSE_LIMITS = [
     "ADR lines of a linked, filing foreign issuer with common class evidence stay (V6-U drops ADRs without an issuer link)",
     "identity is the r4 rehearsal bridge (rehearsal_identity, scope_complete false): unbridged operating stocks drop",
@@ -145,7 +153,7 @@ DELISTING_MARK_RULE = (
     "within [first, last] role session; termination_session = the role session after L (null when L is not a role "
     "session or is the last one); attributes are the stage's cause (delist_code), imputed dlret (delist_return, null "
     "where absent), dlret_if_performance, cause_basis, exchange and available_at (the classification clock, which may "
-    "follow the termination session by up to 30 days); rows available on or after 2025-01-01 are dropped")
+    f"follow the termination session by up to 30 days); rows available on or after {rw.SEAL_DATE} are dropped")
 DELISTING_RETURN_RULE = (
     "delisting-return-on-termination-v1 (--delisting-returns; default off): for a marked termination with a non-null "
     "delist_return r whose line is present at L and at no role session after L, the termination session T = L + 1 "
@@ -235,8 +243,10 @@ def prepare_cache(source: Path, output: Path, begin: str, end: str, limits: Limi
                   batch_rows=65536):
     """Filter five columns vectorially, spill to a PRIVATE bounded DuckDB, sort once."""
     first, last = dt.date.fromisoformat(begin), dt.date.fromisoformat(end)
-    if not first < last <= SEAL or not 1024 <= batch_rows <= 65536:
-        raise ValueError("projection needs ordered dates ending no later than2025 and bounded batch")
+    if not first < last or not 1024 <= batch_rows <= 65536:
+        raise ValueError("projection needs ordered dates and a bounded batch")
+    if last > SEAL:
+        raise rw.SealError(rw.seal_message(f"projection through {last - dt.timedelta(days=1)} holds sessions"))
     captured = source.stat()
     pf = pq.ParquetFile(source)
     check_source_schema(pf.schema_arrow)
@@ -361,6 +371,9 @@ def cache_receipt(directory: Path, limits: Limits):
     p = directory / "accepted.parquet"
     if m.get("schema") != CACHE_SCHEMA or m.get("status") != "complete":
         raise ValueError("unpublished projection cannot be resumed")
+    # A projection reaching the research seal holds sealed rows: refuse it before its payload is read.
+    if day(m["end_exclusive"]) > day(SEAL):
+        raise rw.SealError(rw.seal_message(f"projection {directory} (end_exclusive {m['end_exclusive']}) holds sessions"))
     stat = p.stat()
     identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
     if stat.st_size != m["accepted"]["bytes"] or sha_file(p, limits) != m["accepted"]["sha256"]:
@@ -653,8 +666,9 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
                   fields_sha256: str | None = None, universe: str = LINKED_OPERATING_UNIVERSE,
                   delisting: Path | None = None, delisting_sha256: str | None = None, delisting_returns: bool = False):
     """``--universe linked-operating-v1`` / ``-v2`` / ``-v3``: a new role = the base role with member.u8 restricted (see
-    module doc); v2 and v3 also mark delisting terminations and, with ``delisting_returns``, apply their imputed
-    returns; v3 reads SIC from the atx-db fundamentals stage (``sic_events`` = the stage directory)."""
+    module doc); with ``delisting`` (required by v2 and v3, optional for v1) it also marks delisting terminations and,
+    with ``delisting_returns``, applies their imputed returns; v3 reads SIC from the atx-db fundamentals stage
+    (``sic_events`` = the stage directory)."""
     import prepare_research_fields as prf  # same directory: the fields' own link / SIC semantics
     if universe not in LINKED_UNIVERSES:
         raise ValueError(f"restrict_role implements {', '.join(LINKED_UNIVERSES)} only")
@@ -662,19 +676,18 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     v3 = universe == LINKED_OPERATING_V3_UNIVERSE                                   # + the stage SIC table
     if v3:
         sic_events = prf.sic_stage_dir(sic_events)
-    if (delisting is None) != (delisting_sha256 is None) or v2 != (delisting is not None):
-        raise ValueError(f"--delisting and --delisting-sha256 go together, with {LINKED_OPERATING_V2_UNIVERSE} / "
-                         f"{LINKED_OPERATING_V3_UNIVERSE} only")
-    if delisting_returns and not v2:
-        raise ValueError(f"--delisting-returns applies to {LINKED_OPERATING_V2_UNIVERSE} / "
-                         f"{LINKED_OPERATING_V3_UNIVERSE} only")
+    if (delisting is None) != (delisting_sha256 is None) or (v2 and delisting is None):
+        raise ValueError(f"--delisting and --delisting-sha256 go together (required by {LINKED_OPERATING_V2_UNIVERSE} "
+                         f"/ {LINKED_OPERATING_V3_UNIVERSE}, optional for {LINKED_OPERATING_UNIVERSE})")
+    if delisting_returns and delisting is None:
+        raise ValueError("--delisting-returns needs the --delisting stage it applies")
     if prf.GRP_STALE_DAYS != UNIVERSE_SIC_STALE_DAYS:
         raise ValueError("prepare_research_fields.GRP_STALE_DAYS changed; the universe SIC staleness is declared 550")
     if (fields is None) != (fields_sha256 is None):
         raise ValueError("--check-fields and --check-fields-sha256 go together")
     budget = prf.Budget(max_rss_mib=limits.memory_bytes >> 20,
                         max_seconds=max(1.0, min(7200.0, limits.deadline - time.monotonic())))
-    role = prf.Role(base, base_sha256)  # pin, schema, namespace, axes, member bytes, < 2025 seal
+    role = prf.Role(base, base_sha256)  # pin, schema, namespace, axes, member bytes, before the seal
     m = role.manifest
     if m.get("universe") is not None:
         raise ValueError("base role already carries a universe restriction")
@@ -742,7 +755,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
                                    sic_events_sha256 if v3 else None)
     del visible_all, not_common, link, primary
     delist, patched = None, {}
-    if v2:  # marked (and applied) before the output directory exists: a refusal leaves nothing behind
+    if delisting is not None:  # marked (and applied) before the output directory exists: a refusal leaves nothing
         delist, patched = _delisting(prf, delisting, delisting_sha256, role, base, kept, delisting_returns, budget)
         if patched:  # members cleared on applied termination sessions (counted in universe.delisting.applied)
             kept_counts = [int(x) for x in kept.astype(np.int64).sum(axis=1)]
@@ -809,7 +822,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
         "dropped_member_share": share,
         "dropped_member_share_definition": "per session: 1 - kept members / base members (null: no base member)",
     }
-    if v2:
+    if delist is not None:  # v2 / v3 always; v1 only with --delisting (absent: the v1 manifest is unchanged)
         result["universe"]["inputs"]["delisting"] = delist.pop("inputs")
         result["universe"]["delisting"] = delist
     if v3:
@@ -915,7 +928,8 @@ def main():
     p.add_argument("mode", choices=("project", "role"))
     p.add_argument("--source", type=Path); p.add_argument("--cache", type=Path)
     p.add_argument("--out", required=True, type=Path)
-    p.add_argument("--start", default="2018-06-01"); p.add_argument("--end", default="2025-01-01")
+    p.add_argument("--start", default="2018-06-01")
+    p.add_argument("--end", default=rw.SEAL_DATE, help="exclusive end (default: the research seal)")
     p.add_argument("--score-start", default="2020-01-01")
     p.add_argument("--top-n", type=int, default=3000); p.add_argument("--max-union", type=int, default=8000)
     p.add_argument("--memory-mib", type=int, default=768); p.add_argument("--disk-mib", type=int, default=12288)
@@ -934,7 +948,8 @@ def main():
     p.add_argument("--check-fields", type=Path, help="optional: the base role's fields directory to cross-check")
     p.add_argument("--check-fields-sha256")
     p.add_argument("--delisting", type=Path,
-                   help=f"{LINKED_OPERATING_V2_UNIVERSE} / {LINKED_OPERATING_V3_UNIVERSE}: atx-db delisting stage directory")
+                   help=f"atx-db delisting stage directory: required by {LINKED_OPERATING_V2_UNIVERSE} / "
+                        f"{LINKED_OPERATING_V3_UNIVERSE}, optional for {LINKED_OPERATING_UNIVERSE} (the same marks)")
     p.add_argument("--delisting-sha256")
     p.add_argument("--delisting-returns", type=Path,
                    help="apply the imputed delisting returns of this delisting stage (must be the --delisting stage; "
@@ -959,11 +974,12 @@ def main():
         if any(x is None for x in linked[:6]):
             p.error(f"--universe {a.universe} requires --base-role/--identity-bridge/--sic-events and "
                     "their -sha256 pins")
-        if a.universe == LINKED_OPERATING_UNIVERSE and any(x is not None for x in v2_args):
-            p.error(f"--delisting/--delisting-returns need --universe {LINKED_OPERATING_V2_UNIVERSE} or "
-                    f"{LINKED_OPERATING_V3_UNIVERSE}")
         if a.universe != LINKED_OPERATING_UNIVERSE and (a.delisting is None or a.delisting_sha256 is None):
             p.error(f"--universe {a.universe} requires --delisting and --delisting-sha256")
+        if (a.delisting is None) != (a.delisting_sha256 is None):
+            p.error("--delisting and --delisting-sha256 go together")
+        if a.delisting_returns is not None and a.delisting is None:
+            p.error("--delisting-returns needs --delisting and --delisting-sha256 (the stage it applies)")
         if a.delisting_returns is not None and delisting_dir(a.delisting_returns) != delisting_dir(a.delisting):
             p.error("--delisting-returns must name the --delisting stage")
         restrict_role(a.base_role, a.base_role_sha256, a.out, limits, bridge=a.identity_bridge,

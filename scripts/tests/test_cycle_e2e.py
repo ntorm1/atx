@@ -180,11 +180,22 @@ def test_tiny_world_inside_the_research_window():
 
 # ------------------------------------------------------------------ live
 @pytest.mark.skipif(not BIN, reason="set ATX_EQUITY_BIN to the directory of the equity executables")
-def test_cycle_e2e_goldens_redundant_copy_and_idempotent_rerun(tmp_path):
+def test_cycle_e2e_goldens_redundant_copy_and_idempotent_rerun():
     if not accepts_no_git():
         pytest.skip("research_cycle.py does not accept --no-git yet (contract K3, lane A)")
+    # A short root directly under the system temp dir, not pytest's tmp_path: the candidate cache nests
+    # <role sha>/fp_*/ic1_*/<id>.<key>.json (about 150 characters), and under tmp_path the IC runner's cache
+    # publish crosses Windows MAX_PATH (260) and fails with "The system cannot find the path specified".
+    root = fresh_root()
+    try:
+        _live_cycle(root)
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _live_cycle(root: Path) -> None:
     goldens = json.loads(GOLDENS.read_bytes())
-    root = fresh_root(tmp_path)
     TW.build(root, bin_dir=Path(BIN))
     spec = json.loads((root / TW.SPEC).read_bytes())
     done, seconds = run_cycle(root)

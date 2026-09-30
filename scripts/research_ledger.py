@@ -5,14 +5,26 @@ JSON object per line, written by nav_summ (backtest_integrity.ledger_append: one
 ``trial_id``). A **protocol** line (kind ``protocol``: a research-window change under an owner ruling) is not a trial:
 it has no ``cell`` and ``count`` 0, so it never raises the cross-cell N (nav_summ's Appendix A sums ``count``; its
 series readers skip lines without a ``series``). It stays in the file like every line and is skipped when listing the
-ledger's cells and when resolving ``summ.dsr_n: "ledger+1"``.
+ledger's cells.
+
+One N, one append (PM ruling 2026-09-29, lane G task 1): both go through the validation kit's ledger module,
+atx-impl/tools/backtest_integrity.py (``backtest_integrity()`` below, loaded as the nav_summ shim loads the moved
+tools: that directory on sys.path, imported by name, on first use only).
+  N       ``summ.dsr_n: "ledger+1"`` resolves to ``backtest_integrity.ledger_n``: the construction trials by the defect
+          rule (``trial_counts``: protocol lines, window re-runs, invalid and blind-replaced cells add 0) plus 1 when
+          the scored cell has no line yet -- the N nav_summ --dsr-ledger prints. The scored cell is matched as
+          nav_summ matches it (the trial_id of its primary daily CSV) once its NAV output exists, by its cell name
+          before that (plan time).
+  append  the protocol line is written by ``backtest_integrity.ledger_append(..., chain=True)``, nav_summ's append:
+          the ledger's hash chain is verified first and the line carries ``prev_sha256`` (ledger-chain-v1), so it is
+          protected the moment it is written.
 
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date YYYY-MM-DD
                                     [--window-id ID] [--research-window FILE] [--root R]
 
-appends one protocol line {schema, kind, count 0, window_id, owner_ruling, date, research_window_sha256, trial_id};
-the window id defaults to the W0-1 window's, the window file to atx-impl/strategies/research_window.json. The same
-line is never appended twice (same trial_id).
+appends one protocol line {schema, kind, count 0, window_id, owner_ruling, date, research_window_sha256, trial_id,
+prev_sha256}; the window id defaults to the W0-1 window's, the window file to atx-impl/strategies/research_window.json.
+The same line is never appended twice (same trial_id).
 """
 from __future__ import annotations
 
@@ -29,12 +41,24 @@ import research_tree  # noqa: E402
 
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
 PROTOCOL = "protocol"
-NON_TRIAL_KINDS = (PROTOCOL,)           # ledger lines that are no trial: skipped by cells() and dsr_n "ledger+1"
+NON_TRIAL_KINDS = (PROTOCOL,)           # ledger lines that are no trial: skipped by cells()
+N_KIND = "construction"                 # the kind whose trials make N (nav_summ --dsr-ledger)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
+TOOLS = research_tree.REPO / "atx-impl" / "tools"
 
 
 class LedgerError(ValueError):
     pass
+
+
+def backtest_integrity():
+    """atx-impl/tools/backtest_integrity.py, the validation kit's ledger module (one N, one append), imported as the
+    nav_summ shim imports the moved tools: that directory on sys.path, the module by name. On first use only (numpy)."""
+    tools = str(TOOLS)
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import backtest_integrity as BI  # noqa: PLC0415
+    return BI
 
 
 def read_lines(path: Path) -> list[tuple[int, dict]]:
@@ -66,6 +90,35 @@ def cells(path: Path) -> list[str]:
     return out
 
 
+def scored_trial_id(nav_dir: Path | None) -> str | None:
+    """nav_summ's identity of a NAV cell: trial_id(construction, SHA-256 of its primary daily CSV); None while the NAV
+    output (summary.json and that CSV) does not exist."""
+    if nav_dir is None:
+        return None
+    try:
+        summary = json.loads((Path(nav_dir) / "summary.json").read_text(encoding="utf-8"))
+        daily = Path(nav_dir) / f"daily_{summary['primary_scenario']}.csv"
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not daily.is_file():
+        return None
+    bi = backtest_integrity()
+    return bi.trial_id(N_KIND, bi.sha256_file(daily))
+
+
+def ledger_n(path: Path, cell: str, nav_dir: Path | None = None) -> int:
+    """N for summ.dsr_n "ledger+1": backtest_integrity.ledger_n over every line (the defect rule), the scored cell
+    matched by its daily series' trial_id once ``nav_dir`` holds the NAV output (nav_summ's rule), else by its name."""
+    records = [rec for _, rec in read_lines(path)]
+    tid = scored_trial_id(nav_dir)
+
+    def scored(rec: dict) -> bool:
+        if rec.get("kind", N_KIND) != N_KIND:
+            return False
+        return rec["trial_id"] == tid if tid is not None and "trial_id" in rec else rec.get("cell") == cell
+    return backtest_integrity().ledger_n(records, any(scored(rec) for rec in records), N_KIND)
+
+
 def protocol_line(window_id: str, owner_ruling: str, date: str, research_window_sha256: str) -> dict:
     if not all(isinstance(x, str) and x.strip() for x in (window_id, owner_ruling)):
         raise LedgerError("protocol line: window_id and owner_ruling must be non-empty")
@@ -82,15 +135,12 @@ def protocol_line(window_id: str, owner_ruling: str, date: str, research_window_
     return rec
 
 
-def append(path: Path, rec: dict) -> bool:
-    """Append one line (backtest_integrity's encoding) unless a line with its trial_id is present; never rewrites."""
-    path = Path(path)
-    if path.exists() and any(r.get("trial_id") == rec["trial_id"] for _, r in read_lines(path)):
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
-    return True
+def append(path: Path, rec: dict) -> dict | None:
+    """Append one line through nav_summ's append (backtest_integrity.ledger_append, chained: the chain is verified
+    first and the line carries prev_sha256) unless a line with its trial_id is present; never rewrites. Returns the
+    line as written, or None when it was already present."""
+    appended, _ = backtest_integrity().ledger_append(Path(path), [rec], chain=True)
+    return appended[0] if appended else None
 
 
 def main(argv=None) -> int:
@@ -109,9 +159,10 @@ def main(argv=None) -> int:
         wid = a.window_id or research_tree.window_id()
         rec = protocol_line(wid, a.owner_ruling, a.date, hashlib.sha256(window.read_bytes()).hexdigest())
         ledger = Path(a.ledger) if Path(a.ledger).is_absolute() else a.root / a.ledger
-        added = append(ledger, rec)
-    except (LedgerError, LookupError) as exc:
+        written = append(ledger, rec)
+    except (ValueError, LookupError) as exc:  # LedgerError, a schema or hash-chain refusal of the ledger
         print(f"research_cycle ledger-protocol: {exc}", file=sys.stderr)
         return 2
-    print(("appended" if added else "already present (not appended)") + f": {json.dumps(rec, sort_keys=True)}")
+    print(("appended" if written else "already present (not appended)") +
+          f": {json.dumps(written or rec, sort_keys=True)}")
     return 0

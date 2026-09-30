@@ -18,7 +18,7 @@ on the command line and recorded per field):
 Clock (``SEC_CLOCK``): a source row is usable at role session t only if its ``available_at`` (UTC; EDGAR acceptance)
 is strictly before 22:00 UTC of session t-1 on the session calendar (role sessions inside the role, the NYSE rule
 calendar outside it). A filing accepted at 22:30 UTC on d-1 is therefore first usable at d+1. Rows available on or
-after 2025-01-01 are dropped (seal). Sessions are counted on the same calendar.
+after the research seal (``research_window.py`` ``SEAL_DATE``) are dropped. Sessions are counted on the same calendar.
 """
 from __future__ import annotations
 
@@ -27,15 +27,22 @@ import hashlib
 import json
 import re
 from pathlib import Path
+import sys
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the research window (the seal)
+
 GROUP = "sec"
 OPTIONS = ("sec_stages", "sec_identity_bridge", "sec_identity_bridge_sha256", "earnings_calendar_sha256",
            "insider_sha256", "sec_filings_sha256")
+# v8 C-3 --reuse (prepare_research_fields.reuse_module_fields): the producing code of every SEC field is the
+# SecFieldModule class and every module-level definition it reaches, plus the builder code it reads through ``h``.
+PRODUCERS = {GROUP: ("SecFieldModule",)}
+HOST_HANDLES = ("h",)
 STAGES = {  # stage key -> (directory, manifest schema)
     "earnings_calendar": ("earnings_calendar", "atx.alpha-panel.earnings-calendar/v1"),
     "insider": ("insider", "atx.alpha-panel.insider/v1"),
@@ -73,7 +80,7 @@ ACCESSION_PATTERN = r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$"
 SEC_CLOCK = ("sec-acceptance-lag1-v1: a source row is usable at role session t iff available_at (UTC, the EDGAR "
              "acceptance resolved by atx-db acceptance-per-file-clock-v1) < 22:00 UTC of session t-1 on the session "
              "calendar (role sessions inside the role range, the NYSE rule calendar nyse-rule-v1 outside it); rows "
-             "available on or after 2025-01-01 are dropped; sessions are counted on the same calendar")
+             f"available on or after {rw.SEAL_DATE} are dropped; sessions are counted on the same calendar")
 LINK_NOTE = ("line -> CIK through the pinned --sec-identity-bridge (atx.identity-bridge/v1, atx-db "
              "export/identity-bridge-v2-pit) with the builder's LINK_RULE; values on primary (P) lines only")
 EA_CAVEATS = [
@@ -406,6 +413,31 @@ def bind(host_namespace: dict) -> "SecFieldModule":
     return SecFieldModule(host_namespace)
 
 
+# -- --reuse interface (v8 C-3) --------------------------------------------------------------------------------------
+def producer_group(name: str) -> str:
+    return GROUP
+
+
+def field_spec(name: str) -> dict:
+    return FIELDS[name]
+
+
+def reuse_inputs(name: str, options: dict) -> dict:
+    """This run's input pins of a SEC field: its stage manifests and the SEC identity bridge (the --reuse source check;
+    each manifest pins every file it lists)."""
+    pins = {s: str(options.get(f"{s}_sha256") or "").lower() for s in FIELDS[name]["stages"]}
+    pins["sec_identity_bridge"] = str(options.get("sec_identity_bridge_sha256") or "").lower()
+    return pins
+
+
+def entry_inputs(entry: dict) -> dict:
+    """The same pins as a manifest entry of a SEC field records them."""
+    stages = entry.get("stage_manifests") if isinstance(entry.get("stage_manifests"), dict) else {}
+    pins = {s: (v or {}).get("sha256") for s, v in stages.items()}
+    pins["sec_identity_bridge"] = entry.get("identity_bridge_manifest_sha256")
+    return pins
+
+
 class SecFieldModule:
     GROUP, FIELDS, OPTIONS = GROUP, FIELDS, OPTIONS
 
@@ -571,9 +603,12 @@ class SecFieldModule:
               "dropped_shares_not_positive": 0,
               "dropped_code_direction_mismatch": 0}
         files, pres_c, pres_a, tr = [], [], [], {k: [] for k in ("c", "o", "a", "d", "sh", "buy")}
-        for rel, qday in zip(rels, qdays):
+        for rel, qday, (year, quarter) in zip(rels, qdays, quarters):
             if (qday - epoch).days > end_day + INS_SKIP_MARGIN_DAYS:
                 st["files_not_read_after_role"] += 1   # filed from a quarter start well after the role's last mark
+                continue
+            if rw.partition_is_sealed(int(year), int(quarter)):
+                st["files_not_read_sealed"] = st.get("files_not_read_sealed", 0) + 1   # never opened: all sealed
                 continue
             blob, src = self._verified(directory, m, rel, budget)
             files.append([rel, src["bytes"], src["sha256"]])
@@ -916,11 +951,13 @@ class SecFieldModule:
         for x in names:
             writers[x].close()
         source_checks[GROUP] = st
+        producer = {"module": Path(__file__).name, **h.module_code_identity(sys.modules[__name__])}  # v8 C-3 --reuse
         for x in names:
             spec = FIELDS[x]
             stages = {s: {"path": str((Path(options["sec_stages"]) / STAGES[s][0] / "manifest.json").resolve()),
                           "sha256": pins[s]} for s in spec["stages"]}
             field_extras[x] = {
+                "producer": producer,
                 "formula_id": spec["formula_id"],
                 "formula_sha256": h.formula_id(x, h.spec_definition(x, SEC_LAG_SESSIONS)),
                 "lag_sessions": SEC_LAG_SESSIONS, "lag": spec["lag"], "min_history": spec["min_history"],

@@ -27,6 +27,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/core/linalg/linalg.hpp"
+#include "atx/engine/data/research_window.hpp"
 #include "atx/engine/risk/cov_ewma.hpp"
 #include "../src/strategy_risk_model.hpp"
 #include "../src/strategy_spo.hpp"
@@ -965,18 +966,22 @@ TEST(RiskVerb, RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused) {
   EXPECT_EQ(run_verb(contract, dir.path / "price" / "out", error), 1);
   EXPECT_NE(error.find("price contract"), std::string::npos) << error;
 }
-// R1 m-5 / m-16: a role reaching 2023-01-01 (the sealed VAL/holdout) is refused unless an owner
-// admits it by name; the manifest records the seal and the producing executable and build.
+// R1 m-5 / m-16: a role reaching the research seal (research_window.hpp, the hidden sample) is
+// refused unless an owner admits it by name; the manifest records the seal and the producing
+// executable and build.
 TEST(RiskVerb, RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer) {
   Directory dir;
   Planted planted(130, 120, 67);
-  constexpr i64 seal = 1'672'531'200LL * 1'000'000'000LL; // 2023-01-01 00:00 UTC
-  const i64 shift = seal - planted.sessions.back() + day_ns; // the last session is 2023-01-02
+  constexpr i64 seal = atx::engine::data::kSealBeginNs;
+  const i64 shift = seal - planted.sessions.back() + day_ns; // the last session is seal + 1 day
   for (auto& s : planted.sessions) s += shift;
   const auto pinned = write_role_and_fields(dir.path / "sealed", planted);
   std::string error;
   EXPECT_EQ(run_verb(pinned, dir.path / "sealed" / "out", error), 1);
-  EXPECT_NE(error.find("2023-01-01"), std::string::npos) << error;
+  const std::string seal_date(atx::engine::data::kSealBeginDate);
+  EXPECT_NE(error.find(seal_date), std::string::npos) << error;
+  EXPECT_NE(error.find(std::string(atx::engine::data::kResearchWindowId)), std::string::npos)
+      << error;
   EXPECT_FALSE(std::filesystem::exists(dir.path / "sealed" / "out"));
   ASSERT_EQ(run_verb(pinned, dir.path / "sealed" / "owned", error, {"--unseal", "root"}), 0)
       << error;
@@ -984,6 +989,7 @@ TEST(RiskVerb, RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer) {
   Json manifest;
   in >> manifest;
   EXPECT_EQ(manifest.at("seal").at("unseal_owner"), "root");
+  EXPECT_EQ(manifest.at("seal").at("begin").get<std::string>(), seal_date);
   EXPECT_EQ(manifest.at("seal").at("role_last_session_ns").get<i64>(), planted.sessions.back());
   EXPECT_TRUE(manifest.at("producer").contains("executable_sha256"));
   EXPECT_FALSE(manifest.at("producer").at("engine_git_sha").get<std::string>().empty());

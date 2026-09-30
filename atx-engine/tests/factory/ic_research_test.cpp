@@ -167,7 +167,7 @@ TEST(ResearchIc, ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggreg
   auto p=make_panel(180,12); auto cfg=ex::equivalence_ic_screen_config();
   cfg.horizons={5,21,63,0}; cfg.min_names=3; cfg.min_dates=8;
   EXPECT_FALSE(ex::prepare_research_ic(p,cfg,{3,true,0}));
-  EXPECT_FALSE(ex::prepare_research_ic(p,cfg,{3,true,5}));
+  EXPECT_FALSE(ex::prepare_research_ic(p,cfg,{3,true,ex::max_research_ic_workers+1}));
   EXPECT_FALSE(ex::prepare_research_ic(p,cfg,{3,true,std::numeric_limits<usize>::max()}));
   auto serial=ex::prepare_research_ic(p,cfg,{3,true,1}); ASSERT_TRUE(serial);
   auto ss=ex::prepare_research_ic_scratch(*serial); ASSERT_TRUE(ss);

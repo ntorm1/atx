@@ -126,7 +126,8 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN resource types");
   const auto source_bytes=recipe.at("max_working_bytes").get<i64>();
   const auto source_workers=recipe.value("vm_workers",i64{1});
-  if (source_bytes<(32LL<<20) || source_bytes>(16LL<<30) || source_workers<1 || source_workers>4)
+  if (source_bytes<(32LL<<20) || source_bytes>(16LL<<30) || source_workers<1 ||
+      source_workers>static_cast<i64>(ex::max_research_ic_workers))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN resource bounds");
   // T14 ruling (strict M1): a blend frozen WITH pinned weights is never a validation
   // source. Its artifact hashes a recipe that pins the weights, whose provenance
@@ -328,8 +329,9 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+
         " fields manifest role binding differs from the pinned role manifest/axes");
   const auto& rows=j.at("fields"); const auto& files=j.at("files");
-  if (!rows.is_array() || rows.empty() || rows.size()>64 || !files.is_object())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest field list");
+  if (!rows.is_array() || rows.empty() || rows.size()>max_field_manifest_rows || !files.is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest field list (1.."+
+        std::to_string(max_field_manifest_rows)+" rows)");
   const auto bytes=d*n*sizeof(f64);
   std::map<std::string,FieldFile> available;
   for (const auto& row:rows) {

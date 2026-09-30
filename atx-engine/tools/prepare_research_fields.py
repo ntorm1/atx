@@ -45,7 +45,8 @@ presence). The default field list is the point-in-time fields only; the others (
 ``mktcap_lagged``, ``size_grp``) are produced only when named in ``--fields``. Implied volatility
 outside the declared domain ``IV_DOMAIN`` becomes NaN (never clamped) and is counted per field.
 
-Everything available on or after 2025-01-01 is excluded; the role itself must end before it.
+Everything available on or after the research seal (``research_window.py`` ``SEAL_DATE``) is excluded; the role
+itself must end before it.
 Row groups of the vendor file mix all dates: only needed columns are decoded, rows are filtered to
 the role ids/dates before any statistic. No warehouse access. Outputs are exclusive and
 deterministic (no wall-clock value in any output byte).
@@ -60,10 +61,14 @@ functions and of every module-level definition they reach, docstrings dropped, c
 the prior payload -- this builder when its LF SHA-256 matches, else its recorded git blob; unrecoverable code is never
 reused; grp_* fields also need the same SIC mapping table), the same inputs (every prior source path lies under this
 run's source argument for the field's group and still hashes to the recorded SHA-256; a source without a file SHA-256
-is never reused) and every field it depends on is reused too. Copied payload bytes are hashed and must equal the prior
+is never reused, except sv_ratio126's CNMS directory, whose read files re-hash to its list SHA-256 by
+``REUSE_DIRECTORY_RULE``) and every field it depends on is reused too. Copied payload bytes are hashed and must equal the prior
 manifest's pin. Reused entries are the prior entries verbatim plus ``reused_from``, which names the code that
 produced the payload (never this builder unless it is the same code); the manifest gains a ``reuse`` block. Without
-``--reuse`` nothing in the output changes.
+``--reuse`` nothing in the output changes. Field modules (research_fields_sec.py, research_fields_holdings.py; v8 C-3)
+reuse by ``REUSE_MODULE_RULE``: the module's PRODUCERS closure plus the builder code it reads through its host handle,
+its stage manifest pins as the source check, its formula keys; their computed entries record the module's code
+identity as ``producer``.
 """
 from __future__ import annotations
 
@@ -79,6 +84,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
 
 import numpy as np
@@ -88,12 +94,13 @@ import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
 import code_fingerprint  # noqa: E402  (same directory: the AST closure fingerprints --reuse keys on)
+import research_window as rw  # same directory: the research window (TRAIN and the seal)
 
 SCHEMA = "atx.research-role-fields/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 DAY_NS = 86_400_000_000_000
 EPOCH = dt.date(1970, 1, 1)
-SEAL = dt.date(2025, 1, 1)
+SEAL = rw.SEAL  # first sealed date (research_window.py)
 FINRA_MAX_STALE_DAYS = 45
 FINRA_HEADER = b"security_id,available_at,value"
 FINRA_REPUBLICATION_SETTLEMENT_BEFORE = dt.date(2021, 6, 1)
@@ -258,7 +265,7 @@ FIELDS = {
         "units": "indicator: 1 when line_types.security_type is common or common_unverified (the research universe's eligible types), 0 for every other type (ETF, ADR, fund, unknown, ...)",
         "clock": "static-line-classification;NOT-point-in-time",
         "staleness": "constant across sessions; NaN only when the line has no line_types row",
-        "caveats": ["classification uses a 2026-09-18 Nasdaq Trader directory snapshot (listed lines) and whole-history vendor earnings evidence (delisted lines): information after 2025-01-01 by construction; use as a coarse ETF/fund filter, not as a PIT signal",
+        "caveats": ["classification uses a 2026-09-18 Nasdaq Trader directory snapshot (listed lines) and whole-history vendor earnings evidence (delisted lines): information after " + rw.SEAL_DATE + " by construction; use as a coarse ETF/fund filter, not as a PIT signal",
                     "ADR is typed 0"]},
     "mkt_ret": {
         "group": "role", "source_columns": ["close.f64", "raw_close.f64", "present.u8", "member.u8"], "point_in_time": True,
@@ -499,7 +506,8 @@ SV_FIELDS = {
 # then the short-volume field.
 ALL_FIELDS = {**FIELDS, **ISSUER_FIELDS, **SV_FIELDS}
 # W5a registry hook: opt-in field modules (research_fields_sec.py: SEC earnings calendar, Form 4, 8-K). Each appends its
-# registry after every field above and runs via the FIELD_MODULES loops in run()/main(); its fields are never --reuse'd.
+# registry after every field above and runs via the FIELD_MODULES loops in run()/main(); --reuse copies its fields by
+# the module's own PRODUCERS, stage pins and formula (reuse_module_fields, v8 C-3).
 import research_fields_sec  # noqa: E402  (same directory; it does not import this module)
 FIELD_MODULES = [research_fields_sec.bind(globals())]
 ALL_FIELDS.update(research_fields_sec.FIELDS)
@@ -519,6 +527,10 @@ REUSE_RULE = ("a field is copied from the prior fields directory iff: the prior 
               "mapping table SHA-256; same inputs (every prior source path lies under this run's source argument "
               "for the field's group and re-hashes to its recorded SHA-256); every field it depends on is reused; "
               "copied bytes re-hash to the prior pin")
+REUSE_DIRECTORY_RULE = ("v8 C-3: sv_ratio126's CNMS directory source (no single file SHA-256) passes the same-inputs "
+                        "check iff the files this run reads for this role (sv_window_files of the current directory "
+                        "listing) re-hash, by SV_FILES_LIST_RULE, to the recorded files_sha256 with the recorded "
+                        "files_read, first_file_date and last_file_date")
 REUSE_SOURCE_CHECK_KEYS = {"th": "tickerhistory", "lake": "lake", "issuer": "issuer", "finra_sv": "finra_short_volume"}
 # The producing code of each field group (R1 M-6): its builder functions; producer_fingerprints adds every
 # module-level definition they reach. run() and main() orchestrate and are never part of a producer.
@@ -655,9 +667,9 @@ class Role:
             raise ValueError("role ids are not strictly increasing positive i64 securityIDs")
         self.days = sessions // DAY_NS
         self.ids = ids.astype(np.int64)
-        # The roles end 2024; assert it rather than trust it.
+        # The roles end before the research seal; assert it rather than trust it.
         if int(self.days[-1]) >= day_of(SEAL):
-            raise ValueError("role contains a session on or after 2025-01-01; refusing (sealed)")
+            raise rw.SealError(rw.seal_message("role contains a session"))
         self.member = np.frombuffer(blobs["member.u8"], dtype="u1").reshape(self.n_dates, self.n)
         years = self.days.astype("datetime64[D]").astype("datetime64[Y]").astype(np.int64) + 1970
         self.years = years
@@ -1357,7 +1369,7 @@ def lake_fields(names, lake: Path, role: Role, output: Path, budget: Budget):
         formations = set()
         for year in range(first_year, int(role.years[-1]) + 1):
             if year >= SEAL.year:
-                raise ValueError("spine year on or after 2025 requested")
+                raise rw.SealError(rw.seal_message(f"spine year {year} requested"))
             rel = f"spine_monthly/year={year}/part-0.parquet"
             if rel not in listed:
                 if listed_years and year < listed_years[0]:
@@ -1564,7 +1576,7 @@ SIC_STAGE_MAPPING = (
     "Facts CIK. sic2 / ff12 / ff49 are not used: groups come from this builder's own SIC mapping table (the stage "
     "labels are compared with it and the disagreeing rows counted). Consumer rule unchanged: the linked CIK's latest row "
     "(max clock, tie by accession) with clock < the mark of session t-L, age = date(t) - UTC date(clock) <= 550 days; "
-    "rows with clock on or after 2025-01-01 and sic outside [100, 9999] are dropped (counted)")
+    f"rows with clock on or after {rw.SEAL_DATE} and sic outside [100, 9999] are dropped (counted)")
 BRIDGE_KINDS = ("P", "J")                              # any other primary value (N, ...) is dropped and counted
 BRIDGE_EXCLUDED_BASES = ("current_ticker_verified",)   # T18: starts at the 2026 snapshot, never backfills history
 STALENESS_DAYS_ALLOWED = (FUND_STALE_DAYS, FUND_STALE_DAYS_ANNUAL)  # v4-prereg R2: 200 / 400 only
@@ -2295,18 +2307,26 @@ def sv_resolve_collisions(col: np.ndarray, exact: np.ndarray) -> np.ndarray:
     return keep
 
 
+def sv_window_files(listing: list, role_days) -> tuple:
+    """The CNMS files sv_ratio126 reads for a role, from the directory listing (``sv_listing``): (the session calendar
+    of the windows, its prefix length, its sessions that open a window, the file days read, ascending). Shared by
+    ``sv_field`` and the --reuse check of its directory source."""
+    fdays = np.array([d for d, _ in listing], dtype=np.int64)
+    names = dict(listing)
+    prefix = fdays[fdays < int(role_days[0])][-SV_WINDOW:]
+    ext = np.concatenate((prefix, role_days)).astype(np.int64)  # the session calendar of the windows
+    on_ext = set(int(x) for x in ext[:-1])  # the last session's file is never inside a window
+    return ext, len(prefix), on_ext, sorted(d for d in names if d in on_ext)
+
+
 def sv_field(role: Role, output: Path, budget: Budget, directory: Path, th: Path, known_digest=None):
     """sv_ratio126 (``SV_FIELDS``): streams the CNMS files one session at a time through a 126-session ring."""
     listing = sv_listing(directory)
     receipt, receipt_source = read_sv_receipt(directory)
     fdays = np.array([d for d, _ in listing], dtype=np.int64)
     names = dict(listing)
-    first, last = int(role.days[0]), int(role.days[-1])
-    prefix = fdays[fdays < first][-SV_WINDOW:]
-    ext = np.concatenate((prefix, role.days)).astype(np.int64)  # the session calendar of the windows
-    e0 = len(prefix)
-    on_ext = set(int(x) for x in ext[:-1])  # the last session's file is never inside a window
-    need = sorted(d for d in names if d in on_ext)
+    last = int(role.days[-1])
+    ext, e0, on_ext, need = sv_window_files(listing, role.days)
     if not need:
         raise ValueError("short volume: no CNMS file dated on a session before the role's last session")
     span = [d for d in names if int(ext[0]) <= d < last]
@@ -2455,9 +2475,20 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
                  "issuer:grp": [p for p in (identity_bridge, sic_events if sic_events is not None else fund_events)
                                 if p is not None],
                  "finra_sv": [p for p in (finra_short_volume, tickerhistory) if p is not None]}
-        reused, reuse_block, th_known = reuse_fields(Path(reuse), reuse_sha256, role, selected, output, budget,
+        module_fields = {f for m in FIELD_MODULES for f in m.FIELDS}
+        reused, reuse_block, th_known = reuse_fields(Path(reuse), reuse_sha256, role,
+                                                     [f for f in selected if f not in module_fields], output, budget,
                                                      roots=roots, lag=fund_lag_sessions, tickerhistory=tickerhistory,
                                                      hardlink=reuse_hardlink)
+        for m in FIELD_MODULES:  # v8 C-3: each opt-in module reuses by its own PRODUCERS, stage pins and formula
+            names = [f for f in selected if f in m.FIELDS]
+            if names:
+                got, why, prior_checks = reuse_module_fields(
+                    sys.modules[type(m).__module__], Path(reuse), reuse_sha256, role, names, output, budget,
+                    options=module_options or {}, reused_names=set(reused), hardlink=reuse_hardlink)
+                reused.update(got)
+                merge_module_reuse(reuse_block, selected, names, got, why, group=m.GROUP,
+                                   prior_check=prior_checks.get(m.GROUP))
     outcome = {}
     source_checks = dict(reuse_block.pop("_source_checks")) if reuse_block else {}
     groups = {g: [f for f in selected if ALL_FIELDS[f]["group"] == g and f not in reused]
@@ -2557,7 +2588,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
                  "clock_recipe": role.manifest.get("clock_recipe")},
         "instrument_namespace": "spiderrock.securityID",
         "seal": {"exclusive_end": SEAL.isoformat(),
-                 "rule": "every source row available on or after 2025-01-01 is dropped before use; role sessions asserted < 2025-01-01"},
+                 "rule": f"every source row available on or after {SEAL.isoformat()} is dropped before use; role sessions "
+                         f"asserted < {SEAL.isoformat()}"},
         "cell_rule": "NaN where the field is not visible at the session decision or the source is absent",
         "coverage_basis": "member.u8 cells of the role (member cells with a finite value / member cells)",
         "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role close clock), before the 23:00 UTC decision",
@@ -2640,14 +2672,15 @@ def git_blob(blob_sha1) -> bytes | None:
     return done.stdout if done.returncode == 0 else None
 
 
-def producer_source(ident: dict) -> tuple[bytes | None, str]:
-    """(LF source, how it was found) of the builder named by a code identity, or (None, why not)."""
+def producer_source(ident: dict, current: bytes | None = None, what: str = "this builder") -> tuple[bytes | None, str]:
+    """(LF source, how it was found) of the code named by a code identity, or (None, why not): this builder's source
+    (default) or ``current`` (a field module's source) when the LF SHA-256 matches, else the recorded git blob."""
     lf_sha = ident.get("code_sha256_lf")
     if not isinstance(lf_sha, str):
         return None, "no recorded code_sha256_lf"
-    current = builder_source().replace(b"\r\n", b"\n")
+    current = (builder_source() if current is None else current).replace(b"\r\n", b"\n")
     if sha_bytes(current) == lf_sha:
-        return current, "this builder (same code_sha256_lf)"
+        return current, f"{what} (same code_sha256_lf)"
     blob = git_blob(ident.get("code_git_blob_sha1"))
     if blob is None:
         return None, "code_sha256_lf differs from this builder and its git blob is not available"
@@ -2691,6 +2724,153 @@ def producer_fingerprints(source: bytes) -> dict:
     return code_fingerprint.fingerprints(source, FIELD_PRODUCERS, PRODUCER_ORCHESTRATION)
 
 
+# ---------------------------------------------------------------------------
+# Field module reuse (v8 C-3): research_fields_sec.py and research_fields_holdings.py
+# ---------------------------------------------------------------------------
+# A module exports PRODUCERS {producer group: (entry names,)}, HOST_HANDLES (how it reads this builder: ``h.X`` or
+# ``ns["X"]``), producer_group(name), field_spec(name), reuse_inputs(name, options) and entry_inputs(entry).
+MODULE_FORMULA_KEYS = ("formula_id", "units", "clock", "staleness", "source_columns", "definition", "domain")
+REUSE_MODULE_RULE = ("a field module's field is copied from the prior fields directory iff: the prior manifest is complete "
+                     "and bound to this role; same field; same formula (formula_id, units, clock, staleness, "
+                     "source_columns, definition, domain of the module's spec); same producing code (SHA-256 of the AST, "
+                     "docstrings dropped, of the module's PRODUCERS group and every module-level definition it reaches, "
+                     "plus the closure of every builder definition it reads through its host handle, for the module and "
+                     "builder code that produced the prior payload: the entry's producer and the builder named by the "
+                     "manifest or by reused_from.host_code, found as this code or its git blob); same inputs (the stage "
+                     "manifest SHA-256s, and the SEC identity bridge, recorded by the entry); every field it requires "
+                     "is reused; copied bytes re-hash to the prior pin")
+
+
+def module_source(module) -> bytes:
+    """A field module's source bytes: what its computed entries' producer identity pins and --reuse compares with."""
+    return Path(module.__file__).read_bytes()
+
+
+def module_code_identity(module) -> dict:
+    """``code_identity`` of a field module's source (the ``producer`` of the entries it computes)."""
+    return code_identity_of(module_source(module))
+
+
+def module_fingerprints(module, source: bytes, host_source: bytes) -> dict:
+    """{producer group: SHA-256} of a field module's source bound into a builder source (code_fingerprint.Host)."""
+    host = code_fingerprint.Host(host_source.replace(b"\r\n", b"\n"), module.HOST_HANDLES, PRODUCER_ORCHESTRATION)
+    return code_fingerprint.fingerprints(source.replace(b"\r\n", b"\n"), module.PRODUCERS, host=host)
+
+
+def module_formula(record: dict) -> dict:
+    """The definition keys a module's field spec and its manifest entry share (tuples compared as lists)."""
+    return json.loads(canonical({k: list(record[k]) if k == "domain" else record[k]
+                                 for k in MODULE_FORMULA_KEYS if k in record}))
+
+
+def reuse_module_fields(module, prior_dir: Path, prior_sha256: str | None, role: Role, names: list, output: Path,
+                        budget: Budget, *, options: dict, reused_names: set, hardlink: bool = False):
+    """Decide (``REUSE_MODULE_RULE``) and copy the reusable ``names`` of a field module from a prior fields directory.
+
+    Returns ({name: (entry, files pin)}, {name: why not reused}, the prior manifest's source_checks)."""
+    prior, prior_sha = load_prior(prior_dir, prior_sha256, role)
+    entries = {e["name"]: e for e in prior.get("fields", []) if isinstance(e, dict) and "name" in e}
+    shape = [role.n_dates, role.n]
+    manifest_code = {k: prior.get(k) for k in ("code_sha256", "code_sha256_lf", "code_git_blob_sha1")}
+    current_module = module_source(module)
+    current = module_fingerprints(module, current_module, builder_source())
+    label = Path(module.__file__).name
+    found = {}   # (module lf, builder lf) -> (fingerprints or None, how)
+
+    def producers_of(e):
+        ident_m = e.get("producer") if isinstance(e.get("producer"), dict) else {}
+        rec = e.get("reused_from") if isinstance(e.get("reused_from"), dict) else {}
+        ident_h = rec.get("host_code") if isinstance(rec.get("host_code"), dict) else manifest_code
+        key = (ident_m.get("code_sha256_lf"), ident_h.get("code_sha256_lf"))
+        if key not in found:
+            src_m, how_m = producer_source(ident_m, current_module, "this module")
+            src_h, how_h = producer_source(ident_h)
+            fps, how = None, f"{label}: {how_m}; builder: {how_h}"
+            if src_m is not None and src_h is not None:
+                try:
+                    fps = module_fingerprints(module, src_m, src_h)
+                except ValueError as err:
+                    how = str(err)
+            found[key] = (fps, how)
+        return (ident_m, ident_h, *found[key])
+
+    reasons, candidates = {}, {}
+    for name in names:
+        e, pin = entries.get(name), (prior.get("files") or {}).get(f"{name}.f64")
+        if e is None or pin is None:
+            reasons[name] = "absent from the prior manifest"
+            continue
+        if (e.get("file") != f"{name}.f64" or e.get("dtype") != "<f8" or e.get("layout") != "date-major"
+                or e.get("shape") != shape or e.get("sha256") != pin.get("sha256")
+                or pin.get("bytes") != role.n_dates * role.n * 8):
+            reasons[name] = "prior entry layout/shape/pin differs"
+            continue
+        spec = module.field_spec(name)
+        if module_formula(e) != module_formula(spec):
+            reasons[name] = "formula differs (formula id or definition changed)"
+            continue
+        group = module.producer_group(name)
+        ident_m, ident_h, fps, how = producers_of(e)
+        if fps is None:
+            reasons[name] = f"producing code not recoverable: {how}"
+            continue
+        if fps.get(group) is None or fps[group] != current[group]:
+            reasons[name] = f"producing code differs ({label} group {group} with the builder code it reads; {how})"
+            continue
+        if module.entry_inputs(e) != module.reuse_inputs(name, options):
+            reasons[name] = "inputs differ (stage manifest or bridge SHA-256)"
+            continue
+        missing = [d for d in spec.get("requires", []) if d not in reused_names]
+        if missing:
+            reasons[name] = f"depends on {', '.join(missing)}, which is recomputed"
+            continue
+        candidates[name] = (e, pin, ident_m, ident_h, fps[group], how)
+    reused = {}
+    for name in names:
+        if name not in candidates:
+            continue
+        e, pin, ident_m, ident_h, producer, how = candidates[name]
+        digest, size = _copy_payload(prior_dir / f"{name}.f64", output / f"{name}.f64", hardlink, budget)
+        if digest != pin["sha256"] or size != pin["bytes"]:
+            raise ValueError(f"--reuse: prior payload {name}.f64 does not match its manifest pin (corrupt prior dir)")
+        entry = json.loads(canonical(e))
+        # the code that produced the payload (the origin through chained reuse), never this run's code
+        entry["reused_from"] = {"dir": str(prior_dir.resolve()), "manifest_sha256": prior_sha,
+                                "producer": {k: ident_m.get(k) for k in ("module", "code_sha256", "code_sha256_lf",
+                                                                         "code_git_blob_sha1")},
+                                "host_code": {k: ident_h.get(k) for k in ("code_sha256", "code_sha256_lf",
+                                                                          "code_git_blob_sha1")},
+                                "producer_sha256": producer, "producer_code": how,
+                                "inputs": module.entry_inputs(e), "payload_sha256": digest,
+                                "mode": "hardlink" if hardlink else "copy"}
+        reused[name] = (entry, {"bytes": size, "sha256": digest})
+    budget.report("reuse-plan-module", module=label, reused=len(reused), computed=len(names) - len(reused))
+    return reused, reasons, prior.get("source_checks") or {}
+
+
+def merge_module_reuse(block: dict, order: list, names: list, reused: dict, reasons: dict, *, group: str,
+                       prior_check=None) -> None:
+    """Extend a manifest's reuse block with a field module's decisions (lists in ``order``); carry the prior source
+    check of ``group`` when every one of ``names`` is reused (recorded as partial when only some are)."""
+    done = set(block["reused"]) | {n for n in names if n in reused}
+    listed = set(block["reused"]) | set(block["computed"]) | set(names)
+    why = {**block["not_reused"], **{n: reasons[n] for n in names if n in reasons}}
+    block["reused"] = [n for n in order if n in done]
+    block["computed"] = [n for n in order if n in listed and n not in done]
+    block["not_reused"] = {n: why[n] for n in order if n in why}
+    lf = {**block["producing_code_sha256_lf"],
+          **{n: reused[n][0]["reused_from"]["producer"]["code_sha256_lf"] for n in names if n in reused}}
+    block["producing_code_sha256_lf"] = {n: lf[n] for n in order if n in lf}
+    block.setdefault("module_rule", REUSE_MODULE_RULE)
+    if prior_check is None or not any(n in reused for n in names):
+        return
+    if all(n in reused for n in names):
+        block.setdefault("_source_checks", {})[group] = prior_check
+        block["source_checks_from_prior"] = sorted(set(block["source_checks_from_prior"]) | {group})
+    else:
+        block["prior_source_checks_of_partial_groups"][group] = prior_check
+
+
 def inputs_sha256(entry: dict, role_sha256: str) -> str:
     """SHA-256 of the field's inputs: the role pin, the declared lag and every (normalised path, SHA-256) source."""
     srcs = sorted([_norm(x["path"]), x.get("sha256")] for x in entry.get("sources") or [])
@@ -2719,11 +2899,9 @@ def _copy_payload(src: Path, dst: Path, hardlink: bool, budget: Budget) -> tuple
     return h.hexdigest(), size
 
 
-def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected: list, output: Path, budget: Budget,
-                 *, roots: dict, lag: int, tickerhistory: Path, hardlink: bool = False):
-    """Decide (``REUSE_RULE``) and copy the reusable fields of a prior fields directory into ``output``.
-
-    Returns ({name: (entry, files pin)}, reuse block for the manifest, th_known or None)."""
+def load_prior(prior_dir: Path, prior_sha256: str | None, role: Role) -> tuple[dict, str]:
+    """(prior manifest, its SHA-256): a complete fields manifest bound to this role (manifest, sessions, ids, member),
+    checked against --reuse-sha256 when given."""
     blob = (prior_dir / "manifest.json").read_bytes()
     prior_manifest_sha = sha_bytes(blob)
     if prior_sha256 is not None and prior_manifest_sha != prior_sha256.lower():
@@ -2736,11 +2914,56 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
             or bound.get("ids_sha256") != role.ids_sha256
             or bound.get("member_sha256") != role.manifest["files"]["member.u8"]["sha256"]):
         raise ValueError("--reuse: prior fields manifest is bound to a different role (manifest/sessions/ids/member)")
+    return prior, prior_manifest_sha
+
+
+def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected: list, output: Path, budget: Budget,
+                 *, roots: dict, lag: int, tickerhistory: Path, hardlink: bool = False):
+    """Decide (``REUSE_RULE``) and copy the reusable fields of a prior fields directory into ``output``.
+
+    Returns ({name: (entry, files pin)}, reuse block for the manifest, th_known or None)."""
+    prior, prior_manifest_sha = load_prior(prior_dir, prior_sha256, role)
     entries = {e["name"]: e for e in prior.get("fields", [])}
     prior_revisions = prior.get("formula_revisions") or {}   # absent: every field at revision 1 (all manifests so far)
     shape = [role.n_dates, role.n]
     hashed = {}      # normalised path -> SHA-256 (each distinct source hashed once)
     th_known = None
+    directory_checked = []
+
+    def sv_directory_ok(x: dict, allowed) -> str | None:
+        """A CNMS directory source of sv_ratio126 (v8 C-3, ``REUSE_DIRECTORY_RULE``): the files this run reads for
+        this role (``sv_window_files`` of the current listing) re-hash to the recorded list SHA-256, count and dates."""
+        path = _norm(x["path"])
+        if not any(_under(path, r) for r in allowed):
+            return f"source {x['path']} is outside this run's inputs for group finra_sv"
+        d = Path(x["path"])
+        if not d.is_dir():
+            return f"source {x['path']} is missing"
+        key = ("sv-directory", path)
+        if key not in hashed:
+            try:
+                listing = sv_listing(d)
+            except ValueError as err:
+                return f"source {x['path']}: {err}"
+            names = dict(listing)
+            need = sv_window_files(listing, role.days)[3]
+            files = []
+            for day in need:
+                f = d / names[day]
+                before = identity(f)
+                digest = sha_file(f, budget)
+                if identity(f) != before:
+                    raise ValueError(f"--reuse: source {f} changed while hashing")
+                files.append([names[day], before[2], digest])
+            files.sort()
+            budget.report("reuse-source-directory", path=str(d), files=len(files))
+            hashed[key] = {"files_read": len(files), "files_sha256": sha_bytes(canonical(files).encode("utf-8")),
+                           "first_file_date": date_of(need[0]) if need else None,
+                           "last_file_date": date_of(need[-1]) if need else None}
+        directory_checked.append(path)
+        if any(x.get(k) != v for k, v in hashed[key].items()):
+            return f"source {x['path']} changed (the CNMS files this run reads differ from the prior list)"
+        return None
 
     def source_ok(name: str, entry: dict):
         nonlocal th_known
@@ -2750,6 +2973,12 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
         group = ALL_FIELDS[name]["group"]
         allowed = roots.get(f"{group}:{ALL_FIELDS[name].get('kind')}", roots.get(group, []))
         for x in srcs:
+            if (group == "finra_sv" and isinstance(x, dict) and isinstance(x.get("path"), str) and "sha256" not in x
+                    and x.get("files_list_rule") == SV_FILES_LIST_RULE):
+                why = sv_directory_ok(x, allowed)
+                if why is not None:
+                    return why
+                continue
             if not isinstance(x, dict) or "path" not in x or "sha256" not in x:
                 return "a source without a file SHA-256 (not reusable by rule)"
             path = _norm(x["path"])
@@ -2888,6 +3117,8 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
              "not_reused": {n: reasons[n] for n in selected if n in reasons},
              "source_checks_from_prior": sorted(carried),
              "prior_source_checks_of_partial_groups": partial, "_source_checks": carried}
+    if directory_checked:  # v8 C-3: only when a directory source was checked (other reuse blocks are unchanged)
+        block["directory_rule"] = REUSE_DIRECTORY_RULE
     budget.report("reuse-plan", reused=len(block["reused"]), computed=len(block["computed"]))
     return reused, block, th_known
 
@@ -2940,6 +3171,11 @@ def main(argv=None):
 # register() wraps run() and main() in this namespace; nothing changes unless one of its fields is requested.
 import research_fields_holdings as _holdings  # noqa: E402  (same directory, as prepare_recent_research imports this)
 _holdings.register(globals())
+# Platform v8 F-1 registry hook: the price and long-lookback fields of research_fields_price.py, an opt-in FIELD_MODULES
+# module like research_fields_sec.py (registry after every field above); nothing changes unless one is requested.
+import research_fields_price as _price  # noqa: E402  (same directory; it does not import this module)
+FIELD_MODULES.append(_price.bind(globals()))
+ALL_FIELDS.update(_price.FIELDS)
 
 if __name__ == "__main__":
     main()

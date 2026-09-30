@@ -5,6 +5,7 @@
 #include <bit>
 #include <cassert>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -27,6 +28,8 @@
 #include "atx/engine/book/replay_cost.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
 #include "atx/engine/eval/hac.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
+#include "atx/engine/parallel/lockstep_grid.hpp" // v8 D-1: books on a pool, grid spec
 #include "strategy_holdings.hpp" // v7 W4: the f64 holdings layout
 #include "strategy_nav_replay_detail.hpp"
 #include "strategy_target_replay_detail.hpp"
@@ -39,6 +42,7 @@ namespace co = atx::core;
 namespace bk = atx::engine::book;
 namespace ce = atx::engine::cost;
 namespace hac = atx::engine::eval::hac;
+namespace par = atx::engine::parallel;
 using Json = nlohmann::json;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr f64 inf = std::numeric_limits<f64>::infinity();
@@ -46,6 +50,8 @@ constexpr i64 day_ns = 86'400'000'000'000LL;
 constexpr i64 hour_ns = 3'600'000'000'000LL;
 constexpr usize max_dates = 4096, max_names = 20000;
 constexpr usize max_scenarios = 8; // books run in lockstep by replay_nav_scenarios
+constexpr usize max_book_workers = 64; // NavReplayConfig::book_workers
+constexpr u64 max_grid_file_bytes = 1ULL << 20;
 constexpr u64 max_event_cap = 1ULL << 24;
 // Per scenario book: 8 f64 + u32 + 2 u8 per name (70 B), plus the delta order basis's
 // f64 anchor and u8 flag (79 B; allocated only under it), rounded up.
@@ -306,9 +312,11 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
       cfg.liquidity_window > max_dates || cfg.min_vol_pairs < 2 ||
       cfg.min_vol_pairs > cfg.liquidity_window || !cfg.max_events ||
       cfg.max_events > max_event_cap || cfg.target.one_way_bps != 0 ||
-      cfg.target.annual_borrow_bps != 0 || cfg.warm_start_sessions > max_dates)
+      cfg.target.annual_borrow_bps != 0 || cfg.warm_start_sessions > max_dates ||
+      cfg.book_workers < 1 || cfg.book_workers > max_book_workers)
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "nav replay: invalid recipe (target-replay cost/borrow must be zero)");
+                   "nav replay: invalid recipe (target-replay cost/borrow must be zero; "
+                   "book workers 1..64)");
   // Trading rate: per-name-v1 is aim-partial-v5 only; a fixed rate carries no rate
   // parameters (each stays at its declared default). within() also refuses NaN.
   const bool rate_ok = cfg.rate == NavRateRule::Fixed
@@ -333,6 +341,12 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
                    "nav replay: order basis target|delta; locate-in-aim needs a neutralizing "
                    "construction (--neutralize) and the borrow fields");
   return co::Ok();
+}
+// The price-exposure session ring the shared construction binds when it neutralizes
+// (v8 D-1): charged by the input budget and the pinned run's reserve alike.
+u64 ring_bytes(const TargetReplayConfig& target, usize names) {
+  return target.neutralize == TargetNeutralize::None
+      ? 0 : session_ring_bytes(target.price_risk, names);
 }
 // A warm start of K sessions decides from role row score_begin - K: never before row 0.
 co::Status check_warm_start(usize sessions, usize score_begin) {
@@ -380,7 +394,8 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
       !budget.add(liquidity_cached(cfg) ? x.instruments : 0, rate_name_bytes) ||
       !budget.add(x.decision_end - x.decision_begin, books * sizeof(NavReplayDay)) ||
       !budget.add(cfg.max_events, books * sizeof(NavEvent)) ||
-      !budget.add(1, detail::construction_scratch_bytes(cfg.target, x.instruments)))
+      !budget.add(1, detail::construction_scratch_bytes(cfg.target, x.instruments)) ||
+      !budget.add(1, ring_bytes(cfg.target, x.instruments)))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: workspace budget");
   return co::Ok();
 }
@@ -1058,22 +1073,99 @@ void start_scoring(const Ctx& c, Book& b) {
   b.participation = ParticipationHistogram{};
   b.rates = RateStatistics{}; b.rates.reset(c.cfg.rate_min, c.cfg.rate_max);
 }
+// Where the replay's wall time goes (--stage-timers, v8 D-1): the shared construction of
+// every decision (borrow tiers, desired target, neutralization, its price exposures
+// included) and, of that, the price exposures (the session ring's own clock).
+struct StageClock {
+  f64 construction{}, exposures{};
+};
+f64 seconds_since(std::chrono::steady_clock::time_point started) {
+  return std::chrono::duration<f64>(std::chrono::steady_clock::now() - started).count();
+}
+// Session t of run_books: the same for every book.
+struct Session {
+  usize t{}, start{}, begin{}, end{}, first_return{};
+  bool execution{}, decision{}, scored{}, boundary{};
+};
+// A book's first phase of session t: its MARK (after the first session), the warm-start
+// boundary, then its EXECUTE (else the no-trade carry of NAV). Book-owned state only.
+co::Status open_book(const TargetReplayInput& x, const Ctx& c, Book& b, const BorrowTiers& tiers,
+                     const LiquidityCache& cache, const Session& s, NavReplayDay& day) {
+  auto& r = b.result;
+  if (b.trace) b.trace->clear();
+  day = open_day(x, s.t, s.t >= s.first_return);
+  if (s.t > s.start) ATX_TRY_VOID(mark_session(c, b, tiers, s.t, day));
+  if (s.boundary) { // the warm-up MARK is not a scored row: the base row starts here
+    start_scoring(c, b);
+    day = open_day(x, s.t, false);
+  }
+  day.pretrade_nav = b.nav_pre;
+  day.pretrade_gross_dollars = gross_dollars(b.names);
+  if (s.execution) {
+    ATX_TRY_VOID(execute_orders(c, b, s.t, cache, day));
+    if (r.deployment_index == s.end && day.traded_dollars > 0) r.deployment_index = s.t;
+    day.one_way_turnover_gmv = day.pretrade_gross_dollars > 0
+        ? day.traded_dollars / day.pretrade_gross_dollars : nan;
+  } else {
+    b.nav_post = b.nav_pre; b.pending_cost = 0;
+  }
+  return co::Ok();
+}
+// The shared part of decision t: formed when t is a cadence decision of some book. A book
+// whose own cadence misses t plans a non-rebalance decision with the idle record, exactly
+// as it would alone (where form_desired never runs for it).
+struct SharedDecision {
+  bool rebalance{};
+  TierCensus census;
+  ConstructionDay construction;
+};
+// A book's second phase of session t: its DECIDE (on a decision session), close, the
+// final-session report, then (scored rows only) the observer and the row. Book-owned
+// state only (the observed book alone touches the sink and `holdings`); per-name-v1 rates
+// write the shared cache, so replay_books runs that rate on one thread.
+co::Status close_book(const TargetReplayInput& x, const Ctx& c, Book& b,
+                      const Construction& shared, const BorrowTiers& tiers,
+                      LiquidityCache& cache, const Session& s, const SharedDecision& decided,
+                      const Observer& observer, std::vector<NavHolding>& holdings,
+                      NavReplayDay& day) {
+  if (s.decision) {
+    const bool mine = cadence_day(s.t, s.begin, c.cfg.target.cadence);
+    const ConstructionDay idle{};
+    ATX_TRY_VOID(plan_decision(c, b, shared, tiers, cache, s.t, mine && decided.rebalance,
+                               mine ? decided.construction : idle, day));
+    day.member_tiers = decided.census.members;
+    day.member_missing_predictors = decided.census.missing;
+  }
+  ATX_TRY_VOID(close_day(c, b, day));
+  if (s.t + 1 == s.end) ATX_TRY_VOID(report_unresolved(c, b, s.t));
+  if (!s.scored) return co::Ok(); // warm-up rows are never reported
+  if (b.trace && (s.decision || s.execution))
+    ATX_TRY_VOID(emit_holdings(x, b, shared, tiers, day, s.t, holdings, *observer.sink));
+  b.result.days.push_back(day);
+  return co::Ok();
+}
 // Sessions [begin - K, end) (K = warm_start_sessions; 0 without a warm start): MARK
 // (t > begin - K) -> EXECUTE (begin - K < t <= end-2) -> DECIDE (t < end-2); rows t >=
-// begin are reported. Row t reads data at rows <= t only. The scenario books run in
-// lockstep: each book performs exactly its own single-book sequence (mark, execute,
-// decide, close) on its own state; only the decision's desired target and borrow
-// tiers (and, with rate per-name-v1, the session's liquidity windows) are formed once
-// and shared, so every book is bit-identical to a replay on its own. An observer only
-// reads the observed book (its trace is written beside, never read by, the arithmetic).
+// begin are reported. Row t reads data at rows <= t only. The books run in lockstep:
+// each book performs exactly its own single-book sequence (mark, execute, decide, close)
+// on its own state; only the decision's desired target and borrow tiers (and, with rate
+// per-name-v1 or the liquidity cache, the session's liquidity windows) are formed once and
+// shared, so every book is bit-identical to a replay on its own. The per-book phases run
+// on `pool` when given (engine for_each_lane: lane-owned writes only, the lowest failing
+// book's error). An observer only reads the observed book (its trace is written beside,
+// never read by, the arithmetic). `stages` (--stage-timers) receives the construction and
+// exposure seconds.
 co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const NavFinancingFields& fields,
                                                    std::span<const Ctx> ctxs,
-                                                   const Observer& observer = {}) {
+                                                   const Observer& observer,
+                                                   par::DetPool* pool, StageClock* stages) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
-  const auto& target = ctxs.front().cfg.target; // identical for every book
-  // The rate, order basis, locate-in-aim, cache and warm start (like the target) are the
-  // base config's, identical for every book.
+  // The shared construction's config (neutralization, price risk, guard) is every book's:
+  // replay_books admits only variants that agree on it; the cadence may differ per book.
+  const auto& target = ctxs.front().cfg.target;
+  // The rate, order basis, locate-in-aim, cache and warm start are the base config's,
+  // identical for every book.
   const auto& base = ctxs.front().cfg;
   const usize warm = base.warm_start_sessions, start = begin - warm; // validated: warm <= begin
   // A flat start's row begin+1 marks an empty book; a warm book earns from row begin+1.
@@ -1088,6 +1180,13 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     b.rates.reset(c.cfg.rate_min, c.cfg.rate_max);
   }
   Construction shared(x.instruments, base.locate_in_aim);
+  // v8 D-1: every decision's price exposures from the session ring (each session logged
+  // once per replay); the bits of recomputing each window (the ring's contract: x's
+  // prices are immutable for this call).
+  if (target.neutralize != TargetNeutralize::None)
+    enable_session_ring(shared.price.exposure,
+                        PriceExposureInput{x.dates, x.instruments, x.close, x.raw_close,
+                                           x.volume, x.present});
   // Tiers of the latest decision: MARK t reads those of decision t-1 (or earlier).
   BorrowTiers tiers(x.instruments, !fields.shares_out.empty());
   // per-name-v1 caches its decision windows too; --liquidity-cache only execution's.
@@ -1100,55 +1199,36 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   }
   std::vector<NavReplayDay> days(count);
   for (usize t = start; t < end; ++t) {
-    const bool execution = t > start && t + 2 <= end, decision = t + 2 < end;
-    const bool scored = t >= begin, boundary = warm && t == begin;
-    const bool rate_decision = per_name && decision;
-    if (cache.on() && (execution || rate_decision))
-      fill_liquidity(ctxs.front(), books, t, execution, rate_decision, cache);
-    for (usize k = 0; k < count; ++k) {
-      const auto& c = ctxs[k]; auto& b = *books[k]; auto& day = days[k];
-      auto& r = b.result;
-      if (b.trace) b.trace->clear();
-      day = open_day(x, t, t >= first_return);
-      if (t > start) ATX_TRY_VOID(mark_session(c, b, tiers, t, day));
-      if (boundary) { // the warm-up MARK is not a scored row: the base row starts here
-        start_scoring(c, b);
-        day = open_day(x, t, false);
-      }
-      day.pretrade_nav = b.nav_pre;
-      day.pretrade_gross_dollars = gross_dollars(b.names);
-      if (execution) {
-        ATX_TRY_VOID(execute_orders(c, b, t, cache, day));
-        if (r.deployment_index == end && day.traded_dollars > 0) r.deployment_index = t;
-        day.one_way_turnover_gmv = day.pretrade_gross_dollars > 0
-            ? day.traded_dollars / day.pretrade_gross_dollars : nan;
-      } else {
-        b.nav_post = b.nav_pre; b.pending_cost = 0;
-      }
+    Session s;
+    s.t = t; s.start = start; s.begin = begin; s.end = end; s.first_return = first_return;
+    s.execution = t > start && t + 2 <= end; s.decision = t + 2 < end;
+    s.scored = t >= begin; s.boundary = warm && t == begin;
+    const bool rate_decision = per_name && s.decision;
+    if (cache.on() && (s.execution || rate_decision))
+      fill_liquidity(ctxs.front(), books, t, s.execution, rate_decision, cache);
+    // SAFETY (data races): each lane writes only book k and days[k]; tiers, cache and the
+    // shared construction are written only here between the phases, on this thread.
+    ATX_TRY_VOID(par::for_each_lane(pool, count, [&](usize k) {
+      return open_book(x, ctxs[k], *books[k], tiers, cache, s, days[k]);
+    }));
+    SharedDecision decided;
+    if (s.decision) {
+      const bool cadence = std::any_of(ctxs.begin(), ctxs.end(), [&](const Ctx& c) {
+        return cadence_day(t, begin, c.cfg.target.cadence);
+      });
+      const auto started = stages ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
+      ATX_TRY(decided.rebalance,
+              decide_construction(x, fields, base, t, cadence, {}, shared, tiers,
+                                  decided.census, decided.construction));
+      if (stages) stages->construction += seconds_since(started);
     }
-    if (decision) {
-      TierCensus census;
-      ConstructionDay construction;
-      const bool cadence = cadence_day(t, begin, target.cadence);
-      ATX_TRY(const bool rebalance, decide_construction(x, fields, base, t, cadence, {},
-                                                        shared, tiers, census, construction));
-      for (usize k = 0; k < count; ++k) {
-        ATX_TRY_VOID(plan_decision(ctxs[k], *books[k], shared, tiers, cache, t, rebalance,
-                                   construction, days[k]));
-        days[k].member_tiers = census.members;
-        days[k].member_missing_predictors = census.missing;
-      }
-    }
-    for (usize k = 0; k < count; ++k) {
-      auto& b = *books[k];
-      ATX_TRY_VOID(close_day(ctxs[k], b, days[k]));
-      if (t + 1 == end) ATX_TRY_VOID(report_unresolved(ctxs[k], b, t));
-      if (!scored) continue; // warm-up rows are never reported
-      if (b.trace && (decision || execution))
-        ATX_TRY_VOID(emit_holdings(x, b, shared, tiers, days[k], t, holdings, *observer.sink));
-      b.result.days.push_back(days[k]);
-    }
+    ATX_TRY_VOID(par::for_each_lane(pool, count, [&](usize k) {
+      return close_book(x, ctxs[k], *books[k], shared, tiers, cache, s, decided, observer,
+                        holdings, days[k]);
+    }));
   }
+  if (stages) stages->exposures = shared.price.exposure.ring.seconds;
   std::vector<NavReplayResult> results;
   results.reserve(count);
   for (auto& book : books) {
@@ -1960,7 +2040,8 @@ std::vector<NavScenario> nav_scenario_matrix(bool tiered) {
 // scenario results (days + events at cap), every lockstep book's per-name state, the
 // shared construction (with its price-risk scratch when neutralizing), the shared
 // borrow tiers, the shared liquidity cache (per-name-v1, or --liquidity-cache at a
-// fixed rate: validate_nav_input's predicate) and publication. books <= max_scenarios.
+// fixed rate: validate_nav_input's predicate) and publication. books <= max_scenarios
+// (x nav_max_grid_variants for a construction grid); the session ring when neutralizing.
 u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool tiered,
                                 usize names, usize sessions, bool holdings) {
   const bool cached = liquidity_cached(base);
@@ -1968,41 +2049,92 @@ u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool t
          u64{names} * (u64{books} * per_name_bytes + shared_name_bytes +
                        (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0) +
                        (holdings ? holdings_name_bytes : 0)) +
-         detail::construction_scratch_bytes(base.target, names) +
+         detail::construction_scratch_bytes(base.target, names) + ring_bytes(base.target, names) +
          u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
 }
 
 namespace {
-co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& in,
-                                                         const NavReplayConfig& base,
-                                                         std::span<const NavScenario> scenarios,
-                                                         const Observer& observer) {
+// True while a v7 extension is installed on this thread: its seams are then not the
+// identity, and extend_holdings writes its declarations exactly then (a read-only probe).
+bool v7_extension_installed() {
+  Json probe = Json::object();
+  v7::extend_holdings(probe);
+  return !probe.empty();
+}
+bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b) {
+  return a.beta_window == b.beta_window && a.vol_window == b.vol_window &&
+         a.adv_window == b.adv_window && a.min_return_pairs == b.min_return_pairs &&
+         a.min_names == b.min_names && a.clip_z == b.clip_z;
+}
+// Grid variants agree on everything but nav_grid_variant_flags' target keys (rule,
+// cadence, trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage,
+// exit_rate) and the scenario: the shared construction, the shared liquidity windows and
+// the book-independent settings are then one.
+bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
+  const auto& s = a.target; const auto& t = b.target;
+  return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
+         s.neutralize_max_amplification == t.neutralize_max_amplification &&
+         s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
+         s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
+         s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
+         a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
+         a.max_events == b.max_events && a.rate == b.rate && a.rate_rra == b.rate_rra &&
+         a.rate_min == b.rate_min && a.rate_max == b.rate_max &&
+         a.rate_lambda == b.rate_lambda && a.order_basis == b.order_basis &&
+         a.locate_in_aim == b.locate_in_aim && a.liquidity_cache == b.liquidity_cache &&
+         a.warm_start_sessions == b.warm_start_sessions && a.book_workers == b.book_workers;
+}
+// Every variant x every scenario (book v * scenarios + k) in one lockstep run_books.
+// One variant is replay_nav_scenarios: the same validation and the same books.
+co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
+    const NavReplayInput& in, std::span<const NavReplayConfig> variants,
+    std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages) {
   if (scenarios.empty() || scenarios.size() > max_scenarios)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..8 scenarios per replay");
-  if (observer.sink && observer.book >= scenarios.size())
+  if (variants.empty() || variants.size() > nav_max_grid_variants)
+    return co::Err(co::ErrorCode::InvalidArgument, "nav grid: 1..16 variants");
+  if (observer.sink && (variants.size() != 1 || observer.book >= scenarios.size()))
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: observed book out of range");
+  const auto& base = variants.front();
+  for (const auto& variant : variants)
+    if (!same_shared(base, variant))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav grid: variants may differ only in rule, cadence, trade fraction, "
+                     "monthly budget, band, dust, aim leverage and exit rate");
+  // Books on a pool: the per-name-v1 rates share one buffer, and a v7 hook is
+  // thread-local (a worker would silently run without it).
+  if (base.book_workers > 1 &&
+      (base.rate == NavRateRule::PerNameV1 || v7_extension_installed()))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: --book-workers above 1 needs a fixed rate and no v7 extension");
+  const usize books = variants.size() * scenarios.size();
   // The NAV volume is authoritative, also for price-risk neutralization.
   TargetReplayInput x = in.target;
   x.volume = in.volume;
   const NavReplayInput input{x, in.volume, in.financing};
   try {
-    std::vector<NavReplayConfig> configs(scenarios.size(), base);
-    for (usize k = 0; k < scenarios.size(); ++k) {
-      configs[k].scenario = scenarios[k];
-      ATX_TRY_VOID(validate_nav_config(configs[k]));
-      if (scenarios[k].financing.rule == NavFinancingRule::TieredSwapV1 &&
-          in.financing.shares_out.empty())
-        return co::Err(co::ErrorCode::InvalidArgument,
-                       "nav replay: tiered financing requires the borrow fields");
-    }
+    std::vector<NavReplayConfig> configs;
+    configs.reserve(books);
+    for (const auto& variant : variants)
+      for (const auto& scenario : scenarios) {
+        auto& cfg = configs.emplace_back(variant);
+        cfg.scenario = scenario;
+        ATX_TRY_VOID(validate_nav_config(cfg));
+        if (scenario.financing.rule == NavFinancingRule::TieredSwapV1 &&
+            in.financing.shares_out.empty())
+          return co::Err(co::ErrorCode::InvalidArgument,
+                         "nav replay: tiered financing requires the borrow fields");
+      }
     // The locate-in-aim mask is the decision's special tier: no tiers without fields.
     if (base.locate_in_aim && in.financing.shares_out.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav replay: locate-in-aim requires the borrow fields");
-    ATX_TRY_VOID(validate_nav_input(input, configs.front(), scenarios.size()));
+    // Each variant's own target contract; the budget charges every book of the grid.
+    for (usize v = 0; v < variants.size(); ++v)
+      ATX_TRY_VOID(validate_nav_input(input, configs[v * scenarios.size()], books));
     std::vector<std::unique_ptr<const bk::ReplayCostModel>> models;
     std::vector<Ctx> ctxs;
-    models.reserve(scenarios.size()); ctxs.reserve(scenarios.size());
+    models.reserve(books); ctxs.reserve(books);
     for (const auto& cfg : configs) {
       ATX_TRY(auto model, make_cost_model(cfg.scenario));
       models.push_back(std::move(model));
@@ -2022,12 +2154,29 @@ co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& i
       }
       ctxs.push_back(ctx);
     }
-    return run_books(x, in.financing, ctxs, observer);
+    std::unique_ptr<par::DetPool> pool;
+    if (base.book_workers > 1) pool = std::make_unique<par::DetPool>(base.book_workers);
+    ATX_TRY(auto flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
+    std::vector<std::vector<NavReplayResult>> out(variants.size());
+    for (usize k = 0; k < books; ++k)
+      out[k / scenarios.size()].push_back(std::move(flat[k]));
+    return co::Ok(std::move(out));
+  } catch (const std::system_error&) { // the book pool's threads could not start
+    return co::Err(co::ErrorCode::OutOfRange, "nav replay: book worker threads");
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: allocation failed");
   } catch (const std::length_error&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: allocation extent");
   }
+}
+co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& in,
+                                                         const NavReplayConfig& base,
+                                                         std::span<const NavScenario> scenarios,
+                                                         const Observer& observer,
+                                                         StageClock* stages = nullptr) {
+  ATX_TRY(auto grid, replay_books(in, std::span<const NavReplayConfig>(&base, 1), scenarios,
+                                  observer, stages));
+  return co::Ok(std::move(grid.front()));
 }
 } // namespace
 
@@ -2040,6 +2189,12 @@ co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
     NavHoldingsSink& sink, usize observed) {
   return replay_observed(in, base, scenarios, Observer{&sink, observed});
+}
+
+co::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
+    const NavReplayInput& in, std::span<const NavReplayConfig> variants,
+    std::span<const NavScenario> scenarios) {
+  return replay_books(in, variants, scenarios, Observer{}, nullptr);
 }
 
 co::Result<NavReplayResult> replay_nav(const NavReplayInput& in, const NavReplayConfig& cfg) {
@@ -2182,6 +2337,44 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 }
 
 namespace {
+constexpr const char* stage_timers_declaration =
+    "v8 D-1 --stage-timers, seconds on a steady clock: load = entry to the end of the pinned "
+    "load (argument checks and payload SHA verification included); exposures = the price "
+    "exposures of the shared construction (session ring); construction = the rest of the "
+    "shared per-decision construction (borrow tiers, desired target, neutralization); books = "
+    "the rest of the replay (every book's MARK, EXECUTE, DECIDE and close); hash = SHA-256 "
+    "of the published files; write = the rest (summaries, CSV and JSON writes); the six "
+    "stages sum to wall = entry to the summary.json write (that write excluded); observation "
+    "only: no published value depends on a clock";
+// --stage-timers (v8 D-1): the run's clock marks and the replay's own clock. The stages
+// are differences of nested intervals, so each is >= 0 and they sum to wall.
+struct StageTimes {
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point started{Clock::now()}, loaded{started}, replayed{started};
+  StageClock replay{};
+  f64 hash{};
+  [[nodiscard]] Json json() const {
+    const auto now = Clock::now();
+    const auto between = [](Clock::time_point a, Clock::time_point b) {
+      return std::chrono::duration<f64>(b - a).count();
+    };
+    const f64 replay_wall = between(loaded, replayed), post = between(replayed, now);
+    return Json{{"load", between(started, loaded)}, {"exposures", replay.exposures},
+                {"construction", replay.construction - replay.exposures},
+                {"books", replay_wall - replay.construction}, {"hash", hash},
+                {"write", post - hash}, {"wall", between(started, now)},
+                {"definition", stage_timers_declaration}};
+  }
+};
+// A SHA-256 of published bytes; its wall time joins the hash stage when timed.
+template <class Digest>
+co::Result<std::string> timed_digest(StageTimes* times, Digest&& digest) {
+  if (!times) return digest();
+  const auto started = std::chrono::steady_clock::now();
+  auto out = digest();
+  times->hash += seconds_since(started);
+  return out;
+}
 // Everything one run publishes, computed before the output directory exists.
 struct NavRun {
   const TargetReplayRunConfig& cfg;
@@ -2193,6 +2386,8 @@ struct NavRun {
   const std::string& manifest_json; // the pinned combined manifest
   const Json& fields;               // borrow-field binding; null without --fields
   const Json& warm_start;           // the summary's warm_start record; null without one
+  StageTimes* times;                // --stage-timers: the clock (null: untimed)
+  bool summary_timers;              // write stage_seconds into summary.json (single runs)
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
 // accepted the input (warm_start_sessions <= decision_begin).
@@ -2225,8 +2420,9 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
   const bool construction = detail::construction_active(run.cfg.target);
   ATX_TRY_VOID(write_daily(daily, result, construction, tiered));
   ATX_TRY_VOID(write_events(events, result));
-  ATX_TRY(auto daily_sha, co::sha256_file(daily.string()));
-  ATX_TRY(auto events_sha, co::sha256_file(events.string()));
+  ATX_TRY(auto daily_sha, timed_digest(run.times, [&] { return co::sha256_file(daily.string()); }));
+  ATX_TRY(auto events_sha,
+          timed_digest(run.times, [&] { return co::sha256_file(events.string()); }));
   auto entry = scenario_summary(sc, k == nav_primary_scenario_index, tiered, result, summary,
                                 daily_sha, events_sha);
   if (construction) {
@@ -2260,7 +2456,8 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
   if (!std::filesystem::create_directory(dir))
     return co::Err(co::ErrorCode::AlreadyExists, "nav replay: output must not exist");
   const auto method = nav_recipe(cfg, run.base, run.scenarios, run.limits, run.fields);
-  ATX_TRY(auto method_sha, co::sha256_hex(method.dump()));
+  const auto method_text = method.dump();
+  ATX_TRY(auto method_sha, timed_digest(run.times, [&] { return co::sha256_hex(method_text); }));
   ATX_TRY_VOID(write_json(dir / "recipe.json", method));
   Json list = Json::array();
   for (usize k = 0; k < run.scenarios.size(); ++k) {
@@ -2291,6 +2488,10 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
   }
   if (!run.warm_start.is_null()) summary["warm_start"] = run.warm_start; // v8, only when on
   v7::extend_summary(summary); // L4 hook: identity unless extended
+  if (run.times && run.summary_timers) { // v8 --stage-timers: the one key a clock writes
+    summary["stage_seconds"] = run.times->json();
+    progress << "nav replay stage seconds: " << summary.at("stage_seconds").dump() << '\n';
+  }
   return write_json(dir / "summary.json", summary);
 }
 
@@ -2478,33 +2679,169 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
   return run_nav_replay(cfg, limits, fields, rate, execution, NavEmitOptions{}, progress);
 }
 
+namespace {
+// The run-level contract of the nav verb (run_nav_replay and run_nav_grid).
+co::Status check_run(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
+                     const NavFieldsPin& fields) {
+  if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
+  if (cfg.target.one_way_bps != 0 || cfg.target.annual_borrow_bps != 0)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: costs and borrow are fixed scenarios, not flags");
+  if (!std::isfinite(limits.daily_mean_max) || !(limits.daily_mean_max > 0) ||
+      !std::isfinite(limits.daily_p95_max) || !(limits.daily_p95_max > 0))
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: daily turnover ceilings");
+  if (fields.manifest_path.empty() != fields.manifest_sha256.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: --fields and --fields-sha256 go together");
+  if (neutralize_by_industry(cfg.target.neutralize) && fields.manifest_path.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: the industry ids need --fields (grp_ff12)");
+  return co::Ok();
+}
+// The book config every scenario of a nav run starts from: the target and the options.
+NavReplayConfig run_base(const TargetReplayConfig& target, const NavRateOptions& rate,
+                         const NavExecutionOptions& execution) {
+  NavReplayConfig base; base.target = target;
+  base.rate = rate.rate; base.rate_rra = rate.rate_rra; base.rate_lambda = rate.rate_lambda;
+  base.rate_min = rate.rate_min; base.rate_max = rate.rate_max;
+  base.order_basis = execution.order_basis; base.locate_in_aim = execution.locate_in_aim;
+  base.liquidity_cache = execution.liquidity_cache;
+  base.warm_start_sessions = execution.warm_start_sessions;
+  base.book_workers = execution.book_workers;
+  return base;
+}
+// Command-line numbers: the whole value, else std::invalid_argument.
+f64 parse_real(const std::string& value) {
+  usize used = 0; const f64 x = std::stod(value, &used);
+  if (used != value.size()) throw std::invalid_argument("invalid number");
+  return x;
+}
+u64 parse_integer(const std::string& value) {
+  u64 x = 0;
+  const auto parsed = std::from_chars(value.data(), value.data() + value.size(), x);
+  if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+    throw std::invalid_argument("invalid integer");
+  return x;
+}
+// The construction flags (nav_grid_variant_flags), parsed exactly as the command line
+// parses them (the command line calls this); false for any other key. A bad value throws
+// std::invalid_argument (std::out_of_range from std::stod).
+bool apply_construction_flag(const std::string& key, const std::string& value,
+                             TargetReplayConfig& target) {
+  if (key == "--rule") {
+    if (value == "baseline-v1") target.rule = TargetReplayRule::BaselineTargetV1;
+    else if (value == "monthly-budget-v2") target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
+    else if (value == "aim-partial-v5") target.rule = TargetReplayRule::AimPartialV5;
+    else throw std::invalid_argument("unknown target rule");
+  } else if (key == "--cadence") {
+    const auto x = parse_integer(value);
+    if (x > max_dates) throw std::invalid_argument("cadence exceeds bound");
+    target.cadence = static_cast<usize>(x);
+  } else if (key == "--trade-fraction") {
+    target.trade_fraction = parse_real(value);
+  } else if (key == "--monthly-budget") {
+    target.monthly_budget = parse_real(value);
+  } else if (key == "--band-multiple") {
+    target.band_multiple = parse_real(value);
+  } else if (key == "--dust-multiple") {
+    target.dust_multiple = parse_real(value);
+  } else if (key == "--aim-leverage") {
+    target.aim_leverage = parse_real(value);
+  } else if (key == "--exit-rate") {
+    target.exit_rate = parse_real(value);
+  } else {
+    return false;
+  }
+  return true;
+}
+constexpr const char* grid_file_schema = "atx.nav-construction-grid/v1";
+// A construction grid file (bounded, schema-checked, string flag values) and its SHA,
+// under the engine's variant rules: ids, allowed keys, at most nav_max_grid_variants.
+struct GridSpec {
+  std::vector<par::GridVariant> variants;
+  std::string sha256;
+};
+co::Result<GridSpec> read_grid(const std::string& path) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec || size > max_grid_file_bytes)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav grid: the grid file is missing or above 1 MiB");
+  std::string text(static_cast<usize>(size), '\0');
+  std::ifstream file(path, std::ios::binary);
+  if (!file || !file.read(text.data(), static_cast<std::streamsize>(size)))
+    return co::Err(co::ErrorCode::IoError, "nav grid: grid file read");
+  GridSpec spec;
+  ATX_TRY(spec.sha256, co::sha256_hex(text));
+  const auto doc = Json::parse(text, nullptr, false);
+  const auto is_string = [](const Json& j, const char* key) {
+    return j.contains(key) && j.at(key).is_string();
+  };
+  if (doc.is_discarded() || !doc.is_object() || doc.size() != 2 || !is_string(doc, "schema") ||
+      doc.at("schema").get<std::string>() != grid_file_schema || !doc.contains("variants") ||
+      !doc.at("variants").is_array())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav grid: a grid file is {\"schema\": \"atx.nav-construction-grid/v1\", "
+                   "\"variants\": [...]}");
+  for (const auto& v : doc.at("variants")) {
+    if (!v.is_object() || v.size() != 2 || !is_string(v, "id") || !v.contains("flags") ||
+        !v.at("flags").is_object())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav grid: a variant is {\"id\": ..., \"flags\": {...}}");
+    par::GridVariant variant{v.at("id").get<std::string>(), {}};
+    const auto& flags = v.at("flags");
+    for (auto it = flags.begin(); it != flags.end(); ++it) {
+      if (!it.value().is_string())
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "nav grid: flag values are strings, as on the command line");
+      variant.overrides.emplace_back(it.key(), it.value().get<std::string>());
+    }
+    spec.variants.push_back(std::move(variant));
+  }
+  ATX_TRY_VOID(par::validate_grid(spec.variants,
+                                  par::GridRules{nav_max_grid_variants, nav_grid_variant_flags}));
+  return co::Ok(std::move(spec));
+}
+// The target of each variant: the base's with the variant's flags applied.
+co::Result<std::vector<TargetReplayConfig>> variant_targets(const GridSpec& grid,
+                                                            const TargetReplayConfig& base) {
+  std::vector<TargetReplayConfig> out;
+  out.reserve(grid.variants.size());
+  for (const auto& variant : grid.variants) {
+    auto& target = out.emplace_back(base);
+    try {
+      for (const auto& [key, value] : variant.overrides)
+        if (!apply_construction_flag(key, value, target))
+          return co::Err(co::ErrorCode::InvalidArgument, "nav grid: may not set " + key);
+    } catch (const std::exception& e) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav grid: variant " + variant.id + ": " + e.what());
+    }
+  }
+  return co::Ok(std::move(out));
+}
+constexpr const char* grid_declaration =
+    "v8 D-1 construction grid: one pinned load; one shared construction per decision "
+    "(borrow tiers, price exposures from one session ring, desired target, neutralization) "
+    "for every variant, formed on the union of the variants' cadence days (a variant whose "
+    "cadence misses a decision plans it idle, as it does alone); each variant's scenario "
+    "books run their own MARK, EXECUTE, DECIDE and close in lockstep. <id>/ is byte for "
+    "byte the directory of the standalone nav run with the base flags and the variant's "
+    "flags; this manifest is written last";
+} // namespace
+
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
                           const NavFieldsPin& fields, const NavRateOptions& rate,
                           const NavExecutionOptions& execution, const NavEmitOptions& emit,
                           std::ostream& progress) {
   try {
-    if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
-      return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
-    if (cfg.target.one_way_bps != 0 || cfg.target.annual_borrow_bps != 0)
-      return co::Err(co::ErrorCode::InvalidArgument,
-                     "nav replay: costs and borrow are fixed scenarios, not flags");
-    if (!std::isfinite(limits.daily_mean_max) || !(limits.daily_mean_max > 0) ||
-        !std::isfinite(limits.daily_p95_max) || !(limits.daily_p95_max > 0))
-      return co::Err(co::ErrorCode::InvalidArgument, "nav replay: daily turnover ceilings");
-    if (fields.manifest_path.empty() != fields.manifest_sha256.empty())
-      return co::Err(co::ErrorCode::InvalidArgument,
-                     "nav replay: --fields and --fields-sha256 go together");
+    StageTimes times; // --stage-timers: the clock starts at entry
+    StageTimes* const timed = emit.stage_timers ? &times : nullptr;
+    ATX_TRY_VOID(check_run(cfg, limits, fields));
     const bool tiered = !fields.manifest_path.empty();
-    if (neutralize_by_industry(cfg.target.neutralize) && !tiered)
-      return co::Err(co::ErrorCode::InvalidArgument,
-                     "nav replay: the industry ids need --fields (grp_ff12)");
     const auto scenarios = v7::run_scenarios(nav_scenario_matrix(tiered)); // L4 hook
-    NavReplayConfig base; base.target = cfg.target;
-    base.rate = rate.rate; base.rate_rra = rate.rate_rra; base.rate_lambda = rate.rate_lambda;
-    base.rate_min = rate.rate_min; base.rate_max = rate.rate_max;
-    base.order_basis = execution.order_basis; base.locate_in_aim = execution.locate_in_aim;
-    base.liquidity_cache = execution.liquidity_cache;
-    base.warm_start_sessions = execution.warm_start_sessions;
+    const auto base = run_base(cfg.target, rate, execution);
     const bool holdings = !emit.holdings_directory.empty();
     if (holdings) {
       const auto nav_dir = std::filesystem::path(cfg.output_directory);
@@ -2517,6 +2854,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     // Admission (the reserve at the pinned role's own geometry, then the fields and the
     // loader against the rest) and the pinned load.
     ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, scenarios.size(), holdings));
+    times.loaded = StageTimes::Clock::now();
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
     auto view = blend.view();
     view.industry = loaded.industry; // empty unless an industry id
@@ -2525,16 +2863,18 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     // All scenarios in lockstep: the desired target (and its price exposures) and
     // the borrow tiers are formed once per decision for every scenario book. With
     // --emit-holdings the primary book is observed (read only) while it runs.
+    StageClock* const stages = timed ? &times.replay : nullptr;
     std::vector<NavReplayResult> results;
     HoldingsEmitter csv;
     if (holdings) {
       ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids));
-      ATX_TRY(results, replay_nav_scenarios(input, base, scenarios, csv,
-                                            nav_primary_scenario_index));
+      ATX_TRY(results, replay_observed(input, base, scenarios,
+                                       Observer{&csv, nav_primary_scenario_index}, stages));
       ATX_TRY_VOID(csv.close());
     } else {
-      ATX_TRY(results, replay_nav_scenarios(input, base, scenarios));
+      ATX_TRY(results, replay_observed(input, base, scenarios, Observer{}, stages));
     }
+    times.replayed = StageTimes::Clock::now();
     std::vector<NavSummary> summaries; summaries.reserve(scenarios.size());
     for (const auto& result : results) {
       ATX_TRY(auto summary, summarize_nav(result, limits));
@@ -2545,9 +2885,11 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     ATX_TRY_VOID(v7::capture(scenarios, results, summaries));
     const Json warm = warm_start_record(base, view);
     const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
-                     loaded.binding, warm};
+                     loaded.binding, warm, timed, true};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
+    if (base.book_workers > 1)
+      progress << "nav replay: scenario books on " << base.book_workers << " workers\n";
     if (!warm.is_null())
       progress << "nav replay: warm start of " << base.warm_start_sessions
                << " sessions, first decision session_ns "
@@ -2559,18 +2901,107 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
   }
 }
 
+co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
+                        const NavFieldsPin& fields, const NavRateOptions& rate,
+                        const NavExecutionOptions& execution, const NavEmitOptions& emit,
+                        const std::string& grid_path, std::ostream& progress) {
+  try {
+    StageTimes times;
+    StageTimes* const timed = emit.stage_timers ? &times : nullptr;
+    ATX_TRY_VOID(check_run(cfg, limits, fields));
+    if (!emit.holdings_directory.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav grid: --emit-holdings is a single-run option");
+    if (v7_extension_installed())
+      return co::Err(co::ErrorCode::InvalidArgument, "nav grid: not with a v7 extension");
+    const auto root = std::filesystem::path(cfg.output_directory);
+    if (std::filesystem::exists(root))
+      return co::Err(co::ErrorCode::AlreadyExists, "nav grid: output must not exist");
+    ATX_TRY(const auto grid, read_grid(grid_path));
+    const bool tiered = !fields.manifest_path.empty();
+    const auto scenarios = v7::run_scenarios(nav_scenario_matrix(tiered)); // identity here
+    const auto base = run_base(cfg.target, rate, execution);
+    ATX_TRY(const auto targets, variant_targets(grid, base.target));
+    std::vector<NavReplayConfig> configs(targets.size(), base);
+    for (usize v = 0; v < targets.size(); ++v) configs[v].target = targets[v];
+    // One admission and load for the grid, at the first variant's config (the variants
+    // share every setting the reserve and the loader read); every book is charged.
+    auto first = cfg;
+    first.target = targets.front();
+    const usize books = configs.size() * scenarios.size();
+    ATX_TRY(auto admitted, admit_and_load(first, configs.front(), fields, books, false));
+    times.loaded = StageTimes::Clock::now();
+    const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
+    auto view = blend.view();
+    view.industry = loaded.industry;
+    const NavReplayInput input{view, blend.volume,
+                               NavFinancingFields{loaded.shares_out, loaded.si_shares}};
+    ATX_TRY(const auto results, replay_books(input, configs, scenarios, Observer{},
+                                             timed ? &times.replay : nullptr));
+    times.replayed = StageTimes::Clock::now();
+    std::vector<std::vector<NavSummary>> summaries(configs.size());
+    for (usize v = 0; v < configs.size(); ++v)
+      for (const auto& result : results[v]) {
+        ATX_TRY(auto summary, summarize_nav(result, limits));
+        summaries[v].push_back(std::move(summary));
+      }
+    const Json warm = warm_start_record(base, view);
+    if (!std::filesystem::create_directory(root))
+      return co::Err(co::ErrorCode::AlreadyExists, "nav grid: output must not exist");
+    Json published = Json::array();
+    for (usize v = 0; v < configs.size(); ++v) {
+      const auto& variant = grid.variants[v];
+      auto own = cfg;
+      own.target = targets[v];
+      own.output_directory = (root / variant.id).string();
+      // The variant summaries carry no stage_seconds: they stay the standalone bytes.
+      const NavRun run{own, limits, configs[v], scenarios, results[v], summaries[v],
+                       blend.manifest_json, loaded.binding, warm, timed, false};
+      ATX_TRY_VOID(publish_nav(run, progress));
+      const auto dir = root / variant.id;
+      ATX_TRY(auto recipe_sha, timed_digest(timed, [&] {
+        return co::sha256_file((dir / "recipe.json").string());
+      }));
+      ATX_TRY(auto summary_sha, timed_digest(timed, [&] {
+        return co::sha256_file((dir / "summary.json").string());
+      }));
+      Json flags = Json::object();
+      for (const auto& [key, value] : variant.overrides) flags[key] = value;
+      published.push_back(Json{{"id", variant.id}, {"directory", variant.id},
+                               {"flags", std::move(flags)},
+                               {"recipe_file_sha256", std::move(recipe_sha)},
+                               {"summary_file_sha256", std::move(summary_sha)}});
+    }
+    Json manifest{{"schema", "atx.nav-grid-run/v1"}, {"status", "complete"},
+                  {"grid_sha256", grid.sha256}, {"combined_sha256", cfg.combined_sha256},
+                  {"role_sha256", cfg.role_sha256}, {"books", books},
+                  {"book_workers", base.book_workers}, {"variants", std::move(published)},
+                  {"semantics", grid_declaration}};
+    if (timed) manifest["stage_seconds"] = times.json();
+    progress << "nav grid: " << configs.size() << " variants x " << scenarios.size()
+             << " scenario books published under " << root.string() << '\n';
+    return write_json(root / "grid_manifest.json", manifest);
+  } catch (const std::exception& e) {
+    return co::Err(co::ErrorCode::InvalidArgument, std::string("nav grid: ") + e.what());
+  }
+}
+
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
   if (v7::claims_nav_args(argc, argv)) return v7::dispatch_nav_v7(argc, argv, out, err); // L4
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
     NavRateOptions rate; NavExecutionOptions execution; NavEmitOptions emit;
+    std::string grid_path; // v8 --construction-grid
     std::set<std::string> seen;
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
-      // v6 switches take no value; repeated, they are a usage error like any flag.
-      if (key == "--locate-in-aim" || key == "--liquidity-cache") {
+      // v6/v8 switches take no value; repeated, they are a usage error like any flag.
+      if (key == "--locate-in-aim" || key == "--liquidity-cache" || key == "--stage-timers") {
         if (!seen.insert(key).second) throw std::invalid_argument("duplicate/missing flag");
-        (key == "--locate-in-aim" ? execution.locate_in_aim : execution.liquidity_cache) = true;
+        bool& on = key == "--stage-timers" ? emit.stage_timers
+                   : key == "--locate-in-aim" ? execution.locate_in_aim
+                                              : execution.liquidity_cache;
+        on = true;
         continue;
       }
       if (key == "--help") {
@@ -2595,7 +3026,14 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--warm-start-sessions 0 (K > 0: decide and trade from score_begin - K, "
                "score from score_begin; K <= the role's score_begin)] "
                "[--hold-band B (aim-partial-v5; v8 hold-band-v1 rank hysteresis, B in [0, 1])] "
-               "[--adv-hold-q Q (aim-partial-v5; v8 adv-hold-v1 holding cap Q x ADV, 0 = off)]\n"
+               "[--adv-hold-q Q (aim-partial-v5; v8 adv-hold-v1 holding cap Q x ADV, 0 = off)] "
+               "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
+               "bit-identical; fixed rate only)] [--stage-timers (summary.json "
+               "stage_seconds: load, exposures, construction, books, hash, write)] "
+               "[--construction-grid GRID.json (atx.nav-construction-grid/v1 variants over "
+               "--rule --cadence --trade-fraction --monthly-budget --band-multiple "
+               "--dust-multiple --aim-leverage --exit-rate: one lockstep run; "
+               "<output>/<id>/ = the standalone run, grid_manifest.json last)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -2609,18 +3047,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       if (!seen.insert(key).second || i + 1 >= argc)
         throw std::invalid_argument("duplicate/missing flag");
       const std::string value = argv[++i];
-      const auto real = [&]() {
-        usize used = 0; const f64 x = std::stod(value, &used);
-        if (used != value.size()) throw std::invalid_argument("invalid number");
-        return x;
-      };
-      const auto integer = [&]() {
-        u64 x = 0;
-        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), x);
-        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
-          throw std::invalid_argument("invalid integer");
-        return x;
-      };
+      const auto real = [&]() { return parse_real(value); };
+      const auto integer = [&]() { return parse_integer(value); };
+      // --rule, --cadence and the construction parameters (the grid variants' flags).
+      if (apply_construction_flag(key, value, cfg.target)) continue;
       if (key == "--combined") cfg.combined_path = value;
       else if (key == "--combined-sha256") cfg.combined_sha256 = value;
       else if (key == "--output") cfg.output_directory = value;
@@ -2629,24 +3059,19 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--fields") fields.manifest_path = value;
       else if (key == "--fields-sha256") fields.manifest_sha256 = value;
       else if (key == "--emit-holdings") emit.holdings_directory = value;
+      else if (key == "--construction-grid") grid_path = value;
       else if (key == "--holdings-format") {
         // Accepted without --emit-holdings: the v7 capacity pass drops --emit-holdings
         // and forwards every other flag (strategy_nav_v7.cpp).
         if (value == "f64") emit.format = NavHoldingsFormat::F64;
         else if (value == "csv") emit.format = NavHoldingsFormat::Csv;
         else throw std::invalid_argument("unknown --holdings-format (f64|csv)");
-      } else if (key == "--cadence") {
+      } else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
+      else if (key == "--book-workers") {
         const auto x = integer();
-        if (x > max_dates) throw std::invalid_argument("cadence exceeds bound");
-        cfg.target.cadence = static_cast<usize>(x);
-      } else if (key == "--trade-fraction") cfg.target.trade_fraction = real();
-      else if (key == "--monthly-budget") cfg.target.monthly_budget = real();
-      else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
-      else if (key == "--band-multiple") cfg.target.band_multiple = real();
-      else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
-      else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
-      else if (key == "--exit-rate") cfg.target.exit_rate = real();
-      else if (key == "--hold-band") cfg.target.hold_band = real(); // v8 R-4 hold-band-v1
+        if (x < 1 || x > max_book_workers) throw std::invalid_argument("--book-workers 1..64");
+        execution.book_workers = static_cast<usize>(x);
+      } else if (key == "--hold-band") cfg.target.hold_band = real(); // v8 R-4 hold-band-v1
       else if (key == "--adv-hold-q") cfg.target.adv_hold_q = real(); // v8 R-5 adv-hold-v1
       else if (key == "--warm-start-sessions") {
         const auto x = integer();
@@ -2670,25 +3095,39 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
         if (value == "fixed") rate.rate = NavRateRule::Fixed;
         else if (value == "per-name-v1") rate.rate = NavRateRule::PerNameV1;
         else throw std::invalid_argument("unknown --rate (fixed|per-name-v1)");
-      } else if (key == "--rule") {
-        if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
-        else if (value == "monthly-budget-v2")
-          cfg.target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
-        else if (value == "aim-partial-v5") cfg.target.rule = TargetReplayRule::AimPartialV5;
-        else throw std::invalid_argument("unknown target rule");
       } else throw std::invalid_argument("unknown flag: " + key);
     }
     if (cfg.role_path.empty() || cfg.role_sha256.empty())
       throw std::invalid_argument("--role and --role-sha256 are required in nav mode");
     if (fields.manifest_path.empty() != fields.manifest_sha256.empty())
       throw std::invalid_argument("--fields and --fields-sha256 go together");
-    // The rate belongs to aim-partial-v5, its parameters to --rate per-name-v1.
-    if (seen.count("--rate") && cfg.target.rule != TargetReplayRule::AimPartialV5)
-      throw std::invalid_argument("--rate is aim-partial-v5 only");
+    // The rate belongs to aim-partial-v5, its parameters to --rate per-name-v1. A grid
+    // checks every variant's own rule (its --rule overrides the base's), as its
+    // standalone command line would be checked.
+    std::vector<TargetReplayRule> rules{cfg.target.rule};
+    if (!grid_path.empty()) {
+      if (!emit.holdings_directory.empty())
+        throw std::invalid_argument("--construction-grid does not take --emit-holdings");
+      auto grid = read_grid(grid_path);
+      if (!grid) { err << grid.error().to_string() << '\n'; return 1; }
+      rules.clear();
+      for (const auto& variant : grid->variants) {
+        auto target = cfg.target;
+        for (const auto& [flag, setting] : variant.overrides)
+          if (!apply_construction_flag(flag, setting, target))
+            throw std::invalid_argument("grid flag " + flag);
+        rules.push_back(target.rule);
+      }
+    }
+    for (const auto rule : rules)
+      if (seen.count("--rate") && rule != TargetReplayRule::AimPartialV5)
+        throw std::invalid_argument("--rate is aim-partial-v5 only");
     for (const char* flag : {"--rate-rra", "--rate-lambda", "--rate-min", "--rate-max"})
       if (seen.count(flag) && rate.rate != NavRateRule::PerNameV1)
         throw std::invalid_argument(std::string(flag) + " needs --rate per-name-v1");
-    const auto status = run_nav_replay(cfg, limits, fields, rate, execution, emit, out);
+    const auto status = grid_path.empty()
+        ? run_nav_replay(cfg, limits, fields, rate, execution, emit, out)
+        : run_nav_grid(cfg, limits, fields, rate, execution, emit, grid_path, out);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     return 0;
   } catch (const std::exception& e) { err << "nav replay: " << e.what() << '\n'; return 2; }

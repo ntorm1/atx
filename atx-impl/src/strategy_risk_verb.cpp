@@ -25,6 +25,7 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/data/research_window.hpp"
 #include "build_provenance.hpp"
 #include "stage_data_provenance.hpp"
 #include "strategy_risk_model.hpp"
@@ -33,13 +34,15 @@ namespace atx::impl::strategy::risk {
 namespace {
 using namespace atx;
 namespace co = atx::core;
+namespace rw = atx::engine::data;
 using Json = nlohmann::json;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr u64 max_manifest_bytes = 16ULL << 20;
 constexpr usize max_dates = 4096, max_names = 20000;
 constexpr const char* role_schema = "atx.recent-research-role/v1";
-// 2023-01-01 00:00 UTC: the sealed VAL/holdout begins (R1 m-5). A role reaching it needs an owner.
-constexpr i64 seal_begin_ns = 1'672'531'200LL * 1'000'000'000LL;
+// The research seal (research_window.hpp) begins the hidden sample (R1 m-5): a role reaching it
+// needs an owner.
+constexpr i64 seal_begin_ns = rw::kSealBeginNs;
 constexpr const char* fields_schema = "atx.research-role-fields/v1";
 // Bytes per cell the run holds: role prices (24) and masks (2), cap (8), industry (1), seven
 // f32 descriptors (28), three transient f64 fields while deriving (24), the residual history
@@ -856,13 +859,16 @@ co::Status check_args(const RiskArgs& a) {
   if (a.random > 1024) return co::Err(co::ErrorCode::InvalidArgument, "risk: at most 1024 random portfolios");
   return co::Ok();
 }
-// The TRAIN/seal guard (R1 m-5): a role whose sessions reach 2023-01-01 is refused unless an
-// owner admits it by name (--unseal OWNER, recorded in the manifest). Book weights must lie in
-// the role's sessions (BiasHarness), so the role bounds them too.
+// The TRAIN/seal guard (R1 m-5): a role whose sessions reach the research seal
+// (research_window.hpp) is refused unless an owner admits it by name (--unseal OWNER, recorded
+// in the manifest). Book weights must lie in the role's sessions (BiasHarness), so the role
+// bounds them too.
 co::Status check_seal(std::span<const i64> sessions, const std::string& owner) {
   if (sessions.empty() || sessions.back() < seal_begin_ns || !owner.empty()) return co::Ok();
-  return co::Err(co::ErrorCode::InvalidArgument, "risk: the role reaches 2023-01-01 (sealed "
-                                                 "VAL/holdout); refused without --unseal OWNER");
+  return co::Err(co::ErrorCode::InvalidArgument,
+                 "risk: the role reaches the research seal " + std::string(rw::kSealBeginDate) +
+                     " (" + std::string(rw::kResearchWindowId) +
+                     ", hidden sample); refused without --unseal OWNER");
 }
 RiskPanel panel_of(const Inputs& in) {
   RiskPanel panel;
@@ -915,7 +921,8 @@ Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const R
       {"book_weights", a.book.empty() ? Json(nullptr)
                                       : Json{{"path", a.book}, {"sha256", a.book_sha},
                                              {"rows", book_rows}}},
-      {"seal", {{"begin", "2023-01-01"}, {"role_last_session_ns", in.sessions.back()},
+      {"seal", {{"begin", std::string(rw::kSealBeginDate)},
+                {"role_last_session_ns", in.sessions.back()},
                 {"unseal_owner", a.unseal.empty() ? Json(nullptr) : Json(a.unseal)}}},
       {"producer", producer_json()},
       {"geometry", {{"dates", in.dates}, {"instruments", in.names}, {"factors", factor_count},
@@ -1002,7 +1009,9 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
                "--fields-sha256 SHA --output NEWDIR [--book-weights CSV (session|session_ns,"
                "instrument_id,weight|held_weight; L3 holdings.csv as is) --book-weights-sha256 SHA] [--random-portfolios 64] [--seed 7] "
                "[--emit-exposures none|last|all] [--max-bytes 1400000000] [--unseal OWNER (a "
-               "role reaching 2023-01-01, the sealed VAL/holdout, is refused without it)]\n";
+               "role reaching the research seal "
+            << rw::kSealBeginDate << " (" << rw::kResearchWindowId
+            << "), the hidden sample, is refused without it)]\n";
         return 0;
       }
       if (!seen.insert(key).second || i + 1 >= argc)

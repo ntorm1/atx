@@ -1,0 +1,12 @@
+{
+  "schema": "atx.research-window/v2",
+  "train_begin": "2020-01-01",
+  "train_end_exclusive": "2024-01-01",
+  "seal_begin": "2024-01-01",
+  "hidden": {
+    "read_twice_at_book_level": ["2024-01-01", "2025-01-01"],
+    "never_read": ["2025-01-01", null]
+  },
+  "supersedes": {"schema": "research-seal-v1", "train_end_exclusive": "2023-01-01", "seal_begin": "2025-01-01"},
+  "owner_ruling": {"date": "2026-09-29", "text": "expand TRAIN to include 2023; keep 2024+ hidden and out of sample"}
+}
