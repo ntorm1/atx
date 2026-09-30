@@ -1,163 +1,222 @@
-# Task F-3 report: v8 field specs (F-A done; F-B, F-C, F-D not started)
+# Task F-3 report: v8 field specs F-A to F-D and the E-21 fix
 
-Lane F3, pool-9, branch `feat/platform-v8-f3-20260929` (base `76aa05e3` = lane F F-1 + lane C C-3). Python only;
-synthetic tests only. Stopped at the owner's instruction after F-A (see "STOPPED HERE").
+Lane F3, pool-9, branch `feat/platform-v8-f3-20260929`. Python only; synthetic tests only.
 
-## STOPPED HERE
+## Status
 
-| field | status | commit |
+| task | status | commit |
 |---|---|---|
-| F-A `grp_ff12f49` | DONE, 8 tests | `230b39e1` |
-| F-B `k8_item402_63` | not started | - |
-| F-C `gscore7_lowbm` | not started | - |
-| F-D `eps_consist_4y` | not started | - |
+| Step 0: merge root (integration 3, W0-1) | DONE, no conflicts | `c6b3ee0b` |
+| E-21: F-1 price module reuse interface | DONE | `eca04c18` |
+| F-B `k8_item402_63` | DONE | `0687e82f` |
+| F-C `gscore7_lowbm` | DONE | `1444310f` |
+| F-D `eps_consist_4y` | DONE | `0f32d581` |
+| F-A `grp_ff12f49` (predecessor) | DONE | `230b39e1` |
 
-Design notes for whoever resumes F-B to F-D are at the end of this report.
+Tests (`atx-engine/tools`, synthetic, `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider`):
+```
+test_research_fields_v8_quarters.py test_research_fields_v8.py test_research_fields_price.py
+test_prepare_research_fields.py test_prepare_research_fields_sec.py test_research_fields_holdings.py
+test_prepare_research_fields_sic.py test_prepare_research_fields_sv.py test_prepare_research_fields_module_reuse.py
+test_prepare_research_fields_reuse.py test_record_store.py test_research_window.py test_seal_partitions.py
+```
+Result: **147 passed, 6 subtests passed** (post-merge baseline of the first 11 files: 127). New fixtures are dated
+2014-2021, except one synthetic row per F-A/F-B fixture dated just after the seal (the seal probe, F-A's `AFTER_SEAL`).
 
-## F-A `grp_ff12f49`: what was built
+## E-21: the F-1 reuse interface (`eca04c18`)
 
-New module `atx-engine/tools/research_fields_v8.py`. It is an opt-in `FIELD_MODULES` module, registered at the end
-of `prepare_research_fields.py` after the F-1 price hook.
+- `research_fields_price.py` now has `HOST_HANDLES = ("h",)`, `producer_group` (the spec's group), `field_spec`,
+  `reuse_inputs` and `entry_inputs` (both `{}`: the price source must hash to the role's `source_sha256`, and the prior
+  is bound to the same role). Computed entries record `producer` (module code identity) instead of `producer_code`.
+- Builder (`prepare_research_fields.py`): `MODULE_REUSE_INTERFACE` and `module_reuse_interface(module)`. `run()` calls
+  it for every module with requested fields when `--reuse` is given, **before `output.mkdir`**. A module without the
+  interface is refused with "`--reuse: field module X lacks the reuse interface (...)`" and no output directory.
+- No producer fingerprint moved (builder 6/6, SEC, holdings 4/4, price 5/5, v8 equal to `c6b3ee0b`).
+- Test `test_reuse_with_price_fields`: a mixed reuse (2 copied, 3 computed, files equal a fresh build); a self reuse
+  copies all 5 byte for byte (entries verbatim plus `reused_from`); a chained reuse; a simulated `coskew_rows` edit
+  recomputes only `coskew_60m`; a pre-E-21 prior (entries with `producer_code` only) is recomputed ("producing code not
+  recoverable"); deleting `HOST_HANDLES` gives the named refusal before any output.
+- A prior written by F-1 code before this fix has no `producer`: its price fields recompute once.
 
-**Interface.** The module follows C-3:
-- `bind`, `FIELDS`, `OPTIONS = ()`, `add_arguments`, `check` and `compute`;
-- `PRODUCERS = {"v8_ff12f49": ("ff12f49_rows",)}` and `HOST_HANDLES = ("h",)`;
-- `producer_group`, `field_spec`, `reuse_inputs` (returns `{}`) and `entry_inputs` (returns `{}`).
+## F-B `k8_item402_63` (`0687e82f`)
 
-**Code units.**
-- `ff12f49_code(ff12, ff49)` is the pure cellwise rule.
-- `ff12f49_rows` is the producer.
-- `PublishedRows` is a generic reader of this run's published payloads. It hashes each payload as it reads it, and
-  those hashes are recorded as the field's `sources`. F-C can reuse it.
+In `research_fields_sec.py`'s 8-K pass, as the design note said:
+- `_eightk` builds a second item mask (`item == "4.02"`, OR-reduced per accession like the material mask) and a
+  `Windowed` of window 63 on the same usable/event clock.
+- Spec: stage `sec_filings`, formula `sec-k8-item402-63-v1`, `K8_PRESENT` NaN rule and `LINK_RULE` (primary lines).
+  1 if an original 8-K (form starts with 8-K, not an amendment) with item 4.02 became usable within the last 63
+  sessions (e <= t < e + 63), else 0.
+- Registered after every v7 SEC field, so the registry order of the others is unchanged.
+- `source_checks.sec.sec_filings.accessions_used_item402` is added only when the field is requested. Without it, the
+  SEC checks and every `k8_*` payload are byte-identical.
+- Cost: the `sec` group fingerprint changes, so the 14 SEC fields recompute once under `--reuse` (same bytes).
 
-**Registration without a fingerprint change.**
-- `bind()` adds `FIELDS` to the builder's `ALL_FIELDS` itself. The builder hook is therefore two code lines:
-  `import research_fields_v8 as _v8` and `FIELD_MODULES.append(_v8.bind(globals()))`.
-- Measured: an F-1-style `ALL_FIELDS.update(_v8.FIELDS)` statement in the builder changes the SEC module's producer
-  fingerprint. The SEC host closure reads `spec_definition`, which reads `ALL_FIELDS`. The cost would have been a
-  recompute of all 14 SEC fields under `--reuse`.
-- With the chosen form, the builder, SEC and holdings fingerprints are all unchanged. The test
-  `test_registration_keeps_every_other_producer_fingerprint` pins this.
+Tests (2021 fixture, `test_research_fields_v8.py::K8Item402`):
+- every cell against an oracle;
+- the window edges e-1 / e / e+62 / e+63;
+- a 22:30 UTC acceptance;
+- point in time: rows at or after the t mark mutated, plus rows exactly at the mark and one hour after; rows 0..t
+  byte-identical for all four `k8_*` fields;
+- the 8-K/A and a 10-Q with 4.02 never count, and an amendment alone gives no presence;
+- the seal: `tool.SEAL` equals `research_window.SEAL`. A patched `SEAL_NS` inside the role drops the later rows, the
+  output equals the oracle at that seal, and `rows_sealed` is counted;
+- `k8_*` payloads, entries and checks are unchanged without the field;
+- reuse: mixed and self.
 
-| item | value |
-|---|---|
-| formula id | `ff12-money-ff49-v1` (entry also carries `formula_sha256`, `producer`, `money_member_cells`) |
-| inputs | this run's `grp_ff12.f64`, `grp_ff49.f64` (`requires`, manifest `depends_on`); both SHA-256 recorded in `sources` |
-| rule | 100 + ff49 when ff12 == 11 and ff49 in {45, 46, 47, 48} (145 Banks, 146 Insur, 147 RlEst, 148 Fin); otherwise ff12 (Money with NaN ff49 gives 11; non-Money gives ff12 bit for bit; ff12 NaN gives NaN) |
-| clock | that of grp_ff12 / grp_ff49 (fund-events-lagged-v1 on the SIC table, the same latest visible valid SIC row, `--fund-lag-sessions`); row t reads their row t only |
-| staleness | inherits grp_ff12 (550 days): NaN exactly where grp_ff12 is NaN |
-| validity start | wherever grp_ff12 is finite: role row L onward. The SIC table starts 2009q2 (FSDS), so the field is defined throughout TRAIN 2020-2023. |
-| seal | no own read. The SIC rows are sealed by the builder (`SEAL_NS` in `load_events` / `load_sic_stage`), so the field follows W0-1 after the merge. |
+The existing SEC oracle gained the field (all 0/NaN there). The C-3 63-field recipe excludes it.
 
-**Registered choices.**
-1. REIT (6798) is 148 Fin, as French's Siccodes49 has it.
-2. A Money SIC that Siccodes49 does not list keeps 11. There are 592 such SICs in the pinned table, for example
-   6001-6009.
-3. The rule is written in the stated order: `otherwise ff12` also covers a Money cell whose FF49 is outside 45-48. The
-   pinned table has none: every finite Money FF49 is in {45..48}, and no non-Money SIC maps to 45-48.
-4. `lagged: False`, and the clock names grp_ff12's clock without a `{lag}`. This is F-1's `xrd0_ttm` precedent. A
-   `{lag}` template would never match in C-3's `module_formula`, so the field would never be reused. A lag change
-   recomputes grp_ff12, and the `requires` rule then recomputes this field.
+## F-C `gscore7_lowbm` (`1444310f`) and F-D `eps_consist_4y` (`0f32d581`)
+
+Both live in `research_fields_v8.py` (one module, so every helper the producers reach is inside their fingerprinted
+closure). `PRODUCERS`: `v8_gscore: (issuer_history, gscore_rows)`, `v8_epscons: (issuer_history, eps_consist_rows)`.
+
+**Inputs.** The history is read through `h` (fingerprinted): `load_bridge`, `resolve_links`, `pinned_manifest`,
+`load_events`, `advance`, `EVENTS_ADAPTER` and `NULL_PERIOD_DAY`.
+- Sources are the builder's own `--identity-bridge`, `--fund-events`, their pins and `--fund-lag-sessions`. These
+  names are the module's `OPTIONS`, so `main()` passes the parsed values.
+- `run()` callers must pass them in `module_options` too. `check` refuses before any output if one is missing or the
+  lag is outside [0, 5].
+- The selection at session t is the issuer fields' own (`LatestRows`): the latest row with clock < mark(t-L), primary
+  lines, and the 200/400-day staleness.
+
+**Point in time.**
+- Each events row r carries a fiscal-quarter view built from the CIK's rows up to r in (accepted_utc, accession) order
+  (`QuarterIndex`, rule `fiscal-quarter-view-v1`).
+- Quarter k is the period_end nearest A - floor(91.3125 k + 0.5) days within 20 days (ties: the later). Its items are
+  those of the latest row up to r anchored at it.
+- Every row of the view is visible whenever r is selected. Sealed rows are dropped by `load_events` (`SEAL_NS` from
+  research_window).
+
+**F-C**, formula `mohanram-g7-lowbm3-sic2-v1`:
+- bm = be / me_company[t-1], with be > 0 and me_company from this run's payload of the previous row. Bottom tercile =
+  bm <= the 1/3 quantile (numpy linear) over member names with a finite bm.
+- Seven signals:
+  - ROA, CFROA, RDA and CAPXA are above the peer median. They are scaled by `at`, and a missing R&D counts as 0;
+  - CFO > NI;
+  - VARROA and VARSGR are below the peer median. VARROA uses ni_q/at of each quarter, and VARSGR uses sale_ttm(P_k) /
+    sale_ttm(P_k+1) - 1. Each is a ddof-1 sample variance over k = 0..15 with at least 12 finite.
+- Peer median, per measure: over the tercile names of the same `grp_sic2` with that measure finite.
+- A tercile name is scored only when `grp_sic2` and every input but R&D are finite. Otherwise, and outside the
+  tercile, the value is NaN. Non-member cells are NaN.
+- `requires: [me_company, grp_sic2]`.
+
+**F-D**, formula `alwathainani-eps-consistency-16q-v1`:
+- EPS_k = ni_q / shrs_q (shrs_q > 0, as reported).
+- g_k = (EPS_k - EPS_k+4) / ((|EPS_k+4| + |EPS_k+8|) / 2), NaN on a 0 denominator.
+- Value = the mean of the finite g_k, k = 0..15, when at least 12 are finite.
+- NaN when g_0 or g_4 is missing, |g_0| > 6, or g_0 g_4 < 0.
+- The entry carries `nan_reasons_member_cells` by reason.
+
+**Entries.** Both record `identity_bridge_manifest_sha256`, `fund_events_manifest_sha256` and `fund_lag_sessions`.
+These are `entry_inputs` / `reuse_inputs`, so a changed bridge, events or lag recomputes them ("inputs differ").
+`source_checks.v8` holds the lag, the clock, the quarter rule, the bridge and the events checks.
+
+**Tests** (`test_research_fields_v8_quarters.py`: 2014-2021 world with TH3, FINRA, role, bridge, SIC and events; 9
+tests):
+- both fields cell by cell against an independent oracle;
+- point in time: events and SIC rows at or after the t mark are mutated or added (one exactly at the mark), and the
+  role's raw_close is scaled from row t on, which moves me_company at t itself. Rows 0..t of both fields stay
+  bit-identical;
+- seal: rows added after a seal inside the role would move both fields unsealed. Sealed, the output equals the world
+  without them;
+- the base payloads, entries and checks are identical without the new fields;
+- reuse: self, mixed, and a lag change;
+- refusals before output, and the CLI;
+- QuarterIndex against brute force (amendments, missing quarters, jitter, a null period_end, a tie);
+- the G-score cross-section on 400 random names;
+- EPS rule boundaries (|g_0| = 6 kept, a zero g, a zero denominator, exactly 12 finite).
+
+**Registered choices** (not in the draft or E-20; root may overrule before the build):
+1. The quarter rule itself.
+2. "Prior 16 quarters" = k = 0..15, the anchor's quarter included.
+3. The tercile is ties-inclusive at the cut, and U is every member name with a finite bm.
+4. Per-measure peer medians.
+5. Strict > / < comparisons.
+6. ddof 1.
+7. F-D: a missing g_0/g_4 gives NaN. "Opposite signs" is strict: a zero g does not change sign.
 
 ## How root verifies
 
-1. Tests:
-   ```
-   cd atx-engine/tools
-   "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider test_research_fields_v8.py test_research_fields_price.py test_prepare_research_fields.py test_prepare_research_fields_sec.py test_research_fields_holdings.py test_prepare_research_fields_sic.py test_prepare_research_fields_sv.py test_prepare_research_fields_module_reuse.py test_prepare_research_fields_reuse.py test_record_store.py
-   ```
-   Here: **120 passed** (8 new). The new tests (fixture dated 2021, before the W0-1 seal):
-   - `test_money_mappings`: the four Money codes, 11, 6 and 12, the late link and the 550-day staleness. It also checks
-     the full array against a cell-by-cell oracle and checks `money_member_cells`.
-   - `test_non_money_cells_equal_grp_ff12_bit_for_bit`: a `<u8` view comparison.
-   - `test_nan_pattern_equals_grp_ff12`: also checks the canonical NaN bytes.
-   - `test_field_at_t_unchanged_when_rows_after_t_mutate`: every SIC row at or after the t mark is changed, and rows
-     are added after it (one exactly at the mark). Rows 0..t stay byte-identical and later rows move.
-   - `test_existing_payloads_byte_identical`: grp_sic2, grp_ff12 and grp_ff49 have the same files and entries with or
-     without the new field.
-   - `test_reuse_copies_unchanged_and_recomputes_after_a_group_change`: a self reuse copies all four, and so does a
-     reuse of a reuse. A changed SIC table recomputes the field with the reason "depends on grp_ff12, grp_ff49".
-   - `test_requires_registration_and_cli`.
-   - `test_registration_keeps_every_other_producer_fingerprint`.
-2. Identity:
-   - Without `grp_ff12f49` in `--fields`, the module computes nothing and every output is unchanged.
-   - With it, only `grp_ff12f49.f64` and its entry are added. Every other field's `sha256` in the new manifest equals
-     the prior's.
-3. Fields v10 on the 4-year role: the v9 argv plus the following. `grp_ff12` and `grp_ff49` are in v9; F-A needs no
-   new option.
-   ```
-   --fields <v9 list>,ret_overnight,ret_intraday,ceq_iss_5y,coskew_60m,vol_126,xrd0_ttm,grp_ff12f49
-   --reuse <fields-v9 dir> --reuse-sha256 <its manifest sha> --reuse-hardlink
-   --price-source C:/Users/natha/Downloads/TickerHistory3.parquet --max-rss-mib 1200
-   ```
-   Two blockers, both outside F-A:
-   - **The F-1 price module has no C-3 reuse interface** (see Open risks). This argv fails as soon as `--reuse` meets
-     any F-1 field.
-   - **v10 has 63 + 6 + 1 = 70 fields**, above the 64-row manifest cap. B-2's cap lift or a lean manifest is needed
-     first (draft section 8).
+1. The tests above.
+2. Fingerprints (what I ran): `code_fingerprint.fingerprints` / `module_fingerprints` of `git show c6b3ee0b:<file>`
+   against the working tree:
+   - builder 6/6 equal;
+   - holdings 4/4 equal;
+   - price 5/5 equal;
+   - `v8_ff12f49` equal;
+   - `sec` differs (F-B, intended);
+   - `v8_gscore` and `v8_epscons` are new.
+3. Opt-in identity on the build: every new field is outside `DEFAULT_FIELDS`. After the v10/v11 build with `--reuse`,
+   run the C-3 identity one-liner (task-C-3-report step 3) on prior versus new. Expected:
+   - every prior field's `sha256` is unchanged, the 14 recomputed SEC fields included;
+   - `reuse.not_reused` names only the SEC fields ("producing code differs (research_fields_sec.py group sec ...)")
+     and the new fields ("absent from the prior manifest").
 
-   If only F-A is wanted for the R-2 cell, use the v9 argv plus `grp_ff12f49` and `--reuse`. That build does not hit
-   the first blocker, and 64 rows is within the cap.
+## Argv deltas and expected `--reuse` counts
+
+Prior P = `v8-i3p4-c-fields2` (63 fields, integration-3 code, live regsho pin; manifest `5e5def8d...`), with its argv
+(integration-log section c). Assume integration 4 merges this lane and moves no other builder or holdings closure.
+
+**Fields v10** (v9 + F-1 + grp_ff12f49 = 70 fields). Argv delta:
+```
+--fields <v9 63 names>,ret_overnight,ret_intraday,ceq_iss_5y,coskew_60m,vol_126,xrd0_ttm,grp_ff12f49
+--price-source C:/Users/natha/Downloads/TickerHistory3.parquet     (must hash to the role's source_sha256)
+--reuse <P> --reuse-sha256 <P manifest sha> --reuse-hardlink
+```
+- Keep `--max-rss-mib 2048` from v9's argv (F-1 needs at least 1200).
+- If the build stops with `FieldNeedsOpen`, drop `ret_overnight,ret_intraday` (OD-6).
+- `grp_ff12f49` and `xrd0_ttm` need only `grp_ff12` / `grp_ff49` and `xrd_ttm` / `sale_ttm`, all in v9.
+
+Expected counts:
+- with F-B merged: **reused 49, computed 21**. The 14 SEC fields recompute once with the same bytes; the 7 new
+  fields are computed.
+- with only E-21 and F-A merged: reused 63, computed 7.
+
+**Fields v11** (v10 + F-B, F-C, F-D = 73 fields). Argv delta:
+```
+--fields <v10 list>,k8_item402_63,gscore7_lowbm,eps_consist_4y
+```
+- No new option. F-B uses v9's `--sec-stages`, `--sec-filings-sha256` and `--sec-identity-bridge*`. F-C and F-D use
+  v9's `--identity-bridge`, `--fund-events`, their pins and `--fund-lag-sessions`.
+- `gscore7_lowbm` requires `me_company` and `grp_sic2`, both in v9.
+
+Expected counts:
+- from v10: **reused 70, computed 3**;
+- directly from P: reused 49, computed 24.
+
+## Deviations, with reasons
+
+- F-C: per-measure peer medians (the draft's "median of the same measure"). My first cut used only fully scored
+  peers; I changed it before commit.
+- F-C/F-D: history comes from `fundamental_events` rows, not the daily panels (the design note: 16 to 24 quarters
+  exceed the 4-year role).
+- E-21's builder check runs only with `--reuse`, so builds without it are untouched.
 
 ## Cross-lane edits
 
-- `atx-engine/tools/prepare_research_fields.py`: 4 lines at the end, after the F-1 hook (2 comment lines, then the
-  import and the append). The seal constants and the research_window import are untouched.
-- `atx-engine/tools/test_research_fields_price.py:457`:
-  - The old assertion said the price fields are the last block of `ALL_FIELDS`. That is false once any later module
-    registers.
-  - The new assertion says they form one contiguous block after every builder and SEC field.
+- `prepare_research_fields.py` (lane C): `MODULE_REUSE_INTERFACE`, `module_reuse_interface()`, and 2 lines in `run()`.
+  They are outside every closure.
+- `research_fields_price.py` and `test_research_fields_price.py` (lane F): the E-21 interface, line 419, and one new
+  test.
+- `research_fields_sec.py` (W5a / C-3): F-B.
+- `test_prepare_research_fields_sec.py`: the oracle's F-B key (1 line).
+- `test_prepare_research_fields_module_reuse.py`: `SEC_V9` leaves out the opt-in F-B field, keeping the 63-field v9
+  recipe.
 
 ## Open risks
 
-- **The price module is missing the C-3 reuse interface.** This is a merge gap between F-1 and C-3 on this base.
-  - `research_fields_price.py` has `PRODUCERS` but no `HOST_HANDLES`, `producer_group`, `field_spec`, `reuse_inputs`
-    or `entry_inputs`. Its entries record `producer_code`, not `producer`.
-  - `run()` calls `reuse_module_fields` for every `FIELD_MODULES` module with requested fields. With `--reuse` and any
-    F-1 field, `module_fingerprints` therefore raises `AttributeError: HOST_HANDLES`. This happens after
-    `output.mkdir`, which leaves a partial directory.
-  - Fix, about 20 lines:
-    - add `HOST_HANDLES = ("h",)`;
-    - `producer_group` returns `FIELDS[name]["group"]`, and `field_spec` returns the spec;
-    - `reuse_inputs` and `entry_inputs` return `{}`. The price source is pinned to the role's `source_sha256`, and
-      the role is pinned by `load_prior`;
-    - record `"producer": {"module": ..., **h.module_code_identity(sys.modules[__name__])}` in the entries;
-    - update the one test line (`test_research_fields_price.py:419`).
-  - Not done here, on the stop instruction.
-- Existing synthetic fixtures of other modules still use 2024 sessions (C-3 report). Mine use 2021 and survive the
-  W0-1 seal.
-
-## Design notes for the remaining fields (not implemented)
-
-- **F-B `k8_item402_63` belongs in the SEC module's pass**, not in `research_fields_v8.py`, for three reasons:
-  1. The K8 parse, calendar and link rule are `SecFieldModule` code. A separate module would have to import them, and
-     imports are opaque to `code_fingerprint`: an edit there would not invalidate reuse.
-  2. One pass reads and hashes `eight_k_items.parquet` and loads the SEC bridge once.
-  3. There is no copy of the `_eightk` loop.
-
-  How: add `"4.02"` as a second mask in `_eightk` (an `item402` Windowed with window 63, same `usable` / `event`
-  clock), a spec with `stages ["sec_filings"]` and formula `sec-k8-item402-63-v1`, and add its stats key only when the
-  field is requested.
-
-  Cost: the `sec` group fingerprint changes, so all 14 SEC fields recompute once under `--reuse`. Their payloads stay
-  byte-identical, which the ByteIdentity tests check. The W0E seal merge forces that same recompute anyway (C-3 report).
-- **F-C and F-D need 16 to 24 fiscal quarters of history.** The 4-year role starts about 2018-06, so the daily
-  panels cannot serve it. They must read `fundamental_events.parquet` through the builder's `load_bridge`,
-  `resolve_links`, `load_events` and `advance` (via `h`, so the reads are fingerprinted), using the builder's own
-  `--identity-bridge`, `--fund-events`, their SHA-256 pins and `--fund-lag-sessions`. These builder argument names
-  would go in the module's `OPTIONS`, so that `main()` hands the same parsed values over; programmatic `run()` callers
-  pass them in `module_options`.
-
-  Per events row, derive values from the CIK's rows up to that row. Map fiscal quarters by calendar offset:
-  quarter k = the known `period_end` nearest A - round(91.3125 k) days, within ±20 days (the contract's lag
-  tolerance). Then pick the latest visible row per session with the anchor staleness rule, as the issuer fields do.
-
-  Open questions for root:
-  - F-C has no discrete-quarter revenue item. Quarterly sales growth would be `sale_ttm(P)/sale_ttm(P-1q) - 1`.
-  - F-C: the minimum history for the two variances (proposed 12 of 16, as F-D).
-  - F-C: use `me_company[t-1]` (the t-1 price rule) in bm.
-  - F-C: the peer set is member names only.
-  - F-D: split basis. EPS from the anchor row of each quarter is on the share basis as first reported, so a split
-    inside the 8-quarter span distorts g.
-  - F-D: the literal denominator `mean(EPS_q-4, EPS_q-8)` can be 0 or negative. Root was to check it against the CZ
-    code.
+- **Manifest cap:** v10 has 70 rows and v11 has 73, above the 64-row runner cap. B-2's cap lift or a lean manifest
+  must land first.
+- **Programmatic `run()` callers** pass the issuer inputs twice (kwargs and `module_options`). A mismatch would give
+  F-C/F-D other inputs than me_company/grp_sic2, and nothing detects it. `main()` (every production build) is
+  consistent by construction.
+- **Quarter view:** a restatement of an older quarter that arrives with a later anchor is not seen. The quarter keeps
+  its last value from while it was the anchor (caveat on both fields).
+- **History reach:** events rows start 2014-06-01.
+  - F-C (13 to 17 quarters) is defined from about 2017-08.
+  - F-D (at least 20 quarters for 12 finite g) is defined from about mid-2019.
+  - TRAIN 2020-2023 is covered by both. The early rows of the 4-year role are sparse.
+- **Split distortion (F-D):** as-reported shares distort g for up to 8 quarters after a split (E-20 disclosed). At a
+  Q4 anchor, `shrs_q` is often the fiscal-year count.
+- **Seal constant names:** the builder must keep the `SEAL_NS` name that `load_events` / `load_bridge` read (they
+  follow research_window).
