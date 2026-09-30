@@ -2118,8 +2118,10 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
   if (observer.sink && (variants.size() != 1 || observer.book >= scenarios.size()))
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: observed book out of range");
   const auto& base = variants.front();
-  for (const auto& variant : variants)
-    if (!same_shared(base, variant))
+  // From the second variant: the base against itself would refuse a NaN option (NaN != NaN)
+  // here with the grid message instead of the option's own refusal in validate_nav_config.
+  for (usize v = 1; v < variants.size(); ++v)
+    if (!same_shared(base, variants[v]))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav grid: variants may differ only in rule, cadence, trade fraction, "
                      "monthly budget, band, dust, aim leverage and exit rate");
