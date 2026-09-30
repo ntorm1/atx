@@ -454,7 +454,10 @@ class PriceFields(unittest.TestCase):
         for group, entries in price.PRODUCERS.items():
             for fn in entries:
                 self.assertTrue(callable(getattr(price, fn)), (group, fn))
-        self.assertEqual(list(tool.ALL_FIELDS)[-len(price.FIELDS):], list(price.FIELDS))
+        names = list(tool.ALL_FIELDS)   # one block after every builder and SEC field (later modules follow it)
+        start = names.index(next(iter(price.FIELDS)))
+        self.assertEqual(names[start:start + len(price.FIELDS)], list(price.FIELDS))
+        self.assertTrue(set(names[:start]) >= set(tool.FIELDS) | set(tool.ISSUER_FIELDS) | set(sec.FIELDS))
         self.assertTrue(all(tool.ALL_FIELDS[x]["point_in_time"] for x in price.FIELDS))
         self.assertFalse(set(price.FIELDS) & set(tool.DEFAULT_FIELDS))   # opt-in: the default build is unchanged
 

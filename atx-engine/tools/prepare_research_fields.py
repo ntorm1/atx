@@ -3173,6 +3173,10 @@ _holdings.register(globals())
 import research_fields_price as _price  # noqa: E402  (same directory; it does not import this module)
 FIELD_MODULES.append(_price.bind(globals()))
 ALL_FIELDS.update(_price.FIELDS)
+# Platform v8 F-3 registry hook: the v8 fields of research_fields_v8.py (grp_ff12f49), an opt-in FIELD_MODULES module;
+# its bind() appends its registry to ALL_FIELDS itself, so no ALL_FIELDS statement joins the SEC module's host closure.
+import research_fields_v8 as _v8  # noqa: E402  (same directory; it does not import this module)
+FIELD_MODULES.append(_v8.bind(globals()))
 
 if __name__ == "__main__":
     main()
