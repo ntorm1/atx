@@ -884,6 +884,63 @@ co::Status check_label_manifests(const Json& role, const Json& label) {
     return label_refused("base: universe.inputs.delisting differs from --role's");
   return co::Ok();
 }
+// A cell of the blend geometry (date-major, ids.size() names, not empty) as a refusal names it.
+std::string label_cell(usize k, std::span<const u64> ids) {
+  return " (row " + std::to_string(k / ids.size()) + ", instrument " +
+         std::to_string(ids[k % ids.size()]) + ")";
+}
+// The two pinned manifests of a label role run: --role's and the label role's.
+struct LabelManifests {
+  Json role, label;
+};
+// Both manifests, pinned, then the manifest rule (detail::check_label_role).
+co::Result<LabelManifests> admitted_label_manifests(const TargetReplayRunConfig& cfg,
+                                                    const std::string& path,
+                                                    const std::string& sha256) {
+  if (cfg.role_path.empty() || cfg.role_sha256.empty() || path.empty() || sha256.empty())
+    return label_refused("--role and --label-role, each with its SHA-256, are required");
+  ATX_TRY(auto role, pinned_json(cfg.role_path, cfg.role_sha256));
+  auto label = pinned_json(path, sha256);
+  if (!label) return label_refused("its manifest: " + label.error().to_string());
+  ATX_TRY_VOID(check_label_manifests(role, *label));
+  return co::Ok(LabelManifests{std::move(role), std::move(*label)});
+}
+// The declared delisting-return clearing, cell by cell. Only when the manifests pin different
+// member.u8 (check_label_manifests admitted that only with a declared N > 0): --role's member.u8
+// (loaded against --role's own receipt) and the label's `member` (validated 0/1; `present` is
+// the label's presence) may differ only on a cell --role has absent and keeps a member (the
+// lagged membership) that the label role prices and clears (DELISTING_RETURN_RULE member[T] = 0),
+// and on exactly N cells. The effective membership (member & present & close > 0) is checked
+// against the blend on every cell by the caller.
+co::Status check_declared_clearing(const TargetReplayRunConfig& cfg,
+                                   const LabelManifests& manifests, std::span<const u8> member,
+                                   std::span<const u8> present,
+                                   const detail::LoadedSavedBlend& blend) {
+  if (!member_differs(manifests.role, manifests.label)) return co::Ok();
+  const usize cells = blend.present.size();
+  if (member.size() != cells || present.size() != cells || blend.ids.empty())
+    return label_refused("it needs --role's prices (the NAV load)");
+  std::vector<u8> kept;
+  ATX_TRY_VOID(payload(std::filesystem::path(cfg.role_path).parent_path(),
+                       manifests.role.at("files"), "member.u8", kept, cells));
+  u64 cleared = 0;
+  for (usize k = 0; k < cells; ++k) {
+    if (kept[k] == member[k]) continue;
+    if (kept[k] != 1 || member[k] != 0 || blend.present[k] != 0 || present[k] == 0)
+      return label_refused("the membership (member.u8) differs from --role's" +
+                           label_cell(k, blend.ids) +
+                           " outside a delisting-return clearing (only a member --role keeps on "
+                           "a cell it has absent and the label role prices may be cleared)");
+    ++cleared;
+  }
+  const u64 declared = declared_cleared(manifests.label);
+  if (cleared != declared)
+    return label_refused("the membership (member.u8) differs from --role's on " +
+                         std::to_string(cleared) + " cells and the label role declares " +
+                         std::to_string(declared) + " cleared (universe.delisting.applied."
+                         "members_cleared_on_termination_session)");
+  return co::Ok();
+}
 const char* rule_name(TargetReplayRule rule) {
   switch (rule) {
   case TargetReplayRule::BaselineTargetV1: return "baseline-target-v1";
@@ -1453,12 +1510,8 @@ co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, 
 co::Status check_label_role(const TargetReplayRunConfig& cfg, const std::string& path,
                             const std::string& sha256) {
   try {
-    if (cfg.role_path.empty() || cfg.role_sha256.empty() || path.empty() || sha256.empty())
-      return label_refused("--role and --label-role, each with its SHA-256, are required");
-    ATX_TRY(const auto role, pinned_json(cfg.role_path, cfg.role_sha256));
-    auto label = pinned_json(path, sha256);
-    if (!label) return label_refused("its manifest: " + label.error().to_string());
-    return check_label_manifests(role, *label);
+    ATX_TRY_VOID(admitted_label_manifests(cfg, path, sha256));
+    return co::Ok();
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: --label-role allocation failed");
   } catch (const std::exception& e) {
@@ -1469,7 +1522,7 @@ co::Result<LoadedLabelRole> load_label_role(const TargetReplayRunConfig& cfg,
                                             const std::string& path, const std::string& sha256,
                                             const LoadedSavedBlend& blend) {
   try {
-    ATX_TRY_VOID(check_label_role(cfg, path, sha256));
+    ATX_TRY(const auto manifests, admitted_label_manifests(cfg, path, sha256));
     const usize n = blend.names, cells = blend.dates * blend.names;
     if (!cells || blend.sessions.size() != blend.dates || blend.ids.size() != n ||
         blend.close.size() != cells || blend.raw.size() != cells ||
@@ -1480,19 +1533,15 @@ co::Result<LoadedLabelRole> load_label_role(const TargetReplayRunConfig& cfg,
     if (std::any_of(blend.sessions.begin(), blend.sessions.end(),
                     [](i64 session) { return rw::is_sealed(session); }))
       return label_refused(sealed_label());
-    ATX_TRY(const auto label, pinned_json(path, sha256));
     const auto base = std::filesystem::path(path).parent_path();
-    const auto& files = label.at("files");
+    const auto& files = manifests.label.at("files");
     LoadedLabelRole out;
     ATX_TRY_VOID(payload(base, files, "close.f64", out.close, cells));
     ATX_TRY_VOID(payload(base, files, "raw_close.f64", out.raw, cells));
     ATX_TRY_VOID(payload(base, files, "present.u8", out.present, cells));
     std::vector<u8> member;
     ATX_TRY_VOID(payload(base, files, "member.u8", member, cells));
-    const auto where = [&blend, n](usize k) {
-      return " (row " + std::to_string(k / n) + ", instrument " +
-             std::to_string(blend.ids[k % n]) + ")";
-    };
+    const auto where = [&blend](usize k) { return label_cell(k, blend.ids); };
     for (usize k = 0; k < cells; ++k) {
       const bool shown = out.present[k] != 0;
       const f64 close = out.close[k], raw = out.raw[k];
@@ -1512,6 +1561,7 @@ co::Result<LoadedLabelRole> load_label_role(const TargetReplayRunConfig& cfg,
       const usize row = k / n;
       if (row >= blend.begin && row < blend.end) ++out.label_only_scored_cells;
     }
+    ATX_TRY_VOID(check_declared_clearing(cfg, manifests, member, out.present, blend));
     return co::Ok(std::move(out));
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: --label-role allocation failed");

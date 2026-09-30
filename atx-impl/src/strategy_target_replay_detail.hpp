@@ -59,7 +59,12 @@ struct LoadedSavedBlend {
 // differs except close.f64, raw_close.f64, volume.f64 and present.u8 (sessions: the dates,
 // ids: the instruments, member.u8: the membership), or whose universe block is not absent in
 // both or the same id, base role (manifest, member), identity-bridge and SIC-events pins (and
-// the role's delisting-stage pin when it has one).
+// the role's delisting-stage pin when it has one). member.u8 (and then the manifest key
+// score_member_counts) may differ only when the label role declares a delisting-return
+// clearing (prepare_recent_research.py DELISTING_RETURN_RULE member[T] = 0):
+// universe.delisting.returns_applied true and
+// universe.delisting.applied.members_cleared_on_termination_session N > 0; load_label_role
+// verifies the N cells.
 [[nodiscard]] atx::core::Status check_label_role(const TargetReplayRunConfig& cfg,
                                                  const std::string& path,
                                                  const std::string& sha256);
@@ -75,13 +80,17 @@ struct LoadedLabelRole {
 // role's, loaded with prices) at or after the seal; then close.f64, raw_close.f64, present.u8
 // and member.u8 against the label manifest's receipts (SHA-256 and extent), refusing a
 // presence/price contract breach, a --role-present cell that is absent or at another close or
-// raw close (bits), or member & present & close > 0 differing from blend.member.
+// raw close (bits), or member & present & close > 0 differing from blend.member. When the
+// manifests pin different member.u8 (a declared clearing), it also loads the role's member.u8
+// against the role's receipt and refuses unless the two differ on exactly the declared N cells,
+// each one the role has absent and keeps a member and the label role presents and clears.
 [[nodiscard]] atx::core::Result<LoadedLabelRole> load_label_role(
     const TargetReplayRunConfig& cfg, const std::string& path, const std::string& sha256,
     const LoadedSavedBlend& blend);
-// What a label role's load holds beside the blend: per cell its close, raw close, presence and
-// the member mask it verifies; and the two pinned manifests' text and parse.
-inline constexpr atx::u64 label_role_cell_bytes = 2 * sizeof(atx::f64) + 2;
+// What a label role's load holds beside the blend: per cell its close, raw close, presence, the
+// member mask it verifies and, for a declared clearing, the role's member mask; and the two
+// pinned manifests' text and parse.
+inline constexpr atx::u64 label_role_cell_bytes = 2 * sizeof(atx::f64) + 3;
 inline constexpr atx::u64 label_role_metadata_bytes = 8ULL << 20;
 // The target replay's own recipe/geometry/axes/support validation and budget.
 [[nodiscard]] atx::core::Status validate_replay_input(const TargetReplayInput& in,
