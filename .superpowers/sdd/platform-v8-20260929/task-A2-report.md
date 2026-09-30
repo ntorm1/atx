@@ -207,3 +207,122 @@ fields lines), `Cycle.__init__` (one line), `steps()` (the `as_built` line and t
 8. Card on the 4-year role is estimated at about 1.3 GB (runbook) under the 1,536 MiB base cap; add `runner.phases.card`
    if it binds. The marginal verb's own admission formula gives about 354 MiB for 55 candidates on 1,405 x 6,100
    (under its 600 MiB default and the 1,536 MiB runner cap).
+
+Status of these risks after the follow-up below: 1 resolved by Ruling E-25 (pending lane R45's key), 2 by E-28, 3 by
+follow-up task 1, 4 by task 2, 5 by E-27 (task 3) and E-26, 8 by task 4. 6 and 7 stand.
+
+# Follow-up (PM, Rulings E-25..E-29): all four tasks done
+
+Step 0: `git merge --no-ff feat/platform-v8-20260929` = `814deafd` (clean).
+
+| task | commits |
+|---|---|
+| 1 add-alpha on a v8 parent; E3/E4 options | `83a52d36`, `ef87b78c` |
+| 2 cache gc keeps the shared store | `8f8764da` |
+| 3 R-3 on the R-1 rule (E-27) | `0944bef7` |
+| 4 templates for E-25, E-26, E-28, E-29; card caps | `4ef84de4` |
+
+## Task 1: add-alpha with a v8 parent spec
+
+- `--parent-spec` may be a v8 base spec or a template; refused (exit 2, nothing written) while the template's parent
+  is null, its chain lists a `requires`, or a value is unfilled (`research_spec.run_refusal`).
+- Name rule `derive_name(text, parent, name)`: every token PARENT (generate_library.rename: not inside a longer name or
+  number) becomes NAME; a name without the token gets `-NAME` appended. B0a's `mega-v8-b0a-train-u` ->
+  `mega-v8-b0a-train-u-v80`; `mega-nav-v8-b0a-lo1-v71-ew-...` -> `...-lo1-v80-ew-...`; the v7 specs are unchanged.
+- Stores: a parent with `fit.work_dir == <out_root or build-equity>/fit-work` (C-1) passes `ic.cache` and
+  `fit.work_dir` on; a v7 parent (per-version stores) still gets them derived from the role (A-2 behaviour).
+- Kept inputs: every parent input except library, recipe, baseline_*, reference_* and the fields-builder inputs (so
+  `role` and B0c's `label_role` carry over).
+- Library edits, no hand edits: `--removes ID` (X appended, IDs removed with their exceptions: draft E3),
+  `--replaces ID` (X in the first ID's roster position, others removed, X inherits their exceptions: draft E4, the
+  q5_eg exception moves to q5_eg_f49), `--rescreen` (with one `--replaces`: `libraries/NAME.json` gains
+  `"rescreens"`, the gate lists it under `report`, not `admitted`; recipe `trials.admission_trials` excludes it and
+  records `rescreens` and `removed_parent_members`), `--exception LIMIT=N --exception-basis TEXT` (Ruling R2-b),
+  `--fields DIR` (an as-built fields dir the child pins; the parent's stays `baseline_fields`, so `ref` runs and must
+  reproduce the parent's S2 daily; sticky: later adds into the same wave keep it). Optional keys are written only when
+  non-empty: v7.1 regeneration byte-identical (`test_v71_library_byte_identical` passes).
+- Identity compares after u gain `keys_in: "{input:library}"` when parent members left (research_cycle compare: the
+  parent's member rows the child still holds).
+- Tests (`test_research_spec.py`): `test_add_alpha_on_a_v8_base_spec_screens_and_runs` (base-lo1 parent, fake tools:
+  names, stores, kept inputs, lock, `run --screen` then `run`), `..._template_removes_replaces_rescreens_and_records_
+  exceptions` (r4 template parent: null-parent refusal, 7 refusals writing nothing, E3 + two E4 re-screens + sticky
+  fields, library/recipe/stub/spec contents, screen and run with ref, the compare fails without `keys_in`),
+  `test_derive_name_substitutes_the_parent_token_else_appends`.
+
+## Task 2: cache gc
+
+`research_gc.users`: a candidate `<base>/<child>` is kept when a spec names `<base>` (every window: the monitor reads
+all windows of its role). `test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores`: `--apply` with the ten v8
+specs keeps `fit-work/*` and the lo1 / lo3 caches, deletes the stale ones.
+
+## Task 3: R-3 on the R-1 rule (fitter only; no C++ change)
+
+`composition_rules.ew_theme_std(..., gains=)`: w_k = (1/T) score_k g_k / sum_theme score g, then the member cap
+1/(2T). `--composition ew-theme-std-aim-v1` writes an ew-theme-std-v1 weights file (schema v2, the same
+`theme_standardise` block with rule "ew-theme-std-v1", which the IC runner already applies) whose weights carry the
+gains; provenance.rule `ew-theme-std-aim-v1`, provenance.std `aim_gains`, provenance.aim the aim report block. Gains
+of 1 give the ew-theme-std-v1 weights bit for bit. Fitter edits outside the composition functions (H1 overlap): the
+composition tuples, `AIM_RULES`, one line in `fit()` (`aim=args.composition in AIM_RULES`), the aim predicate and
+dispatch in `fit_prior()`. Tests: `test_aim_gain_composes_with_theme_std` (theme shares 1/T before the cap, score x
+gain inside, cap after, gains of 1 bit for bit, refusals), `test_std_aim_fit_is_the_std_rule_on_the_aim_gains`
+(fitter end to end); ew-theme-aim-v1 bytes unchanged (`V1BytesUnchangedByV6` ran, not skipped; fitter suite 95
+passed). Template flag values may map the parent's value; `r3-aim-gain.json` maps `--composition` ew-theme-v1 ->
+ew-theme-aim-v1, ew-theme-std-v1 -> ew-theme-std-aim-v1, and its `requires` is gone.
+
+## Task 4: templates
+
+base-b0c: `change.inputs.label_role` (lo1-dlret; null pin; re-point to lo3-dlret when B0b wins), requires dropped,
+`--capacity-curve` kept (E-29). r6: requires dropped (E-26). r1: `runner.phases.w.max_rss_mib 3072` and new spec key
+`ic.w_flags {"--max-memory-mib": "3072"}` (applied to ic.flags for the w pass only; validated), inherited down the
+chain (tested on R-1 and R-3-on-R-1: u 2,560, w 3,072). base-lo1 / base-lo3: `runner.phases.card` 300 s / 2,560 MiB.
+r2 / r7: a `requires` that names the add-alpha spec that runs the cell (never run the template and lib-v8x both).
+
+# STOPPED HERE (owner stop, 2026-09-30)
+
+Done: follow-up tasks 1-4 and this report; tree clean. Not done: nothing of the four tasks. Open, for other lanes:
+
+1. **label_role key (lane R45).** base-b0c and every template on it carry `inputs.label_role`; until R45 adds it to
+   `INPUT_KEYS` and the NAV step (`--label-role MANIFEST --label-role-sha256 SHA`), `plan`/`run` of base-b0c and r1..r7
+   stop with "spec inputs: unknown key(s) label_role". `test_research_spec.py` registers the key in an autouse fixture
+   only when absent (drop it after R45 merges). Nothing else here depends on R45.
+2. Remaining `requires`: r2 (runs as `lib-v80.json`), r7 (runs as `lib-v81.json`; fields v11). Remaining fills: r6
+   `--risk-model`, `--risk-model-sha256` (R-6 step 3). Every template: `parent` null until root sets it.
+3. Design decisions another lane must keep: E3 appends (`--removes`), E4 replaces in place (`--replaces --rescreen`);
+   re-screens are 0 admission trials and gate report rows; `--fields` is sticky within a wave; the std-aim weights
+   file keeps the runner block `ew-theme-std-v1`; gc keeps every child of a named store base.
+
+## Root command sequence (`PY="C:/Program Files/Python312/python.exe"`, `RC="$PY scripts/research_cycle.py"`)
+
+Each spec: commit it before `run` (clean check); `plan` prints every pin and phase.
+
+- **B0a**, after runbook R4, R5, R7, R10: `$RC lock scripts/specs/v8/base-lo1.json --write`; `$RC plan
+  scripts/specs/v8/base-lo1.json`; `$RC run scripts/specs/v8/base-lo1.json`.
+- **B0b**, after R5, R8, R11 and B0a's cell: `$RC lock scripts/specs/v8/base-lo3.json --write`; `plan`; `run`.
+- **B0c**, after R15 (the winner's dlret role) and R45's label_role merge: set `"parent": "base-lo1.json"` (or
+  `"base-lo3.json"` and re-point `change.inputs.label_role` to `build-equity/train-2020-2023-lo3-dlret`) in
+  `scripts/specs/v8/base-b0c.json`; `$RC lock scripts/specs/v8/base-b0c.json --write`; `plan`; `run`.
+- **R-1, R-3..R-6** (templates): set `"parent"` to the last accepted cell's spec (e.g. `"base-b0c.json"`,
+  `"r1-comp-v8.json"`); r6 also fills the two `<fill:...>` values; `$RC lock <template> --write`; `plan`; `run`.
+- **R-2** (P = the last accepted cell's spec, e.g. `scripts/specs/v8/base-b0c.json` with its parent set; its cell run):
+  1. E1: add registry field rows `ea_days_since`, `inst_own_share` to `atx-impl/strategies/alphas/registry.json`
+     (hand edit; clock and basis from the fields-v9 manifest; add-alpha adds alphas, not field rows).
+  2. The 7 READY commands of library-v8-draft.md section 7, in order, each with `--parent-spec P` appended (optionally
+     `--form`, `--prior-sign-source`, `--formula`, `--domain`, `--deviation` per E2); `earn_surprise_comp` also takes
+     `--removes sue --removes droe --removes chtax --exception max_extra_fields=8 --exception-basis "Ruling R2-b"`.
+     K1: the parent's IC exe runs `--plan-only` on the parent's role and fields (or pass `--plan-json`).
+  3. Fields: build fields v9 + `grp_ff12f49` with `--reuse` from v9 on the parent's role (fields lane / runbook; an
+     as-built dir F whose manifest lists grp_ff12f49); E4: add the `grp_ff12f49` registry field row (hand edit).
+  4. The 8 re-screens, one call each, in R2-8 table order: `$RC add-alpha --id <x>_f49 --dsl "<R2-8 string>" --theme
+     <original's> --tier <original's> --prior-sign <original's> --citation "<original's>; S-12 FF49 financials"
+     --origin prior --parent v71 --name v80 --parent-spec P --replaces <x> --rescreen --fields F`.
+  5. add-alpha locks `scripts/specs/v8/lib-v80.json` (exit 3 if a pin is missing: `$RC lock
+     scripts/specs/v8/lib-v80.json --write`); root registers `libraries/v80.prereg.md` and pins the library and
+     slim-recipe SHAs in v8-prereg.md (E5); commit.
+  6. `$RC run scripts/specs/v8/lib-v80.json --screen`: gate p1-v80 `admitted` = the 7 trials (require any), `report` =
+     the 8 re-screens; marginal IC on P's combined signal with P's weights. Then `$RC run
+     scripts/specs/v8/lib-v80.json`: ref first (fields F differ from P's: must reproduce P's S2 daily), w, nav,
+     monitor, summ (dsr_n ledger+1: one cell). Recipe: admission_trials 7, rescreens 8, removed_parent_members 11.
+- **R-7**: as R-2 with `--parent <v80 if R-2 accepted, else v71> --name v81`, fields v11 as `--fields`, draft E6-E10.
+
+Tests at stop: cycle + spec + ledger + e2e + generator + composition rules 147 passed, 4 skipped (live roots / exe
+dirs); fitter 95 passed.
