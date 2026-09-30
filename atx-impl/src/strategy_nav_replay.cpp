@@ -1060,6 +1060,31 @@ struct Observer {
 bool cadence_day(usize t, usize begin, usize cadence) {
   return t >= begin ? (t - begin) % cadence == 0 : (begin - t) % cadence == 0;
 }
+// UTC calendar date of a session key (ns since the epoch), YYYY-MM-DD.
+std::string session_date(i64 session_ns) {
+  namespace ch = std::chrono;
+  const ch::sys_time<ch::nanoseconds> at{ch::nanoseconds(session_ns)};
+  const ch::year_month_day ymd{ch::floor<ch::days>(at)};
+  const auto two = [](unsigned v) { return (v < 10 ? "0" : "") + std::to_string(v); };
+  return std::to_string(static_cast<int>(ymd.year())) + '-' +
+         two(static_cast<unsigned>(ymd.month())) + '-' + two(static_cast<unsigned>(ymd.day()));
+}
+// Review A-3: a warm start whose K sessions left every book flat on row score_begin (gross
+// leverage 0 after that row's EXECUTE) built no book; its scored rows would be a flat start's
+// with one more (zero) return row, so the run is refused.
+tl::unexpected<co::Error> refuse_inert_warm_start(const TargetReplayInput& x, usize warm) {
+  const usize begin = x.decision_begin;
+  const i64 first = x.session_keys[begin];
+  return co::Err(co::ErrorCode::InvalidArgument,
+                 "nav replay: the warm start built no book: after --warm-start-sessions " +
+                     std::to_string(warm) + " (warm-up role rows " +
+                     std::to_string(begin - warm) + ".." + std::to_string(begin - 1) +
+                     ") every book is flat on the first scored session " +
+                     session_date(first) + " (session_ns " + std::to_string(first) +
+                     ", role row " + std::to_string(begin) +
+                     " = score_begin; gross leverage 0 after its EXECUTE): the warm-up placed "
+                     "no fill that survived to score_begin");
+}
 // A fresh row t (every other field is filled by the session's MARK/EXECUTE/DECIDE).
 NavReplayDay open_day(const TargetReplayInput& x, usize t, bool return_observation) {
   NavReplayDay day;
@@ -1246,6 +1271,12 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       return close_book(x, ctxs[k], *books[k], shared, tiers, cache, s, decided, observer,
                         holdings, days[k]);
     }));
+    // Review A-3: the warm-up must have built a book (row score_begin, EXECUTE included, of
+    // some book not flat). Without a warm start there is no boundary: nothing is checked.
+    if (s.boundary && std::none_of(days.begin(), days.end(), [](const NavReplayDay& day) {
+          return day.gross_leverage > 0;
+        }))
+      return refuse_inert_warm_start(x, warm);
   }
   if (stages) stages->exposures = shared.price.exposure.ring.seconds;
   std::vector<NavReplayResult> results;
@@ -2422,14 +2453,30 @@ struct NavRun {
   bool summary_timers;              // write stage_seconds into summary.json (single runs)
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
-// accepted the input (warm_start_sessions <= decision_begin).
+// accepted the input (warm_start_sessions <= decision_begin). The role rows of the first
+// warm-up decision and of score_begin (review A-3); publish_nav adds each book's gross
+// leverage on row score_begin.
 Json warm_start_record(const NavReplayConfig& base, const TargetReplayInput& x) {
   const usize k = base.warm_start_sessions;
   if (!k) return Json(nullptr);
   return Json{{"sessions", k},
               {"first_decision_session_ns", x.session_keys[x.decision_begin - k]},
               {"scoring_begins_session_ns", x.session_keys[x.decision_begin]},
+              {"first_decision_row", x.decision_begin - k},
+              {"score_begin_row", x.decision_begin},
               {"rule", "recipe warm_start_rule"}};
+}
+// Review A-3: each book's gross leverage on row score_begin (its first reported row: the
+// daily CSV's gross_leverage there, after that session's EXECUTE), keyed by book label. The
+// replay refused the run if every one is 0.
+Json score_begin_gross(const NavRun& run, bool tiered) {
+  Json gross = Json::object();
+  for (usize k = 0; k < run.scenarios.size(); ++k) {
+    const auto& days = run.results[k].days;
+    gross[scenario_label(run.scenarios[k], tiered)] =
+        days.empty() ? Json(nullptr) : finite_or_null(days.front().gross_leverage);
+  }
+  return gross;
 }
 // construction.v5 of one book over its decision rows: the rule's plan (pre locate
 // rule) gross, net and held share of the decision's members.
@@ -2518,7 +2565,11 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     summary["locate_in_aim"] = Json{{"zeroed_special_short_aims", zeroed},
         {"basis", "member-decisions whose negative tied-rank aim was set to 0 (special tier)"}};
   }
-  if (!run.warm_start.is_null()) summary["warm_start"] = run.warm_start; // v8, only when on
+  if (!run.warm_start.is_null()) { // v8, only when on
+    auto warm = run.warm_start;
+    warm["score_begin_gross_leverage"] = score_begin_gross(run, tiered); // review A-3
+    summary["warm_start"] = std::move(warm);
+  }
   v7::extend_summary(summary); // L4 hook: identity unless extended
   if (run.times && run.summary_timers) { // v8 --stage-timers: the one key a clock writes
     summary["stage_seconds"] = run.times->json();
@@ -2708,6 +2759,10 @@ co::Status publish_holdings(const NavRun& run, const HoldingsEmitter& csv,
                  "column of v1: the stored ones exactly, the derived ones by the declared "
                  "expressions"}};
   if (csv.hold_state()) manifest["hold_band_state"] = hold_band_state_declaration; // v8 E-16
+  // v8 D-0 warm start only (review A-3): K and the role row of the first reported session.
+  if (!run.warm_start.is_null())
+    manifest["warm_start"] = Json{{"warm_start_sessions", run.warm_start.at("sessions")},
+                                  {"score_begin_row", run.warm_start.at("score_begin_row")}};
   v7::extend_holdings(manifest); // L4 hook: identity unless extended
   progress << "nav replay holdings " << book << ": " << csv.rows << " rows over "
            << csv.sessions << " sessions\n";

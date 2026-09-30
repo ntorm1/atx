@@ -1518,9 +1518,10 @@ struct PinBench {
   Directory dir;
   Panel panel = market_panel(160, 60, 17, 3e7);
   Fields fields{panel, 23};
-  Artifact artifact = write_artifact(dir.path, panel, fields, 20);
+  usize score_begin; // the role's first scored row (20 unless a test asks for another)
+  Artifact artifact = write_artifact(dir.path, panel, fields, score_begin);
   usize runs = 0;
-  PinBench() {
+  explicit PinBench(usize begin = 20) : score_begin(begin) {
     std::ofstream positions(dir.path / "flat.csv", std::ios::binary);
     positions << "instrument_id,held_dollars\n";
   }
@@ -1562,9 +1563,11 @@ bool recipe_mismatch(const co::Result<st::DecideOutcome>& r) {
 // Absent, or at the off value, the recomputed NAV recipe hashes exactly as before, so a
 // manifest pinned to a NAV run without the flag still verifies; on, the key is part of the pin
 // both ways (a run with the flag needs the key, a run without it refuses the key); a malformed
-// key is refused by name.
+// key is refused by name. The role scores from row 140: the book's price-risk exposures (126
+// return pairs) exist on the 5 warm-up rows, so the warm start builds a book (review A-3 refuses
+// one that does not; from row 20 every warm-up rebalance would be skipped).
 TEST(StrategyLive, RecipePinBackwardCompatibleWithNewConstructionFields) {
-  PinBench bench;
+  PinBench bench(140);
   const auto plain = bench.nav_recipe("nav-plain", {});
   const auto warm = bench.nav_recipe("nav-warm", {"--warm-start-sessions", "5"});
   EXPECT_NE(plain, warm);

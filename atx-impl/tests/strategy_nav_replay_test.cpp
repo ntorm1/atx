@@ -3012,6 +3012,20 @@ TEST(NavWarmStart, RefusesMoreThanTheRolesHistoryAndRecordsTheWarmStart) {
   EXPECT_EQ(summary.at("warm_start").at("sessions"), 5);
   EXPECT_EQ(summary.at("warm_start").at("first_decision_session_ns"), q.sessions[0]);
   EXPECT_EQ(summary.at("warm_start").at("scoring_begins_session_ns"), q.sessions[5]);
+  // Review A-3: the role rows of the first warm-up decision and of score_begin, and each
+  // book's gross leverage on row score_begin (the daily CSV's value there; some book > 0).
+  EXPECT_EQ(summary.at("warm_start").at("first_decision_row"), 0);
+  EXPECT_EQ(summary.at("warm_start").at("score_begin_row"), 5);
+  const auto& gross = summary.at("warm_start").at("score_begin_gross_leverage");
+  EXPECT_EQ(gross.size(), summary.at("scenarios").size());
+  const auto cells = [](const std::string& line) {
+    std::vector<std::string> parts;
+    std::string piece;
+    std::istringstream stream(line);
+    while (std::getline(stream, piece, ',')) parts.push_back(piece);
+    return parts;
+  };
+  bool built = false;
   const auto cold_summary = read_json(dir.path / "cold" / "summary.json");
   for (usize k = 0; k < summary.at("scenarios").size(); ++k) {
     const auto& s = summary.at("scenarios")[k];
@@ -3022,7 +3036,50 @@ TEST(NavWarmStart, RefusesMoreThanTheRolesHistoryAndRecordsTheWarmStart) {
     ASSERT_EQ(rows.size(), q.d - 5 + 1) << id; // header + scored rows
     EXPECT_EQ(rows.front(), first_line(dir.path / "cold" / ("daily_" + id + ".csv"))) << id;
     EXPECT_EQ(rows[1].substr(0, 2), "5,") << id;
+    const auto names = cells(rows.front()), base_row = cells(rows[1]);
+    const auto column = std::find(names.begin(), names.end(), "gross_leverage");
+    ASSERT_NE(column, names.end()) << id;
+    const auto index = static_cast<usize>(column - names.begin());
+    ASSERT_LT(index, base_row.size()) << id;
+    ASSERT_TRUE(gross.contains(id)) << id;
+    ASSERT_TRUE(gross.at(id).is_number()) << id;
+    EXPECT_DOUBLE_EQ(gross.at(id).get<f64>(), std::stod(base_row[index])) << id;
+    built = built || gross.at(id).get<f64>() > 0;
   }
+  EXPECT_TRUE(built);
+  EXPECT_FALSE(cold_summary.contains("warm_start"));
+}
+
+// Review A-3: a warm start that builds no book is refused. With every warm-up row holding no
+// member (every desired target flat, nothing traded) each book is flat on row score_begin:
+// the replay refuses (InvalidArgument) naming K and the first scored session (its date, its
+// session_ns and its role row), while the flat start of the same rows and the warm start of
+// the live rows run.
+TEST(NavWarmStart, WarmStartThatBuildsNoBookIsRefused) {
+  Panel p(40, 8); randomize_rows(p, 11, 0); p.begin = 20;
+  auto cfg = config(flat(6, 300), 1e6, st::TargetReplayConfig{});
+  cfg.liquidity_window = 5; cfg.min_vol_pairs = 3;
+  cfg.warm_start_sessions = 6;
+  Panel inert = p;
+  for (usize t = 0; t < p.begin; ++t)
+    for (usize i = 0; i < p.n; ++i) inert.nonmember(t, i);
+  const auto refused = st::replay_nav(inert.nav(), cfg);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  const auto& message = refused.error().message();
+  EXPECT_NE(message.find("built no book"), std::string::npos) << message;
+  EXPECT_NE(message.find("--warm-start-sessions 6 "), std::string::npos) << message;
+  EXPECT_NE(message.find("session_ns " + std::to_string(p.sessions[20])), std::string::npos)
+      << message;
+  EXPECT_NE(message.find("role row 20 = score_begin"), std::string::npos) << message;
+  EXPECT_NE(message.find("2020-01-30"), std::string::npos) << message; // weekday 20 from 01-02
+  auto cold_cfg = cfg; cold_cfg.warm_start_sessions = 0;
+  const auto cold = st::replay_nav(inert.nav(), cold_cfg);
+  ASSERT_TRUE(cold) << cold.error().to_string();
+  EXPECT_EQ(cold->days.front().gross_leverage, 0.0);
+  const auto live = st::replay_nav(p.nav(), cfg);
+  ASSERT_TRUE(live) << live.error().to_string();
+  EXPECT_GT(live->days.front().gross_leverage, 0.0);
 }
 
 // ---- v8 D-1: stage timers, the construction grid, books on a pool ----

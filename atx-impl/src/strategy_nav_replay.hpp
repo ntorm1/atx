@@ -172,8 +172,10 @@ struct NavReplayConfig {
   // decision_begin is the scored base row (its warm-up MARK is not reported; its fills
   // and decision are), return rows are [decision_begin + 1, decision_end), and a
   // deployment during the warm-up leaves deployment_index before the first row. The
-  // cadence phase stays relative to decision_begin. 0 (default): the flat start, every
-  // output bit for bit.
+  // cadence phase stays relative to decision_begin. A warm start that built no book (every
+  // book's row decision_begin, its EXECUTE included, at gross 0) is refused with
+  // InvalidArgument naming K and the first scored session (review A-3). 0 (default): the
+  // flat start, every output bit for bit.
   atx::usize warm_start_sessions{};
   // Books on a deterministic pool (v8 D-1): each session's per-book phases (MARK and
   // EXECUTE; then DECIDE, close and report) run on book_workers threads around the shared
@@ -538,10 +540,14 @@ struct NavFieldsPin {
 // and order_basis to the summary; locate-in-aim adds locate_in_aim / locate_in_aim_rule
 // to the recipe and locate_in_aim {zeroed_special_short_aims} to the summary; the
 // liquidity cache adds nothing (every output byte is unchanged). A warm start K > 0 adds
-// warm_start_sessions / warm_start_rule to the recipe and warm_start {sessions,
-// first_decision_session_ns, scoring_begins_session_ns} to the summary; it is refused
-// (InvalidArgument, before any payload is loaded) when K exceeds the pinned role's
-// score_begin. NavExecutionOptions{} is exactly the five-argument overload.
+// warm_start_sessions / warm_start_rule to the recipe, warm_start {sessions,
+// first_decision_session_ns, scoring_begins_session_ns, first_decision_row, score_begin_row,
+// score_begin_gross_leverage (per book: gross leverage of row score_begin)} to the summary
+// and, with --emit-holdings, warm_start {warm_start_sessions, score_begin_row} to the
+// holdings manifest (review A-3); it is refused (InvalidArgument, before any payload is
+// loaded) when K exceeds the pinned role's score_begin, and after the replay's row
+// score_begin when every book is flat there. NavExecutionOptions{} is exactly the
+// five-argument overload.
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
