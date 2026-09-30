@@ -1004,6 +1004,7 @@ struct Engine::Impl {
   std::map<std::string, BookState, std::less<>> books;
   std::vector<DiagnosticRow> rows;
   std::vector<TrackingRow> tracking_rows; // spo-v3
+  std::vector<f64> last_aim;              // spo-v3: the latest decision's aim (observation)
   Timing timing;
   std::vector<f64> desired_copy, shadow_before; // scratch
 
@@ -1448,7 +1449,11 @@ co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>&
   budget = v3_gross_bound_multiple * in.cfg.target.aim_leverage; // checked, never imposed
   ATX_TRY_VOID(prepare(in));
   const auto member = x.member.subspan(d * n_all, n_all);
-  std::vector<f64> aim(n_all, 0.0);
+  // The aim L x desired, with desired the NAV replay's shared desired target as aim-partial-v5
+  // forms it (v8 E-26: --hold-band / --adv-hold-q shape it there, detail::form_desired; this
+  // rule adds nothing). Kept as last_aim: an observation, never published.
+  auto& aim = last_aim;
+  aim.assign(n_all, 0.0);
   for (usize i = 0; i < n_all; ++i)
     if (member[i]) aim[i] = in.cfg.target.aim_leverage * in.desired[i];
   if (!calibration.done) ATX_TRY_VOID(calibrate_tracking(in, aim));
@@ -1472,6 +1477,7 @@ co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>&
       std::chrono::duration<f64>(std::chrono::steady_clock::now() - started).count();
   ++timing.solves; timing.seconds += seconds;
   timing.max_seconds = std::max(timing.max_seconds, seconds);
+  if (!sol.converged) { ++timing.unconverged; timing.unconverged_seconds += seconds; }
   std::vector<f64> next = std::move(fixed.next);
   book.dual.assign(n_all, 0.0);
   for (usize j = 0; j < names.size(); ++j) {
@@ -1522,6 +1528,7 @@ std::span<const DiagnosticRow> Engine::rows() const noexcept { return impl_->row
 std::span<const TrackingRow> Engine::tracking_rows() const noexcept {
   return impl_->tracking_rows;
 }
+std::span<const f64> Engine::last_aim() const noexcept { return impl_->last_aim; }
 const Calibration& Engine::calibration() const noexcept { return impl_->calibration; }
 const SpoParams& Engine::params() const noexcept { return impl_->params; }
 Timing Engine::timing() const noexcept { return impl_->timing; }

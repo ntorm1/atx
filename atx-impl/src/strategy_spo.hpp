@@ -363,6 +363,9 @@ struct Calibration {
 struct Timing {
   atx::usize solves{};
   atx::f64 seconds{}, max_seconds{};
+  // spo-v3: the solves that stopped at the iteration cap (not converged) and their seconds.
+  atx::usize unconverged{};
+  atx::f64 unconverged_seconds{};
 };
 
 // The per-run state of the rule: declared parameters, the risk model, gamma, the shared
@@ -387,6 +390,10 @@ public:
   void begin_run();
   [[nodiscard]] std::span<const DiagnosticRow> rows() const noexcept; // spo-v1/v2
   [[nodiscard]] std::span<const TrackingRow> tracking_rows() const noexcept; // spo-v3
+  // spo-v3: the aim L x desired the tracker received at the latest rebalance decision (every
+  // instrument, 0 off the members; empty before the first). An observation in memory only,
+  // never published (v8 E-26 test seam).
+  [[nodiscard]] std::span<const atx::f64> last_aim() const noexcept;
   // spo-v3: session, gamma, aim_vol = sigma_aim, aim_gross and names of its calibration.
   [[nodiscard]] const Calibration& calibration() const noexcept;
   [[nodiscard]] const SpoParams& params() const noexcept;

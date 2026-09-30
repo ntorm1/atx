@@ -1,14 +1,20 @@
 // spo-v3 (platform v8 R-6): target tracking toward the aim through the spo engine and the v7
 // hook -- the aim itself without costs or limits (a direct Engine::plan), the gross sanity
 // bound slack on the fixture and its breach voiding the run, the tracking error, trade-limit
-// share and aim correlation with their per-book report, and the CLI refusals of the
-// registered constants. The spo-v1 / spo-v2 digest guard is strategy_spo_v3_pin_test.cpp.
+// share and aim correlation with their per-book report, the CLI refusals of the registered
+// constants, and (v8 E-26) the aim shaped by --hold-band / --adv-hold-q exactly as the
+// aim-partial-v5 path shapes desired. The spo-v1 / spo-v2 digest guard is
+// strategy_spo_v3_pin_test.cpp.
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +26,7 @@
 #include "../src/strategy_spo.hpp"
 #include "../src/strategy_spo_v3.hpp"
 #include "../src/strategy_target_replay.hpp"
+#include "../src/strategy_target_replay_detail.hpp"
 #include "strategy_spo_fixture.hpp"
 
 namespace {
@@ -40,31 +47,68 @@ std::shared_ptr<const sp::RiskStore> clean_model(const Directory& dir, const Rol
   return store ? std::make_shared<const sp::RiskStore>(std::move(*store)) : nullptr;
 }
 
-// A replay of the fixture (nav_config: S1, S2, S3, cadence 1, theta .25, L 1.2, NAV 1e8) under
-// spo-v3 through the v7 hook, with what the extension would publish.
+// The observed book's rebalance decisions (a NavHoldingsSink): per session index, every
+// reported name's shared desired target (NaN: not reported) and, given the spo engine, the aim
+// its tracker received at that decision (Engine::last_aim, read right after the book's DECIDE).
+class Recorder final : public st::NavHoldingsSink {
+public:
+  explicit Recorder(usize names) : n_(names) {}
+  const sp::Engine* engine{};
+  std::map<usize, std::vector<f64>> desired, aim;
+  [[nodiscard]] co::Status session(const st::NavReplayDay& day,
+                                   std::span<const st::NavHolding> names) override {
+    if (!day.decision || !day.rebalance) return co::Ok();
+    auto& row = desired[day.session_index];
+    row.assign(n_, std::numeric_limits<f64>::quiet_NaN());
+    for (const auto& h : names) row[h.index] = h.desired;
+    if (engine != nullptr) {
+      const auto received = engine->last_aim();
+      aim[day.session_index].assign(received.begin(), received.end());
+    }
+    return co::Ok();
+  }
+
+private:
+  usize n_{};
+};
+
+// A replay of the fixture (nav_config: S1, S2, S3, cadence 1, theta .25, L 1.2, NAV 1e8, or
+// `cfg`) under spo-v3 through the v7 hook, with what the extension would publish; with a
+// recorder, its primary book alone (replay_nav_scenarios, bit-identical) observed.
 struct Replay {
   std::vector<sp::TrackingRow> rows;
   usize legacy_rows{}; // spo-v1/v2 rows (none under spo-v3)
   sp::Calibration calibration;
   f64 horizon{}, bound{};
-  Json parameters, summary, tripwire;
-  std::string csv;
+  Json parameters, summary, tripwire, calibration_json;
+  std::string csv, declaration;
   bool captured{};
+  st::NavReplayResult result; // the (first) book's
 };
 Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
-                 const sp::SpoParams& params) {
+                 const sp::SpoParams& params, const st::NavReplayConfig& cfg = nav_config(),
+                 Recorder* recorder = nullptr) {
   v7::NavV7Options o;
   o.spo_v1 = true;
   o.spo_params = params;
   o.spo_risk = std::move(risk);
   const v7::ScopedNavExtension extension(o);
-  const auto result = st::replay_nav(role.nav(), nav_config());
-  EXPECT_TRUE(result) << result.error().to_string();
   Replay out;
   const auto* engine = extension.spo_engine();
   if (engine == nullptr) {
     ADD_FAILURE() << "no spo engine";
     return out;
+  }
+  if (recorder == nullptr) {
+    auto result = st::replay_nav(role.nav(), cfg);
+    EXPECT_TRUE(result) << result.error().to_string();
+    if (result) out.result = std::move(*result);
+  } else {
+    recorder->engine = engine;
+    const std::array<st::NavScenario, 1> primary{cfg.scenario};
+    auto results = st::replay_nav_scenarios(role.nav(), cfg, primary, *recorder, 0);
+    EXPECT_TRUE(results) << results.error().to_string();
+    if (results && results->size() == 1) out.result = std::move(results->front());
   }
   const auto rows = engine->tracking_rows();
   out.rows.assign(rows.begin(), rows.end());
@@ -76,9 +120,23 @@ Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
   out.summary = engine->rows_summary_json();
   out.tripwire = engine->rows_tripwire_json();
   out.csv = engine->rows_csv();
+  out.declaration = engine->rule_declaration();
+  out.calibration_json = engine->rule_calibration_json();
   out.captured = static_cast<bool>(v7::capture({}, {}, {})); // the seam before publication
   return out;
 }
+
+// nav_config without aim-partial-v5's dust band (dust 0, hence exit rate 1), which the desired
+// target never reads: the plain aim-partial-v5 replay then plans every member whose desired
+// target is nonzero, so its holdings carry every member's desired at the first decision too
+// (after it, a declared hold band reports every ranked name).
+st::NavReplayConfig undusted_config() {
+  auto cfg = nav_config();
+  cfg.target.dust_multiple = 0.0;
+  cfg.target.exit_rate = 1.0;
+  return cfg;
+}
+u64 bits(f64 x) { return std::bit_cast<u64>(x); }
 
 // No trading cost, no borrow and no binding limit (ADV 1e15, beta band +-1, every name a
 // member with a risk row, from flat, no fixed position): the tracking optimum is the aim
@@ -405,5 +463,171 @@ TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
   EXPECT_EQ(recipe["v7"]["spo_v3"]["calibration"]["rule"].get<std::string>().rfind(
                 "gamma = S_prior / sigma_aim", 0),
             0U);
+}
+
+// v8 E-26: spo-v3's aim is L x the desired target the aim-partial-v5 NAV path forms, its
+// shaping included. On the fixture with the hold band b = .1 and the ADV cap Q = .05, both
+// binding (members keep their band value, names are clipped), the aim the tracker receives at
+// every rebalance decision equals L x the plain aim-partial-v5 replay's desired target bit for
+// bit on every member (each one reported), and 0 off the members; the construction record of
+// every decision agrees.
+TEST(SpoV3, AimIncludesHoldBandAndAdvCapWhenDeclared) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  auto cfg = undusted_config();
+  cfg.target.hold_band = 0.1;
+  cfg.target.adv_hold_q = 0.05;
+  Recorder reference(role.n); // the aim-partial-v5 path itself: no extension installed
+  const std::array<st::NavScenario, 1> primary{cfg.scenario};
+  const auto plain = st::replay_nav_scenarios(role.nav(), cfg, primary, reference, 0);
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  ASSERT_EQ(plain->size(), 1U);
+  usize kept = 0, clipped = 0;
+  for (const auto& day : plain->front().days) {
+    kept += day.construction.hold_kept;
+    clipped += day.construction.adv_clipped;
+  }
+  EXPECT_GT(kept, 0U) << "the hold band keeps no member";
+  EXPECT_GT(clipped, 0U) << "the ADV cap clips no name";
+  Recorder tracked(role.n);
+  const Replay run = replay_v3(role, risk, sp::v3_params(), cfg, &tracked);
+  ASSERT_FALSE(run.rows.empty());
+  ASSERT_FALSE(tracked.aim.empty());
+  ASSERT_EQ(tracked.aim.size(), reference.desired.size());
+  const f64 leverage = cfg.target.aim_leverage;
+  usize compared = 0;
+  for (const auto& [t, aim] : tracked.aim) {
+    const auto found = reference.desired.find(t);
+    ASSERT_NE(found, reference.desired.end()) << "session " << t;
+    const auto& desired = found->second;
+    ASSERT_EQ(aim.size(), role.n) << "session " << t;
+    for (usize i = 0; i < role.n; ++i) {
+      if (role.member[t * role.n + i] == 0) {
+        EXPECT_EQ(bits(aim[i]), bits(0.0)) << "session " << t << " name " << i;
+        continue;
+      }
+      ASSERT_FALSE(std::isnan(desired[i])) << "member not reported: " << t << ' ' << i;
+      EXPECT_EQ(bits(aim[i]), bits(leverage * desired[i])) << "session " << t << " name " << i;
+      ++compared;
+    }
+  }
+  EXPECT_GT(compared, 0U);
+  const auto& a = plain->front().days;
+  const auto& b = run.result.days;
+  ASSERT_EQ(a.size(), b.size());
+  for (usize k = 0; k < a.size(); ++k) {
+    EXPECT_EQ(a[k].rebalance, b[k].rebalance) << k;
+    EXPECT_EQ(a[k].construction.hold_kept, b[k].construction.hold_kept) << k;
+    EXPECT_EQ(a[k].construction.hold_moved, b[k].construction.hold_moved) << k;
+    EXPECT_EQ(a[k].construction.adv_clipped, b[k].construction.adv_clipped) << k;
+    EXPECT_EQ(bits(a[k].construction.adv_clipped_mass), bits(b[k].construction.adv_clipped_mass))
+        << k;
+  }
+}
+
+// v8 E-26, both flags absent: spo-v3 publishes what it did. The shaping reaches the rule only
+// through the shared desired target and the rule's own blocks carry no shaping key, so the
+// band declared at its identity b = 0 (the kernel runs and carries its state; no key) with
+// Q = 0 (off) gives every published block and every received aim bit for bit, and the rule id
+// stays "spo-v3"; declaring b = .1 and Q = .05 changes the diagnostics and extends the rule id
+// exactly as the aim-partial path's.
+TEST(SpoV3, ShapingFlagsAbsentIsByteIdentical) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  const auto params = sp::v3_params();
+  const auto absent_cfg = nav_config();
+  ASSERT_FALSE(absent_cfg.target.hold_band.has_value());
+  ASSERT_EQ(absent_cfg.target.adv_hold_q, 0.0);
+  auto identity_cfg = absent_cfg;
+  identity_cfg.target.hold_band = 0.0;
+  auto shaped_cfg = absent_cfg;
+  shaped_cfg.target.hold_band = 0.1;
+  shaped_cfg.target.adv_hold_q = 0.05;
+  Recorder absent_aims(role.n), identity_aims(role.n);
+  const Replay absent = replay_v3(role, risk, params, absent_cfg, &absent_aims);
+  const Replay identity = replay_v3(role, risk, params, identity_cfg, &identity_aims);
+  const Replay shaped = replay_v3(role, risk, params, shaped_cfg);
+  ASSERT_FALSE(absent.rows.empty());
+  EXPECT_EQ(identity.csv, absent.csv);
+  EXPECT_EQ(identity.parameters.dump(), absent.parameters.dump());
+  EXPECT_EQ(identity.summary.dump(), absent.summary.dump());
+  EXPECT_EQ(identity.tripwire.dump(), absent.tripwire.dump());
+  EXPECT_EQ(identity.calibration_json.dump(), absent.calibration_json.dump());
+  EXPECT_EQ(identity.declaration, absent.declaration);
+  ASSERT_FALSE(absent_aims.aim.empty());
+  ASSERT_EQ(identity_aims.aim.size(), absent_aims.aim.size());
+  for (const auto& [t, aim] : absent_aims.aim) {
+    const auto found = identity_aims.aim.find(t);
+    ASSERT_NE(found, identity_aims.aim.end()) << "session " << t;
+    ASSERT_EQ(found->second.size(), aim.size()) << "session " << t;
+    for (usize i = 0; i < aim.size(); ++i)
+      EXPECT_EQ(bits(found->second[i]), bits(aim[i])) << "session " << t << " name " << i;
+  }
+  // The rule's blocks name no shaping, declared or not.
+  for (const Replay* run : {&absent, &shaped}) {
+    for (const char* key : {"hold_band", "hold-band", "adv_hold", "adv-hold"}) {
+      EXPECT_EQ(run->parameters.dump().find(key), std::string::npos) << key;
+      EXPECT_EQ(run->declaration.find(key), std::string::npos) << key;
+    }
+  }
+  ASSERT_FALSE(shaped.rows.empty());
+  EXPECT_NE(shaped.csv, absent.csv); // the shaped aim reached the tracker
+  // The rule id: the NAV replay's, relabelled by the extension as every spo-v3 id.
+  const auto rule = [&](const st::NavReplayConfig& cfg, bool v3) {
+    Json recipe{{"rule", st::detail::construction_rule_id(cfg.target)}};
+    if (v3) {
+      v7::NavV7Options o;
+      o.spo_v1 = true;
+      o.spo_params = params;
+      const v7::ScopedNavExtension extension(o);
+      v7::extend_recipe(recipe);
+    }
+    return recipe.at("rule").get<std::string>();
+  };
+  EXPECT_EQ(rule(absent_cfg, true), "spo-v3");
+  EXPECT_EQ(rule(identity_cfg, true), "spo-v3");
+  EXPECT_EQ(rule(shaped_cfg, false), "aim-partial-v5+hold-band-0.1+adv-hold-0.05");
+  EXPECT_EQ(rule(shaped_cfg, true), "spo-v3+hold-band-0.1+adv-hold-0.05");
+}
+
+// v8 E-26 CLI: --hold-band and --adv-hold-q pass through to the replay under spo-v3 (in the
+// order given; the replay's own parser and validation read them) and are refused with spo-v1
+// and spo-v2 whatever their value or place.
+TEST(SpoV3, ShapingFlagsPassThroughAndSpoV1V2RefuseThem) {
+  const std::vector<std::string> tail{"--risk-model", "risk", "--risk-model-sha256", "abc",
+                                      "--output", "x"};
+  const auto parse = [&](std::vector<std::string> head) {
+    head.insert(head.end(), tail.begin(), tail.end());
+    std::vector<char*> argv;
+    for (auto& a : head) argv.push_back(a.data());
+    return v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data());
+  };
+  const auto v3 =
+      parse({"nav", "--hold-band", ".1", "--rule", "spo-v3", "--adv-hold-q", ".05"});
+  ASSERT_TRUE(v3) << v3.error().to_string();
+  EXPECT_EQ(v3->options.spo_params.version, 3U);
+  EXPECT_EQ(v3->args, (std::vector<std::string>{"nav", "--hold-band", ".1", "--rule",
+                                                "aim-partial-v5", "--adv-hold-q", ".05",
+                                                "--output", "x"}));
+  EXPECT_TRUE(parse({"nav", "--rule", "spo-v3", "--hold-band", "0"}));
+  for (const char* spo : {"spo-v1", "spo-v2"}) {
+    EXPECT_TRUE(parse({"nav", "--rule", spo})) << spo; // without the flags, as before
+    for (const char* flag : {"--hold-band", "--adv-hold-q"}) {
+      for (const char* value : {"0", ".1"}) {
+        const auto refused = parse({"nav", "--rule", spo, flag, value});
+        ASSERT_FALSE(refused) << spo << ' ' << flag << ' ' << value;
+        EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument) << spo << ' ' << flag;
+        EXPECT_NE(refused.error().message().find(flag), std::string::npos)
+            << refused.error().to_string();
+        EXPECT_NE(refused.error().message().find("spo-v3"), std::string::npos)
+            << refused.error().to_string();
+        EXPECT_FALSE(parse({"nav", flag, value, "--rule", spo})) << spo << ' ' << flag;
+      }
+    }
+  }
 }
 } // namespace
