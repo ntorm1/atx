@@ -178,7 +178,7 @@ def input_manifests() -> dict[str, Any]:
 def catalog_manifest() -> dict[str, Any]:
     """The S4.2 catalog definition as published (per item: Compustat mnemonic, seed item, kind, chain, rules)."""
     return {"rule": fcat.__doc__, "label_rule": LABEL_RULE, "pre_rule": CATALOG_PRE_RULE,
-            "statement_tag_exclude": fcat.STMT_TAG_EXCLUDE,
+            "statement_tag_exclude": fcat.STMT_TAG_EXCLUDE, "nil_rule": fi.CAT_NIL_RULE,
             "structural_by_template": {k: sorted(v) for k, v in fi.CAT_STRUCTURAL.items()},
             "items": [{"col": it.col, "mnemonic": it.mnemonic, "seed_item_id": it.seed, "kind": it.kind,
                        "chain": list(it.chain), "zero_statement": it.stmt, "zero_tag_pattern": it.tags,

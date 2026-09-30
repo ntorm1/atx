@@ -324,6 +324,28 @@ PERIOD_DEF_CIDS = frozenset(cid for cid, _, _, _, _, p in CONCEPTS if p)
 MAIN_CIDS = frozenset(CID[c] for c in MAIN_STATEMENT_CONCEPTS) | frozenset(CID[c] for c in MAIN_STATEMENT_EXT)
 NI_CIDS = frozenset(CHAIN_IDS["ni"]) | frozenset(CHAIN_EXT_IDS["ni"])
 NIL_CID_CHAIN = {cid: name for name in NIL_CHAINS for cid in CHAIN_IDS.get(name, ()) + CHAIN_EXT_IDS.get(name, ())}
+# cat-nil-zero-v1: catalog money chains (flows and balances) that get the nil-as-zero rule; concepts of any v9 chain
+# are left out so the v9 items never change
+ASSETS_CID = CID["Assets"]
+_V9_CHAIN_CIDS = frozenset(c for ids in list(CHAIN_IDS.values()) + list(CHAIN_EXT_IDS.values()) for c in ids)
+CAT_NIL_FLOW: dict[int, tuple[str, ...]] = {}
+CAT_NIL_STOCK: dict[int, tuple[str, ...]] = {}
+for _it in fcat.CATALOG:
+    if _it.kind not in ("flow", "stock") or not _it.chain or _it.stmt is None:   # line items only, never totals
+        continue
+    _target, _shape = (CAT_NIL_FLOW, "duration") if _it.kind == "flow" else (CAT_NIL_STOCK, "instant")
+    for _c in CHAIN_CAT_IDS[CAT + _it.col]:
+        if _c not in _V9_CHAIN_CIDS and CONCEPTS[_c][3] == "money" and CONCEPTS[_c][4] == _shape:
+            _target[_c] = _target.get(_c, ()) + (CAT + _it.col,)
+del _it, _target, _shape, _c
+NIL_INST_CIDS = frozenset(CAT_NIL_STOCK) | {ASSETS_CID}
+CAT_NIL_RULE = (
+    "cat-nil-zero-v1: as nil-as-zero-v1 for the catalog money line items with a statement zero rule (never totals "
+    "or note-only items; a filing reports the year-ago comparative "
+    "year but no current period of the same duration: 0 over the own current period); balances: a catalog item the "
+    "filing reports at a comparative balance-sheet date (the filing also reports Assets there, 1-380 days before its "
+    "own period end, at which it reports Assets) but no concept of the item's chain at the own period end is 0 at the "
+    "own period end. Concepts of any v9 chain are excluded (v9 items unchanged).")
 RAW_SHARE_CIDS = (DEI_CID, CID["CommonStockSharesOutstanding"], CID[f"{IFRS}:NumberOfSharesOutstanding"])
 # S4.6 restatement flag: chains whose concepts' earlier-reported values are watched (both tiers, reported
 # taxonomies only); a change by more than RESTATE_REL of the larger magnitude marks the filing ``is_restated``
@@ -374,7 +396,7 @@ FX_LAG_BALANCE = ("at_lag4", "noa_lag4", "be_lag1q", "be_lag1q_lag4")
 FX_LAG_FLOW_Q = ("ni_q_lag4", "txt_q_lag4", "sale_q_lag4")
 FX_COLUMNS = ("fx_converted", "fx_rate", "fx_rate_avg_q", "fx_rate_avg_ttm", "available_at")
 CAT_SHARES = ("cshpri", "cshfd", "cshi")
-CAT_DERIVED_STOCKS = ("intano", "dlc", "dltt", "txditc", "ceq", "teq", "wcap")
+CAT_DERIVED_STOCKS = ("intano", "dlc", "dltt", "txditc", "ceq", "teq", "wcap", "lco")
 CAT_FX_BALANCE = tuple(c.col for c in fcat.CATALOG if (c.kind == "stock" and c.col not in CAT_SHARES)
                        or c.col in CAT_DERIVED_STOCKS)
 CAT_FX_FLOW = tuple(c.col for c in fcat.CATALOG if c.col not in CAT_FX_BALANCE and c.col not in CAT_SHARES)
@@ -1546,7 +1568,8 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
 CAT_EVIDENCE = {"BS": ("has_bs", "at"), "IS": ("has_is", "ni_ttm"), "CF": ("has_cf", "cfo_ttm")}
 # catalog items structurally absent by template (as the v9 items they derive from)
 CAT_STRUCTURAL: dict[str, frozenset[str]] = {
-    "bank": frozenset({"wcap", "xopr_ttm"}), "insurer": frozenset({"wcap"}), "reit": frozenset({"wcap"}),
+    "bank": frozenset({"wcap", "xopr_ttm", "lco", "aco", "xpp", "xacc"}),
+    "insurer": frozenset({"wcap", "lco", "aco", "xpp", "xacc"}), "reit": frozenset({"wcap", "lco", "aco", "xpp", "xacc"}),
     "utility": frozenset(), "other": frozenset()}
 
 
@@ -1598,6 +1621,12 @@ def catalog_items(s: Snapshot, calc: ItemCalc, ctx: Ctx, end: dt.date, out: dict
         out["intano"] = s.inst("intan_gw", end)
     at = out.get("at")
     out["dlc"] = cur.get("st") if cur.get("st") is not None else (0.0 if at is not None else None)
+    if not cat_structural(ctx.template, ctx.sic, "lco"):     # Compustat: LCT = AP + DLC + TXP + LCO
+        lct, ap = out.get("lct"), out.get("ap")
+        if lct is not None and ap is not None and out["dlc"] is not None:
+            out["lco"] = lct - ap - out["dlc"] - (out.get("txp") or 0.0)
+        else:
+            out["lco"] = s.inst(CAT + "lco", end)
     out["dltt"] = cur.get("ltd_nc") if at is not None or cur.get("ltd_nc") is not None else None
     txditc = s.inst_carry("txditc", end, CARRY_DAYS)
     out["txditc"] = txditc if txditc is not None else (0.0 if at is not None else None)
@@ -1811,6 +1840,59 @@ def nil_zeros(k: Knowledge, durs: list[tuple[int, dt.date, dt.date]], own: dt.da
     return n
 
 
+def cat_nil_zeros(k: Knowledge, durs: list[tuple[int, dt.date, dt.date]], insts: list[tuple[int, dt.date]],
+                  own: dt.date | None, clock: dt.datetime, counters: dict[str, int]) -> int:
+    """``CAT_NIL_RULE`` for one filing: flows as ``nil_zeros`` over ``CAT_NIL_FLOW``; balances over ``CAT_NIL_STOCK``
+    at the filing's comparative balance-sheet dates. Returns the number of zero facts entered."""
+    if own is None:
+        return 0
+    n = 0
+    cur: dict[int, dt.date] = {}
+    for cid, s0, e0 in durs:
+        if e0 == own:
+            cur.setdefault(_dur_days(s0, e0), s0)
+    if cur:
+        lo, hi = own - dt.timedelta(days=365 + YEAR_TOL), own - dt.timedelta(days=365 - YEAR_TOL)
+        done: set[tuple[str, int]] = set()
+        for cid, s0, e0 in durs:
+            chains = CAT_NIL_FLOW.get(cid)
+            if not chains or not (lo <= e0 <= hi):
+                continue
+            n0 = _dur_days(s0, e0)
+            best = min(cur, key=lambda d: abs(d - n0))
+            if abs(best - n0) > CHAIN_TOL:
+                continue
+            sc = cur[best]
+            for chain in chains:
+                cids = CHAIN_CAT_IDS[chain]
+                if (chain, best) in done or any(own in k.by_end.get(c, {}) for c in cids):
+                    continue
+                done.add((chain, best))
+                if any(v != 0 for c in cids for (st, en), v in k.dur.get(c, {}).items() if st == sc and en < own):
+                    continue
+                k.apply(cid, sc, own, 0.0, clock)
+                n += 1
+    m = 0
+    bs_dates = {e for c, e in insts if c == ASSETS_CID}
+    if own in bs_dates:
+        done_s: set[str] = set()
+        for cid, e in insts:
+            chains = CAT_NIL_STOCK.get(cid)
+            if not chains or e >= own or e not in bs_dates or (own - e).days > 380:
+                continue
+            for chain in chains:
+                if chain in done_s or any(own in k.inst.get(c, {}) for c in CHAIN_CAT_IDS[chain]):
+                    continue
+                done_s.add(chain)
+                k.apply(cid, None, own, 0.0, clock)
+                m += 1
+    if n:
+        counters["cat_nil_zero_facts"] = counters.get("cat_nil_zero_facts", 0) + n
+    if m:
+        counters["cat_nil_zero_insts"] = counters.get("cat_nil_zero_insts", 0) + m
+    return n + m
+
+
 def reporting_currency(units: Counter) -> str | None:
     """Most frequent money unit of a filing (ties: USD, then alphabetical)."""
     if not units:
@@ -1868,7 +1950,7 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
             if a is None:
                 a = accns[accn] = {"forms": {}, "filed": filed, "fy": {}, "basis": basis, "own_pe": None,
                                    "any_end": None, "ni_ends": set(), "units": Counter(), "ends": set(),
-                                   "durs": [], "restated": set()}
+                                   "durs": [], "insts": [], "restated": set()}
             a["forms"][form] = a["forms"].get(form, 0) + 1
             if fy is not None or fp is not None:
                 a["fy"][(fy, fp)] = a["fy"].get((fy, fp), 0) + 1
@@ -1898,6 +1980,8 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
                 a["ends"].add(end)
                 if start is not None:
                     a["durs"].append((cid, start, end))
+                elif cid in NIL_INST_CIDS:
+                    a["insts"].append((cid, end))
             if cid in NI_CIDS and start is not None:
                 a["ni_ends"].add(end)
         # period end, fiscal labels, SIC, statement flags, reporting currency, quarterly filer clocks
@@ -1913,6 +1997,7 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
                     pre_by_pe[own] = pre_by_accn[accn]
             a["own"] = own
             nil_zeros(k, a["durs"], a["own_pe"], clock, counters)
+            cat_nil_zeros(k, a["durs"], a["insts"], a["own_pe"], clock, counters)
             if accn in sic_by_accn:
                 sic = sic_by_accn[accn]
             cur = reporting_currency(a["units"])

@@ -118,3 +118,48 @@ def test_label_fallback_tier():
     assert e["cogs_ttm"] == 500.0 and e["gp_ttm"] == 300.0 and e["gp_src"] == "sale_minus_cogs"
     e = ev([row("lbl:OperatingIncomeLoss", S, E, 111.0)])
     assert e["oi_ttm"] == 111.0
+
+
+P0, P1 = D(2022, 1, 1), D(2022, 12, 31)
+
+
+def test_catalog_nil_zero_flows():
+    """cat-nil-zero-v1 (flows): the filing reports a catalog flow for the year-ago comparative year but not for its own
+    year (a blank current cell, which Company Facts drops): 0 enters the knowledge for the own year, so the TTM is 0
+    (a reported value, not a zero fill); v9 chains keep their own nil rule."""
+    prior = [row("ProceedsFromSaleOfPropertyPlantAndEquipment", P0, P1, 30.0),
+             row("PaymentsToAcquireBusinessesNetOfCashAcquired", P0, P1, 70.0)]
+    e = ev(prior, pre=PRE_BASE | {"c_sppiv_ttm": True, "c_aqc_ttm": True})    # the lines are on the statement
+    assert e["sppiv_ttm"] == 0.0 and e["aqc_ttm"] == 0.0
+    assert "sppiv_ttm" not in e["catalog_zero_filled"].split(",")
+    c = {}
+    rows = sorted(BASE + prior, key=lambda r: (r[0], r[1], r[2]))
+    fi.company_events(1, rows, T(2024, 1, 1), c, "USD")
+    assert c.get("cat_nil_zero_facts") == 2
+    # a current-year fact wins; no zero is entered
+    e = ev(prior + [row("ProceedsFromSaleOfPropertyPlantAndEquipment", S, E, 12.0)],
+           pre=PRE_BASE | {"c_sppiv_ttm": True})
+    assert e["sppiv_ttm"] == 12.0
+
+
+def test_catalog_nil_zero_stocks():
+    """cat-nil-zero-v1 (stocks): an item reported at the comparative balance-sheet date (the filing also reports
+    Assets there) but not at the own date is 0 at the own date; without the comparative Assets fact the rule
+    does not apply."""
+    prior = [row("PrepaidExpenseCurrent", None, P1, 8.0)]
+    e = ev(prior + [row("Assets", None, P1, 900.0)], pre=PRE_BASE | {"c_xpp": True})
+    assert e["xpp"] == 0.0 and "xpp" not in e["catalog_zero_filled"].split(",")
+    e = ev(prior, pre=PRE_BASE | {"c_xpp": True})
+    assert e["xpp"] is None
+
+
+def test_lco_identity():
+    """lco = lct - ap - dlc - txp (Compustat's LCT = AP + DLC + TXP + LCO); else the other-current chain."""
+    extra = [row("LiabilitiesCurrent", None, E, 300.0), row("AccountsPayableCurrent", None, E, 100.0),
+             row("DebtCurrent", None, E, 50.0), row("TaxesPayableCurrent", None, E, 20.0),
+             row("OtherLiabilitiesCurrent", None, E, 44.0)]
+    assert ev(extra)["lco"] == 130.0
+    assert ev(extra[:3] + extra[4:])["lco"] == 150.0                         # no tax line: txp is 0
+    assert ev(extra[4:])["lco"] == 44.0                                      # no lct: the chain
+    assert ev(extra, sic=6022)["lco"] is None                                # banks: structural like lct
+    assert fi.cat_structural("bank", 6022, "lco") and fi.cat_structural("bank", 6022, "aco")

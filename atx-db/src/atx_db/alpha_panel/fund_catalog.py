@@ -185,13 +185,10 @@ CATALOG: tuple[CatItem, ...] = (
             tags=r"^taxespayable|^accruedincometaxes(current|payable)?$|^incometaxe?s?payable|^currenttaxliabilit"
                  r"|^accruedtaxes|^incometaxesreceivablepayable|^currentincometaxliabilit",
             exclude=r"deferred|receivable|non-?current|long[- ]term|asset"),
-    CatItem("lco", "LCO", 1226, "stock", ("OtherLiabilitiesCurrent", "OtherAccruedLiabilitiesCurrent")
+    CatItem("lco", "LCO", 1226, "derived", ("OtherLiabilitiesCurrent", "OtherAccruedLiabilitiesCurrent")
             + _i("OtherCurrentLiabilities"),
-            "BS", r"other current liabilities|other liabilities,? current|accrued (expenses|liabilities)|other accrued",
-            tags=r"^otherliabilitiescurrent|^othercurrentliabilities|^otheraccruedliabilities|^accrued"
-                 r"|^otherliabilitiesmiscellaneouscurrent|^employeerelatedliabilitiescurrent"
-                 r"|^accountspayableandotheraccruedliabilities|^accountspayableandaccruedliabilities",
-            exclude=r"non-?current|long[- ]term"),
+            note="lct - ap - dlc - txp (Compustat's LCT = AP + DLC + TXP + LCO; txp 0 when missing), else the chain; "
+                 "structural where lct is"),
     CatItem("wcap", "WCAP", 1321, "derived", note="act - lct (structural where act/lct are)"),
     # --- income statement (TTM) --------------------------------------------------------------------------------
     CatItem("xopr_ttm", "XOPR", 1010, "derived", note="sale_ttm - (oi_ttm + dp_ttm) (Compustat: OIBDP = SALE - XOPR)"),
