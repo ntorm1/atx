@@ -399,7 +399,7 @@ class DailyIcKind(Base):
 
 
 class Seal(unittest.TestCase):
-    def test_seal_is_2024_01_01_from_the_window_or_the_fallback(self):
+    def test_seal_is_2024_01_01_from_the_window(self):
         seal_ns, source = cwo.seal()
         self.assertEqual(seal_ns, ns("2024-01-01"))
         self.assertTrue("research_window" in source)

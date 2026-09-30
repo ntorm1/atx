@@ -24,9 +24,8 @@ involved). A finite old value with no aligned new cell (an instrument, session o
 ``old_cells_missing_in_new``. ``bit_identical`` = no unequal cell and no missing old value. New-only instruments,
 sessions and keys are expected (the union grows) and only counted.
 
-Seal: the seal comes from atx-engine/tools/research_window.py (task W0-1); until that module is merged into this
-branch the documented fallback is the literal 2024-01-01T00:00Z. A role session, CSV row or --before on or after the
-seal is refused before any payload is opened. ``--before YYYY-MM-DD`` compares sessions strictly before that date.
+Seal: the seal comes from atx-engine/tools/research_window.py (task W0-1), read through ``engine_tools.py``; no date
+is written here. A role session, CSV row or --before on or after the seal is refused before any payload is opened. ``--before YYYY-MM-DD`` compares sessions strictly before that date.
 Memory: one key at a time; payloads are numpy memmaps read in blocks of BLOCK_ROWS sessions, so two full panels of
 all fields are never resident. Payload SHA-256s are verified against their manifest or sidecar (``--no-verify``
 skips that second read).
@@ -65,8 +64,6 @@ SIDECAR_LIMIT = 1 << 20           # the runner's metadata_text bound for a cache
 SCAN_DEPTH = 4                    # ROOT/<vm identity>/<role sha>/fp_<fk16>/
 IC_RESULT_DIR = re.compile(r"ic\d+_[0-9a-f]{16}")  # IC-result entries beside signal entries (never signals)
 HASH_CHUNK = 8 << 20
-SEAL_FALLBACK_NS = 1_704_067_200_000_000_000  # 2024-01-01T00:00Z; used only until research_window.py is merged
-ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
 CELL_RULE = ("equal iff identical IEEE-754 bits or NaN on both sides; max_abs_diff over unequal cells with no NaN side "
              "(inf when an infinity is involved); a finite old value without an aligned new cell is "
              "old_cells_missing_in_new; bit_identical = no unequal cell and no missing old value")
@@ -88,13 +85,8 @@ def require(condition, message: str) -> None:
 
 
 def seal() -> tuple[int, str]:
-    """(seal session ns, source): research_window.SEAL_NS (task W0-1), else the documented literal fallback."""
-    if str(ENGINE_TOOLS) not in sys.path:
-        sys.path.append(str(ENGINE_TOOLS))
-    try:
-        import research_window  # noqa: PLC0415  (task W0-1: the one source of the research window)
-    except ImportError:
-        return SEAL_FALLBACK_NS, "fallback literal 2024-01-01 (atx-engine/tools/research_window.py not merged)"
+    """(seal session ns, source): research_window.SEAL_NS (task W0-1), the atx-impl instance of engine_tools.py."""
+    from engine_tools import research_window  # noqa: PLC0415  (task W0-1: the one source of the research window)
     return int(research_window.SEAL_NS), "atx-engine/tools/research_window.py SEAL_NS"
 
 
