@@ -119,11 +119,78 @@ untouched. `atx-impl/tests/strategy_live_test.cpp`: `write_artifact` gains `scor
 
 ## Open risks
 
-- `decide --check-replay` against a hold-band NAV run's emitted holdings (`--emit-holdings`) will not match: the
-  emitted holdings (f64 and v1 csv layouts, lane D's files) carry no hold state, so decide starts unset. The library
-  test proves parity when the state is carried. Not needed in v8 (no deployment); adding the two state fields to the
-  holdings layouts would close it.
+- (Closed by ruling E-16, `1e4a50c8`, below.) `decide --check-replay` against a hold-band NAV run's emitted holdings
+  did not match because the export carried no hold state; it now does.
 - Operators chaining decide must join `targets.csv`'s state columns onto the next positions file (the broker file has
-  none); the decide verb itself carries them only through the positions file.
+  none); the decide verb itself carries them only through the positions file (or the replay's own export).
 - The kept names hold a pre-demean value while the others move; after demean, gross 1 and the neutralization their
   weights still change slightly, so the dust band (not the hold band) absorbs those residual moves.
+
+## PM session 2 (2026-09-30): ruling E-16, decide parity from the holdings export (`1e4a50c8`)
+
+Also in this session (see the R-5 report): root merged in (`a51ab1f4`) and the grid fix `dca2165a` (a hold-band
+construction grid shares the band and one cadence; `HoldBand.GridSharesTheBandAndOneCadence`).
+
+What was built. With a hold band declared (b > 0, `hold_band_declared`) and `--emit-holdings`, the replay snapshots
+the band's state at the start of every session, before that session's construction advances it
+(`Construction::hold_in`, copied into reused storage; `Construction::emit_hold` gates it). That is the state the
+session's DECIDE reads, which is exactly what `decide --asof t` needs (the export's `held_dollars` is likewise what
+DECIDE at t read). `emit_holdings` then:
+- reports a name holding a set rank even when it has no other state (so a name missing or flat for a while keeps
+  its state in the export, as the replay does), and
+- fills `NavHolding::rank_set` / `desired_prev` (new fields, NaN = unset; NaN by default, untouched without a band).
+Layouts (lane D / v7 W4 files):
+- f64: `holdings.f64` rows are `hold_row_width` = 13 values (the 11 v1 values, then `rank_set`, `desired_prev`);
+  `holdings_index.json` names the columns (`data.columns` gains the two names, `data.row_width` 13) and adds a
+  `hold_state` declaration; the reader (`holdings::read_session`) accepts either layout by its column names and
+  returns `SessionRead::hold_state`; a row with one state value NaN and the other not is refused. New:
+  `holdings::pack_hold`, `HoldRow`, `hold_column_names`, `col_rank_set`, `col_desired_prev`;
+  `BinaryAppender::open(path, width = row_width)` and `append(span)`; `write_index(..., hold_state = false)`.
+- csv: `holdings.csv` gains the two trailing columns (nan spelled `nan`).
+- both manifests gain `hold_band_state` (the declaration).
+Decide: `read_f64_positions` takes the state from a hold-band export (`Positions::has_hold_state`); the csv reader
+already read the columns (R-4). `decision.json` `hold_band.state_in` says which layout supplied it. The workspace
+reserve charges the snapshot (2 f64 per name) with holdings and a declared band.
+
+Identity (band unset or b = 0). `emit_hold` and the emitter's `hold_` are false: no snapshot, no added row, the csv
+header and rows are written by the same statements (the two columns are appended only under `hold_`), the f64 rows
+are `pack()`'s 11 values, the index JSON has the same keys and values (`row_width` 11, the 11 names, no
+`hold_state`), the manifests have no new key. How root verifies: the accepted v7.1 NAV argv (see "How root
+verifies" above) with `--emit-holdings H --holdings-format f64` and again with `--holdings-format csv`, run with the
+pre-E-16 exe (root HEAD before this merge) and with the merged exe: every file of the NAV directory and of `H`
+(`holdings.f64`, `holdings_index.json`, `holdings_days.csv`, `manifest.json`; `holdings.csv`) byte-identical; also
+with `--hold-band 0` appended on the merged exe (same bytes). In-build test:
+`HoldBand.EmittedHoldingsUnchangedWithoutADeclaredBand` (flag off vs `--hold-band 0`, both formats, byte-identical
+directories; 11-value rows with the v1 column names, the v1 csv header, no `hold_band_state`).
+One non-output effect: `sizeof(NavHolding)` grows by 16 bytes, so the conservative `--emit-holdings` workspace reserve
+(`holdings_name_bytes`) grows by 16 bytes per name for every holdings run; no published byte depends on it (a
+budget within 16 x names bytes of the old reserve would now be refused).
+
+Tests (`strategy_live_test.cpp`):
+- `HoldBand.CheckReplayMatchesEmittedHoldings`: a NAV run with `--hold-band .1 --emit-holdings` (f64) and the same run
+  with `--holdings-format csv`; the NAV directory is byte-identical to the run without `--emit-holdings`; the f64
+  index has row width 13 with the two named columns, the csv header ends `,rank_set,desired_prev`, both manifests
+  carry `hold_band_state`; `decide --check-replay` from each export at sessions 150, 151, 170 and 190: 0
+  mismatches over every name, state read from the export (`names_set_in` > 0); at a session where the band kept a
+  member, the same positions and targets without the state columns give mismatches > 0.
+- `HoldBand.EmittedHoldingsUnchangedWithoutADeclaredBand` (above).
+- Changed: `HoldBand.DecideVerbCarriesState` now starts from a positions CSV `instrument_id,held_dollars` built from
+  the replay's holdings of 150 (the f64 export of a hold-band run now carries the state, so it no longer starts
+  unset); every assertion is unchanged.
+
+How root verifies: build `atx-impl-strategy-target-tests`; gtest filter
+`HoldBand.*:AdvHold.*:StrategyLive.*:StrategyNavReplay.*:NavWarmStart.*:NavV5.*:NavV6.*:NavV7Hook.*:ConstructionGrid.*:NavBookWorkers.*:NavTimers.*:BookTargetShaping.*`
+(`StrategyLive.*` holds the holdings writer/reader identity tests, e.g. `HoldingsF64CarriesEveryV1CsvColumnBitForBit`,
+`EmitHoldingsLeavesNavOutputsByteIdentical`, `DecideReadsF64AndV1CsvIdenticallyAndRefusesTamperedHoldings`).
+
+Deviation (declared): the export carries the state entering the session's construction, not the state after it.
+Reason: decide at t must read the state its own decision starts from, and it reads one session of the export; the
+state after decision t is `targets.csv`'s (R-4) and the export's next session. On the final execution-only session
+the row carries the state after the last decision.
+
+Cross-lane edits (E-16): `atx-impl/src/strategy_nav_replay.cpp` (lane D: `hold_trace_name_bytes`, `Construction`
+members, `emit_holdings`, the snapshot in `run_books`, `nav_workspace_reserve_bytes`, `HoldingsEmitter`
+open/session/write_name/close/`hold_state()`, `hold_band_state_declaration`, `publish_holdings`, the
+`run_nav_replay` call of `open`); `atx-impl/src/strategy_nav_replay.hpp` (`NavHolding` fields and comment, `<limits>`,
+the reserve comment); `atx-impl/src/strategy_holdings.{hpp,cpp}` (v7 W4 layout, as above);
+`atx-impl/src/strategy_live.{cpp,hpp}` (f64 state read, `state_in`, the positions doc; seal lines untouched).
