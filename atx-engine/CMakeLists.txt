@@ -3,6 +3,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/book/claims_state.cpp
     src/book/replay.cpp
     src/book/security_transition.cpp
+    # platform v8 R-6: target tracking (spo-v3's solver; ADMM on the factor structure)
+    src/book/target_tracking.cpp
     src/factory/canonical.cpp
     src/factory/crossover.cpp
     src/factory/factory.cpp
@@ -200,6 +202,12 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/combine/orthogonalize.cpp src/combine/marginal_rank_ic.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/combine/orthogonalize.cpp src/combine/marginal_rank_ic.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    # v8 R-6: the NAV replay solves one tracking problem per rebalance decision and book
+    # (~1,500 solves of ~100 ADMM iterations over ~1,850 names per TRAIN cell).
+    set_property(SOURCE src/book/target_tracking.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/book/target_tracking.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 

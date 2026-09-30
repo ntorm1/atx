@@ -42,6 +42,10 @@
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
 // the replay's own summary.json.
+// Warm start (v8 D-0, --warm-start-sessions K): the decisions before the role's
+// decision_begin plan the books but are not scored, so every v7 side file (the transfer
+// coefficients, spo_diagnostics.csv, the spo summary blocks) and the spo tripwire cover
+// decisions d >= decision_begin only. K = 0: every decision is scored, bytes unchanged.
 //
 // Threading: the installed extension is thread-local; a replay runs on one thread.
 
@@ -150,8 +154,9 @@ extension_cost_model(const NavScenario& scenario);
                                      std::span<const atx::u8> tier = {},
                                      std::span<const atx::u8> no_locate = {});
 // After the replay and before anything is published: records the books and reads the spo
-// specific-ceiling tripwire (spo::ceiling_tripwire). An error voids the run: the replay
-// returns it before its output directory exists. Ok without an extension (identity).
+// specific-ceiling tripwire (spo::ceiling_tripwire) over the scored decisions (a warm-up
+// decision leaves no spo row). An error voids the run: the replay returns it before its
+// output directory exists. Ok without an extension (identity).
 [[nodiscard]] atx::core::Status capture(std::span<const NavScenario> scenarios,
                                         std::span<const NavReplayResult> results,
                                         std::span<const NavSummary> summaries);
