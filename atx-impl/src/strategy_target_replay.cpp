@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/data/research_window.hpp" // v8 E-25: the seal a label role may not reach
+#include "atx/engine/data/strategy_data.hpp"   // review B-3: --role is never a delisting-returns role
 
 namespace atx::impl::strategy {
 namespace {
@@ -812,10 +813,16 @@ bool member_differs(const Json& role, const Json& label) {
   const Json* b = json_at(label, {"files", "member.u8", "sha256"});
   return a && b && *a != *b;
 }
-// The manifest rule of detail::check_label_role (`role`: --role's pinned manifest).
-co::Status check_label_manifests(const Json& role, const Json& label) {
+// The manifest rule of detail::check_label_role (`role`: --role's pinned manifest, at
+// `role_path`).
+co::Status check_label_manifests(const Json& role, const Json& label,
+                                 const std::string& role_path) {
   if (!role.is_object() || !label.is_object())
     return label_refused("a role manifest is not a JSON object");
+  // Review B-3 (Ruling E-10): --role, the signal role, is never a --delisting-returns build, so
+  // its member.u8 is the uncleared lagged membership check_declared_clearing assumes. Applied to
+  // `role` only: a label role declares universe.delisting.returns_applied true by construction.
+  ATX_TRY_VOID(rw::refuse_delisting_returns_signal_role(role.dump(), role_path));
   // The seal first: a label role reaching it is refused whatever else it shares.
   if (label.contains("score_end_ns") && (!label.at("score_end_ns").is_number_integer() ||
                                          label.at("score_end_ns").get<i64>() > rw::kSealBeginNs))
@@ -902,7 +909,7 @@ co::Result<LabelManifests> admitted_label_manifests(const TargetReplayRunConfig&
   ATX_TRY(auto role, pinned_json(cfg.role_path, cfg.role_sha256));
   auto label = pinned_json(path, sha256);
   if (!label) return label_refused("its manifest: " + label.error().to_string());
-  ATX_TRY_VOID(check_label_manifests(role, *label));
+  ATX_TRY_VOID(check_label_manifests(role, *label, cfg.role_path));
   return co::Ok(LabelManifests{std::move(role), std::move(*label)});
 }
 // The declared delisting-return clearing, cell by cell. Only when the manifests pin different

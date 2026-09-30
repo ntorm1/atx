@@ -64,7 +64,9 @@ struct LoadedSavedBlend {
 // clearing (prepare_recent_research.py DELISTING_RETURN_RULE member[T] = 0):
 // universe.delisting.returns_applied true and
 // universe.delisting.applied.members_cleared_on_termination_session N > 0; load_label_role
-// verifies the N cells.
+// verifies the N cells. Before all of these, cfg's role itself is refused when it is a
+// --delisting-returns build (review B-3: atx::engine::data::refuse_delisting_returns_signal_role,
+// its own message), never the label role.
 [[nodiscard]] atx::core::Status check_label_role(const TargetReplayRunConfig& cfg,
                                                  const std::string& path,
                                                  const std::string& sha256);

@@ -2834,3 +2834,33 @@ TEST(NavLabelRole, AdmitsOnlyTheDeclaredDelistingClearing) {
   EXPECT_NE(rule.get<std::string>().find("members_cleared_on_termination_session"),
             std::string::npos);
 }
+
+// Review B-3 wired into the label-role path (integration of FIX-AB and R45): a --role that is
+// itself a --delisting-returns build (universe.delisting.returns_applied true) is refused from
+// its manifest, by the B-3 signal-role refusal, before any payload and before the output exists.
+// The label role is never checked by it (AdmitsOnlyTheDeclaredDelistingClearing runs a label
+// role that declares returns_applied true).
+TEST(NavLabelRole, RefusesADelistingReturnsSignalRole) {
+  Directory dir;
+  const auto panel = market_panel(70, 12, 5, 2e5);
+  const Fields fields(panel, 9);
+  const Json universe{{"id", "linked-operating-v1"},
+      {"base_role", {{"manifest_sha256", pin}, {"member_sha256", pin}}},
+      {"inputs", {{"identity_bridge", {{"manifest_sha256", pin}}},
+                  {"sic_events", {{"manifest_sha256", pin}}},
+                  {"delisting", {{"manifest_sha256", pin}}}}},
+      {"delisting", {{"returns_applied", true}}}};
+  const auto role_dir = dir.path / "dlret";
+  ASSERT_TRUE(std::filesystem::create_directory(role_dir));
+  const auto a = write_artifact(role_dir, panel, fields, 20, universe);
+  const LabelPin same{a.cfg.role_path, a.cfg.role_sha256};
+  const auto out_dir = dir.path / "refused";
+  std::ostringstream out, err;
+  EXPECT_EQ(nav_cli(pair_args(a, out_dir, label_flags(same)), out, err), 1) << err.str();
+  EXPECT_NE(err.str().find("was built with --delisting-returns "
+                           "(universe.delisting.returns_applied true)"),
+            std::string::npos)
+      << err.str();
+  EXPECT_NE(err.str().find(a.cfg.role_path), std::string::npos) << err.str();
+  EXPECT_FALSE(std::filesystem::exists(out_dir));
+}
