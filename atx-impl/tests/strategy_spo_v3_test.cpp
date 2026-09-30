@@ -104,6 +104,10 @@ TEST(SpoV3, ZeroCostNoLimitsReturnsAimTo1e8) {
     mean += desired[i];
   }
   for (f64& v : desired) v -= mean / static_cast<f64>(n);
+  // Gross 1, as every desired target (detail::desired_target), so L x desired is inside 2 x L.
+  f64 gross = 0;
+  for (const f64 v : desired) gross += std::abs(v);
+  for (f64& v : desired) v /= gross;
   const st::cost_v2::DecisionLiquidity liquidity{std::vector<f64>(n, 1e15),
                                                  std::vector<f64>(n, 0.02)};
   const sp::BookDecision in{x, cfg, law, d, 1e8, desired, {}, {}, liquidity, "S2"};
