@@ -225,7 +225,8 @@ co::Result<KnownManifests> legacy_manifests(const IcRunnerConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: at most 64 --cache-legacy-fields");
   for (const auto& directory:cfg.candidate_cache_legacy_fields) {
     const auto where="IC runner: --cache-legacy-fields "+directory;
-    ATX_TRY(auto text,metadata_text((std::filesystem::path(directory)/"manifest.json").string()));
+    ATX_TRY(auto text,metadata_text((std::filesystem::path(directory)/"manifest.json").string(),
+        ic_fields_manifest_max_bytes));
     ATX_TRY(auto sha,co::sha256_hex(text));
     const auto j=Json::parse(text,nullptr,false);
     if (j.is_discarded() || !j.is_object() || j.value("schema",std::string{})!=fields_schema ||

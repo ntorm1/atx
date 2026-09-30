@@ -6,6 +6,13 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 namespace atx::impl::strategy {
+// Bytes of a research fields manifest (atx.research-role-fields/v1) the IC runner and the
+// marginal verb read (review B-4). Every other metadata file keeps 1 MiB, but a published
+// field row (definition, sources, coverage, caveats, its file receipt) is 7.7 KB on average
+// on fields-v9 and 12.3 KB at its widest (sv_ratio126): 1 MiB held 82 such rows, far under
+// the 1,024-row cap, and 73 of them already publish 927,292 B. 1,024 rows of the widest width
+// publish 12,591,307 B; 16 MiB (the risk verb's manifest bound) keeps that cap reachable.
+inline constexpr atx::u64 ic_fields_manifest_max_bytes=16ULL<<20;
 struct IcRunnerConfig {
   std::string library_path, library_sha256;
   std::string train_manifest, train_sha256;

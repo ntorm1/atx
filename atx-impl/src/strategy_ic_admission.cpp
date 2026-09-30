@@ -327,7 +327,12 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
   if (std::error_code ec; !std::filesystem::is_directory(dir,ec))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" must name the fields directory "
         "(the one holding manifest.json), not a file or missing path: "+directory);
-  ATX_TRY(auto j,pinned_json((dir/"manifest.json").string(),pin));
+  // Review B-4: its own byte bound, so the row cap below is reachable at published row widths.
+  const auto bounds=" ("+role.name+" fields manifest bounds: "+std::to_string(ic_fields_manifest_max_bytes>>20)+
+      " MiB, 1.."+std::to_string(max_field_manifest_rows)+" rows)";
+  auto loaded=pinned_json((dir/"manifest.json").string(),pin,ic_fields_manifest_max_bytes);
+  if (!loaded) return co::Err(loaded.error().code(),loaded.error().message()+bounds);
+  const auto j=std::move(*loaded);
   const auto d=role.metadata.at("dates").get<u64>(),n=role.metadata.at("instruments").get<u64>();
   const auto& receipts=role.metadata.at("files");
   if (!j.is_object() || j.value("schema",std::string{})!=fields_schema ||
@@ -344,7 +349,7 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
   const auto& rows=j.at("fields"); const auto& files=j.at("files");
   if (!rows.is_array() || rows.empty() || rows.size()>max_field_manifest_rows || !files.is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest field list (1.."+
-        std::to_string(max_field_manifest_rows)+" rows)");
+        std::to_string(max_field_manifest_rows)+" rows)"+bounds);
   const auto bytes=d*n*sizeof(f64);
   std::map<std::string,FieldFile> available;
   for (const auto& row:rows) {

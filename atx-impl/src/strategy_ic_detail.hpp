@@ -55,6 +55,9 @@ inline constexpr const char* ic_price_field="close";
 // reference up to 256 distinct extra fields, one FieldMask bit each.
 inline constexpr usize max_field_manifest_rows=1024;
 inline constexpr usize max_extra_fields=256;
+// Metadata files (library, role manifests, recipes, sidecars, weights): at most 1 MiB. A
+// fields manifest is read under ic_fields_manifest_max_bytes instead (strategy_ic_runner.hpp).
+inline constexpr u64 max_metadata_bytes=1ULL<<20;
 // Bit f = Library::extra_fields[f]. In-memory only: no mask is ever written to a
 // manifest, cache sidecar or summary, so no on-disk format depends on its width.
 using FieldMask=std::bitset<max_extra_fields>;
@@ -243,9 +246,11 @@ struct CachedIc { ex::ResearchIcResult result; std::array<std::vector<f64>,3> pe
 bool hash_valid(std::string_view value);
 bool base_field(std::string_view name);
 bool field_identifier(std::string_view s);
-co::Result<std::string> metadata_text(const std::string& path);
-co::Result<std::string> pinned_text(const std::string& path,const std::string& pin);
-co::Result<Json> pinned_json(const std::string& path,const std::string& pin);
+// `limit`: the file's byte bound (max_metadata_bytes, or ic_fields_manifest_max_bytes for a
+// fields manifest); the refusal names it.
+co::Result<std::string> metadata_text(const std::string& path,u64 limit=max_metadata_bytes);
+co::Result<std::string> pinned_text(const std::string& path,const std::string& pin,u64 limit=max_metadata_bytes);
+co::Result<Json> pinned_json(const std::string& path,const std::string& pin,u64 limit=max_metadata_bytes);
 co::Result<Library> library(const IcRunnerConfig& cfg);
 Json candidate_plan_rows(const Library& lib);
 void release(std::vector<f64>& buffer) noexcept;

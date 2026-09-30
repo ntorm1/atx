@@ -37,28 +37,28 @@ bool field_identifier(std::string_view s) {
   return !s.empty() && s.size()<=64 && ((s.front()>='a' && s.front()<='z') || s.front()=='_') &&
       std::all_of(s.begin(),s.end(),[](char c) { return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_'; });
 }
-co::Result<std::string> metadata_text(const std::string& path) {
+co::Result<std::string> metadata_text(const std::string& path,u64 limit) {
   std::ifstream in(path,std::ios::binary|std::ios::ate);
   if (!in || in.tellg()<0)
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: metadata file missing or unreadable: "+path);
-  if (in.tellg()==0 || static_cast<u64>(in.tellg())>(1ULL<<20))
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: metadata file empty or over 1 MiB ("+
-        std::to_string(static_cast<u64>(in.tellg()))+" B): "+path);
+  if (in.tellg()==0 || static_cast<u64>(in.tellg())>limit)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: metadata file empty or over "+
+        std::to_string(limit>>20)+" MiB ("+std::to_string(static_cast<u64>(in.tellg()))+" B): "+path);
   std::string text(static_cast<usize>(in.tellg()),'\0');
   in.seekg(0); in.read(text.data(),static_cast<std::streamsize>(text.size()));
   if (!in || in.peek()!=std::char_traits<char>::eof())
     return co::Err(co::ErrorCode::IoError,"IC runner: metadata extent changed");
   return co::Ok(std::move(text));
 }
-co::Result<std::string> pinned_text(const std::string& path,const std::string& pin) {
+co::Result<std::string> pinned_text(const std::string& path,const std::string& pin,u64 limit) {
   if (!hash_valid(pin)) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: external SHA256 required");
-  ATX_TRY(auto text,metadata_text(path));
+  ATX_TRY(auto text,metadata_text(path,limit));
   ATX_TRY(auto actual,co::sha256_hex(text));
   if (actual!=pin) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: external metadata pin differs");
   return co::Ok(std::move(text));
 }
-co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
-  ATX_TRY(auto text,pinned_text(path,pin));
+co::Result<Json> pinned_json(const std::string& path,const std::string& pin,u64 limit) {
+  ATX_TRY(auto text,pinned_text(path,pin,limit));
   return co::Ok(Json::parse(text));
 }
 namespace {

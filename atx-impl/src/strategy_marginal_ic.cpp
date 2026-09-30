@@ -66,10 +66,12 @@ std::optional<u64> count_of(const Json& j, const char* key) {
 }
 Json finite_or_null(f64 v) { return std::isfinite(v) ? Json(v) : Json(nullptr); }
 
-co::Result<std::string> read_text(const fs::path& path, std::string_view what) {
+// `limit`: metadata_limit, or ic_fields_manifest_max_bytes for a fields manifest (review B-4).
+co::Result<std::string> read_text(const fs::path& path, std::string_view what, u64 limit = metadata_limit) {
   std::ifstream in(path, std::ios::binary | std::ios::ate);
-  if (!in || in.tellg() <= 0 || static_cast<u64>(in.tellg()) > metadata_limit)
-    return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " missing, empty or over 1 MiB: " + path.string()));
+  if (!in || in.tellg() <= 0 || static_cast<u64>(in.tellg()) > limit)
+    return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " missing, empty or over " +
+        std::to_string(limit >> 20) + " MiB: " + path.string()));
   std::string text(static_cast<usize>(in.tellg()), '\0');
   in.seekg(0); in.read(text.data(), static_cast<std::streamsize>(text.size()));
   if (!in) return co::Err(fail(co::ErrorCode::IoError, std::string(what) + " read: " + path.string()));
@@ -77,8 +79,9 @@ co::Result<std::string> read_text(const fs::path& path, std::string_view what) {
 }
 struct Pinned { Json json; std::string sha, text; };
 // `pin` empty: the SHA256 is computed and recorded, not checked.
-co::Result<Pinned> pinned_json(const fs::path& path, const std::string& pin, std::string_view what) {
-  ATX_TRY(auto text, read_text(path, what));
+co::Result<Pinned> pinned_json(const fs::path& path, const std::string& pin, std::string_view what,
+                               u64 limit = metadata_limit) {
+  ATX_TRY(auto text, read_text(path, what, limit));
   ATX_TRY(auto sha, co::sha256_hex(text));
   if (!pin.empty() && pin != sha)
     return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " SHA256 differs from its pin: " + path.string()));
@@ -246,7 +249,8 @@ co::Result<Themes> read_themes(const MarginalIcConfig& cfg, const Pool& pool, co
 co::Result<std::map<std::string, std::string>> read_fields(const MarginalIcConfig& cfg, const Pool& pool, std::string& sha) {
   std::map<std::string, std::string> out;
   if (cfg.fields_directory.empty()) return co::Ok(std::move(out));
-  ATX_TRY(auto pinned, pinned_json(fs::path(cfg.fields_directory) / "manifest.json", std::string{}, "fields manifest"));
+  ATX_TRY(auto pinned, pinned_json(fs::path(cfg.fields_directory) / "manifest.json", std::string{}, "fields manifest",
+                                   ic_fields_manifest_max_bytes));
   const Json& j = pinned.json; sha = pinned.sha;
   if (text_of(j, "schema") != fields_schema || !j.contains("role") || text_of(j.at("role"), "manifest_sha256") != pool.role_sha ||
       !j.contains("fields") || !j.at("fields").is_array())
