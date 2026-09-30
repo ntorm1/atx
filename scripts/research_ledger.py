@@ -25,6 +25,11 @@ tools: that directory on sys.path, imported by name, on first use only).
 appends one protocol line {schema, kind, count 0, window_id, owner_ruling, date, research_window_sha256, trial_id,
 prev_sha256}; the window id defaults to the W0-1 window's, the window file to atx-impl/strategies/research_window.json.
 The same line is never appended twice (same trial_id).
+
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
+
+appends one chained defect line (review C-3; backtest_integrity.defect_line): the cell ledgered as TID is invalid
+(v8-prereg item 7). Refused when TID is not a ledgered cell line or is invalid already.
 """
 from __future__ import annotations
 
@@ -41,7 +46,8 @@ import research_tree  # noqa: E402
 
 LEDGER_SCHEMA = "atx.trial-ledger/v1"
 PROTOCOL = "protocol"
-NON_TRIAL_KINDS = (PROTOCOL,)           # ledger lines that are no trial: skipped by cells()
+DEFECT = "defect"                       # review C-3: a defect event line (backtest_integrity.defect_line)
+NON_TRIAL_KINDS = (PROTOCOL, DEFECT)    # event lines, no cell and no trial: skipped by cells()
 N_KIND = "construction"                 # the kind whose trials make N (nav_summ --dsr-ledger)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 TOOLS = research_tree.REPO / "atx-impl" / "tools"
@@ -169,6 +175,31 @@ def append(path: Path, rec: dict) -> dict | None:
     line as written, or None when it was already present."""
     appended, _ = backtest_integrity().ledger_append(Path(path), [rec], chain=True)
     return appended[0] if appended else None
+
+
+def defect_main(argv=None) -> int:
+    """research_cycle.py ledger-defect: one chained defect line (review C-3) for a cell ledgered already."""
+    ap = argparse.ArgumentParser(prog="research_cycle.py ledger-defect",
+                                 description="append a defect line: the ledgered cell TRIAL_ID is invalid "
+                                             "(v8-prereg item 7; its blind re-run may then replace it)")
+    ap.add_argument("--ledger", required=True, help="the trial ledger (root-relative or absolute)")
+    ap.add_argument("--trial-id", required=True, help="the invalid cell's trial_id")
+    ap.add_argument("--reason", required=True)
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD the defect was found (optional)")
+    ap.add_argument("--root", type=Path, default=research_tree.REPO)
+    a = ap.parse_args(argv)
+    try:
+        if a.date is not None:
+            dt.date.fromisoformat(a.date)
+        bi = backtest_integrity()
+        rec = bi.defect_line(a.trial_id, a.reason, a.date)
+        ledger = Path(a.ledger) if Path(a.ledger).is_absolute() else a.root / a.ledger
+        appended, _ = bi.ledger_append(ledger, [rec], chain=True)
+    except ValueError as exc:  # a malformed date, an unknown or invalid target, a broken chain
+        print(f"research_cycle ledger-defect: {exc}", file=sys.stderr)
+        return 2
+    print(("appended" if appended else "already present (not appended)") + f": {json.dumps(rec, sort_keys=True)}")
+    return 0
 
 
 def main(argv=None) -> int:

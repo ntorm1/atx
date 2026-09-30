@@ -12,6 +12,8 @@
                            (research_gc.py: stores no listed spec uses; deleted only with --apply)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
+                           (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell)
 
 Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
   --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's
@@ -1630,6 +1632,8 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
         return research_ledger.main(argv[1:])
+    if argv[:1] == ["ledger-defect"]:        # review C-3: a ledgered cell found invalid afterwards
+        return research_ledger.defect_main(argv[1:])
     if argv[:2] == ["cache", "gc"]:          # unreferenced candidate caches and fit work dirs: research_gc.py
         import research_gc  # noqa: PLC0415  (imports this module)
         return research_gc.main(argv[2:])

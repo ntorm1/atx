@@ -100,6 +100,30 @@ def test_dsr_n_equals_trial_counts_with_defect_and_rerun_lines(tmp_path):
     assert err.value.code == RC.EXIT_PIN and f"set summ.dsr_n to {want}" in str(err.value)
 
 
+def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
+    """Review C-3: `research_cycle.py ledger-defect` appends one chained defect line for a cell ledgered already; N
+    (the cycle's ledger+1 and nav_summ's) drops the cell; research_ledger.cells skips the line; bad input exits 2."""
+    root, sp = make_root(tmp_path, summ={"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl"})
+    ledger = root / "trials.jsonl"
+    for k, rel in enumerate(("prior/a", "prior/b")):
+        nav_cell(root, rel, k)
+    a, b = record(root, "prior/a"), record(root, "prior/b")
+    BI.ledger_append(ledger, [a, b], chain=True)
+    assert cycle_n(root, sp) == 3
+    argv = ["ledger-defect", "--ledger", "trials.jsonl", "--trial-id", b["trial_id"], "--reason", "stale fields",
+            "--date", "2026-10-01", "--root", str(root)]
+    assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("appended: ")
+    assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("already present")
+    records = BI.ledger_read(ledger)
+    assert records[-1]["kind"] == "defect" and records[-1]["defect_of"] == b["trial_id"] and "prev_sha256" in records[-1]
+    assert BI.trial_counts(records) == [1, 0, 0] and cycle_n(root, sp) == 2
+    assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]      # the cell listing skips the event line
+    for bad in (["--trial-id", "0" * 16], ["--date", "01/10/2026"], ["--reason", " "]):
+        args = list(argv)
+        args[args.index(bad[0]) + 1] = bad[1]
+        assert RC.main(args) == 2
+
+
 def test_protocol_line_is_chained_when_written(tmp_path):
     root = tmp_path
     ledger = root / "trials.jsonl"
