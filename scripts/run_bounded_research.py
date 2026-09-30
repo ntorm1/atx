@@ -14,6 +14,8 @@ pathspec (research_tree.CODE_PATHSPEC) must be empty; dirty paths outside it
 (lane reports, research outputs) are listed in the receipt, not refused.
 --no-git (contract K3) skips git for a root outside any repository (test roots
 such as the tiny_world fixture) and is refused for a root inside one.
+--role-id ID (platform v8 H-1) names the era role of the run in start.json and
+receipt.json (written only when given).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -81,12 +84,16 @@ def main() -> int:
                         help="where the process runs and outputs go (default: this worktree)")
     parser.add_argument("--no-git", action="store_true",
                         help="no source pin: only for a --root outside any git repository (contract K3)")
+    parser.add_argument("--role-id", default=None,
+                        help="the era role of this run (v8 H-1): recorded in start.json and receipt.json")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if (not command or not math.isfinite(args.seconds) or not 0 < args.seconds <= 600
             or not 32 <= args.max_rss_mib <= 8192 or not 64 <= args.min_free_mib <= 8192):
         parser.error("require a command, <=600 seconds, and explicit bounded RAM limits")
+    if args.role_id is not None and not re.fullmatch(r"[A-Za-z0-9_]+", args.role_id):
+        parser.error("--role-id must match [A-Za-z0-9_]+")
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     if args.no_git and research_tree.no_git_refusal(root):
         parser.error(research_tree.no_git_refusal(root))
@@ -120,6 +127,8 @@ def main() -> int:
         outcome="launch-failed", exit_code=None,
         git="none (--no-git: root outside any repository)" if args.no_git else "clean in the code pathspec",
         dirty_outside_pathspec=ignored)
+    if args.role_id is not None:
+        receipt["role_id"] = args.role_id
     (output / "start.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     started = time.monotonic()
     child = None

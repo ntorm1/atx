@@ -112,6 +112,11 @@ def scored_trial_id(nav_dir: Path | None) -> str | None:
     return bi.trial_id(N_KIND, bi.sha256_file(daily))
 
 
+def pool_label(dirs: list[str]) -> str:
+    """The cell name of a pooled era cell (task H-1): era_pool.pool_label of its era NAV dirs as nav_summ is given them."""
+    return backtest_integrity().era_pool().pool_label(dirs)
+
+
 def pooled_trial_id(nav_dirs: list[Path]) -> str | None:
     """The trial_id of a pooled era cell (task H-1): backtest_integrity.pooled_trial_id over the eras' primary daily
     CSVs in date order (one era: the era's own trial_id); None while any era's NAV output does not exist."""

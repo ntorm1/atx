@@ -9,7 +9,9 @@
    phases[{name, seconds, peak_mib}]  from each phase's bounded-runner receipt, else the cycle's own wall clock
                  (peak_mib null) for a direct phase run by this invocation}
 
-The cycle is duck-typed (research_cycle.Cycle): spec, res, screen, steps(), receipt(), cycle_dir().
+The cycle is duck-typed (research_cycle.Cycle, or research_roles.RolesCycle): spec, res, screen, steps(), receipt(),
+cycle_dir(). A step of one era of a roles: cycle (task H-1) is keyed ``phase:role`` (``step_key``) in the phase rows;
+the scoring blocks are read for the last NAV step (a pooled summ's last JSON row is the pooled row).
 """
 from __future__ import annotations
 
@@ -19,6 +21,12 @@ from pathlib import Path
 VERDICT = "cycle_verdict.json"
 VERDICT_SCHEMA = "atx.cycle-verdict/v1"
 SUMM_JSON, PBO_JSON = "summ.json", "pbo.json"     # nav_summ --json / --pbo-json targets in the cycle dir
+
+
+def step_key(st) -> str:
+    """A step's name in plans, logs, timings and phase rows: its phase, or ``phase:role`` for an era's step (H-1)."""
+    role = getattr(st, "role", None)
+    return f"{st.phase}:{role}" if role else st.phase
 
 
 def listed_rows(rows: list, ids: list[str] | None) -> list:
@@ -32,14 +40,14 @@ def listed_rows(rows: list, ids: list[str] | None) -> list:
 
 def phase_rows(cycle, steps: dict, timings: dict) -> list[dict]:
     out = []
-    for st in steps.values():   # the receipt of the attempt run now (an always-run phase moved on to a fresh dir)
-        ran = timings.get(st.phase) or {}
+    for key, st in steps.items():   # the receipt of the attempt run now (an always-run phase moved on to a fresh dir)
+        ran = timings.get(key) or {}
         r = cycle.receipt(ran.get("run_dir") or st.run_dir)
         if r is not None:
-            out.append({"name": st.phase, "seconds": r.get("wall_seconds"),
+            out.append({"name": key, "seconds": r.get("wall_seconds"),
                         "peak_mib": (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20})
         elif ran:
-            out.append({"name": st.phase, "seconds": ran["seconds"], "peak_mib": None})
+            out.append({"name": key, "seconds": ran["seconds"], "peak_mib": None})
     return out
 
 
@@ -62,7 +70,7 @@ def scoring_blocks(res, cycle_dir: str, nav_out: str) -> dict:
 
 def verdict(cycle, timings: dict, spec_sha256: str | None) -> dict:
     s, res = cycle.spec, cycle.res
-    steps = {st.phase: st for st in cycle.steps()}
+    steps = {step_key(st): st for st in cycle.steps()}
     ids = s["gate"]["admitted"] if "gate" in s else None
     doc = {"schema": VERDICT_SCHEMA, "cycle": s["name"], "mode": "screen" if cycle.screen else "run",
            "spec_sha256": spec_sha256}
@@ -75,8 +83,9 @@ def verdict(cycle, timings: dict, spec_sha256: str | None) -> dict:
     if m is not None and m.state == "skipped":
         doc["marginal_note"] = m.note
     doc["phases"] = phase_rows(cycle, steps, timings)
-    if not cycle.screen and s.get("verdict") and "nav" in steps:
-        doc.update(scoring_blocks(res, cycle.cycle_dir(), steps["nav"].output))
+    navs = [st for st in steps.values() if st.phase == "nav"]
+    if not cycle.screen and s.get("verdict") and navs:
+        doc.update(scoring_blocks(res, cycle.cycle_dir(), navs[-1].output))
     return doc
 
 

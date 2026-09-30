@@ -39,6 +39,11 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates)
   receipts        "every-phase": the direct phases (fields, check, monitor, summ) run through the bounded runner too
   ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields)
+  roles           (task H-1, research_roles.py) era shards: a list of roles {id, dir, begin, end, manifest_sha256,
+                  universe, fields_dir, fields_manifest_sha256} replaces inputs.role; one role is exactly the
+                  single-role cycle; two or more run fields, u, w and nav per era (outputs -<id>, receipts
+                  --role-id), and check, the pooled fit (--era / --era-id), gate and the pooled summ (nav_summ --pool)
+                  on the anchor (the last role); steps are named phase:<id>
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -123,7 +128,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_ledger  # noqa: E402
 import research_tree  # noqa: E402
-from cycle_verdict import SUMM_JSON, PBO_JSON, write_verdict as _write_verdict  # noqa: E402
+from cycle_verdict import SUMM_JSON, PBO_JSON, step_key, write_verdict as _write_verdict  # noqa: E402
 
 SCHEMA = "atx.research-cycle-spec/v1"
 PHASES = ("fields", "check", "ref", "u", "fit", "card", "marginal", "gate", "w", "nav", "monitor", "summ")
@@ -132,6 +137,7 @@ STOP_PHASES = PHASES + tuple(p + COMPARE_SUFFIX for p in PHASES)
 COMPARE_MODES = ("file", "csv-rows", "json-rows")
 OUT_PHASES = ("fields", "ref", "u", "fit", "card", "w", "nav", "monitor")  # {out:PHASE} operands
 ATTEMPT_PHASES = ("u", "fit", "w", "nav")
+ERA_PHASES = ("fields", "u", "w", "nav")   # H-1: the phases each era of a roles: cycle runs (research_roles.py)
 EXIT_OK, EXIT_USAGE, EXIT_PIN, EXIT_STOP, EXIT_GATE = 0, 2, 3, 4, 10
 FIT_INCOMPLETE = 3                     # fit_composition_weights.py: "incomplete (rerun resumes)"
 MAX_ATTEMPTS = 9
@@ -454,6 +460,7 @@ class Step:
         self.phase, self.kind, self.argv, self.output, self.run_dir = phase, kind, argv, output, run_dir
         self.attempt, self.state, self.note = attempt, state, note
         self.checks = checks or []  # compare steps: the resolved comparisons
+        self.role, self.cycle = None, None  # a roles: cycle's era id and era Cycle (H-1; step_key, fields_check)
 
     @property
     def done(self) -> bool:
@@ -477,7 +484,7 @@ class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
-                 screen: bool = False, capabilities=None, verify: bool = True):
+                 screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and spec.get("fields", {}).get("manifest_sha256"):
@@ -499,13 +506,21 @@ class Cycle:
         self.no_git, self.screen = no_git, screen
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
+        # task H-1 (research_roles.py): an era of a roles: cycle keys its outputs and receipts by role_key; the
+        # anchor era's fit and summ pool the others (fit_pool: (argv, binds); summ_pool: [(id, nav dir, weights)])
+        self.role_key, self.weights_name = role_key, "composition_weights.json"
+        self.fit_pool: tuple[list[str], list[str]] | None = None
+        self.summ_pool: list[tuple[str, str, str]] | None = None
         # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
         self.pins = self.verify_inputs() if verify else {}
 
     # -------------------------------------------------------------- names and pins
-    def out(self, name: str) -> str:
-        """An output name: placed under out_root (when set, for a relative name), then suffixed."""
+    def out(self, name: str, keyed: bool = True) -> str:
+        """An output name: placed under out_root (when set, for a relative name), keyed by the era (H-1: ``-<role>``,
+        per-era outputs only), then suffixed."""
         name = self.placed(name)
+        if keyed and self.role_key:
+            name = f"{name}-{self.role_key}"
         return f"{name}-{self.suffix}" if self.suffix else name
 
     def placed(self, name: str) -> str:
@@ -534,11 +549,11 @@ class Cycle:
 
     def cache_dir(self) -> str:
         ic = self.spec["ic"]
-        return self.out(ic["cache"]) if "cache" in ic else self.derived_root("candidate-cache")
+        return self.out(ic["cache"], keyed=False) if "cache" in ic else self.derived_root("candidate-cache")
 
     def fit_work_dir(self) -> str:
         fit = self.spec["fit"]
-        return self.out(fit["work_dir"]) if "work_dir" in fit else self.derived_root("fit-work")
+        return self.out(fit["work_dir"], keyed=False) if "work_dir" in fit else self.derived_root("fit-work")
 
     def tool(self, rel: str) -> str:
         """A spec script path; with --no-git a relative one absent under the root is this worktree's copy."""
@@ -632,7 +647,10 @@ class Cycle:
         if self.no_git:
             argv += ["--root", str(self.res.root), "--no-git"]
         argv += ["--seconds", str(caps["seconds"]), "--max-rss-mib", str(caps["max_rss_mib"]),
-                 "--min-free-mib", str(caps["min_free_mib"]), "--output", run_dir]
+                 "--min-free-mib", str(caps["min_free_mib"])]
+        if self.role_key and phase in ERA_PHASES:   # H-1: an era's own run (the pooled fit and summ have none)
+            argv += ["--role-id", self.role_key]
+        argv += ["--output", run_dir]
         for b in binds:
             argv += ["--bind", b]
         return argv + ["--"]
@@ -749,7 +767,7 @@ class Cycle:
             base = self.out(ic["w_output"])
             n, state, note = self.ic_attempt("w", base)
             wt_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
-            weights = f"{w_dir}/composition_weights.json"
+            weights = f"{w_dir}/{self.weights_name}"
             argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights], "w") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", wt_out,
@@ -823,11 +841,15 @@ class Cycle:
             argv += ["--weights", f"{w_dir}/composition_weights.json"]
         if "reference_cell" in s["inputs"]:
             argv += ["--reference", self.idir("reference_cell")]
+        pool = self.summ_pool                # H-1: the eras' NAV dirs pooled by nav_summ --pool (anchor era)
+        for _, _, weights in pool or []:
+            if weights != f"{w_dir}/composition_weights.json":
+                argv += ["--weights", weights]
         from_ledger = sm.get("cells_from_ledger") or sm["dsr_n"] == DSR_FROM_LEDGER
         prior, ledger_n = self.ledger_cells(n_out) if from_ledger else (None, None)
         cells = prior if sm.get("cells_from_ledger") else (sm.get("cells") or [])
         if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
-            argv += [*cells, n_out]
+            argv += [*cells] + ([] if pool else [n_out])
         argv += ["--dsr-n", str(self.dsr_n(ledger_n)), *sm.get("extra", [])]
         if s.get("verdict"):
             argv += ["--json", f"{self.cycle_dir()}/{SUMM_JSON}"]
@@ -836,7 +858,9 @@ class Cycle:
         ledger = self.ledger or sm.get("ledger")
         if ledger:
             argv += ["--ledger", ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
-        if not cells:
+        if pool:
+            argv += ["--pool", *[nav for _, nav, _ in pool], "--pool-ids", ",".join(i for i, _, _ in pool)]
+        elif not cells:
             argv.append(n_out)
         return self.always_step("summ", argv, [self.tool(sm["script"])], "nav_summ vs the reference cell")
 
@@ -899,9 +923,11 @@ class Cycle:
         p = self.res.path(rel)
         if not p.is_file():
             raise CycleError(f"summ.cells_from_ledger: no trial ledger at {rel}", EXIT_PIN)
+        navs = [nav for _, nav, _ in self.summ_pool or []]   # H-1: the pooled cell, by its pooled trial_id
         try:
             cells = research_ledger.cells(p)
-            n = research_ledger.ledger_n(p, n_out, self.res.path(n_out))
+            n = (research_ledger.ledger_n(p, research_ledger.pool_label(navs), pool_dirs=[self.res.path(d) for d in navs])
+                 if navs else research_ledger.ledger_n(p, n_out, self.res.path(n_out)))
         except research_ledger.LedgerError as exc:
             raise CycleError(f"summ.cells_from_ledger: {exc}", EXIT_PIN) from exc
         prior = [c for c in cells if c != n_out]
@@ -1018,7 +1044,7 @@ class Cycle:
 
     def fit_step(self, u_out: str, lib: str, lib_sha: str, role_m: str, role_sha: str) -> tuple[Step, str]:
         s, fit = self.spec, self.spec["fit"]
-        w_dir = self.out(fit["output"])
+        w_dir = self.out(fit["output"], keyed=False)   # H-1: one pooled fit for every era
         o, sm = f"{u_out}/orientations.json", f"{u_out}/summary.json"
         max_passes = int(fit.get("max_passes", 3))
         runs = [j for j in range(1, MAX_ATTEMPTS + 1) if self.res.exists_dir(f"{w_dir}-run{j}")]
@@ -1040,7 +1066,8 @@ class Cycle:
             state, note = "failed", f"fit still incomplete after {max_passes} passes"
         else:
             state, note = "pending", "" if j == 1 else f"resume pass {j} (previous pass exited {FIT_INCOMPLETE})"
-        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm], "fit") + [
+        pool_argv, pool_binds = self.fit_pool or ([], [])   # H-1: --era ... --era-id of the anchor era
+        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm, *pool_binds], "fit") + [
             self.py, self.tool(fit["script"]), "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
             role_sha, "--orientations", o, "--orientations-sha256", self.rt_sha(o), "--runner-summary", sm,
             "--runner-summary-sha256", self.rt_sha(sm), *fit["flags"]]
@@ -1049,7 +1076,7 @@ class Cycle:
         argv += ["--work-dir", self.fit_work_dir()]
         if "max_seconds" in fit:
             argv += ["--max-seconds", str(fit["max_seconds"])]
-        argv += ["--output", w_dir]
+        argv += [*pool_argv, "--output", w_dir]
         return Step("fit", "bounded", argv, w_dir, run_dir, j, state, note), w_dir
 
 
@@ -1248,7 +1275,7 @@ def plan_lines(cycle: Cycle, lines_only: bool = False) -> list[str]:
         if not lines_only:
             where = f" -> {st.output}" if st.output else ""
             rd = f" (receipt {st.run_dir})" if st.run_dir else ""
-            out.append(f"# phase {st.phase} [{st.kind}; {st.state}{'; ' + st.note if st.note else ''}]{where}{rd}")
+            out.append(f"# phase {step_key(st)} [{st.kind}; {st.state}{'; ' + st.note if st.note else ''}]{where}{rd}")
             for c in st.checks:
                 out.append(f"#   compare {c['name']} [{c['mode']}]: {c['a']} vs {c['b']}")
         if st.argv and st.kind != "skipped":
@@ -1259,7 +1286,7 @@ def plan_lines(cycle: Cycle, lines_only: bool = False) -> list[str]:
 def status_lines(cycle: Cycle) -> list[str]:
     out = header(cycle)
     for st in cycle.steps():
-        line = f"{st.phase:6s} {st.state:8s}"
+        line = f"{step_key(st):6s} {st.state:8s}"
         if st.output:
             line += f" {st.output}"
         r = cycle.receipt(st.run_dir)
@@ -1331,14 +1358,15 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
         if phase_idx >= len(steps):
             break
         st = steps[phase_idx]
+        key = step_key(st)              # the phase, or phase:role for an era of a roles: cycle (H-1)
         if st.state == "failed":
-            raise CycleError(f"HARD-STOP [{st.phase}]: {st.note}")
+            raise CycleError(f"HARD-STOP [{key}]: {st.note}")
         if st.state == "skipped":
-            log(f"== {st.phase}: skipped ({st.note})")
+            log(f"== {key}: skipped ({st.note})")
         elif st.done:
-            log(f"== {st.phase}: done ({st.output})")
+            log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
-                fields_check(cycle, f"{st.output}/manifest.json", log)
+                fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
             try:
@@ -1350,22 +1378,22 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             compare(cycle, st, log)
         else:
             if "<sha256:" in " ".join(st.argv):
-                raise CycleError(f"HARD-STOP [{st.phase}]: an upstream pin is unresolved (upstream output missing)")
+                raise CycleError(f"HARD-STOP [{key}]: an upstream pin is unresolved (upstream output missing)")
             if st.output and st.state == "pending" and st.phase != "fit" and cycle.res.exists_dir(st.output):
-                raise CycleError(f"HARD-STOP [{st.phase}]: output {st.output} exists (never overwritten)")
+                raise CycleError(f"HARD-STOP [{key}]: output {st.output} exists (never overwritten)")
             check_clean(cycle, clean, log, seen)
             if st.phase == "summ" and cycle.spec.get("verdict"):
                 cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
-            log(f"== {st.phase}" + (f" (attempt {st.attempt})" if st.attempt else ""))
+            log(f"== {key}" + (f" (attempt {st.attempt})" if st.attempt else ""))
             log(fmt_argv(st.argv))
             started = time.monotonic()
             done = executor(st.argv, root, env, st.kind == "bounded")
-            timings[st.phase] = {"seconds": time.monotonic() - started, "run_dir": st.run_dir}
+            timings[key] = {"seconds": time.monotonic() - started, "run_dir": st.run_dir}
             if st.kind == "bounded":
                 r = cycle.receipt(st.run_dir)
                 if r is None:
                     tail = (done.stderr or "")[-400:]
-                    raise CycleError(f"HARD-STOP [{st.phase}]: no receipt in {st.run_dir} (runner exit "
+                    raise CycleError(f"HARD-STOP [{key}]: no receipt in {st.run_dir} (runner exit "
                                      f"{done.returncode}) {tail}")
                 peak = (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20
                 log(f"   receipt: outcome {r.get('outcome')} exit {r.get('exit_code')} "
@@ -1376,19 +1404,20 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                     log("   fit incomplete (exit 3, the documented resume protocol): next pass resumes")
                     continue
                 if r.get("outcome") != "completed" or r.get("exit_code") != 0:
-                    raise CycleError(f"HARD-STOP [{st.phase}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
+                    raise CycleError(f"HARD-STOP [{key}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
                                      f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}")
             else:
                 if st.kind == "direct" and done.returncode != 0:
-                    raise CycleError(f"HARD-STOP [{st.phase}]: exit {done.returncode}")
+                    raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
             post = cycle.steps()[phase_idx]
             if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor", "marginal") and not post.done:
-                raise CycleError(f"HARD-STOP [{st.phase}]: exit 0 but its output is incomplete ({st.output})")
+                raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
-                fields_check(cycle, f"{st.output}/manifest.json", log)
+                fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
             if st.phase == "summ":
                 copy_ledger(cycle, log)
-        if stop_after == st.phase:
+        # --stop-after PHASE stops after the last step of that phase (every era's, in a roles: cycle)
+        if stop_after == st.phase and not any(x.phase == st.phase for x in steps[phase_idx + 1:]):
             log(f"== stopped after {st.phase} (--stop-after)")
             return EXIT_OK
         phase_idx += 1
@@ -1418,27 +1447,49 @@ def copy_ledger(cycle: Cycle, log) -> None:
 # ------------------------------------------------------------------ lock
 def lock(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[str]]:
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    if "roles" in spec:                    # H-1: the inputs and every role's role and fields pins
+        import research_roles  # noqa: PLC0415  (imports this module)
+        return research_roles.lock(spec, root, relock)
     validate_spec(spec)
     res = Resolver(root)
-    notes = []
+    notes: list[str] = []
     for key, item in spec["inputs"].items():
-        got = res.sha(item["path"])
-        if got is None:
-            raise CycleError(f"lock: input {key} missing: {item['path']}", EXIT_PIN)
-        if item.get("sha256") in (None, got):
-            if item.get("sha256") is None:
-                notes.append(f"locked {key}: {item['path']} {got}")
-            item["sha256"] = got
-        elif relock:
-            notes.append(f"RELOCKED {key}: {item['path']} {item['sha256']} -> {got}")
-            item["sha256"] = got
-        else:
-            raise CycleError(f"lock: {key} pin {item['sha256']} differs from the file ({got}); --relock to replace",
-                             EXIT_PIN)
+        lock_pin(res, item, "sha256", item["path"], key, relock, notes)
     return spec, notes
 
 
+def lock_pin(res: Resolver, item: dict, field: str, rel: str, key: str, relock: bool, notes: list[str]) -> None:
+    """item[field] = the SHA-256 of the file ``rel``: a null pin is filled, an equal one kept, a different one
+    replaced only with ``relock`` (else exit 3); a missing file is exit 3."""
+    got = res.sha(rel)
+    if got is None:
+        raise CycleError(f"lock: input {key} missing: {rel}", EXIT_PIN)
+    if item.get(field) in (None, got):
+        if item.get(field) is None:
+            notes.append(f"locked {key}: {rel} {got}")
+        item[field] = got
+    elif relock:
+        notes.append(f"RELOCKED {key}: {rel} {item[field]} -> {got}")
+        item[field] = got
+    else:
+        raise CycleError(f"lock: {key} pin {item[field]} differs from the file ({got}); --relock to replace",
+                         EXIT_PIN)
+
+
 # ------------------------------------------------------------------ CLI
+def make_cycle(res: Resolver, *, spec_path: Path, **kw):
+    """The Cycle of SPEC; a spec with ``roles`` (task H-1) is the era loop of research_roles.py (one role: that
+    role's single-role Cycle)."""
+    try:
+        raw = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CycleError(f"spec {spec_path}: {exc}", EXIT_USAGE) from exc
+    if isinstance(raw, dict) and "roles" in raw:
+        import research_roles  # noqa: PLC0415  (imports this module)
+        return research_roles.roles_cycle(raw, res, spec_path=spec_path, **kw)
+    return Cycle(load_spec(spec_path), res, spec_path=spec_path, **kw)
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["ledger-protocol"]:      # a protocol (window change) line: research_ledger.py
@@ -1482,10 +1533,10 @@ def main(argv=None) -> int:
             return EXIT_OK
         if a.suffix is not None and (not a.suffix or any(c in a.suffix for c in "/\\ ")):
             raise CycleError("--suffix must be a non-empty name without separators or spaces", EXIT_USAGE)
-        cycle = Cycle(load_spec(spec_path), Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
-                      reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
-                      runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
-                      screen=a.screen)
+        cycle = make_cycle(Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
+                           reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
+                           runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
+                           screen=a.screen)
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK
@@ -1499,4 +1550,7 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # the lazily imported research_roles / research_gc / research_add_alpha `import research_cycle`: this module, so
+    # their CycleError is the one main() catches (H-1)
+    sys.modules.setdefault("research_cycle", sys.modules[__name__])
     sys.exit(main())
