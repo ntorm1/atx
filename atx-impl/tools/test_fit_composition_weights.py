@@ -1359,7 +1359,8 @@ class WorkStoreKeys(unittest.TestCase):
         self.assertEqual(key, {"schema": "atx.fit-candidate-factor/v2", "semantics_tag": fcw.SEMANTICS_TAG,
                                "role_manifest_sha256": fx.train_sha, "window_id": fcw.window_id(),
                                "cache_payload_sha256": payload,
-                               "producer_fingerprint": fcw.producer_fingerprint(fcw.FACTOR_PRODUCERS)})
+                               "producer_fingerprint": fcw.producer_fingerprint(fcw.FACTOR_PRODUCERS),
+                               "horizon_fingerprint": fcw.horizon_fingerprint()})
         aim = store.key({"payload_sha256": payload}, "aim")
         self.assertEqual(aim["producer_fingerprint"], fcw.producer_fingerprint(fcw.AIM_PRODUCERS))
         self.assertEqual(aim["train_window_ns"], [fcw.FIT_BEGIN_NS, fcw.TRAIN_END_NS])
