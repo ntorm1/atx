@@ -288,6 +288,37 @@ def test_land_batches_receipts_parts_and_resume(tmp_path: Path, monkeypatch: pyt
     assert all({"url", "bytes", "sha256", "http_status", "fetched_at"} <= set(r) for r in receipts)
 
 
+def test_select_filings_member_scope_and_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "lake"
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(root))
+    (root / "panel" / "year=2020").mkdir(parents=True)
+    (root / "identity").mkdir()
+    (root / "sec_filings").mkdir()
+    # line 1 -> CIK 10 (panel cik); line 2 is member_equity with no panel cik but a backfill link to CIK 20;
+    # line 3 is a member but not member_equity (CIK 30); CIK 40 is linked to nothing in the panel
+    pq.write_table(pa.table({"session_date": [dt.date(2020, 3, 2)] * 3, "security_id": [1, 2, 3],
+                             "member_equity": [True, True, False], "cik": [10, None, 30]}),
+                   root / "panel" / "year=2020" / "panel-03.parquet")
+    pq.write_table(pa.table({"security_id": [2, 3, 4], "cik": [20, 30, 40], "link_tier": ["backfill", "strict",
+                                                                                          "strict"]}),
+                   root / "identity" / "link_table.parquet")
+    rows = []
+    for cik in (10, 20, 30, 40):
+        for n, (form, day) in enumerate((("10-K", dt.date(2018, 3, 1)), ("10-K", dt.date(2019, 3, 1)),
+                                         ("40-F", dt.date(2020, 3, 1)), ("10-K/A", dt.date(2020, 4, 1)))):
+            rows.append({"cik": cik, "accession": f"{cik:010d}-{n}", "form": form if cik != 20 or n != 1 else "20-F",
+                         "filing_date": day, "report_date": None, "acceptance_utc": dt.datetime(2020, 1, 1),
+                         "acceptance_clock": "file_utc", "vintage_risk": None, "available_at": dt.datetime(2020, 1, 1),
+                         "primary_document": "a.htm"})
+    pq.write_table(pa.Table.from_pylist(rows), root / "sec_filings" / "filings.parquet")
+    con = FT.C.connect(memory="100MB", threads=1)
+    got = FT.select_filings(con)
+    assert {r["cik"] for r in got} == {10, 20}  # 30 is not member_equity, 40 is not a member line
+    assert {r["form"] for r in got} == {"10-K", "20-F"}  # no 40-F, no amendments
+    assert [(r["cik"], r["filing_date"].year, r["priority"]) for r in got] == [
+        (10, 2019, 1), (20, 2019, 1), (10, 2018, 2), (20, 2018, 2)]
+
+
 # ------------------------------------------------------------------ text features helpers
 
 

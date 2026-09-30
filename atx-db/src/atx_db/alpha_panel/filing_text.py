@@ -1,8 +1,10 @@
 """Filing text landing (lane TXT, S7.2 / S7.3 input): 10-K / 20-F primary documents -> extracted Item sections.
 
 Selection (``select_filings``): original annual reports of the 10-K family (``FORMS_10K``) and 20-F filed from
-``FILED_FROM`` by a CIK of ``identity/link_table.parquet``, from ``sec_filings/filings.parquet`` (the resolved
-acceptance clock). Priority 1: CIKs with an ``ever_member`` line, 2: every other linked CIK; oldest first within.
+``FILED_FROM`` by a CIK linked (any tier) to a ``member_equity`` panel line in 2019-2026, from
+``sec_filings/filings.parquet`` (the resolved acceptance clock). Priority 1: filed from ``PRIORITY_FROM`` (every pair
+behind a score-window value), newest first; priority 2: the rest of 2018. (The first 1,300 filings landed under the
+earlier scope: ever-member CIKs, oldest first.)
 
 Per filing (resumable): GET ``Archives/edgar/data/<cik>/<acc>/<primaryDocument>`` through ``atx_db.sec_http``
 (approved agent, host-wide 5 req/s limiter, shared 403/429 pause) -> ``html_to_text`` -> ``extract_sections`` ->
@@ -56,6 +58,11 @@ SOURCE = "sec_text"
 FORMS_10K = ("10-K", "10-K405", "10-KSB", "10-KSB40", "10-KT", "10-KT405")
 FORMS_20F = ("20-F",)
 FILED_FROM = dt.date(2018, 1, 1)
+#: CIKs in scope: linked to a member_equity line in these years (controller ruling 2026-09-30).
+MEMBER_YEARS = (2019, 2026)
+#: Landing priority 1 from here: the score window starts 2020-09-28, a value stays fresh 400 days (filed from
+#: 2019-08) and is compared with a prior filing about a year earlier (from 2018-08).
+PRIORITY_FROM = dt.date(2018, 8, 1)
 ARCHIVES = "https://www.sec.gov/Archives/edgar/data"
 MAX_DOC_BYTES = 40 * 1024 * 1024
 #: Documents above this size are parsed one at a time (the parse holds ~3 copies of the document).
@@ -559,27 +566,44 @@ def _quote_list(items: Iterable[str]) -> str:
     return ", ".join("'" + s.replace("'", "''") + "'" for s in items)
 
 
-def select_filings(con: Any, start: dt.date = FILED_FROM) -> list[dict[str, Any]]:
-    """Filings to land, one row per accession (co-registrant CIKs in ``ciks``), priority then filing date order.
+def target_ciks_sql(years: tuple[int, int] = MEMBER_YEARS) -> str:
+    """SQL for the CIKs linked (any tier) to a ``member_equity`` line in ``years``: the panel's own ``cik`` on
+    member_equity cells, plus every ``identity/link_table.parquet`` CIK of a line that is member_equity in the window."""
+    root = C.build_root()
+    panel = (root / "panel" / "year=*" / "panel-*.parquet").as_posix()
+    lt = (root / "identity" / "link_table.parquet").as_posix()
+    lo, hi = years
+    return f"""
+    WITH m AS (SELECT DISTINCT security_id, cik FROM read_parquet('{panel}', union_by_name = true,
+                                                                  hive_partitioning = false)
+               WHERE member_equity AND session_date BETWEEN DATE '{lo}-01-01' AND DATE '{hi}-12-31')
+    SELECT DISTINCT cik FROM m WHERE cik IS NOT NULL
+    UNION
+    SELECT DISTINCT l.cik FROM read_parquet('{lt}') l JOIN (SELECT DISTINCT security_id FROM m) s USING (security_id)
+    WHERE l.cik IS NOT NULL"""
 
-    10-K family: every CIK of ``identity/link_table.parquet``; 20-F: CIKs with an ``ever_member`` line only.
-    ``available_at`` is the latest of the accession's per-CIK clocks (conservative for co-registrants).
+
+def select_filings(con: Any, start: dt.date = FILED_FROM) -> list[dict[str, Any]]:
+    """Filings to land, one row per accession (co-registrant CIKs in ``ciks``), in landing order.
+
+    Scope (controller ruling 2026-09-30): original 10-K family and 20-F filings from ``start`` of the CIKs linked to a
+    ``member_equity`` line in ``MEMBER_YEARS`` (``target_ciks_sql``). Priority 1: filed on or after ``PRIORITY_FROM``
+    (every filing and prior-year filing behind a score-window value), newest first; priority 2: the rest of 2018
+    (the priors of 2019 values). ``available_at`` is the latest per-CIK clock of the accession (co-registrants).
     """
     root = C.build_root()
     fp = (root / "sec_filings" / "filings.parquet").as_posix()
-    lt = (root / "identity" / "link_table.parquet").as_posix()
     sql = f"""
-    WITH l AS (SELECT cik, bool_or(coalesce(ever_member, false)) AS ever_member
-               FROM read_parquet('{lt}') GROUP BY cik),
-    f AS (SELECT f.*, l.ever_member FROM read_parquet('{fp}') f JOIN l USING (cik)
+    WITH t AS ({target_ciks_sql()}),
+    f AS (SELECT f.* FROM read_parquet('{fp}') f JOIN t USING (cik)
           WHERE f.filing_date >= DATE '{start.isoformat()}' AND coalesce(f.primary_document, '') <> ''
-            AND (f.form IN ({_quote_list(FORMS_10K)}) OR (f.form IN ({_quote_list(FORMS_20F)}) AND l.ever_member)))
+            AND f.form IN ({_quote_list(FORMS_10K + FORMS_20F)}))
     SELECT accession, min(cik) AS cik, list(DISTINCT cik ORDER BY cik) AS ciks, min(form) AS form,
            min(filing_date) AS filing_date, min(report_date) AS report_date, max(acceptance_utc) AS acceptance_utc,
            min(acceptance_clock) AS acceptance_clock, max(vintage_risk) AS vintage_risk,
            max(available_at) AS available_at, min(primary_document) AS primary_document,
-           CASE WHEN bool_or(ever_member) THEN 1 ELSE 2 END AS priority
-    FROM f GROUP BY accession ORDER BY priority, filing_date, accession
+           CASE WHEN min(filing_date) >= DATE '{PRIORITY_FROM.isoformat()}' THEN 1 ELSE 2 END AS priority
+    FROM f GROUP BY accession ORDER BY priority, filing_date DESC, accession
     """
     cur = con.execute(sql)
     cols = [d[0] for d in cur.description]
