@@ -9,6 +9,8 @@ tools of test_research_cycle.py.
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,6 +23,7 @@ import research_cycle as RC  # noqa: E402
 import research_spec as RS  # noqa: E402
 import research_tree  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake tools and fixtures)
+import research_add_alpha as RA  # noqa: E402
 
 V8 = HERE.parent / "specs" / "v8"
 V8_SPECS = sorted(p.name for p in V8.glob("*.json"))
@@ -266,3 +269,202 @@ def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):
     for bad in ("abc", 7):
         with pytest.raises(RC.CycleError, match="SHA-256 hex digest"):
             RC.validate_spec(dict(spec, fields=dict(spec["fields"], manifest_sha256=bad)))
+
+
+# ------------------------------------------------------------------ add-alpha on a v8 parent (A2 follow-up, task 1)
+V71_IDS = json.loads((T.STRATEGIES / "libraries" / "v71.json").read_text(encoding="utf-8"))["members"]
+F49 = "build-equity/train-2020-2023-lo1-fields-v9-f49"   # fields v9 + grp_ff12f49 (built with --reuse from v9)
+SPECS = "scripts/specs/v8"
+
+
+def files_of(root: Path) -> list[str]:
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+
+def v8_root(tmp_path: Path) -> tuple[Path, Path]:
+    """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
+    fake --plan-only one), locked on stand-ins of its inputs, the committed registry and library v7.1."""
+    doc = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
+    doc.update(python=sys.executable, exes={"ic": "bin/ic.cmd", "nav": "bin/nav.exe"})
+    doc["runner"]["script"] = "scripts/runner.py"
+    for section in ("fit", "card", "monitor", "summ"):
+        doc[section]["script"] = f"scripts/{section}.py"
+    root, _ = fake_root(tmp_path, doc)
+    s = root / "atx-impl" / "strategies"
+    for rel in ("alphas/registry.json", "libraries/v71.json", "fund_industry_ic_v71.json",
+                "fund_industry_ic_v71.recipe.json"):
+        (s / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(T.STRATEGIES / rel, s / rel)
+    tools = {"scripts/runner.py": T.FAKE_RUNNER, "scripts/fit.py": "", "scripts/card.py": "",
+             "scripts/monitor.py": T.FAKE_MONITOR, "scripts/summ.py": T.FAKE_SUMM_JSON, "bin/fake_ic.py": T.FAKE_IC_PLAN,
+             "bin/ic.cmd": f'@"{sys.executable}" "%~dp0fake_ic.py" %*\n', "bin/nav.exe": "nav"}
+    for rel, text in tools.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    path = root / SPECS / "base-lo1.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    assert RC.main(["lock", str(path), "--root", str(root), "--write"]) == RC.EXIT_OK
+    return root, path
+
+
+def parent_cell(root: Path, spec_path: Path) -> dict:
+    """The parent cell's outputs the child pins (made-up content; the pool binds the role and the parent's weights)."""
+    spec = RC.load_spec(spec_path)
+    outs = RA.parent_outputs(spec, root)
+    files = {f"{outs['u']}/summary.json": '{"status": "complete"}', f"{outs['w']}/summary.json": '{"status": "complete"}',
+             f"{outs['u']}/orientations.json": json.dumps({"candidates": [{"id": m, "sign": 1} for m in V71_IDS]}),
+             f"{outs['u']}/train_daily_ic.csv": "id,h,v\n" + "".join(f"{m},21,0.01\n" for m in V71_IDS),
+             f"{outs['fit']}/admission.json": json.dumps({"candidates": [{"id": m, "status": "admitted"}
+                                                                         for m in V71_IDS]}),
+             f"{outs['fit']}/composition_weights.json": '{"weights": {}}',
+             f"{outs['nav']}/summary.json": json.dumps({"status": "complete", "primary_scenario": "s2"})}
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(text.encode())                    # LF, as the fake u pass writes the child's
+    (root / outs["nav"] / "daily_s2.csv").write_text("net_return\n0.001\n")   # text mode, as the fake NAV writes
+    (root / outs["w"] / "train_combined.json").write_text(T.pool_manifest(root, spec["inputs"]["role"]["path"],
+                                                                          f"{outs['fit']}/composition_weights.json"))
+    return RA.parent_outputs(spec, root)
+
+
+def add(root: Path, parent_spec: Path, cid: str, dsl: str, *extra: str) -> int:
+    like = T.v71_entry("sue")
+    return RC.main(["add-alpha", "--id", cid, "--dsl", dsl, "--theme", like["theme"], "--tier", like["tier"],
+                    "--prior-sign", "1", "--citation", f"test citation for {cid}", "--origin", "prior", "--parent", "v71",
+                    "--name", "v80", "--parent-spec", str(parent_spec), "--root", str(root), *extra])
+
+
+def child_ic_files(root: Path, spec: dict, admitted: list[str]) -> None:
+    """The fake u pass writes the child's member rows (the parent's rows of its members, byte for byte), the fake fit
+    admits `admitted`."""
+    members = [c["id"] for c in json.loads((root / spec["inputs"]["library"]["path"]).read_text())["candidates"]]
+    T.behave(root, ic_files={Path(spec["ic"]["u_output"]).name + "-1": {
+        "orientations.json": json.dumps({"candidates": [{"id": m, "sign": 1} for m in members]}),
+        "train_daily_ic.csv": "id,h,v\n" + "".join(f"{m},21,0.01\n" for m in members)}},
+        admission={"rules": {}, "candidates": [{"id": m, "status": "admitted", "sign_agrees": True,
+                                                "failed_checks": []} for m in admitted]})
+
+
+def test_derive_name_substitutes_the_parent_token_else_appends():
+    assert RA.derive_name("build-equity/mega-v71w-train-ew", "v71", "v80") == "build-equity/mega-v80w-train-ew"
+    assert RA.derive_name("build-equity/mega-nav-v8-b0a-lo1-v71-ew-L1.247", "v71", "v80") == \
+        "build-equity/mega-nav-v8-b0a-lo1-v80-ew-L1.247"
+    for name in ("build-equity/mega-v8-b0a-train-u", "x-v710", "x-dv71"):          # no token v71: appended
+        assert RA.derive_name(name, "v71", "v80") == f"{name}-v80"
+    assert RA.shared_stores({"fit": {"work_dir": "build-equity/fit-work"}})
+    assert RA.shared_stores({"out_root": "o/", "fit": {"work_dir": "o/fit-work"}})
+    assert not RA.shared_stores({"fit": {"work_dir": "build-equity/mega-fit-work-v70"}}) and not RA.shared_stores({})
+
+
+def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
+    root, parent = v8_root(tmp_path)
+    outs = parent_cell(root, parent)
+    base = RC.load_spec(parent)
+    assert add(root, parent, "v8_probe", "rank(decay_linear((be / at_lag4), 21))") == RC.EXIT_OK
+    sp = root / SPECS / "lib-v80.json"
+    spec = RC.load_spec(sp)
+    assert all(item["sha256"] for item in spec["inputs"].values()) and spec["fields"]["manifest_sha256"]   # locked
+    assert set(spec["inputs"]) == {"library", "recipe", "baseline_library", "role", "baseline_fields",
+                                   "reference_admission", "reference_cell", "reference_combined", "reference_weights",
+                                   "reference_daily", "reference_orientations", "reference_daily_ic"}
+    assert spec["inputs"]["role"]["path"] == base["inputs"]["role"]["path"]          # kept; the builders' are not
+    assert spec["inputs"]["reference_weights"]["path"] == f"{outs['fit']}/composition_weights.json"
+    names = {k: spec[s][k2] for k, (s, k2) in {"u": ("ic", "u_output"), "w": ("ic", "w_output"), "fit": ("fit", "output"),
+                                               "card": ("card", "output"), "nav": ("nav", "output"),
+                                               "monitor": ("monitor", "output")}.items()}
+    assert names == {"u": "build-equity/mega-v8-b0a-train-u-v80", "w": "build-equity/mega-v8-b0aw-train-ew-v80",
+                     "fit": "build-equity/mega-weights-v8-b0a-ew-v80", "card": "build-equity/mega-cards-v8-b0a-v80",
+                     "nav": base["nav"]["output"].replace("-v71-", "-v80-"),
+                     "monitor": "build-equity/mega-monitor-v8-b0a-v80"}              # the name rule
+    assert (spec["ic"]["cache"], spec["fit"]["work_dir"]) == (base["ic"]["cache"], "build-equity/fit-work")   # C-1
+    assert spec["card"]["flags"] == base["card"]["flags"] and spec["runner"] == base["runner"]
+    assert spec["fields"] == dict(base["fields"], manifest_sha256=spec["fields"]["manifest_sha256"])
+    assert spec["gate"] == {"name": "p1-v80", "admitted": ["v8_probe"], "require": "any", "sign_agrees": True,
+                            "report": []}
+    assert not any("keys_in" in c for c in spec["compare"]) and "ref" in spec     # ref skipped: the parent's fields
+    assert RS.run_refusal(spec, sp, root) is None
+    child_ic_files(root, spec, ["v8_probe"])
+    log = []
+    assert T.run(root, sp, log, screen=True, capabilities=T.CAPS) == RC.EXIT_OK, log
+    ran = T.calls(root)
+    assert ran[:4] == ["mega-v8-b0a-train-u-v80-run1", "mega-weights-v8-b0a-ew-v80-run1", "mega-cards-v8-b0a-v80-run",
+                       "mega-v8-b0a-train-u-v80-marginal-run"], ran
+    assert "== ref: skipped" in " ".join(log) and (root / spec["marginal"]["output"] / "marginal_ic.json").is_file()
+    assert T.run(root, sp, log, capabilities=T.CAPS) == RC.EXIT_OK, log                # the full run continues
+    assert (root / names["nav"] / "summary.json").is_file() and (root / "build-equity" / "cycle-v80" /
+                                                                   "cycle_verdict.json").is_file()
+
+
+def test_add_alpha_on_a_v8_template_replaces_rescreens_and_records_exceptions(tmp_path, capsys):
+    root, base = v8_root(tmp_path)
+    tpl = json.loads((V8 / "r4-hold-band.json").read_text(encoding="utf-8"))
+    tp = root / SPECS / "r4-hold-band.json"
+    tp.write_text(json.dumps(tpl), encoding="utf-8")                   # parent null: planned on a nominal parent
+    s = root / "atx-impl" / "strategies"
+    reg = json.loads((s / "alphas" / "registry.json").read_text(encoding="utf-8"))
+    reg["fields"]["grp_ff12f49"] = dict(reg["fields"]["grp_ff49"], basis="test: the FF49 regrouping (Ruling R2-e)")
+    (s / "alphas" / "registry.json").write_bytes(RA.G.encode_data(reg))
+    lo1_fields = RC.load_spec(base)["fields"]["list"]
+    (root / F49).mkdir(parents=True)
+    (root / F49 / "manifest.json").write_text(json.dumps({"fields": [{"name": n} for n in lo1_fields + ["grp_ff12f49"]]}))
+    earn = "rank(decay_linear((sue + be + at + lt + che + debt + sale_ttm), 21))"    # 7 extra fields
+    replace3 = ("--replaces", "sue", "--replaces", "droe", "--replaces", "chtax")
+    shutil.copyfile(V8 / "base-b0c.json", tp.parent / "base-b0c.json")               # r4's nominal parent
+    before = files_of(root)
+    ruling = ("--exception", "max_extra_fields=8", "--exception-basis", "Ruling R2-b")
+    assert add(root, tp, "earn_probe", earn, *replace3, *ruling) == RC.EXIT_USAGE     # template parent null
+    assert "template parent is null" in capsys.readouterr().err and files_of(root) == before
+    tpl["parent"] = "base-lo1.json"
+    tp.write_text(json.dumps(tpl), encoding="utf-8")
+    outs = parent_cell(root, tp)
+    before = files_of(root)
+    assert add(root, tp, "earn_probe", earn, *replace3) == RC.EXIT_USAGE              # 7 > 5 extra fields: K1
+    for bad in (("--replaces", "nope"), ("--rescreen",), ("--exception", "max_extra_fields=8"),
+                ("--exception", "max_nodes=8", "--exception-basis", "x")):
+        assert add(root, tp, "earn_probe", earn, *replace3[:2], *bad) == RC.EXIT_USAGE, bad
+    assert files_of(root) == before                                                  # nothing written
+    assert add(root, tp, "earn_probe", earn, *replace3, *ruling) == RC.EXIT_OK
+    q5 = re.sub(r"\bgrp_ff12\b", "grp_ff12f49", T.v71_entry("q5_eg")["dsl"])
+    gpa = re.sub(r"\bgrp_ff12\b", "grp_ff12f49", T.v71_entry("gpa")["dsl"])
+    assert add(root, tp, "q5_eg_f49", q5, "--replaces", "q5_eg", "--rescreen", "--fields", F49) == RC.EXIT_OK
+    assert add(root, tp, "gpa_f49", gpa, "--replaces", "gpa", "--rescreen") == RC.EXIT_OK   # --fields is sticky
+    assert add(root, tp, "gpa_f49", gpa, "--replaces", "gpa", "--rescreen") == RC.EXIT_OK   # identical: no-op
+    lib = json.loads((s / "libraries" / "v80.json").read_text(encoding="utf-8"))
+    want = [{"sue": "earn_probe", "q5_eg": "q5_eg_f49", "gpa": "gpa_f49"}.get(m, m) for m in V71_IDS
+            if m not in ("droe", "chtax")]
+    assert lib["members"] == want and lib["rescreens"] == ["q5_eg_f49", "gpa_f49"]    # in place, in roster order
+    ex = {e["id"]: e for e in lib["budget_exceptions"]}
+    assert set(ex) == {"qmj_safety", "q5_eg_f49", "earn_probe"} and ex["q5_eg_f49"]["max_extra_fields"] == 6
+    assert ex["q5_eg_f49"]["basis"].startswith("inherited from q5_eg (replaced in place): q5_eg: prereg ruling")
+    assert (ex["earn_probe"]["max_extra_fields"], ex["earn_probe"]["basis"]) == (8, "Ruling R2-b")
+    rec = json.loads((s / "fund_industry_ic_v80.recipe.v2.json").read_text(encoding="utf-8"))
+    assert rec["trials"]["admission_trials"] == 1 and rec["trials"]["rescreens"] == ["q5_eg_f49", "gpa_f49"]
+    assert rec["trials"]["removed_parent_members"] == ["chtax", "droe", "gpa", "q5_eg", "sue"]
+    stub = (s / "libraries" / "v80.prereg.md").read_text(encoding="utf-8")
+    assert "| `gpa_f49` |" in stub and "re-screen (0 admission trials)" in stub and "1 admission trial(s) and 2" in stub
+    sp = root / SPECS / "lib-v80.json"
+    spec = RC.load_spec(sp)
+    assert spec["gate"] == {"name": "p1-v80", "admitted": ["earn_probe"], "require": "any", "sign_agrees": True,
+                            "report": ["q5_eg_f49", "gpa_f49"]}                     # 1 trial; the re-screens reported
+    assert spec["fields"]["output"] == F49 and spec["fields"]["list"] == lo1_fields + ["grp_ff12f49"]
+    assert spec["inputs"]["baseline_fields"]["dir"] == outs["fields"] != F49          # the ref identity's baseline
+    assert spec["nav"]["output"].endswith("-v80") and "--hold-band" in spec["nav"]["flags"]   # the template's cell
+    assert spec["inputs"]["reference_cell"]["dir"] == outs["nav"] == RC.load_spec(tp)["nav"]["output"]
+    assert [c.get("keys_in") for c in spec["compare"]] == [None, "{input:library}", "{input:library}"]
+    child_ic_files(root, spec, ["earn_probe", "q5_eg_f49", "gpa_f49"])
+    log = []
+    assert T.run(root, sp, log, screen=True, capabilities=T.CAPS) == RC.EXIT_OK, log
+    same = lambda: sum(x.startswith("   IDENTICAL: ") for x in log)                     # noqa: E731
+    assert "== ref: skipped (screen: runs with the full `run`)" in log and same() == 2   # the kept members' rows
+    assert any(x.startswith("  q5_eg_f49: status") for x in log), log                 # a re-screen: reported
+    n = len(T.calls(root))
+    assert T.run(root, sp, log, capabilities=T.CAPS) == RC.EXIT_OK, log
+    assert T.calls(root)[n].endswith("-v80-ref-run") and same() == 2 + 3              # new fields: ref runs
+    check = dict(spec["compare"][1], a=spec["inputs"]["reference_orientations"]["path"],
+                 b=f"{spec['ic']['u_output']}-1/orientations.json", keys=spec["inputs"]["baseline_library"]["path"],
+                 keys_in=spec["inputs"]["library"]["path"])
+    RC.compare_files(RC.Resolver(root), check)                                        # the 43 members both hold
+    check.pop("keys_in")                                                              # without it: the replaced rows
+    with pytest.raises(RC.CycleError, match="IDENTITY MISMATCH"):
+        RC.compare_files(RC.Resolver(root), check)

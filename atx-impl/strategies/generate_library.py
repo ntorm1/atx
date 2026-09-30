@@ -12,7 +12,8 @@ Data in, no per-version Python:
                            themes     {name: description}          (order = the library's family order)
                            tier_scores{grade: score}               (order = tier rank 1, 2, ...)
                            house_budget, candidate_defaults
-  libraries/NAME.json    {id, parent, members[], budget_exceptions[], prereg}
+  libraries/NAME.json    {id, parent, members[], budget_exceptions[], prereg[, rescreens[]]}  (rescreens: members that
+                         re-screen a parent member's hypothesis in place, e.g. the FF49 regrouping; 0 admission trials)
 Out, next to this file:
   <id>.json              atx.dsl-ic-library/v1, the IC runner's library (the legacy generators' exact encoding)
   <id>.recipe.v2.json    atx.dsl-ic-experiment/v2, the slim recipe: library pin, parent pin, lineage rows (theme, tier,
@@ -46,6 +47,7 @@ ALPHA_KEYS = ("id", "dsl", "theme", "tier", "prior_sign", "citation", "prior_sig
 NOTE_KEYS = ("formula", "domain", "deviation")
 FIELD_KEYS = ("formula_id", "origin", "producer", "clock", "basis")
 LIBRARY_KEYS = ("id", "parent", "members", "budget_exceptions", "prereg")
+LIBRARY_OPTIONAL = ("rescreens",)                          # written only when non-empty (v7.1 bytes unchanged)
 PLAN_KEYS = ("id", "dsl_sha256", "num_slots", "required_lookback", "extra_fields", "node_count")   # contract K1
 BUDGET = {"max_extra_fields": "extra fields", "max_slots": "slots", "max_prior_bars": "prior bars"}  # per member
 HOUSE_KEYS = tuple(BUDGET) + ("max_dsl_bytes", "max_roster")
@@ -184,8 +186,13 @@ def library_file(root: Path, name: str) -> Path:
 
 
 def validate_library(lib: dict, name: str) -> dict:
-    if not isinstance(lib, dict) or set(lib) != set(LIBRARY_KEYS):
-        raise LibraryError(f"libraries/{name}.json: keys must be exactly {', '.join(LIBRARY_KEYS)}")
+    if not isinstance(lib, dict) or not set(LIBRARY_KEYS) <= set(lib) <= set(LIBRARY_KEYS + LIBRARY_OPTIONAL):
+        raise LibraryError(f"libraries/{name}.json: keys must be exactly {', '.join(LIBRARY_KEYS)} (optional "
+                           f"{', '.join(LIBRARY_OPTIONAL)})")
+    rescreens = lib.get("rescreens", [])
+    if "rescreens" in lib and (not isinstance(rescreens, list) or not rescreens or len(set(rescreens)) != len(rescreens)
+                               or not set(rescreens) <= set(lib.get("members") or [])):
+        raise LibraryError(f"libraries/{name}.json: rescreens must list distinct members (omitted when none)")
     if not isinstance(lib["id"], str) or not ID_RE.fullmatch(lib["id"]):
         raise LibraryError(f"libraries/{name}.json: id must match {ID_RE.pattern}")
     if lib["parent"] is not None and (not isinstance(lib["parent"], str) or not lib["parent"]):
@@ -266,6 +273,57 @@ def child_library(root: Path, parent: str, name: str, add: list[str], prereg: st
                 budget_exceptions=parent_exceptions(root, parent, members), prereg=prereg)
 
 
+def replace_members(lib: dict, new: str, replaces: list[str], rescreen: bool = False) -> dict:
+    """Library `lib` with member `new` in place of `replaces` (research_cycle add-alpha --replaces): it takes the roster
+    position of the first replaced member, the others leave, and it inherits their budget exceptions (per limit, the
+    largest). `rescreen` (one replaced member: the same hypothesis in another peer group, e.g. the FF49 regrouping,
+    Ruling R2-e) lists it in `rescreens` (0 admission trials). A call whose replacement is already in place is a no-op."""
+    members = list(lib["members"])
+    if not replaces or len(set(replaces)) != len(replaces):
+        raise LibraryError("--replaces needs distinct member ids")
+    if rescreen and len(replaces) != 1:
+        raise LibraryError("a re-screen replaces exactly one member")
+    gone = [r for r in replaces if r in members]
+    if not gone and new in members:                           # an identical second call
+        return lib
+    if gone != list(replaces) or new in members:
+        raise LibraryError(f"--replaces {', '.join(replaces)}: every replaced id must be a member of {lib['id']} and "
+                           f"{new} must not be one (members replaced: {gone})")
+    members[members.index(replaces[0])] = new
+    members = [m for m in members if m not in replaces[1:]]
+    inherited: dict = {}
+    for e in lib["budget_exceptions"]:
+        if e["id"] in replaces:
+            for key in BUDGET:
+                if key in e:
+                    inherited[key] = max(inherited.get(key, 0), e[key])
+    kept = [e for e in lib["budget_exceptions"] if e["id"] not in replaces]
+    if inherited:
+        basis = "; ".join(f"{e['id']}: {e['basis']}" for e in lib["budget_exceptions"] if e["id"] in replaces)
+        kept.append(dict(id=new, **inherited, basis=f"inherited from {', '.join(replaces)} (replaced in place): {basis}"))
+    out = dict(lib, members=members, budget_exceptions=kept)
+    rescreens = [r for r in lib.get("rescreens", []) if r in members] + ([new] if rescreen else [])
+    out.pop("rescreens", None)
+    if rescreens:
+        out["rescreens"] = rescreens
+    return out
+
+
+def set_exception(lib: dict, cid: str, limits: dict, basis: str) -> dict:
+    """Library `lib` with a recorded budget exception of member `cid` (add-alpha --exception LIMIT=N; the ruling in
+    `basis`): its limits are added to (or replace those of) the member's exception."""
+    if cid not in lib["members"] or not limits or not set(limits) <= set(BUDGET) or \
+            not all(type(v) is int and v > 0 for v in limits.values()) or not basis:
+        raise LibraryError(f"exception for {cid}: a member, limits among {', '.join(BUDGET)} (positive integers) and "
+                           "a basis (the ruling)")
+    have = next((e for e in lib["budget_exceptions"] if e["id"] == cid), {})
+    if all(have.get(k) == v for k, v in limits.items()) and basis in have.get("basis", ""):
+        return lib                                            # an identical second call
+    entry = {"id": cid, **{k: v for k, v in have.items() if k in BUDGET}, **limits,
+             "basis": basis if not have else f"{have['basis']}; {basis}"}
+    return dict(lib, budget_exceptions=[e for e in lib["budget_exceptions"] if e["id"] != cid] + [entry])
+
+
 def build_library(reg: dict, lib: dict) -> dict:
     """The IC runner's library (atx.dsl-ic-library/v1) of a library definition."""
     alphas = {a["id"]: a for a in reg["alphas"]}
@@ -296,6 +354,7 @@ def build_recipe(reg: dict, lib: dict, library_bytes: bytes, root: Path) -> dict
     parent_members = set(parent[1]) if parent else set()
     alphas = {a["id"]: a for a in reg["alphas"]}
     new = [m for m in lib["members"] if m not in parent_members]
+    rescreens = [m for m in lib.get("rescreens", []) if m in new]
     lineage = []
     for k, m in enumerate(lib["members"], 1):
         a = alphas[m]
@@ -316,8 +375,10 @@ def build_recipe(reg: dict, lib: dict, library_bytes: bytes, root: Path) -> dict
                         new_members=new, house_budget=reg["house_budget"], budget_exceptions=lib["budget_exceptions"]),
         lineage=lineage,
         trials=dict(new_candidates=len(new), unchanged_candidates=len(lib["members"]) - len(new),
-                    admission_trials=len(new), dsr_n_rule="cross-cell N = trial-ledger lines at run time + 1 "
-                    "(research_cycle summ.dsr_n \"ledger+1\")"),
+                    admission_trials=len(new) - len(rescreens), dsr_n_rule="cross-cell N = trial-ledger lines at run "
+                    "time + 1 (research_cycle summ.dsr_n \"ledger+1\")",
+                    **({"rescreens": rescreens, "removed_parent_members": sorted(parent_members - set(lib["members"]))}
+                       if rescreens or parent_members - set(lib["members"]) else {})),
         static_validation=dict(source="atx-equity-strategy-ic --plan-only candidates[] (contract K1)",
                                rule="each member's plan row carries sha256(dsl), fits the house budget or its recorded "
                                     "exception and reads registry fields only; checked by generate_library.py "

@@ -96,7 +96,8 @@ compare   ``compare`` (optional list) adds identity checks after a named phase: 
           keys, exact numbers); b may add objects of other keys). The compared keys are a's keys, or, with the
           operand "keys" (a library JSON, e.g. {input:baseline_library}), its candidate ids -- the parent's member
           rows, so a series of another key in both files (the IC runner's __combined__ book) is not compared; a
-          must hold every one of them
+          must hold every one of them. "keys_in" (a second library JSON, with "keys") keeps the keys it also lists
+          (add-alpha --replaces: the parent's members the child still holds)
 
 Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, SIC events (the
 atx-db fundamentals stage manifest: the grp_* fields' --sic-events), baseline fields, reference admission, reference
@@ -443,7 +444,9 @@ def validate_compare(spec: dict) -> None:
         if "keys" in c and (c["mode"] == "file" or not isinstance(c["keys"], str) or not c["keys"]):
             raise CycleError(f"spec compare {c['name']}: keys (a library JSON path) is for the row modes only",
                              EXIT_USAGE)
-        for side in [s for s in ("a", "b", "keys") if s in c]:
+        if "keys_in" in c and ("keys" not in c or not isinstance(c["keys_in"], str) or not c["keys_in"]):
+            raise CycleError(f"spec compare {c['name']}: keys_in (a library JSON path) narrows keys", EXIT_USAGE)
+        for side in [s for s in ("a", "b", "keys", "keys_in") if s in c]:
             for kind, key in OPERAND.findall(c[side]):
                 ok = key in spec["inputs"] if kind == "input" else key in OUT_PHASES and phase_present(spec, key)
                 if not ok:
@@ -964,7 +967,7 @@ class Cycle:
         done = []
         for st in steps:
             done.append(st)
-            mine = [dict(c, **{s: operand(c[s]) for s in ("a", "b", "keys") if s in c})
+            mine = [dict(c, **{s: operand(c[s]) for s in ("a", "b", "keys", "keys_in") if s in c})
                     for c in items if c["after"] == st.phase]
             if mine:
                 note = "identity: " + "; ".join(f"{c['name']} [{c['mode']}]" for c in mine) + " (a miss hard-stops)"
@@ -1282,6 +1285,9 @@ def compare_files(res: Resolver, c: dict) -> str:
             raise miss(f"sha256 {sa} != {sb}")
         return f"bit for bit ({pa.stat().st_size} bytes, sha256 {sa})"
     members = compare_keys(res, c["keys"]) if c.get("keys") else None
+    if members is not None and c.get("keys_in"):
+        also = set(compare_keys(res, c["keys_in"]))
+        members = [m for m in members if m in also]
     if mode == "csv-rows":
         la, lb = _lines(pa.read_bytes()), _lines(pb.read_bytes())
         if not la or not lb or la[0] != lb[0]:
