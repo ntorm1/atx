@@ -110,6 +110,8 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     strategy_risk_model_test.cpp
     strategy_spo_test.cpp
     strategy_spo_pin_test.cpp
+    strategy_spo_v3_test.cpp
+    strategy_spo_v3_pin_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_target_shaping_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 

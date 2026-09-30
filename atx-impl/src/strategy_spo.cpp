@@ -17,7 +17,9 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/book/target_tracking.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
+#include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
 
 namespace atx::impl::strategy::spo {
@@ -25,6 +27,7 @@ namespace {
 using namespace atx;
 namespace co = atx::core;
 namespace ce = atx::engine::cost;
+namespace tt = atx::engine::book;
 using Json = nlohmann::json;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr f64 inf = std::numeric_limits<f64>::infinity();
@@ -387,8 +390,12 @@ SpoParams v2_params() {
   p.version = 2;
   return p;
 }
-const char* rule_name(const SpoParams& p) { return p.version == 2 ? "spo-v2" : "spo-v1"; }
-const char* json_key(const SpoParams& p) { return p.version == 2 ? "spo_v2" : "spo_v1"; }
+const char* rule_name(const SpoParams& p) {
+  return p.version == 3 ? "spo-v3" : p.version == 2 ? "spo-v2" : "spo-v1";
+}
+const char* json_key(const SpoParams& p) {
+  return p.version == 3 ? "spo_v3" : p.version == 2 ? "spo_v2" : "spo_v1";
+}
 
 co::Status validate_params(const SpoParams& p) {
   const bool gamma_ok = std::isnan(p.gamma) || (finite_positive(p.gamma) && p.gamma <= 1e12);
@@ -400,11 +407,13 @@ co::Status validate_params(const SpoParams& p) {
       !(p.adv_trade_p > 0 && p.adv_trade_p <= 1) || p.max_iterations == 0 ||
       p.max_iterations > 100000 || !(p.tolerance > 0 && p.tolerance <= 1e-3) ||
       !(p.target_vol > 0 && p.target_vol <= 1) || !(p.beta_max >= 0 && p.beta_max <= 1) ||
-      !(p.specific_ceiling > 0) || (p.version != 1 && p.version != 2))
+      !(p.specific_ceiling > 0) || p.version < 1 || p.version > 3)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "spo: gamma > 0, IC in (0, 1], w_max/q/p in (0, 1], 1..100000 iterations, "
                    "tolerance in (0, 1e-3], target vol in (0, 1], horizons in [1, 10000] "
                    "(--alpha-horizon a number), specific ceiling > 0, --spo-gross > 0");
+  if (p.version == 3 && !(finite_positive(p.sharpe_prior) && p.sharpe_prior <= 1e3))
+    return co::Err(co::ErrorCode::InvalidArgument, "spo-v3: S_prior finite in (0, 1e3]");
   return co::Ok();
 }
 f64 gross_budget_of(const SpoParams& p, f64 aim_leverage) noexcept {
@@ -920,6 +929,32 @@ f64 correlation(std::span<const f64> a, std::span<const f64> b) {
 f64 per_session(f64 bps, u32 day_count) {
   return bps * 1e-4 * (365.0 / sessions_per_year) / static_cast<f64>(day_count);
 }
+// The plan fields of a book's move current -> next, exactly as aim-partial-v5 accumulates
+// them (every rule).
+void accumulate_plan(std::span<const u8> member, std::span<const f64> next,
+                     std::span<const f64> current, TargetReplayDay& out) {
+  out.applied_fraction = 1.0;
+  f64 squared = 0;
+  for (usize i = 0; i < next.size(); ++i) {
+    const bool live = member[i] != 0;
+    const f64 w = next[i], move = std::abs(w - current[i]);
+    out.turnover += move;
+    if (!live) out.forced_turnover += move; else out.discretionary_turnover += move;
+    out.gross += std::abs(w); out.net += w;
+    out.long_weight += std::max(0.0, w); out.short_weight += std::max(0.0, -w);
+    out.max_abs_weight = std::max(out.max_abs_weight, std::abs(w));
+    out.held_names += w != 0 ? 1U : 0U; squared += w * w;
+  }
+  out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+}
+// spo-v3: annualised ex-ante tracking error of the whole book w to the aim (priced names);
+// gap is scratch.
+f64 tracking_error(const RiskSlice& r, std::span<const f64> w, std::span<const f64> aim,
+                   std::vector<f64>& gap) {
+  gap.resize(aim.size());
+  for (usize i = 0; i < aim.size(); ++i) gap[i] = w[i] - aim[i];
+  return std::sqrt(sessions_per_year * book_variance(r, gap));
+}
 } // namespace
 
 struct Engine::Impl {
@@ -938,17 +973,37 @@ struct Engine::Impl {
   struct BookState {
     Multipliers warm;
     std::vector<f64> shadow; // the plan-level aim-partial-v5 shadow book (weights)
+    std::vector<f64> dual;   // spo-v3: the last solve's dual per instrument (a warm start)
+  };
+  // Positions outside the problem at d (every rule): nonmembers follow aim-partial-v5's exit
+  // rule, members without a risk row keep their weight.
+  struct FixedPositions {
+    std::vector<f64> next;     // per instrument: the fixed weights, 0 on the optimized names
+    std::vector<f64> exposure; // risk_factors: X'w of the fixed positions with a risk row
+    f64 net{}, gross{}, beta{};
+    usize nonmembers{};        // nonmembers held before or after d
+  };
+  // One book's per-name market terms over the optimized names (every rule): the primary S2
+  // law's linear cost per unit (unamortized) and impact coefficient, spo-v1/v2's holding cap,
+  // the trade limit p ADV / NAV (0 without ADV), the locate floor min(w0, 0) where the book's
+  // locate rule guards the name (-inf elsewhere) and the book's financing per session.
+  struct MarketTerms {
+    f64 linear_raw{};
+    std::vector<f64> cap, trade, floor, impact_raw, long_rate, short_rate;
+    std::vector<u8> guarded;
   };
   Impl(const SpoParams& p, std::shared_ptr<const RiskStore> r) : params(p), risk(std::move(r)) {}
   SpoParams params;
   std::shared_ptr<const RiskStore> risk;
   bool axes_checked{};
   f64 gamma{nan}, horizon{nan}, alpha_h{nan};
-  f64 budget{nan}; // G in effect (--spo-gross, else the book's --aim-leverage)
+  // G in effect (--spo-gross, else the book's --aim-leverage); spo-v3: the gross sanity bound
+  f64 budget{nan};
   Calibration calibration;
   DateData date;
   std::map<std::string, BookState, std::less<>> books;
   std::vector<DiagnosticRow> rows;
+  std::vector<TrackingRow> tracking_rows; // spo-v3
   Timing timing;
   std::vector<f64> desired_copy, shadow_before; // scratch
 
@@ -958,6 +1013,21 @@ struct Engine::Impl {
   co::Status shadow_step(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                          bool rebalance, std::span<const f64> desired, BookState& book,
                          TargetReplayDay& day);
+  co::Status fixed_positions(const BookDecision& in, std::span<const f64> current,
+                             FixedPositions& out) const;
+  void market_terms(const BookDecision& in, std::span<const f64> current,
+                    MarketTerms& out) const;
+  // spo-v3 (strategy_spo_v3.hpp).
+  co::Status calibrate_tracking(const BookDecision& in, std::span<const f64> aim);
+  co::Status plan_tracking(const BookDecision& in, std::vector<f64>& planned,
+                           TargetReplayDay& out);
+  tt::TrackingProblem tracking_problem(std::span<const f64> aim, std::span<const f64> current,
+                                       const FixedPositions& fixed,
+                                       const MarketTerms& market) const;
+  TrackingRow tracking_row(const BookDecision& in, const tt::TrackingProblem& p,
+                           const tt::TrackingSolution& sol, std::span<const f64> aim,
+                           std::span<const f64> current, std::span<const f64> next,
+                           usize fixed_nonmembers, const TargetReplayDay& out) const;
 };
 
 // The shadow book's aim-partial-v5 move at d: detail::update_weights on its own plan-level
@@ -1010,12 +1080,15 @@ co::Status Engine::Impl::prepare(const BookDecision& in) {
   b.alpha.resize(n); b.beta.resize(n);
   b.covariance = r.covariance;
   b.fixed_exposure.assign(risk_factors, 0.0);
+  // spo-v3 tracks the aim: no alpha vector (b.alpha stays 0) and no FISTA metric.
+  const bool alpha_rule = params.version != 3;
   for (usize j = 0; j < n; ++j) {
     const usize i = date.names[j];
     b.industry[j] = static_cast<u32>(1 + r.slot[i]);
     std::copy_n(r.styles.begin() + static_cast<std::ptrdiff_t>(i * risk_styles), risk_styles,
                 b.styles.begin() + static_cast<std::ptrdiff_t>(j * risk_styles));
     b.specific[j] = r.specific[i];
+    if (!alpha_rule) continue;
     const f64 z = sd > 0 ? in.desired[i] / sd : 0.0;
     b.alpha[j] = gk_alpha(params.ic_book, r.specific[i], z, alpha_h); // per session over h
   }
@@ -1044,7 +1117,7 @@ co::Status Engine::Impl::prepare(const BookDecision& in) {
       }
   }
   for (usize j = 0; j < n; ++j) b.beta[j] = date.beta[date.names[j]];
-  date.scale = estimate_metric_scale(b);
+  date.scale = alpha_rule ? estimate_metric_scale(b) : 1.0;
   date.key = x.close.data(); date.d = d;
   return co::Ok();
 }
@@ -1063,6 +1136,82 @@ co::Status Engine::Impl::calibrate(const BookDecision& in) {
   return co::Ok();
 }
 
+// Positions outside the problem: nonmembers follow aim-partial-v5's exit rule, members
+// without a risk row keep their weight.
+co::Status Engine::Impl::fixed_positions(const BookDecision& in, std::span<const f64> current,
+                                         FixedPositions& out) const {
+  const auto& x = in.x; const auto& cfg = in.cfg;
+  const usize n_all = x.instruments, d = in.d;
+  const auto& r = date.slice;
+  const auto member = x.member.subspan(d * n_all, n_all);
+  const bool decaying = cfg.target.exit_rate != 1.0;
+  if (decaying && x.present.size() != x.dates * n_all)
+    return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: exit_rate below 1 needs prices");
+  const f64 exit_band = date.members ? cfg.target.dust_multiple / static_cast<f64>(date.members)
+                                     : inf;
+  const f64 keep = 1.0 - cfg.target.exit_rate;
+  out.next.assign(n_all, 0.0);
+  out.exposure.assign(risk_factors, 0.0);
+  out.net = 0; out.gross = 0; out.beta = 0;
+  out.nonmembers = 0;
+  for (usize i = 0; i < n_all; ++i) {
+    if (date.position[i] != not_optimized) continue;
+    f64 w = 0;
+    if (member[i]) {
+      w = current[i];
+    } else if (decaying && x.present[d * n_all + i]) {
+      w = current[i] * keep;
+      if (std::abs(w) <= exit_band) w = 0;
+    }
+    if (!member[i] && (current[i] != 0 || w != 0)) ++out.nonmembers;
+    out.next[i] = w;
+    if (w == 0) continue;
+    out.net += w; out.gross += std::abs(w);
+    if (has_row(r, i)) { add_exposure(r, i, w, out.exposure); out.beta += date.beta[i] * w; }
+  }
+  return co::Ok();
+}
+
+// The book's per-name market terms over the optimized names (primary S2 law, the book's
+// financing and locate rule).
+void Engine::Impl::market_terms(const BookDecision& in, std::span<const f64> current,
+                                MarketTerms& out) const {
+  const usize n = date.names.size();
+  const f64 nav = in.nav_post;
+  const auto& fin = in.cfg.scenario.financing;
+  const bool tiered = fin.rule == NavFinancingRule::TieredSwapV1;
+  out.linear_raw = (in.s2.half_spread_bps + in.s2.commission_bps) * 1e-4;
+  out.cap.assign(n, 0.0); out.trade.assign(n, 0.0); out.floor.assign(n, -inf);
+  out.impact_raw.assign(n, 0.0); out.long_rate.assign(n, 0.0); out.short_rate.assign(n, 0.0);
+  out.guarded.assign(n, u8{0});
+  for (usize j = 0; j < n; ++j) {
+    const usize i = date.names[j];
+    const f64 w0 = current[i], adv = in.liquidity.adv[i];
+    const bool liquid = finite_positive(adv);
+    out.cap[j] = liquid ? std::min(params.w_max, params.adv_cap_q * adv / nav) : 0.0;
+    out.trade[j] = liquid ? params.adv_trade_p * adv / nav : 0.0;
+    const bool special = !in.tier.empty() &&
+                         in.tier[i] == static_cast<u8>(ce::BorrowTier::Special);
+    const bool guarded = fin.block_special_shorts &&
+                         (special || (!in.no_locate.empty() && in.no_locate[i] != 0));
+    if (guarded) { out.guarded[j] = u8{1}; out.floor[j] = std::min(w0, 0.0); }
+    const f64 sigma = std::isnan(in.liquidity.sigma[i]) ? in.s2.fallback_daily_vol
+                                                        : in.liquidity.sigma[i];
+    out.impact_raw[j] = liquid ? in.s2.impact_y * sigma * std::sqrt(nav / adv) : 0.0;
+    if (tiered) {
+      const u8 tier = in.tier.empty() ? static_cast<u8>(ce::BorrowTier::Warm) : in.tier[i];
+      const f64 fee = tier == static_cast<u8>(ce::BorrowTier::GeneralCollateral) ? fin.gc_bps
+                      : tier == static_cast<u8>(ce::BorrowTier::Special)         ? fin.special_bps
+                                                                                  : fin.warm_bps;
+      out.long_rate[j] = per_session(fin.long_spread_bps, fin.day_count);
+      out.short_rate[j] = per_session(fin.short_spread_bps + fee, fin.day_count);
+    } else {
+      out.long_rate[j] = 0.0;
+      out.short_rate[j] = per_session(fin.flat_short_bps, fin.day_count);
+    }
+  }
+}
+
 co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
                               TargetReplayDay& out) {
   const auto& x = in.x; const auto& cfg = in.cfg;
@@ -1079,6 +1228,7 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
       return co::Err(co::ErrorCode::InvalidArgument, "spo: horizon 1 / theta out of [1, 1e4]");
     alpha_h = params.alpha_horizon; // independent of H (R2 M-2)
   }
+  if (params.version == 3) return plan_tracking(in, planned, out); // target tracking
   // G: the hard cap on the book's planned gross. Without --spo-gross it is the book's own
   // --aim-leverage, spo-v1's budget bit for bit (and not re-validated: no new refusal).
   budget = gross_budget_of(params, cfg.target.aim_leverage);
@@ -1089,81 +1239,36 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   const auto& r = date.slice;
   const std::vector<f64> current(planned);
   const auto member = x.member.subspan(d * n_all, n_all);
-  const f64 nav = in.nav_post;
-  // Positions outside the problem: nonmembers follow aim-partial-v5's exit rule, members
-  // without a risk row keep their weight.
-  const bool decaying = cfg.target.exit_rate != 1.0;
-  if (decaying && x.present.size() != x.dates * n_all)
-    return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: exit_rate below 1 needs prices");
-  const f64 exit_band = date.members ? cfg.target.dust_multiple / static_cast<f64>(date.members)
-                                     : inf;
-  const f64 keep = 1.0 - cfg.target.exit_rate;
+  FixedPositions fixed;
+  ATX_TRY_VOID(fixed_positions(in, current, fixed));
+  std::vector<f64>& next = fixed.next;
   Problem p = date.base;
   p.gamma = gamma;
-  f64 net_fixed = 0, gross_fixed = 0, beta_fixed = 0;
-  usize fixed_nonmembers = 0;
-  std::vector<f64> next(n_all, 0.0);
-  for (usize i = 0; i < n_all; ++i) {
-    if (date.position[i] != not_optimized) continue;
-    f64 w = 0;
-    if (member[i]) {
-      w = current[i];
-    } else if (decaying && x.present[d * n_all + i]) {
-      w = current[i] * keep;
-      if (std::abs(w) <= exit_band) w = 0;
-    }
-    if (!member[i] && (current[i] != 0 || w != 0)) ++fixed_nonmembers;
-    next[i] = w;
-    if (w == 0) continue;
-    net_fixed += w; gross_fixed += std::abs(w);
-    if (has_row(r, i)) { add_exposure(r, i, w, p.fixed_exposure); beta_fixed += date.beta[i] * w; }
-  }
+  p.fixed_exposure = std::move(fixed.exposure);
   // The book's names: bounds, costs (primary S2 law, amortized over H) and financing.
   const usize n = p.n;
   p.w0.resize(n); p.lower.resize(n); p.upper.resize(n);
   p.linear_cost.resize(n); p.impact_cost.resize(n); p.long_rate.resize(n); p.short_rate.resize(n);
-  std::vector<f64> cap(n), trade(n), floor(n, -inf), impact_raw(n);
-  const auto& fin = cfg.scenario.financing;
-  const bool tiered = fin.rule == NavFinancingRule::TieredSwapV1;
-  const f64 linear_raw = (in.s2.half_spread_bps + in.s2.commission_bps) * 1e-4;
-  const f64 linear = linear_raw / horizon;
+  MarketTerms market;
+  market_terms(in, current, market);
+  const f64 linear = market.linear_raw / horizon;
   for (usize j = 0; j < n; ++j) {
     const usize i = date.names[j];
-    const f64 w0 = current[i], adv = in.liquidity.adv[i];
-    const bool liquid = finite_positive(adv);
-    cap[j] = liquid ? std::min(params.w_max, params.adv_cap_q * adv / nav) : 0.0;
-    trade[j] = liquid ? params.adv_trade_p * adv / nav : 0.0;
-    const bool special = !in.tier.empty() &&
-                         in.tier[i] == static_cast<u8>(ce::BorrowTier::Special);
-    const bool guarded = fin.block_special_shorts &&
-                         (special || (!in.no_locate.empty() && in.no_locate[i] != 0));
-    f64 hold_lo = -cap[j];
-    const f64 hold_hi = cap[j];
-    if (guarded) { floor[j] = std::min(w0, 0.0); hold_lo = std::max(hold_lo, floor[j]); }
-    f64 lo = std::max(hold_lo, w0 - trade[j]), hi = std::min(hold_hi, w0 + trade[j]);
-    if (lo > hi) lo = hi = w0 - trade[j] > hold_hi ? w0 - trade[j] : w0 + trade[j];
+    const f64 w0 = current[i], trade = market.trade[j];
+    f64 hold_lo = -market.cap[j];
+    const f64 hold_hi = market.cap[j];
+    if (market.guarded[j] != 0) hold_lo = std::max(hold_lo, market.floor[j]);
+    f64 lo = std::max(hold_lo, w0 - trade), hi = std::min(hold_hi, w0 + trade);
+    if (lo > hi) lo = hi = w0 - trade > hold_hi ? w0 - trade : w0 + trade;
     p.w0[j] = w0; p.lower[j] = lo; p.upper[j] = hi;
-    const f64 sigma = std::isnan(in.liquidity.sigma[i]) ? in.s2.fallback_daily_vol
-                                                        : in.liquidity.sigma[i];
     p.linear_cost[j] = linear;
-    impact_raw[j] = liquid ? in.s2.impact_y * sigma * std::sqrt(nav / adv) : 0.0;
-    p.impact_cost[j] = impact_raw[j] / horizon;
-    if (tiered) {
-      const u8 tier = in.tier.empty() ? static_cast<u8>(ce::BorrowTier::Warm) : in.tier[i];
-      const f64 fee = tier == static_cast<u8>(ce::BorrowTier::GeneralCollateral) ? fin.gc_bps
-                      : tier == static_cast<u8>(ce::BorrowTier::Special)         ? fin.special_bps
-                                                                                  : fin.warm_bps;
-      p.long_rate[j] = per_session(fin.long_spread_bps, fin.day_count);
-      p.short_rate[j] = per_session(fin.short_spread_bps + fee, fin.day_count);
-    } else {
-      p.long_rate[j] = 0.0;
-      p.short_rate[j] = per_session(fin.flat_short_bps, fin.day_count);
-    }
+    p.impact_cost[j] = market.impact_raw[j] / horizon;
+    p.long_rate[j] = market.long_rate[j]; p.short_rate[j] = market.short_rate[j];
   }
-  p.net = -net_fixed;
-  p.gross = std::max(0.0, budget - gross_fixed);
-  p.beta_lo = -params.beta_max - beta_fixed;
-  p.beta_hi = params.beta_max - beta_fixed;
+  p.net = -fixed.net;
+  p.gross = std::max(0.0, budget - fixed.gross);
+  p.beta_lo = -params.beta_max - fixed.beta;
+  p.beta_hi = params.beta_max - fixed.beta;
   auto& book = books[std::string(in.book)];
   const auto started = std::chrono::steady_clock::now();
   ATX_TRY(const auto sol, solve(p, p.w0, SolverOptions{params.max_iterations, params.tolerance,
@@ -1176,24 +1281,12 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   book.warm = sol.multipliers;
   for (usize j = 0; j < n; ++j) next[date.names[j]] = sol.w[j];
   // The plan fields, exactly as aim-partial-v5 accumulates them.
-  out.applied_fraction = 1.0;
-  f64 squared = 0;
-  for (usize i = 0; i < n_all; ++i) {
-    const bool live = member[i] != 0;
-    const f64 w = next[i], move = std::abs(w - current[i]);
-    out.turnover += move;
-    if (!live) out.forced_turnover += move; else out.discretionary_turnover += move;
-    out.gross += std::abs(w); out.net += w;
-    out.long_weight += std::max(0.0, w); out.short_weight += std::max(0.0, -w);
-    out.max_abs_weight = std::max(out.max_abs_weight, std::abs(w));
-    out.held_names += w != 0 ? 1U : 0U; squared += w * w;
-  }
-  out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+  accumulate_plan(member, next, current, out);
   // Diagnostics of this decision and book.
   DiagnosticRow row;
   row.session = x.session_keys[d]; row.book = std::string(in.book);
   row.members = date.members; row.optimized = n; row.unpriced_members = date.unpriced_members;
-  row.fixed_nonmembers = fixed_nonmembers; row.gamma = gamma;
+  row.fixed_nonmembers = fixed.nonmembers; row.gamma = gamma;
   row.iterations = sol.iterations; row.restarts = sol.restarts; row.backtracks = sol.backtracks;
   row.prox_passes = sol.prox_passes; row.converged = sol.converged;
   row.coupling_met = sol.coupling_met; row.residual = sol.residual;
@@ -1215,9 +1308,9 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   for (usize j = 0; j < n; ++j) {
     const f64 w = sol.w[j], move = std::abs(w - p.w0[j]);
     if (w == p.w0[j]) ++row.no_trade;
-    if (cap[j] > 0 && std::abs(w) >= cap[j] * (1.0 - 1e-9)) ++row.at_cap;
-    if (trade[j] > 0 && move >= trade[j] * (1.0 - 1e-9)) ++row.at_trade_limit;
-    if (std::isfinite(floor[j]) && w <= floor[j]) ++row.at_locate_floor;
+    if (market.cap[j] > 0 && std::abs(w) >= market.cap[j] * (1.0 - 1e-9)) ++row.at_cap;
+    if (market.trade[j] > 0 && move >= market.trade[j] * (1.0 - 1e-9)) ++row.at_trade_limit;
+    if (std::isfinite(market.floor[j]) && w <= market.floor[j]) ++row.at_locate_floor;
   }
   out.construction.banded_names = row.no_trade;
   const auto& m = sol.multipliers;
@@ -1236,7 +1329,7 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
     const usize i = date.names[j];
     const f64 move = std::abs(book.shadow[i] - shadow_before[i]);
     alpha_shadow += p.alpha[j] * book.shadow[i];
-    cost_shadow += linear_raw * move + impact_raw[j] * move * std::sqrt(move);
+    cost_shadow += market.linear_raw * move + market.impact_raw[j] * move * std::sqrt(move);
   }
   row.alpha_shadow = alpha_shadow; row.gross_shadow = shadow_day.gross;
   row.turnover_shadow = shadow_day.turnover; row.trade_cost_shadow = cost_shadow;
@@ -1245,6 +1338,168 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   // moves the shadow, but is not scored: no row, so spo_diagnostics.csv, the summary and
   // the tripwire cover scored decisions only. Without a warm start every d is scored.
   if (d >= x.decision_begin) rows.push_back(std::move(row));
+  planned = std::move(next);
+  return co::Ok();
+}
+
+// ---- spo-v3: target tracking (strategy_spo_v3.hpp) --------------------------------------------
+// gamma on the first rebalance decision: S_prior / sigma_aim, sigma_aim the annualised ex-ante
+// vol of the whole aim (its names with a risk row), so the aim's implied annual Sharpe is
+// S_prior.
+co::Status Engine::Impl::calibrate_tracking(const BookDecision& in, std::span<const f64> aim) {
+  const f64 sigma_aim = std::sqrt(sessions_per_year * book_variance(date.slice, aim));
+  if (!finite_positive(sigma_aim))
+    return co::Err(co::ErrorCode::Unavailable,
+                   "spo-v3: the aim of the first rebalance decision has no ex-ante vol "
+                   "(sigma_aim " + std::to_string(sigma_aim) + ")");
+  f64 aim_gross = 0;
+  for (const f64 w : aim) aim_gross += std::abs(w);
+  gamma = params.sharpe_prior / sigma_aim;
+  calibration.session = in.x.session_keys[in.d];
+  calibration.gamma = gamma;
+  calibration.aim_vol = sigma_aim;
+  calibration.aim_gross = aim_gross;
+  calibration.names = date.names.size();
+  calibration.done = true;
+  return co::Ok();
+}
+
+// One book's problem over the optimized names: the decision's factor structure, the aim, the
+// S2 costs amortized over H, the short financing, the trade limits and locate floors, and the
+// limits net of the fixed positions, whose factor exposure is the external gap (their aim is
+// 0: nonmembers; unpriced members have no risk row).
+tt::TrackingProblem Engine::Impl::tracking_problem(std::span<const f64> aim,
+                                                   std::span<const f64> current,
+                                                   const FixedPositions& fixed,
+                                                   const MarketTerms& market) const {
+  const Problem& b = date.base;
+  const usize n = b.n;
+  tt::TrackingProblem p;
+  p.factors = tt::TrackingFactors{b.layout.industries, b.layout.styles};
+  p.n = n;
+  p.group = b.industry; p.styles = b.styles; p.covariance = b.covariance;
+  p.specific = b.specific; p.beta = b.beta;
+  p.external_gap = fixed.exposure;
+  p.target.resize(n); p.current.resize(n); p.impact_cost.resize(n); p.borrow_cost.resize(n);
+  p.trade_limit.resize(n); p.lower.resize(n);
+  p.linear_cost.assign(n, market.linear_raw / horizon);
+  p.upper.assign(n, inf); // no holding cap (not in the registration)
+  for (usize j = 0; j < n; ++j) {
+    const usize i = date.names[j];
+    p.target[j] = aim[i];
+    p.current[j] = current[i];
+    p.impact_cost[j] = market.impact_raw[j] / horizon;
+    p.borrow_cost[j] = market.short_rate[j];
+    p.trade_limit[j] = market.trade[j];
+    p.lower[j] = market.guarded[j] != 0 ? market.floor[j] : -inf;
+  }
+  p.gamma = gamma;
+  p.net = tt::TrackingLimit{-fixed.net, -fixed.net};
+  p.beta_limit = tt::TrackingLimit{-params.beta_max - fixed.beta, params.beta_max - fixed.beta};
+  return p;
+}
+
+// The diagnostics of one book's decision (plan_tracking adds the shadow's columns).
+TrackingRow Engine::Impl::tracking_row(const BookDecision& in, const tt::TrackingProblem& p,
+                                       const tt::TrackingSolution& sol,
+                                       std::span<const f64> aim, std::span<const f64> current,
+                                       std::span<const f64> next, usize fixed_nonmembers,
+                                       const TargetReplayDay& out) const {
+  const auto& r = date.slice;
+  TrackingRow row;
+  row.session = in.x.session_keys[in.d]; row.book = std::string(in.book);
+  row.members = date.members; row.optimized = p.n; row.unpriced_members = date.unpriced_members;
+  row.fixed_nonmembers = fixed_nonmembers; row.gamma = gamma;
+  row.iterations = sol.iterations; row.converged = sol.converged;
+  row.limits_met = sol.limits_met;
+  row.primal_residual = sol.primal_residual; row.dual_residual = sol.dual_residual;
+  row.limit_violation = sol.limit_violation; row.clipped_eigenvalues = sol.clipped_eigenvalues;
+  std::vector<f64> gap;
+  row.tracking_error = tracking_error(r, next, aim, gap);
+  row.tracking_error_current = tracking_error(r, current, aim, gap);
+  row.aim_correlation = correlation(sol.w, p.target);
+  row.objective = sol.terms.objective; row.amortized_cost = sol.terms.trade_cost;
+  row.trade_cost = sol.terms.trade_cost * horizon; row.borrow = sol.terms.borrow;
+  f64 aim_gross = 0, beta = 0;
+  for (usize i = 0; i < aim.size(); ++i) {
+    aim_gross += std::abs(aim[i]);
+    beta += date.beta[i] * next[i];
+  }
+  row.gross = out.gross; row.aim_gross = aim_gross; row.net = out.net;
+  row.long_weight = out.long_weight; row.short_weight = out.short_weight;
+  row.abs_beta = std::abs(beta); row.turnover = out.turnover;
+  row.no_trade = sol.no_trade; row.at_trade_limit = sol.at_trade_limit;
+  row.trade_limit_share = sol.trade_limit_share;
+  for (usize j = 0; j < p.n; ++j)
+    if (std::isfinite(p.lower[j]) && sol.w[j] <= p.lower[j]) ++row.at_locate_floor;
+  row.gross_bound_breached = !(out.gross <= budget);
+  row.nu = sol.net_multiplier; row.rho = sol.beta_multiplier;
+  row.capped_specific = r.capped_specific;
+  return row;
+}
+
+// One book's rebalance decision: track the aim L x desired. plan() validated the decision
+// and set H; the plan fields, the fixed positions, the market terms and the shadow book are
+// spo-v1/v2's.
+co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>& planned,
+                                       TargetReplayDay& out) {
+  const auto& x = in.x;
+  const usize n_all = x.instruments, d = in.d;
+  budget = v3_gross_bound_multiple * in.cfg.target.aim_leverage; // checked, never imposed
+  ATX_TRY_VOID(prepare(in));
+  const auto member = x.member.subspan(d * n_all, n_all);
+  std::vector<f64> aim(n_all, 0.0);
+  for (usize i = 0; i < n_all; ++i)
+    if (member[i]) aim[i] = in.cfg.target.aim_leverage * in.desired[i];
+  if (!calibration.done) ATX_TRY_VOID(calibrate_tracking(in, aim));
+  const std::vector<f64> current(planned);
+  FixedPositions fixed;
+  ATX_TRY_VOID(fixed_positions(in, current, fixed));
+  MarketTerms market;
+  market_terms(in, current, market);
+  const tt::TrackingProblem p = tracking_problem(aim, current, fixed, market);
+  const auto& names = date.names;
+  auto& book = books[std::string(in.book)];
+  std::vector<f64> warm; // the book's last dual on today's names (cold: empty)
+  if (book.dual.size() == n_all) {
+    warm.resize(names.size());
+    for (usize j = 0; j < names.size(); ++j) warm[j] = book.dual[names[j]];
+  }
+  const tt::TrackingOptions options{params.max_iterations, params.tolerance};
+  const auto started = std::chrono::steady_clock::now();
+  ATX_TRY(const auto sol, tt::solve_tracking(p, options, warm));
+  const f64 seconds =
+      std::chrono::duration<f64>(std::chrono::steady_clock::now() - started).count();
+  ++timing.solves; timing.seconds += seconds;
+  timing.max_seconds = std::max(timing.max_seconds, seconds);
+  std::vector<f64> next = std::move(fixed.next);
+  book.dual.assign(n_all, 0.0);
+  for (usize j = 0; j < names.size(); ++j) {
+    next[names[j]] = sol.w[j];
+    book.dual[names[j]] = sol.dual[j];
+  }
+  accumulate_plan(member, next, current, out);
+  out.construction.banded_names = sol.no_trade;
+  TrackingRow row = tracking_row(in, p, sol, aim, current, next, fixed.nonmembers, out);
+  // The shadow aim-partial-v5 book at d, scored against the same aim, risk model and S2 law.
+  if (book.shadow.size() != n_all) book.shadow.assign(n_all, 0.0);
+  shadow_before = book.shadow;
+  TargetReplayDay shadow_day;
+  ATX_TRY_VOID(shadow_step(x, in.cfg, d, true, in.desired, book, shadow_day));
+  f64 cost_shadow = 0;
+  std::vector<f64> held(names.size()), gap;
+  for (usize j = 0; j < names.size(); ++j) {
+    const usize i = names[j];
+    const f64 move = std::abs(book.shadow[i] - shadow_before[i]);
+    cost_shadow += market.linear_raw * move + market.impact_raw[j] * move * std::sqrt(move);
+    held[j] = book.shadow[i];
+  }
+  row.gross_shadow = shadow_day.gross; row.turnover_shadow = shadow_day.turnover;
+  row.trade_cost_shadow = cost_shadow;
+  row.tracking_error_shadow = tracking_error(date.slice, book.shadow, aim, gap);
+  row.aim_correlation_shadow = correlation(held, p.target);
+  // Scored decisions only (v8 D-0), as spo-v1/v2.
+  if (d >= x.decision_begin) tracking_rows.push_back(std::move(row));
   planned = std::move(next);
   return co::Ok();
 }
@@ -1264,6 +1519,9 @@ co::Status Engine::hold(const TargetReplayInput& x, const NavReplayConfig& cfg, 
 }
 void Engine::begin_run() { impl_->books.clear(); impl_->date = Impl::DateData{}; }
 std::span<const DiagnosticRow> Engine::rows() const noexcept { return impl_->rows; }
+std::span<const TrackingRow> Engine::tracking_rows() const noexcept {
+  return impl_->tracking_rows;
+}
 const Calibration& Engine::calibration() const noexcept { return impl_->calibration; }
 const SpoParams& Engine::params() const noexcept { return impl_->params; }
 Timing Engine::timing() const noexcept { return impl_->timing; }

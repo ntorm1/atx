@@ -1,14 +1,14 @@
-# Task R-6 report: target-tracking optimiser spo-v3 (S-8) -- STOPPED after part 1 of 2
+# Task R-6 report: target-tracking optimiser spo-v3 (S-8) -- parts 1 and 2 built
 
-Lane R6, worktree `C:/atx-wt/pool-7`, branch `feat/platform-v8-r6-20260929`. Stopped on the owner's instruction at the
-end of the engine-solver unit. Not built and not run (lane rules). Every claim about behaviour below is from reading
-the code, or from a numpy port of the same algorithm run on synthetic data (marked [proto]).
+Lane R6, worktree `C:/atx-wt/pool-7`, branch `feat/platform-v8-r6-20260929`. Not built and not run (lane rules).
+Every claim about behaviour below is from reading the code, or from a numpy port run on synthetic data ([proto]).
 
 | commit | content |
 |---|---|
 | `75774cd8` | PM addition: v7 side files and the spo tripwire cover scored decisions only under `--warm-start-sessions K` |
 | `d695cbd8` | part 1: `atx::engine::book::solve_tracking` (the generic solver) + `TargetTracking.*` gtests |
-| (none) | part 2, the atx-impl rule `--rule spo-v3 --spo-alpha implied-aim`: NOT STARTED (see STOPPED HERE) |
+| `a7a26df1` | step 0: merge of root `feat/platform-v8-20260929` (41ac94fd, integration 3) into the lane; no conflict |
+| `3a59c5bc` | part 2: the atx-impl rule `--rule spo-v3 --spo-alpha implied-aim` + `SpoV3.*` gtests (section 5) |
 
 ## 1. Warm-start side files (`75774cd8`, PM instruction)
 
@@ -120,7 +120,7 @@ Root: `powershell scripts\atx-build.ps1 build atx-engine-book-tests`, then
 `build\bin\atx-engine-book-tests.exe --gtest_filter=TargetTracking.*`. No other target is affected: the solver is not
 called by anything yet, so every existing output is unchanged by construction.
 
-## 3. Open risks
+## 3. Open risks of part 1
 
 1. **Registered constants vs. the book's risk structure [proto, synthetic]. Please read before registering the
    cell.**
@@ -137,9 +137,9 @@ called by anything yet, so every existing output is unchanged by construction.
      | 20 | .96 | 1.09 | .09 |
      | aim-partial reference | .82 | .99 | .24 |
 
-   - This lane changes no constant. Root may want to register a mechanical criterion (the note suggests
-     corr(w, w_aim) >= .9) or revisit S_prior before spending the trial. The part-2 diagnostics will record
-     corr(w, w_aim).
+   - RESOLVED by PM Ruling E-14 (2026-09-30, pre-read amendment): S_prior = 20, and the cell gains the
+     mechanical criterion "mean correlation of the traded book with the aim over scored decisions >= .9". Part 2
+     codes S_prior 20 as `spo::v3_sharpe_prior` and reports the correlation (section 5).
 2. Not compiled: expect one `/W4 /WX` pass.
    - Eigen is reached only through `atx::core::linalg::symmetric_eig`.
    - Watch for `Eigen::Index` conversions and a `-Wmissing-field-initializers` on `TrackingLimit`-typed aggregates.
@@ -148,97 +148,223 @@ called by anything yet, so every existing output is unchanged by construction.
 4. Warm-start commit: a specific-variance clamp inside the warm-up no longer reaches the tripwire (as instructed). The
    risk model's own `diagnostics.csv` still shows it.
 
-## 4. Cross-lane edits
+## 4. Cross-lane edits of part 1
 
 - `atx-engine/CMakeLists.txt`, +8 lines: `src/book/target_tracking.cpp` added to the `atx-engine` source list after
   `src/book/security_transition.cpp`, and a Debug `/O2 /Ob2 /clang:-finline` + `SKIP_PRECOMPILE_HEADERS` block for
   it inside the existing MSVC/Clang/Debug `if`.
 
-## STOPPED HERE
+## 5. Part 2: the atx-impl rule `--rule spo-v3 --spo-alpha implied-aim` (`3a59c5bc`)
 
-Done: section 1 (committed) and part 1, the engine solver with its gtests (committed).
+Built to the design this report recorded at the stop, with PM Ruling E-14 (S_prior = 20) and the deviations listed
+at the end of this section.
 
-Remains: part 2, the atx-impl rule. Nothing of it is written. These design decisions were taken so another lane can
-pick it up unchanged.
+### Files
 
-**Files**
-- `strategy_spo.{hpp,cpp}`:
-  - `Engine::Impl::plan_tracking`, dispatched from `Impl::plan` when `params.version == 3`.
-  - `prepare()` skips the v1 alpha and the FISTA metric for v3.
-  - Three verbatim extractions from `plan()`, used by both paths: the fixed positions (nonmember exit, unpriced
-    hold, fixed exposure / net / beta), the per-name market terms (trade limit, locate guard, impact coefficient,
-    financing rates) and the plan-field accumulation. They must stay expression-identical so the SpoPin digests
-    hold.
-- New `strategy_spo_v3.cpp`: the v3 problem statement, `v3_params`, declaration, parameters/calibration JSON,
-  `TrackingRow` CSV, per-book summary and the v3 tripwire. Needs `atx-impl/CMakeLists.txt`: source list + Debug /O2
-  list (cross-lane).
-- `strategy_nav_v7.{hpp,cpp}`:
-  - `spo_rule` gains `spo-v3`; `spo_flag` gains `--spo-alpha`.
-  - `write_extras` / `extend_summary` / `capture` call engine-level dispatch functions (`rows_csv`,
-    `rows_summary_json`, `rows_tripwire_json`, `rows_tripwire`) that delegate to the existing v1/v2 functions
-    unchanged.
-- No edit to `atx-impl/tools/equity_strategy_targets.cpp`: `nav` routes through `v7::claims_nav_args`.
+- `atx-impl/src/strategy_spo_v3.hpp` (new): the problem statement and the registered constants:
 
-**Parameters**, `v3_params()`:
+  | constant | value | note |
+  |---|---|---|
+  | `v3_horizon` | 20 | H, sessions: fixed, not 1 / theta |
+  | `v3_sharpe_prior` | 20 | S_prior. The comment cites "Ruling E-14" (pre-read amendment; 1.0 was the first declaration) |
+  | `v3_adv_trade_p` | .01 | trade limit p ADV / NAV |
+  | `v3_beta_max` | .02 | |
+  | `v3_specific_ceiling` | 1.0 | void on: a clamp is a tripwire |
+  | `v3_gross_bound_multiple` | 2 | breach: planned gross > 2 x `--aim-leverage` |
 
-| field | value | note |
-|---|---|---|
-| version | 3 | |
-| H | 20 | fixed, not 1/theta |
-| S_prior | 1.0 | annualised |
-| gross bound | 2 x `--aim-leverage` | a checked sanity bound, not a solver constraint |
-| adv_trade_p | .01 | |
-| beta_max | .02 | |
-| specific ceiling | 1.0, void on | the v2 tripwire, kept |
-| iterations / tolerance | engine constants | |
-| alpha | implied-aim | |
+  - Also declares `v3_params()` and the published blocks: `tracking_declaration`, `tracking_parameters_json`,
+    `tracking_calibration_json`, `tracking_csv`, `tracking_units_json`, `tracking_summary_json`,
+    `tracking_tripwire`, `tracking_tripwire_json`.
+- `atx-impl/src/strategy_spo_v3.cpp` (new): those functions, plus the Engine's rule-level dispatch members (they
+  use only the Engine's public accessors).
+- `atx-impl/src/strategy_spo.hpp`:
+  - `SpoParams::sharpe_prior` (NaN; v3 only).
+  - `TrackingRow`.
+  - New `Engine` members:
+    - `tracking_rows()`.
+    - `rule_declaration()`, `rule_parameters_json()`, `rule_calibration_json()`.
+    - `rows_csv()`, `rows_units_json()`, `rows_summary_json()`, `rows_tripwire_json()`, `rows_tripwire()`.
+  - Under spo-v1/v2 each dispatch member calls the old function with the old arguments.
+- `atx-impl/src/strategy_spo.cpp`:
+  - `validate_params` accepts version 3 and checks S_prior in (0, 1e3]. `rule_name` / `json_key` give
+    `spo-v3` / `spo_v3`.
+  - `Impl::plan` returns `plan_tracking` when `version == 3`. The dispatch comes after the geometry and S2-law
+    checks and after H is set.
+  - `prepare()` skips the alpha and the FISTA metric under v3.
+  - Three extractions from `plan()`, now used by both paths, with the expressions copied unchanged:
+    - `Impl::fixed_positions`: nonmember exit, unpriced hold, fixed exposure, net, gross and beta.
+    - `Impl::market_terms`: holding cap, trade limit, locate guard and floor, impact coefficient, financing rates.
+    - free `accumulate_plan`: the plan fields.
+  - spo-v3: `calibrate_tracking`, `tracking_problem`, `tracking_row`, `plan_tracking`, and a free
+    `tracking_error`.
+- `atx-impl/src/strategy_nav_v7.{hpp,cpp}`:
+  - `spo_rule` gains `spo-v3`; `spo_flag` gains `--spo-alpha`; new `refused_with_v3`.
+  - The parser: v3 defaults, then the refusals, then `--spo-alpha`.
+  - `declarations` / `write_extras` / `extend_summary` / `capture` go through the Engine members.
+  - `--help` and the header comment document v3.
+- Tests:
+  - New: `strategy_spo_v3_test.cpp`, `strategy_spo_v3_pin_test.cpp`, `strategy_spo_digest.hpp`.
+  - `strategy_spo_pin_test.cpp` is refactored onto the shared digest header.
 
-- gamma = S_prior / sigma_aim, with sigma_aim = sqrt(252 w_aim' Sigma w_aim) of the whole aim at the first rebalance
-  decision. Sigma is daily, so the aim's implied annual Sharpe is S_prior. Refuse (Unavailable) if sigma_aim is not
-  finite and positive.
+### The problem as coded (per rebalance decision and book)
 
-**Problem assembly** per rebalance decision and book:
-- w_aim = L x desired on the members.
-- Optimised names = members with a risk row. Nonmembers exit per aim-partial-v5; unpriced members hold.
-  `external_gap` = their factor exposure.
-- trade limit = p ADV/NAV (0 without ADV); lower = min(w0, 0) where the locate rule guards the name, else -inf;
-  upper = +inf. No holding cap: it is not in the registration.
-- s = (half spread + commission)/H; eta = impact_y sigma sqrt(NAV/ADV)/H (primary S2 law); b = the book's short
-  financing per session (v1's `short_rate`). No long-financing term.
-- net: 1'w = -net_fixed. beta band: +-.02 minus the fixed beta.
-- Warm dual kept per book per instrument.
+- w_aim = L x desired on the members. Optimized names are the members with a risk row. Nonmembers exit per
+  aim-partial-v5 and unpriced members hold (`fixed_positions`). `external_gap` is the fixed positions' factor
+  exposure: their aim is 0, and unpriced names have no risk row.
+- Per-name terms:
+  - s = (half spread + commission) / H and eta = impact_y sigma sqrt(NAV / ADV) / H (primary S2 law).
+  - b = the book's short financing per session. No long term.
+  - trade limit p ADV / NAV (0 without ADV).
+  - lower = min(w0, 0) where guarded, else -inf; upper = +inf (no holding cap).
+- Limits: net 1'w = -net_fixed (an equality band); beta in +-.02 - beta_fixed.
+- Solver: `tt::solve_tracking(problem, {--spo-iters, --spo-tol}, warm)`. Defaults 2000 / 1e-9 = the engine
+  constants.
+- Warm dual: kept per book per instrument. A name new to the problem starts at 0. `begin_run` clears it (every
+  pass starts cold).
+- gamma = S_prior / sigma_aim, set at the first plan call. sigma_aim = sqrt(252 x `book_variance(slice, aim)`)
+  over the whole aim. Unavailable if sigma_aim is not finite and positive. The calibration records session, gamma,
+  sigma_aim (`aim_vol`), the aim's gross and the name count.
+- `out.construction.banded_names` = the solver's no-trade count, as v1/v2.
+- Scored decisions only (`d >= decision_begin`) leave a row, as v1/v2. The shadow and the warm dual still move in
+  the warm-up.
 
-**CLI**
-- `--rule spo-v3`, with optional `--spo-alpha implied-aim` (the only value; refused with v1/v2).
-- Refused with v3 (registered constants): `--gamma --ic-book --w-max --adv-cap-q --adv-trade-p --target-vol
-  --spo-horizon --alpha-horizon --spo-gross`.
-- Allowed with v3: `--risk-model(-sha256) --spo-iters --spo-tol --spo-books --specific-ceiling(-void)`.
-- As v1/v2: capacity curve refused, fixed rate required, `--emit-holdings` refused with the void on.
+### `spo_diagnostics.csv` under spo-v3 (41 columns)
 
-**Diagnostics** (`spo_diagnostics.csv` for v3, its own columns):
-- session, book, members, optimized, unpriced_members, fixed_nonmembers, gamma
-- iterations, converged, limits_met, primal_residual, dual_residual, limit_violation, clipped_eigenvalues
-- tracking_error, tracking_error_current (annualised, whole book), aim_correlation
-- objective, trade_cost, amortized_cost, borrow
-- gross, aim_gross, net, long, short, abs_beta, turnover
-- no_trade, at_trade_limit, trade_limit_share, at_locate_floor, gross_bound_breached, nu, rho, capped_specific
-- shadow aim-partial-v5: gross, turnover, trade_cost, tracking_error, aim_correlation
+`session, book, members, optimized, unpriced_members, fixed_nonmembers, gamma, iterations, converged, limits_met,
+primal_residual, dual_residual, limit_violation, clipped_eigenvalues, tracking_error, tracking_error_current,
+aim_correlation, objective, trade_cost, amortized_cost, borrow, gross, aim_gross, net, long, short, abs_beta, turnover,
+no_trade, at_trade_limit, trade_limit_share, at_locate_floor, gross_bound_breached, nu, rho, capped_specific,
+gross_shadow, turnover_shadow, trade_cost_shadow, tracking_error_shadow, aim_correlation_shadow`
 
-**Tripwire v3**
-- Status is void when the void switch is on and either a clamped decision or a gross-bound breach occurred.
-- Report-only: TE mean/max, share at the trade limit mean/max, corr(w, w_aim) mean/min, unconverged, limits unmet.
+- tracking_error*: annualised, whole book, priced names.
+- aim_correlation*: Pearson correlation of the planned (shadow) and the aim weights over the optimized names. It is
+  NaN when either has no dispersion, e.g. a flat plan.
+- Units are in `diagnostics_units`.
 
-**Tests**
-- `strategy_spo_v3_test.cpp`: `SpoV3.ZeroCostNoLimitsReturnsAimTo1e8` (direct `Engine::plan` with a zero-cost S2
-  scenario, zero financing, ADV 1e15, beta_max 1), `SpoV3.GrossCapIsSlackOnFixture`,
-  `SpoV3.ReportsTrackingErrorAndShareAtTradeLimit`.
-- `strategy_spo_v3_pin_test.cpp`: `SpoV3.V1AndV2DigestsUnchanged`. It uses the base API only.
-  - v1 digests = the existing SpoPin pins.
-  - v2 digests: capture on the pre-R6 base with this one file added, then pin (W1b protocol).
-- Both files go in the `atx-impl-strategy-target-tests` list (cross-lane edit, `atx-impl/tests/CMakeLists.txt`).
+### Tripwire and report (`v7_extras.json` `spo_v3.tripwire`, `summary.json` `v7.spo_v3_tripwire`)
 
-**Planned root argv after part 2** (not runnable yet):
-- Base: the v7.1-cell nav argv with the lo3 role, fields and the 4-year role once W0-2 lands.
-- Add: `--rule spo-v3 --spo-alpha implied-aim --risk-model <atx-risk-v1.1 on the 4-year role>
-  --risk-model-sha256 <pin> --spo-books primary`.
-- Read `v7_extras.json` `spo_v3.tripwire.status == "clear"` before any return.
+- `status`:
+  - `void` when `--specific-ceiling-void` is on (the default) and any scored decision clamped a specific variance,
+    or any book planned gross above 2 x L. The run then exits 3 with diagnostics only, as spo-v2.
+  - `tripped (not voiding ...)` when the void is off.
+  - `clear` otherwise.
+- Also recorded: `capped_specific_decisions`, `capped_specific_names_max`, `gross_bound_multiple`,
+  `gross_bound_breaches` (book decisions) and `max_gross`.
+- `report_only.<book>`: `decisions`, `tracking_error {mean, max, n}`, `trade_limit_share {mean, max, n}`,
+  `aim_correlation {mean, min, n}`, `unconverged`, `limits_unmet`.
+  - The same block heads each book's entry of `spo_v3.books` / `v7.spo_v3_books`.
+  - Those entries add the mean iterations and residuals, mean current TE, cost, gross and turnover, the holding
+    period, breaches, clamps, the shadow (cost, gross, turnover, TE, aim correlation) and `trade_cost_ratio`.
+- **E-14 criterion** (report-only; the PM judges it): the primary book's
+  `spo_v3.tripwire.report_only["modeled-1bn-stale5-v1+<financing id>"].aim_correlation.mean >= .9`. NaN rows are
+  excluded; `n` counts the rows that were averaged.
+
+### CLI
+
+- `--rule spo-v3` loads `v3_params()`. `--spo-alpha implied-aim` is optional. It is refused with spo-v1/v2, for any
+  other value, and twice.
+- Refused with v3, wherever they stand on the line: `--gamma --ic-book --w-max --adv-cap-q --adv-trade-p
+  --target-vol --spo-horizon --alpha-horizon --spo-gross`.
+- Allowed: `--risk-model(-sha256) --spo-iters --spo-tol --spo-books --specific-ceiling(-void)`.
+- As v1/v2: no capacity curve, fixed rate only, no `--emit-holdings` with the void on, one `--rule` only.
+
+### Tests (`atx-impl-strategy-target-tests`; the glob also puts them in `atx-impl-tests`)
+
+| test | checks |
+|---|---|
+| `SpoV3.ZeroCostNoLimitsReturnsAimTo1e8` | direct `Engine::plan`: zero-cost S2 law, zero borrow, ADV 1e15, beta band +-1, flat, all names optimized. Plan = L x desired to 1e-8; converged, limits met, TE < 1e-6, correlation 1; gamma = 20 / sigma_aim; TE_current = sigma_aim; H 20; bound 2L |
+| `SpoV3.GrossCapIsSlackOnFixture` | fixture replay under `v3_params`: no breach, every gross < 2L, max < .75 x 2L, tripwire clear. A forced breach voids with the void on and is `tripped` with it off |
+| `SpoV3.ReportsTrackingErrorAndShareAtTradeLimit` | first row's TE_current = sigma_aim. The first trading decision from flat converges, cuts TE and has names at the trade limit. share = at / optimized; correlation in [-1, 1] (NaN only on flat rows); net/beta held where limits were met; CSV rows and 41 columns; summary and tripwire report equal the rows' mean / max / min / counts |
+| `SpoV3.ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim` | v3 defaults (S_prior 20), allowed overrides, the nine refusals (before or after `--rule`), `--spo-alpha` rules, capacity / rate / holdings refusals, the `spo_v3` recipe block and the relabelled rule |
+| `SpoV3.V1AndV2DigestsUnchanged` | spo-v1 weights and replay digests against SpoPin's pins. spo-v2 (`v2_params`, w_max .5, Role(30, 12, 71), model seed 9, every CSV column) against its pins, which are a **0 placeholder**: the test SKIPS after the v1 checks until root captures them (section 6) |
+
+### Deviations from the stop-time design
+
+1. S_prior is 20 (Ruling E-14), not 1.0.
+2. Dispatch covers the declaration, the parameters and the calibration too (`rule_*`), so nav_v7 never branches on
+   the version. The members are defined in `strategy_spo_v3.cpp`.
+3. The SpoPin digest procedures moved into `strategy_spo_digest.hpp` rather than being copied into the new pin test.
+   The fold order and the `[spo-pin]` prints are unchanged, and the pins are untouched.
+4. The v2 digest fixture differs from SpoPin's. Under v2 defaults (w_max .01), SpoPin's Role(40, 12, 53) cannot
+   reach the vol target, so v2 is refused there. v2 uses the spo-v2 hook tests' fixture instead.
+5. The report is keyed per book (`report_only.<book>`) because the criterion is the primary book's.
+
+## 6. How root verifies
+
+1. Compile each TU first:
+   - `powershell scripts\atx-build.ps1 check atx-impl\src\strategy_spo.cpp`
+   - the same for `atx-impl\src\strategy_spo_v3.cpp`, `atx-impl\src\strategy_nav_v7.cpp` and
+     `atx-engine\src\book\target_tracking.cpp`.
+2. Build: `powershell scripts\atx-build.ps1 build atx-engine-book-tests atx-impl-strategy-target-tests`. Add
+   `atx-equity-strategy-targets` for the real-data runs.
+3. Run the gtests:
+   - `build\bin\atx-engine-book-tests.exe --gtest_filter=TargetTracking.*`
+   - `build\bin\atx-impl-strategy-target-tests.exe --gtest_filter=Spo*:NavV7Hook.*`. SpoPin must pass with its old
+     pins; this proves the digest refactor. `SpoV3.V1AndV2DigestsUnchanged` passes its v1 checks, then SKIPS until
+     step 4.
+4. **spo-v2 pin capture** (never invent a digest):
+   1. Take a pool tree on the integration head without R6 (`feat/platform-v8-20260929` at 41ac94fd, or its
+      successor before the R6 merge).
+   2. Copy `atx-impl/tests/strategy_spo_digest.hpp` and `atx-impl/tests/strategy_spo_v3_pin_test.cpp` from
+      `3a59c5bc`. Both use only pre-R6 API.
+   3. Append `strategy_spo_v3_pin_test.cpp` to the `atx-impl-strategy-target-tests` list in
+      `atx-impl/tests/CMakeLists.txt`.
+   4. Build that target and run `--gtest_filter=SpoV3.V1AndV2DigestsUnchanged`. The v1 checks pass, then the test
+      skips. Read the line `[spo-v3-pin] v2 weights=0x... replay=0x...`.
+   5. On the R6 head, set `pinned_v2_weights` / `pinned_v2_replay` in `strategy_spo_v3_pin_test.cpp` to those two
+      values. Rebuild. The test must print the same values and pass.
+5. **Identity runs on real data, with the flag off:**
+   - (a) The v7.1 cell (aim-partial-v5, no spo rule): rerun its recorded nav argv with the new exe. Every output file
+     must be byte-identical. No-rule runs never enter the spo code.
+   - (b) spo-v2: rerun the recorded spo-v2 cell argv (W1b report, step 4). Byte-identical: `spo_diagnostics.csv`,
+     `v7_transfer_coefficient.csv`, `v7_extras.json`, `recipe.json`, `summary.json` and the NAV / daily / events
+     files. The warm-start commit is a no-op at K = 0.
+   - (c) spo-v1: the SpoPin digests. A recorded spo-v1 cell may be rerun the same way as (b).
+6. **Trial argv delta** for the spo-v3 cell, after W0-2's 4-year role and atx-risk-v1.1 on it with its manifest pin:
+   - Start from the v7.1-cell nav argv on the registered role.
+   - REPLACE `--rule aim-partial-v5` with `--rule spo-v3 --spo-alpha implied-aim`. The hook rewrites it to
+     aim-partial-v5; a second `--rule` is refused.
+   - Keep the aim-partial-v5 flags (`--trade-fraction`, `--dust-multiple`, `--aim-leverage`, `--exit-rate`,
+     cadence). They drive the exits, the shadow and L. H stays 20.
+   - ADD `--risk-model <dir> --risk-model-sha256 <pin> --spo-books primary`.
+   - The line must carry: fixed rate, no `--capacity-curve`, no `--emit-holdings`, `--book-workers 1` (the hook is
+     thread-local), and the cell's `--warm-start-sessions K`.
+   - Before any return: a tripped run exits 3 with status `void` and no NAV file. Otherwise read `v7_extras.json`
+     `spo_v3.tripwire.status == "clear"`, then the E-14 criterion from the report block (section 5).
+
+## 7. Cross-lane edits of part 2
+
+- `atx-impl/CMakeLists.txt`: `src/strategy_spo_v3.cpp` in the `atx-impl-core` source list (after
+  `strategy_spo.cpp`) and in both Debug `/O2 /Ob2` + `SKIP_PRECOMPILE_HEADERS` lists.
+- `atx-impl/tests/CMakeLists.txt`: `strategy_spo_v3_test.cpp` and `strategy_spo_v3_pin_test.cpp` appended to
+  `atx-impl-strategy-target-tests`.
+- `atx-impl/tests/strategy_spo_pin_test.cpp`: its digest procedures moved to `strategy_spo_digest.hpp`. Pins and
+  prints are unchanged.
+- The step-0 merge (`a7a26df1`) had no textual conflict. Nothing was resolved by hand, and no window or digest
+  constant was touched.
+
+## 8. Open risks of part 2
+
+1. **Not compiled.** Expect a `/W4 /WX` pass. Points to watch:
+   - The namespace alias `tt` (engine book) is declared in `strategy_spo.cpp`'s anonymous namespace and used in the
+     `Engine::Impl` member declarations.
+   - `tt::TrackingLimit{lo, hi}` / `tt::TrackingOptions{iters, tol}` aggregates.
+   - `ATX_TRY(const auto sol, tt::solve_tracking(p, options, warm))`, where `warm` is a `std::vector` converted to a
+     span.
+   - The nlohmann `Json` comparisons in the tests.
+2. **The v2 pins are a placeholder** (the test SKIPS) until the capture in section 6, step 4.
+3. **Beta feasibility under the one-session trade limit.** When a book's beta jumps more than one session's trade
+   limits can repair, the solve runs to the 2000-iteration cap. It is reported (`limits_met` 0, `unconverged`) and
+   never refused.
+   - The fixture redraws style exposures daily, so the fixture tests check net and beta only on rows that met their
+     limits, and check the counts.
+   - On real data, each such decision costs the iteration cap in runtime. Read `unconverged` and `limits_unmet` in the
+     report.
+4. `GrossCapIsSlackOnFixture` asserts max planned gross < .75 x 2L = 1.8. That threshold is reasoned, not measured:
+   aim gross 1.2 plus the hedge of one decaying nonmember. If it fails while no row breaches, the threshold is wrong,
+   not the rule.
+5. On a flat start, a decision with an empty liquidity window (the fixture's first) has ADV 0, so its trade limit is
+   0 and nothing trades, as in v1/v2. Its aim correlation is NaN and falls out of the criterion's `n`.
+6. Iteration count and runtime at 1,850 names are still unmeasured (part 1, risk 3).
+7. Cosmetic: the `summary.json` `v7.extras` string still reads "spo_diagnostics.csv (spo-v1/v2)" under v3. It was
+   kept so the v1/v2 bytes stay identical.
