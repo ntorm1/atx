@@ -1,7 +1,7 @@
 """Synthetic known-answer tests for backtest_integrity.py and the nav_summ v7 integrity options (platform v7 L2).
 
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider \
-     .superpowers/sdd/mega-alpha-20260926/studies/test_backtest_integrity.py
+     atx-impl/tools/test_backtest_integrity.py
 
 No real data: every series and NAV dir is generated here.
 """

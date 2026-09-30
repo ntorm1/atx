@@ -2,7 +2,7 @@
 
 Everything is read through ``Registry`` so every input file is hashed and listed in the report header, a missing
 file is recorded (and rendered n/a by the caller) instead of raising, and a path naming validation / VAL / 2023-2025
-is refused before it is opened. Derived statistics mirror ``studies/nav_summ.py`` (return rows = return_observation
+is refused before it is opened. Derived statistics mirror ``atx-impl/tools/nav_summ.py`` (return rows = return_observation
 == 1 and not the first CSV row; Sharpe = mean / sd(ddof 1) x sqrt(sessions per year); tau_t over executed sessions
 with positive pre-trade gross, deployment session excluded; Memmel (2003) SE; Lo (2002) single-cell DSR null).
 """
