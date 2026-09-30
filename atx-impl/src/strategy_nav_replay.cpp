@@ -1202,7 +1202,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    par::DetPool* pool, StageClock* stages) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   // The shared construction's config (neutralization, price risk, guard) is every book's:
-  // replay_books admits only variants that agree on it; the cadence may differ per book.
+  // replay_books admits only variants that agree on it (with the ADV cap also on the aim
+  // leverage: one call per leverage group, review A-1); the cadence may differ per book.
   const auto& target = ctxs.front().cfg.target;
   // The rate, order basis, locate-in-aim, cache and warm start are the base config's,
   // identical for every book.
@@ -1278,7 +1279,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
         }))
       return refuse_inert_warm_start(x, warm);
   }
-  if (stages) stages->exposures = shared.price.exposure.ring.seconds;
+  // Accumulated: a grid of several leverage groups (review A-1) calls run_books per group.
+  if (stages) stages->exposures += shared.price.exposure.ring.seconds;
   std::vector<NavReplayResult> results;
   results.reserve(count);
   for (auto& book : books) {
@@ -2121,7 +2123,9 @@ bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b)
 // cadence, trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage,
 // exit_rate) and the scenario: the shared construction, the shared liquidity windows and
 // the book-independent settings are then one. The v8 construction options (hold band, ADV
-// cap) shape the shared desired target, so they are shared too.
+// cap) shape the shared desired target, so they are shared too. The ADV cap Q ADV /
+// (aim_leverage NAV) also reads aim_leverage, a variant flag: replay_books then forms one
+// construction per distinct leverage (review A-1).
 bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
   const auto& s = a.target; const auto& t = b.target;
   return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
@@ -2137,8 +2141,27 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
          a.locate_in_aim == b.locate_in_aim && a.liquidity_cache == b.liquidity_cache &&
          a.warm_start_sessions == b.warm_start_sessions && a.book_workers == b.book_workers;
 }
-// Every variant x every scenario (book v * scenarios + k) in one lockstep run_books.
-// One variant is replay_nav_scenarios: the same validation and the same books.
+// The variants' lockstep groups (variant indices, in order of first appearance): one group
+// of every variant, except with the ADV cap (adv_hold_q > 0, shared by same_shared), whose
+// shared construction reads aim_leverage: then one group per distinct aim leverage (review
+// A-1), each variant capped at its own leverage as in its standalone run.
+std::vector<std::vector<usize>> leverage_groups(std::span<const NavReplayConfig> variants) {
+  std::vector<std::vector<usize>> groups;
+  const bool capped = variants.front().target.adv_hold_q > 0;
+  for (usize v = 0; v < variants.size(); ++v) {
+    auto found = groups.begin();
+    if (capped)
+      found = std::find_if(groups.begin(), groups.end(), [&](const std::vector<usize>& g) {
+        return variants[g.front()].target.aim_leverage == variants[v].target.aim_leverage;
+      });
+    if (found == groups.end()) groups.push_back({v});
+    else found->push_back(v);
+  }
+  return groups;
+}
+// Every variant x every scenario (book v * scenarios + k) in one lockstep run_books (with
+// the ADV cap at several aim leverages, one per leverage group: leverage_groups). One
+// variant is replay_nav_scenarios: the same validation and the same books.
 co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,
     std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages) {
@@ -2219,10 +2242,28 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     }
     std::unique_ptr<par::DetPool> pool;
     if (base.book_workers > 1) pool = std::make_unique<par::DetPool>(base.book_workers);
-    ATX_TRY(auto flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
     std::vector<std::vector<NavReplayResult>> out(variants.size());
-    for (usize k = 0; k < books; ++k)
-      out[k / scenarios.size()].push_back(std::move(flat[k]));
+    const auto groups = leverage_groups(variants);
+    if (groups.size() == 1) { // every variant in one lockstep run (always without the cap)
+      ATX_TRY(auto flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
+      for (usize k = 0; k < books; ++k)
+        out[k / scenarios.size()].push_back(std::move(flat[k]));
+      return co::Ok(std::move(out));
+    }
+    // Review A-1: the ADV cap at several aim leverages. Each group of variants with one
+    // leverage runs its own lockstep (its shared construction capped at that leverage), so
+    // every variant is its standalone replay; groups run one after the other.
+    std::vector<Ctx> members;
+    members.reserve(books);
+    for (const auto& group : groups) {
+      members.clear();
+      for (const usize v : group)
+        for (usize k = 0; k < scenarios.size(); ++k)
+          members.push_back(ctxs[v * scenarios.size() + k]);
+      ATX_TRY(auto flat, run_books(x, in.financing, members, observer, pool.get(), stages));
+      for (usize j = 0; j < flat.size(); ++j)
+        out[group[j / scenarios.size()]].push_back(std::move(flat[j]));
+    }
     return co::Ok(std::move(out));
   } catch (const std::system_error&) { // the book pool's threads could not start
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: book worker threads");
@@ -2940,6 +2981,12 @@ constexpr const char* grid_declaration =
     "books run their own MARK, EXECUTE, DECIDE and close in lockstep. <id>/ is byte for "
     "byte the directory of the standalone nav run with the base flags and the variant's "
     "flags; this manifest is written last";
+// Only with --adv-hold-q and several aim leverages (review A-1).
+constexpr const char* leverage_groups_declaration =
+    "v8 adv-hold-v1 caps the shared desired target at Q ADV / (aim_leverage NAV) and "
+    "--aim-leverage is a variant flag: the variants run in one lockstep per distinct aim "
+    "leverage (these groups, in grid order), each group's shared construction capped at its "
+    "own leverage, so every <id>/ stays byte for byte its standalone run";
 } // namespace
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
@@ -3089,6 +3136,16 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
                   {"role_sha256", cfg.role_sha256}, {"books", books},
                   {"book_workers", base.book_workers}, {"variants", std::move(published)},
                   {"semantics", grid_declaration}};
+    if (const auto groups = leverage_groups(configs); groups.size() > 1) { // review A-1
+      Json ids = Json::array();
+      for (const auto& group : groups) {
+        Json members = Json::array();
+        for (const usize v : group) members.push_back(grid.variants[v].id);
+        ids.push_back(std::move(members));
+      }
+      manifest["leverage_groups"] =
+          Json{{"rule", leverage_groups_declaration}, {"groups", std::move(ids)}};
+    }
     if (timed) manifest["stage_seconds"] = times.json();
     progress << "nav grid: " << configs.size() << " variants x " << scenarios.size()
              << " scenario books published under " << root.string() << '\n';

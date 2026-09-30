@@ -3199,6 +3199,7 @@ TEST(ConstructionGrid, EachVariantEqualsItsStandaloneRun) {
     EXPECT_EQ(manifest.at("books"), 9);
     EXPECT_EQ(manifest.at("book_workers"), 1);
     EXPECT_FALSE(manifest.contains("stage_seconds"));
+    EXPECT_FALSE(manifest.contains("leverage_groups")); // no ADV cap: one lockstep (A-1)
     ASSERT_EQ(manifest.at("variants").size(), grid.size());
     std::vector<std::string> names{"grid_manifest.json"};
     for (usize v = 0; v < grid.size(); ++v) {
@@ -3252,6 +3253,38 @@ TEST(ConstructionGrid, EachVariantEqualsItsStandaloneRun) {
       EXPECT_EQ(file_names(alone).size(), 12U); // recipe, summary, 5 books x 2 CSVs
     }
   }
+}
+
+// Review A-1: with --adv-hold-q the shared desired target is capped at Q ADV / (aim_leverage
+// NAV) and --aim-leverage is a variant flag. The grid runs one lockstep per distinct leverage:
+// every <id>/ is byte for byte its standalone run (each capped at its own leverage), and the
+// grid manifest names the groups in grid order.
+TEST(ConstructionGrid, AdvCapGroupsVariantsByLeverage) {
+  std::ostringstream out, err;
+  const auto p = publication_panel();
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto capped = joined(v5_flags, {"--adv-hold-q", ".1"});
+  const std::vector<GridVariantSpec> grid{
+      {"l15", {}},
+      {"l10", {{"--aim-leverage", "1"}}},
+      {"l15-t25", {{"--trade-fraction", ".25"}}}};
+  const auto file = dir.path / "grid.json";
+  write_grid(file, grid);
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "grid", joined(capped, grid_flag(file))), out, err),
+            0) << err.str();
+  for (const auto& spec : grid) {
+    const auto alone = dir.path / ("alone-" + spec.id);
+    ASSERT_EQ(dispatch(nav_args(a, alone, with_overrides(capped, spec.flags)), out, err), 0)
+        << err.str();
+    expect_same_files(dir.path / "grid" / spec.id, alone);
+  }
+  const auto manifest = read_json(dir.path / "grid" / "grid_manifest.json");
+  ASSERT_TRUE(manifest.contains("leverage_groups"));
+  const auto& groups = manifest.at("leverage_groups");
+  EXPECT_TRUE(groups.at("rule").is_string());
+  EXPECT_EQ(groups.at("groups"), Json::parse(R"([["l15", "l15-t25"], ["l10"]])"));
+  EXPECT_FALSE(file_bytes(dir.path / "grid" / "l15" / "summary.json") ==
+               file_bytes(dir.path / "grid" / "l10" / "summary.json"));
 }
 
 // replay_nav_grid: every variant's books equal replay_nav_scenarios of that variant alone

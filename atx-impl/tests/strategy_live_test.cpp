@@ -2050,6 +2050,55 @@ TEST(AdvHold, SideGrossPreserved) {
   EXPECT_GT(clipped, 0U);
 }
 
+// Review A-1: in a construction grid the ADV cap Q ADV / (aim_leverage NAV) is each variant's
+// own. A grid of --aim-leverage 1.0, 1.5 and 1.0 again at Q = .1 replays every variant as its
+// standalone run bit for bit (before, every variant was capped at the first variant's
+// leverage), and the two leverages' caps differ on the fixture (the cap binds).
+TEST(AdvHold, GridCapsEachVariantAtItsOwnLeverage) {
+  const CapBench bench;
+  const auto in = bench.input();
+  auto low = v61_book(1e7);
+  low.target.adv_hold_q = 0.1;
+  low.target.aim_leverage = 1.0;
+  auto high = low;
+  high.target.aim_leverage = 1.5;
+  auto slow = low; // same leverage as the first: the same lockstep group
+  slow.target.trade_fraction = 0.5;
+  const std::array<st::NavScenario, 1> one{low.scenario};
+  const std::vector<st::NavReplayConfig> grid{low, high, slow};
+  const auto run = st::replay_nav_grid(in, grid, one);
+  ASSERT_TRUE(run) << run.error().to_string();
+  ASSERT_EQ(run->size(), grid.size());
+  usize clipped = 0;
+  for (usize v = 0; v < grid.size(); ++v) {
+    const auto alone = st::replay_nav_scenarios(in, grid[v], one);
+    ASSERT_TRUE(alone) << alone.error().to_string();
+    ASSERT_EQ((*run)[v].size(), 1U) << v;
+    const auto& a = (*run)[v].front().days;
+    const auto& b = alone->front().days;
+    ASSERT_EQ(a.size(), b.size()) << v;
+    for (usize t = 0; t < a.size(); ++t) {
+      EXPECT_EQ(bits(a[t].pretrade_nav), bits(b[t].pretrade_nav)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].posttrade_nav), bits(b[t].posttrade_nav)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].planned_gross), bits(b[t].planned_gross)) << v << ' ' << t;
+      EXPECT_EQ(a[t].construction.adv_clipped, b[t].construction.adv_clipped) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].construction.adv_clipped_mass),
+                bits(b[t].construction.adv_clipped_mass))
+          << v << ' ' << t;
+      clipped += a[t].construction.adv_clipped;
+    }
+  }
+  EXPECT_GT(clipped, 0U); // the cap binds
+  // The leverages cap differently: the same desired target clipped at L 1.0 and at L 1.5.
+  const auto& lo = (*run)[0].front().days;
+  const auto& hi = (*run)[1].front().days;
+  bool differ = false;
+  for (usize t = 0; t < lo.size() && t < hi.size(); ++t)
+    differ = differ || bits(lo[t].construction.adv_clipped_mass) !=
+                           bits(hi[t].construction.adv_clipped_mass);
+  EXPECT_TRUE(differ);
+}
+
 // A Q no name reaches is the accepted construction byte for byte in every daily and events CSV
 // (the recipe and summary add only the adv-hold keys, with no clip and no breach recorded).
 TEST(AdvHold, LargeQIsByteIdentical) {
