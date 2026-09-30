@@ -468,3 +468,30 @@ def test_add_alpha_on_a_v8_template_replaces_rescreens_and_records_exceptions(tm
     check.pop("keys_in")                                                              # without it: the replaced rows
     with pytest.raises(RC.CycleError, match="IDENTITY MISMATCH"):
         RC.compare_files(RC.Resolver(root), check)
+
+
+# ------------------------------------------------------------------ cache gc on the v8 specs (A2 follow-up, task 2)
+def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monkeypatch):
+    """C-1: the v8 specs name the store base build-equity/fit-work; the fitter, the card and the monitor extend it with
+    <role sha16>-<window id> themselves (the monitor reads every window of its role): --apply deletes none of it."""
+    import research_gc
+    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    root = tmp_path / "root"
+    specs = [V8 / n for n in V8_SPECS]
+    named = {RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}
+    assert "build-equity/fit-work" in named and len(named) == 3                       # + the lo1 and lo3 caches
+    shared = [f"fit-work/{'0123456789abcdef'}-research-window-v2", f"fit-work/{'fedcba9876543210'}-research-window-v1",
+              "mega-candidate-cache-v8-lo1", "mega-candidate-cache-v8-lo3"]
+    stale = ["mega-candidate-cache-v71", "candidate-cache/0123456789abcdef-research-window-v2", "mega-fit-work-v71"]
+    for rel in shared + stale:
+        (root / "build-equity" / rel / ("a" * 64)).mkdir(parents=True)
+        (root / "build-equity" / rel / ("a" * 64) / "x.f64").write_bytes(b"\0" * 2048)
+    (root / "build-equity" / "fit-work" / "0123456789abcdef-research-window-v2" / "context").mkdir()
+    log = []
+    rep = research_gc.gc(specs, root, ["build-equity"], apply=True, log=log.append)
+    assert sorted(rep["keep"]) == sorted(f"build-equity/{r}" for r in shared)
+    assert sorted(rep["deleted"]) == sorted(f"build-equity/{r}" for r in stale)
+    assert all((root / "build-equity" / r / ("a" * 64) / "x.f64").is_file() for r in shared)   # nothing of the stores
+    assert not any((root / "build-equity" / r).exists() for r in stale)
+    assert any(x.startswith("keep  build-equity/fit-work/fedcba9876543210-research-window-v1") and
+               "(store base build-equity/fit-work named by " in x and "v8-b0a-lo1" in x for x in log), log

@@ -6,8 +6,10 @@ Candidates (platform review P-14, plan section 14 disk risk) are only the store 
 (default build-equity): a direct child whose name contains "candidate-cache" or "fit-work" (the v7 per-version stores,
 e.g. mega-candidate-cache-v61-r7), and each child of the derived stores candidate-cache/ and fit-work/ (the v8
 <role sha16>-<window id> roots). A candidate is kept when a listed spec's cycle uses it (its ic.cache / fit.work_dir,
-or the root derived from its role pin when the spec omits them; no --suffix); anything else is listed with its size
-and deleted only with --apply. A candidate holding research state at its top level (a receipt, a run start, a summary,
+or the root derived from its role pin when the spec omits them; no --suffix), and a derived root <base>/<child> is kept
+whole when a listed spec names its store base <base> (C-1: fit.work_dir build-equity/fit-work, which the fitter, the
+card and the monitor extend with <role sha16>-<window id> themselves, the monitor reading every window of its role);
+anything else is listed with its size and deleted only with --apply. A candidate holding research state at its top level (a receipt, a run start, a summary,
 a manifest, a ledger, a daily CSV) is never deleted. Ledgers, receipts, roles, fields dirs and NAV cells are never
 candidates. Sizes add file sizes: hard-linked copies (cp -al seeds) count in full, so the space freed can be smaller.
 """
@@ -73,15 +75,24 @@ def protected(path: Path) -> str | None:
     return next((p.name for p in sorted(path.iterdir()) if p.is_file() and PROTECTED.fullmatch(p.name)), None)
 
 
+def users(rel: str, keep: dict[str, list[str]]) -> str | None:
+    """Why candidate `rel` is kept: a spec uses it, or names its store base (the parent dir of a derived root)."""
+    if rel in keep:
+        return f"referenced by {', '.join(keep[rel])}"
+    base = rel.rsplit("/", 1)[0]
+    return f"store base {base} named by {', '.join(keep[base])}" if base in keep else None
+
+
 def gc(specs: list[Path], root: Path, under: list[str], apply: bool, log=print) -> dict:
     keep = referenced(specs, root)
     report = {"keep": [], "gc": [], "skip": [], "deleted": []}
     for rel in candidates(root, under):
         path = root / rel
         mib = size_of(path) / (1 << 20)
-        if rel in keep:
+        why_kept = users(rel, keep)
+        if why_kept:
             report["keep"].append(rel)
-            log(f"keep  {rel}  {mib:,.1f} MiB  (referenced by {', '.join(keep[rel])})")
+            log(f"keep  {rel}  {mib:,.1f} MiB  ({why_kept})")
             continue
         why = protected(path)
         if why:
