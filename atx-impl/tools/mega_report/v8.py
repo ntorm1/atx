@@ -357,7 +357,9 @@ def _metric(row, ch: dict):
 
 def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None) -> dict:
     """The mechanical criterion of a cell's task: ``checks`` [{metric, per?, op le|lt|ge|gt, factor?}] compare the
-    cell's nav_summ row with its parent's x factor; without checks ``met`` is the configured reading (or None)."""
+    cell's nav_summ row with its parent's x factor; a check without ``metric`` ({text, met}) is a part the report cannot
+    compute (a capacity-curve or marginal-t reading): its ``met`` is the PM's reading, None until set. Without checks
+    ``met`` is the configured reading of the whole criterion (or None)."""
     crit = crit or {}
     checks = crit.get('checks') or []
     if not checks:
@@ -366,6 +368,12 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None) -> di
                 'detail': 'as configured' if isinstance(met, bool) else None}
     parts, res = [], []
     for ch in checks:
+        if 'metric' not in ch:
+            met = ch.get('met') if isinstance(ch.get('met'), bool) else None
+            res.append(met)
+            parts.append(f"{ch.get('text') or 'manual part'}: "
+                         + {True: 'met (PM reading)', False: 'not met (PM reading)', None: 'to be read (config met)'}[met])
+            continue
         if ch.get('op') not in ('le', 'lt', 'ge', 'gt'):
             raise ValueError(f"mechanical criterion: unknown op {ch.get('op')!r}")
         v, pv = _metric(row, ch), _metric(prow, ch)

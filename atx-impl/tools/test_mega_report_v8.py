@@ -351,6 +351,13 @@ def test_criterion_eval_ops_per_and_factor():
     assert V.criterion_eval({'text': 'capacity at 4x', 'met': True}, None, None) == {
         'text': 'capacity at 4x', 'met': True, 'detail': 'as configured'}
     assert V.criterion_eval(None, row, par)['met'] is None
+    mixed = {'checks': [{'metric': 'tau', 'op': 'lt'}, {'text': 'net at 2x not lower', 'met': None}]}
+    ce = V.criterion_eval(mixed, row, par)
+    assert ce['met'] is None and 'net at 2x not lower: to be read (config met)' in ce['detail']
+    mixed['checks'][1]['met'] = True
+    assert V.criterion_eval(mixed, row, par)['met'] is True
+    mixed['checks'][1]['met'] = False
+    assert V.criterion_eval(mixed, row, par)['met'] is False
     with pytest.raises(ValueError, match='unknown op'):
         V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'eq'}]}, row, par)
 

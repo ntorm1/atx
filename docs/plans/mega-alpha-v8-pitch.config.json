@@ -1,0 +1,184 @@
+{
+  "schema": "atx.mega-report-config/v2",
+  "title": "Mega-alpha v8: strategy pitch",
+  "kicker": "atx mega-alpha \u00b7 platform v8 \u00b7 in-sample TRAIN 2020-2023 \u00b7 for a quantitative PM",
+  "root": "C:/atx-wt/pool-2",
+  "train_window": {"label": "TRAIN 2020-2023 (research-window-v2)"},
+  "sessions_per_year": 252,
+  "cell_prefix": "mega-nav-",
+  "scenarios": [
+    {"key": "S2", "id": "modeled-1bn-stale5-v1+swap-fin-v1", "label": "S2 modeled $1bn", "short": "S2", "token": "s2"}
+  ],
+  "primary_scenario": "S2",
+  "verdict_badges": {"rules": []},
+  "v8": {
+    "summ": "build-equity/mega-nav-v8-summ.json",
+    "bundle": "build-equity/mega-nav-v8-bundle-b0c-v8f.json",
+    "base": "B0c",
+    "final": "R-7",
+    "cells": [
+      {"key": "B0a", "label": "B0a v7.1 on lo1, 2020-2023", "n": 38,
+       "dir": "build-equity/mega-nav-v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+       "criterion": {"text": "none (re-base)"}, "verdict": "pending run"},
+      {"key": "B0b", "label": "B0b v7.1 on lo3, 2020-2023", "n": 39, "parent": "B0a",
+       "dir": "build-equity/mega-nav-v8-b0b-lo3-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+       "paired": "build-equity/mega-nav-v8-paired-b0b.json",
+       "criterion": {"text": "none besides dSR > 0 and mechanics (ruling W0-b)", "met": true}, "verdict": "pending run"},
+      {"key": "B0c", "label": "B0c baseline: winner + delisting returns + warm start 60", "n": 40,
+       "dir": "build-equity/mega-nav-v8-b0c",
+       "criterion": {"text": "none (protocol correction; baseline by declaration, rulings W0-b and E-10)"},
+       "verdict": "pending run"},
+      {"key": "R-1", "label": "R-1 composition v8", "n": 41, "parent": "B0c", "dir": "build-equity/mega-nav-v8-r1",
+       "paired": "build-equity/mega-nav-v8-paired-r1.json",
+       "criterion": {"text": "turnover per unit gross not higher",
+                     "checks": [{"metric": "tau_gmv_mean", "per": "mean_gross_leverage_all_rows", "op": "le"}]},
+       "verdict": "pending run"},
+      {"key": "R-2", "label": "R-2 library v8.0", "n": 42, "parent": "R-1", "dir": "build-equity/mega-nav-v8-r2",
+       "paired": "build-equity/mega-nav-v8-paired-r2.json",
+       "criterion": {"text": "turnover not higher", "checks": [{"metric": "tau_gmv_mean", "op": "le"}]},
+       "verdict": "pending run"},
+      {"key": "R-3", "label": "R-3 persistence gain", "n": 43, "parent": "R-2", "dir": "build-equity/mega-nav-v8-r3",
+       "paired": "build-equity/mega-nav-v8-paired-r3.json",
+       "criterion": {"text": "net at 2x not lower; turnover lower",
+                     "checks": [{"text": "S2 net Sharpe at 2x NAV not lower than the parent's (capacity curve)", "met": null},
+                                {"metric": "tau_gmv_mean", "op": "lt"}]},
+       "verdict": "pending run"},
+      {"key": "R-4", "label": "R-4 rank hysteresis", "n": 44, "parent": "R-3", "dir": "build-equity/mega-nav-v8-r4",
+       "paired": "build-equity/mega-nav-v8-paired-r4.json",
+       "criterion": {"text": "turnover at least 15% lower",
+                     "checks": [{"metric": "tau_gmv_mean", "op": "le", "factor": 0.85}]},
+       "verdict": "pending run"},
+      {"key": "R-5", "label": "R-5 ADV holding cap", "n": 45, "parent": "R-4", "dir": "build-equity/mega-nav-v8-r5",
+       "paired": "build-equity/mega-nav-v8-paired-r5.json",
+       "criterion": {"text": "net at 4x higher; net at 1x within one SE",
+                     "checks": [{"text": "S2 net Sharpe at 4x NAV higher than the parent's (capacity curve)", "met": null},
+                                {"text": "S2 net Sharpe at 1x within one Memmel SE of the parent's", "met": null}]},
+       "verdict": "pending run"},
+      {"key": "R-6", "label": "R-6 target tracking spo-v3", "n": 46, "parent": "R-5", "dir": "build-equity/mega-nav-v8-r6",
+       "paired": "build-equity/mega-nav-v8-paired-r6.json",
+       "criterion": {"text": "cost per dollar not higher", "checks": [{"metric": "cost_bps_traded", "op": "le"}]},
+       "verdict": "pending run"},
+      {"key": "R-7", "label": "R-7 library v8.1", "n": 47, "parent": "R-6", "dir": "build-equity/mega-nav-v8-r7",
+       "paired": "build-equity/mega-nav-v8-paired-r7.json",
+       "criterion": {"text": "half of the admitted new members with marginal t above 0",
+                     "checks": [{"text": "at least half of the admitted new members have marginal HAC t > 0 (K6)", "met": null}]},
+       "verdict": "pending run"}
+    ],
+    "mechanics": [
+      {"label": "Gross leverage, mean over all rows", "metric": "mean_gross_leverage_all_rows", "op": "between",
+       "lo": 0.9, "hi": 1.05, "fmt": ".4f", "threshold_fmt": ".2f"},
+      {"label": "Net leverage, mean over all rows", "metric": "mean_net_leverage_all_rows", "op": "abs_le",
+       "value": 0.02, "fmt": "+.4f", "threshold_fmt": ".2f"},
+      {"label": "Daily turnover tau, mean", "metric": "tau_gmv_mean", "op": "le", "value": 0.2, "fmt": ".4f",
+       "threshold_fmt": ".2f"},
+      {"label": "Daily turnover tau, p95", "metric": "tau_gmv_p95", "op": "le", "value": 0.3, "fmt": ".4f",
+       "threshold_fmt": ".2f"}
+    ],
+    "freeze_gate": {
+      "name": "Freeze gate (v8-prereg item 9: S2 net >= 1.0 AND mechanics AND cumulative paired dSR > 0 with bootstrap p < .10 AND cell-count DSR >= .95)",
+      "alpha": 0.1,
+      "unmet_note": "Freeze gate unmet: no frozen book. The lever is OD-3 (the history extension to 2013-2019, read once on the frozen book), not more cells on 2020-2023 (plan task V8-F step 3).",
+      "checks": [
+        {"label": "S2 net Sharpe, TRAIN 2020-2023", "metric": "net_sharpe", "op": "ge", "value": 1.0, "fmt": "+.3f",
+         "threshold_fmt": ".2f"},
+        {"label": "Mechanics: gross leverage, mean over all rows", "metric": "mean_gross_leverage_all_rows",
+         "op": "between", "lo": 0.9, "hi": 1.05, "fmt": ".4f", "threshold_fmt": ".2f"},
+        {"label": "Mechanics: net leverage, mean over all rows", "metric": "mean_net_leverage_all_rows", "op": "abs_le",
+         "value": 0.02, "fmt": "+.4f", "threshold_fmt": ".2f"},
+        {"label": "Mechanics: daily turnover tau, mean", "metric": "tau_gmv_mean", "op": "le", "value": 0.2,
+         "fmt": ".4f", "threshold_fmt": ".2f"},
+        {"label": "Mechanics: daily turnover tau, p95", "metric": "tau_gmv_p95", "op": "le", "value": 0.3,
+         "fmt": ".4f", "threshold_fmt": ".2f"},
+        {"builtin": "paired_dsr"},
+        {"builtin": "paired_p"},
+        {"label": "Deflated Sharpe, cell count (N = the ledger count, OD-4; never the effective-N figure)",
+         "metric": "deflated_ledger.dsr", "op": "ge", "value": 0.95, "fmt": ".3f", "threshold_fmt": ".2f"}
+      ]
+    },
+    "diagnostics": "build-equity/mega-diagnostics-v8-b0c/diagnostics-v8.json",
+    "member_horizon": {
+      "card_index": "build-equity/mega-cards-v8-r7/index.json",
+      "admission": "build-equity/mega-weights-v8-r7-ew/admission.json"
+    },
+    "trial_ledger": "build-equity/trials.jsonl",
+    "re_screens": 8,
+    "budget": {"n": 51, "admission": 15},
+    "prereg": ".superpowers/sdd/platform-v8-20260929/v8-prereg.md",
+    "literature": {"path": ".superpowers/sdd/platform-v8-20260929/reports/Equity long short alpha v8.md",
+                   "heading": "Where the new notes contradict or update v6 and v7"},
+    "od1_notes": [
+      "2023 enters TRAIN partly selected: TRAIN statistics on 2023 flatter the incumbent by up to about .08 in a paired difference [est].",
+      "2024 stays hidden but is not pristine. Only 2025 and later has never been read.",
+      "Four years cut every Sharpe standard error by 13% against three years; a true +.08 step has t .80, so v8 tests bundles and one cumulative comparison.",
+      "The standing rule never to read a per-candidate validation statistic no longer covers 2023. It covers 2024 and later."
+    ]
+  },
+  "narrative": {
+    "summary": {
+      "paragraphs": [
+        "**Thesis.** A dollar- and price-risk-neutral US equity long/short book, costed at $1bn with square-root impact and tiered borrow (scenario S2). v8 re-based the protocol on the four-year TRAIN window 2020-2023, corrected the baseline for delisting returns and the flat start (B0c), and tested a pre-registered, ordered list of construction cells, each against the last accepted cell.",
+        "**Result on TRAIN.** The last accepted cell (V8-F) earns S2 net Sharpe {a:v8_bundle.final_row.net_sharpe|+.3f} at all-rows gross leverage {a:v8_bundle.final_row.mean_gross_leverage_all_rows|.3f} and daily turnover {a:v8_bundle.final_row.tau_gmv_mean|.4f} of GMV. Against B0c the cumulative paired dSR is {a:v8_bundle.paired.dsr|+.3f} (Memmel SE {a:v8_bundle.paired.se|.3f}, one-sided bootstrap p {a:v8_bundle.paired.p1|.4f}); cell-count DSR {a:v8_bundle.final_row.deflated_ledger.dsr|.3f} at N {a:v8_ledger.n|d}. Freeze gate met: {a:v8_bundle.freeze}."
+      ],
+      "check": [
+        "The freeze gate reads the cell-count DSR (N = the ledger count, OD-4), never the effective-N figure.",
+        "Single cells are sign-level evidence; only the cumulative test V8-F vs B0c has power (plan 12.2).",
+        "Every figure is TRAIN 2020-2023; no statistic dated 2024-01-01 or later exists in this report."
+      ]
+    },
+    "window": {
+      "paragraphs": [
+        "Every number in this pitch is TRAIN 2020-2023. The report refuses any input whose path or content is dated on or after the seal, and every file it read is listed with its SHA-256 in the appendix."
+      ]
+    },
+    "cells": {
+      "paragraphs": [
+        "The cells run in the pre-registered order (v8-prereg item 11). A cell is accepted when its paired S2 net dSR against its parent is above 0 AND mechanics pass AND the mechanical criterion named in its task holds (item 5); a rejected cell is not retried with other parameters. The year table shows whether a result rests on one year; 2023 is partly selected (OD-1)."
+      ]
+    },
+    "diagnostics": {
+      "paragraphs": [
+        "The diagnostics ran on B0c and cost no trial. They, and the member columns ic_theta, f_theta and marginal IC, gate nothing and select nothing (v8-prereg item 8): they explain the book, they do not choose it."
+      ]
+    },
+    "literature": {
+      "paragraphs": [
+        "The v8 literature review reversed or updated several v6 and v7 recommendations. The table lists each case with its source; the figures are from the literature, not measurements on the book."
+      ]
+    }
+  },
+  "callouts": {
+    "planning": {
+      "title": "Planning value (for sizing and expectations; an estimate, not a forecast)",
+      "kind": "note",
+      "items": [
+        "Plan on a live net Sharpe .7 to 1.0 [est] against the TRAIN figure {a:v8_bundle.final_row.net_sharpe|+.3f} (S2, 2020-2023).",
+        "Why lower than TRAIN: selection over N = {a:v8_ledger.n|d} ledgered construction trials, a 2023 that was read twice before it entered TRAIN (OD-1), and costs and borrow the model does not see (diagnostic G-3a).",
+        "No out-of-sample statistic exists for v8; 2024 and later stays sealed."
+      ]
+    },
+    "caveats": {
+      "title": "Honest caveats",
+      "kind": "caveat",
+      "items": [
+        "**2023 is partly selected.** It was read twice at book level as validation before it entered TRAIN; TRAIN statistics on 2023 flatter the incumbent by up to about .08 in a paired difference [est].",
+        "**Power.** At four years a true +.08 step has t about .80; each single cell is sign-level evidence.",
+        "**Trials.** TRAIN construction cells N = {a:v8_ledger.n|d}; admission trials this sprint {a:v8_ledger.k|d} plus {a:v8_ledger.re_screens|d} re-screens (ruling R2-e).",
+        "**If the freeze gate is unmet** the lever is OD-3 (history 2013-2019 read once on the frozen book), not more cells on 2020-2023."
+      ]
+    }
+  },
+  "layout": [
+    {"id": "summary", "num": "0", "title": "Executive summary", "blocks": [
+      {"type": "callout", "key": "planning"}, "v8_bundle", {"type": "callout", "key": "caveats"}]},
+    {"id": "window", "num": "1", "title": "Window, protocol and trial accounting", "blocks": [
+      "v8_od1", "v8_trial_accounting"]},
+    {"id": "cells", "num": "2", "title": "The v8 cells", "blocks": [
+      "v8_ladder", {"type": "h3", "text": "Year tables, TRAIN 2020-2023"}, "v8_year_table"]},
+    {"id": "diagnostics", "num": "3", "title": "Diagnostics and traded-horizon columns (zero trials)", "blocks": [
+      "v8_diagnostics", {"type": "h3", "text": "Member columns of the final library (report only, gates nothing)"},
+      "v8_member_horizon"]},
+    {"id": "literature", "num": "4", "title": "Contradictions with the v6 and v7 literature", "blocks": [
+      "v8_contradictions"]},
+    {"id": "appendix", "num": "5", "title": "Appendix: input files", "blocks": ["t_files"]}
+  ]
+}
