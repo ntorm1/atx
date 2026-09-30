@@ -51,7 +51,7 @@ ADDS lines / JSON keys; without them the output is byte-identical to the v6.1 na
                          (admission|composition|construction|universe|data; default construction; --ledger-count per
                          line, --ledger-note), with its pins, TRAIN window, daily CSV path + SHA-256 and S2 net SR.
                          Idempotent on (kind, daily series SHA-256): an identity re-run adds no trial; a series with a
-                         session >= 2023-01-01 is refused.
+                         session outside the research window's TRAIN (research_window.py) is refused.
   --ledger-n PATH        print the Appendix A block: trials by kind and window from that ledger (no dirs needed).
   --effective-n SOURCE   effective-N DSR beside the cell-count DSR and the Lo null: ONC clusters (Lopez de Prado &
                          Lewis 2019) of the trial series of SOURCE = "dirs" (the listed dirs) or a ledger PATH (its
@@ -62,6 +62,30 @@ ADDS lines / JSON keys; without them the output is byte-identical to the v6.1 na
                          --pbo-max-splits K (> 0) asks for a seeded subsample (then flagged); --pbo-json OUT.
   --psr                  PSR and MinTRL (Bailey & Lopez de Prado 2012) of every listed dir against --psr-benchmarks
                          (annualized SR*, default 0,0.5) at --psr-alpha (.05).
+
+Validation kit (platform v8 V-1). Every option below is opt-in; without them the output is byte-identical to v7. The
+research window (TRAIN and the seal) is read from atx-engine/tools/research_window.py; any NAV daily CSV with a session
+at or after the seal is refused before a statistic is formed.
+  --protocol v8          the v8 pre-registration (item 4): bootstrap seed 20260929 and 4,999 resamples (block 21) unless
+                         --seed / --draws are given; a year table per dir; ledger lines carry origin (--origin required
+                         with --ledger), window_id and the hash chain; --ledger-n adds the v8 Appendix A block.
+  --origin CLASS         prior | grid | mined (contract K5), recorded in every appended ledger line.
+  --rerun-of ID --rerun-basis window|blind|returns
+                         the appended line re-runs trial ID: window = a ledgered cell re-run on a longer window (no new
+                         trial); blind / returns = the defect rule (v8-prereg item 7): a re-run decided without seeing
+                         returns replaces the invalid cell, one decided because the returns looked wrong is a new trial.
+  --ledger-defect REASON the appended line is an invalid cell: logged and excluded from N.
+  protocol lines         (W0-3; written by `research_cycle.py ledger-protocol`, lane A) kind protocol, no cell, count 0:
+                         every reader here skips them when it lists cells or counts N, and the hash chain covers them.
+  --year-table           per dir and calendar year: return rows, compounded net return, net Sharpe, volatility, mean
+                         daily GMV turnover (the tau_t sessions) and cost per traded dollar (bps).
+  --dsr-ledger PATH      DSR per dir with N = the ledger's construction trial count (+1 when the dir is not in it) and
+                         V[SR] from the construction cells ledgered on the current window (OD-4; v8-prereg item 3); the
+                         legacy variance (lines without a window_id) is reported beside it and gates nothing.
+  --bundle BASE FINAL    the cumulative paired test FINAL vs BASE (e.g. V8-F vs B0c): paired dSR(net) with Memmel SE,
+                         CBB percentile CI and the studentized CBB (Ledoit-Wolf) two-sided and one-sided p, a per-year
+                         dSR table and the verdict dSR > 0 and one-sided p < --bundle-alpha (.10, the freeze gate);
+                         --bundle-json OUT writes it.
 """
 from __future__ import annotations
 
@@ -81,6 +105,9 @@ import backtest_integrity as BI
 
 ANNUAL = 252
 DEFAULT_DRAWS, DEFAULT_BLOCK, DEFAULT_SEED = 2000, 21, 20260927
+V8_DRAWS, V8_SEED = 4999, 20260929  # v8-prereg item 4 (block stays DEFAULT_BLOCK = 21)
+PROTOCOLS = ("v7", "v8")
+BUNDLE_ALPHA = 0.10  # v8-prereg item 9: the freeze gate's cumulative paired test, bootstrap p < .10
 DEFAULT_DSR_N = 10  # R6': N = 10 construction cells
 EULER_GAMMA = 0.5772156649015329
 LEVERAGE_GATE_BASIS = ("all_rows: the R6' mechanics gate (ruled D1/R6') reads mean_gross_leverage_all_rows / "
@@ -138,11 +165,21 @@ def load_daily(d: Path, scenario: str) -> dict:
     return load_daily_csv(Path(d) / f"daily_{scenario}.csv")
 
 
-def load_daily_csv(path: Path) -> dict:
-    """``load_daily`` of an explicit CSV path (the trial ledger records the path)."""
+def load_daily_csv(path: Path, *, allow_sealed: bool = False) -> dict:
+    """``load_daily`` of an explicit CSV path (the trial ledger records the path).
+
+    The session column is checked against the research seal before any other column is parsed: a session at or after
+    the seal refuses the file (SystemExit). Only holdout_gate.py, the owner-ruled reader of the hidden blocks, passes
+    ``allow_sealed``."""
     with Path(path).open(newline="", encoding="utf-8") as stream:
         rows = list(csv.reader(stream))
     header, body = rows[0], rows[1:]
+    if "session_ns" in header and not allow_sealed:
+        k = header.index("session_ns")
+        try:
+            BI.refuse_sealed([int(float(r[k])) for r in body], f"nav_summ: {path}")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     out: dict = {}
     for n, name in enumerate(header):
         col = [r[n] for r in body]
@@ -266,8 +303,11 @@ def bartlett_psi(y: np.ndarray, lag: int) -> np.ndarray:
 
 
 def paired_stats(a: np.ndarray, b: np.ndarray, draws: int = DEFAULT_DRAWS, block: int = DEFAULT_BLOCK,
-                 seed: int = DEFAULT_SEED) -> dict:
-    """Paired dSR(net) = SR(a) - SR(b) on aligned daily nets: Memmel SE, CBB percentile CI, LW studentized CI."""
+                 seed: int = DEFAULT_SEED, one_sided: bool = False) -> dict:
+    """Paired dSR(net) = SR(a) - SR(b) on aligned daily nets: Memmel SE, CBB percentile CI, LW studentized CI.
+
+    ``one_sided`` adds lw["p_one_sided"] (H0: dSR <= 0) from the same resamples: the share of signed studentized draws
+    (ds - d0) / ss at or above d0 / s0, (k + 1) / (valid + 1); without it the result is unchanged."""
     a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
     t = a.size
     if t != b.size or t < 3:
@@ -307,6 +347,11 @@ def paired_stats(a: np.ndarray, b: np.ndarray, draws: int = DEFAULT_DRAWS, block
         c = float(np.quantile(tstar[good], 0.95))
         lw["ci95"] = [(d0 - c * s0) * math.sqrt(ANNUAL), (d0 + c * s0) * math.sqrt(ANNUAL)]
         lw["p_value"] = (int((tstar[good] >= abs(d0) / s0).sum()) + 1) / (int(good.sum()) + 1)
+    if one_sided:
+        lw["p_one_sided"] = None
+        if good.any() and s0 > 0 and math.isfinite(d0):
+            signed = (ds[good] - d0) / ss[good]
+            lw["p_one_sided"] = (int((signed >= d0 / s0).sum()) + 1) / (int(good.sum()) + 1)
     return {"sessions": t, "sr": sr_a, "sr_reference": sr_b, "dsr": dsr, "rho": rho, "memmel_se": se,
             "t": dsr / se if se > 0 else None, "cbb_ci95": [float(lo), float(hi)], "cbb_valid_draws": int(ok.sum()),
             "lw": lw, "draws": draws, "block": block, "seed": seed}
@@ -461,6 +506,114 @@ def run_provenance(argv: list[str], warnings: list[str]) -> dict:
             "git_head": git_head(script.parent), "warnings": list(warnings)}
 
 
+# ------------------------------------------------------------------ validation kit (platform v8 V-1)
+def finite_or_none(x):
+    return float(x) if x is not None and math.isfinite(x) else None
+
+
+def year_table(daily: dict) -> list[dict]:
+    """Per calendar year (UTC date of session_ns) of the return rows: return rows, compounded net return, net Sharpe
+    (mean / sd ddof 1 x sqrt 252), annualized volatility, mean daily GMV turnover over the tau_t sessions of the year
+    (``turnover_rows``) and cost per traded dollar in bps over the year's executed sessions."""
+    ret, keep = return_mask(daily), turnover_rows(daily)
+    executed = daily["executed"] == 1
+    years = np.array([BI.session_date(int(s)).year for s in daily["session_ns"]])
+    rows = []
+    for y in sorted(set(years[ret].tolist())):
+        in_y = years == y
+        x = daily["net_return"][ret & in_y]
+        tau = daily["one_way_turnover_gmv"][keep & in_y]
+        traded = float(daily["traded_dollars"][executed & in_y].sum())
+        cost = float(daily["trade_cost_dollars"][executed & in_y].sum())
+        sd = float(x.std(ddof=1)) if x.size > 1 else 0.0
+        rows.append({"year": int(y), "return_rows": int(x.size), "net_return": float(np.prod(1.0 + x) - 1.0),
+                     "net_sharpe": float(x.mean()) / sd * math.sqrt(ANNUAL) if sd > 0 else None,
+                     "ann_vol": sd * math.sqrt(ANNUAL) if x.size > 1 else None,
+                     "tau_gmv_mean": float(tau.mean()) if tau.size else None,
+                     "cost_bps_traded": 1e4 * cost / traded if traded > 0 else None})
+    return rows
+
+
+def print_year_table(rows: list[dict], indent: str = "   ") -> None:
+    print(f"{indent}year table (return rows, compounded net return, net Sharpe, volatility, tau_gmv mean, cost bps "
+          "per traded dollar):")
+    for y in rows:
+        print(f"{indent}  {y['year']} rows {y['return_rows']:4d} net {fmt(y['net_return'], '+.4f')} sharpe "
+              f"{fmt(y['net_sharpe'], '+.3f')} vol {fmt(y['ann_vol'], '.4f')} tau {fmt(y['tau_gmv_mean'], '.4f')} "
+              f"cost_bps {fmt(y['cost_bps_traded'], '.2f')}")
+
+
+def ledger_dsr(moments: dict, records: list[dict], in_ledger: bool, research_window_id: str) -> dict:
+    """OD-4 DSR of one dir: N = the ledger's construction trials (+1 when the dir is not in the ledger), V[SR] from the
+    construction cells ledgered on ``research_window_id``; the legacy variance's DSR beside it (gates nothing)."""
+    v = BI.dsr_variance(records, research_window_id)
+    n = v["n"] + (0 if in_ledger else 1)
+    row = dict(v, n=n, n_rule="construction trials of the ledger by the defect rule" +
+               ("" if in_ledger else " + 1 (this cell, not yet ledgered)"),
+               dsr=None, sr0_daily=None, sr0_annual=None, legacy_dsr=None, legacy_sr0_annual=None)
+    sr, t = moments["sr_daily"], moments["sessions"]
+    if sr is None or moments["skew"] is None or t < 2 or n < 2:
+        return row
+    for key, variance in (("", v["variance_sr"]), ("legacy_", v["legacy_variance_sr"])):
+        if variance is None:
+            continue
+        sr0 = expected_max_sr(variance, n)
+        row[f"{key}sr0_annual"] = sr0 * math.sqrt(ANNUAL)
+        row[f"{key}dsr"] = deflated_sharpe(sr, t, moments["skew"], moments["kurtosis"], sr0)
+        if not key:
+            row["sr0_daily"] = sr0
+    return row
+
+
+def print_ledger_dsr(q: dict) -> None:
+    print(f"   ledger DSR (N={q['n']}, {q['window_id']}): DSR {fmt(q['dsr'], '.4f')} vs SR0 "
+          f"{fmt(q['sr0_annual'], '.3f')} ann | V[SR] from {q['cells']} cells ledgered on {q['window_id']} "
+          f"({fmt(q['variance_sr'], '.3e')}) | beside: legacy variance ({q['legacy_cells']} cells) DSR "
+          f"{fmt(q['legacy_dsr'], '.4f')} vs SR0 {fmt(q['legacy_sr0_annual'], '.3f')} ann")
+
+
+def bundle(base: Path, final: Path, args) -> dict:
+    """The cumulative paired test FINAL vs BASE (v8-prereg items 4 and 9): paired dSR with the one-sided studentized
+    bootstrap p, a per-year dSR table, both cells' year tables and the verdict dSR > 0 and p_one_sided < alpha."""
+    nets, tables, scenarios = {}, {}, {}
+    for tag, d in (("base", base), ("final", final)):
+        scen = scenario_of(load_summary(d), args.scenario)["scenario"]
+        daily = load_daily(d, scen)
+        nets[tag], tables[tag], scenarios[tag] = net_series(daily), year_table(daily), scen
+    a, b = align(nets["final"], nets["base"])
+    paired = paired_stats(a, b, args.draws, args.block, args.seed, one_sided=True)
+    common = sorted(set(nets["final"]) & set(nets["base"]))
+    years = []
+    for y in sorted({BI.session_date(s).year for s in common}):
+        sessions = [s for s in common if BI.session_date(s).year == y]
+        sr_f = finite_or_none(sharpe(np.array([nets["final"][s] for s in sessions])))
+        sr_b = finite_or_none(sharpe(np.array([nets["base"][s] for s in sessions])))
+        years.append({"year": y, "sessions": len(sessions), "sr_final": sr_f, "sr_base": sr_b,
+                      "dsr": sr_f - sr_b if sr_f is not None and sr_b is not None else None})
+    p1 = paired["lw"].get("p_one_sided")
+    positive = bool(math.isfinite(paired["dsr"]) and paired["dsr"] > 0)
+    verdict = {"dsr_positive": positive, "p_one_sided": p1, "alpha": args.bundle_alpha,
+               "pass": bool(positive and p1 is not None and p1 < args.bundle_alpha),
+               "rule": "cumulative paired S2 net dSR(FINAL - BASE) > 0 and studentized circular-block-bootstrap "
+                       "one-sided p < alpha (v8-prereg item 9: this part of the freeze gate only)"}
+    return {"base": str(base), "final": str(final), "scenarios": scenarios, "paired": paired, "years": years,
+            "year_table": tables, "verdict": verdict}
+
+
+def print_bundle(res: dict) -> None:
+    p, lw, v = res["paired"], res["paired"]["lw"], res["verdict"]
+    print(f"== bundle {res['final']} vs {res['base']} [{res['scenarios']['final']}]: dSR(net) {p['dsr']:+.3f} = SR "
+          f"{p['sr']:+.3f} - SR {p['sr_reference']:+.3f} | rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE "
+          f"{p['memmel_se']:.3f} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
+          f"[{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p two-sided {fmt(lw['p_value'], '.4f')} "
+          f"one-sided {fmt(lw['p_one_sided'], '.4f')} ({p['draws']} draws, block {p['block']}, seed {p['seed']})")
+    print(f"   verdict {'PASS' if v['pass'] else 'FAIL'}: dSR > 0 {v['dsr_positive']}; one-sided p "
+          f"{fmt(v['p_one_sided'], '.4f')} < {v['alpha']}")
+    for y in res["years"]:
+        print(f"   {y['year']}: dSR {fmt(y['dsr'], '+.3f')} (SR final {fmt(y['sr_final'], '+.3f')}, SR base "
+              f"{fmt(y['sr_base'], '+.3f')}, {y['sessions']} sessions)")
+
+
 # ------------------------------------------------------------------ driver
 def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> tuple[dict, dict]:
     """The dir's result row and its net series (session_ns -> net return over the return rows)."""
@@ -487,6 +640,8 @@ def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> tuple[
     if ref_nets is not None:
         a, b = align(nets, ref_nets)
         out["paired"] = paired_stats(a, b, args.draws, args.block, args.seed)
+    if getattr(args, "year_table", False):
+        out["year_table"] = year_table(daily)
     return out, nets
 
 
@@ -576,10 +731,26 @@ def print_effective(eff: dict, source: str) -> None:
         print(f"   cluster {k}: {len(cl)} series, IVP SR {fmt(ann, '+.3f')} ann: {', '.join(cl)}")
 
 
+def ledger_fields(args) -> dict:
+    """The v8 ledger-line fields the options ask for (empty without them: the line keeps the v7 layout)."""
+    out = {}
+    if getattr(args, "origin", None):
+        out["origin"] = args.origin
+    if getattr(args, "protocol", "v7") == "v8":
+        out["research_window_id"] = BI.window_id()
+    if getattr(args, "rerun_of", None):
+        out.update(rerun_of=args.rerun_of, rerun_basis=args.rerun_basis)
+    if getattr(args, "ledger_defect", None):
+        out["defect"] = args.ledger_defect
+    return out
+
+
 def integrity(args, argv, results, analysed) -> None:
-    """--ledger / --psr / --effective-n / --pbo / --ledger-n, after the legacy per-dir analysis."""
+    """--ledger / --psr / --effective-n / --pbo / --ledger-n, after the legacy per-dir analysis (v8: the v8 ledger
+    fields and chain, --dsr-ledger and the v8 Appendix A block). Every ledger reader skips protocol lines."""
     nets_by = {d: nets for d, (_, nets) in zip(args.dirs, analysed)}
-    if args.ledger:
+    v8 = getattr(args, "protocol", "v7") == "v8"
+    if args.ledger and args.dirs:
         run = {k: v for k, v in run_provenance(argv, []).items() if k in ("script_sha256", "git_head")}
         recs = []
         for d, r in zip(args.dirs, results):
@@ -587,10 +758,13 @@ def integrity(args, argv, results, analysed) -> None:
             try:
                 recs.append(BI.ledger_record(args.ledger_kind, d, Path(d) / "summary.json", daily, r["scenario"],
                                              nets_by[d], r["net_sharpe"], count=args.ledger_count,
-                                             note=args.ledger_note, run=run))
+                                             note=args.ledger_note, run=run, **ledger_fields(args)))
             except ValueError as exc:
                 raise SystemExit(f"nav_summ: {exc}") from exc
-        added, skipped = BI.ledger_append(Path(args.ledger), recs)
+        try:
+            added, skipped = BI.ledger_append(Path(args.ledger), recs, chain=v8)
+        except ValueError as exc:
+            raise SystemExit(f"nav_summ: {exc}") from exc
         added_ids = {a["trial_id"] for a in added}
         for rec, r in zip(recs, results):
             r["ledger"] = {"path": args.ledger, "trial_id": rec["trial_id"], "kind": rec["kind"],
@@ -636,9 +810,22 @@ def integrity(args, argv, results, analysed) -> None:
                        common_sessions=[BI.session_date(common[0]).isoformat(), BI.session_date(common[-1]).isoformat()],
                        nav_summ_run=run_provenance(argv, []))
             Path(args.pbo_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if getattr(args, "dsr_ledger", None):
+        records = BI.ledger_read(Path(args.dsr_ledger))
+        present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
+        wid = BI.window_id()
+        for d, r in zip(args.dirs, results):
+            series_sha = BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv")
+            r["deflated_ledger"] = ledger_dsr(r["net_moments"], records,
+                                              BI.trial_id("construction", series_sha) in present, wid)
+            print(f"== ledger DSR {d}")
+            print_ledger_dsr(r["deflated_ledger"])
     if args.ledger_n:
-        for line in BI.appendix_a(BI.ledger_read(Path(args.ledger_n)), args.ledger_n):
+        records = BI.ledger_read(Path(args.ledger_n))
+        for line in BI.appendix_a(records, args.ledger_n):
             print(line)
+        if v8:
+            print(BI.appendix_a_v8(records))
 
 
 def float_list(text: str) -> list[float]:
@@ -651,9 +838,9 @@ def main(argv=None) -> int:
     ap.add_argument("--weights", action="append", default=[], help="composition_weights.json (or its dir); repeatable")
     ap.add_argument("--reference", default=None, help="reference NAV dir for the paired dSR(net)")
     ap.add_argument("--scenario", default=None, help="scenario name (default: each summary's primary)")
-    ap.add_argument("--draws", type=int, default=DEFAULT_DRAWS)
+    ap.add_argument("--draws", type=int, default=None, help=f"bootstrap resamples ({DEFAULT_DRAWS}; v8: {V8_DRAWS})")
     ap.add_argument("--block", type=int, default=DEFAULT_BLOCK)
-    ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ap.add_argument("--seed", type=int, default=None, help=f"bootstrap seed ({DEFAULT_SEED}; v8: {V8_SEED})")
     ap.add_argument("--dsr-n", type=int, default=DEFAULT_DSR_N,
                     help="trials N of the deflated Sharpe ratio (R6': 10; >= 2); V[SR_n] comes from the dirs given")
     ap.add_argument("--json", default=None, help="also write the per-dir results as JSON")
@@ -672,16 +859,46 @@ def main(argv=None) -> int:
     ap.add_argument("--psr", action="store_true", help="PSR and MinTRL of every listed dir")
     ap.add_argument("--psr-benchmarks", type=float_list, default=[0.0, 0.5], help="annualized SR* list (0,0.5)")
     ap.add_argument("--psr-alpha", type=float, default=0.05)
+    ap.add_argument("--protocol", choices=PROTOCOLS, default="v7",
+                    help="v8: pre-registered bootstrap (seed 20260929, 4,999 draws), year tables, origin + window_id + "
+                         "hash chain in ledger lines, v8 Appendix A block")
+    ap.add_argument("--origin", choices=BI.ORIGINS, default=None, help="origin class of the ledgered cells (K5)")
+    ap.add_argument("--rerun-of", default=None, help="the appended line re-runs this trial_id")
+    ap.add_argument("--rerun-basis", choices=BI.RERUN_BASES, default=None,
+                    help="window: longer window, no new trial; blind / returns: the defect rule (v8-prereg item 7)")
+    ap.add_argument("--ledger-defect", default=None, help="REASON: the appended line is an invalid cell (N excludes it)")
+    ap.add_argument("--year-table", action="store_true", help="per-year table of every listed dir")
+    ap.add_argument("--dsr-ledger", default=None, help="DSR with N and V[SR] from this ledger (OD-4)")
+    ap.add_argument("--bundle", nargs=2, default=None, metavar=("BASE", "FINAL"),
+                    help="cumulative paired test FINAL vs BASE with its verdict")
+    ap.add_argument("--bundle-alpha", type=float, default=BUNDLE_ALPHA)
+    ap.add_argument("--bundle-json", default=None, help="write the --bundle result as JSON")
     argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
+    v8 = args.protocol == "v8"
+    args.draws = (V8_DRAWS if v8 else DEFAULT_DRAWS) if args.draws is None else args.draws
+    args.seed = (V8_SEED if v8 else DEFAULT_SEED) if args.seed is None else args.seed
+    args.year_table = args.year_table or v8
     if args.dsr_n < 2:
         ap.error("--dsr-n must be >= 2")
-    if not args.dirs and not args.ledger_n and not args.pbo:
+    if not args.dirs and not args.ledger_n and not args.pbo and not args.bundle:
         ap.error("give NAV dirs (or --ledger-n LEDGER / --pbo CELL ...)")
     if args.ledger_count < 1 or args.onc_init < 1 or not 0 < args.psr_alpha < 0.5:
         ap.error("--ledger-count and --onc-init must be >= 1; --psr-alpha in (0, 0.5)")
     if (args.ledger or args.psr or args.effective_n == "dirs") and not args.dirs:
         ap.error("--ledger / --psr / --effective-n dirs need NAV dirs")
+    if (args.rerun_of is None) != (args.rerun_basis is None):
+        ap.error("--rerun-of and --rerun-basis go together")
+    if (args.origin or args.rerun_of or args.ledger_defect) and not args.ledger:
+        ap.error("--origin / --rerun-of / --ledger-defect need --ledger")
+    if v8 and args.ledger and args.dirs and not args.origin:
+        ap.error("--protocol v8 records the origin class in every ledger line: give --origin prior|grid|mined (K5)")
+    if args.dsr_ledger and not args.dirs:
+        ap.error("--dsr-ledger needs NAV dirs")
+    if args.bundle_json and not args.bundle:
+        ap.error("--bundle-json needs --bundle BASE FINAL")
+    if not 0 < args.bundle_alpha < 0.5:
+        ap.error("--bundle-alpha in (0, 0.5)")
     weights = load_weights(args.weights)
     ref_nets = None
     if args.reference:
@@ -700,12 +917,20 @@ def main(argv=None) -> int:
     for d, r in zip(args.dirs, results):
         print_scenarios(load_summary(Path(d)))
         print_analysis(r, args.reference)
+        if "year_table" in r:
+            print_year_table(r["year_table"])
     integrity(args, argv, results, analysed)
     if args.json:
         run = run_provenance(argv, warnings)
         for r in results:
             r["nav_summ_run"] = run
         Path(args.json).write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.bundle:
+        res = bundle(Path(args.bundle[0]), Path(args.bundle[1]), args)
+        print_bundle(res)
+        if args.bundle_json:
+            doc = dict(res, protocol=args.protocol, nav_summ_run=run_provenance(argv, []))
+            Path(args.bundle_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
 

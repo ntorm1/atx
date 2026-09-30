@@ -201,12 +201,23 @@ def test_ledger_append_is_idempotent_and_counts_by_kind_and_window(tmp_path):
 
 
 def test_ledger_refuses_post_train_sessions_and_changed_series(tmp_path):
-    long = write_nav(tmp_path / "long", list(np.full(1200, 0.001)))   # 2020-01-02 + 1201 days -> 2023
-    daily = NS.load_daily(long, SCEN)
-    with pytest.raises(ValueError, match="only TRAIN"):
-        BI.ledger_record("construction", str(long), long / "summary.json", long / f"daily_{SCEN}.csv", SCEN,
-                         NS.net_series(daily), 1.0)
+    # TRAIN comes from research_window.py (v8 V-1). The window's TRAIN end can equal its seal, and nav_summ's CSV
+    # reader refuses sealed sessions before any statistic, so the crossing series is built as a nets map here.
+    rw = BI.research_window()
     d = make_cells(tmp_path, k=1)[0]
+    paths = (Path(d) / "summary.json", Path(d) / f"daily_{SCEN}.csv", SCEN)
+    for nets in ({rw.TRAIN_END_NS - DAY: 0.001, rw.TRAIN_END_NS: 0.001},        # reaches the TRAIN end
+                 {rw.TRAIN_BEGIN_NS - DAY: 0.001, rw.TRAIN_BEGIN_NS: 0.001}):   # starts before TRAIN
+        with pytest.raises(ValueError, match="only TRAIN"):
+            BI.ledger_record("construction", d, *paths, nets, 1.0)
+    w = BI.window_of([rw.TRAIN_BEGIN_NS, rw.TRAIN_END_NS - DAY])
+    assert w["label"] == "TRAIN" and w["sessions"] == 2
+    three_years = write_nav(tmp_path / "long", list(np.full(1090, 0.001)))   # 2020-01-02 + 1091 days: ends 2022
+    rec = BI.ledger_record("construction", str(three_years), three_years / "summary.json",
+                           three_years / f"daily_{SCEN}.csv", SCEN, NS.net_series(NS.load_daily(three_years, SCEN)),
+                           1.0)
+    # a series ending before the TRAIN end stays valid (the legacy 3-year cells)
+    assert rec["window"]["last_session"] < BI.session_date(rw.TRAIN_END_NS).isoformat()
     ledger = tmp_path / "t.jsonl"
     rec = BI.ledger_record("construction", d, Path(d) / "summary.json", Path(d) / f"daily_{SCEN}.csv", SCEN,
                            NS.net_series(NS.load_daily(Path(d), SCEN)), 1.0)
