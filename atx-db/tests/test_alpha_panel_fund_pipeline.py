@@ -69,3 +69,21 @@ def test_process_batch_end_to_end(monkeypatch, tmp_path):
     assert cat["epspx_ttm"] == 0.5 and cat["re"] == 300.0 and cat["tstk"] == 0.0
     assert cat["accession"] == ev["accession"] and "tstk" in cat["catalog_zero_filled"]
     assert fu._batch_done(cf_dir / "batch-0000.parquet", fu.parts_dir() / "batch-0000.json")
+
+
+def test_prepare_step_cache(tmp_path):
+    """A prepare step whose output exists with the same SQL fingerprint is skipped (guard stops resume prepare);
+    a changed query recomputes."""
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        dest = tmp_path / "x.parquet"
+        r: dict = {}
+        assert fu.cached_copy(con, "SELECT 1 AS a UNION ALL SELECT 2", dest, r, "x") == 2 and r["cached"] == []
+        r2: dict = {}
+        assert fu.cached_copy(con, "SELECT 1 AS a UNION ALL SELECT 2", dest, r2, "x") == 2 and r2["cached"] == ["x"]
+        r3: dict = {}
+        assert fu.cached_copy(con, "SELECT 5 AS a", dest, r3, "x") == 1 and r3["cached"] == []
+    finally:
+        con.close()

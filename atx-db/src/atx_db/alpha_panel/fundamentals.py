@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import datetime as dt
 import math
 import os
@@ -369,6 +370,32 @@ def label_lines_sql(pre_glob: str, num_glob: str) -> str:
     """
 
 
+def _fingerprint(sql: str) -> str:
+    """SHA-256 of a step's SQL plus the size and mtime of every FSDS input file (the SQL names its globs)."""
+    h = hashlib.sha256(sql.encode())
+    for p in sorted(common.FSDS_DIR.glob("*/*.parquet")):
+        st = p.stat()
+        h.update(f"{p.as_posix()}|{st.st_size}|{st.st_mtime_ns}".encode())
+    return h.hexdigest()
+
+
+def cached_copy(con: Any, sql: str, dest: Path, receipt: dict[str, Any], key: str, **kw: Any) -> int:
+    """``common.copy_to_parquet`` unless ``dest`` exists with the same fingerprint (``<dest>.sha256`` sidecar):
+    a guard stop during prepare resumes at the first unfinished step. Skipped steps are listed in
+    ``receipt['cached']``."""
+    receipt.setdefault("cached", [])
+    side = dest.with_name(dest.name + ".sha256")
+    fp = _fingerprint(sql)
+    if dest.exists() and side.exists() and side.read_text().strip() == fp:
+        receipt["cached"].append(key)
+        return int(pq.ParquetFile(dest).metadata.num_rows)
+    if side.exists():
+        side.unlink()
+    n = common.copy_to_parquet(con, sql, dest, **kw)
+    side.write_text(fp)
+    return n
+
+
 def prepare() -> dict[str, Any]:
     receipt: dict[str, Any] = {}
     con = common.connect(memory=DUCKDB_MEM, threads=2)
@@ -376,7 +403,7 @@ def prepare() -> dict[str, Any]:
         with common.timed(receipt, "sub_clock"):
             sub_glob = (common.FSDS_DIR / "sub" / "*.parquet").as_posix()
             dest = sub_clock_path()
-            n = common.copy_to_parquet(
+            n = cached_copy(
                 con,
                 f"""
                 SELECT adsh, TRY_CAST(cik AS BIGINT) AS sub_cik, TRY_CAST(sic AS INTEGER) AS sic, form AS sub_form,
@@ -384,7 +411,7 @@ def prepare() -> dict[str, Any]:
                        CAST(accepted_utc AS TIMESTAMP) AS accepted_utc, quarter AS sub_quarter
                 FROM read_parquet('{sub_glob}')
                 """,
-                dest,
+                dest, receipt, "sub_clock",
             )
             dup = con.execute(
                 f"SELECT count(*) - count(DISTINCT adsh) FROM read_parquet('{dest.as_posix()}')"
@@ -397,16 +424,17 @@ def prepare() -> dict[str, Any]:
             ).fetchone()[0]
         with common.timed(receipt, "class_shares"):
             num_glob = (common.FSDS_DIR / "num" / "*.parquet").as_posix()
-            receipt["class_share_rows"] = common.copy_to_parquet(con, class_sum_sql(num_glob), class_shares_path())
+            receipt["class_share_rows"] = cached_copy(con, class_sum_sql(num_glob), class_shares_path(), receipt,
+                                                      "class_shares")
         with common.timed(receipt, "pos_sums"):
-            receipt["pos_sum_rows"] = common.copy_to_parquet(con, pos_sum_sql(num_glob), pos_sums_path())
+            receipt["pos_sum_rows"] = cached_copy(con, pos_sum_sql(num_glob), pos_sums_path(), receipt, "pos_sums")
         with common.timed(receipt, "pre_flags"):
             pre_glob = (common.FSDS_DIR / "pre" / "*.parquet").as_posix()
-            receipt["pre_flag_rows"] = common.copy_to_parquet(con, pre_flags_sql(pre_glob), pre_flags_path(),
-                                                              row_group_size=32768)
+            receipt["pre_flag_rows"] = cached_copy(con, pre_flags_sql(pre_glob), pre_flags_path(), receipt,
+                                                   "pre_flags", row_group_size=32768)
         with common.timed(receipt, "label_lines"):
-            receipt["label_line_rows"] = common.copy_to_parquet(con, label_lines_sql(pre_glob, num_glob),
-                                                                label_lines_path())
+            receipt["label_line_rows"] = cached_copy(con, label_lines_sql(pre_glob, num_glob), label_lines_path(),
+                                                     receipt, "label_lines")
             receipt["label_lines_by_concept"] = dict(con.execute(
                 f"SELECT concept, count(*) FROM read_parquet('{label_lines_path().as_posix()}') GROUP BY 1").fetchall())
         with common.timed(receipt, "scope"):
