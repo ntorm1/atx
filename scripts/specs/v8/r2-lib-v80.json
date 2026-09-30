@@ -5,7 +5,7 @@
   "parent": null,
   "nominal_parent": "base-b0c.json",
   "requires": [
-    "R-2 runs as scripts/specs/v8/lib-v80.json, the spec `research_cycle.py add-alpha --parent v71 --name v80 --parent-spec <the last accepted cell's spec>` writes and locks (task-A2-report.md, R-2 sequence: 7 admission trials, earn_surprise_comp --replaces sue/droe/chtax, the 8 _f49 re-screens --replaces --rescreen on fields with grp_ff12f49); this template plans the cell only (one cell, one trial line: never run both)."
+    "R-2 runs as scripts/specs/v8/lib-v80.json, the spec `research_cycle.py add-alpha --parent v71 --name v80 --parent-spec <the last accepted cell's spec>` writes and locks (task-A2-report.md, R-2 sequence: 7 admission trials, earn_surprise_comp appended with --removes sue/droe/chtax, the 8 _f49 re-screens --replaces --rescreen on fields with grp_ff12f49); this template plans the cell only (one cell, one trial line: never run both)."
   ],
   "change": {
     "set": {

@@ -2,18 +2,20 @@
 
   research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
                               --parent v71 [--name v72] [--parent-spec SPEC] [--plan-json PATH] [--root R]
-                              [--replaces ID ...] [--rescreen] [--exception LIMIT=N ... --exception-basis TEXT]
-                              [--fields DIR] [--prior-sign-source S] [--form F] [--formula F] [--domain D] [--deviation D]
+                              [--removes ID ... | --replaces ID ... [--rescreen]]
+                              [--exception LIMIT=N ... --exception-basis TEXT] [--fields DIR]
+                              [--prior-sign-source S] [--form F] [--formula F] [--domain D] [--deviation D]
 
 1. registers the alpha in atx-impl/strategies/alphas/registry.json (an identical registration of an existing id is
    reused, another definition of it refused; theme, tier and origin are checked against the registry);
 2. defines library NAME (default: the parent's name with its trailing number + 1) = the parent's members + X in
    libraries/NAME.json (a second add-alpha into the same NAME and parent appends: one wave, several members) and builds
-   its IC library <id>.json and slim recipe <id>.recipe.v2.json (generate_library.py). --replaces ID (repeatable) puts X
-   in place of the first ID; the other IDs leave the library; X inherits their budget exceptions (e.g. earn_surprise_comp
-   for sue, droe, chtax; q5_eg_f49 for q5_eg). --rescreen (with one --replaces) marks X a re-screen of that member's
-   hypothesis (Ruling R2-e: 0 admission trials; listed in the gate's report rows, not its admitted rows).
-   --exception max_extra_fields=8 --exception-basis "Ruling R2-b" records X's budget exception;
+   its IC library <id>.json and slim recipe <id>.recipe.v2.json (generate_library.py). --removes ID (repeatable): X is
+   appended and the IDs leave the library with their exceptions (library-v8-draft E3: earn_surprise_comp, sue, droe,
+   chtax). --replaces ID (repeatable) puts X in place of the first ID (its roster position); the other IDs leave; X
+   inherits their budget exceptions (E4: q5_eg_f49 takes q5_eg's). --rescreen (with one --replaces) marks X a re-screen
+   of that member's hypothesis (Ruling R2-e: 0 admission trials; listed in the gate's report rows, not its admitted
+   rows). --exception max_extra_fields=8 --exception-basis "Ruling R2-b" records X's budget exception;
 3. validates through the exe's plan rows (contract K1): the parent spec's IC exe runs --plan-only on the new library,
    the role and the fields (metadata only), or --plan-json PATH gives a saved plan; every member needs its row and the
    new members must fit the house budget or their recorded exception;
@@ -272,14 +274,18 @@ def parse_limits(items: list[str]) -> dict:
 
 def child_definition(a, strategies: Path, name: str, prereg: str) -> dict:
     """libraries/NAME.json after this call: X appended, or in place of --replaces; its exception recorded."""
-    replaces = list(a.replaces or [])
+    replaces, removes = list(a.replaces or []), list(a.removes or [])
     if a.rescreen and len(replaces) != 1:
         raise AddAlphaError("--rescreen needs exactly one --replaces ID (the member whose hypothesis it re-screens)")
+    if replaces and removes:
+        raise AddAlphaError("--replaces (in place) and --removes (appended) exclude each other")
     if bool(a.exception) != bool(a.exception_basis):
         raise AddAlphaError("--exception LIMIT=N and --exception-basis TEXT (the ruling) go together")
     lib = G.child_library(strategies, a.parent, name, [] if replaces else [a.id], prereg)
     if replaces:
         lib = G.replace_members(lib, a.id, replaces, a.rescreen)
+    if removes:
+        lib = G.remove_members(lib, removes, a.id)
     if a.exception:
         lib = G.set_exception(lib, a.id, parse_limits(a.exception), a.exception_basis)
     return G.validate_library(lib, name)
@@ -364,6 +370,8 @@ def main(argv=None) -> int:
     ap.add_argument("--name", default=None, help="the new library's name (default: the parent's number + 1)")
     ap.add_argument("--parent-spec", default=None, help="the parent's cycle spec or template (default: by name)")
     ap.add_argument("--plan-json", type=Path, default=None, help="a saved --plan-only JSON (default: run the exe)")
+    ap.add_argument("--removes", action="append", default=None, metavar="ID",
+                    help="X is appended and ID leaves the library (with its budget exception)")
     ap.add_argument("--replaces", action="append", default=None, metavar="ID",
                     help="X takes the roster place of the first ID; the other IDs leave the library")
     ap.add_argument("--rescreen", action="store_true", help="X re-screens its one --replaces member (0 trials)")

@@ -309,6 +309,28 @@ def replace_members(lib: dict, new: str, replaces: list[str], rescreen: bool = F
     return out
 
 
+def remove_members(lib: dict, removes: list[str], keep: str) -> dict:
+    """Library `lib` without the members `removes` (research_cycle add-alpha --removes, e.g. library-v8-draft E3: the
+    composite `keep`, appended, stands for sue, droe and chtax), their budget exceptions and re-screen marks. A call
+    whose removal is already done (none of them a member, `keep` one) is a no-op."""
+    members = list(lib["members"])
+    if not removes or len(set(removes)) != len(removes) or keep in removes:
+        raise LibraryError("--removes needs distinct member ids other than the new one")
+    gone = [r for r in removes if r in members]
+    if not gone and keep in members:
+        return lib
+    if gone != list(removes):
+        raise LibraryError(f"--removes {', '.join(removes)}: every removed id must be a member of {lib['id']} "
+                           f"(members: {gone})")
+    out = dict(lib, members=[m for m in members if m not in removes],
+               budget_exceptions=[e for e in lib["budget_exceptions"] if e["id"] not in removes])
+    rescreens = [r for r in lib.get("rescreens", []) if r not in removes]
+    out.pop("rescreens", None)
+    if rescreens:
+        out["rescreens"] = rescreens
+    return out
+
+
 def set_exception(lib: dict, cid: str, limits: dict, basis: str) -> dict:
     """Library `lib` with a recorded budget exception of member `cid` (add-alpha --exception LIMIT=N; the ruling in
     `basis`): its limits are added to (or replace those of) the member's exception."""

@@ -460,7 +460,7 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                                                                    "cycle_verdict.json").is_file()
 
 
-def test_add_alpha_on_a_v8_template_replaces_rescreens_and_records_exceptions(tmp_path, capsys):
+def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions(tmp_path, capsys):
     root, base = v8_root(tmp_path)
     tpl = json.loads((V8 / "r4-hold-band.json").read_text(encoding="utf-8"))
     tp = root / SPECS / "r4-hold-band.json"
@@ -473,31 +473,37 @@ def test_add_alpha_on_a_v8_template_replaces_rescreens_and_records_exceptions(tm
     (root / F49).mkdir(parents=True)
     (root / F49 / "manifest.json").write_text(json.dumps({"fields": [{"name": n} for n in lo1_fields + ["grp_ff12f49"]]}))
     earn = "rank(decay_linear((sue + be + at + lt + che + debt + sale_ttm), 21))"    # 7 extra fields
-    replace3 = ("--replaces", "sue", "--replaces", "droe", "--replaces", "chtax")
+    remove3 = ("--removes", "sue", "--removes", "droe", "--removes", "chtax")          # draft E3
     shutil.copyfile(V8 / "base-b0c.json", tp.parent / "base-b0c.json")               # r4's nominal parent
     before = files_of(root)
     ruling = ("--exception", "max_extra_fields=8", "--exception-basis", "Ruling R2-b")
-    assert add(root, tp, "earn_probe", earn, *replace3, *ruling) == RC.EXIT_USAGE     # template parent null
+    assert add(root, tp, "earn_probe", earn, *remove3, *ruling) == RC.EXIT_USAGE      # template parent null
     assert "template parent is null" in capsys.readouterr().err and files_of(root) == before
     tpl["parent"] = "base-lo1.json"
     tp.write_text(json.dumps(tpl), encoding="utf-8")
     outs = parent_cell(root, tp)
     before = files_of(root)
-    assert add(root, tp, "earn_probe", earn, *replace3) == RC.EXIT_USAGE              # 7 > 5 extra fields: K1
-    for bad in (("--replaces", "nope"), ("--rescreen",), ("--exception", "max_extra_fields=8"),
-                ("--exception", "max_nodes=8", "--exception-basis", "x")):
-        assert add(root, tp, "earn_probe", earn, *replace3[:2], *bad) == RC.EXIT_USAGE, bad
-    assert files_of(root) == before                                                  # nothing written
-    assert add(root, tp, "earn_probe", earn, *replace3, *ruling) == RC.EXIT_OK
     q5 = re.sub(r"\bgrp_ff12\b", "grp_ff12f49", T.v71_entry("q5_eg")["dsl"])
     gpa = re.sub(r"\bgrp_ff12\b", "grp_ff12f49", T.v71_entry("gpa")["dsl"])
+    assert add(root, tp, "earn_probe", earn, *remove3) == RC.EXIT_USAGE               # 7 > 5 extra fields: K1
+    for cid, dsl, *bad in (("earn_probe", earn, *remove3[:2], "--removes", "nope"),
+                           ("earn_probe", earn, *remove3[:2], "--rescreen"),
+                           ("earn_probe", earn, *remove3[:2], "--replaces", "gpa"),
+                           ("earn_probe", earn, *remove3[:2], "--exception", "max_extra_fields=8"),
+                           ("earn_probe", earn, *remove3[:2], "--exception", "max_nodes=8", "--exception-basis", "x"),
+                           ("q5_eg_f49", q5, "--replaces", "nope", "--rescreen", "--fields", F49),
+                           ("q5_eg_f49", q5, "--replaces", "q5_eg", "--replaces", "gpa", "--rescreen")):
+        assert add(root, tp, cid, dsl, *bad) == RC.EXIT_USAGE, bad
+    assert files_of(root) == before                                                  # nothing written
+    assert add(root, tp, "earn_probe", earn, *remove3, *ruling) == RC.EXIT_OK
     assert add(root, tp, "q5_eg_f49", q5, "--replaces", "q5_eg", "--rescreen", "--fields", F49) == RC.EXIT_OK
     assert add(root, tp, "gpa_f49", gpa, "--replaces", "gpa", "--rescreen") == RC.EXIT_OK   # --fields is sticky
     assert add(root, tp, "gpa_f49", gpa, "--replaces", "gpa", "--rescreen") == RC.EXIT_OK   # identical: no-op
+    assert add(root, tp, "earn_probe", earn, *remove3, *ruling) == RC.EXIT_OK        # identical: no-op
     lib = json.loads((s / "libraries" / "v80.json").read_text(encoding="utf-8"))
-    want = [{"sue": "earn_probe", "q5_eg": "q5_eg_f49", "gpa": "gpa_f49"}.get(m, m) for m in V71_IDS
-            if m not in ("droe", "chtax")]
-    assert lib["members"] == want and lib["rescreens"] == ["q5_eg_f49", "gpa_f49"]    # in place, in roster order
+    want = [{"q5_eg": "q5_eg_f49", "gpa": "gpa_f49"}.get(m, m) for m in V71_IDS if m not in ("sue", "droe", "chtax")]
+    assert lib["members"] == want + ["earn_probe"]                                   # E3 appended; E4 in place
+    assert lib["rescreens"] == ["q5_eg_f49", "gpa_f49"]
     ex = {e["id"]: e for e in lib["budget_exceptions"]}
     assert set(ex) == {"qmj_safety", "q5_eg_f49", "earn_probe"} and ex["q5_eg_f49"]["max_extra_fields"] == 6
     assert ex["q5_eg_f49"]["basis"].startswith("inherited from q5_eg (replaced in place): q5_eg: prereg ruling")
