@@ -205,3 +205,78 @@ Each is the runbook's decision-role command (w0-2-runbook R7 or R8) with the del
 - Refusal prefix and names as tested.
 - Recipe and summary keys only when on.
 - The ref phase never takes the label.
+
+## Session 3 (lane R45, pool-11): the three open items done
+
+Commits, on top of `126a5f5f`:
+- `08c9ac7b`: item 1, the payload check of the declared clearing.
+- `8bb2ee3d`: item 2, the text (recipe rule, header contract, `--help`).
+- `44451659`: item 3, the test.
+
+Nothing was compiled or run in C++ (lane rule). No Python file was touched;
+`scripts/tests/test_research_cycle_label_role.py` still passes (2 passed).
+
+### What was built
+
+**Item 1: the check (`atx-impl/src/strategy_target_replay.cpp`).**
+- New anonymous-namespace helpers:
+  - `admitted_label_manifests(cfg, path, sha256) -> Result<LabelManifests{role, label}>`: pins both manifests and applies `check_label_manifests`. `detail::check_label_role` and `detail::load_label_role` share it, so each call parses the two manifests once. `load_label_role` no longer parses the label manifest a second time.
+  - `check_declared_clearing(cfg, manifests, member, present, blend)`: runs only when `member_differs(role, label)`. It loads `--role`'s `member.u8` against `--role`'s own receipt. A cell may differ only if `--role` keeps it a member (1), `--role` has it absent, and the label role presents it and clears it (member 0). The number of such cells must equal the declared N.
+  - `label_cell(k, ids)`: the " (row r, instrument id)" suffix, now shared with the existing refusals.
+- `load_label_role` calls `check_declared_clearing` after its per-cell loop, so the presence/price contract and the effective-membership check are still refused first.
+- New refusals (prefix `nav replay: --label-role refused: `):
+  - `the membership (member.u8) differs from --role's (row R, instrument I) outside a delisting-return clearing (...)`
+  - `the membership (member.u8) differs from --role's on C cells and the label role declares N cleared (universe.delisting.applied.members_cleared_on_termination_session)`
+- `detail::label_role_cell_bytes` is now `2 * sizeof(f64) + 3` (was `+ 2`), to hold `--role`'s mask. This charge applies only with the flag on.
+- This matches `prepare_recent_research.py` `_delisting`. There, `cleared += kept[T, j] != 0` counts exactly the applied terminations whose lagged member it clears. Each such cell has present 0 in the base role (`present_after_last_session` is a skip reason) and present 1 in the label role.
+
+**Item 2: text.**
+- `strategy_target_replay_detail.hpp`: the `check_label_role`, `load_label_role` and cell-bytes comments.
+- `strategy_nav_replay.hpp`: the `execution.label_role` paragraph.
+- `strategy_nav_replay.cpp`:
+  - `label_role_declaration`, the recipe `label_role.rule`. The labelled `recipe_sha256` therefore differs from session 2's.
+  - The `--help` text.
+- All of them now say that `member.u8` is shared, or differs only by the members a `--delisting-returns` label role declares cleared (and then `score_member_counts` may differ), verified on exactly those N cells.
+- The help keeps the substrings that `FlagOffIsByteIdentical` tests.
+
+**Item 3: test (`atx-impl/tests/strategy_live_test.cpp`).**
+- `NavLabelRole.AdmitsOnlyTheDeclaredDelistingClearing`. The setup:
+  - a 160 x 60 role pair built with `terminated()`;
+  - `--role`'s `member.u8` keeps the name a member on its absent termination cell, while the blend's member stays 0;
+  - a `universe` block on both roles.
+- The cases:
+  - Declared N = 1: runs, and records `label_only_present_cells` 1 and the new rule text.
+  - Undeclared: refused from the manifests.
+  - N = 2: refused at the payload count.
+  - A further difference on a cell absent in both roles: refused by row and instrument.
+  - Every refusal leaves no output directory.
+- `write_artifact` gains two trailing defaulted parameters: `universe` (a Json, null means none) and `role_member` (pointer, null means `p.member`). Existing calls are unchanged.
+- The role-pair NAV argv of `TerminalReturnReachesThePnlAndNoDecisionInput` (3) moves to the helper `pair_args`, shared with the new test. The argv is unchanged.
+
+### How root verifies
+
+1. Build `atx-impl-strategy-target-tests atx-equity-strategy-targets`. Then run:
+   - `-Ctest -R "NavLabelRole|NavV6|StrategyLive|HoldBand|AdvHold"`;
+   - or, as gtest filters on the test exe:
+     - `--gtest_filter=NavLabelRole.*` (5 tests: FlagOffIsByteIdentical, SameRoleIsIdentity, TerminalReturnReachesThePnlAndNoDecisionInput, RefusesMismatchedAxes, AdmitsOnlyTheDeclaredDelistingClearing);
+     - `--gtest_filter=NavV6.OrderBasisTargetAndExitRateOneAreBitIdentical`, which pins the flag-off recipe SHAs.
+2. **Flag absent.** Run the accepted v7.1 NAV argv (receipt `mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-run`) with the old exe and the new exe into two new directories. Every file must be byte-identical. Session 3 code runs only inside `load_label_role`/`check_label_role`, which the verb calls only with the flag. Only the `--help` text changes, and it is not a run output.
+3. **`--label-role` equal to `--role`.** Run the same argv plus `--label-role <that argv's --role manifest> --label-role-sha256 <its --role-sha256>`.
+   - Every daily and events CSV (and holdings file, if emitted) must be byte-identical to step 2's.
+   - `recipe.json` differs only by `label_role`.
+   - `summary.json` differs only by `label_role` and `recipe_sha256`.
+   - Here `member.u8` is the same file, so the new check does not run.
+
+### Where FIX-AB's B-3 refusal goes after merge
+
+FIX-AB (pool 7) adds, in the signal-role loader, a refusal of a delisting-returns role used as `--role`. I did not duplicate it. After the merge, add one call in `check_label_manifests(role, label)` (`atx-impl/src/strategy_target_replay.cpp`). Put it right after the "a role manifest is not a JSON object" test, before the seal and membership rules.
+- Apply the B-3 predicate to `role` (`--role`'s pinned manifest) only. Then a label pair whose `--role` is itself a `--delisting-returns` build is refused before any payload, by the B-3 name. Today it would pass `check_label_role` and only be refused later, by the blend load.
+- **Never apply it to `label`.** A real B0c label role has `universe.delisting.returns_applied: true` by construction.
+- Item 1 relies on B-3: it assumes `--role`'s `member.u8` is the uncleared, lagged membership.
+
+### Concerns
+
+- Nothing compiled. The new code copies the local idiom (`ATX_TRY`, `label_refused`, `payload`, spans from vectors) and keeps lines at 100 columns or less. Root fixes any `/W4 /WX` finding.
+- `TerminalReturnReachesThePnlAndNoDecisionInput` (3) and the new test both run the verb on a terminated role pair. Neither has ever been run.
+- The count check means the label role must be built from the same membership as `--role` (the same code and pins). A drifted rule is refused, as intended, but by count or by cell rather than at the manifest.
+- The label role's `score_member_counts` may differ once a clearing is declared, but it is not recomputed from the payloads. The NAV never reads it.
