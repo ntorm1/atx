@@ -1518,9 +1518,10 @@ struct PinBench {
   Directory dir;
   Panel panel = market_panel(160, 60, 17, 3e7);
   Fields fields{panel, 23};
-  Artifact artifact = write_artifact(dir.path, panel, fields, 20);
+  usize score_begin; // the role's first scored row (20 unless a test asks for another)
+  Artifact artifact = write_artifact(dir.path, panel, fields, score_begin);
   usize runs = 0;
-  PinBench() {
+  explicit PinBench(usize begin = 20) : score_begin(begin) {
     std::ofstream positions(dir.path / "flat.csv", std::ios::binary);
     positions << "instrument_id,held_dollars\n";
   }
@@ -1562,9 +1563,11 @@ bool recipe_mismatch(const co::Result<st::DecideOutcome>& r) {
 // Absent, or at the off value, the recomputed NAV recipe hashes exactly as before, so a
 // manifest pinned to a NAV run without the flag still verifies; on, the key is part of the pin
 // both ways (a run with the flag needs the key, a run without it refuses the key); a malformed
-// key is refused by name.
+// key is refused by name. The role scores from row 140: the book's price-risk exposures (126
+// return pairs) exist on the 5 warm-up rows, so the warm start builds a book (review A-3 refuses
+// one that does not; from row 20 every warm-up rebalance would be skipped).
 TEST(StrategyLive, RecipePinBackwardCompatibleWithNewConstructionFields) {
-  PinBench bench;
+  PinBench bench(140);
   const auto plain = bench.nav_recipe("nav-plain", {});
   const auto warm = bench.nav_recipe("nav-warm", {"--warm-start-sessions", "5"});
   EXPECT_NE(plain, warm);
@@ -2045,6 +2048,55 @@ TEST(AdvHold, SideGrossPreserved) {
   }
   EXPECT_GT(compared, 3U);
   EXPECT_GT(clipped, 0U);
+}
+
+// Review A-1: in a construction grid the ADV cap Q ADV / (aim_leverage NAV) is each variant's
+// own. A grid of --aim-leverage 1.0, 1.5 and 1.0 again at Q = .1 replays every variant as its
+// standalone run bit for bit (before, every variant was capped at the first variant's
+// leverage), and the two leverages' caps differ on the fixture (the cap binds).
+TEST(AdvHold, GridCapsEachVariantAtItsOwnLeverage) {
+  const CapBench bench;
+  const auto in = bench.input();
+  auto low = v61_book(1e7);
+  low.target.adv_hold_q = 0.1;
+  low.target.aim_leverage = 1.0;
+  auto high = low;
+  high.target.aim_leverage = 1.5;
+  auto slow = low; // same leverage as the first: the same lockstep group
+  slow.target.trade_fraction = 0.5;
+  const std::array<st::NavScenario, 1> one{low.scenario};
+  const std::vector<st::NavReplayConfig> grid{low, high, slow};
+  const auto run = st::replay_nav_grid(in, grid, one);
+  ASSERT_TRUE(run) << run.error().to_string();
+  ASSERT_EQ(run->size(), grid.size());
+  usize clipped = 0;
+  for (usize v = 0; v < grid.size(); ++v) {
+    const auto alone = st::replay_nav_scenarios(in, grid[v], one);
+    ASSERT_TRUE(alone) << alone.error().to_string();
+    ASSERT_EQ((*run)[v].size(), 1U) << v;
+    const auto& a = (*run)[v].front().days;
+    const auto& b = alone->front().days;
+    ASSERT_EQ(a.size(), b.size()) << v;
+    for (usize t = 0; t < a.size(); ++t) {
+      EXPECT_EQ(bits(a[t].pretrade_nav), bits(b[t].pretrade_nav)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].posttrade_nav), bits(b[t].posttrade_nav)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].planned_gross), bits(b[t].planned_gross)) << v << ' ' << t;
+      EXPECT_EQ(a[t].construction.adv_clipped, b[t].construction.adv_clipped) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].construction.adv_clipped_mass),
+                bits(b[t].construction.adv_clipped_mass))
+          << v << ' ' << t;
+      clipped += a[t].construction.adv_clipped;
+    }
+  }
+  EXPECT_GT(clipped, 0U); // the cap binds
+  // The leverages cap differently: the same desired target clipped at L 1.0 and at L 1.5.
+  const auto& lo = (*run)[0].front().days;
+  const auto& hi = (*run)[1].front().days;
+  bool differ = false;
+  for (usize t = 0; t < lo.size() && t < hi.size(); ++t)
+    differ = differ || bits(lo[t].construction.adv_clipped_mass) !=
+                           bits(hi[t].construction.adv_clipped_mass);
+  EXPECT_TRUE(differ);
 }
 
 // A Q no name reaches is the accepted construction byte for byte in every daily and events CSV

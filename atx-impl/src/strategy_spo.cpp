@@ -1011,6 +1011,8 @@ struct Engine::Impl {
   co::Status prepare(const BookDecision& in);
   co::Status calibrate(const BookDecision& in);
   co::Status plan(const BookDecision& in, std::vector<f64>& planned, TargetReplayDay& out);
+  co::Status warm_up_step(const BookDecision& in, std::vector<f64>& planned,
+                          TargetReplayDay& out);
   co::Status shadow_step(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                          bool rebalance, std::span<const f64> desired, BookState& book,
                          TargetReplayDay& day);
@@ -1040,6 +1042,24 @@ co::Status Engine::Impl::shadow_step(const TargetReplayInput& x, const NavReplay
   desired_copy.assign(desired.begin(), desired.end());
   return detail::update_weights(x, cfg.target, d, rebalance, 0.0, desired_copy, book.shadow,
                                 day);
+}
+
+// A warm-up rebalance decision (v8 D-0: d before the role's decision_begin; review A-2): the
+// book makes aim-partial-v5's move toward the shared desired target (the rule the spo rules
+// are rewritten to on the command line) and the shadow book the same move. No risk row is
+// read and nothing is solved, calibrated or recorded, so gamma is calibrated on the first
+// scored decision and a risk store without rows before decision_begin serves a warm start.
+co::Status Engine::Impl::warm_up_step(const BookDecision& in, std::vector<f64>& planned,
+                                      TargetReplayDay& out) {
+  if (in.desired.size() != in.x.instruments)
+    return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: decision geometry");
+  auto& book = books[std::string(in.book)];
+  TargetReplayDay shadow_day;
+  ATX_TRY_VOID(shadow_step(in.x, in.cfg, in.d, true, in.desired, book, shadow_day));
+  calibration.warm_up = true;
+  // shadow_step left the desired target in desired_copy (update_weights reads it only).
+  return detail::update_weights(in.x, in.cfg.target, in.d, true, 0.0, desired_copy, planned,
+                                out);
 }
 
 // The shared data of decision d (once for every book): the risk slice, the optimized names,
@@ -1229,6 +1249,9 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
       return co::Err(co::ErrorCode::InvalidArgument, "spo: horizon 1 / theta out of [1, 1e4]");
     alpha_h = params.alpha_horizon; // independent of H (R2 M-2)
   }
+  // v8 D-0 warm-up (review A-2): aim-partial-v5's move, no risk row, gamma not yet taken.
+  // Without a warm start every decision has d >= decision_begin: nothing changes.
+  if (d < x.decision_begin) return warm_up_step(in, planned, out);
   if (params.version == 3) return plan_tracking(in, planned, out); // target tracking
   // G: the hard cap on the book's planned gross. Without --spo-gross it is the book's own
   // --aim-leverage, spo-v1's budget bit for bit (and not re-validated: no new refusal).
@@ -1335,9 +1358,8 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   row.alpha_shadow = alpha_shadow; row.gross_shadow = shadow_day.gross;
   row.turnover_shadow = shadow_day.turnover; row.trade_cost_shadow = cost_shadow;
   row.exante_vol_shadow = std::sqrt(sessions_per_year * book_variance(r, book.shadow));
-  // A warm-start decision (v8 D-0: d before the role's decision_begin) plans the book and
-  // moves the shadow, but is not scored: no row, so spo_diagnostics.csv, the summary and
-  // the tripwire cover scored decisions only. Without a warm start every d is scored.
+  // Scored decisions only: a warm-up decision (v8 D-0) never reaches here (warm_up_step),
+  // so spo_diagnostics.csv, the summary and the tripwire cover scored decisions only.
   if (d >= x.decision_begin) rows.push_back(std::move(row));
   planned = std::move(next);
   return co::Ok();
@@ -1419,6 +1441,15 @@ TrackingRow Engine::Impl::tracking_row(const BookDecision& in, const tt::Trackin
   row.tracking_error = tracking_error(r, next, aim, gap);
   row.tracking_error_current = tracking_error(r, current, aim, gap);
   row.aim_correlation = correlation(sol.w, p.target);
+  // Review A-4: the traded book DECIDE read (filled, capped, blocked, drifted) against the
+  // aim over every name either holds; the E-14 criterion reads this, not the plan's.
+  std::vector<f64> held, aimed;
+  for (usize i = 0; i < aim.size(); ++i) {
+    if (aim[i] == 0 && current[i] == 0) continue;
+    held.push_back(current[i]);
+    aimed.push_back(aim[i]);
+  }
+  row.aim_correlation_traded = correlation(held, aimed);
   row.objective = sol.terms.objective; row.amortized_cost = sol.terms.trade_cost;
   row.trade_cost = sol.terms.trade_cost * horizon; row.borrow = sol.terms.borrow;
   f64 aim_gross = 0, beta = 0;
@@ -1658,15 +1689,17 @@ Json parameters_json(const SpoParams& p, f64 horizon, f64 gross_budget) {
 }
 
 Json calibration_json(const Calibration& c) {
-  return Json{{"done", c.done}, {"from_flag", c.from_flag}, {"session", c.session},
-              {"rule", gamma_rule_text(c.rule)},
-              {"gamma", finite_or_null(c.gamma)}, {"gamma_vol", finite_or_null(c.gamma_vol)},
-              {"gamma_bind", finite_or_null(c.gamma_bind)}, {"vol_reached", c.vol_reached},
-              {"bind_reached", c.bind_reached},
-              {"gamma_bind_note", c.bind_note.empty() ? Json(nullptr) : Json(c.bind_note)},
-              {"aim_vol", finite_or_null(c.aim_vol)},
-              {"aim_gross", finite_or_null(c.aim_gross)}, {"evaluations", c.evaluations},
-              {"names", c.names}};
+  Json j{{"done", c.done}, {"from_flag", c.from_flag}, {"session", c.session},
+         {"rule", gamma_rule_text(c.rule)},
+         {"gamma", finite_or_null(c.gamma)}, {"gamma_vol", finite_or_null(c.gamma_vol)},
+         {"gamma_bind", finite_or_null(c.gamma_bind)}, {"vol_reached", c.vol_reached},
+         {"bind_reached", c.bind_reached},
+         {"gamma_bind_note", c.bind_note.empty() ? Json(nullptr) : Json(c.bind_note)},
+         {"aim_vol", finite_or_null(c.aim_vol)},
+         {"aim_gross", finite_or_null(c.aim_gross)}, {"evaluations", c.evaluations},
+         {"names", c.names}};
+  if (c.warm_up) j["warm_up"] = warm_up_calibration_text; // review A-2; absent without one
+  return j;
 }
 
 namespace {

@@ -321,6 +321,11 @@ struct TrackingRow {
   atx::f64 tracking_error{}, tracking_error_current{};
   // Pearson correlation of the planned and the aim weights over the optimized names.
   atx::f64 aim_correlation{};
+  // Review A-4, the Ruling E-14 criterion's input: Pearson correlation of the traded book (the
+  // holdings DECIDE read at d, after the fills, caps, blocks and drift of earlier decisions;
+  // nonmember exits and unpriced members included) and the aim, over every name either
+  // holds (NaN from a flat book).
+  atx::f64 aim_correlation_traded{};
   // The solver's terms (per session, NAV fractions): objective = (gamma/2) tracking variance
   // over the problem + amortized_cost + borrow; trade_cost = amortized_cost x H (unamortized).
   atx::f64 objective{}, trade_cost{}, amortized_cost{}, borrow{};
@@ -338,8 +343,18 @@ struct TrackingRow {
   atx::f64 gross_shadow{unset}, turnover_shadow{unset}, trade_cost_shadow{unset};
   atx::f64 tracking_error_shadow{unset}, aim_correlation_shadow{unset};
 };
+// The calibration blocks' "warm_up" entry (Calibration::warm_up, review A-2).
+inline constexpr const char* warm_up_calibration_text =
+    "v8 D-0 warm start: the unscored warm-up decisions (before the role's decision_begin) move "
+    "the book as aim-partial-v5 toward the same desired target and read no risk row; gamma, "
+    "session and the aim figures are those of the first scored decision";
 struct Calibration {
   bool done{}, from_flag{};
+  // v8 D-0 warm start (review A-2): true once a warm-up decision (d before the role's
+  // decision_begin) was planned. Such a decision moves the book as aim-partial-v5 and reads no
+  // risk row, so gamma (and `session`) belong to the first scored decision. The calibration
+  // blocks carry a "warm_up" key only when true (without a warm start: byte-identical).
+  bool warm_up{};
   GammaRule rule{GammaRule::VolAndBind};
   atx::i64 session{};
   atx::f64 gamma{}, gamma_vol{}, gamma_bind{};
@@ -379,7 +394,9 @@ public:
   Engine(Engine&&) noexcept;
   Engine& operator=(Engine&&) noexcept;
   // Plans the book's rebalance decision: `planned` holds the current weights on entry and the
-  // plan on return; `out` accumulates the plan fields exactly as aim-partial-v5's move.
+  // plan on return; `out` accumulates the plan fields exactly as aim-partial-v5's move. A
+  // warm-up decision (d < x.decision_begin, v8 D-0) is aim-partial-v5's move itself (review
+  // A-2): no risk row, no solve, no calibration and no diagnostics row.
   [[nodiscard]] atx::core::Status plan(const BookDecision& in, std::vector<atx::f64>& planned,
                                        TargetReplayDay& out);
   // A non-rebalance decision of the book: the shadow book's aim-partial-v5 move (exits only).

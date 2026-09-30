@@ -29,7 +29,10 @@ or after the builder's seal are never used.
 ``--reuse`` (v8 C-3 contract; Ruling E-21): ``PRODUCERS``, ``HOST_HANDLES``, ``producer_group``, ``field_spec``,
 ``reuse_inputs`` and ``entry_inputs``; every computed entry records ``producer`` (this module's code identity). The
 inputs beyond the role are pinned by the role itself: ``--price-source`` must hash to the role's ``source_sha256``
-(and the prior is bound to the same role), and ``xrd0_ttm``'s required fields must be reused with it.
+(and the prior is bound to the same role), and ``xrd0_ttm``'s required fields must be reused with it. A field on the
+extended axis also pins the NYSE rule calendar it reads before the role (``session_calendar``, review B-1): that
+calendar is code of ``research_fields_sec.py``, which no producer fingerprint of this module covers (the fingerprint
+follows no import), so its digest is an input of the entry.
 """
 from __future__ import annotations
 
@@ -45,6 +48,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import research_window as rw  # same directory: the seal bounds the session calendar digest
 from research_fields_sec import _Host, nyse_sessions  # the SEC module's calendar and host view (same directory)
 
 GROUP = "price"
@@ -63,6 +67,11 @@ GUARD_EXCESS = 0.10
 OPEN_TYPES = (pa.float32(), pa.float64())
 HISTORY_SESSIONS = CEQ_SESSIONS + 1   # sessions before the role that row 0 reaches (t-1 and t-1-1260)
 NEVER = np.iinfo(np.int64).max
+CALENDAR_RULE = "nyse-rule-v1"        # research_fields_sec.nyse_sessions
+CALENDAR_FIRST = dt.date(1970, 1, 1)  # the calendar digest's first day: before any pre-role session of any role
+# The field groups on the extended session axis (NYSE rule sessions before the role): their payloads depend on the rule
+# calendar, so their --reuse inputs pin its digest (review B-1). price_volume and price_rd read role rows only.
+CALENDAR_GROUPS = ("price_open", "price_ceq", "price_coskew")
 
 
 class FieldNeedsOpen(ValueError):
@@ -189,6 +198,20 @@ def require_open(path: Path, names) -> None:
     if i < 0 or schema.field(i).type not in OPEN_TYPES:
         raise FieldNeedsOpen(f"{', '.join(names)}: field needs open; absent in export ({Path(path)} has no float "
                              "'open' column; the research projection prepare_recent_research.COLUMNS has none either)")
+
+
+def session_calendar() -> dict:
+    """The rule calendar the extended axis reads before the role, as a ``--reuse`` input pin (review B-1): the NYSE rule
+    sessions (``nyse_sessions``, rule nyse-rule-v1) from ``CALENDAR_FIRST`` through the day before the seal, which
+    covers every pre-role session of any role (a role starts before the seal; the role's own sessions are bound by the
+    prior's role binding). ``{rule, first, last, sessions, sha256}``, the SHA-256 over the rule id and the sessions'
+    epoch days as little-endian int64. A holiday corrected in ``research_fields_sec.py`` changes it, so a price field
+    built on the old calendar is recomputed, never copied."""
+    last = rw.SEAL - dt.timedelta(days=1)
+    days = np.ascontiguousarray(nyse_sessions(CALENDAR_FIRST, last), dtype="<i8")
+    digest = hashlib.sha256(CALENDAR_RULE.encode("ascii") + b"\n" + days.tobytes()).hexdigest()
+    return {"rule": CALENDAR_RULE, "first": CALENDAR_FIRST.isoformat(), "last": last.isoformat(),
+            "sessions": int(len(days)), "sha256": digest}
 
 
 def extended_days(role, pre_sessions: int, lookback_days: int = 0):
@@ -669,14 +692,20 @@ def field_spec(name: str) -> dict:
 
 
 def reuse_inputs(name: str, options: dict) -> dict:
-    """This run's input pins of a price field beyond the role and its required fields: none. The price source must
-    hash to the role's source_sha256 and the prior is bound to the same role (load_prior)."""
-    return {}
+    """This run's input pins of a price field beyond the role and its required fields: for a field on the extended
+    axis (``CALENDAR_GROUPS``) the rule calendar it reads before the role (``session_calendar``, review B-1); none
+    otherwise. The price source must hash to the role's source_sha256 and the prior is bound to the same role, its
+    sessions included (load_prior)."""
+    return {"session_calendar": session_calendar()} if FIELDS[name]["group"] in CALENDAR_GROUPS else {}
 
 
 def entry_inputs(entry: dict) -> dict:
-    """The same pins as a manifest entry records them (none)."""
-    return {}
+    """The same pins as a manifest entry records them (an entry written before review B-1 has no calendar pin: None,
+    so its field is recomputed)."""
+    name = entry.get("name")
+    if name not in FIELDS or FIELDS[name]["group"] not in CALENDAR_GROUPS:
+        return {}
+    return {"session_calendar": entry.get("session_calendar")}
 
 
 class PriceFieldModule:
@@ -742,11 +771,14 @@ class PriceFieldModule:
             results.update(zero_filled_rows(h, role, output, budget))
         source_checks[GROUP] = st
         producer = {"module": Path(__file__).name, **h.module_code_identity(sys.modules[__name__])}  # v8 C-3 --reuse
+        calendar = session_calendar() if any(FIELDS[x]["group"] in CALENDAR_GROUPS for x in names) else None
         for x in names:
             w, sources, extra = results[x]
             spec = FIELDS[x]
             field_extras[x] = {"producer": producer, "formula_id": spec["formula_id"],
                                "formula_sha256": h.formula_id(x, h.spec_definition(x, LAG_SESSIONS)),
                                "lag_sessions": LAG_SESSIONS, "min_history": spec["min_history"], **extra}
+            if spec["group"] in CALENDAR_GROUPS:   # review B-1: the --reuse input pin (entry_inputs)
+                field_extras[x]["session_calendar"] = dict(calendar)
             outcome[x] = (w, sources, w.coverage())
         budget.report("price-complete", fields=len(names))

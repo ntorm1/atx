@@ -1,7 +1,8 @@
 // spo-v3 (platform v8 R-6): target tracking toward the aim through the spo engine and the v7
 // hook -- the aim itself without costs or limits (a direct Engine::plan), the gross sanity
 // bound slack on the fixture and its breach voiding the run, the tracking error, trade-limit
-// share and aim correlation with their per-book report, the CLI refusals of the registered
+// share and aim correlation with their per-book report, gamma on the first scored decision
+// under a warm start (review A-2), the CLI refusals of the registered
 // constants, and (v8 E-26) the aim shaped by --hold-band / --adv-hold-q exactly as the
 // aim-partial-v5 path shapes desired. The spo-v1 / spo-v2 digest guard is
 // strategy_spo_v3_pin_test.cpp.
@@ -48,19 +49,23 @@ std::shared_ptr<const sp::RiskStore> clean_model(const Directory& dir, const Rol
 }
 
 // The observed book's rebalance decisions (a NavHoldingsSink): per session index, every
-// reported name's shared desired target (NaN: not reported) and, given the spo engine, the aim
+// reported name's shared desired target (NaN: not reported), every name's held weight (what
+// its DECIDE read; 0: not reported, as the stream declares) and, given the spo engine, the aim
 // its tracker received at that decision (Engine::last_aim, read right after the book's DECIDE).
 class Recorder final : public st::NavHoldingsSink {
 public:
   explicit Recorder(usize names) : n_(names) {}
   const sp::Engine* engine{};
-  std::map<usize, std::vector<f64>> desired, aim;
+  std::map<usize, std::vector<f64>> desired, held, aim;
   [[nodiscard]] co::Status session(const st::NavReplayDay& day,
                                    std::span<const st::NavHolding> names) override {
     if (!day.decision || !day.rebalance) return co::Ok();
     auto& row = desired[day.session_index];
     row.assign(n_, std::numeric_limits<f64>::quiet_NaN());
     for (const auto& h : names) row[h.index] = h.desired;
+    auto& book = held[day.session_index];
+    book.assign(n_, 0.0);
+    for (const auto& h : names) book[h.index] = h.held_weight;
     if (engine != nullptr) {
       const auto received = engine->last_aim();
       aim[day.session_index].assign(received.begin(), received.end());
@@ -74,7 +79,8 @@ private:
 
 // A replay of the fixture (nav_config: S1, S2, S3, cadence 1, theta .25, L 1.2, NAV 1e8, or
 // `cfg`) under spo-v3 through the v7 hook, with what the extension would publish; with a
-// recorder, its primary book alone (replay_nav_scenarios, bit-identical) observed.
+// recorder, its primary book alone (replay_nav_scenarios, bit-identical) observed. The role's
+// first scored row is `decision_begin` (0: the fixture's own).
 struct Replay {
   std::vector<sp::TrackingRow> rows;
   usize legacy_rows{}; // spo-v1/v2 rows (none under spo-v3)
@@ -87,7 +93,9 @@ struct Replay {
 };
 Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
                  const sp::SpoParams& params, const st::NavReplayConfig& cfg = nav_config(),
-                 Recorder* recorder = nullptr) {
+                 Recorder* recorder = nullptr, usize decision_begin = 0) {
+  auto input = role.nav();
+  input.target.decision_begin = decision_begin;
   v7::NavV7Options o;
   o.spo_v1 = true;
   o.spo_params = params;
@@ -100,13 +108,13 @@ Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
     return out;
   }
   if (recorder == nullptr) {
-    auto result = st::replay_nav(role.nav(), cfg);
+    auto result = st::replay_nav(input, cfg);
     EXPECT_TRUE(result) << result.error().to_string();
     if (result) out.result = std::move(*result);
   } else {
     recorder->engine = engine;
     const std::array<st::NavScenario, 1> primary{cfg.scenario};
-    auto results = st::replay_nav_scenarios(role.nav(), cfg, primary, *recorder, 0);
+    auto results = st::replay_nav_scenarios(input, cfg, primary, *recorder, 0);
     EXPECT_TRUE(results) << results.error().to_string();
     if (results && results->size() == 1) out.result = std::move(results->front());
   }
@@ -137,6 +145,20 @@ st::NavReplayConfig undusted_config() {
   return cfg;
 }
 u64 bits(f64 x) { return std::bit_cast<u64>(x); }
+// Pearson correlation as the engine computes it (NaN below 3 pairs or without dispersion).
+f64 pearson(std::span<const f64> a, std::span<const f64> b) {
+  const usize n = std::min(a.size(), b.size());
+  if (n < 3) return std::numeric_limits<f64>::quiet_NaN();
+  f64 ma = 0, mb = 0;
+  for (usize i = 0; i < n; ++i) { ma += a[i]; mb += b[i]; }
+  ma /= static_cast<f64>(n); mb /= static_cast<f64>(n);
+  f64 ab = 0, aa = 0, bb = 0;
+  for (usize i = 0; i < n; ++i) {
+    const f64 x = a[i] - ma, y = b[i] - mb;
+    ab += x * y; aa += x * x; bb += y * y;
+  }
+  return aa > 0 && bb > 0 ? ab / std::sqrt(aa * bb) : std::numeric_limits<f64>::quiet_NaN();
+}
 
 // No trading cost, no borrow and no binding limit (ADV 1e15, beta band +-1, every name a
 // member with a risk row, from flat, no fixed position): the tracking optimum is the aim
@@ -305,13 +327,15 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     }
     by_book[r.book].push_back(&r);
   }
-  // One CSV row per scored (decision, book); 41 columns.
+  // One CSV row per scored (decision, book); 42 columns (review A-4 added
+  // aim_correlation_traded after aim_correlation).
   EXPECT_EQ(static_cast<usize>(std::count(run.csv.begin(), run.csv.end(), '\n')),
             run.rows.size() + 1);
   const std::string header = run.csv.substr(0, run.csv.find('\n'));
-  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 40);
+  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 41);
   for (const char* column : {",tracking_error,", ",tracking_error_current,", ",aim_correlation,",
-                             ",at_trade_limit,", ",trade_limit_share,", ",gross_bound_breached,",
+                             ",aim_correlation_traded,", ",at_trade_limit,",
+                             ",trade_limit_share,", ",gross_bound_breached,",
                              ",tracking_error_shadow,", ",aim_correlation_shadow"})
     EXPECT_NE(header.find(column), std::string::npos) << column;
   // The per-book report: summary and tripwire record agree with the rows.
@@ -353,6 +377,147 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     EXPECT_EQ(report.at(book).at("trade_limit_share"), entry.at("trade_limit_share")) << book;
   }
   EXPECT_EQ(run.tripwire.at("status"), "clear");
+}
+
+// Review A-2 (v8 D-0 warm start): the warm-up decisions move the book as aim-partial-v5 and read
+// no risk row, and gamma is calibrated on the first scored decision. On a risk store with no
+// forecast before decision_begin (every earlier row unforecast, where a read refuses) the warm
+// start runs: its calibration is the flat start's at decision_begin bit for bit (the same aim
+// and slice), its rows are exactly the flat start's scored decisions, the book it scores from
+// is the plain aim-partial-v5 warm start's (not flat), and its calibration block names the
+// warm-up (the flat start's has no such key).
+TEST(SpoV3, WarmStartCalibratesOnTheFirstScoredDecision) {
+  constexpr usize begin = 12, warm = 8;
+  const Role role(40, 12, 53);
+  std::vector<u8> forecast(role.d, u8{1});
+  for (usize d = 0; d < begin; ++d) forecast[d] = 0;
+  const Directory dir;
+  const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 3);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  ASSERT_TRUE(store) << store.error().to_string();
+  const auto risk = std::make_shared<const sp::RiskStore>(std::move(*store));
+  const auto params = sp::v3_params();
+  const auto flat_cfg = nav_config();
+  auto warm_cfg = flat_cfg;
+  warm_cfg.warm_start_sessions = warm;
+  const Replay flat = replay_v3(role, risk, params, flat_cfg, nullptr, begin);
+  const Replay warmed = replay_v3(role, risk, params, warm_cfg, nullptr, begin);
+  ASSERT_FALSE(flat.rows.empty());
+  ASSERT_FALSE(warmed.rows.empty());
+  // gamma of the first scored decision, not of row begin - K (unforecast: it would refuse).
+  const auto& c = warmed.calibration;
+  ASSERT_TRUE(c.done);
+  EXPECT_TRUE(c.warm_up);
+  EXPECT_FALSE(flat.calibration.warm_up);
+  EXPECT_EQ(c.session, role.sessions[begin]);
+  EXPECT_EQ(flat.calibration.session, role.sessions[begin]);
+  EXPECT_EQ(bits(c.gamma), bits(flat.calibration.gamma));
+  EXPECT_EQ(bits(c.aim_vol), bits(flat.calibration.aim_vol));
+  EXPECT_EQ(c.names, flat.calibration.names);
+  // Rows: the scored decisions only, the flat start's.
+  ASSERT_EQ(warmed.rows.size(), flat.rows.size());
+  for (usize k = 0; k < warmed.rows.size(); ++k) {
+    EXPECT_EQ(warmed.rows[k].session, flat.rows[k].session) << k;
+    EXPECT_EQ(warmed.rows[k].book, flat.rows[k].book) << k;
+    EXPECT_GE(warmed.rows[k].session, role.sessions[begin]) << k;
+    EXPECT_EQ(bits(warmed.rows[k].gamma), bits(c.gamma)) << k;
+  }
+  EXPECT_EQ(warmed.rows.front().session, role.sessions[begin]);
+  // The warm-up built the book the scored window starts from (the flat start's is empty).
+  ASSERT_FALSE(warmed.result.days.empty());
+  ASSERT_FALSE(flat.result.days.empty());
+  EXPECT_EQ(warmed.result.days.front().session, role.sessions[begin]);
+  EXPECT_GT(warmed.result.days.front().pretrade_gross_dollars, 0.0);
+  EXPECT_EQ(flat.result.days.front().pretrade_gross_dollars, 0.0);
+  EXPECT_NE(bits(warmed.rows.front().tracking_error_current),
+            bits(flat.rows.front().tracking_error_current));
+  // That book is the plain aim-partial-v5 warm start's (no extension), bit for bit: row
+  // score_begin's book entering it, its EXECUTE of the last warm-up orders and its gross.
+  auto input = role.nav();
+  input.target.decision_begin = begin;
+  const auto plain = st::replay_nav(input, warm_cfg);
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  ASSERT_FALSE(plain->days.empty());
+  const auto& a = plain->days.front();
+  const auto& b = warmed.result.days.front();
+  EXPECT_EQ(a.session_index, b.session_index);
+  EXPECT_EQ(bits(a.pretrade_gross_dollars), bits(b.pretrade_gross_dollars));
+  EXPECT_EQ(bits(a.traded_dollars), bits(b.traded_dollars));
+  EXPECT_EQ(bits(a.gross_leverage), bits(b.gross_leverage));
+  // The calibration block: the warm-up is named only when there was one.
+  ASSERT_TRUE(warmed.calibration_json.contains("warm_up"));
+  EXPECT_EQ(warmed.calibration_json.at("warm_up").get<std::string>(),
+            std::string(sp::warm_up_calibration_text));
+  EXPECT_FALSE(flat.calibration_json.contains("warm_up"));
+  EXPECT_EQ(warmed.calibration_json.at("session"), role.sessions[begin]);
+  EXPECT_TRUE(warmed.captured);
+}
+
+// Review A-4: Ruling E-14's criterion reads the traded book, not the plan. Each row's
+// aim_correlation_traded is the correlation of the holdings its DECIDE read (the observed
+// book's held weights, which the holdings stream reports as the plan's current weights bit for
+// bit) with the aim the tracker received, over every name either holds: recomputed here from
+// the stream. From flat (the first decision) it is NaN; on later decisions it differs from the
+// plan's aim_correlation (fills trail the plan under the 1% ADV trade limit, and the book
+// drifts). The report carries both, and its criterion is the traded mean against .9.
+TEST(SpoV3, CriterionReadsTheTradedBook) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  Recorder recorder(role.n);
+  const Replay run = replay_v3(role, risk, sp::v3_params(), nav_config(), &recorder);
+  ASSERT_FALSE(run.rows.empty());
+  std::map<i64, usize> row_of;
+  for (usize t = 0; t < role.d; ++t) row_of[role.sessions[t]] = t;
+  usize compared = 0, differ = 0;
+  f64 sum = 0, lowest = 2.0;
+  for (const auto& r : run.rows) {
+    const usize t = row_of.at(r.session);
+    ASSERT_EQ(recorder.held.count(t), 1U) << t;
+    ASSERT_EQ(recorder.aim.count(t), 1U) << t;
+    const auto& held = recorder.held.at(t);
+    const auto& aim = recorder.aim.at(t);
+    ASSERT_EQ(aim.size(), role.n) << t;
+    std::vector<f64> traded, aimed;
+    for (usize i = 0; i < role.n; ++i) {
+      if (aim[i] == 0 && held[i] == 0) continue;
+      traded.push_back(held[i]);
+      aimed.push_back(aim[i]);
+    }
+    const f64 expected = pearson(traded, aimed);
+    if (std::isnan(expected)) {
+      EXPECT_TRUE(std::isnan(r.aim_correlation_traded)) << t;
+      continue;
+    }
+    EXPECT_NEAR(r.aim_correlation_traded, expected, 1e-12) << t;
+    ++compared;
+    sum += r.aim_correlation_traded;
+    lowest = std::min(lowest, r.aim_correlation_traded);
+    if (std::isfinite(r.aim_correlation) &&
+        std::abs(r.aim_correlation_traded - r.aim_correlation) > 1e-9)
+      ++differ;
+  }
+  EXPECT_TRUE(std::isnan(run.rows.front().aim_correlation_traded)); // the book is flat
+  ASSERT_GT(compared, 0U);
+  EXPECT_GT(differ, 0U) << "the traded book never differs from the plan";
+  // The report (one book): both correlations; the criterion reads the traded mean.
+  ASSERT_EQ(run.summary.size(), 1U);
+  const auto& entry = run.summary.begin().value();
+  EXPECT_EQ(entry.at("aim_correlation_traded").at("n"), compared);
+  EXPECT_NEAR(entry.at("aim_correlation_traded").at("mean").get<f64>(),
+              sum / static_cast<f64>(compared), 1e-12);
+  EXPECT_EQ(entry.at("aim_correlation_traded").at("min").get<f64>(), lowest);
+  EXPECT_TRUE(entry.contains("aim_correlation")); // the plan's, as before
+  const auto& criterion = entry.at("aim_correlation_criterion");
+  EXPECT_EQ(criterion.at("reads"), "aim_correlation_traded.mean");
+  EXPECT_EQ(criterion.at("threshold").get<f64>(), sp::v3_aim_correlation_min);
+  EXPECT_EQ(sp::v3_aim_correlation_min, 0.9);
+  const f64 value = criterion.at("value").get<f64>();
+  EXPECT_EQ(value, entry.at("aim_correlation_traded").at("mean").get<f64>());
+  EXPECT_EQ(criterion.at("met").get<bool>(), value >= 0.9);
+  EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_criterion"),
+            criterion);
 }
 
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta

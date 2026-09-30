@@ -57,6 +57,7 @@ struct Stats {
 struct BookStats {
   usize decisions{}, unconverged{}, unmet{}, breaches{}, capped_decisions{}, capped_max{};
   Stats iterations, primal, dual, tracking_error, tracking_error_current, share, correlation;
+  Stats correlation_traded; // review A-4: the E-14 criterion's input
   Stats trade_cost, gross, turnover;
   Stats te_shadow, correlation_shadow, cost_shadow, gross_shadow, turnover_shadow;
   void add(const TrackingRow& r) {
@@ -70,6 +71,7 @@ struct BookStats {
     primal.add(r.primal_residual); dual.add(r.dual_residual);
     tracking_error.add(r.tracking_error); tracking_error_current.add(r.tracking_error_current);
     share.add(r.trade_limit_share); correlation.add(r.aim_correlation);
+    correlation_traded.add(r.aim_correlation_traded);
     trade_cost.add(r.trade_cost); gross.add(r.gross); turnover.add(r.turnover);
     te_shadow.add(r.tracking_error_shadow); correlation_shadow.add(r.aim_correlation_shadow);
     cost_shadow.add(r.trade_cost_shadow); gross_shadow.add(r.gross_shadow);
@@ -81,12 +83,26 @@ std::map<std::string, BookStats> by_book(std::span<const TrackingRow> rows) {
   for (const auto& r : rows) books[r.book].add(r);
   return books;
 }
-// The report-only block of one book (the tripwire record and the summary share it).
+// Ruling E-14's criterion on one book (review A-4): the mean correlation of the traded book
+// with the aim (aim_correlation_traded), not the plan's (aim_correlation), against .9.
+Json e14_criterion(const BookStats& b) {
+  const f64 value = b.correlation_traded.mean();
+  return Json{{"rule", "Ruling E-14: mean correlation of the traded book with the aim >= .9 "
+                       "(threshold = v3_aim_correlation_min)"},
+              {"reads", "aim_correlation_traded.mean"},
+              {"threshold", v3_aim_correlation_min}, {"value", finite_or_null(value)},
+              {"met", std::isfinite(value) ? Json(value >= v3_aim_correlation_min)
+                                           : Json(nullptr)}};
+}
+// The report-only block of one book (the tripwire record and the summary share it): the
+// plan's and the traded book's aim correlation, the criterion reading the traded one.
 Json report(const BookStats& b) {
   return Json{{"decisions", b.decisions},
               {"tracking_error", b.tracking_error.mean_max()},
               {"trade_limit_share", b.share.mean_max()},
               {"aim_correlation", b.correlation.mean_min()},
+              {"aim_correlation_traded", b.correlation_traded.mean_min()},
+              {"aim_correlation_criterion", e14_criterion(b)},
               {"unconverged", b.unconverged}, {"limits_unmet", b.unmet}};
 }
 // Holding period of a plan (gross / one-way turnover, sessions).
@@ -113,6 +129,10 @@ Trip count_trips(std::span<const TrackingRow> rows) {
 }
 constexpr const char* correlation_unit =
     "Pearson correlation over the optimized names of the planned (shadow) and the aim weights";
+constexpr const char* traded_correlation_unit =
+    "Pearson correlation of the traded book (the holdings DECIDE read at d: fills, caps, "
+    "blocks and drift of earlier decisions, nonmember exits and unpriced members included) and "
+    "the aim, over every name either holds; Ruling E-14's criterion reads its mean";
 } // namespace
 
 SpoParams v3_params() {
@@ -190,20 +210,23 @@ Json tracking_parameters_json(const SpoParams& p, f64 horizon, f64 gross_bound) 
 }
 
 Json tracking_calibration_json(const SpoParams& p, const Calibration& c) {
-  return Json{{"done", c.done}, {"session", c.session},
-              {"rule", "gamma = S_prior / sigma_aim, sigma_aim = sqrt(252 w_aim' Sigma w_aim) of "
-                       "the whole aim (its names with a risk row) at the first rebalance "
-                       "decision"},
-              {"sharpe_prior", finite_or_null(p.sharpe_prior)},
-              {"sigma_aim", finite_or_null(c.aim_vol)}, {"aim_gross", finite_or_null(c.aim_gross)},
-              {"gamma", finite_or_null(c.gamma)}, {"names", c.names}};
+  Json j{{"done", c.done}, {"session", c.session},
+         {"rule", "gamma = S_prior / sigma_aim, sigma_aim = sqrt(252 w_aim' Sigma w_aim) of "
+                  "the whole aim (its names with a risk row) at the first rebalance "
+                  "decision"},
+         {"sharpe_prior", finite_or_null(p.sharpe_prior)},
+         {"sigma_aim", finite_or_null(c.aim_vol)}, {"aim_gross", finite_or_null(c.aim_gross)},
+         {"gamma", finite_or_null(c.gamma)}, {"names", c.names}};
+  if (c.warm_up) j["warm_up"] = warm_up_calibration_text; // review A-2; absent without one
+  return j;
 }
 
 std::string tracking_csv(std::span<const TrackingRow> rows) {
   std::string text =
       "session,book,members,optimized,unpriced_members,fixed_nonmembers,gamma,iterations,"
       "converged,limits_met,primal_residual,dual_residual,limit_violation,clipped_eigenvalues,"
-      "tracking_error,tracking_error_current,aim_correlation,objective,trade_cost,"
+      "tracking_error,tracking_error_current,aim_correlation,aim_correlation_traded,objective,"
+      "trade_cost,"
       "amortized_cost,borrow,gross,aim_gross,net,long,short,abs_beta,turnover,no_trade,"
       "at_trade_limit,trade_limit_share,at_locate_floor,gross_bound_breached,nu,rho,"
       "capped_specific,gross_shadow,turnover_shadow,trade_cost_shadow,tracking_error_shadow,"
@@ -217,7 +240,8 @@ std::string tracking_csv(std::span<const TrackingRow> rows) {
             number(r.primal_residual) + ',' + number(r.dual_residual) + ',' +
             number(r.limit_violation) + ',' + u(r.clipped_eigenvalues) + ',' +
             number(r.tracking_error) + ',' + number(r.tracking_error_current) + ',' +
-            number(r.aim_correlation) + ',' + number(r.objective) + ',' + number(r.trade_cost) +
+            number(r.aim_correlation) + ',' + number(r.aim_correlation_traded) + ',' +
+            number(r.objective) + ',' + number(r.trade_cost) +
             ',' + number(r.amortized_cost) + ',' + number(r.borrow) + ',' + number(r.gross) +
             ',' + number(r.aim_gross) + ',' + number(r.net) + ',' + number(r.long_weight) + ',' +
             number(r.short_weight) + ',' + number(r.abs_beta) + ',' + number(r.turnover) + ',' +
@@ -240,6 +264,7 @@ Json tracking_units_json() {
               {"amortized_cost", "trade_cost / H"}, {"borrow", session},
               {"trade_cost", decision}, {"trade_cost_shadow", decision},
               {"aim_correlation", correlation_unit}, {"aim_correlation_shadow", correlation_unit},
+              {"aim_correlation_traded", traded_correlation_unit},
               {"primal_residual", "weight units"},
               {"dual_residual", "weight units (rho step over gamma d)"}};
 }

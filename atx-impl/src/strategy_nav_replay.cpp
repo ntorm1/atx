@@ -1060,6 +1060,31 @@ struct Observer {
 bool cadence_day(usize t, usize begin, usize cadence) {
   return t >= begin ? (t - begin) % cadence == 0 : (begin - t) % cadence == 0;
 }
+// UTC calendar date of a session key (ns since the epoch), YYYY-MM-DD.
+std::string session_date(i64 session_ns) {
+  namespace ch = std::chrono;
+  const ch::sys_time<ch::nanoseconds> at{ch::nanoseconds(session_ns)};
+  const ch::year_month_day ymd{ch::floor<ch::days>(at)};
+  const auto two = [](unsigned v) { return (v < 10 ? "0" : "") + std::to_string(v); };
+  return std::to_string(static_cast<int>(ymd.year())) + '-' +
+         two(static_cast<unsigned>(ymd.month())) + '-' + two(static_cast<unsigned>(ymd.day()));
+}
+// Review A-3: a warm start whose K sessions left every book flat on row score_begin (gross
+// leverage 0 after that row's EXECUTE) built no book; its scored rows would be a flat start's
+// with one more (zero) return row, so the run is refused.
+tl::unexpected<co::Error> refuse_inert_warm_start(const TargetReplayInput& x, usize warm) {
+  const usize begin = x.decision_begin;
+  const i64 first = x.session_keys[begin];
+  return co::Err(co::ErrorCode::InvalidArgument,
+                 "nav replay: the warm start built no book: after --warm-start-sessions " +
+                     std::to_string(warm) + " (warm-up role rows " +
+                     std::to_string(begin - warm) + ".." + std::to_string(begin - 1) +
+                     ") every book is flat on the first scored session " +
+                     session_date(first) + " (session_ns " + std::to_string(first) +
+                     ", role row " + std::to_string(begin) +
+                     " = score_begin; gross leverage 0 after its EXECUTE): the warm-up placed "
+                     "no fill that survived to score_begin");
+}
 // A fresh row t (every other field is filled by the session's MARK/EXECUTE/DECIDE).
 NavReplayDay open_day(const TargetReplayInput& x, usize t, bool return_observation) {
   NavReplayDay day;
@@ -1177,7 +1202,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    par::DetPool* pool, StageClock* stages) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   // The shared construction's config (neutralization, price risk, guard) is every book's:
-  // replay_books admits only variants that agree on it; the cadence may differ per book.
+  // replay_books admits only variants that agree on it (with the ADV cap also on the aim
+  // leverage: one call per leverage group, review A-1); the cadence may differ per book.
   const auto& target = ctxs.front().cfg.target;
   // The rate, order basis, locate-in-aim, cache and warm start are the base config's,
   // identical for every book.
@@ -1246,8 +1272,15 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       return close_book(x, ctxs[k], *books[k], shared, tiers, cache, s, decided, observer,
                         holdings, days[k]);
     }));
+    // Review A-3: the warm-up must have built a book (row score_begin, EXECUTE included, of
+    // some book not flat). Without a warm start there is no boundary: nothing is checked.
+    if (s.boundary && std::none_of(days.begin(), days.end(), [](const NavReplayDay& day) {
+          return day.gross_leverage > 0;
+        }))
+      return refuse_inert_warm_start(x, warm);
   }
-  if (stages) stages->exposures = shared.price.exposure.ring.seconds;
+  // Accumulated: a grid of several leverage groups (review A-1) calls run_books per group.
+  if (stages) stages->exposures += shared.price.exposure.ring.seconds;
   std::vector<NavReplayResult> results;
   results.reserve(count);
   for (auto& book : books) {
@@ -2090,7 +2123,9 @@ bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b)
 // cadence, trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage,
 // exit_rate) and the scenario: the shared construction, the shared liquidity windows and
 // the book-independent settings are then one. The v8 construction options (hold band, ADV
-// cap) shape the shared desired target, so they are shared too.
+// cap) shape the shared desired target, so they are shared too. The ADV cap Q ADV /
+// (aim_leverage NAV) also reads aim_leverage, a variant flag: replay_books then forms one
+// construction per distinct leverage (review A-1).
 bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
   const auto& s = a.target; const auto& t = b.target;
   return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
@@ -2106,8 +2141,27 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
          a.locate_in_aim == b.locate_in_aim && a.liquidity_cache == b.liquidity_cache &&
          a.warm_start_sessions == b.warm_start_sessions && a.book_workers == b.book_workers;
 }
-// Every variant x every scenario (book v * scenarios + k) in one lockstep run_books.
-// One variant is replay_nav_scenarios: the same validation and the same books.
+// The variants' lockstep groups (variant indices, in order of first appearance): one group
+// of every variant, except with the ADV cap (adv_hold_q > 0, shared by same_shared), whose
+// shared construction reads aim_leverage: then one group per distinct aim leverage (review
+// A-1), each variant capped at its own leverage as in its standalone run.
+std::vector<std::vector<usize>> leverage_groups(std::span<const NavReplayConfig> variants) {
+  std::vector<std::vector<usize>> groups;
+  const bool capped = variants.front().target.adv_hold_q > 0;
+  for (usize v = 0; v < variants.size(); ++v) {
+    auto found = groups.begin();
+    if (capped)
+      found = std::find_if(groups.begin(), groups.end(), [&](const std::vector<usize>& g) {
+        return variants[g.front()].target.aim_leverage == variants[v].target.aim_leverage;
+      });
+    if (found == groups.end()) groups.push_back({v});
+    else found->push_back(v);
+  }
+  return groups;
+}
+// Every variant x every scenario (book v * scenarios + k) in one lockstep run_books (with
+// the ADV cap at several aim leverages, one per leverage group: leverage_groups). One
+// variant is replay_nav_scenarios: the same validation and the same books.
 co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,
     std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages) {
@@ -2188,10 +2242,28 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     }
     std::unique_ptr<par::DetPool> pool;
     if (base.book_workers > 1) pool = std::make_unique<par::DetPool>(base.book_workers);
-    ATX_TRY(auto flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
     std::vector<std::vector<NavReplayResult>> out(variants.size());
-    for (usize k = 0; k < books; ++k)
-      out[k / scenarios.size()].push_back(std::move(flat[k]));
+    const auto groups = leverage_groups(variants);
+    if (groups.size() == 1) { // every variant in one lockstep run (always without the cap)
+      ATX_TRY(auto flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
+      for (usize k = 0; k < books; ++k)
+        out[k / scenarios.size()].push_back(std::move(flat[k]));
+      return co::Ok(std::move(out));
+    }
+    // Review A-1: the ADV cap at several aim leverages. Each group of variants with one
+    // leverage runs its own lockstep (its shared construction capped at that leverage), so
+    // every variant is its standalone replay; groups run one after the other.
+    std::vector<Ctx> members;
+    members.reserve(books);
+    for (const auto& group : groups) {
+      members.clear();
+      for (const usize v : group)
+        for (usize k = 0; k < scenarios.size(); ++k)
+          members.push_back(ctxs[v * scenarios.size() + k]);
+      ATX_TRY(auto flat, run_books(x, in.financing, members, observer, pool.get(), stages));
+      for (usize j = 0; j < flat.size(); ++j)
+        out[group[j / scenarios.size()]].push_back(std::move(flat[j]));
+    }
     return co::Ok(std::move(out));
   } catch (const std::system_error&) { // the book pool's threads could not start
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: book worker threads");
@@ -2422,14 +2494,30 @@ struct NavRun {
   bool summary_timers;              // write stage_seconds into summary.json (single runs)
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
-// accepted the input (warm_start_sessions <= decision_begin).
+// accepted the input (warm_start_sessions <= decision_begin). The role rows of the first
+// warm-up decision and of score_begin (review A-3); publish_nav adds each book's gross
+// leverage on row score_begin.
 Json warm_start_record(const NavReplayConfig& base, const TargetReplayInput& x) {
   const usize k = base.warm_start_sessions;
   if (!k) return Json(nullptr);
   return Json{{"sessions", k},
               {"first_decision_session_ns", x.session_keys[x.decision_begin - k]},
               {"scoring_begins_session_ns", x.session_keys[x.decision_begin]},
+              {"first_decision_row", x.decision_begin - k},
+              {"score_begin_row", x.decision_begin},
               {"rule", "recipe warm_start_rule"}};
+}
+// Review A-3: each book's gross leverage on row score_begin (its first reported row: the
+// daily CSV's gross_leverage there, after that session's EXECUTE), keyed by book label. The
+// replay refused the run if every one is 0.
+Json score_begin_gross(const NavRun& run, bool tiered) {
+  Json gross = Json::object();
+  for (usize k = 0; k < run.scenarios.size(); ++k) {
+    const auto& days = run.results[k].days;
+    gross[scenario_label(run.scenarios[k], tiered)] =
+        days.empty() ? Json(nullptr) : finite_or_null(days.front().gross_leverage);
+  }
+  return gross;
 }
 // construction.v5 of one book over its decision rows: the rule's plan (pre locate
 // rule) gross, net and held share of the decision's members.
@@ -2518,7 +2606,11 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     summary["locate_in_aim"] = Json{{"zeroed_special_short_aims", zeroed},
         {"basis", "member-decisions whose negative tied-rank aim was set to 0 (special tier)"}};
   }
-  if (!run.warm_start.is_null()) summary["warm_start"] = run.warm_start; // v8, only when on
+  if (!run.warm_start.is_null()) { // v8, only when on
+    auto warm = run.warm_start;
+    warm["score_begin_gross_leverage"] = score_begin_gross(run, tiered); // review A-3
+    summary["warm_start"] = std::move(warm);
+  }
   v7::extend_summary(summary); // L4 hook: identity unless extended
   if (run.times && run.summary_timers) { // v8 --stage-timers: the one key a clock writes
     summary["stage_seconds"] = run.times->json();
@@ -2708,6 +2800,10 @@ co::Status publish_holdings(const NavRun& run, const HoldingsEmitter& csv,
                  "column of v1: the stored ones exactly, the derived ones by the declared "
                  "expressions"}};
   if (csv.hold_state()) manifest["hold_band_state"] = hold_band_state_declaration; // v8 E-16
+  // v8 D-0 warm start only (review A-3): K and the role row of the first reported session.
+  if (!run.warm_start.is_null())
+    manifest["warm_start"] = Json{{"warm_start_sessions", run.warm_start.at("sessions")},
+                                  {"score_begin_row", run.warm_start.at("score_begin_row")}};
   v7::extend_holdings(manifest); // L4 hook: identity unless extended
   progress << "nav replay holdings " << book << ": " << csv.rows << " rows over "
            << csv.sessions << " sessions\n";
@@ -2885,6 +2981,12 @@ constexpr const char* grid_declaration =
     "books run their own MARK, EXECUTE, DECIDE and close in lockstep. <id>/ is byte for "
     "byte the directory of the standalone nav run with the base flags and the variant's "
     "flags; this manifest is written last";
+// Only with --adv-hold-q and several aim leverages (review A-1).
+constexpr const char* leverage_groups_declaration =
+    "v8 adv-hold-v1 caps the shared desired target at Q ADV / (aim_leverage NAV) and "
+    "--aim-leverage is a variant flag: the variants run in one lockstep per distinct aim "
+    "leverage (these groups, in grid order), each group's shared construction capped at its "
+    "own leverage, so every <id>/ stays byte for byte its standalone run";
 } // namespace
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
@@ -3034,6 +3136,16 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
                   {"role_sha256", cfg.role_sha256}, {"books", books},
                   {"book_workers", base.book_workers}, {"variants", std::move(published)},
                   {"semantics", grid_declaration}};
+    if (const auto groups = leverage_groups(configs); groups.size() > 1) { // review A-1
+      Json ids = Json::array();
+      for (const auto& group : groups) {
+        Json members = Json::array();
+        for (const usize v : group) members.push_back(grid.variants[v].id);
+        ids.push_back(std::move(members));
+      }
+      manifest["leverage_groups"] =
+          Json{{"rule", leverage_groups_declaration}, {"groups", std::move(ids)}};
+    }
     if (timed) manifest["stage_seconds"] = times.json();
     progress << "nav grid: " << configs.size() << " variants x " << scenarios.size()
              << " scenario books published under " << root.string() << '\n';

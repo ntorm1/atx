@@ -2701,13 +2701,15 @@ TEST(StrategyIcRunner, CacheMissOnRoleChange) {
 // ---- Platform v8 B-2: field caps (manifest rows 1,024; referenced fields 256) and workers 16 ----
 // Pads a fields directory's manifest to `rows` rows with unreferenced entries shaped
 // like its first row (pad_0000, ...; payload SHAs no file backs: never opened) and re-pins it.
-bool pad_manifest(const std::string& directory,usize rows,std::string& pin) {
+// `definition_bytes` > 0 gives each added row a definition of that many characters.
+bool pad_manifest(const std::string& directory,usize rows,std::string& pin,usize definition_bytes=0) {
   const auto path=std::filesystem::path(directory)/"manifest.json";
   auto manifest=read_json(path); const auto first=manifest.at("fields").at(0);
   const std::string sha(64,'a');
   while (manifest.at("fields").size()<rows) {
     const auto name="pad_"+std::to_string(10000+manifest.at("fields").size()).substr(1);
     auto row=first; row["name"]=name; row["file"]=name+".f64"; row["sha256"]=sha;
+    if (definition_bytes>0) row["definition"]=std::string(definition_bytes,'d');
     manifest["fields"].push_back(row);
     manifest["files"][name+".f64"]={{"bytes",D*N*sizeof(f64)},{"sha256",sha}};
   }
@@ -2750,6 +2752,35 @@ TEST(FieldCaps, Admits200RowManifestWith40Referenced) {
   EXPECT_NE(refused.error().to_string().find("train fields manifest field list (1..1024 rows)"),std::string::npos)
       << refused.error().to_string();
   EXPECT_TRUE(refused_log.str().empty());
+}
+// Review B-4: the fields manifest has its own byte bound (ic_fields_manifest_max_bytes,
+// 16 MiB). 100 rows as wide as the widest published fields-v9 row (sv_ratio126, 12.3 KB)
+// weigh over the 1 MiB metadata bound and still plan; one past 16 MiB refuses naming both
+// bounds, before any payload or output. Other metadata files keep 1 MiB.
+TEST(FieldCaps, AdmitsA100RowManifestOfPublishedRowWidth) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  ASSERT_TRUE(pad_manifest(cfg.train_fields_directory,100,cfg.train_fields_sha256,12300));
+  const auto manifest=std::filesystem::path(cfg.train_fields_directory)/"manifest.json";
+  EXPECT_EQ(read_json(manifest).at("fields").size(),100U);
+  EXPECT_GT(std::filesystem::file_size(manifest),1ULL<<20);
+  EXPECT_LT(std::filesystem::file_size(manifest),atx::impl::strategy::ic_fields_manifest_max_bytes);
+  cfg.plan_only=true;
+  std::ostringstream plan; const auto admitted=atx::impl::strategy::run_ic(cfg,plan);
+  ASSERT_TRUE(admitted) << admitted.error().to_string();
+  const auto roles=Json::parse(plan.str()).at("research_fields").at("roles");
+  ASSERT_EQ(roles.size(),2U);
+  EXPECT_EQ(roles.at(0).at("manifest_sha256"),cfg.train_fields_sha256);
+  // One more row carrying 16 MiB of definition text crosses the bound.
+  ASSERT_TRUE(pad_manifest(cfg.train_fields_directory,101,cfg.train_fields_sha256,
+                           static_cast<usize>(atx::impl::strategy::ic_fields_manifest_max_bytes)));
+  std::ostringstream refused_log; const auto refused=atx::impl::strategy::run_ic(cfg,refused_log);
+  ASSERT_FALSE(refused);
+  const auto message=refused.error().to_string();
+  EXPECT_NE(message.find("over 16 MiB"),std::string::npos) << message;
+  EXPECT_NE(message.find("train fields manifest bounds: 16 MiB, 1..1024 rows"),std::string::npos) << message;
+  EXPECT_TRUE(refused_log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
 }
 // 256 referenced fields (bits 0..255 of the FieldMask) score end to end; a 257th refuses
 // when the library compiles, before any manifest, role or output.
@@ -3033,6 +3064,40 @@ TEST(CompositionV8, ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput) {
           << text << " -> " << status.error().to_string();
       EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
     }
+  }
+}
+// Review B-3 (Ruling E-10): a role built with --delisting-returns is refused as a signal
+// role at admission, train or validation, before any payload or output; a role whose
+// delisting block only marks terminations (returns_applied false) is admitted.
+TEST(StrategyIcRunner, DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto declare=[](const std::string& manifest,bool applied,std::string& sha) {
+    auto j=read_json(manifest);
+    j["universe"]={{"id","linked-operating-v1"},{"delisting",{{"returns_applied",applied}}}};
+    return json_file(manifest,j,sha);
+  };
+  ASSERT_TRUE(declare(cfg.train_manifest,false,cfg.train_sha256));
+  ASSERT_TRUE(declare(cfg.validation_manifest,false,cfg.validation_sha256));
+  cfg.plan_only=true;
+  std::ostringstream admitted;
+  const auto marked=atx::impl::strategy::run_ic(cfg,admitted);
+  ASSERT_TRUE(marked) << marked.error().to_string();
+  for (const bool train:{true,false}) {
+    auto role_cfg=cfg;
+    const auto& manifest=train?role_cfg.train_manifest:role_cfg.validation_manifest;
+    ASSERT_TRUE(declare(manifest,true,train?role_cfg.train_sha256:role_cfg.validation_sha256));
+    for (const bool plan_only:{true,false}) {
+      role_cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(role_cfg,attempt);
+      ASSERT_FALSE(status);
+      const auto message=status.error().to_string();
+      EXPECT_NE(message.find(manifest),std::string::npos) << message;
+      EXPECT_NE(message.find("universe.delisting.returns_applied true"),std::string::npos) << message;
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+    ASSERT_TRUE(declare(manifest,false,train?role_cfg.train_sha256:role_cfg.validation_sha256));
   }
 }
 } // namespace

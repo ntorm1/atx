@@ -1,10 +1,18 @@
 #pragma once
 #include <iosfwd>
+#include <map>
 #include <string>
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 namespace atx::impl::strategy {
+// Bytes of a research fields manifest (atx.research-role-fields/v1) the IC runner and the
+// marginal verb read (review B-4). Every other metadata file keeps 1 MiB, but a published
+// field row (definition, sources, coverage, caveats, its file receipt) is 7.7 KB on average
+// on fields-v9 and 12.3 KB at its widest (sv_ratio126): 1 MiB held 82 such rows, far under
+// the 1,024-row cap, and 73 of them already publish 927,292 B. 1,024 rows of the widest width
+// publish 12,591,307 B; 16 MiB (the risk verb's manifest bound) keeps that cap reachable.
+inline constexpr atx::u64 ic_fields_manifest_max_bytes=16ULL<<20;
 struct IcRunnerConfig {
   std::string library_path, library_sha256;
   std::string train_manifest, train_sha256;
@@ -82,5 +90,20 @@ struct IcCacheVmIdentity {
 // Same shape for the IC-result cache: its semantics version, identity (compiler,
 // FP flavor, IC SIMD width) and the engine IC scoring sources pinned against it.
 [[nodiscard]] IcCacheVmIdentity ic_result_cache_identity();
+// The theme grouping a composition weights document pins for the blend, read with the
+// same block checks as the runner's composition (platform v8 review B-2: the marginal
+// verb groups the book by these themes, not by the library rows). The blocks are the
+// exclusive `theme_standardise` (ew-theme-std-v1) and `theme_redistribution`
+// (ew-theme-v6). `block` names the one present, empty when neither is (then `themes` is
+// empty). `rerank` is true exactly for theme_standardise with rerank true: the blend
+// re-ranks each theme composite before adding it. `themes`: candidate id -> theme name
+// ([a-z0-9_]{1,64}) as the block lists it. Err (InvalidArgument) on text that is not a
+// JSON object, duplicate keys, both blocks, or a block of the wrong shape.
+struct IcWeightsThemes {
+  std::string block;
+  bool rerank{false};
+  std::map<std::string,std::string> themes;
+};
+[[nodiscard]] atx::core::Result<IcWeightsThemes> ic_weights_themes(const std::string& weights_text);
 [[nodiscard]] int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err);
 } // namespace atx::impl::strategy

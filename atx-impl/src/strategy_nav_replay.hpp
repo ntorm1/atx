@@ -172,8 +172,10 @@ struct NavReplayConfig {
   // decision_begin is the scored base row (its warm-up MARK is not reported; its fills
   // and decision are), return rows are [decision_begin + 1, decision_end), and a
   // deployment during the warm-up leaves deployment_index before the first row. The
-  // cadence phase stays relative to decision_begin. 0 (default): the flat start, every
-  // output bit for bit.
+  // cadence phase stays relative to decision_begin. A warm start that built no book (every
+  // book's row decision_begin, its EXECUTE included, at gross 0) is refused with
+  // InvalidArgument naming K and the first scored session (review A-3). 0 (default): the
+  // flat start, every output bit for bit.
   atx::usize warm_start_sessions{};
   // Books on a deterministic pool (v8 D-1): each session's per-book phases (MARK and
   // EXECUTE; then DECIDE, close and report) run on book_workers threads around the shared
@@ -406,8 +408,10 @@ public:
 // trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage, exit_rate);
 // any other difference (the v8 hold_band and adv_hold_q included) is InvalidArgument, and
 // with a hold band every variant has the base's cadence (the band's state advances on the
-// shared cadence decisions). 1 <= variants <= nav_max_grid_variants; the workspace budget is
-// charged for every book.
+// shared cadence decisions). With adv_hold_q > 0 the cap Q ADV / (aim_leverage NAV) reads a
+// variant flag: the variants then run in one lockstep per distinct aim_leverage, each
+// capped at its own (review A-1; without the cap, one lockstep as before). 1 <= variants <=
+// nav_max_grid_variants; the workspace budget is charged for every book.
 inline constexpr atx::usize nav_max_grid_variants = 16;
 [[nodiscard]] atx::core::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,
@@ -538,10 +542,14 @@ struct NavFieldsPin {
 // and order_basis to the summary; locate-in-aim adds locate_in_aim / locate_in_aim_rule
 // to the recipe and locate_in_aim {zeroed_special_short_aims} to the summary; the
 // liquidity cache adds nothing (every output byte is unchanged). A warm start K > 0 adds
-// warm_start_sessions / warm_start_rule to the recipe and warm_start {sessions,
-// first_decision_session_ns, scoring_begins_session_ns} to the summary; it is refused
-// (InvalidArgument, before any payload is loaded) when K exceeds the pinned role's
-// score_begin. NavExecutionOptions{} is exactly the five-argument overload.
+// warm_start_sessions / warm_start_rule to the recipe, warm_start {sessions,
+// first_decision_session_ns, scoring_begins_session_ns, first_decision_row, score_begin_row,
+// score_begin_gross_leverage (per book: gross leverage of row score_begin)} to the summary
+// and, with --emit-holdings, warm_start {warm_start_sessions, score_begin_row} to the
+// holdings manifest (review A-3); it is refused (InvalidArgument, before any payload is
+// loaded) when K exceeds the pinned role's score_begin, and after the replay's row
+// score_begin when every book is flat there. NavExecutionOptions{} is exactly the
+// five-argument overload.
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
@@ -597,8 +605,9 @@ struct NavEmitOptions {
 // (exclusive): <output>/<id>/ byte for byte the directory the standalone nav run with the
 // variant's flags publishes, then <output>/grid_manifest.json LAST (atx.nav-grid-run/v1:
 // the grid file SHA, each variant's flags and file SHAs; stage_seconds with --stage-timers,
-// which then stay out of the variant summaries). Refused with --emit-holdings and while a
-// v7 extension is installed.
+// which then stay out of the variant summaries; leverage_groups, only with --adv-hold-q and
+// several aim leverages: the lockstep groups, review A-1). Refused with --emit-holdings and
+// while a v7 extension is installed.
 [[nodiscard]] atx::core::Status run_nav_grid(const TargetReplayRunConfig& cfg,
                                              const NavTurnoverLimits& limits,
                                              const NavFieldsPin& fields,
