@@ -369,6 +369,23 @@ TEST(MarginalIc, RefusesInputsNotBoundToThePool) {
   EXPECT_FALSE(fs::exists(f.cfg.output_directory));
 }
 
+// Review B-3 (Ruling E-10): the pool's role carries the scored signals, so a role built with
+// --delisting-returns is refused, naming the manifest and the flag, before any output.
+TEST(MarginalIc, DelistingReturnsRoleIsRefused) {
+  Fixture f(Mode::Noise); ASSERT_TRUE(f.ok);
+  auto manifest = read_json(f.cfg.role_manifest);
+  manifest["universe"] = {{"id", "linked-operating-v1"}, {"delisting", {{"returns_applied", true}}}};
+  std::string unused;
+  ASSERT_TRUE(json_file(f.cfg.role_manifest, manifest, unused));
+  std::ostringstream progress;
+  const auto status = st::run_marginal_ic(f.cfg, progress);
+  ASSERT_FALSE(status);
+  const auto message = status.error().to_string();
+  EXPECT_NE(message.find(f.cfg.role_manifest), std::string::npos) << message;
+  EXPECT_NE(message.find("universe.delisting.returns_applied true"), std::string::npos) << message;
+  EXPECT_FALSE(fs::exists(f.cfg.output_directory));
+}
+
 // Review B-2: an ew-theme-std-v1 weights file groups the book by its theme_standardise block
 // (t_one, t_two), not by the library rows (alpha, delta, beta). With rerank each theme regressor
 // is the blend's re-ranked theme term, so the marginal statistic is taken inside the theme:

@@ -210,7 +210,11 @@ struct Budget {
 // `themes`: pinned themes under `rule` (0: none, admission unchanged).
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
                       std::string pin,std::string name,bool enforce_budget,usize themes,IcThemeRule rule) {
-  ATX_TRY(auto j,pinned_json(path,pin));
+  ATX_TRY(auto text,pinned_text(path,pin));
+  // Ruling E-10 (review B-3): every role the runner admits carries signals, so a role
+  // built with --delisting-returns is refused here, before any payload or output.
+  ATX_TRY_VOID(engine::data::refuse_delisting_returns_signal_role(text,path));
+  auto j=Json::parse(text);
   const auto d=j.at("dates").get<u64>(),n=j.at("instruments").get<u64>();
   const auto begin=j.at("score_begin").get<u64>(),end=j.at("score_end").get<u64>();
   if (!d || d>4096 || !n || n>20000 || end!=d || begin>=end || begin<383 ||

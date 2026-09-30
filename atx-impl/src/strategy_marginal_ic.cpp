@@ -401,6 +401,12 @@ co::Result<Labels> research_labels(const engine::data::StrategyRoleData& role) {
   out.last_session_ns = role.session_keys[out.begin + out.rows - 1U];
   return co::Ok(std::move(out));
 }
+// Ruling E-10 (review B-3): the pool's role is the one its candidate signals were scored on,
+// so a role built with --delisting-returns is refused before any payload is opened.
+co::Status refuse_terminal_return_role(const MarginalIcConfig& cfg) {
+  ATX_TRY(const auto manifest, read_text(cfg.role_manifest, "role manifest"));
+  return engine::data::refuse_delisting_returns_signal_role(manifest, cfg.role_manifest);
+}
 // The role lives only inside this call: it is released before any payload is streamed.
 co::Result<Labels> load_labels(const MarginalIcConfig& cfg, const Pool& pool) {
   ATX_TRY(auto role, engine::data::read_strategy_role(cfg.role_manifest, cfg.max_working_bytes));
@@ -606,6 +612,7 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     if (fs::exists(cfg.output_directory, ec) || ec)
       return co::Err(fail(co::ErrorCode::AlreadyExists, "output directory must be new: " + cfg.output_directory));
     ATX_TRY(const auto pool, read_pool(cfg));
+    ATX_TRY_VOID(refuse_terminal_return_role(cfg));
     std::string library_sha;
     ATX_TRY(const auto lib, read_library(cfg, library_sha));
     ATX_TRY(const auto themes, read_themes(cfg, pool, lib));

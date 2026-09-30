@@ -3035,4 +3035,38 @@ TEST(CompositionV8, ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput) {
     }
   }
 }
+// Review B-3 (Ruling E-10): a role built with --delisting-returns is refused as a signal
+// role at admission, train or validation, before any payload or output; a role whose
+// delisting block only marks terminations (returns_applied false) is admitted.
+TEST(StrategyIcRunner, DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto declare=[](const std::string& manifest,bool applied,std::string& sha) {
+    auto j=read_json(manifest);
+    j["universe"]={{"id","linked-operating-v1"},{"delisting",{{"returns_applied",applied}}}};
+    return json_file(manifest,j,sha);
+  };
+  ASSERT_TRUE(declare(cfg.train_manifest,false,cfg.train_sha256));
+  ASSERT_TRUE(declare(cfg.validation_manifest,false,cfg.validation_sha256));
+  cfg.plan_only=true;
+  std::ostringstream admitted;
+  const auto marked=atx::impl::strategy::run_ic(cfg,admitted);
+  ASSERT_TRUE(marked) << marked.error().to_string();
+  for (const bool train:{true,false}) {
+    auto role_cfg=cfg;
+    const auto& manifest=train?role_cfg.train_manifest:role_cfg.validation_manifest;
+    ASSERT_TRUE(declare(manifest,true,train?role_cfg.train_sha256:role_cfg.validation_sha256));
+    for (const bool plan_only:{true,false}) {
+      role_cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(role_cfg,attempt);
+      ASSERT_FALSE(status);
+      const auto message=status.error().to_string();
+      EXPECT_NE(message.find(manifest),std::string::npos) << message;
+      EXPECT_NE(message.find("universe.delisting.returns_applied true"),std::string::npos) << message;
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+    ASSERT_TRUE(declare(manifest,false,train?role_cfg.train_sha256:role_cfg.validation_sha256));
+  }
+}
 } // namespace

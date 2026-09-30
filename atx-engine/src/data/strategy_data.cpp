@@ -170,4 +170,37 @@ core::Result<StrategyRoleData> read_strategy_role(const std::string& path, u64 m
     return core::Err(core::ErrorCode::InvalidArgument, std::string("strategy role: ") + e.what());
   }
 }
+
+core::Result<bool> role_delisting_returns_applied(std::string_view manifest_text) {
+  const auto malformed = [](const char* what) {
+    return core::Err(core::ErrorCode::InvalidArgument, std::string("strategy role: manifest ") + what);
+  };
+  try {
+    const auto j = Json::parse(manifest_text.begin(), manifest_text.end(), nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return malformed("is not a JSON object");
+    const auto universe = j.find("universe");
+    if (universe == j.end()) return core::Ok(false);
+    if (!universe->is_object()) return malformed("universe is not an object");
+    const auto delisting = universe->find("delisting");
+    if (delisting == universe->end()) return core::Ok(false);
+    if (!delisting->is_object()) return malformed("universe.delisting is not an object");
+    const auto applied = delisting->find("returns_applied");
+    if (applied == delisting->end() || !applied->is_boolean())
+      return malformed("universe.delisting lacks a boolean returns_applied");
+    return core::Ok(applied->get<bool>());
+  } catch (const std::exception& e) {
+    return core::Err(core::ErrorCode::InvalidArgument, std::string("strategy role: ") + e.what());
+  }
+}
+
+core::Status refuse_delisting_returns_signal_role(std::string_view manifest_text, std::string_view manifest_path) {
+  const auto applied = role_delisting_returns_applied(manifest_text);
+  if (!applied)
+    return core::Err(applied.error().code(), applied.error().message() + ": " + std::string(manifest_path));
+  if (!*applied) return core::Ok();
+  return core::Err(core::ErrorCode::InvalidArgument,
+      "strategy role " + std::string(manifest_path) + " was built with --delisting-returns "
+      "(universe.delisting.returns_applied true): its imputed terminal returns may mark the NAV replay's "
+      "books only (Ruling E-10), so it is refused as a signal role");
+}
 } // namespace atx::engine::data
