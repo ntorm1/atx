@@ -159,6 +159,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/risk/hybrid_factor_model.cpp
     src/risk/cost_terms.cpp
     src/book/replay_cost.cpp
+    # v8 R-4/R-5: desired-target shaping kernels (hold band, capped pro rata redistribution)
+    src/book/target_shaping.cpp
     src/cost/cost_surface.cpp
     src/cost/spread_estimators.cpp
     src/cost/borrow_tiers.cpp

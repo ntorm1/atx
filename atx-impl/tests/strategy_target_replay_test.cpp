@@ -1229,3 +1229,206 @@ TEST(TargetReplayV6, LocateInAimHoldsZeroedShortsThroughTheIndustryDemeaning) {
   EXPECT_EQ(record.locate_zeroed, shorts);
   for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(v1[i])) << i;
 }
+
+// ---- v8 R-4: hold-band-v1 (rank hysteresis) ----
+namespace {
+std::string file_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::ostringstream text; text << in.rdbuf(); return text.str();
+}
+// The centred tied rank the construction gives sorted position k of m distinct members.
+f64 centred_rank(usize k, usize m) {
+  return (static_cast<f64>(k) + static_cast<f64>(k)) / (2.0 * static_cast<f64>(m - 1)) - 0.5;
+}
+// One decision of the shared construction (no prices: no neutralization) on `state`.
+st::ConstructionDay decide_desired(const Fixture& f, const st::TargetReplayConfig& cfg, usize d,
+                                   std::vector<f64>& desired, st::detail::DesiredState& state) {
+  std::vector<std::pair<f64, usize>> row;
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay out;
+  const auto rebalance =
+      st::detail::form_desired(f.input(), cfg, d, row, desired, scratch, out, {}, &state);
+  EXPECT_TRUE(rebalance) << rebalance.error().to_string();
+  return out;
+}
+st::TargetReplayConfig held_v5(f64 band) {
+  auto c = aim_partial(0.3, 0.1, 1.247); c.hold_band = band; return c;
+}
+} // namespace
+
+// b = 0 runs the kernel (and carries its state) yet is aim-partial-v5 bit for bit: every day
+// field of the replay with forced exits (random nonmember cells), the price-risk-v1
+// construction with its skip guard, and the pinned run's recipe, daily CSV and summary byte for
+// byte (b = 0 writes no key).
+TEST(HoldBand, ZeroBandIsByteIdenticalToV5) {
+  auto f = random_fixture(40, 30, 51);
+  Lcg drop{52};
+  for (usize k = 0; k < f.signal.size(); ++k)
+    if (drop.uniform() < 0.1) { f.member[k] = 0; f.signal[k] = missing; }
+  const auto v5 = aim_partial(0.3, 0.1, 1.247);
+  const auto zero = held_v5(0.0);
+  const auto a = st::replay_targets(f.input(), v5);
+  const auto b = st::replay_targets(f.input(), zero);
+  ASSERT_TRUE(a) << a.error().to_string();
+  ASSERT_TRUE(b) << b.error().to_string();
+  ASSERT_EQ(a->days.size(), b->days.size());
+  usize seen = 0;
+  for (usize d = 0; d < a->days.size(); ++d) {
+    expect_same_target_day(a->days[d], b->days[d], d);
+    seen += b->days[d].construction.hold_moved + b->days[d].construction.hold_kept;
+  }
+  EXPECT_GT(seen, 0U); // the kernel ran
+  EXPECT_GT(b->forced_turnover, 0);
+  EXPECT_EQ(bits(a->total_turnover), bits(b->total_turnover));
+  EXPECT_EQ(bits(a->forced_turnover), bits(b->forced_turnover));
+  Role role(70, 12, 61);
+  for (usize t = 30; t < 33; ++t) role.nonmember(t, 4);
+  auto nv5 = neutral_daily();
+  nv5.rule = st::TargetReplayRule::AimPartialV5; nv5.trade_fraction = 0.3;
+  nv5.dust_multiple = 0.1; nv5.aim_leverage = 1.247;
+  auto nzero = nv5; nzero.hold_band = 0.0;
+  const auto c = st::replay_targets(role.input(), nv5);
+  const auto e = st::replay_targets(role.input(), nzero);
+  ASSERT_TRUE(c) << c.error().to_string();
+  ASSERT_TRUE(e) << e.error().to_string();
+  ASSERT_EQ(c->days.size(), e->days.size());
+  for (usize d = 0; d < c->days.size(); ++d) {
+    expect_same_target_day(c->days[d], e->days[d], d);
+    EXPECT_EQ(c->days[d].construction.neutralize, e->days[d].construction.neutralize) << d;
+  }
+  EXPECT_GT(count_outcome(*e, st::NeutralizeOutcome::Applied), 0U);
+  EXPECT_GT(count_outcome(*e, st::NeutralizeOutcome::SkippedTooFewNames), 0U);
+  Directory dir;
+  std::ostringstream progress;
+  auto plain = artifact(dir.path, f);
+  auto held = plain;
+  plain.target = v5; plain.output_directory = (dir.path / "v5").string();
+  held.target = zero; held.output_directory = (dir.path / "zero").string();
+  ASSERT_TRUE(st::run_target_replay(plain, progress));
+  ASSERT_TRUE(st::run_target_replay(held, progress));
+  for (const auto* name : {"recipe.json", "daily.csv", "summary.json"})
+    EXPECT_EQ(file_bytes(dir.path / "v5" / name), file_bytes(dir.path / "zero" / name)) << name;
+}
+
+// Inside the band a member keeps its previous (pre-demean) desired value; outside it takes its
+// new rank. 21 members (rank step .05): an adjacent swap (5 <-> 6, |dr| = .05) and a one-step
+// shift (16, 17, 18) stay inside b = .1; name 15 jumps three steps (.15) and moves. The desired
+// target is the demeaned gross-1 row of the held values, so names 5 and 6 keep their old order.
+TEST(HoldBand, NameInsideBandKeepsDesired) {
+  constexpr usize n = 21;
+  Fixture f(2, n);
+  for (usize i = 0; i < n; ++i) f.signal[i] = static_cast<f64>(i);
+  for (usize i = 0; i < n; ++i) f.signal[n + i] = static_cast<f64>(i);
+  f.signal[n + 5] = 6; f.signal[n + 6] = 5; f.signal[n + 15] = 18.5;
+  const auto cfg = held_v5(0.1);
+  st::detail::DesiredState state;
+  std::vector<f64> desired(n), unbanded(n);
+  const auto first = decide_desired(f, cfg, 0, desired, state);
+  EXPECT_EQ(first.hold_moved, n);
+  EXPECT_EQ(first.hold_first_set, n);
+  EXPECT_EQ(first.hold_kept, 0U);
+  ASSERT_EQ(state.hold.rank_set.size(), n);
+  for (usize i = 0; i < n; ++i) EXPECT_EQ(bits(state.hold.rank_set[i]), bits(centred_rank(i, n)));
+  const auto second = decide_desired(f, cfg, 1, desired, state);
+  EXPECT_EQ(second.hold_moved, 1U);
+  EXPECT_EQ(second.hold_kept, n - 1);
+  EXPECT_EQ(second.hold_first_set, 0U);
+  // The held values: decision 0's ranks, except name 15 at its new rank (sorted position 18).
+  std::vector<f64> held(n);
+  for (usize i = 0; i < n; ++i) held[i] = centred_rank(i, n);
+  held[15] = centred_rank(18, n);
+  for (usize i = 0; i < n; ++i) {
+    EXPECT_EQ(bits(state.hold.rank_set[i]), bits(held[i])) << i;
+    EXPECT_EQ(bits(state.hold.desired_prev[i]), bits(held[i])) << i;
+  }
+  f64 mean = 0;
+  for (const f64 h : held) mean += h;
+  mean /= static_cast<f64>(n);
+  f64 gross = 0;
+  for (const f64 h : held) gross += std::abs(h - mean);
+  for (usize i = 0; i < n; ++i) EXPECT_NEAR(desired[i], (held[i] - mean) / gross, 1e-15) << i;
+  EXPECT_LT(desired[5], desired[6]); // the kept order; the fresh ranks reverse it
+  st::detail::DesiredState none;
+  decide_desired(f, aim_partial(0.3, 0.1, 1.247), 1, unbanded, none);
+  EXPECT_GT(unbanded[5], unbanded[6]);
+  EXPECT_TRUE(none.hold.rank_set.empty()); // the band off never touches the state
+}
+
+// A member missing for a day (a nonmember: NaN signal) keeps its state untouched and exits by
+// the unchanged rule; back at its old position it is kept (not re-set: first_set 0); a later
+// jump to the top moves it. The replay carries the same state across its decisions.
+TEST(HoldBand, StateSurvivesMissingDay) {
+  constexpr usize n = 21, name = 3;
+  Fixture f(4, n);
+  for (usize t = 0; t < 4; ++t)
+    for (usize i = 0; i < n; ++i) f.signal[t * n + i] = static_cast<f64>(i);
+  f.member[n + name] = 0; f.signal[n + name] = missing; // decision 1: missing
+  f.signal[3 * n + name] = 100;                           // decision 3: top of the book
+  const auto cfg = held_v5(0.1);
+  st::detail::DesiredState state;
+  std::vector<f64> desired(n);
+  decide_desired(f, cfg, 0, desired, state);
+  const f64 set0 = state.hold.rank_set[name], prev0 = state.hold.desired_prev[name];
+  const auto missing_day = decide_desired(f, cfg, 1, desired, state);
+  EXPECT_EQ(missing_day.hold_moved + missing_day.hold_kept, n - 1);
+  EXPECT_EQ(desired[name], 0);
+  EXPECT_EQ(bits(state.hold.rank_set[name]), bits(set0));
+  EXPECT_EQ(bits(state.hold.desired_prev[name]), bits(prev0));
+  const auto back = decide_desired(f, cfg, 2, desired, state);
+  EXPECT_EQ(back.hold_first_set, 0U);
+  EXPECT_EQ(back.hold_moved, 0U);
+  EXPECT_EQ(back.hold_kept, n);
+  EXPECT_EQ(bits(state.hold.rank_set[name]), bits(set0));
+  const auto jump = decide_desired(f, cfg, 3, desired, state);
+  EXPECT_EQ(jump.hold_moved, 1U);
+  EXPECT_EQ(jump.hold_first_set, 0U);
+  EXPECT_EQ(bits(state.hold.rank_set[name]), bits(centred_rank(n - 1, n)));
+  const auto r = st::replay_targets(f.input(), cfg);
+  ASSERT_TRUE(r) << r.error().to_string();
+  ASSERT_EQ(r->days.size(), 4U);
+  const std::array<usize, 4> moved{n, 0, 0, 1}, first_set{n, 0, 0, 0};
+  for (usize d = 0; d < 4; ++d) {
+    EXPECT_EQ(r->days[d].construction.hold_moved, moved[d]) << d;
+    EXPECT_EQ(r->days[d].construction.hold_first_set, first_set[d]) << d;
+  }
+  EXPECT_GT(r->days[1].forced_turnover, 0); // the missing name exits by the unchanged rule
+}
+
+// Recipe, rule id and summary keys only for b > 0; refusals outside aim-partial-v5 or [0, 1];
+// the CLI flag.
+TEST(HoldBand, RecordsDeclaredBandAndRefusesBadConfigs) {
+  const auto f = random_fixture(12, 21, 71);
+  const auto runs = [&](const st::TargetReplayConfig& c) {
+    return static_cast<bool>(st::replay_targets(f.input(), c));
+  };
+  EXPECT_TRUE(runs(held_v5(0.0)));
+  EXPECT_TRUE(runs(held_v5(1.0)));
+  for (const f64 band : {-0.01, 1.01, missing}) EXPECT_FALSE(runs(held_v5(band))) << band;
+  st::TargetReplayConfig baseline; baseline.hold_band = 0.1;
+  EXPECT_FALSE(runs(baseline));
+  EXPECT_EQ(st::detail::construction_rule_id(held_v5(0.1)), "aim-partial-v5+hold-band-0.1");
+  EXPECT_EQ(st::detail::construction_rule_id(held_v5(0.0)), "aim-partial-v5");
+  Directory dir;
+  const auto cfg = artifact(dir.path, f);
+  std::ostringstream out, err;
+  std::vector<std::string> args{"targets", "--combined", cfg.combined_path,
+      "--combined-sha256", cfg.combined_sha256, "--output", (dir.path / "held").string(),
+      "--cadence", "1", "--rule", "aim-partial-v5", "--trade-fraction", ".3",
+      "--dust-multiple", ".1", "--hold-band", ".1"};
+  std::vector<char*> argv;
+  for (auto& arg : args) argv.push_back(arg.data());
+  ASSERT_EQ(st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err), 0)
+      << err.str();
+  const auto recipe = read_json(dir.path / "held" / "recipe.json");
+  EXPECT_EQ(recipe.at("rule"), "aim-partial-v5+hold-band-0.1");
+  EXPECT_EQ(recipe.at("hold_band"), 0.1);
+  EXPECT_TRUE(recipe.at("hold_band_rule").is_string());
+  const auto summary = read_json(dir.path / "held" / "summary.json");
+  const auto& hold = summary.at("construction").at("hold_band");
+  EXPECT_EQ(hold.at("band"), 0.1);
+  EXPECT_EQ(hold.at("decisions"), f.d);
+  EXPECT_EQ(hold.at("first_set_names_total"), f.n);
+  EXPECT_EQ(hold.at("moved_names_total").get<usize>() + hold.at("kept_names_total").get<usize>(),
+            f.d * f.n);
+  EXPECT_GT(hold.at("kept_names_total").get<usize>(), 0U);
+}

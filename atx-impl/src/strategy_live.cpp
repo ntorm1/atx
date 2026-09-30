@@ -23,6 +23,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/book/target_shaping.hpp"
 #include "build_provenance.hpp"
 #include "stage_data_provenance.hpp"
 #include "strategy_cost_v2.hpp"
@@ -250,6 +251,11 @@ co::Status parse_optional_nav(const Json& nav, Deploy& out) {
     if (!unsigned_integer(nav, "warm_start_sessions", sessions) || sessions > max_warm_start)
       return nav_missing("warm_start_sessions");
     out.base.warm_start_sessions = static_cast<usize>(sessions);
+  }
+  if (nav.contains("hold_band")) { // v8 R-4: nav --hold-band B (range: the replay's validation)
+    f64 band = 0;
+    if (!number(nav, "hold_band", band)) return nav_missing("hold_band");
+    out.run.target.hold_band = band;
   }
   return co::Ok();
 }
@@ -479,15 +485,17 @@ struct Positions {
   std::vector<f64> held;     // per name; +0 when absent
   std::vector<f64> expected; // target_weight per name (+0 when absent); has_expected only
   std::vector<f64> shares;   // broker shares per name (+0 when absent); has_shares only
+  // v8 R-4 hold-band-v1 state per name (NaN when absent: unset); has_hold_state only.
+  std::vector<f64> rank_set, desired_prev;
   std::vector<u8> seen;
-  bool has_nav{}, has_expected{}, has_shares{};
+  bool has_nav{}, has_expected{}, has_shares{}, has_hold_state{};
   f64 nav{};
   usize rows{};
   const char* layout{"csv"};
 };
 // Column positions of a positions CSV (the width when absent).
 struct PositionColumns {
-  usize id{}, held{}, nav{}, target{}, shares{};
+  usize id{}, held{}, nav{}, target{}, shares{}, rank_set{}, desired_prev{};
 };
 co::Status read_position_row(const Csv& csv, std::span<const u64> ids,
                              const PositionColumns& at, Positions& out) {
@@ -519,12 +527,18 @@ co::Status read_position_row(const Csv& csv, std::span<const u64> ids,
     if (!parse_cell(cells[at.shares], shares) || !std::isfinite(shares)) return bad;
     out.shares[i] = shares;
   }
+  if (at.rank_set < width) { // both columns (read_positions); "nan" = unset
+    if (!parse_cell(cells[at.rank_set], out.rank_set[i]) ||
+        !parse_cell(cells[at.desired_prev], out.desired_prev[i]))
+      return bad;
+  }
   return co::Ok();
 }
 Positions empty_positions(usize names) {
   Positions out;
   out.held.assign(names, 0.0); out.seen.assign(names, u8{0});
   out.expected.assign(names, 0.0); out.shares.assign(names, 0.0);
+  out.rank_set.assign(names, nan); out.desired_prev.assign(names, nan);
   return out;
 }
 // The f64 holdings layout (v7 W4): the as-of session's rows, every file SHA verified.
@@ -553,14 +567,19 @@ co::Result<Positions> read_positions(const std::string& path, std::span<const u6
   ATX_TRY_VOID(open_csv(path, csv, "positions"));
   const PositionColumns at{csv.column("instrument_id"), csv.column("held_dollars"),
                            csv.column("nav_post"), csv.column("target_weight"),
-                           csv.column("shares")};
+                           csv.column("shares"), csv.column("rank_set"),
+                           csv.column("desired_prev")};
   const usize session = csv.column("session_ns"), width = csv.columns.size();
   if (at.id == width || at.held == width)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "decide: positions need instrument_id and held_dollars columns");
+  if ((at.rank_set < width) != (at.desired_prev < width))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "decide: positions rank_set and desired_prev columns go together");
   Positions out = empty_positions(ids.size());
   out.has_expected = at.target < width;
   out.has_shares = at.shares < width;
+  out.has_hold_state = at.rank_set < width;
   while (csv.next()) {
     if (csv.line.empty()) continue;
     if (session < width) {
@@ -903,17 +922,27 @@ bool nonzero_bits(f64 v) { return std::bit_cast<u64>(v) != 0; }
 void write_value(std::ostream& out, f64 v) {
   if (std::isnan(v)) out << "nan"; else out << v;
 }
-co::Status write_targets(const std::filesystem::path& path, const Facts& f, f64 leverage) {
+// hold_columns (v8 R-4, hold band declared): two more columns, rank_set and desired_prev, the
+// hold-band state after this decision, and a row for every name holding a set rank (a name
+// missing for a day keeps its state in the file). targets.csv is then a positions file whose
+// state columns carry the book into the next decide.
+co::Status write_targets(const std::filesystem::path& path, const Facts& f, f64 leverage,
+                         bool hold_columns) {
   std::ofstream file(path, std::ios::binary);
   if (!file) return co::Err(co::ErrorCode::IoError, "decide: targets output");
   file.imbue(std::locale::classic()); file << std::setprecision(17);
   file << "instrument_id,member,tier,tier_missing,no_short,no_locate,held_dollars,"
           "current_weight,desired_weight,aim_weight,rule_weight,target_weight,trade_weight,"
-          "order_dollars,reason\n";
+          "order_dollars,reason";
+  if (hold_columns) file << ",rank_set,desired_prev";
+  file << '\n';
   const auto& dec = f.dec; const usize n = f.x.instruments;
   for (usize i = 0; i < n; ++i) {
     const bool member = f.x.member[f.d * n + i] != 0;
-    if (!member && !nonzero_bits(f.positions.held[i]) && !nonzero_bits(dec.target[i])) continue;
+    const bool state = hold_columns && std::isfinite(dec.hold.rank_set[i]);
+    if (!member && !state && !nonzero_bits(f.positions.held[i]) &&
+        !nonzero_bits(dec.target[i]))
+      continue;
     const bool tiered = !dec.tier.empty();
     file << f.x.instrument_ids[i] << ',' << member << ','
          << detail::borrow_tier_label(tiered ? dec.tier[i] : u8{0}) << ','
@@ -924,7 +953,13 @@ co::Status write_targets(const std::filesystem::path& path, const Facts& f, f64 
     write_value(file, dec.rebalance ? dec.desired[i] : nan); file << ',';
     write_value(file, dec.rebalance ? leverage * dec.desired[i] : nan);
     file << ',' << dec.rule[i] << ',' << dec.target[i] << ',' << dec.target[i] - dec.current[i]
-         << ',' << dec.target[i] * f.nav - f.positions.held[i] << ',' << reason(f, i) << '\n';
+         << ',' << dec.target[i] * f.nav - f.positions.held[i] << ',' << reason(f, i);
+    if (hold_columns) {
+      file << ',';
+      write_value(file, dec.hold.rank_set[i]); file << ',';
+      write_value(file, dec.hold.desired_prev[i]);
+    }
+    file << '\n';
   }
   file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "decide: targets close"));
@@ -1090,10 +1125,10 @@ struct Published {
   OrderTotals totals;
 };
 co::Result<Published> write_tables(const std::filesystem::path& dir, const Facts& f,
-                                   f64 leverage, const orders::Book& book) {
+                                   f64 leverage, const orders::Book& book, bool hold_columns) {
   if (!std::filesystem::create_directory(dir))
     return co::Err(co::ErrorCode::AlreadyExists, "decide: output must not exist");
-  ATX_TRY_VOID(write_targets(dir / "targets.csv", f, leverage));
+  ATX_TRY_VOID(write_targets(dir / "targets.csv", f, leverage, hold_columns));
   Published out;
   ATX_TRY(out.totals, write_orders(dir / "orders.csv", f));
   ATX_TRY_VOID(write_share_orders(dir / "orders_shares.csv", f, book));
@@ -1249,6 +1284,22 @@ Json transfer_json(const Transfer& tc) {
                        {"desired_over_sigma_target", tc_target_definition},
                        {"signal_over_variance", tc_definition}}}};
 }
+// v8 R-4: the hold-band state entering and leaving the decision and what the band did there.
+Json hold_band_json(const Record& r) {
+  const auto& p = r.inputs.positions; const auto& dec = r.facts.dec;
+  const auto& c = dec.construction;
+  const auto count_set = [](const std::vector<f64>& ranks) {
+    return static_cast<usize>(
+        std::count_if(ranks.begin(), ranks.end(), [](f64 v) { return std::isfinite(v); }));
+  };
+  return Json{{"band", *r.deploy.base.target.hold_band},
+      {"state_in", p.has_hold_state ? "positions rank_set,desired_prev columns"
+                                    : "none (no state columns): every name unset"},
+      {"names_set_in", count_set(p.rank_set)}, {"names_set_out", count_set(dec.hold.rank_set)},
+      {"moved", c.hold_moved}, {"kept", c.hold_kept}, {"first_set", c.hold_first_set},
+      {"state_out", "targets.csv rank_set,desired_prev: the state after this decision, the "
+                    "next decide's positions columns"}};
+}
 Json decision_summary(const Record& r) {
   const auto& in = r.inputs; const auto& published = r.published;
   Json summary{{"schema", book_decision_schema}, {"status", "complete"},
@@ -1282,6 +1333,7 @@ Json decision_summary(const Record& r) {
          r.parity.mismatches ? Json(r.parity.first_mismatch) : Json(nullptr)},
         {"basis", "bitwise target weight vs the positions file's target_weight at the as-of "
                   "(an absent name is +0)"}};
+  if (hold_band_declared(r.deploy.base.target)) summary["hold_band"] = hold_band_json(r);
   return summary;
 }
 void report(std::ostream& progress, const Record& r) {
@@ -1292,6 +1344,21 @@ void report(std::ostream& progress, const Record& r) {
            << ", health " << health_label(r.health.worst);
   if (r.parity.checked) progress << ", replay parity mismatches " << r.parity.mismatches;
   progress << '\n';
+}
+// nav_decide at the as-of row with the book's hold-band state (v8 R-4): the positions' state
+// columns (NaN = unset; every name unset without them), read only with the hold band on.
+co::Result<detail::NavDecision> decide_row(const NavReplayInput& view, const Deploy& deploy,
+                                           usize d, const Inputs& inputs) {
+  const auto& p = inputs.positions;
+  const auto no_locate = inputs.locates_supplied ? std::span<const u8>(inputs.locates.no_locate)
+                                                 : std::span<const u8>{};
+  const atx::engine::book::HoldBandState hold{p.rank_set, p.desired_prev};
+  const bool holding = hold_band_on(deploy.base.target);
+  ATX_TRY(auto dec, detail::nav_decide(view, deploy.base, d, p.held, inputs.nav, no_locate,
+                                       holding ? &hold : nullptr));
+  if (hold_band_declared(deploy.base.target) && dec.hold.rank_set.size() != p.held.size())
+    return co::Err(co::ErrorCode::Internal, "decide: hold-band state lost");
+  return co::Ok(std::move(dec));
 }
 // The as-of decision from verified pins and inputs; decision.json is written last.
 co::Result<DecideOutcome> decide(const DecideConfig& cfg, std::ostream& progress) {
@@ -1305,10 +1372,7 @@ co::Result<DecideOutcome> decide(const DecideConfig& cfg, std::ostream& progress
   ATX_TRY_VOID(check_cadence_anchor(deploy, x));
   ATX_TRY(const auto fresh, check_freshness(x, d, cfg.allow_stale));
   ATX_TRY(const auto inputs, read_inputs(cfg, x, asof));
-  const auto no_locate = inputs.locates_supplied ? std::span<const u8>(inputs.locates.no_locate)
-                                                 : std::span<const u8>{};
-  ATX_TRY(const auto dec, detail::nav_decide(view, deploy.base, d, inputs.positions.held,
-                                             inputs.nav, no_locate));
+  ATX_TRY(const auto dec, decide_row(view, deploy, d, inputs));
   const Facts facts{x, d, dec, inputs.positions,
                     inputs.locates_supplied ? &inputs.locates : nullptr, inputs.nav};
   const f64 nav_dollars = cfg.nav_dollars.value_or(inputs.nav);
@@ -1323,7 +1387,8 @@ co::Result<DecideOutcome> decide(const DecideConfig& cfg, std::ostream& progress
   add_w4_checks(health, band, tc.desired_target, fresh, cfg);
   const Parity parity = cfg.check_replay ? replay_parity(facts) : Parity{};
   const auto dir = std::filesystem::path(cfg.output_directory);
-  ATX_TRY(const auto published, write_tables(dir, facts, leverage, book));
+  ATX_TRY(const auto published, write_tables(dir, facts, leverage, book,
+                                             hold_band_declared(deploy.base.target)));
   const Record record{cfg, deploy, loaded.recipe_sha256, asof, d, inputs, facts, tc, health,
                       parity, book, nav_dollars, published};
   ATX_TRY_VOID(write_json(dir / "decision.json", decision_summary(record)));

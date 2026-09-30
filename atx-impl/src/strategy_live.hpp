@@ -25,7 +25,8 @@ namespace atx::impl::strategy {
 //        max_working_bytes, recipe_sha256 (the NAV run's summary.json recipe_sha256)},
 //   optional nav keys (v8; absent = off = 0, and the NAV recipe recomputed without them
 //        hashes exactly as before: each enters the recipe only when on): warm_start_sessions
-//        (the nav verb's --warm-start-sessions K, an unsigned integer <= 4096),
+//        (the nav verb's --warm-start-sessions K, an unsigned integer <= 4096), hold_band
+//        (--hold-band B, v8 R-4; B = 0 hashes as absent),
 //   executables {"atx-equity-strategy-targets": sha, "atx-equity-strategy-ic": sha},
 //   source.git_sha (40 hex), seal {policy "research-seal-v1", exclusive_session
 //   "2025-01-01"}, owner_gate (null, or {owner, ruling, date}),
@@ -102,7 +103,9 @@ struct DecideOutcome {
 // - a CSV with columns instrument_id and held_dollars (any order, other columns ignored);
 //   with a session_ns column only rows of the as-of session are read (so a replay's v1
 //   holdings.csv is a positions file); nav_post, target_weight and shares columns are read
-//   when present (shares: the broker's share count, used by the share orders);
+//   when present (shares: the broker's share count, used by the share orders); v8 R-4:
+//   rank_set and desired_prev (both or neither; "nan" = unset) carry the hold-band state
+//   into the decision, a name without a row or a file without them is unset;
 // - an f64 holdings directory of `nav --emit-holdings` (or its holdings_index.json): the
 //   as-of session's rows (held_dollars, target_weight) and nav_post, every file SHA
 //   verified; a session the replay did not report is refused.
@@ -122,6 +125,9 @@ struct DecideOutcome {
 //   expected_holdings.csv: instrument_id,shares,current_shares,order_shares,
 //     reference_price,notional (the book after the sent orders fill; reconcile's
 //     --expected).
+//   targets.csv with the hold band declared (v8 R-4, b > 0): two trailing columns
+//     rank_set,desired_prev (the state after the decision) and a row for every name with a
+//     set rank, so its state columns are the next decide's positions columns.
 // Returns the outcome once decision.json is written; any refusal is an error and writes
 // nothing (the directory is created only after every check and the decision).
 [[nodiscard]] atx::core::Result<DecideOutcome> run_decide(const DecideConfig& cfg,

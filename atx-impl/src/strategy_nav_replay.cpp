@@ -210,6 +210,7 @@ struct Construction {
   std::vector<f64> desired;
   std::vector<u8> no_short; // locate-in-aim only: 1 = special tier at the decision
   PriceRiskScratch price;   // grows only when neutralizing
+  detail::DesiredState state; // v8 (R-4 hold band): carried across decisions; empty when off
 };
 // Borrow tiers of the latest decision, shared by every book of a lockstep replay.
 // They are rate-independent (the engine's flag count only); each book maps a tier to
@@ -732,7 +733,7 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
 co::Result<bool> form_desired_target(const TargetReplayInput& x, const TargetReplayConfig& target,
                                      usize d, Construction& shared, ConstructionDay& out) {
   return detail::form_desired(x, target, d, shared.row, shared.desired, shared.price, out,
-                              shared.no_short);
+                              shared.no_short, &shared.state);
 }
 // Engine predictors of name i as of decision d (row d fields and prices, presence
 // rows <= d); not available when any is missing or out of its declared domain.
@@ -2582,7 +2583,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "holdings.f64 + holdings_index.json, the default; csv: the v1 holdings.csv; "
                "ignored without --emit-holdings)]] "
                "[--warm-start-sessions 0 (K > 0: decide and trade from score_begin - K, "
-               "score from score_begin; K <= the role's score_begin)]\n"
+               "score from score_begin; K <= the role's score_begin)] "
+               "[--hold-band B (aim-partial-v5; v8 hold-band-v1 rank hysteresis, B in [0, 1])]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -2633,6 +2635,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--exit-rate") cfg.target.exit_rate = real();
+      else if (key == "--hold-band") cfg.target.hold_band = real(); // v8 R-4 hold-band-v1
       else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
@@ -2748,7 +2751,8 @@ co::Result<NavDeployLoad> load_nav_deploy(const TargetReplayRunConfig& cfg,
 
 co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConfig& cfg, usize d,
                                    std::span<const f64> held, f64 nav_post,
-                                   std::span<const u8> no_locate) {
+                                   std::span<const u8> no_locate,
+                                   const atx::engine::book::HoldBandState* hold) {
   try {
     // As replay_nav_scenarios: the NAV volume is authoritative, also for price risk.
     TargetReplayInput x = in.target;
@@ -2776,6 +2780,7 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
                      "nav decide: one finite position per name, NAV > 0, locate mask geometry");
     NavDecision out;
     Construction shared(n, cfg.locate_in_aim);
+    if (hold) shared.state.hold = *hold; // v8 R-4: the book's hold-band state entering d
     BorrowTiers tiers(n, tiered);
     TierCensus census;
     out.cadence = (d - x.decision_begin) % cfg.target.cadence == 0;
@@ -2800,6 +2805,7 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
       if (x.member[d * n + i]) out.sigma[i] = window_liquidity(x, in.volume, cfg, d, i).sigma;
     out.desired = std::move(shared.desired); out.no_short = std::move(shared.no_short);
     out.tier = std::move(tiers.tier); out.tier_missing = std::move(tiers.missing);
+    out.hold = std::move(shared.state.hold);
     return co::Ok(std::move(out));
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav decide: allocation failed");

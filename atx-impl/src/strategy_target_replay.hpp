@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iosfwd>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -71,7 +72,27 @@ struct TargetReplayConfig {
   // Only r < 1 writes keys: recipe exit_rate + exit_rate_rule (aim_partial's nonmember
   // clause then names exit_rate_rule) and summary construction.v5.exit_rate.
   atx::f64 exit_rate{1.0};
+  // hold-band-v1 (v8 R-4, rank hysteresis; aim-partial-v5 only). Unset (default): off, every
+  // output unchanged. b in [0, 1]: on every rebalance decision the members' centred tied ranks
+  // r_i in [-.5, .5] pass engine::book::apply_hold_band BEFORE the demean: a member keeps its
+  // previous pre-demean desired value unless rank_set_i is unset or |r_i - rank_set_i| > b
+  // (then it takes r_i and rank_set_i = r_i); then the unchanged demean, gross 1, locate
+  // zeroing and neutralization. The state is per name and carried across decisions; a
+  // nonmember's state is untouched (a name missing for a day is compared with its old rank on
+  // return) and it follows the exit rule unchanged. The state advances on every cadence
+  // decision the construction runs, a guard-skipped one included (the registered order: the
+  // band acts before the neutralization and its guard). b = 0 is the identity bit for bit (the
+  // kernel still runs and carries its state); only b > 0 writes recipe, rule-id and summary
+  // keys.
+  std::optional<atx::f64> hold_band{};
 };
+// hold-band-v1 is on (the kernel runs) / declared (b > 0: recipe, rule id and summary keys).
+[[nodiscard]] constexpr bool hold_band_on(const TargetReplayConfig& c) noexcept {
+  return c.hold_band.has_value();
+}
+[[nodiscard]] constexpr bool hold_band_declared(const TargetReplayConfig& c) noexcept {
+  return c.hold_band.has_value() && *c.hold_band > 0;
+}
 // All spans are borrowed for this synchronous call, date-major, immutable.
 // Prices are optional ALL together. Presence is source presence, independent of
 // decision membership. Signal members must be finite; nonmembers must be NaN.
@@ -106,6 +127,9 @@ struct ConstructionDay {
   // NAV locate-in-aim (v6 prereg C3): members whose negative desired weight was set to 0
   // before neutralization because they may not be shorted. 0 otherwise; no CSV column.
   atx::usize locate_zeroed{};
+  // hold-band-v1 (v8 R-4): members whose desired took the fresh rank (first set included) and
+  // members that kept their previous desired value. 0 unless the kernel ran; no CSV column.
+  atx::usize hold_moved{}, hold_kept{}, hold_first_set{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input
