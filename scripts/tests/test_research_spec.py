@@ -166,6 +166,10 @@ def test_v8_base_specs_carry_the_ruled_settings():
         assert RC.option_value(s["card"]["flags"], "--work-dir") == "build-equity/fit-work"
         assert s["fields"]["list"] == RC.load_spec(HERE.parent / "specs" / "v71.json")["fields"]["list"]
         assert s["summ"]["script"] == "atx-impl/tools/nav_summ.py" and "--protocol" in s["summ"]["extra"]
+        # review C-2 / C-1 (FIX-C): the K5 class in summ.origin (v7.1's members are all prior), never --origin in
+        # extra; a verdict spec names its ledger (nav_summ --dsr-ledger). Templates inherit the summ block.
+        assert s["summ"]["origin"] == "prior" and "--origin" not in s["summ"]["extra"]
+        assert s["verdict"] is True and s["summ"]["ledger"] == "build-equity/trials.jsonl"
     assert lo3["inputs"]["reference_cell"]["dir"] == lo1["nav"]["output"]                 # B0b is paired with B0a
     assert (lo1["inputs"]["role"]["universe"], lo3["inputs"]["role"]["universe"]) == ("linked-operating-v1",
                                                                                       "linked-operating-v3")

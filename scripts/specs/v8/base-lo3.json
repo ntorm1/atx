@@ -118,7 +118,8 @@
     "cells_from_ledger": true,
     "extra": ["--protocol", "v8", "--effective-n", "dirs", "--psr", "--pbo"],
     "ledger": "build-equity/trials.jsonl",
-    "ledger_kind": "construction"
+    "ledger_kind": "construction",
+    "origin": "prior"
   },
   "verdict": true
 }
