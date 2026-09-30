@@ -297,3 +297,190 @@ TEST(StrategyIcComposition, WithinThemeRedistributionKeepsMissingMassInTheme) {
   ASSERT_TRUE(base); ASSERT_TRUE(two); EXPECT_EQ(*two - *base, 2U * 8U * 16U);
   EXPECT_FALSE(st::ic_composition_working_bytes(2, 4, 3, 33));
 }
+
+// ---- platform v8 R-1: composition ew-theme-std-v1 (IcThemeRule::standardise) ----
+namespace {
+constexpr f64 v8_nan = std::numeric_limits<f64>::quiet_NaN();
+// Literal reference, independent of the kernels: the centred tied rank of values[i] among
+// the entries with keep[j]: (less + (less + equal - 1)) / (2 (n - 1)) - 0.5.
+std::vector<f64> v8_ref_ranks(const std::vector<f64>& values, const std::vector<bool>& keep) {
+  std::vector<f64> out(values.size(), v8_nan);
+  usize n = 0;
+  for (usize i = 0; i < values.size(); ++i) n += keep[i] ? 1U : 0U;
+  if (n < 2) return out;
+  for (usize i = 0; i < values.size(); ++i) {
+    if (!keep[i]) continue;
+    usize less = 0, equal = 0;
+    for (usize j = 0; j < values.size(); ++j) {
+      if (!keep[j]) continue;
+      less += values[j] < values[i] ? 1U : 0U;
+      equal += values[j] == values[i] ? 1U : 0U;
+    }
+    out[i] = (static_cast<f64>(less) + static_cast<f64>(less + equal - 1)) / (2.0 * static_cast<f64>(n - 1)) - 0.5;
+  }
+  return out;
+}
+// Reference ew-theme-std-v1 blend: per date and theme the sum of present members'
+// w * s * rank, re-ranked over names with a present member, times W_theme = sum of w.
+std::vector<f64> v8_ref_blend(usize days, usize width, const std::vector<u8>& member,
+                              const std::vector<std::vector<f64>>& signals, const std::vector<f64>& w,
+                              const std::vector<int>& s, const std::vector<usize>& theme, usize themes) {
+  std::vector<f64> out(days * width, 0.0);
+  for (usize d = 0; d < days; ++d) {
+    std::vector<std::vector<f64>> sum(themes, std::vector<f64>(width, 0.0));
+    std::vector<std::vector<bool>> present(themes, std::vector<bool>(width, false));
+    std::vector<f64> mass(themes, 0.0);
+    for (usize k = 0; k < signals.size(); ++k) {
+      if (!(w[k] > 0) || s[k] == 0) continue;
+      mass[theme[k]] += w[k];
+      std::vector<f64> row(width); std::vector<bool> keep(width);
+      for (usize i = 0; i < width; ++i) {
+        row[i] = signals[k][d * width + i];
+        keep[i] = member[d * width + i] != 0 && std::isfinite(row[i]);
+      }
+      const auto r = v8_ref_ranks(row, keep);
+      for (usize i = 0; i < width; ++i) if (!std::isnan(r[i])) {
+        sum[theme[k]][i] += static_cast<f64>(s[k]) * w[k] * r[i]; present[theme[k]][i] = true;
+      }
+    }
+    for (usize t = 0; t < themes; ++t) {
+      const auto rr = v8_ref_ranks(sum[t], present[t]);
+      for (usize i = 0; i < width; ++i) if (!std::isnan(rr[i])) out[d * width + i] += mass[t] * rr[i];
+    }
+    for (usize i = 0; i < width; ++i) if (!member[d * width + i]) out[d * width + i] = v8_nan;
+  }
+  return out;
+}
+f64 v8_sd(const std::vector<f64>& v, usize begin, usize end) {
+  f64 mean = 0;
+  for (usize k = begin; k < end; ++k) mean += v[k];
+  mean /= static_cast<f64>(end - begin);
+  f64 ss = 0;
+  for (usize k = begin; k < end; ++k) ss += (v[k] - mean) * (v[k] - mean);
+  return std::sqrt(ss / static_cast<f64>(end - begin));
+}
+struct V8Fixture {
+  static constexpr usize days = 3, width = 9;
+  // Theme a: one member; theme b: three members whose ranks disagree (i, (i + 8) % 9 and
+  // (8 i) % 9, rotated per date), so b's plain mean rank has a third of a's dispersion.
+  std::vector<st::IcCompositionCandidate> candidates{{"a1", "a"}, {"b1", "b"}, {"b2", "b"}, {"b3", "b"}};
+  std::vector<usize> themes{0, 1, 1, 1};
+  std::vector<int> signs{1, 1, 1, 1};
+  std::vector<u8> member = std::vector<u8>(days * width, 1);
+  std::vector<std::vector<f64>> signals = std::vector<std::vector<f64>>(4, std::vector<f64>(days * width));
+  st::IcCompositionConfig cfg;
+  V8Fixture() {
+    cfg.dates = days; cfg.instruments = width; cfg.decision_end = days;
+    for (usize d = 0; d < days; ++d) for (usize i = 0; i < width; ++i) {
+      const auto at = d * width + i, j = (i + d) % width;
+      signals[0][at] = static_cast<f64>(j);
+      signals[1][at] = static_cast<f64>(j);
+      signals[2][at] = static_cast<f64>((j + 8) % width);
+      signals[3][at] = static_cast<f64>((8 * j) % width);
+    }
+  }
+  std::optional<st::IcCompositionResult> compose(const std::vector<f64>& weights, std::span<const usize> t,
+                                                 st::IcThemeRule rule,
+                                                 atx::engine::parallel::DetPool* pool = nullptr) const {
+    auto c = st::IcComposition::create(cfg, candidates, member, weights, t, rule);
+    if (!c) return std::nullopt;
+    for (usize k = 0; k < candidates.size(); ++k)
+      if (!c->add(k, signals[k], signs[k], pool)) return std::nullopt;
+    auto out = c->finish();
+    if (!out) return std::nullopt;
+    return std::move(*out);
+  }
+};
+} // namespace
+
+// S-1: under ew-theme-v1 the one-member theme carries about three times the dispersion of
+// a theme whose members disagree; after the re-rank both enter with W_theme times the same
+// grid of centred ranks, so equal theme weights are equal effective weights.
+TEST(CompositionV8, OneMemberThemeHasSameDispersionAsOthers) {
+  const V8Fixture f;
+  const auto std_rule = st::IcThemeRule::standardise;
+  const std::vector<f64> a_only{.5, 0, 0, 0}, b_only{0, 1.0 / 6, 1.0 / 6, 1.0 / 6}, both{.5, 1.0 / 6, 1.0 / 6, 1.0 / 6};
+  const f64 w_a = .5, w_b = 0.0 + 1.0 / 6 + 1.0 / 6 + 1.0 / 6; // W_theme as the composition sums it
+  const auto a = f.compose(a_only, f.themes, std_rule), b = f.compose(b_only, f.themes, std_rule);
+  const auto plain_b = f.compose(b_only, {}, std_rule); // no themes: the ew-theme-v1 pinned path
+  const auto full = f.compose(both, f.themes, std_rule);
+  ASSERT_TRUE(a); ASSERT_TRUE(b); ASSERT_TRUE(plain_b); ASSERT_TRUE(full);
+  for (usize d = 0; d < V8Fixture::days; ++d) {
+    SCOPED_TRACE(d);
+    const usize begin = d * V8Fixture::width, end = begin + V8Fixture::width;
+    const f64 grid = v8_sd(a->signal, begin, end) / w_a;
+    EXPECT_GT(grid, .3);
+    EXPECT_NEAR(v8_sd(b->signal, begin, end) / w_b, grid, 1e-12);
+    EXPECT_NEAR(v8_sd(plain_b->signal, begin, end) / w_b, grid / 3, 1e-12); // before: a third
+  }
+  // Themes fold in index order onto a zero blend: the two-theme blend is the sum of the parts.
+  for (usize k = 0; k < full->signal.size(); ++k)
+    EXPECT_EQ(std::bit_cast<u64>(full->signal[k]), std::bit_cast<u64>(a->signal[k] + b->signal[k])) << k;
+  const auto ref = v8_ref_blend(V8Fixture::days, V8Fixture::width, f.member, f.signals, both, f.signs, f.themes, 2);
+  for (usize k = 0; k < ref.size(); ++k) EXPECT_NEAR(full->signal[k], ref[k], 1e-15) << k;
+}
+
+// Rule 4 (member cap 1/(2T), excess pro rata to the other themes) is fitted by
+// composition_rules.py; the runner-side contract is that a theme enters with W_theme =
+// the sum of its pinned (capped) member weights. T = 2: the one-member theme a is capped
+// from 1/2 to 1/4 and theme b's members rise from 1/6 to 1/4 each. Missing members stay
+// neutral (no redistribution), a theme with no present member adds nothing, nonmembers
+// stay NaN, and the pooled path equals the serial bits.
+TEST(CompositionV8, MemberCapRedistributes) {
+  V8Fixture f;
+  f.signals[2][0] = v8_nan;                         // b2 missing for name 0 on date 0: b = b1 + b3 there
+  f.signals[0][V8Fixture::width + 1] = v8_nan;      // a1 missing for name 1 on date 1: theme a absent there
+  f.member[2 * V8Fixture::width + 8] = 0;           // name 8 leaves on date 2
+  const auto std_rule = st::IcThemeRule::standardise;
+  const std::vector<f64> uncapped{.5, 1.0 / 6, 1.0 / 6, 1.0 / 6}, capped{.25, .25, .25, .25};
+  const auto before = f.compose(uncapped, f.themes, std_rule), after = f.compose(capped, f.themes, std_rule);
+  ASSERT_TRUE(before); ASSERT_TRUE(after);
+  for (const auto& [weights, out] : {std::pair{uncapped, before}, std::pair{capped, after}}) {
+    const auto ref = v8_ref_blend(V8Fixture::days, V8Fixture::width, f.member, f.signals, weights, f.signs,
+                                  f.themes, 2);
+    for (usize k = 0; k < ref.size(); ++k) {
+      if (std::isnan(ref[k])) { EXPECT_TRUE(std::isnan(out->signal[k])) << k; continue; }
+      EXPECT_NEAR(out->signal[k], ref[k], 1e-15) << k;
+    }
+  }
+  // Name 1 on date 1 has no present member of theme a: only W_b * rank_b reaches it, and
+  // the cap moved mass .25 from a to b.
+  const auto at = V8Fixture::width + 1;
+  EXPECT_NEAR(after->signal[at] / .75, before->signal[at] / .5, 1e-15);
+  EXPECT_TRUE(std::isnan(after->signal[2 * V8Fixture::width + 8]));
+  for (const usize workers : {usize{2}, usize{3}}) {
+    SCOPED_TRACE(workers);
+    atx::engine::parallel::DetPool pool(workers);
+    const auto pooled = f.compose(capped, f.themes, std_rule, &pool); ASSERT_TRUE(pooled);
+    for (usize k = 0; k < pooled->signal.size(); ++k)
+      EXPECT_EQ(std::bit_cast<u64>(pooled->signal[k]), std::bit_cast<u64>(after->signal[k])) << k;
+    for (usize d = 0; d < V8Fixture::days; ++d)
+      EXPECT_EQ(std::bit_cast<u64>(pooled->contribution_fraction[d]),
+                std::bit_cast<u64>(after->contribution_fraction[d]));
+  }
+  // Envelope: one f64 plane per theme (8 B per cell per theme), half of redistribute's.
+  const auto base = st::ic_composition_working_bytes(3, 9, 4);
+  const auto two = st::ic_composition_working_bytes(3, 9, 4, 2, std_rule);
+  ASSERT_TRUE(base); ASSERT_TRUE(two); EXPECT_EQ(*two - *base, 2U * 27U * 8U);
+}
+
+// Without themes the rule changes nothing (the ew-theme-v1 pinned path, bit for bit: the
+// runner's rerank-off identity relies on it, see CompositionV8.IdentityWithReRankAndCapOffIsEwThemeV1
+// in strategy_ic_runner_test.cpp); with themes it needs pinned weights and a weighted member.
+TEST(CompositionV8, StandardiseNeedsThemesAndPinnedWeights) {
+  const V8Fixture f;
+  const auto std_rule = st::IcThemeRule::standardise;
+  const std::vector<f64> w{.5, 1.0 / 6, 1.0 / 6, 1.0 / 6};
+  // No themes: the rule is ignored and the blend is the pinned path's, bit for bit.
+  const auto plain = f.compose(w, {}, st::IcThemeRule::redistribute), ignored = f.compose(w, {}, std_rule);
+  ASSERT_TRUE(plain); ASSERT_TRUE(ignored);
+  for (usize k = 0; k < plain->signal.size(); ++k)
+    EXPECT_EQ(std::bit_cast<u64>(plain->signal[k]), std::bit_cast<u64>(ignored->signal[k]));
+  EXPECT_EQ(std::bit_cast<u64>(plain->total_planned_turnover), std::bit_cast<u64>(ignored->total_planned_turnover));
+  // Themes need pinned weights and a weighted member; indices < 32.
+  const std::vector<f64> zeros(4, 0.0);
+  const std::vector<usize> far{0, 1, 1, 32};
+  EXPECT_FALSE(st::IcComposition::create(f.cfg, f.candidates, f.member, {}, f.themes, std_rule));
+  EXPECT_FALSE(st::IcComposition::create(f.cfg, f.candidates, f.member, zeros, f.themes, std_rule));
+  EXPECT_FALSE(st::IcComposition::create(f.cfg, f.candidates, f.member, w, far, std_rule));
+}

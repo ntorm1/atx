@@ -62,7 +62,7 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
     const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
-    bool themed=false) {
+    bool themed=false,bool standardised=false) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -124,6 +124,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   // inside its theme (per name and date); signal_semantics stays admissible to the
   // replay consumers and this key (absent otherwise) states the redistribution.
   if (themed) manifest["composition_redistribution"]=theme_redistribution_rule;
+  // Same for ew-theme-std-v1 with rerank on (absent otherwise, and with rerank off).
+  if (standardised) manifest["composition_standardise"]=theme_standardise_rule;
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -247,11 +249,12 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
   return co::Ok(std::move(out));
 }
 // `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
-// `themes`: pinned within-theme redistribution themes (empty = none; ew-theme-v6).
+// `themes`: pinned themes under `rule` (empty = none; redistribute: ew-theme-v6,
+// standardise: ew-theme-std-v1).
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
     const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
     std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
-    std::ostream& progress,std::span<const usize> themes={}) {
+    std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -323,7 +326,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     for (const auto& c:lib.candidates) candidates.push_back({c.id,c.family});
     IcCompositionConfig cc; cc.dates=role.panel.dates(); cc.instruments=role.panel.instruments();
     cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
-    ATX_TRY(auto created,IcComposition::create(cc,candidates,effective,weights,themes));
+    ATX_TRY(auto created,IcComposition::create(cc,candidates,effective,weights,themes,rule));
     composition.emplace(std::move(created));
   }
   // One key per candidate (empty = cache off); directories are created on write.
@@ -502,8 +505,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   const bool save=combined && cfg.save_combined;
   if (save) {
     const auto save_started=std::chrono::steady_clock::now();
+    const bool themed=!themes.empty();
     ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
-        !blend_signs.empty(),!themes.empty()));
+        !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,themed && rule==IcThemeRule::standardise));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -592,12 +596,12 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     std::vector<Role> roles;
     // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none.
     ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only,
-        pinned.theme_count));
+        pinned.composition_theme_count(),pinned.theme_rule()));
     ATX_TRY_VOID(bind_fields(lib,train,cfg.train_fields_directory,cfg.train_fields_sha256,!validation_only));
     roles.push_back(std::move(train));
     if (!cfg.validation_manifest.empty()) {
       ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation",true,
-          pinned.theme_count));
+          pinned.composition_theme_count(),pinned.theme_rule()));
       ATX_TRY_VOID(bind_fields(lib,val,cfg.validation_fields_directory,cfg.validation_fields_sha256,true));
       ATX_TRY_VOID(same_field_definitions(lib,roles.front(),val));
       if (roles.front().metadata.at("score_end_ns").get<i64>()>val.metadata.at("score_start_ns").get<i64>())
@@ -659,7 +663,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       }
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
-    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty());
+    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),!pinned.std_themes.empty());
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -699,7 +703,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
       auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
-          report.value("orientations_artifact_sha256",std::string{}),progress,pinned.themes);
+          report.value("orientations_artifact_sha256",std::string{}),progress,pinned.composition_themes(),
+          pinned.theme_rule());
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -766,8 +771,10 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "  --composition-weights: must carry train_manifest_sha256 (== --train-sha256); optional signs {id: +1|-1}\n"
                "    replace the IC orientation in the blend; a blend frozen with weights resumes only with the same file.\n"
                "    optional theme_redistribution {rule: within-theme-v1, composition: ew-theme-v6, themes: {id: theme}}\n"
-               "    keeps a missing member's mass inside its theme per name and date; schema\n"
-               "    atx.dsl-composition-weights/v2 iff that block is present, v1 iff absent.\n";
+               "    keeps a missing member's mass inside its theme per name and date; or optional theme_standardise\n"
+               "    {rule: ew-theme-std-v1, rerank: true|false, themes: {id: theme}} re-ranks each theme's weighted rank\n"
+               "    sum per date and adds W_theme times that rank (rerank false: the plain pinned blend, bit for bit);\n"
+               "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none.\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");
