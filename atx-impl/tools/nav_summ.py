@@ -547,7 +547,7 @@ def ledger_dsr(moments: dict, records: list[dict], in_ledger: bool, research_win
     """OD-4 DSR of one dir: N = the ledger's construction trials (+1 when the dir is not in the ledger), V[SR] from the
     construction cells ledgered on ``research_window_id``; the legacy variance's DSR beside it (gates nothing)."""
     v = BI.dsr_variance(records, research_window_id)
-    n = v["n"] + (0 if in_ledger else 1)
+    n = BI.ledger_n(records, in_ledger)  # the one N (research_cycle.py's summ.dsr_n "ledger+1" reads it too)
     row = dict(v, n=n, n_rule="construction trials of the ledger by the defect rule" +
                ("" if in_ledger else " + 1 (this cell, not yet ledgered)"),
                dsr=None, sr0_daily=None, sr0_annual=None, legacy_dsr=None, legacy_sr0_annual=None)

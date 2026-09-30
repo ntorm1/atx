@@ -700,6 +700,16 @@ def trial_counts(records: list[dict]) -> list[int]:
     return out
 
 
+def ledger_n(records: list[dict], scored_in_ledger: bool, kind: str = "construction") -> int:
+    """The N that gates (PM ruling 2026-09-29; v8-prereg Appendix A rules 2 and 7): the ``kind`` trials of the ledger
+    by ``trial_counts`` (the defect rule: protocol lines, window re-runs, invalid and blind-replaced cells add 0), plus
+    1 for the scored cell when it has no ``kind`` line in the ledger yet. nav_summ --dsr-ledger and research_cycle.py
+    (summ.dsr_n "ledger+1") both read N here, so the two print the same N. A line without a kind (a layout
+    ledger_record never writes) is read as a ``kind`` line."""
+    n = sum(c for rec, c in zip(records, trial_counts(records)) if rec.get("kind", kind) == kind)
+    return n + (0 if scored_in_ledger else 1)
+
+
 def excluded_lines(records: list[dict]) -> list[dict]:
     """The lines the defect rule takes out of N (invalid cells and cells replaced by a blind re-run)."""
     seen = {r.get("rerun_of") for r in records if r.get("rerun_basis") == "returns"}
