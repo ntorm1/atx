@@ -1,11 +1,11 @@
-"""research_fields_v8 fiscal-quarter fields (platform v8 F-C gscore7_lowbm; Ruling E-20).
+"""research_fields_v8 fiscal-quarter fields (platform v8 F-C gscore7_lowbm, F-D eps_consist_4y; Ruling E-20).
 
 Synthetic world dated 2014-2021 only: a TickerHistory3-like file (shares_out, hence me_company), a role of the NYSE
 sessions 2021-03-01 .. 2021-06-30 (15 lines: 13 primary issuers, a second class of the first, an unlinked line), a
 pinned identity bridge and an atx.fundamental-events/v1 artifact with quarterly rows 2014-2021 per issuer (an
 amendment, a missing quarter, an annual-only filer, a short history, a null period_end, a split, a |g_0| > 6 jump, a
 sign flip, non-positive shares, missing R&D and capex, a negative book equity). Every value is checked against an
-independent oracle written from the definitions (QUARTER_RULE, GSCORE_RULE)."""
+independent oracle written from the definitions (QUARTER_RULE, GSCORE_RULE, EPS_RULE)."""
 import contextlib
 import datetime as dt
 import hashlib
@@ -34,7 +34,7 @@ SIDS = [11 + j for j in range(N_LINES)]
 LAG, CUT = 1, 40
 BM_TARGET = [0.2, 0.3, 0.25, 0.4, 1.0, 1.2, 0.15, 0.35, 2.0, 0.22, -0.1, 0.28, 0.5]
 SICS = (3571, 7372, 2834)
-NEW = ["gscore7_lowbm"]
+NEW = ["gscore7_lowbm", "eps_consist_4y"]
 BASE_FIELDS = ["si_shares", "shares_out", "me_company", "grp_sic2"]    # shares_out's units rule reads si_shares
 FINRA_ROWS = [(11, "2021-02-01", "100"), (12, "2021-03-15", "50")]
 ITEMS = ("be", "at", "ni_ttm", "cfo_ttm", "capx_ttm", "xrd_ttm", "ni_q", "sale_ttm", "shrs_q")
@@ -233,6 +233,22 @@ def val(r, key):
     return math.nan if r is None else r[key]
 
 
+def oracle_eps(view):
+    eps = []
+    for r in quarter_view(view, 24):
+        s, n = val(r, "shrs_q"), val(r, "ni_q")
+        eps.append(n / s if math.isfinite(s) and s > 0 and math.isfinite(n) else math.nan)
+    g = []
+    for k in range(16):
+        a, b, c = eps[k], eps[k + 4], eps[k + 8]
+        den = (abs(b) + abs(c)) / 2 if math.isfinite(b) and math.isfinite(c) else math.nan
+        g.append((a - b) / den if math.isfinite(a) and math.isfinite(den) and den > 0 else math.nan)
+    fin = [x for x in g if math.isfinite(x)]
+    if len(fin) < 12 or not (math.isfinite(g[0]) and math.isfinite(g[4])) or abs(g[0]) > 6 or g[0] * g[4] < 0:
+        return math.nan
+    return math.fsum(fin) / len(fin)
+
+
 def variance(xs):
     fin = [x for x in xs if math.isfinite(x)]
     return float(np.var(fin, ddof=1)) if len(fin) >= 12 else math.nan
@@ -266,8 +282,8 @@ def selected_view(rows, sid, t, seal):
 
 
 def oracle(rows, me, sic2, member, seal=base.at(2099, 1, 1)):
-    """The gscore7_lowbm array; me / sic2 are this run's me_company and grp_sic2 payloads."""
-    gs = np.full((len(SESSIONS), N_LINES), np.nan)
+    """(gscore7_lowbm, eps_consist_4y) arrays; me / sic2 are this run's me_company and grp_sic2 payloads."""
+    gs, ec = np.full((len(SESSIONS), N_LINES), np.nan), np.full((len(SESSIONS), N_LINES), np.nan)
     for t in range(len(SESSIONS)):
         x = {k: np.full(N_LINES, np.nan) for k in ("bm", "roa", "cfroa", "rda", "capxa", "varroa", "varsgr")}
         cfo_gt_ni = np.zeros(N_LINES, dtype=bool)
@@ -275,6 +291,7 @@ def oracle(rows, me, sic2, member, seal=base.at(2099, 1, 1)):
             view = selected_view(rows, sid, t, seal)
             if view is None:
                 continue
+            ec[t, i] = oracle_eps(view)
             r = view[-1]
             prev = me[t - 1, i] if t else math.nan
             if r["be"] > 0 and prev > 0:
@@ -302,7 +319,7 @@ def oracle(rows, me, sic2, member, seal=base.at(2099, 1, 1)):
                 med = float(np.median([x[k][p] for p in peers if math.isfinite(x[k][p])]))
                 count += int(x[k][i] < med) if k.startswith("var") else int(x[k][i] > med)
             gs[t, i] = count
-    return gs
+    return gs, ec
 
 
 def entry(manifest, name):
@@ -315,7 +332,7 @@ class QuarterFields(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         cls.w = World(Path(cls.temp.name))
         cls.manifest = cls.w.run("q")
-        cls.gs = cls.w.field("q", "gscore7_lowbm")
+        cls.gs, cls.ec = cls.w.field("q", "gscore7_lowbm"), cls.w.field("q", "eps_consist_4y")
         member = np.fromfile(cls.w.role / "member.u8", dtype="u1").reshape(len(SESSIONS), N_LINES)
         cls.member = member
         cls.want = oracle(cls.w.rows, cls.w.field("q", "me_company"), cls.w.field("q", "grp_sic2"), member)
@@ -325,15 +342,34 @@ class QuarterFields(unittest.TestCase):
         cls.temp.cleanup()
 
     def test_values_equal_the_definitions(self):
-        np.testing.assert_array_equal(self.gs, self.want)
-        self.assertGreater(int(np.isfinite(self.gs).sum()), 100)                # the world exercises the field
+        gs, ec = self.want
+        np.testing.assert_array_equal(self.gs, gs)
+        np.testing.assert_allclose(self.ec, ec, rtol=1e-12, atol=0)
+        np.testing.assert_array_equal(np.isnan(self.ec), np.isnan(ec))
+        self.assertGreater(int(np.isfinite(self.gs).sum()), 100)                # the world exercises both fields
         self.assertGreater(len({float(x) for x in self.gs[np.isfinite(self.gs)]}), 3)
-        for j in (13, 14):                                                     # J line, unlinked
+        self.assertGreater(int(np.isfinite(self.ec).sum()), 300)
+        for j in (5, 12, 13, 14):                                              # annual-only, short, J line, unlinked
+            self.assertTrue(np.isnan(self.ec[:, j]).all(), j)
+        for j in (13, 14):
             self.assertTrue(np.isnan(self.gs[:, j]).all(), j)
         self.assertTrue(np.isnan(self.gs[:, 10]).all())                        # be < 0: never in the bm universe
         self.assertTrue(np.isnan(self.gs[0]).all())                            # no me_company at t-1 on row 0
+        q1 = next(t for t, d in enumerate(SESSIONS) if d >= dt.date(2021, 5, 11))   # first Q1-2021 row usable
+        self.assertTrue(np.isnan(self.ec[:q1, 6]).all())                       # |g_0| > 6 at the 2020-12-31 anchor
+        self.assertTrue(np.isnan(self.ec[:q1, 7]).all())                       # g_0 < 0 < g_4
+        self.assertTrue(np.isnan(self.ec[0]).all() and np.isfinite(self.ec[1:, 0]).all())   # t < L: NaN
         self.assertTrue(np.isnan(self.gs[:5, 2]).all() and np.isnan(self.gs[20:30, 6]).all())   # non-members: NaN
         self.assertTrue(np.isfinite(self.gs[5:20, 6]).any())                   # ... and a member in the tercile
+        e = entry(self.manifest, "eps_consist_4y")
+        reasons = e["nan_reasons_member_cells"]
+        self.assertGreater(reasons["abs_g0_above_6"], 0)
+        self.assertGreater(reasons["g0_g4_opposite_signs"], 0)
+        self.assertGreater(reasons["fewer_than_12_finite_g"], 0)
+        self.assertEqual((e["formula_id"], e["fund_lag_sessions"], e["producer"]["module"]),
+                         ("alwathainani-eps-consistency-16q-v1", LAG, "research_fields_v8.py"))
+        self.assertEqual((e["identity_bridge_manifest_sha256"], e["fund_events_manifest_sha256"]),
+                         (self.w.bridge_sha, self.w.events_sha))
         g = entry(self.manifest, "gscore7_lowbm")
         self.assertEqual((g["fund_lag_sessions"], g["producer"]["module"]), (LAG, "research_fields_v8.py"))
         self.assertEqual((g["identity_bridge_manifest_sha256"], g["fund_events_manifest_sha256"]),
@@ -372,8 +408,9 @@ class QuarterFields(unittest.TestCase):
         me_a, me_b = self.w.field("q", "me_company"), mutated.field("late-q", "me_company")
         self.assertFalse(np.array_equal(me_a[CUT], me_b[CUT], equal_nan=True))   # me_company moved at t itself:
         member = np.fromfile(mutated.role / "member.u8", dtype="u1").reshape(len(SESSIONS), N_LINES)
-        gs = oracle(rows, me_b, mutated.field("late-q", "grp_sic2"), member)   # ... gscore reads t-1 only
+        gs, ec = oracle(rows, me_b, mutated.field("late-q", "grp_sic2"), member)   # ... gscore reads t-1 only
         np.testing.assert_array_equal(mutated.field("late-q", "gscore7_lowbm"), gs)
+        np.testing.assert_allclose(mutated.field("late-q", "eps_consist_4y"), ec, rtol=1e-12, atol=0)
 
     def test_existing_payloads_byte_identical(self):
         alone = self.w.run("base-only", fields=BASE_FIELDS)
@@ -402,7 +439,8 @@ class QuarterFields(unittest.TestCase):
         lag2 = self.w.run("lag2", fund_lag_sessions=2, reuse=self.w.base / "q")
         for name in NEW:
             self.assertIn("inputs differ", lag2["reuse"]["not_reused"][name])
-        self.assertNotEqual(lag2["files"]["gscore7_lowbm.f64"], self.manifest["files"]["gscore7_lowbm.f64"])
+        for name in NEW:
+            self.assertNotEqual(lag2["files"][f"{name}.f64"], self.manifest["files"][f"{name}.f64"], name)
 
     def _prior_without_new(self):
         path = self.w.base / "prior-base"
@@ -452,9 +490,10 @@ class QuarterFields(unittest.TestCase):
         unsealed = loud.run("unsealed-loud")
         for name in NEW:                          # the added rows do move the field when nothing seals them
             self.assertNotEqual(unsealed["files"][f"{name}.f64"], self.manifest["files"][f"{name}.f64"], name)
-        gs = oracle(self.w.rows, self.w.field("sealed", "me_company"), self.w.field("sealed", "grp_sic2"),
-                    self.member, seal=seal)
+        gs, ec = oracle(self.w.rows, self.w.field("sealed", "me_company"), self.w.field("sealed", "grp_sic2"),
+                        self.member, seal=seal)
         np.testing.assert_array_equal(self.w.field("sealed", "gscore7_lowbm"), gs)
+        np.testing.assert_allclose(self.w.field("sealed", "eps_consist_4y"), ec, rtol=1e-12, atol=0)
 
 
 class QuarterUnits(unittest.TestCase):
@@ -498,6 +537,30 @@ class QuarterUnits(unittest.TestCase):
         self.assertEqual(rows[int(got[tie, 1])]["period_end"], dt.date(2020, 10, 11))
         self.assertGreater(int((got >= 0).sum()), 1000)
         self.assertGreater(int((got[:, 1:] < 0).sum()), 50)                     # missing quarters exercised
+
+    def test_eps_rule_boundaries(self):
+        def run(eps_by_k):
+            """eps_consistency of the newest row of one CIK whose quarter k (0 = newest) has EPS eps_by_k[k]."""
+            n = len(eps_by_k)
+            ends = quarter_ends(dt.date(2015, 3, 31), dt.date(2021, 12, 31))[:n]
+            ev = {"clock": np.arange(n, dtype=np.int64), "cidx": np.zeros(n, dtype=np.int64),
+                  "period_end": np.array([day(p) for p in ends], dtype=np.int64),
+                  "values": {"ni_q": np.array(eps_by_k[::-1], dtype=float), "shrs_q": np.ones(n)}}
+            ev["known"] = np.ones(n, dtype=bool)
+            value, reason = v8.eps_consistency(ev, v8.QuarterIndex(ev))
+            view = [{"period_end": p, "ni_q": x, "shrs_q": 1.0} for p, x in zip(ends, eps_by_k[::-1])]
+            want = oracle_eps(view)
+            self.assertTrue(math.isnan(want) if math.isnan(value[-1]) else value[-1] == want, (value[-1], want))
+            return value[-1], int(reason[-1])
+        flat = [1.0] * 24
+        self.assertEqual(run(flat), (0.0, 0))                                   # g = 0: no sign change
+        self.assertEqual(run([7.0] + flat[1:]), (6.0 / 16, 0))                  # |g_0| = 6 is kept
+        self.assertEqual(run([7.0 + 1e-9] + flat[1:])[1], 3)                    # |g_0| > 6
+        self.assertEqual(run([0.5, 1, 1, 1, 2] + flat[5:])[1], 4)               # g_0 < 0 < g_4
+        value, code = run([1.0] * 12 + [0.0] * 12)       # EPS_12..23 = 0: g_8..g_15 have a 0 denominator -> NaN
+        self.assertEqual(code, 1)                        # 8 finite g < 12
+        self.assertTrue(math.isnan(value))
+        self.assertEqual(run([1.0] * 16 + [0.0] * 8), (0.0, 0))   # g_12..g_15 NaN: exactly 12 finite is enough
 
     def test_gscore_cross_section_matches_the_definition(self):
         rng = np.random.default_rng(11)
