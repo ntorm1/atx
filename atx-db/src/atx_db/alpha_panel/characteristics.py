@@ -542,7 +542,7 @@ def extract(con, years: Sequence[int], nb: int) -> dict[str, Any]:
     panel_years = sorted(int(p.name.split("=")[1]) for p in (root / "panel").glob("year=*") if p.is_dir())
     # every panel year up to the last output year: the years before the first output year are window warm-up
     for d in _tmp(IN_DIR, "panel").glob("year=*"):
-        if int(d.name.split("=")[1]) > max(years):
+        if d.name.endswith(".partial") or int(d.name.split("=")[1]) > max(years):  # .partial: a stopped run
             shutil.rmtree(d)
     for y in [py for py in panel_years if py <= max(years)]:
         bp = root / "borrow_proxy" / f"year={y}"

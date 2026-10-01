@@ -82,6 +82,8 @@ def test_isolated_cli_build_matches_in_process_build_and_cli_pit(tmp_path, monke
     root.mkdir()
     monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(root))
     make_lake(root)
+    # leftovers of a run stopped by the guard mid-write are cleared, not parsed
+    (root / "_tmp" / "char_in" / "panel" / "year=2019.partial" / "b=0").mkdir(parents=True)
     monkeypatch.setenv("PYTHONPATH", str(Path(CH.__file__).resolve().parents[2]))
     assert CH.main(["--isolate", "--years", "2019-2019", "--nb", str(NB), "--memory", "300MB", "--threads", "1"]) == 0
     got = pq.read_table(root / "characteristics" / "year=2019" / "characteristics.parquet",
