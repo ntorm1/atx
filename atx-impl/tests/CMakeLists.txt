@@ -115,6 +115,14 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_target_shaping_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 
+# Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
+# search path, research IC fitness and op-catalogue tests it builds on. Run it directly with a
+# gtest filter (not in the atx_equity_strategy label).
+add_executable(atx-impl-strategy-mine-tests EXCLUDE_FROM_ALL
+    strategy_mine_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/factory_signal_fitness_test.cpp")
+atx_impl_test_target_environment(atx-impl-strategy-mine-tests)
+
 # Platform v8 E-3: the three strategy executables are ctest-visible under one label, so a built tree qualifies them
 # with `ctest -L atx_equity_strategy`. They stay EXCLUDE_FROM_ALL: PRE_TEST discovery enumerates each at ctest time,
 # and one that is not built appears as <target>_NOT_BUILT, which carries no label. The prefix keeps their names

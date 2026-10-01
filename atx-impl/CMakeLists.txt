@@ -19,6 +19,13 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_ic_composition.cpp
     # platform v8 F-2: `atx-equity-strategy-ic marginal` (contract K6, marginal_ic.json)
     src/strategy_marginal_ic.cpp
+    # platform v8 H-3: the shared research-role loader and the mining verb (mined-v1)
+    src/strategy_research_role.cpp
+    src/strategy_mine.cpp
+    src/strategy_mine_pool.cpp
+    src/strategy_mine_promote.cpp
+    src/strategy_mine_rule.cpp
+    src/strategy_mine_trials.cpp
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
     src/strategy_nav_replay.cpp
@@ -168,6 +175,10 @@ target_link_libraries(atx-equity-strategy-targets PRIVATE atx-impl-core atx_warn
 # atx-risk-v1 fundamental risk model + bias harness (platform v7 L4): the `risk` verb.
 add_executable(atx-equity-strategy-risk EXCLUDE_FROM_ALL tools/equity_strategy_risk.cpp)
 target_link_libraries(atx-equity-strategy-risk PRIVATE atx-impl-core atx_warnings)
+
+# Platform v8 H-3: the mining verb (built and self-tested; real campaigns only under OD-7).
+add_executable(atx-equity-strategy-mine EXCLUDE_FROM_ALL tools/equity_strategy_mine.cpp)
+target_link_libraries(atx-equity-strategy-mine PRIVATE atx-impl-core atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

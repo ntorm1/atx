@@ -149,6 +149,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/data/strategy_data.cpp
     # platform v8 H-3: role adapters lifted from the IC runner (DSL overlay panel, return guard)
     src/data/role_panel.cpp
+    # platform v8 H-3: the research IC fitness of the signal-fitness search path (mining verb)
+    src/factory/research_ic_fitness.cpp
     src/factory/objective_ic.cpp
     src/eval/multiple_testing.cpp
     src/eval/lockbox_audit.cpp

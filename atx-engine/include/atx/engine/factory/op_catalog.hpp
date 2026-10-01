@@ -26,6 +26,7 @@
 #include <array>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/core/random.hpp"
@@ -109,6 +110,22 @@ struct OpInvariance {
 }
 
 // =========================================================================
+//  OpCatalogCfg — which named ops op-swap may offer (platform v8 H-3).
+//
+//  literature_ops : also file the W2 literature rows (alpha::detail::literature_ops()). add_op
+//                   drops their record and hparam rows as it does for the built-ins, so this
+//                   adds ts_resid_on, ts_beta_on, cs_resid_on, ts_count_increases and
+//                   group_cross.
+//  deny           : op names never offered as a replacement (a node already carrying one keeps
+//                   it; analyze stays the validity backstop).
+//  The default ({false, {}}) builds exactly the pre-v8 catalogue.
+// =========================================================================
+struct OpCatalogCfg {
+  bool literature_ops{false};
+  std::vector<std::string> deny{};
+};
+
+// =========================================================================
 //  OpCatalog — named-Call op candidates bucketed by (shape-cat, dtype, arity).
 // =========================================================================
 
@@ -116,10 +133,11 @@ class OpCatalog {
 public:
   // Build the catalog from the run-wide Library.
   // SAFETY: `lib` is borrowed only for the duration of construction. The cached
-  // `const OpSig*` candidates alias the static `builtin_ops()` table (program
-  // lifetime), so they never dangle; the Library reference establishes which run
-  // the catalog belongs to (the same one every genome borrows ops from — §0.4).
-  explicit OpCatalog(const alpha::Library &lib);
+  // `const OpSig*` candidates alias the static `builtin_ops()` (and, with
+  // cfg.literature_ops, `literature_ops()`) tables (program lifetime), so they
+  // never dangle; the Library reference establishes which run the catalog
+  // belongs to (the same one every genome borrows ops from — §0.4).
+  explicit OpCatalog(const alpha::Library &lib, const OpCatalogCfg &cfg = {});
 
   // Sample a replacement op for a Call slot of result `(shape, dtype)` and the
   // given materialized `arity`, drawn uniformly from the same bucket but never
@@ -256,7 +274,7 @@ private:
     return fallback;
   }
 
-  void build();
+  void build(const OpCatalogCfg &cfg);
 
   void add_op(const OpSig &sig) {
     if (!sig.pins.empty()) {

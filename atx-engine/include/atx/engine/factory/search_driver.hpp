@@ -96,6 +96,7 @@
 #include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
+#include "atx/engine/factory/signal_fitness.hpp"  // factory::SignalFitness (v8 H-3)
 #include "atx/engine/factory/search_state.hpp"    // factory::CachedScore (fitness-cache value)
 #include "atx/engine/factory/search_progress.hpp" // factory::SearchProgressSink, SearchResumeState (resumable-discover)
 
@@ -315,6 +316,27 @@ struct SearchConfig {
   // Behavioral archive eviction: Fifo (legacy ring of recent elites) or
   // FarthestPoint (max-min-distance set of elite behaviours, behavior.hpp).
   ArchiveEviction archive_eviction{ArchiveEviction::Fifo};
+
+  // ---- platform v8 H-3 research search (all default OFF -> byte-identical) ----
+  //
+  // cross_section_mask: date-major eligibility (panel cells() flags in {0,1}) copied into
+  // every VM engine of the run: the full-panel engines and, strided alike
+  // (strided_cells), every racing rung's engines. Every Cs* operator then ranks over the
+  // eligible names only (alpha::Engine::set_cross_section_mask); field loads keep the
+  // Panel's own mask. BORROWED: must outlive run(). Refused with a weak panel (its
+  // geometry differs). Empty: the engines keep the Panel's valid set.
+  std::span<const atx::u8> cross_section_mask{};
+  // signal_fitness: the caller's functor (signal_fitness.hpp) scores every evaluated
+  // signal in place of pool_aware_fitness, at the full pass and at each racing rung;
+  // parsimony is still added when enabled. BORROWED: must outlive run(). The run refuses
+  // (signal_path_invalid) a non-legacy objective or execution rule, a non-empty pool, a
+  // weak panel, an active or injected IC screen, output dedup, deflation, capacity or
+  // turnover objectives, a checkpoint sink or resume, a CPCV DateV2 plan, and any low
+  // rung that is not instrument_only (a date stride changes every time-series operator).
+  SignalFitness *signal_fitness{nullptr};
+  // op_catalog: the op-swap catalogue, rebuilt at the top of run(); the default is the
+  // constructor's catalogue exactly.
+  OpCatalogCfg op_catalog{};
 };
 
 // =========================================================================
@@ -364,6 +386,15 @@ struct SearchResult {
   // These are training ICs, not P&L, Sharpe or durable registry records.
   std::vector<ResidualCandidateScore> residual_scores;
   std::vector<atx::u64> residual_unavailable_hashes;
+  // platform v8 H-3. Complete, sorted identities of the candidates rejected at a racing
+  // rung (any fitness path) and, on the signal-fitness path, of the attempts that got no
+  // score (ScoreOrigin::Unscored). A signal-fitness rejection is in ic_rejected_hashes.
+  std::vector<atx::u64> fidelity_rejected_hashes;
+  std::vector<atx::u64> unscored_hashes;
+  // A refused cross_section_mask / signal_fitness configuration, a failed bind, or a
+  // functor Err while scoring: nothing from the failing generation is admitted.
+  bool signal_path_invalid{false};
+  std::string signal_path_error{};
 };
 
 namespace detail {
