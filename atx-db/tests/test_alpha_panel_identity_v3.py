@@ -234,8 +234,12 @@ def test_bridge_exports_seal(tmp_path, monkeypatch) -> None:
     m = json.loads((tmp_path / "export" / "identity-bridge-v3-all" / "manifest.json").read_text())
     assert m["seal"]["consumer_seal_date"] == "2024-01-01" and m["seal"]["applied"] is True
     assert m["seal"]["max_end_incl"] == "2023-12-31"
+    assert m["seal"]["censored_rows"] == 2                         # ids 2 and 4 crossed; id 1 ended 2022 (not counted)
+    mp = json.loads((tmp_path / "export" / "identity-bridge-v3-pit" / "manifest.json").read_text())
+    assert mp["seal"]["censored_rows"] == 1                        # id 2 only (backfill is not in pit)
     assert m["counts"]["max_end_incl"] == "2023-12-31"
     V.export_bridges(con, table, seal=None)                        # disabled: unclipped
     assert {r[0]: r for r in q("pit")}[3][1] == dt.date(2024, 2, 1)
     m = json.loads((tmp_path / "export" / "identity-bridge-v3-pit" / "manifest.json").read_text())
     assert m["seal"]["applied"] is False and m["seal"]["max_end_incl"] == "2026-09-18"
+    assert m["seal"]["censored_rows"] == 0

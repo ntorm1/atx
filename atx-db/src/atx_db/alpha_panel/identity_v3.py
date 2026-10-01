@@ -73,6 +73,7 @@ WINDOW_DAYS = 400
 RECENT_DAYS = 120
 MIN_WEIGHT = 2
 MEMORY = "220MB"
+EXPORT_SEAL = "2024-01-01"      # consumer seal for the bridge exports (global constraint 1)
 MODULES = ("identity_v3", "identity_names", "shortflow_common", "common")
 DEAD_BEFORE = "2026-09-01"
 FIRST_SESSION = "2017-10-01"
@@ -345,7 +346,7 @@ def dated() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- link table v3
-def table() -> dict[str, Any]:
+def table(seal: str | None = EXPORT_SEAL) -> dict[str, Any]:
     root = C.build_root()
     wd = work_dir()
     con = C.connect(memory=MEMORY, threads=1, db_file="identity_v3_table.duckdb")
@@ -496,7 +497,7 @@ def table() -> dict[str, Any]:
         FROM read_parquet('{dest.as_posix()}') GROUP BY 1 ORDER BY 1""").fetchall()]
     receipt["linktype_linkprim"] = {f"{a}/{b}": int(n) for a, b, n in con.execute(f"""
         SELECT linktype, linkprim, count(*) FROM read_parquet('{dest.as_posix()}') GROUP BY 1, 2 ORDER BY 1, 2""").fetchall()}
-    receipt["exports"] = export_bridges(con, dest)
+    receipt["exports"] = export_bridges(con, dest, seal)
     receipt["audit"] = audit(con)
     con.close()
     (root / "_tmp" / "identity_v3_table.duckdb").unlink(missing_ok=True)
@@ -543,9 +544,6 @@ def _agreement(con, p: dict[str, str]) -> dict[str, Any]:
 VARIANTS = {"strict": ("strict",), "pit": ("strict", "dated", "name"), "all": ("strict", "dated", "name", "backfill")}
 
 
-EXPORT_SEAL = "2024-01-01"
-
-
 def export_bridges(con, table: Path, seal: str | None = EXPORT_SEAL) -> dict[str, Any]:
     """Write the three bridge exports. ``seal`` (ISO date, default 2024-01-01; None disables) is the consumer seal
     (global constraint 1): rows whose ``start`` or ``available_at`` is on or after it are dropped, ``end_incl`` is
@@ -584,12 +582,22 @@ def export_bridges(con, table: Path, seal: str | None = EXPORT_SEAL) -> dict[str
                 WHERE start >= DATE '{seal}' OR end_incl >= DATE '{seal}' OR available_at >= TIMESTAMP '{seal}'
                    OR knowledge_at >= TIMESTAMP '{seal}'""").fetchone()[0]
             assert bad == 0, f"bridge export {name}: {bad} rows carry a date on or after the seal {seal}"
+        censored = 0
+        if seal is not None:      # source rows kept whose interval crossed the seal (end_incl censored, not a real end)
+            censored = con.execute(f"""
+                SELECT count(*) FROM read_parquet('{table.as_posix()}')
+                WHERE link_tier IN ({lst}) AND valid_from < DATE '{seal}' AND {avail} < TIMESTAMP '{seal}'
+                  AND valid_to >= DATE '{seal}'""").fetchone()[0]
         maxd = con.execute(f"""
             SELECT max(start), max(end_incl), max(available_at), max(knowledge_at)
             FROM read_parquet('{(d / "links.parquet").as_posix()}')""").fetchone()
         manifest = {
             "schema": "atx.identity-bridge/v1", "status": "complete", "rule": f"{RULE}/{name}",
             "seal": {"consumer_seal_date": seal, "applied": seal is not None,
+                     "censored_rows": censored,
+                     "censored_rows_note": "rows whose end_incl was censored to the day before the seal (the link "
+                                           "was still open at the seal; 2023-12-31 is not a real end). No per-row "
+                                           "flag column: the consumer's bridge reader requires an exact schema.",
                      "max_start": str(maxd[0]), "max_end_incl": str(maxd[1]), "max_available_at": str(maxd[2]),
                      "max_knowledge_at": str(maxd[3]),
                      "rule": "rows with start or available_at on/after the seal dropped; end_incl censored to the day "
@@ -722,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seal", default=EXPORT_SEAL, help="bridge export seal date (ISO) or 'none'")
     args = ap.parse_args(argv)
     seal = None if args.seal.lower() == "none" else args.seal
-    steps = {"evidence": evidence, "names": names, "dated": dated, "table": table, "codes": codes,
+    steps = {"evidence": evidence, "names": names, "dated": dated, "table": lambda: table(seal), "codes": codes,
              "exports": lambda: exports_only(seal)}
     for name in (("evidence", "names", "dated", "table") if args.cmd == "all" else (args.cmd,)):
         t0 = time.perf_counter()
