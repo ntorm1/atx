@@ -160,3 +160,94 @@ Cell: set `"parent"` in `r10.json` to the last accepted cell's spec (it must car
 - Python and C++ order the cap's theme redistribution differently (names vs first appearance) when two themes spill in
   one pass: last-bit differences only, inside the runner's 1e-12.
 - Memory: as ew-theme-std-v1 (one f64 plane per theme); E-28's 3,072 MiB w pass is inherited through R-1.
+
+## Round 1 (Ruling E-44: the aim variant; r10 derives its rule from the parent)
+
+Rulings: E-44 (R-10 runs on the last accepted parent whatever its composition; open risk "Parent" above is closed).
+Accepted as registered: the IC definition (the fitter's admission `train_mean`, no new read) and the R-1 mechanical
+acceptance criterion.
+
+Commits: `4ca3ab4c` (C++ variant, rule-table row, gtests, shared fixture), `2cf5ca89` (fitter path, r10.json, Python
+and spec tests).
+
+### Registration of `ic-shrink-aim-v1` (declared before any cell read; constants unchanged from round 0)
+
+1. Steps 1-4 of ic-shrink-v1 unchanged: ic_k = admission `train_mean`; shrunk_k = .5 * theme mean + .5 * ic_k; floor 0;
+   share_k = floored / theme sum (equal 1/n_t when the theme has no positive value).
+2. Gains: g_k = the parent's per-member aim gain, `fit_composition_weights.aim_gain` as coded (theta .05,
+   g = theta * sum_{j=0..126} (1-theta)^j rho_k(j), rho from TRAIN signal-rank autocorrelation, clipped [.05, 1]), read
+   from the same aim records the aim parent's fit reads (`ensure_records(aim=True)`; the fitter test asserts the gains
+   equal the ew-theme-std-aim-v1 fit's). No new window, no new read beyond what the aim parent already reads.
+3. E-27a mechanism: w_k = share_k * g_k / (T * sum_{theme(k)} share * g) (each theme keeps 1/T), computed by
+   `composition_rules.tier_weights(themes, [share * g])` -- the function ew-theme-std-aim-v1 calls (a mock test pins
+   the call and its arguments); then `composition_rules.member_cap` at 1/(2T), tolerance 1e-12 relative.
+4. Standardisation unchanged (ew-theme-std-v1's per-date re-rank). Weights file: schema v2, `theme_standardise`
+   {rule: ic-shrink-aim-v1, rerank: true, themes, ic_shrink: {intensity .5, floor 0, members: {id: {theme, ic, gain}}}},
+   `provenance.ic_shrink` (+ `aim_gains`, `aim_rule`), `provenance.aim` (the R4' report block), theme table
+   `aim_gains` / `aim_theme_weight` (the fitter's aim summary).
+5. Gains of 1 give ic-shrink-v1's weights to rounding (share / (T * share sum) vs share / T; asserted <= 1e-15).
+
+### C++ (`strategy_ic_shrink.{hpp,cpp}`, `strategy_ic_admission.cpp`)
+
+- `ic_shrink_aim_rule = "ic-shrink-aim-v1"`; `ic_shrink_weights(ic, theme, themes, gains = {})`:
+  empty gains = ic-shrink-v1 exactly as before; otherwise one finite gain > 0 per member, share * g summed per theme
+  in member order, w = share * g / (T * total) (tier_weights' expressions in the same order), then the engine's
+  `cap_across_groups` (shared with ic-shrink-v1). Refusals carry the variant's name ("ic-shrink-aim-v1: ...").
+- Rule table: 3 rows; `{ic-shrink-aim-v1, rerank_off false, verify_ic_shrink_aim}`. `verify_shrink(block, lib,
+  weights, aim)` is the one body behind both verifies: the aim row also needs each member's `gain` (finite > 0) and
+  re-applies the variant with the recorded gains; every pinned weight must match within 1e-12. Messages of
+  ic-shrink-v1 unchanged; the shape message names `ic-shrink-v1|ic-shrink-aim-v1` (old text kept as its prefix).
+- No C++ aim function exists to call (ew-theme-std-aim-v1 is fitter-only; the runner treats its files as
+  ew-theme-std-v1), so the C++ renormalisation is the in-function expression mirroring `tier_weights`; the cap is the
+  shared engine kernel.
+
+### Tests
+
+- Shared fixture `atx-impl/tests/fixtures/ic_shrink_aim_v1.json` (T = 2, cap 1/4): value ic {.003, .001, .002},
+  momentum {.004, .002, -.003}, gains {.6, .5, .8 | .9, 1, .8}; shares {5/12, 1/4, 1/3 | 5/8, 3/8, 0}; before cap
+  {15/77, 15/154, 16/77 | 3/10, 1/5, 0}; b1 capped, excess 1/20 to value (x 11/10): {3/14, 3/28, 8/35 | 1/4, 1/5, 0};
+  one pass; ic-shrink-v1 on the same ICs {15/64, 9/64, 3/16 | 1/4, 3/16, 0}.
+- gtest `IcShrinkAimV1.{RegisteredId, WeightsFollowTheWrittenRule, FixtureTellsWrongRulesApart,
+  RefusesBadGainsAndNamesTheVariant}`: the written rule computed in the test step by step (theme sums 1/T before the
+  cap, the single cap pass) equals the C++ rule and the fixture fractions to 1e-15; T-1: no gains, gains not
+  renormalised in the theme, gains renormalised over the whole book, gains after the cap each differ by > 1e-3;
+  refusals (size, 0, negative, NaN, inf; infeasible cap named "ic-shrink-aim-v1: group cap").
+- gtest `CompositionV8.IcShrinkAimRunsTheStandardisationUnchangedAndRecordsItsRule` (the variant's weights pinned under
+  ew-theme-std-v1 and under ic-shrink-aim-v1: byte-identical combined planes, planned targets, IC rows; recipe, combined
+  manifests and summary name ic-shrink-aim-v1) and `CompositionV8.IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput` (the
+  runner's re-application check on the variant: ic-shrink-v1 weights under the aim rule, aim weights under
+  ic-shrink-v1, a changed gain, a missing / zero / negative / string gain, intensity, missing ic_shrink, rerank off;
+  plan-only and full, no output). Runner fixture gains {.5, 1, 1, .5 | .2, .9} give {63/368, 45/184, 27/184 | 1/4,
+  3/16, 0} (volume_rank capped), checked against the Python port to 3e-17.
+- Python `test_composition_ic_shrink.py` (+8): `DeclaredAimRule` (shared aim fixture equals the C++ fractions to 1e-15
+  -- the Python fitter equals the C++ rule; written rule; tier_weights / member_cap calls; T-1 alternatives; block,
+  theme table, provenance, gains-of-1; refusals) and `FitterEndToEnd` (fit --composition ic-shrink-aim-v1 on the
+  synthetic aim world: weights = the written variant on admission `train_mean` and the ew-theme-std-aim-v1 parent's
+  gains to 1e-15; runner-order re-application with the recorded gains within 1e-12; flag-absent identity now also covers
+  ew-theme-std-aim-v1 bytes).
+
+### Template (`scripts/specs/v8/r10.json`)
+
+`--composition` by the parent's value: ew-theme-std-v1 -> ic-shrink-v1, ew-theme-v1 -> ic-shrink-v1,
+ew-theme-std-aim-v1 -> ic-shrink-aim-v1, ew-theme-aim-v1 -> ic-shrink-aim-v1 (an unmapped composition, e.g.
+ew-theme-v6, still refuses at load). The template now sets E-28's w pass itself (`runner.phases.w.max_rss_mib` 3072,
+`ic.w_flags.--max-memory-mib` "3072", the values R-1 sets: no diff against the nominal parent), so a parent chain
+without R-1 (B0c, R-3 on B0c) also runs the theme_standardise w pass at 3,072 MiB. `test_research_spec.py`:
+`test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072` (R-1, B0c, R-3-on-R-1, R-3-on-B0c parents:
+rule and caps [2560, 3072, 2560, 1536] and the IC argv; ew-theme-v6 parent refused).
+
+### Counts
+
+Python: fitter suites (`test_composition_rules`, `test_fit_composition_weights`, `_pool`, `_store`,
+`test_composition_ic_shrink`) 145 passed; `scripts/tests` 165 passed, 4 skipped (`test_research_spec` 33). C++: never
+compiled (6 new gtests). Root: build `atx-impl-strategy-ic-tests`, run
+`--gtest_filter=IcShrinkV1.*:IcShrinkAimV1.*:GroupShrink.*:GroupCap.*:CompositionV8.*:StrategyIcComposition.*:StrategyIcRunner.*:MarginalIc.*`.
+
+### Round 1 concerns
+
+- ew-theme-v1 -> ic-shrink-v1 is mapped by reading E-44 "whatever its composition"; on an ew-theme-v1 or
+  ew-theme-aim-v1 parent the cell changes two things at once (IC shares and the theme standardisation R-1 would have
+  added). If root wants R-10 only on a standardised parent (cf. ORTH's note that R-11 is undefined if R-1 is rejected),
+  drop the two non-std keys from the map.
+- The runner verifies the variant against the gains the file records; it cannot re-derive the gains (they come from
+  TRAIN rank autocorrelation in the fitter). The fitter test pins file gains = parent gains.
