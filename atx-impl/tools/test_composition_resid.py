@@ -311,6 +311,10 @@ class FitterEndToEnd(unittest.TestCase):
                 cls.shrink_codes[comp] = (fcw.fit(cls.fx.args(cls.root / comp, **shrink))[0],
                                           fcw.fit(cls.fx.args(cls.root / f"{comp}-resid", theme_resid=cres.RULE_ID,
                                                               **shrink))[0])
+            # R-11 on an accepted R-3 parent (Ruling E-44, finding R6B-O-6): ew-theme-std-aim-v1
+            aim = dict(STD_ARGS, composition=cr.STD_AIM_RULE_ID)
+            cls.aim_codes = (fcw.fit(cls.fx.args(cls.root / "std-aim", **aim))[0],
+                             fcw.fit(cls.fx.args(cls.root / "std-aim-resid", theme_resid=cres.RULE_ID, **aim))[0])
         cls.std_bytes = {p.name: p.read_bytes() for p in (cls.root / "std").iterdir()}
         cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "resid").iterdir()}
         cls.std = json.loads(cls.std_bytes[fcw.OUTPUT_WEIGHTS])
@@ -379,6 +383,25 @@ class FitterEndToEnd(unittest.TestCase):
                 del doc[cres.BLOCK]
                 del doc["provenance"]["resid"]
                 self.assertEqual(fcw.canonical_bytes(doc), plain)
+
+    def test_an_aim_parent_keeps_its_gains_and_records_its_rule(self):
+        """Ruling E-44 (finding R6B-O-6): R-11 on R-3's ew-theme-std-aim-v1 parent, end to end. The parent writes the
+        ew-theme-std-v1 block (rerank true), so the fitter attaches theme_residualise in the registered order and
+        provenance.resid records the aim parent's rule; the aim gains stay in the weights: the file minus the block and
+        provenance.resid is the plain aim parent file byte for byte. A future change of the aim variant's block rule
+        that R-11 does not accept fails here."""
+        self.assertEqual(self.aim_codes, (fcw.EXIT_OK, fcw.EXIT_OK))
+        plain = (self.root / "std-aim" / fcw.OUTPUT_WEIGHTS).read_bytes()
+        doc = json.loads((self.root / "std-aim-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual((doc["theme_standardise"]["rule"], doc["theme_standardise"]["rerank"]), (cr.STD_RULE_ID, True))
+        self.assertEqual(doc[cres.BLOCK], {"rule": "theme-resid-v1", "order": ["value", "reversal_seasonality"]})
+        self.assertEqual(doc["provenance"]["rule"], cr.STD_AIM_RULE_ID)
+        self.assertEqual(doc["provenance"]["resid"]["parent_composition"], "ew-theme-std-aim-v1")
+        self.assertIn("aim", doc["provenance"])
+        self.assertNotEqual(doc["weights"], self.std["weights"])                 # the gains moved weight
+        del doc[cres.BLOCK]
+        del doc["provenance"]["resid"]
+        self.assertEqual(fcw.canonical_bytes(doc), plain)
 
     def test_attach_refuses_rerank_off_and_unregistered_themes(self):
         off = json.loads(json.dumps(self.std))
