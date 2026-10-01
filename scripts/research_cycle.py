@@ -12,8 +12,9 @@
                            (research_gc.py: stores no listed spec uses; deleted only with --apply)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
-  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
-                           (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell)
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT --ruling ID --date D [--root R]
+                           (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell; reviews
+                           F-1, F-5: the owner ruling's id and date; a blind or returns re-run of TID needs the ruling)
   research_cycle.py ledger-campaign --ledger PATH --campaign DIR [--date D] [--root R]
                            (research_ledger.py, Ruling E-33: a mine output's campaign line; count 0, registry count)
 
@@ -35,14 +36,18 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
                   construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered,
                   0 for a history read, Ruling E-41; research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
-  resume          (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec and argv
-                  SHA-256); a done NAV is scored only when its spec digest (else its argv digest, from the binding or
-                  its receipt's command) matches the current spec: a mismatch is a pin stop (exit 3) naming both
+  resume         (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec digest and argv
+                  SHA-256); a done NAV is scored only when its spec digest matches the current spec's AND its argv
+                  digest (from the binding or its receipt's command) the NAV command the spec runs now (review F-9: a
+                  template's spec digest, also the verdict's spec_sha256, covers every parent up its chain,
+                  research_spec.spec_digest): a mismatch is a pin stop (exit 3) naming both; the ref phase's NAV
+                  records and is checked on its argv digest alone (review F-6)
   admission lines (review C-7) the gate of a v8 cycle with a ledger first appends one chained admission line per
                   listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
   summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
                   "verdict": true spec, or --protocol v8 in summ.extra) always runs nav_summ --protocol v8 (seed
-                  20260929, 4,999 draws) and, with a ledger, --origin summ.origin; a verdict spec's summ also passes
+                  20260929, 4,999 draws, block 21: summ.extra may not set --seed, --draws or --block, review F-2)
+                  and, with a ledger, --origin summ.origin; a verdict spec's summ also passes
                   --dsr-ledger <the ledger> and the verdict's DSR is nav_summ's deflated_ledger (review C-1)
   build          "equity" | "equity-rel": resolves exes (defaults or bare names) and env_path_prepend (BUILDS)
   out_root        a root-relative dir every relative output name is placed under; ic.cache and fit.work_dir, when
@@ -70,6 +75,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   (UNLOCKED), written by `lock --write`
   ic.w_flags      {"--opt": "value" | true | false} applied to ic.flags for the weighted (w) pass only (research_spec
                   apply_flags), e.g. Ruling E-28's --max-memory-mib 3072 for a theme_standardise composition
+  fit.flags       (Ruling E-27b) a v8 spec refuses --composition ew-theme-aim-v1 (the v5 rule); R-3 on an ew-theme-v1
+                  parent fits ew-theme-aim-v2
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -158,7 +165,8 @@ import cycle_resume  # noqa: E402
 import research_ledger  # noqa: E402
 import research_spec  # noqa: E402
 import research_tree  # noqa: E402
-from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
+from cycle_verdict import (SUMM_JSON, PBO_JSON, VERDICT, VerdictError, step_key,  # noqa: E402
+                           write_verdict as _write_verdict)
 
 SCHEMA = "atx.research-cycle-spec/v1"
 PHASES = ("fields", "check", "ref", "u", "fit", "card", "marginal", "gate", "w", "nav", "monitor", "summ")
@@ -180,9 +188,12 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
               "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
     ("reuse_fields", "label_role")
-# label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): the nav phase MARKS its books
-# with it (nav --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner receipt); signals, fields and
-# every decision input stay on inputs.role, and the ref phase (an identity against the unlabelled parent) never gets it.
+# label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): every phase that replays the
+# book MARKS it with it (nav and ref: --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner
+# receipt; the NAV verb's capacity pass forwards both); signals, fields and every decision input stay on inputs.role.
+# Review F-8: a spec with a ref phase and a label role is an add-alpha child of a labelled parent (a template drops its
+# parent's ref, research_spec.IDENTITY_SECTIONS), so its ref reproduces a labelled NAV and is compared with that NAV's
+# labelled S2 daily CSV on equal footing.
 # F-2's marginal IC verb (atx-impl/src/strategy_marginal_ic.cpp, dispatch_marginal_ic / run_marginal_ic): every option
 # takes one value and a run without MARGINAL_REQUIRED is refused. The step builds MARGINAL_BUILT from the spec (paths and
 # pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
@@ -197,6 +208,8 @@ SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("la
                 ("finra_short_volume", "--finra-short-volume"))
 DSR_FROM_LEDGER = "ledger+1"           # summ.dsr_n: resolved at scoring time from the trial ledger
 SUMM_V8 = "v8"                         # nav_summ --protocol v8: seed 20260929, 4,999 draws, origin + window_id lines
+V8_FIXED_FLAGS = ("--seed", "--draws", "--block")   # review F-2: v8-prereg item 4's bootstrap; never in a v8 summ.extra
+V5_AIM_RULE, V8_AIM_RULE = "ew-theme-aim-v1", "ew-theme-aim-v2"   # Ruling E-27b: a v8 spec never fits the v5 rule
 DEFAULT_OUT_ROOT = "build-equity"      # derived cache / fit roots and the cycle dir when the spec has no out_root
 RECEIPT_MODES = ("every-phase",)       # spec "receipts": the direct phases run through the bounded runner too
 CAP_KEYS = ("seconds", "max_rss_mib", "min_free_mib")
@@ -386,6 +399,11 @@ def validate_v8_keys(spec: dict) -> None:
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
     validate_summ_protocol(spec)
+    if summ_protocol(spec) == SUMM_V8 and option_value((spec.get("fit") or {}).get("flags", []),
+                                                       "--composition") == V5_AIM_RULE:
+        raise CycleError(f"spec fit: {V5_AIM_RULE} is the v5 R4' rule (aim gains normalised globally); a v8 spec fits "
+                         f"R-3 on an ew-theme-v1 parent with {V8_AIM_RULE} (Ruling E-27b: gains renormalised inside "
+                         "each theme, member cap 1/(2T))", EXIT_USAGE)
     inputs = spec["inputs"]
     sec = [k for k in SEC_INPUTS if k in inputs]
     if sec and len(sec) != len(SEC_INPUTS):
@@ -429,6 +447,11 @@ def validate_summ_protocol(spec: dict) -> None:
     if spec.get("verdict") is True and option_value(extra, "--protocol") not in (None, SUMM_V8):
         raise CycleError("spec verdict: a verdict cell is scored under nav_summ --protocol v8 (the v8 "
                          "pre-registration); summ.extra asks for another protocol", EXIT_USAGE)
+    fixed = [x for x in extra if isinstance(x, str) and x.split("=", 1)[0] in V8_FIXED_FLAGS]
+    if fixed and summ_protocol(spec) == SUMM_V8:
+        raise CycleError(f"spec summ: a v8 scoring step runs the pre-registered paired bootstrap (v8-prereg item 4: "
+                         f"seed 20260929, 4,999 draws, block 21); summ.extra may not set {', '.join(fixed)}",
+                         EXIT_USAGE)
 
 
 def validate_marginal(spec: dict) -> None:
@@ -1094,7 +1117,7 @@ class Cycle:
         run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
         flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
         binds, label = [s["exes"]["nav"], comb, fdm], []
-        if phase == "nav" and "label_role" in s["inputs"]:  # v8 E-25: the label role marks the cell's books
+        if "label_role" in s["inputs"]:   # v8 E-25: the label role marks every replayed book (review F-8: ref too)
             binds.append(self.ipath("label_role"))
             label = ["--label-role", self.ipath("label_role"), "--label-role-sha256", self.pin("label_role")]
         argv = self.runner(run_dir, binds, phase) + [
@@ -1461,7 +1484,10 @@ def compare(cycle: Cycle, st: Step, log=print) -> None:
 # ------------------------------------------------------------------ plan / status / run
 def header(cycle: Cycle) -> list[str]:
     spec_sha = sha256_file(cycle.spec_path) if cycle.spec_path else None
-    lines = [f"# research_cycle {cycle.spec['name']}: spec {cycle.spec_path} sha256 {spec_sha}; root {cycle.res.root}; "
+    cell = cycle_resume.spec_digest(cycle)      # review F-9: a template's digest covers its parent chain
+    chain = f" (spec digest over the template chain {cell})" if cell and cell != spec_sha else ""
+    lines = [f"# research_cycle {cycle.spec['name']}: spec {cycle.spec_path} sha256 {spec_sha}{chain}; "
+             f"root {cycle.res.root}; "
              f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
              f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
              f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"]
@@ -1571,8 +1597,8 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase == "nav":           # review C-13: scored only when made from this spec
-                try:
+            if st.phase in ("nav", "ref"):  # review C-13: scored only when made from this spec (F-6: ref compared
+                try:                        # only when made by the NAV command the spec runs now)
                     log(f"   binding: {cycle_resume.check_binding(cycle, st)}")
                 except cycle_resume.ResumeError as exc:
                     raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
@@ -1624,7 +1650,7 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase == "nav":           # review C-13: what a later resume checks before scoring it
+            if st.phase in ("nav", "ref"):  # review C-13 (F-6: ref too): what a later resume checks
                 cycle_resume.write_binding(cycle, st)
             if st.phase == "summ":
                 copy_ledger(cycle, log)
@@ -1653,7 +1679,7 @@ def admission_trials(cycle, w_dir: str, log) -> None:
 
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
     try:
-        return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log,
+        return _write_verdict(cycle, timings, cycle_resume.spec_digest(cycle), log,   # F-9: the template chain's
                               ledger_state(cycle))
     except ValueError as exc:     # review C-1: no verdict DSR from a cell count; C-6: a broken ledger chain
         raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
@@ -1667,7 +1693,28 @@ def ledger_state(cycle) -> dict | None:
         return None
     bi = research_ledger.backtest_integrity()
     p = cycle.res.path(rel)
+    check_recorded_heads(cycle, p, bi)
     return {"path": rel, "head": bi.ledger_head(p), "lines": len(bi.ledger_read(p))}
+
+
+def check_recorded_heads(cycle, p: Path, bi) -> None:
+    """Review F-3: every earlier verdict of this ledger under the cycle's out base (<out base>/cycle-*/
+    cycle_verdict.json, ledger.path resolving to ``p``) recorded {head, lines}; the ledger's first ``lines`` lines must
+    still fold to that head (backtest_integrity.chain_head), so an edit of any line an earlier verdict read, the tail
+    included, stops the verdict (ValueError: HARD-STOP [verdict])."""
+    texts = [line for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for vp in sorted(cycle.res.path(cycle.out_base()).glob(f"cycle-*/{VERDICT}")):
+        try:
+            led = json.loads(vp.read_text(encoding="utf-8")).get("ledger")
+        except (OSError, ValueError, AttributeError) as exc:
+            raise ValueError(f"verdict {vp} is unreadable ({exc}): its recorded ledger head cannot be checked") from exc
+        if not isinstance(led, dict) or not isinstance(led.get("path"), str) or \
+                cycle.res.path(led["path"]).resolve() != p.resolve():
+            continue
+        n, head = led.get("lines"), led.get("head")
+        if type(n) is not int or n > len(texts) or bi.chain_head(texts[:n]) != head:
+            raise ValueError(f"ledger {led['path']}: its first {n} line(s) no longer fold to the chain head {head} that "
+                             f"{vp} recorded (a line an earlier verdict read was edited or removed)")
 
 
 def copy_ledger(cycle: Cycle, log) -> None:

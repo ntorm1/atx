@@ -149,7 +149,7 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
     pn, cn = parent["nav"]["flags"], child["nav"]["flags"]
     nav_delta = {"base-b0c.json": pn + ["--warm-start-sessions", "60", "--capacity-curve"],
                  "r4-hold-band.json": pn + ["--hold-band", ".1"], "r5-adv-hold.json": pn + ["--adv-hold-q", ".1"],
-                 "r6-spo-v3.json": [x for x in pn if x != "--capacity-curve"] + [
+                 "r6-spo-v3.json": pn + [                                   # review F-14 / E-37: the curve stays
                      "--spo-alpha", "implied-aim", "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                      "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"],
                  # R-8: the registered constants spelled out; --capacity-curve (E-29) is already the parent's
@@ -157,7 +157,8 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                                   "<fill:nav.flags --risk-model-sha256>"]}
     assert cn == nav_delta.get(name, pn)
-    comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v1"}
+    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
+    comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v2"}   # E-27b
     assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]]
     assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
 
@@ -309,16 +310,27 @@ def test_apply_flags_operations():
 
 def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
     """Ruling E-27: R-3's gains go on top of the parent's composition: ew-theme-std-aim-v1 on an R-1 parent,
-    ew-theme-aim-v1 (bytes unchanged) on an ew-theme-v1 parent; both are fitter compositions."""
+    ew-theme-aim-v2 on an ew-theme-v1 parent (Rulings E-27a, E-27b: the same within-theme gains and member cap, review
+    F-10); both are fitter compositions. The v5 rule ew-theme-aim-v1 is refused in a v8 spec, naming v2 (E-27b)."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
     doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
     assert "requires" not in doc
-    for parent, want in (("base-b0c.json", "ew-theme-aim-v1"), ("r1-comp-v8.json", "ew-theme-std-aim-v1")):
+    for parent, want in (("base-b0c.json", "ew-theme-aim-v2"), ("r1-comp-v8.json", "ew-theme-std-aim-v1")):
         path = tmp_path / f"r3-on-{parent}"
         path.write_text(json.dumps(dict(doc, parent=f"scripts/specs/v8/{parent}")), encoding="utf-8")
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
+        assert want in fcw.AIM_RULES                                       # the fitter computes the aim records
+    v8 = RC.load_spec(V8 / "base-lo1.json")                                # verdict true: a v8 spec
+    v5 = dict(v8, fit=dict(v8["fit"], flags=RS.apply_flags(v8["fit"]["flags"], {"--composition": "ew-theme-aim-v1"},
+                                                            "fit.flags")))
+    with pytest.raises(RC.CycleError, match="ew-theme-aim-v1 is the v5 R4' rule.*ew-theme-aim-v2") as e:
+        RC.validate_spec(v5)
+    assert e.value.code == RC.EXIT_USAGE
+    with pytest.raises(RC.CycleError, match="ew-theme-aim-v2"):            # --protocol v8 makes a v8 spec too
+        RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--protocol", "v8"])))
+    RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--effective-n", "dirs"])))  # v7: as before
 
 
 def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):
@@ -549,6 +561,46 @@ def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_excep
     check.pop("keys_in")                                                              # without it: the replaced rows
     with pytest.raises(RC.CycleError, match="IDENTITY MISMATCH"):
         RC.compare_files(RC.Resolver(root), check)
+
+
+def test_add_alpha_child_of_a_labelled_parent_labels_its_ref_and_nav(tmp_path):
+    """Review F-8: the child of a labelled parent (inputs.label_role, e.g. B0c) reproduces the parent's NAV in its ref
+    phase and compares it byte for byte with the parent's labelled S2 daily CSV; so ref (and nav) carry --label-role and
+    --label-role-sha256 with the parent's own pin, and a label role changed since the parent ran stops `lock`."""
+    root, parent = v8_root(tmp_path)
+    label = "build-equity/train-2020-2023-lo1-dlret"
+    (root / label).mkdir(parents=True)
+    (root / label / "manifest.json").write_text('{"labels": "delisting returns"}')
+    doc = json.loads(parent.read_text(encoding="utf-8"))
+    doc["inputs"]["label_role"] = {"dir": label, "path": f"{label}/manifest.json", "sha256": None}
+    parent.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    assert RC.main(["lock", str(parent), "--root", str(root), "--write"]) == RC.EXIT_OK
+    pin = json.loads(parent.read_text(encoding="utf-8"))["inputs"]["label_role"]["sha256"]
+    assert pin == RC.sha256_file(root / label / "manifest.json")
+    parent_cell(root, parent)
+    f2 = "build-equity/train-2020-2023-lo1-fields-v9-b"                 # other fields: the ref is not skipped
+    (root / f2).mkdir(parents=True)
+    (root / f2 / "manifest.json").write_text(json.dumps({"fields": [{"name": n} for n in doc["fields"]["list"]],
+                                                         "build": "b"}))
+    probe = ("v8_probe", "rank(decay_linear((be / at_lag4), 21))", "--fields", f2)
+    (root / label / "manifest.json").write_text('{"labels": "rebuilt"}')   # not the label the parent's NAV used
+    assert add(root, parent, *probe) == RC.EXIT_PIN                     # the child keeps the parent's pin: unlocked
+    (root / label / "manifest.json").write_text('{"labels": "delisting returns"}')
+    assert add(root, parent, *probe) == RC.EXIT_OK                       # the same wave, now locked
+    sp = root / SPECS / "lib-v80.json"
+    spec = RC.load_spec(sp)
+    assert spec["inputs"]["label_role"] == {"dir": label, "path": f"{label}/manifest.json", "sha256": pin}
+    assert spec["compare"][0]["name"] == "ref-s2-daily" and spec["compare"][0]["a"] == "{input:reference_daily}"
+    steps = {st.phase: st for st in RC.Cycle(spec, RC.Resolver(root), spec_path=sp, capabilities=T.CAPS).steps()}
+    assert steps["ref"].state == "pending"                              # the parent's fields differ: ref runs
+    want = ["--label-role", f"{label}/manifest.json", "--label-role-sha256", pin]
+    for phase in ("ref", "nav"):
+        argv = steps[phase].argv
+        assert argv[-4:] == want and ["--bind", f"{label}/manifest.json"] == argv[argv.index("--") - 2:argv.index("--")]
+    (root / label / "manifest.json").write_text('{"labels": "rebuilt"}')   # not the label the parent's NAV used
+    with pytest.raises(RC.CycleError, match="label_role pin") as e:
+        RC.lock(sp, root)
+    assert e.value.code == RC.EXIT_PIN
 
 
 # ------------------------------------------------------------------ cache gc on the v8 specs (A2 follow-up, task 2)

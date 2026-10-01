@@ -93,6 +93,10 @@ second moments of the TRAIN signal only (no means, no covariances, no returns).
                coverage-effective theme weight (mean over TRAIN decisions of sum_{k in theme} w_k c_k(d) /
                sum_k w_k c_k(d), c_k(d) = live names / used names) land in ``provenance.aim``; nothing in them
                feeds back into the weights. ``ew-theme-v1`` output bytes are unchanged (no aim keys).
+v8 (``--composition ew-theme-aim-v2``; R-3 on an ew-theme-v1 parent, Rulings E-27a and E-27b): the same gains and
+report block, weights w_k = (1/T) g_k / sum_{theme(k)} g (renormalised inside the theme, each theme 1/T), then the
+member cap 1/(2T): composition_rules.ew_theme_aim_v2, the code ew-theme-std-aim-v1 runs (theme_gain_weights). The file
+stays schema v1. ``ew-theme-aim-v1`` keeps the v5 rule above byte for byte; research_cycle.py refuses it in a v8 spec.
 
 v6 (``--composition ew-theme-v6`` with the same prior orientation/screens; v4-prereg.md "## v6 revision" item V6-W,
 declared before any v6 TRAIN read; the rule text is binding): the admitted non-degenerate members of the screen, then
@@ -218,7 +222,11 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
                                     COMPOSITIONS + (composition_rules.STD_RULE_ID,))
 PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,),  # v8 R-3, Ruling E-27
                                     COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
-AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
+# v8 R-3 on an ew-theme-v1 parent (Rulings E-27a, E-27b): ew-theme-aim-v2, the gains renormalised inside each theme and
+# the member cap 1/(2T), composition_rules.ew_theme_aim_v2 (the code of ew-theme-std-aim-v1); ew-theme-aim-v1 keeps v5.
+AIM_V2_RULE_ID = composition_rules.AIM_V2_RULE_ID
+PRIOR_COMPOSITIONS, COMPOSITIONS = PRIOR_COMPOSITIONS + (AIM_V2_RULE_ID,), COMPOSITIONS + (AIM_V2_RULE_ID,)
+AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID, AIM_V2_RULE_ID)  # the compositions that read aim gains
 # v8 H-1 + Ruling E-35: the compositions the pooled (era) fit implements, each by the single-window code on the pooled
 # decisions (E-35a adds ew-theme-aim-v1, by Ruling E-27a's definition: ``pooled_aim_weights``). Any other id is refused
 # by name: never a fall-back to another rule.
@@ -2163,7 +2171,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     aim = args.composition in AIM_RULES  # ew-theme-aim-v1, or ew-theme-std-aim-v1 (v8 R-3: gains on the R-1 rule)
     v6 = args.composition == V6_RULE_ID  # only ew-theme-v6 writes theme_redistribution / provenance.v6
     require(aim == (aims is not None), "fit: aim records exist exactly for --composition ew-theme-aim-v1 / "
-                                       "ew-theme-std-aim-v1")
+                                       "ew-theme-aim-v2 / ew-theme-std-aim-v1")
     v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
@@ -2300,6 +2308,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                              [tiers[k] for k in active], error=FitError,
                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
+    elif args.composition == AIM_V2_RULE_ID:  # v8 R-3 on ew-theme-v1 (E-27a/b): ew-theme-std-aim-v1's code, scores 1
+        gains = [aims[k]["gain"] for k in active]  # type: ignore[index]
+        weights, theme_table = composition_rules.ew_theme_aim_v2([ids[k] for k in active], [themes[k] for k in active],
+                                                                 gains, error=FitError)
+        composition_text, fit_series = composition_rules.AIM_V2_TEXT, composition_rules.AIM_V2_FIT_SERIES
     else:
         require(args.composition == EW_THEME_RULE_ID,  # Ruling E-35: nothing falls back to ew-theme-v1
                 f"fit: --composition {args.composition} has no prior weight rule")

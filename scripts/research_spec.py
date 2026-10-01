@@ -14,7 +14,7 @@ research_cycle.py loads a template like any SPEC (plan, run, status, lock). A te
                                           the bare flag / remove the option and its value / root fills it (null: a
                                           "<fill:...>" placeholder; run refuses while one is left) / the value by
                                           the parent's value (a parent value the map lacks is refused; e.g. R-3's
-                                          --composition ew-theme-v1 -> ew-theme-aim-v1, ew-theme-std-v1 ->
+                                          --composition ew-theme-v1 -> ew-theme-aim-v2, ew-theme-std-v1 ->
                                           ew-theme-std-aim-v1)
    "locked": {key: {"path", "sha256"}}}   `lock --write`: the pins of the inputs the template derives
 
@@ -29,14 +29,22 @@ flags. Name and description are the template's. nav.output must differ from the 
 Every other output the template keeps is the parent's and resumes as done (research_cycle never overwrites an
 output): a template renames exactly the outputs downstream of its change (a NAV-only change reuses the parent's u, fit,
 card and w passes; a composition change renames fit, card, w, nav and monitor; a library change renames them all).
+
+Digest (review F-9): a template's cell is its resolved spec, a function of the bytes of the template and of every
+parent up its chain (`lock_template` leaves the parent's pins in the parent's file). spec_digest is the SHA-256 over
+those files' SHA-256s, so editing any parent (a re-pointed label role, a nav flag, a relocked pin) changes the digest
+of every template below it; a plain spec's digest stays its file's SHA-256. research_cycle records it as the verdict's
+spec_sha256 and the C-13 binding (cycle_resume.py).
 """
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 TEMPLATE_SCHEMA = "atx.research-cycle-template/v1"
+CHAIN_DIGEST = "atx.research-spec-chain/v1"   # the domain tag of a template's spec_digest
 FILL = "<fill:"                          # a value root fills before `run` (a null flag value in the template)
 TEMPLATE_KEYS = {"schema", "name", "description", "parent", "nominal_parent", "requires", "change", "locked"}
 CHANGE_KEYS = ("unset", "set", "inputs", "flags")
@@ -204,6 +212,26 @@ def chain(path: Path, repo: Path) -> list[tuple[Path, dict, Path, bool]]:
         out.append((p, doc, parent, nominal))
         p = parent
     return out
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def spec_digest(path: Path, repo: Path) -> str:
+    """Review F-9: the content digest of the cell a spec file describes (see the module doc). A plain spec: its file's
+    SHA-256. A template: SHA-256 of the compact JSON list [CHAIN_DIGEST, SHA-256 of the template, of its parent, ...,
+    of the plain spec the chain rests on] (the parent, else the nominal parent while parent is null)."""
+    links = chain(path, repo)
+    if not links:
+        return file_sha256(path)
+    files = [p for p, _, _, _ in links] + [links[-1][2]]
+    text = json.dumps([CHAIN_DIGEST] + [file_sha256(f) for f in files], separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def fills(node, where: str = "") -> list[str]:

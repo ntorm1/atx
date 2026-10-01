@@ -75,15 +75,17 @@ def test_dsr_n_equals_trial_counts_with_defect_and_rerun_lines(tmp_path):
     a, b, e = record(root, "prior/a", legacy=True), \
         record(root, "prior/b", defect="role built without the delisting returns"), \
         record(root, "prior/e", defect="cost model misread")
+    ruling = lambda x: BI.defect_line(x["trial_id"], x["defect"]["reason"], "2026-10-01", "E-31")   # noqa: E731
     lines = [a, b,
              record(root, "prior/c", rerun_of=a["trial_id"], rerun_basis="window"),   # a on the longer window: 0
+             ruling(b),                                                                # the ruling b's re-run needs
              record(root, "prior/d", rerun_of=b["trial_id"], rerun_basis="blind"),    # replaces invalid b: b 1, d 0
-             e,
+             e, ruling(e),
              record(root, "prior/f", rerun_of=e["trial_id"], rerun_basis="returns")]  # e stays a trial: 1 + 1
     BI.ledger_append(ledger, lines, chain=True)
     assert protocol(ledger, root) == 0                                                 # protocol line: 0
     records = BI.ledger_read(ledger)
-    assert BI.trial_counts(records) == [1, 1, 0, 0, 1, 1, 0]                           # review C-5 attribution
+    assert BI.trial_counts(records) == [1, 1, 0, 0, 0, 1, 0, 1, 0]                     # review C-5 attribution
     want = sum(BI.trial_counts(records)) + 1                                           # + this cycle's cell
     assert want == 5 and len(research_ledger.cells(ledger)) + 1 == 7                   # the old line count differs
     assert cycle_n(root, sp) == want == BI.ledger_n(records, False)                   # plan time: no NAV output yet
@@ -114,11 +116,17 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
     BI.ledger_append(ledger, [a, b], chain=True)
     assert cycle_n(root, sp) == 3
     argv = ["ledger-defect", "--ledger", "trials.jsonl", "--trial-id", b["trial_id"], "--reason", "stale fields",
-            "--date", "2026-10-01", "--root", str(root)]
+            "--ruling", "E-31", "--date", "2026-10-01", "--root", str(root)]
+    for missing in ("--ruling", "--date"):                              # review F-5: both are required
+        k = argv.index(missing)
+        with pytest.raises(SystemExit):
+            RC.main(argv[:k] + argv[k + 2:])
+    capsys.readouterr()
     assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("appended: ")
     assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("already present")
     records = BI.ledger_read(ledger)
     assert records[-1]["kind"] == "defect" and records[-1]["defect_of"] == b["trial_id"] and "prev_sha256" in records[-1]
+    assert (records[-1]["ruling"], records[-1]["date"]) == ("E-31", "2026-10-01")
     assert BI.trial_counts(records) == [1, 0, 0] and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]      # the cell listing skips the event line
     BI.ledger_append(ledger, [BI.campaign_line("mined-q1", "mine/registry.jsonl", "cd" * 32, 250),   # Ruling E-33
@@ -126,7 +134,7 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
                                "owner_ruling": {"path": "r.json", "sha256": "ef" * 32}, "trial_id": "v" * 16}],
                      chain=True)
     assert research_ledger.cells(ledger) == ["prior/a", "prior/b"] and cycle_n(root, sp) == 2      # neither adds
-    for bad in (["--trial-id", "0" * 16], ["--date", "01/10/2026"], ["--reason", " "]):
+    for bad in (["--trial-id", "0" * 16], ["--date", "01/10/2026"], ["--reason", " "], ["--ruling", " "]):
         args = list(argv)
         args[args.index(bad[0]) + 1] = bad[1]
         assert RC.main(args) == 2

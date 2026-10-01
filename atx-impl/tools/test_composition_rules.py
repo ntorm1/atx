@@ -238,6 +238,8 @@ class FitterEndToEnd(unittest.TestCase):
             cls.aim_code, cls.aim_summary = fcw.fit(cls.fx.args(cls.root / "aim", **tfw.AIM_ARGS))
             cls.std_aim_code, cls.std_aim_summary = fcw.fit(cls.fx.args(cls.root / "std-aim", **dict(
                 STD_ARGS, composition="ew-theme-std-aim-v1")))
+            cls.v2_code, cls.v2_summary = fcw.fit(cls.fx.args(cls.root / "aim-v2", **dict(   # Rulings E-27a/b
+                tfw.AIM_ARGS, composition="ew-theme-aim-v2")))
         cls.v1_bytes = {p.name: p.read_bytes() for p in (cls.root / "v1").iterdir()}
         cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "std").iterdir()}
         cls.v1 = json.loads(cls.v1_bytes[fcw.OUTPUT_WEIGHTS])
@@ -296,6 +298,34 @@ class FitterEndToEnd(unittest.TestCase):
                          {t: e["theme_weight"] for t, e in sorted(doc["provenance"]["themes"].items())})
         self.assertNotIn("aim", self.doc["provenance"])                              # ew-theme-std-v1 unchanged
         self.assertNotIn("aim_gains", self.doc["provenance"]["std"])
+
+    def test_aim_v2_fit_is_the_within_theme_rule_on_the_aim_gains(self):
+        """Rulings E-27a / E-27b (review F-10): --composition ew-theme-aim-v2: the same admission and aim gains as
+        ew-theme-aim-v1; w_k = (1/T) g_k / sum_{theme(k)} g, then the cap 1/(2T) (checked against the loop port);
+        schema v1 without a theme block; the v5 rule ew-theme-aim-v1 (gains normalised globally) differs."""
+        self.assertEqual((self.v2_code, self.aim_code), (fcw.EXIT_OK, fcw.EXIT_OK))
+        out = self.root / "aim-v2"
+        doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        aim = json.loads((self.root / "aim" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual((out / fcw.OUTPUT_ADMISSION).read_bytes(),
+                         (self.root / "aim" / fcw.OUTPUT_ADMISSION).read_bytes())
+        self.assertEqual((doc["provenance"]["rule"], self.v2_summary["composition"]), ("ew-theme-aim-v2",) * 2)
+        self.assertEqual((doc["schema"], doc["provenance"]["composition"]), (self.v1["schema"], cr.AIM_V2_TEXT))
+        self.assertFalse({"theme_standardise", "theme_redistribution"} & set(doc))
+        gains = aim["provenance"]["aim"]["gain"]
+        self.assertEqual(doc["provenance"]["aim"]["gain"], gains)                     # the same aim records
+        members = [i for i in self.ids if aim["weights"][i] > 0]
+        themes = {c["id"]: c["theme"] for c in self.adm["candidates"]}
+        t_count = len({themes[i] for i in members})
+        total = {t: sum(gains[i] for i in members if themes[i] == t) for t in {themes[i] for i in members}}
+        want = ref_cap({i: gains[i] / (t_count * total[themes[i]]) for i in members}, themes, 1 / (2 * t_count))
+        for i in self.ids:
+            self.assertAlmostEqual(doc["weights"][i], want.get(i, 0.0), places=15, msg=i)
+        got, _ = cr.ew_theme_aim_v2(members, [themes[i] for i in members], [gains[i] for i in members])
+        self.assertEqual(doc["weights"], {i: float(dict(zip(members, got)).get(i, 0.0)) for i in self.ids})
+        self.assertNotEqual(doc["weights"], aim["weights"])                          # v5: normalised globally
+        self.assertEqual(self.v2_summary["aim_theme_weights"],
+                         {t: e["aim_theme_weight"] for t, e in sorted(doc["provenance"]["themes"].items())})
 
     def test_document_is_what_the_runner_reads(self):
         # strategy_ic_admission.cpp: schema v2 iff one theme block; theme_standardise {rule, rerank bool, themes}
