@@ -968,3 +968,36 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   reads 2 (before v8); 2024+ never opened (one disclosure: progress-line row counts past the seal, no value).
 - Root code head 9c5cfa0c (build v8-10); every tree clean.
 - Status: docs/plans/2026-10-01-platform-v8-status-4.md. Goal prompt: docs/plans/2026-10-01-platform-v8-next-goal-prompt-4.md.
+
+## 2026-10-01 PM session 5 (root head 61fe8317; code 9c5cfa0c; build v8-10). FIX-4 lanes finished; rulings before integration 6 part C; no read yet on 2020-2023
+- Goal prompt 4 (6 steps). Model: Opus 5.5 for every lane, integrator and reader; PM coordinates and rules only.
+  Host 4.2 GB free memory, 47 GB disk. Root clean; pools 4, 8, 10 clean.
+- FIX-4a done 98ef8d89 (pool 4): O-1 d9726cfa, O-2 e8997d64 (PM4-11), O-3 72696785 (PM4-12), O-4 263077f8, O-5
+  b8b68f4e (WIP, reviewed hunk by hunk by the resumed lane) + aeda5bd7 (a key present in one file only, even as
+  null, is a difference; `--theme-resid-parent` refused by name with `--era`), O-6 d928c299, O-7 c3110301, C-1
+  233accd9 (PM4-7), C-5 2a47da99; report task-FIX-4a-report.md. Pytest 361 passed / 4 skipped (192 impl tools,
+  169 scripts). C++ uncompiled (O-3, O-4, O-7, C-5). Root builds `atx-impl-strategy-ic-tests`,
+  `atx-equity-strategy-ic`; filter `ThemeResid.*:ThemeResidRunner.*:CompositionV8.*:StrategyIcRunner.*`.
+- FIX-4b done 0b093a4c (pool 10): C-2 f408a6f1 (PM4-8, PM4-9), C-4 cf15052d, S-1 0089b5e8 (tests only: the tiered
+  primary-label test and the CLI void test, exit 3 and the `voided` keys), S-2 b69317f8; report
+  task-FIX-4b-report.md. Pytest 168 passed (lane suites), 196 passed / 4 skipped (downstream). C++ tests
+  uncompiled. Root builds `atx-impl-strategy-target-tests` (and `atx-impl-tests`); filter
+  `SpoV3.*:SpoTripwire.*:SpoPin.*`. The CLI void test rests on an unrun premise (zero volume from session 30
+  makes the primary book's limit unmet); verified at integration 6 part C on the built executable.
+- Ruling PM5-1 (O-5, module SHAs compared strictly): stands as the lane coded it; R-11's re-fit must equal the
+  parent's weights file including the recorded module SHAs -- the parent cell and R-11 are fitted on the same
+  locked tool commit (PM4-2 keeps MINE-FIX out until after the freeze gate), so a differing module SHA can only
+  mean an unplanned tool change between the two cells, which is exactly the lineage drift the finding names --
+  cost if wrong: after an unplanned tool fix R-11's fit refuses loudly and the parent's weights need a blind
+  re-fit first (no return read, no trial).
+- Ruling PM5-2 (O-5, parent flags optional at the fitter): accepted -- the r11 template always passes them, the
+  lock pins the template, `--era` fits refuse them, and no cell is ever fitted by a bare command (cells brief) --
+  cost if wrong: a hand-run fit without the flags skips the check; the scoped review at part C confirms the
+  template path cannot drop them.
+- Ruling PM5-3 (PM4-10 refusal text): `composition_rules.py` is not reworded in v8 -- naming the ruling in the
+  message changes a hashed module for no behaviour and would move `module_sha256` under every weights file; the
+  integrator's log records "undefined (PM4-10)" for such a cell -- cost if wrong: none.
+- Ruling PM5-4 (FIX-4b cross-lane edit): the nav CLI input helpers moved unchanged from `strategy_spo_test.cpp`
+  into the shared `strategy_spo_cli_fixture.hpp` are accepted (tests only; the pinned `strategy_spo_fixture.hpp`
+  untouched; `SpoTripwire.*` re-checks the old user) -- cost if wrong: none, it is a test-file move.
+- Dispatched: integrator 6C (root; brief task-INT6C-brief.md; tag prefix v8-11): merge 98ef8d89 then 0b093a4c.
