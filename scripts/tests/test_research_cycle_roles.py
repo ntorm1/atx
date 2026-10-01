@@ -303,11 +303,23 @@ def test_a_history_role_alone_pools_its_fit_and_summ(tmp_path):
     (root / "e1" / "manifest.json").write_text(json.dumps(doc))
     role = {"id": "E1", "dir": "e1", "begin": "2015-01-01", "end": "2016-01-01", "universe": "u-v1"}
     sp = tmp_path / "s.json"
-    sp.write_text(json.dumps(base_spec(roles=[role])))
+    spec = base_spec(roles=[role])
+    sp.write_text(json.dumps(spec))
+    # review P-1: a ledgered history read names the TRAIN cell it re-reads, refused at plan time without it
+    with pytest.raises(RC.CycleError, match="add --era-of") as e:
+        cycle_of(root, sp)
+    assert e.value.code == RC.EXIT_USAGE
+    spec["summ"]["extra"] = ["--era-of", "0123456789abcdef"]
+    sp.write_text(json.dumps(spec))
     steps = {st.phase: st for st in cycle_of(root, sp).steps()}
     assert steps["fit"].argv[-4:] == ["--era-id", "E1", "--output", "out/W"]
     assert steps["summ"].argv[-4:] == ["--pool", "out/N", "--pool-ids", "E1"]
+    k = steps["summ"].argv.index("--era-of")
+    assert steps["summ"].argv[k + 1] == "0123456789abcdef"
     assert steps["u"].output == "out/U-1" and "--role-id" not in steps["u"].argv
+    spec["summ"] = {"script": NAV_SUMM, "dsr_n": 2}                    # no ledger: nothing to name
+    sp.write_text(json.dumps(spec))
+    assert "--era-of" not in next(st for st in cycle_of(root, sp).steps() if st.phase == "summ").argv
 
 
 # ------------------------------------------------------------------ refusals and lock
@@ -327,6 +339,7 @@ def test_a_history_role_alone_pools_its_fit_and_summ(tmp_path):
     (lambda s, r: s["fields"].update(check={"baseline": "x"}), "fields.check are single-role"),
     (lambda s, r: s["summ"].update(cells=["c"]), "summ.cells are single-role"),
     (lambda s, r: s.pop("fit") and s.pop("gate"), "needs fit"),
+    (lambda s, r: s["summ"].update(extra=["--era-of", "0123456789abcdef"]), "history read on one role"),   # P-1
 ])
 def test_roles_refusals(tmp_path, change, needle):
     root, sp, _ = two_era_root(tmp_path)

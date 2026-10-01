@@ -99,6 +99,9 @@ Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
                          --pool-reference (pooled) or --reference is skipped with a note below 3 common sessions.
                          With --ledger: one line per era (adds no trial) and one pooled line (window POOL, one trial);
                          a one-era pool is the era's own line (backtest_integrity.ledger_pool_records).
+  --era-of TRIAL_ID      a one-era history pool (sessions before TRAIN) with --ledger: the trial_id of the TRAIN cell
+                         it re-reads, required (review P-1). Its line carries era_of: an era line, adding no trial,
+                         never read as a TRAIN cell; refused for a pool of two or more eras or one inside TRAIN.
 """
 from __future__ import annotations
 
@@ -924,7 +927,8 @@ def integrity(args, argv, results, analysed) -> None:
             try:
                 pool_recs = BI.ledger_pool_records(args.ledger_kind, eras, nets_by[pooled["dir"]],
                                                    pooled["net_sharpe"], count=args.ledger_count,
-                                                   note=args.ledger_note, run=run, **ledger_fields(args))
+                                                   note=args.ledger_note, run=run,
+                                                   era_of=getattr(args, "era_of", None), **ledger_fields(args))
             except ValueError as exc:
                 raise SystemExit(f"nav_summ: {exc}") from exc
             recs += pool_recs
@@ -1049,6 +1053,8 @@ def main(argv=None) -> int:
     ap.add_argument("--pool-ids", default=None, help="ID,... of the --pool eras (default E1,E2,...)")
     ap.add_argument("--pool-reference", nargs="+", default=None, metavar="DIR",
                     help="the reference's era NAV dirs, pooled, for the pooled row's paired dSR (default --reference)")
+    ap.add_argument("--era-of", default=None, metavar="TRIAL_ID",
+                    help="a one-era history --pool with --ledger: the trial_id of the TRAIN cell it re-reads (P-1)")
     argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
     v8 = args.protocol == "v8"
@@ -1065,6 +1071,8 @@ def main(argv=None) -> int:
         ap.error("--ledger / --psr / --effective-n dirs need NAV dirs")
     if (args.pool_ids or args.pool_reference) and not args.pool:
         ap.error("--pool-ids / --pool-reference need --pool")
+    if args.era_of is not None and not (args.pool and args.ledger):
+        ap.error("--era-of needs --pool and --ledger (the ledger line of a one-era history read)")
     if (args.rerun_of is None) != (args.rerun_basis is None):
         ap.error("--rerun-of and --rerun-basis go together")
     if (args.origin or args.rerun_of or args.ledger_defect) and not args.ledger:

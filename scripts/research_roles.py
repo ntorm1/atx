@@ -18,7 +18,8 @@ A spec (``atx.research-cycle-spec/v1``) may list ``roles`` instead of ``inputs.r
 
 One role: exactly the single-role Cycle of the derived spec (inputs.role from the entry; fields as built when
 fields_dir is given): every plan, status and run line of a spec with inputs.role. A history role (end on or before the
-TRAIN begin) adds the fitter's ``--era-id`` (the explicit pooled mask) and nav_summ's ``--pool`` (the ERA ledger rule).
+TRAIN begin) adds the fitter's ``--era-id`` (the explicit pooled mask) and nav_summ's ``--pool`` (the ERA ledger rule);
+when its summ ledgers, summ.extra must name the TRAIN cell it re-reads (``--era-of TRIAL_ID``, review P-1).
 
 Two or more roles (RolesCycle): per era (keyed ``-<id>`` outputs, ``--role-id`` receipts) fields, u, w and nav; shared,
 on the anchor (the last role, E3 when present): the static check (on the anchor's fields), the pooled fit (``--era``
@@ -165,9 +166,22 @@ def fit_weights_dir(cycle: RC.Cycle) -> str:
     return cycle.out(cycle.spec["fit"]["output"], keyed=False) if "fit" in cycle.spec else ""
 
 
+def check_history_ledger(cycle: RC.Cycle, role: dict) -> None:
+    """Review P-1: a history read on one role that ledgers its summ names the TRAIN cell it re-reads (nav_summ
+    ``--era-of TRIAL_ID`` in summ.extra, written as the line's era_of); refused at plan time, before any step runs."""
+    sm = cycle.spec["summ"]
+    if (cycle.ledger or sm.get("ledger")) and RC.option_value(sm.get("extra", []), "--era-of") is None:
+        raise usage(f"role {role['id']}: a history read on one role re-reads a TRAIN cell and its ledger line names it: "
+                    "add --era-of <that cell's trial_id> to summ.extra (review P-1)")
+
+
 def roles_cycle(spec: dict, res: RC.Resolver, **kw):
     """The cycle of a roles: spec: one role is its single-role Cycle; two or more a RolesCycle."""
     roles = validate_roles(spec, kw.get("keep_fields", False), kw.get("reuse_fields"))
+    if RC.option_value(spec.get("summ", {}).get("extra", []), "--era-of") is not None and (
+            len(roles) > 1 or not is_history(roles[0])):
+        raise usage("--era-of in summ.extra names the TRAIN cell of a history read on one role (review P-1); a pool "
+                    "of two or more roles is its own trial and a role inside TRAIN is the cell itself")
     if len(roles) > 1:
         return RolesCycle(spec, roles, res, **kw)
     role = roles[0]
@@ -177,6 +191,7 @@ def roles_cycle(spec: dict, res: RC.Resolver, **kw):
         if "fit" in cycle.spec:
             cycle.fit_pool = (["--era-id", role["id"]], [])
         if "summ" in cycle.spec:
+            check_history_ledger(cycle, role)
             cycle.summ_pool = [(role["id"], cycle.out(cycle.spec["nav"]["output"]),
                                 f"{fit_weights_dir(cycle)}/{cycle.weights_name}")]
     return cycle

@@ -296,9 +296,88 @@ def test_history_eras_are_ledgered_by_the_era_rule_and_a_single_history_cell_is_
     assert [r["window"]["label"] for r in recs] == ["ERA E1", "ERA E2", "POOL"]
     assert recs[2]["window"]["first_session"] == "2014-01-06"          # the first return row (a flat, a deployment)
     assert BI.trial_counts(recs) == [0, 0, 1]
-    one = tmp_path / "one.jsonl"                                       # a one-era history pool: its own line, ERA
-    assert NS.main(["--pool", str(e1), "--pool-ids", "E1", "--ledger", str(one)]) == 0
-    (line,) = BI.ledger_read(one)
-    assert line["window"]["label"] == "ERA E1" and "era_of" not in line and BI.trial_counts([line]) == [1]
     with pytest.raises(ValueError, match="TRAIN end"):
         BI.window_of([BI.research_window().TRAIN_END_NS], era="E9")
+
+
+# ------------------------------------------------------------------ review P-1: a history read on one era
+def test_a_one_era_history_read_names_the_train_cell_it_re_reads(tmp_path, capsys):
+    """Every history-read line carries era_of: a one-era history pool names the TRAIN cell it re-reads (--era-of, a
+    ledgered cell line of its kind); its line is an era line (adds 0) that no reader takes for a TRAIN cell."""
+    e1 = write_dir(tmp_path / "H-E1", history_rows("2014-01-02", 90, 1), role_sha="e1" * 32)
+    e2 = write_dir(tmp_path / "H-E2", history_rows("2017-01-03", 90, 2), role_sha="e2" * 32)
+    cell = write_dir(tmp_path / "cell0", tiny_rows())
+    one = tmp_path / "one.jsonl"
+    assert NS.main([str(cell), "--ledger", str(one)]) == 0             # the TRAIN cell, ledgered first
+    (train_line,) = BI.ledger_read(one)
+    hist = ["--pool", str(e1), "--pool-ids", "E1", "--ledger", str(one)]
+    with pytest.raises(SystemExit, match=r"re-reads a TRAIN cell: .*--era-of TRIAL_ID"):
+        NS.main(hist)                                                  # without the TRAIN cell: refused
+    for bad, needle in (("abc", "got 'abc'"), ("0" * 16, "is not the trial_id of a ledgered construction cell")):
+        with pytest.raises(SystemExit, match=needle):
+            NS.main([*hist, "--era-of", bad])
+    assert BI.ledger_read(one) == [train_line]                         # every refusal appends nothing
+    assert NS.main([*hist, "--era-of", train_line["trial_id"]]) == 0
+    recs = BI.ledger_read(one)
+    line = recs[1]
+    assert line["window"]["label"] == "ERA E1" and line["era"] == {"id": "E1", "role_sha256": "e1" * 32}
+    assert line["era_of"] == train_line["trial_id"] and BI.is_era_line(line) and BI.is_history_line(line)
+    assert BI.trial_counts(recs) == [1, 0] and BI.ledger_n(recs, True) == 1
+    cell0 = str(cell).replace("\\", "/")
+    assert RL.cells(one) == [cell0] and BI.ledger_net_series(recs, lambda r: {})[0] == [cell0]
+    assert BI.dsr_variance(recs, BI.window_id())["legacy_cells"] == 1
+    # --era-of is for a one-era history pool only
+    with pytest.raises(SystemExit, match="a pool of two or more eras is its own trial"):
+        NS.main(["--pool", str(e1), str(e2), "--ledger", str(tmp_path / "two.jsonl"), "--era-of",
+                 train_line["trial_id"]])
+    inside = write_dir(tmp_path / "N-E3", tiny_rows())
+    with pytest.raises(SystemExit, match="scored inside TRAIN"):
+        NS.main(["--pool", str(inside), "--pool-ids", "E3", "--ledger", str(tmp_path / "in.jsonl"), "--era-of",
+                 train_line["trial_id"]])
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        NS.main([str(cell), "--era-of", train_line["trial_id"]])
+    assert e.value.code == 2 and "--era-of needs --pool and --ledger" in capsys.readouterr().err
+
+
+@pytest.fixture()
+def p1_ledger(tmp_path):
+    """A v8 ledger holding two TRAIN cells and one history read on one era written before the fix (P-1's line: label
+    ERA, an era block and window_id, no era_of), appended as the H-1 writer appended it."""
+    rows = tiny_rows()
+    cells = [write_dir(tmp_path / f"cell{k}", dict(rows, net_return=rows["net_return"] * (1.0 + k) + 1e-4 * k))
+             for k in range(2)]
+    ledger = tmp_path / "trials.jsonl"
+    for d in cells:
+        assert NS.main([str(d), "--ledger", str(ledger), "--protocol", "v8", "--origin", "prior"]) == 0
+    hist = write_dir(tmp_path / "H-E1", history_rows("2014-01-02", 90, 1), role_sha="e1" * 32)
+    daily = hist / f"daily_{SCEN}.csv"
+    nets = NS.net_series(NS.load_daily(hist, SCEN))
+    line = BI.ledger_record("construction", str(hist), hist / "summary.json", daily, SCEN, nets, 0.9,
+                            era={"id": "E1", "role_sha256": "e1" * 32}, origin="prior",
+                            research_window_id=BI.window_id())
+    BI.ledger_append(ledger, [line], chain=True)
+    recs = BI.ledger_read(ledger)
+    assert len(recs) == 3 and recs[2]["window"]["label"] == "ERA E1" and "era" in recs[2]
+    assert not BI.is_era_line(recs[2]) and not BI.is_pool_line(recs[2]) and BI.is_history_line(recs[2])
+    assert recs[2]["window_id"] == BI.window_id() == recs[0]["window_id"]
+    return {"ledger": ledger, "records": recs, "cells": [str(d).replace("\\", "/") for d in cells]}
+
+
+def test_p1_dsr_variance_leaves_a_history_line_without_era_of_out(p1_ledger):
+    recs = p1_ledger["records"]
+    v = BI.dsr_variance(recs, BI.window_id())
+    srs = [r["s2_net_sr"] / math.sqrt(BI.ANNUAL) for r in recs[:2]]
+    assert v["cells"] == 2 and v["variance_sr"] == pytest.approx(float(np.var(srs, ddof=1)), rel=1e-15)
+    assert v["legacy_cells"] == 0
+    assert BI.dsr_variance(recs[:2], BI.window_id())["variance_sr"] == v["variance_sr"]   # as if it were absent
+
+
+def test_p1_research_ledger_cells_skips_a_history_line_without_era_of(p1_ledger):
+    assert RL.cells(p1_ledger["ledger"]) == p1_ledger["cells"]       # never a positional cell of a later summ
+
+
+def test_p1_ledger_net_series_skips_a_history_line_without_era_of(p1_ledger):
+    names, series = BI.ledger_net_series(p1_ledger["records"],
+                                         lambda r: NS.net_series(NS.load_daily_csv(Path(r["series"]["path"]))))
+    assert names == p1_ledger["cells"] and len(series) == 2
