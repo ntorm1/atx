@@ -26,6 +26,8 @@
 // financing per session (no long financing term). No holding cap and no gross constraint:
 // a planned gross above 2 x L breaches a sanity bound, and with --specific-ceiling-void on
 // (the default) a breach or a clamped specific variance at any scored decision voids the run.
+// Ruling E-31a: a scored decision of the primary book whose net or beta limit is not met
+// (limits_met false) voids the run whatever --specific-ceiling-void, before any return file.
 //
 // Nonmembers follow aim-partial-v5's exit rule and members without a risk row keep their
 // weight (spo-v1's fixed positions): they enter the limits, and their factor exposure enters
@@ -40,6 +42,7 @@
 
 #include <span>
 #include <string>
+#include <string_view>
 #include <nlohmann/json_fwd.hpp>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -66,10 +69,16 @@ inline constexpr atx::f64 v3_gross_bound_multiple = 2.0; // breach: planned gros
 
 // spo-v3's parameters: SpoParams{} with version 3, H = v3_horizon, S_prior = v3_sharpe_prior,
 // p and beta_max as above, the specific ceiling 1 with the void on, and the engine's
-// iteration cap and tolerance (tracking_max_iterations, tracking_tolerance). --spo-iters,
-// --spo-tol, --spo-books and --specific-ceiling(-void) may override them; every other field
-// keeps spo-v1's default and is unused.
+// iteration cap and tolerance (tracking_max_iterations, tracking_tolerance; registered:
+// --spo-iters and --spo-tol are refused, Ruling E-31a). --spo-books and
+// --specific-ceiling(-void) may override them; every other field keeps spo-v1's default and is
+// unused.
 [[nodiscard]] SpoParams v3_params();
+// Ruling E-31a's default primary book: the label "<trading id>+<financing id>" of
+// fixed_nav_scenarios()[nav_primary_scenario_index] (the untiered matrix's S2). A tiered run's
+// primary (S2 x swap-fin-v1) is set by the v7 hook from the run's matrix
+// (Engine::set_primary_book).
+[[nodiscard]] std::string default_primary_book();
 
 // ---- published blocks (Engine's rule_* / rows_* members dispatch here under spo-v3) ----------
 [[nodiscard]] std::string tracking_declaration(const SpoParams& p);
@@ -88,16 +97,20 @@ inline constexpr atx::f64 v3_gross_bound_multiple = 2.0; // breach: planned gros
 // criterion on the traded one, cost, gross, turnover, holding period, gross-bound breaches,
 // clamps, and the shadow book with the cost ratio.
 [[nodiscard]] nlohmann::json tracking_summary_json(std::span<const TrackingRow> rows);
-// The tripwire, read after the replay and before anything is published: with the void on,
-// Unavailable when a scored decision clamped a specific variance or a book planned a gross
-// above 2 x L (the run is void); Ok otherwise (void off, or neither).
+// The tripwire, read after the replay and before anything is published. Ruling E-31a, whatever
+// the void flag: Unavailable when a scored decision of `primary_book` did not meet its net or
+// beta limit (limits_met false): the run is void. With the void on, also Unavailable when a
+// scored decision clamped a specific variance or a book planned a gross above 2 x L. Ok
+// otherwise.
 [[nodiscard]] atx::core::Status tracking_tripwire(const SpoParams& p,
-                                                  std::span<const TrackingRow> rows);
+                                                  std::span<const TrackingRow> rows,
+                                                  std::string_view primary_book);
 // Its record: ceiling, void flag, clamp counts, gross-bound breaches, the largest planned
-// gross, the status and, report only, per book: tracking error mean / max, share at the trade
-// limit mean / max, aim correlation mean / min (planned and traded), the E-14 criterion
-// (aim_correlation_criterion: the traded book's mean against .9), unconverged and limits
-// unmet solves.
+// gross, the primary book with its limits_unmet count and first session (Ruling E-31a; a void
+// by it adds "voided": "limits_unmet"), the status and, report only, per book: tracking error
+// mean / max, share at the trade limit mean / max, aim correlation mean / min (planned and
+// traded), the E-14 criterion (aim_correlation_criterion), unconverged and limits unmet solves.
 [[nodiscard]] nlohmann::json tracking_tripwire_json(const SpoParams& p,
-                                                    std::span<const TrackingRow> rows);
+                                                    std::span<const TrackingRow> rows,
+                                                    std::string_view primary_book);
 } // namespace atx::impl::strategy::spo

@@ -1005,6 +1005,7 @@ struct Engine::Impl {
   std::vector<DiagnosticRow> rows;
   std::vector<TrackingRow> tracking_rows; // spo-v3
   std::vector<f64> last_aim;              // spo-v3: the latest decision's aim (observation)
+  std::string primary_book{default_primary_book()}; // spo-v3: Ruling E-31a's book
   Timing timing;
   std::vector<f64> desired_copy, shadow_before; // scratch
 
@@ -1565,6 +1566,8 @@ const SpoParams& Engine::params() const noexcept { return impl_->params; }
 Timing Engine::timing() const noexcept { return impl_->timing; }
 f64 Engine::horizon() const noexcept { return impl_->horizon; }
 f64 Engine::gross_budget() const noexcept { return impl_->budget; }
+void Engine::set_primary_book(std::string book) { impl_->primary_book = std::move(book); }
+const std::string& Engine::primary_book() const noexcept { return impl_->primary_book; }
 
 // ---- declarations and outputs ------------------------------------------------------------
 std::string declaration(const SpoParams& params) {

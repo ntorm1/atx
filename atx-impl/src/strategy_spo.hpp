@@ -418,6 +418,12 @@ public:
   [[nodiscard]] atx::f64 horizon() const noexcept; // H in effect (NaN before the first plan)
   // G in effect, spo-v3's gross sanity bound 2 x L (NaN before the first plan).
   [[nodiscard]] atx::f64 gross_budget() const noexcept;
+  // spo-v3, Ruling E-31a: the label ("<trading id>+<financing id>") of the run's primary book,
+  // whose limits_unmet on a scored decision voids the run (tracking_tripwire). Default: the
+  // untiered primary (default_primary_book(), strategy_spo_v3.hpp); the v7 hook sets the run's
+  // own from its scenario matrix.
+  void set_primary_book(std::string book);
+  [[nodiscard]] const std::string& primary_book() const noexcept;
   // The rule's published blocks over its scored rows (strategy_spo_v3.cpp). spo-v1/v2
   // delegate unchanged to declaration(params()), parameters_json(params(), horizon(),
   // gross_budget()), calibration_json(calibration()) and diagnostics_csv,

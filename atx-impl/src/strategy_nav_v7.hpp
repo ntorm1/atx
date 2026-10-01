@@ -42,10 +42,13 @@
 //                             sigma_aim (S_prior 20, Ruling E-14), H 20, trade limit .01 ADV,
 //                             beta .02, no holding cap, gross above 2 x --aim-leverage a
 //                             breach; its own spo_diagnostics.csv columns and tripwire (a
-//                             clamp or a breach voids the run with the void on, the default).
-//                             Allowed: --risk-model(-sha256), --spo-iters, --spo-tol,
-//                             --spo-books, --specific-ceiling(-void); every other spo flag is
-//                             refused. --spo-alpha is refused with spo-v1/v2. v8 E-26: the
+//                             clamp or a breach voids the run with the void on, the default;
+//                             v8 E-31a: a scored decision of the primary book whose net or
+//                             beta limit is not met voids it whatever the flag, so
+//                             --emit-holdings is refused). Allowed: --risk-model(-sha256),
+//                             --spo-books, --specific-ceiling(-void); every other spo flag
+//                             (--spo-iters and --spo-tol included, E-31a) is refused.
+//                             --spo-alpha is refused with spo-v1/v2. v8 E-26: the
 //                             replay's --hold-band B / --adv-hold-q Q shape desired exactly as
 //                             aim-partial-v5's (the shared construction, detail::form_desired),
 //                             so the aim is L x the shaped desired and the rule id carries
