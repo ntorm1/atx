@@ -668,6 +668,23 @@ def is_history_line(rec: dict) -> bool:
     return "era" in rec or is_era_line(rec) or label.startswith("ERA ") or is_pool_line(rec)
 
 
+def begins_before_train(rec: dict) -> bool:
+    """The line's series begins before the research window's TRAIN begin (its window's first session)."""
+    first = (rec.get("window") or {}).get("first_session")
+    return isinstance(first, str) and first < session_date(research_window().TRAIN_BEGIN_NS).isoformat()
+
+
+def history_read_lines(records: list[dict]) -> list[dict]:
+    """Ruling E-41: the line of record of every history read, in ledger order. A pooled line whose series begins
+    before TRAIN, or a one-era history line: an era block whose era_of names no pooled line (the TRAIN cell it
+    re-reads, or no era_of on a line written before review P-1). A pool's era lines belong to its pooled line's read;
+    a pool of eras inside TRAIN is no history read. Each adds 0 to N (``trial_counts``) and 1 to the history reads of
+    the Appendix A block."""
+    pools = {r.get("trial_id") for r in records if is_pool_line(r)}
+    return [r for r in records if (is_pool_line(r) and begins_before_train(r)) or
+            ("era" in r and not is_pool_line(r) and r.get("era_of") not in pools)]
+
+
 def is_trial_id(value) -> bool:
     """A ledger trial_id: 16 lowercase hex digits (``trial_id``)."""
     return isinstance(value, str) and len(value) == 16 and all(c in "0123456789abcdef" for c in value)
@@ -701,7 +718,8 @@ def ledger_pool_records(kind: str, eras: list[dict], pooled_nets: dict, pooled_s
     TRAIN is the plain cell line and takes no ``era_of``. Two or more: one line per era (``era``, ``era_of`` = the
     pooled trial_id; adds 0; it carries the origin and window id only) and one pooled line (window ``POOL``,
     ``series.pool[]``, ``eras[]``, ``s2_net_sr`` = ``pooled_sr``; adds ``count``; it carries every v8 field, re-run and
-    defect included: it is the trial); ``era_of`` is refused there."""
+    defect included: it is the trial); ``era_of`` is refused there. Ruling E-41: a one-era or pooled read scored before
+    TRAIN is a history read and adds 0 (``history_read_lines``, ``trial_counts``)."""
     if not eras:
         raise ValueError("ledger: a pool needs an era")
     check_record_fields(kind, count, **{k: v for k, v in v8.items() if k != "research_window_id"})
@@ -988,14 +1006,18 @@ def trial_counts(records: list[dict]) -> list[int]:
     re-run names it. A re-run never lowers N (review C-5): the replaced cell stays counted and its blind re-run adds 0
     (one trial for the pair), while a re-run decided because the returns looked wrong (``rerun_basis`` returns) is a
     new trial beside it. Lines without the v8 fields add their count, exactly as ``ledger_counts`` summed them before
-    v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial. A mining campaign line (Ruling
-    E-33) adds 0: its registry count is the campaign's own budget, never part of a ledger N."""
+    v8. An era shard line (``era_of``, task H-1) adds 0: its pooled line is the trial of a pool inside TRAIN. A mining
+    campaign line (Ruling E-33) adds 0: its registry count is the campaign's own budget, never part of a ledger N. A
+    history read (Ruling E-41, ``history_read_lines``: one era or a pool, scored before TRAIN) adds 0: the Appendix A
+    block counts it apart, as a history read."""
     rerun = {r.get("rerun_of") for r in records if r.get("rerun_basis") in ("blind", "returns")}
     invalid = invalid_ids(records)
+    reads = {id(r) for r in history_read_lines(records)}
     out = []
     for rec in records:
         tid = rec.get("trial_id")
-        if is_event(rec) or rec.get("rerun_basis") in ("window", "blind") or is_era_line(rec) or is_campaign(rec):
+        if (is_event(rec) or rec.get("rerun_basis") in ("window", "blind") or is_era_line(rec) or is_campaign(rec)
+                or id(rec) in reads):
             out.append(0)
         elif tid in invalid and tid not in rerun:
             out.append(0)
@@ -1027,10 +1049,12 @@ def excluded_lines(records: list[dict]) -> list[dict]:
 
 def ledger_counts(records: list[dict]) -> dict:
     """Trials by kind and window: {kind: {window key: trials}} (``trial_counts`` per line; default 1 each). Protocol
-    and defect lines are events, not trials: they are skipped, and so are mining campaign lines (Ruling E-33)."""
+    and defect lines are events, not trials: they are skipped, and so are mining campaign lines (Ruling E-33) and
+    history reads (Ruling E-41: counted apart, ``history_read_lines``)."""
     out: dict = {}
+    reads = {id(r) for r in history_read_lines(records)}
     for rec, trials in zip(records, trial_counts(records)):
-        if is_event(rec) or is_era_line(rec) or is_campaign(rec):
+        if is_event(rec) or is_era_line(rec) or is_campaign(rec) or id(rec) in reads:
             continue
         w = rec.get("window") or {}
         key = f"{w.get('label', '?')} {w.get('first_session', '?')}..{w.get('last_session', '?')}"
@@ -1054,7 +1078,10 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
     if campaigns:
         lines.append(f"   {MINING_CAMPAIGN} {0:5d}  ({len(campaigns)} campaign line(s), registry count "
                      f"{campaign_registry_count(records)}: the campaigns' own budget, not in N)")
-    zero = [r for r, c in zip(records, trial_counts(records)) if c == 0 and not is_era_line(r) and not is_campaign(r)]
+    history = history_read_lines(records)
+    reads_ids = {id(r) for r in history}
+    zero = [r for r, c in zip(records, trial_counts(records))
+            if c == 0 and not is_era_line(r) and not is_campaign(r) and id(r) not in reads_ids]
     if zero:  # only ledgers with v8 fields print this line: a v7 ledger's block is unchanged
         reads = sum(1 for r in zero if r.get("kind") == VALIDATION)
         out = [r for r in zero if r.get("rerun_basis") != "window" and r.get("kind") not in ZERO_TRIAL_KINDS
@@ -1067,12 +1094,16 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
     if eras:  # task H-1: printed only when an era shard is ledgered
         lines.append(f"   era shard line(s): {len(eras)}, adding no trial (each pooled line counts its eras once: "
                      f"{sum(1 for r in records if is_pool_line(r))} pooled line(s))")
+    if history:  # Ruling E-41: printed only when a history read is ledgered
+        lines.append(f"   history read(s): {len(history)}, adding no trial (Ruling E-41; counted apart in the "
+                     "Appendix A block)")
     return lines
 
 
 def appendix_a_v8(records: list[dict]) -> str:
     """The v8 Appendix A block (v8-prereg, 'on every result'): construction trials by the defect rule, this window's
-    admission trials, and the window statement, every window date taken from the research window."""
+    admission trials, and the window statement, every window date taken from the research window. Beside the
+    validation reads, the history reads of the ledger (Ruling E-41, ``history_read_lines``; none of them is in N)."""
     rw, wid = research_window(), window_id()
     counts = trial_counts(records)
     n = sum(c for r, c in zip(records, counts) if r.get("kind") == "construction")
@@ -1084,7 +1115,8 @@ def appendix_a_v8(records: list[dict]) -> str:
     never_year = dt.date.fromisoformat(never[0]).year if never[0] else None
     tail = f"; {never_year}+ never read" if never_year else ""
     return (f"TRAIN construction cells {n}; admission trials this sprint {k}; window {wid} ({first}-{last}); "
-            f"hidden {sealed}+ unread in this sprint; validation reads before v8: {PRIOR_VALIDATION_READS}{tail}.")
+            f"hidden {sealed}+ unread in this sprint; validation reads before v8: {PRIOR_VALIDATION_READS}; "
+            f"history reads {len(history_read_lines(records))}{tail}.")
 
 
 def dsr_variance(records: list[dict], research_window_id: str, kind: str = "construction") -> dict:

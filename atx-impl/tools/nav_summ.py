@@ -98,7 +98,9 @@ Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
                          hac_t and held_share null, the per-era rows in row["pool"]["eras"]; the paired block against
                          --pool-reference (pooled) or --reference is skipped with a note below 3 common sessions.
                          With --ledger: one line per era (adds no trial) and one pooled line (window POOL, one trial);
-                         a one-era pool is the era's own line (backtest_integrity.ledger_pool_records).
+                         a one-era pool is the era's own line (backtest_integrity.ledger_pool_records). A history
+                         read (one era or a pool scored before TRAIN) adds no trial and counts as a history read in
+                         the Appendix A block (Ruling E-41); its --dsr-ledger N has no + 1.
   --era-of TRIAL_ID      a one-era history pool (sessions before TRAIN) with --ledger: the trial_id of the TRAIN cell
                          it re-reads, required (review P-1). Its line carries era_of: an era line, adding no trial,
                          never read as a TRAIN cell; refused for a pool of two or more eras or one inside TRAIN.
@@ -591,13 +593,16 @@ def print_year_table(rows: list[dict], indent: str = "   ") -> None:
               f"cost_bps {fmt(y['cost_bps_traded'], '.2f')}")
 
 
-def ledger_dsr(moments: dict, records: list[dict], in_ledger: bool, research_window_id: str) -> dict:
-    """OD-4 DSR of one dir: N = the ledger's construction trials (+1 when the dir is not in the ledger), V[SR] from the
-    construction cells ledgered on ``research_window_id``; the legacy variance's DSR beside it (gates nothing)."""
+def ledger_dsr(moments: dict, records: list[dict], in_ledger: bool, research_window_id: str,
+               history: bool = False) -> dict:
+    """OD-4 DSR of one dir: N = the ledger's construction trials (+1 when the dir is not in the ledger; a history read
+    adds no trial, Ruling E-41), V[SR] from the construction cells ledgered on ``research_window_id``; the legacy
+    variance's DSR beside it (gates nothing)."""
     v = BI.dsr_variance(records, research_window_id)
-    n = BI.ledger_n(records, in_ledger)  # the one N (research_cycle.py's summ.dsr_n "ledger+1" reads it too)
+    n = BI.ledger_n(records, in_ledger or history)  # the one N (research_cycle.py's summ.dsr_n "ledger+1" reads it)
     row = dict(v, n=n, n_rule="construction trials of the ledger by the defect rule" +
-               ("" if in_ledger else " + 1 (this cell, not yet ledgered)"),
+               (" (a history read adds no trial, Ruling E-41)" if history else
+                "" if in_ledger else " + 1 (this cell, not yet ledgered)"),
                dsr=None, sr0_daily=None, sr0_annual=None, legacy_dsr=None, legacy_sr0_annual=None)
     sr, t = moments["sr_daily"], moments["sessions"]
     if sr is None or moments["skew"] is None or t < 2 or n < 2:
@@ -987,12 +992,14 @@ def integrity(args, argv, results, analysed) -> None:
         present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
         wid = BI.window_id()
         for d, r in zip(labels, results):
+            history = False
             if "pool" in r and d not in args.dirs:   # the pooled row: its pooled trial_id (task H-1)
                 tid = BI.pooled_trial_id("construction", [BI.sha256_file(Path(e["dir"]) / f"daily_{e['scenario']}.csv")
                                                           for e in r["pool"]["eras"]])
+                history = min(nets_by[d]) < BI.research_window().TRAIN_BEGIN_NS   # a history read (Ruling E-41)
             else:
                 tid = BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
-            r["deflated_ledger"] = ledger_dsr(r["net_moments"], records, tid in present, wid)
+            r["deflated_ledger"] = ledger_dsr(r["net_moments"], records, tid in present, wid, history)
             print(f"== ledger DSR {d}")
             print_ledger_dsr(r["deflated_ledger"])
     if args.ledger_n:

@@ -259,6 +259,7 @@ def test_ledger_lines_per_era_plus_one_pooled_line_add_one_trial(two_eras, tmp_p
     assert pooled["s2_net_sr"] == pytest.approx(NS.sharpe(daily["net_return"][NS.return_mask(daily)]), rel=1e-12)
     assert BI.trial_counts(recs)[len(before):] == [0, 0, 1]
     assert BI.ledger_n(recs, True) == n0                              # N + 1 in total, not + 3
+    assert BI.history_read_lines(recs) == [] and "; history reads 0" in BI.appendix_a_v8(recs)   # eras inside TRAIN
     cell0 = str(other).replace("\\", "/")
     assert RL.cells(ledger) == [cell0]                                 # era and pooled lines are no grid cells
     assert RL.ledger_n(ledger, label, pool_dirs=pool_dirs) == n0      # now ledgered: matched by the pooled trial_id
@@ -295,7 +296,12 @@ def test_history_eras_are_ledgered_by_the_era_rule_and_a_single_history_cell_is_
     recs = BI.ledger_read(ledger)
     assert [r["window"]["label"] for r in recs] == ["ERA E1", "ERA E2", "POOL"]
     assert recs[2]["window"]["first_session"] == "2014-01-06"          # the first return row (a flat, a deployment)
-    assert BI.trial_counts(recs) == [0, 0, 1]
+    # Ruling E-41: a pooled history read adds 0 to N and counts once as a history read (its pooled line)
+    assert BI.trial_counts(recs) == [0, 0, 0] and BI.history_read_lines(recs) == [recs[2]]
+    assert BI.ledger_n(recs, True) == 0 and "; history reads 1" in BI.appendix_a_v8(recs)
+    rows = run_json(tmp_path, "dsr", ["--pool", str(e1), str(e2), "--dsr-ledger", str(ledger)])
+    q = rows[0]["deflated_ledger"]                                     # its own DSR: N without + 1
+    assert q["n"] == BI.ledger_n(recs, True) == 0 and q["n_rule"].endswith("(a history read adds no trial, Ruling E-41)")
     with pytest.raises(ValueError, match="TRAIN end"):
         BI.window_of([BI.research_window().TRAIN_END_NS], era="E9")
 
@@ -323,6 +329,7 @@ def test_a_one_era_history_read_names_the_train_cell_it_re_reads(tmp_path, capsy
     assert line["window"]["label"] == "ERA E1" and line["era"] == {"id": "E1", "role_sha256": "e1" * 32}
     assert line["era_of"] == train_line["trial_id"] and BI.is_era_line(line) and BI.is_history_line(line)
     assert BI.trial_counts(recs) == [1, 0] and BI.ledger_n(recs, True) == 1
+    assert BI.history_read_lines(recs) == [line]                       # Ruling E-41: one history read
     cell0 = str(cell).replace("\\", "/")
     assert RL.cells(one) == [cell0] and BI.ledger_net_series(recs, lambda r: {})[0] == [cell0]
     assert BI.dsr_variance(recs, BI.window_id())["legacy_cells"] == 1
@@ -371,6 +378,21 @@ def test_p1_dsr_variance_leaves_a_history_line_without_era_of_out(p1_ledger):
     assert v["cells"] == 2 and v["variance_sr"] == pytest.approx(float(np.var(srs, ddof=1)), rel=1e-15)
     assert v["legacy_cells"] == 0
     assert BI.dsr_variance(recs[:2], BI.window_id())["variance_sr"] == v["variance_sr"]   # as if it were absent
+
+
+def test_e41_appendix_a_counts_the_history_read_apart_and_n_is_unchanged(p1_ledger):
+    """Ruling E-41 on the P-1 fixture ledger: the history read (written before every such line carried era_of) adds 0
+    to the construction N and 1 to the history reads printed beside the validation reads."""
+    recs = p1_ledger["records"]
+    assert BI.trial_counts(recs) == [1, 1, 0] and BI.history_read_lines(recs) == [recs[2]]
+    assert BI.ledger_n(recs, True) == BI.ledger_n(recs[:2], True) == 2
+    block = BI.appendix_a_v8(recs)
+    assert block.startswith("TRAIN construction cells 2; ")
+    assert "validation reads before v8: 2 (2023-2024); history reads 1" in block
+    assert "; history reads 0" in BI.appendix_a_v8(recs[:2])
+    text = BI.appendix_a(recs, "t")
+    assert text[0] == "Appendix A (trial ledger t): 2 trials in 3 ledger lines" and not any("ERA" in x for x in text)
+    assert text[-1].startswith("   history read(s): 1, adding no trial (Ruling E-41")
 
 
 def test_p1_research_ledger_cells_skips_a_history_line_without_era_of(p1_ledger):
