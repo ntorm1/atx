@@ -131,8 +131,8 @@ partial-pass marker: rerun the same command to resume.
 Report only (v8 C-2): ``--report-f-theta`` adds ``f_theta`` / ``f_theta_hac_t`` to every admission row (the factor
 return of the theta-averaged sleeve book, theta .05, horizon_stats.theta_book_returns, over live TRAIN decisions, and
 its Newey-West t) and a ``report_only`` block; they are computed after every verdict and nothing reads them back.
-Era pools (v8 H-1; prior screens with POOLED_COMPOSITIONS only, Ruling E-35: ew-theme-v1, ew-theme-v6,
-ew-theme-std-v1 and ew-theme-std-aim-v1; any other --composition is refused by name):
+Era pools (v8 H-1; prior screens with POOLED_COMPOSITIONS only, Rulings E-35 / E-35a: ew-theme-v1, ew-theme-aim-v1,
+ew-theme-v6, ew-theme-std-v1 and ew-theme-std-aim-v1; any other --composition is refused by name):
 ``--era ID ROLE ROLE_SHA ORIENT ORIENT_SHA SUMMARY SUMMARY_SHA`` (repeatable, date order) adds an era scored by its own
 TRAIN-only IC run, and ``--era-id ID``
 names the main --train role (the anchor, the last era). Each era keeps its own RoleManifest, orientations, cache layout
@@ -149,7 +149,9 @@ composition_rules.ew_theme_std, and ew-theme-std-aim-v1 feeds it the aim gains o
 each era stores its lag correlations c_j(d) over every scored decision of its role (``era_aim_part``, store kind
 ``aim-era``), the eras' c sit side by side in date order (no lag pair crosses an era) and ``correlation_profile`` (the
 code of ``aim_profile``) gives rho, g and the half-sample gains over every pooled decision. One era scored inside
-TRAIN gives the single-window aim record bit for bit.
+TRAIN gives the single-window aim record bit for bit. ew-theme-aim-v1 (Ruling E-35a) weights the same pooled gains by
+Ruling E-27a (``pooled_aim_weights``: within-theme renormalisation, then the member cap 1/(2T)); until lane FIX-3 moves
+the single-window rule to E-27a, the single window still normalises the gains across themes.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -218,8 +220,18 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
                                     COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
 AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
 # v8 H-1 + Ruling E-35: the compositions the pooled (era) fit implements, each by the single-window code on the pooled
-# decisions. Any other id is refused by name: never a fall-back to another rule.
-POOLED_COMPOSITIONS = (EW_THEME_RULE_ID, V6_RULE_ID, composition_rules.STD_RULE_ID, composition_rules.STD_AIM_RULE_ID)
+# decisions (E-35a adds ew-theme-aim-v1, by Ruling E-27a's definition: ``pooled_aim_weights``). Any other id is refused
+# by name: never a fall-back to another rule.
+POOLED_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID, composition_rules.STD_RULE_ID,
+                       composition_rules.STD_AIM_RULE_ID)
+POOLED_AIM_TEXT = ("ew-theme-aim-v1 (Ruling E-27a; era pool, Ruling E-35a): w_k=(1/T)*g_k/sum_{theme(k)} g (the "
+                   "ew-theme-v1 weights 1/(T*n_theme) times the gains, renormalised inside each theme so each keeps "
+                   "1/T), then member cap 1/(2T) with the excess pro rata to the other themes' uncapped members "
+                   "(repeated to a fixed point); g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], "
+                   "rho_k from the pooled rank autocorrelation; T=themes with >=1 admitted non-degenerate member; no "
+                   "mean or covariance estimation")
+AIM_FIT_SERIES = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
+                  "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -1892,6 +1904,24 @@ def pool_aims(eras: list[dict], digest: str) -> list[dict]:
     return out
 
 
+def pooled_aim_weights(themes: list[str], gains: list[float]) -> tuple[np.ndarray, dict]:
+    """ew-theme-aim-v1 of an era pool (Ruling E-35a), by Ruling E-27a's definition: the ew-theme-v1 weight
+    1/(T*n_theme) times g_k, renormalised inside its theme so each theme keeps 1/T (composition_rules.tier_weights with
+    the gains as the within-theme scores), then the member cap 1/(2T) (composition_rules.member_cap), as
+    ew-theme-std-aim-v1 does. The single-window ew_theme_aim_weights still normalises across themes on this branch;
+    lane FIX-3 moves it to E-27a, after which both paths run that code and this function goes."""
+    require(len(themes) == len(gains) and themes and all(isinstance(g, float) and math.isfinite(g) and g > 0
+                                                         for g in gains), "fit: one finite positive aim gain per member")
+    present = sorted(set(themes))
+    weights, passes = composition_rules.member_cap(composition_rules.tier_weights(themes, list(gains)), themes,
+                                                   1.0 / (2 * len(present)), FitError)
+    capped = {k for p in passes for k in p["capped"]}
+    table = {t: {"admitted_count": themes.count(t), "nominal_theme_weight": 1.0 / len(present),
+                 "aim_theme_weight": float(sum(w for w, th in zip(weights, themes) if th == t)),
+                 "capped": sum(1 for k in capped if themes[k] == t)} for t in present}
+    return weights, table
+
+
 def fit(args, log=None) -> tuple[int, dict]:
     started = time.perf_counter()
     if pooled(args):  # v8 H-1, Ruling E-35: an explicit list, checked first so every other id is refused by its name
@@ -2234,15 +2264,18 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                        "factor series", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                        seconds=round(time.perf_counter() - started, 2))
         return EXIT_NO_WEIGHTS, summary
-    if args.composition == AIM_RULE_ID:
+    if args.composition == AIM_RULE_ID and pool is not None:  # Ruling E-35a: E-27a's rule (pooled_aim_weights)
+        weights, theme_table = pooled_aim_weights([themes[k] for k in active],
+                                                  [aims[k]["gain"] for k in active])  # type: ignore[index]
+        composition_text, fit_series = POOLED_AIM_TEXT, AIM_FIT_SERIES
+    elif args.composition == AIM_RULE_ID:
         weights, theme_table = ew_theme_aim_weights([themes[k] for k in active],
                                                     [aims[k]["gain"] for k in active])  # type: ignore[index]
         composition_text = ("w_k=(g_k/(T*n_theme(k)))/sum_m(g_m/(T*n_theme(m))) over admitted non-degenerate k "
                             "(normalised globally); g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], "
                             "rho_k from TRAIN rank autocorrelation; T=themes with >=1 such member; no mean or "
                             "covariance estimation")
-        fit_series = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
-                      "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
+        fit_series = AIM_FIT_SERIES
     elif v6:
         # (c) reads the standalone tau of each member's admission row: admission.json candidates[].tau (status admitted).
         weights, theme_table, v6_detail = ew_theme_v6_weights([ids[k] for k in active], [themes[k] for k in active],
