@@ -28,17 +28,28 @@
 // acceptance) and the mined-v1 arithmetic.
 //
 // The world: 16 names, one session per calendar day from 2018-12-14 to 2023-12-31 (1,844
-// sessions; score_begin 383 is 2020-01-01), every name a decision member from session 63.
-// Drivers p1, p2, p3, m1, n1 and the noise e are i.i.d. N(0, 1) over names and days, so no
-// expression of a driver's past predicts anything: the one-day return is
-// r(t) = .01 (p1 + p2 + p3 + m1)(t - 2) + .01 e(t), and the h 21 label of decision t
-// (close[t+22] / close[t+1] - 1) carries each driver at t with rank IC about .09. The pool is the
-// book m1: its centred rank is the marginal term's regressor and m1 its member. The mined fields
-// are p1, p2, p3 (planted), copy = m1 + .02 noise (the book again) and n1 (noise). Discover is
-// [2020-01-01, 2023-01-01) (1,074 mature label rows), confirm [2023-01-01, 2024-01-01) (343).
-// A numpy replica of this exact world (same generator; Bartlett-21 t, not the IC recipe's
-// conservative one) reads: rank(p_i) f1 11.6 to 14.8, f2 11.2 to 14.5, confirm t 4.9 to 8.5;
-// rank(copy) f1 12.2, f2 1.1; rank(n1) f1 0.0. The Bonferroni value is about 3.4 at ~80 trials.
+// sessions; score_begin 383 is 2020-01-01, row 1,295 is 2022-07-01), every name a decision member
+// from session 63. Drivers p1..p4, m1, m2, n1, neg, flip and the noise e are i.i.d. N(0, 1) over
+// names and days, so no expression of a driver's past predicts anything. The one-day return is
+// r(t) = .01 x(t - 2) + .005 e(t), x = p1 + p2 + p3 + m1 - neg + (p4 - flip before row 1,295;
+// flip from it), so the h 21 label of decision t (close[t+22] / close[t+1] - 1) carries each
+// loaded driver at t. Discover is [2020-01-01, 2022-07-01) (890 mature label rows), confirm
+// [2022-07-01, 2024-01-01) (527).
+// The pool (review MINE-9): the marginal term's regressor is the book rank(m1) (its centred
+// tied rank) and the pool's one member is m2, independent of every field and of the returns, so
+// only the marginal term can stop a copy of the book.
+// The mined fields: p1, p2, p3 (planted), copy = m1 + .02 noise (the book again), n1 (noise),
+// swap (p4 before the confirm begin, m1 from it: planted in discover, the book in confirm), neg
+// (return loading -1 in both windows) and flip (-1 in discover, +1 in confirm).
+// A numpy replica of this world (the same generator; Bartlett-21 t's; the IC runner's
+// conservative t approximated by Bartlett) reads, on the corrected scale t / 1.55:
+//   discover f2 / F  rank(p1) 5.1, rank(p2) 6.4, rank(p3) 6.0, rank(swap) 4.6, rank(neg) 5.6 and
+//                    rank(flip) 6.8 (both sign -1), rank(copy) -1.2 (its f1 / F 7.3), rank(n1)
+//                    0.3; a delta(f, w) template reads about .7 of rank(f) and correlates with
+//                    it at about .66 (under the rho bound);
+//   confirm t / F    rank(p1) 4.3, rank(p2) 5.0, rank(p3) 4.3, rank(neg) 6.1, rank(flip) -3.6,
+//                    rank(swap) undefined (every confirm row spanned by the book), while its raw
+//                    IC t / F is 4.8.
 namespace {
 using namespace atx;
 using Json = nlohmann::json;
@@ -50,6 +61,8 @@ namespace ex = atx::engine::factory;
 constexpr i64 day = 86'400'000'000'000LL;
 constexpr i64 first_day = 17879; // 2018-12-14
 constexpr usize D = 1844, N = 16, score_begin = 383;
+// The fixture's confirm begin, 2022-07-01: swap and flip change their role from this row on.
+constexpr usize kConfirmRow = 1295;
 constexpr f64 missing = std::numeric_limits<f64>::quiet_NaN();
 // The fixture campaigns' --budget: above their capacity (templates + 16 x 2 stage-2 candidates).
 constexpr u64 kBudget = 128;
@@ -133,23 +146,35 @@ std::vector<u64> instrument_ids() {
 }
 
 struct World {
-  std::vector<f64> p1, p2, p3, m1, n1, copy, close, book;
+  std::vector<f64> p1, p2, p3, p4, m1, m2, n1, neg, flip, copy, swap, close, book;
   World() {
     Rng g{0x6d696e65U};
     p1 = draws(g, D * N);
     p2 = draws(g, D * N);
     p3 = draws(g, D * N);
+    p4 = draws(g, D * N);
     m1 = draws(g, D * N);
+    m2 = draws(g, D * N);
     n1 = draws(g, D * N);
+    neg = draws(g, D * N);
+    flip = draws(g, D * N);
     const auto e = draws(g, D * N), jitter = draws(g, D * N);
     copy.resize(D * N);
-    for (usize c = 0; c < D * N; ++c) copy[c] = m1[c] + 0.02 * jitter[c];
+    swap.resize(D * N);
+    for (usize c = 0; c < D * N; ++c) {
+      copy[c] = m1[c] + 0.02 * jitter[c];
+      swap[c] = c / N < kConfirmRow ? p4[c] : m1[c];
+    }
     close.assign(D * N, 100.0);
     for (usize t = 1; t < D; ++t)
       for (usize i = 0; i < N; ++i) {
-        const usize lag = (t >= 2 ? t - 2 : 0) * N + i;
-        const f64 driver = t >= 2 ? p1[lag] + p2[lag] + p3[lag] + m1[lag] : 0.0;
-        close[t * N + i] = close[(t - 1) * N + i] * (1.0 + 0.01 * driver + 0.01 * e[t * N + i]);
+        f64 driver = 0.0;
+        if (t >= 2) {
+          const usize s = (t - 2) * N + i; // the driving row t - 2
+          driver = p1[s] + p2[s] + p3[s] + m1[s] - neg[s] +
+                   (t - 2 < kConfirmRow ? p4[s] - flip[s] : flip[s]);
+        }
+        close[t * N + i] = close[(t - 1) * N + i] * (1.0 + 0.01 * driver + 0.005 * e[t * N + i]);
       }
     // The book's regressor: m1's centred tied rank over the decision members.
     book.assign(D * N, missing);
@@ -219,8 +244,9 @@ struct Fixture {
     if (!fs::create_directory(fields)) return false;
     Json rows = Json::array(), files = Json::object();
     const std::vector<std::pair<const char *, const std::vector<f64> *>> columns{
-        {"p1", &world.p1}, {"p2", &world.p2}, {"p3", &world.p3}, {"copy", &world.copy},
-        {"n1", &world.n1}};
+        {"p1", &world.p1},     {"p2", &world.p2},     {"p3", &world.p3},
+        {"copy", &world.copy}, {"n1", &world.n1},     {"swap", &world.swap},
+        {"neg", &world.neg},   {"flip", &world.flip}};
     for (const auto &[name, values] : columns) {
       const std::string file = std::string(name) + ".f64";
       if (!payload(fields, files, file, *values)) return false;
@@ -242,9 +268,9 @@ struct Fixture {
     const auto pool = dir.path / "pool";
     if (!fs::create_directory(pool)) return false;
     if (!payload(pool, pool_files, "book.f64", world.book) ||
-        !payload(pool, pool_files, "m1.f64", world.m1))
+        !payload(pool, pool_files, "m2.f64", world.m2))
       return false;
-    return write_pool_manifest("manifest.json", {"book"}, {"m1"}, pool_sha);
+    return write_pool_manifest("manifest.json", {"book"}, {"m2"}, pool_sha);
   }
   // An atx.mine-pool/v1 manifest `name` in the pool directory over the payloads written there.
   bool write_pool_manifest(const std::string &name, const std::vector<std::string> &regressors,
@@ -271,12 +297,14 @@ struct Fixture {
     cfg.role.manifest_sha256 = role_sha;
     cfg.role.fields_directory = (dir.path / "fields").string();
     cfg.role.fields_sha256 = fields_sha;
+    // The stage-2 campaigns mine the fields whose combinations cannot cancel (every planted
+    // loading +1 in both windows); the rule pins (RulePinsOnTheTemplates) mine all eight.
     cfg.role.fields = {"p1", "p2", "p3", "copy", "n1"};
     cfg.pool_path = (dir.path / "pool" / "manifest.json").string();
     cfg.pool_sha256 = pool_sha;
     cfg.discover_begin = "2020-01-01";
-    cfg.discover_end = "2023-01-01";
-    cfg.confirm_begin = "2023-01-01";
+    cfg.discover_end = "2022-07-01";
+    cfg.confirm_begin = "2022-07-01";
     cfg.confirm_end = "2024-01-01";
     cfg.registry_path = (dir.path / ("registry-" + tag + ".atxtrg")).string();
     cfg.campaign_id = "fixture";
@@ -287,8 +315,8 @@ struct Fixture {
     cfg.stage2_seeds = 8;
     cfg.stage2_population = 16;
     cfg.stage2_generations = 2;
-    // The rung keeps half: rank(copy) ranks 6th of the 55 templates on every second name in the
-    // numpy replica of this world, rank(p3) 11th, the 28th |t| is under 3.
+    // The rung keeps half: on every second name the numpy replica of this world ranks rank(copy)
+    // 4th of the 55 templates, rank(p1) 9th and rank(p3) 14th; the 28th |t| is under 2.
     cfg.race_strides = {2};
     cfg.race_keep = 0.5;
     cfg.min_names = 10;
@@ -306,7 +334,7 @@ std::string text_of(const fs::path &path) {
 
 // trials.csv: eleven unquoted cells, then the quoted DSL.
 struct TrialRow {
-  std::string status, reason, dsl;
+  std::string canon_hash, stage, status, reason, dsl;
   f64 f1{missing}, f2{missing};
 };
 std::vector<TrialRow> read_trials(const fs::path &path) {
@@ -326,6 +354,8 @@ std::vector<TrialRow> read_trials(const fs::path &path) {
       return cell.empty() ? missing : std::stod(cell);
     };
     TrialRow row;
+    row.canon_hash = cells[0];
+    row.stage = cells[1];
     row.status = cells[2];
     row.reason = cells[3];
     row.f1 = number(cells[6]);
@@ -505,11 +535,24 @@ TEST(StrategyMine, TemplatesAreTheHouseSet) {
 }
 
 // ---- the fixture acceptance --------------------------------------------------------------------
-// 3 planted signals promoted, the planted copy rejected by the marginal term, no noise expression
-// promoted, in 5 seeds; registry count = evaluated + racing-rejected + screen-rejected.
+// The shortlist row of `dsl` in campaign.json's promotions (null when it is not shortlisted).
+const Json *promotion_of(const Json &campaign, const std::string &dsl) {
+  for (const Json &row : campaign.at("promotions"))
+    if (row.at("dsl").get<std::string>() == dsl) return &row;
+  return nullptr;
+}
+
+// 3 planted signals promoted, the planted copy stopped by the marginal term alone (the pool's
+// member m2 is independent of it, so no rho step could), no noise expression promoted, in 5
+// seeds; registry count = evaluated + racing-rejected + screen-rejected. Review MINE-9: stage 1
+// (the templates, one generation, no mutation) does not depend on the seed, so the seeds differ
+// in stage 2 only; the test pins that stage 1 is the same in every seed rather than counting it
+// five times.
 TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
   Fixture f;
   ASSERT_TRUE(f.ok);
+  std::string first_stage1;
+  Json first_stage1_search;
   for (const u64 seed : {1U, 2U, 3U, 4U, 5U}) {
     const auto cfg = f.config("seed" + std::to_string(seed), seed, 1);
     std::ostringstream progress;
@@ -559,8 +602,120 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_EQ(copy->status, "evaluated") << "seed " << seed;
     EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle) << "seed " << seed;
     EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle) << "seed " << seed;
+    EXPECT_TRUE(promotion_of(campaign, "rank(copy)") == nullptr) << "seed " << seed;
+    // Stage 1 in the same order with the same racing in every seed.
+    std::string stage1;
+    for (const TrialRow &row : rows)
+      if (row.stage == "1") stage1 += row.canon_hash + " " + row.dsl + "\n";
+    Json stage1_search = campaign.at("search").at("stage1");
+    stage1_search.erase("seconds");
+    EXPECT_EQ(stage1_search.at("trials").get<usize>(), 55U) << "seed " << seed;
+    if (seed == 1U) {
+      first_stage1 = stage1;
+      first_stage1_search = stage1_search;
+    } else {
+      EXPECT_EQ(stage1, first_stage1) << "seed " << seed;
+      EXPECT_EQ(stage1_search, first_stage1_search) << "seed " << seed;
+    }
     expect_campaign_line(cfg, campaign, out, "seed " + std::to_string(seed));
   }
+}
+
+// Review MINE-9 (T-1 standard): the mined-v1 rule pinned on the 88 templates of all eight fields
+// (stage 1 only, no racing, so every template is read in full; --budget 1000), each pin a case a
+// wrong rule passes:
+//   E-32      rank(swap) is shortlisted and passes the rho check, and its raw IC t / F on the
+//             confirm window clears 2, but its confirm marginal t is undefined (the book spans
+//             every confirm row): a raw-IC confirm would admit it;
+//   sign      rank(neg) is admitted with sign -1; rank(flip) (sign -1 frozen from discover) reads
+//             a confirm t / F of about -3.6 and is rejected: a confirm on |t| would admit it;
+//   N         the hurdle is mined_hurdle(--budget), not that of the 88 trials recorded, and the
+//             shortlist is exactly the evaluated rows with f2 / F at or above it, by f2;
+//   copy      rank(copy) clears the hurdle on f1 and not on f2, so it never reaches the rho step
+//             (where the independent member m2 could not stop it).
+TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  auto cfg = f.config("pins", 1, 1);
+  cfg.role.fields = {"p1", "p2", "p3", "copy", "n1", "swap", "neg", "flip"};
+  cfg.stage2_generations = 0;
+  cfg.race_strides.clear();
+  cfg.max_promotions = 64; // above the 27 rows the replica shortlists: no cap
+  cfg.budget = 1000;
+  std::ostringstream progress;
+  const auto status = st::run_mine(cfg, progress);
+  ASSERT_TRUE(status) << status.error().to_string() << "\n" << progress.str();
+  const fs::path out(cfg.output_directory);
+  const Json campaign = read_json(out / "campaign.json");
+  const auto rows = read_trials(out / "trials.csv");
+  ASSERT_EQ(rows.size(), 88U);
+  ASSERT_EQ(campaign.at("registry").at("n_raw").get<u64>(), 88U);
+  // N: the declared budget's Bonferroni value.
+  const f64 hurdle = campaign.at("hurdle").at("t").get<f64>();
+  EXPECT_EQ(hurdle, st::mined_hurdle(1000));
+  EXPECT_NE(hurdle, st::mined_hurdle(88));
+  // The shortlist: every evaluated row with f2 / F >= the hurdle, f2 descending, hash ascending.
+  std::vector<const TrialRow *> expected;
+  for (const TrialRow &row : rows)
+    if (row.status == "evaluated" && std::isfinite(row.f2) &&
+        st::mined_overlap_corrected(row.f2) >= hurdle)
+      expected.push_back(&row);
+  std::sort(expected.begin(), expected.end(), [](const TrialRow *a, const TrialRow *b) {
+    return a->f2 != b->f2 ? a->f2 > b->f2 : a->canon_hash < b->canon_hash;
+  });
+  const Json &promotions = campaign.at("promotions");
+  ASSERT_EQ(promotions.size(), expected.size());
+  ASSERT_LT(expected.size(), cfg.max_promotions);
+  for (usize k = 0; k < expected.size(); ++k)
+    EXPECT_EQ(promotions[k].at("canon_hash").get<std::string>(), expected[k]->canon_hash) << k;
+  // E-32: the swapped field.
+  const Json *swapped = promotion_of(campaign, "rank(swap)");
+  ASSERT_TRUE(swapped != nullptr);
+  EXPECT_TRUE(swapped->at("rho_pass").get<bool>());
+  EXPECT_TRUE(swapped->at("confirm_read").get<bool>());
+  EXPECT_TRUE(swapped->at("confirm_defined").get<bool>());
+  EXPECT_TRUE(swapped->at("confirm_marginal_t").is_null());
+  EXPECT_GE(st::mined_overlap_corrected(swapped->at("confirm_ic_t").get<f64>()),
+            st::kMinedConfirmT);
+  EXPECT_FALSE(swapped->at("admitted").get<bool>());
+  // Sign: frozen from discover.
+  const Json *negative = promotion_of(campaign, "rank(neg)");
+  ASSERT_TRUE(negative != nullptr);
+  EXPECT_EQ(negative->at("sign").get<int>(), -1);
+  EXPECT_GE(negative->at("confirm_t_corrected").get<f64>(), st::kMinedConfirmT);
+  EXPECT_TRUE(negative->at("admitted").get<bool>());
+  const Json *flipped = promotion_of(campaign, "rank(flip)");
+  ASSERT_TRUE(flipped != nullptr);
+  EXPECT_EQ(flipped->at("sign").get<int>(), -1);
+  EXPECT_TRUE(flipped->at("rho_pass").get<bool>());
+  EXPECT_TRUE(flipped->at("confirm_defined").get<bool>());
+  EXPECT_LE(flipped->at("confirm_t_corrected").get<f64>(), -st::kMinedConfirmT);
+  EXPECT_FALSE(flipped->at("admitted").get<bool>());
+  // The copy: f1 clears the hurdle, f2 does not, so it is not shortlisted.
+  const auto copy = std::find_if(rows.begin(), rows.end(),
+                                 [](const TrialRow &row) { return row.dsl == "rank(copy)"; });
+  ASSERT_NE(copy, rows.end());
+  EXPECT_EQ(copy->status, "evaluated");
+  EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle);
+  EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle);
+  EXPECT_TRUE(promotion_of(campaign, "rank(copy)") == nullptr);
+  // Admitted: only expressions of p1, p2, p3 or neg, and each of them.
+  const Json mined = read_json(out / "mined_members.json");
+  std::array<bool, 4> read_field{};
+  const std::array<std::string, 4> planted{"p1", "p2", "p3", "neg"};
+  for (const Json &member : mined.at("members")) {
+    const auto dsl = member.at("dsl").get<std::string>();
+    bool any = false;
+    for (usize k = 0; k < planted.size(); ++k) {
+      if (dsl.find(planted[k]) == std::string::npos) continue;
+      read_field[k] = true;
+      any = true;
+    }
+    EXPECT_TRUE(any) << dsl;
+    for (const char *field : {"swap", "flip", "copy", "n1"})
+      EXPECT_EQ(dsl.find(field), std::string::npos) << dsl;
+  }
+  EXPECT_TRUE(read_field[0] && read_field[1] && read_field[2] && read_field[3]);
 }
 
 // Same seed twice and at 1 and 4 workers: the same registry chain head, trial log and members.
@@ -707,7 +862,7 @@ TEST(StrategyMineCampaign, RefusesACampaignWithoutTheBook) {
     EXPECT_FALSE(fs::exists(cfg.registry_path)) << manifest;
   };
   refused("no-member.json", {"book"}, {});
-  refused("no-regressor.json", {}, {"m1"});
+  refused("no-regressor.json", {}, {"m2"});
 }
 
 // Research window: a role with a session on 2024-01-02 is refused from its manifest, before any

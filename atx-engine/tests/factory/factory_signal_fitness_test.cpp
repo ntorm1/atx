@@ -586,4 +586,127 @@ TEST(ResearchIcFitnessTest, CandidateSpannedByTheRegressorsIsScreened) {
   EXPECT_FALSE(fitness->bind(ex::SignalFitnessBinding{1, Planted::d, Planted::n, dated}));
 }
 
+// Two fields f and g, both i.i.d. uniform, r(t) = .02 (f + g)(t - 2) + .01 e(t); the regressor is
+// f's centred tied rank over the members.
+struct PlantedPair {
+  static constexpr usize d = 300;
+  static constexpr usize n = 24;
+  Panel panel;
+  std::vector<f64> f;
+  std::vector<f64> g;
+  std::vector<u8> member;
+  std::vector<f64> f_rank;
+};
+
+[[nodiscard]] PlantedPair planted_pair() {
+  constexpr usize d = PlantedPair::d;
+  constexpr usize n = PlantedPair::n;
+  Lcg rng{0xFA17ULL};
+  std::vector<f64> f(d * n);
+  std::vector<f64> g(d * n);
+  for (f64 &v : f) {
+    v = rng.next();
+  }
+  for (f64 &v : g) {
+    v = rng.next();
+  }
+  std::vector<f64> close(d * n, 100.0);
+  for (usize t = 1; t < d; ++t) {
+    for (usize i = 0; i < n; ++i) {
+      const f64 driver = t >= 2 ? f[(t - 2) * n + i] + g[(t - 2) * n + i] : 0.0;
+      close[t * n + i] = close[(t - 1) * n + i] * (1.0 + 0.02 * driver + 0.01 * rng.next());
+    }
+  }
+  auto panel = Panel::create(d, n, {"close", "f", "g"}, {close, f, g}, {});
+  EXPECT_TRUE(panel.has_value());
+  std::vector<u8> member(d * n, 1);
+  std::vector<f64> ranks(d * n, kNaN);
+  std::vector<std::pair<f64, usize>> sorted;
+  for (usize t = 0; t < d; ++t) {
+    const auto status = atx::engine::combine::centred_tied_ranks(
+        std::span<const f64>{f}.subspan(t * n, n), std::span<const u8>{member}.subspan(t * n, n),
+        std::span<f64>{ranks}.subspan(t * n, n), sorted);
+    EXPECT_TRUE(status.has_value());
+  }
+  return PlantedPair{std::move(*panel), std::move(f), std::move(g), std::move(member),
+                     std::move(ranks)};
+}
+
+// Review MINE-9: f2 is the discover sign times the marginal HAC t of the candidate's residual on
+// the regressors. Against the regressor rank(f), the half-spanned f + g (sign +1; a numpy replica
+// reads raw IC t 17.7, marginal t 7.8) and the negative-IC -2 f + g (sign -1, marginal t +8.1)
+// score exactly the direct combine::marginal_rank_ic_day + summarize_rank_ic computation on the
+// IC recipe's labels: neither the raw IC t nor |marginal t| reproduces both.
+TEST(ResearchIcFitnessTest, PartlySpannedAndNegativeCandidatesScoreTheDirectMarginalT) {
+  namespace cb = atx::engine::combine;
+  constexpr usize d = PlantedPair::d;
+  constexpr usize n = PlantedPair::n;
+  const PlantedPair p = planted_pair();
+  const Library lib{};
+  const ex::ResearchIcWindow window{30, d, 10, 100, 1ULL << 26};
+  const std::vector<std::span<const f64>> regressors{p.f_rank};
+  auto fitness = ex::ResearchIcFitness::prepare(
+      ex::ResearchIcFitnessInputs{&p.panel, window, p.member, {}, regressors});
+  ASSERT_TRUE(fitness.has_value()) << fitness.error().to_string();
+  ASSERT_TRUE(fitness->bind(ex::SignalFitnessBinding{1, d, n, {}}));
+  const auto config = ex::research_window_ic_config(window.begin, window.end, window.min_names,
+                                                    window.min_dates, window.max_cache_bytes);
+  auto cache = ex::prepare_research_ic(p.panel, config, {3, true, 1}, p.member);
+  ASSERT_TRUE(cache.has_value()) << cache.error().to_string();
+  const usize rows = cache->label_rows(ex::kResearchIcHorizon);
+  const std::span<const f64> labels = cache->labels(ex::kResearchIcHorizon);
+  ASSERT_EQ(rows, d - 30U - 22U);
+  // The K6 kernel row by row on the label rows, then the Bartlett lag-21 summary.
+  const auto direct_t = [&](const std::vector<f64> &signal) {
+    std::vector<f64> rank_row(n, kNaN);
+    std::vector<f64> daily(rows, kNaN);
+    std::vector<f64> compact;
+    std::vector<std::pair<f64, usize>> sorted;
+    cb::MarginalRankIcScratch scratch;
+    for (usize row = 0; row < rows; ++row) {
+      const usize at = (cache->first_date() + row) * n;
+      EXPECT_TRUE(cb::centred_tied_ranks(std::span<const f64>{signal}.subspan(at, n),
+                                         std::span<const u8>{p.member}.subspan(at, n), rank_row,
+                                         sorted)
+                      .has_value());
+      const std::array<std::span<const f64>, 1> regressor_rows{
+          std::span<const f64>{p.f_rank}.subspan(at, n)};
+      const auto day = cb::marginal_rank_ic_day(rank_row, regressor_rows,
+                                                labels.subspan(row * n, n), window.min_names,
+                                                scratch);
+      EXPECT_TRUE(day.has_value());
+      if (day.has_value()) {
+        daily[row] = day->marginal_ic;
+      }
+    }
+    return cb::summarize_rank_ic(daily, ex::kResearchIcHacLag, compact).hac_t;
+  };
+  struct Case {
+    f64 f_weight;
+    f64 g_weight;
+    int sign;
+    u64 hash;
+  };
+  for (const Case c : {Case{1.0, 1.0, 1, 21}, Case{-2.0, 1.0, -1, 22}}) {
+    std::vector<f64> signal(d * n);
+    for (usize k = 0; k < signal.size(); ++k) {
+      signal[k] = c.f_weight * p.f[k] + c.g_weight * p.g[k];
+    }
+    // The genome only names the trial; the fitness scores `signal`.
+    auto scored = fitness->score(genome_of("f", lib, c.hash), signal, ex::SignalLevel{}, 0);
+    ASSERT_TRUE(scored.has_value()) << scored.error().to_string();
+    EXPECT_FALSE(scored->rejected) << c.hash;
+    const auto trials = fitness->take_trials();
+    ASSERT_EQ(trials.size(), 1U);
+    const ex::ResearchIcRead &read = trials.front().read;
+    EXPECT_EQ(read.sign, c.sign) << c.hash;
+    EXPECT_EQ(read.spanned_dates, 0U) << c.hash;
+    const f64 direct = direct_t(signal);
+    EXPECT_GT(direct, 3.0) << c.hash; // g's part survives the projection on rank(f)
+    EXPECT_NEAR(read.marginal_t, direct, 1e-12) << c.hash;
+    EXPECT_NEAR(scored->objectives[1], static_cast<f64>(c.sign) * direct, 1e-12) << c.hash;
+    EXPECT_NEAR(ex::research_ic_f2(read), static_cast<f64>(c.sign) * direct, 1e-12) << c.hash;
+  }
+}
+
 } // namespace atxtest_factory_signal_fitness
