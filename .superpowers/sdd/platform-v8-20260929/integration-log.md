@@ -1506,6 +1506,10 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R7 | `train-2020-2023-lo1-run` | `bfd6bc91` | completed / 0 | 4.0 | 232 | `983717743db5899238b8b63cc6d11c230925d602a570124ee36dfdfe3b835c65` | `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53` |
 | R8 | `train-2020-2023-lo3-run` | `2d3e14ef` | completed / 0 | 4.9 | 304 | `9d3cafcd22fcd586c9ae4a517cfcf8fc02e230bdf542a6a9abdfe1b810767b11` | `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4` |
 | R9 lo1 | `w0-2-admit-probe-lo1-run` | `9322cdd1` | process-error / 1 (by design) | 0.3 | 2 | `8fb0dfc5d1e883ddd7afa324ffbe6ef45ee11a8a692fe76e0d05b04c42ff2fe4` | (none; metadata probe) |
+| R9 lo3 | `w0-2-admit-probe-lo3-run` | `25b744af` | process-error / 1 (by design) | 0.3 | 3 | `aa9d85d82db080b7c669980940d4afd879707809aff8b1a9a87018785546e8c6` | (none; metadata probe) |
+
+Every measured peak and wall time also fits the runbook's own narrower runner limits (largest: R1 766 MiB of 1,100;
+R5 b21-41 56.9 s of 180).
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1553,3 +1557,51 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   exceeds configured memory budget before payload load`. **1,989,405,564 B = 1,897.2 MiB**, equal to the runbook's
   exact formula at n = 5,922 (slots 8, capacity 6, workers 4; the formula reproduces the 3-year 1,553,063,994 B).
   Below the OD-2 cap 2,684,354,560 B (2,560 MiB) by 663.1 MiB; above 1,536 MiB, so the IC phases need OD-2.
+- **R9 lo3 PASS.** Same stderr line, `required_bytes=1989405564 max_compiled_slots=8`: lo1 and lo3 share axes
+  (1,405 x 5,922), so one number serves both, as the runbook said. **Q2 answered:** 1,897.2 MiB at n = 5,922, fits
+  2,560 MiB; open question 8 answered by the exe itself (`max_compiled_slots=8`); open question 7 answered (n = 5,922).
+  Expected cold-pass RSS at the recorded 82% ratio: ~1.56 GB.
+
+### Pins for part 2 (R10 onward)
+
+| var | artifact | manifest SHA-256 |
+|---|---|---|
+| PROJ | `build-equity/recent-projection-v2` | `931b54ef8412b9f61ae4b9c67d663a265604209bc2639c81046669b591fc2ea5` |
+| BASE1 | `build-equity/train-2020-2023-base-v1` | `6688677096b6a5692f0040ea9ed54df9da938566a062d9ab1ffd873d53636678` |
+| BASE | `build-equity/train-2020-2023-base` | `de8d91db7e8788dc58ac1fc6aa1bedc71dc555e63039a378c2deb469f8c49029` |
+| R4 | `build-equity/identity-bridge-r4-v2` | `f598c04c51e0bea33bd730a3a2beb3a9f76abe0b9630c75f21c70ad0ec3643de` |
+| FEV | `build-equity/fundamental-events-v3` | `304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b` |
+| GRP | `build-equity/train-2020-2023-base-grp` | `d1b2eaea9087f3eae4953bf709dd63623995f518993e8167ef7b387c7e37957e` |
+| LO1 | `build-equity/train-2020-2023-lo1` | `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53` |
+| LO3 | `build-equity/train-2020-2023-lo3` | `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4` |
+
+### Disk
+
+C: free 40 G before R1, 46 G (47,916,108 KiB) after R9; the rise is other host activity. The eight new artifact
+directories hold 1,423 MiB (run dirs excluded). RAM available after R9: 3,479 MiB.
+
+### Fixes
+
+None. No source file changed; the only commits are this log (one per run, `git add -f`).
+
+### Hidden-data record
+
+- **Inputs opened by the tools:** the vendor file (reader-side seal), the r4 export (`ac9bcda7`), CompanyFacts and FSDS
+  staging (pins `50e018e1`, `2cad6134`; SUB quarters to 2023q4 only), the v2-pit bridge, fundamentals and delisting
+  stages (pins above), and pool-2 artifacts. Whole-file pin hashing of multi-year stages is the runbook's design (open
+  question 25).
+- **Logs:** a scan of all 16 run dirs' stdout and stderr for dates in 2024 or later found 0 hits.
+- **What I read:** receipt fields, manifest keys named in the runbook checks (window, seal, sessions, counts, universe
+  kept counts, fields cross-check), the R3 scan table (2018-06-01..2023-12-29) and one caveat string (the CompanyFacts
+  snapshot label, 2026-09-20, a vintage name). I made no comparison of the r4-v2 CIK set with v1's (v1's extra CIKs
+  are 2024-only evidence) and read no sealed-row counter.
+- **Nothing dated 2024-01-01 or later was opened by me. No disclosure.**
+
+### Open items
+
+- Part 2 (R10-R14) not run, per the dispatch. Before R10/R11: re-hash the live stage manifests, in particular
+  regsho_threshold (blocker 1; open question 1, pin decision still with root).
+- R4's optional `--check` diagnostic was skipped (live atx-db warehouse; open question 27).
+- R5 event batches ran ~2.2x slower than the old receipts (203 s total against ~93 s); still far inside every cap.
+- Carried: sealed-row counter key names (open question 24); the validation-window artifacts and
+  `recent-projection-v1` still hold 2024 data (open question 33, owner).
