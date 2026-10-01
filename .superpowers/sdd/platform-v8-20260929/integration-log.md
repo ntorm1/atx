@@ -1497,6 +1497,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R3 repair | `train-2020-2023-base-run` | `d8e67483` | completed / 0 | 3.6 | 389 | `403522ad5f1f21fe9899038ca70ba7d53a66125e7c293eb59e3fc61ad8f96ac7` | `de8d91db7e8788dc58ac1fc6aa1bedc71dc555e63039a378c2deb469f8c49029` |
 | R4 | `identity-bridge-r4-v2-run` | `4c2fcc74` | completed / 0 | 2.8 | 142 | `8fe0b16cf770aaf5f3c2c86f6a748216797d110f9ed8e7a679c3ac9ef454e2d4` | `f598c04c51e0bea33bd730a3a2beb3a9f76abe0b9630c75f21c70ad0ec3643de` |
 | R5 prep | `fundamental-events-v3-run-prep` | `58a10023` | completed / 0 | 11.9 | 455 | `b0629775396545030c3d2fbfc650243dce7244f3a3d0684fdbff3fba4d821aff` | (stage; manifest at fin) |
+| R5 b0-20 | `fundamental-events-v3-run-b0-20` | `6430fdda` | completed / 0 | 47.2 | 620 | `e08a9acd430888a57963db38fe2c5cad6a2d155aa482293b069f3180f782801d` | (stage; batches 0-20 computed) |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
