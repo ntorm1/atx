@@ -32,13 +32,49 @@ WEIGHTS = [0.2, 0.15, 0.2, 0.2, 0.25]           # a1, a2 (theme a); b1, b2 (them
 SIGNS = [1, -1, 1, 1, 1]
 POSITIONS = [0, 0, 1, 1, 2]                     # registered order a, b, c
 # The rule's exact blend on the fixture (rational arithmetic; date 2: theme b equals theme a, so it adds nothing).
+# Theme b's composite ties names 2 / 4 and 5 / 6 on dates 0 and 1 (b2's ranks tie them): Ruling PM4-12's tie step
+# applies there (the registered text without it gave -337/840, -27/280, 9/56, 1/10, 17/70, 1/60, -13/168, 23/420 and
+# -53/140, 9/70, 1/140, -1/140, 11/60, -97/420, 17/210, 13/60); date 2 has no tie.
 EXPECTED_BLEND = [
-    [Fraction(-337, 840), Fraction(-27, 280), Fraction(9, 56), Fraction(1, 10), Fraction(17, 70), Fraction(1, 60),
-     Fraction(-13, 168), Fraction(23, 420)],
-    [Fraction(-53, 140), Fraction(9, 70), Fraction(1, 140), Fraction(-1, 140), Fraction(11, 60), Fraction(-97, 420),
-     Fraction(17, 210), Fraction(13, 60)],
+    [Fraction(-11, 24), Fraction(-27, 280), Fraction(53, 280), Fraction(1, 10), Fraction(3, 14), Fraction(43, 420),
+     Fraction(-89, 840), Fraction(23, 420)],
+    [Fraction(-53, 140), Fraction(9, 70), Fraction(-11, 420), Fraction(-1, 140), Fraction(13, 60), Fraction(-37, 140),
+     Fraction(4, 35), Fraction(13, 60)],
     [Fraction(1, 15), Fraction(3, 40), Fraction(-7, 60), Fraction(-1, 15), Fraction(-31, 120), Fraction(1, 12),
      Fraction(13, 60), None]]
+# Ruling PM4-12 kernel fixture (strategy_ic_theme_resid_test.cpp TiedCompositeStaysTiedAfterResidualisation): two
+# themes, two dates, six names, W = 1/2 each; theme 1 is a sparse flag on date 0 and three levels on date 1.
+TIE_NAMES = 6
+TIE_PLANES = [[12, 10, 19, 18, 1, 14, 7, 1, 15, 2, 19, 11], [0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 0, 1]]
+TIE_EXPECTED = [Fraction(-3, 20), Fraction(-1, 4), Fraction(3, 20), Fraction(7, 20), Fraction(-1, 20), Fraction(-1, 20),
+                Fraction(-1, 4), Fraction(-1, 4), Fraction(7, 20), Fraction(-3, 20), Fraction(1, 20), Fraction(1, 4)]
+TIE_SPREAD = [Fraction(-1, 5), Fraction(-2, 5), Fraction(3, 10), Fraction(2, 5), Fraction(-1, 10), Fraction(0),
+              Fraction(-3, 10), Fraction(-3, 10), Fraction(2, 5), Fraction(0), Fraction(1, 10), Fraction(1, 10)]
+
+
+def registered_without_tie_step(planes, mass, names: int) -> np.ndarray:
+    """The registered text before Ruling PM4-12 (no tie step), on the reference's own functions: the contrast for the
+    tie fixture and the bit-for-bit reference for a composite without ties."""
+    planes = np.asarray(planes, dtype=np.float64)
+    out = np.zeros(planes.shape[1])
+    for d in range(planes.shape[1] // names):
+        total = planes[:, d * names:(d + 1) * names]
+        z = cres.standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total))
+        row = out[d * names:(d + 1) * names]
+        for t in range(len(planes)):
+            names_t = np.flatnonzero(~np.isnan(z[t]))
+            if len(names_t) < 2:
+                continue
+            if t == 0:
+                row[names_t] += mass[0] * z[0, names_t]
+                continue
+            e, spanned = cres.residual(z[t, names_t], np.nan_to_num(z[:t][:, names_t], nan=0.0).T)
+            if spanned:
+                continue
+            full, keep = np.zeros(names), np.zeros(names, dtype=bool)
+            full[names_t], keep[names_t] = e, True
+            row[names_t] += mass[t] * cres.centred_tied_ranks(full, keep)[names_t]
+    return out
 
 
 def fixture():
@@ -156,9 +192,10 @@ class RunnerReference(unittest.TestCase):
         a_only = std_blend(member, signals, [0.2, 0.15, 0, 0, 0], SIGNS, POSITIONS, 1)
         b_equal_a = cres.blend(member, signals, [0.2, 0.15, 0.2, 0.2, 0], SIGNS, POSITIONS, 2)
         np.testing.assert_allclose(b_equal_a[2, :7], a_only[2, :7], rtol=0, atol=1e-15)
-        # the order is the rule: b first changes the blend
+        # the order is the rule: b first changes the blend (by exactly 1/40 at most, on date 2, with PM4-12's tie step;
+        # the three-theme kernel case below and ThemeResidRunner's 3-cycle are the stronger order checks)
         swapped = cres.blend(member, signals, WEIGHTS, SIGNS, [1, 1, 0, 0, 2], 3)
-        self.assertGreater(np.nanmax(np.abs(out - swapped)), 0.05)
+        self.assertGreater(np.nanmax(np.abs(out - swapped)), 0.02)
 
     def test_first_theme_is_its_standardised_composite(self):
         member, signals = fixture()
@@ -176,6 +213,54 @@ class RunnerReference(unittest.TestCase):
         np.testing.assert_allclose(e, closed, rtol=0, atol=1e-14)
         self.assertLess(abs(e.sum()), 1e-12)
         self.assertLess(abs(e @ x), 1e-12)
+
+    def test_tied_composite_stays_tied_after_residualisation(self):
+        """Ruling PM4-12: names tied in a theme's own composite get one value of it, the re-ranked mean of their
+        residuals (exact fractions; the C++ kernel test pins the same); on date 1 the block means reorder the levels;
+        the registered text without the tie step spreads each block (TIE_SPREAD)."""
+        got = cres.kernel(TIE_PLANES, [0.5, 0.5], TIE_NAMES)
+        np.testing.assert_allclose(got, [float(x) for x in TIE_EXPECTED], rtol=0, atol=1e-15)
+        spread = registered_without_tie_step(TIE_PLANES, [0.5, 0.5], TIE_NAMES)
+        np.testing.assert_allclose(spread, [float(x) for x in TIE_SPREAD], rtol=0, atol=1e-15)
+        self.assertGreater(np.max(np.abs(got - spread)), 0.05)
+        for d in range(2):
+            cells = slice(d * TIE_NAMES, (d + 1) * TIE_NAMES)
+            first = cres.centred_tied_ranks(np.array(TIE_PLANES[0][cells], dtype=float), np.ones(TIE_NAMES, bool))
+            second = got[cells] - 0.5 * first                                   # theme 1's add per name
+            flag = np.array(TIE_PLANES[1][cells])
+            for level in set(flag.tolist()):
+                block = second[flag == level]
+                self.assertLess(np.ptp(block), 1e-15, (d, level))           # one value per tie block
+        levels = {lv: float(second[np.array(TIE_PLANES[1][TIE_NAMES:]) == lv][0]) for lv in (0, 1, 2)}
+        self.assertEqual(sorted(levels, key=levels.get), [0, 2, 1])            # residualisation moved whole blocks
+
+    def test_tie_block_means_sum_in_ascending_name_order(self):
+        """The block mean's summation order (PM4-12 as coded on both sides): from the block's first name, ascending; a
+        block of one name is untouched (its bits kept)."""
+        e = np.array([1e16, 0.3, 1.0, -1e16])
+        z = np.array([0.5, -0.5, 0.5, 0.5])
+        got = cres.tie_block_means(e, z)
+        self.assertEqual(got[1], 0.3)                                          # a block of one: untouched
+        self.assertEqual(list(got[[0, 2, 3]]), [0.0, 0.0, 0.0])               # ((1e16 + 1) - 1e16) / 3 in this order
+        self.assertNotEqual((1e16 + -1e16 + 1.0) / 3, 0.0)                    # another order gives 1/3
+        np.testing.assert_array_equal(cres.tie_block_means(e, np.arange(4.0)), e)
+
+    def test_no_tie_composite_is_the_registered_rule_bit_for_bit(self):
+        """Ruling PM4-12: a composite without ties gives the registered text bit for bit (strategy_ic_theme_resid_test.cpp
+        NoTieCompositeIsTheRegisteredRuleBitForBit, same planes)."""
+        names = 7
+        planes = np.zeros((3, 2 * names))
+        for d in range(2):
+            for i in range(names):
+                planes[0, d * names + i] = float((3 * i + 2 * d) % 7) + 0.5
+                planes[1, d * names + i] = float((5 * i + d) % 7) * 0.25
+                planes[2, d * names + i] = float((2 * i + 3 * d + 1) % 7) - 3.0
+        planes[1, names + 2] = NAN
+        planes[2, 5] = NAN
+        got = cres.kernel(planes, [0.3, 0.45, 0.25], names)
+        want = registered_without_tie_step(planes, [0.3, 0.45, 0.25], names)
+        self.assertEqual(got.view(np.uint64).tolist(), want.view(np.uint64).tolist())
+        self.assertGreater(np.max(np.abs(got)), 0.05)
 
     def test_spanned_and_dependent_regressors(self):
         x = np.array([0.5, -0.25, 1 / 6, -1 / 3, 0.125, 0.0])

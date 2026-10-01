@@ -39,8 +39,33 @@ struct Scratch {
   std::vector<usize> support;
 };
 
+// Ruling PM4-12: names tied in the theme's own standardised composite z_t stay tied. A tie block is
+// a run of exactly equal z_t over the support (sorted by (z_t, support position), so a block lists
+// its names in ascending name order); inside a block of two or more names the residual becomes the
+// block mean: the sum from the block's first name, adding the others in ascending name order, divided
+// by the block size. A block of one name is left untouched, so a composite without ties keeps the
+// registered residual bit for bit. `row` is scratch (reserved capacity: no allocation).
+void mean_over_tie_blocks(const std::vector<f64>& own, usize offset, Scratch& s, std::vector<Ranked>& row) {
+  const usize n = s.support.size();
+  row.clear();
+  for (usize k = 0; k < n; ++k) row.emplace_back(own[offset + s.support[k]], k);
+  std::sort(row.begin(), row.end());
+  for (usize b = 0; b < n;) {
+    usize end = b + 1U;
+    while (end < n && row[end].first == row[b].first) ++end;
+    if (end - b > 1U) {
+      f64 sum = s.dependent[row[b].second];
+      for (usize k = b + 1U; k < end; ++k) sum += s.dependent[row[k].second];
+      const f64 mean = sum / static_cast<f64>(end - b);
+      for (usize k = b; k < end; ++k) s.dependent[row[k].second] = mean;
+    }
+    b = end;
+  }
+}
+
 // Theme t on row `offset` (planes already standardised on that row): theme 0 adds W_0 z_0 with
-// ew-theme-std-v1's expression; theme t > 0 adds W_t times the re-rank of its residual.
+// ew-theme-std-v1's expression; theme t > 0 adds W_t times the re-rank of its residual, averaged
+// inside each tie block of z_t first (Ruling PM4-12).
 atx::core::Status add_theme(std::span<std::vector<f64>> planes, std::span<const f64> mass, usize t, usize offset,
                             usize names, std::span<f64> out, std::vector<Ranked>& row, Scratch& s) {
   const auto& own = planes[t];
@@ -66,6 +91,7 @@ atx::core::Status add_theme(std::span<std::vector<f64>> planes, std::span<const 
   }
   ATX_TRY(const auto fit, cb::residualise_in_place(s.dependent, s.columns));
   if (fit.spanned) return atx::core::Ok(); // theme t is in the span of the earlier themes today
+  mean_over_tie_blocks(own, offset, s, row);
   row.clear();
   for (usize k = 0; k < n; ++k) row.emplace_back(s.dependent[k], s.support[k]);
   cb::for_each_centered_rank(row, [&](usize i, f64 r) { out[offset + i] += mass[t] * r; });

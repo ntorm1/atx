@@ -17,7 +17,9 @@ namespace atx::impl::strategy {
 // standardised composite z (centred tied rank over its present names; 0 for a lone present name),
 // then theme 0 adds W_0 z_0 and theme t > 0 adds W_t times the centred tied re-rank of the
 // least-squares residual of z_t on an intercept and z_0..z_{t-1} (absent = 0) over the names where
-// t is present (combine/group_residualise.hpp; a residual within its span tolerance adds nothing).
+// t is present (combine/group_residualise.hpp; a residual within its span tolerance adds nothing),
+// the residual first replaced by its mean inside each tie block of z_t (exact equality; Ruling
+// PM4-12: names t does not distinguish stay tied; without ties the residual is unchanged).
 // A theme with fewer than two present names on a date adds nothing, as under ew-theme-std-v1.
 // Theme 0 adds exactly what ew-theme-std-v1 adds for it. `out` (dates x names) is accumulated;
 // `row` is ranking scratch (its capacity is kept). The planes are consumed. Refuses

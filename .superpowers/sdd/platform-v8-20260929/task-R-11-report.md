@@ -152,3 +152,24 @@ Results on this branch: `atx-impl/tools` 475 passed, 2 skipped (10 new); `script
   (about 0.5 MB).
 - The registered order is the v4 list order. It was not chosen for the hypothesis: value keeps its full composite and
   later themes keep only what the earlier ones do not span.
+
+## 7. Amendment (Rulings PM4-11, PM4-12, declared before any read), 2026-10-01
+
+Fix round FIX-4a (findings R6B-O-2, R6B-O-3). Both rulings were declared by the project manager before any read; no
+statistic of 2020-2023 (or later) was read for them or for this text. Nothing was ever run or written under
+`theme-resid-v1`, so the id stays (E-30 precedent: silent points are fixed blind before the cell). Section 1 above
+stands except where this amendment replaces it.
+
+| item | amended value |
+|---|---|
+| theme order source (replaces the first row of section 1; Ruling PM4-11) | the registry order of `fit_composition_weights.PRIOR_THEMES`, with any theme registered after the original ten appended in the order it was registered: `filing_events` (v8.1, E7; `exch_switch` joins it, E-42) comes last, after `ownership_flow`. Derived from `PRIOR_THEMES` by `composition_resid.registered_order`, which refuses a list whose first ten themes are not exactly `FROZEN_PREFIX` = value, profitability_quality, investment_issuance, earnings_momentum, price_momentum, low_risk, short_interest, reversal_seasonality, options_implied, ownership_flow (in that order) or that repeats a theme. Restricted to the themes with a weighted member, as before. Never derived from a data statistic. |
+| re-standardisation with ties (adds to the row "re-standardisation"; Ruling PM4-12) | names tied in theme t's own standardised composite z_t stay tied. A tie block is a set of names of t's support with exactly equal z_t (f64 equality; z_t is a monotone function of the composite sums, so this is exact equality of the sums). Inside each block of two or more names the residual e_t is replaced by the block's arithmetic mean, summed in f64 from the block's first name and then the others in ascending name order, divided by the block size. A block of one name is left untouched. The block-mean residuals are then re-ranked (centred tied rank over the same names). |
+| unchanged by PM4-12 | the regression (regressors are the earlier composites z_j, absent = 0), the span tolerance and the spanned test (on the raw residual, before the tie step), the first theme (z_1 bit for bit), the blend. A composite without ties gives the result of section 1 bit for bit. |
+
+Implementation: C++ `strategy_ic_theme_resid.cpp` `mean_over_tie_blocks` (in `add_theme`, after the residual, before the
+re-rank); Python reference `composition_resid.tie_block_means` (in `add_session`), the same expression in the same
+summation order. Fixtures: the existing three-theme fixture has a tied composite (theme b ties names 2 / 4 and 5 / 6 on
+dates 0 and 1), so its dates 0 and 1 changed and date 2 kept its values; new kernel fixtures pin a sparse flag theme
+and a three-level theme (`ThemeResid.TiedCompositeStaysTiedAfterResidualisation`, Python
+`test_tied_composite_stays_tied_after_residualisation`) and the no-tie bit identity
+(`ThemeResid.NoTieCompositeIsTheRegisteredRuleBitForBit`, Python `test_no_tie_composite_is_the_registered_rule_bit_for_bit`).
