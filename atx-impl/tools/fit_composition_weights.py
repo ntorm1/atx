@@ -179,6 +179,7 @@ import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
 import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
 import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pure functions in this directory)
+import composition_ic_shrink  # noqa: E402  (v8 R-10: composition ic-shrink-v1, pure functions in this directory)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -208,6 +209,8 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
                                     COMPOSITIONS + (composition_rules.STD_RULE_ID,))
 PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,),  # v8 R-3, Ruling E-27
                                     COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
+PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.RULE_ID,),  # v8 R-10, Ruling E-38
+                                    COMPOSITIONS + (composition_ic_shrink.RULE_ID,))
 AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
@@ -2159,6 +2162,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                              [tiers[k] for k in active], error=FitError,
                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
+    elif args.composition == composition_ic_shrink.RULE_ID:  # v8 R-10: the admission rows' train_mean are the ICs
+        std = composition_ic_shrink.ic_shrink([ids[k] for k in active], [themes[k] for k in active],
+                                              [rows[k]["train_mean"] for k in active], error=FitError)
+        weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
     else:
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
         composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
@@ -2227,6 +2234,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                                      priors["recipe_sha256"])
     if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
         composition_rules.attach_std(document, std)
+    if args.composition == composition_ic_shrink.RULE_ID:  # schema v2, its theme_standardise, provenance.ic_shrink
+        composition_ic_shrink.attach(document, std)
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)

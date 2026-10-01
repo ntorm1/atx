@@ -2011,7 +2011,8 @@ class AimGainRules(unittest.TestCase):
         self.assertEqual((fcw.AIM_THETA, fcw.AIM_GAIN_MIN, fcw.AIM_MAX_LAG, fcw.AIM_MIN_NAMES), (0.05, 0.05, 126, 50))
         self.assertEqual(fcw.AIM_LAGS, list(range(22)) + [28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98, 105, 112, 119, 126])
         self.assertEqual(fcw.PRIOR_COMPOSITIONS, ("ew-theme-v1", "ew-theme-aim-v1", "ew-theme-v6",  # + v6 V6-W
-                                                  "ew-theme-std-v1", "ew-theme-std-aim-v1"))  # + v8 R-1, R-3
+                                                  "ew-theme-std-v1", "ew-theme-std-aim-v1",  # + v8 R-1, R-3
+                                                  "ic-shrink-v1"))  # + v8 R-10
         self.assertIn("ew-theme-aim-v1", fcw.COMPOSITIONS)
 
     def test_aim_gain_ar1_matches_closed_form(self):
