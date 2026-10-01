@@ -593,9 +593,17 @@ class FitterEndToEnd(unittest.TestCase):
             self.resid_fit("refused-no-flag", parent, theme_resid=None)
         self.assertFalse((self.root / "refused-half").exists() or (self.root / "refused-no-flag").exists())
 
+    def registry(self, name: str, themes) -> Path:
+        """An alpha registry (task A-1 schema) whose themes table lists ``themes`` in order."""
+        path = self.root / name
+        path.write_text(json.dumps({"schema": fcw.REGISTRY_SCHEMA, "alphas": [], "fields": {},
+                                    "themes": {t: f"{t} text" for t in themes}}), encoding="utf-8")
+        return path
+
     def test_the_fitter_derives_the_order_from_prior_themes(self):
         """Ruling PM4-11 (finding R6B-O-2): the fitter passes its PRIOR_THEMES, so a theme registered later (E7's
-        filing_events) is placed last once it is registered, and a weighted member of it is refused before."""
+        filing_events, in the registry and in V7_APPENDED_THEMES: finding R6C-4) is placed last once it is registered,
+        and a weighted member of it is refused before."""
         later = fcw.PRIOR_THEMES + ("filing_events",)
         doc = json.loads(json.dumps(self.std))
         weighted = [i for i, w in doc["weights"].items() if w > 0]
@@ -604,12 +612,40 @@ class FitterEndToEnd(unittest.TestCase):
         with self.assertRaises(cres.ResidError):
             cres.attach(doc, fcw.PRIOR_THEMES)
         with unittest.mock.patch.object(fcw, "PRIOR_THEMES", later), \
+                unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry("later.json", later)), \
                 unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
             code, _ = fcw.fit(self.fx.args(self.root / "later-resid", theme_resid=cres.RULE_ID, **STD_ARGS))
         self.assertEqual(code, fcw.EXIT_OK)
         resid = json.loads((self.root / "later-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())["provenance"]["resid"]
         self.assertEqual(resid["registered_order"], list(later))
         self.assertEqual(resid["order"], ["value", "reversal_seasonality"])
+
+    def test_the_registry_themes_must_be_prior_themes_under_theme_resid(self):
+        """Finding R6C-4 (Ruling PM5-12): under --theme-resid the registry's theme tuple must equal PRIOR_THEMES, the
+        registered order, before anything is computed (here before the parent flags are even read): a theme registered
+        without extending V7_APPENDED_THEMES (E7's filing_events), PRIOR_THEMES extended without the registry, or the
+        same themes in another order are refused naming both tuples, with no output. Flag absent: not checked."""
+        later = fcw.PRIOR_THEMES + ("filing_events",)
+        reordered = fcw.PRIOR_THEMES[1:] + fcw.PRIOR_THEMES[:1]
+        bogus_parent = {"theme_resid_parent": str(self.root / "no-parent.json"), "theme_resid_parent_sha256": "0" * 64}
+        for name, registered, constant in (("registered-only", later, fcw.PRIOR_THEMES),
+                                           ("constant-only", fcw.PRIOR_THEMES, later),
+                                           ("reordered", reordered, fcw.PRIOR_THEMES)):
+            with self.subTest(name), unittest.mock.patch.object(fcw, "PRIOR_THEMES", constant), \
+                    unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry(f"{name}.json", registered)), \
+                    unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+                with self.assertRaises(fcw.FitError) as caught:
+                    fcw.fit(self.fx.args(self.root / f"order-{name}", theme_resid=cres.RULE_ID, **bogus_parent,
+                                         **STD_ARGS))
+                msg = str(caught.exception)
+                self.assertIn(f"the admissible themes (registry {name}.json: {', '.join(registered)}) are not "
+                              f"PRIOR_THEMES", msg)
+                self.assertIn(f"(Ruling PM4-11: {', '.join(constant)})", msg)
+                self.assertFalse((self.root / f"order-{name}").exists())
+        with unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry("plain.json", later)), \
+                unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+            code, _ = fcw.fit(self.fx.args(self.root / "order-plain", **STD_ARGS))   # no --theme-resid: no check
+        self.assertEqual(code, fcw.EXIT_OK)
 
 
 if __name__ == "__main__":
