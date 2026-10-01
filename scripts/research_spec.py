@@ -24,8 +24,10 @@ the parent's own identity checks against its parent (sections compare, ref, stat
 IDENTITY_INPUTS); then unset, set; then DERIVED inputs from the parent's outputs (the paired reference of every R cell
 is its parent, plan section 9: reference_cell = its NAV cell, reference_admission = its fit admission and, when the
 resolved spec has a marginal section, reference_combined = its first weighted pass's combined signal and
-reference_weights = its fit weights, the pool's composition weights); then change.inputs (over the derived ones); then
-flags. Name and description are the template's. nav.output must differ from the parent's (a cell is a new NAV dir).
+reference_weights = its fit weights, the pool's composition weights; and when the template's own fit flags add
+RESID_FLAG (v8 R-11, finding R6B-O-5), reference_resid_parent = its fit weights, which the fit step passes as
+--theme-resid-parent so the re-fit is checked against them -- derived, so a child of that cell never inherits it);
+then change.inputs (over the derived ones); then flags. Name and description are the template's. nav.output must differ from the parent's (a cell is a new NAV dir).
 Every other output the template keeps is the parent's and resumes as done (research_cycle never overwrites an
 output): a template renames exactly the outputs downstream of its change (a NAV-only change reuses the parent's u, fit,
 card and w passes; a composition change renames fit, card, w, nav and monitor; a library change renames them all).
@@ -51,7 +53,8 @@ CHANGE_KEYS = ("unset", "set", "inputs", "flags")
 IDENTITY_SECTIONS = ("compare", "ref", "static_check")       # the parent's identity checks against its own parent
 IDENTITY_INPUTS = ("baseline_library", "baseline_fields", "reference_daily", "reference_orientations",
                    "reference_daily_ic")
-DERIVED = ("reference_cell", "reference_admission", "reference_combined", "reference_weights")
+DERIVED = ("reference_cell", "reference_admission", "reference_combined", "reference_weights", "reference_resid_parent")
+RESID_FLAG = "--theme-resid"          # fit_composition_weights.py (composition_resid.add_argument): v8 R-11
 
 
 class TemplateError(ValueError):
@@ -89,8 +92,9 @@ def placed(spec: dict, name: str) -> str:
     return f"{root.rstrip('/')}/{name}" if root and not Path(name).is_absolute() else name
 
 
-def parent_references(parent: dict, marginal: bool) -> dict:
-    """The DERIVED inputs of a child: its paired reference and pool are the parent's outputs."""
+def parent_references(parent: dict, marginal: bool, resid: bool = False) -> dict:
+    """The DERIVED inputs of a child: its paired reference and pool are the parent's outputs; ``resid`` (the template
+    adds RESID_FLAG to the fit): the parent's fit weights, against which the fit checks its re-fit."""
     if "nav" not in parent or "fit" not in parent or "w_output" not in parent.get("ic", {}):
         raise TemplateError("a template's parent must be a cell spec (fit, ic.w_output and nav)")
     nav, fit = placed(parent, parent["nav"]["output"]), placed(parent, parent["fit"]["output"])
@@ -99,6 +103,8 @@ def parent_references(parent: dict, marginal: bool) -> dict:
     if marginal:
         out["reference_combined"] = {"path": f"{placed(parent, parent['ic']['w_output'])}-1/train_combined.json"}
         out["reference_weights"] = {"path": f"{fit}/composition_weights.json"}
+    if resid:
+        out["reference_resid_parent"] = {"path": f"{fit}/composition_weights.json"}
     return out
 
 
@@ -181,7 +187,9 @@ def resolve(doc: dict, path: Path, load, repo: Path) -> dict:
         node, last = _walk(spec, key, create=True)
         node[last] = copy.deepcopy(value)
     locked = doc.get("locked") or {}
-    for key, item in parent_references(parent, "marginal" in spec).items():
+    fit_ops = (change.get("flags") or {}).get("fit")
+    resid = isinstance(fit_ops, dict) and isinstance(fit_ops.get(RESID_FLAG), str)   # this cell adds theme-resid
+    for key, item in parent_references(parent, "marginal" in spec, resid).items():
         if f"inputs.{key}" in change.get("unset", []):
             continue
         pin = locked.get(key) or {}

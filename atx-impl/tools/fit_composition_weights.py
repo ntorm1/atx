@@ -423,6 +423,25 @@ def appended_themes(themes: tuple) -> tuple:
 
 
 # ---------------------------------------------------------------- pinned inputs
+def load_resid_parent(args) -> dict | None:
+    """v8 R-11, finding R6B-O-5: --theme-resid-parent (the parent cell's composition_weights.json, pinned by
+    --theme-resid-parent-sha256) and the admission.json beside it (pinned by that file's provenance.admission_sha256),
+    as bytes for composition_resid.parent_check; None without the flags. Only with --theme-resid."""
+    path, pin = getattr(args, "theme_resid_parent", None), getattr(args, "theme_resid_parent_sha256", None)
+    require((path is None) == (pin is None), "--theme-resid-parent and --theme-resid-parent-sha256 go together")
+    if path is None:
+        return None
+    require(getattr(args, "theme_resid", None) is not None, "--theme-resid-parent needs --theme-resid")
+    weights = pinned_bytes(Path(path), pin, "--theme-resid-parent")
+    doc = unique_json(weights, "--theme-resid-parent")
+    provenance = doc.get("provenance") if isinstance(doc, dict) else None
+    admission_sha = provenance.get("admission_sha256") if isinstance(provenance, dict) else None
+    require(is_hash(admission_sha), "--theme-resid-parent: provenance.admission_sha256 must name the parent's "
+                                    "admission.json")
+    admission = pinned_bytes(Path(path).parent / OUTPUT_ADMISSION, admission_sha, "--theme-resid-parent admission.json")
+    return {"sha256": pin, "weights": weights, "admission": admission}
+
+
 def load_library(path: Path, pin: str) -> list[dict]:
     j = unique_json(pinned_bytes(path, pin, "library"), "library")
     require(j.get("schema") == LIBRARY_SCHEMA, "library: schema")
@@ -1934,6 +1953,7 @@ def fit(args, log=None) -> tuple[int, dict]:
             "--composition ew-theme-v1|ew-theme-aim-v1|ew-theme-v6 and --screen v4-prior-v1/v2 go together")
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
+    resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
     require(args.work_dir is not None or (args.max_seconds is None and args.max_new_candidates is None),
@@ -1990,10 +2010,10 @@ def fit(args, log=None) -> tuple[int, dict]:
         return fit_prior(args, library, priors, runner_signs, pool["factors"], pool["taus"], shas, cache_entry,
                          pool["records"], dict(inputs, context_sha256=pool["block"]["context_sha256"]), pool["window"],
                          pool["sessions"], sum(e["computed"] for e in eras), sum(e["reused"] for e in eras), out,
-                         started, pool["aims"], pool=pool)
+                         started, pool["aims"], pool=pool, resid_parent=resid_parent)
     if prior:
         return fit_prior(args, library, priors, runner_signs, factors, taus, shas, cache_entry, records, inputs,
-                         window, decision_sessions, computed, reused, out, started, aims)
+                         window, decision_sessions, computed, reused, out, started, aims, resid_parent=resid_parent)
     files: dict[str, bytes] = {}
     admission_sha = None
     if args.screen == SCREEN_ID:
@@ -2142,7 +2162,8 @@ def fit(args, log=None) -> tuple[int, dict]:
 def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], factors: np.ndarray,
               taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
               window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
-              started: float, aims: list[dict] | None = None, pool: dict | None = None) -> tuple[int, dict]:
+              started: float, aims: list[dict] | None = None, pool: dict | None = None,
+              resid_parent: dict | None = None) -> tuple[int, dict]:
     """v4-prior-v1/v2 admission + ew-theme-v1 weights (pre-registration R3/R4, v4.2 R3'). Nothing is estimated but tau.
 
     ``ew-theme-aim-v1`` (v5 R4') scales the same member set by the aim gains in ``aims``; the admission
@@ -2374,8 +2395,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_rules.attach_std(document, std)
     if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
         composition_ic_shrink.attach(document, std)
-    # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11); absent: no change
-    composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError)
+    # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5); absent:
+    # no change
+    composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
+                            admission=files[OUTPUT_ADMISSION])
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)

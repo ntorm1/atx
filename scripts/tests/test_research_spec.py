@@ -8,6 +8,7 @@ tools of test_research_cycle.py.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import shutil
@@ -39,7 +40,7 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS,
              "r8.json": CHILD_NULLS,
              "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
-NULL_PINS["r11.json"] = CHILD_NULLS                                                       # v8 R-11 (lane ORTH)
+NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FIT_DOWN = {"fit.output", "card.output", "ic.w_output", "nav.output", "monitor.output"}   # downstream of the fit
@@ -150,6 +151,8 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
     if "marginal" in child:
         want.update(reference_combined={"path": f"{parent['ic']['w_output']}-1/train_combined.json", "sha256": None},
                     reference_weights={"path": f"{parent['fit']['output']}/composition_weights.json", "sha256": None})
+    if RS.RESID_FLAG in ((doc["change"].get("flags") or {}).get("fit") or {}):   # v8 R-11: the re-fit's parent check
+        want["reference_resid_parent"] = {"path": f"{parent['fit']['output']}/composition_weights.json", "sha256": None}
     assert refs == want
     pn, cn = parent["nav"]["flags"], child["nav"]["flags"]
     nav_delta = {"base-b0c.json": pn + ["--warm-start-sessions", "60", "--capacity-curve"],
@@ -426,6 +429,45 @@ def test_r11_appends_theme_resid_to_the_parents_fit(tmp_path):
     root, spec = fake_root(tmp_path / "root", spec)
     c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
     assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
+
+
+def test_r11_checks_its_re_fit_against_the_parent_cells_weights(tmp_path):
+    """Finding R6B-O-5: the cell whose template adds --theme-resid derives reference_resid_parent = the parent's fit
+    composition_weights.json, and its single-window fit step passes it with its pin (--theme-resid-parent,
+    --theme-resid-parent-sha256; the fitter refuses a re-fit that is not that file plus the block). A pooled (era) fit,
+    a template child of the cell and an add-alpha child never carry it (it is derived, and add-alpha re-derives every
+    reference_ input); no other template derives it."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((V8 / "r11.json").read_text(encoding="utf-8"))
+    path = tmp_path / "r11-on-r1.json"
+    path.write_text(json.dumps(dict(doc, parent="scripts/specs/v8/r1-comp-v8.json")), encoding="utf-8")
+    spec = RC.load_spec(path)
+    r1 = RC.load_spec(V8 / "r1-comp-v8.json")
+    want = f"{r1['fit']['output']}/composition_weights.json"
+    assert spec["inputs"]["reference_resid_parent"] == {"path": want, "sha256": None}
+    root, planned = fake_root(tmp_path / "root", spec)
+    c = RC.Cycle(planned, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
+    fit = next(s for s in c.steps() if s.phase == "fit")
+    tool = fit.argv[fit.argv.index("--") + 1:]
+    assert RC.option_value(tool, "--theme-resid") == "theme-resid-v1"
+    assert RC.option_value(tool, "--theme-resid-parent") == want
+    assert RC.option_value(tool, "--theme-resid-parent-sha256") == RC.sha256_file(root / want)
+    assert want in [fit.argv[k + 1] for k, x in enumerate(fit.argv[:fit.argv.index("--")]) if x == "--bind"]
+    args = fcw.parse_args(tool[2:])                                   # the fitter parses the argv as built
+    assert (args.theme_resid_parent, args.theme_resid_parent_sha256) == (want, RC.sha256_file(root / want))
+    c.fit_pool = (["--era-id", "E3"], [])                            # a pooled history fit: no parent check
+    pooled = next(s for s in c.steps() if s.phase == "fit")
+    assert "--theme-resid-parent" not in pooled.argv and "--theme-resid" in pooled.argv
+    child = tmp_path / "r11-child.json"                              # a NAV-only child of the cell
+    r4 = json.loads((V8 / "r4-hold-band.json").read_text(encoding="utf-8"))
+    child.write_text(json.dumps(dict(r4, parent=str(path))), encoding="utf-8")
+    inherited = RC.load_spec(child)
+    assert "reference_resid_parent" not in inherited["inputs"]
+    assert RC.option_value(inherited["fit"]["flags"], "--theme-resid") == "theme-resid-v1"
+    assert all("reference_resid_parent" not in RC.load_spec(V8 / n)["inputs"] for n in V8_SPECS if n != "r11.json")
+    # add-alpha (R-12 on an accepted R-11) carries no reference_ input of its parent over (derive_spec re-derives them)
+    assert 'not k.startswith("reference_")' in inspect.getsource(RA.derive_spec)
 
 
 def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,10 @@ RULE_TEXT = (
     "signs and the member cap are the parent's, unchanged")
 PRIOR_ONLY = ("--theme-resid needs the prior path (--orientation prior, a v4 screen) and a composition whose weights "
               "file carries theme_standardise with rerank true")
+# Finding R6B-O-5: the cell's re-fit against its parent cell's weights file (--theme-resid-parent).
+PARENT_CHECK = ("the re-fit minus theme_residualise and provenance.resid equals the parent cell's weights file apart "
+                "from provenance.script_sha256 and provenance.admission_sha256, and the re-fit's admission.json equals "
+                "the parent's apart from inputs.script_sha256")
 
 
 class ResidError(ValueError):
@@ -144,12 +149,56 @@ def attach(document: dict, registered, error: type[Exception] = ResidError) -> d
         "runner": ("atx-equity-strategy-ic theme_residualise {rule, order} beside theme_standardise {rerank: true}: "
                    "per session the theme at position t of `order` adds W_t x the centred tied re-rank of the "
                    "least-squares residual of its standardised composite on an intercept and the earlier themes' "
-                   "(absent = 0) over its present names; the first theme adds W_1 x its composite "
+                   "(absent = 0) over its present names, averaged inside each tie block of that composite first "
+                   "(Ruling PM4-12); the first theme adds W_1 x its composite "
                    "(strategy_ic_theme_resid.cpp, IcThemeRule::residualise)"),
         "diagnostic": ("provenance.blend_in_sample_TRAIN_diagnostic excludes the per-session re-rank and "
                        "residualisation"),
         "module_sha256": module_sha256()}
     return document
+
+
+def _text(value) -> str:
+    return json.dumps(value, sort_keys=True, allow_nan=False)
+
+
+def parent_check(document: dict, admission: bytes, parent: bytes, parent_admission: bytes,
+                 error: type[Exception] = ResidError) -> None:
+    """Finding R6B-O-5: R-11's weights are a re-fit of its parent cell's argv plus the block, so ``document`` (the
+    re-fit, block and provenance.resid attached) must be the parent's weights file ``parent`` again (PARENT_CHECK): the
+    two differ only in provenance.script_sha256 (this fitter file's SHA-256) and provenance.admission_sha256, which may
+    differ only because the admission table records that SHA (``admission`` and ``parent_admission`` equal apart from
+    inputs.script_sha256). Anything else -- fitter-affecting code or an input changed between the parent's fit and this
+    one -- is refused, naming the keys that differ. A parent that already carries the block is refused. Compared as
+    canonical JSON (sorted keys: the fitter's canonical_bytes up to whitespace)."""
+    try:
+        mother, child_adm, mother_adm = json.loads(parent), json.loads(admission), json.loads(parent_admission)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise error(f"{RULE_ID}: --theme-resid-parent: JSON parse: {exc}") from exc
+    _require(isinstance(mother, dict) and isinstance(mother.get("provenance"), dict) and isinstance(child_adm, dict)
+             and isinstance(mother_adm, dict), f"{RULE_ID}: --theme-resid-parent: not a weights file with provenance",
+             error)
+    _require(BLOCK not in mother and "resid" not in mother["provenance"],
+             f"{RULE_ID}: --theme-resid-parent already carries {BLOCK}: the parent cell is not the rule's parent", error)
+    child = json.loads(_text(document))
+    child.pop(BLOCK, None)
+    child["provenance"].pop("resid", None)
+    for doc in (child, mother):
+        doc["provenance"].pop("script_sha256", None)
+    for doc in (child_adm, mother_adm):
+        if isinstance(doc.get("inputs"), dict):
+            doc["inputs"].pop("script_sha256", None)
+    adm_differ = sorted(k for k in set(child_adm) | set(mother_adm) if _text(child_adm.get(k)) != _text(mother_adm.get(k)))
+    _require(not adm_differ, f"{RULE_ID}: --theme-resid-parent: the re-fit's admission.json differs from the parent's "
+                             f"beyond inputs.script_sha256 (keys {adm_differ})", error)
+    for doc in (child, mother):
+        doc["provenance"].pop("admission_sha256", None)
+    differ = sorted({k for k in set(child) | set(mother) if k != "provenance" and
+                     _text(child.get(k)) != _text(mother.get(k))} |
+                    {f"provenance.{k}" for k in set(child["provenance"]) | set(mother["provenance"])
+                     if _text(child["provenance"].get(k)) != _text(mother["provenance"].get(k))})
+    _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus the "
+                         f"block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
 
 
 def add_argument(parser: argparse.ArgumentParser) -> None:
@@ -158,14 +207,30 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
                              "the same weights plus a theme_residualise block, so the IC runner residualises each "
                              "standardised theme composite on the earlier ones in the registered theme order; absent: "
                              "output bytes unchanged")
+    parser.add_argument("--theme-resid-parent", default=None,
+                        help="v8 R-11 (finding R6B-O-5): the parent cell's composition_weights.json (its admission.json "
+                             "beside it, bound by the file's provenance.admission_sha256); with --theme-resid the re-fit "
+                             "must be that file plus the block (only provenance.script_sha256 and the admission SHA it "
+                             "moves may differ), and provenance.resid records its SHA-256")
+    parser.add_argument("--theme-resid-parent-sha256", default=None, help="the SHA-256 pin of --theme-resid-parent")
 
 
-def apply(args, document: dict, summary: dict, registered, error: type[Exception] = ResidError) -> None:
+def apply(args, document: dict, summary: dict, registered, error: type[Exception] = ResidError,
+          parent: dict | None = None, admission: bytes | None = None) -> None:
     """The fitter hook: with ``--theme-resid`` attach the block (refused without a rerank-true theme_standardise) and
-    record it in the summary; without it nothing changes. ``registered``: the fitter's PRIOR_THEMES (rule 1)."""
+    record it in the summary; without it nothing changes. ``registered``: the fitter's PRIOR_THEMES (rule 1).
+    ``parent`` (finding R6B-O-5; the fitter's load of --theme-resid-parent: {sha256, weights, admission} bytes) checks
+    the re-fit against the parent cell's file (``parent_check``, with ``admission`` the re-fit's admission.json bytes)
+    and records the parent's SHA-256 in provenance.resid and the summary."""
     if getattr(args, "theme_resid", None) is None:
+        _require(parent is None, f"{RULE_ID}: --theme-resid-parent needs --theme-resid", error)
         return
     attach(document, registered, error)
+    if parent is not None:
+        _require(admission is not None, f"{RULE_ID}: --theme-resid-parent needs the re-fit's admission table", error)
+        parent_check(document, admission, parent["weights"], parent["admission"], error)
+        document["provenance"]["resid"].update(parent_weights_sha256=parent["sha256"], parent_check=PARENT_CHECK)
+        summary["theme_residualise_parent_sha256"] = parent["sha256"]
     summary[BLOCK] = dict(document[BLOCK])
 
 

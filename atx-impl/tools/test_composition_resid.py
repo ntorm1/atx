@@ -7,6 +7,7 @@ here identically; both sides compare against the same exact values of the rule (
 equals C++" check of the brief.
 """
 from fractions import Fraction
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -393,6 +394,74 @@ class FitterEndToEnd(unittest.TestCase):
         alien["theme_standardise"]["themes"][first] = "liquidity"
         with self.assertRaises(cres.ResidError):
             cres.attach(alien, fcw.PRIOR_THEMES)
+
+    def resid_fit(self, name: str, parent: Path | None, sha: str | None = None, **override):
+        """--theme-resid on the std parent's argv into ``name``, checked against ``parent`` (finding R6B-O-5)."""
+        args = dict(STD_ARGS, theme_resid=cres.RULE_ID)
+        args.update(override)
+        if parent is not None:
+            args.update(theme_resid_parent=str(parent),
+                        theme_resid_parent_sha256=sha or hashlib.sha256(parent.read_bytes()).hexdigest())
+        with unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+            return fcw.fit(self.fx.args(self.root / name, **args))
+
+    def test_the_re_fit_is_checked_against_the_parent_cells_file(self):
+        """Finding R6B-O-5: with --theme-resid-parent the re-fit must be the parent cell's weights file plus the block;
+        provenance.resid and the summary record the parent's SHA-256. A changed fitter file (script_sha256, and the
+        admission SHA it moves) is the one tolerated difference."""
+        parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
+        sha = hashlib.sha256(parent.read_bytes()).hexdigest()
+        code, summary = self.resid_fit("checked", parent)
+        self.assertEqual(code, fcw.EXIT_OK)
+        doc = json.loads((self.root / "checked" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(doc["provenance"]["resid"]["parent_weights_sha256"], sha)
+        self.assertEqual(doc["provenance"]["resid"]["parent_check"], cres.PARENT_CHECK)
+        self.assertEqual(summary["theme_residualise_parent_sha256"], sha)
+        self.assertEqual(summary[cres.BLOCK], doc[cres.BLOCK])
+        del doc[cres.BLOCK]
+        del doc["provenance"]["resid"]
+        self.assertEqual(fcw.canonical_bytes(doc), parent.read_bytes())
+        with unittest.mock.patch.object(fcw, "SCRIPT_SHA256", "0" * 64):       # the fitter file changed in between
+            code, _ = self.resid_fit("new-script", parent)
+        self.assertEqual(code, fcw.EXIT_OK)
+        moved = json.loads((self.root / "new-script" / fcw.OUTPUT_WEIGHTS).read_bytes())["provenance"]
+        before = json.loads(parent.read_bytes())["provenance"]
+        self.assertEqual(moved["script_sha256"], "0" * 64)
+        self.assertNotEqual(moved["admission_sha256"], before["admission_sha256"])
+
+    def test_a_re_fit_that_is_not_the_parent_cells_file_is_refused(self):
+        """Finding R6B-O-5: another composition's file, a parent whose weights or admission were changed, a parent that
+        already carries the block, a wrong pin and incomplete flags are refused before any output."""
+        parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
+        tampered = self.root / "tampered"
+        tampered.mkdir()
+        doc = json.loads(parent.read_bytes())
+        first = next(i for i, w in doc["weights"].items() if w > 0)
+        doc["weights"][first] += 1e-12
+        (tampered / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
+        (tampered / fcw.OUTPUT_ADMISSION).write_bytes((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        moved = self.root / "moved-admission"                              # an admission changed beyond the script SHA
+        moved.mkdir()
+        adm = json.loads((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        adm["rules"]["note"] = "edited"
+        (moved / fcw.OUTPUT_ADMISSION).write_bytes(fcw.canonical_bytes(adm))
+        doc = json.loads(parent.read_bytes())
+        doc["provenance"]["admission_sha256"] = hashlib.sha256(fcw.canonical_bytes(adm)).hexdigest()
+        (moved / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
+        cases = [("other-rule", self.root / cis.RULE_ID / fcw.OUTPUT_WEIGHTS, {}, "is not the parent cell's"),
+                 ("tampered", tampered / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['weights'"),
+                 ("moved", moved / fcw.OUTPUT_WEIGHTS, {}, r"admission.json differs .*\['rules'\]"),
+                 ("resid-parent", self.root / "resid" / fcw.OUTPUT_WEIGHTS, {}, "already carries theme_residualise"),
+                 ("bad-pin", parent, {"sha": "0" * 64}, "SHA-256 pin differs")]
+        for name, path, extra, needle in cases:
+            with self.subTest(name), self.assertRaisesRegex(fcw.FitError, needle):
+                self.resid_fit(f"refused-{name}", path, **extra)
+            self.assertFalse((self.root / f"refused-{name}").exists())
+        with self.assertRaisesRegex(fcw.FitError, "go together"):
+            self.resid_fit("refused-half", None, theme_resid_parent=str(parent))
+        with self.assertRaisesRegex(fcw.FitError, "needs --theme-resid"):
+            self.resid_fit("refused-no-flag", parent, theme_resid=None)
+        self.assertFalse((self.root / "refused-half").exists() or (self.root / "refused-no-flag").exists())
 
     def test_the_fitter_derives_the_order_from_prior_themes(self):
         """Ruling PM4-11 (finding R6B-O-2): the fitter passes its PRIOR_THEMES, so a theme registered later (E7's
