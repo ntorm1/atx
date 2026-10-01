@@ -1504,6 +1504,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R5 fin | `fundamental-events-v3-run-fin` | `19c64f0e` | completed / 0 | 6.6 | 302 | `03e33b04e8b8c0be909c80f86ece4a395e4d60595f4bf416225ef4c70038fb45` | `304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b` |
 | R6 | `train-2020-2023-base-grp-run` | `977d9a4b` | completed / 0 | 6.7 | 218 | `747e51d46880a31646687e8e0fd62b33e5f881ad6bcf50d8f5c5f8c7fb481475` | `d1b2eaea9087f3eae4953bf709dd63623995f518993e8167ef7b387c7e37957e` |
 | R7 | `train-2020-2023-lo1-run` | `bfd6bc91` | completed / 0 | 4.0 | 232 | `983717743db5899238b8b63cc6d11c230925d602a570124ee36dfdfe3b835c65` | `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53` |
+| R8 | `train-2020-2023-lo3-run` | `2d3e14ef` | completed / 0 | 4.9 | 304 | `9d3cafcd22fcd586c9ae4a517cfcf8fc02e230bdf542a6a9abdfe1b810767b11` | `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4` |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1539,3 +1540,10 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   kept member cells 2,382,552 of 3,970,647; fields cross-check `link_member_cells_equal` true against `GRP`. The
   runbook one-liner prints **`1155 1405 True`** (kept members per session identical to the 3-year lo1 role on its
   1,155 sessions). Manifest 90,101 B; 207 MiB on disk. `LO1 = 2ff9d771...1e53`.
+- **R8 PASS.** Live stage manifests re-hashed at R8's launch by the runner (`--bind`) equal the runbook pins:
+  identity-bridge-v2-pit `09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01`, fundamentals (SIC)
+  `9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b`, delisting
+  `1b1166b61e5a77d8dbe007f2de3261392424fb86a59c1118028862abc264c37f`; the role builder verified the same pins.
+  Role lo3 = linked-operating-v3, 1,405 x 5,922, `score_end_ns` 1704067200000000000, `--delisting-returns` off; kept
+  member cells 2,490,424. The one-liner against the 3-year lo3 role (`40e3d832`) prints **`1155 1405 True`**.
+  Manifest 602,407 B (runbook estimate ~560 KB; C++ metadata cap 1 MiB); 207 MiB on disk. `LO3 = e1c67101...95f4`.
