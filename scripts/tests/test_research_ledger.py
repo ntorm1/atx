@@ -164,6 +164,7 @@ def mine_recipe(tag: str, confirm: tuple[str, str]) -> dict:
             "discover": {"begin": "2020-01-01", "end": confirm[0], "rows": [383, 1295], "label_rows": 890},
             "confirm": {"begin": confirm[0], "end": confirm[1], "rows": [1295, 1844], "label_rows": 527},
             "ic": "research_window_ic_config (EquivalenceV3, ...)", "marginal": "combine::marginal_rank_ic_day ...",
+            "overlap_factor": 1.55, "max_budget": 1000, "min_discover_rows": 504, "min_confirm_rows": 200,
             "min_names": 10, "min_dates": 128}
 
 
@@ -210,7 +211,8 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     writes (its real format: a 64-hex chain head = SHA-256 of the registry's first bytes) through
     backtest_integrity.campaign_line, chained; it equals the verb's ledger_line.json, adds 0 to every N and carries
     the registry count (n_raw); a registry extended by a later campaign still verifies; the same registry head is never
-    appended twice. Refused, appending nothing: the pre-fix verb's 16-hex head, a line that differs, an edited registry,
+    appended twice. Refused, appending nothing: the pre-fix verb's 16-hex head, a line that differs, a budget above
+    kMinedMaxBudget (Ruling PM4-13), an edited registry,
     a registry_head.txt of another head, a missing registry, an incomplete campaign and a missing output."""
     root, sp = make_root(tmp_path, summ={"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl"})
     ledger = root / "trials.jsonl"
@@ -271,6 +273,8 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     refused("mine/old-form", "differs from campaign_line on count")
     mine_output(root, "mine/overspent", 4, registry_rel="mine/r-over.atxtrg", budget=3)     # rule 10: over budget
     refused("mine/overspent", "budget is fixed in advance")
+    mine_output(root, "mine/over-ceiling", 4, registry_rel="mine/r-ceil.atxtrg", budget=1001)
+    refused("mine/over-ceiling", "at most 1000 (kMinedMaxBudget, Ruling PM4-13")             # above F's validation
     edited = mine_output(root, "mine/edited", 4, registry_rel="mine/r-edit.atxtrg")
     log = bytearray((root / "mine" / "r-edit.atxtrg").read_bytes())
     log[60] ^= 1

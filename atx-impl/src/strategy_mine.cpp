@@ -121,6 +121,14 @@ co::Status check_config(const MineConfig &cfg) {
                         "(2..4096); at most 2 --race-strides; --race-keep in (0, 1]; --min-names "
                         ">= 3; --min-dates >= 8; --max-promotions 1..256; --max-memory-mib "
                         "64..65536)"));
+  // Ruling PM4-13: the overlap factor holds to kMinedMaxBudget only; refused before any payload.
+  if (cfg.budget > kMinedMaxBudget)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "--budget " + std::to_string(cfg.budget) + " is above kMinedMaxBudget " +
+                            std::to_string(kMinedMaxBudget) +
+                            " (Ruling PM4-13): the mined-v1 overlap factor kMinedOverlapFactor is "
+                            "validated to that budget only; a larger campaign waits until the "
+                            "factor is re-derived at its own Bonferroni level"));
   // Pre-registration rule 10 (Ruling E-32a): the budget is fixed in advance and binds the search.
   const u64 capacity = mine_trial_capacity(cfg);
   if (cfg.budget < capacity)
@@ -312,6 +320,7 @@ Json recipe_json(const MineConfig &cfg, const ResearchRole &role, const MinePool
       {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
                    "summarize_rank_ic Bartlett lag 21"},
       {"overlap_factor", kMinedOverlapFactor},
+      {"max_budget", kMinedMaxBudget}, // Ruling PM4-13: the budget F is validated to
       {"min_discover_rows", kMinedMinDiscoverRows},
       {"min_confirm_rows", kMinedMinConfirmRows},
       {"min_names", cfg.min_names},
@@ -588,6 +597,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                     {"family_alpha", kMinedFamilyAlpha},
                     {"t", finite_or_null(hurdle)},
                     {"overlap_factor", kMinedOverlapFactor},
+                    {"max_budget", kMinedMaxBudget},
                     {"reads", "f2 / overlap_factor"}}},
         {"promotions", promotions_json(trials, promotions, pool)},
         {"admitted", members.size()},
@@ -665,7 +675,8 @@ constexpr const char *kUsage =
     "  owner decision OD-7). Windows lie inside TRAIN of research-window-v2; a role with a\n"
     "  session at or after the seal is refused. --budget N fixes the campaign's trial budget in\n"
     "  advance (pre-registration rule 10): N covers the templates plus the stage-2 population\n"
-    "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N. --pool is\n"
+    "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N; N is at\n"
+    "  most 1000 (Ruling PM4-13: the overlap factor is validated to that budget). --pool is\n"
     "  required and names at least one regressor and one member (Ruling E-32a). Writes\n"
     "  NEWDIR/campaign.json, trials.csv, mined_members.json, ledger_line.json and\n"
     "  registry_head.txt (rule mined-v1).\n";

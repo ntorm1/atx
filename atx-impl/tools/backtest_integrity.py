@@ -756,6 +756,7 @@ def positive_int(value) -> bool:
 
 
 MINED_RULE = "mined-v1"                   # the rule of every mining campaign (atx-equity-strategy-mine)
+MINED_MAX_BUDGET = 1000                   # Ruling PM4-13: strategy_mine_rule.hpp kMinedMaxBudget
 
 
 def sha256_hex_digest(value) -> bool:
@@ -790,7 +791,8 @@ def campaign_line(campaign: str, registry_path: str, registry_head: str, registr
     registry log's first ``registry.bytes`` bytes (the append-only log as the campaign left it;
     atx-equity-strategy-mine writes it, and its C++ twin strategy_mine_ledger.cpp writes this line byte for byte).
     Ruling E-32a (review MINE-4): ``budget`` is the campaign's --budget, fixed before its search (pre-registration
-    rule 10; the mined-v1 hurdle is computed from it), at least its registry count. Review MINE-3: ``recipe_sha256``
+    rule 10; the mined-v1 hurdle is computed from it), at least its registry count and, Ruling PM4-13, at most
+    MINED_MAX_BUDGET (the budget the overlap factor is validated to). Review MINE-3: ``recipe_sha256``
     is the campaign's trial recipe, which binds its ``confirm`` window {begin, end} with the role, fields, library and
     pool digests; the trial_id is (mining-campaign, recipe, chain head) and check_line refuses a second campaign line
     on the same recipe (a second confirm read on the same identity) or the same campaign name."""
@@ -805,6 +807,9 @@ def campaign_line(campaign: str, registry_path: str, registry_head: str, registr
     if not positive_int(budget) or budget < registry_count:
         raise ValueError("ledger: a mining campaign's budget is fixed in advance and covers its registry count "
                          "(pre-registration rule 10)")
+    if budget > MINED_MAX_BUDGET:
+        raise ValueError(f"ledger: a mining campaign's budget is at most {MINED_MAX_BUDGET} (kMinedMaxBudget, Ruling "
+                         "PM4-13: the overlap factor is validated to that budget only)")
     if not positive_int(registry_bytes):
         raise ValueError("ledger: a mining campaign's registry byte count is a positive integer")
     if not sha256_hex_digest(recipe_sha256):

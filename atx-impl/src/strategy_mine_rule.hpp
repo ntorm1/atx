@@ -31,6 +31,11 @@
 // floors (kMinedMinConfirmRows, kMinedMinDiscoverRows): a longer window needs a smaller factor.
 // The Bonferroni value lies beyond the 99.8% level once N exceeds 25 (z 3.09), where F is an
 // extrapolation of the simulated tail (the MINE-FIX report gives a deeper one-off check).
+//
+// Ruling PM4-13 (binds under OD-7): F is checked only to N = kMinedMaxBudget (a one-off 200,000-
+// draw null at the 504-row floor: ratio 1.46 at the 99.95% level, 1.51 at 99.99%, nominal near
+// N = 1,000), so a --budget above it is refused until F is re-derived at the campaign's own
+// Bonferroni level (v9). The ceiling is in the recipe and campaign.json's hurdle beside F.
 #include <limits>
 #include <span>
 #include <string_view>
@@ -56,6 +61,9 @@ inline constexpr atx::usize kMinedMinConfirmRows = 200;
 inline constexpr atx::usize kMinedMinDiscoverRows = 504;
 // Ruling E-32a (review MINE-6): the label-overlap factor every hurdle of mined-v1 divides t by.
 inline constexpr atx::f64 kMinedOverlapFactor = 1.55;
+// Ruling PM4-13: the largest --budget kMinedOverlapFactor is validated to; the verb refuses a
+// larger one before any payload, and backtest_integrity.campaign_line refuses its ledger line.
+inline constexpr atx::u64 kMinedMaxBudget = 1000;
 
 // t / kMinedOverlapFactor (NaN stays NaN): the scale every hurdle of mined-v1 is read on.
 [[nodiscard]] atx::f64 mined_overlap_corrected(atx::f64 t) noexcept;

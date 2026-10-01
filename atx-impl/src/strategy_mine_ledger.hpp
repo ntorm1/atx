@@ -9,7 +9,8 @@
 //    "kind": "mining-campaign", "origin": "mined", "recipe_sha256": R,
 //    "registry": {"bytes": B, "chain_head": SHA, "count": C, "path": P, "total": T},
 //    "rule": "mined-v1", "schema": "atx.trial-ledger/v1", "trial_id": TID, "window_id": W}
-// N is the campaign's --budget (pre-registration rule 10, Ruling E-32a), at least C.
+// N is the campaign's --budget (pre-registration rule 10, Ruling E-32a), at least C and at most
+// kMinedMaxBudget (Ruling PM4-13).
 // chain_head is the SHA-256 (64 lowercase hex) of the campaign registry's first B bytes, the
 // whole append-only log as the campaign left it. Ruling E-33a: C is the number of records this
 // campaign added (>= 1), T the registry's cumulative size (>= C), so a registry shared by

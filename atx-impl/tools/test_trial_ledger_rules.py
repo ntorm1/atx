@@ -246,10 +246,10 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
     v7_text = BI.appendix_a(BI.ledger_read(ledger), "t")
     confirm = {"begin": "2023-01-01", "end": "2024-01-01"}
     camp = BI.campaign_line("mined-q1", "build-equity/mine/q1/registry.jsonl", "ab" * 32, 1000,
-                            registry_total=1250, registry_bytes=96048, budget=2048, recipe_sha256="cd" * 32,
-                            confirm=confirm, research_window_id=WID, date="2026-10-02")
+                            registry_total=1250, registry_bytes=96048, budget=1000, recipe_sha256="cd" * 32,
+                            confirm=confirm, research_window_id=WID, date="2026-10-02")   # PM4-13: at the ceiling
     assert camp == {"schema": BI.LEDGER_SCHEMA, "kind": "mining-campaign", "count": 0, "campaign": "mined-q1",
-                    "origin": "mined", "rule": "mined-v1", "budget": 2048, "recipe_sha256": "cd" * 32,
+                    "origin": "mined", "rule": "mined-v1", "budget": 1000, "recipe_sha256": "cd" * 32,
                     "confirm": confirm, "registry": {"path": "build-equity/mine/q1/registry.jsonl",
                                                      "chain_head": "ab" * 32, "bytes": 96048, "count": 1000,
                                                      "total": 1250},
@@ -283,6 +283,7 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
                            ({"registry_total": 4}, "E-33a"),             # the total is the registry, >= the count
                            ({"budget": 4}, "budget is fixed in advance"),  # review MINE-4: rule 10's budget covers it
                            ({"budget": 0}, "budget is fixed in advance"), ({"budget": True}, "budget is fixed"),
+                           ({"budget": BI.MINED_MAX_BUDGET + 1}, "at most 1000 .kMinedMaxBudget, Ruling PM4-13"),
                            ({"recipe_sha256": "ef" * 16}, "trial recipe"),                # review MINE-3
                            ({"confirm": {"begin": "2024-01-01", "end": "2023-01-01"}}, "confirm window"),
                            ({"confirm": {"begin": "2023-01-01"}}, "confirm window"), ({"rule": "mined-v0"}, "mined-v1")):

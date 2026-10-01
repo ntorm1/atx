@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import backtest_integrity as BI
 import mine_overlap_factor as MOF
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,6 +67,8 @@ def test_the_constants_are_the_verbs():
     assert int(constant(RULE_HPP, "kMinedMinDiscoverRows")) == MOF.ROWS_DISCOVER
     assert int(constant(RULE_HPP, "kMinedMinConfirmRows")) == MOF.ROWS_CONFIRM
     assert int(constant(FITNESS_HPP, "kResearchIcHacLag")) == MOF.HAC_LAG
+    # Ruling PM4-13: the budget ceiling the verb compiles is the one the ledger refuses above.
+    assert int(constant(RULE_HPP, "kMinedMaxBudget")) == BI.MINED_MAX_BUDGET == 1000
 
 
 def test_the_estimator_is_the_verbs():

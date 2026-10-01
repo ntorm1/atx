@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "atx/core/sha256.hpp"
+#include "strategy_mine_rule.hpp" // kMinedMaxBudget (Ruling PM4-13)
 
 namespace atx::impl::strategy {
 namespace {
@@ -45,6 +46,9 @@ std::string field_problem(const MineLedgerLine &line) {
   if (line.budget < line.registry_count)
     return "a mining campaign's budget is fixed in advance and covers its registry count "
            "(pre-registration rule 10)";
+  if (line.budget > kMinedMaxBudget)
+    return "a mining campaign's budget is at most " + std::to_string(kMinedMaxBudget) +
+           " (kMinedMaxBudget, Ruling PM4-13: the overlap factor is validated to that budget only)";
   if (line.registry_bytes < 1U) return "a mining campaign's registry byte count is a positive integer";
   if (!lower_hex(line.recipe_sha256, 64U))
     return "a mining campaign names its trial recipe (a SHA-256 hex digest)";

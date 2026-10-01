@@ -38,7 +38,9 @@
 // (mine_trial_capacity: the templates plus the stage-2 population times its generations), so
 // no search can exceed it; the mined-v1 hurdle is computed from N, never from the realised or
 // the registry's count, so neither a fresh registry nor a small search lowers it. campaign.json
-// and the ledger line carry N.
+// and the ledger line carry N. Ruling PM4-13: N is at most kMinedMaxBudget (1,000; the budget
+// the overlap factor is validated to), refused before any payload; the ceiling is in the recipe
+// and in campaign.json's hurdle, and campaign_line refuses a line above it.
 //
 // Pool (Ruling E-32a; review MINE-7): --pool is mandatory and its manifest names at least one
 // regressor and one member, checked from the manifest before any payload. Without the book the

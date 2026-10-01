@@ -698,13 +698,18 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   cfg.stage2_generations = 0;
   cfg.race_strides.clear();
   cfg.max_promotions = 64; // above the 27 rows the replica shortlists: no cap
-  cfg.budget = 1000;
+  cfg.budget = st::kMinedMaxBudget; // 1000: Ruling PM4-13's ceiling itself is accepted
   std::ostringstream progress;
   const auto status = st::run_mine(cfg, progress);
   ASSERT_TRUE(status) << status.error().to_string() << "\n" << progress.str();
   const fs::path out(cfg.output_directory);
   const Json campaign = read_json(out / "campaign.json");
   const auto rows = read_trials(out / "trials.csv");
+  // Ruling PM4-13: the ceiling is in the recipe (so its identity) and in the hurdle, beside F.
+  EXPECT_EQ(campaign.at("budget").get<u64>(), st::kMinedMaxBudget);
+  EXPECT_EQ(campaign.at("recipe").at("max_budget").get<u64>(), st::kMinedMaxBudget);
+  EXPECT_EQ(campaign.at("hurdle").at("max_budget").get<u64>(), st::kMinedMaxBudget);
+  EXPECT_EQ(campaign.at("recipe").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
   ASSERT_EQ(rows.size(), 88U);
   ASSERT_EQ(campaign.at("registry").at("n_raw").get<u64>(), 88U);
   // N: the declared budget's Bonferroni value.
@@ -887,6 +892,56 @@ TEST(StrategyMineCampaign, RefusesAMissingBudgetOrOneBelowTheCapacity) {
   }
   cfg.stage2_generations = 0; // no stage 2: the templates alone
   EXPECT_EQ(st::mine_trial_capacity(cfg), templates);
+}
+
+// Ruling PM4-13: the overlap factor is validated to --budget kMinedMaxBudget (1000) only, so
+// 1001 is refused before any payload -- here the role and pool manifests do not even exist --
+// and writes nothing (RulePinsOnTheTemplates runs at 1000 itself). The ledger twin refuses a
+// line above the ceiling in campaign_line's words and accepts one at it.
+TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  EXPECT_EQ(st::kMinedMaxBudget, 1000U);
+  auto cfg = f.config("ceiling", 1, 1);
+  cfg.budget = st::kMinedMaxBudget + 1U;
+  cfg.role.manifest = (f.dir.path / "absent-role.json").string();
+  cfg.pool_path = (f.dir.path / "absent-pool.json").string();
+  std::ostringstream progress;
+  const auto refused = st::run_mine(cfg, progress);
+  ASSERT_FALSE(refused);
+  const std::string message = refused.error().message();
+  EXPECT_NE(message.find("--budget 1001 is above kMinedMaxBudget 1000 (Ruling PM4-13)"),
+            std::string::npos)
+      << message;
+  EXPECT_NE(message.find("validated to that budget only"), std::string::npos) << message;
+  EXPECT_FALSE(fs::exists(cfg.output_directory));
+  EXPECT_FALSE(fs::exists(cfg.registry_path));
+  st::MineLedgerLine line;
+  line.campaign_id = "ceiling";
+  line.registry_path = "mine/registry.atxtrg";
+  line.registry_head = std::string(64U, 'a');
+  line.registry_bytes = 4096U;
+  line.registry_count = 40U;
+  line.registry_total = 40U;
+  line.budget = st::kMinedMaxBudget;
+  line.recipe_sha256 = std::string(64U, 'b');
+  line.confirm_begin = "2023-01-01";
+  line.confirm_end = "2024-01-01";
+  line.window_id = "research-window-v2";
+  const auto at_ceiling = st::mine_ledger_line(line);
+  ASSERT_TRUE(at_ceiling) << at_ceiling.error().to_string();
+  EXPECT_EQ(st::mine_ledger_line_problem(*at_ceiling), "");
+  line.budget = st::kMinedMaxBudget + 1U;
+  const auto above = st::mine_ledger_line(line);
+  ASSERT_FALSE(above);
+  EXPECT_NE(above.error().message().find(
+                "budget is at most 1000 (kMinedMaxBudget, Ruling PM4-13: the overlap factor is "
+                "validated to that budget only)"),
+            std::string::npos)
+      << above.error().to_string();
+  Json over = Json::parse(*at_ceiling);
+  over["budget"] = st::kMinedMaxBudget + 1U;
+  EXPECT_NE(st::mine_ledger_line_problem(over.dump()).find("Ruling PM4-13"), std::string::npos);
 }
 
 // Ruling E-32a (review MINE-7): mined-v1 reads the book. A campaign without --pool, or with a
