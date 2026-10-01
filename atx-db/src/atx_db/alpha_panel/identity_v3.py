@@ -543,27 +543,57 @@ def _agreement(con, p: dict[str, str]) -> dict[str, Any]:
 VARIANTS = {"strict": ("strict",), "pit": ("strict", "dated", "name"), "all": ("strict", "dated", "name", "backfill")}
 
 
-def export_bridges(con, table: Path) -> dict[str, Any]:
+EXPORT_SEAL = "2024-01-01"
+
+
+def export_bridges(con, table: Path, seal: str | None = EXPORT_SEAL) -> dict[str, Any]:
+    """Write the three bridge exports. ``seal`` (ISO date, default 2024-01-01; None disables) is the consumer seal
+    (global constraint 1): rows whose ``start`` or ``available_at`` is on or after it are dropped, ``end_incl`` is
+    censored to the day before it, and ``knowledge_at`` (the link's own clock, a 2026 snapshot stamp on backfill
+    rows) is nulled when on or after it. The export is asserted free of any date at or after the seal.
+    ``identity/link_table_v3.parquet`` itself is never clipped."""
     out: dict[str, Any] = {}
+    if seal is not None:
+        seal = dt.date.fromisoformat(seal).isoformat()
     root = C.build_root()
     for name, tiers in VARIANTS.items():
         d = root / "export" / f"identity-bridge-v3-{name}"
         d.mkdir(parents=True, exist_ok=True)
         lst = ", ".join(f"'{t}'" for t in tiers)
         avail = "evidence_at" if name == "all" else "available_at"
+        if seal is None:
+            end_x, know_x, where_x = "valid_to", "available_at", ""
+        else:
+            end_x = f"least(valid_to, DATE '{seal}' - INTERVAL 1 DAY)::DATE"
+            know_x = f"CASE WHEN available_at < TIMESTAMP '{seal}' THEN available_at END"
+            where_x = f" AND valid_from < DATE '{seal}' AND {avail} < TIMESTAMP '{seal}'"
         C.copy_to_parquet(con, f"""
-            SELECT security_id AS sr_id, cik, valid_from AS start, valid_to AS end_incl, {avail} AS available_at,
+            SELECT security_id AS sr_id, cik, valid_from AS start, {end_x} AS end_incl, {avail} AS available_at,
                    CASE WHEN is_issuer_primary THEN 'P' ELSE 'J' END AS "primary",
                    link_tier AS tier, basis, coalesce(share_class, 'common') AS class_status,
-                   link_tier, share_class, available_at AS knowledge_at, linktype, linkprim
-            FROM read_parquet('{table.as_posix()}') WHERE link_tier IN ({lst})
+                   link_tier, share_class, {know_x} AS knowledge_at, linktype, linkprim
+            FROM read_parquet('{table.as_posix()}') WHERE link_tier IN ({lst}){where_x}
             ORDER BY sr_id, start""", d / "links.parquet")
         stats = con.execute(f"""
             SELECT count(*), count(DISTINCT sr_id), count(DISTINCT cik), min(start), max(end_incl),
                    count(*) FILTER (WHERE available_at > CAST(start AS TIMESTAMP) + INTERVAL 22 HOUR)
             FROM read_parquet('{(d / "links.parquet").as_posix()}')""").fetchone()
+        if seal is not None:
+            bad = con.execute(f"""
+                SELECT count(*) FROM read_parquet('{(d / "links.parquet").as_posix()}')
+                WHERE start >= DATE '{seal}' OR end_incl >= DATE '{seal}' OR available_at >= TIMESTAMP '{seal}'
+                   OR knowledge_at >= TIMESTAMP '{seal}'""").fetchone()[0]
+            assert bad == 0, f"bridge export {name}: {bad} rows carry a date on or after the seal {seal}"
+        maxd = con.execute(f"""
+            SELECT max(start), max(end_incl), max(available_at), max(knowledge_at)
+            FROM read_parquet('{(d / "links.parquet").as_posix()}')""").fetchone()
         manifest = {
             "schema": "atx.identity-bridge/v1", "status": "complete", "rule": f"{RULE}/{name}",
+            "seal": {"consumer_seal_date": seal, "applied": seal is not None,
+                     "max_start": str(maxd[0]), "max_end_incl": str(maxd[1]), "max_available_at": str(maxd[2]),
+                     "max_knowledge_at": str(maxd[3]),
+                     "rule": "rows with start or available_at on/after the seal dropped; end_incl censored to the day "
+                             "before the seal; knowledge_at nulled when on/after the seal"},
             "rehearsal_identity": True, "instrument_namespace": "spiderrock.securityID", "mark_utc": "22:00:00",
             "tiers_kept": list(tiers),
             "available_at_basis": ("evidence_at for backfill rows (knowledge_at = 2026-09-20 snapshot: survivorship-"
@@ -676,11 +706,24 @@ def codes() -> dict[str, Any]:
     return rec
 
 
+def exports_only(seal: str | None) -> dict[str, Any]:
+    """Rewrite just the bridge exports from the existing ``identity/link_table_v3.parquet``."""
+    table_path = C.build_root() / "identity" / "link_table_v3.parquet"
+    con = C.connect(memory=MEMORY, threads=1)
+    try:
+        return export_bridges(con, table_path, seal)
+    finally:
+        con.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("evidence", "names", "dated", "table", "codes", "all"))
+    ap.add_argument("cmd", choices=("evidence", "names", "dated", "table", "codes", "exports", "all"))
+    ap.add_argument("--seal", default=EXPORT_SEAL, help="bridge export seal date (ISO) or 'none'")
     args = ap.parse_args(argv)
-    steps = {"evidence": evidence, "names": names, "dated": dated, "table": table, "codes": codes}
+    seal = None if args.seal.lower() == "none" else args.seal
+    steps = {"evidence": evidence, "names": names, "dated": dated, "table": table, "codes": codes,
+             "exports": lambda: exports_only(seal)}
     for name in (("evidence", "names", "dated", "table") if args.cmd == "all" else (args.cmd,)):
         t0 = time.perf_counter()
         rec = steps[name]()

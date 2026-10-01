@@ -194,3 +194,48 @@ def test_share_exchange_history_runs(tmp_path, monkeypatch) -> None:
     assert [(r[0], r[3], r[4], r[5]) for r in got] == [(1, 3, 1, 11), (1, 2, 3, 11), (2, 5, 4, 73), (3, 2, 3, 31)]
     assert got[1][1] == sess[3] and got[1][6] == dt.datetime(2021, 3, 3, 22)   # stamped d-1 22:00 UTC
     assert rec["rows"] == 4
+
+
+def _bridge_table(tmp_path) -> "Path":
+    D, T = dt.date, dt.datetime
+    rows = [  # id, from, to, tier, available_at, evidence_at
+        (1, D(2022, 1, 3), D(2022, 6, 30), "strict", T(2022, 1, 3, 22), T(2022, 1, 3, 22)),
+        (2, D(2023, 6, 1), D(2026, 9, 18), "strict", T(2023, 6, 1, 22), T(2023, 6, 1, 22)),      # crosses the seal
+        (3, D(2024, 2, 1), D(2025, 1, 31), "dated", T(2024, 2, 1, 22), T(2024, 2, 1, 22)),       # starts after
+        (4, D(2022, 3, 1), D(2026, 9, 18), "backfill", T(2026, 9, 20), T(2022, 3, 1, 22)),       # snapshot stamp
+    ]
+    cols = ["security_id", "cik", "valid_from", "valid_to", "link_tier", "available_at", "evidence_at"]
+    data = {c: [r[(0, 0, 1, 2, 3, 4, 5)[i]] if c != "cik" else 100 + r[0] for r in rows] for i, c in enumerate(cols)}
+    data |= {"is_issuer_primary": [True] * 4, "basis": ["b"] * 4, "share_class": [None] * 4,
+             "linktype": ["LC"] * 4, "linkprim": ["P"] * 4, "sessions": [1.0] * 4}
+    path = tmp_path / "identity" / "link_table_v3.parquet"
+    _write(path, data)
+    return path
+
+
+def test_bridge_exports_seal(tmp_path, monkeypatch) -> None:
+    import json
+
+    import duckdb
+
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path))
+    table = _bridge_table(tmp_path)
+    con = duckdb.connect()
+    V.export_bridges(con, table)                                   # default seal 2024-01-01
+    q = lambda n: con.execute(f"""SELECT sr_id, start, end_incl, available_at, knowledge_at FROM read_parquet(
+        '{(tmp_path / 'export' / f'identity-bridge-v3-{n}' / 'links.parquet').as_posix()}') ORDER BY 1""").fetchall()
+    pit = {r[0]: r for r in q("pit")}
+    assert sorted(pit) == [1, 2]                                   # id 3 starts after the seal: dropped
+    assert pit[2][2] == dt.date(2023, 12, 31)                      # crossing interval censored
+    assert pit[1][2] == dt.date(2022, 6, 30)                       # untouched
+    allr = {r[0]: r for r in q("all")}
+    assert sorted(allr) == [1, 2, 4]                               # backfill kept (evidence_at is the clock)
+    assert allr[4][2] == dt.date(2023, 12, 31) and allr[4][4] is None   # 2026 snapshot stamp nulled
+    m = json.loads((tmp_path / "export" / "identity-bridge-v3-all" / "manifest.json").read_text())
+    assert m["seal"]["consumer_seal_date"] == "2024-01-01" and m["seal"]["applied"] is True
+    assert m["seal"]["max_end_incl"] == "2023-12-31"
+    assert m["counts"]["max_end_incl"] == "2023-12-31"
+    V.export_bridges(con, table, seal=None)                        # disabled: unclipped
+    assert {r[0]: r for r in q("pit")}[3][1] == dt.date(2024, 2, 1)
+    m = json.loads((tmp_path / "export" / "identity-bridge-v3-pit" / "manifest.json").read_text())
+    assert m["seal"]["applied"] is False and m["seal"]["max_end_incl"] == "2026-09-18"
