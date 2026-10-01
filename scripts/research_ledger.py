@@ -95,16 +95,18 @@ def read_lines(path: Path) -> list[tuple[int, dict]]:
 def cells(path: Path) -> list[str]:
     """The ledgered cells in ledger order (protocol, defect and validation lines skipped); a trial line without a cell
     is an error, except a cell-less admission line (review C-7: a screened candidate, no NAV dir) or mining campaign
-    line (Ruling E-33: a campaign registry, no NAV dir). Era shard and pooled era lines
-    (task H-1) are skipped too: they are not grid NAV dirs of the research window."""
+    line (Ruling E-33: a campaign registry, no NAV dir). History lines (backtest_integrity.is_history_line: era shard,
+    one-era history and pooled era lines; task H-1, review P-1) are skipped too, with or without ``era_of``: they are
+    not grid NAV dirs of the research window."""
     out = []
     bi = None
     for k, rec in read_lines(path):
         if rec.get("kind") in NON_TRIAL_KINDS or (rec.get("kind") in CELL_LESS_KINDS and "cell" not in rec):
             continue
-        if "era_of" in rec or "eras" in rec:
-            bi = bi or backtest_integrity()
-            if bi.is_era_line(rec) or bi.is_pool_line(rec):
+        label = str((rec.get("window") or {}).get("label") or "")
+        if "era" in rec or "era_of" in rec or "eras" in rec or label.startswith(("ERA ", "POOL")):
+            bi = bi or backtest_integrity()   # numpy on first use: only a ledger holding a history line loads it
+            if bi.is_history_line(rec):
                 continue
         cell = rec.get("cell")
         if not isinstance(cell, str) or not cell:
