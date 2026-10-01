@@ -211,7 +211,10 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
                                     COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
 PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.RULE_ID,),  # v8 R-10, Ruling E-38
                                     COMPOSITIONS + (composition_ic_shrink.RULE_ID,))
+PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.AIM_RULE_ID,),  # R-10 on an aim
+                                    COMPOSITIONS + (composition_ic_shrink.AIM_RULE_ID,))      # parent, Ruling E-44
 AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
+AIM_RULES += (composition_ic_shrink.AIM_RULE_ID,)  # v8 R-10's aim variant (Ruling E-44)
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -2162,9 +2165,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                              [tiers[k] for k in active], error=FitError,
                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
-    elif args.composition == composition_ic_shrink.RULE_ID:  # v8 R-10: the admission rows' train_mean are the ICs
+    elif args.composition in composition_ic_shrink.RULES:  # v8 R-10: the admission rows' train_mean are the ICs
         std = composition_ic_shrink.ic_shrink([ids[k] for k in active], [themes[k] for k in active],
-                                              [rows[k]["train_mean"] for k in active], error=FitError)
+                                              [rows[k]["train_mean"] for k in active], error=FitError,
+                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
     else:
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
@@ -2234,7 +2238,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                                      priors["recipe_sha256"])
     if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
         composition_rules.attach_std(document, std)
-    if args.composition == composition_ic_shrink.RULE_ID:  # schema v2, its theme_standardise, provenance.ic_shrink
+    if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
         composition_ic_shrink.attach(document, std)
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
