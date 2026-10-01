@@ -14,7 +14,8 @@
 // shortlist is every evaluated trial with f2 at or above the value, in f2 order. The rho check is
 // greedy in that order against every pool member and every earlier kept candidate (mean daily
 // correlation of centred ranks on the discover decision rows). The confirm read is the marginal
-// IC HAC t on the confirm window, oriented by the discover sign; one-sided p = Phi(-t),
+// IC HAC t on the confirm window, oriented by the discover sign, and counts only on its full
+// window (mined_confirm_defined; otherwise t is NaN, unconfirmed); one-sided p = Phi(-t),
 // Benjamini-Yekutieli over the candidates that pass the rho check. The theme is `mined`.
 #include <limits>
 #include <span>
@@ -32,6 +33,17 @@ inline constexpr atx::f64 kMinedFamilyAlpha = 0.05;
 inline constexpr atx::f64 kMinedConfirmT = 2.0;
 inline constexpr atx::f64 kMinedConfirmBy = 0.10;
 inline constexpr atx::f64 kMinedMaxAbsRho = 0.70;
+// Review MINE-2: the fewest mature h 21 label rows a confirm read is made on (registered with the
+// rule; the 2023 confirm window of research-window-v2 has about 228). The verb refuses a shorter
+// confirm window before any search.
+inline constexpr atx::usize kMinedMinConfirmRows = 200;
+
+// Review MINE-2: a confirm read counts only on its full window -- the h 21 rank IC defined (and
+// on at least kMinedMinConfirmRows label rows) and the marginal IC defined on every one of the
+// window's `label_rows` -- so its HAC t is never read off a few overlapping label rows.
+[[nodiscard]] bool mined_confirm_defined(bool ic_defined, atx::usize ic_dates,
+                                         atx::usize marginal_dates,
+                                         atx::usize label_rows) noexcept;
 
 // -norm_ppf(.05 / (2 N)): 3.48 at 100, 4.06 at 1,000, 4.56 at 10,000. NaN when N is 0.
 [[nodiscard]] atx::f64 mined_hurdle(atx::u64 trials) noexcept;

@@ -170,7 +170,10 @@ co::Result<MineWindows> parse_windows(const MineConfig &cfg) {
   return co::Ok(std::move(w));
 }
 
-co::Status bind_rows(MineWindow &w, const dt::StrategyRoleData &role, const char *name) {
+// Binds `w` to the role's decision rows; refuses rows outside the score window and fewer than
+// `min_label_rows` mature h 21 labels.
+co::Status bind_rows(MineWindow &w, const dt::StrategyRoleData &role, const char *name,
+                     usize min_label_rows) {
   const auto &sessions = role.session_keys;
   const auto row = [&sessions](i64 ns) {
     return static_cast<usize>(std::lower_bound(sessions.begin(), sessions.end(), ns) -
@@ -178,10 +181,15 @@ co::Status bind_rows(MineWindow &w, const dt::StrategyRoleData &role, const char
   };
   w.begin = row(w.begin_ns);
   w.end = row(w.end_ns);
-  if (w.begin < role.score_begin || w.end > role.score_end || w.end < w.begin + kLabelLag + 3U)
+  if (w.begin < role.score_begin || w.end > role.score_end)
     return co::Err(fail(co::ErrorCode::InvalidArgument,
-                        std::string(name) + " window: rows outside the role's score window or "
-                                            "too few for mature h 21 labels"));
+                        std::string(name) + " window: rows outside the role's score window"));
+  const usize label_rows = w.end > w.begin + kLabelLag ? w.end - w.begin - kLabelLag : 0U;
+  if (label_rows < min_label_rows)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        std::string(name) + " window: " + std::to_string(label_rows) +
+                            " mature h 21 label rows, fewer than the " +
+                            std::to_string(min_label_rows) + " the rule reads on it"));
   return co::Ok();
 }
 
@@ -355,8 +363,9 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     ResearchRoleSpec spec = cfg.role;
     spec.max_bytes = cfg.max_working_bytes;
     ATX_TRY(const auto role, ResearchRole::load(spec));
-    ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover"));
-    ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm"));
+    ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", 3U));
+    // Review MINE-2: the confirm read is made on at least kMinedMinConfirmRows label rows.
+    ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm", kMinedMinConfirmRows));
     ATX_TRY(const auto pool, load_mine_pool(pool_manifest, *role));
     const usize label_rows = windows.discover.end - windows.discover.begin - kLabelLag;
     const usize confirm_rows = windows.confirm.end - windows.confirm.begin - kLabelLag;

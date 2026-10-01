@@ -55,7 +55,9 @@ struct ResearchIcWindow {
 };
 
 // One read of a signal. The IC fields are NaN (and sign 0) when the h 21 estimate is undefined;
-// the marginal fields are NaN when no marginal term was read or it is undefined.
+// the marginal fields are NaN when no marginal term was read or it is undefined. ic_dates and
+// marginal_dates count the label rows on which the daily h 21 rank IC, respectively the daily
+// marginal IC, is defined (a caller compares them with ResearchIcScorer::label_rows()).
 struct ResearchIcRead {
   IcScreenReason reason{IcScreenReason::Disabled};
   bool ic_defined{};
@@ -67,6 +69,7 @@ struct ResearchIcRead {
   atx::f64 marginal_t = std::numeric_limits<atx::f64>::quiet_NaN();
   atx::usize marginal_dates{};
   atx::usize spanned_dates{};
+  atx::usize ic_dates{};
 };
 
 // f1 = |IC t| and f2 = sign x marginal t (NaN when undefined).

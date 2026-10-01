@@ -116,6 +116,8 @@ struct Promotion {
   usize trial{}; // index into the campaign's trials
   MinedRho rho{};
   bool confirm_read{};
+  bool confirm_defined{}; // the read covers its full window (mined_confirm_defined)
+  usize confirm_rows{};   // the confirm window's mature label rows
   ex::ResearchIcRead confirm{};
   MinedConfirm decision{};
   bool admitted{};

@@ -16,6 +16,12 @@ f64 mined_hurdle(u64 trials) noexcept {
   return -atx::engine::eval::norm_ppf(kMinedFamilyAlpha / (2.0 * static_cast<f64>(trials)));
 }
 
+bool mined_confirm_defined(bool ic_defined, usize ic_dates, usize marginal_dates,
+                           usize label_rows) noexcept {
+  return ic_defined && label_rows >= kMinedMinConfirmRows && ic_dates >= kMinedMinConfirmRows &&
+         marginal_dates == label_rows;
+}
+
 std::vector<usize> mined_shortlist(std::span<const MinedRead> reads, f64 hurdle, usize cap) {
   std::vector<usize> out;
   for (usize i = 0; i < reads.size(); ++i)

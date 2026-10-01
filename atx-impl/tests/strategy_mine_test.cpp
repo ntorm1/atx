@@ -433,6 +433,16 @@ TEST(StrategyMineRule, ConfirmIsOneSidedWithBenjaminiYekutieli) {
   EXPECT_FALSE(out[3].confirmed);
 }
 
+// Review MINE-2: a confirm read counts only on its full window of at least 200 label rows.
+TEST(StrategyMineRule, ConfirmReadNeedsItsFullWindow) {
+  EXPECT_TRUE(st::mined_confirm_defined(true, 228, 228, 228));
+  EXPECT_FALSE(st::mined_confirm_defined(false, 228, 228, 228)); // the h 21 IC undefined
+  EXPECT_FALSE(st::mined_confirm_defined(true, 199, 228, 228));  // too few IC rows
+  EXPECT_FALSE(st::mined_confirm_defined(true, 228, 227, 228));  // a marginal day missing
+  EXPECT_FALSE(st::mined_confirm_defined(true, 3, 3, 3));        // three overlapping rows
+  EXPECT_EQ(st::kMinedMinConfirmRows, 200U);
+}
+
 TEST(StrategyMine, TemplatesAreTheHouseSet) {
   const std::vector<std::string> fields{"a", "b"};
   const auto t = st::mine_templates(fields);
@@ -639,5 +649,15 @@ TEST(StrategyMineCampaign, RefusesSealedRolesAndWindowsPastTrain) {
   ASSERT_FALSE(past);
   EXPECT_NE(past.error().message().find("inside TRAIN"), std::string::npos);
   EXPECT_FALSE(fs::exists(late.output_directory));
+  // Review MINE-2: a confirm window of 162 mature label rows is refused before any search.
+  auto short_confirm = f.config("short", 1, 1);
+  short_confirm.confirm_begin = "2023-07-01";
+  const auto too_short = st::run_mine(short_confirm, progress);
+  ASSERT_FALSE(too_short);
+  EXPECT_NE(too_short.error().message().find("confirm window: 162 mature h 21 label rows"),
+            std::string::npos)
+      << too_short.error().to_string();
+  EXPECT_FALSE(fs::exists(short_confirm.output_directory));
+  EXPECT_FALSE(fs::exists(short_confirm.registry_path));
 }
 } // namespace
