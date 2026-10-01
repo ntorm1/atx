@@ -868,7 +868,7 @@ atx::core::Result<StageResult> run_discover_gated(
     // length) surfaces here as a CLEAN propagated error instead of an ATX_ASSERT abort
     // (debug) / out-of-bounds projection read (release). Mark the run failed and
     // propagate so the CLI prints a clear message rather than crashing/corrupting.
-    auto rep_r = fac.mine_into(fcfg, liblib, gate, sink_ptr, resume_ptr);
+    auto rep_r = fac.mine_research_into(fcfg, liblib, gate, sink_ptr, resume_ptr);
     if (!rep_r.has_value()) {
         if (rec) { (void)rec->mark_failed(now_unix(), rep_r.error().to_string()); }
         return atx::core::Err(rep_r.error());
@@ -989,6 +989,7 @@ atx::core::Result<StageResult> run_discover_gated(
            << (source_artifact_id.empty() ? "unknown" : source_artifact_id) << '\n';
         mf << "seed="            << cfg.seed             << '\n';
         mf << "count="           << n                    << '\n';
+        mf << "admission_evidence=research_only\n";
         mf << "evaluated="       << rep.evaluated        << '\n';
         mf << "duplicates="      << rep.duplicates       << '\n';
         mf << "reject_histogram="<< rej                  << '\n';
@@ -1119,6 +1120,7 @@ atx::core::Result<StageResult> run_discover_gated(
     sr.digest = stage_digest;
     sr.kvs = {
         {"gated",           "1"},
+        {"admission_evidence", "research_only"},
         {"admitted",        std::to_string(n)},
         {"evaluated",       std::to_string(rep.evaluated)},
         {"duplicates",      std::to_string(rep.duplicates)},
@@ -1438,6 +1440,7 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         mf << "seed="          << cfg.seed             << '\n';
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
+        mf << "admission_evidence=research_only\n";
         if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
             cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
             cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
@@ -1486,6 +1489,7 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
     sr.digest = stage_digest;
     sr.kvs = {
         {"admitted",      std::to_string(n)},
+        {"admission_evidence", "research_only"},
         {"trial_count",   std::to_string(res.trial_count)},
         {"candidates",    std::to_string(res.candidates_generated)},
         {"search_digest", to_hex16(res.digest)},
