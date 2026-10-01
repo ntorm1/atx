@@ -1505,6 +1505,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R6 | `train-2020-2023-base-grp-run` | `977d9a4b` | completed / 0 | 6.7 | 218 | `747e51d46880a31646687e8e0fd62b33e5f881ad6bcf50d8f5c5f8c7fb481475` | `d1b2eaea9087f3eae4953bf709dd63623995f518993e8167ef7b387c7e37957e` |
 | R7 | `train-2020-2023-lo1-run` | `bfd6bc91` | completed / 0 | 4.0 | 232 | `983717743db5899238b8b63cc6d11c230925d602a570124ee36dfdfe3b835c65` | `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53` |
 | R8 | `train-2020-2023-lo3-run` | `2d3e14ef` | completed / 0 | 4.9 | 304 | `9d3cafcd22fcd586c9ae4a517cfcf8fc02e230bdf542a6a9abdfe1b810767b11` | `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4` |
+| R9 lo1 | `w0-2-admit-probe-lo1-run` | `9322cdd1` | process-error / 1 (by design) | 0.3 | 2 | `8fb0dfc5d1e883ddd7afa324ffbe6ef45ee11a8a692fe76e0d05b04c42ff2fe4` | (none; metadata probe) |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1547,3 +1548,8 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   Role lo3 = linked-operating-v3, 1,405 x 5,922, `score_end_ns` 1704067200000000000, `--delisting-returns` off; kept
   member cells 2,490,424. The one-liner against the 3-year lo3 role (`40e3d832`) prints **`1155 1405 True`**.
   Manifest 602,407 B (runbook estimate ~560 KB; C++ metadata cap 1 MiB); 207 MiB on disk. `LO3 = e1c67101...95f4`.
+- **R9 lo1 PASS** (exe ic `39bc5f33...ce2b` = v8-7a, library v7.1 `787c802e...2259`, `--max-memory-mib 64`,
+  `--workers 4`, `--plan-only`). stderr: `Unavailable: IC runner: required_bytes=1989405564 max_compiled_slots=8
+  exceeds configured memory budget before payload load`. **1,989,405,564 B = 1,897.2 MiB**, equal to the runbook's
+  exact formula at n = 5,922 (slots 8, capacity 6, workers 4; the formula reproduces the 3-year 1,553,063,994 B).
+  Below the OD-2 cap 2,684,354,560 B (2,560 MiB) by 663.1 MiB; above 1,536 MiB, so the IC phases need OD-2.
