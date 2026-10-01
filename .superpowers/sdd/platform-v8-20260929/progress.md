@@ -524,3 +524,16 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   cost if wrong: one identity re-run.
 - Integration 5 part A dispatched: merge FIX-C d0d081f2, FIX-AB dd677d3b, R45 9cc0d3cb, A2 79440cfa; build v8-6;
   suites; wire B-3 into check_label_manifests(role); A2 spec keys per FIX-C.
+
+## 2026-09-30 integration 5 part A closed (log section "integration 5 part A"; head b44774d6)
+- Merged FIX-C d0d081f2 (d3b9513d), FIX-AB dd677d3b (d3e6d855), R45 9cc0d3cb (4b57a6af), A2 79440cfa (67c5aff0).
+  Builds v8-6, v8-6a clean. C++: data 285/14 skipped, combine 220, factory 377, book 147, ic 105, strategy 46,
+  target 233/1 skipped, impl 957 passed 7 skipped 1 failed (known ConfigJsonNotInDiscoverDigest). Python: strategies
+  163, engine tools 241, impl tools 465/2 skipped, scripts 163/3 skipped. tiny_world 5/5, no golden moved.
+- Integration fixes: d833b25f (B-3 refusal on --role only in check_label_manifests, test), 7c77fac2 (base-lo1/lo3
+  summ.origin "prior"), 229f8e78 (SameRoleIsIdentity fixture row 140, test slip). dsl_vm_sources f24cfbbe ->
+  ad6c4ca7 (FIX-AB re-pin, tripwire passes). Open: spo-v2 pin needs a pre-R6 build (part C); B0c's 60-session
+  warm start must build a book or A-3 refuses it (expected: it builds one).
+- Dispatched from b44774d6: integrator part B (H3 339c07b1, root), lane ERA (pool 3, E-35 + P-1), lane FIX-2
+  (pool 7, P-2, P-3, T-1, T-2, T-4, N-1, N-2, N-3), scoped re-review of the fix lanes plus first read of the R45
+  and A2 follow-up code (reader on pool 10 detached at b44774d6; output review-w1-fixes.md).
