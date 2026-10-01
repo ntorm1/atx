@@ -92,15 +92,16 @@ class DeclaredRule(unittest.TestCase):
     def test_declared_constants_and_their_cpp_pins(self):
         self.assertEqual((cres.RULE_ID, cres.BLOCK, cres.SPAN_TOLERANCE),
                          ("theme-resid-v1", "theme_residualise", 1e-10))
-        self.assertEqual(cres.REGISTERED_THEME_ORDER, fcw.PRIOR_THEMES)     # v4 list + the v7 appended theme
+        # rule 1 (Ruling PM4-11): the order is PRIOR_THEMES; its first ten are the frozen v4 list + v7 appended theme
+        self.assertEqual(cres.FROZEN_PREFIX, fcw.V4_THEMES + fcw.V7_APPENDED_THEMES)
+        self.assertEqual(cres.registered_order(fcw.PRIOR_THEMES), fcw.PRIOR_THEMES)
         self.assertEqual(cres.STD_RULE_ID, cr.STD_RULE_ID)
         # rule 6 (E-44, E-45): every rerank-true theme_standardise rule the fitter writes (R-1 / R-3, then R-10)
         self.assertEqual(cres.STANDARDISE_RULES, (cr.STD_RULE_ID,) + cis.RULES)
         self.assertEqual(len(cres.RULE_TEXT), 5)
         registry = REPO / "atx-impl" / "strategies" / "alphas" / "registry.json"
-        if registry.is_file():                                              # the registry's themes table, file order
-            self.assertEqual(tuple(json.loads(registry.read_text(encoding="utf-8"))["themes"]),
-                             cres.REGISTERED_THEME_ORDER)
+        if registry.is_file():   # the registry's themes table in file order is PRIOR_THEMES (a new theme edits both)
+            self.assertEqual(tuple(json.loads(registry.read_text(encoding="utf-8"))["themes"]), fcw.PRIOR_THEMES)
         kernel = (REPO / "atx-engine" / "include" / "atx" / "engine" / "combine" / "group_residualise.hpp").read_text(
             encoding="utf-8")
         self.assertIn("kResidualSpanTolerance = 1e-10;", kernel)
@@ -110,12 +111,30 @@ class DeclaredRule(unittest.TestCase):
             encoding="utf-8"))
 
     def test_theme_order_is_the_registered_order_restricted(self):
-        self.assertEqual(cres.theme_order(["reversal_seasonality", "value", "ownership_flow", "value"]),
+        self.assertEqual(cres.theme_order(["reversal_seasonality", "value", "ownership_flow", "value"], fcw.PRIOR_THEMES),
                          ["value", "reversal_seasonality", "ownership_flow"])
         with self.assertRaises(cres.ResidError):
-            cres.theme_order(["value", "liquidity"])
+            cres.theme_order(["value", "liquidity"], fcw.PRIOR_THEMES)
         with self.assertRaises(cres.ResidError):
-            cres.theme_order([])
+            cres.theme_order([], fcw.PRIOR_THEMES)
+
+    def test_a_later_registered_theme_follows_the_frozen_ten(self):
+        """Ruling PM4-11 (finding R6B-O-2): a theme registered after the frozen ten (v8.1's filing_events, E7) is
+        appended in registration order, so filing_events is last, after ownership_flow; before it is registered it is
+        refused as outside the order. The frozen ten may not be reordered, dropped or interleaved."""
+        later = fcw.PRIOR_THEMES + ("filing_events",)
+        self.assertEqual(cres.registered_order(later), later)
+        self.assertEqual(cres.theme_order(["filing_events", "ownership_flow", "value"], later),
+                         ["value", "ownership_flow", "filing_events"])
+        self.assertEqual(cres.theme_order(["filing_events", "low_risk"], later + ("another_theme",)),
+                         ["low_risk", "filing_events"])
+        with self.assertRaises(cres.ResidError):
+            cres.theme_order(["filing_events", "value"], fcw.PRIOR_THEMES)
+        swapped = ("profitability_quality", "value") + fcw.PRIOR_THEMES[2:]
+        interleaved = fcw.PRIOR_THEMES[:9] + ("filing_events",) + fcw.PRIOR_THEMES[9:]
+        for bad in (swapped, interleaved, fcw.PRIOR_THEMES[1:], later + ("value",), ()):
+            with self.subTest(bad=bad), self.assertRaises(cres.ResidError):
+                cres.registered_order(bad)
 
 
 class RunnerReference(unittest.TestCase):
@@ -213,7 +232,8 @@ class FitterEndToEnd(unittest.TestCase):
         resid = self.doc["provenance"]["resid"]
         self.assertEqual((resid["rule"], resid["parent_composition"], resid["span_tolerance_relative"]),
                          ("theme-resid-v1", "ew-theme-std-v1", 1e-10))
-        self.assertEqual(resid["registered_order"], list(cres.REGISTERED_THEME_ORDER))
+        self.assertEqual(resid["registered_order"], list(fcw.PRIOR_THEMES))
+        self.assertEqual(resid["frozen_prefix"], list(cres.FROZEN_PREFIX))
         # flag absent: no key; the resid file minus the block and provenance.resid is the parent file, byte for byte
         self.assertNotIn(cres.BLOCK, self.std)
         self.assertNotIn("resid", self.std["provenance"])
@@ -268,16 +288,34 @@ class FitterEndToEnd(unittest.TestCase):
         off = json.loads(json.dumps(self.std))
         off["theme_standardise"]["rerank"] = False
         with self.assertRaises(cres.ResidError):
-            cres.attach(off)
+            cres.attach(off, fcw.PRIOR_THEMES)
         unknown = json.loads(json.dumps(self.std))                             # a rule outside the runner's table
         unknown["theme_standardise"]["rule"] = "ew-theme-std-v9"
         with self.assertRaises(cres.ResidError):
-            cres.attach(unknown)
+            cres.attach(unknown, fcw.PRIOR_THEMES)
         alien = json.loads(json.dumps(self.std))
         first = next(i for i, w in alien["weights"].items() if w > 0)
         alien["theme_standardise"]["themes"][first] = "liquidity"
         with self.assertRaises(cres.ResidError):
-            cres.attach(alien)
+            cres.attach(alien, fcw.PRIOR_THEMES)
+
+    def test_the_fitter_derives_the_order_from_prior_themes(self):
+        """Ruling PM4-11 (finding R6B-O-2): the fitter passes its PRIOR_THEMES, so a theme registered later (E7's
+        filing_events) is placed last once it is registered, and a weighted member of it is refused before."""
+        later = fcw.PRIOR_THEMES + ("filing_events",)
+        doc = json.loads(json.dumps(self.std))
+        weighted = [i for i, w in doc["weights"].items() if w > 0]
+        doc["theme_standardise"]["themes"][weighted[0]] = "filing_events"
+        self.assertEqual(cres.attach(json.loads(json.dumps(doc)), later)[cres.BLOCK]["order"][-1], "filing_events")
+        with self.assertRaises(cres.ResidError):
+            cres.attach(doc, fcw.PRIOR_THEMES)
+        with unittest.mock.patch.object(fcw, "PRIOR_THEMES", later), \
+                unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+            code, _ = fcw.fit(self.fx.args(self.root / "later-resid", theme_resid=cres.RULE_ID, **STD_ARGS))
+        self.assertEqual(code, fcw.EXIT_OK)
+        resid = json.loads((self.root / "later-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())["provenance"]["resid"]
+        self.assertEqual(resid["registered_order"], list(later))
+        self.assertEqual(resid["order"], ["value", "reversal_seasonality"])
 
 
 if __name__ == "__main__":

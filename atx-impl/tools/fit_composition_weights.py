@@ -2374,7 +2374,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_rules.attach_std(document, std)
     if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
         composition_ic_shrink.attach(document, std)
-    composition_resid.apply(args, document, summary, FitError)  # v8 R-11 --theme-resid; absent: no change
+    # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11); absent: no change
+    composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError)
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)

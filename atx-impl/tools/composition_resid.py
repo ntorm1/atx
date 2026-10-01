@@ -4,9 +4,11 @@
 Registration (lane ORTH, task-R-11-report.md; every constant fixed blind, declared before any read):
   Hypothesis: theme composites residualised against the preceding themes carry uncorrelated alpha and combine better
   than the raw composites.
-  1. Order: the registered theme order ``REGISTERED_THEME_ORDER`` (the v4 pre-registration theme list plus the v7
-     appended theme; the alpha registry's ``themes`` table in its file order), restricted to the themes with a weighted
-     member. A theme outside it is refused.
+  1. Order: the registered theme order (Ruling PM4-11, ``registered_order``): fit_composition_weights.PRIOR_THEMES, the
+     alpha registry's ``themes`` table in its file order, whose first ten themes are frozen (``FROZEN_PREFIX``: the v4
+     pre-registration list plus the v7 appended theme) and any theme registered later follows in registration order
+     (``filing_events`` after ``ownership_flow``); restricted to the themes with a weighted member. A theme outside it
+     is refused. Derived from the list, never from a data statistic.
   2. Per decision session and theme t, the standardised composite z_t is the parent's (ew-theme-std-v1): the centred
      tied rank, over the names with a present member of t, of the sum of the present members' w_k s_k rank_k. A lone
      present name has z = 0; a name without a present member has none.
@@ -48,14 +50,15 @@ STD_RULE_ID = "ew-theme-std-v1"   # composition_rules.STD_RULE_ID: the runner bl
 # ic-shrink-aim-v1 (composition_ic_shrink.RULES; tested against it).
 STANDARDISE_RULES = (STD_RULE_ID, "ic-shrink-v1", "ic-shrink-aim-v1")
 WEIGHTS_SCHEMA_V2 = "atx.dsl-composition-weights/v2"
-# Rule 1 (blind, the registered order): fit_composition_weights.PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES.
-REGISTERED_THEME_ORDER = ("value", "profitability_quality", "investment_issuance", "earnings_momentum",
-                          "price_momentum", "low_risk", "short_interest", "reversal_seasonality", "options_implied",
-                          "ownership_flow")
+# Rule 1 (blind, Ruling PM4-11): the first ten themes of the registered order, frozen in their registered order
+# (fit_composition_weights.V4_THEMES + V7_APPENDED_THEMES); the order itself is PRIOR_THEMES (registered_order).
+FROZEN_PREFIX = ("value", "profitability_quality", "investment_issuance", "earnings_momentum", "price_momentum",
+                 "low_risk", "short_interest", "reversal_seasonality", "options_implied", "ownership_flow")
 SPAN_TOLERANCE = 1e-10            # rule 3: atx/engine/combine/group_residualise.hpp kResidualSpanTolerance
 RULE_TEXT = (
-    "1. themes in the registered order (v4 pre-registration list + v7 appended theme), restricted to the themes with a "
-    "weighted member",
+    "1. themes in the registered order (Ruling PM4-11: PRIOR_THEMES, the registry order; its first ten frozen: v4 "
+    "pre-registration list + v7 appended theme; a later theme in registration order, filing_events after "
+    "ownership_flow), restricted to the themes with a weighted member",
     "2. per session the parent's standardised theme composite z_t: centred tied rank over the names with a present "
     "member of the sum of present w_k*s_k*rank_k (ew-theme-std-v1)",
     "3. theme t>1: least-squares residual of z_t on an intercept and z_1..z_{t-1} over the names where t is present "
@@ -82,37 +85,52 @@ def module_sha256() -> str:
 
 
 # ---------------------------------------------------------------- the weights file
-def theme_order(themes, error: type[Exception] = ResidError) -> list[str]:
-    """Rule 1: the registered order restricted to ``themes``; a theme outside the registered list is refused."""
+def registered_order(prior_themes, error: type[Exception] = ResidError) -> tuple[str, ...]:
+    """Rule 1 (Ruling PM4-11): the registered theme order derived from ``prior_themes`` (the fitter's PRIOR_THEMES, the
+    registry order): its first ten themes must be ``FROZEN_PREFIX`` in that order, every later theme follows in the
+    order it was registered, and no theme repeats."""
+    themes = tuple(prior_themes)
+    _require(all(isinstance(t, str) and t for t in themes) and len(set(themes)) == len(themes),
+             f"{RULE_ID}: the registered theme list must name each theme once: {list(themes)}", error)
+    _require(themes[:len(FROZEN_PREFIX)] == FROZEN_PREFIX,
+             f"{RULE_ID}: the registered theme order must begin with the frozen ten {list(FROZEN_PREFIX)} in that order "
+             f"(Ruling PM4-11; a later theme is appended in registration order): {list(themes)}", error)
+    return themes
+
+
+def theme_order(themes, registered, error: type[Exception] = ResidError) -> list[str]:
+    """Rule 1: ``registered_order(registered)`` restricted to ``themes``; a theme outside it is refused."""
+    order = registered_order(registered, error)
     present = set(themes)
-    unknown = sorted(present - set(REGISTERED_THEME_ORDER))
-    _require(not unknown, f"{RULE_ID}: themes outside the registered order {list(REGISTERED_THEME_ORDER)}: {unknown}",
-             error)
+    unknown = sorted(present - set(order))
+    _require(not unknown, f"{RULE_ID}: themes outside the registered order {list(order)}: {unknown}", error)
     _require(present, f"{RULE_ID}: no weighted theme", error)
-    return [t for t in REGISTERED_THEME_ORDER if t in present]
+    return [t for t in order if t in present]
 
 
-def resid_block(document: dict, error: type[Exception] = ResidError) -> dict:
-    """The ``theme_residualise`` block for a weights document that carries a rerank-true ``theme_standardise``."""
+def resid_block(document: dict, registered, error: type[Exception] = ResidError) -> dict:
+    """The ``theme_residualise`` block for a weights document that carries a rerank-true ``theme_standardise``;
+    ``registered``: the fitter's PRIOR_THEMES (rule 1)."""
     std = document.get("theme_standardise") if isinstance(document, dict) else None
     if not (isinstance(std, dict) and std.get("rule") in STANDARDISE_RULES and std.get("rerank") is True and
             isinstance(std.get("themes"), dict) and document.get("schema") == WEIGHTS_SCHEMA_V2):
         raise error(f"{RULE_ID}: {PRIOR_ONLY}")
     weights = document.get("weights", {})
     themes = [t for cid, t in std["themes"].items() if weights.get(cid, 0) > 0]
-    return {"rule": RULE_ID, "order": theme_order(themes, error)}
+    return {"rule": RULE_ID, "order": theme_order(themes, registered, error)}
 
 
-def attach(document: dict, error: type[Exception] = ResidError) -> dict:
+def attach(document: dict, registered, error: type[Exception] = ResidError) -> dict:
     """The weights document of the rule: the parent's document plus ``theme_residualise`` and ``provenance.resid``;
-    weights, signs, schema and the theme_standardise block are untouched."""
-    block = resid_block(document, error)
+    weights, signs, schema and the theme_standardise block are untouched. ``registered``: the fitter's PRIOR_THEMES."""
+    block = resid_block(document, registered, error)
     document[BLOCK] = block
     document.setdefault("provenance", {})["resid"] = {
         "rule": RULE_ID,
         "registration": "task-R-11-report.md (platform v8 R-11, Ruling E-38 slot 50), declared before any read",
         "rule_text": list(RULE_TEXT), "order": list(block["order"]),
-        "registered_order": list(REGISTERED_THEME_ORDER), "span_tolerance_relative": SPAN_TOLERANCE,
+        "registered_order": list(registered_order(registered, error)), "frozen_prefix": list(FROZEN_PREFIX),
+        "span_tolerance_relative": SPAN_TOLERANCE,
         "parent_composition": document.get("provenance", {}).get("rule"),
         "weights": "the parent composition's, unchanged (theme shares, within-theme weights, signs, member cap)",
         "runner": ("atx-equity-strategy-ic theme_residualise {rule, order} beside theme_standardise {rerank: true}: "
@@ -134,12 +152,12 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
                              "output bytes unchanged")
 
 
-def apply(args, document: dict, summary: dict, error: type[Exception] = ResidError) -> None:
+def apply(args, document: dict, summary: dict, registered, error: type[Exception] = ResidError) -> None:
     """The fitter hook: with ``--theme-resid`` attach the block (refused without a rerank-true theme_standardise) and
-    record it in the summary; without it nothing changes."""
+    record it in the summary; without it nothing changes. ``registered``: the fitter's PRIOR_THEMES (rule 1)."""
     if getattr(args, "theme_resid", None) is None:
         return
-    attach(document, error)
+    attach(document, registered, error)
     summary[BLOCK] = dict(document[BLOCK])
 
 
