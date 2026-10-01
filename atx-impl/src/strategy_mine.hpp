@@ -19,9 +19,10 @@
 // is written to OUTPUT/registry_head.txt and copied into campaign.json and ledger_line.json.
 //
 // Outputs (OUTPUT must be new): campaign.json (atx.mine-campaign/v1), trials.csv,
-// mined_members.json (atx.mined-members/v1, theme `mined`), ledger_line.json (one ready-to-append
-// atx.trial-ledger/v1 line, kind mining-campaign; the ledger adds prev_sha256 when it appends it)
-// and registry_head.txt.
+// mined_members.json (atx.mined-members/v1, theme `mined`), ledger_line.json (the Ruling E-33
+// atx.trial-ledger/v1 line of backtest_integrity.campaign_line: kind mining-campaign, count 0,
+// registry {path, chain_head, count = n_raw}; `research_cycle.py ledger-campaign --campaign OUTPUT`
+// rebuilds it from campaign.json, checks it and appends it chained) and registry_head.txt.
 #include <iosfwd>
 #include <span>
 #include <string>

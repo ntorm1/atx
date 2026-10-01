@@ -30,6 +30,13 @@ The same line is never appended twice (same trial_id).
 
 appends one chained defect line (review C-3; backtest_integrity.defect_line): the cell ledgered as TID is invalid
 (v8-prereg item 7). Refused when TID is not a ledgered cell line or is invalid already.
+
+  research_cycle.py ledger-campaign --ledger PATH --campaign DIR [--date D] [--root R]
+
+appends one chained mining campaign line (Ruling E-33; backtest_integrity.campaign_line) for the output DIR of
+atx-equity-strategy-mine: built from DIR/campaign.json (campaign_id, registry path and chain head, registry count =
+n_raw, the mined-v1 Bonferroni count; research window id) and refused unless the campaign is complete and the line
+equals the verb's DIR/ledger_line.json. It adds 0 to every N; the same registry head is never appended twice.
 """
 from __future__ import annotations
 
@@ -203,6 +210,50 @@ def defect_main(argv=None) -> int:
         print(f"research_cycle ledger-defect: {exc}", file=sys.stderr)
         return 2
     print(("appended" if appended else "already present (not appended)") + f": {json.dumps(rec, sort_keys=True)}")
+    return 0
+
+
+MINE_CAMPAIGN_SCHEMA = "atx.mine-campaign/v1"   # atx-equity-strategy-mine's campaign.json (platform v8 H-3)
+
+
+def campaign_record(directory: Path, date: str | None = None) -> dict:
+    """The Ruling E-33 ledger line of one atx-equity-strategy-mine output directory, built by
+    ``backtest_integrity.campaign_line`` from its campaign.json and checked against the verb's own ledger_line.json."""
+    campaign = json.loads((directory / "campaign.json").read_text(encoding="utf-8"))
+    if campaign.get("schema") != MINE_CAMPAIGN_SCHEMA or campaign.get("status") != "complete":
+        raise LedgerError(f"{directory}: campaign.json is not a complete {MINE_CAMPAIGN_SCHEMA} campaign")
+    reg = campaign["registry"]
+    rec = backtest_integrity().campaign_line(campaign["campaign_id"], reg["path"], reg["head"], reg["n_raw"],
+                                             research_window_id=campaign["research_window"]["id"], date=date)
+    verb = json.loads((directory / "ledger_line.json").read_text(encoding="utf-8"))
+    own = {k: v for k, v in rec.items() if k != "date"}
+    if verb != own:
+        keys = sorted(k for k in set(verb) | set(own) if verb.get(k) != own.get(k))
+        raise LedgerError(f"{directory}: ledger_line.json differs from campaign_line on {', '.join(keys)}")
+    return rec
+
+
+def campaign_main(argv=None) -> int:
+    """research_cycle.py ledger-campaign: one chained mining campaign line (Ruling E-33) for a mine output dir."""
+    ap = argparse.ArgumentParser(prog="research_cycle.py ledger-campaign",
+                                 description="append the mining campaign line of an atx-equity-strategy-mine output "
+                                             "(Ruling E-33: adds 0 to N, carries its registry count)")
+    ap.add_argument("--ledger", required=True, help="the trial ledger (root-relative or absolute)")
+    ap.add_argument("--campaign", required=True, type=Path, help="the mine verb's output directory")
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD of the campaign (optional)")
+    ap.add_argument("--root", type=Path, default=research_tree.REPO)
+    a = ap.parse_args(argv)
+    try:
+        if a.date is not None:
+            dt.date.fromisoformat(a.date)
+        rec = campaign_record(a.campaign if a.campaign.is_absolute() else a.root / a.campaign, a.date)
+        ledger = Path(a.ledger) if Path(a.ledger).is_absolute() else a.root / a.ledger
+        written = append(ledger, rec)
+    except (OSError, ValueError, LookupError, TypeError) as exc:  # missing or malformed output, a chain refusal
+        print(f"research_cycle ledger-campaign: {exc}", file=sys.stderr)
+        return 2
+    print(("appended" if written else "already present (not appended)") +
+          f": {json.dumps(written or rec, sort_keys=True)}")
     return 0
 
 

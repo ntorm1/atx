@@ -425,11 +425,25 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_EQ(copy->status, "evaluated") << "seed " << seed;
     EXPECT_GE(copy->f1, hurdle) << "seed " << seed;
     EXPECT_LT(copy->f2, hurdle) << "seed " << seed;
+    // Ruling E-33: exactly backtest_integrity.campaign_line(campaign_id, registry path, head,
+    // n_raw, research_window_id) -- count 0, the registry count beside it, trial_id (kind, head).
     const Json ledger = read_json(out / "ledger_line.json");
-    EXPECT_EQ(ledger.at("kind"), "mining-campaign");
-    EXPECT_EQ(ledger.at("count"), registry.at("new_records"));
-    EXPECT_EQ(ledger.at("registry").at("head"), registry.at("head"));
-    EXPECT_EQ(ledger.at("trial_id").get<std::string>().size(), 16U);
+    std::string registry_path = cfg.registry_path;
+    std::replace(registry_path.begin(), registry_path.end(), '\\', '/');
+    const auto head_hex = registry.at("head").get<std::string>();
+    const auto ident = core::sha256_hex(Json::array({"mining-campaign", head_hex}).dump());
+    ASSERT_TRUE(ident.has_value());
+    const Json expected_line{
+        {"schema", "atx.trial-ledger/v1"},
+        {"kind", "mining-campaign"},
+        {"count", 0},
+        {"campaign", "fixture"},
+        {"origin", "mined"},
+        {"window_id", campaign.at("research_window").at("id")},
+        {"registry",
+         {{"path", registry_path}, {"chain_head", head_hex}, {"count", registry.at("n_raw")}}},
+        {"trial_id", ident->substr(0, 16)}};
+    EXPECT_EQ(ledger, expected_line) << "seed " << seed;
     const auto head = ev::read_chain_head(out / "registry_head.txt");
     ASSERT_TRUE(head.has_value());
     EXPECT_EQ(head->records, registry.at("records").get<u64>());

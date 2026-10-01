@@ -14,6 +14,8 @@
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
   research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
                            (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell)
+  research_cycle.py ledger-campaign --ledger PATH --campaign DIR [--date D] [--root R]
+                           (research_ledger.py, Ruling E-33: a mine output's campaign line; count 0, registry count)
 
 Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
   --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's
@@ -1748,7 +1750,9 @@ def main(argv=None) -> int:
         return research_ledger.main(argv[1:])
     if argv[:1] == ["ledger-defect"]:        # review C-3: a ledgered cell found invalid afterwards
         return research_ledger.defect_main(argv[1:])
-    if argv[:2] == ["cache", "gc"]:          # unreferenced candidate caches and fit work dirs: research_gc.py
+    if argv[:1] == ["ledger-campaign"]:      # Ruling E-33: a mining campaign's line (atx-equity-strategy-mine)
+        return research_ledger.campaign_main(argv[1:])
+    if argv[:2] == ["cache", "gc"]:         # unreferenced candidate caches and fit work dirs: research_gc.py
         import research_gc  # noqa: PLC0415  (imports this module)
         return research_gc.main(argv[2:])
     if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock

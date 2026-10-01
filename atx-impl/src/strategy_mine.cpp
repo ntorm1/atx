@@ -476,19 +476,24 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                      {"theme", std::string(kMinedTheme)},
                      {"registry_head", head_hex},
                      {"members", members}};
-    // The ledger line's identity is its kind, campaign and registry head (trial_id rule of
-    // research_ledger.py: sha256 of the compact JSON array, first 16 hex digits).
-    const Json ident = Json::array({std::string(kLedgerKind), cfg.campaign_id, head_hex});
+    // Ruling E-33: the line backtest_integrity.campaign_line builds (count 0: it adds no trial to
+    // any ledger N; registry.count = n_raw, the mined-v1 Bonferroni count, the campaign's own
+    // budget), trial_id = sha256 of the compact ["mining-campaign", head], first 16 hex digits.
+    // `research_cycle.py ledger-campaign` rebuilds it from campaign.json through campaign_line,
+    // refuses a difference, and appends it chained (prev_sha256).
+    const Json ident = Json::array({std::string(kLedgerKind), head_hex});
     ATX_TRY(const std::string ident_sha, co::sha256_hex(ident.dump()));
+    std::string ledger_registry_path = cfg.registry_path;
+    std::replace(ledger_registry_path.begin(), ledger_registry_path.end(), '\\', '/');
     const Json ledger{
         {"schema", std::string(kLedgerSchema)},
         {"kind", std::string(kLedgerKind)},
-        {"count", inserted},
+        {"count", 0},
+        {"campaign", cfg.campaign_id},
         {"origin", "mined"},
         {"window_id", std::string(dt::kResearchWindowId)},
-        {"campaign_id", cfg.campaign_id},
-        {"rule", std::string(kMinedRule)},
-        {"registry", {{"records", head.records}, {"head", head_hex}, {"n_raw", n_raw}}},
+        {"registry",
+         {{"path", ledger_registry_path}, {"chain_head", head_hex}, {"count", n_raw}}},
         {"trial_id", ident_sha.substr(0, 16)}};
     ATX_TRY_VOID(write_text(out_dir / "trials.csv", trials_csv(trials)));
     ATX_TRY_VOID(write_text(out_dir / "mined_members.json", mined.dump(2) + "\n"));
