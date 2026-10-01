@@ -1441,3 +1441,45 @@ V71 plus `--label-role build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.
   - `ConfigJsonNotInDiscoverDigest` (known);
   - the `ParallelLockstepGrid` group (unconfigured);
   - build provenance `e2bb716b` for v8-8 (source `3bfd293e`).
+
+## Wave 0 part 1 (R1-R9) (2026-09-30)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `864b7836` (clean). Dispatch: brief
+`task-W0-run-brief.md`, runbook `w0-2-runbook.md` steps R1-R9 only (stop after R9; R10 and later not run). No merge,
+no build.
+
+### Preconditions
+
+1. **Disk:** `df -h /c` 40 G free of 458 G (>= 30 GB). Host RAM 16,068 MiB, 3,161 MiB available at start.
+2. **Runbook section 1:** `research_window.SEAL_DATE` prints `2024-01-01`; `p.SEAL, f.SEAL, h.SEAL, b.SEAL` print
+   `2024-01-01` four times. `research_window.json` SHA-256 `62cf2cfab1d0f61b02731a807ccfdd326bb2df91caff1173a3cf1b37e6e63584`
+   (`WINDOW_ID research-window-v2`, TRAIN `[2020-01-01, 2024-01-01)`). Vendor file unchanged: 3,617,973,507 B, mtime_ns
+   1789920127331396300 (the runbook's values).
+3. **Section 0 blockers at `864b7836`** (no fix needed; no precondition commit):
+   1. regsho_threshold republished: no step of R1-R9 reads that stage; its re-hash belongs before R10/R11 (part 2).
+      The live stage manifests R8 reads (v2-pit bridge, fundamentals, delisting) are hashed by the runner at R8's
+      launch (`--bind`) and checked by the role builder against the runbook pins; recorded under R8.
+   2. `LAST_SUB_QUARTER`: fixed, `atx-engine/tools/build_fundamental_events.py:76`
+      `"{}q{}".format(*rw.last_quarter_before_seal())` (prints `2023q4`); `SEAL = rw.SEAL` at `:71`.
+   3. insider 2024q1 file: fixed, `atx-engine/tools/research_fields_sec.py:620-622`
+      `if rw.partition_is_sealed(int(year), int(quarter)): ... continue` (never opened; `partition_is_sealed(2024, 1)`
+      True, `(2023, 4)` False).
+   4. `TRAIN_END_EXCLUSIVE`: fixed by V-1's move, `atx-impl/tools/backtest_integrity.py:97-108` (window module) and
+      `:576-585` (refusal reads `rw.TRAIN_END_NS` = 1704067200000000000); the studies `nav_summ.py` is now a shim that
+      runs `atx-impl/tools/nav_summ.py`.
+   5. one-line role command: procedural; linked universes refuse `--cache`
+      (`atx-engine/tools/prepare_recent_research.py:973`), so R1-R3 build the base role first, as the runbook does.
+   6. protocol line without a cell: fixed, `scripts/research_ledger.py:58` `NON_TRIAL_KINDS = (PROTOCOL, DEFECT,
+      VALIDATION)` skipped by `cells()` (`:95-103`); `scripts/research_cycle.py:1110-1125` `ledger_cells` reads
+      `research_ledger.cells`.
+4. **Executables:** latest tracked builds are v8-7a (source `ccb66a87`, receipt SHA-256 `61f2fbba...b952`) and v8-8
+   (source `3bfd293e`, test targets only, receipt `4058198e...eb5c`). `git diff --stat ccb66a87 864b7836` outside
+   `.superpowers/` is one test file (`atx-impl/tests/strategy_spo_v3_pin_test.cpp`), linked into no strategy exe, so no
+   build ran. On-disk SHA-256 equals the v8-7a receipt: ic `39bc5f331fd3b1fb6f5acf55fe153cfe13b1e994533e55f6ed2bf80d73fbce2b`,
+   targets `474fabb02ef61f7254c04cedf3444d7d85e61aff8cba974736866a8c80f3b7d1`.
+
+### Caps
+
+Brief caps: preparation steps (R1-R8: projection, role, scan, repair, bridge, events, grp fields, lo1, lo3) run under
+600 s / 2,560 MiB; R9 (IC exe, plan-only) under the IC cap 300 s / 2,560 MiB. The free-memory floor and the tools'
+own inner limits are the runbook's argv unchanged (`--min-free-mib` 768 for R2, 512 elsewhere).
