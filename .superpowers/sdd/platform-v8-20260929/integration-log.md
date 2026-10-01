@@ -1720,3 +1720,160 @@ opened. **No disclosure.**
   scaler); the ADV cap reads L (up to 1.25 x Q ADV); `strategy_live` has no `--risk-target`.
 - DLRET: runbook R15 is stale (the lo1 label-role command is in task-DLRET-report.md); B0c registration names `$DL`.
 - Known: `ConfigJsonNotInDiscoverDigest` (1).
+
+## integration 6 part B (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `d76da89d` (clean). Tag prefix v8-10.
+Scope (`task-INT6B-brief.md`): merge FIX-2, FIX-3, COMB2 and ORTH by SHA; part-B edits 1-4 (Rulings E-27b, E-35a,
+E-44, E-45, PM4-4); build; every suite; identities 1, 4, 7 and 8 (Ruling PM4-3). No Wave 0 step and no cell was run.
+
+### Merges (`--no-ff` by SHA, in order)
+
+| lane (tasks) | lane SHA | merge | conflicts and resolution |
+|---|---|---|---|
+| FIX-2 (N-1, N-3, P-2, P-3, T-1, T-2, T-4; round 1 E-31a / SPO-1 / SPO-5, SPO-4, E-14a, fixture) | `de32b9ad` | `78571ef2` | 21 files, +2092 / -240. `strategy_nav_v7.cpp` (2 hunks): union. RISK's `scaler` init and `risk_target_flag` / `risk_model_flag` kept; FIX-2's SPO-4 constructor body (`capacity_engine->set_primary_book({})`) and E-31a comment kept. N-2 `28051c4c` was already on root (the merge base): no-op, as expected. |
+| FIX-3 (F-1, F-2, F-3, F-5, F-6, F-8, F-9, F-10, F-14; round 1 E-27b) | `75acb091` | `b3360dcf` | 21 files, +859 / -133. Five conflicts, all unions: `backtest_integrity.appendix_a_v8` docstring (E-41 history reads and F-5 defect lines); `fit_composition_weights.py` constants (FIX-3's `AIM_V2_RULE_ID` / `AIM_RULES` beside ERA's `POOLED_*`, left for edit 1); `research_cycle.py` usage (ledger-defect `--ruling --date` beside ledger-campaign; E-41 beside the F-9 / F-6 resume text); `research_ledger.py` usage (same); `r6-spo-v3.json` description: FIX-3's F-14 `--capacity-curve` sentence with FIX-2's E-31a pre-return check (`limits_unmet_primary.count == 0`) and E-14a criterion (`aim_correlation_traded_after.mean`). |
+| COMB2 (R-10 ic-shrink-v1; round 1 ic-shrink-aim-v1, E-44) | `1e8af5b8` | `de2f9636` | 21 files, +2251 / -29. Three conflicts: `fit_composition_weights.py` (registration: aim-v2, then ic-shrink-v1, ic-shrink-aim-v1; `AIM_RULES` gains ic-shrink-aim-v1; the aim-v2 and ic-shrink `elif`s side by side); `test_fit_composition_weights.py` (constants pin both lanes' ids); `test_research_spec.py` (`NULL_PINS` / `EXPECTED_CHANGES` carry r8 and r10; the template-diff composition map carries r1, r3 -> aim-v2 and r10). |
+| ORTH (R-11 theme-resid-v1) | `c1cc57ce` | `7e5ff769` | 19 files, +1584 / -19. Six conflicts. C++: `method_recipe` / `save_combined_artifact` take COMB2's rule name (`std::string_view standardised`) plus ORTH's `bool residualised`; `score_role` records `std_rule` for standardise and residualise alike (both run the standardisation); `run_ic` passes `pinned.standardise_rule()` and `pinned.residualise`; help text carries both lanes' lines; both new TUs in `atx-impl-core` and in the `/O2` + no-PCH lists. theme-resid-v1 stays ORTH's separate `theme_residualise` block riding on any rerank-true `theme_standardise` row, not a row of COMB2's table (it adds no weight rule). Python: both imports; ic-shrink `attach` runs before `composition_resid.apply` (the block needs the rerank-true `theme_standardise`); `test_research_spec.py` carries r11 and `FIT_APPENDED`. |
+
+### Part-B edits (ruled)
+
+| commit | item | what |
+|---|---|---|
+| `dbfc09bc` | 1 (E-27b, E-35a) | `pooled_aim_weights`, `POOLED_AIM_TEXT` and the pooled `elif` deleted: the era pool's aim rule is ew-theme-aim-v2, fitted by `composition_rules.ew_theme_aim_v2` (FIX-3's shared `theme_gain_weights`) exactly as the single window. `POOLED_COMPOSITIONS` lists aim-v2 in place of aim-v1. A pooled `--composition ew-theme-aim-v1` is refused before any read: "...is not implemented by the pooled fit: it is the v5 rule (gains normalised across themes); Ruling E-27a's rule on an ew-theme-v1 parent is ew-theme-aim-v2 (Ruling E-27b)". The one-era equality test is un-skipped and parametrised: **passes for ew-theme-std-v1, ew-theme-std-aim-v1 and ew-theme-aim-v2** (no skip left); new refusal test. |
+| `8ea2e7bf` | 2 (E-45) | `r10.json` map is `{ew-theme-std-v1: ic-shrink-v1, ew-theme-std-aim-v1: ic-shrink-aim-v1}`; the ew-theme-v1 and ew-theme-aim-v1 entries are gone, the description says E-45. `test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072` pins the map; B0c (ew-theme-v1) and R-3-on-B0c (ew-theme-aim-v2) parents refuse at load ("maps the parent's value"). No v8 spec or template maps ew-theme-aim-v1 (r3 names it only as refused). |
+| `393910ed` | 3 (E-44, E-45) | **Behaviour change.** ORTH's `composition_resid.resid_block` required `theme_standardise.rule == ew-theme-std-v1` (written before COMB2's table), so the fitter refused `--theme-resid` on an accepted R-10 parent (rule ic-shrink-v1 / -aim-v1, rerank true) while the C++ runner accepts any rerank-true row. E-44 runs slots 49-51 on the last accepted parent; E-45 and ORTH's rule 6 define R-11 on any rerank-true `theme_standardise`. New `STANDARDISE_RULES = (ew-theme-std-v1, ic-shrink-v1, ic-shrink-aim-v1)`, tested equal to `(composition_rules.STD_RULE_ID,) + composition_ic_shrink.RULES`; no block, rerank false or an unknown rule is still refused. New test: `--theme-resid` on an ic-shrink-v1 fit attaches the block; the file minus block and `provenance.resid` is the ic-shrink-v1 file byte for byte. |
+| `f6288685` | 3 (PM4-4, E-44, E-45) | `r11.json` acceptance now reads as r10's: "paired S2 net dSR > 0 against the parent AND mechanics AND planned turnover per unit gross not higher than the parent's (the composition-cell criterion of R-1, plan 12.1)"; the domain text names the rerank-true parents and E-45's skip. Refusal of a parent without a rerank-true `theme_standardise` confirmed (fitter `test_refused_without_a_standardised_parent`, `test_attach_refuses_rerank_off_and_unregistered_themes`; C++ `composition_residualise`). `test_r11_appends_theme_resid_to_the_parents_fit` asserts both templates carry the same criterion text. |
+| `486aa4f3` | 4 | `PRIOR_COMPOSITIONS` is one tuple in registration order (values and order unchanged), the list of record; `COMPOSITIONS = (mv-shrink, netcost) + PRIOR_COMPOSITIONS`; `AIM_RULES` one tuple. `test_declared_constants` pins the derivation, `AIM_RULES`, `POOLED_COMPOSITIONS`, `composition_ic_shrink.RULES` and `STD_RULES` inside `PRIOR_COMPOSITIONS`, aim-v1 outside the pooled list, no duplicate id; `test_research_spec` pins `research_cycle.V5_AIM_RULE` / `V8_AIM_RULE` to the fitter's ids. |
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-10 | `486aa4f3` clean | atx-impl-strategy-ic-tests, -strategy-target-tests, atx-engine-book-tests, atx-engine-combine-tests, atx-impl-tests, -strategy-tests, -strategy-mine-tests, atx-engine-factory-tests, atx-equity-strategy-targets, -ic, -risk, -mine | ok, exit 0, 86.4 s, 47 TUs, 12 links, 4 jobs; reconfigured (glob mismatch: new sources); receipt `4fb85a9c...e286` |
+| v8-10a | `9c5cfa0c` clean | atx-impl-strategy-ic-tests, atx-impl-tests | ok, exit 0, 12.8 s, 2 TUs, 2 links; receipt `906ea731...5f5c` |
+
+**The four lanes' C++ (FIX-2 spo-v3 / NAV hook / book test, COMB2 kernel + rule + runner wiring + tests, ORTH kernel +
+rule + runner wiring + tests) compiled first time under `/W4 /WX`: 0 compile fixes, 0 warnings, 0 errors in the log.**
+
+Executables (v8-10 unless noted): targets `47d51210...cb43`, ic `b082a3a0...f352`, risk `3e0b630b...f9b9`, mine
+`04317818...0bb1`, target-tests `34ba09c4...228d`, book-tests `9796cfd8...871b`, combine-tests `0857efde...467c`,
+strategy-tests `3096ebe7...9943`, mine-tests `66e44aad...a07f`, factory-tests `3e8d84f2...9817` (unchanged since v8-9a);
+v8-10a: ic-tests `5ad7390f...438c`, impl-tests `572c2699...0416`. `git diff --stat 486aa4f3 9c5cfa0c`: 3 files, all
+tests (two Python, `strategy_ic_runner_test.cpp`); no executable's source changed after v8-10.
+
+### Test fixes (no compile fix)
+
+| commit | test | reason |
+|---|---|---|
+| `25295a5a` | `test_prepare_research_fields_module_reuse.py::test_seal_move_recomputes_every_holdings_field` (FIX-2) | iterated `hold.HOLD_FIELDS`, which now holds LIB2's `exch_up_365d`, a v12 field outside the 63-field RECIPE the fixture builds (StopIteration). Now iterates `HOLD_V9`, the file's own recipe constant: the same N-1 rule on every field the run builds. |
+| `25295a5a` | `test_research_fields_holdings_xsw.py::Reuse::test_self_copy_pin_change_and_fingerprints` (LIB2) | expected `reused_from.inputs == {security_master}`; N-1 pins the seal for every holdings kind (`build_xsw` drops rows at or after it), so the expectation names both pins exactly. |
+| `9c5cfa0c` | `CompositionV8.IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule` (COMB2, never run by the lane) | the validation manifest's `orientations_artifact_sha256` is the SHA-256 of the run's `orientations.json`, which records the run's `recipe_sha256`: a recipe link like `run_recipe_sha256`. The test now asserts it equals each run's own `orientations.json` SHA (null on train) and erases it with the other pins; every other key must still be equal. |
+
+Each is a premise slip (two of them created by the merge order: FIX-2 and LIB2 were written apart); each still asserts
+the registered rule exactly. No pin, golden or expected hash was edited.
+
+### Tests
+
+| exe / suite | build | result |
+|---|---|---|
+| target-tests `SpoV3.*:SpoPin.*:SpoHook.*:SpoTripwire.*:NavV7Hook.*:CostV2Capacity.*:AdvHold.*` (FIX-2) | v8-10 | **49/49**; pins hold: v1 `0xda6b6871e7e267c5` / `0xaabdbb72f99a6e13`, v2 `0xb039820b40d5cf24` / `0xd24b61721a7c698c` (the `3bfd293e` values) |
+| book-tests `TargetTracking.*` (FIX-2 T-4) | v8-10 | 10/10 |
+| combine-tests `GroupShrink.*:GroupCap.*:GroupRerank.*:GroupResidualise.*` (COMB2, ORTH) | v8-10 | 18/18 |
+| ic-tests `StrategyIcComposition.*:CompositionV8.*` (FIX-2 T-1) | v8-10a | 17/17 (v8-10: 16 + the IcShrink failure fixed above) |
+| ic-tests `IcShrinkV1.*:IcShrinkAimV1.*:GroupShrink.*:GroupCap.*:CompositionV8.*:StrategyIcComposition.*:StrategyIcRunner.*:MarginalIc.*` (COMB2) | v8-10a | 89/89 |
+| ic-tests `GroupResidualise.*:ThemeResid.*:ThemeResidRunner.*:CompositionV8.*:StrategyIcComposition.*:StrategyIcRunner.*:MarginalIc.*` (ORTH) | v8-10a | 86/86 |
+| impl-tests `SpoV3.*:SpoPin.*` | v8-10a | 17/17 (same pin lines) |
+| atx-impl-strategy-target-tests (whole) | v8-10 | **256/256** (253 + FIX-2) |
+| atx-engine-book-tests (whole) | v8-10 | **155/155** (154 + T-4) |
+| atx-impl-strategy-tests | v8-10 | **46/46** |
+| atx-impl-strategy-ic-tests | v8-10a | **139/139** (105 + 34: COMB2, ORTH, FIX-2 T-1) |
+| atx-impl-strategy-mine-tests | v8-10 | **18/18** |
+| atx-engine-factory-tests | v8-10 | **387/387** |
+| atx-engine-combine-tests (whole; no baseline in the brief) | v8-10 | 233/233 |
+| atx-impl-tests (run from the repo root) | v8-10a | 1,009 run: **1,003 passed, 5 skipped, 1 failed: the known `ConfigJsonNotInDiscoverDigest`** (979 + 24) |
+| atx-impl/strategies | - | **163** passed; `test_generate_library.py` with `ATX_V71_PLAN_JSON=build-equity/v8-i3-plan-v71.json` **9** passed |
+| atx-engine/tools (whole) | - | **253** passed, 6 subtests (252 + FIX-2 N-1; before `25295a5a`: 251 + 2 failed) |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute, v8-10) | v8-10 | **529 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset); ERA's equality test no longer skipped |
+| scripts/tests (whole; `ATX_EQUITY_BIN` absolute, v8-10) | v8-10 | **178 passed, 3 skipped** (the three RESEARCH_CYCLE_LIVE_ROOT tests); tiny_world `test_cycle_e2e.py` in it: no golden moved, `git status` clean after |
+
+impl-tests skips: Alpha101Orats x2, AtxImplDiscover.W6, SingleAlphaCapacity, FundamentalZoo (environment gates).
+
+### Identities (Ruling PM4-3; bounded runner, one at a time, clean tree `9c5cfa0c`, exes of v8-10)
+
+Every run: `python scripts/run_bounded_research.py --output build-equity/v8-i6b-<id>-run --seconds 180 --max-rss-mib
+1536 --min-free-mib 512 -- <argv>`, the argv read from `build-equity/v8-i5c-<id>-run/receipt.json` with only the
+output paths renamed `v8-i5c-` -> `v8-i6b-`. Every receipt: outcome completed, exit 0, `git: clean in the code
+pathspec`, source `9c5cfa0c`. The child's console went to a file that was never read; only receipt fields, file
+SHA-256s, JSON paths (no values) and a digit-masked line diff were looked at.
+
+| id | receipt.json SHA-256 | exe | wall s | peak MiB | result |
+|---|---|---|---|---|---|
+| 1a | `e71eb8d9fa2ca8b46afa648f77daddbd48b807775d831467fecc455f6ddd2b0f` | targets | 14.1 | 359 | **PASS** |
+| 1b | `f9b9607d971b7e02830acb133a1af9de7a75b1fc01bb30c2b82624b05bdd796f` | targets | 14.3 | 360 | **PASS** |
+| 4 step 1 | `2da29bb737f8ba11e22d18e5cb4f96b22ce549e89b6135957c6da218a3e5e07f` | python | 0.3 | 5 | weights equal; module SHA differs (declared) |
+| 4 step 2 | `49f7e061b964b23b433aad4c0a6d19f9c71e326d74aa233245968572ea534fba` | ic | 18.6 | 507 | **PASS** |
+| 7 | `72f294b7544ab4d9cb7b66a4445563405c609c11825fc13d81cf7851ba555b6a` | targets | 34.5 | 360 | **PASS** |
+| 8 | `db74e3118041ff4cedf2a5b8e6194b0d3565264fab2185ef415058a9b944ed87` | targets | 13.2 | 464 | **PASS** |
+
+- **1a** (V71 argv, `build-equity/v8-i6b-i1-nav`): **12 of 12 files byte-identical** to the accepted cell
+  `mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247` and to part C's `v8-i5c-i1-nav` (primary daily
+  `fbec452e...d5f4`, recipe `b956bbcc...34fa`, summary `5b109a70...170a`); `stdout.log` `813ce59c...` equals part C.
+- **1b** (`v7-w4-nav-on` argv with `--emit-holdings`): NAV **12 of 12** identical to `v7-w4-nav-on` (recipe
+  `2324dd91...0858`, summary `998eca31...fea3`); holdings **4 of 4** identical to **`v7-w4-holdings`**
+  (`holdings.f64` `ce5523c6...eff4`, `holdings_days.csv` `43d9d2fe...3857`, `holdings_index.json` `aef15691...fde1`,
+  `manifest.json` `532044d5...e141`); `stdout.log` `b40bd0cc...` equals part C.
+- **4 step 1** (`composition_rules.py identity-weights`, out `build-equity/v8-i6b-i4-identity-weights.json`):
+  `d49e208c...2eae` against part C's `88635696...1d7e`. **Exactly one JSON path differs:
+  `provenance.std_identity.module_sha256`** (composition_rules.py changed in FIX-3: `theme_gain_weights`, aim-v2);
+  weights, signs and the `theme_standardise` block (rerank false) are identical. A declared tool-fingerprint link,
+  not a weight change.
+- **4 step 2** (the exact part C argv: `--composition-weights build-equity/v8-i5c-i4-identity-weights.json
+  --composition-weights-sha256 88635696...`, only `--output build-equity/v8-i6b-i4-w` new):
+  - against part C's `v8-i5c-i4-w`: **10 of 12 byte-identical** (`recipe.json` `15b200d8...6410`,
+    `orientations.json` `6d0d1be9...849d`, `train_combined.json` `2831faf0...3e17`, every payload and both CSVs);
+    `summary.json` (201 JSON paths) and `train_candidates.jsonl` (96 records, 192 paths) differ **only in timing
+    paths** (a check found 0 other paths);
+  - against the accepted `mega-v71w-train-ew-1`: `train_combined.f64` `1cf245b1...3912`, `_member.u8` and `_finite.u8`
+    `732f47b7...f1a4`, `_ids.u64` `102e89c6...741c`, `_sessions.i64` `89af5340...2830`, `train_planned_targets.csv`
+    `e6dbd9a8...5297`, `train_daily_ic.csv` `7e6e596f...bce6` **byte-identical**; recipe, orientations, combined json,
+    summary and candidates differ by the hash links and timings part C recorded.
+- **7** (spo-v2 argv, lo3): **9 of 9 byte-identical** to the recorded cell `mega-nav-v70-lo3-spo-v2-G1.0` and to part C
+  (`spo_diagnostics.csv` `1131cd59...7dc2`, `v7_transfer_coefficient.csv` `a27505c2...1bb0`, `v7_extras.json`
+  `d96be152...42eb`, recipe `d6ffb028...58c8`, summary `75caf7f6...c44f`). FIX-2's E-31a primary-book void and the
+  `--spo-iters` / `--spo-tol` refusal bind spo-v3 only: spo-v2 with `--spo-iters 500 --spo-tol 1e-8` ran unchanged.
+  `stdout.log` differs from part C in two lines only (digit-masked diff): the solver-timing line and the output path.
+- **8** (V71 plus `--label-role` = `--role`): the **10 daily and events CSVs byte-identical** to 1a; `recipe.json`
+  `10961936...6635` and `summary.json` `6753c13c...5c00` (E-25's declared `label_role` keys) **byte-identical to part
+  C's `v8-i5c-i8-nav`**: 12 of 12 against part C; `stdout.log` `d8ee4a6a...` equals part C.
+
+### Hidden-data record
+
+- Inputs: the TRAIN 2020-2022 roles (lo1 `3e79978a`, lo3 `40e3d832`), their fields-v7 / v9, the accepted v6.1, v7.0-lo3
+  and v7.1 artifacts, `v7-w4-*`, the lo3 risk model `786cb601`, `mega-candidate-cache-v71`, part C's outputs, and
+  `build-equity/v8-i3-plan-v71.json` (the plan-only file of earlier integrations). Tests used synthetic fixtures and
+  tiny_world.
+- Read: the four lane reports, rulings, sources, build receipts and logs, runner receipts (outcome, exit, timings,
+  log SHA-256s), output-file SHA-256s, JSON paths of differences (no values) and a digit-masked line diff of two stdout
+  logs. No return, Sharpe or IC statistic was read or printed.
+- A scan of every `v8-i6b-*-run` stdout and stderr and of the runner consoles for dates in 2024 or later found only the
+  runs' own `started_utc` wall-clock (2026-10-01).
+- **Nothing dated 2024-01-01 or later was opened. No disclosure.**
+
+### Open items
+
+- Behaviour change for the PM to confirm: `393910ed` lets `--theme-resid` attach on R-10's ic-shrink-v1 /
+  ic-shrink-aim-v1 parents (E-44 / E-45 / ORTH rule 6; the runner already accepted them).
+- R-10 under `--era`: COMB2's registration says the IC estimate uses "the pooled era decisions" under `--era`, but
+  `POOLED_COMPOSITIONS` (ERA, E-35) does not list ic-shrink-v1 / -aim-v1, so a pooled R-10 fit is refused by name.
+  Nothing in v8 plans one; root to rule if an OD-3 history read of a V8-F on an R-10 parent is planned.
+- Identity 4's step-1 weights file now carries the new `composition_rules.py` module SHA (`d49e208c`); any later
+  identity that regenerates it will differ from `88635696` in that one path.
+- FIX-2 carried: the E-31a CLI path (exit 3, `v7_extras.json` voided / limits_unmet) is not tested end to end;
+  `prepare_research_fields.py` `REUSE_MODULE_RULE` text and the not-reused reason do not name the seal (N-1 deviation);
+  fields dirs built before `6ed5fef8` recompute their 9 holdings fields once on the next `--reuse` (manifests gain
+  `seal_date`).
+- FIX-3 carried: untouched minors F-4, F-7, F-11, F-12, F-13; the fitter has no protocol input (aim-v1 is refused for v8
+  in research_cycle spec validation, not in a direct fitter call).
+- Next per PM3-9 / PM4-2: Wave 0 part 2 (R10-R14) on this head; MINE-FIX (integration 7) only after the V8-F freeze.
+- Known: `ConfigJsonNotInDiscoverDigest` (1).
