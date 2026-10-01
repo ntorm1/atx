@@ -462,7 +462,9 @@ co::Result<MineMemory> mine_memory(const MineFootprint &f) {
   m.full_engines = workers * cells * slot_cell;
   m.full_signals = workers * cells * sizeof(f64);
   m.members = static_cast<u64>(f.members) * cells * sizeof(f64);
-  m.shortlist = static_cast<u64>(f.shortlist) * cells * sizeof(f64);
+  // Ruling PM5-9: the rho step runs over every trial above the hurdle, streamed so that at most
+  // the cap plus one signals are held at once.
+  m.shortlist = (static_cast<u64>(f.shortlist) + 1U) * cells * sizeof(f64);
   m.promotion_engine = cells * slot_cell;
   m.rho_rows = rho * names * sizeof(f64) + rho * rho * kPairBytes + kSortPairBytes * names;
   m.confirm_cache = kIcCacheCellBytes * cells + kIcCacheDateBytes * dates + full_workspace;

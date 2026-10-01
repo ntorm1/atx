@@ -585,9 +585,11 @@ st::MineFootprint fixture_footprint(usize workers) {
 // largest of its engine, rho and confirm steps). The pinned values come from the lane report's
 // Python mirror of that model. One more trial costs its daily IC, its allowance and its registry
 // row; one more prior record its registry row. On the 4-year role the promotion is the peak at 1
-// and 4 workers alike (5,253 MiB; the old sum was 11,111 MiB at 4 workers). The configuration
-// bounds need far more than the 64 GiB --max-memory-mib ceiling, so such a campaign is refused
-// before any payload.
+// and 4 workers alike (5,319 MiB; the old sum was 11,111 MiB at 4 workers). The shortlist term
+// is the cap plus one signals (Ruling PM5-9). The first real campaign's shape (12 fields, one
+// regressor, 53 members, stage 1 only, no racing) needs 6,296 MiB at 1 and 4 workers, inside
+// its 7,680 MiB ceiling. The configuration bounds need far more than the 64 GiB
+// --max-memory-mib ceiling, so such a campaign is refused before any payload.
 TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(st::kMineMaxProgramSlots, 8U);
   st::MineFootprint small;
@@ -632,7 +634,7 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(m.full_engines, u64{2'228'330'000});
   EXPECT_EQ(m.full_signals, u64{274'256'000});
   EXPECT_EQ(m.members, u64{2'194'048'000});
-  EXPECT_EQ(m.shortlist, u64{1'097'024'000});
+  EXPECT_EQ(m.shortlist, u64{1'165'588'000});
   EXPECT_EQ(m.promotion_engine, u64{557'082'500});
   EXPECT_EQ(m.rho_rows, u64{2'476'864});
   EXPECT_EQ(m.confirm_cache, u64{420'892'660});
@@ -650,13 +652,30 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(m.peak(), resident + std::max(search, promotion));
   EXPECT_EQ(m.resident(), u64{1'660'442'932});
   EXPECT_EQ(m.search(), u64{3'133'906'420});
-  EXPECT_EQ(m.promotion(), u64{3'848'154'500});
-  EXPECT_EQ(st::mine_working_bytes(four_year_footprint(4)).value(), u64{5'508'597'432});
+  EXPECT_EQ(m.promotion(), u64{3'916'718'500});
+  EXPECT_EQ(st::mine_working_bytes(four_year_footprint(4)).value(), u64{5'577'161'432});
   const auto one = st::mine_memory(four_year_footprint(1));
   ASSERT_TRUE(one.has_value()) << one.error().to_string();
   EXPECT_EQ(one->search(), u64{1'595'598'920});
-  EXPECT_EQ(one->promotion(), u64{3'848'154'500});
-  EXPECT_EQ(one->peak(), u64{5'508'597'432});
+  EXPECT_EQ(one->promotion(), u64{3'916'718'500});
+  EXPECT_EQ(one->peak(), u64{5'577'161'432});
+  // The first real campaign (lane MINE-RUN's mine-c1): 12 fields, one regressor, at most 53
+  // members, the 132 stage-1 templates, no racing, the cap of 16.
+  for (const usize workers : {usize{1}, usize{4}}) {
+    auto c1 = four_year_footprint(workers);
+    c1.extras = 12;
+    c1.regressors = 1;
+    c1.members = 53;
+    c1.rungs = 0;
+    c1.trials = 12U * 11U;
+    const auto first = st::mine_memory(c1);
+    ASSERT_TRUE(first.has_value()) << first.error().to_string();
+    EXPECT_EQ(first->resident(), u64{1'245'173'652});
+    EXPECT_EQ(first->search(), workers == 1U ? u64{1'046'539'160} : u64{2'926'158'260});
+    EXPECT_EQ(first->promotion(), u64{5'356'562'500});
+    EXPECT_EQ(first->peak(), u64{6'601'736'152});
+    EXPECT_LE(first->peak(), u64{7680} << 20);
+  }
   // Without racing the race terms vanish and the search is the fitness and the full pass.
   auto unraced = four_year_footprint(4);
   unraced.rungs = 0;
@@ -669,7 +688,7 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
                                  plain->full_engines + plain->full_signals);
   // The fixture campaigns (StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers reads
   // these back from campaign.json).
-  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(1)).value(), u64{95'435'840});
+  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(1)).value(), u64{95'671'872});
   EXPECT_EQ(st::mine_working_bytes(fixture_footprint(4)).value(), u64{101'584'960});
 
   st::MineFootprint bounds;
@@ -1073,6 +1092,10 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
     EXPECT_EQ(logs[k], logs[0]) << k;
     EXPECT_EQ(members[k], members[0]) << k;
   }
+  // Lane MINE-MEM: the fixture's registry head and trial log, recorded (--gtest_output=xml) so
+  // one build's campaign can be compared with another's; equal at 1 and 4 workers above.
+  RecordProperty("fixture_registry_head", heads.front());
+  RecordProperty("fixture_trials_csv_sha256", core::sha256_hex(logs.front()).value_or(""));
   auto again = f.config("w1a", 7, 1);
   again.output_directory = (f.dir.path / "out-w1a-again").string();
   std::ostringstream progress;

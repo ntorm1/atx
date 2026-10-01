@@ -148,7 +148,8 @@ struct MineMemory {
   atx::u64 full_signals{};        // W x C x 8: one full-pass signal per worker
   // Promotion: after the search, the fitness released.
   atx::u64 members{};          // M x C x 8: loaded after the search
-  atx::u64 shortlist{};        // K x C x 8: the shortlist's signals
+  atx::u64 shortlist{};        // (K + 1) x C x 8: the signals the rho step and the confirm read
+                               // hold at once (Ruling PM5-9: streamed, at most K + 1)
   atx::u64 promotion_engine{}; // C x (8 S + 1): while the shortlist is evaluated
   atx::u64 rho_rows{};         // (M + K) x names x 8 + (M + K)^2 x 16 + 16 names: rank rows,
                                // pair sums and counts, sort buffer
