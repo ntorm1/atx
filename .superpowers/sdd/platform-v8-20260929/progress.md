@@ -785,3 +785,27 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   admission trials 0; history reads 0; validation reads 2 (before v8); 2024+ never opened (LIB2 disclosure above).
 - Pitch determination unchanged: no v8 metric exists.
 - Status: docs/plans/2026-09-30-platform-v8-status-3.md. Goal prompt: docs/plans/2026-09-30-platform-v8-next-goal-prompt-3.md.
+
+## 2026-10-01 PM session 4 (root head 272cc897; code 48c625fc; build v8-9a). Rulings before dispatch; no read yet on 2020-2023
+- Goal prompt 3 (7 steps). Model: Opus 5.5 for every lane, integrator and reader; PM coordinates and rules only.
+  All pools clean at their lane heads (3 ebc254f0, 4 c1cc57ce, 7 de32b9ad, 8 d7f98f1b, 9 35bcda95, 10 75acb091,
+  11 1e8af5b8); root clean; host 6.2 GB free memory, 59 GB disk.
+- Ruling PM4-1 (MINE-FIX resumed): the lane resumes now on pool 8 for MINE-7, 8, 6, 9, 10 (its report's list) --
+  the goal is to finish v8 and a half-fixed verb with an unwired hurdle factor is worse than either end state; the
+  lane is isolated (no build, no data) and costs root nothing -- cost if wrong: one lane's tokens.
+- Ruling PM4-2 (integration 7 timing): MINE-FIX merges (integration 7) only after the V8-F freeze gate, never
+  between Wave 0 part 2 and the last cell -- it adds a member to an engine header (ResearchIcRead.ic_dates) and
+  would move executable and tool-commit pins under locked specs mid-research; nothing in v8 runs a campaign --
+  cost if wrong: the mining verb lands a few hours later.
+- Ruling PM4-3 (identities after part B): after the part-B build the integrator re-runs identities 1, 4, 7, 8
+  (argv of "integration 5 part C") because FIX-2, COMB2 and ORTH touch strategy_nav_v7, strategy_spo and the IC
+  runner, and fields v9 and every cell are built on these executables -- byte identity with the flags absent is
+  the lane rule and is cheapest to check before the 4-year build -- cost if wrong: about 10 minutes of root time.
+- Ruling PM4-4 (R-11 criterion text): r11.json's recorded acceptance carries R-1's turnover criterion beside
+  rule 5 (E-44 governs; ORTH wrote rule 5 only); the integrator aligns the template text and test in part B --
+  cost if wrong: none; E-44 already binds the verdict.
+- Ruling PM4-5 (E-15 wording, FIX-2 round-1 concern): E-15 stands as recorded (the aim's ADV cap reads the run's
+  initial NAV at every capacity multiple); no per-multiple desired target is built in v8 -- the capacity curve is
+  report-only (E-29, E-37) and the primary series cannot move -- cost if wrong: the 2x / 4x capacity rows are
+  slightly optimistic on the aim cap; disclosed beside the curve.
+- Dispatched: integrator 6B (root; brief task-INT6B-brief.md; tag prefix v8-10); MINE-FIX resume (pool 8).
