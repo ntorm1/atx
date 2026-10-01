@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import gc
 import itertools
 import math
 import sys
@@ -110,16 +111,18 @@ def nw_t(x: np.ndarray, lag: int, min_n: int | None = None) -> float:
 
 
 def session_ics(x: np.ndarray, y: np.ndarray, grp: np.ndarray | None, risk: np.ndarray | None,
-                min_names: int) -> tuple[float, float, float] | None:
+                min_names: int, y_cache: tuple[np.ndarray, np.ndarray] | None = None) -> tuple[float, float, float] | None:
     """(raw, industry-neutral, risk-adjusted) IC of one session; ``None`` below ``min_names`` usable lines.
 
     ``grp`` holds integer group codes (< 0 = unclassified), ``risk`` an (n, 3) matrix of the risk inputs; the variants
-    that lack their inputs, or the lines to compute on, are NaN."""
+    that lack their inputs, or the lines to compute on, are NaN. ``y_cache`` = (finite mask of ``y``, its ranks) lets the
+    caller share the label ranks across features whose usable lines equal the label's."""
     ok = np.isfinite(x) & np.isfinite(y)
     if int(ok.sum()) < min_names:
         return None
     xs, ys = x[ok], y[ok]
-    rx, ry = rank_avg(xs), rank_avg(ys)
+    rx = rank_avg(xs)
+    ry = y_cache[1] if y_cache is not None and np.array_equal(ok, y_cache[0]) else rank_avg(ys)
     raw = _corr(rx, ry)
     ind = risk_ic = float("nan")
     if grp is not None:
@@ -291,14 +294,23 @@ def _batches(feats: list[tuple[str, str]]) -> list[tuple[str, list[str]]]:
     return out
 
 
-def _fetch_block(con, stage: str, year: int, cols: list[str], n: int) -> np.ndarray:
+def _fetch_block(con, stage: str, year: int, cols: list[str], n: int, step: int = 4) -> np.ndarray:
+    """(n, len(cols)) float64 block of ``cols`` aligned to ``meta`` row order (NaN = null / non-finite / no stage row).
+
+    Fetched ``step`` columns at a time so the transient copies stay small (memory guard)."""
+    X = np.full((n, len(cols)), np.nan)
     if year not in _stage_years(stage):
-        return np.full((n, len(cols)), np.nan)
-    sel = ", ".join(f"CAST(f.{c} AS DOUBLE) AS c{i}" for i, c in enumerate(cols))
-    got = con.execute(f"""SELECT {sel} FROM meta m LEFT JOIN read_parquet('{_stage_glob(stage, year)}') f
-                          ON f.session_date = m.session_date AND f.security_id = m.security_id ORDER BY m.rn""").fetchnumpy()
-    X = np.column_stack([_f(got[f"c{i}"]) for i in range(len(cols))])
-    X[~np.isfinite(X)] = np.nan
+        return X
+    for lo in range(0, len(cols), step):
+        part = cols[lo:lo + step]
+        sel = ", ".join(f"CAST(f.{c} AS DOUBLE) AS c{i}" for i, c in enumerate(part))
+        got = con.execute(f"""SELECT {sel} FROM meta m LEFT JOIN read_parquet('{_stage_glob(stage, year)}') f
+                              ON f.session_date = m.session_date AND f.security_id = m.security_id ORDER BY m.rn""").fetchnumpy()
+        for i in range(len(part)):
+            col = _f(got.pop(f"c{i}"))
+            col[~np.isfinite(col)] = np.nan
+            X[:, lo + i] = col
+        del got
     return X
 
 
@@ -397,7 +409,7 @@ def _redundancy(con, cal, train_end, feats: list[tuple[str, str]], overlap: list
 
 
 def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
-        overlap: tuple[str, list[str] | None] | None = None, memory: str = "450MB", threads: int = 2) -> dict[str, Any]:
+        overlap: tuple[str, list[str] | None] | None = None, memory: str = "220MB", threads: int = 2) -> dict[str, Any]:
     root = C.build_root()
     con = C.connect(memory=memory, threads=threads, db_file="ic_eval.duckdb")
     cal = C.load_calendar(con)
@@ -505,15 +517,18 @@ def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
                         ysub = Y[h][sl][um]
                         if int(np.isfinite(ysub).sum()) < MIN_NAMES:
                             continue
+                        yfin = np.isfinite(ysub)
+                        ycache = (yfin, rank_avg(ysub[yfin]))
                         for k, g in enumerate(gj):
                             xs = cur_X[um, k]
-                            res = session_ics(xs, ysub, gsub, rsub, MIN_NAMES)
+                            res = session_ics(xs, ysub, gsub, rsub, MIN_NAMES, ycache)
                             if res is None:
                                 continue
                             nn = int((np.isfinite(xs) & np.isfinite(ysub)).sum())
                             series.setdefault((g, h, u_name), Series()).add(di, nn, res)
             del X
         con.execute("DROP TABLE IF EXISTS meta")
+        gc.collect()
         print(f"ic_eval: year {year} done", flush=True)
     red, pair_info = _redundancy(con, cal, train_end, feats, ovl_cols, notices) if feats else ({}, {"pairs": {}, "months": [], "overlap": {}})
     con.close()
@@ -547,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--features", nargs="+", required=True, help="<stage>[:<col,...>] (stage: panel|characteristics|gold)")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--overlap-with", default=None, help="<stage>:<col,...>")
-    ap.add_argument("--memory", default="450MB")
+    ap.add_argument("--memory", default="220MB")
     a = ap.parse_args(argv)
     res = run([parse_features(s) for s in a.features], a.out,
               overlap=parse_features(a.overlap_with) if a.overlap_with else None, memory=a.memory)
