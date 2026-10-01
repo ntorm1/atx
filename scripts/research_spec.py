@@ -14,7 +14,7 @@ research_cycle.py loads a template like any SPEC (plan, run, status, lock). A te
                                           the bare flag / remove the option and its value / root fills it (null: a
                                           "<fill:...>" placeholder; run refuses while one is left) / the value by
                                           the parent's value (a parent value the map lacks is refused; e.g. R-3's
-                                          --composition ew-theme-v1 -> ew-theme-aim-v1, ew-theme-std-v1 ->
+                                          --composition ew-theme-v1 -> ew-theme-aim-v2, ew-theme-std-v1 ->
                                           ew-theme-std-aim-v1)
    "locked": {key: {"path", "sha256"}}}   `lock --write`: the pins of the inputs the template derives
 

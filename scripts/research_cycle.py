@@ -73,6 +73,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   (UNLOCKED), written by `lock --write`
   ic.w_flags      {"--opt": "value" | true | false} applied to ic.flags for the weighted (w) pass only (research_spec
                   apply_flags), e.g. Ruling E-28's --max-memory-mib 3072 for a theme_standardise composition
+  fit.flags       (Ruling E-27b) a v8 spec refuses --composition ew-theme-aim-v1 (the v5 rule); R-3 on an ew-theme-v1
+                  parent fits ew-theme-aim-v2
 
 SPEC is a JSON file (``atx.research-cycle-spec/v1``; a relative SPEC not found from the current directory is looked
 up next to this script, so ``specs/v61.json`` works from the worktree root). Paths inside it are relative to --root
@@ -205,6 +207,7 @@ SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("la
 DSR_FROM_LEDGER = "ledger+1"           # summ.dsr_n: resolved at scoring time from the trial ledger
 SUMM_V8 = "v8"                         # nav_summ --protocol v8: seed 20260929, 4,999 draws, origin + window_id lines
 V8_FIXED_FLAGS = ("--seed", "--draws", "--block")   # review F-2: v8-prereg item 4's bootstrap; never in a v8 summ.extra
+V5_AIM_RULE, V8_AIM_RULE = "ew-theme-aim-v1", "ew-theme-aim-v2"   # Ruling E-27b: a v8 spec never fits the v5 rule
 DEFAULT_OUT_ROOT = "build-equity"      # derived cache / fit roots and the cycle dir when the spec has no out_root
 RECEIPT_MODES = ("every-phase",)       # spec "receipts": the direct phases run through the bounded runner too
 CAP_KEYS = ("seconds", "max_rss_mib", "min_free_mib")
@@ -394,6 +397,11 @@ def validate_v8_keys(spec: dict) -> None:
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
     validate_summ_protocol(spec)
+    if summ_protocol(spec) == SUMM_V8 and option_value((spec.get("fit") or {}).get("flags", []),
+                                                       "--composition") == V5_AIM_RULE:
+        raise CycleError(f"spec fit: {V5_AIM_RULE} is the v5 R4' rule (aim gains normalised globally); a v8 spec fits "
+                         f"R-3 on an ew-theme-v1 parent with {V8_AIM_RULE} (Ruling E-27b: gains renormalised inside "
+                         "each theme, member cap 1/(2T))", EXIT_USAGE)
     inputs = spec["inputs"]
     sec = [k for k in SEC_INPUTS if k in inputs]
     if sec and len(sec) != len(SEC_INPUTS):

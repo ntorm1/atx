@@ -87,14 +87,16 @@ second moments of the TRAIN signal only (no means, no covariances, no returns).
                finite on both days (n_both >= 50), at exact lags 0..21 and 28, 35, ..., 126.
   g_k          theta * sum_{j=0..126} (1-theta)^j rho_k(j), theta = 0.05, rho linearly interpolated between exact
                lags, a NaN lag counts 0; clipped to [0.05, 1].
-  weights      v8 Ruling E-27a (R-3 on an ew-theme-v1 parent; it supersedes R4''s global normalisation
-               w_k = (g_k / (T * n_theme(k))) / sum_m (g_m / (T * n_theme(m)))): w_k = (1/T) g_k / sum_{theme(k)} g over
-               admitted non-degenerate members (renormalised inside the theme, each theme 1/T), then the member cap
-               1/(2T), exactly as ew-theme-std-aim-v1 (composition_rules.ew_theme_aim / theme_gain_weights).
+  weights      w_k = (g_k / (T * n_theme(k))) / sum_m (g_m / (T * n_theme(m))) over admitted non-degenerate
+               members (normalised globally, not within a theme).
   report only  per-candidate rho and g, half-sample gains (first / second half of the TRAIN decisions) and the
                coverage-effective theme weight (mean over TRAIN decisions of sum_{k in theme} w_k c_k(d) /
                sum_k w_k c_k(d), c_k(d) = live names / used names) land in ``provenance.aim``; nothing in them
                feeds back into the weights. ``ew-theme-v1`` output bytes are unchanged (no aim keys).
+v8 (``--composition ew-theme-aim-v2``; R-3 on an ew-theme-v1 parent, Rulings E-27a and E-27b): the same gains and
+report block, weights w_k = (1/T) g_k / sum_{theme(k)} g (renormalised inside the theme, each theme 1/T), then the
+member cap 1/(2T): composition_rules.ew_theme_aim_v2, the code ew-theme-std-aim-v1 runs (theme_gain_weights). The file
+stays schema v1. ``ew-theme-aim-v1`` keeps the v5 rule above byte for byte; research_cycle.py refuses it in a v8 spec.
 
 v6 (``--composition ew-theme-v6`` with the same prior orientation/screens; v4-prereg.md "## v6 revision" item V6-W,
 declared before any v6 TRAIN read; the rule text is binding): the admitted non-degenerate members of the screen, then
@@ -112,8 +114,7 @@ declared before any v6 TRAIN read; the rule text is binding): the admitted non-d
       w_k s_k r_k,i / sum_{k present} w_k, W_theme = sum of the theme's weights; a theme with no present member adds
       nothing. ``provenance.v6`` records the rule, threshold, shrunk / dropped / merged members and the input SHAs.
       The file's schema is ``atx.dsl-composition-weights/v2`` (the runner accepts v2 iff the block is present).
-  Only ``ew-theme-v6`` writes these keys: ``ew-theme-v1`` and ``ew-theme-aim-v1`` files stay schema v1 (ew-theme-v1
-  bytes unchanged; ew-theme-aim-v1 weights per Ruling E-27a since platform v8).
+  Only ``ew-theme-v6`` writes these keys: ``ew-theme-v1`` and ``ew-theme-aim-v1`` bytes are unchanged (schema v1).
 
 Incremental (v8 C-1): with ``--work-dir W`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted under one store per role and research window,
@@ -211,7 +212,11 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
                                     COMPOSITIONS + (composition_rules.STD_RULE_ID,))
 PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,),  # v8 R-3, Ruling E-27
                                     COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
-AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
+# v8 R-3 on an ew-theme-v1 parent (Rulings E-27a, E-27b): ew-theme-aim-v2, the gains renormalised inside each theme and
+# the member cap 1/(2T), composition_rules.ew_theme_aim_v2 (the code of ew-theme-std-aim-v1); ew-theme-aim-v1 keeps v5.
+AIM_V2_RULE_ID = composition_rules.AIM_V2_RULE_ID
+PRIOR_COMPOSITIONS, COMPOSITIONS = PRIOR_COMPOSITIONS + (AIM_V2_RULE_ID,), COMPOSITIONS + (AIM_V2_RULE_ID,)
+AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID, AIM_V2_RULE_ID)  # the compositions that read aim gains
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -1520,6 +1525,18 @@ def ew_theme_weights(themes: list[str]) -> tuple[np.ndarray, dict]:
     return weights, table
 
 
+def ew_theme_aim_weights(themes: list[str], gains: list[float]) -> tuple[np.ndarray, dict]:
+    """ew-theme-aim-v1 (R4'): w_k proportional to g_k / (themes present * members of the theme), normalised globally."""
+    present = sorted(set(themes))
+    counts = {t: themes.count(t) for t in present}
+    raw = np.array([g / (len(present) * counts[t]) for t, g in zip(themes, gains)])
+    require(bool(np.all(np.isfinite(raw))) and float(raw.sum()) > 0, "fit: aim gains must be finite with a positive sum")
+    weights = raw / raw.sum()
+    table = {t: {"admitted_count": counts[t], "nominal_theme_weight": 1.0 / len(present),
+                 "aim_theme_weight": float(sum(w for w, th in zip(weights, themes) if th == t))} for t in present}
+    return weights, table
+
+
 def ew_theme_v6_weights(ids: list[str], themes: list[str], taus: list[float]) -> tuple[np.ndarray, dict, dict]:
     """ew-theme-v6 (v6 revision V6-W) over the members that take part (admitted, non-degenerate), in input order.
 
@@ -2016,7 +2033,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     aim = args.composition in AIM_RULES  # ew-theme-aim-v1, or ew-theme-std-aim-v1 (v8 R-3: gains on the R-1 rule)
     v6 = args.composition == V6_RULE_ID  # only ew-theme-v6 writes theme_redistribution / provenance.v6
     require(aim == (aims is not None), "fit: aim records exist exactly for --composition ew-theme-aim-v1 / "
-                                       "ew-theme-std-aim-v1")
+                                       "ew-theme-aim-v2 / ew-theme-std-aim-v1")
     v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
@@ -2117,11 +2134,15 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                        "factor series", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                        seconds=round(time.perf_counter() - started, 2))
         return EXIT_NO_WEIGHTS, summary
-    if args.composition == AIM_RULE_ID:  # Ruling E-27a: ew-theme-std-aim-v1's within-theme gains and cap, shared code
-        gains = [aims[k]["gain"] for k in active]  # type: ignore[index]
-        weights, theme_table = composition_rules.ew_theme_aim([ids[k] for k in active], [themes[k] for k in active],
-                                                              gains, error=FitError)
-        composition_text, fit_series = composition_rules.AIM_V1_TEXT, composition_rules.AIM_V1_FIT_SERIES
+    if args.composition == AIM_RULE_ID:
+        weights, theme_table = ew_theme_aim_weights([themes[k] for k in active],
+                                                    [aims[k]["gain"] for k in active])  # type: ignore[index]
+        composition_text = ("w_k=(g_k/(T*n_theme(k)))/sum_m(g_m/(T*n_theme(m))) over admitted non-degenerate k "
+                            "(normalised globally); g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], "
+                            "rho_k from TRAIN rank autocorrelation; T=themes with >=1 such member; no mean or "
+                            "covariance estimation")
+        fit_series = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
+                      "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
     elif v6:
         # (c) reads the standalone tau of each member's admission row: admission.json candidates[].tau (status admitted).
         weights, theme_table, v6_detail = ew_theme_v6_weights([ids[k] for k in active], [themes[k] for k in active],
@@ -2146,6 +2167,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                              [tiers[k] for k in active], error=FitError,
                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
+    elif args.composition == AIM_V2_RULE_ID:  # v8 R-3 on ew-theme-v1 (E-27a/b): ew-theme-std-aim-v1's code, scores 1
+        gains = [aims[k]["gain"] for k in active]  # type: ignore[index]
+        weights, theme_table = composition_rules.ew_theme_aim_v2([ids[k] for k in active], [themes[k] for k in active],
+                                                                 gains, error=FitError)
+        composition_text, fit_series = composition_rules.AIM_V2_TEXT, composition_rules.AIM_V2_FIT_SERIES
     else:
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
         composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "

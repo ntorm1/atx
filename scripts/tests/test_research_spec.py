@@ -151,7 +151,7 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
                      "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"]}
     assert cn == nav_delta.get(name, pn)
     assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
-    comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v1"}
+    comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v2"}   # E-27b
     assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]]
     assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
 
@@ -303,17 +303,27 @@ def test_apply_flags_operations():
 
 def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
     """Ruling E-27: R-3's gains go on top of the parent's composition: ew-theme-std-aim-v1 on an R-1 parent,
-    ew-theme-aim-v1 on an ew-theme-v1 parent (Ruling E-27a: the same within-theme gains and member cap, review F-10);
-    both are fitter compositions."""
+    ew-theme-aim-v2 on an ew-theme-v1 parent (Rulings E-27a, E-27b: the same within-theme gains and member cap, review
+    F-10); both are fitter compositions. The v5 rule ew-theme-aim-v1 is refused in a v8 spec, naming v2 (E-27b)."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
     doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
     assert "requires" not in doc
-    for parent, want in (("base-b0c.json", "ew-theme-aim-v1"), ("r1-comp-v8.json", "ew-theme-std-aim-v1")):
+    for parent, want in (("base-b0c.json", "ew-theme-aim-v2"), ("r1-comp-v8.json", "ew-theme-std-aim-v1")):
         path = tmp_path / f"r3-on-{parent}"
         path.write_text(json.dumps(dict(doc, parent=f"scripts/specs/v8/{parent}")), encoding="utf-8")
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
+        assert want in fcw.AIM_RULES                                       # the fitter computes the aim records
+    v8 = RC.load_spec(V8 / "base-lo1.json")                                # verdict true: a v8 spec
+    v5 = dict(v8, fit=dict(v8["fit"], flags=RS.apply_flags(v8["fit"]["flags"], {"--composition": "ew-theme-aim-v1"},
+                                                            "fit.flags")))
+    with pytest.raises(RC.CycleError, match="ew-theme-aim-v1 is the v5 R4' rule.*ew-theme-aim-v2") as e:
+        RC.validate_spec(v5)
+    assert e.value.code == RC.EXIT_USAGE
+    with pytest.raises(RC.CycleError, match="ew-theme-aim-v2"):            # --protocol v8 makes a v8 spec too
+        RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--protocol", "v8"])))
+    RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--effective-n", "dirs"])))  # v7: as before
 
 
 def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):

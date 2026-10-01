@@ -40,10 +40,11 @@ then the member cap 1/(2T) as in rule 4. Fitter only: the weights file is an ew-
 the gains; provenance.rule names ew-theme-std-aim-v1 and provenance.std records the gains. Gains of 1 give the
 ew-theme-std-v1 weights bit for bit.
 
-``ew-theme-aim-v1`` (R-3 on an ew-theme-v1 parent, Ruling E-27a, superseding the v5 R4' global normalisation): the same
-rule on the parent's equal member weights, ``ew_theme_aim``: w_k = (1/T) * g_k / sum_{theme(k)} g, each theme 1/T,
-then the member cap 1/(2T). Both aim rules are ``theme_gain_weights`` (rules 1, 3 and 4 on member scores times gains);
-an ew-theme-aim-v1 weights file stays schema v1 (a plain weighted blend: no theme block).
+``ew-theme-aim-v2`` (R-3 on an ew-theme-v1 parent, Rulings E-27a and E-27b): the same rule on the parent's equal
+member weights, ``ew_theme_aim_v2``: w_k = (1/T) * g_k / sum_{theme(k)} g, each theme 1/T, then the member cap 1/(2T).
+Both v8 aim rules are ``theme_gain_weights`` (rules 1, 3 and 4 on member scores times gains); an ew-theme-aim-v2
+weights file stays schema v1 (a plain weighted blend: no theme block). The v5 rule ew-theme-aim-v1 (gains normalised
+globally) stays in fit_composition_weights.py, unchanged, and is refused in a v8 spec (research_cycle.py).
 """
 from __future__ import annotations
 
@@ -99,14 +100,15 @@ STD_AIM_TEXT = (
 STD_AIM_FIT_SERIES = ("none (prior tier-score theme weights scaled within theme by TRAIN signal-rank persistence "
                       "gains); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0, without the "
                       "per-date theme re-rank")
-AIM_V1_RULE_ID = "ew-theme-aim-v1"        # R-3 on an ew-theme-v1 parent (Ruling E-27a); the fitter's AIM_RULE_ID
-AIM_V1_TEXT = (
-    "ew-theme-aim-v1 (Ruling E-27a): w_k=(1/T)*g_k/sum_{theme(k)} g (the ew-theme-v1 member weights times the gains, "
+AIM_V2_RULE_ID = "ew-theme-aim-v2"        # R-3 on an ew-theme-v1 parent (Rulings E-27a, E-27b)
+AIM_V2_TEXT = (
+    "ew-theme-aim-v2 (Rulings E-27a, E-27b): w_k=(1/T)*g_k/sum_{theme(k)} g (the ew-theme-v1 member weights times the "
+    "gains, "
     "renormalised inside the theme so each theme keeps 1/T; g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to "
     "[0.05,1], rho_k from TRAIN rank autocorrelation), then member cap 1/(2T) with the excess pro rata to the other "
     "themes' uncapped members (repeated to a fixed point); T=themes with >=1 admitted non-degenerate member; no mean "
     "or covariance estimation")
-AIM_V1_FIT_SERIES = ("none (equal theme weights scaled within theme by TRAIN signal-rank persistence gains, member cap "
+AIM_V2_FIT_SERIES = ("none (equal theme weights scaled within theme by TRAIN signal-rank persistence gains, member cap "
                      "1/(2T)); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0")
 
 
@@ -216,7 +218,7 @@ def member_cap(weights: np.ndarray, themes: list[str], cap: float,
 def theme_gain_weights(themes: list[str], scores: list[float],
                        error: type[Exception] = RuleError) -> tuple[np.ndarray, np.ndarray, list[dict], float]:
     """Rules 1, 3 and 4 on member scores: ``tier_weights`` (w_k = score_k / (T * sum of its theme's scores), each theme
-    1/T), then ``member_cap`` at 1/(2T). The aim rules (Rulings E-27, E-27a) pass score_k = the parent's within-theme
+    1/T), then ``member_cap`` at 1/(2T). The v8 aim rules (E-27, E-27a/b) pass score_k = the parent's within-theme
     score times the gain g_k. Returns (weights, uncapped weights, cap passes, cap)."""
     uncapped = tier_weights(themes, scores)
     cap = 1.0 / (2 * len(set(themes)))
@@ -231,15 +233,15 @@ def check_gains(gains, n: int, rule: str, error: type[Exception]) -> None:
              f"{rule}: one finite positive aim gain per member", error)
 
 
-def ew_theme_aim(ids: list[str], themes: list[str], gains: list[float],
-                 error: type[Exception] = RuleError) -> tuple[np.ndarray, dict]:
-    """ew-theme-aim-v1 (Ruling E-27a) over the members that take part, in input order: ``theme_gain_weights`` with
-    every member's score 1 times its gain (w_k = (1/T) g_k / sum_{theme(k)} g, then the member cap 1/(2T)). Returns
-    (weights, theme table {admitted_count, nominal_theme_weight 1/T, aim_theme_weight (after the cap),
+def ew_theme_aim_v2(ids: list[str], themes: list[str], gains: list[float],
+                    error: type[Exception] = RuleError) -> tuple[np.ndarray, dict]:
+    """ew-theme-aim-v2 (Rulings E-27a, E-27b) over the members that take part, in input order: ``theme_gain_weights``
+    with every member's score 1 times its gain (w_k = (1/T) g_k / sum_{theme(k)} g, then the member cap 1/(2T)).
+    Returns (weights, theme table {admitted_count, nominal_theme_weight 1/T, aim_theme_weight (after the cap),
     capped_members})."""
-    _require(len(ids) == len(themes) and ids, f"{AIM_V1_RULE_ID}: members and themes differ in length or are empty",
+    _require(len(ids) == len(themes) and ids, f"{AIM_V2_RULE_ID}: members and themes differ in length or are empty",
              error)
-    check_gains(gains, len(ids), AIM_V1_RULE_ID, error)
+    check_gains(gains, len(ids), AIM_V2_RULE_ID, error)
     weights, _, passes, _ = theme_gain_weights(themes, [float(g) for g in gains], error)
     capped = {k for it in passes for k in it["capped"]}
     present = sorted(set(themes))

@@ -2011,8 +2011,10 @@ class AimGainRules(unittest.TestCase):
         self.assertEqual((fcw.AIM_THETA, fcw.AIM_GAIN_MIN, fcw.AIM_MAX_LAG, fcw.AIM_MIN_NAMES), (0.05, 0.05, 126, 50))
         self.assertEqual(fcw.AIM_LAGS, list(range(22)) + [28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98, 105, 112, 119, 126])
         self.assertEqual(fcw.PRIOR_COMPOSITIONS, ("ew-theme-v1", "ew-theme-aim-v1", "ew-theme-v6",  # + v6 V6-W
-                                                  "ew-theme-std-v1", "ew-theme-std-aim-v1"))  # + v8 R-1, R-3
+                                                  "ew-theme-std-v1", "ew-theme-std-aim-v1",  # + v8 R-1, R-3
+                                                  "ew-theme-aim-v2"))                        # + v8 E-27b
         self.assertIn("ew-theme-aim-v1", fcw.COMPOSITIONS)
+        self.assertEqual(fcw.AIM_RULES, ("ew-theme-aim-v1", "ew-theme-std-aim-v1", "ew-theme-aim-v2"))
 
     def test_aim_gain_ar1_matches_closed_form(self):
         phi, theta = 0.02, 0.05
@@ -2121,13 +2123,27 @@ class AimGainRules(unittest.TestCase):
         self.assertGreater(prof["gain_half"][0], prof["gain_half"][1])
         self.assertEqual(prof["rank_decisions"], 100)
 
-    def test_aim_weights_within_theme_then_capped_e27a(self):
-        """Ruling E-27a (review F-10): ew-theme-aim-v1 renormalises the gains inside each theme (each theme 1/T) and
-        applies the member cap 1/(2T) after, as ew-theme-std-aim-v1 does, through the same code
+    def test_aim_weights_global_normalization(self):
+        w, t = fcw.ew_theme_aim_weights(["a", "a", "b"], [1.0, 1.0, 0.25])
+        self.assertTrue(abs(w.sum() - 1) < 1e-12 and t["a"]["aim_theme_weight"] > t["b"]["aim_theme_weight"])
+        # raw = [1/4, 1/4, 0.25/2] -> normalised globally, not within the theme
+        np.testing.assert_allclose(w, [0.4, 0.4, 0.2], rtol=0, atol=1e-15)
+        self.assertEqual(t["b"], {"admitted_count": 1, "nominal_theme_weight": 0.5, "aim_theme_weight": w[2]})
+        # equal gains reproduce ew-theme-v1
+        themes = ["value", "value", "low_risk", "value", "short_interest"]
+        ew, _ = fcw.ew_theme_weights(themes)
+        aim, _ = fcw.ew_theme_aim_weights(themes, [0.7] * 5)
+        np.testing.assert_allclose(aim, ew, rtol=0, atol=1e-15)
+        with self.assertRaises(fcw.FitError):
+            fcw.ew_theme_aim_weights(["a"], [float("nan")])
+
+    def test_aim_v2_weights_within_theme_then_capped(self):
+        """Rulings E-27a / E-27b (review F-10): ew-theme-aim-v2 renormalises the gains inside each theme (each theme
+        1/T) and applies the member cap 1/(2T) after, as ew-theme-std-aim-v1 does, through the same code
         (composition_rules.theme_gain_weights). Two themes, cap 1/4: gains a = (1, .25, .25), b = (.1, .1)."""
         cr = fcw.composition_rules
         ids, themes, gains = ["a0", "a1", "a2", "b0", "b1"], ["a", "a", "a", "b", "b"], [1.0, 0.25, 0.25, 0.1, 0.1]
-        w, t = cr.ew_theme_aim(ids, themes, gains, error=fcw.FitError)
+        w, t = cr.ew_theme_aim_v2(ids, themes, gains, error=fcw.FitError)
         # inside the theme: a (2/3, 1/6, 1/6) / 2, b (1/2, 1/2) / 2; a0's 1/3 is capped at 1/4 and its 1/12 goes to b
         # (7/24 each), b's members are capped and their 2/24 return to a's uncapped members (1/12 + 1/24 = 1/8 each)
         np.testing.assert_allclose(w, [1 / 4, 1 / 8, 1 / 8, 1 / 4, 1 / 4], rtol=0, atol=1e-15)
@@ -2136,20 +2152,20 @@ class AimGainRules(unittest.TestCase):
         self.assertEqual(t["b"]["capped_members"], ["b0", "b1"])
         for theme in "ab":                                                       # each theme keeps 1/T here
             self.assertAlmostEqual(t[theme]["aim_theme_weight"], 0.5, places=15)
-        # the v5 R4' global normalisation moved weight across themes: g / (T n_theme) summed over a is 5/6 of the total
-        raw = [g / (2 * themes.count(th)) for g, th in zip(gains, themes)]
-        self.assertAlmostEqual(sum(raw[:3]) / sum(raw), 5 / 6, places=15)
+        # the v5 rule (ew-theme-aim-v1, unchanged) moves weight across themes: theme a holds 5/6 of it
+        v5, _ = fcw.ew_theme_aim_weights(themes, gains)
+        self.assertAlmostEqual(float(v5[:3].sum()), 5 / 6, places=15)
         # ew-theme-std-aim-v1 with equal tier scores (A = 1.0) is the same computation, bit for bit
         std = cr.ew_theme_std(ids, themes, ["A"] * 5, registry_path=Path(__file__).parent / "no-registry.json",
                               gains=gains)
         self.assertEqual(std.weights.tobytes(), w.tobytes())
         # equal gains where no member reaches the cap reproduce ew-theme-v1
         ew, _ = fcw.ew_theme_weights(["a", "a", "b", "b"])
-        aim, _ = cr.ew_theme_aim(["p", "q", "r", "s"], ["a", "a", "b", "b"], [0.7] * 4, error=fcw.FitError)
-        np.testing.assert_allclose(aim, ew, rtol=0, atol=1e-15)
+        v2, _ = cr.ew_theme_aim_v2(["p", "q", "r", "s"], ["a", "a", "b", "b"], [0.7] * 4, error=fcw.FitError)
+        np.testing.assert_allclose(v2, ew, rtol=0, atol=1e-15)
         for bad_themes, bad_gains in ((["a"], [float("nan")]), (["a"], [1.0])):    # a bad gain; one theme: no taker
             with self.assertRaises(fcw.FitError):
-                cr.ew_theme_aim(["x"], bad_themes, bad_gains, error=fcw.FitError)
+                cr.ew_theme_aim_v2(["x"], bad_themes, bad_gains, error=fcw.FitError)
 
 
 def aim_world():
@@ -2180,9 +2196,6 @@ class AimEndToEnd(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.root = Path(cls.tmp.name)
         panel, signals, ids, extra = aim_world()
-        # Ruling E-27a: the member cap 1/(2T) needs M >= 2T admitted members (aim_world admits 5 in 3 themes); flip
-        # joins value, as in test_composition_rules.FitterEndToEnd (T = 2, M = 5)
-        extra = dict(extra, flip=dict(extra["flip"], theme="value"))
         cls.ids = ids
         cls.fx = Fixture(cls.root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
                          candidate_extra=extra)
@@ -2209,31 +2222,20 @@ class AimEndToEnd(unittest.TestCase):
         self.assertEqual(members, sorted(prov["aim"]["members"]))
         self.assertIn("medium", members)
         self.assertEqual(self.doc["signs"], self.v1["signs"])
-        # Ruling E-27a: w_k = (1/T) g_k / sum_{theme} g, then the member cap 1/(2T) (composition_rules.ew_theme_aim,
-        # whose arithmetic test_aim_weights_within_theme_then_capped_e27a checks by hand)
+        # w_k = (g_k / (T n_theme)) / sum over members, T and n_theme exactly as ew-theme-v1
         gains = prov["aim"]["gain"]
         themes = {r["id"]: r["theme"] for r in prov["candidates"]}
-        order = [i for i in self.ids if i in members]
-        want, _ = fcw.composition_rules.ew_theme_aim(order, [themes[i] for i in order], [gains[i] for i in order])
-        self.assertEqual({i: w[i] for i in order}, {i: float(x) for i, x in zip(order, want)})
-        cap = 1 / (2 * len(prov["themes_present"]))
-        capped = {i for e in prov["themes"].values() for i in e["capped_members"]}
-        self.assertTrue(capped and all(w[i] <= cap * (1 + 1e-12) for i in members))  # the cap binds here
-        for theme in prov["themes_present"]:              # uncapped members keep the gain ratios inside their theme
-            free = [i for i in members if themes[i] == theme and i not in capped]
-            for a, b in zip(free, free[1:]):
-                self.assertAlmostEqual(w[a] / w[b], gains[a] / gains[b], places=12)
-        self.assertEqual(self.doc["schema"], "atx.dsl-composition-weights/v1")   # a plain blend: no theme block
-        self.assertFalse({"theme_redistribution", "theme_standardise"} & set(self.doc))
-        self.assertNotIn("v6", prov)
+        n_theme = {t: sum(1 for i in members if themes[i] == t) for t in set(themes[i] for i in members)}
+        raw = {i: gains[i] / (len(n_theme) * n_theme[themes[i]]) for i in members}
+        for i in members:
+            self.assertAlmostEqual(w[i], raw[i] / sum(raw.values()), places=15)
         self.assertAlmostEqual(sum(w.values()), 1.0, places=15)
         self.assertTrue(all(fcw.AIM_GAIN_MIN <= g <= 1.0 for g in gains.values()))
         # slow AR(.97) members keep more aim than the AR(.85) member: the GP ordering
         self.assertGreater(min(gains["slow_a_clone"], gains["slow_a_twin"]), gains["medium"] + 0.2)
         self.assertLess(gains["medium"], 0.4)
         for theme, entry in prov["themes"].items():
-            self.assertEqual(set(entry), {"admitted_count", "nominal_theme_weight", "aim_theme_weight", "admitted",
-                                          "capped_members"})
+            self.assertEqual(set(entry), {"admitted_count", "nominal_theme_weight", "aim_theme_weight", "admitted"})
             self.assertAlmostEqual(entry["aim_theme_weight"], sum(w[i] for i in entry["admitted"]), places=15)
         self.assertAlmostEqual(prov["weighted_standalone_turnover"],
                                sum(w[i] * r["tau"] for i, r in ((r["id"], r) for r in prov["candidates"])), places=14)
@@ -2656,8 +2658,11 @@ class V6EndToEnd(unittest.TestCase):
         self.assertEqual(self.doc["schema"], "atx.dsl-composition-weights/v2")
         self.assertEqual(fcw.WEIGHTS_SCHEMA_V2, "atx.dsl-composition-weights/v2")
         self.assertEqual(self.v1["schema"], "atx.dsl-composition-weights/v1")
-        # ew-theme-aim-v1 stays v1: AimEndToEnd.test_members_weights_and_gains (Ruling E-27a's member cap 1/(2T) has
-        # no fixed point on this world, 5 members in 4 themes: test_v1_and_aim_documents_carry_no_v6_keys)
+        aim_out = self.root / "aim_schema"
+        code, _ = fcw.fit(self.fx.args(aim_out, **AIM_ARGS))
+        self.assertEqual(code, fcw.EXIT_OK)
+        self.assertEqual(json.loads((aim_out / fcw.OUTPUT_WEIGHTS).read_bytes())["schema"],
+                         "atx.dsl-composition-weights/v1")
         # The runner port refuses either schema with the other's block state.
         stripped = {k: v for k, v in self.doc.items() if k != "theme_redistribution"}
         grafted = dict(self.v1, theme_redistribution=self.doc["theme_redistribution"])
@@ -2670,13 +2675,12 @@ class V6EndToEnd(unittest.TestCase):
         self.assertNotIn("theme_redistribution", self.v1)
         self.assertNotIn("v6", self.v1["provenance"])
         self.assertTrue(all("theme_v6" not in r for r in self.v1["provenance"]["candidates"]))
-        # an ew-theme-aim-v1 document carries none either (AimEndToEnd); on this world (5 members, 4 themes) Ruling
-        # E-27a's member cap 1/(2T) cannot place the excess and the fit is refused before anything is published
         aim_out = self.root / "aim"
-        with self.assertRaises(fcw.FitError) as caught:
-            fcw.fit(self.fx.args(aim_out, **AIM_ARGS))
-        self.assertIn("member cap 1/(2T)", str(caught.exception))
-        self.assertFalse(aim_out.exists())
+        code, _ = fcw.fit(self.fx.args(aim_out, **AIM_ARGS))
+        aim = json.loads((aim_out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(code, fcw.EXIT_OK)
+        self.assertNotIn("theme_redistribution", aim)
+        self.assertNotIn("v6", aim["provenance"])
 
     def test_combination_refusals_and_all_dropped(self):
         out = self.root / "refused"
@@ -2697,10 +2701,9 @@ class V6EndToEnd(unittest.TestCase):
 
 
 class V1BytesUnchangedByV6(unittest.TestCase):
-    """V6-W edit: ew-theme-v1 (v4-prior-v1 and v4-prior-v2) emits exactly the bytes of the fitter at the V6-W base
-    (04e9d5bc) except the embedded script SHA and the SHAs derived from it (context digest, admission SHA), with
-    identical work-cache paths. Same byte_stability contract as V1BytesUnchangedByAim. ew-theme-aim-v1 was in this
-    list until platform v8 Ruling E-27a changed its weights (within-theme gains, member cap 1/(2T); review F-10)."""
+    """V6-W edit: ew-theme-v1 (v4-prior-v1 and v4-prior-v2) and ew-theme-aim-v1 emit exactly the bytes of the fitter at
+    the V6-W base (04e9d5bc) except the embedded script SHA and the SHAs derived from it (context digest, admission
+    SHA), with identical work-cache paths. Same byte_stability contract as V1BytesUnchangedByAim."""
 
     BASE_BLOB = "bb11a677205a6e6c5ce573acdffc349e497ef7a9"  # fit_composition_weights.py at 04e9d5bc (T31 81e9977d)
 
@@ -2724,7 +2727,8 @@ class V1BytesUnchangedByV6(unittest.TestCase):
             panel, signals, ids, extra = v6_world()
             fx = Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
                          candidate_extra=extra)
-            for screen, composition in (("v4-prior-v1", "ew-theme-v1"), ("v4-prior-v2", "ew-theme-v1")):
+            for screen, composition in (("v4-prior-v1", "ew-theme-v1"), ("v4-prior-v2", "ew-theme-v1"),
+                                        ("v4-prior-v1", "ew-theme-aim-v1")):
                 got = {}
                 for tag, module in (("new", fcw), ("old", base)):
                     out, work = root / f"{screen}-{composition}-{tag}", root / f"work-{screen}-{composition}-{tag}"
