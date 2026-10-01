@@ -184,16 +184,16 @@ deserialize_canon(const std::string &blob) {
 //   key raw n_objectives obj0..obj_{kMaxObjectives-1} n_desc desc0..desc_{n-1}
 // Fields are space-joined; records are '\n'-joined. The key (canon_hash) is stored
 // INLINE so a record is self-describing; the cache is emitted in sorted-key order.
-// IC-screen rejections append the explicit token `ic3`; legacy records stay byte
-// identical. The tag distinguishes IC rejection from the historical -inf fidelity
-// sentinel without changing old checkpoint decoding or inventing a fitness value.
+// v2 stores trial-independent raw scores and appends origin + the exact DSR
+// sufficient statistics. Legacy blobs are readable for diagnostics, but cannot
+// resume deflated selection: their raw values may already contain a stale haircut.
 [[nodiscard]] inline std::string serialize_cache(const std::vector<atx::u64> &keys,
                                                  const std::vector<CachedScore> &vals,
                                                  std::optional<atx::u64> ic_identity = std::nullopt,
                                                  std::optional<atx::u64> cpcv_identity = std::nullopt) {
-  std::string out;
+  std::string out = "fitness-cache-v2";
   if (ic_identity) {
-    out = "ic-screen-v2 " + u64_to_hex(*ic_identity);
+    out += "\nic-screen-v2 " + u64_to_hex(*ic_identity);
   }
   if (cpcv_identity) {
     if (!out.empty()) out += '\n';
@@ -219,11 +219,12 @@ deserialize_canon(const std::string &blob) {
       out += ' ';
       out += f64_to_hex(d);
     }
-    if (cs.origin == ScoreOrigin::IcRejected) {
-      out += " ic3";
-    } else if (cs.origin == ScoreOrigin::ResidualUnavailable) {
-      out += " residual2";
-    }
+    out += ' ' + u64_to_hex(static_cast<atx::u64>(cs.origin));
+    out += ' ' + u64_to_hex(cs.dsr_sample.available ? 1U : 0U);
+    out += ' ' + u64_to_hex(cs.dsr_sample.observations);
+    out += ' ' + f64_to_hex(cs.dsr_sample.per_period_sharpe);
+    out += ' ' + f64_to_hex(cs.dsr_sample.skewness);
+    out += ' ' + f64_to_hex(cs.dsr_sample.excess_kurtosis);
   }
   return out;
 }
@@ -232,20 +233,30 @@ deserialize_canon(const std::string &blob) {
 deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
                   std::vector<CachedScore> &vals,
                   std::optional<atx::u64> *ic_identity = nullptr,
-                  std::optional<atx::u64> *cpcv_identity = nullptr) {
+                  std::optional<atx::u64> *cpcv_identity = nullptr,
+                  bool *has_raw_statistics = nullptr) {
   keys.clear();
   vals.clear();
   if (ic_identity != nullptr) {
     ic_identity->reset();
   }
   if (cpcv_identity != nullptr) cpcv_identity->reset();
+  if (has_raw_statistics != nullptr) *has_raw_statistics = false;
   if (blob.empty()) {
     return atx::core::Ok();
   }
   bool saw_cpcv_identity = false;
   bool saw_identity = false;
+  bool versioned = false;
   for (const std::string &line : detail::split_on(blob, '\n')) {
     const std::vector<std::string> f = detail::split_on(line, ' ');
+    if (!f.empty() && f.front() == "fitness-cache-v2") {
+      if (versioned || saw_identity || saw_cpcv_identity || !keys.empty() || f.size() != 1U)
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "deserialize_cache: bad score version");
+      versioned = true;
+      if (has_raw_statistics != nullptr) *has_raw_statistics = true;
+      continue;
+    }
     if (!f.empty() && f.front() == "cpcv-date-v2") {
       atx::u64 identity = 0;
       if (saw_cpcv_identity || !keys.empty() || f.size() != 2U || !hex_to_u64(f[1], identity))
@@ -282,7 +293,7 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: bad raw");
     }
     atx::u64 nobj = 0;
-    if (!hex_to_u64(f[idx++], nobj)) {
+    if (!hex_to_u64(f[idx++], nobj) || nobj > kMaxObjectives) {
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: bad n_objectives");
     }
     cs.n_objectives = static_cast<atx::u8>(nobj);
@@ -295,14 +306,17 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
     if (!hex_to_u64(f[idx++], ndesc)) {
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: bad n_desc");
     }
-    const bool ic_tag = f.back() == "ic3";
-    const bool residual_tag = f.back() == "residual2";
+    const bool ic_tag = !versioned && f.back() == "ic3";
+    const bool residual_tag = !versioned && f.back() == "residual2";
     const bool rejection_tag = ic_tag || residual_tag;
     if (rejection_tag && f.size() == fixed) {
       return atx::core::Err(atx::core::ErrorCode::Internal,
                             "deserialize_cache: IC tag without descriptor count");
     }
-    const atx::usize expected_desc = f.size() - fixed - (rejection_tag ? 1U : 0U);
+    const atx::usize suffix = versioned ? 6U : (rejection_tag ? 1U : 0U);
+    if (f.size() < fixed + suffix)
+      return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: missing score statistics");
+    const atx::usize expected_desc = f.size() - fixed - suffix;
     if (ndesc != expected_desc) {
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: desc count mismatch");
     }
@@ -323,6 +337,22 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
                               "deserialize_cache: invalid IC rejection sentinel");
       }
       cs.origin = ic_tag ? ScoreOrigin::IcRejected : ScoreOrigin::ResidualUnavailable;
+    }
+    if (versioned) {
+      atx::u64 origin = 0, available = 0, count = 0;
+      if (!hex_to_u64(f[idx++], origin) || origin > static_cast<atx::u64>(ScoreOrigin::FitnessUnavailable) ||
+          !hex_to_u64(f[idx++], available) || available > 1U ||
+          !hex_to_u64(f[idx++], count) || count > std::numeric_limits<atx::usize>::max() ||
+          !hex_to_f64(f[idx++], cs.dsr_sample.per_period_sharpe) ||
+          !hex_to_f64(f[idx++], cs.dsr_sample.skewness) ||
+          !hex_to_f64(f[idx++], cs.dsr_sample.excess_kurtosis))
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "deserialize_cache: invalid score statistics");
+      cs.origin = static_cast<ScoreOrigin>(origin);
+      cs.dsr_sample.available = available != 0U;
+      cs.dsr_sample.observations = static_cast<atx::usize>(count);
+      if (is_rejected_score(cs.origin) &&
+          (cs.raw != kRejectedRaw || cs.n_objectives != 0U || !cs.descriptor.empty() || cs.dsr_sample.available))
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "deserialize_cache: invalid rejection sentinel");
     }
     keys.push_back(key);
     vals.push_back(std::move(cs));

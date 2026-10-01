@@ -191,29 +191,20 @@ struct SearchConfig {
   // local exploration alive when escape from a plateau is most needed.
   bool jitter_anneal{true};
   atx::f64 jitter_anneal_decay{0.97};
-  // R4: opt-in deflated-Sharpe selection pressure. When ON, evaluate_generation
-  // captures canon.size() BEFORE the parallel_for as the per-generation deflation
-  // N (worker-order-independent), feeds it into a per-generation FitnessCfg so
-  // pool_aware_fitness computes dsr with that N, then at the score_slot seam:
-  //   (1) objectives[kObjDeflation] = rep->dsr    (new NSGA objective, maximized)
-  //   (2) score_slot[j].raw *= rep->dsr            (raw haircut for elitism/ScalarRaw)
-  // OFF (the default): gen_fit == cfg.fitness exactly — zero new computation, the
-  // F1 search digest, admission digest, ScalarRaw boundary pin, and MultiObjective
-  // default digest are ALL byte-identical to the pre-R4 path.
-  // CACHING NOTE: a genome first scored in generation g caches its haircut raw +
-  // objectives[kObjDeflation] computed with N = canon.size() at gen g; a later
-  // reuse keeps that first-evaluation deflation. Fully deterministic (cache order
-  // is serial) — the accepted semantic.
+  // Refresh every ranked population member (including cached elites) at the
+  // same N = max(1, prior_trial_count + all local distinct trials INCLUDING this
+  // generation). Cache raw fitness + exact sample statistics; project min(raw, raw*DSR)
+  // and objectives[kObjDeflation] immediately before ranking, without re-eval.
+  // Off: raw selection and objective columns retain their original values.
   bool deflate_selection{false};  // R4: deflated-Sharpe enters search selection
   // S5-2: the CROSS-RUN cumulative trial count from a persistent library opened
   // BEFORE this search (library::Library::cumulative_trials(), read once by the
   // Factory caller before driver.run() — a pure scalar, no ordering hazard). Added
-  // to canon.size() at each generation (ONLY when deflate_selection is set) so a
+  // to the completed generation's distinct count (only when deflate_selection is set) so a
   // later run in a multi-run --library-dir sweep deflates its NSGA `dsr` selection
   // column by the TRUE cumulative N, not just this run's own local canon.size().
   // 0 (the default, and always 0 for a fresh library / the non-library mine() path)
-  // makes the per-generation N identical to the pre-S5-2 canon.size()-only value —
-  // byte-identical off-path. Ignored entirely when deflate_selection is false.
+  // uses only this run's trials. Ignored when deflate_selection is false.
   atx::usize prior_trial_count{0};
   // W1b: the wrap_in_op mutation — wrap a subtree in a conditioning op (zscore/
   // signedpower/rank/winsorize/group_neutralize) so the GA can CREATE in-expression
@@ -332,10 +323,9 @@ struct SearchResult {
   atx::usize trial_count{0};                  // distinct candidates scored (canon.size())
   atx::usize candidates_generated{0};         // total genomes produced across the run
   atx::f64 dedup_pct{0.0};                    // 1 - trial_count/candidates_generated (F6)
-  std::vector<atx::f64> best_fitness_per_gen; // best RAW fitness per gen (the
-                                              // maximized search signal; elites
-                                              // carry it forward so this is
-                                              // non-decreasing by construction)
+  // Best selection fitness at each generation's common trial count; historical
+  // values are telemetry and need not increase when deflation is enabled.
+  std::vector<atx::f64> best_fitness_per_gen;
   std::vector<Genome> all_scored;             // every distinct genome that was scored (F5)
   std::vector<Genome> admitted_candidates;    // top survivors of the final gen
   atx::u64 seed{0};                           // == cfg.master_seed (artifact key)
@@ -350,6 +340,8 @@ struct SearchResult {
   atx::usize ic_screen_evaluations{0};
   atx::usize ic_screen_unavailable{0}; // preparation/scratch/runtime errors; fail open
   atx::usize ic_prepass_vm_evaluations{0}; // both-on path, no population signal cache
+  atx::usize full_fitness_evaluations{0}; // actual full fitness calls in this invocation
+  bool fitness_cache_resume_mismatch{false}; // legacy cache cannot certify trial-independent raw statistics
   bool cpcv_invalid{false}; // invalid checked plan: no evaluation/admission
   bool cpcv_resume_mismatch{false};
   eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2

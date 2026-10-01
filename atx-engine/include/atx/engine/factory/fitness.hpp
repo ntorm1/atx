@@ -400,6 +400,16 @@ enum class Reduce : atx::u8 { Max, Mean };
 //  Rule of Zero (the `descriptor` vector self-manages). Matches the fwd.hpp
 //  forward declaration.
 // =========================================================================
+// Exact unique-return sample statistics for refreshing DSR without a backtest.
+// These are independent of the trial count and of behavioral descriptor bins.
+struct DsrSampleStats {
+  atx::usize observations{};
+  atx::f64 per_period_sharpe{};
+  atx::f64 skewness{};
+  atx::f64 excess_kurtosis{};
+  bool available{false};
+};
+
 struct FitnessReport {
   atx::f64 wq;
   atx::f64 redundancy;
@@ -442,6 +452,7 @@ struct FitnessReport {
   FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
   bool residual_available{false};
   ObjectiveIcResult residual_ic{}; // training IC diagnostics, never P&L/DSR/CPCV
+  DsrSampleStats dsr_sample{};
 };
 
 // =========================================================================
@@ -634,6 +645,7 @@ struct FitnessCore {
   bool residual_available{false};
   ObjectiveIcResult residual_ic{};
   atx::f64 residual_score{};
+  DsrSampleStats dsr_sample{};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:

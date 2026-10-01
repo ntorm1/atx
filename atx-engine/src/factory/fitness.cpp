@@ -396,6 +396,7 @@ execution_fitness_core(const Genome& cand, const alpha::Panel& panel,
   out.execution_rule = ExecutionObjectiveRule::DelayedSurfaceV2;
   out.execution_context_sha256 = streams.execution_context_sha256;
   out.realized_begin = begin; out.realized_end = end;
+  out.dsr_sample = {count, per_period, skew, kurtosis, true};
   return atx::core::Ok(std::move(out));
 }
 
@@ -479,9 +480,12 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   const atx::usize T = moments.size();
   const auto sample = eval::mean_std_pop(moments);
   const atx::f64 per_period_sharpe = sample.std == 0.0 ? 0.0 : sample.mean / sample.std;
+  const DsrSampleStats dsr_sample{T, per_period_sharpe, eval::skewness(moments),
+                                  eval::excess_kurtosis(moments), true};
   const eval::DsrResult dsr =
-      eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
-                            eval::excess_kurtosis(moments), cfg.trial_count, std::nullopt);
+      eval::deflated_sharpe(dsr_sample.per_period_sharpe, dsr_sample.observations,
+                            dsr_sample.skewness, dsr_sample.excess_kurtosis,
+                            cfg.trial_count, std::nullopt);
 
   // (5b) W4a split-sample stability over the SAME index-0-dropped OOS PnL stream
   // (`moments`). Full-sample per-period Sharpe sign reference. split_half_sharpe slices
@@ -535,10 +539,12 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   //   sharpe_h1, sharpe_h2, split_stable, selection_cost_bps,
   //   capacity_score, turnover_autocorr (S4 — the two trailing gate columns; left
   //   at their inert 0.0 defaults here, populated by S4-3's gated compute block).
-  return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
+  FitnessCore core{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
                                    dsr.haircut_sharpe, cost_bps, agg.turnover,
                                    split.sharpe_h1, split.sharpe_h2, split.stable,
-                                   selection_cost_bps, capacity_score, turnover_autocorr});
+                                   selection_cost_bps, capacity_score, turnover_autocorr};
+  core.dsr_sample = dsr_sample;
+  return atx::core::Ok(std::move(core));
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
@@ -616,6 +622,7 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   }
   FitnessReport rep{core.wq, redundancy, diversify,          core.robust,
                     raw,     core.dsr,   core.haircut_sharpe};
+  rep.dsr_sample = core.dsr_sample;
   // S4.1: project the existing fields into the multi-objective vector (NO new
   // fitness math — these are the SAME wq/diversify/robust already assembled into
   // `raw`). MultiObjective mode ranks over these via NSGA-II; ScalarRaw ignores
