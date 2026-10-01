@@ -188,11 +188,14 @@ class FitterEndToEnd(unittest.TestCase):
         with unittest.mock.patch.object(cr, "REGISTRY_PATH", cls.root / "no-registry.json"):
             cls.std_code, cls.std_summary = fcw.fit(cls.fx.args(cls.root / "std", **STD_ARGS))
             cls.code, cls.summary = fcw.fit(cls.fx.args(cls.root / "resid", theme_resid=cres.RULE_ID, **STD_ARGS))
-            # R-11 on an accepted R-10 parent (Rulings E-44, E-45): ic-shrink-v1's rerank-true block
-            shrink = dict(STD_ARGS, composition=cis.RULE_ID)
-            cls.shrink_code, _ = fcw.fit(cls.fx.args(cls.root / "shrink", **shrink))
-            cls.shrink_resid_code, _ = fcw.fit(cls.fx.args(cls.root / "shrink-resid", theme_resid=cres.RULE_ID,
-                                                           **shrink))
+            # R-11 on an accepted R-10 parent (Rulings E-44, E-45, finding R6B-O-1): the rerank-true block of either
+            # rule of the runner's table that R-10 writes, ic-shrink-v1 and its aim variant ic-shrink-aim-v1
+            cls.shrink_codes = {}
+            for comp in cis.RULES:
+                shrink = dict(STD_ARGS, composition=comp)
+                cls.shrink_codes[comp] = (fcw.fit(cls.fx.args(cls.root / comp, **shrink))[0],
+                                          fcw.fit(cls.fx.args(cls.root / f"{comp}-resid", theme_resid=cres.RULE_ID,
+                                                              **shrink))[0])
         cls.std_bytes = {p.name: p.read_bytes() for p in (cls.root / "std").iterdir()}
         cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "resid").iterdir()}
         cls.std = json.loads(cls.std_bytes[fcw.OUTPUT_WEIGHTS])
@@ -242,18 +245,24 @@ class FitterEndToEnd(unittest.TestCase):
         self.assertFalse((self.root / "mv-resid").exists())
 
     def test_an_ic_shrink_parent_is_a_standardised_parent(self):
-        """Rulings E-44, E-45: R-10's ic-shrink-v1 file carries a rerank-true theme_standardise (the runner's per-date
-        standardisation unchanged), so R-11 attaches its block on it; the file minus the block and provenance.resid is
-        the plain ic-shrink-v1 file byte for byte."""
-        self.assertEqual((self.shrink_code, self.shrink_resid_code), (fcw.EXIT_OK, fcw.EXIT_OK))
-        plain = (self.root / "shrink" / fcw.OUTPUT_WEIGHTS).read_bytes()
-        doc = json.loads((self.root / "shrink-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())
-        self.assertEqual((doc["theme_standardise"]["rule"], doc["theme_standardise"]["rerank"]), (cis.RULE_ID, True))
-        self.assertEqual(doc[cres.BLOCK], {"rule": "theme-resid-v1", "order": ["value", "reversal_seasonality"]})
-        self.assertEqual(doc["provenance"]["resid"]["parent_composition"], cis.RULE_ID)
-        del doc[cres.BLOCK]
-        del doc["provenance"]["resid"]
-        self.assertEqual(fcw.canonical_bytes(doc), plain)
+        """Rulings E-44, E-45 (finding R6B-O-1): R-10's ic-shrink-v1 and ic-shrink-aim-v1 files carry a rerank-true
+        theme_standardise of their own rule (the runner's per-date standardisation unchanged), so R-11 attaches its
+        block on either and records the parent's rule; the file minus the block and provenance.resid is the plain parent
+        file byte for byte (composition_resid.apply runs after composition_ic_shrink.attach: before it, the block would
+        be missing and the fit refused)."""
+        for comp in cis.RULES:
+            with self.subTest(parent=comp):
+                self.assertEqual(self.shrink_codes[comp], (fcw.EXIT_OK, fcw.EXIT_OK))
+                plain = (self.root / comp / fcw.OUTPUT_WEIGHTS).read_bytes()
+                doc = json.loads((self.root / f"{comp}-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())
+                self.assertEqual((doc["theme_standardise"]["rule"], doc["theme_standardise"]["rerank"]), (comp, True))
+                self.assertEqual(doc[cres.BLOCK], {"rule": "theme-resid-v1", "order": ["value", "reversal_seasonality"]})
+                self.assertEqual(doc["provenance"]["rule"], comp)
+                self.assertEqual(doc["provenance"]["resid"]["parent_composition"], comp)
+                self.assertEqual("aim" in doc["provenance"], comp == cis.AIM_RULE_ID)   # the aim parent's gains stay
+                del doc[cres.BLOCK]
+                del doc["provenance"]["resid"]
+                self.assertEqual(fcw.canonical_bytes(doc), plain)
 
     def test_attach_refuses_rerank_off_and_unregistered_themes(self):
         off = json.loads(json.dumps(self.std))

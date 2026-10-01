@@ -3465,4 +3465,39 @@ TEST(CompositionV8, IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput) {
     }
   }
 }
+// ---- Platform v8 R-11 on an R-10 parent (finding R6B-O-1; Rulings E-44, E-45) ----
+// The shrink members' file under registered theme names: liquidity -> value, size ->
+// price_momentum (the same first-appearance order, so the same rule weights and verify).
+Json registered_themes(Json doc) {
+  const auto relabel=[](Json& theme) { theme=(theme=="liquidity")?"value":"price_momentum"; };
+  auto& block=doc["theme_standardise"];
+  for (auto it=block["themes"].begin();it!=block["themes"].end();++it) relabel(*it);
+  if (block.contains("ic_shrink"))
+    for (auto it=block["ic_shrink"]["members"].begin();it!=block["ic_shrink"]["members"].end();++it)
+      relabel((*it)["theme"]);
+  return doc;
+}
+// theme-resid-v1 rides on a rerank-true theme_standardise of every row of the rule table
+// (ew-theme-std-v1, and R-10's ic-shrink-v1 / ic-shrink-aim-v1): the plan admits the block and
+// records both rules, before any payload (close.f64 is absent).
+TEST(ThemeResidRunner, RidesOnEveryRerankTrueRuleOfTheTable) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string(); cfg.plan_only=true;
+  for (const std::string rule:{"ew-theme-std-v1","ic-shrink-v1","ic-shrink-aim-v1"}) {
+    SCOPED_TRACE(rule);
+    auto doc=registered_themes(shrink_doc(cfg,rule));
+    doc["theme_residualise"]=Json{{"rule","theme-resid-v1"},{"order",Json::array({"value","price_momentum"})}};
+    ASSERT_TRUE(text_file(path,doc.dump(),cfg.composition_weights_sha256));
+    std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    ASSERT_TRUE(status) << status.error().to_string();
+    const auto record=Json::parse(log.str()).at("composition_weights");
+    EXPECT_EQ(record.at("standardise"),rule);
+    EXPECT_EQ(record.at("residualise"),"theme-resid-v1");
+    EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  }
+}
 } // namespace
