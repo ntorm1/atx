@@ -1933,6 +1933,7 @@ array as compact JSON (`json.dumps(command, separators=(",", ":"))`). Peak = sam
 | step | receipt dir | source | outcome / ExitCode | s | peak MiB | argv digest | receipt.json SHA-256 | output manifest SHA-256 |
 |---|---|---|---|---|---|---|---|---|
 | R10 | `train-2020-2023-lo1-fields-v9-run` | `814c2c0a` | completed / 0 | 166.8 | 960 | `0a5e19898e32d46cd095b155b4a8637d8d2195dc301945577d4fd7d380812a57` | `50ca556f5f2bb4c6a99d8b554ee639d90760524aa4378e81e92b06c4d1ec42e9` | `888e6616e441e863a9f91234124e1aebc907db11e18d9789d3c583cf447b8695` |
+| R11 | `train-2020-2023-lo3-fields-v9-run` | `2b80cf9e` | completed / 0 | 154.6 | 1,014 | `4e828bff080775cdf6183c013671e4d541faabfa7aeff557ac7338fba2c82870` | `5675df067c2022a31d4376ccbb05e9cdfd7eef04d025a5af5b77a25df5b39a9d` | `9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef` |
 
 - **R10 PASS.** Bindings: `prepare_research_fields.py` `b44cff42...`, `research_fields_sec.py` `27034019...`,
   `research_fields_holdings.py` `edfd1967...`, role lo1 `2ff9d771...1e53`. Runner min free 4,407 MiB. Manifest:
@@ -1944,3 +1945,12 @@ array as compact JSON (`json.dumps(command, separators=(",", ":"))`). Peak = sam
   Coverage acceptance against the v7.1 fields (`8fd00e9f`) on 2020-2022 member cells: **62 of 63 within .02**; the
   exception is the runbook's expected one, `regsho_threshold_days63` finite member fraction 0.430 / 0.444 / 0.424 ->
   1.000 / 1.000 / 1.000 (2020 / 2021 / 2022; republished stage, blocker 1).
+- Stage manifests re-hashed again at 2026-10-01T10:50:03Z, immediately before R11: all eleven equal the table above.
+- **R11 PASS.** Same bindings except role lo3 `e1c67101...95f4`. Runner min free 4,396 MiB. Manifest: status complete,
+  `seal.exclusive_end` 2024-01-01, role `e1c67101` 1,405 x 5,922 (2018-06-01..2023-12-29, score 399..1405); **63
+  fields, names in F63 order (True)**; `reuse` null (all 63 computed); 78 source paths, **none 2024-named**; pins =
+  the live hashes above, issuer bridge and SEC bridge v2-pit `09aac28f`, SIC from the fundamentals stage `9f9b2f85`,
+  fundamental events v3 `304d2945`. Same code identity as R10 (`74df97f9...`, blob `e8b57af5`). 4,000 MiB on disk.
+  stdout/stderr scanned for dates 2024+: 0 hits. Coverage against the 3-year `recent-fast-train-2020-2022-v2-lo3-
+  fields-v7` (41 common names): **all within .02** on 2020-2022 (largest gap 0.00055, `me_company` 2022). The 22 W5a /
+  W5b names have no 3-year lo3 reference (open question 30): reported only, not checked.
