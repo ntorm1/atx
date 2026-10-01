@@ -38,8 +38,9 @@ atx-equity-strategy-mine: built from DIR/campaign.json (campaign_id, registry pa
 registry count = the records the campaign added and total = n_raw, Ruling E-33a; the campaign's --budget, Ruling
 E-32a; research window id) and refused unless the campaign is
 complete, the registry's first bytes still hash to the chain head (review MINE-1; a relative registry path is read
-from --root), DIR/registry_head.txt names the same registry head, and the line equals the verb's
-DIR/ledger_line.json. It adds 0 to every N; the same registry head is never appended twice.
+from --root), DIR/registry_head.txt names the same registry head, the trial recipe hashes to its recipe_sha256, and
+the line equals the verb's DIR/ledger_line.json. It adds 0 to every N. Review MINE-3: a second line on the same
+recipe (a second confirm read on the same identity) or campaign name is refused, not skipped.
 """
 from __future__ import annotations
 
@@ -254,18 +255,31 @@ def check_campaign_registry(directory: Path, reg: dict, root: Path) -> None:
         raise LedgerError(f"{directory}: registry_head.txt does not name the campaign's registry head")
 
 
+def recipe_sha256(recipe: dict) -> str:
+    """SHA-256 of a campaign's trial recipe as the verb hashes it (nlohmann dump(): compact, keys sorted, UTF-8)."""
+    text = json.dumps(recipe, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def campaign_record(directory: Path, date: str | None = None, root: Path = research_tree.REPO) -> dict:
     """The Ruling E-33 ledger line of one atx-equity-strategy-mine output directory, built by
     ``backtest_integrity.campaign_line`` from its campaign.json and checked against the verb's own ledger_line.json.
-    The registry it names (root-relative or absolute) must still begin with the bytes the campaign hashed."""
+    The registry it names (root-relative or absolute) must still begin with the bytes the campaign hashed, and the
+    trial recipe in campaign.json must hash to its recipe_sha256 (review MINE-3 / MINE-13: the windows, role, fields,
+    library and pool cannot change after the campaign without changing its identity)."""
     campaign = json.loads((directory / "campaign.json").read_text(encoding="utf-8"))
     if campaign.get("schema") != MINE_CAMPAIGN_SCHEMA or campaign.get("status") != "complete":
         raise LedgerError(f"{directory}: campaign.json is not a complete {MINE_CAMPAIGN_SCHEMA} campaign")
     reg = campaign["registry"]
     check_campaign_registry(directory, reg, root)
+    recipe = campaign["recipe"]
+    if recipe_sha256(recipe) != campaign["recipe_sha256"]:
+        raise LedgerError(f"{directory}: campaign.json's recipe does not hash to its recipe_sha256")
+    confirm = {"begin": recipe["confirm"]["begin"], "end": recipe["confirm"]["end"]}
     rec = backtest_integrity().campaign_line(campaign["campaign_id"], reg["path"], reg["head"], reg["new_records"],
                                              registry_total=reg["n_raw"], registry_bytes=reg["bytes"],
-                                             budget=campaign["budget"],
+                                             budget=campaign["budget"], recipe_sha256=campaign["recipe_sha256"],
+                                             confirm=confirm, rule=campaign["rule"],
                                              research_window_id=campaign["research_window"]["id"], date=date)
     verb = json.loads((directory / "ledger_line.json").read_text(encoding="utf-8"))
     own = {k: v for k, v in rec.items() if k != "date"}

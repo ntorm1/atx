@@ -122,7 +122,9 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
     assert BI.trial_counts(records) == [1, 0, 0] and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]      # the cell listing skips the event line
     BI.ledger_append(ledger, [BI.campaign_line("mined-q1", "mine/registry.jsonl", "cd" * 32, 250,     # Ruling E-33
-                                               registry_total=250, registry_bytes=4096, budget=400),
+                                               registry_total=250, registry_bytes=4096, budget=400,
+                                               recipe_sha256="ef" * 32,
+                                               confirm={"begin": "2023-01-01", "end": "2024-01-01"}),
                               {"schema": BI.LEDGER_SCHEMA, "kind": "validation", "count": 0,       # review C-11
                                "owner_ruling": {"path": "r.json", "sha256": "ef" * 32}, "trial_id": "v" * 16}],
                      chain=True)
@@ -152,29 +154,50 @@ def grow_registry(root: Path, rel: str, records: int) -> tuple[str, int]:
     return hashlib.sha256(data).hexdigest(), len(data)
 
 
+def mine_recipe(tag: str, confirm: tuple[str, str]) -> dict:
+    """A campaign's trial recipe in the verb's layout (strategy_mine.cpp recipe_json); ``tag`` stands for the pool."""
+    return {"schema": "atx.mine-trial/v1", "rule": "mined-v1", "role_manifest_sha256": "a1" * 32,
+            "fields_manifest_sha256": "b2" * 32, "pool_sha256": hashlib.sha256(tag.encode()).hexdigest(),
+            "library": {"vm_identity": "dslvm1_clang18.1", "dsl_vm_sources_sha256": "c3" * 32,
+                        "ic_identity": "icres1", "ic_sources_sha256": "d4" * 32},
+            "window_id": BI.window_id(),
+            "discover": {"begin": "2020-01-01", "end": confirm[0], "rows": [383, 1295], "label_rows": 890},
+            "confirm": {"begin": confirm[0], "end": confirm[1], "rows": [1295, 1844], "label_rows": 527},
+            "ic": "research_window_ic_config (EquivalenceV3, ...)", "marginal": "combine::marginal_rank_ic_day ...",
+            "min_names": 10, "min_dates": 128}
+
+
 def mine_output(root: Path, rel: str, records: int, campaign_id: str = "fixture", registry_rel: str = REGISTRY_REL,
-                budget: int = 128, **ledger_override) -> Path:
+                budget: int = 128, recipe_tag: str | None = None,
+                confirm: tuple[str, str] = ("2022-07-01", "2024-01-01"), **ledger_override) -> Path:
     """An atx-equity-strategy-mine output directory exactly as the verb writes it (strategy_mine.cpp and
     strategy_mine_ledger.cpp; review MINE-1), after the campaign appended ``records`` records to its registry:
     campaign.json, registry_head.txt (eval::write_chain_head's line) and ledger_line.json (compact sorted keys), whose
     line is built here independently of backtest_integrity.campaign_line, as the C++ verb builds it. Ruling E-33a:
-    the line's count is ``records``, its total the registry's size (a registry shared with earlier campaigns)."""
+    the line's count is ``records``, its total the registry's size (a registry shared with earlier campaigns). Review
+    MINE-3: the recipe (one per ``recipe_tag``, default ``rel``) binds the confirm window; its SHA-256 is the campaign's
+    identity in the line."""
     head, size = grow_registry(root, registry_rel, records)
     total = (size - HEADER_BYTES) // RECORD_BYTES
     directory = root / rel
     directory.mkdir(parents=True)
     chain = hashlib.sha256(head.encode()).hexdigest()[:16]
+    recipe = mine_recipe(rel if recipe_tag is None else recipe_tag, confirm)
+    recipe_sha = hashlib.sha256(json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     campaign = {"schema": "atx.mine-campaign/v1", "status": "complete", "campaign_id": campaign_id,
                 "rule": "mined-v1", "budget": budget,
                 "research_window": {"id": BI.window_id(), "seal_begin": "2024-01-01"},
+                "recipe_sha256": recipe_sha, "recipe": recipe,
                 "registry": {"path": registry_rel, "format": "V3", "records": total,
                              "chain": chain, "head": head, "bytes": size, "n_raw": total, "new_records": records,
                              "anchor": None if total == records else {"records": total - records, "head": "0" * 16}}}
     (directory / "campaign.json").write_text(json.dumps(campaign, indent=2) + "\n", encoding="utf-8")
     (directory / "registry_head.txt").write_text(f"ATXTRGH1 {total:x} {int(chain, 16):x} 1f2e3d\n", encoding="utf-8")
-    ident = hashlib.sha256(json.dumps(["mining-campaign", head], separators=(",", ":")).encode()).hexdigest()
+    ident = hashlib.sha256(json.dumps(["mining-campaign", recipe_sha, head], separators=(",", ":")).encode())
     line = {"schema": "atx.trial-ledger/v1", "kind": "mining-campaign", "count": 0, "campaign": campaign_id,
-            "origin": "mined", "budget": budget, "window_id": BI.window_id(), "trial_id": ident[:16],
+            "origin": "mined", "rule": "mined-v1", "budget": budget, "recipe_sha256": recipe_sha,
+            "confirm": {"begin": confirm[0], "end": confirm[1]}, "window_id": BI.window_id(),
+            "trial_id": ident.hexdigest()[:16],
             "registry": {"path": registry_rel, "chain_head": head, "bytes": size, "count": records, "total": total}}
     line.update(ledger_override)
     (directory / "ledger_line.json").write_text(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n",
@@ -207,12 +230,16 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     reg = campaign["registry"]
     assert len(line["registry"]["chain_head"]) == 64
     assert line == dict(BI.campaign_line("fixture", reg["path"], reg["head"], 81, registry_total=81,
-                                         registry_bytes=reg["bytes"], budget=128, research_window_id=BI.window_id()),
+                                         registry_bytes=reg["bytes"], budget=128,
+                                         recipe_sha256=campaign["recipe_sha256"],
+                                         confirm={"begin": "2022-07-01", "end": "2024-01-01"},
+                                         research_window_id=BI.window_id()),
                         prev_sha256=head_before)
     assert line["budget"] == campaign["budget"] == 128                                       # Ruling E-32a
+    assert line["confirm"] == {"begin": "2022-07-01", "end": "2024-01-01"}                 # review MINE-3
+    assert line["trial_id"] == BI.campaign_trial_id(campaign["recipe_sha256"], reg["head"])
     assert BI.trial_counts(records) == [1, 0] and BI.campaign_registry_count(records) == 81 and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a"]
-    assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("already present")      # a rerun, same head
     before = ledger.read_bytes()
     bad = list(argv)
 
@@ -220,6 +247,19 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
         bad[bad.index("--campaign") + 1] = rel
         assert RC.main(bad) == 2 and needle in capsys.readouterr().err, rel
         assert ledger.read_bytes() == before
+
+    # Review MINE-3: a second confirm read on the same identity is refused, not skipped -- the same output again, a
+    # re-run on a fresh registry with the same recipe, or another recipe under the ledgered campaign name.
+    refused("mine/out-w1a", "a second confirm read on the same identity is refused")
+    mine_output(root, "mine/again", 81, campaign_id="fixture-again", registry_rel="mine/fresh.atxtrg",
+                recipe_tag="mine/out-w1a")
+    refused("mine/again", "recipe_sha256 with the ledgered campaign 'fixture'")
+    mine_output(root, "mine/renamed", 7, registry_rel="mine/r-name.atxtrg")
+    refused("mine/renamed", "shares campaign")
+    recut = mine_output(root, "mine/recut", 7, campaign_id="recut", registry_rel="mine/r-recut.atxtrg")
+    text = (recut / "campaign.json").read_text(encoding="utf-8").replace('"end": "2024-01-01"', '"end": "2023-12-01"')
+    (recut / "campaign.json").write_text(text, encoding="utf-8")
+    refused("mine/recut", "does not hash to its recipe_sha256")                              # MINE-13: windows edited
 
     sixteen = mine_output(root, "mine/sixteen", 3, registry_rel="mine/r16.atxtrg")           # the pre-fix verb's head
     head64 = json.loads((sixteen / "campaign.json").read_text(encoding="utf-8"))["registry"]["head"]

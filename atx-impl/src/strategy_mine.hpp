@@ -15,7 +15,11 @@
 // Registry: every distinct expression of the campaign is one trial of a V3 TrialRegistry
 // (--registry; an existing log is reopened only against --registry-head), in first-seen order:
 // evaluated trials with their oriented daily h 21 rank IC over the discover label rows (NaN as
-// 0), screen-rejected, racing-rejected and failed ones as screened observations. The registry's
+// 0), screen-rejected, racing-rejected and failed ones as screened observations. A trial's
+// identity is (recipe, expression); the recipe (campaign.json recipe, recipe_sha256) binds the
+// role, the fields manifest, the library (VM and IC source pins), the pool and both windows, so a
+// campaign any of whose trials the registry holds under its recipe is a second confirm read on
+// that identity and is refused before the confirm read (review MINE-3). The registry's
 // own chain head (records, u64) is written to OUTPUT/registry_head.txt (the next campaign's
 // --registry-head); the ledger's chain head is the SHA-256 of the registry log's bytes as the
 // campaign left it (review MINE-1), in campaign.json with the byte count and in ledger_line.json.

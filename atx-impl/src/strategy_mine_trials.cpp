@@ -30,6 +30,13 @@ u64 fnv1a64(std::string_view text) {
   return h;
 }
 
+// A trial's registry configuration: the recipe (which binds the confirm window, review MINE-3)
+// and the expression.
+u64 trial_config(const std::string &recipe_sha, const MinedTrial &t) {
+  return fnv1a64(std::string(kTrialRecipe) + "|" + recipe_sha + "|" + hex16(t.canon_hash) + "|" +
+                 t.dsl);
+}
+
 const ex::ResearchIcTrial *find_read(const std::vector<ex::ResearchIcTrial> &reads, u64 hash) {
   const auto it = std::lower_bound(
       reads.begin(), reads.end(), hash,
@@ -178,8 +185,7 @@ co::Result<usize> record_trials(ev::TrialRegistry &registry, std::vector<MinedTr
   std::vector<f64> pnl(rows);
   usize inserted = 0;
   for (MinedTrial &t : trials) {
-    const u64 config = fnv1a64(std::string(kTrialRecipe) + "|" + recipe_sha + "|" +
-                               hex16(t.canon_hash) + "|" + t.dsl);
+    const u64 config = trial_config(recipe_sha, t);
     if (t.status == TrialStatus::Evaluated) {
       // The oriented daily h 21 rank IC over the discover label rows, undefined days as 0.
       const std::vector<f64> &daily = t.read->daily_rank_ic;
@@ -215,6 +221,19 @@ co::Result<usize> record_trials(ev::TrialRegistry &registry, std::vector<MinedTr
     inserted += recorded.inserted ? 1U : 0U;
   }
   return co::Ok(inserted);
+}
+
+co::Result<usize> registered_trials(const MineConfig &cfg, const std::vector<MinedTrial> &trials,
+                                    const std::string &recipe_sha, usize rows,
+                                    const std::optional<ev::TrialChainHead> &anchor) {
+  if (!anchor) return co::Ok(usize{0}); // a new registry holds nothing (and is not created here)
+  ATX_TRY(const auto registry, open_registry(cfg, rows, anchor));
+  usize found = 0;
+  for (const MinedTrial &t : trials)
+    found += registry.contains(ev::trial_id(ev::TrialKind::MinerExpr, trial_config(recipe_sha, t)))
+                 ? 1U
+                 : 0U;
+  return co::Ok(found);
 }
 
 co::Result<RegistryReceipt> record_campaign(const MineConfig &cfg, std::vector<MinedTrial> &trials,

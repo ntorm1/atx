@@ -78,6 +78,13 @@ void classify(const StageRun &stage, usize stage_number, std::vector<MinedTrial>
 [[nodiscard]] co::Result<ev::TrialRegistry>
 open_registry(const MineConfig &cfg, usize pnl_len,
               const std::optional<ev::TrialChainHead> &anchor);
+// How many of `trials` the registry already holds under `recipe_sha` (0 for a new registry,
+// which is not created). Review MINE-3: the recipe binds the confirm window, so a held trial is
+// an expression whose confirm window was read already under the same identity.
+[[nodiscard]] co::Result<usize> registered_trials(const MineConfig &cfg,
+                                                  const std::vector<MinedTrial> &trials,
+                                                  const std::string &recipe_sha, usize rows,
+                                                  const std::optional<ev::TrialChainHead> &anchor);
 // Records every trial once, in order; returns how many records were new. An evaluated trial
 // whose oriented daily IC is degenerate becomes screen-rejected.
 [[nodiscard]] co::Result<usize> record_trials(ev::TrialRegistry &registry,

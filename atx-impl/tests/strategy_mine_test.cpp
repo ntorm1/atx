@@ -346,14 +346,24 @@ void expect_campaign_line(const st::MineConfig &cfg, const Json &campaign, const
   EXPECT_EQ(head_hex, prefix_sha256(cfg.registry_path, bytes)) << context;
   std::string registry_path = cfg.registry_path;
   std::replace(registry_path.begin(), registry_path.end(), '\\', '/');
-  const auto ident = core::sha256_hex(Json::array({"mining-campaign", head_hex}).dump());
+  // Review MINE-3: the recipe in campaign.json hashes to the identity and binds the confirm window.
+  const auto recipe_sha = campaign.at("recipe_sha256").get<std::string>();
+  EXPECT_EQ(core::sha256_hex(campaign.at("recipe").dump()).value_or(""), recipe_sha) << context;
+  const Json &confirm = campaign.at("recipe").at("confirm");
+  EXPECT_EQ(confirm.at("begin").get<std::string>(), cfg.confirm_begin) << context;
+  EXPECT_EQ(confirm.at("end").get<std::string>(), cfg.confirm_end) << context;
+  const auto ident =
+      core::sha256_hex(Json::array({"mining-campaign", recipe_sha, head_hex}).dump());
   ASSERT_TRUE(ident.has_value());
   const Json expected{{"schema", "atx.trial-ledger/v1"},
                       {"kind", "mining-campaign"},
                       {"count", 0},
                       {"campaign", campaign.at("campaign_id")},
                       {"origin", "mined"},
+                      {"rule", "mined-v1"},
                       {"budget", campaign.at("budget")},
+                      {"recipe_sha256", recipe_sha},
+                      {"confirm", {{"begin", cfg.confirm_begin}, {"end", cfg.confirm_end}}},
                       {"window_id", campaign.at("research_window").at("id")},
                       {"registry",
                        {{"path", registry_path},
@@ -492,7 +502,8 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
 
 // Same seed twice and at 1 and 4 workers: the same registry chain head, trial log and members.
 // An existing registry reopens only against its exported head, and a re-run of the recorded
-// campaign (it would add no record, Ruling E-33a) is refused, writing nothing.
+// campaign's recipe (a second confirm read on its identity, review MINE-3) is refused, writing
+// nothing.
 TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
   Fixture f;
   ASSERT_TRUE(f.ok);
@@ -522,18 +533,24 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
   EXPECT_FALSE(fs::exists(again.output_directory));
   again.registry_head_path = (f.dir.path / "out-w1a" / "registry_head.txt").string();
   const std::string log_before = text_of(again.registry_path);
-  const auto rerun = st::run_mine(again, progress);
-  ASSERT_FALSE(rerun);
-  EXPECT_NE(rerun.error().message().find("registered already"), std::string::npos)
-      << rerun.error().to_string();
-  EXPECT_FALSE(fs::exists(again.output_directory));
-  EXPECT_EQ(text_of(again.registry_path), log_before);
+  // Review MINE-3: the same recipe again -- the same seed, or another seed (stage 1 is the same
+  // templates) -- is a second confirm read on the same identity, refused before the confirm read.
+  for (const u64 seed : {u64{7}, u64{8}}) {
+    again.seed = seed;
+    const auto rerun = st::run_mine(again, progress);
+    ASSERT_FALSE(rerun) << seed;
+    EXPECT_NE(rerun.error().message().find("a second confirm read on the same identity"),
+              std::string::npos)
+        << rerun.error().to_string();
+    EXPECT_FALSE(fs::exists(again.output_directory));
+    EXPECT_EQ(text_of(again.registry_path), log_before);
+  }
 }
 
-// Ruling E-33a: two campaigns on one registry. The second (other windows, so other trial
-// identities) reopens the registry against the first one's head; each line counts only the
-// records its campaign added and carries the registry's size as its total, so the two counts
-// sum to the registry once.
+// Ruling E-33a: two campaigns on one registry. The second has another confirm window, which
+// review MINE-3 puts in every trial's identity, so all its trials are new records; it reopens
+// the registry against the first one's head. Each line counts only the records its campaign
+// added and carries the registry's size as its total, so the two counts sum to the registry.
 TEST(StrategyMineCampaign, SharedRegistryLinesCountEachCampaignsOwnRecords) {
   Fixture f;
   ASSERT_TRUE(f.ok);
@@ -545,8 +562,7 @@ TEST(StrategyMineCampaign, SharedRegistryLinesCountEachCampaignsOwnRecords) {
   second.campaign_id = "fixture-b";
   second.registry_path = first.registry_path;
   second.registry_head_path = (fs::path(first.output_directory) / "registry_head.txt").string();
-  second.discover_end = "2022-07-01";
-  second.confirm_begin = "2022-07-01";
+  second.confirm_begin = "2023-03-01"; // the discover window (the registry's calendar) is kept
   const auto b_status = st::run_mine(second, progress);
   ASSERT_TRUE(b_status) << b_status.error().to_string();
   const Json a = read_json(fs::path(first.output_directory) / "campaign.json");
@@ -558,6 +574,7 @@ TEST(StrategyMineCampaign, SharedRegistryLinesCountEachCampaignsOwnRecords) {
   EXPECT_EQ(b_new, b.at("trials").at("distinct").get<u64>());
   EXPECT_EQ(b_total, a_new + b_new);
   EXPECT_FALSE(b.at("registry").at("anchor").is_null());
+  EXPECT_NE(a.at("recipe_sha256"), b.at("recipe_sha256"));
   const Json a_line = read_json(fs::path(first.output_directory) / "ledger_line.json");
   const Json b_line = read_json(fs::path(second.output_directory) / "ledger_line.json");
   EXPECT_EQ(a_line.at("registry").at("count").get<u64>(), a_new);

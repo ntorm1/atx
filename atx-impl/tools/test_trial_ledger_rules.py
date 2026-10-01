@@ -244,14 +244,17 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
     ledger = tmp_path / "trials.jsonl"
     BI.ledger_append(ledger, [record(c[0], 0.6)], chain=True)
     v7_text = BI.appendix_a(BI.ledger_read(ledger), "t")
+    confirm = {"begin": "2023-01-01", "end": "2024-01-01"}
     camp = BI.campaign_line("mined-q1", "build-equity/mine/q1/registry.jsonl", "ab" * 32, 1000,
-                            registry_total=1250, registry_bytes=96048, budget=2048, research_window_id=WID,
-                            date="2026-10-02")
+                            registry_total=1250, registry_bytes=96048, budget=2048, recipe_sha256="cd" * 32,
+                            confirm=confirm, research_window_id=WID, date="2026-10-02")
     assert camp == {"schema": BI.LEDGER_SCHEMA, "kind": "mining-campaign", "count": 0, "campaign": "mined-q1",
-                    "origin": "mined", "budget": 2048, "registry": {"path": "build-equity/mine/q1/registry.jsonl",
-                                                    "chain_head": "ab" * 32, "bytes": 96048, "count": 1000,
-                                                    "total": 1250},
-                    "window_id": WID, "date": "2026-10-02", "trial_id": BI.trial_id("mining-campaign", "ab" * 32)}
+                    "origin": "mined", "rule": "mined-v1", "budget": 2048, "recipe_sha256": "cd" * 32,
+                    "confirm": confirm, "registry": {"path": "build-equity/mine/q1/registry.jsonl",
+                                                     "chain_head": "ab" * 32, "bytes": 96048, "count": 1000,
+                                                     "total": 1250},
+                    "window_id": WID, "date": "2026-10-02",
+                    "trial_id": BI.campaign_trial_id("cd" * 32, "ab" * 32)}
     BI.ledger_append(ledger, [camp, record(c[1], 0.9)], chain=True)
     records = BI.ledger_read(ledger)
     assert BI.trial_counts(records) == [1, 0, 1]
@@ -269,15 +272,44 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
                          NS.net_series(NS.load_daily(c[0], SCEN)), 0.6)
     with pytest.raises(ValueError, match="is not the trial_id of a ledgered cell line"):  # no defect of a campaign
         BI.ledger_append(ledger, [BI.defect_line(camp["trial_id"], "budget overrun")], chain=True)
+    good = {"registry_total": 5, "registry_bytes": 96048, "budget": 8, "recipe_sha256": "ef" * 32,
+            "confirm": confirm}
     for args, needle in ((("", "r", "ab" * 32, 5), "needs a name"), (("m", "r", "xyz", 5), "chain head"),
                          (("m", "r", "ab" * 16, 5), "chain head"),         # review MINE-1: the pre-fix 16-hex head
                          (("m", "r", "ab" * 32, 0), "positive integer")):
         with pytest.raises(ValueError, match=needle):
-            BI.campaign_line(*args, registry_total=5, registry_bytes=96048, budget=8)
-    with pytest.raises(ValueError, match="byte count"):
-        BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=5, registry_bytes=0, budget=8)
-    with pytest.raises(ValueError, match="E-33a"):                      # the total is the registry, >= the count
-        BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=4, registry_bytes=96048, budget=8)
-    for budget in (4, 0, True):                                         # review MINE-4: rule 10's budget covers it
-        with pytest.raises(ValueError, match="budget is fixed in advance"):
-            BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=5, registry_bytes=96048, budget=budget)
+            BI.campaign_line(*args, **good)
+    for change, needle in (({"registry_bytes": 0}, "byte count"),
+                           ({"registry_total": 4}, "E-33a"),             # the total is the registry, >= the count
+                           ({"budget": 4}, "budget is fixed in advance"),  # review MINE-4: rule 10's budget covers it
+                           ({"budget": 0}, "budget is fixed in advance"), ({"budget": True}, "budget is fixed"),
+                           ({"recipe_sha256": "ef" * 16}, "trial recipe"),                # review MINE-3
+                           ({"confirm": {"begin": "2024-01-01", "end": "2023-01-01"}}, "confirm window"),
+                           ({"confirm": {"begin": "2023-01-01"}}, "confirm window"), ({"rule": "mined-v0"}, "mined-v1")):
+        with pytest.raises(ValueError, match=needle):
+            BI.campaign_line("m", "r", "ab" * 32, 5, **dict(good, **change))
+
+
+def test_a_second_campaign_line_on_one_identity_is_refused_not_skipped(tmp_path):
+    """Review MINE-3: a mining campaign line is appended once. The same line again, another line on its recipe (the
+    same confirm window, role, fields, library and pool: a second confirm read on that identity, e.g. on a fresh
+    registry) and another recipe under its campaign name are refused; nothing is appended. Another campaign on another
+    recipe under another name is appended."""
+    ledger = tmp_path / "trials.jsonl"
+    confirm = {"begin": "2023-01-01", "end": "2024-01-01"}
+
+    def line(name: str, recipe: str, head: str) -> dict:
+        return BI.campaign_line(name, "mine/registry.atxtrg", head, 40, registry_total=40, registry_bytes=4096,
+                                budget=64, recipe_sha256=recipe, confirm=confirm, research_window_id=WID)
+
+    first = line("mined-a", "11" * 32, "aa" * 32)
+    BI.ledger_append(ledger, [first], chain=True)
+    before = ledger.read_bytes()
+    for again, needle in ((first, "trial_id, recipe_sha256, campaign"),
+                          (line("mined-b", "11" * 32, "bb" * 32), "recipe_sha256"),
+                          (line("mined-a", "22" * 32, "cc" * 32), "campaign")):
+        with pytest.raises(ValueError, match=f"shares {needle}.*a second confirm read on the same identity"):
+            BI.ledger_append(ledger, [again], chain=True)
+        assert ledger.read_bytes() == before
+    appended, skipped = BI.ledger_append(ledger, [line("mined-c", "33" * 32, "dd" * 32)], chain=True)
+    assert len(appended) == 1 and not skipped and BI.campaign_registry_count(BI.ledger_read(ledger)) == 80

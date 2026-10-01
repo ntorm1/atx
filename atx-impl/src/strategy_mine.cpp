@@ -30,6 +30,7 @@
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/fidelity.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
+#include "strategy_ic_runner.hpp" // the library identity of a trial recipe (review MINE-3)
 #include "strategy_mine_detail.hpp"
 #include "strategy_mine_ledger.hpp"
 
@@ -249,6 +250,34 @@ Json stage_json(const StageRun &stage) {
               {"racing_rejected", stage.result.fidelity_rejected},
               {"racing_evaluations", stage.result.fidelity_evals}, {"seconds", stage.seconds}};
 }
+
+// The campaign's trial recipe (review MINE-3): what one confirm read of an expression is.
+Json recipe_json(const MineConfig &cfg, const ResearchRole &role, const MinePool &pool,
+                 const MineWindows &windows, usize label_rows, usize confirm_rows) {
+  const IcCacheVmIdentity vm = ic_cache_vm_identity();
+  const IcCacheVmIdentity ic = ic_result_cache_identity();
+  return Json{
+      {"schema", std::string(kTrialRecipe)},
+      {"rule", std::string(kMinedRule)},
+      {"role_manifest_sha256", role.data().manifest_sha256},
+      {"fields_manifest_sha256", role.fields_sha256()},
+      {"pool_sha256", pool.sha256},
+      {"library",
+       {{"vm_identity", vm.identity},
+        {"dsl_vm_sources_sha256", vm.sources_sha256},
+        {"ic_identity", ic.identity},
+        {"ic_sources_sha256", ic.sources_sha256}}},
+      {"window_id", std::string(dt::kResearchWindowId)},
+      {"discover", window_json(windows.discover, label_rows)},
+      {"confirm", window_json(windows.confirm, confirm_rows)},
+      {"ic", "research_window_ic_config (EquivalenceV3, horizons 5/21/63, delay 1, maturity at "
+             "the window end), ResearchIcOptions{3, true, 1}, h 21 rank IC; decision "
+             "membership and research return guard"},
+      {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
+                   "summarize_rank_ic Bartlett lag 21"},
+      {"min_names", cfg.min_names},
+      {"min_dates", cfg.min_dates}};
+}
 } // namespace
 
 // ---- public -------------------------------------------------------------------------------------
@@ -385,25 +414,23 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                           "the search evaluated " + std::to_string(trials.size()) +
                               " distinct trials, above --budget " + std::to_string(cfg.budget)));
 
-    // The scoring recipe every trial of this campaign is an expression under.
+    // The campaign's identity: the scoring recipe every trial is an expression under. Review
+    // MINE-3: it binds the confirm window with the role, the fields manifest (which pins every
+    // field payload), the library (VM and IC sources) and the pool, so each trial's registry
+    // identity is its expression under one confirm read.
     Json payloads = Json::object();
     for (const auto &field : role->extras()) payloads[field.name] = field.sha256;
-    const Json recipe{
-        {"schema", std::string(kTrialRecipe)},
-        {"role_manifest_sha256", role->data().manifest_sha256},
-        {"fields_manifest_sha256", role->fields_sha256()},
-        {"field_payload_sha256", payloads},
-        {"pool_sha256", pool.sha256},
-        {"window_id", std::string(dt::kResearchWindowId)},
-        {"discover", window_json(windows.discover, label_rows)},
-        {"ic", "research_window_ic_config (EquivalenceV3, horizons 5/21/63, delay 1, maturity at "
-               "the window end), ResearchIcOptions{3, true, 1}, h 21 rank IC; decision "
-               "membership and research return guard"},
-        {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
-                     "summarize_rank_ic Bartlett lag 21"},
-        {"min_names", cfg.min_names},
-        {"min_dates", cfg.min_dates}};
+    const Json recipe = recipe_json(cfg, *role, pool, windows, label_rows, confirm_rows);
     ATX_TRY(const std::string recipe_sha, co::sha256_hex(recipe.dump()));
+    // A second confirm read on the same identity is refused, not skipped: no trial of this
+    // campaign may be in the registry under this recipe already.
+    ATX_TRY(const usize held, registered_trials(cfg, trials, recipe_sha, label_rows, anchor));
+    if (held != 0U)
+      return co::Err(fail(co::ErrorCode::AlreadyExists,
+                          std::to_string(held) + " of the campaign's trials are registered already "
+                          "under its recipe " + recipe_sha.substr(0, 16) + " (role, fields, "
+                          "library, pool, discover and confirm windows): a second confirm read on "
+                          "the same identity is refused"));
 
     // Registry: every distinct expression once; the chain head leaves the log at once.
     const fs::path out_dir(cfg.output_directory);
@@ -414,7 +441,8 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
             record_campaign(cfg, trials, recipe_sha, label_rows, anchor));
     // Ruling E-33a: a campaign's line counts the records it added; one that added none is a
     // re-run of a recorded campaign, which has no line to write and is refused before any read
-    // of the confirm window.
+    // of the confirm window. The identity check above refuses it first; this is the backstop
+    // against another writer registering the same trials in between.
     if (registry.inserted == 0U) {
       static_cast<void>(fs::remove(out_dir, ec)); // empty: nothing was written into it
       return co::Err(fail(co::ErrorCode::AlreadyExists,
@@ -484,6 +512,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"windows", {{"discover", window_json(windows.discover, label_rows)},
                      {"confirm", window_json(windows.confirm, confirm_rows)}}},
         {"recipe_sha256", recipe_sha},
+        {"recipe", recipe},
         {"search", search_json},
         {"trials", {{"distinct", trials.size()},
                     {"evaluated", counts.evaluated},
@@ -513,9 +542,10 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                      {"members", members}};
     // Ruling E-33: the line backtest_integrity.campaign_line builds (strategy_mine_ledger.hpp;
     // count 0: it adds no trial to any ledger N; Ruling E-33a: registry.count = the records this
-    // campaign added, registry.total = n_raw). `research_cycle.py ledger-campaign` rebuilds it
-    // from campaign.json through campaign_line, checks the registry against its head, refuses a
-    // difference, and appends it chained (prev_sha256).
+    // campaign added, registry.total = n_raw; review MINE-3: the recipe identity and the confirm
+    // window, in the trial_id). `research_cycle.py ledger-campaign` rebuilds it from campaign.json
+    // through campaign_line, checks the registry against its head and the recipe against its
+    // SHA-256, refuses a difference or a second line on the recipe, and appends it chained.
     MineLedgerLine line;
     line.campaign_id = cfg.campaign_id;
     line.registry_path = cfg.registry_path;
@@ -524,6 +554,9 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     line.registry_count = registry.inserted;
     line.registry_total = n_raw;
     line.budget = cfg.budget;
+    line.recipe_sha256 = recipe_sha;
+    line.confirm_begin = windows.confirm.begin_date;
+    line.confirm_end = windows.confirm.end_date;
     line.window_id = std::string(dt::kResearchWindowId);
     ATX_TRY(const std::string ledger, mine_ledger_line(line));
     ATX_TRY_VOID(write_text(out_dir / "trials.csv", trials_csv(trials)));
