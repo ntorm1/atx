@@ -914,3 +914,12 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Fix round FIX-4 (brief task-FIX-4-brief.md), two lanes from the part-B head: FIX-4a (pool 4): O-1..O-7, C-1
   (PM4-7), C-5; FIX-4b (pool 10): C-2 (PM4-8, PM4-9), C-4, S-1, S-2. C-7 and C-8 stand as recorded. Integration
   6 part C merges both, builds, re-runs the touched suites and identity 4; Wave 0 part 2 follows.
+- FIX-4a dispatched on pool 4 (feat/platform-v8-fix4a-20261001), FIX-4b on pool 10 (feat/platform-v8-fix4b-20261001),
+  both from root 43a0447d.
+- Ruling PM4-14 (Wave 0 part 2 split, declared before any read): dispatch 2a (R10, R11: fields v9 on lo1 and lo3,
+  and the field overlap report, R13 report 1, under W0-a) runs now on build v8-10 while the FIX-4 lanes work;
+  dispatch 2b (R12 plan-only, the cold u pass, the signal and daily IC overlap reports, R14 pins, protocol line,
+  lock --write) runs after integration 6 part C, because FIX-4a changes IC runner sources and the locks pin the
+  executables -- FIX-4 owns no field builder or field module (brief file lists), so fields v9 is built on final
+  field code and root does not idle for a lane-turn -- cost if wrong: fields v9 is rebuilt once if part C
+  changes a field module fingerprint (the v10 reuse count 49 / 21 would show it).

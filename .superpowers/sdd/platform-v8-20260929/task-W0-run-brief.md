@@ -23,7 +23,12 @@ IC phases: 300 s / 2,560 MiB, 4 workers. Preparation steps (projection, roles, r
 runbook's number and record it). A refusal on the free-memory floor: wait two minutes, retry up to five times; then
 record and stop.
 
-## Steps (THIS DISPATCH: R1-R9 only; stop after R9, report)
+## Steps (R1-R9 are done, see the log section "Wave 0 part 1 (R1-R9)". Part 2 runs R10-R14 in two dispatches:
+## dispatch 2a = R10, R11 and report (1) of R13, the field overlap; dispatch 2b = R12, the rest of R13, R14.
+## Your dispatch message says which one you are; do only that one, then report. Ruling PM4-14.)
+Before R10 (Ruling W0-n): re-hash the live stage manifests and record the digests; fields v9 pins the live
+`regsho_threshold` stage. Fields v9 is built fresh on the 4-year roles with the calendar pin in the fingerprint
+(PM3-5a); the later reuse expectations are v10 from v9 49 reused / 21 computed and v11 from v10 70 / 3.
 R1 .. R12 of the runbook in order, one bounded run each (`scripts/run_bounded_research.py`), the exact argv from the
 runbook's section 3 (reconstructed argv in R10/R11). After each run: receipt ExitCode, seconds, peak MiB, output
 manifest sha256 into the log. Commit before the next run.
