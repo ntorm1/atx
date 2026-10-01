@@ -585,11 +585,53 @@ def line_bucket(con, b: int, years: Sequence[int], features: Sequence[R.Feature]
 
 
 def year_pass(con, year: int, features: Sequence[R.Feature]) -> dict[str, Any]:
+    """One calendar month at a time (the group statistics are same-session, so the split is exact; a whole-year
+    sort of ~2.7M x 106 columns broke the 1 GiB job cap), each month sorted by (session_date, security_id), then
+    the month parts are streamed row group by row group into the year file (atomic ``.partial`` -> rename)."""
     src = _rp(_tmp(LINE_DIR, "b=*", f"yr={year}", "*.parquet"))
     dest = C.stage_dir(STAGE) / f"year={year}" / "characteristics.parquet"
-    sql = year_sql(src, dt.date(year, 1, 1), dt.date(year, 12, 31), features) + " ORDER BY session_date, security_id"
-    rows = C.copy_to_parquet(con, sql, dest, row_group_size=32768)
-    return {"rows": rows, "bytes": dest.stat().st_size}
+    parts_dir = _tmp(LINE_DIR, f"year_parts={year}")
+    if parts_dir.exists():
+        shutil.rmtree(parts_dir)
+    parts: list[Path] = []
+    rows = 0
+    for m in range(1, 13):
+        lo = dt.date(year, m, 1)
+        hi = (dt.date(year + (m == 12), m % 12 + 1, 1) - dt.timedelta(days=1))
+        part = parts_dir / f"m{m:02d}.parquet"
+        n = C.copy_to_parquet(con, year_sql(src, lo, hi, features) + " ORDER BY session_date, security_id", part,
+                              row_group_size=32768)
+        if n:
+            parts.append(part)
+            rows += n
+    _concat_parquet(parts, dest)
+    shutil.rmtree(parts_dir)
+    return {"rows": rows, "bytes": dest.stat().st_size, "months": len(parts)}
+
+
+def _concat_parquet(parts: Sequence[Path], dest: Path, row_group_size: int = 32768) -> None:
+    """Stream ``parts`` (same schema, in order) into ``dest`` one row group at a time."""
+    import pyarrow.parquet as pq
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".partial")
+    if tmp.exists():
+        tmp.unlink()
+    writer = None
+    try:
+        for p in parts:
+            pf = pq.ParquetFile(p)
+            for i in range(pf.num_row_groups):
+                t = pf.read_row_group(i)
+                if writer is None:
+                    writer = pq.ParquetWriter(tmp, t.schema, compression="zstd")
+                writer.write_table(t, row_group_size=row_group_size)
+    finally:
+        if writer is not None:
+            writer.close()
+    if writer is None:
+        raise ValueError(f"no rows for {dest}")
+    os.replace(tmp, dest)
 
 
 def coverage(con, features: Sequence[R.Feature], years: tuple[int, int] = COVERAGE_YEARS) -> dict[str, Any]:
