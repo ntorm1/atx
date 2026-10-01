@@ -163,3 +163,94 @@ PY="C:/Program Files/Python312/python.exe"
    through research_cycle. I did not touch that or check it here.
 5. **Size of the era aim parts.** Each candidate and era stores 37 x T floats (about 0.5 MB of JSON at T = 756).
    Each era's z is computed one candidate at a time, as for aim records.
+
+## Round 1 (Rulings E-41 and E-35a)
+
+Concerns 1 and 2 above are answered by these rulings.
+
+| item | commit | content |
+|---|---|---|
+| E-41 | `0b855971` | history reads add 0 to N; they are counted apart in Appendix A |
+| E-35a | `51d59f48` | the pooled fit implements ew-theme-aim-v1 by E-27a's rule |
+
+### E-41 (`backtest_integrity.py`, `nav_summ.py`)
+
+- `history_read_lines(records)` returns the line of record of each history read:
+  - a pooled line whose series begins before TRAIN (`begins_before_train`: window first_session against the
+    research window's TRAIN begin);
+  - a one-era history line: an era block whose `era_of` names no pooled line. That is the TRAIN cell it re-reads,
+    or, on a line written before P-1, no `era_of` at all.
+
+  A pool's era lines belong to its pooled line's read, so a two-era read counts once. A pool of eras that lie inside
+  TRAIN is not a history read: its POOL line still adds 1 (H-1 behaviour, as in tiny_world's TRAIN split).
+- `trial_counts` gives history reads 0, and `ledger_counts` skips them, so N is unchanged by a history read.
+- `appendix_a` prints `history read(s): K, adding no trial (Ruling E-41; ...)`, only when a history read is
+  ledgered. History reads are kept out of its "adding no trial ... by the defect rule" line.
+- `appendix_a_v8` always prints `history reads K` right after the validation reads:
+  `...; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.`
+  The start of the block (`TRAIN construction cells N; admission trials ...`, which the mega report's regex parses)
+  is unchanged.
+- `nav_summ --dsr-ledger`: the pooled row of a history read takes N with no "+ 1". Its `n_rule` ends in
+  "(a history read adds no trial, Ruling E-41)".
+- Tests in `test_nav_summ_pool.py`:
+  - `test_e41_appendix_a_counts_the_history_read_apart_and_n_is_unchanged`, on the P-1 fixture ledger:
+    - `trial_counts == [1, 1, 0]`; `history_read_lines` holds the one history line; N = 2, the same as without the line;
+    - the block starts "TRAIN construction cells 2;" and contains "history reads 1" (and "history reads 0" without
+      the line);
+    - `appendix_a` totals 2 trials and shows no ERA row.
+  - The two-era history pool now counts `[0, 0, 0]` with one history read, and its `--dsr-ledger` N has no + 1.
+  - The one-era history read with `--era-of` counts one history read.
+  - The TRAIN-split pool still counts `[0, 0, 1]` with "history reads 0".
+
+### E-35a (`fit_composition_weights.py`)
+
+- `POOLED_COMPOSITIONS` = ew-theme-v1, ew-theme-aim-v1, ew-theme-v6, ew-theme-std-v1, ew-theme-std-aim-v1.
+- ew-theme-aim-v1 in a pool takes the pooled aim records (`pool_aims`, the same records as ew-theme-std-aim-v1) and
+  weights them with `pooled_aim_weights(themes, gains)`. That function is E-27a's rule:
+  `composition_rules.tier_weights(themes, gains)` (w_k = (1/T) g_k / sum over its theme of g), then
+  `composition_rules.member_cap(..., 1/(2T))`. These are the same functions the std-aim variant uses, with the gains
+  as the within-theme scores. It writes composition text `POOLED_AIM_TEXT` and the same theme-table keys as
+  `ew_theme_aim_weights`, plus `capped`.
+- **This branch does not have FIX-3.** Here the single-window ew-theme-aim-v1 still normalises across themes
+  (`ew_theme_aim_weights`), so the pooled path implements E-27a on its own, through a separate `elif` branch in
+  `fit_prior`. After FIX-3 merges, the integrator should:
+  - drop that branch and `pooled_aim_weights`, so both paths run FIX-3's E-27a code;
+  - then re-run `test_pooled_aim_fit_over_one_era_equals_the_single_window_fit`. It skips today and runs on its own
+    once the single window follows E-27a.
+
+  A scratch emulation pointed `ew_theme_aim_weights` at `pooled_aim_weights`. The one-era pool then equals the
+  single window, minus the pool keys and the composition text: weights document and admission both byte-equal.
+- Single-window identity against b44774d6 still holds for all eight single-window cases and the H-1 pooled ones
+  (scratch `identity_fit.py`). The single branch only swapped its `fit_series` literal for the same-valued constant
+  `AIM_FIT_SERIES`.
+- Tests in `test_fit_composition_weights_pool.py`:
+  - `test_pooled_aim_fit_over_one_era_is_e27a_on_the_single_window_gains`: admission and aim gains/rho equal the
+    single window's; weights equal an independent E-27a reference (within-theme renormalisation, then
+    `test_composition_rules.ref_cap`) to 1e-15; the cap holds.
+  - `test_pooled_aim_fit_over_one_era_equals_the_single_window_fit`: skipped until FIX-3, as above.
+  - `test_two_history_eras_pooled_aim_is_e27a_on_the_pooled_gains`: the same gains as std-aim, every era aim part
+    reused, E-27a weights, and the E1 file identical apart from its role binding.
+  - The refusal test drops ew-theme-aim-v1 and keeps an unknown id, mv-shrink and netcost. The H-1 refusal case that
+    used ew-theme-aim-v1 now uses netcost.
+
+### Round 1 tests
+
+- `test_fit_composition_weights_pool.py`: 27 passed, 1 skipped (the FIX-3 equality test).
+- Fitter suites (pool, main, store, composition_rules): 139 passed, 1 skipped.
+- Ledger, nav_summ and report set (nav_summ_pool, backtest_integrity, trial_ledger_rules, nav_summ_v8, nav_summ,
+  holdout_gate, mega_report_v8 and its render test, research_ledger, research_cycle_roles, research_cycle): 302 passed,
+  4 skipped.
+- Full `atx-impl/tools scripts/tests` + the era_pool, record_store and research_window tests: 670 passed, 7 skipped
+  (the existing ATX_EQUITY_* gates plus the FIX-3 equality test), 486 s.
+
+### Round 1 concerns
+
+1. **Merge with FIX-3.**
+   - It will conflict in `fit_prior`'s ew-theme-aim-v1 branch: drop this branch's `pooled_aim_weights` and its `elif`.
+   - It may also touch the same region of `backtest_integrity.py`. FIX-3's change (`check_rerun`, F-1) is separate from
+     the new functions here.
+2. **E-27a's member cap is infeasible when every theme has a single admitted member.** With T themes of one member
+   each, every weight is 1/T, which exceeds the cap 1/(2T), and no other theme can take the excess. The fit refuses,
+   as ew-theme-std-aim-v1 already does. H-1's two-era fixture is such a case, which is why its refusal test changed id.
+3. **The research_cycle `summ.dsr_n` "ledger+1" N for a history-read cell is resolved at plan time without
+   NAV output.** It still adds 1; `research_cycle.py` is not my file. `nav_summ --dsr-ledger` is correct.
