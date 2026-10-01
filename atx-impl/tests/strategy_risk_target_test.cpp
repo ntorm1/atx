@@ -61,7 +61,7 @@ std::shared_ptr<const sp::RiskStore> clean_store(const Directory& dir, const Rol
   const std::vector<u8> forecast(role.d, u8{1});
   return store_of(dir, role, forecast, seed);
 }
-rt::Options target(f64 sigma_star) {
+rt::Options risk_options(f64 sigma_star) {
   rt::Options o;
   o.on = true;
   o.params.sigma_star = sigma_star;
@@ -234,7 +234,7 @@ TEST(RiskTarget, ScalerSigmaHatMatchesADenseRecomputationOnTheStore) {
   ASSERT_TRUE(std::isfinite(sigma));
   ASSERT_GT(sigma, 0.0);
   const f64 base = 1.2;
-  auto options = target(1.15 * sigma * base); // raw = L, inside [.8 L, 1.25 L]
+  auto options = risk_options(1.15 * sigma * base); // raw = L, inside [.8 L, 1.25 L]
   ASSERT_TRUE(eb::validate_risk_target(options.params));
   rt::Scaler scaler(options, risk);
   // d = 2: no forecast, so no estimate; L in force.
@@ -282,7 +282,7 @@ TEST(RiskTarget, ReplayEstimatesOnTheFirstBookThenEvery21Sessions) {
   const auto cfg = nav_config();
   const f64 base = cfg.target.aim_leverage;
   v7::NavV7Options o;
-  o.risk_target = target(0.05);
+  o.risk_target = risk_options(0.05);
   o.spo_risk = risk;
   const v7::ScopedNavExtension extension(o);
   const auto result = st::replay_nav(role.nav(), cfg);
@@ -337,7 +337,7 @@ TEST(RiskTarget, ReplayEstimatesOnTheFirstBookThenEvery21Sessions) {
   usize lines = 0;
   for (const char c : csv) lines += c == '\n' ? 1U : 0U;
   EXPECT_EQ(lines, records.size() + 1);
-  auto tuned = target(0.05);
+  auto tuned = risk_options(0.05);
   tuned.params.bias = 1.2;
   tuned.params.cadence = 10;
   EXPECT_EQ(rt::rule_suffix(tuned), "+risk-target-0.05-bias-1.2-cadence-10");
@@ -353,7 +353,7 @@ TEST(RiskTarget, AimPartialV5PlansTowardTheScaledAimBitForBit) {
   ASSERT_NE(risk, nullptr);
   const auto cfg = nav_config();
   v7::NavV7Options o;
-  o.risk_target = target(0.05);
+  o.risk_target = risk_options(0.05);
   o.risk_target.params.cadence = 3;
   o.spo_risk = risk;
   const v7::ScopedNavExtension extension(o);
@@ -391,7 +391,7 @@ TEST(RiskTarget, CapacityX1IsTheMainBookBitForBit) {
   ASSERT_EQ(books[1].id, "capacity-x1-v1");
   v7::NavV7Options o;
   o.capacity = true;
-  o.risk_target = target(0.05);
+  o.risk_target = risk_options(0.05);
   o.spo_risk = risk;
   v7::ScopedNavExtension extension(o);
   extension.begin_run(v7::NavV7Pass::Main);
