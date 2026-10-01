@@ -709,3 +709,54 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   35bcda95, LIB2 5d64644e and builds now (root is free); part B merges FIX-2, FIX-3, COMB2, ORTH, MINE-FIX when
   they report, applies ERA's post-FIX-3 items, builds and runs every suite; Wave 0 part 2 (R10-R14) follows --
   cost if wrong: one extra build tag.
+- COMB2 done 692b57d8 (pool 11; kernel 9dbabf54, C++ rule b8a86b1b, fitter d0813fc5, r10.json 42614cc2). Registered
+  blind (task-R-10-report.md): IC = each member's admission-row train_mean (the parent fitter's window; no new read);
+  shrunk_k = .5 theme-mean + .5 ic_k; floor 0 (a theme with no positive value falls back to 1 / n); theme share
+  1 / T; cap 1 / (2T); runner re-applies the rule to the recorded ICs (1e-12). Acceptance: dSR > 0, mechanics,
+  planned turnover per unit gross not higher than the parent (R-1's criterion). Python 137 passed; not compiled.
+  Cross-lane: fit_composition_weights.py (4 hunks; FIX-3 edits it too), test_research_spec.py; a C++ rule table
+  created in strategy_ic_admission.cpp (ORTH adds its row).
+- Ruling E-44 (R-10 / R-11 on an aim parent; COMB2 concern 1, declared before any read): the slot-49..51 rules
+  run on the last accepted parent whatever its composition. If that parent carries R-3's gains, ic-shrink-v1
+  multiplies its shrunk weights by the gains inside each theme, renormalised, cap after (E-27a mechanism), id
+  `ic-shrink-aim-v1`; theme-resid-v1 acts on composites and is unchanged by gains (it must accept an aim parent
+  and record the parent's rule). The mechanical criterion for both is R-1's (planned turnover per unit gross
+  not higher than the parent) -- the registration says "parent = last accepted" -- cost if wrong: one variant
+  unused.
+- FIX-2 done d43949b7 (pool 7; N-2 28051c4c, P-2 6471c38f, P-3 6a90caae, N-3 4e834a9c + c314a12b, N-1 6ed5fef8,
+  T-1 fc83c456, T-2 6006fe9d, T-4 edcb597b). No defect found under T-2 (code reads t-1; both look-ahead patches
+  fail the strengthened tests) or T-4 (by reading). Python 204 + 55 + 91 pass; C++ not compiled. One-time cost:
+  fields dirs built before 6ed5fef8 recompute their 9 holdings fields once (manifests gain seal_date). The card now
+  needs --marginal-ic-pool-sha256 with --marginal-ic. Untouched: T-10 (R-1 planned turnover), prepare_research_fields
+  rule text. Round 1 dispatched: SPO-1 / SPO-5 (E-31a), SPO-4, SPO-2 (E-14a).
+- ORTH done c1cc57ce (pool 4; kernel 19cc08ef, C++ rule 75534a36, fitter + r11.json 121bfb15). Registered blind
+  (task-R-11-report.md): theme order = fit_composition_weights.PRIOR_THEMES (registry order), themes with a weighted
+  member only; per session each theme's standardised composite regressed by least squares on an intercept and the
+  earlier composites (not residuals), names where the theme is present, absent earlier theme = 0; tolerance 1e-10
+  relative, dependent regressor dropped; residual re-ranked (centred tied rank); first theme unchanged bit for bit;
+  blend with the parent's shares, weights, signs, cap. Acceptance per E-44 (rule 5 plus R-1's turnover criterion;
+  the lane wrote rule 5 only -- E-44 governs). Python 475 + 165 pass; C++ not compiled; test vectors verified by a
+  loop port. Cross-lane: fit_composition_weights.py (+4), test_research_spec.py, strategy_ic_runner_test.cpp, CMake.
+- Ruling E-45 (ORTH concern 1, declared before any read): R-10 and R-11 are defined only on a parent whose weights
+  file carries a rerank-true theme_standardise (R-1 accepted); if R-1 is rejected they are skipped as undefined
+  (ledger says so) and slots 49-51 hold only R-12 (E-38) -- a rejected rule is never retried in another guise --
+  cost if wrong: two cells unused.
+- FIX-3 done b6899ed7 (pool 10; F-8 df42ed69, F-1 fe5f5396, F-9 124d3d11, F-10 c9a154c2, F-14 9c53fe63; minors
+  F-2 ca1db951, F-3 ac59103f, F-5 baa31ce5, F-6 f78c9a7a). 166 + 248 tests pass. Untouched minors F-4, F-7, F-11,
+  F-12, F-13 (other owners / need rulings). Procedure rule from concern 3: a re-run cell is scored alone (a
+  multi-dir summ with --rerun-of refuses the prior cells). A cell ledgered invalid through nav_summ needs a ruled
+  defect line (ledger-defect --ruling --date) before its re-run.
+- Ruling E-27b (FIX-3 concern 1): the E-27a rule on an ew-theme-v1 parent takes the new id `ew-theme-aim-v2`;
+  `ew-theme-aim-v1` keeps its v5 semantics (reproducible from code) and is refused for v8 cells; the pooled fit
+  (ERA, E-35a) implements v2, not v1 -- a rule id must name one rule for ever -- cost if wrong: an id rename.
+  FIX-3 round 1 does the rename; integration 6 part B aligns ERA's list.
+
+## 2026-09-30 integration 6 part A closed (log "integration 6 part A"; head 48c625fc)
+- Merged DLRET f51c5fd8 (2ddcece9), ERA ebc254f0 (1f2c98ab), RISK 35bcda95 (d1c86389; FIX-2's N-2 came along),
+  LIB2 5d64644e (31c69d9d); no conflicts. Edits e41d71b1 (E-41 plan-time N), 7ca53c67 (E-42 theme move in the
+  LIB2 registration). Builds v8-9, v8-9a clean; RISK compiled first time. C++: target 253, book 154, strategy 46,
+  ic 105, mine 18, factory 387, impl 979/5/1 known. Python: strategies 163 + 9, engine tools 252, impl tools 482/2
+  skipped, scripts 168/3 skipped. tiny_world unmoved. DLRET tool diff empty; LIB2 holdings fingerprints unchanged.
+- Next: part B after FIX-2 r1, FIX-3 r1, COMB2 r1 (merge FIX-2, FIX-3, COMB2, ORTH; drop ERA's pooled aim elif;
+  E-27b id alignment; un-skip the equality test; build; suites); then Wave 0 part 2 (R10-R14). MINE-FIX merges in
+  integration 7 (off the v8 critical path).
