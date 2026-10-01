@@ -1501,6 +1501,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R5 b21-41 | `fundamental-events-v3-run-b21-41` | `38b06aa9` | completed / 0 | 56.9 | 657 | `c9dcf0f64f10b4819eccf1231f7c95eeddb513ac3a801c077a897a908c26d8a2` | (stage; batches 21-41 computed) |
 | R5 b42-62 | `fundamental-events-v3-run-b42-62` | `19d0a704` | completed / 0 | 49.6 | 599 | `1b2ee2338c6954390e9f92b09f4b9cbfcebbc1330f666866999e8084d9f60432` | (stage; batches 42-62 computed) |
 | R5 b63-84 | `fundamental-events-v3-run-b63-84` | `d0bef9b3` | completed / 0 | 30.9 | 608 | `7d6f302b0d91b49c6afb626c56c900f92dd90726b6005d6eca3562f98991df14` | (stage; batches 63-84 computed, batch 84 0 rows) |
+| R5 fin | `fundamental-events-v3-run-fin` | `19c64f0e` | completed / 0 | 6.6 | 302 | `03e33b04e8b8c0be909c80f86ece4a395e4d60595f4bf416225ef4c70038fb45` | `304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b` |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1524,3 +1525,8 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   `run.json` `parameters.seal` 2024-01-01, `parameters.sub_quarters` `2009q2..2023q4`; `fsds.sub_quarters` lists 59
   quarters, the last `2023q4` (the only 2024+ date text in `run.json` is the seal itself). SIC: 6,337 CIKs, 217,340
   rows; 366,856 unique SUB accessions.
+- **R5 PASS** (6 runs, 203.1 s total, max peak 657 MiB; the runbook expected ~93 s / <= 660 MiB: the event batches
+  ran ~2.2x slower than the old receipts, well inside the cap). Manifest `seal` and `parameters.seal` 2024-01-01,
+  `parameters.sub_quarters` `2009q2..2023q4`; 155,577 event rows; 51 MiB on disk. The only other date text past the
+  seal is `caveats[2]`, the CompanyFacts snapshot label (2026-09-20, archive `ee099c73`), not data.
+  `FEV = 304d2945...be87b`.
