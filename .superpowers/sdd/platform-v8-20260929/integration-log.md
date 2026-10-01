@@ -1934,6 +1934,7 @@ array as compact JSON (`json.dumps(command, separators=(",", ":"))`). Peak = sam
 |---|---|---|---|---|---|---|---|---|
 | R10 | `train-2020-2023-lo1-fields-v9-run` | `814c2c0a` | completed / 0 | 166.8 | 960 | `0a5e19898e32d46cd095b155b4a8637d8d2195dc301945577d4fd7d380812a57` | `50ca556f5f2bb4c6a99d8b554ee639d90760524aa4378e81e92b06c4d1ec42e9` | `888e6616e441e863a9f91234124e1aebc907db11e18d9789d3c583cf447b8695` |
 | R11 | `train-2020-2023-lo3-fields-v9-run` | `2b80cf9e` | completed / 0 | 154.6 | 1,014 | `4e828bff080775cdf6183c013671e4d541faabfa7aeff557ac7338fba2c82870` | `5675df067c2022a31d4376ccbb05e9cdfd7eef04d025a5af5b77a25df5b39a9d` | `9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef` |
+| R13 (1) field overlap | `w0-2-overlap-field-lo1-run` | `75567df3` | completed / 0 | 20.9 | 162 | `4cb746ca45533ecad832d6d025437945881419aa5167b3b0b10732b522aa4490` | `b9a2ee911a2952b6d99f53c1e84048c013f1d800f86a44bb25edb023de4551d8` | report `w0-2-overlap-field-lo1.json` `fafdc20f5397dca48df83f0787e7b0408ee5aeaf8e579be7d9996b587b212c77` |
 
 - **R10 PASS.** Bindings: `prepare_research_fields.py` `b44cff42...`, `research_fields_sec.py` `27034019...`,
   `research_fields_holdings.py` `edfd1967...`, role lo1 `2ff9d771...1e53`. Runner min free 4,407 MiB. Manifest:
@@ -1954,3 +1955,97 @@ array as compact JSON (`json.dumps(command, separators=(",", ":"))`). Peak = sam
   stdout/stderr scanned for dates 2024+: 0 hits. Coverage against the 3-year `recent-fast-train-2020-2022-v2-lo3-
   fields-v7` (41 common names): **all within .02** on 2020-2022 (largest gap 0.00055, `me_company` 2022). The 22 W5a /
   W5b names have no 3-year lo3 reference (open question 30): reported only, not checked.
+
+### R13 report 1: field overlap, fields v9 lo1 against the v7.1 fields (Ruling W0-a)
+
+Argv = runbook R13 field line plus `--per-key` (one row per field, needed for the field-by-field classes; it adds rows
+to the report and changes no comparison): `compare_window_overlap.py --kind field --old
+build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9 --new build-equity/train-2020-2023-lo1-fields-v9 --out
+build-equity/w0-2-overlap-field-lo1.json --per-key`; runner 180 s / 1,536 MiB / 512 (the brief's default cap). Bindings:
+tool `b4d7f2e8...`, old manifest `8fd00e9f...` (= `scripts/specs/v71.json` `fields.manifest_sha256`), new `888e6616...`.
+Payload SHA-256s verified against both manifests (no `--no-verify`); no `--before`.
+
+- **Alignment:** 1,155 common sessions (2018-06-01..2022-12-30: the v7.1 role's whole axis, warm-up included, so a
+  superset of the 2020-2022 cells), 5,627 common instruments (**old-only instruments 0, old-only sessions 0**),
+  new-only 295 instruments and 250 sessions (counted only).
+- **Totals:** 63 keys, 63 compared, **409,448,655 cells compared** (6,499,185 per field, no key without cells),
+  `old_cells_missing_in_new` 0, `unequal_cells` 3,006,158 of which `nan_mismatch_cells` 3,006,153, **`max_abs_diff`
+  5.0**, `max_rel_diff` 1.0, `bit_identical` **false**, **`w0a_class` stop**. One differing key.
+- **First differing field and cell:** `regsho_threshold_days63`, session 2018-06-04 (ns 1528070400000000000),
+  instrument id 2234.
+
+Per field class (every field is reported; "identical" = every one of its 6,499,185 common cells has the same IEEE-754
+bits or NaN on both sides):
+
+| class (why it could differ) | fields | W0-a class | numbers |
+|---|---|---|---|
+| FINRA short interest | si_shares, si_dtc (2) | identical | 0 unequal |
+| TickerHistory3 (reader-side seal) | iv_atm_21d, iv_atm_63d, iv_atm_126d, earn_recent, shares_out (5) | identical | 0 unequal |
+| role cross-section, wider instrument axis (open question 10) | mkt_ret | identical | 0 unequal |
+| issuer fields on the rebuilt sealed inputs (bridge r4-v2 `f598c04c` for r4-v1, fundamental events v3 `304d2945` for v2) | be .. fscore (28) and grp_sic2, grp_ff12, grp_ff49 (3) | identical | 0 unequal |
+| role-line dependent (open question 9): sum over the issuer's role lines / role ticker map | me_company, sv_ratio126 | identical | 0 unequal |
+| SEC fields, clock text names the seal (W0-1) | ea_* (6), ins_* (5), k8_* (3) (14) | identical | 0 unequal |
+| holdings, seal bound by N-1 (FIX-2 `6ed5fef8`; v7.1 built under seal 2025-01-01) | inst_own_share, inst_breadth_chg, inst_own_chg_q, inst_best_ideas, inst_n_holders, ftd_shares_ratio21, sv_offexchange_share126 (7) | identical | 0 unequal |
+| holdings, seal bound by N-1 **and** stage republished (W0-n: live `fb073c62` against v7.1's `68f431f0`) | **regsho_threshold_days63** | **stop** (> 1e-9) | 3,006,158 unequal of 6,499,185 (46.3%): 3,006,153 NaN against a value, 5 finite value changes, max_abs_diff 5.0, max_rel_diff 1.0; first cell 2018-06-04 / id 2234 |
+| calendar-pinned price fields (PM3-5a) | none: not in the 63-field list, not built, not compared | n/a | - |
+
+Reading (facts only; the ruling is the PM's):
+- 62 of 63 fields are bit-identical: no field reached the below-1e-9 class. The rebuilt bridge and fundamental events,
+  the wider instrument axis (mkt_ret), the role lines (me_company, sv_ratio126), W0-1's SEC clock text and N-1's seal
+  pin left every common cell of those fields unchanged; for ftd_shares_ratio21 and sv_offexchange_share126 this is
+  N-1's "unverified" point settled on this role (no row available between the two seals moved a 2018-2022 cell).
+- The one difference is the field the runbook named in advance (blocker 1, R10 coverage note). The coverage shift
+  0.43 -> 1.00 on 2020-2022 member cells is consistent with the NaN mismatches being v7.1 NaN against a v9 value. No
+  v7.1 candidate reads the field: library `787c802e` does not name it, and the v7.1 recipe lists it "at 0 trials"; in
+  the v8 specs it appears only in the 63-name `fields.list`.
+- Not separated here: how much of the difference is the stage republish alone. Integration 3 identity c built the
+  3-year lo1 fields under seal 2024 on the live regsho pin (`build-equity/v8-i3p4-c-fields2`, manifest `5e5def8d...`):
+  62 of 63 payloads byte-identical to v7.1, regsho differing (`031016d4` -> `2cb2fe40`). A field overlap of that
+  directory against the 4-year lo1 fields would show whether the 4-year regsho cells equal the 3-year live-pin cells
+  (i.e. whether the whole difference is the republish). **Not run** (not named in this dispatch).
+- Per the brief, a stop class ends the overlap sequence: reports 2 and 3 are dispatch 2b's and were not run.
+
+### Disk
+
+C: free 58 G (59,926,588 KiB) before R10, 50 G (51,713,548 KiB) after the overlap report. The two new fields
+directories hold 4,000 MiB each (runbook estimate ~4,120); run dirs and the report under 1 MiB each. RAM available
+5,700 MiB before the overlap run.
+
+### Fixes
+
+None. No source file changed; no tool failed. The only commits are this log (`814c2c0a`, `2b80cf9e`, `75567df3` and
+this one, `git add -f`).
+
+### Hidden-data record
+
+- **Inputs opened by the tools:** the vendor file and the FINRA short-interest asof files (reader-side seal); the raw
+  CNMS short-volume files of the role's sessions; the atx-db stages at the pins above (multi-year non-partitioned files
+  filtered at read; sealed partitions never opened: insider quarters from 2024q1, 13F `parts/source=` from 2024q1,
+  `year=2024+` FTD / threshold / short-volume-ext files, `rw.partition_is_sealed`); the v2-pit bridge, bridge r4-v2,
+  fundamental events v3, roles lo1 / lo3; for the overlap, the two fields directories and the two roles, refused by
+  the tool on any session on or after the seal (none: last session 2023-12-29). Whole-file pin hashing of multi-year
+  stage manifests is the runbook's design (open question 25).
+- **Logs:** R10, R11 and overlap stdout / stderr scanned for dates in 2024 or later: 0 hits.
+- **What I read:** receipt fields, manifest keys (seal, role block, names, source paths, stage pins, reuse block,
+  per-year coverage fractions for 2020, 2021 and 2022 only), the overlap report (alignment, totals, per-field cell
+  counts and difference sizes on the 2018-06-01..2022-12-30 common cells), the v7.1 library and recipe text for the
+  regsho name. **Disclosure:** while R10 ran I read its first 20 stdout progress lines; they include two sealed-row
+  counters (`si_shares-parsed` / `si_dtc-parsed` `sealed` 650,045 / 649,897 FINRA rows, and a TickerHistory counter
+  key named `rows_on_or_after_2025...`, value not read in full): row counts of data past the seal (open question 24),
+  not a return, Sharpe, IC or value statistic; nothing uses them.
+- **No return, Sharpe or IC statistic was read, computed or printed. Nothing dated 2024-01-01 or later was opened.**
+
+### Open items
+
+- **Ruling needed (W0-a, Ruling W0-n):** the field overlap class is **stop** on one field, `regsho_threshold_days63`
+  (46.3% of common cells NaN against a value, 5 value changes up to 5.0; first cell 2018-06-04 / id 2234); 62 fields
+  bit-identical. Options the PM may weigh: accept it as the declared republish (no v7.1 candidate reads it) or ask
+  first for the decomposition run above (`--old build-equity/v8-i3p4-c-fields2`, ~21 s).
+- R11 has no overlap report (dispatch scope: report 1 is lo1 only); its 22 W5a / W5b fields have no 3-year lo3
+  coverage reference (open question 30).
+- Not run (dispatch 2b): R12 plan-only, the cold u pass, the signal and daily IC overlap reports, R14 (pins into
+  `v8-prereg.md`, protocol line, `lock --write`); R15 and every cell. Pins for R14: fields v9 lo1 `888e6616...b8695`,
+  lo3 `9f156363...021ef`.
+- PM4-14's check: if integration 6 part C changes a field module fingerprint, fields v9 is rebuilt once (FIX-4 lists
+  none); R10 / R11 bound `prepare_research_fields.py` `b44cff42`, `research_fields_sec.py` `27034019`,
+  `research_fields_holdings.py` `edfd1967`.
