@@ -1605,3 +1605,118 @@ None. No source file changed; the only commits are this log (one per run, `git a
 - R5 event batches ran ~2.2x slower than the old receipts (203 s total against ~93 s); still far inside every cap.
 - Carried: sealed-row counter key names (open question 24); the validation-window artifacts and
   `recent-projection-v1` still hold 2024 data (open question 33, owner).
+
+## integration 6 part A (2026-09-30)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `2a283e29` (clean). Tag prefix v8-9.
+Scope: merge DLRET, ERA, RISK and LIB2 by SHA, two integration edits (E-41 plan-time N, E-42 theme), build, tests.
+Not in scope (part B, after FIX-3): the pooled aim `elif` / `pooled_aim_weights` in `fit_composition_weights.py`,
+left untouched. No identity run on data and no real-data run.
+
+### Merges (`--no-ff`, in order)
+
+| lane (tasks) | lane SHA | merge | conflicts |
+|---|---|---|---|
+| DLRET (E-39: lo1 `--delisting-returns` label-role proof; tests and fixture only) | `f51c5fd8` | `2ddcece9` | none (5 files, +3609 / -8) |
+| ERA (E-35, P-1; round 1 E-41 `0b855971`, E-35a `51d59f48`) | `ebc254f0` | `1f2c98ab` | none (9 files, +1037 / -105) |
+| RISK (R-8 risk-target-v1; branched from `28051c4c` = FIX-2's N-2, carried as intended) | `35bcda95` | `d1c86389` | none (17 files, +2009 / -30) |
+| LIB2 (library v8.2 registration, field `exch_up_365d`, holdings kind `xsw`) | `5d64644e` | `31c69d9d` | none (4 files, +758 / -8) |
+
+`scripts/research_ledger.py` (ERA) and the three CMake lists (RISK) auto-merged. RISK's `test_research_spec.py`
+r8 entries merged clean beside the r10 / r11 entries already on root (the union the R-8 report asked for).
+
+### Integration edits
+
+| commit | lane | files | what |
+|---|---|---|---|
+| `e41d71b1` | ERA concern 3, Ruling E-41 | `scripts/research_cycle.py`, `scripts/research_ledger.py`, `scripts/research_roles.py`, `scripts/tests/test_research_cycle_roles.py` | plan-time `summ.dsr_n "ledger+1"` adds 0 for a history read |
+| `7ca53c67` | LIB2, Ruling E-42 | `task-LIB2-report.md` | `exch_switch` joins `filing_events`; no `listing_events` theme |
+
+- E-41: nav_summ's rule (`0b855971`) calls the pooled row a history read when its series begins before TRAIN and
+  takes N with no + 1. At plan time there is no NAV output, so the roles loop applies the same rule to the declared
+  era windows: `research_roles.begins_before_train(roles)` (first era's begin < TRAIN begin; `check_windows` already
+  forbids a straddle). It sets `Cycle.summ_history` wherever it sets `summ_pool` (one history role, or the anchor of
+  a RolesCycle). `Cycle.ledger_cells` passes it to `research_ledger.ledger_n(..., history=)`, which calls
+  `backtest_integrity.ledger_n(records, history or scored_in_ledger)`, the same call nav_summ makes. A pool of eras
+  inside TRAIN is unchanged (its pooled line is a trial, N + 1).
+  - New test `test_e41_a_history_read_adds_no_trial_to_the_plan_time_ledger_n`, on a ledger holding one TRAIN cell:
+    one history era with `--era-of` gives `--dsr-n 1`, a two-era history pool gives `--dsr-n 1`, and the tiny_world
+    TRAIN split gives `--dsr-n 2`.
+  - Negative check (scratch): with the flag ignored, the test fails.
+- E-42: in `task-LIB2-report.md`, section 1 (table row), C-3 (registration and theme risk), section 3 L1 (the
+  `listing_events` row is withdrawn; replacement `filing_events` text: "Adverse filing and listing events: an 8-K Item
+  4.02 non-reliance disclosure within the last 63 sessions, or a move of the listing up to NYSE or NYSE American (from
+  Nasdaq or NYSE American) within the last 365 days; a recent event predicts lower returns."), the L3 `exch_switch` row
+  and the `exch_switch` add-alpha line (`--theme filing_events`), and LIB2-a marked ruled. The DSL strings and SHAs
+  are unchanged.
+  - LIB2 committed no registry or spec file, and no test names the theme (`git diff fd2ff7a8 5d64644e -- atx-engine/tools`
+    has no theme reference), so there is no test to add.
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-9 | `7ca53c67` clean | atx-engine-book-tests, atx-impl-strategy-target-tests | ok, exit 0, 64.8 s, 18 TUs, 4 links, 4 jobs; reconfigured (CMake lists changed), provenance `7ca53c67`; receipt `63cfcab3...` |
+| v8-9a | `7ca53c67` clean | atx-impl-tests, -strategy-tests, -strategy-ic-tests, -strategy-mine-tests, atx-engine-factory-tests, atx-equity-strategy-targets, -ic, -risk, -mine | ok, exit 0, 16.0 s, 8 TUs, 10 links, 4 jobs; receipt `69332085...` |
+
+**RISK compiled first time under `/W4 /WX`, with no build fix** (`risk_target.cpp`, `strategy_risk_target.cpp`,
+`strategy_nav_v7.cpp`, `strategy_spo.cpp` and the three test files). Both logs have 0 warnings.
+
+Executables:
+- v8-9: book-tests `a9918acf...bb2b`, target-tests `b3ce62e8...3a0a`.
+- v8-9a: impl-tests `fdde916b...4795`, strategy-tests `8d5f1779...cfac`, ic-tests `4a98ef50...2860`, mine-tests
+  `5d779b77...4961`, factory-tests `3e8d84f2...9817`, targets `a259a293...7304`, ic `d7dcc0db...781c`, risk
+  `fab237aa...8c32`, mine `8ada5e39...0369`.
+
+### Tests
+
+| exe / suite | build | result |
+|---|---|---|
+| target-tests `RiskTarget.*:BookRiskTarget.*` (RISK) | v8-9 | **14/14** |
+| target-tests `RiskTarget.FlagAbsentKeepsThePinnedBenchDigests:SpoPin.*:SpoV3.*:SpoHook.*:NavV7Hook.*` (RISK identity) | v8-9 | **37/37** (SpoPin `0xda6b6871e7e267c5` / `0xaabdbb72f99a6e13` hold) |
+| target-tests `NavLabelRoleLo1.*:NavLabelRole.*` (DLRET) | v8-9 | **9/9** (3 new + R45's 6) |
+| atx-impl-strategy-target-tests (whole) | v8-9 | 253/253 (part C 234 + DLRET 3 + RISK 14 + N-2 / RISK spo-v3 2) |
+| atx-engine-book-tests (whole) | v8-9 | 154/154 |
+| atx-impl-strategy-tests | v8-9a | 46/46 |
+| atx-impl-strategy-ic-tests | v8-9a | 105/105 |
+| atx-impl-strategy-mine-tests | v8-9a | 18/18 |
+| atx-engine-factory-tests | v8-9a | 387/387 |
+| atx-impl-tests (run from the repo root) | v8-9a | 985 run: 979 passed, 5 skipped, **1 failed: the known `ConfigJsonNotInDiscoverDigest`** (recorded only) |
+| atx-impl/strategies | - | 163 passed; `test_generate_library.py` with `ATX_V71_PLAN_JSON` 9 passed |
+| atx-engine/tools (whole) | - | 252 passed, 6 subtests (part A 241 + DLRET 1 + LIB2 10) |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` = v8-9a) | v8-9a | 482 passed, 2 skipped (ERA's FIX-3 equality test; `ATX_EQUITY_ROOT` unset) |
+| scripts/tests (whole; `ATX_EQUITY_BIN` = v8-9a bin) | v8-9a | 168 passed, 3 skipped (the three RESEARCH_CYCLE_LIVE_ROOT tests); tiny_world `test_cycle_e2e.py` in it, no golden moved |
+
+- impl-tests skips: Alpha101Orats x2, AtxImplDiscover.W6, SingleAlphaCapacity, FundamentalZoo (all environment
+  gates). Part B's 7 lost `SpoV3.V1AndV2DigestsUnchanged` (pinned at part C) and `TrialLedgerRepository...` (it runs
+  from the repo root).
+- `git status` was clean after every Python set.
+
+### Identity
+
+- RISK flag-absent: the identity filter above (37/37). The data-side identity argv (parent NAV re-run) is root's,
+  before R-8.
+- DLRET: `git diff fd2ff7a8 HEAD -- atx-engine/tools/prepare_recent_research.py` is empty;
+  `test_lo1_delisting_off_is_byte_identical` passes (in atx-engine/tools).
+- LIB2 step 3: holdings producer fingerprints, `fd2ff7a8` source against the merged tree, equal for 13f `cab3b9b4`,
+  ftd `9b2f42b6`, regsho `cc4cf935` and svx `b1ceebb3`; xsw new `3cf03c85` (the report's values).
+
+### Hidden-data record
+
+No real-data run. Read: the four lane reports, progress.md rulings E-41 / E-42 / E-43, library-v8-draft E7, sources,
+build receipts and logs. Tests used synthetic fixtures and tiny_world only. Nothing dated 2024-01-01 or later was
+opened. **No disclosure.**
+
+### Open items
+
+- Part B (after FIX-3): drop `pooled_aim_weights` and its `elif` in `fit_prior`, then un-skip
+  `test_pooled_aim_fit_over_one_era_equals_the_single_window_fit` (ERA round 1 concern 1).
+- E-42 assumes E7 was applied at v8.1 (`filing_events` exists because `nonreliance_402` proceeded). If
+  `nonreliance_402` was withdrawn, `filing_events` does not exist and exch_switch would open it alone. Root to rule.
+  Root also applies the widened text to the registry row at the v8.2 freeze.
+- FIX-2 is only partly on root: N-2 (`28051c4c`) came with RISK; the rest of FIX-2 (E-31a void, SPO-4 traps) merges
+  with its lane. PM3-9's R10-R14 waits on FIX-2, FIX-3 and ERA.
+- RISK open risks carried: check the v1.1 store's `capped_specific` count before R-8 (no specific ceiling in the
+  scaler); the ADV cap reads L (up to 1.25 x Q ADV); `strategy_live` has no `--risk-target`.
+- DLRET: runbook R15 is stale (the lo1 label-role command is in task-DLRET-report.md); B0c registration names `$DL`.
+- Known: `ConfigJsonNotInDiscoverDigest` (1).
