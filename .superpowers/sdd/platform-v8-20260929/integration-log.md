@@ -2117,3 +2117,132 @@ SHA-256s, seal, role, producer, definition text) and the overlap report (cell co
 2018-06-01..2022-12-30 common cells); registry and library text. No return, Sharpe or IC statistic was read; nothing
 dated 2024-01-01 or later was opened. Not run: R12, the u pass, the signal and daily IC overlap reports, R14, R15, any
 cell.
+
+## integration 6 part C (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `67f04389` (clean; code head `9c5cfa0c`,
+build v8-10). Tag prefix v8-11. Scope (`task-INT6C-brief.md`): merge FIX-4a and FIX-4b by SHA; build; every suite;
+identity 4 (identity 1 only if a NAV source changed). No Wave 0 step and no cell was run.
+
+### Merges (`--no-ff` by SHA, in order; both lanes from `43a0447d`)
+
+| lane (findings) | lane SHA | merge | conflicts and resolution |
+|---|---|---|---|
+| FIX-4a (R6B-O-1..O-7, R6B-C-1, R6B-C-5) | `98ef8d89` | `c17fb449` | none; 17 files, +1593 / -178. Lane head merged whole, WIP `b8b68f4e` included (finished in `aeda5bd7`), nothing cherry-picked. |
+| FIX-4b (R6B-C-2, R6B-C-4, R6B-S-1, R6B-S-2) | `0b093a4c` | `41ef00fb` | one: `scripts/tests/test_research_spec.py` import block (FIX-4a `import inspect`, FIX-4b `import argparse`, `import copy`): union, sorted. `scripts/research_cycle.py` auto-merged and checked against both lanes: FIX-4a's `INPUT_KEYS` `reference_resid_parent` and the fit step's `--theme-resid-parent` binds (O-5) and FIX-4b's `argparse_values` / `validate_e27b` called from `validate_v8_keys` (C-4) are all present. Test functions in the file: base 17, + 1 (FIX-4a) + 3 (FIX-4b) = 21. |
+
+`strategy_spo_cli_fixture.hpp` (FIX-4b, Ruling PM5-4) needs **no CMake change**: it is a header included by quote from
+`strategy_spo_test.cpp` and `strategy_spo_v3_test.cpp` in the same directory; `atx-impl/tests/CMakeLists.txt` globs
+only `*_test.cpp` and lists sources only. The v8-11 build did not reconfigure and compiled both users in both owning
+targets.
+
+### Build (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-11 | `41ef00fb` clean | atx-equity-strategy-ic, atx-impl-strategy-ic-tests, atx-impl-strategy-target-tests, atx-impl-tests | ok, exit 0, 57.5 s, 17 TUs, 5 links, 3 jobs, no reconfigure; receipt `50416bd5...41db` |
+
+**All lane C++ (FIX-4a O-3, O-4, O-7, C-5 sources and tests; FIX-4b S-1, S-2 tests and the new header) compiled first
+time under `/W4 /WX`: 0 compile fixes, 0 warnings, 0 errors in the log.** TUs: atx-impl-core `strategy_ic_library`,
+`_admission`, `_runner`, `_composition`, `_result_cache`, `_signal_cache`, `_theme_resid`, `strategy_research_role`,
+`strategy_mine_pool` (the last two include `strategy_ic_detail.hpp`; they use none of its changed symbols:
+`PinnedWeights`, `method_recipe`, `theme_order_json`); tests `strategy_ic_theme_resid_test`, `strategy_ic_runner_test`
+(ic-tests and impl-tests), `strategy_spo_test`, `strategy_spo_v3_test` (target-tests and impl-tests).
+
+Executables (v8-11): ic `46ae5c97...d682`, ic-tests `69f46d28...f570`, target-tests `1e3b26f0...fa96`, impl-tests
+`36542729...c896`. **Not rebuilt (v8-10 bytes kept): atx-equity-strategy-targets, -risk, -mine**, because no NAV, spo,
+target, book, risk or mine source changed (FIX-4b is tests only; FIX-4a touches the IC runner sources only).
+
+### Tests (no test fix)
+
+| exe / suite | build | result |
+|---|---|---|
+| ic-tests `ThemeResid.*:ThemeResidRunner.*:CompositionV8.*:StrategyIcRunner.*:GroupResidualise.*` (FIX-4a) | v8-11 | **79/79**; the six new tests pass: `ThemeResid.TiedCompositeStaysTiedAfterResidualisation`, `.NoTieCompositeIsTheRegisteredRuleBitForBit`, `.SmallCaseSeparatesTheRegisteredRegressors`, `ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule`, `.RidesOnEveryRerankTrueRuleOfTheTable`, `CompositionV8.RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput` |
+| target-tests `SpoV3.*:SpoTripwire.*:SpoPin.*` (FIX-4b) | v8-11 | **22/22**; pins hold: `[spo-pin]` v1 `0xda6b6871e7e267c5` / `0xaabdbb72f99a6e13`; `[spo-v3-pin]` v2 `0xb039820b40d5cf24` / `0xd24b61721a7c698c` (the `3bfd293e` values) |
+| atx-impl-strategy-ic-tests (whole) | v8-11 | **145/145** (139 + 6 FIX-4a) |
+| atx-impl-strategy-target-tests (whole) | v8-11 | **259/259** (256 + 3 FIX-4b) |
+| atx-impl-tests (run from the repo root) | v8-11 | 1,018 run: **1,012 passed, 5 skipped, 1 failed: the known `ConfigJsonNotInDiscoverDigest`** (1,003 + 9: the same 6 + 3 through the glob); same pin lines; the three new SpoV3 tests pass here too |
+| atx-engine-book-tests 155, atx-impl-strategy-tests 46, atx-impl-strategy-mine-tests 18, atx-engine-factory-tests 387, atx-engine-combine-tests 233 | - | **not re-run: targets not rebuilt** (no source of theirs changed; `GroupResidualise.*` of combine ran inside ic-tests, 6/6) |
+| `scripts/tests/test_research_spec.py` after both merges | - | **43 passed** |
+| atx-impl/strategies | - | **163** passed; `test_generate_library.py` with `ATX_V71_PLAN_JSON=build-equity/v8-i3-plan-v71.json` **9** passed |
+| atx-engine/tools (whole) | - | **253** passed, 6 subtests |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute) | v8-11 / targets v8-10 | **567 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset), 14 subtests: 529 + 38, all in the four lane test files (`test_composition_resid.py` 11 -> 21 defs, `test_fit_composition_weights_pool.py` 19 -> 23, `test_mega_report_v8.py` 35 -> 42, `test_mega_report_v8_render.py` 19 -> 22) |
+| scripts/tests (whole; `ATX_EQUITY_BIN` absolute) | v8-11 | **182 passed, 3 skipped** (178 + 4 in `test_research_spec.py`; the three RESEARCH_CYCLE_LIVE_ROOT skips); tiny_world `test_cycle_e2e.py` in it: no golden moved, `git status` clean after |
+
+**R6B-S-1 / open item "E-31a void exit path untested end to end": closed.**
+`SpoV3.CliVoidOnPrimaryLimitsUnmetExitsThreeWithTheExtrasOnly` **ran and passed** on the built v8-11 executables
+(target-tests, 4.8 s, and impl-tests, 4.6 s). It drives the real CLI dispatch (`dispatch_nav_replay` -> `dispatch_nav_v7`
+-> replay -> capture) in process, once with `--specific-ceiling-void on` and once `off`; for both it asserts exit 3,
+`<output>` = exactly `spo_diagnostics.csv`, `v7_extras.json`, `v7_transfer_coefficient.csv` (no recipe, summary, daily,
+events, NAV or return file), "run VOID" and no "net Sharpe", `status: void`, `voided: limits_unmet`, the
+`limits_unmet` block (book = the untiered S2 label, rule citing E-31a, count and first session equal to the tripwire
+record and to the primary book's `limits_met = 0` rows of the CSV, count > 0). The lane's premise (volume 0 from
+session 30, ADV 0 from decision 93 under the 63-session window, asserted in the test) held: the test passed unchanged,
+no test edit.
+
+### Identities (bounded runner, clean tree `41ef00fb`)
+
+Identity 4, argv as in part B, read from `build-equity/v8-i6b-i4w-run/receipt.json` (step 1) and
+`build-equity/v8-i6b-i4-run/receipt.json` (step 2), only the output paths renamed `v8-i6b-` -> `v8-i6c-`; runner
+`--seconds 180 --max-rss-mib 1536 --min-free-mib 512`. Inputs re-hashed before the run: library `787c802e`, role lo1
+`3e79978a`, fields-v9 manifest `8fd00e9f`, v7.1 weights `7b0a59c9`, part C weights `88635696` (3-year role and
+existing caches only). Both receipts: outcome completed, exit 0, `git: clean in the code pathspec`, source `41ef00fb`.
+
+| id | receipt.json SHA-256 | exe | wall s | peak MiB | result |
+|---|---|---|---|---|---|
+| 4 step 1 | `ee62771d6db04d01a8eed159e215b2a1305daebc79d4332d901dd00b454f8e72` | python | 0.3 | 5 | **PASS: weights file byte-identical** |
+| 4 step 2 | `dd147a92f03a96dd0d7e8882252bbc90813e0ceb69e49b6b304533da461005f8` | ic v8-11 `46ae5c97` | 26.4 | 506 | **PASS** |
+
+- **Step 1** (`composition_rules.py identity-weights`, out `build-equity/v8-i6c-i4-identity-weights.json`):
+  `d49e208c...2eae`, **byte-identical** to part B's `v8-i6b-i4-identity-weights.json` (`composition_rules.py`
+  unchanged in FIX-4, Ruling PM5-3, so no module SHA moved). Console: one line, differing from part B's only in the
+  `out` path.
+- **Step 2** (the exact part B argv, `--composition-weights build-equity/v8-i5c-i4-identity-weights.json
+  --composition-weights-sha256 88635696...`, `--output build-equity/v8-i6c-i4-w`): against part B's `v8-i6b-i4-w`
+  **10 of 12 byte-identical** (`recipe.json` `15b200d8...6410`, `orientations.json` `6d0d1be9...849d`,
+  `train_combined.json` `2831faf0...3e17`, `train_combined.f64` `1cf245b1...3912`, `_member.u8` / `_finite.u8`
+  `732f47b7...f1a4`, `_ids.u64` `102e89c6...741c`, `_sessions.i64` `89af5340...2830`, `train_planned_targets.csv`
+  `e6dbd9a8...5297`, `train_daily_ic.csv` `7e6e596f...bce6`); `summary.json` (6,031 paths, 200 differ) and
+  `train_candidates.jsonl` (5,424 paths, 191 differ) differ **only in timing paths** (`stage_seconds.*`,
+  `wall_seconds`, `hash_seconds`; no other path). The payloads equal part B's, so they equal the accepted
+  `mega-v71w-train-ew-1` payloads as part B recorded. With a rerank-off identity file the new C-5 recorded-rule check
+  and the O-4 order key admit it and write nothing new (the recipe is byte-identical).
+
+**Identity 1: not run (not applicable).** No NAV source changed in either lane: FIX-4b changed tests only
+(`strategy_spo_test.cpp`, `strategy_spo_v3_test.cpp`, the new `strategy_spo_cli_fixture.hpp`) plus Python, config and
+template; FIX-4a changed `strategy_ic_admission.cpp`, `strategy_ic_detail.hpp`, `strategy_ic_runner.cpp`,
+`strategy_ic_theme_resid.{hpp,cpp}` (the IC runner) plus Python. No `strategy_nav_v7*`, `strategy_spo*`, target or book
+source moved, and the NAV executable was not rebuilt (v8-10 bytes).
+
+### Scoped review range
+
+- **Code: `9c5cfa0c..41ef00fb`** restricted to `research_tree.CODE_PATHSPEC` (atx-core, atx-tsdb, atx-engine,
+  atx-impl, scripts, top-level CMake): 21 files, +2,463 / -317. Final code head `41ef00fb` (the FIX-4b merge); no
+  integrator code commit. The only integration-made code line is the merge resolution of the
+  `test_research_spec.py` import block (union).
+- Read with it, outside the code pathspec: FIX-4b's C-2 `docs/plans/mega-alpha-v8-pitch.config.json` and
+  `docs/plans/mega-alpha-scorecard-v8.template.md` (the R-8..R-12 ladder config the code reads).
+
+### Hidden-data record
+
+- Inputs: the TRAIN 2020-2022 lo1 role (`3e79978a`), its fields v9 / v7, v7.1 library and weights, the candidate
+  cache v71, part C's identity weights. Tests used synthetic fixtures and tiny_world.
+- Read: the two lane reports, briefs, rulings, sources, build receipt and log, runner receipts (outcome, exit,
+  timings, SHA-256s), output-file SHA-256s, JSON paths of differences (no values), the one-line step 1 console (paths,
+  SHA-256s, rule). The step 2 child console went to files that were not read (a pattern scan for 2024+ dates in both
+  runs' stdout / stderr and runner consoles found only the runs' own `started_utc` 2026-10-01). No return, Sharpe or
+  IC statistic was read or printed.
+- **Nothing dated 2024-01-01 or later was opened. No disclosure.**
+
+### Open items
+
+- Executables not at v8-11: atx-equity-strategy-targets, -risk, -mine keep their v8-10 bytes (no source of theirs
+  changed). If Wave 0 part 2b's locks want every strategy executable from one build tag, rebuild them first; the
+  mine verb's TUs `strategy_mine_pool.cpp` / `strategy_research_role.cpp` were recompiled in atx-impl-core only
+  because they include `strategy_ic_detail.hpp`.
+- FIX-4a carried: O-5 strict module-SHA comparison (Ruling PM5-1); O-2 a theme registered after `filing_events` needs
+  the C++ `theme_resid_order` extended (the pin test fails loudly); a PM4-10 refused cell is ledgered "undefined
+  (PM4-10)" (Ruling PM5-3, the message text unchanged).
+- FIX-4b carried: the R-8 band [.04, .06] is config constants (a target change is a config edit).
+- Known: `ConfigJsonNotInDiscoverDigest` (1).
+- Next per PM4-14: Wave 0 part 2b on this head.
