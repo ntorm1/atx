@@ -35,10 +35,12 @@ namespace dg = atx::impl::strategy::spo::digest;
 // spo-v1: SpoPin's pins (strategy_spo_pin_test.cpp), the same procedures on the same fixture.
 constexpr u64 pinned_v1_weights = 0xda6b6871e7e267c5ULL;
 constexpr u64 pinned_v1_replay = 0xaabdbb72f99a6e13ULL;
-// spo-v2: PLACEHOLDER (0 = unset) until root captures them on the pre-R6 tree (protocol
-// above). While unset the test skips after its spo-v1 checks.
-constexpr u64 pinned_v2_weights = 0;
-constexpr u64 pinned_v2_replay = 0;
+// spo-v2: captured by root under Ruling PM3-7 (in place of the pre-R6 protocol above) from build
+// v8-7a (target-tests 575539e2...7f71, source ccb66a87), after integration 5 part C identity 7
+// (the real-data spo-v2 cell mega-nav-v70-lo3-spo-v2-G1.0 rerun: every file byte-identical) proved
+// the current spo-v2 equals the pre-R6 code. Printed: 40 diagnostics rows, 30 days.
+constexpr u64 pinned_v2_weights = 0xb039820b40d5cf24ULL;
+constexpr u64 pinned_v2_replay = 0xd24b61721a7c698cULL;
 
 v7::NavV7Options spo(const sp::SpoParams& params, std::shared_ptr<const sp::RiskStore> risk) {
   v7::NavV7Options o;
