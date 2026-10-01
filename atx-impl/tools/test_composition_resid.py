@@ -52,6 +52,35 @@ TIE_EXPECTED = [Fraction(-3, 20), Fraction(-1, 4), Fraction(3, 20), Fraction(7, 
                 Fraction(-1, 4), Fraction(-1, 4), Fraction(7, 20), Fraction(-3, 20), Fraction(1, 20), Fraction(1, 4)]
 TIE_SPREAD = [Fraction(-1, 5), Fraction(-2, 5), Fraction(3, 10), Fraction(2, 5), Fraction(-1, 10), Fraction(0),
               Fraction(-3, 10), Fraction(-3, 10), Fraction(2, 5), Fraction(0), Fraction(1, 10), Fraction(1, 10)]
+# Finding R6B-O-7 kernel fixture (strategy_ic_theme_resid_test.cpp SmallCaseSeparatesTheRegisteredRegressors): one
+# date, five names, three themes without a tie, W = .3 / .45 / .25; theme 1 is absent on name 4, theme 2 on name 2.
+# Exact values (rational arithmetic) of the rule and of the plausible wrong rules (a) regressing on the earlier themes'
+# pre-rank residuals, (b) on their re-ranked residuals, (c) on the earlier composites without the intercept.
+SMALL_NAMES = 5
+SMALL_PLANES = [[3, 9, 19, 15, 2], [19, 11, 8, 13, NAN], [2, 11, NAN, 18, 13]]
+SMALL_MASS = [0.3, 0.45, 0.25]
+SMALL_EXPECTED = [Fraction(-1, 24), Fraction(-7, 20), Fraction(3, 40), Fraction(17, 40), Fraction(-13, 120)]
+_SMALL_ON_RESIDUALS = [Fraction(-1, 8), Fraction(-4, 15), Fraction(3, 40), Fraction(41, 120), Fraction(-1, 40)]
+SMALL_WRONG = {"a": _SMALL_ON_RESIDUALS, "b": _SMALL_ON_RESIDUALS,
+               "c": [Fraction(-1, 8), Fraction(-4, 15), Fraction(3, 40), Fraction(17, 40), Fraction(-13, 120)]}
+# Finding R6B-O-7 runner fixture (strategy_ic_runner_test.cpp ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule):
+# eight names, volume = 1e8 (i + 1); one-member themes resid_a = 1 / (volume - 1e8) (absent on name 0),
+# resid_b = (volume - 1.5e8)(volume - 6e8), resid_c = (volume - .5e8)(volume - 4e8), weights .3 / .45 / .25, at
+# registered positions 1, 2, 0 (a 3-cycle of their library order). Exact values of the rule and of (a)-(c) and (d) the
+# inverted position map (2, 0, 1).
+CYCLE_X = [1e8 * (i + 1) for i in range(WIDTH)]
+CYCLE_SIGNALS = [[NAN] + [1 / (x - 1e8) for x in CYCLE_X[1:]], [(x - 1.5e8) * (x - 6e8) for x in CYCLE_X],
+                 [(x - 0.5e8) * (x - 4e8) for x in CYCLE_X]]
+CYCLE_WEIGHTS = [0.3, 0.45, 0.25]
+CYCLE_EXPECTED = [Fraction(-3, 35), Fraction(1, 20), Fraction(-2, 5), Fraction(-13, 140), Fraction(3, 140),
+                  Fraction(19, 140), Fraction(1, 4), Fraction(17, 140)]
+_CYCLE_ON_RESIDUALS = [Fraction(6, 35), Fraction(-1, 70), Fraction(-13, 28), Fraction(-1, 35), Fraction(3, 140),
+                       Fraction(19, 140), Fraction(13, 70), Fraction(-1, 140)]
+CYCLE_WRONG = {"a": _CYCLE_ON_RESIDUALS, "b": _CYCLE_ON_RESIDUALS,
+               "c": [Fraction(-3, 35), Fraction(1, 10), Fraction(-7, 20), Fraction(-13, 140), Fraction(3, 140),
+                     Fraction(19, 140), Fraction(1, 5), Fraction(1, 14)],
+               "d": [Fraction(1, 140), Fraction(-1, 140), Fraction(-51, 140), Fraction(0), Fraction(3, 70),
+                     Fraction(1, 20), Fraction(13, 140), Fraction(5, 28)]}
 
 
 def registered_without_tie_step(planes, mass, names: int) -> np.ndarray:
@@ -76,6 +105,43 @@ def registered_without_tie_step(planes, mass, names: int) -> np.ndarray:
             full, keep = np.zeros(names), np.zeros(names, dtype=bool)
             full[names_t], keep[names_t] = e, True
             row[names_t] += mass[t] * cres.centred_tied_ranks(full, keep)[names_t]
+    return out
+
+
+def plausible_wrong_rule(planes, mass, names: int, variant: str) -> np.ndarray:
+    """Finding R6B-O-7's plausible wrong rules on the reference's functions (no tie step: their fixtures have no tie).
+    Theme t > 0 is regressed on, per earlier theme: "a" its pre-rank residual (the first theme: its composite), "b" its
+    re-ranked residual (the first: its composite), "c" its composite without the intercept; absent = 0."""
+    planes = np.asarray(planes, dtype=np.float64)
+    out = np.zeros(planes.shape[1])
+    for d in range(planes.shape[1] // names):
+        total = planes[:, d * names:(d + 1) * names]
+        z = cres.standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total))
+        row = out[d * names:(d + 1) * names]
+        regressors = []                                  # per earlier theme, a names-vector (absent 0)
+        for t in range(len(planes)):
+            names_t = np.flatnonzero(~np.isnan(z[t]))
+            composite = np.nan_to_num(z[t], nan=0.0)
+            if len(names_t) < 2:
+                regressors.append(np.zeros(names))
+                continue
+            if t == 0:
+                row[names_t] += mass[0] * z[0, names_t]
+                regressors.append(composite)
+                continue
+            x = np.column_stack([r[names_t] for r in regressors])
+            y = z[t, names_t]
+            if variant == "c":
+                e, spanned = y - x @ np.linalg.lstsq(x, y, rcond=None)[0], False
+            else:
+                e, spanned = cres.residual(y, x)
+            residual, reranked = np.zeros(names), np.zeros(names)
+            if not spanned:
+                keep = np.zeros(names, dtype=bool)
+                residual[names_t], keep[names_t] = e, True
+                reranked[names_t] = cres.centred_tied_ranks(residual, keep)[names_t]
+                row[names_t] += mass[t] * reranked[names_t]
+            regressors.append({"a": residual, "b": reranked, "c": composite}[variant])
     return out
 
 
@@ -272,6 +338,38 @@ class RunnerReference(unittest.TestCase):
         want = registered_without_tie_step(planes, [0.3, 0.45, 0.25], names)
         self.assertEqual(got.view(np.uint64).tolist(), want.view(np.uint64).tolist())
         self.assertGreater(np.max(np.abs(got)), 0.05)
+
+    def test_small_case_separates_the_registered_regressors(self):
+        """Finding R6B-O-7 (strategy_ic_theme_resid_test.cpp SmallCaseSeparatesTheRegisteredRegressors, same planes):
+        the registered rule (theme t on an intercept and the earlier composites) gives SMALL_EXPECTED; regressing on the
+        earlier pre-rank residuals (a), on their re-ranked residuals (b) or without the intercept (c) gives SMALL_WRONG,
+        each at least 1/12 away. No composite has a tie, so the tie step leaves the registered text bit for bit."""
+        got = cres.kernel(SMALL_PLANES, SMALL_MASS, SMALL_NAMES)
+        np.testing.assert_allclose(got, [float(x) for x in SMALL_EXPECTED], rtol=0, atol=1e-15)
+        want = registered_without_tie_step(SMALL_PLANES, SMALL_MASS, SMALL_NAMES)
+        self.assertEqual(got.view(np.uint64).tolist(), want.view(np.uint64).tolist())
+        for variant, values in SMALL_WRONG.items():
+            wrong = plausible_wrong_rule(SMALL_PLANES, SMALL_MASS, SMALL_NAMES, variant)
+            np.testing.assert_allclose(wrong, [float(x) for x in values], rtol=0, atol=1e-12, err_msg=variant)
+            self.assertGreater(np.max(np.abs(wrong - got)), 0.08, variant)
+
+    def test_three_theme_cycle_is_the_registered_rule(self):
+        """Finding R6B-O-7 (strategy_ic_runner_test.cpp ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule, same
+        signals): the blend with the members at registered positions 1, 2, 0 is CYCLE_EXPECTED; (d) the inverted
+        position map (2, 0, 1) and the plausible wrong rules (a)-(c) give CYCLE_WRONG, each at least 1/20 away."""
+        member = np.ones((1, WIDTH), dtype=np.uint8)
+        signals = [np.array([s]) for s in CYCLE_SIGNALS]
+        got = cres.blend(member, signals, CYCLE_WEIGHTS, [1, 1, 1], [1, 2, 0], 3)[0]
+        np.testing.assert_allclose(got, [float(x) for x in CYCLE_EXPECTED], rtol=0, atol=1e-15)
+        order = [2, 0, 1]                                  # the registered order: resid_c, resid_a, resid_b
+        planes, mass = [CYCLE_SIGNALS[k] for k in order], [CYCLE_WEIGHTS[k] for k in order]
+        np.testing.assert_allclose(cres.kernel(planes, mass, WIDTH), got, rtol=0, atol=1e-15)
+        wrong = {v: plausible_wrong_rule(planes, mass, WIDTH, v) for v in "abc"}
+        wrong["d"] = cres.blend(member, signals, CYCLE_WEIGHTS, [1, 1, 1], [2, 0, 1], 3)[0]
+        for variant, values in CYCLE_WRONG.items():
+            np.testing.assert_allclose(wrong[variant], [float(x) for x in values], rtol=0, atol=1e-12,
+                                       err_msg=variant)
+            self.assertGreater(np.max(np.abs(wrong[variant] - got)), 0.05 - 1e-12, variant)
 
     def test_spanned_and_dependent_regressors(self):
         x = np.array([0.5, -0.25, 1 / 6, -1 / 3, 0.125, 0.0])

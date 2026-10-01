@@ -3135,6 +3135,51 @@ TEST(ThemeResidRunner, ResidualisesInTheBlockOrderAndRecordsTheRule) {
       EXPECT_EQ(file_sha(dir.path/"one-resid"/(role_name+suffix)),file_sha(dir.path/"one-std"/(role_name+suffix)))
           << role_name << suffix;
 }
+// Finding R6B-O-7: three one-member themes whose library order is not the registered order. The
+// weighted candidates resid_a, resid_b, resid_c (theme indices 0, 1, 2 by first appearance) sit at
+// registered positions 1, 2, 0 (earnings_momentum, price_momentum, value): a 3-cycle, so the
+// inverted position map (2, 0, 1) is another rule. Every signal is constant over the dates (the
+// fixture's volume is 1e8 (i + 1)): resid_a = 1 / (volume - 1e8) is absent on name 0 (1 / 0),
+// resid_b and resid_c are quadratics; no composite ties.
+bool cycle_library(atx::impl::strategy::IcRunnerConfig& cfg) {
+  auto lib=read_json(cfg.library_path);
+  for (const auto& [id,dsl]:{std::pair{"resid_a","1 / (volume - 100000000)"},
+                             std::pair{"resid_b","(volume - 150000000) * (volume - 600000000)"},
+                             std::pair{"resid_c","(volume - 50000000) * (volume - 400000000)"}})
+    lib["candidates"].push_back({{"id",id},{"family","fixed_volume"},{"dsl",dsl},
+        {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  return json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+// From d = 63 every combined row is the registered rule's exact value (rational arithmetic;
+// test_composition_resid.py CYCLE_EXPECTED, with the numpy lstsq reference, pins the same): order
+// value (resid_c, W .25), earnings_momentum (resid_a, W .3), price_momentum (resid_b, W .45).
+// test_composition_resid.py pins the plausible wrong rules' exact values (CYCLE_WRONG), each at least
+// 1/20 away: (d) the inverted position map 1/140, -1/140, -51/140, 0, 3/70, 1/20, 13/140, 5/28;
+// regressing on the earlier pre-rank (a) or re-ranked (b) residuals 6/35, -1/70, -13/28, -1/35,
+// 3/140, 19/140, 13/70, -1/140; no intercept (c) -3/35, 1/10, -7/20, -13/140, 3/140, 19/140, 1/5,
+// 1/14. The recipe and the combined manifests record the order.
+TEST(ThemeResidRunner, ThreeThemeCycleIsTheRegisteredRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(cycle_library(cfg)); cfg.save_combined=true;
+  const std::string weights=R"({"volume_level":0,"volume_rank":0,"resid_a":0.3,"resid_b":0.45,"resid_c":0.25})";
+  const std::string signs=R"(,"signs":{"resid_a":1,"resid_b":1,"resid_c":1})";
+  const std::string themes=R"({"resid_a":"earnings_momentum","resid_b":"price_momentum","resid_c":"value"})";
+  const std::string order=R"(["value","earnings_momentum","price_momentum"])";
+  cfg.composition_weights_path=(dir.path/"cycle.json").string();
+  ASSERT_TRUE(text_file(cfg.composition_weights_path,
+                        themed_text(weights_v2,cfg,weights,signs+std_block(themes,true)+resid_block(order)),
+                        cfg.composition_weights_sha256));
+  const auto cycle=run_named(dir,cfg,"cycle"); ASSERT_TRUE(cycle.ok) << cycle.error;
+  const std::vector<f64> expected{-3.0/35,1.0/20,-2.0/5,-13.0/140,3.0/140,19.0/140,1.0/4,17.0/140};
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(dir.path/"cycle"/(role_name+"_combined.f64"),signal));
+    for (usize d=63;d<D;++d) for (usize i=0;i<N;++i) ASSERT_NEAR(signal[d*N+i],expected[i],1e-15) << d << ' ' << i;
+    EXPECT_EQ(read_json(dir.path/"cycle"/(role_name+"_combined.json")).at("composition_residualise_order"),
+              Json::parse(order));
+  }
+  EXPECT_EQ(read_json(dir.path/"cycle"/"recipe.json").at("composition_residualise_order"),Json::parse(order));
+}
 TEST(ThemeResidRunner, BlockRefusalsPrecedeAnyPayloadOrOutput) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   // Payloads are absent: every refusal below must precede any role payload read.

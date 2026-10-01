@@ -380,6 +380,35 @@ TEST(ThemeResid, NoTieCompositeIsTheRegisteredRuleBitForBit) {
   EXPECT_GT(max_abs_difference(out, std::vector<f64>(out.size(), 0.0)), .05);
 }
 
+// Finding R6B-O-7: a small case that separates the registered regressors (theme t on an intercept
+// and the earlier *composites*) from the plausible wrong ones. One date, five names, three themes
+// without a tie, W = .3 / .45 / .25; theme 1 is absent on name 4 and theme 2 on name 2, so the
+// earlier composites have non-zero means over a later theme's names and theme 1 misses a name of
+// theme 2. Exact values of the rule (rational arithmetic; test_composition_resid.py SMALL_EXPECTED,
+// with the numpy lstsq reference, pins the same). test_composition_resid.py computes the wrong rules
+// on the reference's functions and pins their exact values (SMALL_WRONG, listed below): regressing
+// on the earlier pre-rank residuals (a) or on their re-ranked residuals (b), and omitting the
+// intercept (c), each move a name by at least 1/12. No composite ties, so the tie step leaves the
+// registered text bit for bit.
+TEST(ThemeResid, SmallCaseSeparatesTheRegisteredRegressors) {
+  constexpr usize names = 5;
+  const std::vector<std::vector<f64>> input{{3, 9, 19, 15, 2},
+                                            {19, 11, 8, 13, kNaN},
+                                            {2, 11, kNaN, 18, 13}};
+  const std::vector<f64> mass{.3, .45, .25};
+  const std::vector<f64> expected{-1.0 / 24, -7.0 / 20, 3.0 / 40, 17.0 / 40, -13.0 / 120};
+  const std::vector<std::vector<f64>> wrong{
+      {-1.0 / 8, -4.0 / 15, 3.0 / 40, 41.0 / 120, -1.0 / 40},   // (a) and (b): on the earlier residuals
+      {-1.0 / 8, -4.0 / 15, 3.0 / 40, 17.0 / 40, -13.0 / 120}}; // (c): without the intercept
+  auto planes = input;
+  std::vector<f64> out(names, 0.0);
+  std::vector<std::pair<f64, usize>> row;
+  ASSERT_TRUE(st::add_theme_residualised(planes, mass, names, out, row));
+  for (usize k = 0; k < names; ++k) EXPECT_NEAR(out[k], expected[k], 1e-15) << k;
+  for (const auto& w : wrong) EXPECT_GT(max_abs_difference(out, w), .08);
+  EXPECT_TRUE(same_bits(out, registered_without_tie_step(input, mass, names)));
+}
+
 // The kernel: absent planes add nothing; mismatched shapes and a non-finite theme weight refuse.
 TEST(ThemeResid, KernelRefusesMismatchedShapes) {
   std::vector<std::vector<f64>> planes(2, std::vector<f64>(8, kNaN));
