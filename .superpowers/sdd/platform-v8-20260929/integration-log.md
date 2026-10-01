@@ -2440,3 +2440,120 @@ fields v10, any cell.
   1,989,405,564 B (1,897.2 MiB) on both roles**, equal to R9's number (lo1 and lo3 share axes 1,405 x 5,922), inside
   the OD-2 cap by 663.1 MiB. Role pins in the plan: lo1 `2ff9d771`, lo3 `e1c67101`; fields pins lo1 `888e6616`, lo3
   `9f156363`. No candidate row names `regsho` (PM4-15 item 4 holds on the plan too).
+
+### R13: cold u pass v7.1 on lo1 and overlap reports 2 and 3 (Ruling W0-a, PM4-15)
+
+| step | receipt dir | source | caps | outcome / ExitCode | s | peak MiB | argv digest | receipt.json SHA-256 | output SHA-256 |
+|---|---|---|---|---|---|---|---|---|---|
+| R13 u pass (cold) | `w0-2-v71-u-lo1-run1` | `16909f97` | 300 s / 2,560 / 512 (W0-c) | completed / 0 | 129.4 | 1,572 | `05a81e90f8cff795864b2626843ef51ad7298065ceab6ebed17fff3e134b8b9e` | `7e2f7a3b1c5770087943dfbb362b44bd585b4e806a281d5cb9ebbaf675d5fa18` | `summary.json` `0c7530928719db9d9ab1be5f5d4dc134c3271e3f881146091663daafa1b5ee51` |
+| R13 (2) signal overlap | `w0-2-overlap-signal-lo1-run` | `16909f97` | 180 s / 1,536 / 512 | completed / 0 | 16.8 | 150 | `735164bab409d2735cb5c4071506ba2508fad5de11cef8f16fc306100a379cec` | `84833a3c622a26231c5a2f91bb90a6b6bd240df96d853e8d4e8c57e386bb8254` | report `w0-2-overlap-signal-lo1.json` `4a2b5b6d3a0e81dcc4fb7727926176ab5ed30b4693797c4aa4f43164948932d3` |
+| R13 (3) daily IC overlap | `w0-2-overlap-daily-ic-lo1-run` | `16909f97` | 180 s / 1,536 / 512 | completed / 0 | 2.4 | 95 | `7f15513ec4f0ad54ec9ca7fe89d5f07f53daa99c197868e3d0c2ede5063321d0` | `201db6008cf70cacd4fa2444e10ec7a23c5d97a38891d0bb76a56fc467bd102c` | report `w0-2-overlap-daily-ic-lo1.json` `f6111822ba859d298440b9834b2c238f0f1f930ccb0d76d739fc8e1b4b7d3a6f` |
+
+- **u pass PASS (mechanics).** Argv = runbook R13 verbatim (`--output build-equity/w0-2-v71-u-lo1-1 --max-memory-mib
+  2560 --min-names 1000 --workers 4 --save-combined --candidate-cache build-equity/mega-candidate-cache-v8-lo1`), exe IC
+  `ab7e2cbd` (v8-12), bindings library `787c802e`, role lo1 `2ff9d771`, fields v9 lo1 `888e6616`. Runner min free
+  4,113 MiB; stderr empty. Runbook expectation cold ~120 s / ~1.6 GB: measured 129.4 s / 1,572 MiB. `summary.json`
+  `status` complete, recipe `3ea61343...`; candidate cache **cold: hits 0, misses 48, vm_evaluations 48**, layout
+  `atx.dsl-candidate-signal/v2`, entries 48, cache dir `mega-candidate-cache-v8-lo1/2ff9d771.../` (fields key
+  `888e6616`). Combined artifact sessions 1,405 (2018-06-01..2023-12-29), none on or after the seal. Cache 3,052 MiB
+  (runbook ~3,140), u dir 93 MiB (~95). Output file SHA-256s: `recipe.json` `09d92c6d...24ef`, `orientations.json`
+  `bbb6f5ba...ab68`, `train_candidates.jsonl` `3bba2b5c...edaf`, `train_daily_ic.csv` `70ab07ef...635f`,
+  `train_combined.f64` `08f7969e...b98d`, `train_combined.json` `ff709231...8d92`, `_ids.u64` `761bd1df...d296`,
+  `_sessions.i64` `ab244802...84b7`, `_member.u8` = `_finite.u8` `ec21a192...06dd`, `train_planned_targets.csv`
+  `1c15ff2c...86a1`. No IC value, orientation sign or summary statistic of the pass was read.
+- **Report 2, signal overlap: BIT-IDENTICAL (W0-a class identical; PM4-15's proof holds).** Argv = the W0-2 tool
+  report's R13 signal line: `compare_window_overlap.py --kind signal --per-key --before 2022-09-30 --old
+  build-equity/mega-candidate-cache-v71 --new build-equity/mega-candidate-cache-v8-lo1 --old-role <v7.1 fields
+  manifest role.path = build-equity/recent-fast-train-2020-2022-v2-lo1> --new-role build-equity/train-2020-2023-lo1
+  --old-run build-equity/mega-v71-train-u-1 --new-run build-equity/w0-2-v71-u-lo1-1 --out
+  build-equity/w0-2-overlap-signal-lo1.json` (the runbook's "sessions before 2022-09-30 for signal and daily_ic").
+  Tool `b4d7f2e8` (= part 2a); bindings old role `3e79978a`, new role `2ff9d771`, old run summary `7024b246...`, new
+  run summary `0c753092...`; payloads verified (no `--no-verify`); seal source `research_window.py SEAL_NS`.
+  Alignment: 1,091 common sessions (2018-06-01..2022-09-29), 5,627 common instruments, old-only sessions 0 and
+  instruments 0, new-only instruments 295 (counted). **`bit_identical` true, `max_abs_diff` null, cells compared
+  294,674,736** (48 keys, 6,139,057 each; keys without cells 0), unequal 0, NaN mismatches 0,
+  `old_cells_missing_in_new` 0, `differing_keys` []. Mapping: 48 of 48 `dsl_sha256_equal`; unmatched (ambiguous,
+  missing_in_new, new_only_keys, run_entry_not_in_cache) all empty. Every v7.1 candidate signal (the ten
+  `me_company` readers and `sv_flow` included) is bit-identical on the common cells.
+- **Report 3, daily IC overlap: NOT bit-identical, W0-a class STOP (> 1e-9).** Argv = the tool report's R13 daily_ic
+  line: `compare_window_overlap.py --kind daily_ic --per-key --before 2022-09-30 --old build-equity/mega-v71-train-u-1
+  --new build-equity/w0-2-v71-u-lo1-1 --out build-equity/w0-2-overlap-daily-ic-lo1.json`; bindings tool `b4d7f2e8`,
+  old `train_daily_ic.csv` `929b4a5a...a5c8`, new `70ab07ef...635f`. Alignment: 692 common sessions (score sessions
+  2020-01-02..2022-09-29), old-only 0, new-only 0. Totals: **`bit_identical` false, `max_abs_diff` 1.3089812302391757,
+  cells compared 305,172** (49 keys = 48 candidates + `__combined__`, 6,228 each = 692 sessions x 3 horizons x 3 columns;
+  keys without cells 0), unequal 12,451, NaN mismatches 0, `old_cells_missing_in_new` 0, `max_rel_diff` 2.0 (the
+  tool's summary line), **`w0a_class` stop**.
+  - **First differing cell (totals): key `__combined__`, column `pearson`, horizon 5, session 2020-01-02
+    (ns 1577923200000000000).**
+  - Differing keys, 4 of 49 (tool per-key identity fields): `__combined__` 6,228 of 6,228 unequal, max_abs_diff
+    0.2895, first diff `pearson` h5 2020-01-02; `chtax` 2,071 of 6,228, max_abs_diff 0.5800, first diff
+    `oriented_rank_ic` h5 2020-01-02; `ind_adj_rev_5` 2,076 of 6,228, max_abs_diff 1.3090, first diff
+    `oriented_rank_ic` h5 2020-01-02; `ind_mom_12_1` 2,076 of 6,228, max_abs_diff 1.0431, first diff
+    `oriented_rank_ic` h5 2020-01-02. The other **45 candidates: bit-identical** on all 6,228 cells each.
+  - Structure, from those identity fields only: each of the three candidate keys differs on at most one column's worth
+    of cells (692 x 3 = 2,076) and first in `oriented_rank_ic` (its `pearson` and `rank_ic` at that first cell are
+    equal); the combined key differs on every cell. **Code reading (no data):** on a TRAIN u pass the IC runner sets
+    each candidate's sign to the sign of its whole-window mean rank IC at horizon 21 (`strategy_ic_runner.cpp:419-423`,
+    `sample_orientation_sign`, `orientation_horizon` 21), writes `oriented_rank_ic` with that sign (`:341`) and, with
+    no pinned signs, blends the unweighted combined with the same sign (`:432`, `blend_sign = sign`). That sign is a
+    quantity of the whole TRAIN window (2020-2022 vs 2020-2023), not of a session; a sign that differs between the two
+    windows for these three candidates would give exactly this pattern. **Not verified**: confirming it means reading
+    `orientations.json` signs (a TRAIN IC statistic), which this dispatch forbids. **Disclosure:** the identity fields
+    above (a `max_rel_diff` of 2.0 = equal magnitude, opposite sign, in the oriented column) carry that implication
+    about three candidates' TRAIN-window orientation; no IC level, sign list or orientation file was read.
+- **Per the dispatch and W0-a: STOP.** The re-base is stopped until the PM rules on the cause. Not run after report 3:
+  step D (the FIX-5 merge; SHA `d2304773` received from the PM during R13, verified to exist and not to be an ancestor
+  of HEAD, **not merged**), step E (R14: no pin written into `v8-prereg.md`, no protocol line appended, no lock).
+
+### Disk
+
+C: free 46,425,160 KiB (44.3 GiB) before R12, **43,173,644 KiB (41.2 GiB)** after report 3 (`df -h` 45G -> 42G). New:
+`mega-candidate-cache-v8-lo1` 3,052 MiB (144 files), `w0-2-v71-u-lo1-1` 93 MiB, five run dirs and two reports < 1 MiB
+each. RAM free 5,966 MiB before the u pass.
+
+### Fixes
+
+None. No source file changed; no tool failed. Commits: `16909f97` (preconditions, R12) and this log.
+
+### Ledger
+
+`build-equity/trials.jsonl` untouched: 37 lines, all `construction`, unchained (0 lines with `prev_sha256`); chain
+head (fold) `00c901da636e9ae0cf758020f3fa3bd55ef3912899b4bf912de8ae631b9e0d93`; file SHA-256 `a2c24f56...0810`;
+**N = 37** (`backtest_integrity.ledger_n(records, True)`). Read through `ledger_read` (kinds and counts only; no line
+content printed).
+
+### Hidden-data record
+
+- **Inputs opened by the tools:** the IC exe read role lo1 (1,405 sessions to 2023-12-29) and fields v9 lo1
+  (`888e6616`; R12 metadata only, the u pass payloads); the overlap tool read the two caches, the two roles, the two
+  run summaries and the two `train_daily_ic.csv`, refused by the tool on any session on or after the seal (none; both
+  restricted to sessions before 2022-09-30).
+- **Logs:** R12 (2), u pass, signal and daily IC stdout / stderr scanned for dates in 2024 or later: 0 hits; the
+  two reports' only such date is the `seal.date` 2024-01-01.
+- **What I read:** receipt fields; the R12 plan JSON (counts, bytes, pins, candidate ids and field names, no data);
+  the u pass `summary.json` status, recipe SHA and candidate-cache block (hits, misses, evaluations, entry keys, no
+  IC); output file SHA-256s; the two reports' alignment, totals and per-key identity fields (cells, unequal, NaN
+  mismatches, max_abs_diff, first_diff); `strategy_ic_runner.cpp` and `compare_window_overlap.py` source; the
+  ledger's line kinds, N and chain head. The disclosure under report 3 stands. **No IC level, return or Sharpe of
+  2020-2023 was read, printed or summarised. Nothing dated 2024-01-01 or later was opened.**
+
+### Open items
+
+- **Ruling needed (W0-a, report 3):** daily IC overlap class **stop**: `__combined__` (all 6,228 cells) and the
+  `oriented_rank_ic` column of `chtax`, `ind_adj_rev_5`, `ind_mom_12_1`; first cell `__combined__` / `pearson` / h5 /
+  2020-01-02; 45 candidates bit-identical; signals bit-identical (report 2). Candidate cause (code reading, not
+  verified): the TRAIN-window orientation sign (h21 mean rank IC over the whole window) of these three candidates.
+  Options the PM may weigh: rule the `oriented_rank_ic` column and the u-pass `__combined__` row window-wide quantities
+  (like a fit, not old values) and order a cause test that reads only identity fields (e.g. the overlap restricted to
+  the `pearson` / `rank_ic` columns, which the tool cannot do today, or a sign-equality count over `orientations.json`
+  read by someone allowed to see it); or keep the stop.
+- **Next dispatch, once ruled:** step D (merge FIX-5 `d2304773`, every Python suite, identity 4 with the argv of
+  integration 7), then step E (R14).
+- **Found while reading for R14 (not run):** `lock --write` on `scripts/specs/v8/base-lo3.json` will refuse today:
+  `research_cycle.lock` pins every `inputs` entry (`scripts/research_cycle.py:1791-1812`, `lock_pin` exit 3 on a
+  missing file) and base-lo3's `inputs.reference_cell` is B0a's NAV `summary.json`
+  (`build-equity/mega-nav-v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json`), which does not exist
+  before B0a runs. The A2 root sequence (`task-A2-report.md:300`) locks base-lo3 "after R5, R8, R11 and B0a's cell".
+  R14 as dispatched can lock base-lo1 only; base-lo3 needs a PM ruling (lock after B0a, or drop
+  `inputs.reference_cell` as the runbook Q4 note allows).
+- Carried from 2a: R11 has no overlap report (open question 30).
