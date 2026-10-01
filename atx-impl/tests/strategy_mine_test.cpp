@@ -18,6 +18,7 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/combine/marginal_rank_ic.hpp"
 #include "atx/engine/eval/trial_registry.hpp"
+#include "atx/engine/factory/research_ic_fitness.hpp"
 #include "strategy_mine.hpp"
 #include "strategy_mine_ledger.hpp"
 #include "strategy_mine_rule.hpp"
@@ -45,6 +46,7 @@ namespace fs = std::filesystem;
 namespace st = atx::impl::strategy;
 namespace cb = atx::engine::combine;
 namespace ev = atx::engine::eval;
+namespace ex = atx::engine::factory;
 constexpr i64 day = 86'400'000'000'000LL;
 constexpr i64 first_day = 17879; // 2018-12-14
 constexpr usize D = 1844, N = 16, score_begin = 383;
@@ -407,11 +409,41 @@ TEST(StrategyMineRule, HurdleIsTheBonferroniValueOfThePlan) {
   EXPECT_TRUE(std::isnan(st::mined_hurdle(0)));
 }
 
+// Review MINE-6: the hurdle is read on f2 / 1.55, so at a hurdle of 3 an f2 of 4.6 is out and
+// one of 4.7 is in.
 TEST(StrategyMineRule, ShortlistIsByF2ThenHashAndCapped) {
-  const std::vector<st::MinedRead> reads{{9, 5.0}, {3, missing}, {2, 7.0}, {1, 5.0}, {4, 3.0}};
-  EXPECT_EQ(st::mined_shortlist(reads, 4.0, 8), (std::vector<usize>{2, 3, 0}));
-  EXPECT_EQ(st::mined_shortlist(reads, 4.0, 2), (std::vector<usize>{2, 3}));
+  const std::vector<st::MinedRead> reads{{9, 5.0}, {3, missing}, {2, 7.0}, {1, 5.0},
+                                         {4, 3.0}, {5, 4.6},     {6, 4.7}};
+  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 8), (std::vector<usize>{2, 3, 0, 6}));
+  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 2), (std::vector<usize>{2, 3}));
   EXPECT_TRUE(st::mined_shortlist(reads, missing, 8).empty());
+}
+
+// Review MINE-6 (Ruling E-32a): the label-overlap factor and the window floors it was derived on
+// are registered with the rule, and the derivation's estimator (mine_overlap_factor.py
+// summarize_t) is the verb's: summarize_rank_ic at Bartlett lag 21 over the defined days. The
+// pinned t's are the script's on the same series (test_mine_overlap_factor.py pins them too).
+TEST(StrategyMineRule, OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs) {
+  EXPECT_EQ(st::kMinedOverlapFactor, 1.55);
+  EXPECT_EQ(st::kMinedMinDiscoverRows, 504U);
+  EXPECT_EQ(st::kMinedMinConfirmRows, 200U);
+  EXPECT_EQ(ex::kResearchIcHacLag, 21U);
+  EXPECT_DOUBLE_EQ(st::mined_overlap_corrected(3.1), 2.0);
+  EXPECT_TRUE(std::isnan(st::mined_overlap_corrected(missing)));
+  std::vector<f64> daily(60);
+  for (usize k = 0; k < daily.size(); ++k)
+    daily[k] = static_cast<f64>(static_cast<int>((k * 37U) % 23U) - 11) / 100.0 + 0.004;
+  daily[7] = missing;
+  daily[30] = missing;
+  std::vector<f64> compact;
+  const auto full = cb::summarize_rank_ic(daily, ex::kResearchIcHacLag, compact);
+  EXPECT_EQ(full.dates, 58U);
+  EXPECT_NEAR(full.hac_t, 2.096947998340487, 1e-12);
+  // Eleven defined days: the lag clamps to 10.
+  const auto clamped = cb::summarize_rank_ic(std::span<const f64>(daily).first(12U),
+                                             ex::kResearchIcHacLag, compact);
+  EXPECT_EQ(clamped.dates, 11U);
+  EXPECT_NEAR(clamped.hac_t, -0.3360738764789554, 1e-12);
 }
 
 TEST(StrategyMineRule, RhoIsGreedyAgainstMembersAndKeptCandidates) {
@@ -431,17 +463,23 @@ TEST(StrategyMineRule, RhoIsGreedyAgainstMembersAndKeptCandidates) {
   EXPECT_EQ(out[2].against, 0U);
 }
 
+// Review MINE-6: the confirm read is taken as t / 1.55 -- the raw t's 9.3, 3.875 and 2.945 are
+// 6.0, 2.5 and 1.9 on the corrected scale.
 TEST(StrategyMineRule, ConfirmIsOneSidedWithBenjaminiYekutieli) {
-  const std::vector<f64> t{6.0, 2.5, 1.9, missing};
+  const std::vector<f64> t{9.3, 3.875, 2.945, missing};
   const auto out = st::mined_confirm(t);
   ASSERT_EQ(out.size(), 4U);
-  EXPECT_NEAR(out[1].p, 0.0062097, 1e-6);
+  EXPECT_EQ(out[1].t, 3.875);
+  EXPECT_NEAR(out[0].t_corrected, 6.0, 1e-12);
+  EXPECT_NEAR(out[1].t_corrected, 2.5, 1e-12);
+  EXPECT_NEAR(out[2].t_corrected, 1.9, 1e-12);
+  EXPECT_NEAR(out[1].p, 0.0062097, 1e-6); // Phi(-2.5)
   EXPECT_NEAR(out[1].p_by, 0.0258736, 1e-6); // 4 x 2.0833 / 2 x p
   EXPECT_NEAR(out[2].p_by, 0.0797682, 1e-6);
   EXPECT_EQ(out[3].p, 1.0);
   EXPECT_TRUE(out[0].confirmed);
   EXPECT_TRUE(out[1].confirmed);
-  EXPECT_FALSE(out[2].confirmed); // p_BY passes, t < 2 does not
+  EXPECT_FALSE(out[2].confirmed); // p_BY passes and the raw t clears 2; t / F does not
   EXPECT_FALSE(out[3].confirmed);
 }
 
@@ -498,6 +536,9 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_LE(registry.at("n_raw").get<u64>(), kBudget);
     EXPECT_LE(campaign.at("search").at("capacity").get<u64>(), kBudget);
     EXPECT_EQ(hurdle, st::mined_hurdle(kBudget)) << "seed " << seed;
+    // Review MINE-6: the hurdle is read on f2 / F, and F is part of the recipe.
+    EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
+    EXPECT_EQ(campaign.at("recipe").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
     std::array<bool, 3> planted_read{};
     for (const Json &member : mined.at("members")) {
       const auto dsl = member.at("dsl").get<std::string>();
@@ -516,8 +557,8 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
                                    [](const TrialRow &row) { return row.dsl == "rank(copy)"; });
     ASSERT_NE(copy, rows.end()) << "seed " << seed;
     EXPECT_EQ(copy->status, "evaluated") << "seed " << seed;
-    EXPECT_GE(copy->f1, hurdle) << "seed " << seed;
-    EXPECT_LT(copy->f2, hurdle) << "seed " << seed;
+    EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle) << "seed " << seed;
+    EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle) << "seed " << seed;
     expect_campaign_line(cfg, campaign, out, "seed " + std::to_string(seed));
   }
 }
@@ -704,6 +745,16 @@ TEST(StrategyMineCampaign, RefusesSealedRolesAndWindowsPastTrain) {
       << too_short.error().to_string();
   EXPECT_FALSE(fs::exists(short_confirm.output_directory));
   EXPECT_FALSE(fs::exists(short_confirm.registry_path));
+  // Review MINE-6: a discover window of 495 mature label rows is refused before any search.
+  auto short_discover = f.config("short-discover", 1, 1);
+  short_discover.discover_end = "2021-06-01";
+  const auto too_few = st::run_mine(short_discover, progress);
+  ASSERT_FALSE(too_few);
+  EXPECT_NE(too_few.error().message().find("discover window: 495 mature h 21 label rows"),
+            std::string::npos)
+      << too_few.error().to_string();
+  EXPECT_FALSE(fs::exists(short_discover.output_directory));
+  EXPECT_FALSE(fs::exists(short_discover.registry_path));
 }
 
 // Review MINE-8 (Ruling E-10, review B-3): the shared research-role loader refuses a role built

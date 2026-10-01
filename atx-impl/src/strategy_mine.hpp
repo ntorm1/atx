@@ -43,6 +43,12 @@
 // regressor and one member, checked from the manifest before any payload. Without the book the
 // marginal t is the raw IC t and the rho check meets no member, so mined-v1 would admit a copy of
 // the book (the case Ruling E-32 exists for): no pool, no campaign.
+//
+// Label overlap (Ruling E-32a; review MINE-6): both mined-v1 reads are taken as t /
+// kMinedOverlapFactor (strategy_mine_rule.hpp), a factor derived on discover windows of at least
+// kMinedMinDiscoverRows and confirm windows of at least kMinedMinConfirmRows mature h 21 label
+// rows; a shorter window is refused before any search. The factor is in the recipe and in
+// campaign.json's hurdle.
 #include <iosfwd>
 #include <span>
 #include <string>

@@ -299,6 +299,9 @@ Json recipe_json(const MineConfig &cfg, const ResearchRole &role, const MinePool
              "membership and research return guard"},
       {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
                    "summarize_rank_ic Bartlett lag 21"},
+      {"overlap_factor", kMinedOverlapFactor},
+      {"min_discover_rows", kMinedMinDiscoverRows},
+      {"min_confirm_rows", kMinedMinConfirmRows},
       {"min_names", cfg.min_names},
       {"min_dates", cfg.min_dates}};
 }
@@ -380,8 +383,10 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     ResearchRoleSpec spec = cfg.role;
     spec.max_bytes = cfg.max_working_bytes;
     ATX_TRY(const auto role, ResearchRole::load(spec));
-    ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", 3U));
-    // Review MINE-2: the confirm read is made on at least kMinedMinConfirmRows label rows.
+    // Review MINE-6: the overlap factor is derived on discover windows of kMinedMinDiscoverRows
+    // label rows and more; review MINE-2: the confirm read is made on at least
+    // kMinedMinConfirmRows label rows.
+    ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", kMinedMinDiscoverRows));
     ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm", kMinedMinConfirmRows));
     ATX_TRY(const auto pool, load_mine_pool(pool_manifest, *role));
     const usize label_rows = windows.discover.end - windows.discover.begin - kLabelLag;
@@ -484,7 +489,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
              << std::flush;
 
     // mined-v1 at the Bonferroni value of the campaign's budget (Ruling E-32a: never the realised
-    // count, never the registry's).
+    // count, never the registry's), read on f2 / kMinedOverlapFactor (review MINE-6).
     const f64 hurdle = mined_hurdle(cfg.budget);
     PromotionContext context;
     context.role = role.get();
@@ -556,7 +561,9 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                       {"anchor", anchor_json}}},
         {"hurdle", {{"budget", cfg.budget},
                     {"family_alpha", kMinedFamilyAlpha},
-                    {"t", finite_or_null(hurdle)}}},
+                    {"t", finite_or_null(hurdle)},
+                    {"overlap_factor", kMinedOverlapFactor},
+                    {"reads", "f2 / overlap_factor"}}},
         {"promotions", promotions_json(trials, promotions, pool)},
         {"admitted", members.size()},
         {"seconds", seconds_since(started)}};
