@@ -101,6 +101,16 @@ def test_exit_measure_linked_usd_basis(monkeypatch, tmp_path):
     assert y["sale_ttm"]["linked_usd_cells"] == 6 and y["sale_ttm"]["linked_usd"] == 1.0
     assert y["gp_ttm"]["linked_usd"] == round(4 / 6, 4)
     assert y["sale_ttm"]["linked"] == round(6 / 8, 4)                                    # linked, not yet visible
+    assert y["sale_ttm"]["member_all"] == round(6 / 12, 4) and y["sale_ttm"]["member_all_cells"] == 12
+    # v9-style stage: no available_at column -> clock_utc is the visibility clock
+    st9 = tmp_path / "stage_v9"
+    st9.mkdir()
+    t = pq.read_table(st / "events.parquet")
+    pq.write_table(t.drop_columns(["available_at"]), st9 / "events.parquet")
+    y9 = fv.exit_measure(duckdb.connect(), st9, years=(2021,))["by_year"]["2021"]
+    assert y9["sale_ttm"]["linked_usd"] == y["sale_ttm"]["linked_usd"]
+    r2 = fv.exit_measure(duckdb.connect(), st, years=(2021,), extra_fields=("ni_ttm",))
+    assert r2["by_year"]["2021"]["ni_ttm"]["linked"] == 0.0 and "gp_ttm" in r2["by_year"]["2021"]
 
 
 def test_benchmark_own_period_cells(monkeypatch, tmp_path):
@@ -171,3 +181,14 @@ def test_cutoff_rebuild_matches_asof_views(monkeypatch, tmp_path):
     con.close()
     assert r["events_sampled"] == 3 and r["compared_rows"] > 3 and r["differences"] == 0, r["examples"]
     assert len(fcat.CAT_COLUMNS) > 0
+
+
+def test_validate_memory_env_override(monkeypatch):
+    """ATX_FUND_VALIDATE_MEM overrides the default DuckDB memory limit (real-data coverage OOMed at 350MB)."""
+    import importlib
+    monkeypatch.setenv("ATX_FUND_VALIDATE_MEM", "480MB")
+    try:
+        assert importlib.reload(fv).MEM == "480MB"
+    finally:
+        monkeypatch.delenv("ATX_FUND_VALIDATE_MEM")
+        assert importlib.reload(fv).MEM == "350MB"

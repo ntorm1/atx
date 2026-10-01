@@ -41,6 +41,7 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -58,7 +59,7 @@ from . import fundamentals as fu
 TARGET = 0.90
 FYEARS = tuple(range(2015, 2026))
 TOP_N = 3000
-MEM = "350MB"
+MEM = os.environ.get("ATX_FUND_VALIDATE_MEM", "350MB")
 
 # Compustat analog of every v9 event column counted in the S4.2 coverage (annual basis; quarterly columns are
 # reported separately and not counted)
@@ -408,7 +409,7 @@ def cutoff(con, stage: Path, n_events: int = CUTOFF_EVENTS, seed: int = CUTOFF_S
             names = [d[0] for d in con.description]
             cview = con.execute(
                 f"SELECT * FROM read_parquet('{_q(stage / 'catalog.parquet')}') WHERE cik = {cik} "
-                f"AND available_at < TIMESTAMP '{cut.isoformat(sep=' ')}' ORDER BY cik, available_at, clock_utc, accession"
+                f"AND available_at < TIMESTAMP '{cut.isoformat(sep=' ')}'"
             ).fetchall()
             cnames = [d[0] for d in con.description]
             hview = con.execute(
@@ -463,7 +464,8 @@ def _f(v: Any, schema, name: str) -> Any:
 # exit measurement on member cells
 # ---------------------------------------------------------------------------------------------------------------
 
-def exit_measure(con, stage: Path, years: tuple[int, ...] = (2020, 2021, 2022)) -> dict[str, Any]:
+def exit_measure(con, stage: Path, years: tuple[int, ...] = (2020, 2021, 2022),
+                 extra_fields: tuple[str, ...] = ()) -> dict[str, Any]:
     root = common.build_root()
     ev = _q(stage / "events.parquet")
     lt = _q(root / "identity" / "link_table.parquet")
@@ -471,7 +473,10 @@ def exit_measure(con, stage: Path, years: tuple[int, ...] = (2020, 2021, 2022)) 
     sessions = [r[0] for r in cal]
     con.execute("CREATE OR REPLACE TEMP TABLE cal (session_date DATE, prev_session DATE)")
     con.executemany("INSERT INTO cal VALUES (?, ?)", list(zip(sessions[1:], sessions[:-1])))
-    fields = list(EXIT_FIELDS)
+    # v9 events carry only clock_utc; v10 adds available_at (>= clock_utc, FX-lagged non-USD filers)
+    cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{ev}')").fetchall()}
+    avail = "available_at" if "available_at" in cols else "clock_utc"
+    fields = list(EXIT_FIELDS) + [f for f in extra_fields if f not in EXIT_FIELDS]
     res: dict[str, Any] = {"targets": EXIT_FIELDS, "years": list(years), "stage": stage.name, "by_year": {}}
     tot: dict[str, list[int]] = {}
     for y in years:
@@ -487,13 +492,15 @@ def exit_measure(con, stage: Path, years: tuple[int, ...] = (2020, 2021, 2022)) 
             QUALIFY row_number() OVER (PARTITION BY m.session_date, m.security_id
                                        ORDER BY l.is_issuer_primary DESC NULLS LAST, l.cik) = 1""")
         con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE e_one AS
+            SELECT *, {avail} AS avail_ts FROM read_parquet('{ev}')
+            QUALIFY row_number() OVER (PARTITION BY cik, {avail} ORDER BY period_end DESC, accession DESC) = 1""")
+        con.execute(f"""
             CREATE OR REPLACE TEMP TABLE j AS
             SELECT x.*, e.period_end, e.currency, e.fin_template, e.sic_in_force,
                    {", ".join(f'CASE WHEN x.session_date - e.period_end <= 400 THEN e."{f}" END AS "{f}"' for f in fields)}
-            FROM cells x ASOF LEFT JOIN (SELECT * FROM read_parquet('{ev}')
-                                         QUALIFY row_number() OVER (PARTITION BY cik, available_at
-                                                                    ORDER BY period_end DESC, accession DESC) = 1) e
-              ON x.cik = e.cik AND x.cutoff > e.available_at""")
+            FROM cells x ASOF LEFT JOIN e_one e
+              ON x.cik = e.cik AND x.cutoff > e.avail_ts""")
         yr: dict[str, Any] = {}
         n_cells, n_linked = con.execute("SELECT count(*), count(cik) FROM j").fetchone()
         yr["member_cells"], yr["linked_cells"] = n_cells, n_linked
@@ -507,14 +514,18 @@ def exit_measure(con, stage: Path, years: tuple[int, ...] = (2020, 2021, 2022)) 
                        count(*) FILTER (WHERE cik IS NOT NULL AND currency = 'USD' AND session_date - period_end <= 400
                                         AND NOT coalesce({s}, false) AND "{f}" IS NOT NULL AND isfinite("{f}"))
                 FROM j""").fetchone()
-            yr[f] = {"linked": _r(r[1] / r[0]) if r[0] else None, "linked_usd": _r(r[3] / r[2]) if r[2] else None,
+            ma = con.execute(f"""SELECT count(*) FILTER (WHERE NOT (cik IS NOT NULL AND coalesce({s}, false))),
+                       count(*) FILTER (WHERE NOT (cik IS NOT NULL AND coalesce({s}, false))
+                                        AND "{f}" IS NOT NULL AND isfinite("{f}")) FROM j""").fetchone()
+            yr[f] = {"member_all": _r(ma[1] / ma[0]) if ma[0] else None, "member_all_cells": ma[0],
+                     "linked": _r(r[1] / r[0]) if r[0] else None, "linked_usd": _r(r[3] / r[2]) if r[2] else None,
                      "linked_usd_cells": r[2]}
             acc = tot.setdefault(f, [0, 0, 0, 0])
             for k in range(4):
                 acc[k] += r[k]
         res["by_year"][str(y)] = yr
     res["pooled"] = {f: {"linked": _r(a[1] / a[0]) if a[0] else None, "linked_usd": _r(a[3] / a[2]) if a[2] else None,
-                         "target": EXIT_FIELDS[f], "met": bool(a[2] and a[3] / a[2] >= EXIT_FIELDS[f])}
+                         "target": EXIT_FIELDS.get(f), "met": bool(f in EXIT_FIELDS and a[2] and a[3] / a[2] >= EXIT_FIELDS[f])}
                      for f, a in tot.items()}
     res["rule"] = __doc__.split("* ``exit``:")[1].strip()
     return res
@@ -525,7 +536,8 @@ def exit_measure(con, stage: Path, years: tuple[int, ...] = (2020, 2021, 2022)) 
 CHECKS = ("ttm_gaps", "fx", "coverage", "benchmark", "balance", "cutoff", "exit")
 
 
-def run(checks: list[str], stages: list[str] | None = None) -> dict[str, Any]:
+def run(checks: list[str], stages: list[str] | None = None, exit_years: tuple[int, ...] = (2020, 2021, 2022),
+        exit_fields: tuple[str, ...] = ()) -> dict[str, Any]:
     path = out_path()
     doc = common.read_json(path) if path.exists() else {}
     stage = _stage()
@@ -550,7 +562,7 @@ def run(checks: list[str], stages: list[str] | None = None) -> dict[str, Any]:
             elif c == "cutoff":
                 doc["cutoff"] = cutoff(con, stage)
             elif c == "exit":
-                doc["exit"] = {s: exit_measure(con, common.build_root() / s) for s in (stages or [stage.name])}
+                doc["exit"] = {s: exit_measure(con, common.build_root() / s, exit_years, exit_fields) for s in (stages or [stage.name])}
             doc.setdefault("seconds", {})[c] = round(time.perf_counter() - t0, 1)
             doc["created_utc"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
             common.write_json_atomic(path, doc)
@@ -577,12 +589,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checks", nargs="+", help=f"'all' or any of {CHECKS}")
     ap.add_argument("--stages", nargs="*", help="stage directories for ttm_gaps / exit (default: the current stage)")
+    ap.add_argument("--exit-years", nargs="*", type=int, default=[2020, 2021, 2022])
+    ap.add_argument("--exit-fields", nargs="*", default=[], help="extra event columns to measure in ``exit``")
     args = ap.parse_args(argv)
     checks = list(CHECKS) if args.checks == ["all"] else args.checks
     bad = [c for c in checks if c not in CHECKS]
     if bad:
         raise SystemExit(f"unknown checks {bad}")
-    run(checks, args.stages)
+    run(checks, args.stages, tuple(args.exit_years), tuple(args.exit_fields))
     return 0
 
 

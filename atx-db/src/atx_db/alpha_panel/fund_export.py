@@ -91,7 +91,13 @@ def export_dir() -> Path:
     return path
 
 
-def build() -> dict[str, Any]:
+DEFAULT_SEAL = "2024-01-01"
+
+
+def build(seal: str | None = DEFAULT_SEAL) -> dict[str, Any]:
+    """Write the export. ``seal`` (ISO date, default 2024-01-01; controller ruling R5 / Global Constraint 1): only events
+    whose ``available_at`` (the export's ``accepted_utc``) is before ``seal`` 00:00 UTC are written; ``None`` = unsealed."""
+    seal_ts = dt.datetime.fromisoformat(seal).replace(tzinfo=None).isoformat(sep=" ") if seal else None
     t0 = time.perf_counter()
     stage = fu.fund_dir()
     stage_manifest = stage / "manifest.json"
@@ -120,6 +126,7 @@ def build() -> dict[str, Any]:
                    {item_sql}, x.zero_filled, x.catalog_zero_filled, {", ".join("x." + d for d in DESCRIPTORS)}
             FROM (SELECT e.*, {cat_cols}, c.catalog_zero_filled
                   FROM read_parquet('{ev}') e LEFT JOIN read_parquet('{cat}') c USING (cik, accession)) x
+            {f"WHERE x.available_at < TIMESTAMP '{seal_ts}'" if seal_ts else ""}
             ORDER BY x.cik, accepted_utc, x.accession
             """,
             out / "fundamental_events.parquet", row_group_size=32768)
@@ -130,6 +137,7 @@ def build() -> dict[str, Any]:
                    CASE WHEN e.clock_basis = 'fsds_accepted_utc' THEN 'fsds_accepted_utc' ELSE 'cf_fc1' END AS clock_basis,
                    e.filed, e.form, CAST(s.sic AS INTEGER) AS sic, s.sic_basis, s.sic2, s.ff12, s.ff49
             FROM read_parquet('{sic}') s JOIN read_parquet('{ev}') e USING (cik, accession)
+            {f"WHERE e.available_at < TIMESTAMP '{seal_ts}'" if seal_ts else ""}
             ORDER BY s.cik, accepted_utc, s.accession
             """,
             out / "sic_events.parquet")
@@ -146,6 +154,11 @@ def build() -> dict[str, Any]:
         vals = con.execute(f"SELECT {fin} FROM read_parquet('{f}') WHERE accepted_utc >= TIMESTAMPTZ '2020-01-01'"
                            ).fetchone()
         counts["finite_fraction_2020_plus"] = dict(zip(items, vals))
+        counts["max_accepted_utc"] = str(con.execute(f"SELECT max(accepted_utc) FROM read_parquet('{f}')").fetchone()[0])
+        counts["max_sic_accepted_utc"] = str(con.execute(
+            f"SELECT max(accepted_utc) FROM read_parquet('{(out / 'sic_events.parquet').as_posix()}')").fetchone()[0])
+        if seal_ts and not (counts["max_accepted_utc"] < seal_ts and counts["max_sic_accepted_utc"] < seal_ts):
+            raise AssertionError(f"export carries accepted_utc >= seal {seal}")
         nulls = con.execute(f"SELECT {', '.join(f'sum((\"{c}\" IS NULL)::INT)' for c in items)} "
                             f"FROM read_parquet('{f}')").fetchone()
         if any(nulls):
@@ -159,7 +172,7 @@ def build() -> dict[str, Any]:
     manifest = {
         "schema": SCHEMA, "status": "complete", "values_label": "modeled_unaccepted", "rehearsal_identity": False,
         "producer": "atx_db.alpha_panel.fund_export (stage F rule " + fu.RULE + ", stage " + stage.name + ")",
-        "seal": None, "emit_from": fu.EMIT_FROM.date().isoformat(),
+        "seal": seal, "emit_from": fu.EMIT_FROM.date().isoformat(),
         "files": files, "items": items, "item_units": {c: UNITS[c] for c in items},
         "descriptor_columns": ["zero_filled", "catalog_zero_filled", "filing_accepted_utc", *DESCRIPTORS],
         "code_sha256": common.code_identity("fund_export", *fu.MODULES),
@@ -186,6 +199,9 @@ def _load_consumer(path: Path):
     spec = importlib.util.spec_from_file_location("_consumer_prepare_research_fields", path)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    here = str(Path(path).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)          # the consumer imports sibling modules (code_fingerprint)
     spec.loader.exec_module(mod)
     return mod
 
@@ -230,12 +246,14 @@ def verify(consumer: Path = CONSUMER) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("build")
+    b = sub.add_parser("build")
+    b.add_argument("--seal", default=DEFAULT_SEAL, help="ISO date: keep events with available_at before it 00:00 UTC "
+                   "(default 2024-01-01, consumer seal); 'none' = unsealed")
     v = sub.add_parser("verify")
     v.add_argument("--consumer", type=Path, default=CONSUMER)
     args = ap.parse_args(argv)
     if args.cmd == "build":
-        build()
+        build(None if args.seal.lower() == "none" else args.seal)
     else:
         verify(args.consumer)
     return 0
