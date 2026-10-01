@@ -2397,3 +2397,46 @@ source `807af678`, exe SHA-256 = the v8-12 receipt's.
   wanted on it.
 - Known: `ConfigJsonNotInDiscoverDigest` (1).
 - Next per PM5-6: Wave 0 part 2b pins the four v8-12 executables above on this head.
+
+## Wave 0 part 2b (R12-R14) (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `9ed1ed09` (clean; code head `807af678`,
+every research executable on v8-12). Dispatch 2b of Ruling PM4-14: R12 (plan-only), R13 (cold u pass v7.1 on lo1, the
+signal and daily IC overlap reports), the FIX-5 merge gate (PM5-12), R14 (pins, protocol line, locks). Not run: R15,
+fields v10, any cell.
+
+### A. Preconditions
+
+1. **Disk:** `df /c` 46,425,160 KiB free (44.3 GiB; `df -h` 45G) of 458 G before R12 (>= 30 GB). RAM 4,577 MiB free
+   of 16,069 MiB.
+2. **Runbook section 1:** `research_window.SEAL_DATE` prints `2024-01-01`; `p.SEAL, f.SEAL, h.SEAL, b.SEAL` print
+   `2024-01-01` four times; `WINDOW_ID` `research-window-v2`; `partition_is_sealed(2024, 1)` True, `(2023, 4)` False.
+   `atx-impl/strategies/research_window.json` SHA-256 `62cf2cfab1d0f61b02731a807ccfdd326bb2df91caff1173a3cf1b37e6e63584`
+   (= parts 1 and 2a). Vendor file unchanged: 3,617,973,507 B, mtime_ns 1789920127331396300.
+3. **Executables (v8-12):** receipt `build-equity/mega-v8-12-receipt.json` SHA-256
+   `e44344bfaf6da4d76f0d1e7cf44cef68e10a1c5954639ea99282ccc204ba6b5a` (source `807af678`, ExitCode 0, DirtyEntries 0).
+   On disk equal to the receipt: IC `ab7e2cbda3c87f74be7cd1d66725b7eb99b95a5182898c44aa465bbd1615452d`, NAV / targets
+   `5497c89d5141ae5f40d72ad2bef427cf9d6bf5462236b0a6d648765435b9bca6`, risk
+   `8967952c5c2054170d02466f121fc66122a2b3daa34d7bb99fe63a94a7eed258`, mine
+   `cd661fe99ad06d592af2886eb6491d853c5acfd35a40f27f34f5f9088588c91d` (bin timestamps 2026-10-01 18:54:48 .. 18:55:00).
+   `git diff --stat 807af678 9ed1ed09` outside `.superpowers/`: empty. No build.
+4. **Input pins** re-hashed before R12, equal to parts 1 and 2a: library v7.1 `787c802e...2259`, role lo1
+   `2ff9d771...1e53`, role lo3 `e1c67101...95f4`, fields v9 lo1 `888e6616...b8695`, fields v9 lo3 `9f156363...021ef`.
+
+### Runs
+
+`scripts/run_bounded_research.py` on a clean tree (source column), one at a time. Argv digest = SHA-256 of the receipt's
+`command` array as compact JSON (`json.dumps(command, separators=(",", ":"))`). Peak = sampled peak tree RSS.
+
+| step | receipt dir | source | caps | outcome / ExitCode | s | peak MiB | argv digest | receipt.json SHA-256 | output SHA-256 |
+|---|---|---|---|---|---|---|---|---|---|
+| R12 lo1 | `w0-2-plan-lo1-run` | `9ed1ed09` | 180 s / 1,536 / 512 | completed / 0 | 0.27 | 2.0 | `43dfb15848d430d92c54be3db5fecf01ab60948a2263f1438f1e063d1e2fa8b2` | `72e86b0874f29e1a65bdf1bce6727942593965685547652b54b2ab6edc348493` | plan (stdout.log) `bae09a826f3b86dbebf6724a00f05821ef8a87bf30da1e1b252ce54105c59217` |
+| R12 lo3 | `w0-2-plan-lo3-run` | `9ed1ed09` | 180 s / 1,536 / 512 | completed / 0 | 0.27 | 5.0 | `cfd009d3fc85e23d43db4c54d9c1c5acb6530bd35ad72da38d048f93045e3f18` | `d29bc45a4d65058518faa92863d884e4e40cc358ef4d4c911f948204f467b4d2` | plan (stdout.log) `a7fcbac4e7b859491e65661f08750d21226c3c0fb61818bc3e0009e63e4474d8` |
+
+- **R12 PASS (both roles).** Argv = runbook R12 verbatim (its runner caps 180 s / 1,536 MiB; the exe's
+  `--max-memory-mib 2560`), exe IC `ab7e2cbd` (v8-12), stderr empty. Plan (`mode` metadata-only-no-payload):
+  `candidate_count` 48, `max_compiled_slots` 8, `research_fields.resident_capacity` 6 (40 loaded / 40 declared extras,
+  54 planned loads), `required_lookback` 272, workers 4, `max_working_bytes` 2,684,354,560; **`required_bytes`
+  1,989,405,564 B (1,897.2 MiB) on both roles**, equal to R9's number (lo1 and lo3 share axes 1,405 x 5,922), inside
+  the OD-2 cap by 663.1 MiB. Role pins in the plan: lo1 `2ff9d771`, lo3 `e1c67101`; fields pins lo1 `888e6616`, lo3
+  `9f156363`. No candidate row names `regsho` (PM4-15 item 4 holds on the plan too).
