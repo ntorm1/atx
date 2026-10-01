@@ -31,10 +31,11 @@ u64 fnv1a64(std::string_view text) {
 }
 
 // A trial's registry configuration: the recipe (which binds the confirm window, review MINE-3)
-// and the expression.
+// and the expression's canonical hash. Review MINE-17: not its surface form, so canonically
+// equal expressions written differently are one trial across seeds and campaigns (the DSL text
+// stays in trials.csv as metadata).
 u64 trial_config(const std::string &recipe_sha, const MinedTrial &t) {
-  return fnv1a64(std::string(kTrialRecipe) + "|" + recipe_sha + "|" + hex16(t.canon_hash) + "|" +
-                 t.dsl);
+  return fnv1a64(std::string(kTrialRecipe) + "|" + recipe_sha + "|" + hex16(t.canon_hash));
 }
 
 const ex::ResearchIcTrial *find_read(const std::vector<ex::ResearchIcTrial> &reads, u64 hash) {
