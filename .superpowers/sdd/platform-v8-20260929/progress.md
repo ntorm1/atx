@@ -1149,3 +1149,45 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Dispatched: integrator W0-2b (root; task-W0-run-brief.md, dispatch 2b, on build v8-12). FIX-5 (Python only)
   merges inside this dispatch before R14 and before any lock: its SHA is sent to the integrator when the lane
   reports; without it the integrator stops after the overlap reports.
+
+## 2026-10-01 Wave 0 part 2b: STOP at the daily IC overlap (W0-a); FIX-5 done; rulings PM5-16, PM5-17 (before any level is read)
+- FIX-5 done d2304773 (pool 10, base 41ef00fb; 12 files, Python / JSON / markdown only): R6C-1 c8f92975, R6C-2
+  e9ca4e29 (PM5-11 texts in the pitch config, scorecard template and the r1 / r10 / r11 spec descriptions; the
+  computed check unchanged), R6C-5 43ac15fa, R6C-6 f8adf49d, R6C-4 9e38cdda, R6C-3 Python half ae77d274.
+  Pytest 603 passed / 4 skipped across 23 suites. Consequences: script_sha256 (and admission_sha256) move in
+  every weights file (identity 4 re-checked at the merge); the spec_digest of r1, r10, r11 move (nothing run or
+  locked on them). Lane readings accepted: a defect cell holds one slot of N which its blind re-run takes
+  (prereg rule 7: net 1); R6C-1 does not refuse twice where the missing input already has its own unavailable
+  block. SHA sent to the Wave 0 part 2b integrator for its step D.
+- Wave 0 part 2b stopped at R13 report 3 (log "Wave 0 part 2b (R12-R14)"; head 23f4b638). A pass. R12 plan-only
+  lo1 and lo3 pass (required_bytes 1,989,405,564, 8 slots, 48 candidates). Cold u pass v7.1 lo1: 48 misses,
+  129.4 s, 1,572 MiB, summary 0c753092. Report 2, signal overlap: BIT-IDENTICAL, 294,674,736 cells, 48 / 48
+  candidates (PM4-15's proof holds). Report 3, daily IC overlap: STOP class under W0-a: 305,172 cells compared,
+  12,451 unequal, max_abs_diff 1.309; only four keys differ: `__combined__` (every cell) and the
+  `oriented_rank_ic` column of chtax, ind_adj_rev_5, ind_mom_12_1; the raw columns of all 48 candidates and
+  everything of the other 45 are bit-identical. D and E not run: no pin, no protocol line, no lock. N 37.
+  Disclosure: the overlap tool's max_rel_diff 2.0 on those three columns means opposite signs, so the sign of
+  the whole-window mean rank IC (horizon 21) of three candidates differs between the 3-year and the 4-year
+  window; that is a coarse statistic touched by 2023 and is recorded as read. No IC level, no orientation file
+  and no return was read.
+- Ruling PM5-16 (W0-a on the daily IC overlap; declared before any IC level or orientation value is read): the
+  STOP stands until the cause is shown by test, not by reading. Hypothesis (from code, unverified): the IC
+  runner orients each candidate by the sign of its mean rank IC at horizon 21 over the run's whole window
+  (strategy_ic_runner.cpp:419-432), so `oriented_rank_ic` and the combined row are whole-window quantities and
+  not per-cell values. Cause test, identity fields only: (i) for the three candidates the 4-year oriented
+  column is the exact negation of the 3-year one on every common cell, and for the other 45 it is equal;
+  (ii) with the orientation pinned to the 3-year run's (by the runner's own option if it has one, else by a
+  recomputation of the combined row from the bit-identical signals and the 3-year signs), the combined row is
+  bit-identical on every common cell. Outcome (a): both hold -> the cause is found: no old value changed; a
+  window-dependent sign changed. Outcome (b): either fails -> the re-base stays stopped and the first differing
+  cell is traced to code. What the 4-year book then uses as orientation is ruled separately (PM5-18), from the
+  registration and the code's consumers, before any level is read and without regard to which three names
+  flipped -- W0-a exists so that old values do not change silently; a sign that is a function of the window
+  is not an old value, but it can change the book, so the consumers are established first -- cost if wrong:
+  one investigator turn and one bounded run.
+- Ruling PM5-17 (R14 lock order): R14 locks base-lo1 only; base-lo3 is locked after B0a, as A2's root command
+  sequence has it (its reference_cell is B0a's NAV summary, which does not exist yet) -- the lock cannot be
+  written before its input exists -- cost if wrong: none.
+- Dispatched: read-only investigator (orientation: how computed, every consumer, pin option; output
+  orientation-consumers.md, parked); integrator D (root: merge FIX-5 d2304773, Python suites, identity 4; no
+  Wave 0 step).
