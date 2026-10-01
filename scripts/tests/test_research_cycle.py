@@ -1508,6 +1508,32 @@ def test_ledger_copied_after_summ(tmp_path):
         RC.validate_spec(dict(json.loads(sp.read_text()), summ={"script": "s", "dsr_n": 3, "ledger_copy": "x"}))
 
 
+def test_a_verdict_checks_every_recorded_ledger_head(tmp_path):
+    """Review F-3: verdicts recorded the ledger's {head, lines} but nothing re-checked them, so an edit of a line an
+    earlier verdict read (the tail of an unchained ledger included) went unnoticed. Every verdict under the out base
+    that names this ledger is now checked when a cycle writes its own: an append passes, an edit is a hard stop."""
+    summ = {"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl"}
+    root, sp = make_root(tmp_path, summ=summ)
+    ledger = root / "trials.jsonl"
+    ledger.write_text(cell_line("prior/a"))
+    assert run(root, sp) == RC.EXIT_OK                                  # verdict: {head of line 1, lines 1}
+    other = root / "build-equity" / "cycle-other" / "cycle_verdict.json"   # another cycle's verdict, same ledger
+    other.parent.mkdir(parents=True)
+    shutil.copyfile(root / "build-equity" / "cycle-synthetic" / "cycle_verdict.json", other)
+    with ledger.open("a") as f:
+        f.write(cell_line("prior/b"))                                   # an append: the recorded heads still hold
+    assert run(root, sp) == RC.EXIT_OK
+    v = json.loads((root / "build-equity" / "cycle-synthetic" / "cycle_verdict.json").read_text())
+    assert v["ledger"]["lines"] == 2
+    ledger.write_text(cell_line("prior/a") + cell_line("prior/c"))     # line 2, read by the last verdict, edited
+    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[verdict\]: ledger trials.jsonl: its first 2 line\(s\) no "
+                                            "longer fold"):
+        run(root, sp)
+    ledger.write_text(cell_line("prior/z") + cell_line("prior/b"))     # line 1, read by both verdicts, edited
+    with pytest.raises(RC.CycleError, match="cycle-other"):           # the other cycle's verdict is checked first
+        run(root, sp)
+
+
 # ---------------------------------------------------------------- platform v8 A-2: run --screen, verdict, add-alpha
 import re  # noqa: E402
 import shutil  # noqa: E402

@@ -160,7 +160,8 @@ import cycle_resume  # noqa: E402
 import research_ledger  # noqa: E402
 import research_spec  # noqa: E402
 import research_tree  # noqa: E402
-from cycle_verdict import SUMM_JSON, PBO_JSON, VerdictError, step_key, write_verdict as _write_verdict  # noqa: E402
+from cycle_verdict import (SUMM_JSON, PBO_JSON, VERDICT, VerdictError, step_key,  # noqa: E402
+                           write_verdict as _write_verdict)
 
 SCHEMA = "atx.research-cycle-spec/v1"
 PHASES = ("fields", "check", "ref", "u", "fit", "card", "marginal", "gate", "w", "nav", "monitor", "summ")
@@ -1677,7 +1678,28 @@ def ledger_state(cycle) -> dict | None:
         return None
     bi = research_ledger.backtest_integrity()
     p = cycle.res.path(rel)
+    check_recorded_heads(cycle, p, bi)
     return {"path": rel, "head": bi.ledger_head(p), "lines": len(bi.ledger_read(p))}
+
+
+def check_recorded_heads(cycle, p: Path, bi) -> None:
+    """Review F-3: every earlier verdict of this ledger under the cycle's out base (<out base>/cycle-*/
+    cycle_verdict.json, ledger.path resolving to ``p``) recorded {head, lines}; the ledger's first ``lines`` lines must
+    still fold to that head (backtest_integrity.chain_head), so an edit of any line an earlier verdict read, the tail
+    included, stops the verdict (ValueError: HARD-STOP [verdict])."""
+    texts = [line for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for vp in sorted(cycle.res.path(cycle.out_base()).glob(f"cycle-*/{VERDICT}")):
+        try:
+            led = json.loads(vp.read_text(encoding="utf-8")).get("ledger")
+        except (OSError, ValueError, AttributeError) as exc:
+            raise ValueError(f"verdict {vp} is unreadable ({exc}): its recorded ledger head cannot be checked") from exc
+        if not isinstance(led, dict) or not isinstance(led.get("path"), str) or \
+                cycle.res.path(led["path"]).resolve() != p.resolve():
+            continue
+        n, head = led.get("lines"), led.get("head")
+        if type(n) is not int or n > len(texts) or bi.chain_head(texts[:n]) != head:
+            raise ValueError(f"ledger {led['path']}: its first {n} line(s) no longer fold to the chain head {head} that "
+                             f"{vp} recorded (a line an earlier verdict read was edited or removed)")
 
 
 def copy_ledger(cycle: Cycle, log) -> None:
