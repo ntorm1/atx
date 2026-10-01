@@ -12,6 +12,10 @@ the cells run and replaces every {{...}} placeholder from the file its alias nam
   {{TEXT:ALIAS ...}}        text quoted verbatim from a document
   {{PM: ...}} or {{PM}}     a statement the PM writes (a verdict, a ruling, a name), never a computed number
 Format as scorecard v6: Sharpe +.3f, dSR +.3f (SE .3f), p .4f, tau .4f, bps .2f, returns +pct1, leverage .3f/.4f.
+Optional cells (Rulings E-38, E-45, PM4-8, PM4-10): R-9a..c run only if R-6 is rejected; R-10 and R-11 only if R-6 and
+R-1 are accepted; R-12 only if R-6 is accepted (and a candidate passes the screen). A cell whose branch was not taken, or
+that could not be formed (PM4-10: the member cap 1/(2T) infeasible), keeps its row with "-" in every value column and
+the verdict "undefined (<ruling id>)"; it adds 0 to N. R-9's frontier cells are report only: no dSR, no acceptance.
 Hidden-data rule: nothing dated 2024-01-01 or later is opened; no validation statistic is quoted anywhere.
 The same inputs render the pitch: python atx-impl/tools/mega_report --config docs/plans/mega-alpha-v8-pitch.config.json
 Delete this comment in the filled scorecard.
@@ -30,7 +34,7 @@ scenario **S2** = `modeled-1bn-stale5-v1` impact costs at $1bn NAV x `swap-fin-v
 | alias | path (relative to `C:/atx-wt/pool-2`) | produced by |
 |---|---|---|
 | `SUMM` | `build-equity/mega-nav-v8-summ.json` | `nav_summ.py --protocol v8 --dsr-ledger build-equity/trials.jsonl --effective-n dirs --psr --json build-equity/mega-nav-v8-summ.json <every cell dir below>` |
-| `PAIRED[K]` | `build-equity/mega-nav-v8-paired-<k>.json` (k = b0b, r1 .. r7) | `nav_summ.py --protocol v8 --bundle <parent dir> <cell dir> --bundle-json <path>` |
+| `PAIRED[K]` | `build-equity/mega-nav-v8-paired-<k>.json` (k = b0b, r1 .. r8, r10 .. r12; R-9's frontier cells have none) | `nav_summ.py --protocol v8 --bundle <parent dir> <cell dir> --bundle-json <path>` |
 | `BUNDLE` | `build-equity/mega-nav-v8-bundle-b0c-v8f.json` | `nav_summ.py --protocol v8 --bundle <B0c dir> <V8-F dir> --bundle-json <path>` |
 | `LEDGER` | `build-equity/trials.jsonl` | the cycle's ledger lines (`--origin`, window id, hash chain) |
 | `APPX` | the Appendix A line of `nav_summ.py --protocol v8 --ledger-n build-equity/trials.jsonl` | stdout, pasted verbatim |
@@ -59,7 +63,13 @@ scenario **S2** = `modeled-1bn-stale5-v1` impact costs at $1bn NAV x `swap-fin-v
 | R-5 | `mega-nav-v8-r5` ({{PM}}) | last accepted | 45 | net at 4x higher; net at 1x within one SE; S3 not lower |
 | R-6 | `mega-nav-v8-r6` ({{PM}}) | last accepted | 46 | cost per traded dollar not higher; tripwire clear; limits_unmet 0 on the scored decisions of the primary book (Ruling E-31: else the run is invalid; E-31a: the run voids itself); traded-book correlation with the aim >= .9 (Ruling E-14; E-14a: the traded book after decision d's trades against the aim at d) |
 | R-7 | `mega-nav-v8-r7` ({{PM}}) | last accepted | 47 | turnover not higher (Ruling E-36: the new members' marginal IC is report only, rule 8) |
-| (R-8, R-9) | optional ({{PM: remove or fill}}) | last accepted | up to 51 | as stated in the plan |
+| R-8 | `mega-nav-v8-r8` ({{PM}}) | last accepted | 48 | realised volatility of the S2 net series inside [.8, 1.2] x sigma_star 5% in each TRAIN year (Ruling E-43: rule 5 governs) |
+| R-9a | `mega-nav-v8-r9a` ({{PM}}) | last accepted | 49 | none: report-only frontier cell, theta .03 at 4x NAV, no acceptance (Ruling PM4-8); defined only if R-6 is rejected (Rulings E-38, E-37) |
+| R-9b | `mega-nav-v8-r9b` ({{PM}}) | last accepted | 50 | none: report-only frontier cell, theta .04 at 4x NAV, no acceptance (Ruling PM4-8); defined only if R-6 is rejected (Rulings E-38, E-37) |
+| R-9c | `mega-nav-v8-r9c` ({{PM}}) | last accepted | 51 | none: report-only frontier cell, theta .05 at 4x NAV, no acceptance (Ruling PM4-8); defined only if R-6 is rejected (Rulings E-38, E-37) |
+| R-10 | `mega-nav-v8-r10` ({{PM}}) | last accepted | 49 | planned turnover per unit gross not higher (R-1's criterion, Ruling E-44); defined only if R-6 and R-1 are accepted (Rulings E-38, E-45) |
+| R-11 | `mega-nav-v8-r11` ({{PM}}) | last accepted | 50 | planned turnover per unit gross not higher (R-1's criterion, Rulings E-44, PM4-4); defined only if R-6 and R-1 are accepted (Rulings E-38, E-45) |
+| R-12 | `mega-nav-v8-r12` ({{PM}}) | last accepted | 51 | book turnover not higher (Ruling PM4-9); defined only if R-6 is accepted (Ruling E-38) |
 
 V8-F = the last accepted cell: **{{PM: key of V8-F}}**.
 
@@ -115,6 +125,13 @@ named in the task; rejected cells are not retried. dSR and its SE come from `PAI
 | 8 | R-5 | ADV holding cap | {{PM}} | 45 | {{SUMM[R-5].net_sharpe}} | {{SUMM[R-5].gross_sharpe}} | {{PM}} | {{SUMM[R-5].tau_gmv_mean}}/{{SUMM[R-5].tau_gmv_p95}} | {{SUMM[R-5].cost_bps_traded}} | {{SUMM[R-5].mean_gross_leverage_all_rows}} | {{SUMM[R-5].mean_net_leverage_all_rows}} | {{PAIRED[R-5].paired.dsr}} ({{PAIRED[R-5].paired.memmel_se}}) | {{PAIRED[R-5].paired.lw.p_one_sided}} | net at 4x higher ({{CAP[R-5]}}); net at 1x within one SE; S3 not lower ({{NAV[R-5].scenarios[S3].net_sharpe}} vs parent {{NAV[R-4].scenarios[S3].net_sharpe}}): {{PM}} | {{PM}} |
 | 9 | R-6 | target tracking spo-v3 | {{PM}} | 46 | {{SUMM[R-6].net_sharpe}} | {{SUMM[R-6].gross_sharpe}} | {{PM}} | {{SUMM[R-6].tau_gmv_mean}}/{{SUMM[R-6].tau_gmv_p95}} | {{SUMM[R-6].cost_bps_traded}} | {{SUMM[R-6].mean_gross_leverage_all_rows}} | {{SUMM[R-6].mean_net_leverage_all_rows}} | {{PAIRED[R-6].paired.dsr}} ({{PAIRED[R-6].paired.memmel_se}}) | {{PAIRED[R-6].paired.lw.p_one_sided}} | cost per traded dollar not higher ({{SUMM[R-6].cost_bps_traded}} vs parent); tripwire clear ({{NAV[R-6].v7.spo_v3_tripwire.status}}); limits_unmet 0 on the scored decisions of the primary book, E-31 ({{NAV[R-6].v7.spo_v3_books.modeled-1bn-stale5-v1+swap-fin-v1.limits_unmet}}); traded-book aim correlation (after decision d's trades, aim at d) >= .9, E-14 / E-14a ({{NAV[R-6].v7.spo_v3_books.modeled-1bn-stale5-v1+swap-fin-v1.aim_correlation_traded_after.mean}}): {{PM}} | {{PM}} |
 | 10 | R-7 | library v8.1 | {{PM}} | 47 | {{SUMM[R-7].net_sharpe}} | {{SUMM[R-7].gross_sharpe}} | {{PM}} | {{SUMM[R-7].tau_gmv_mean}}/{{SUMM[R-7].tau_gmv_p95}} | {{SUMM[R-7].cost_bps_traded}} | {{SUMM[R-7].mean_gross_leverage_all_rows}} | {{SUMM[R-7].mean_net_leverage_all_rows}} | {{PAIRED[R-7].paired.dsr}} ({{PAIRED[R-7].paired.memmel_se}}) | {{PAIRED[R-7].paired.lw.p_one_sided}} | turnover not higher ({{SUMM[R-7].tau_gmv_mean}} vs parent): {{PM}}; marginal IC of the new members report only, gates nothing (rule 8, Ruling E-36; `CARDS`) | {{PM}} |
+| 11 | R-8 | ex-ante risk target | {{PM}} | 48 | {{SUMM[R-8].net_sharpe}} | {{SUMM[R-8].gross_sharpe}} | {{PM}} | {{SUMM[R-8].tau_gmv_mean}}/{{SUMM[R-8].tau_gmv_p95}} | {{SUMM[R-8].cost_bps_traded}} | {{SUMM[R-8].mean_gross_leverage_all_rows}} | {{SUMM[R-8].mean_net_leverage_all_rows}} | {{PAIRED[R-8].paired.dsr}} ({{PAIRED[R-8].paired.memmel_se}}) | {{PAIRED[R-8].paired.lw.p_one_sided}} | realised volatility inside [.04, .06] = [.8, 1.2] x 5% in each TRAIN year, E-43 ({{SUMM[R-8].year_table.0.ann_vol}} / {{SUMM[R-8].year_table.1.ann_vol}} / {{SUMM[R-8].year_table.2.ann_vol}} / {{SUMM[R-8].year_table.3.ann_vol}}): {{PM}} | {{PM}} |
+| 12 | R-9a | frontier, theta .03 at 4x NAV | {{PM}} | 49 | {{SUMM[R-9a].net_sharpe}} | {{SUMM[R-9a].gross_sharpe}} | {{PM}} | {{SUMM[R-9a].tau_gmv_mean}}/{{SUMM[R-9a].tau_gmv_p95}} | {{SUMM[R-9a].cost_bps_traded}} | {{SUMM[R-9a].mean_gross_leverage_all_rows}} | {{SUMM[R-9a].mean_net_leverage_all_rows}} | - | - | none: report only, no acceptance (Ruling PM4-8); defined only if R-6 is rejected (E-38, E-37) | {{PM: reported / undefined (E-38, E-37)}} |
+| 13 | R-9b | frontier, theta .04 at 4x NAV | {{PM}} | 50 | {{SUMM[R-9b].net_sharpe}} | {{SUMM[R-9b].gross_sharpe}} | {{PM}} | {{SUMM[R-9b].tau_gmv_mean}}/{{SUMM[R-9b].tau_gmv_p95}} | {{SUMM[R-9b].cost_bps_traded}} | {{SUMM[R-9b].mean_gross_leverage_all_rows}} | {{SUMM[R-9b].mean_net_leverage_all_rows}} | - | - | none: report only, no acceptance (Ruling PM4-8); defined only if R-6 is rejected (E-38, E-37) | {{PM: reported / undefined (E-38, E-37)}} |
+| 14 | R-9c | frontier, theta .05 at 4x NAV | {{PM}} | 51 | {{SUMM[R-9c].net_sharpe}} | {{SUMM[R-9c].gross_sharpe}} | {{PM}} | {{SUMM[R-9c].tau_gmv_mean}}/{{SUMM[R-9c].tau_gmv_p95}} | {{SUMM[R-9c].cost_bps_traded}} | {{SUMM[R-9c].mean_gross_leverage_all_rows}} | {{SUMM[R-9c].mean_net_leverage_all_rows}} | - | - | none: report only, no acceptance (Ruling PM4-8); defined only if R-6 is rejected (E-38, E-37) | {{PM: reported / undefined (E-38, E-37)}} |
+| 15 | R-10 | composition ic-shrink-v1 | {{PM}} | 49 | {{SUMM[R-10].net_sharpe}} | {{SUMM[R-10].gross_sharpe}} | {{PM}} | {{SUMM[R-10].tau_gmv_mean}}/{{SUMM[R-10].tau_gmv_p95}} | {{SUMM[R-10].cost_bps_traded}} | {{SUMM[R-10].mean_gross_leverage_all_rows}} | {{SUMM[R-10].mean_net_leverage_all_rows}} | {{PAIRED[R-10].paired.dsr}} ({{PAIRED[R-10].paired.memmel_se}}) | {{PAIRED[R-10].paired.lw.p_one_sided}} | planned turnover per unit gross not higher, R-1's criterion, E-44: {{PM: tau/gross cell vs parent}}; defined only if R-6 and R-1 are accepted (E-38, E-45) | {{PM: verdict / undefined (E-38, E-45) / undefined (PM4-10)}} |
+| 16 | R-11 | composition theme-resid-v1 | {{PM}} | 50 | {{SUMM[R-11].net_sharpe}} | {{SUMM[R-11].gross_sharpe}} | {{PM}} | {{SUMM[R-11].tau_gmv_mean}}/{{SUMM[R-11].tau_gmv_p95}} | {{SUMM[R-11].cost_bps_traded}} | {{SUMM[R-11].mean_gross_leverage_all_rows}} | {{SUMM[R-11].mean_net_leverage_all_rows}} | {{PAIRED[R-11].paired.dsr}} ({{PAIRED[R-11].paired.memmel_se}}) | {{PAIRED[R-11].paired.lw.p_one_sided}} | planned turnover per unit gross not higher, R-1's criterion, E-44 / PM4-4: {{PM: tau/gross cell vs parent}}; defined only if R-6 and R-1 are accepted (E-38, E-45) | {{PM: verdict / undefined (E-38, E-45)}} |
+| 17 | R-12 | library v8.2 (add-alpha) | {{PM}} | 51 | {{SUMM[R-12].net_sharpe}} | {{SUMM[R-12].gross_sharpe}} | {{PM}} | {{SUMM[R-12].tau_gmv_mean}}/{{SUMM[R-12].tau_gmv_p95}} | {{SUMM[R-12].cost_bps_traded}} | {{SUMM[R-12].mean_gross_leverage_all_rows}} | {{SUMM[R-12].mean_net_leverage_all_rows}} | {{PAIRED[R-12].paired.dsr}} ({{PAIRED[R-12].paired.memmel_se}}) | {{PAIRED[R-12].paired.lw.p_one_sided}} | book turnover not higher ({{SUMM[R-12].tau_gmv_mean}} vs parent), PM4-9: {{PM}}; marginal IC is the entry screen, gates nothing (rule 8); defined only if R-6 is accepted (E-38) | {{PM: verdict / undefined (E-38)}} |
 
 Not trials (identity checks and window re-runs of ledgered cells, v8-prereg item 2): {{PM: list, each with its identity
 result}}. Invalid cells excluded by the defect rule (item 7): {{PM: none / list}}.
@@ -127,7 +144,7 @@ twice at book level before it entered TRAIN (OD-1): a result that rests on 2023 
 | cell | 2020 | 2021 | 2022 | 2023 | TRAIN |
 |---|---|---|---|---|---|
 | B0c | {{SUMM[B0c].year_table.0.net_sharpe}} / {{SUMM[B0c].year_table.0.net_return}} | {{SUMM[B0c].year_table.1.net_sharpe}} / {{SUMM[B0c].year_table.1.net_return}} | {{SUMM[B0c].year_table.2.net_sharpe}} / {{SUMM[B0c].year_table.2.net_return}} | {{SUMM[B0c].year_table.3.net_sharpe}} / {{SUMM[B0c].year_table.3.net_return}} | {{SUMM[B0c].net_sharpe}} |
-| {{PM: one row per cell, B0a .. R-7, same columns}} | | | | | |
+| {{PM: one row per cell, B0a .. R-12 (every cell that is not undefined), same columns}} | | | | | |
 | **V8-F** | {{SUMM[V8-F].year_table.0.net_sharpe}} / {{SUMM[V8-F].year_table.0.net_return}} | {{SUMM[V8-F].year_table.1.net_sharpe}} / {{SUMM[V8-F].year_table.1.net_return}} | {{SUMM[V8-F].year_table.2.net_sharpe}} / {{SUMM[V8-F].year_table.2.net_return}} | {{SUMM[V8-F].year_table.3.net_sharpe}} / {{SUMM[V8-F].year_table.3.net_return}} | {{SUMM[V8-F].net_sharpe}} |
 
 V8-F year table in full (return rows, net Sharpe, return, volatility, turnover, cost per traded dollar):
@@ -202,7 +219,7 @@ selects or re-weights anything (v8-prereg item 8). A skipped diagnostic is liste
 Trial accounting (TRAIN 2020-2023 only; hidden 2024+ unread in this sprint; no validation statistic read):
   before v8: N 37 (ledger through v7.1); validation reads before v8: 2 (2023-2024); 2025+ never read.
   v8 re-base: B0a, B0b, B0c (N 38-40); window re-runs of ledgered cells add 0 ({{PM: count}}).
-  v8 construction cells: {{PM: R-1 .. R-7 as run, each with its verdict}} -> N {{SUMM[V8-F].deflated_ledger.n}}.
+  v8 construction cells: {{PM: R-1 .. R-12 as run, each with its verdict; an undefined cell with its ruling, adding 0}} -> N {{SUMM[V8-F].deflated_ledger.n}}.
   admission: {{PM: 7 (library v8.0) + <k> (library v8.1)}} plus 8 `_f49` re-screens at 0 trials (ruling R2-e).
   budget: N <= 51, admission <= 15 (plan 12.1): {{PM: within / exceeded}}.
   Not trials: identity checks, window re-runs (item 2), invalid cells (item 7): {{PM: list}}.

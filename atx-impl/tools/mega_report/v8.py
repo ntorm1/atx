@@ -35,6 +35,15 @@ cell whose paired test was read but whose verdict is missing or still pending, a
 v8-prereg item 5 contradicts (an accept the rule rejects or cannot read for an unread criterion part, a reject the rule
 accepts), and a parent that is not the last accepted cell before its cell (a rejected cell is never a parent).
 
+The optional cells are part of the ladder (Rulings E-38, E-45, PM4-8, PM4-10). A cell with ``defined_if`` ({"accepted":
+[keys], "rejected": [keys], "ruling": id}) is undefined once a named earlier cell's recorded verdict settles against it
+(R-9 only if R-6 was rejected; R-10 and R-11 only if R-6 and R-1 were accepted; R-12 only if R-6 was accepted), and a
+cell whose own verdict reads "undefined ..." could not be formed (Ruling PM4-10: the member cap 1/(2T) infeasible). An
+undefined cell keeps its row, rendered "undefined (ruling)": it adds 0, reads no input, is never a parent and is never
+an unavailable block; a decided verdict recorded on it is refused. A ``report_only`` cell (R-9's frontier cells) has no
+acceptance: no rule, and an accepted or rejected verdict on it is refused. A ``source: years`` criterion check reads the
+cell's own nav_summ year table: every TRAIN year inside [lo, hi] (R-8's realised volatility band, Ruling E-43).
+
 ``v8_book`` (layout ``{"type": "v8_book", "block": NAME, ...}``) runs one of the v7 pitch's book-level blocks
 (``BOOK_BLOCKS``: equity curve, drawdowns, returns, costs, turnover, capacity curve, exposures, signal correlation) on
 the top-level ``final`` cell after checking every file that block reads (``book_inputs``, derived from the config as
@@ -47,6 +56,7 @@ import datetime as dt
 import io
 import json
 import re
+from types import SimpleNamespace
 
 import backtest_integrity as BI  # atx-impl/tools is on sys.path for every mega_report entry
 import nav_summ as NS
@@ -312,7 +322,7 @@ def blk_year_table(ctx, spec) -> str:
     if '_error' in sm:
         return unavailable(BLOCK_YEAR, _rel(v8.get('summ')), sm['_error'])
     keys = spec.get('cells')
-    cells = [_cell(v8, k) for k in keys] if keys else _cells(v8)
+    cells = [_cell(v8, k) for k in keys] if keys else defined_cells(_cells(v8), ctx.verdict_rules())
     entries, notes = [], []
     for c in cells:
         r = sm['by'].get(_base(c.get('dir')))
@@ -425,15 +435,40 @@ def summary_checks(crit: dict | None) -> list[dict]:
     return [ch for ch in (crit or {}).get('checks') or [] if ch.get('source') == 'summary' and 'metric' in ch]
 
 
+def year_values(row: dict | None, metric: str) -> dict:
+    """{TRAIN year: ``metric`` of that year's row in a nav_summ ``year_table``}; None for a year without a row or a
+    value. The years are the research window's TRAIN years (never a literal)."""
+    table = (row or {}).get('year_table')
+    by = {int(y['year']): y for y in table if isinstance(y, dict) and C.is_num(y.get('year'))} \
+        if isinstance(table, list) else {}
+    return {y: by.get(y, {}).get(metric) for y in train_years()}
+
+
+def years_eval(row: dict | None, ch: dict, name: str) -> tuple[bool | None, str]:
+    """A ``source: years`` check on the cell's own nav_summ row (op ``between``, ``lo`` / ``hi``): met when ``metric``
+    of every TRAIN year is inside [lo, hi]; None while the row, a TRAIN year or a value is missing. Ruling E-43: R-8's
+    realised volatility of the S2 net series (the year table's ``ann_vol``) inside [.8, 1.2] x 5% in each TRAIN year."""
+    lo, hi = ch.get('lo'), ch.get('hi')
+    if ch.get('op') != 'between' or not (C.is_num(lo) and C.is_num(hi)):
+        raise ValueError(f"mechanical criterion: a years check takes op between with numeric lo and hi "
+                         f"(op {ch.get('op')!r})")
+    vals = year_values(row, ch['metric'])
+    res = [lo <= v <= hi if C.is_num(v) else None for v in vals.values()]
+    each = ', '.join(f'{y} {_short(v)}' for y, v in vals.items())
+    return (None if any(r is None for r in res) else all(res),
+            f"{name} by TRAIN year ({each}) between {_short(lo)} and {_short(hi)}")
+
+
 def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs: dict | None = None) -> dict:
     """The mechanical criterion of a cell's task: ``checks`` [{metric, per?, op le|lt|ge|gt, factor?}] compare the
     cell's nav_summ row with its parent's x factor; with ``value`` a check compares the cell's value with that fixed
     value instead (ops le|lt|ge|gt|eq; no parent read). ``"source": "summary"`` reads the NAV verb's ``summary.json``
     of the cell (and of its parent) instead of the nav_summ row (``docs``: {'cell', 'parent', 'scenarios': {key: id},
     'primary': id}; ``scenario`` picks a cost scenario, ``{primary}`` names the primary book, e.g. the spo-v3 blocks
-    ``v7.spo_v3_books.{primary}``). A check without ``metric`` ({text, met}) is a part the report cannot compute (a
-    capacity-curve reading): its ``met`` is the PM's reading, None until set and then listed in ``unread``. Without
-    checks ``met`` is the configured reading of the whole criterion (or None, then unread)."""
+    ``v7.spo_v3_books.{primary}``). ``"source": "years"`` reads the cell's nav_summ ``year_table``: every TRAIN year's
+    value inside [lo, hi] (``years_eval``; no parent read). A check without ``metric`` ({text, met}) is a part the
+    report cannot compute (a capacity-curve reading): its ``met`` is the PM's reading, None until set and then listed in
+    ``unread``. Without checks ``met`` is the configured reading of the whole criterion (or None, then unread)."""
     crit, docs = crit or {}, docs or {}
     checks = crit.get('checks') or []
     if not checks:
@@ -452,7 +487,7 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs:
                          + {True: 'met (PM reading)', False: 'not met (PM reading)', None: 'to be read (config met)'}[met])
             continue
         source = ch.get('source', 'summ')
-        if source not in ('summ', 'summary'):
+        if source not in ('summ', 'summary', 'years'):
             raise ValueError(f"mechanical criterion: unknown source {source!r}")
 
         def value_of(which, ch=ch, source=source):
@@ -461,6 +496,11 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs:
             return _metric(row if which == 'cell' else prow, ch)
         name = ch.get('label') or ((f"{ch['scenario']} " if ch.get('scenario') else '') + ch['metric']
                                    + (f" / {ch['per']}" if ch.get('per') else ''))
+        if source == 'years':
+            met, text = years_eval(row, ch, name)
+            res.append(met)
+            parts.append(text)
+            continue
         v = value_of('cell')
         if 'value' in ch:
             if ch.get('op') not in ABSOLUTE_OPS:
@@ -492,8 +532,8 @@ def _crit_html(r: dict) -> str | None:
         return None
     if r.get('crit_met') is not None:
         chip = C.chip(r['crit_met']) + ' '
-    else:
-        chip = C.na('criterion not evaluated') + ' ' if r.get('crit_detail') else ''
+    else:  # a report-only cell (plan R-9) has no criterion to evaluate: its figures, no n/a marker
+        chip = C.na('criterion not evaluated') + ' ' if r.get('crit_detail') and not r.get('report_only') else ''
     det = f'<span class="sub">{C.esc(r["crit_detail"])}</span>' if r.get('crit_detail') else ''
     return f'{chip}{C.esc(r.get("crit_text") or "")}{det}'
 
@@ -570,11 +610,104 @@ def _nav_summary(ctx, cell: dict, cache: dict, unav: list, srcs: list):
     return cache[rel]
 
 
+DECIDED = ('accepted', 'rejected', 'defect')  # verdict kinds that settle a cell (a defect cell is excluded, item 7)
+UNDEFINED, REPORT = 'undefined', 'report'  # Rulings E-38, E-45, PM4-10: not formed; plan R-9: reported, no acceptance
+SETTLED = DECIDED + (UNDEFINED, REPORT)    # every cell before a cell settled: its parent check runs
+UNDEFINED_RULE = (UNDEFINED, r'^\s*undefined\b')  # a verdict recording a cell that could not be formed (PM4-10)
+NEVER_PARENT = {'rejected': ('rejected', 'a rejected cell is never a parent'),
+                'defect': ('defect', 'a rejected cell is never a parent'),
+                UNDEFINED: ('undefined', 'an undefined cell is never a parent (it was not formed)'),
+                REPORT: ('report only', 'a report-only cell has no acceptance and is never a parent')}
+
+
+def verdict_rules_of(cfg: dict) -> list:
+    """The config's verdict badge rules exactly as ``report.Ctx.verdict_rules`` reads them (``inputs`` has no
+    context)."""
+    from . import report as R  # imported here, as blk_book imports it
+    return R.Ctx.verdict_rules(SimpleNamespace(cfg=cfg))
+
+
+def _recorded_kind(c: dict, rules) -> str | None:
+    """The kind of a cell's recorded verdict: its explicit ``verdict_kind``, else the config's badge rules, then a
+    verdict that reads "undefined ..." (Ruling PM4-10), then the report's defaults."""
+    return c.get('verdict_kind') or C.verdict_kind(c.get('verdict'), [*rules, UNDEFINED_RULE])
+
+
+def _defined(cond: dict, kinds: dict, key) -> tuple[bool | None, str]:
+    """(defined, why) of a cell with ``defined_if`` ({"accepted": [keys], "rejected": [keys], "ruling": id}): True when
+    every named earlier cell is recorded with the named kind, False once one has settled otherwise (``why`` names it),
+    None while one is still open (pending, missing, a defect awaiting its rerun)."""
+    need = [(k, 'accepted') for k in cond.get('accepted') or []] + [(k, 'rejected') for k in cond.get('rejected') or []]
+    if not need:
+        raise KeyError(f"v8 cell {key!r}: defined_if names no cell (accepted / rejected)")
+    why = f"defined only if {' and '.join(f'{k} is {want}' for k, want in need)} ({cond.get('ruling') or 'no ruling'})"
+    state = True
+    for k, want in need:
+        if k not in kinds:
+            raise KeyError(f"v8 cell {key!r}: defined_if names {k!r}, not an earlier cell of v8.cells")
+        if kinds[k] == want:
+            continue
+        if kinds[k] in ('accepted', 'rejected', UNDEFINED, REPORT):
+            return False, f"{why}; {k} is {kinds[k]}"
+        state = None
+    return state, why
+
+
+def cell_states(cells: list[dict], rules) -> dict:
+    """The E-38 / E-45 branch of the ladder from the recorded verdicts (Ruling PM4-8), in ladder order: {key: {'kind':
+    the cell's effective verdict kind, 'recorded': its recorded kind, 'why': why it is undefined (None when defined),
+    'verdict': the verdict it renders}}. A cell is undefined when its ``defined_if`` has settled against it (it renders
+    "undefined (ruling)") or when its own verdict records it undefined (a cell that could not be formed, Ruling
+    PM4-10). A defined ``report_only`` cell (plan R-9's frontier cells: no acceptance) with a recorded verdict settles
+    as 'report'. Every other cell keeps its recorded kind."""
+    kinds, out = {}, {}
+    for c in cells:
+        key, rec = c.get('key'), _recorded_kind(c, rules)
+        kind, why, verdict, cond = rec, None, c.get('verdict'), c.get('defined_if')
+        if rec == UNDEFINED:
+            why = 'its verdict records it undefined (not formed, no trial)'
+        elif cond:
+            ok, text = _defined(cond, kinds, key)
+            if ok is False:
+                kind, why, verdict = UNDEFINED, text, f"undefined ({cond.get('ruling') or 'no ruling'})"
+        if kind != UNDEFINED and c.get('report_only') and rec not in (None, 'pending', 'defect'):
+            kind = REPORT
+        kinds[key] = kind
+        out[key] = {'kind': kind, 'recorded': rec, 'why': why, 'verdict': verdict}
+    return out
+
+
+def defined_cells(cells: list[dict], rules) -> list[dict]:
+    """The cells of the ladder that are not undefined (``cell_states``): the ones whose inputs are read."""
+    states = cell_states(cells, rules)
+    return [c for c in cells if states[c.get('key')]['kind'] != UNDEFINED]
+
+
+def _undefined_row(k: int, c: dict, st: dict) -> dict:
+    """The ladder row of an undefined cell: nothing read, the reason in the criterion column, its verdict
+    "undefined (ruling)" (or the recorded one); a decided recorded verdict is refused by ``branch_checks``."""
+    return {'k': k, 'key': c.get('key'), 'label': c.get('label'), 'name': _base(c.get('dir')),
+            'parent': 'none (undefined)', 'n': '', 'mech': '', 'dsr': '', 'p1': '', 'pos': '', 'rule': '',
+            'crit_text': f"not formed: {st['why']}; adds 0 to N, no input read", 'crit_met': None, 'crit_detail': None,
+            'crit_unread': [], 'verdict': st['verdict'], 'verdict_kind': UNDEFINED, 'recorded': c.get('verdict'),
+            'recorded_kind': st['recorded'], 'undefined': st['why']}
+
+
+def _report_text(r: dict | None) -> str:
+    """The frontier figures of a report-only cell from its nav_summ row (no acceptance reads them)."""
+    if r is None:
+        return 'report only, no acceptance: nav_summ row n/a'
+    return (f"report only, no acceptance: S2 net Sharpe {_short(r.get('net_sharpe'))}, turnover tau mean "
+            f"{_short(r.get('tau_gmv_mean'))}, cost {_short(r.get('cost_bps_traded'))} bps per traded dollar")
+
+
 def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
-    """(rows, unavailable blocks of missing paired or NAV-summary inputs, notes, sources) of the configured v8 cells."""
+    """(rows, unavailable blocks of missing paired or NAV-summary inputs, notes, sources) of the configured v8 cells;
+    an undefined cell (``cell_states``) reads nothing and renders "undefined (ruling)"."""
     v8 = _v8(ctx)
     cells = _cells(v8)
     by_key = {c.get('key'): c for c in cells}
+    states = cell_states(cells, ctx.verdict_rules())
     sm, why = _summ(ctx)
     notes = [f'{why}; mechanics and the metric criteria are n/a'] if why else []
     mech_checks = v8.get('mechanics') or []
@@ -589,6 +722,10 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
         par = by_key.get(c.get('parent'))
         if c.get('parent') and par is None:
             raise KeyError(f"v8 cell {c.get('key')!r}: parent {c.get('parent')!r} not in v8.cells")
+        st = states[c.get('key')]
+        if st['kind'] == UNDEFINED:  # Rulings E-38, E-45, PM4-10: adds 0, nothing read, never a parent
+            rows.append(_undefined_row(i, c, st))
+            continue
         r, pr = row_of(c), row_of(par)
         if sm and r is None:
             notes.append(f"{c.get('key')}: {_base(c.get('dir'))} is not a row of the nav_summ JSON")
@@ -624,18 +761,24 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
                 unav.append(unavailable(BLOCK_LADDER, rel, err))
             else:
                 srcs.append(P3._src(ctx, rel))
-        else:
+        elif not c.get('report_only'):
             notes.append(f"{c.get('key')}: no paired test configured (v8.cells[].paired)")
         dsr = pd.get('dsr') if pd else None
         row.update(dsr=dsr, p1=pd.get('p1') if pd else None, pos=(dsr > 0) if C.is_num(dsr) else None,
                    se_txt=f"SE {C.fmt(pd.get('se'), '.3f')}" if pd and C.is_num(pd.get('se')) else None)
+        if c.get('report_only'):  # plan R-9, Ruling PM4-8: a frontier cell is reported, never accepted
+            row.update(pos='', rule='', crit_met=None, crit_unread=[], crit_detail=_report_text(r),
+                       report_only=True, recorded=c.get('verdict'), recorded_kind=st['recorded'])
+            if not c.get('paired'):  # no paired test by design: blank, not a missing input
+                row.update(dsr='', p1='')
+            if st['kind'] == REPORT:
+                row['verdict_kind'] = REPORT
+            rows.append(row)
+            continue
         parts = [row['pos'], row['mech'], row['crit_met']]
         row['rule'] = None if any(x is None for x in parts) else all(parts)
         rows.append(row)
     return rows, unav, notes, srcs
-
-
-DECIDED = ('accepted', 'rejected', 'defect')  # verdict kinds that settle a cell (a defect cell is excluded, item 7)
 
 
 def _rule_text(r: dict) -> str:
@@ -666,21 +809,38 @@ def verdict_rule_checks(rows: list[dict], kinds: dict) -> list[tuple[str, str]]:
     return out
 
 
+def branch_checks(rows: list[dict]) -> list[tuple[str, str]]:
+    """Ruling PM4-8: an undefined cell (E-38, E-45: its branch was not taken; PM4-10: it could not be formed) adds 0
+    and carries no decided verdict; a report-only cell (plan R-9's frontier) is never accepted or rejected."""
+    out = []
+    for r in rows:
+        key, rec = f"v8.cells[{r['key']}].verdict", r.get('recorded_kind')
+        if r.get('verdict_kind') == UNDEFINED and rec in DECIDED:
+            out.append((key, f"recorded {rec} ({r.get('recorded')!r}) but the cell is undefined ({r['undefined']}): "
+                             f"an undefined cell adds 0 and has no verdict"))
+        elif r.get('report_only') and rec in ('accepted', 'rejected'):
+            out.append((key, f"recorded {rec} ({r.get('recorded')!r}) but {r['key']} is a report-only cell: no "
+                             f"acceptance (plan R-9; Ruling PM4-8)"))
+    return out
+
+
 def parent_checks(cells: list[dict], kinds: dict) -> list[tuple[str, str]]:
     """Review P-3, plan section 9 ("Parent = the last accepted cell"): a configured parent that is rejected (or a
-    defect) is refused; once every cell before a cell is settled, its parent must be the last accepted one of them.
-    While an earlier cell is still undecided the second check waits (the committed config pre-fills the chain)."""
+    defect), undefined or report-only is refused; once every cell before a cell is settled, its parent must be the
+    last accepted one of them. While an earlier cell is still undecided the second check waits (the committed config
+    pre-fills the chain). An undefined cell has no parent to check."""
     out = []
     for i, c in enumerate(cells):
         parent = c.get('parent')
-        if not parent:  # a baseline by declaration
+        if not parent or kinds.get(c.get('key')) == UNDEFINED:  # a baseline by declaration; a cell not formed
             continue
         key = f"v8.cells[{c.get('key')}].parent"
-        if kinds.get(parent) in ('rejected', 'defect'):
-            out.append((key, f"{parent!r} is {kinds[parent]}: a rejected cell is never a parent"))
+        if kinds.get(parent) in NEVER_PARENT:
+            what, why = NEVER_PARENT[kinds[parent]]
+            out.append((key, f"{parent!r} is {what}: {why}"))
             continue
         prior = [p.get('key') for p in cells[:i]]
-        if any(kinds.get(p) not in DECIDED for p in prior):
+        if any(kinds.get(p) not in SETTLED for p in prior):
             continue
         accepted = [p for p in prior if kinds.get(p) == 'accepted']
         last = accepted[-1] if accepted else None
@@ -691,9 +851,10 @@ def parent_checks(cells: list[dict], kinds: dict) -> list[tuple[str, str]]:
 
 def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
     """(config key, reason) of every consistency error of the ladder: a cell whose paired test was read but whose
-    verdict is missing or still pending; a recorded verdict the rule of v8-prereg item 5 contradicts
-    (``verdict_rule_checks``); a parent that is not the last accepted cell before it (``parent_checks``); ``v8.final``
-    not the last accepted cell; a top-level ``final`` (page header, book sections) that is not v8.final's cell."""
+    verdict is missing or still pending; a decided verdict on an undefined cell or an accept / reject on a report-only
+    cell (``branch_checks``); a recorded verdict the rule of v8-prereg item 5 contradicts (``verdict_rule_checks``); a
+    parent that is not the last accepted cell before it (``parent_checks``); ``v8.final`` not the last accepted cell;
+    a top-level ``final`` (page header, book sections) that is not v8.final's cell."""
     v8 = _v8(ctx)
     rules = ctx.verdict_rules()
     kinds = {r['key']: r.get('verdict_kind') or C.verdict_kind(r.get('verdict'), rules) for r in rows}
@@ -704,6 +865,7 @@ def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
             state = 'missing' if k is None else f"still pending ({r.get('verdict')!r})"
             out.append((f"v8.cells[{r['key']}].verdict",
                         f"its paired test {r.get('paired_src')} was read but the verdict is {state}"))
+    out += branch_checks(rows)
     out += verdict_rule_checks(rows, kinds)
     out += parent_checks(_cells(v8), kinds)
     final = v8.get('final')
@@ -1421,7 +1583,7 @@ def blk_book(ctx, spec) -> str:
 # ============================================================================================ inputs, registration
 def inputs(cfg: dict) -> list[tuple[str, str, str]]:
     """(owner block, config key, path) of every v8 input the config names: the list the PM fills, and the one input
-    per owner that a missing file marks unavailable."""
+    per owner that a missing file marks unavailable. An undefined cell (``cell_states``) names none."""
     v8 = cfg.get('v8') or {}
     out = []
 
@@ -1429,8 +1591,9 @@ def inputs(cfg: dict) -> list[tuple[str, str, str]]:
         if spec:
             out.append((block, key, _rel(spec)))
     add(BLOCK_YEAR, 'v8.summ', v8.get('summ'))
-    need = summary_needs(v8.get('cells') or [])
-    for c in v8.get('cells') or []:
+    cells = defined_cells(v8.get('cells') or [], verdict_rules_of(cfg))
+    need = summary_needs(cells)
+    for c in cells:
         add(BLOCK_LADDER, f"v8.cells[{c.get('key')}].paired", c.get('paired'))
         if c.get('key') in need:  # a criterion reads this cell's NAV summary.json (source: summary)
             add(BLOCK_LADDER, f"v8.cells[{c.get('key')}].summary", summary_path(c))
