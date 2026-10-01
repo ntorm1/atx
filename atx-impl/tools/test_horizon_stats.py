@@ -4,6 +4,7 @@ the card). Hand values and the report-only contract (synthetic data only).
 Run: python -m pytest -q -p no:cacheprovider atx-impl/tools/test_horizon_stats.py
 """
 import contextlib
+import hashlib
 import io
 import json
 import math
@@ -136,6 +137,35 @@ class FTheta(unittest.TestCase):
         self.assertGreater(rows["slow_b"]["f_theta"], 0)  # oriented by the screen sign like every other column
 
 
+POOL_SHA = "77" * 32  # the pool (combined-signal manifest) the synthetic K6 file names
+LIBRARY_SHA = "11" * 32  # card_base.CardWorld's orientations library_sha256
+K6_ROWS = [{"id": "a", "ic21": 0.02, "ic21_hac_t": 2.5, "marginal_ic21": 0.011, "marginal_hac_t": 1.9,
+            "max_abs_rho": 0.4, "max_rho_member": "b", "n_dates": 120},
+           {"id": "b", "ic21": -0.01, "ic21_hac_t": -1.0, "marginal_ic21": None, "marginal_hac_t": None,
+            "max_abs_rho": None, "max_rho_member": None}]
+
+
+def k6_doc(world) -> dict:
+    """A marginal_ic.json as the K6 verb writes it, bound to ``world``'s role (its score window less the h 21 label lag
+    of 22 sessions), the pool POOL_SHA and the u pass's library."""
+    role = fcw.RoleManifest(world.manifest, world.train_sha)
+    sb, rows = role.score_begin, role.score_end - role.score_begin - 22
+    return {"schema": "atx.marginal-ic/v1", "status": "complete", "contract": "K6",
+            "inputs": {"pool": {"path": "w/train_combined.json", "sha256": POOL_SHA,
+                                "role_manifest_sha256": world.train_sha, "library_sha256": LIBRARY_SHA,
+                                "composition_weights_sha256": "88" * 32},
+                       "library": {"path": "lib.json", "sha256": LIBRARY_SHA},
+                       "role": {"path": str(world.manifest), "manifest_sha256": world.train_sha}},
+            "window": {"score_begin": sb, "rows": rows, "first_decision_session_ns": int(role.sessions[sb]),
+                       "last_decision_session_ns": int(role.sessions[sb + rows - 1])},
+            "candidates": K6_ROWS}
+
+
+def write_k6(path: Path, doc) -> str:
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 class CardColumns(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -147,12 +177,12 @@ class CardColumns(unittest.TestCase):
                                                             for i in ("a", "b", "c")}, ref_horizons=(21,))
         cls.plain_code, _ = cls.world.run(cls.root / "plain")
         cls.k6 = cls.root / "marginal_ic.json"
-        cls.k6.write_text(json.dumps({"schema": "atx.marginal-ic/v1", "candidates": [
-            {"id": "a", "ic21": 0.02, "ic21_hac_t": 2.5, "marginal_ic21": 0.011, "marginal_hac_t": 1.9,
-             "max_abs_rho": 0.4, "max_rho_member": "b", "n_dates": 120},
-            {"id": "b", "ic21": -0.01, "ic21_hac_t": -1.0, "marginal_ic21": None, "marginal_hac_t": None,
-             "max_abs_rho": None, "max_rho_member": None}]}), encoding="utf-8")
-        cls.code, cls.err = cls.world.run(cls.root / "report", ["--ic-theta", "--marginal-ic", str(cls.k6)])
+        cls.k6_sha = write_k6(cls.k6, k6_doc(cls.world))
+        cls.code, cls.err = cls.world.run(cls.root / "report", ["--ic-theta", *cls.k6_args(cls.k6, cls.k6_sha)])
+
+    @staticmethod
+    def k6_args(path: Path, sha: str) -> list[str]:
+        return ["--marginal-ic", str(path), "--marginal-ic-sha256", sha, "--marginal-ic-pool-sha256", POOL_SHA]
 
     @classmethod
     def tearDownClass(cls):
@@ -170,13 +200,53 @@ class CardColumns(unittest.TestCase):
     def test_marginal_ic_rows_are_copied(self):
         a, b, c = (card_base.load(self.root / "report", i) for i in ("a", "b", "c"))
         self.assertEqual(a["marginal_ic"], {"ic21": 0.02, "ic21_hac_t": 2.5, "marginal_ic21": 0.011,
-                                            "marginal_hac_t": 1.9, "max_abs_rho": 0.4, "max_rho_member": "b"})
+                                            "marginal_hac_t": 1.9, "max_abs_rho": 0.4, "max_rho_member": "b",
+                                            "use": "report-only (rule 8)"})
         self.assertIsNone(b["marginal_ic"]["marginal_ic21"])
-        self.assertEqual(c["marginal_ic"], {"status": "absent from marginal_ic.json"})
+        self.assertEqual(c["marginal_ic"], {"status": "absent from marginal_ic.json", "use": "report-only (rule 8)"})
         index = json.loads((self.root / "report" / "index.json").read_bytes())
         rows = {r["id"]: r for r in index["candidates"]}
         self.assertEqual(rows["a"]["marginal_ic21"], 0.011)
         self.assertIn(str(self.k6), index["inputs"]["files"])
+        # Ruling E-36: the index records what the K6 file was bound to, and both pages carry the label
+        bound = index["marginal_ic"]
+        self.assertEqual((bound["sha256"], bound["pool_sha256"], bound["library_sha256"], bound["role_manifest_sha256"]),
+                         (self.k6_sha, POOL_SHA, LIBRARY_SHA, self.world.train_sha))
+        self.assertEqual(bound["window"], k6_doc(self.world)["window"])
+        self.assertTrue(bound["use"].startswith("report-only (rule 8)") and "Ruling E-36" in bound["use"])
+        self.assertIn("report-only (rule 8)", (self.root / "report" / "card-a.html").read_text(encoding="utf-8"))
+        self.assertIn("report-only (rule 8)", (self.root / "report" / "index.html").read_text(encoding="utf-8"))
+
+    def test_k6_is_bound_to_the_cards_role_window_pool_and_library(self):
+        """Ruling E-36 (review N-3): a K6 file of another role, window, pool or library is refused, and both pins are
+        required."""
+        day = 86_400 * 10 ** 9
+        edits = {
+            "role": (lambda d: d["inputs"]["role"].update(manifest_sha256="aa" * 32), "is not the card's TRAIN role"),
+            "pool-role": (lambda d: d["inputs"]["pool"].update(role_manifest_sha256="aa" * 32),
+                          "is not the card's TRAIN role"),
+            "rows": (lambda d: d["window"].update(rows=d["window"]["rows"] - 1), "is not the card's role window"),
+            "first": (lambda d: d["window"].update(first_decision_session_ns=d["window"]["first_decision_session_ns"]
+                                                   + day), "is not the card's role window"),
+            "pool": (lambda d: d["inputs"]["pool"].update(sha256="99" * 32), "is not --marginal-ic-pool-sha256"),
+            "library": (lambda d: d["inputs"]["library"].update(sha256="22" * 32), "is not the u pass's library"),
+            "schema": (lambda d: d.update(schema="atx.marginal-ic/v0"), "not a complete atx.marginal-ic/v1")}
+        for name, (edit, why) in edits.items():
+            doc = k6_doc(self.world)
+            edit(doc)
+            path = self.root / f"k6-{name}.json"
+            code, err = self.world.run(self.root / f"out-{name}", self.k6_args(path, write_k6(path, doc)))
+            self.assertEqual(code, 1, name)
+            self.assertIn(why, err, name)
+            self.assertFalse((self.root / f"out-{name}").exists(), name)
+        code, err = self.world.run(self.root / "no-pin", ["--marginal-ic", str(self.k6), "--marginal-ic-pool-sha256",
+                                                          POOL_SHA])
+        self.assertEqual(code, 1)
+        self.assertIn("--marginal-ic-sha256 is required", err)
+        code, err = self.world.run(self.root / "no-pool", ["--marginal-ic", str(self.k6), "--marginal-ic-sha256",
+                                                           self.k6_sha])
+        self.assertEqual(code, 1)
+        self.assertIn("--marginal-ic-pool-sha256 is required", err)
 
     def test_switches_off_leave_the_cards_unchanged(self):
         plain = {p.name: p.read_bytes() for p in (self.root / "plain").iterdir()}
@@ -203,13 +273,13 @@ class CardColumns(unittest.TestCase):
             self.assertEqual((card["admission"]["f_theta"], card["admission"]["f_theta_hac_t"]), (0.0003, 1.25))
         finally:
             adm_path.write_bytes(original)
-        code, err = self.world.run(self.root / "pinned", ["--marginal-ic", str(self.k6), "--marginal-ic-sha256",
-                                                          "0" * 64])
+        code, err = self.world.run(self.root / "pinned", self.k6_args(self.k6, "0" * 64))
         self.assertEqual(code, 1)
         self.assertIn("marginal IC: SHA-256 pin differs", err)
         bad = self.root / "bad.json"
-        bad.write_text(json.dumps([{"id": "a", "ic21": 0.1}]), encoding="utf-8")
-        code, err = self.world.run(self.root / "bad", ["--marginal-ic", str(bad)])
+        doc = k6_doc(self.world)
+        doc["candidates"] = [{"id": "a", "ic21": 0.1}]
+        code, err = self.world.run(self.root / "bad", self.k6_args(bad, write_k6(bad, doc)))
         self.assertEqual(code, 1)
         self.assertIn("K6 keys", err)
 
