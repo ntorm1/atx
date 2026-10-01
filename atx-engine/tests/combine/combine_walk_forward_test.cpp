@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -79,6 +80,43 @@ struct SpyCombiner {
   }
 };
 static_assert(cb::Combiner<SpyCombiner>);
+
+struct IntermittentInvalidCombiner {
+  [[nodiscard]] atx::core::Result<cb::CombineWeights> fit(const cb::SignalStore &s,
+                                                          cb::FitWindow w) const {
+    cb::CombineWeights out;
+    out.w.assign(s.n_alphas(), 1.0 / static_cast<f64>(s.n_alphas()));
+    if (w.end == 1U || w.end == 3U) {
+      out.w.back() = std::numeric_limits<f64>::quiet_NaN();
+    } else if (w.end == 2U || w.end == 5U) {
+      out.w.back() = std::numeric_limits<f64>::infinity();
+    } else if (w.end >= 6U) {
+      out.w.assign(s.n_alphas(), 0.0);
+      out.w.front() = 1.0;
+    }
+    return atx::core::Ok(std::move(out));
+  }
+};
+
+TEST(CombineWalkForward, InvalidFitsPreserveLastValidWeightsAndAllowRecovery) {
+  const cb::SignalStore st = to_store(make_raw(4U));
+  cb::WalkForwardCfg cfg;
+  cfg.min_train = 1U;
+  const auto path = cb::walk_forward(st, cfg, IntermittentInvalidCombiner{});
+  ASSERT_TRUE(path.has_value());
+  EXPECT_EQ(path->failed_fits, 4U);
+  for (usize d = 0U; d < 4U; ++d) {
+    EXPECT_FALSE(path->has_weights(d));
+  }
+  ASSERT_EQ(path->adopted_dates, (std::vector<usize>{4U, 6U}));
+  EXPECT_TRUE(path->has_weights(4U));
+  EXPECT_TRUE(path->has_weights(5U));
+  for (usize a = 0U; a < kK; ++a) {
+    EXPECT_DOUBLE_EQ(path->at(4U)[a], 1.0 / static_cast<f64>(kK));
+    EXPECT_DOUBLE_EQ(path->at(5U)[a], path->at(4U)[a]);
+    EXPECT_DOUBLE_EQ(path->at(6U)[a], a == 0U ? 1.0 : 0.0);
+  }
+}
 
 TEST(CombineWalkForward, EmbargoCadenceAndRollingWindow) {
   const cb::SignalStore st = to_store(make_raw(1U));
