@@ -82,7 +82,9 @@ injected by patching `composition_resid.tie_block_means` and each is >= 2/7 away
 ```
 "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-impl/tools/test_mega_report_v8.py atx-impl/tools/test_mega_report_v8_render.py atx-impl/tools/test_mega_report_pitch3.py atx-impl/tools/test_mega_report_seal.py atx-impl/tools/test_mega_report_sig_corr.py atx-impl/tools/test_composition_resid.py atx-impl/tools/test_fit_composition_weights.py atx-impl/tools/test_fit_composition_weights_pool.py atx-impl/tools/test_fit_composition_weights_store.py atx-impl/tools/test_composition_ic_shrink.py atx-impl/tools/test_composition_rules.py atx-impl/tools/test_alpha_report_card.py atx-impl/tools/test_alpha_report_card_store.py atx-impl/tools/test_book_diagnostics.py atx-impl/tools/test_book_monitor.py atx-impl/tools/test_exposures_export.py atx-impl/tools/test_horizon_stats.py atx-impl/strategies/test_generate_library.py atx-engine/tools/test_research_window.py atx-engine/tools/test_research_fields_v8.py scripts/tests/test_research_spec.py scripts/tests/test_research_cycle.py scripts/tests/test_cycle_scoring.py
 ```
-Result on `ae77d274`: RESULT_LINE (test_research_cycle's live-root tests skip without `RESEARCH_CYCLE_LIVE_ROOT`).
+Result on `ae77d274`: 603 passed, 4 skipped, 20 subtests passed, 0 failed (180 s; the 4 skips are
+test_research_cycle's live-root tests, which skip without `RESEARCH_CYCLE_LIVE_ROOT`; nothing under build-equity read).
+`ruff check --line-length 120` is clean on every changed Python file.
 No build target: no C++ changed.
 
 Identity:
