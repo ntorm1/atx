@@ -1877,3 +1877,48 @@ SHA-256s, JSON paths (no values) and a digit-masked line diff were looked at.
   in research_cycle spec validation, not in a direct fitter call).
 - Next per PM3-9 / PM4-2: Wave 0 part 2 (R10-R14) on this head; MINE-FIX (integration 7) only after the V8-F freeze.
 - Known: `ConfigJsonNotInDiscoverDigest` (1).
+
+## Wave 0 part 2a (R10, R11, field overlap) (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `ebb2070a` (code head `9c5cfa0c`, clean).
+Dispatch 2a of Ruling PM4-14: R10 (fields v9 on lo1), R11 (fields v9 on lo3), R13 report 1 (field overlap) only.
+No merge, no build. Not run: R12, the u pass, the signal and daily IC overlap reports, R14, R15, any cell.
+
+### Preconditions
+
+1. **Disk:** `df -h /c` 58 G free of 458 G (59,926,588 KiB) before R10 (>= 30 GB). RAM available 5,702 MiB of
+   16,068 MiB.
+2. **Runbook section 1:** `research_window.SEAL_DATE` prints `2024-01-01`; `p.SEAL, f.SEAL, h.SEAL, b.SEAL` print
+   `2024-01-01` four times; `WINDOW_ID` `research-window-v2`; `partition_is_sealed(2024, 1)` True, `(2023, 4)` False.
+   `atx-impl/strategies/research_window.json` SHA-256 `62cf2cfab1d0f61b02731a807ccfdd326bb2df91caff1173a3cf1b37e6e63584`
+   (= part 1). Vendor file unchanged: 3,617,973,507 B, mtime_ns 1789920127331396300.
+3. **Executables:** build v8-10 receipt `build-equity/mega-v8-10-receipt.json` SHA-256
+   `4fb85a9ce1bf3215597cffd41f458d08c2c57f0753ecbd8e4d1e50a12838e286` (source `486aa4f3`, ExitCode 0); v8-10a receipt
+   `906ea731b85cc2721585d3e82dccfffc2af6fd8516f01f4cd166207352475f5c`. On disk equal to the v8-10 receipt: ic
+   `b082a3a0d801e574f777e7ce8e54cfa5b301c087c36c068c776ea72c23e2f352`, targets
+   `47d51210e40bc1409d37011f70a2fcf2edb2d0f0216c488886d50ad96d02cb43`. `git diff --stat 486aa4f3 ebb2070a` outside
+   `.superpowers/`: 3 test files only. **Dispatch 2a runs no C++ executable** (fields builder and overlap tool are
+   Python): the runner's `executable_sha256` is python.exe
+   `624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181` (= part 1). Nothing was built.
+4. **Input pins** re-hashed at 2026-10-01T10:44Z, equal to part 1: `LO1` `2ff9d771...1e53`, `LO3` `e1c67101...95f4`,
+   `R4` `f598c04c...43de`, `FEV` `304d2945...be87b`.
+
+### Live stage manifests (Ruling W0-n), re-hashed 2026-10-01T10:44:41Z, immediately before R10
+
+| stage (`C:/atx/atx-db/data/alpha_panel/v1/...`) | manifest SHA-256 | runbook pin / R8 |
+|---|---|---|
+| export/identity-bridge-v2-pit | `09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01` | equal (R8 equal) |
+| earnings_calendar | `9a4a976b03d0ad04672796f01abc129d0d09e3db23d62ddf57aea68ae3c7d769` | equal |
+| insider | `dcd3f1aa4ba6e266c03ef78568ca131c1336f51ade477f03faff2e88a62ba061` | equal |
+| sec_filings | `5190fe99e4c2f1f13218d966a67d06995d51b7a31a73151dad2686e829aed693` | equal |
+| thirteenf | `8974170f64b4a002cc1b131449c2abf0c7daaab23d4a256992afbdfc4105ffb0` | equal |
+| ftd | `a76d69bed49829d9e14216f1abe2ef76b480c16c576fa49ae63fa2a28050f945` | equal |
+| regsho_threshold | `fb073c6222cb16cb27968c067d45ecd2ffe50cf10958391cae8d6417ad9e6f4f` | equal to the runbook's live pin (W0-n pins it); the v7.1 fields pinned `68f431f0...` |
+| security_master | `3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a` | equal |
+| short_volume_ext | `7007a13c226a1730d0ef778d7201bf7c1d0e97ed61d4c12af32c1c4567444928` | equal |
+| fundamentals (SIC) | `9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b` | equal (R8 equal) |
+| delisting | `1b1166b61e5a77d8dbe007f2de3261392424fb86a59c1118028862abc264c37f` | equal (R8 equal) |
+| FINRA SI `asof/manifest.json` | `a2561d758b70f5e7ecfae4ac3721b317758da89b1d5844f8d1d29ea9c29cb4df` | equal |
+| raw short volume `manifest.csv` | `8b076a16701096da19d337d31468bbec0baae21c66d4e2d6cd53189d6a851c81` | equal to the v7.1 fields' source pin |
+
+No live stage hash differs from the one recorded at R8 or from the runbook pins.
