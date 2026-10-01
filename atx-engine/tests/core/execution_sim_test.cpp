@@ -29,6 +29,7 @@
 #include <cmath>
 #include <limits>
 #include <span>
+#include <vector>
 
 #include "atx/core/datetime.hpp"      // Timestamp
 #include "atx/core/decimal.hpp"       // Decimal
@@ -648,6 +649,8 @@ TEST(ExecSim, InvalidSellEconomics_PreserveCashLiquidityAndPendingIntent) {
   sim.queue(orders, ts(1000));
   const auto first = sim.settle_pending(ts(2000), b.market);
   ASSERT_EQ(first.size(), 1U);
+  EXPECT_EQ(sim.last_settlement().invalid_economics, 1U);
+  EXPECT_EQ(sim.last_settlement().filled_orders, 1U);
   EXPECT_EQ(first.front().qty, 10);
   EXPECT_NEAR(first.front().price.to_double(), 120.0, 1e-9);
   portfolio.apply_fill(first.front());
@@ -693,6 +696,70 @@ TEST(ExecSim, LatencyBeyondTimestampRange_NeverWrapsToEarlyFill) {
   const std::array orders{market_order(10, 10, maximum - 10)};
   sim.queue(orders, ts(maximum - 10));
   EXPECT_TRUE(sim.settle_pending(ts(maximum), b.market).empty());
+}
+
+TEST(ExecSim, BroadBasketReplacementPreservesFifoLatencyAndAccounting) {
+  constexpr atx::u32 count = 3000;
+  std::vector<InstrumentId> universe;
+  std::vector<SliceRow> rows;
+  std::vector<OrderPayload> orders;
+  for (atx::u32 id = 1; id <= count; ++id) {
+    universe.push_back(inst(id));
+    rows.push_back(row(id, 100, 100, 400)); // ten-share per-bar cap
+    orders.push_back(market_order(count + 1U - id,
+        (count + 1U - id) % 2U == 0U ? 20 : -20, 100));
+  }
+  Market market{universe, {}};
+  market.update_prices(MarketSlice{ts(100), rows});
+  const SlippageCfg slip{SlippageMode::VolumeShare, 0.0, 0.0, 0.025, 0.10};
+  const CommissionCfg comm{CommissionMode::PerShare, 0.0, 0.0, 0.005, 0.0};
+  ExecutionSimulator sim{FillCfg{}, slip, ImpactCfg{0.0, 0.5, 0.0}, comm,
+      LatencyCfg{100}, VolumeCapCfg{}};
+  atx::engine::Portfolio portfolio{Decimal::from_int(1'000'000), universe};
+  sim.queue(orders, ts(100));
+  const auto initial = sim.settle_pending(ts(200), market);
+  ASSERT_EQ(initial.size(), count);
+  for (atx::usize i = 0; i < initial.size(); ++i) {
+    EXPECT_EQ(initial[i].id, orders[i].id);
+    EXPECT_EQ(initial[i].qty, orders[i].qty / 2);
+    portfolio.apply_fill(initial[i]);
+  }
+  orders.clear();
+  for (atx::u32 id = 1; id <= count; ++id)
+    orders.push_back(market_order(id, id % 2U == 0U ? 10 : -10, 0));
+  orders.push_back(orders.front()); // only one of these duplicate intents existed
+  sim.replace_pending(orders, ts(250));
+  const auto replaced = sim.settle_pending(ts(251), market);
+  ASSERT_EQ(replaced.size(), count);
+  for (atx::usize i = 0; i < replaced.size(); ++i) {
+    EXPECT_EQ(replaced[i].id, orders[i].id);
+    EXPECT_EQ(replaced[i].qty, orders[i].qty);
+    portfolio.apply_fill(replaced[i]);
+  }
+  EXPECT_EQ(sim.last_settlement().waiting_latency, 1U);
+  EXPECT_EQ(sim.pending_orders(), 1U);
+  portfolio.mark_to_market(market);
+  EXPECT_EQ(portfolio.cash(), Decimal::from_int(1'000'000));
+  EXPECT_DOUBLE_EQ(portfolio.equity(), 1'000'000.0);
+  const auto remaining = sim.settle_pending(ts(350), market);
+  ASSERT_EQ(remaining.size(), 1U);
+  EXPECT_EQ(remaining.front().id, inst(1));
+  EXPECT_EQ(remaining.front().qty, -10);
+  EXPECT_EQ(sim.pending_orders(), 0U);
+}
+
+TEST(ExecSim, InvalidCommissionCannotBecomeFreeExecution) {
+  Book b{100, 1000, InstrumentStats{}};
+  CommissionCfg comm;
+  comm.per_share = std::numeric_limits<atx::f64>::quiet_NaN();
+  ExecutionSimulator sim{FillCfg{}, SlippageCfg{}, ImpactCfg{}, comm, LatencyCfg{}, VolumeCapCfg{}};
+  EXPECT_FALSE(sim.configuration_valid());
+  const std::array orders{market_order(10, 10, 1000)};
+  sim.queue(orders, ts(1000));
+  EXPECT_TRUE(sim.settle_pending(ts(2000), b.market).empty());
+  EXPECT_EQ(sim.last_settlement().invalid_configuration, 1U);
+  EXPECT_EQ(sim.pending_orders(), 1U);
+  EXPECT_DOUBLE_EQ(b.market.mark(inst(10)), 100.0);
 }
 
 }  // namespace atxtest_execution_sim_test

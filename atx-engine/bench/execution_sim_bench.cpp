@@ -51,9 +51,7 @@ using atx::engine::exec::OrderType;
 using atx::engine::exec::SlippageCfg;
 using atx::engine::exec::VolumeCapCfg;
 
-constexpr atx::usize kOrders = 256; // synthetic open-set size per slice
-
-// A book over `kOrders` distinct instruments, each priced at 100 with ample ADV
+// A book over distinct instruments, each priced at 100 with ample ADV
 // and bar volume so the default volume cap never partials the synthetic orders.
 struct Fixture {
   std::vector<InstrumentId> universe;
@@ -61,29 +59,29 @@ struct Fixture {
   std::vector<SliceRow> rows;
   Market market;
 
-  Fixture()
-      : universe(make_universe()), stats(make_stats()), rows(make_rows()),
+  explicit Fixture(atx::usize count)
+      : universe(make_universe(count)), stats(make_stats(count)), rows(make_rows(count)),
         market{std::span<const InstrumentId>{universe}, std::span<const InstrumentStats>{stats}} {
     market.update_prices(
         MarketSlice{Timestamp::from_unix_nanos(100), std::span<const SliceRow>{rows}});
   }
 
-  static std::vector<InstrumentId> make_universe() {
+  static std::vector<InstrumentId> make_universe(atx::usize count) {
     std::vector<InstrumentId> u;
-    u.reserve(kOrders);
-    for (atx::u32 i = 0; i < kOrders; ++i) {
+    u.reserve(count);
+    for (atx::u32 i = 0; i < count; ++i) {
       u.push_back(InstrumentId{i + 1U});
     }
     return u;
   }
-  static std::vector<InstrumentStats> make_stats() {
-    return std::vector<InstrumentStats>(kOrders, InstrumentStats{/*adv=*/1e7, /*sigma=*/0.02,
+  static std::vector<InstrumentStats> make_stats(atx::usize count) {
+    return std::vector<InstrumentStats>(count, InstrumentStats{/*adv=*/1e7, /*sigma=*/0.02,
                                                                  /*spread=*/0.01});
   }
-  static std::vector<SliceRow> make_rows() {
+  static std::vector<SliceRow> make_rows(atx::usize count) {
     std::vector<SliceRow> r;
-    r.reserve(kOrders);
-    for (atx::u32 i = 0; i < kOrders; ++i) {
+    r.reserve(count);
+    for (atx::u32 i = 0; i < count; ++i) {
       const Bar b{Timestamp::from_unix_nanos(100),
                   Price::from_int(100),
                   Price::from_int(100),
@@ -96,10 +94,10 @@ struct Fixture {
   }
 };
 
-[[nodiscard]] std::vector<OrderPayload> make_orders() {
+[[nodiscard]] std::vector<OrderPayload> make_orders(atx::usize count) {
   std::vector<OrderPayload> o;
-  o.reserve(kOrders);
-  for (atx::u32 i = 0; i < kOrders; ++i) {
+  o.reserve(count);
+  for (atx::u32 i = 0; i < count; ++i) {
     o.push_back(OrderPayload{InstrumentId{i + 1U}, /*qty=*/1'000, OrderType::Market, Decimal{},
                              Timestamp::from_unix_nanos(1000)});
   }
@@ -114,36 +112,40 @@ struct Fixture {
 // settle_full_cost: re-queue + settle each iteration so steady state is measured;
 // the open set is drained fully each settle (orders fill in one slice).
 void BM_SettleFullCost(benchmark::State &state) {
-  Fixture fx{};
+  const auto count = static_cast<atx::usize>(state.range(0));
+  Fixture fx{count};
   ExecutionSimulator sim = make_sim();
-  const std::vector<OrderPayload> orders = make_orders();
-  const Timestamp settle_at = Timestamp::from_unix_nanos(2000);
+  const std::vector<OrderPayload> orders = make_orders(count);
+  atx::i64 settle_at = 2000;
 
   for (auto _ : state) {
     sim.queue(std::span<const OrderPayload>{orders}, Timestamp::from_unix_nanos(1000));
-    const auto fills = sim.settle_pending(settle_at, fx.market);
+    const auto fills = sim.settle_pending(Timestamp::from_unix_nanos(settle_at++), fx.market);
+    if (fills.size() != count) { state.SkipWithError("full-cost basket did not fill"); break; }
     benchmark::DoNotOptimize(fills.data());
     benchmark::ClobberMemory();
   }
-  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kOrders));
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(count));
 }
-BENCHMARK(BM_SettleFullCost);
+BENCHMARK(BM_SettleFullCost)->Arg(256)->Arg(3000);
 
 // queue_then_settle: same end-to-end work but reported per order to expose the
 // ns/order figure the loop sees each bar.
 void BM_QueueThenSettlePerOrder(benchmark::State &state) {
-  Fixture fx{};
+  const auto count = static_cast<atx::usize>(state.range(0));
+  Fixture fx{count};
   ExecutionSimulator sim = make_sim();
-  const std::vector<OrderPayload> orders = make_orders();
-  const Timestamp settle_at = Timestamp::from_unix_nanos(2000);
+  const std::vector<OrderPayload> orders = make_orders(count);
+  atx::i64 settle_at = 2000;
 
   for (auto _ : state) {
     sim.queue(std::span<const OrderPayload>{orders}, Timestamp::from_unix_nanos(1000));
-    const auto fills = sim.settle_pending(settle_at, fx.market);
+    const auto fills = sim.settle_pending(Timestamp::from_unix_nanos(settle_at++), fx.market);
+    if (fills.size() != count) { state.SkipWithError("queued basket did not fill"); break; }
     benchmark::DoNotOptimize(fills.data());
   }
-  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kOrders));
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(count));
 }
-BENCHMARK(BM_QueueThenSettlePerOrder);
+BENCHMARK(BM_QueueThenSettlePerOrder)->Arg(256)->Arg(3000);
 
 } // namespace

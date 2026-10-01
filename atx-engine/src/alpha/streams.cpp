@@ -41,6 +41,10 @@ namespace detail {
 extract_streams(const SignalSet &signals, const WeightPolicy &policy, const Panel &panel,
                 const exec::ExecutionSimulator &sim,
                 std::span<const atx::u32> group_map) {
+  if (!sim.configuration_valid()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "extract_streams: invalid execution configuration");
+  }
   const atx::usize dates = panel.dates();
   const atx::usize insts = panel.instruments();
   if (signals.dates != dates || signals.instruments != insts) {

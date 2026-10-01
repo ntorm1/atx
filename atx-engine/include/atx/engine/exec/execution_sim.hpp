@@ -99,10 +99,11 @@
 // ===========================================================================
 //  No RNG: the sim is deterministic by construction (a probabilistic-fill model
 //  is a deferred residual, see phase-2 ledger). open_ is processed in FIFO order;
-//  the per-instrument volume accumulator uses a deterministic linear scan over a
-//  reset-per-bar small vector (no hash container in the hot path). Two identical
+//  sorted lookup scratch never changes FIFO fill order. Matching pending orders
+//  and tracking broad-basket volume take O(N log N), not quadratic scans. Two identical
 //  sims fed identical orders + market produce bit-for-bit identical fills.
 
+#include <algorithm> // sorted lookup scratch; FIFO order remains in open_
 #include <cmath>  // std::pow (√-impact term), std::isnan (unpriced-mark guard)
 #include <limits> // checked share-count conversion and latency arithmetic
 #include <span>   // std::span (order input + fill output view)
@@ -178,6 +179,29 @@ struct VolumeCapCfg {
   atx::f64 volume_limit = 0.025; // 2.5% of bar volume per bar (Appendix A vol-share)
 };
 
+/// Per-settlement order counts. Every input order is either filled (possibly
+/// partially) or deferred for exactly one reason. Invalid intent remains pending;
+/// callers can distinguish model/input failures from normal market constraints.
+struct SettlementDiagnostics {
+  atx::usize filled_orders{};
+  atx::usize waiting_latency{};
+  atx::usize invalid_mark{};
+  atx::usize limit_not_marketable{};
+  atx::usize no_liquidity{};
+  atx::usize invalid_economics{};
+  atx::usize invalid_configuration{};
+
+  void accumulate(const SettlementDiagnostics &other) noexcept {
+    filled_orders += other.filled_orders;
+    waiting_latency += other.waiting_latency;
+    invalid_mark += other.invalid_mark;
+    limit_not_marketable += other.limit_not_marketable;
+    no_liquidity += other.no_liquidity;
+    invalid_economics += other.invalid_economics;
+    invalid_configuration += other.invalid_configuration;
+  }
+};
+
 // ===========================================================================
 //  ExecutionSimulator
 // ===========================================================================
@@ -193,6 +217,9 @@ public:
     replacement_.reserve(kReserve);
     fills_.reserve(kReserve);
     vol_for_bar_.reserve(kReserve);
+    match_index_.reserve(kReserve);
+    match_cursor_.reserve(kReserve);
+    configuration_valid_ = validate_configuration();
   }
 
   /// Default-configured simulator (every coefficient at its Appendix-A default).
@@ -213,6 +240,12 @@ public:
   /// bar-by-bar queue/settle loop — one cost surface, not a second cost number.
   /// Pure observability; mutates nothing.
   [[nodiscard]] const ImpactCfg &impact_cfg() const noexcept { return impact_cfg_; }
+
+  [[nodiscard]] bool configuration_valid() const noexcept { return configuration_valid_; }
+  [[nodiscard]] const SettlementDiagnostics &last_settlement() const noexcept {
+    return diagnostics_;
+  }
+  [[nodiscard]] atx::usize pending_orders() const noexcept { return open_.size(); }
 
   /// Toggle the same-bar fill relaxation (the delay-0 knob; P3c-3). When false
   /// (the DEFAULT, set at construction) an order fills only on a STRICTLY-LATER
@@ -249,19 +282,28 @@ public:
   void replace_pending(std::span<const OrderPayload> orders,
                        atx::core::time::Timestamp now) noexcept {
     replacement_.clear();
+    match_index_.resize(open_.size());
+    match_cursor_.resize(open_.size());
+    for (atx::usize i = 0; i < open_.size(); ++i) match_index_[i] = i;
+    std::sort(match_index_.begin(), match_index_.end(), [&](atx::usize a, atx::usize b) {
+      if (order_less(open_[a], open_[b])) return true;
+      if (order_less(open_[b], open_[a])) return false;
+      return a < b; // duplicate intents retain their original FIFO timestamps
+    });
+    for (atx::usize i = 0; i < open_.size(); ++i) match_cursor_[i] = i;
     for (const OrderPayload &desired : orders) {
       if (desired.qty == 0) {
         continue;
       }
       OrderPayload replacement = desired;
       replacement.queued_at = now;
-      for (OrderPayload &pending : open_) {
-        if (pending.id == desired.id && pending.qty == desired.qty &&
-            pending.type == desired.type &&
-            (desired.type == OrderType::Market || pending.limit == desired.limit)) {
-          replacement.queued_at = pending.queued_at;
-          pending.qty = 0; // consume the match once if the input contains duplicate orders
-          break;
+      const auto found = std::lower_bound(match_index_.begin(), match_index_.end(), desired,
+          [&](atx::usize index, const OrderPayload &key) { return order_less(open_[index], key); });
+      if (found != match_index_.end()) {
+        auto &cursor = match_cursor_[static_cast<atx::usize>(found - match_index_.begin())];
+        if (cursor < match_index_.size() &&
+            !order_less(desired, open_[match_index_[cursor]])) {
+          replacement.queued_at = open_[match_index_[cursor++]].queued_at;
         }
       }
       replacement_.push_back(replacement);
@@ -284,7 +326,13 @@ public:
   [[nodiscard]] std::span<const FillPayload> settle_pending(atx::core::time::Timestamp now,
                                                             Market &market) noexcept {
     fills_.clear();
+    diagnostics_ = {};
+    if (!configuration_valid_) {
+      diagnostics_.invalid_configuration = open_.size();
+      return {};
+    }
     reset_vol_accumulator_if_new_bar(now);
+    prepare_volume_index();
 
     // Process the open set in FIFO order; survivors compact to the front so the
     // open set stays insertion-ordered for the next slice (determinism).
@@ -301,13 +349,12 @@ public:
   }
 
 private:
-  /// Initial reservation for the open set + scratch buffers. A backtest's per-bar
-  /// open set is small; this is sized once and grows only if a pathological run
-  /// exceeds it (still amortised, never on the steady-state path).
+  /// Initial reservation for small books. Broad universes grow these reusable
+  /// buffers during warm-up; the steady-state path reuses their capacity.
   static constexpr atx::usize kReserve = 256;
 
   /// One in-flight per-(instrument, current bar) filled-volume tally. Reset when
-  /// the bar advances; a deterministic linear scan (no hash) keys it by id.
+  /// the bar advances; sorted by id for binary lookup without per-fill allocation.
   struct VolAccum {
     InstrumentId id{};
     atx::f64 filled = 0.0;
@@ -320,22 +367,31 @@ private:
   [[nodiscard]] bool settle_one(OrderPayload &order, atx::core::time::Timestamp now,
                                 Market &market) noexcept {
     if (!eligible(order, now)) {
+      ++diagnostics_.waiting_latency;
       return false; // firewall / latency not satisfied — stays open
     }
     const atx::f64 ref = market.mark(order.id);
-    if (!std::isfinite(ref) || ref <= 0.0 || !limit_marketable(order, ref)) {
-      return false; // unpriced or limit not penetrated — no fill, stays open
+    if (!std::isfinite(ref) || ref <= 0.0) {
+      ++diagnostics_.invalid_mark;
+      return false;
+    }
+    if (!limit_marketable(order, ref)) {
+      ++diagnostics_.limit_not_marketable;
+      return false;
     }
 
     const atx::i64 fillable = volume_capped_qty(order, market);
     if (fillable == 0) {
+      ++diagnostics_.no_liquidity;
       return false; // cap exhausted / zero bar volume — stays open for next slice
     }
 
     if (!emit_fill(order, fillable, ref, now, market)) {
+      ++diagnostics_.invalid_economics;
       return false; // invalid modeled economics: retain intent without consuming liquidity
     }
     add_vol_filled(order.id, static_cast<atx::f64>(fillable));
+    ++diagnostics_.filled_orders;
 
     // Reduce the SIGNED remainder's MAGNITUDE toward zero. `fillable` is a positive
     // magnitude (<= |order.qty|), so a buy (qty > 0) subtracts it and a sell
@@ -529,29 +585,58 @@ private:
     }
   }
 
-  /// Volume already filled for `id` on the current bar (0 if untouched). Linear
-  /// scan over the small reset-per-bar tally — deterministic, no hash container.
-  [[nodiscard]] atx::f64 vol_filled_for(InstrumentId id) const noexcept {
-    for (const VolAccum &a : vol_for_bar_) {
-      if (a.id == id) {
-        return a.filled;
+  /// Add current order IDs to the index, preserving fills already consumed by
+  /// earlier settle calls on this bar. Repeated IDs add zero, never reset volume.
+  void prepare_volume_index() noexcept {
+    for (const auto &order : open_) vol_for_bar_.push_back(VolAccum{order.id, 0.0});
+    std::sort(vol_for_bar_.begin(), vol_for_bar_.end(),
+        [](const VolAccum &a, const VolAccum &b) { return a.id < b.id; });
+    atx::usize write = 0;
+    for (atx::usize read = 0; read < vol_for_bar_.size(); ++read) {
+      const auto value = vol_for_bar_[read];
+      if (write != 0U && vol_for_bar_[write - 1U].id == value.id) {
+        vol_for_bar_[write - 1U].filled += value.filled;
+      } else {
+        vol_for_bar_[write++] = value;
       }
     }
-    return 0.0;
+    vol_for_bar_.resize(write);
+  }
+
+  /// Volume already filled for `id` on the current bar (0 if untouched).
+  [[nodiscard]] atx::f64 vol_filled_for(InstrumentId id) const noexcept {
+    const auto found = std::lower_bound(vol_for_bar_.begin(), vol_for_bar_.end(), id,
+        [](const VolAccum &a, InstrumentId key) { return a.id < key; });
+    return found != vol_for_bar_.end() && found->id == id ? found->filled : 0.0;
   }
 
   /// Accumulate `shares` into `id`'s current-bar filled-volume tally.
   void add_vol_filled(InstrumentId id, atx::f64 shares) noexcept {
-    for (VolAccum &a : vol_for_bar_) {
-      if (a.id == id) {
-        a.filled += shares;
-        return;
-      }
-    }
-    vol_for_bar_.push_back(VolAccum{id, shares});
+    const auto found = std::lower_bound(vol_for_bar_.begin(), vol_for_bar_.end(), id,
+        [](const VolAccum &a, InstrumentId key) { return a.id < key; });
+    ATX_ASSERT(found != vol_for_bar_.end() && found->id == id);
+    found->filled += shares;
   }
 
   // ---- small helpers --------------------------------------------------------
+
+  [[nodiscard]] static bool order_less(const OrderPayload &a, const OrderPayload &b) noexcept {
+    if (a.id != b.id) return a.id < b.id;
+    if (a.qty != b.qty) return a.qty < b.qty;
+    if (a.type != b.type) return a.type < b.type;
+    return a.type == OrderType::Limit && a.limit < b.limit;
+  }
+
+  [[nodiscard]] bool validate_configuration() const noexcept {
+    const auto valid = [](atx::f64 x) { return std::isfinite(x) && x >= 0.0; };
+    return (slip_cfg_.mode == SlippageMode::VolumeShare || slip_cfg_.mode == SlippageMode::FixedBps) &&
+        (comm_cfg_.mode == CommissionMode::PerShare || comm_cfg_.mode == CommissionMode::PerDollar) &&
+        valid(slip_cfg_.k) && valid(slip_cfg_.bps) && valid(slip_cfg_.cap_volshare) &&
+        valid(slip_cfg_.cap_bps) && valid(impact_cfg_.Y) && valid(impact_cfg_.delta) &&
+        valid(impact_cfg_.gamma) && valid(comm_cfg_.per_share) && valid(comm_cfg_.min_fee) &&
+        valid(comm_cfg_.max_pct) && valid(comm_cfg_.per_dollar_bps) &&
+        valid(cap_cfg_.volume_limit) && latency_cfg_.latency_nanos >= 0;
+  }
 
   /// True for a buy (qty > 0); a sell has qty < 0 (zero-qty never reaches here).
   [[nodiscard]] static bool is_buy(atx::i64 qty) noexcept { return qty > 0; }
@@ -576,6 +661,10 @@ private:
   std::vector<OrderPayload> replacement_{}; // scratch for complete pending-book replacement
   std::vector<FillPayload> fills_{};    // per-call scratch (cleared, not freed)
   std::vector<VolAccum> vol_for_bar_{}; // per-(instrument, current bar) tally
+  std::vector<atx::usize> match_index_{};  // sorted order identity -> original FIFO index
+  std::vector<atx::usize> match_cursor_{}; // first unused duplicate per identity
+  SettlementDiagnostics diagnostics_{};
+  bool configuration_valid_{true};
   atx::i64 current_bar_ns_{0};          // the bar the tally currently covers
   bool bar_seen_{false};                // false until the first settle_pending
 };
