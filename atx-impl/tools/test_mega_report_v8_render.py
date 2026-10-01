@@ -40,9 +40,16 @@ V8_CONFIG = REPO / 'docs/plans/mega-alpha-v8-pitch.config.json'
 V7_CONFIG = REPO / 'docs/plans/mega-alpha-v7-pitch.config.json'
 V7_CONFIG_SHA256 = '73f80583b14d93a602f0934a315e3d9c9cb808c36e65022fb03e8d017e975a3b'  # LF bytes at 39926caa
 PLANNING = 'live net Sharpe .7 to 1.0 [est] against the TRAIN figure'
-# the verdicts root records once the cells ran (the committed config says "pending run")
+# the verdicts root records once the cells ran (the committed config says "pending run"): R-1..R-7 accepted (R-7 is
+# V8-F, as committed) and one branch of Rulings E-38 / E-45 for the optional cells (Ruling PM4-8): R-6 accepted, so
+# R-9's frontier is undefined (its pending verdict stays); R-8, R-10 and R-11 rejected on R-7 (the synthetic world gives
+# a recorded reject a negative paired dSR); R-12 not formed (no library v8.2 candidate passed the screen, E-38)
 VERDICTS = {'B0a': 'accepted (re-base)', 'B0b': 'ACCEPTED', 'B0c': 'accepted (baseline)',
-            **{f'R-{i}': 'ACCEPTED' for i in range(1, 8)}}
+            **{f'R-{i}': 'ACCEPTED' for i in range(1, 8)},
+            'R-8': 'REJECTED', 'R-9a': 'pending run', 'R-9b': 'pending run', 'R-9c': 'pending run', 'R-10': 'REJECTED',
+            'R-11': 'REJECTED', 'R-12': 'undefined (E-38: no library v8.2 candidate passed the screen; slot 51 unused)'}
+PARENTS = {'R-10': 'R-7', 'R-11': 'R-7'}   # the last accepted cell before each (R-8 and R-10 rejected)
+OPTIONAL = ('R-8', 'R-9a', 'R-9b', 'R-9c', 'R-10', 'R-11', 'R-12')   # the cells Ruling PM4-8 added to the ladder
 
 
 def committed_config() -> dict:
@@ -51,16 +58,34 @@ def committed_config() -> dict:
     return cfg
 
 
-def v8_config() -> dict:
-    """The committed config with every cell's verdict recorded and every manual criterion part read (as after the
-    runs: the PM's capacity-curve readings)."""
+def retarget_final(cfg: dict, key: str) -> dict:
+    """v8.final and the top-level final (page header, book sections) moved to the ladder cell ``key``, as the PM sets
+    them when the last accepted cell is not R-7: the V8-F book cell takes that cell's directory."""
+    fc = next(c for c in cfg['v8']['cells'] if c['key'] == key)
+    name = fc['dir'].rsplit('/', 1)[-1][len(cfg['cell_prefix']):]
+    old = cfg['final']
+    cfg['v8']['final'], cfg['final'] = key, name
+    next(c for c in cfg['cells'] if c['group'] == 'v8-final')['dir'] = fc['dir']
+    for it in cfg['rolling']['cells']:
+        if it['cell'] == old:
+            it['cell'] = name
+    return cfg
+
+
+def v8_config(verdicts: dict | None = None, parents: dict | None = None, final: str | None = None) -> dict:
+    """The committed config with every cell's verdict recorded (``VERDICTS``, then ``verdicts``), the parents of
+    ``PARENTS`` (then ``parents``) and every manual criterion part read (as after the runs: the PM's capacity-curve
+    readings); ``final`` retargets V8-F."""
     cfg = committed_config()
+    verdicts, parents = dict(VERDICTS, **(verdicts or {})), dict(PARENTS, **(parents or {}))
     for c in cfg['v8']['cells']:
-        c['verdict'] = VERDICTS[c['key']]
+        c['verdict'] = verdicts[c['key']]
+        if c['key'] in parents:
+            c['parent'] = parents[c['key']]
         for ch in (c.get('criterion') or {}).get('checks') or []:
             if 'metric' not in ch:
                 ch['met'] = True
-    return cfg
+    return retarget_final(cfg, final) if final else cfg
 
 
 INPUTS = V.inputs(v8_config())
@@ -238,11 +263,11 @@ def test_v8_config_uses_registered_blocks_and_names_every_input():
     types = [b if isinstance(b, str) else b['type'] for sec in cfg['layout'] for b in sec['blocks']]
     assert all(t in P.BLOCKS for t in types)
     assert set(V.BLOCKS) <= set(types)  # every v8 section is in the pitch
-    assert [k for _, k, _ in INPUTS] == [
+    assert [k for _, k, _ in INPUTS] == [   # R-9's frontier (undefined: R-6 accepted) and R-12 (not formed): none
         'v8.summ', *[f'v8.cells[{k}].paired' for k in ('B0b', 'R-1', 'R-2', 'R-3', 'R-4')], 'v8.cells[R-4].summary',
         'v8.cells[R-5].paired', 'v8.cells[R-5].summary', 'v8.cells[R-6].paired', 'v8.cells[R-6].summary',
-        'v8.cells[R-7].paired', 'v8.bundle', 'v8.diagnostics', 'v8.member_horizon.card_index',
-        'v8.member_horizon.admission', 'v8.trial_ledger', 'v8.prereg', 'v8.literature']
+        *[f'v8.cells[{k}].paired' for k in ('R-7', 'R-8', 'R-10', 'R-11')], 'v8.bundle', 'v8.diagnostics',
+        'v8.member_horizon.card_index', 'v8.member_horizon.admission', 'v8.trial_ledger', 'v8.prereg', 'v8.literature']
     assert len({p for _, _, p in INPUTS}) == len(INPUTS)
     assert not any(D.path_is_sealed(p) for _, _, p in INPUTS)  # no input is refused by name
     assert cfg['v8']['re_screens'] == 8 and cfg['v8']['final'] in {c['key'] for c in cfg['v8']['cells']}
@@ -288,14 +313,40 @@ REGISTERED_CHECKS = {
             {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.limits_unmet', 'op': 'eq', 'value': 0},
             {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean', 'op': 'ge',
              'value': 0.9}],
-    'R-7': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}
+    'R-7': [{'metric': 'tau_gmv_mean', 'op': 'le'}],
+    # Ruling PM4-8: the optional cells. R-8: E-43's band [.8, 1.2] x sigma_star 5% on every TRAIN year's realised
+    # volatility of the S2 net series; R-9: report only, no check; R-10 / R-11: R-1's criterion (E-44); R-12: R-2's and
+    # R-7's (PM4-9)
+    'R-8': [{'source': 'years', 'metric': 'ann_vol', 'op': 'between', 'lo': 0.04, 'hi': 0.06}],
+    'R-9a': [], 'R-9b': [], 'R-9c': [],
+    'R-10': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
+    'R-11': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
+    'R-12': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}
+# Rulings E-38 / E-45 / E-37: when each optional cell is defined; R-8 always (E-40)
+DEFINED_IF = {'R-9a': {'rejected': ['R-6']}, 'R-9b': {'rejected': ['R-6']}, 'R-9c': {'rejected': ['R-6']},
+              'R-10': {'accepted': ['R-6', 'R-1']}, 'R-11': {'accepted': ['R-6', 'R-1']}, 'R-12': {'accepted': ['R-6']}}
 
 
 def test_committed_criteria_carry_every_registered_part():
-    crit = {c['key']: c.get('criterion') or {} for c in committed_config()['v8']['cells']}
+    cells = committed_config()['v8']['cells']
+    crit = {c['key']: c.get('criterion') or {} for c in cells}
+    assert [c['key'] for c in cells][-len(OPTIONAL):] == list(OPTIONAL) and set(crit) == set(REGISTERED_CHECKS) | {
+        'B0a', 'B0b', 'B0c'}
     for key, want in REGISTERED_CHECKS.items():
         got = [{k: v for k, v in ch.items() if k not in ('text', 'label')} for ch in crit[key].get('checks') or []]
         assert got == want, key
+    r8 = REGISTERED_CHECKS['R-8'][0]
+    assert (r8['lo'], r8['hi']) == (pytest.approx(0.8 * 0.05), pytest.approx(1.2 * 0.05))   # E-43, sigma_star .05
+    by = {c['key']: c for c in cells}
+    assert {k: {kk: v for kk, v in (c.get('defined_if') or {}).items() if kk != 'ruling'}
+            for k, c in by.items() if c.get('defined_if')} == DEFINED_IF
+    assert {k for k, c in by.items() if c.get('report_only')} == {'R-9a', 'R-9b', 'R-9c'}
+    assert all(not by[k].get('paired') for k in ('R-9a', 'R-9b', 'R-9c'))           # no acceptance: no paired test
+    assert all(by[k]['defined_if']['ruling'] == 'E-38, E-37' for k in ('R-9a', 'R-9b', 'R-9c'))
+    assert by['R-10']['defined_if']['ruling'] == by['R-11']['defined_if']['ruling'] == 'E-38, E-45'
+    assert by['R-12']['defined_if']['ruling'] == 'E-38' and 'PM4-9' in crit['R-12']['text']
+    assert 'E-43' in crit['R-8']['text'] and all('E-44' in crit[k]['text'] for k in ('R-10', 'R-11'))
+    assert [by[k]['n'] for k in OPTIONAL] == [48, 49, 50, 51, 49, 50, 51]            # N <= 51 in either branch
     assert 'S3 not lower' in crit['R-5']['text']
     assert all(s in crit['R-6']['text'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'E-31',
                                                   'E-31a', '>= .9', 'E-14', 'E-14a'))
@@ -319,6 +370,22 @@ def test_scorecard_template_carries_every_registered_part():
         assert part in ladder['R-6'], part
     assert 'turnover not higher' in ladder['R-7'] and 'report only, gates nothing' in ladder['R-7']
     assert '| `NAV[K]` | `<cell K dir>/summary.json` |' in text
+    # Ruling PM4-8: the optional cells, each with its criterion and the branch that defines it (E-38, E-45)
+    cells = {ln.split('|')[1].strip(): ln for ln in text.splitlines() if re.match(r'\| R-\d+[a-c]? \| `mega-nav-v8-r', ln)}
+    ladder = {ln.split('|')[2].strip(): ln for ln in text.splitlines() if re.match(r'\| \d+ \| R-\d+[a-c]? \|', ln)}
+    assert set(OPTIONAL) <= set(cells) and set(OPTIONAL) <= set(ladder) and 'optional (' not in text
+    assert all('[.8, 1.2]' in rows['R-8'] and 'E-43' in rows['R-8'] for rows in (cells, ladder))
+    assert '{{SUMM[R-8].year_table.3.ann_vol}}' in ladder['R-8']
+    for k in ('R-9a', 'R-9b', 'R-9c'):
+        assert all('report' in rows[k] and 'no acceptance' in rows[k] and 'R-6 is rejected' in rows[k]
+                   for rows in (cells, ladder)), k
+        assert 'PAIRED[' not in ladder[k], k
+    for k in ('R-10', 'R-11'):
+        assert all('planned turnover per unit gross not higher' in rows[k] and 'E-44' in rows[k] and
+                   'R-6 and R-1 are accepted' in rows[k] for rows in (cells, ladder)), k
+    assert all('turnover not higher' in rows['R-12'] and 'PM4-9' in rows['R-12'] and 'R-6 is accepted' in rows['R-12']
+               for rows in (cells, ladder))
+    assert 'undefined (<ruling id>)' in text and 'PM4-10' in text
 
 
 def test_r5_and_r6_criteria_read_their_nav_summaries(root):
@@ -359,7 +426,9 @@ def test_v8_pitch_renders_every_block_when_every_input_exists(root):
         sha = hashlib.sha256((root / rel).read_bytes()).hexdigest()
         assert f'data-sort="{rel}">{rel}</td><td class="t" data-sort="read">read</td>' in html, rel
         assert sha in html, rel
-    assert html.count('<tr', html.index('id="t-v8-ladder"'), html.index('</table>', html.index('id="t-v8-ladder"'))) == 11
+    lad = html.index('id="t-v8-ladder"')
+    assert html.count('<tr', lad, html.index('</table>', lad)) == 1 + len(cfg['v8']['cells'])   # undefined rows too
+    assert html.count('<span class="chip neutral">UNDEFINED</span>', lad, html.index('</table>', lad)) == 4
     book = T.section(html, 'book')
     for fid in ('fig-equity', 't-drawdowns', 'fig-returns', 'fig-rolling', 't-retstats', 't-worst', 't-stress',
                 't-cost-model', 't-financing', 'fig-costdec', 't-costdec', 't-attrib', 'fig-cost', 'fig-turnover',
@@ -509,14 +578,15 @@ def test_header_shows_the_session_span_and_the_final_cell(root):
 
 def test_committed_config_refuses_its_pending_verdicts(root):
     """As committed (every verdict "pending run"), the ladder shows one refusal per cell whose paired test was read and
-    one for v8.final (no accepted cell); every other block renders."""
+    one for v8.final (no accepted cell); every other block renders. With R-6 and R-1 still pending no optional cell is
+    undefined yet: R-8, R-10, R-11 and R-12 read their paired tests; R-9's frontier cells have none."""
     cfg = committed_config()
     full_world(root, cfg)
     na = T.unavailable(T.build(root, cfg))
-    assert {n for n, _ in na} == {'v8_ladder'} and len(na) == 9
+    assert {n for n, _ in na} == {'v8_ladder'} and len(na) == 13
     msgs = [m for _, m in na]
     assert all(m.startswith('v8_ladder: refused (') for m in msgs)
-    assert sum("was read but the verdict is still pending ('pending run')" in m for m in msgs) == 8
+    assert sum("was read but the verdict is still pending ('pending run')" in m for m in msgs) == 12
     assert "v8.final: 'R-7' is not the last accepted cell: no cell of the ladder is accepted" in msgs[-1]
 
 
@@ -528,3 +598,92 @@ def test_top_level_final_must_be_the_v8_final_cell(root):
     refusals = [m for n, m in na if n == 'v8_ladder']
     assert refusals == ["v8_ladder: refused (final: 'v8-b0c' is build-equity/mega-nav-v8-b0c, not the cell of v8.final "
                         "'R-7' (build-equity/mega-nav-v8-r7))"]
+
+
+# ============================================================================================ optional cells (PM4-8)
+# Rulings E-38 / E-45 / PM4-8 / PM4-10 on the committed config: every branch, each defined cell decided consistently
+# with the synthetic world (a recorded reject has a negative paired dSR), each parent the last accepted cell before it,
+# V8-F the last accepted cell. (verdicts, parents, V8-F, the undefined cells, the ruling each renders)
+FRONTIER = ('R-9a', 'R-9b', 'R-9c')
+PITCH_BRANCHES = {
+    'R-6 and R-1 accepted': (
+        {'R-8': 'ACCEPTED', 'R-10': 'ACCEPTED', 'R-11': 'ACCEPTED', 'R-12': 'ACCEPTED'},
+        {'R-10': 'R-8', 'R-11': 'R-10'}, 'R-12', dict.fromkeys(FRONTIER, 'undefined (E-38, E-37)')),
+    'R-6 accepted, R-1 rejected': (
+        {'R-1': 'REJECTED', 'R-8': 'ACCEPTED', 'R-10': 'pending run', 'R-11': 'pending run', 'R-12': 'ACCEPTED'},
+        {'R-2': 'B0c', 'R-12': 'R-8'}, 'R-12',
+        dict(dict.fromkeys(FRONTIER, 'undefined (E-38, E-37)'), **dict.fromkeys(('R-10', 'R-11'),
+                                                                                'undefined (E-38, E-45)'))),
+    'R-6 rejected': (
+        {'R-6': 'REJECTED', 'R-8': 'ACCEPTED', **dict.fromkeys(FRONTIER, 'reported (frontier, no acceptance)'),
+         'R-10': 'pending run', 'R-11': 'pending run', 'R-12': 'pending run'},
+        {'R-7': 'R-5'}, 'R-8',
+        dict(dict.fromkeys(('R-10', 'R-11'), 'undefined (E-38, E-45)'), **{'R-12': 'undefined (E-38)'})),
+    'PM4-10, R-10 not formed': (
+        {'R-8': 'ACCEPTED', 'R-10': 'undefined (PM4-10: fewer than 2T members admitted, member cap 1/(2T) infeasible)',
+         'R-11': 'ACCEPTED', 'R-12': 'ACCEPTED'},
+        {'R-11': 'R-8'}, 'R-12',
+        dict(dict.fromkeys(FRONTIER, 'undefined (E-38, E-37)'),
+             **{'R-10': 'undefined (PM4-10: fewer than 2T members admitted, member cap 1/(2T) infeasible)'}))}
+
+
+@pytest.mark.parametrize('name', list(PITCH_BRANCHES))
+def test_v8_pitch_renders_every_branch_with_no_unavailable_block(root, name):
+    """The whole pitch (v8 sections and the book sections on V8-F) in each branch: 0 unavailable blocks; each undefined
+    cell keeps its ladder row as "undefined (ruling)", names no input and has no year table; R-9's frontier cells, when
+    defined, are reported with no rule."""
+    verdicts, parents, final, undefined = PITCH_BRANCHES[name]
+    cfg = v8_config(verdicts, parents, final)
+    full_world(root, cfg)
+    assert not [k for _, k, _ in V.inputs(cfg) if any(f'[{u}]' in k for u in undefined)]
+    html = T.build(root, cfg)
+    assert T.unavailable(html) == [], name
+    lad = html.index('id="t-v8-ladder"')
+    ladder = html[lad:html.index('</table>', lad)]
+    assert ladder.count('<span class="chip neutral">UNDEFINED</span>') == len(undefined)
+    for key, verdict in undefined.items():
+        assert f'<span class="sub">{verdict}</span>' in ladder and f'id="t-v8-year-{key}"' not in html, key
+    reported = [k for k in FRONTIER if k not in undefined]
+    assert ladder.count('<span class="chip neutral">REPORT</span>') == len(reported)
+    assert all(f'id="t-v8-year-{k}"' in html for k in reported)
+    head = html.split('</header>')[0]
+    assert f"<dt>Final cell</dt><dd>V8-F (R-7 library v8.1): {cfg['final']}</dd>" in head and cfg['final'] == {
+        'R-12': 'v8-r12', 'R-8': 'v8-r8'}[final]
+
+
+def test_v8_pitch_branch_errors_are_refused_visibly(root):
+    """A decided verdict on an undefined cell, an accept on a report-only frontier cell, and a parent left on an
+    undefined cell are each one visible refusal (counted as unavailable)."""
+    a = PITCH_BRANCHES['R-6 and R-1 accepted']
+    cfg = v8_config(dict(a[0], **{'R-9b': 'REJECTED'}), a[1], a[2])
+    T.world(root, cfg)
+    assert [w for w, _ in T._checks(root, cfg)] == ['v8.cells[R-9b].verdict']
+    c = PITCH_BRANCHES['R-6 rejected']
+    cfg = v8_config(dict(c[0], **{'R-9c': 'ACCEPTED'}), c[1], c[2])
+    T.world(root, cfg)
+    assert T._checks(root, cfg) == [('v8.cells[R-9c].verdict', "recorded accepted ('ACCEPTED') but R-9c is a "
+                                                               "report-only cell: no acceptance (plan R-9; Ruling "
+                                                               "PM4-8)")]
+    b = PITCH_BRANCHES['R-6 accepted, R-1 rejected']
+    cfg = v8_config(b[0], dict(b[1], **{'R-12': 'R-11'}), b[2])
+    T.world(root, cfg)
+    assert T._checks(root, cfg) == [('v8.cells[R-12].parent', "'R-11' is undefined: an undefined cell is never a "
+                                                              "parent (it was not formed)")]
+    na = T.unavailable(T.build(root, cfg))
+    assert [n for n, _ in na if n.startswith('v8_')] == ['v8_ladder']
+
+
+# the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL; its
+# verdicts recorded as v8_config records them, on full_world. The normalised HTML's SHA-256 and length.
+PRE_PM4_8_SHA256 = 'ae009759f39ce7d12e2452f497bb083974b1f6910de0be0c933a59a6e2891e2f'
+PRE_PM4_8_BYTES = 643481
+
+
+def test_v8_pitch_without_the_optional_cells_renders_the_pre_pm4_8_bytes(root):
+    """Identity: the ladder machinery of Ruling PM4-8 (branch states, years checks, report-only cells) moves no byte of
+    a config that carries none of the new cells."""
+    cfg = v8_config()
+    cfg['v8']['cells'] = [c for c in cfg['v8']['cells'] if c['key'] not in OPTIONAL]
+    full_world(root, cfg)
+    norm = T._normalise(T.build(root, cfg), root)
+    assert (len(norm), hashlib.sha256(norm.encode('utf-8')).hexdigest()) == (PRE_PM4_8_BYTES, PRE_PM4_8_SHA256)

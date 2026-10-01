@@ -156,7 +156,8 @@ def write_ledger(path: Path, cfg: dict) -> None:
             r['window_id'] = RW.WINDOW_ID
         return r
     recs = [rec(1, 'construction', 37, v8=False), rec(2, 'protocol', 0)]
-    recs += [rec(10 + i, 'construction', cell=c['dir']) for i, c in enumerate(cfg['v8']['cells'])]
+    cells = V.defined_cells(cfg['v8']['cells'], V.verdict_rules_of(cfg))   # an undefined cell adds 0: no line
+    recs += [rec(10 + i, 'construction', cell=c['dir']) for i, c in enumerate(cells)]
     recs.append(rec(99, 'admission', 7))
     path.parent.mkdir(parents=True, exist_ok=True)
     BI.ledger_append(path, recs, chain=True)
@@ -174,9 +175,11 @@ LITERATURE_TEXT = ('# notes\n\n## Where the new notes contradict or update v6 an
 
 
 def world(root: Path, cfg: dict, skip: tuple = ()) -> None:
-    """A synthetic input at every path the config's v8 key names (``skip``: paths left out)."""
+    """A synthetic input at every path the config's v8 key names (``skip``: paths left out). A cell whose recorded
+    verdict is a reject gets a negative paired dSR (the rule of v8-prereg item 5 then rejects it too)."""
     v8 = cfg['v8']
     by_key = {c['key']: c for c in v8['cells']}
+    states = V.cell_states(v8['cells'], V.verdict_rules_of(cfg))
     writers: dict = {'v8.summ': lambda: summ_rows(cfg), 'v8.bundle': lambda: bundle_doc(
                    by_key[v8['final']]['dir'], by_key[v8['base']]['dir'], dsr=0.25, p1=0.04),
                'v8.diagnostics': diagnostics_doc, 'v8.member_horizon.card_index': card_index,
@@ -194,7 +197,8 @@ def world(root: Path, cfg: dict, skip: tuple = ()) -> None:
         m = re.fullmatch(r'v8\.cells\[(.+)\]\.paired', key)
         if m:
             c = by_key[m.group(1)]
-            put(root, rel, bundle_doc(c['dir'], by_key[c['parent']]['dir']))
+            dsr = -0.02 if states[c['key']]['kind'] == 'rejected' else 0.05
+            put(root, rel, bundle_doc(c['dir'], by_key[c['parent']]['dir'], dsr=dsr))
             continue
         put(root, rel, writers[key]())
 
@@ -624,6 +628,206 @@ def test_ladder_refusals_render_above_the_table_and_count_as_unavailable(root):
     assert na == [('v8_ladder', "v8_ladder: refused (v8.final: 'B0c' is not the last accepted cell of the ladder "
                                 "('R-1'))")]
     assert sec.index('v8_ladder: refused') < sec.index('id="t-v8-ladder"')
+
+
+# ============================================================================================ optional cells (PM4-8)
+# Ruling E-43: R-8's realised volatility of the S2 net series inside [.8, 1.2] x 5% in each TRAIN year
+R8_CHECK = {'label': 'realised vol', 'source': 'years', 'metric': 'ann_vol', 'op': 'between', 'lo': 0.04, 'hi': 0.06}
+
+
+def test_years_check_reads_every_train_year_of_the_cells_own_year_table():
+    crit = {'text': 'vol band', 'checks': [R8_CHECK]}
+    ys = V.train_years()
+
+    def table(vol):  # one TRAIN year's volatility changed
+        return {'year_table': [dict(r, ann_vol=vol(r['year'])) for r in year_table(0)]}
+    ok = V.criterion_eval(crit, table(lambda y: 0.045), None)
+    each = ', '.join(f'{y} 0.045' for y in ys)
+    assert ok == {'text': 'vol band', 'met': True, 'unread': [],
+                  'detail': f'realised vol by TRAIN year ({each}) between 0.04 and 0.06'}
+    for vol, met in ((0.06, True), (0.04, True), (0.0601, False), (0.0399, False), (None, None)):
+        got = V.criterion_eval(crit, table(lambda y, v=vol: v if y == ys[2] else 0.05), None)['met']
+        assert got is met, vol
+    gap = {'year_table': [r for r in year_table(0) if r['year'] != ys[1]]}   # a TRAIN year without return rows: n/a
+    assert V.criterion_eval(crit, gap, None)['met'] is None and f'{ys[1]} n/a' in V.criterion_eval(crit, gap, None)[
+        'detail']
+    assert V.criterion_eval(crit, None, None)['met'] is None                   # no nav_summ row
+    assert V.criterion_eval(crit, {'net_sharpe': 1.0}, None)['met'] is None     # a row without a year table
+    other = {'year_table': year_table(0) + [{'year': ys[0] - 1, 'ann_vol': 0.5}]}   # a year outside TRAIN: not read
+    assert V.criterion_eval(crit, other, {'year_table': []})['met'] is True     # the parent's table is never read
+    for bad in (dict(R8_CHECK, op='le'), {k: v for k, v in R8_CHECK.items() if k != 'hi'}, dict(R8_CHECK, lo='x')):
+        with pytest.raises(ValueError, match='a years check takes op between'):
+            V.criterion_eval({'checks': [bad]}, table(lambda y: 0.05), None)
+
+
+def optional_cfg(verdicts: dict, parents: dict | None = None, final: str = 'R-1') -> dict:
+    """cfg_for() plus the optional cells of Rulings E-38 / E-45 on a small ladder: R-6 (the branch cell, on R-1), R-8
+    (the volatility band), R-9a (a report-only frontier cell, defined only if R-6 is rejected), R-10 (only if R-6 and R-1
+    are accepted) and R-12 (only if R-6 is accepted); ``verdicts`` and ``parents`` by key."""
+    cfg = cfg_for(final=final)
+
+    def cell(key, parent, **kw):
+        c = {'key': key, 'label': f'{key} cell', 'dir': f'b/mega-nav-v8-{key.lower()}', 'parent': parent, 'n': 41,
+             'paired': f'b/paired-{key.lower()}.json',
+             'criterion': {'text': 'turnover not higher', 'checks': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}}
+        c.update(kw)
+        return c
+    cfg['v8']['cells'] += [
+        cell('R-6', 'R-1'), cell('R-8', 'R-6', criterion={'text': 'vol band', 'checks': [R8_CHECK]}),
+        {k: v for k, v in cell('R-9a', 'R-8', report_only=True, criterion={'text': 'none: report only'},
+                               defined_if={'rejected': ['R-6'], 'ruling': 'E-38, E-37'}).items() if k != 'paired'},
+        cell('R-10', 'R-8', defined_if={'accepted': ['R-6', 'R-1'], 'ruling': 'E-38, E-45'}),
+        cell('R-12', 'R-10', defined_if={'accepted': ['R-6'], 'ruling': 'E-38'})]
+    for c in cfg['v8']['cells']:
+        c['verdict'] = verdicts.get(c['key'], c.get('verdict', 'pending run'))
+        c['parent'] = (parents or {}).get(c['key'], c.get('parent'))
+    return cfg
+
+
+# the three branches of E-38 / E-45 with every defined cell decided consistently with the synthetic world
+ALL_ACCEPTED = {'R-6': 'ACCEPTED', 'R-8': 'ACCEPTED', 'R-10': 'ACCEPTED', 'R-12': 'ACCEPTED'}
+BRANCHES = {
+    'R-6 and R-1 accepted': (ALL_ACCEPTED, {}, 'R-12', {'R-9a'}),
+    'R-1 rejected': ({'R-1': 'REJECTED', 'R-6': 'ACCEPTED', 'R-8': 'ACCEPTED', 'R-12': 'ACCEPTED'},
+                     {'R-6': 'B0c', 'R-12': 'R-8'}, 'R-12', {'R-9a', 'R-10'}),
+    'R-6 rejected': ({'R-6': 'REJECTED', 'R-8': 'ACCEPTED', 'R-9a': 'reported (frontier, no acceptance)'},
+                     {'R-8': 'R-1'}, 'R-8', {'R-10', 'R-12'}),
+    'PM4-10': (dict(ALL_ACCEPTED, **{'R-10': 'undefined (PM4-10: fewer than 2T members, cap 1/(2T) infeasible)'}),
+               {'R-12': 'R-8'}, 'R-12', {'R-9a', 'R-10'})}
+
+
+def _kinds(cfg: dict) -> dict:
+    return {k: s['kind'] for k, s in V.cell_states(cfg['v8']['cells'], []).items()}
+
+
+def test_cell_states_follow_the_recorded_branch():
+    """Rulings E-38 / E-45: the branch is read from the recorded verdicts of R-6 and R-1; an open condition leaves the
+    cell as recorded; an "undefined ..." verdict records a cell that could not be formed (Ruling PM4-10)."""
+    pending = _kinds(optional_cfg({}))
+    assert {k: pending[k] for k in ('R-6', 'R-9a', 'R-10', 'R-12')} == dict.fromkeys(('R-6', 'R-9a', 'R-10', 'R-12'),
+                                                                                    'pending')
+    assert _kinds(optional_cfg({'R-6': 'defect: rerun decided blind'}))['R-9a'] == 'pending'   # a defect: still open
+    for name, (verdicts, parents, _, undefined) in BRANCHES.items():
+        kinds = _kinds(optional_cfg(verdicts, parents))
+        assert {k for k, v in kinds.items() if v == 'undefined'} == undefined, name
+    st = V.cell_states(optional_cfg(ALL_ACCEPTED)['v8']['cells'], [])
+    assert st['R-9a'] == {'kind': 'undefined', 'recorded': 'pending', 'verdict': 'undefined (E-38, E-37)',
+                          'why': 'defined only if R-6 is rejected (E-38, E-37); R-6 is accepted'}
+    st = V.cell_states(optional_cfg(BRANCHES['R-1 rejected'][0])['v8']['cells'], [])
+    assert st['R-10']['why'] == 'defined only if R-6 is accepted and R-1 is accepted (E-38, E-45); R-1 is rejected'
+    st = V.cell_states(optional_cfg(BRANCHES['R-6 rejected'][0])['v8']['cells'], [])
+    assert (st['R-9a']['kind'], st['R-9a']['recorded']) == ('report', 'other')    # a recorded frontier cell: report
+    assert st['R-12']['why'].endswith('; R-6 is rejected')
+    st = V.cell_states(optional_cfg(BRANCHES['PM4-10'][0])['v8']['cells'], [])
+    assert st['R-10']['verdict'].startswith('undefined (PM4-10: ') and st['R-12']['kind'] == 'accepted'
+    cells = optional_cfg({})['v8']['cells']
+    cells[-1]['defined_if'] = {'accepted': ['R-13']}
+    with pytest.raises(KeyError, match="defined_if names 'R-13', not an earlier cell"):
+        V.cell_states(cells, [])
+    cells[-1]['defined_if'] = {'ruling': 'E-38'}
+    with pytest.raises(KeyError, match='defined_if names no cell'):
+        V.cell_states(cells, [])
+
+
+@pytest.mark.parametrize('name', list(BRANCHES))
+def test_each_branch_renders_with_no_unavailable_block(root, name):
+    """Every branch of E-38 / E-45 (and a PM4-10 cell): 0 unavailable blocks; an undefined cell renders
+    "undefined (ruling)" in the ladder, names no input, reads nothing and is not in the year table."""
+    verdicts, parents, final, undefined = BRANCHES[name]
+    cfg = optional_cfg(verdicts, parents, final)
+    world(root, cfg)
+    for key in undefined:   # an undefined cell's files are absent too: nothing of it is read
+        (root / f'b/paired-{key.lower()}.json').unlink(missing_ok=True)
+    assert not [k for _, k, _ in V.inputs(cfg) if any(f'[{u}]' in k for u in undefined)]
+    html = build(root, cfg)
+    assert unavailable(html) == [], name
+    sec = htmllib.unescape(section(html, 'cells'))
+    rows = {r['key']: r for r in V.ladder_rows(make_ctx(root, cfg))[0]}
+    for key in undefined:
+        r = rows[key]
+        assert r['verdict_kind'] == 'undefined' and r['crit_text'].startswith('not formed: ')
+        assert r['crit_text'].endswith('adds 0 to N, no input read') and f'id="t-v8-year-{key}"' not in sec
+        assert (r['dsr'], r['mech'], r['rule'], r['n']) == ('', '', '', '')
+    assert sec.count('<span class="chip neutral">UNDEFINED</span>') == len(undefined)
+    if name == 'R-6 rejected':
+        assert rows['R-9a']['verdict_kind'] == 'report' and rows['R-9a']['rule'] == ''
+        assert rows['R-9a']['crit_detail'].startswith('report only, no acceptance: S2 net Sharpe ')
+        assert '<span class="chip neutral">REPORT</span>' in sec and 'id="t-v8-year-R-9a"' in sec
+    else:
+        assert '<span class="sub">undefined (E-38, E-37)</span>' in sec
+
+
+def test_branch_checks_refuse_a_verdict_an_undefined_or_report_only_cell_cannot_carry(root):
+    cfg = optional_cfg(dict(ALL_ACCEPTED, **{'R-9a': 'REJECTED (no frontier)'}), final='R-12')
+    world(root, cfg)
+    assert _checks(root, cfg) == [
+        ('v8.cells[R-9a].verdict', "recorded rejected ('REJECTED (no frontier)') but the cell is undefined (defined "
+                                   "only if R-6 is rejected (E-38, E-37); R-6 is accepted): an undefined cell adds 0 "
+                                   "and has no verdict")]
+    rejected = BRANCHES['R-6 rejected']
+    for verdict in ('ACCEPTED', 'REJECTED'):
+        cfg = optional_cfg(dict(rejected[0], **{'R-9a': verdict}), rejected[1], 'R-8')
+        world(root, cfg)
+        assert _checks(root, cfg) == [
+            ('v8.cells[R-9a].verdict', f"recorded {verdict.lower()} ({verdict!r}) but R-9a is a report-only cell: no "
+                                       f"acceptance (plan R-9; Ruling PM4-8)")]
+    cfg = optional_cfg(rejected[0], rejected[1], 'R-8')                  # pending: open, no refusal
+    cfg['v8']['cells'][4]['verdict'] = 'pending run'
+    world(root, cfg)
+    assert _checks(root, cfg) == []
+
+
+def test_parent_checks_skip_undefined_cells_and_never_take_one_as_parent(root):
+    """Plan section 9, parent = the last accepted cell: an undefined cell is never a parent and is skipped when the
+    last accepted cell is found; a report-only cell is never a parent either."""
+    verdicts, parents, final, _ = BRANCHES['R-1 rejected']
+    cfg = optional_cfg(verdicts, dict(parents, **{'R-12': 'R-10'}), final)   # R-12 on the undefined R-10
+    world(root, cfg)
+    assert _checks(root, cfg) == [('v8.cells[R-12].parent',
+                                   "'R-10' is undefined: an undefined cell is never a parent (it was not formed)")]
+    cfg = optional_cfg(verdicts, dict(parents, **{'R-12': 'R-6'}), final)    # not the last accepted (R-8)
+    world(root, cfg)
+    assert _checks(root, cfg) == [('v8.cells[R-12].parent', "'R-6' is not the last accepted cell before 'R-12' "
+                                                            "('R-8')")]
+    rejected = BRANCHES['R-6 rejected']
+    cfg = optional_cfg(rejected[0], rejected[1], 'R-8')
+    after = copy.deepcopy(cfg['v8']['cells'][4])                             # a cell after the frontier, on R-9a
+    after.update(key='R-9b', dir='b/mega-nav-v8-r9b', parent='R-9a')
+    cfg['v8']['cells'].insert(5, after)
+    world(root, cfg)
+    assert ('v8.cells[R-9b].parent', "'R-9a' is report only: a report-only cell has no acceptance and is never a "
+                                     "parent") in _checks(root, cfg)
+
+
+def test_r8_accepted_against_its_volatility_band_is_refused(root):
+    """Ruling E-43: R-8 is accepted on rule 5 with the band as its criterion; an accept with one TRAIN year outside the
+    band is refused, and the reject is consistent."""
+    def one_year_out(cfg):   # the last TRAIN year's realised volatility above 1.2 x 5%
+        rows = summ_rows(cfg)
+        next(r for r in rows if r['dir'].endswith('mega-nav-v8-r-8'))['year_table'][-1]['ann_vol'] = 0.07
+        put(root, 'b/summ.json', rows)
+    cfg = optional_cfg(ALL_ACCEPTED, final='R-12')
+    world(root, cfg)
+    assert _checks(root, cfg) == []
+    one_year_out(cfg)
+    assert _checks(root, cfg) == [('v8.cells[R-8].verdict', "recorded accepted ('ACCEPTED') but the rule of v8-prereg "
+                                                            "item 5 rejects it (dSR > 0 yes, mechanics yes, criterion "
+                                                            "no)")]
+    cfg = optional_cfg(dict(ALL_ACCEPTED, **{'R-8': 'REJECTED (vol band)'}), {'R-10': 'R-6'}, 'R-12')
+    world(root, cfg)
+    one_year_out(cfg)
+    rows = {r['key']: r for r in V.ladder_rows(make_ctx(root, cfg))[0]}
+    assert (rows['R-8']['pos'], rows['R-8']['crit_met'], rows['R-8']['rule']) == (False, False, False)
+    assert _checks(root, cfg) == []
+
+
+def test_config_without_optional_cells_is_unchanged_by_the_branch_machinery():
+    """No defined_if, report_only or "undefined ..." verdict: every cell is defined and keeps its recorded kind."""
+    cfg = three_cells()
+    states = V.cell_states(cfg['v8']['cells'], [])
+    assert {k: (s['kind'], s['why']) for k, s in states.items()} == {
+        'B0c': ('accepted', None), 'R-1': ('accepted', None), 'R-2': ('accepted', None)}
+    assert V.defined_cells(cfg['v8']['cells'], []) == cfg['v8']['cells']
 
 
 # ============================================================================================ cumulative test, gate
