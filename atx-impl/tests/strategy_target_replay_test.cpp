@@ -1432,3 +1432,83 @@ TEST(HoldBand, RecordsDeclaredBandAndRefusesBadConfigs) {
             f.d * f.n);
   EXPECT_GT(hold.at("kept_names_total").get<usize>(), 0U);
 }
+
+// ---- v8 lane DLRET (Ruling E-39): Ruling E-25's manifest rule on the tool's lo1 pair ----
+namespace {
+// fixtures/lo1_label_role_pair/<role>/manifest.json: the manifests prepare_recent_research.py
+// writes on the synthetic role of atx-engine/tools/test_lo1_delisting.py, kept equal to the
+// tool's output by its test_lo1_label_role_pair_for_the_e25_check (temporary directory, input
+// pins and code identities are tokens there; the rule compares them only for equality).
+// "decision": linked-operating-v1 without delisting options, the shape of B0a's decision role
+// (no universe.delisting); "label": the same role with --delisting --delisting-returns
+// (returns_applied true, one lagged member cleared on its termination session and declared, so
+// the two member.u8 differ).
+struct PinnedManifest {
+  std::string path, sha256; // sha256 empty: the fixture is missing
+};
+PinnedManifest lo1_pair_manifest(const char* role) {
+  const auto path = std::filesystem::path(ATX_IMPL_TESTS_DIR) / "fixtures" /
+                    "lo1_label_role_pair" / role / "manifest.json";
+  const auto sha256 = co::sha256_file(path.string());
+  return {path.string(), sha256 ? *sha256 : std::string{}};
+}
+st::TargetReplayRunConfig with_role(const PinnedManifest& role) {
+  st::TargetReplayRunConfig cfg;
+  cfg.role_path = role.path;
+  cfg.role_sha256 = role.sha256;
+  return cfg;
+}
+} // namespace
+
+// The lo1 --delisting-returns role is admitted as the label role of the plain lo1 decision role
+// (nav --label-role, detail::check_label_role): the B-3 refusal reads --role only, member.u8
+// differs by the declared clearing alone, and the decision role has no delisting stage to match.
+TEST(NavLabelRoleLo1, AdmitsTheToolsDelistingReturnsPair) {
+  const auto decision = lo1_pair_manifest("decision");
+  const auto label = lo1_pair_manifest("label");
+  ASSERT_EQ(decision.sha256.size(), 64U) << decision.path;
+  ASSERT_EQ(label.sha256.size(), 64U) << label.path;
+  const auto manifest = read_json(label.path);
+  const auto& delisting = manifest.at("universe").at("delisting");
+  EXPECT_EQ(manifest.at("universe").at("id"), "linked-operating-v1");
+  EXPECT_EQ(delisting.at("returns_applied"), true);
+  EXPECT_GT(delisting.at("applied").at("members_cleared_on_termination_session").get<i64>(), 0);
+  EXPECT_NE(manifest.at("files").at("member.u8"),
+            read_json(decision.path).at("files").at("member.u8"));
+  const auto admitted =
+      st::detail::check_label_role(with_role(decision), label.path, label.sha256);
+  EXPECT_TRUE(admitted) << admitted.error().to_string();
+}
+
+// Review B-3 on the same pair swapped: the label role as --role is refused from its manifest, by
+// the signal-role refusal that names it.
+TEST(NavLabelRoleLo1, RefusesTheDelistingReturnsRoleAsDecisionRole) {
+  const auto decision = lo1_pair_manifest("decision");
+  const auto label = lo1_pair_manifest("label");
+  ASSERT_EQ(decision.sha256.size(), 64U) << decision.path;
+  ASSERT_EQ(label.sha256.size(), 64U) << label.path;
+  const auto refused =
+      st::detail::check_label_role(with_role(label), decision.path, decision.sha256);
+  ASSERT_FALSE(refused);
+  const auto& message = refused.error().message();
+  EXPECT_NE(message.find("was built with --delisting-returns"), std::string::npos) << message;
+  EXPECT_NE(message.find(label.path), std::string::npos) << message;
+}
+
+// The tool's label role with its clearing undeclared (members_cleared_on_termination_session 0)
+// is refused on the membership: only a declared delisting-return clearing may change member.u8.
+TEST(NavLabelRoleLo1, RefusesTheClearingUndeclared) {
+  const auto decision = lo1_pair_manifest("decision");
+  const auto label = lo1_pair_manifest("label");
+  ASSERT_EQ(decision.sha256.size(), 64U) << decision.path;
+  ASSERT_EQ(label.sha256.size(), 64U) << label.path;
+  Json undeclared = read_json(label.path);
+  undeclared["universe"]["delisting"]["applied"]["members_cleared_on_termination_session"] = 0;
+  Directory dir;
+  const auto path = dir.path / "manifest.json";
+  const auto sha256 = write_json(path, undeclared);
+  const auto refused = st::detail::check_label_role(with_role(decision), path.string(), sha256);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().message().find("the membership (member.u8) differs from --role's"),
+            std::string::npos) << refused.error().message();
+}
