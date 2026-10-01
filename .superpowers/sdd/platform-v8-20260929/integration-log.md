@@ -2246,3 +2246,154 @@ source moved, and the NAV executable was not rebuilt (v8-10 bytes).
 - FIX-4b carried: the R-8 band [.04, .06] is config constants (a target change is a config edit).
 - Known: `ConfigJsonNotInDiscoverDigest` (1).
 - Next per PM4-14: Wave 0 part 2b on this head.
+
+## integration 7 (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `5b2ee1b1` (clean; code head `41ef00fb`,
+build v8-11). Tag prefix v8-12. Scope (`task-INT7-brief.md`, Ruling PM5-6): merge MINE-FIX `20e7bd19` by SHA; build
+every research executable under one tag; mining golden at 1 and 4 workers; every suite; identities 1, 4, 7, 8. No Wave 0
+step, no cell and no mining campaign on real data was run.
+
+### Merge (`--no-ff` by SHA)
+
+| lane (findings) | lane SHA | merge | conflicts and resolution |
+|---|---|---|---|
+| MINE-FIX (MINE-1..12, 17, 18; round 1 PM4-13) | `20e7bd19` (from `864b7836`; nothing newer from pool 8) | `807af678` | 26 files, +2,436 / -289. Two conflicts, both unions. `atx-impl/tools/backtest_integrity.py` `check_line` docstring: root's F-1 sentence (a defect line may name a line ledgered invalid at once with its ruling) plus the lane's MINE-3 sentence; the lane's `if is_campaign(rec): check_campaign(before, rec)` kept. `atx-impl/tools/test_trial_ledger_rules.py`: root's `defect_line(camp["trial_id"], "budget overrun", DAY, RULING)` (F-5's four-argument signature) kept, the lane's `good` dict for the `campaign_line` checks kept. Known overlap (PM4-13): FIX-C's E-33 test auto-merged at budget 1000 with the 1001 refusal. `scripts/research_ledger.py`, `scripts/tests/test_research_ledger.py`, `atx-impl/CMakeLists.txt` (+ `src/strategy_mine_ledger.cpp`) auto-merged. The merge commit message carries git's two `# Conflicts:` lines. |
+
+### Build (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-12 | `807af678` clean | atx-equity-strategy-targets, -ic, -risk, -mine, atx-impl-strategy-mine-tests, atx-engine-factory-tests, atx-impl-strategy-ic-tests, -target-tests, atx-impl-tests, atx-impl-strategy-tests, atx-engine-book-tests, atx-engine-combine-tests | ok, exit 0, 246.5 s, 49 TUs, 15 links, 4 jobs (4,518 MiB free, first attempt); reconfigured (CMakeLists: new source); receipt `e44344bfaf6da4d76f0d1e7cf44cef68e10a1c5954639ea99282ccc204ba6b5a` |
+
+**The lane's C++ (never compiled before) compiled first time under `/W4 /WX`: 0 compile fixes, 0 warnings, 0 errors in
+the log.** TUs: atx-engine `research_ic_fitness`, `research_driver`, `search_driver`, `factory`; atx-impl-core
+`strategy_research_role`, `strategy_mine`, `_ledger` (new), `_rule`, `_pool`, `_trials`, `_promote`, `dispatch`,
+`stage_sweep`, `stage_discover`, `stage_equity_mine`, the generated `build_provenance`; `equity_strategy_mine.cpp`; 23
+factory-test TUs; 6 impl-tests TUs (`strategy_mine_test`, `stage_equity_mine_*`, `discover_test`,
+`w0i0b_mine_membership_test`); `book_pipeline_test`; the two mine-tests TUs. **No NAV, spo, target, book, risk or IC
+runner TU was recompiled**: targets, ic and risk were relinked only (changed `atx-engine.lib` / `atx-impl-core.lib` and
+the regenerated `build_provenance` carrying the new git SHA).
+
+**Every research executable is on v8-12** (one tag; bin timestamps 2026-10-01 18:54:48 .. 18:55:05; the bin files hash
+to the receipt). For Wave 0 part 2b:
+
+| executable | role in the cells | v8-12 SHA-256 |
+|---|---|---|
+| atx-equity-strategy-ic | IC runner | `ab7e2cbda3c87f74be7cd1d66725b7eb99b95a5182898c44aa465bbd1615452d` |
+| atx-equity-strategy-targets | NAV, targets, exposures | `5497c89d5141ae5f40d72ad2bef427cf9d6bf5462236b0a6d648765435b9bca6` |
+| atx-equity-strategy-risk | risk | `8967952c5c2054170d02466f121fc66122a2b3daa34d7bb99fe63a94a7eed258` |
+| atx-equity-strategy-mine | mine | `cd661fe99ad06d592af2886eb6491d853c5acfd35a40f27f34f5f9088588c91d` |
+
+Test executables (v8-12): mine-tests `082d834a...b2b3`, factory-tests `d8373ad2...b1f4`, ic-tests `a51f0f7e...79b5`,
+target-tests `a677f0af...6397`, impl-tests `09f754ee...0360`, strategy-tests `e1489279...4e0b`, book-tests
+`1121d845...937d`, combine-tests `65922b3a...2f5b`. The bare `atx-equity-strategy` (supplied-DSL entry point) was not
+built: no research script references it (`scripts/`, `atx-impl/tools`, `atx-engine/tools` name only `-ic`,
+`-targets`, `-mine`; `-risk` is the risk-model verb of the G / W0-1 reports, built above).
+
+### Mining determinism golden `0x889874a3b9b29c55` (not edited)
+
+| test | exe (v8-12) | 1 worker | 4 workers |
+|---|---|---|---|
+| `SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (loop over {1, 4}) | mine-tests and factory-tests | **holds** | **holds** |
+| `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest` | mine-tests and factory-tests | holds (default config) | - |
+| `NsgaSearch.ScalarRaw_ReproducesGoldenDigest` | factory-tests | holds | - |
+| `StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers` (registry chain head, trials.csv and members equal for w1a, w1b, w4; re-run refused) | mine-tests | equal | equal |
+
+**The golden holds at 1 and at 4 workers.** No revert (brief section 3 not triggered).
+
+### Tests (no test fix)
+
+| exe / suite | build | result |
+|---|---|---|
+| mine-tests `StrategyMine*:SignalFitness*:ResearchIc*:OpCatalogCfgTest.*` (the lane's filter) | v8-12 | **31/31** |
+| atx-impl-strategy-mine-tests (whole) | v8-12 | **31/31** (18 + 13: 10 verb tests in `strategy_mine_test.cpp`, 3 engine tests in `factory_signal_fitness_test.cpp`) |
+| atx-engine-factory-tests (whole; `NsgaSearch.*`, `FactoryFidelity*` for the race's `drop_fresh` refactor) | v8-12 | **390/390** (387 + 3 engine tests) |
+| atx-impl-strategy-target-tests | v8-12 | **259/259**; pins hold: `[spo-pin]` v1 `0xda6b6871e7e267c5` / `0xaabdbb72f99a6e13`; `[spo-v3-pin]` v2 `0xb039820b40d5cf24` / `0xd24b61721a7c698c` |
+| atx-engine-book-tests | v8-12 | **155/155** |
+| atx-impl-strategy-tests | v8-12 | **46/46** |
+| atx-impl-strategy-ic-tests | v8-12 | **145/145** |
+| atx-engine-combine-tests | v8-12 | **233/233** |
+| atx-impl-tests (run from the repo root) | v8-12 | 1,028 run: **1,022 passed, 5 skipped, 1 failed: the known `ConfigJsonNotInDiscoverDigest`** (1,012 + 10 verb tests through the glob); same spo pin lines |
+| lane pytest trio (`test_research_ledger.py`, `test_trial_ledger_rules.py`, `test_mine_overlap_factor.py`) after the merge | - | **17 passed** (lane's 16 + the root test of `test_trial_ledger_rules.py` the lane did not have) |
+| atx-impl/strategies | - | **163** passed; `test_generate_library.py` with `ATX_V71_PLAN_JSON=build-equity/v8-i3-plan-v71.json` **9** passed |
+| atx-engine/tools (whole) | - | **253** passed, 6 subtests |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute, v8-12) | v8-12 | **571 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset), 14 subtests: 567 + 4 (`test_mine_overlap_factor.py` 3, `test_trial_ledger_rules.py` + 1) |
+| scripts/tests (whole; `ATX_EQUITY_BIN` absolute, v8-12) | v8-12 | **183 passed, 3 skipped** (182 + 1 in `test_research_ledger.py`; the three RESEARCH_CYCLE_LIVE_ROOT skips); tiny_world `test_cycle_e2e.py` in it: no golden moved, `git status` clean after |
+
+impl-tests skips: Alpha101Orats x2, AtxImplDiscover.W6, SingleAlphaCapacity, FundamentalZoo (environment gates).
+
+### Identities (bounded runner, one at a time, clean tree `807af678`, exes of v8-12)
+
+Every run: `python scripts/run_bounded_research.py --output build-equity/v8-i7-<id>-run --seconds 180 --max-rss-mib
+1536 --min-free-mib 512 -- <argv>`, the argv read from the earlier receipt (`v8-i6b-i1`, `-i1w4`, `-i7`, `-i8`;
+`v8-i6c-i4w`, `-i4`) with only the output paths renamed to `v8-i7-`. Inputs re-hashed before identity 4: library
+`787c802e`, role lo1 `3e79978a`, fields-v9 manifest `8fd00e9f`, v7.1 weights `7b0a59c9`, part C weights `88635696`
+(3-year roles and existing caches only). Every receipt: outcome completed, exit 0, `git: clean in the code pathspec`,
+source `807af678`, exe SHA-256 = the v8-12 receipt's.
+
+| id | receipt.json SHA-256 | exe | wall s | peak MiB | result |
+|---|---|---|---|---|---|
+| 1a | `2237d525281be5ab25f175c7b34d89ca201e673bbc28342e38d2526d76c9513b` | targets `5497c89d` | 18.9 | 359 | **PASS** |
+| 1b | `538ec53b57a0dc57c05f407c964992784b3bdaf409fd2aedf041dc62c06b6c14` | targets `5497c89d` | 18.2 | 360 | **PASS** |
+| 4 step 1 | `3b3d6c807e77808989f71a57e6ee1525e9071f1b6f1689db11060a6af3f4ddf9` | python | 0.5 | 35 | **PASS: weights file byte-identical** |
+| 4 step 2 | `77de4a2e8b0a12180415c09529ad78a5aed022d0c7378406f02422300e11f65d` | ic `ab7e2cbd` | 24.5 | 507 | **PASS** |
+| 7 | `9ac0a737a4741e9e28437c3c06f92c330943ac2b0c8fda0dd5a50d42e5c2daee` | targets `5497c89d` | 57.7 | 359 | **PASS** |
+| 8 | `f4403c593045299f38467e7304552fb70a4eae5da577e5e4b028540c2c9c02cd` | targets `5497c89d` | 39.5 | 464 | **PASS** |
+
+- **1a** (V71 argv, `build-equity/v8-i7-i1-nav`): **12 of 12 byte-identical** to part B's `v8-i6b-i1-nav` and to the
+  accepted cell `mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247` (primary daily `fbec452e...d5f4`, recipe
+  `b956bbcc...34fa`, summary `5b109a70...170a`); `stdout.log` `813ce59c...` equals parts B and C.
+- **1b** (`v7-w4-nav-on` argv with `--emit-holdings`): NAV **12 of 12** identical to `v7-w4-nav-on` and to part B
+  (recipe `2324dd91...0858`, summary `998eca31...fea3`); holdings **4 of 4** identical to **`v7-w4-holdings`** and to
+  part B (`holdings.f64` `ce5523c6...eff4`, `holdings_days.csv` `43d9d2fe...3857`, `holdings_index.json`
+  `aef15691...fde1`, `manifest.json` `532044d5...e141`); `stdout.log` `b40bd0cc...` equals part B.
+- **4 step 1** (`composition_rules.py identity-weights`, out `build-equity/v8-i7-i4-identity-weights.json`):
+  `d49e208c...2eae`, **byte-identical** to part C's `v8-i6c-i4-identity-weights.json`.
+- **4 step 2** (the exact part C argv, `--composition-weights build-equity/v8-i5c-i4-identity-weights.json
+  --composition-weights-sha256 88635696...`, `--output build-equity/v8-i7-i4-w`): against part C's `v8-i6c-i4-w`
+  **10 of 12 byte-identical** (`recipe.json` `15b200d8...6410`, `orientations.json` `6d0d1be9...849d`,
+  `train_combined.json` `2831faf0...3e17`, `train_combined.f64` `1cf245b1...3912`, `_member.u8` / `_finite.u8`
+  `732f47b7...f1a4`, `_ids.u64` `102e89c6...741c`, `_sessions.i64` `89af5340...2830`, `train_planned_targets.csv`
+  `e6dbd9a8...5297`, `train_daily_ic.csv` `7e6e596f...bce6`); `summary.json` (6,031 paths, 201 differ) and
+  `train_candidates.jsonl` (5,424 paths, 192 differ) differ **only in timing paths** (`stage_seconds.*`,
+  `wall_seconds`, `hash_seconds`; no other path). As in part C: data files identical, timing fields only.
+- **7** (spo-v2 argv, lo3): **9 of 9 byte-identical** to the pinned v7 side files of `mega-nav-v70-lo3-spo-v2-G1.0` and
+  to part B (`spo_diagnostics.csv` `1131cd59...7dc2`, `v7_transfer_coefficient.csv` `a27505c2...1bb0`, `v7_extras.json`
+  `d96be152...42eb`, recipe `d6ffb028...58c8`, summary `75caf7f6...c44f`).
+- **8** (V71 plus `--label-role` = `--role`): **12 of 12 byte-identical to part B's `v8-i6b-i8-nav`** (recipe
+  `10961936...6635`, summary `6753c13c...5c00`: E-25's declared `label_role` keys); its 10 daily and events CSVs are
+  byte-identical to 1a's; `stdout.log` `d8ee4a6a...` equals part B.
+
+**`strategy_research_role` and the engine header moved no byte of any IC or NAV output with the flags absent**
+(identities 1, 4, 7, 8 all pass; `ResearchRole` is used by the mine verb only, and no NAV / IC runner TU was recompiled).
+
+### Scoped review range
+
+- **Code: `41ef00fb..807af678`** in `research_tree.CODE_PATHSPEC`: the MINE-FIX merge, 25 code files (+ the lane
+  report). Final code head `807af678`; no integrator code commit. The only integration-made code lines are the two
+  union resolutions above (one docstring, one test line).
+
+### Hidden-data record
+
+- Inputs: the TRAIN 2020-2022 roles (lo1 `3e79978a`, lo3 `40e3d832`), their fields v7 / v9, the v7.1 library and
+  weights, `mega-candidate-cache-v71`, the accepted v7.0-lo3 and v7.1 artifacts, `v7-w4-*`, the lo3 risk model
+  `786cb601`, parts B / C outputs, `build-equity/v8-i3-plan-v71.json`. Tests used synthetic fixtures (the mining fixture
+  is synthetic; its confirm window ends at the 2024-01-01 boundary exclusive, no data) and tiny_world.
+- Read: the lane report, brief, rulings, review-mine findings list, sources, build receipt and log, runner receipts
+  (outcome, exit, timings, SHA-256s), output-file SHA-256s and JSON paths of differences (no values). gtest output was
+  read for pass / fail / skip lines and pin lines only. No return, Sharpe or IC statistic was read or printed.
+- A scan of every `v8-i7-*-run` stdout / stderr and of the runner consoles for dates in 2024 or later found only the
+  runs' own `started_utc` wall-clock (2026-10-01).
+- **Nothing dated 2024-01-01 or later was opened. No disclosure. No mining campaign on real data.**
+
+### Open items
+
+- MINE-FIX carried (lane report): MINE-14, -15, -16 deferred to v9 (MINE-15 unruled); the confirm's BY
+  p = Phi(-t / F) is approximate on short confirm windows (200-row ratio 1.70 at 99%); an OD-7 campaign on the 4-year
+  role needs about 10.85 GiB and an owner-approved `--max-memory-mib` cap (E-6); real stage-2 searches may file
+  `slot-bound` failures (counted in N). The C++ fixture expectations rested on numpy replicas; they pass as built.
+- `atx-equity-strategy` (bare) keeps its 2026-09-26 bytes; nothing in the cells uses it. Rebuild it only if a lock is
+  wanted on it.
+- Known: `ConfigJsonNotInDiscoverDigest` (1).
+- Next per PM5-6: Wave 0 part 2b pins the four v8-12 executables above on this head.
