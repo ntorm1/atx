@@ -1502,6 +1502,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R5 b42-62 | `fundamental-events-v3-run-b42-62` | `19d0a704` | completed / 0 | 49.6 | 599 | `1b2ee2338c6954390e9f92b09f4b9cbfcebbc1330f666866999e8084d9f60432` | (stage; batches 42-62 computed) |
 | R5 b63-84 | `fundamental-events-v3-run-b63-84` | `d0bef9b3` | completed / 0 | 30.9 | 608 | `7d6f302b0d91b49c6afb626c56c900f92dd90726b6005d6eca3562f98991df14` | (stage; batches 63-84 computed, batch 84 0 rows) |
 | R5 fin | `fundamental-events-v3-run-fin` | `19c64f0e` | completed / 0 | 6.6 | 302 | `03e33b04e8b8c0be909c80f86ece4a395e4d60595f4bf416225ef4c70038fb45` | `304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b` |
+| R6 | `train-2020-2023-base-grp-run` | `977d9a4b` | completed / 0 | 6.7 | 218 | `747e51d46880a31646687e8e0fd62b33e5f881ad6bcf50d8f5c5f8c7fb481475` | `d1b2eaea9087f3eae4953bf709dd63623995f518993e8167ef7b387c7e37957e` |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1530,3 +1531,6 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   `parameters.sub_quarters` `2009q2..2023q4`; 155,577 event rows; 51 MiB on disk. The only other date text past the
   seal is `caveats[2]`, the CompanyFacts snapshot label (2026-09-20, archive `ee099c73`), not data.
   `FEV = 304d2945...be87b`.
+- **R6 PASS** (optional step run, so R7 keeps `--check-fields`). Fields `grp_sic2, grp_ff12, grp_ff49` on the base
+  role (1,405 x 5,922), `seal.exclusive_end` 2024-01-01; 3,444 linked CIKs, 135,259 SIC rows; 191 MiB on disk.
+  `GRP = d1b2eaea...957e`.
