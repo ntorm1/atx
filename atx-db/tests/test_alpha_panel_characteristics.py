@@ -179,9 +179,14 @@ def built(tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("ATX_ALPHA_PANEL_ROOT", str(root))
         lake = make_lake(root)
-        receipt = CH.run(["extract", "line", "year", "manifest"], [2019], nb=NB, memory="300MB", threads=1)
-        out = pq.read_table(root / "characteristics" / "year=2019" / "characteristics.parquet", partitioning=None).to_pandas()
-        yield {"root": root, "lake": lake, "out": out, "receipt": receipt}
+        path = root / "characteristics" / "year=2019" / "characteristics.parquet"
+        # formulas are checked on every line (all_rows), then the default build (member rows) is compared
+        receipt = CH.run(["extract", "line", "year", "manifest"], [2019], nb=NB, memory="300MB", threads=1,
+                         all_rows=True, keep_extract=True)
+        out = pq.read_table(path, partitioning=None).to_pandas()
+        CH.run(["extract", "line", "year", "manifest"], [2019], nb=NB, memory="300MB", threads=1)
+        member_out = pq.read_table(path, partitioning=None).to_pandas()
+        yield {"root": root, "lake": lake, "out": out, "member_out": member_out, "receipt": receipt}
 
 
 def _series(built, sid: int, col: str) -> pd.Series:
@@ -289,6 +294,13 @@ def test_output_schema_rows_and_manifest(built):
     df = built["lake"]["df"]
     n2019 = int((pd.to_datetime(df["session_date"]).dt.year == 2019).sum())
     assert len(out) == n2019
+    # default output: the member rows only, values identical to the all-rows build
+    mem = built["member_out"]
+    assert len(mem) == int(out["member"].sum()) and mem["member"].all()
+    ref = out[out["member"]].reset_index(drop=True)
+    pd.testing.assert_frame_equal(mem.reset_index(drop=True), ref, check_exact=False, rtol=1e-12)
+    # the line scratch survives the default build for pit_check; the extracts are removed after the line pass
+    assert not (root / "_tmp" / "char_in").exists() and (root / "_tmp" / "char_line").exists()
     vals = out[names].to_numpy(dtype=float)
     assert not np.isinf(vals).any()  # non-finite -> NULL
     man = json.loads((root / "characteristics" / "manifest.json").read_text())

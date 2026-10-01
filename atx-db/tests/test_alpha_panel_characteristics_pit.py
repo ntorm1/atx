@@ -4,6 +4,7 @@ planted look-ahead feature (``lead``, whole-history mean) is caught."""
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 import pytest
 
@@ -67,3 +68,26 @@ def test_build_refuses_lookahead_in_production_sql(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         CH.run(["year"], [2019], features=[*R.REGISTRY, bad])
     assert not (tmp_path / "characteristics").exists()
+
+
+def test_isolated_cli_build_matches_in_process_build_and_cli_pit(tmp_path, monkeypatch):
+    """``--isolate`` runs extract, line groups, each year and the manifest in child processes; same bytes of data."""
+    import pyarrow.parquet as pq
+
+    (tmp_path / "a").mkdir()
+    _build(tmp_path / "a", monkeypatch)
+    ref = pq.read_table(tmp_path / "a" / "characteristics" / "year=2019" / "characteristics.parquet",
+                        partitioning=None).to_pandas()
+    root = tmp_path / "b"
+    root.mkdir()
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(root))
+    make_lake(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(CH.__file__).resolve().parents[2]))
+    assert CH.main(["--isolate", "--years", "2019-2019", "--nb", str(NB), "--memory", "300MB", "--threads", "1"]) == 0
+    got = pq.read_table(root / "characteristics" / "year=2019" / "characteristics.parquet",
+                        partitioning=None).to_pandas()
+    assert got.equals(ref)
+    out = root / "validation" / "pit.json"
+    assert CH.main(["--pit", "2019-06-14", "--pit-buckets", "0,1", "--nb", str(NB), "--memory", "300MB",
+                    "--threads", "1", "--out", str(out)]) == 0
+    assert out.exists()

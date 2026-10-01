@@ -438,8 +438,11 @@ def keep_columns(line_cols: Iterable[str], features: Sequence[R.Feature]) -> lis
     return [c for c in have if c in want]
 
 
-def year_sql(line_rel: str, lo: dt.date, hi: dt.date, features: Sequence[R.Feature]) -> str:
-    """Same-session group statistics and the registry expressions over line rows of sessions lo..hi."""
+def year_sql(line_rel: str, lo: dt.date, hi: dt.date, features: Sequence[R.Feature], *,
+             all_rows: bool = False) -> str:
+    """Same-session group statistics and the registry expressions over line rows of sessions lo..hi. Output rows:
+    the ``member`` lines (the scorecard universe, a superset of ``member_equity``) unless ``all_rows``; the group
+    statistics always use every member line of the session."""
     y = f"(SELECT * FROM {line_rel} WHERE session_date BETWEEN DATE '{lo}' AND DATE '{hi}')"
     groups: dict[str, list[tuple[str, str]]] = {}
     for out, src, grp in GROUP_STATS:
@@ -461,7 +464,7 @@ def year_sql(line_rel: str, lo: dt.date, hi: dt.date, features: Sequence[R.Featu
     WITH {', '.join(ctes)},
     z AS (SELECT y.*, {', '.join(gcols)} FROM {y} y {' '.join(joins)}),
     z2 AS (SELECT session_date, security_id, {flags}, {raw} FROM z)
-    SELECT session_date, security_id, {flags}, {', '.join(out_cols)} FROM z2
+    SELECT session_date, security_id, {flags}, {', '.join(out_cols)} FROM z2{'' if all_rows else ' WHERE member'}
     """
 
 
@@ -498,14 +501,21 @@ def _input_manifests() -> dict[str, str | None]:
     return out
 
 
-def _signature(nb: int, features: Sequence[R.Feature], extra_terms: dict[str, str] | None) -> str:
-    here = Path(__file__).resolve().parent
-    h = hashlib.sha256()
-    for m in ("characteristics.py", "char_registry.py"):
-        h.update((here / m).read_bytes().replace(b"\r\n", b"\n"))
-    h.update(json.dumps({"nb": nb, "inputs": _input_manifests(), "features": [f.as_dict() for f in features],
-                         "extra": extra_terms or {}}, sort_keys=True, default=str).encode())
-    return h.hexdigest()
+def _sha(obj: Any) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _line_signature(nb: int, features: Sequence[R.Feature], extra_terms: dict[str, str] | None) -> str:
+    """Everything the extract and line outputs depend on: the SQL text of the extract / line / long / next / market
+    queries, the columns the features name, the bucket count and the input stage manifests."""
+    tokens = sorted({t for f in features for t in _TOKEN.findall(_feature_sql(f))} | {s for _, s, _ in GROUP_STATS})
+    return _sha({"nb": nb, "inputs": _input_manifests(), "tokens": tokens, "extra": extra_terms or {},
+                 "sql": [input_sql("panel", "bp"), line_sql("inp", "hist", "mkt", "cal", extra_terms),
+                         mkt_month_sql("daily", "cal"), PANEL_START, MKT_ID]})
+
+
+def _year_signature(features: Sequence[R.Feature], all_rows: bool) -> str:
+    return _sha({"sql": year_sql("line", dt.date(2020, 1, 1), dt.date(2020, 1, 31), features, all_rows=all_rows)})
 
 
 def _replace_dir(partial: Path, final: Path) -> None:
@@ -584,7 +594,7 @@ def line_bucket(con, b: int, years: Sequence[int], features: Sequence[R.Feature]
     return {"rows": int(rows), "columns": len(keep)}
 
 
-def year_pass(con, year: int, features: Sequence[R.Feature]) -> dict[str, Any]:
+def year_pass(con, year: int, features: Sequence[R.Feature], all_rows: bool = False) -> dict[str, Any]:
     """One calendar month at a time (the group statistics are same-session, so the split is exact; a whole-year
     sort of ~2.7M x 106 columns broke the 1 GiB job cap), each month sorted by (session_date, security_id), then
     the month parts are streamed row group by row group into the year file (atomic ``.partial`` -> rename)."""
@@ -599,8 +609,8 @@ def year_pass(con, year: int, features: Sequence[R.Feature]) -> dict[str, Any]:
         lo = dt.date(year, m, 1)
         hi = (dt.date(year + (m == 12), m % 12 + 1, 1) - dt.timedelta(days=1))
         part = parts_dir / f"m{m:02d}.parquet"
-        n = C.copy_to_parquet(con, year_sql(src, lo, hi, features) + " ORDER BY session_date, security_id", part,
-                              row_group_size=32768)
+        n = C.copy_to_parquet(con, year_sql(src, lo, hi, features, all_rows=all_rows)
+                              + " ORDER BY session_date, security_id", part, row_group_size=32768)
         if n:
             parts.append(part)
             rows += n
@@ -656,22 +666,28 @@ def coverage(con, features: Sequence[R.Feature], years: tuple[int, int] = COVERA
 
 
 def run(stages: Sequence[str], years: Sequence[int], *, nb: int = NB, features: Sequence[R.Feature] | None = None,
-        extra_terms: dict[str, str] | None = None, memory: str = "600MB", threads: int = 2) -> dict[str, Any]:
+        extra_terms: dict[str, str] | None = None, memory: str = "600MB", threads: int = 2,
+        buckets: Sequence[int] | None = None, all_rows: bool = False, keep_extract: bool = False) -> dict[str, Any]:
+    """Run the named sub-stages in this process (``main --isolate`` runs each unit in a child process).
+    ``years`` is the output year range (the extract always covers every panel year up to its end)."""
     feats = R.validate(features if features is not None else R.REGISTRY)
     problems = lint_build(feats)
     if problems:
         raise ValueError(f"look-ahead lint: {problems}")
     years = sorted(years)
-    sig = _signature(nb, feats, extra_terms)
+    sig = _line_signature(nb, feats, extra_terms)
+    ysig = _year_signature(feats, all_rows)
     prog_path = _tmp(LINE_DIR, "progress.json")
     prog = C.read_json(prog_path) if prog_path.exists() else {}
     if prog.get("signature") != sig:
         prog = {"signature": sig, "extract": None, "buckets": {}, "years": {}}
-    receipt: dict[str, Any] = {"stage": STAGE, "nb": nb, "years": years}
+    prog["years"] = {y: r for y, r in prog["years"].items() if r.get("sig") == ysig}
+    receipt: dict[str, Any] = {"stage": STAGE, "nb": nb, "years": years, "all_rows": all_rows}
     con = C.connect(memory=memory, threads=threads, db_file="characteristics.duckdb")
     try:
         if "extract" in stages:
-            if prog["extract"] and prog["extract"].get("years") == years:
+            ex = prog["extract"]
+            if ex and ex.get("years") == years and (not ex.get("deleted") or len(prog["buckets"]) == nb):
                 receipt["extract"] = prog["extract"]
             else:
                 with C.timed(receipt, "extract"):
@@ -681,9 +697,11 @@ def run(stages: Sequence[str], years: Sequence[int], *, nb: int = NB, features: 
                 C.write_json_atomic(prog_path, prog)
         if "line" in stages:
             with C.timed(receipt, "line"):
-                for b in range(nb):
+                for b in (range(nb) if buckets is None else buckets):
                     if str(b) in prog["buckets"]:
                         continue
+                    if not prog["extract"]:
+                        raise RuntimeError("line stage before extract (progress has no extract)")
                     t0 = time.perf_counter()
                     res = line_bucket(con, b, years, feats, extra_terms)
                     res["elapsed_s"] = round(time.perf_counter() - t0, 1)
@@ -691,26 +709,38 @@ def run(stages: Sequence[str], years: Sequence[int], *, nb: int = NB, features: 
                     prog["years"] = {}
                     C.write_json_atomic(prog_path, prog)
                     print("bucket", b, res, flush=True)
-            receipt["line"] = prog["buckets"]
+            if len(prog["buckets"]) == nb and not keep_extract and _tmp(IN_DIR).exists():
+                shutil.rmtree(_tmp(IN_DIR))  # the year pass and pit_check never read the extracts
+                prog["extract"]["deleted"] = True
+                C.write_json_atomic(prog_path, prog)
         if "year" in stages:
             with C.timed(receipt, "year"):
                 for y in years:
                     if str(y) in prog["years"]:
                         continue
+                    if len(prog["buckets"]) != nb:
+                        raise RuntimeError(f"year stage with {len(prog['buckets'])}/{nb} line buckets")
                     t0 = time.perf_counter()
-                    res = year_pass(con, y, feats)
+                    res = year_pass(con, y, feats, all_rows)
                     res["elapsed_s"] = round(time.perf_counter() - t0, 1)
+                    res["sig"] = ysig
                     prog["years"][str(y)] = res
                     C.write_json_atomic(prog_path, prog)
                     print("year", y, res, flush=True)
-            receipt["year"] = prog["years"]
         if "manifest" in stages:
+            missing = [y for y in years if str(y) not in prog["years"]]
+            if missing or len(prog["buckets"]) != nb:
+                raise RuntimeError(f"manifest before the build is complete (years missing {missing})")
+            receipt.update(extract=prog["extract"], line=prog["buckets"], year=prog["years"])
             with C.timed(receipt, "coverage"):
                 receipt["coverage"] = coverage(con, feats)
-            payload = {"registry": R.as_manifest(feats), "receipt": receipt, "progress_signature": sig,
+            payload = {"registry": R.as_manifest(feats), "receipt": receipt, "line_signature": sig,
+                       "year_signature": ysig,
                        "input_manifests_sha256": _input_manifests(),
                        "rules": {"pit": "Global Constraint 4; iv_atm_* lag 1 (ruling R3); vendor earnFlag unused",
-                                 "buckets": f"security_id % {nb}", "group_min": GROUP_MIN, "mkt_id": MKT_ID}}
+                                 "buckets": f"security_id % {nb}", "group_min": GROUP_MIN, "mkt_id": MKT_ID,
+                                 "rows": "every panel row" if all_rows else "panel rows with member (scorecard "
+                                         "universe, includes every member_equity row)"}}
             C.write_stage_manifest(STAGE, SCHEMA, MODULES, payload)
     finally:
         con.close()
@@ -738,7 +768,7 @@ def pit_source(con, bucket: int, dmax: dt.date, *, nb: int = NB, table: str = "p
 
 def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[R.Feature] | None = None,
               extra_terms: dict[str, str] | None = None, max_examples: int = 3,
-              source: str | None = None) -> dict[str, Any]:
+              source: str | None = None, all_rows: bool = False) -> dict[str, Any]:
     """Recompute bucket ``bucket`` at decision session ``d`` from panel / borrow_proxy / prices_history rows with
     ``session_date <= d`` only (read from the published stages, not the build's extracts), then compare every feature
     with the built stage at d: equal (|diff| <= 1e-9 relative, or <= 1e-12) or both NULL.
@@ -768,7 +798,7 @@ def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[
     other_rel = ("SELECT " + cols + " FROM read_parquet([" + ", ".join(f"'{p.as_posix()}'" for p in others)
                  + f"], hive_partitioning = false, union_by_name = true) WHERE session_date = DATE '{d}'") if others else None
     union = f"(SELECT * FROM pit_line{(' UNION ALL ' + other_rel) if other_rel else ''})"
-    con.execute(f"CREATE OR REPLACE TEMP TABLE pit_new AS SELECT * FROM ({year_sql(union, d, d, feats)}) "
+    con.execute(f"CREATE OR REPLACE TEMP TABLE pit_new AS SELECT * FROM ({year_sql(union, d, d, feats, all_rows=all_rows)}) "
                 f"WHERE security_id % {nb} = {bucket}")
     built = _rp(C.stage_dir(STAGE) / f"year={d.year}" / "*.parquet")
     con.execute(f"CREATE OR REPLACE TEMP TABLE pit_old AS SELECT * FROM {built} "
@@ -796,6 +826,8 @@ def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[
 
 def run_pit(sessions: Sequence[dt.date], buckets: Sequence[int], *, nb: int = NB, memory: str = "600MB",
             threads: int = 2, out: Path | None = None) -> dict[str, Any]:
+    man = C.stage_dir(STAGE) / "manifest.json"
+    all_rows = bool(C.read_json(man).get("receipt", {}).get("all_rows")) if man.exists() else False
     con = C.connect(memory=memory, threads=threads, db_file="characteristics_pit.duckdb")
     results = []
     try:
@@ -805,7 +837,7 @@ def run_pit(sessions: Sequence[dt.date], buckets: Sequence[int], *, nb: int = NB
             print("pit source bucket", b, round(time.perf_counter() - t0, 1), "s", flush=True)
             for d in sessions:
                 t0 = time.perf_counter()
-                r = pit_check(con, b, d, nb=nb, source=src)
+                r = pit_check(con, b, d, nb=nb, source=src, all_rows=all_rows)
                 r["elapsed_s"] = round(time.perf_counter() - t0, 1)
                 results.append(r)
                 print(json.dumps({k: r[k] for k in ("bucket", "session", "rows_recomputed", "rows_built", "pass",
@@ -831,17 +863,58 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pit", default="", help="comma-separated decision sessions: run the PIT harness instead")
     ap.add_argument("--pit-buckets", default="3,10")
     ap.add_argument("--out", default="")
+    ap.add_argument("--buckets", default="", help="line buckets a-b (default all)")
+    ap.add_argument("--nb", type=int, default=NB, help="line bucket count (tests)")
+    ap.add_argument("--all-rows", action="store_true", help="write every panel row (default: member rows)")
+    ap.add_argument("--keep-extract", action="store_true")
+    ap.add_argument("--isolate", action="store_true",
+                    help="run extract, each group of 16 line buckets, each year and the manifest in child processes "
+                         "(DuckDB / allocator memory left by one unit is returned before the next)")
+    ap.add_argument("--clean-tmp", action="store_true", help="delete the line-pass scratch (_tmp/char_in, char_line)")
     args = ap.parse_args(argv)
+    if args.clean_tmp:
+        for d in (_tmp(IN_DIR), _tmp(LINE_DIR)):
+            if d.exists():
+                shutil.rmtree(d)
+        return 0
     if args.pit:
         sessions = [dt.date.fromisoformat(s.strip()) for s in args.pit.split(",") if s.strip()]
         buckets = [int(s) for s in args.pit_buckets.split(",") if s.strip()]
         out = Path(args.out) if args.out else C.build_root() / "validation" / "characteristics_pit.json"
-        res = run_pit(sessions, buckets, memory=args.memory, threads=args.threads, out=out)
+        res = run_pit(sessions, buckets, nb=args.nb, memory=args.memory, threads=args.threads, out=out)
         print("PIT", "PASS" if res["pass"] else "FAIL", out, flush=True)
         return 0 if res["pass"] else 1
     a, _, b = args.years.partition("-")
-    run([s.strip() for s in args.stages.split(",") if s.strip()], list(range(int(a), int(b or a) + 1)),
-        memory=args.memory, threads=args.threads)
+    years = list(range(int(a), int(b or a) + 1))
+    stages = [s.strip() for s in args.stages.split(",") if s.strip()]
+    common = ["--years", args.years, "--memory", args.memory, "--threads", str(args.threads), "--nb", str(args.nb)]
+    common += ["--all-rows"] if args.all_rows else []
+    common += ["--keep-extract"] if args.keep_extract else []
+    if args.isolate:
+        import subprocess
+        units: list[list[str]] = []
+        if "extract" in stages:
+            units.append(["--stages", "extract"])
+        if "line" in stages:
+            units += [["--stages", "line", "--buckets", f"{i}-{min(i + 15, args.nb - 1)}"] for i in range(0, args.nb, 16)]
+        if "year" in stages:
+            units += [["--stages", "year", "--years", f"{y}-{y}"] for y in years]
+        if "manifest" in stages:
+            units.append(["--stages", "manifest"])
+        for u in units:
+            cmd = [sys.executable, "-m", "atx_db.alpha_panel.characteristics", *common, *u]
+            print("unit", " ".join(u), flush=True)
+            rc = subprocess.call(cmd)
+            if rc:
+                print("unit failed", rc, u, flush=True)
+                return rc
+        return 0
+    bk = None
+    if args.buckets:
+        lo_b, _, hi_b = args.buckets.partition("-")
+        bk = list(range(int(lo_b), int(hi_b or lo_b) + 1))
+    run(stages, years, nb=args.nb, memory=args.memory, threads=args.threads, buckets=bk, all_rows=args.all_rows,
+        keep_extract=args.keep_extract)
     return 0
 
 
