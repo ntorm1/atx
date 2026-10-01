@@ -535,11 +535,15 @@ TEST(ClaimsReplay, CostedResidualsAndScheduledFinancingReconcileShortTransitionA
   EXPECT_DOUBLE_EQ(replay.final_tri_units[2], 1.5);
 
   constexpr auto claim = -8.0 * 4.0491;
-  constexpr auto bridge = -45.0 + claim + 64.0;
+  // The pre-existing $15 successor long is already accounted for. Only the
+  // $60 short delivery is new: post-event equities - pre-event equities + claim.
+  constexpr auto bridge = (-45.0 - (15.0 - 64.0)) + claim;
   EXPECT_NEAR(replay.intervals[3].claim_recognized, claim, kTolerance);
   EXPECT_NEAR(replay.intervals[3].signed_pending_claims, claim, kTolerance);
   EXPECT_NEAR(replay.intervals[3].gross_payable, -claim, kTolerance);
   EXPECT_NEAR(replay.intervals[3].mandatory_value_bridge, bridge, kTolerance);
+  EXPECT_NEAR(replay.intervals[3].pretrade_nav,
+              replay.intervals[2].nav + bridge, kTolerance);
   EXPECT_NEAR(replay.intervals[4].mandatory_settled_cash, claim, kTolerance);
   EXPECT_DOUBLE_EQ(replay.intervals[4].signed_pending_claims, 0.0);
 

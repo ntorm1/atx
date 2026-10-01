@@ -268,8 +268,14 @@ add_executable(atx-engine-equity-review-tests EXCLUDE_FROM_ALL
     core/backtest_integration_test.cpp
     book/book_borrow_schedule_test.cpp
     book/book_w0b0_borrow_single_count_test.cpp
+    book/book_claims_replay_test.cpp
+    book/book_event_batch_test.cpp
+    book/book_replay_cost_test.cpp
     factory/factory_fitness_test.cpp
     factory/factory_cpcv_cache_test.cpp
+    factory/deflate_selection_running_n_test.cpp
+    factory/search_progress_test.cpp
+    factory/factory_oos_test.cpp
     combine/combine_walk_forward_test.cpp
     data/data_align_test.cpp
     data/data_adapt_feature_test.cpp)
