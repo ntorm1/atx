@@ -8,6 +8,8 @@ tools of test_research_cycle.py.
 """
 from __future__ import annotations
 
+import argparse
+import copy
 import json
 import re
 import shutil
@@ -342,6 +344,115 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
     with pytest.raises(RC.CycleError, match="ew-theme-aim-v2"):            # --protocol v8 makes a v8 spec too
         RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--protocol", "v8"])))
     RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--effective-n", "dirs"])))  # v7: as before
+
+
+# review R6B-C-4: Ruling E-27b reads the argv the tools parse, in every spelling argparse accepts (allow_abbrev is on in
+# the fitter and in nav_summ): "=", any unique prefix, a repeat (the last wins)
+V5_AIM = "ew-theme-aim-v1"
+COMPOSITION_SPELLINGS = {"pair": ["--composition", V5_AIM], "equals": [f"--composition={V5_AIM}"],
+                         "abbreviation": ["--compo", V5_AIM], "abbreviation-equals": [f"--compo={V5_AIM}"],
+                         "shortest": ["--c", V5_AIM], "repeat-last": ["--composition", "ew-theme-v1", "--composition",
+                                                                      V5_AIM],
+                         "repeat-first": ["--composition", V5_AIM, "--composition", "ew-theme-v1"]}
+PROTOCOL_SPELLINGS = {"pair": ["--protocol", "v8"], "equals": ["--protocol=v8"], "abbreviation": ["--proto", "v8"],
+                      "abbreviation-equals": ["--prot=v8"], "shortest": ["--pr", "v8"]}
+FIT_REQUIRED = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+
+
+def tool_parser(main) -> argparse.ArgumentParser:
+    """The argparse parser a tool's main() builds, caught at its parse_args (nothing parsed or run)."""
+    class Caught(Exception):
+        pass
+    seen = []
+
+    def catch(self, args=None, namespace=None):
+        seen.append(self)
+        raise Caught
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(argparse.ArgumentParser, "parse_args", catch)
+        with pytest.raises(Caught):
+            main([])
+    return seen[0]
+
+
+def e27b_variant(doc: dict, composition: list | None = None, protocol: list | None = None) -> dict:
+    """A v8 spec (base-lo1: verdict true) with fit.flags' --composition written as ``composition``; with ``protocol``
+    the spec is v8 only through summ.extra's --protocol written that way (verdict false)."""
+    doc = copy.deepcopy(doc)
+    if composition:
+        doc["fit"]["flags"] = RS.apply_flags(doc["fit"]["flags"], {"--composition": False}, "fit.flags") + composition
+    if protocol:
+        doc["verdict"] = False
+        doc["summ"]["extra"] = RS.apply_flags(doc["summ"]["extra"], {"--protocol": False}, "summ.extra") + protocol
+    return doc
+
+
+def e27b_cases(doc: dict) -> list[tuple[str, dict]]:
+    return ([(f"composition {n}", e27b_variant(doc, sp)) for n, sp in COMPOSITION_SPELLINGS.items()]
+            + [(f"protocol {n}", e27b_variant(doc, ["--composition", V5_AIM], sp)) for n, sp in PROTOCOL_SPELLINGS.items()])
+
+
+def test_e27b_reads_what_the_fitter_and_nav_summ_parse():
+    """Every spelling of the cases is one the real parsers read as ew-theme-aim-v1 / --protocol v8 (so the guard must
+    see it), and the guard reads it."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    import nav_summ as NS
+    for name, sp in COMPOSITION_SPELLINGS.items():
+        assert fcw.parse_args(FIT_REQUIRED + sp).composition == ("ew-theme-v1" if name == "repeat-first" else V5_AIM)
+        assert V5_AIM in RC.argparse_values(sp, "--composition"), name   # a repeat with v1 anywhere is refused too
+    parser = tool_parser(NS.main)
+    for name, sp in PROTOCOL_SPELLINGS.items():
+        assert parser.parse_args(sp).protocol == "v8" and RC.argparse_values(sp, "--protocol") == ["v8"], name
+    with pytest.raises(SystemExit):                    # --p is ambiguous in nav_summ (--pbo, --psr, --pool): it fails
+        parser.parse_args(["--p", "v8"])
+    assert RC.argparse_values(["--p", "v8"], "--protocol") == ["v8"]                  # counted anyway (the safe side)
+    assert RC.argparse_values(["--pool", "a", "--protocol", "v7", "--", "--protocol=v8"], "--protocol") == ["v7"]
+    assert RC.argparse_values(["--psr", "--protocol"], "--protocol") == [None]
+    assert RC.argparse_values(["--orientation", "prior", "--screen", "s"], "--composition") == []
+
+
+def test_e27b_refuses_every_spelling_at_plan_run_and_lock(tmp_path, capsys):
+    base = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
+    sp = tmp_path / "spec.json"
+    for name, doc in e27b_cases(base):
+        sp.write_text(json.dumps(doc), encoding="utf-8")
+        for verb in ("plan", "run", "lock"):
+            argv = [verb, str(sp), "--root", str(tmp_path), *(["--write"] if verb == "lock" else [])]
+            assert RC.main(argv) == RC.EXIT_USAGE, (name, verb)
+            assert "ew-theme-aim-v1 is the v5 R4' rule" in capsys.readouterr().err, (name, verb)
+        assert json.loads(sp.read_text(encoding="utf-8")) == doc, name                  # lock --write wrote nothing
+    # the cycle's own readers see one two-token pair: other spellings are refused (--protocol in every spec, a v8
+    # spec's --composition); outside v8 the composition is free, as before
+    for doc, needle in ((e27b_variant(base, ["--composition=ew-theme-v1"]), "spec fit.flags: write --composition once"),
+                        (e27b_variant(base, ["--composition", "ew-theme-v1", "--composition", "ew-theme-v1"]),
+                         "spec fit.flags: write --composition once"),
+                        (e27b_variant(base, ["--composition", "ew-theme-v1"], ["--protocol=v7"]),
+                         "spec summ.extra: write --protocol once")):
+        with pytest.raises(RC.CycleError, match=needle) as e:
+            RC.validate_spec(doc)
+        assert e.value.code == RC.EXIT_USAGE
+    v7 = e27b_variant(base, [f"--composition={V5_AIM}"], ["--effective-n", "dirs"])
+    RC.validate_spec(v7)                                         # a v7 spec may fit the v5 rule, in any spelling
+    RC.validate_spec(e27b_variant(base, ["--composition", "ew-theme-v1"]))              # the committed form
+
+
+def test_e27b_refuses_every_spelling_at_add_alpha(tmp_path, capsys):
+    """add-alpha loads the parent spec (and validates the child it derives from it) before any write."""
+    root, parent = v8_root(tmp_path)
+    parent_cell(root, parent)
+    doc = json.loads(parent.read_text(encoding="utf-8"))
+    probe = ("v8_probe", "rank(decay_linear((be / at_lag4), 21))")
+    for name, bad in e27b_cases(doc):
+        parent.write_text(json.dumps(bad, indent=2), encoding="utf-8")
+        before = files_of(root)
+        assert add(root, parent, *probe) == RC.EXIT_USAGE, name
+        assert "ew-theme-aim-v1 is the v5 R4' rule" in capsys.readouterr().err, name
+        assert files_of(root) == before, name                                           # nothing written
+    parent.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    assert add(root, parent, *probe) == RC.EXIT_OK                                      # the parent as committed
 
 
 def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_path):

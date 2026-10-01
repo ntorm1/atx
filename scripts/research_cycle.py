@@ -370,8 +370,55 @@ def validate_runner_phases(phases) -> None:
                          EXIT_USAGE)
 
 
+def argparse_values(flags: list, option: str) -> list:
+    """Every value argparse (``allow_abbrev`` on, its default) reads for the long ``option`` in an argv list, in order:
+    ``--option V``, ``--option=V`` and any abbreviation (``--opt V``, ``--opt=V``: argparse takes a unique prefix, and a
+    prefix shared with another option fails that run, so every prefix is counted); None for an occurrence with no value.
+    The value an occurrence consumes is skipped; a bare ``--`` ends the options (review R6B-C-4)."""
+    name, out, i = option[2:], [], 0
+    while i < len(flags):
+        tok = flags[i]
+        i += 1
+        if tok == "--":
+            break
+        if not (isinstance(tok, str) and tok.startswith("--") and len(tok) > 2):
+            continue
+        head, eq, value = tok[2:].partition("=")
+        if not name.startswith(head):
+            continue
+        if eq:
+            out.append(value)
+        else:
+            out.append(flags[i] if i < len(flags) and isinstance(flags[i], str) else None)
+            i += 1
+    return out
+
+
+def validate_e27b(spec: dict) -> None:
+    """Ruling E-27b on the argv the tools parse (review R6B-C-4). A spec is v8 when it is a verdict spec or nav_summ
+    reads --protocol v8 from summ.extra in any spelling (``--protocol v8``, ``--protocol=v8``, an abbreviation); a v8
+    spec never fits the v5 rule ew-theme-aim-v1, whatever the spelling of --composition in fit.flags (``=``, an
+    abbreviation, a repeat: argparse keeps the last). The cycle's own readers (summ_protocol, option_value, the template
+    maps) read one two-token pair, so --protocol (every spec) and a v8 spec's --composition are written once, that way."""
+    extra = (spec.get("summ") or {}).get("extra") or []
+    flags = (spec.get("fit") or {}).get("flags") or []
+    protocols, compositions = argparse_values(extra, "--protocol"), argparse_values(flags, "--composition")
+    v8 = spec.get("verdict") is True or SUMM_V8 in protocols
+    if v8 and V5_AIM_RULE in compositions:
+        raise CycleError(f"spec fit: {V5_AIM_RULE} is the v5 R4' rule (aim gains normalised globally); a v8 spec fits "
+                         f"R-3 on an ew-theme-v1 parent with {V8_AIM_RULE} (Ruling E-27b: gains renormalised inside "
+                         "each theme, member cap 1/(2T))", EXIT_USAGE)
+    for where, given, option, values in (("summ.extra", extra, "--protocol", protocols),
+                                         ("fit.flags", flags, "--composition", compositions if v8 else [])):
+        if values and (len(values) > 1 or option_value(given, option) != values[0]):
+            raise CycleError(f"spec {where}: write {option} once, as the two tokens '{option} VALUE' (argparse also "
+                             f"reads '{option}=VALUE', an abbreviation or a repeat, which the cycle's own checks do not "
+                             f"see; review R6B-C-4)", EXIT_USAGE)
+
+
 def validate_v8_keys(spec: dict) -> None:
-    """The platform v8 spec keys: build, out_root, receipts, verdict, marginal, the stage inputs, reuse_fields."""
+    """The platform v8 spec keys: build, out_root, receipts, verdict, marginal, the stage inputs, reuse_fields; Ruling
+    E-27b on the parsed argv (``validate_e27b``)."""
     if "build" in spec and spec["build"] not in BUILDS:
         raise CycleError(f"spec build must be one of {', '.join(BUILDS)}", EXIT_USAGE)
     if "out_root" in spec and (not isinstance(spec["out_root"], str) or not spec["out_root"] or
@@ -399,11 +446,7 @@ def validate_v8_keys(spec: dict) -> None:
                                                         spec["summ"].get("ledger")):
         raise CycleError("spec summ.ledger_copy (a path) needs summ.ledger", EXIT_USAGE)
     validate_summ_protocol(spec)
-    if summ_protocol(spec) == SUMM_V8 and option_value((spec.get("fit") or {}).get("flags", []),
-                                                       "--composition") == V5_AIM_RULE:
-        raise CycleError(f"spec fit: {V5_AIM_RULE} is the v5 R4' rule (aim gains normalised globally); a v8 spec fits "
-                         f"R-3 on an ew-theme-v1 parent with {V8_AIM_RULE} (Ruling E-27b: gains renormalised inside "
-                         "each theme, member cap 1/(2T))", EXIT_USAGE)
+    validate_e27b(spec)
     inputs = spec["inputs"]
     sec = [k for k in SEC_INPUTS if k in inputs]
     if sec and len(sec) != len(SEC_INPUTS):
