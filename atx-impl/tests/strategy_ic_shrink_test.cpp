@@ -198,22 +198,29 @@ TEST(IcShrinkV1, FixtureTellsWrongRulesApart) {
 }
 
 TEST(IcShrinkV1, RefusesBadInputsAndAnInfeasibleCap) {
-  const std::vector<f64> two{0.002, 0.001};
-  const std::vector<usize> split{0, 1};
-  EXPECT_TRUE(st::ic_shrink_weights(two, split, 2));
+  // Admitted: two themes of two equal members, every weight exactly at the cap 1/4.
+  const std::vector<f64> four{0.002, 0.002, 0.001, 0.001};
+  const std::vector<usize> pairs{0, 0, 1, 1};
+  const auto at_cap = st::ic_shrink_weights(four, pairs, 2);
+  ASSERT_TRUE(at_cap) << at_cap.error().to_string();
+  EXPECT_EQ(at_cap->weights, (std::vector<f64>{0.25, 0.25, 0.25, 0.25}));
+  EXPECT_EQ(at_cap->cap_passes, 0U);
   EXPECT_FALSE(st::ic_shrink_weights({}, {}, 1));
-  EXPECT_FALSE(st::ic_shrink_weights(two, split, 0));
-  EXPECT_FALSE(st::ic_shrink_weights(two, std::vector<usize>{0}, 2));        // shapes
-  EXPECT_FALSE(st::ic_shrink_weights(two, std::vector<usize>{0, 2}, 2));     // theme index out of range
-  EXPECT_FALSE(st::ic_shrink_weights(two, split, 3));                        // a theme without a member
-  EXPECT_FALSE(st::ic_shrink_weights(std::vector<f64>{0.002, std::numeric_limits<f64>::quiet_NaN()}, split, 2));
+  EXPECT_FALSE(st::ic_shrink_weights(four, pairs, 0));
+  EXPECT_FALSE(st::ic_shrink_weights(four, std::vector<usize>{0, 0, 1}, 2));      // shapes
+  EXPECT_FALSE(st::ic_shrink_weights(four, std::vector<usize>{0, 0, 1, 2}, 2));   // theme index out of range
+  EXPECT_FALSE(st::ic_shrink_weights(four, pairs, 3));                            // a theme without a member
+  EXPECT_FALSE(st::ic_shrink_weights(std::vector<f64>{0.002, 0.002, 0.001, std::numeric_limits<f64>::quiet_NaN()},
+                                     pairs, 2));
   EXPECT_FALSE(st::ic_shrink_weights(std::vector<f64>(257, 0.001), std::vector<usize>(257, 0), 1));
   std::vector<f64> wide(33, 0.001);
   std::vector<usize> each(33);
   for (usize k = 0; k < each.size(); ++k) each[k] = k;
-  EXPECT_FALSE(st::ic_shrink_weights(wide, each, 33));                       // 33 themes
-  // One theme: the cap 1/2 binds on the larger member and no other theme can take the excess.
-  const auto alone = st::ic_shrink_weights(two, std::vector<usize>{0, 0}, 1);
+  EXPECT_FALSE(st::ic_shrink_weights(wide, each, 33));                            // 33 themes
+  // One theme: the cap 1/2 binds on the larger member and no other theme can take the excess;
+  // two single-member themes: both capped at 1/4, nobody left to take the excess.
+  EXPECT_FALSE(st::ic_shrink_weights(std::vector<f64>{0.002, 0.001}, std::vector<usize>{0, 1}, 2));
+  const auto alone = st::ic_shrink_weights(std::vector<f64>{0.002, 0.001}, std::vector<usize>{0, 0}, 1);
   ASSERT_FALSE(alone);
   EXPECT_NE(alone.error().to_string().find("ic-shrink-v1: group cap"), std::string::npos)
       << alone.error().to_string();

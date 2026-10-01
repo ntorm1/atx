@@ -78,7 +78,7 @@ group_shrink_shares(std::span<const atx::f64> estimate, std::span<const atx::usi
     kept[k] = out.shrunk[k] > minimum ? out.shrunk[k] : minimum;
     mass[g] += kept[k];
   }
-  for (atx::usize g = 0; g < groups; ++g) out.equal[g] = mass[g] > 0.0 ? 0U : 1U;
+  for (atx::usize g = 0; g < groups; ++g) out.equal[g] = static_cast<atx::u8>(mass[g] > 0.0 ? 0U : 1U);
   for (atx::usize k = 0; k < estimate.size(); ++k) {
     const atx::usize g = group[k];
     out.share[k] = out.equal[g] != 0U ? 1.0 / static_cast<atx::f64>(count[g]) : kept[k] / mass[g];
