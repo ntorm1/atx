@@ -988,7 +988,7 @@ TEST(StrategyMineCampaign, RhoStepReadsTheWholeShortlistBeforeTheCap) {
   const Json campaign = read_json(out / "campaign.json");
   const Json &promotions = campaign.at("promotions");
   ASSERT_GE(promotions.size(), 2U);
-  const Json &blocked = promotions[0];
+  const Json &blocked = promotions.front();
   EXPECT_EQ(blocked.at("dsl").get<std::string>(), lead->dsl);
   EXPECT_TRUE(blocked.at("rho_read").get<bool>());
   EXPECT_FALSE(blocked.at("rho_pass").get<bool>());
