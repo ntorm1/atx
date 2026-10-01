@@ -21,6 +21,9 @@ against that manifest from the exact bytes parsed; nothing available on or after
 * ``regsho_threshold/`` (D3b): ``lists.parquet`` and ``year=YYYY/threshold.parquet``; the listing market of a line comes
   from ``security_master/finra_names.parquet`` (FINRA short-interest rows, PIT at their dissemination).
 * ``short_volume_ext/`` (D3c): ``year=YYYY/short_volume_ext.parquet``; the role's own ``volume.f64``/``present.u8``.
+* ``security_master/finra_names.parquet`` also feeds ``exch_up_365d`` (platform v8 LIB2, kind ``xsw``): a recent move of
+  the line's listing up to NYSE or NYSE American (Dharan and Ikenberry 1995), decided row by row as the name rows
+  become visible (``XSW_RULE``). Opt-in: no other kind's producing code reaches it.
 
 Visibility (the v7 data-request house rule, ``VISIBILITY_RULE``): a source row is usable at role session t iff its
 ``available_at < date(t-1) 22:00 UTC`` (t-1 = the previous role session), so session 0 is NaN in every field. Field
@@ -65,12 +68,14 @@ STAGES = {
                          "staleness_days": 5},
 }
 KIND_STAGES = {"13f": ("thirteenf",), "ftd": ("ftd",), "regsho": ("regsho_threshold", "security_master"),
-               "svx": ("short_volume_ext",)}
+               "svx": ("short_volume_ext",), "xsw": ("security_master",)}
 # v8 C-3 --reuse (prepare_research_fields.reuse_module_fields): each kind's producing code is its builder function and
 # every module-level definition it reaches, plus the builder code it reads through ``ns`` / ``ctx.ns``.
-PRODUCERS = {"13f": ("build_13f",), "ftd": ("build_ftd",), "regsho": ("build_regsho",), "svx": ("build_svx",)}
+PRODUCERS = {"13f": ("build_13f",), "ftd": ("build_ftd",), "regsho": ("build_regsho",), "svx": ("build_svx",),
+             "xsw": ("build_xsw",)}
 HOST_HANDLES = ("ns",)
-KIND_CHECK_KEY = {"13f": "thirteenf", "ftd": "ftd", "regsho": "regsho_threshold", "svx": "short_volume_ext"}
+KIND_CHECK_KEY = {"13f": "thirteenf", "ftd": "ftd", "regsho": "regsho_threshold", "svx": "short_volume_ext",
+                  "xsw": "listing_switch"}
 STAGE_KWARGS = tuple(k for s in STAGES for k in (s, s + "_sha256"))
 
 VISIBILITY_RULE = ("a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous "
@@ -125,6 +130,24 @@ REGSHO_LIST_STATUSES = ("list", "empty_list")
 SVX_WINDOW = 126
 SVX_MIN_SESSIONS = 63
 SVX_DOMAIN = (0.0, 1.0)
+# Exchange listing up-switches (v8 LIB2; declared blind, before any field value was read)
+XSW_WINDOW_DAYS = 365       # an up-switch counts while date(t) - its dissemination date <= 365 days ("past year")
+XSW_MAX_GAP_DAYS = 45       # rows of a line more than 45 days apart are not compared; a latest row older than 45 days
+                            # leaves the listing market unknown (NaN), as REGSHO_NAME_MAX_AGE_DAYS
+XSW_VENUES = ("nasdaq", "amex", "nyse")
+XSW_VENUE_OF_CLASS = {"NNM": "nasdaq", "SC": "nasdaq", "AMEX": "amex", "NYSE": "nyse"}   # any other class: other (-1)
+XSW_UP = (("nasdaq", "nyse"), ("amex", "nyse"), ("nasdaq", "amex"))   # Dharan-Ikenberry's moves (CZ ExchSwitch)
+XSW_NO_DAY = -(1 << 40)     # "no up-switch yet": far below any epoch day, so date(t) - it never fits the window
+XSW_RULE = (
+    "finra-listing-up-switch-v1: the listing venue of a FINRA name row is its market_class mapped NNM/SC -> nasdaq, "
+    "AMEX -> amex (NYSE American), NYSE -> nyse, any other class (ARCA, BZX, OTC, IEX, null) -> other. The rows of "
+    "the role's lines are taken in visibility order (available_at, then dissemination_date, then venue, then file "
+    "order). Per line: "
+    "the first row sets the current (dissemination date, venue); a row with a later dissemination date advances it and "
+    "is an up-switch when current venue -> row venue is nasdaq -> nyse, amex -> nyse or nasdaq -> amex and the two "
+    "dissemination dates are at most 45 days apart; a row on the current date with another venue makes the current "
+    "venue other (conflict: the next row cannot switch from it); a row dated before the current one is ignored (out of "
+    "order). An event is decided when its row becomes visible and is never revised by a later row")
 
 _SESSION_T2 = "the window ends at session t-2, the newest session whose next-day file is visible before the t-1 mark"
 
@@ -233,6 +256,27 @@ HOLD_FIELDS = {
          "files as landed long after the trade date (vintage_risk)",
          "vendor volume is taken as consolidated volume; the ratio of FINRA total volume to it is reported per year in "
          "source_checks.holdings.short_volume_ext"]),
+    "exch_up_365d": _spec(
+        "xsw", "finra-listing-up-switch365-v1", "indicator (0/1)",
+        "1 when the line's latest visible up-switch of its listing exchange (Nasdaq -> NYSE, NYSE American -> NYSE or "
+        "Nasdaq -> NYSE American; Dharan and Ikenberry 1995, the Chen-Zimmermann ExchSwitch moves) has a dissemination "
+        "date d with date(t) - d <= 365 days, else 0. " + XSW_RULE + ".",
+        "finra-names-up-switch-asof-v1: FINRA name rows (security_master finra_names, PIT at their dissemination "
+        "available_at) are usable at role session t iff available_at < date(t-1) 22:00 UTC; the line's state and its "
+        "events at t come from those rows only",
+        "NaN when the line's latest visible name row is more than 45 days older than date(t) (listing market unknown, "
+        "as regsho_threshold_days63), or when the visible name rows (any line of the role) do not reach back 410 days "
+        "(365 + 45) "
+        "before date(t) (short history: an earlier move could not be seen); session 0 -> NaN",
+        ["finra_names.security_id", "finra_names.available_at", "finra_names.dissemination_date",
+         "finra_names.market_class"],
+        ["a listing move shows at the line's first short-interest row after it (semi-monthly: up to about 15 days "
+         "late); the event date is that row's dissemination date, not the listing date",
+         "FINRA short interest before June 2021 is FINRA's later republication: its market class is as republished "
+         "(vintage risk)",
+         "a move that coincides with a new vendor security_id is not seen; a de-SPAC that keeps its vendor line and "
+         "moves from Nasdaq to NYSE is an up-switch",
+         "moves to or from NYSE Arca, Cboe BZX or OTC are not events (Dharan-Ikenberry use CRSP exchange codes)"]),
 }
 FORMULA_IDS = {k: v["formula_id"] for k, v in HOLD_FIELDS.items()}
 
@@ -1055,6 +1099,102 @@ def build_svx(ctx: Ctx, names, stage: Stage):
     return {x: w}, st, {x: {"nan_reasons_member_cells": reasons[x]}}, role_sources
 
 
+def xsw_events(col: np.ndarray, dd: np.ndarray, ven: np.ndarray) -> tuple:
+    """``XSW_RULE`` over rows already in visibility order: (up-switch flag per row, the line's current dissemination
+    day and venue after each row, outcome counts). ``ven`` indexes XSW_VENUES, -1 = other."""
+    up = {(XSW_VENUES.index(a), XSW_VENUES.index(b)) for a, b in XSW_UP}
+    n = len(col)
+    event = np.zeros(n, dtype=bool)
+    state_dd, state_ven = np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int64)
+    counts = dict.fromkeys(("first_rows", "advancing_rows", "up_switches", "advancing_beyond_gap", "conflicts",
+                            "out_of_order_rows"), 0)
+    cur: dict = {}
+    for i, (c, d, v) in enumerate(zip(col.tolist(), dd.tolist(), ven.tolist())):
+        s = cur.get(c)
+        if s is None:
+            s = cur[c] = [d, v]
+            counts["first_rows"] += 1
+        elif d > s[0]:
+            counts["advancing_rows"] += 1
+            if d - s[0] > XSW_MAX_GAP_DAYS:
+                counts["advancing_beyond_gap"] += 1
+            elif (s[1], v) in up:
+                event[i] = True
+                counts["up_switches"] += 1
+            s[0], s[1] = d, v
+        elif d == s[0]:
+            if v != s[1] and s[1] != -1:
+                s[1] = -1
+                counts["conflicts"] += 1
+        else:
+            counts["out_of_order_rows"] += 1
+        state_dd[i], state_ven[i] = s[0], s[1]
+    return event, state_dd, state_ven, counts
+
+
+def build_xsw(ctx: Ctx, names, stage: Stage):
+    role, ns, n, nd = ctx.role, ctx.ns, ctx.role.n, ctx.role.n_dates
+    fn = stage.table("finra_names.parquet", ["security_id", "available_at", "dissemination_date", "market_class"])
+    f_sid, f_av, f_dd = _ids(_col(fn, "security_id")), _instants(_col(fn, "available_at")), \
+        _days(_col(fn, "dissemination_date"))
+    classes = list(XSW_VENUE_OF_CLASS)
+    venue_of = np.array([XSW_VENUES.index(XSW_VENUE_OF_CLASS[c]) for c in classes] + [-1], dtype=np.int64)
+    f_ven = venue_of[_codes(_col(fn, "market_class"), classes)]          # an unlisted class (-1) -> other
+    del fn
+    pos, on = role.columns_of(np.maximum(f_sid, 0))
+    sealed = f_av >= SEAL_NS
+    keep = on & (f_sid > 0) & ~sealed
+    st = {"rows": int(len(f_sid)), "rows_sealed": int(np.count_nonzero(sealed)),
+          "rows_on_role": int(np.count_nonzero(keep))}
+    idx = np.flatnonzero(keep)
+    order = idx[np.lexsort((idx, f_ven[idx], f_dd[idx], f_av[idx]))]   # visibility order, deterministic ties
+    av, dd, col = f_av[order], f_dd[order], pos[order]
+    event, state_dd, state_ven, counts = xsw_events(col, dd, f_ven[order])
+    del f_sid, f_av, f_dd, f_ven, pos, on, sealed, keep, idx, order, state_ven
+    _release()
+    st.update(counts)
+    ctx.budget.check("xsw-read")
+    reasons = _reasons(names, ("short_history", "market_unknown"))
+    x = names[0]
+    latest = np.full(n, -1, dtype=np.int64)
+    last_up = np.full(n, XSW_NO_DAY, dtype=np.int64)
+    first_dd = None
+    flagged = p = 0
+    w = ns["FieldWriter"](ctx.output, x, role)
+    try:
+        for t in range(nd):
+            p2 = int(np.searchsorted(av, ctx.pm[t], side="left"))        # rows with available_at < mark(t-1)
+            if p2 > p:
+                np.maximum.at(latest, col[p:p2], np.arange(p, p2, dtype=np.int64))
+                e = event[p:p2]
+                np.maximum.at(last_up, col[p:p2][e], dd[p:p2][e])
+                low = int(dd[p:p2].min())
+                first_dd = low if first_dd is None else min(first_dd, low)
+                p = p2
+            day = int(ctx.days[t])
+            member = ctx.member[t]
+            r = reasons[x]
+            row = np.full(n, np.nan)
+            if first_dd is None or day - XSW_WINDOW_DAYS - XSW_MAX_GAP_DAYS < first_dd:
+                r["short_history"] += int(np.count_nonzero(member))
+            else:
+                li = np.maximum(latest, 0)
+                fresh = (latest >= 0) & (day - state_dd[li] <= XSW_MAX_GAP_DAYS)
+                row = np.where(fresh, (day - last_up <= XSW_WINDOW_DAYS).astype(np.float64), np.nan)
+                r["market_unknown"] += int(np.count_nonzero(member & ~fresh))
+                flagged += int(np.count_nonzero(member & (row == 1.0)))
+            w.write(row)
+            if t % 256 == 0:
+                ctx.budget.check("xsw-write")
+    except BaseException:
+        w.f.close()
+        raise
+    w.close()
+    st["flagged_member_cells"] = flagged
+    st["lines_with_an_up_switch"] = int(np.count_nonzero(last_up > XSW_NO_DAY))
+    return {x: w}, st, {x: {"nan_reasons_member_cells": reasons[x]}}
+
+
 def _role_matrix(role, name: str, dtype: str) -> np.ndarray:
     entry = role.manifest["files"].get(name)
     blob = (role.dir / name).read_bytes()
@@ -1174,6 +1314,15 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
             sources[x] = stages["short_volume_ext"].sources() + role_src
         _release()
         budget.report("holdings-svx-complete")
+    if "xsw" in kinds:
+        w, st, ex = build_xsw(ctx, kinds["xsw"], stages["security_master"])
+        writers.update(w)
+        extras.update(ex)
+        checks["listing_switch"] = st
+        for x in kinds["xsw"]:
+            sources[x] = stages["security_master"].sources()
+        _release()
+        budget.report("holdings-xsw-complete")
     for x in todo:
         if "shares_out" in HOLD_FIELDS[x].get("requires", []):
             sources[x] = sources[x] + [so_source]
