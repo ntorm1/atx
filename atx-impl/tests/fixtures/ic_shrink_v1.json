@@ -1,0 +1,24 @@
+{
+  "about": "Composition rule ic-shrink-v1 (platform v8 R-10). Shared by atx-impl/tests/strategy_ic_shrink_test.cpp (the C++ rule, IcShrinkV1.SharedFixtureFractions) and atx-impl/tools/test_composition_ic_shrink.py (the fitter's rule): both must reproduce these exact fractions [numerator, denominator] to 1e-15, so the Python fitter equals the C++ rule on this fixture. Derivation (T = 4 themes, cap 1/8, intensity 1/2, floor 0): value ic {.006, .002, -.004}, mean 1/750, shrunk {11/3000, 1/600, -1/750}, floored shares {11/16, 5/16, 0}; momentum {.003, .001, .002}, mean 1/500, shrunk {1/400, 3/2000, 1/500}, shares {5/12, 1/4, 1/3}; quality {-.001, -.003, -.002}, every shrunk value negative, equal shares 1/3; flow {.002, .004, .003}, mean 3/1000, shrunk {1/400, 7/2000, 3/1000}, shares {5/18, 7/18, 1/3}. w = share / 4: a1 = 11/64 is above 1/8, capped; its excess 3/64 goes to the nine members of the other themes pro rata (their mass 3/4): each x 17/16. One capping pass.",
+  "intensity": 0.5,
+  "floor": 0.0,
+  "theme_order": ["value", "momentum", "quality", "flow"],
+  "cap": [1, 8],
+  "cap_passes": 1,
+  "equal_share_themes": ["quality"],
+  "capped": ["a1"],
+  "members": [
+    {"id": "a1", "theme": "value", "ic": 0.006, "shrunk": [11, 3000], "share": [11, 16], "weight": [1, 8]},
+    {"id": "a2", "theme": "value", "ic": 0.002, "shrunk": [1, 600], "share": [5, 16], "weight": [5, 64]},
+    {"id": "a3", "theme": "value", "ic": -0.004, "shrunk": [-1, 750], "share": [0, 1], "weight": [0, 1]},
+    {"id": "b1", "theme": "momentum", "ic": 0.003, "shrunk": [1, 400], "share": [5, 12], "weight": [85, 768]},
+    {"id": "b2", "theme": "momentum", "ic": 0.001, "shrunk": [3, 2000], "share": [1, 4], "weight": [17, 256]},
+    {"id": "b3", "theme": "momentum", "ic": 0.002, "shrunk": [1, 500], "share": [1, 3], "weight": [17, 192]},
+    {"id": "c1", "theme": "quality", "ic": -0.001, "shrunk": [-3, 2000], "share": [1, 3], "weight": [17, 192]},
+    {"id": "c2", "theme": "quality", "ic": -0.003, "shrunk": [-1, 400], "share": [1, 3], "weight": [17, 192]},
+    {"id": "c3", "theme": "quality", "ic": -0.002, "shrunk": [-1, 500], "share": [1, 3], "weight": [17, 192]},
+    {"id": "d1", "theme": "flow", "ic": 0.002, "shrunk": [1, 400], "share": [5, 18], "weight": [85, 1152]},
+    {"id": "d2", "theme": "flow", "ic": 0.004, "shrunk": [7, 2000], "share": [7, 18], "weight": [119, 1152]},
+    {"id": "d3", "theme": "flow", "ic": 0.003, "shrunk": [3, 1000], "share": [1, 3], "weight": [17, 192]}
+  ]
+}

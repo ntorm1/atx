@@ -3100,4 +3100,147 @@ TEST(StrategyIcRunner, DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput) {
     ASSERT_TRUE(declare(manifest,false,train?role_cfg.train_sha256:role_cfg.validation_sha256));
   }
 }
+// ---- Platform v8 R-10: composition ic-shrink-v1 (the theme_standardise rule table) ----
+// Six candidates in two themes (T = 2, cap 1/4): liquidity {volume_level .004, volume_vee .002,
+// volume_lag_1 .003} (mean .003, shares 7/18, 5/18, 6/18) and size {volume_rank .001,
+// volume_lag_2 .003, volume_lag_3 -.004} (mean 0, volume_lag_3 floored, shares 1/4, 3/4, 0).
+// w = share / 2; volume_lag_2's 3/8 is capped at 1/4 and its 1/8 goes to the liquidity members
+// (x 5/4): {35/144, 25/144, 30/144 | 1/8, 1/4, 0}, the hand derivation the runner verifies.
+bool shrink_library(atx::impl::strategy::IcRunnerConfig& cfg) {
+  auto lib=read_json(cfg.library_path);
+  lib["candidates"].push_back({{"id","volume_vee"},{"family","fixed_volume"},{"dsl","abs(volume - 450000000)"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  for (usize k=1;k<=3;++k)
+    lib["candidates"].push_back({{"id","volume_lag_"+std::to_string(k)},{"family","fixed_volume"},
+        {"dsl","delay(volume, "+std::to_string(k)+")"},{"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  return json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+struct ShrinkMember { const char* id; const char* theme; f64 ic; f64 weight; };
+const std::vector<ShrinkMember> shrink_members{
+    {"volume_level","liquidity",.004,35.0/144},{"volume_rank","size",.001,1.0/8},
+    {"volume_vee","liquidity",.002,25.0/144},{"volume_lag_1","liquidity",.003,30.0/144},
+    {"volume_lag_2","size",.003,1.0/4},{"volume_lag_3","size",-.004,0.0}};
+// The members' weights file: weights, +1 signs of the weighted members, and a theme_standardise
+// block of `rule` (rerank true) naming their themes; ic-shrink-v1 adds its ic_shrink inputs.
+Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule) {
+  Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
+  for (const auto& m:shrink_members) {
+    weights[m.id]=m.weight;
+    members[m.id]={{"theme",m.theme},{"ic",m.ic}};
+    if (m.weight>0) { signs[m.id]=1; themes[m.id]=m.theme; }
+  }
+  Json block{{"rule",rule},{"rerank",true},{"themes",themes}};
+  if (rule=="ic-shrink-v1") block["ic_shrink"]=Json{{"intensity",.5},{"floor",0.0},{"members",members}};
+  return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block}};
+}
+// ic-shrink-v1 runs ew-theme-std-v1's per-date standardisation unchanged: the same weights pinned
+// under either rule give the same blend, planned targets and IC rows byte for byte (the flag-
+// absent identity of the rule table: an ew-theme-std-v1 file keeps its records). The recipe, the
+// combined manifests and the summary name the rule; the marginal verb's reader takes the block as
+// a standardised one.
+TEST(CompositionV8, IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const Json& doc) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,doc.dump(),cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",shrink_doc(cfg,"ew-theme-std-v1")));
+  const auto standard=run_named(dir,cfg,"std"); ASSERT_TRUE(standard.ok) << standard.error;
+  ASSERT_TRUE(pin("shrink.json",shrink_doc(cfg,"ic-shrink-v1")));
+  const auto shrink=run_named(dir,cfg,"shrink"); ASSERT_TRUE(shrink.ok) << shrink.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8","_planned_targets.csv"}) {
+      const auto expected=file_sha(dir.path/"std"/(role_name+suffix)); ASSERT_FALSE(expected.empty()) << suffix;
+      EXPECT_EQ(file_sha(dir.path/"shrink"/(role_name+suffix)),expected) << suffix;
+    }
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_FALSE(combined_rows(dir.path/"std"/daily).empty());
+    EXPECT_EQ(combined_rows(dir.path/"shrink"/daily),combined_rows(dir.path/"std"/daily));
+    EXPECT_EQ(member_rows(dir.path/"shrink"/daily),member_rows(dir.path/"std"/daily));
+    auto std_manifest=read_json(dir.path/"std"/(role_name+"_combined.json"));
+    auto shrink_manifest=read_json(dir.path/"shrink"/(role_name+"_combined.json"));
+    EXPECT_EQ(std_manifest.at("composition_standardise"),"ew-theme-std-v1");
+    EXPECT_EQ(shrink_manifest.at("composition_standardise"),"ic-shrink-v1");
+    for (auto* manifest:{&std_manifest,&shrink_manifest})
+      for (const auto* key:{"composition_standardise","composition_weights_sha256","run_recipe_sha256"})
+        manifest->erase(key);
+    EXPECT_EQ(shrink_manifest,std_manifest);
+  }
+  auto std_recipe=read_json(dir.path/"std"/"recipe.json"),shrink_recipe=read_json(dir.path/"shrink"/"recipe.json");
+  EXPECT_EQ(std_recipe.at("composition_standardise"),"ew-theme-std-v1");
+  EXPECT_EQ(shrink_recipe.at("composition_standardise"),"ic-shrink-v1");
+  for (auto* recipe:{&std_recipe,&shrink_recipe}) {
+    recipe->erase("composition_standardise"); recipe->erase("composition_weights_sha256");
+  }
+  EXPECT_EQ(shrink_recipe,std_recipe); // the same per-date method statement
+  EXPECT_EQ(read_json(dir.path/"std"/"summary.json").at("composition_weights").at("standardise"),"ew-theme-std-v1");
+  EXPECT_EQ(read_json(dir.path/"shrink"/"summary.json").at("composition_weights").at("standardise"),"ic-shrink-v1");
+  const auto grouping=atx::impl::strategy::ic_weights_themes(text_of(dir.path/"shrink.json"));
+  ASSERT_TRUE(grouping) << grouping.error().to_string();
+  EXPECT_EQ(grouping->block,"theme_standardise"); EXPECT_TRUE(grouping->rerank);
+  EXPECT_EQ(grouping->themes.size(),5U);
+}
+// The runner verifies an ic-shrink-v1 file against its recorded inputs before any payload or
+// output: weights off the rule (beyond 1e-12), other constants, rerank off, missing or malformed
+// inputs, a weighted non-member, a themes entry that is not the member's theme, an unknown rule.
+TEST(CompositionV8, IcShrinkRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const auto attempt=[&](const Json& doc,bool plan_only,std::ostringstream& log) {
+    cfg.plan_only=plan_only;
+    if (!text_file(path,doc.dump(),cfg.composition_weights_sha256)) return std::string("unwritable");
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    return status?std::string{}:status.error().to_string();
+  };
+  const auto good=shrink_doc(cfg,"ic-shrink-v1");
+  const auto change=[&](auto&& edit) { auto doc=good; edit(doc); return doc; };
+  // Admitted: the rule's weights, and weights within the 1e-12 tolerance of them.
+  const auto within=change([](Json& d) { d["weights"]["volume_level"]=35.0/144+5e-13; });
+  for (const auto* doc:{&good,&within}) {
+    std::ostringstream log; EXPECT_EQ(attempt(*doc,true,log),"");
+  }
+  const std::string registered="intensity and floor must be the registered 0.5 and 0";
+  const std::string malformed="member volume_level needs {theme";
+  const std::vector<std::pair<Json,std::string>> cases{
+      {change([](Json& d) { d["weights"]["volume_level"]=35.0/144+1e-9; d["weights"]["volume_vee"]=25.0/144-1e-9; }),
+       "composition weight of volume_level is"},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["intensity"]=.25; }),registered},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["floor"]=.001; }),registered},
+      {change([](Json& d) { d["theme_standardise"].erase("ic_shrink"); }),"needs ic_shrink"},
+      {change([](Json& d) { d["theme_standardise"]["rerank"]=false; }),
+       "theme_standardise rule ic-shrink-v1 needs rerank true"},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]=Json::object(); }),
+       "ic_shrink.members must be a non-empty object"},
+      {change([](Json& d) {
+         d["theme_standardise"]["ic_shrink"]["members"]["other"]=Json{{"theme","size"},{"ic",.001}};
+       }),"member of unknown candidate: other"},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_level"]["ic"]="0.004"; }),malformed},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_level"]["ic"]=nullptr; }),malformed},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_level"]["theme"]="Liquidity"; }),
+       malformed},
+      // Without volume_level the rule on the other five members is feasible ({1/4 x 4, 0}); the
+      // weighted volume_level is refused as a non-member before its weight is compared.
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"].erase("volume_level"); }),
+       "weighted candidate volume_level is not an ic_shrink member"},
+      {change([](Json& d) { d["theme_standardise"]["themes"]["volume_level"]="size"; }),
+       "themes.volume_level is not its ic_shrink member theme"},
+      {change([](Json& d) { d["theme_standardise"]["rule"]="ic-shrink-v2"; }),
+       "theme_standardise must be {rule: ew-theme-std-v1, rerank: true|false, themes: {id: theme}} or "
+       "{rule: ic-shrink-v1"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [doc,reason]:cases) {
+      std::ostringstream log;
+      const auto error=attempt(doc,plan_only,log);
+      ASSERT_FALSE(error.empty()) << doc.dump();
+      EXPECT_NE(error.find(reason),std::string::npos) << doc.dump() << " -> " << error;
+      EXPECT_TRUE(log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
 } // namespace
