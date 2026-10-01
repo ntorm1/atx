@@ -168,13 +168,12 @@ inline constexpr atx::usize kCostVolWindow = 60U;
   return std::sqrt(ss / static_cast<atx::f64>(n)); // population std
 }
 
-// The aggregate OOS metrics produced by averaging compute_metrics().fitness/
-// .sharpe over the CPCV TEST folds, plus the candidate's full realized OOS PnL
-// stream (the diversification + deflation input).
+// Fold-averaged WQ fitness and turnover, plus the unique realized PnL stream
+// used for diversification and deflation. These are search-window scores;
+// independent post-selection validation requires a separate holdout.
 struct OosAggregate {
   atx::f64 wq;       // mean fold WQ fitness
-  atx::f64 sharpe;   // mean fold ANNUALIZED Sharpe (de-annualized before deflation)
-  atx::f64 turnover; // S3-0: mean fold turnover (same averaging as wq/sharpe)
+  atx::f64 turnover; // S3-0: mean fold turnover (same averaging as wq)
   // The candidate's FULL realized PnL stream (length == n_periods). Used at full
   // length for corr-to-pool (must match the pool members' stream length; the
   // shared structural index-0 ~0 is mean-centered away in Pearson — correlation.hpp
@@ -182,20 +181,6 @@ struct OosAggregate {
   // is dropped (see pool_aware_fitness: skew/kurtosis/T are taken over r[1..)).
   std::vector<atx::f64> oos_pnl;
 };
-
-// Slice a flat per-period stream by an ascending index set (one fold's TEST
-// indices). `width` == 1 for the PnL stream; == n_instruments for positions.
-[[nodiscard]] std::vector<atx::f64>
-slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, atx::usize width) {
-  std::vector<atx::f64> out;
-  out.reserve(idx.size() * width);
-  for (const atx::usize t : idx) {
-    for (atx::usize j = 0U; j < width; ++j) {
-      out.push_back(flat[t * width + j]);
-    }
-  }
-  return out;
-}
 
 // Per-period positions for alpha 0, flat-packed [n_periods * n_instruments]
 // (positions(0, t) is one contiguous cross-section; concatenate over periods).
@@ -211,46 +196,50 @@ slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, at
   return out;
 }
 
-// Aggregate the OOS WQ fitness / Sharpe over the CPCV TEST folds of alpha 0's
-// streams. F3: only TEST indices are scored — never in-sample. The causal VM is
-// evaluated CONTIGUOUSLY (warm-up intact) then the realized PnL/positions are
-// SLICED by each fold's test indices — equivalent precisely because nothing is
-// fitted (§4.6). `wq`/`sharpe` are the MEAN over folds (the OOS-only estimate).
-//
-// The exposed `oos_pnl` is the candidate's FULL realized PnL stream MINUS the
-// structural index-0 zero (combine's §0-F convention): every period is a TEST
-// observation in at least one CPCV fold (the union of all test groups covers
-// [0, N)), so the deduplicated "full OOS PnL" IS the whole stream. Using it (not
-// the fold-concatenation, which repeats each period across overlapping folds)
-// keeps T = the true OOS count for deflation and the corr/moment inputs honest.
+// Aggregate the selected dates of each CPCV fold. Evaluate the causal VM and
+// trades continuously before selecting dates, preserving warmup and adjacency.
+// The full stream includes its structural zero for pool correlation; only the
+// moment calculations drop that zero. Never concatenate overlapping folds for
+// DSR: doing so repeats observations and artificially increases sample size.
 [[nodiscard]] OosAggregate aggregate_oos(const alpha::AlphaStreams &strm,
                                          const std::vector<eval::CpcvFold> &folds,
                                          atx::usize n_instruments, atx::f64 book_size) {
   const std::span<const atx::f64> pnl0 = strm.pnl(0);
   const std::vector<atx::f64> pos0 = positions_flat0(strm);
+  std::vector<atx::f64> turnover;
+  (void)combine::detail::turnover_fill(pos0, n_instruments, book_size, &turnover);
+  // Reuse scalar scratch across folds. Position differences must be computed
+  // on the original calendar: joining test blocks invents trades across gaps.
+  std::vector<atx::f64> test_pnl;
+  test_pnl.reserve(pnl0.size() + 1U);
 
   atx::f64 sum_wq = 0.0;
-  atx::f64 sum_sharpe = 0.0;
-  atx::f64 sum_turnover = 0.0; // S3-0: accumulated alongside wq/sharpe, same valid-fold gate
+  atx::f64 sum_turnover = 0.0; // S3-0: accumulated alongside wq, same valid-fold gate
   atx::usize n_valid = 0U;
   for (const eval::CpcvFold &fold : folds) {
     if (fold.test_idx.empty()) {
       continue;
     }
-    const std::vector<atx::f64> test_pnl =
-        slice_by_idx(pnl0, std::span<const atx::usize>{fold.test_idx}, 1U);
-    const std::vector<atx::f64> test_pos = slice_by_idx(
-        std::span<const atx::f64>{pos0}, std::span<const atx::usize>{fold.test_idx}, n_instruments);
-    const combine::AlphaMetrics m =
-        combine::compute_metrics(test_pnl, test_pos, n_instruments, book_size);
+    // compute_metrics excludes its first input as a structural zero. A fold
+    // starting later than date zero starts with a REAL return, so prepend the
+    // structural zero explicitly and skip only the global structural date.
+    test_pnl.assign(1U, 0.0);
+    atx::f64 traded = 0.0;
+    for (const auto t : fold.test_idx) {
+      if (t != 0U) test_pnl.push_back(pnl0[t]);
+      if (!turnover.empty()) traded += turnover[t];
+    }
+    combine::AlphaMetrics m = combine::compute_metrics(test_pnl, {}, 0U, book_size);
+    m.turnover = traded / static_cast<atx::f64>(fold.test_idx.size());
+    m.fitness = std::sqrt(std::abs(m.returns) /
+        std::max(m.turnover, combine::kTurnoverFloor)) * m.sharpe;
     // A degenerate fold (zero-variance / single-obs) yields NaN moments; skip it
     // from the mean rather than poison the aggregate with NaN.
     // S3-0: turnover is NOT NaN for a degenerate fold (mean_turnover returns 0 for
     // an empty/zero-instrument stream, never NaN); we gate it on the same n_valid
-    // counter as wq/sharpe for a consistent average denominator.
+    // counter as wq for a consistent average denominator.
     if (!std::isnan(m.fitness)) {
       sum_wq += m.fitness;
-      sum_sharpe += std::isnan(m.sharpe) ? 0.0 : m.sharpe;
       sum_turnover += m.turnover; // m.turnover is always finite (mean_turnover never NaN)
       ++n_valid;
     }
@@ -258,7 +247,7 @@ slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, at
   const atx::f64 inv = (n_valid == 0U) ? 0.0 : 1.0 / static_cast<atx::f64>(n_valid);
   // Full realized stream (length == n_periods) — see OosAggregate::oos_pnl.
   std::vector<atx::f64> oos_pnl(pnl0.begin(), pnl0.end());
-  return OosAggregate{sum_wq * inv, sum_sharpe * inv, sum_turnover * inv, std::move(oos_pnl)};
+  return OosAggregate{sum_wq * inv, sum_turnover * inv, std::move(oos_pnl)};
 }
 
 // One label span per period: a point alpha's label is [t, t+1) (it informs only
@@ -481,26 +470,21 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 
   // (5) deflation by the running trial count N (F4): higher N -> lower dsr.
   //
-  // RECONCILIATION (§0.7): combine::compute_metrics().sharpe is ANNUALIZED
-  // (sqrt(252)*mean/std), but eval::deflated_sharpe expects a PER-PERIOD Sharpe
-  // (its variance-of-Sharpe estimator and finite-sample (T-1) correction are
-  // per-observation). We therefore DE-ANNUALIZE the aggregate Sharpe by
-  // sqrt(252) before deflation — feeding the annualized figure saturates PSR to
-  // 1.0 and the trial-count lever never bites. skew/kurtosis are scale-free, so
-  // no adjustment is needed there.
-  // Moment/T input = r[1..) — drop the structural index-0 zero (combine §0-F: it
-  // would bias mean/variance). The full-length oos_pnl is for corr-to-pool only.
+  // DSR's Sharpe, T, skewness and kurtosis must describe the SAME unique
+  // realized sample. Averaging fold Sharpes is nonlinear and cannot be paired
+  // with full-stream moments (nor treated as independent observations).
+  // Drop only the original structural zero; retain full length for pool corr.
   const std::span<const atx::f64> oos_full{agg.oos_pnl};
   const std::span<const atx::f64> moments = (oos_full.size() > 1U) ? oos_full.subspan(1) : oos_full;
   const atx::usize T = moments.size();
-  const atx::f64 per_period_sharpe = agg.sharpe / std::sqrt(combine::kAnnualizationDays);
+  const auto sample = eval::mean_std_pop(moments);
+  const atx::f64 per_period_sharpe = sample.std == 0.0 ? 0.0 : sample.mean / sample.std;
   const eval::DsrResult dsr =
       eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
                             eval::excess_kurtosis(moments), cfg.trial_count, std::nullopt);
 
   // (5b) W4a split-sample stability over the SAME index-0-dropped OOS PnL stream
-  // (`moments`). Full-sample per-period Sharpe sign reference (de-annualized
-  // agg.sharpe; the /sqrt(252) factor is sign-preserving). split_half_sharpe slices
+  // (`moments`). Full-sample per-period Sharpe sign reference. split_half_sharpe slices
   // at the floor midpoint and forms each half's per-period Sharpe (single source of
   // truth, unit-tested). PURE over `moments` — no value/RNG/digest perturbation.
   const atx::f64 full_sign =
