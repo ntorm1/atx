@@ -219,22 +219,20 @@ V6_MERGED_THEMES = {"options_implied": "short_interest"}
 V6_FAST_TAU = 0.08          # standalone daily TRAIN tau_k >= this marks a fast sleeve (admission.json candidates[].tau)
 V6_FAST_FACTOR = 1.0 / 3.0  # a fast member's within-theme weight multiplier
 V6_REDISTRIBUTION = "within-theme-v1"
-PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
-COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
-PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_RULE_ID,),  # v8 R-1 registration
-                                    COMPOSITIONS + (composition_rules.STD_RULE_ID,))
-PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,),  # v8 R-3, Ruling E-27
-                                    COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
 # v8 R-3 on an ew-theme-v1 parent (Rulings E-27a, E-27b): ew-theme-aim-v2, the gains renormalised inside each theme and
 # the member cap 1/(2T), composition_rules.ew_theme_aim_v2 (the code of ew-theme-std-aim-v1); ew-theme-aim-v1 keeps v5.
 AIM_V2_RULE_ID = composition_rules.AIM_V2_RULE_ID
-PRIOR_COMPOSITIONS, COMPOSITIONS = PRIOR_COMPOSITIONS + (AIM_V2_RULE_ID,), COMPOSITIONS + (AIM_V2_RULE_ID,)
-PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.RULE_ID,),  # v8 R-10, Ruling E-38
-                                    COMPOSITIONS + (composition_ic_shrink.RULE_ID,))
-PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.AIM_RULE_ID,),  # R-10 on an aim
-                                    COMPOSITIONS + (composition_ic_shrink.AIM_RULE_ID,))      # parent, Ruling E-44
-AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID, AIM_V2_RULE_ID)  # the compositions that read aim gains
-AIM_RULES += (composition_ic_shrink.AIM_RULE_ID,)  # v8 R-10's aim variant (Ruling E-44)
+# The list of record of the prior compositions, in registration order (integration 6 part B): COMPOSITIONS derives
+# from it; AIM_RULES and POOLED_COMPOSITIONS are subsets of it (test_fit_composition_weights pins the three relations).
+PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID,  # v4 R4, v5 R4', v6 V6-W
+                      composition_rules.STD_RULE_ID,               # v8 R-1 registration
+                      composition_rules.STD_AIM_RULE_ID,           # v8 R-3, Ruling E-27
+                      AIM_V2_RULE_ID,                              # v8 R-3 on ew-theme-v1, Rulings E-27a, E-27b
+                      composition_ic_shrink.RULE_ID,               # v8 R-10, Ruling E-38
+                      composition_ic_shrink.AIM_RULE_ID)           # R-10 on an aim parent, Ruling E-44
+COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID) + PRIOR_COMPOSITIONS
+# The compositions that read aim gains (v5 R4', v8 R-3 and its v2, R-10's aim variant).
+AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID, AIM_V2_RULE_ID, composition_ic_shrink.AIM_RULE_ID)
 # v8 H-1 + Ruling E-35: the compositions the pooled (era) fit implements, each by the single-window code on the pooled
 # decisions (E-35a's E-27a aim rule is ew-theme-aim-v2 by Ruling E-27b, fitted by composition_rules.ew_theme_aim_v2 as
 # in the single window). ew-theme-aim-v1 (v5) is refused naming ew-theme-aim-v2; any other id is refused by name:

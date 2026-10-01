@@ -2017,6 +2017,14 @@ class AimGainRules(unittest.TestCase):
         self.assertIn("ew-theme-aim-v1", fcw.COMPOSITIONS)
         self.assertEqual(fcw.AIM_RULES, ("ew-theme-aim-v1", "ew-theme-std-aim-v1", "ew-theme-aim-v2",
                                          "ic-shrink-aim-v1"))
+        # integration 6 part B: PRIOR_COMPOSITIONS is the list of record; the other lists derive from or sit inside it
+        self.assertEqual(fcw.COMPOSITIONS, (fcw.RULE_ID, fcw.NETCOST_RULE_ID) + fcw.PRIOR_COMPOSITIONS)
+        self.assertLessEqual(set(fcw.AIM_RULES), set(fcw.PRIOR_COMPOSITIONS))
+        self.assertLessEqual(set(fcw.POOLED_COMPOSITIONS), set(fcw.PRIOR_COMPOSITIONS))
+        self.assertLessEqual(set(fcw.composition_ic_shrink.RULES) | set(fcw.composition_rules.STD_RULES),
+                             set(fcw.PRIOR_COMPOSITIONS))
+        self.assertNotIn(fcw.AIM_RULE_ID, fcw.POOLED_COMPOSITIONS)          # Ruling E-27b: the v5 rule is never pooled
+        self.assertEqual(len(set(fcw.COMPOSITIONS)), len(fcw.COMPOSITIONS))
 
     def test_aim_gain_ar1_matches_closed_form(self):
         phi, theta = 0.02, 0.05

@@ -332,6 +332,7 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
         assert want in fcw.AIM_RULES                                       # the fitter computes the aim records
+    assert (RC.V5_AIM_RULE, RC.V8_AIM_RULE) == (fcw.AIM_RULE_ID, fcw.AIM_V2_RULE_ID)   # the fitter's ids (one record)
     v8 = RC.load_spec(V8 / "base-lo1.json")                                # verdict true: a v8 spec
     v5 = dict(v8, fit=dict(v8["fit"], flags=RS.apply_flags(v8["fit"]["flags"], {"--composition": "ew-theme-aim-v1"},
                                                             "fit.flags")))
