@@ -3288,8 +3288,16 @@ TEST(CompositionV8, IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule) {
     auto shrink_manifest=read_json(dir.path/"shrink"/(role_name+"_combined.json"));
     EXPECT_EQ(std_manifest.at("composition_standardise"),"ew-theme-std-v1");
     EXPECT_EQ(shrink_manifest.at("composition_standardise"),"ic-shrink-v1");
+    // A recipe pin too: the validation manifest names its run's orientations.json, which carries
+    // the run's recipe_sha256 (the train manifest's is null).
+    for (const auto& [run,manifest]:{std::pair{"std",&std_manifest},std::pair{"shrink",&shrink_manifest}}) {
+      const auto& pin=manifest->at("orientations_artifact_sha256");
+      if (role_name=="validation") EXPECT_EQ(pin,file_sha(dir.path/run/"orientations.json")) << run;
+      else EXPECT_TRUE(pin.is_null()) << run;
+    }
     for (auto* manifest:{&std_manifest,&shrink_manifest})
-      for (const auto* key:{"composition_standardise","composition_weights_sha256","run_recipe_sha256"})
+      for (const auto* key:{"composition_standardise","composition_weights_sha256","run_recipe_sha256",
+                            "orientations_artifact_sha256"})
         manifest->erase(key);
     EXPECT_EQ(shrink_manifest,std_manifest);
   }
