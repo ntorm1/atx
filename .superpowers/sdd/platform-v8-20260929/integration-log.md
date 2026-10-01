@@ -1503,6 +1503,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R5 b63-84 | `fundamental-events-v3-run-b63-84` | `d0bef9b3` | completed / 0 | 30.9 | 608 | `7d6f302b0d91b49c6afb626c56c900f92dd90726b6005d6eca3562f98991df14` | (stage; batches 63-84 computed, batch 84 0 rows) |
 | R5 fin | `fundamental-events-v3-run-fin` | `19c64f0e` | completed / 0 | 6.6 | 302 | `03e33b04e8b8c0be909c80f86ece4a395e4d60595f4bf416225ef4c70038fb45` | `304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b` |
 | R6 | `train-2020-2023-base-grp-run` | `977d9a4b` | completed / 0 | 6.7 | 218 | `747e51d46880a31646687e8e0fd62b33e5f881ad6bcf50d8f5c5f8c7fb481475` | `d1b2eaea9087f3eae4953bf709dd63623995f518993e8167ef7b387c7e37957e` |
+| R7 | `train-2020-2023-lo1-run` | `bfd6bc91` | completed / 0 | 4.0 | 232 | `983717743db5899238b8b63cc6d11c230925d602a570124ee36dfdfe3b835c65` | `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53` |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1534,3 +1535,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 - **R6 PASS** (optional step run, so R7 keeps `--check-fields`). Fields `grp_sic2, grp_ff12, grp_ff49` on the base
   role (1,405 x 5,922), `seal.exclusive_end` 2024-01-01; 3,444 linked CIKs, 135,259 SIC rows; 191 MiB on disk.
   `GRP = d1b2eaea...957e`.
+- **R7 PASS.** Role lo1 = linked-operating-v1, 1,405 x 5,922, `score_begin` 399, `score_end_ns` 1704067200000000000;
+  kept member cells 2,382,552 of 3,970,647; fields cross-check `link_member_cells_equal` true against `GRP`. The
+  runbook one-liner prints **`1155 1405 True`** (kept members per session identical to the 3-year lo1 role on its
+  1,155 sessions). Manifest 90,101 B; 207 MiB on disk. `LO1 = 2ff9d771...1e53`.
