@@ -146,10 +146,11 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
     pn, cn = parent["nav"]["flags"], child["nav"]["flags"]
     nav_delta = {"base-b0c.json": pn + ["--warm-start-sessions", "60", "--capacity-curve"],
                  "r4-hold-band.json": pn + ["--hold-band", ".1"], "r5-adv-hold.json": pn + ["--adv-hold-q", ".1"],
-                 "r6-spo-v3.json": [x for x in pn if x != "--capacity-curve"] + [
+                 "r6-spo-v3.json": pn + [                                   # review F-14 / E-37: the curve stays
                      "--spo-alpha", "implied-aim", "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                      "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"]}
     assert cn == nav_delta.get(name, pn)
+    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
     comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v1"}
     assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]]
     assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
