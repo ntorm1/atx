@@ -56,8 +56,11 @@
 //                             v8 E-37: --capacity-curve runs report only: each capacity book
 //                             is the NAV-m tracker (trade limit and impact at m x NAV) on its
 //                             own engine, recorded in v7_extras.json capacity_spo_v3; the main
-//                             pass's rows, tripwire and summary are unchanged. --trade-fraction
-//                             has no effect on the spo-v3 plan (H 20 is registered).
+//                             pass's rows, tripwire, counts and summary are unchanged (review
+//                             SPO-4: the capacity engine has no primary book, so E-31a binds the
+//                             main pass only); the aim's --adv-hold-q cap reads the run's initial
+//                             NAV at every multiple (Ruling E-15). --trade-fraction has no
+//                             effect on the spo-v3 plan (H 20 is registered).
 //   spo-v1 / spo-v2 / spo-v3 blocks are keyed "spo_v1" / "spo_v2" / "spo_v3" (recipe v7,
 //   summary v7, extras); the Engine's rule_* / rows_* members produce them.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.

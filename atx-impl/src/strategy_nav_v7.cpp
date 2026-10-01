@@ -48,7 +48,11 @@ struct ScopedNavExtension::State {
         capacity_engine(o.spo_v1 && o.capacity
                             ? std::make_unique<spo::Engine>(capacity_params(o.spo_params),
                                                             o.spo_risk)
-                            : nullptr) {}
+                            : nullptr) {
+    // Review SPO-4: the capacity engine has no primary book, so Ruling E-31a never reads a
+    // capacity book's limits; it binds the main pass, whose rows hold no capacity book.
+    if (capacity_engine) capacity_engine->set_primary_book({});
+  }
   NavV7Options options;
   NavScenario s2; // the primary S2 law: the v6 marginal cost c_i of every book
   NavV7Pass pass{NavV7Pass::Main};
@@ -167,7 +171,8 @@ constexpr const char* capacity_spo_v3_declaration =
     "(--adv-hold-q) reads the initial NAV for every multiple (Ruling E-15); gamma is calibrated "
     "on the same first scored decision as the main pass (gamma_equals_main); the capacity "
     "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
-    "voiding the run; x1 is the main pass's S2 book bit for bit";
+    "voiding the run: it has no primary book, and its rows never enter the main pass's rows, "
+    "tripwire, counts or Ruling E-31a (review SPO-4); x1 is the main pass's S2 book bit for bit";
 constexpr const char* v6_declaration =
     "aim-partial-v6 (R2.2 + R2.3): on a rebalance decision d, c_i = marginal cost per dollar of "
     "the primary S2 law (half spread 5 + commission 1 bps + 1.5 * 0.6 * sigma_i * (q/ADV_i)^0.5) "

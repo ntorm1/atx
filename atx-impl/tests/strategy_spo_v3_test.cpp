@@ -1070,9 +1070,11 @@ TEST(SpoV3, ShapingFlagsPassThroughAndSpoV1V2RefuseThem) {
 // at m x NAV_post: trade limit p ADV / (m NAV), impact at m NAV): x1 is the main pass's S2 book
 // bit for bit (its tracking rows too, relabelled), x4 at NAV V is the spo-v3 book replayed at 4V
 // divided by 4, and the tracker planned at the base NAV under the x4 fills is another book. The
-// main engine keeps exactly the rows, summary and tripwire of a run without the capacity pass;
-// the capacity engine's gamma is the main pass's bit for bit and its tripwire never voids. A
-// capacity pass on a book that is not a capacity book is refused.
+// main engine keeps exactly the rows, summary and tripwire of a run without the capacity pass
+// (review SPO-4: no capacity row in its rows or counts); the capacity engine's gamma is the main
+// pass's bit for bit and its tripwire never voids (no primary book). x4's first trading row is
+// the NAV-4V tracker's (its own trade limit). A capacity pass on a book that is not a capacity
+// book is refused.
 TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
   const Directory dir;
   const Role role(40, 12, 53);
@@ -1136,20 +1138,51 @@ TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
     EXPECT_EQ(bits(u.planned_gross), bits(a.planned_gross)) << t;
     EXPECT_EQ(bits(u.traded_dollars), bits(a.traded_dollars)) << t;
   }
-  std::vector<sp::TrackingRow> unit_rows;
-  usize x4_rows = 0;
+  std::vector<sp::TrackingRow> unit_rows, x4_rows;
   for (const auto& r : capacity->tracking_rows()) {
     if (r.book.rfind(books[1].id + "+", 0) == 0) {
       auto row = r;
       row.book = alone.rows.front().book;
       unit_rows.push_back(std::move(row));
     } else if (r.book.rfind(books[3].id + "+", 0) == 0) {
-      ++x4_rows;
+      x4_rows.push_back(r);
     }
   }
   EXPECT_EQ(sp::tracking_csv(unit_rows), alone.csv);
-  EXPECT_EQ(x4_rows, alone.rows.size());
+  EXPECT_EQ(x4_rows.size(), alone.rows.size());
   EXPECT_EQ(capacity->rows_tripwire_json().at("status"), "clear");
+  // Review SPO-4: no capacity row reaches the main pass's rows, tripwire or counts (Ruling
+  // E-31a included), and the capacity engine, which has no primary book, never voids.
+  for (const auto& r : engine->tracking_rows())
+    EXPECT_NE(r.book.rfind("capacity-", 0), 0U) << r.book;
+  EXPECT_EQ(engine->tracking_rows().size(), alone.rows.size());
+  EXPECT_EQ(engine->rows_tripwire_json().at("limits_unmet_primary").at("count"),
+            alone.primary_unmet);
+  EXPECT_EQ(engine->primary_book(), primary_label());
+  EXPECT_TRUE(capacity->primary_book().empty());
+  EXPECT_TRUE(capacity->rows_tripwire());
+  const auto capacity_trip = capacity->rows_tripwire_json();
+  EXPECT_EQ(capacity_trip.at("limits_unmet_primary").at("count"), 0U);
+  EXPECT_FALSE(capacity_trip.contains("voided"));
+  // Review SPO-4: each capacity book plans with the trade limit of its own NAV. On x4's first
+  // trading decision (every earlier plan flat, so NAV_post is exactly the initial NAV) its row is
+  // the NAV-4V tracker's (the same names at the trade limit, turnover and cost), not the x1
+  // book's (the base-NAV limit is 4 times looser).
+  ASSERT_EQ(x4_rows.size(), genuine.rows.size());
+  ASSERT_EQ(unit_rows.size(), genuine.rows.size());
+  const auto first = std::find_if(genuine.rows.begin(), genuine.rows.end(),
+                                  [](const sp::TrackingRow& r) { return r.turnover > 0; });
+  ASSERT_NE(first, genuine.rows.end());
+  const auto k = static_cast<usize>(first - genuine.rows.begin());
+  const auto& nav4 = genuine.rows[k];
+  const auto& x4_row = x4_rows[k];
+  EXPECT_EQ(x4_row.session, nav4.session);
+  EXPECT_GT(x4_row.at_trade_limit, 0U);
+  EXPECT_EQ(x4_row.at_trade_limit, nav4.at_trade_limit);
+  EXPECT_NEAR(x4_row.turnover, nav4.turnover, 1e-12 * nav4.turnover);
+  EXPECT_NEAR(x4_row.trade_cost, nav4.trade_cost, 1e-12 * nav4.trade_cost);
+  EXPECT_NEAR(x4_row.tracking_error, nav4.tracking_error, 1e-12 * nav4.tracking_error);
+  EXPECT_NE(bits(x4_row.turnover), bits(unit_rows[k].turnover)) << "x4 planned at the base NAV";
   // x4 at NAV V is the NAV-4V tracker divided by 4; planned at the base NAV it is another book.
   const auto& g4 = genuine.result.days;
   ASSERT_EQ(x4->days.size(), g4.size());
