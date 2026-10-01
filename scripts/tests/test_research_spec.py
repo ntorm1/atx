@@ -302,7 +302,8 @@ def test_apply_flags_operations():
 
 def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
     """Ruling E-27: R-3's gains go on top of the parent's composition: ew-theme-std-aim-v1 on an R-1 parent,
-    ew-theme-aim-v1 (bytes unchanged) on an ew-theme-v1 parent; both are fitter compositions."""
+    ew-theme-aim-v1 on an ew-theme-v1 parent (Ruling E-27a: the same within-theme gains and member cap, review F-10);
+    both are fitter compositions."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
     doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
