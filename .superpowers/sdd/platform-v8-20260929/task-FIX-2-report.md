@@ -268,3 +268,94 @@ Nothing else outside the brief's file list.
 - **T-10** (R-1 planned turnover) is not addressed in this lane.
 - **N-1 one-time cost:** fields directories built before `6ed5fef8` recompute their 9 holdings fields once on the next `--reuse`. Manifest-level byte comparisons across this change will see the new `seal_date` key; payloads are unchanged.
 - **Python environment:** this shell now has `VIRTUAL_ENV=c:\atx\atx-db\.venv` (numpy 2.5.2) first on PATH. Under it, 31 tests of `test_mega_report_v8_render.py` fail. The cause is a fixture problem: `daily_text` writes `repr(np.float64)`, which is "np.float64(...)" under numpy 2, so the daily CSVs do not parse and `fig_exposure` becomes unavailable. This lane did not change `daily_text`. Run these suites with Python 3.12 (numpy 1.26), where they all pass, or fix the fixture to use `float(x)`.
+
+## Round 1 (review-spo.md: SPO-1, SPO-2, SPO-4, SPO-5; Rulings E-31a, E-14a)
+
+| item | commit | what |
+|---|---|---|
+| SPO-1 + SPO-5 (Ruling E-31a) | `ad50e574` | primary-book `limits_unmet` voids a spo-v3 run whatever `--specific-ceiling-void`; `--spo-iters` / `--spo-tol` refused; spo-v3 refuses `--emit-holdings` |
+| SPO-4 | `dd1b923e` | capacity engine has no primary book; capacity rows never reach the main rows, tripwire or counts; x4 plans at its own NAV (tested) |
+| SPO-2 (Ruling E-14a) | `8ca8326e` | new `aim_correlation_traded_after`; the E-14 criterion, the R-6 config check, the scorecard template and the r6 template read its mean |
+| own concern | `f1cd0e43` | `daily_text` fixture writes `repr(float(x))`, so the render suite passes under numpy 2 |
+
+**E-31a.**
+- `tracking_tripwire(p, rows, primary_book)` returns Unavailable when any scored row of the primary book has `limits_met` false, before the void-flag logic.
+  - `capture()` returns that error, so the replay stops before its output directory exists: no NAV, no returns CSV, no S2 Sharpe on the console.
+  - `dispatch_nav_v7` writes `v7_extras.json` with `status: void`, `voided: limits_unmet` and `limits_unmet {count, first_session, book, rule}`, then exits 3.
+- The tripwire record gains `primary_book`, `limits_unmet_rule`, `limits_unmet_primary {count, first_session}` and, on a void, `voided`.
+- The primary label comes from `Engine::primary_book()`.
+  - Default: the untiered matrix's S2, `modeled-1bn-stale5-v1+flat-300-v0`.
+  - `run_scenarios` sets it from the run's own matrix in the main pass, so a tiered run reads S2 x `swap-fin-v1`.
+- The declaration names the registered solver constants: stop at 1e-9 or 2000 iterations.
+- The r6 template's pre-return check now names E-31a. The help text and the header are updated.
+
+**SPO-4.**
+- The capacity pass already planned on its own engine at `m x NAV_post` (N-2).
+- The capacity engine now has an empty primary book, so E-31a never reads a capacity row.
+- The test asserts the following:
+  - the main engine holds no `capacity-` row;
+  - the main `limits_unmet_primary` count equals a plain run's;
+  - the capacity tripwire is Ok with count 0;
+  - x4's first trading row (NAV_post is exactly the initial NAV) matches the NAV-4V tracker's row: the same names at the trade limit, turnover, trade cost and tracking error to 1e-12 relative. It is not the x1 row.
+- The aim's `--adv-hold-q` cap still reads the run's initial NAV at every multiple, as recorded in Ruling E-15.
+
+**E-14a.**
+- `plan_tracking` keeps each book's last scored aim and the index of its row.
+- At the book's next rebalance decision, it back-fills `aim_correlation_traded_after`: the correlation of the current book that DECIDE read with the previous aim, over the names either holds. The current book here is d's fills, executed at the next close.
+- The value is NaN on a book's last scored decision.
+- `aim_correlation` (the plan) and review A-4's `aim_correlation_traded` stay beside it.
+- Outputs:
+  - CSV: 43 columns;
+  - units entry;
+  - report `aim_correlation_traded_after {mean, min, n}`;
+  - the criterion `reads: aim_correlation_traded_after.mean`;
+  - pitch config R-6 check: `v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean ge 0.9`;
+  - the scorecard template cell.
+
+### Tests (C++ not compiled or run here)
+
+Target `atx-impl-strategy-target-tests`, filter `SpoV3.*:SpoPin.*:SpoHook.*:SpoTripwire.*:NavV7Hook.*`.
+
+New tests:
+- `SpoV3.PrimaryBookLimitsUnmetVoidsTheRunWhateverTheVoidFlag`: recorded rows, both flag values, other books never void.
+- `SpoV3.EngineVoidsOnItsPrimaryBooksLimitsUnmet`: a book long 0.01 per name with ADV $1 (trade limit 1e-10) cannot restore its net; it voids as the primary book and not as S1, unless S1 is set as the primary.
+- `SpoV3.CriterionReadsTheTradedBookAfterTheTrades`: replaces `CriterionReadsTheTradedBook` and recomputes both traded correlations from the holdings stream.
+
+Modified tests:
+- `GrossCapIsSlackOnFixture`, `ReportsTrackingErrorAndShareAtTradeLimit` and `WarmStartCalibratesOnTheFirstScoredDecision`: assert the exact E-31a rule, void if and only if the primary book has an unmet row.
+- `ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim`: `--spo-iters` and `--spo-tol` are refused; spo-v3 `--emit-holdings` is refused even with the void flag off.
+- `CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone`: gains the SPO-4 assertions.
+
+Single-TU checks: `check atx-impl/src/strategy_spo.cpp`, `strategy_spo_v3.cpp`, `strategy_nav_v7.cpp`, `atx-impl/tests/strategy_spo_v3_test.cpp`.
+
+pytest results:
+
+| suite | Python 3.12, numpy 1.26 | atx-db venv, numpy 2.5 |
+|---|---|---|
+| atx-impl/tools: the 9 suites above | 204 passed | 203 passed, 1 failed (`test_book_diagnostics.py::test_cli_end_to_end_every_diagnostic_on_a_synthetic_cell`: the same `repr(np.float64)` problem in that file's fixture, which this lane did not touch) |
+| `test_mega_report_v8` + `_v8_render` | 107 passed | 107 passed |
+| `scripts/tests/test_research_spec.py` + `test_research_cycle.py` | 121 passed, 3 skipped | |
+
+### Round 1 concerns
+
+- **E-15 versus the round-1 wording.**
+  - The brief says each capacity book has "the ADV cap of its own NAV multiple".
+  - Recorded Ruling E-15 says the cap uses the run's initial NAV, the $1bn, at every multiple, and that a per-multiple cap needs a per-book desired target.
+  - I kept E-15 as recorded. The tracker's own trade limit and impact are at m x NAV. spo-v3 has no holding cap, and `market.cap` is computed at m x NAV but unused.
+  - A per-multiple `--adv-hold-q` cap would need the desired target formed per capacity book in `strategy_nav_replay.cpp`, which is outside this lane. This needs a PM ruling if that was the intent.
+- **Fixture premise.**
+  - Whether the fixture's primary book has `limits_unmet > 0` is unknown, because nothing was run.
+  - The replay tests assert the exact rule either way: a void exactly when the primary book has an unmet row, otherwise clear.
+  - The engine-level test makes the void deterministically.
+- **The E-31a CLI path is not tested end to end.** This covers exit 3 and the `v7_extras.json` `voided` / `limits_unmet` keys. Testing reaches the tripwire, engine and capture seams only.
+- **E-14a timing.**
+  - Under MARK -> EXECUTE -> DECIDE, d's orders fill at the next session's close.
+  - So the traded book after d's trades is first known at the next decision's DECIDE, which is the value recorded. It includes one session's drift on the positions already held.
+  - With cadence > 1, it also includes later working-order fills and drift up to the next rebalance decision.
+  - n is one less than the number of decisions per book.
+- **r6 template.**
+  - I edited only the description: the E-31a pre-return check and the E-14a criterion.
+  - F-14's `--capacity-curve` change touches the same one-line description, so expect a textual merge conflict there.
+- **Nothing compiled.**
+
+STOPPED HERE (owner stop): every round-1 item is committed: E-31a + SPO-5 `ad50e574`, SPO-4 `dd1b923e`, E-14a `8ca8326e` (complete), daily_text `f1cd0e43`, and this report. Nothing remains, except the PM ruling on the E-15 ADV-cap wording and a root build and run of the named gtest filters.
