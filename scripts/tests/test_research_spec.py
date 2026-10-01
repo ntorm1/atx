@@ -36,7 +36,8 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "base-lo3.json": BASE_NULLS | {"inputs.sic_events", "inputs.reference_cell"},
              "base-b0c.json": CHILD_NULLS, "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS,
              "r3-aim-gain.json": CHILD_NULLS, "r4-hold-band.json": CHILD_NULLS, "r5-adv-hold.json": CHILD_NULLS,
-             "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS}
+             "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS,
+             "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
 FILLS = {"r6-spo-v3.json": ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]}
 FIT_DOWN = {"fit.output", "card.output", "ic.w_output", "nav.output", "monitor.output"}   # downstream of the fit
 LIB_DOWN = FIT_DOWN | {"ic.u_output"}                                                       # downstream of the library
@@ -50,7 +51,8 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
                     "r1-comp-v8.json": FIT_DOWN | {"fit.flags"} | W_3072,
                     "r2-lib-v80.json": LIB_CHANGE, "r3-aim-gain.json": FIT_DOWN | {"fit.flags"},
                     "r4-hold-band.json": {"nav.output", "nav.flags"}, "r5-adv-hold.json": {"nav.output", "nav.flags"},
-                    "r6-spo-v3.json": {"nav.output", "nav.flags", "nav.rule"}, "r7-lib-v81.json": LIB_CHANGE}
+                    "r6-spo-v3.json": {"nav.output", "nav.flags", "nav.rule"}, "r7-lib-v81.json": LIB_CHANGE,
+                    "r10.json": FIT_DOWN | {"fit.flags"}}             # its nominal parent R-1 carries W_3072
 MISSING = object()
 
 
@@ -150,8 +152,10 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
                      "--spo-alpha", "implied-aim", "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                      "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"]}
     assert cn == nav_delta.get(name, pn)
-    comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v1"}
-    assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]]
+    comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"), "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v1"),
+            "r10.json": ("ew-theme-std-v1", "ic-shrink-v1")}               # (the parent's --composition, the cell's)
+    old, new = comp.get(name, (None, None))
+    assert child["fit"]["flags"] == [new if x == old else x for x in parent["fit"]["flags"]]
     assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
 
 
@@ -312,6 +316,31 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
         path.write_text(json.dumps(dict(doc, parent=f"scripts/specs/v8/{parent}")), encoding="utf-8")
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
+
+
+def test_r10_maps_only_the_r1_composition_and_inherits_its_w_cap(tmp_path):
+    """R-10 (Ruling E-38, lane COMB2): ic-shrink-v1 replaces the within-theme shares of an ew-theme-std-v1 parent and
+    is a fitter composition; any other parent composition (ew-theme-v1: no standardisation to keep; R-3's
+    ew-theme-std-aim-v1: its gains would be dropped) is refused at load; planned on R-1, the w pass keeps Ruling E-28's
+    3,072 MiB."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((V8 / "r10.json").read_text(encoding="utf-8"))
+    assert "requires" not in doc and doc["nominal_parent"] == "r1-comp-v8.json"
+    spec = RC.load_spec(V8 / "r10.json")
+    assert RC.option_value(spec["fit"]["flags"], "--composition") == "ic-shrink-v1"
+    assert "ic-shrink-v1" in fcw.PRIOR_COMPOSITIONS
+    root, planned = fake_root(tmp_path, spec)
+    c = RC.Cycle(planned, RC.Resolver(root), spec_path=V8 / "r10.json", capabilities=T.CAPS)
+    assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
+    r3 = tmp_path / "r3-on-r1.json"
+    r3.write_text(json.dumps(dict(json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8")),
+                                  parent="scripts/specs/v8/r1-comp-v8.json")), encoding="utf-8")
+    for parent in ("scripts/specs/v8/base-b0c.json", str(r3)):
+        path = tmp_path / f"r10-on-{Path(parent).stem}.json"
+        path.write_text(json.dumps(dict(doc, parent=parent)), encoding="utf-8")
+        with pytest.raises(RC.CycleError, match="maps the parent's value"):
+            RC.load_spec(path)
 
 
 def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):
