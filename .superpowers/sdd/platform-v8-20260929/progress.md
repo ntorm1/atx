@@ -809,3 +809,108 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   report-only (E-29, E-37) and the primary series cannot move -- cost if wrong: the 2x / 4x capacity rows are
   slightly optimistic on the aim cap; disclosed beside the curve.
 - Dispatched: integrator 6B (root; brief task-INT6B-brief.md; tag prefix v8-10); MINE-FIX resume (pool 8).
+
+## 2026-10-01 integration 6 part B closed (log "integration 6 part B"; head d4dffc6d, code 9c5cfa0c)
+- Merged FIX-2 de32b9ad (78571ef2), FIX-3 75acb091 (b3360dcf), COMB2 1e8af5b8 (de2f9636), ORTH c1cc57ce (7e5ff769);
+  conflicts resolved as unions; N-2 a no-op. Part-B edits dbfc09bc, 8ea2e7bf, 393910ed, f6288685, 486aa4f3 (ERA
+  pooled aim elif dropped, aim-v2 in the pooled list, one-era equality test un-skipped and passing for std-v1,
+  std-aim-v1, aim-v2; r10 parent map per E-45; r11 text per PM4-4; 393910ed: the theme-resid fitter accepts
+  ic-shrink parents -- confirmed by the PM: E-44 / E-45 define R-11 on any rerank-true parent, finding R6B-O-1).
+  Builds v8-10 (twelve targets), v8-10a; 0 compile fixes: about 6,000 lines of lane C++ compiled first time under
+  /W4 /WX. 3 test fixes (wrong premises; rules still asserted exactly). C++: target 256, book 155, strategy 46,
+  ic 139, mine 18, factory 387, combine 233, impl 1003 / 5 skipped / 1 known. Python: strategies 163 + 9, engine
+  tools 253, impl tools 529 / 1 skipped, scripts 178 / 3 skipped. tiny_world unmoved; spo-v2 pin holds.
+  Identities 1, 4, 7, 8 PASS (PM4-3; identity 4 weights file differs only in module_sha256, FIX-3 changed
+  composition_rules.py; data files identical). Not verified: the E-31a void exit path end to end (R6B-S-1).
+
+## 2026-10-01 re-review at integration 6 part B and fix round FIX-4 (entries parked while root was held)
+- Ruling PM4-6 (scoped re-review runs beside integration 6 part B, on the lane heads): three read-only readers,
+  Opus 5.5, start now on the fixed lane SHAs -- SPO (pool 7, d43949b7..de32b9ad: E-31a, E-14a, SPO-4, SPO-5),
+  COMB (pool 10 b6899ed7..75acb091: E-27b; pool 11 whole lane to 1e8af5b8: ic-shrink-v1 / ic-shrink-aim-v1, r10,
+  E-44, E-45), ORTH (pool 4 whole lane to c1cc57ce: theme-resid-v1, r11, E-44, E-45). Outputs review-6b-spo.md,
+  review-6b-comb.md, review-6b-orth.md (written outside the repository, folded in when root is free). The part-B
+  edits and the integrator's compile fixes get a short diff read after part B closes -- the lane code is frozen
+  and is the bulk of the diff; a finding found now is fixed before fields v9 is built on it, and root idles
+  less -- cost if wrong: a defect that exists only in integration code is seen one step later (still before
+  Wave 0 part 2).
+- Re-review SPO done (review-6b-spo.md, pool 7 d43949b7..de32b9ad): SPO-1, SPO-2, SPO-4, SPO-5 all ADDRESSED;
+  I 0, M 0, m 2; likely compile failures 0. No path found by which a spo-v3 run with an unmet primary-book limit
+  writes or prints a return or Sharpe; warm-up decisions record no rows; spo-v1 / v2 unchanged. Minors: R6B-S-1
+  (the tiered primary-label line strategy_nav_v7.cpp:510 and the CLI void path, exit 3 and the `voided` keys,
+  are untested; correct by reading), R6B-S-2 (E-14a back-fill tested on one book only). Notes: E-14a's "known at
+  d's close" is literally d+1's close (fills), as the lane recorded; a B0c warm-up book whose beta starts outside
+  the limit could void R-6 on its first scored decision (E-31a then applies: void, blind fix, rerun, no new
+  trial); the r6 template `--capacity-curve` line is FIX-3 F-14's (merge conflict expected, in the 6B brief).
+- Re-review COMB done (review-6b-comb.md; pool 10 round 1, pool 11 whole lane, plus the integration tree):
+  ew-theme-aim-v2, ic-shrink-v1, ic-shrink-aim-v1 all MATCH their registrations (hand examples, fixtures check);
+  I 0, M 3, m 5; likely compile failures 0. R6B-C-1 (M): POOLED_COMPOSITIONS leaves out both ic-shrink ids, so an
+  OD-3 history read of a V8-F that carries an accepted R-10 would refuse (E-35 forbids that). R6B-C-2 (M): the
+  E-44 turnover criterion of R-10 (and R-11) exists only as prose; the v8 ladder of the pitch config stops at
+  R-7, nothing computes or checks R-8, R-10, R-11, R-12 criteria. R6B-C-3 (M, already fixed by the integrator at
+  393910ed): R-11 on an accepted R-10 parent was refused (resid_block required the ew-theme-std-v1 id). Minors:
+  C-4 the E-27b guard is lexical (`--composition=ew-theme-aim-v1`, an abbreviation or `--protocol=v8` passes);
+  C-5 the runner does not check the file's recorded rule against its block's rule; C-6 no ruling on an
+  infeasible-cap fit; C-7 r10 forces the w cap to 3072 (can only lower an inherited cap); C-8 Python and C++
+  sum in different member orders (measure-zero disagreement, runner refuses loudly).
+- Ruling PM4-7 (R6B-C-1; E-35 extended, declared before any read): the pooled (era) fit must implement every
+  composition a V8-F can carry: ic-shrink-v1, ic-shrink-aim-v1 and theme-resid-v1 join it, through the same
+  shared functions as the single-window fit, with the one-era equality test extended to them -- the OD-3 read is
+  on the freeze-gate path and must not block on a rule accepted in slots 49-51 -- cost if wrong: one fix round
+  unused if R-6 is rejected.
+- Ruling PM4-8 (R6B-C-2; criteria of the optional cells are machine-checked, declared before any read): the v8
+  ladder (pitch config, scorecard template, mega_report/v8.py ladder_checks) gains R-8 (rule 5 plus realised
+  volatility inside [.8, 1.2] x 5% in each TRAIN year, E-43), R-9 (three report-only frontier cells, no
+  acceptance), R-10 and R-11 (rule 5 plus planned turnover per unit gross not higher than the parent, E-44),
+  R-12 (below) -- P-2's rule: a registered criterion that nothing computes is a criterion the reader applies by
+  eye -- cost if wrong: none.
+- Ruling PM4-9 (R-12 acceptance, declared before any read): R-12 is a library wave like R-2 and R-7: accepted
+  whole on rule 5 (paired S2 net dSR > 0 against its parent, mechanics) plus "book turnover not higher than the
+  parent" (E-36 precedent; marginal IC is the entry screen and gates nothing at acceptance) -- E-38 named the
+  cell but not its mechanical criterion; the library waves' criterion is the only registered one for an
+  add-alpha cell -- cost if wrong: R-12 judged on a criterion slightly different from what the owner intended;
+  one cell, disclosed.
+- Ruling PM4-10 (R6B-C-6, infeasible cap): a fit refused because fewer than 2T members are admitted (cap 1/(2T)
+  infeasible) is a cell that cannot be formed: it is ledgered as undefined (kind note, adds 0 to N), not as a
+  rejected trial, and the next cell keeps the same parent -- no return was read and no choice was made --
+  cost if wrong: one slot unused.
+- Re-review ORTH done (review-6b-orth.md; pool 4 whole lane): theme-resid-v1 code computes the registered steps
+  (23 fixture values checked by hand); I 0, M 3, m 4; likely compile failures 0. R6B-O-1 (M): the fitter's
+  resid_block refuses an ic-shrink parent (E-44 / E-45 define R-11 on it; partly fixed by the integrator at
+  393910ed); apply must run after COMB2's attach. R6B-O-2 (M): `filing_events` (theme added at v8.1; exch_switch
+  joins it, E-42) is missing from the frozen theme order, so R-11 refuses once such a member is weighted.
+  R6B-O-3 (M, the rule not the code): re-ranking the residual spreads every tie block of a theme's composite in
+  the order of the fitted earlier themes with the sign of a tiny beta; a sparse flag theme becomes a full-width
+  bet against earlier themes and can flip between sessions. Minors: O-4 runner accepts any theme order; O-5
+  nothing checks R-11's weights equal the parent's; O-6 aim parent untested; O-7 the fixture cannot detect
+  regressing on residuals or dropping the intercept.
+- Ruling PM4-11 (R6B-O-2, declared before any read): the registered order of theme-resid-v1 is the registry
+  order of PRIOR_THEMES with any later-registered theme appended in registration order; `filing_events` is last,
+  after `ownership_flow`; derived from PRIOR_THEMES with a frozen-prefix check -- the registration says "registry
+  order" and a later theme is later in the registry; the newest sparse theme then contributes only what the
+  older themes do not -- cost if wrong: the order of one theme in one optional cell.
+- Ruling PM4-12 (R6B-O-3, declared before any read; the registered text is silent on ties): names tied in theme
+  t's own standardised composite stay tied after residualisation: the residual is replaced by its mean inside
+  each exact tie block of z_t and that block mean is re-ranked. A composite without ties gives the registered
+  result bit for bit. The id stays `theme-resid-v1` (nothing was run or written under it; E-30 precedent:
+  constants and silent points are fixed blind before the cell) -- a theme cannot order names it does not
+  distinguish; ordering them by a statistically meaningless beta adds turnover and a bet the hypothesis
+  excludes -- cost if wrong: R-11 differs from the lane's first text on tied names only; one optional cell.
+- MINE-FIX done b772ef61 (pool 8; MINE-7 8051803e, MINE-8 318e5a2c, MINE-6 6b0aeb2f, MINE-9 12f3dfd8, MINE-10
+  5cddc990; minors MINE-11 791b18e0, MINE-12 62f1b818, MINE-17 d81303ab, MINE-18 81be48a2; MINE-13 covered).
+  16 pytest pass; nothing compiled; golden 0x889874a3b9b29c55 unverified until integration 7 (search_driver.hpp
+  changed: wide rebuild). Not done: MINE-14, MINE-16 (not cheap), MINE-15 (needs a ruling). Departures: MINE-10
+  slot bound refuses at evaluation time and has no node bound; MINE-9 rule checks on a separate stage-1-only
+  campaign; MINE-6 written as t / F >= z. Concerns: the 1.55 factor is derived to the 99.8% tail; at the
+  504-row floor the ratio keeps rising (1.46 at 99.95%, 1.51 at 99.99%), nominal per-trial rate reached near
+  N = 1,000; a default campaign on the 4-year role is estimated at 10.85 GiB.
+- Ruling PM4-13 (mined-v1 budget ceiling; binds only under OD-7): a campaign's `--budget` above 1,000 is refused
+  (`kMinedMaxBudget = 1000`) until the overlap factor is re-derived at the campaign's own Bonferroni level (v9)
+  -- E-32a says the hurdle must be valid at the declared budget and 1.55 is checked only to about N = 1,000 --
+  cost if wrong: large campaigns wait for v9; nothing in v8. The 10.85 GiB estimate is recorded for OD-7 (a real
+  campaign needs an owner-approved memory cap, E-6); no code change. MINE-15 deferred to v9 unruled.
+- MINE-FIX round 1 done 20e7bd19 (PM4-13 code and tests 28a928a1: kMinedMaxBudget 1000 in the rule header,
+  recipe and campaign.json; verb, campaign_line and ledger-campaign refuse above it). 16 pytest pass; not
+  compiled. Cross-lane: FIX-C's E-33 test budget 2048 -> 1000. Lane head for integration 7: 20e7bd19.
+- Fix round FIX-4 (brief task-FIX-4-brief.md), two lanes from the part-B head: FIX-4a (pool 4): O-1..O-7, C-1
+  (PM4-7), C-5; FIX-4b (pool 10): C-2 (PM4-8, PM4-9), C-4, S-1, S-2. C-7 and C-8 stand as recorded. Integration
+  6 part C merges both, builds, re-runs the touched suites and identity 4; Wave 0 part 2 follows.
