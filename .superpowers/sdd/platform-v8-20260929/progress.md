@@ -923,3 +923,25 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   executables -- FIX-4 owns no field builder or field module (brief file lists), so fields v9 is built on final
   field code and root does not idle for a lane-turn -- cost if wrong: fields v9 is rebuilt once if part C
   changes a field module fingerprint (the v10 reuse count 49 / 21 would show it).
+
+## 2026-10-01 Wave 0 part 2a closed (log "Wave 0 part 2a (R10, R11, field overlap)"; head b01d8696)
+- R10 fields v9 lo1: 63 / 63 computed fresh, 166.8 s, 960 MiB, manifest 888e6616e441e863...447b8695. R11 fields v9
+  lo3: 63 / 63, 154.6 s, 1,014 MiB, manifest 9f1563638b5e4f7e...bd9021ef. Sealed 2024-01-01; no source named 2024+.
+  Live stage hashes (W0-n) re-hashed before R10 and R11: all 11 equal the runbook pins and the R8 values
+  (regsho_threshold fb073c62). Disk 58 -> 50 GB. No fix. Disclosure: the integrator read 20 R10 progress lines
+  carrying counts of rows past the seal (no value, no statistic).
+- Field overlap lo1 vs the v7.1 fields: 409,448,655 cells (1,155 sessions x 5,627 instruments), 62 / 63 fields
+  bit-identical, none in the below-1e-9 class. STOP class on one field: `regsho_threshold_days63`, 3,006,158 of
+  6,499,185 cells differ (3,006,153 a value against an old NaN; 5 value changes, max_abs_diff 5.0), first cell
+  2018-06-04 instrument 2234. No v7.1 candidate reads the field.
+- Ruling PM4-15 (W0-a on regsho_threshold_days63; declared before the signal overlap and before any statistic):
+  W0-a stops the re-base "until the cause is found". The cause test is the decomposition overlap of fields v9
+  lo1 against `build-equity/v8-i3p4-c-fields2` (built after the stage was republished) on this field: (a) if
+  bit-identical there, the whole difference is the republished stage (runbook blocker 1, W0-n), the cause is
+  found, the 4-year values are the reference, and the re-base continues -- no v7.1 candidate reads the field,
+  so no ledgered signal, IC or paired comparison can move (the signal overlap report, R13 report 2, must then
+  be bit-identical and is the proof); (b) if not identical there, the re-base stays stopped and the first
+  differing cell is traced to code, role or stage before anything else runs -- W0-a exists to keep old values
+  from changing silently; a field no ledgered cell reads cannot change one -- cost if wrong: a v8.0 / v8.1
+  candidate that reads the field is screened on values the old stage did not have; that is the declared
+  republish, disclosed here.
