@@ -439,27 +439,30 @@ TEST(StrategyMineRule, HurdleIsTheBonferroniValueOfThePlan) {
   EXPECT_TRUE(std::isnan(st::mined_hurdle(0)));
 }
 
-// Review MINE-6: the hurdle is read on f2 / 1.55, so at a hurdle of 3 an f2 of 4.6 is out and
-// one of 4.7 is in.
+// Review MINE-6: the hurdle is read on f2 / F, so with F 1.55 at a hurdle of 3 an f2 of 4.6 is
+// out and one of 4.7 is in; a NaN factor (a budget the table does not cover) shortlists nothing.
 TEST(StrategyMineRule, ShortlistIsByF2ThenHashAndCapped) {
   const std::vector<st::MinedRead> reads{{9, 5.0}, {3, missing}, {2, 7.0}, {1, 5.0},
                                          {4, 3.0}, {5, 4.6},     {6, 4.7}};
-  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 8), (std::vector<usize>{2, 3, 0, 6}));
-  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 2), (std::vector<usize>{2, 3}));
-  EXPECT_TRUE(st::mined_shortlist(reads, missing, 8).empty());
+  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 1.55, 8), (std::vector<usize>{2, 3, 0, 6}));
+  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 1.55, 2), (std::vector<usize>{2, 3}));
+  EXPECT_TRUE(st::mined_shortlist(reads, missing, 1.55, 8).empty());
+  EXPECT_TRUE(st::mined_shortlist(reads, 3.0, missing, 8).empty());
 }
 
-// Review MINE-6 (Ruling E-32a): the label-overlap factor and the window floors it was derived on
-// are registered with the rule, and the derivation's estimator (mine_overlap_factor.py
+// Review MINE-6 (Ruling E-32a): the label-overlap factors and the window floors they were derived
+// on are registered with the rule, and the derivation's estimator (mine_overlap_factor.py
 // summarize_t) is the verb's: summarize_rank_ic at Bartlett lag 21 over the defined days. The
-// pinned t's are the script's on the same series (test_mine_overlap_factor.py pins them too).
+// pinned t's are the script's on the same series (test_mine_overlap_factor.py pins them too, and
+// pins both factor tables against this header).
 TEST(StrategyMineRule, OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs) {
-  EXPECT_EQ(st::kMinedOverlapFactor, 1.55);
+  EXPECT_EQ(st::kMinedOverlapBands[1].top, 1000U);
+  EXPECT_EQ(st::kMinedOverlapBands[1].factor, 1.54);
   EXPECT_EQ(st::kMinedMinDiscoverRows, 504U);
   EXPECT_EQ(st::kMinedMinConfirmRows, 200U);
   EXPECT_EQ(ex::kResearchIcHacLag, 21U);
-  EXPECT_DOUBLE_EQ(st::mined_overlap_corrected(3.1), 2.0);
-  EXPECT_TRUE(std::isnan(st::mined_overlap_corrected(missing)));
+  EXPECT_DOUBLE_EQ(st::mined_overlap_corrected(3.1, 1.55), 2.0);
+  EXPECT_TRUE(std::isnan(st::mined_overlap_corrected(missing, 1.54)));
   std::vector<f64> daily(60);
   for (usize k = 0; k < daily.size(); ++k)
     daily[k] = static_cast<f64>(static_cast<int>((k * 37U) % 23U) - 11) / 100.0 + 0.004;
@@ -493,13 +496,14 @@ TEST(StrategyMineRule, RhoIsGreedyAgainstMembersAndKeptCandidates) {
   EXPECT_EQ(out[2].against, 0U);
 }
 
-// Review MINE-6: the confirm read is taken as t / 1.55 -- the raw t's 9.3, 3.875 and 2.945 are
-// 6.0, 2.5 and 1.9 on the corrected scale.
+// Review MINE-6 (lane MINE-STAT): four confirm reads are taken as t / Fc(4) = t / 1.77 -- the raw
+// t's 10.62, 4.425 and 3.363 are 6.0, 2.5 and 1.9 on the corrected scale.
 TEST(StrategyMineRule, ConfirmIsOneSidedWithBenjaminiYekutieli) {
-  const std::vector<f64> t{9.3, 3.875, 2.945, missing};
+  const std::vector<f64> t{10.62, 4.425, 3.363, missing};
   const auto out = st::mined_confirm(t);
   ASSERT_EQ(out.size(), 4U);
-  EXPECT_EQ(out[1].t, 3.875);
+  EXPECT_EQ(out[1].t, 4.425);
+  for (const auto &read : out) EXPECT_EQ(read.factor, 1.77);
   EXPECT_NEAR(out[0].t_corrected, 6.0, 1e-12);
   EXPECT_NEAR(out[1].t_corrected, 2.5, 1e-12);
   EXPECT_NEAR(out[2].t_corrected, 1.9, 1e-12);
@@ -521,6 +525,61 @@ TEST(StrategyMineRule, ConfirmReadNeedsItsFullWindow) {
   EXPECT_FALSE(st::mined_confirm_defined(true, 228, 227, 228));  // a marginal day missing
   EXPECT_FALSE(st::mined_confirm_defined(true, 3, 3, 3));        // three overlapping rows
   EXPECT_EQ(st::kMinedMinConfirmRows, 200U);
+}
+
+// Lane MINE-STAT (lifts Ruling PM4-13): the discover factor is read from the --budget band and the
+// confirm factor from the band of m, the reads that reach the confirm; a band's top belongs to it,
+// and a count the table does not cover (0, or above the last top) reads NaN, so no hurdle passes.
+// Both tables grow with their count (deeper levels, heavier tails), and the ceiling is the
+// overlap table's last top.
+TEST(StrategyMineRule, FactorsAreReadFromTheirBands) {
+  EXPECT_EQ(st::kMinedMaxBudget, 10000U);
+  EXPECT_EQ(st::kMinedMaxBudget, st::kMinedOverlapBands.back().top);
+  const std::vector<std::pair<u64, f64>> budgets{
+      {1U, 1.47},    {100U, 1.47},   {101U, 1.54},  {128U, 1.54},
+      {1000U, 1.54}, {1001U, 1.63}, {10000U, 1.63}};
+  for (const auto &[budget, factor] : budgets)
+    EXPECT_EQ(st::mined_overlap_factor(budget), factor) << budget;
+  EXPECT_TRUE(std::isnan(st::mined_overlap_factor(0U)));
+  EXPECT_TRUE(std::isnan(st::mined_overlap_factor(st::kMinedMaxBudget + 1U)));
+  const std::vector<std::pair<usize, f64>> reads{
+      {1U, 1.77}, {16U, 1.77}, {17U, 1.96}, {64U, 1.96}, {65U, 2.15}, {256U, 2.15}};
+  for (const auto &[m, factor] : reads) EXPECT_EQ(st::mined_confirm_factor(m), factor) << m;
+  EXPECT_TRUE(std::isnan(st::mined_confirm_factor(0U)));
+  EXPECT_TRUE(std::isnan(st::mined_confirm_factor(257U)));
+  for (usize k = 1; k < st::kMinedOverlapBands.size(); ++k) {
+    EXPECT_GT(st::kMinedOverlapBands[k].top, st::kMinedOverlapBands[k - 1].top);
+    EXPECT_GT(st::kMinedOverlapBands[k].factor, st::kMinedOverlapBands[k - 1].factor);
+  }
+  for (usize k = 1; k < st::kMinedConfirmBands.size(); ++k) {
+    EXPECT_GT(st::kMinedConfirmBands[k].top, st::kMinedConfirmBands[k - 1].top);
+    EXPECT_GT(st::kMinedConfirmBands[k].factor, st::kMinedConfirmBands[k - 1].factor);
+  }
+  // The configuration's shortlist bound (--max-promotions 1..256) is the confirm table's last top.
+  EXPECT_EQ(st::kMinedConfirmBands.back().top, 256U);
+}
+
+// Lane MINE-STAT: the confirm factor follows m. The same t 4.425 reads 2.5 among 16 reads (Fc
+// 1.77) and about 2.26 among 17 (Fc 1.96); above the table (257 reads) Fc is NaN and nothing
+// confirms however large t is.
+TEST(StrategyMineRule, ConfirmFactorFollowsTheReadsThatReachIt) {
+  std::vector<f64> t(16U, missing);
+  t[0] = 4.425;
+  const auto sixteen = st::mined_confirm(t);
+  EXPECT_EQ(sixteen[0].factor, 1.77);
+  EXPECT_NEAR(sixteen[0].t_corrected, 2.5, 1e-12);
+  t.push_back(missing);
+  const auto seventeen = st::mined_confirm(t);
+  EXPECT_EQ(seventeen[0].factor, 1.96);
+  EXPECT_NEAR(seventeen[0].t_corrected, 4.425 / 1.96, 1e-12);
+  EXPECT_LT(seventeen[0].t_corrected, sixteen[0].t_corrected);
+  std::vector<f64> many(257U, 50.0);
+  const auto over = st::mined_confirm(many);
+  ASSERT_EQ(over.size(), 257U);
+  for (const auto &read : over) {
+    EXPECT_TRUE(std::isnan(read.factor));
+    EXPECT_FALSE(read.confirmed);
+  }
 }
 
 TEST(StrategyMine, TemplatesAreTheHouseSet) {
@@ -598,6 +657,14 @@ const Json *promotion_of(const Json &campaign, const std::string &dsl) {
   return nullptr;
 }
 
+// Lane MINE-STAT: a factor table as the recipe carries it, [[top, factor], ...].
+Json bands_of(std::span<const st::MinedFactorBand> bands) {
+  Json out = Json::array();
+  for (const st::MinedFactorBand &band : bands)
+    out.push_back(Json::array({band.top, band.factor}));
+  return out;
+}
+
 // 3 planted signals promoted, the planted copy stopped by the marginal term alone (the pool's
 // member m2 is independent of it, so no rho step could), no noise expression promoted, in 5
 // seeds; registry count = evaluated + racing-rejected + screen-rejected. Review MINE-9: stage 1
@@ -636,9 +703,12 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_LE(registry.at("n_raw").get<u64>(), kBudget);
     EXPECT_LE(campaign.at("search").at("capacity").get<u64>(), kBudget);
     EXPECT_EQ(hurdle, st::mined_hurdle(kBudget)) << "seed " << seed;
-    // Review MINE-6: the hurdle is read on f2 / F, and F is part of the recipe.
-    EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
-    EXPECT_EQ(campaign.at("recipe").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
+    // Review MINE-6 (lane MINE-STAT): the hurdle is read on f2 / F, F the factor of the budget's
+    // band; the recipe carries the tables F is read from.
+    const f64 factor = st::mined_overlap_factor(kBudget);
+    EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), factor);
+    EXPECT_EQ(campaign.at("recipe").at("overlap_bands"), bands_of(st::kMinedOverlapBands));
+    EXPECT_EQ(campaign.at("recipe").at("confirm_bands"), bands_of(st::kMinedConfirmBands));
     std::array<bool, 3> planted_read{};
     for (const Json &member : mined.at("members")) {
       const auto dsl = member.at("dsl").get<std::string>();
@@ -657,8 +727,8 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
                                    [](const TrialRow &row) { return row.dsl == "rank(copy)"; });
     ASSERT_NE(copy, rows.end()) << "seed " << seed;
     EXPECT_EQ(copy->status, "evaluated") << "seed " << seed;
-    EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle) << "seed " << seed;
-    EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle) << "seed " << seed;
+    EXPECT_GE(st::mined_overlap_corrected(copy->f1, factor), hurdle) << "seed " << seed;
+    EXPECT_LT(st::mined_overlap_corrected(copy->f2, factor), hurdle) << "seed " << seed;
     EXPECT_TRUE(promotion_of(campaign, "rank(copy)") == nullptr) << "seed " << seed;
     // Stage 1 in the same order with the same racing in every seed.
     std::string stage1;
@@ -681,11 +751,12 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
 // Review MINE-9 (T-1 standard): the mined-v1 rule pinned on the 88 templates of all eight fields
 // (stage 1 only, no racing, so every template is read in full; --budget 1000), each pin a case a
 // wrong rule passes:
-//   E-32      rank(swap) is shortlisted and passes the rho check, and its raw IC t / F on the
+//   E-32      rank(swap) is shortlisted and passes the rho check, and its raw IC t / Fc on the
 //             confirm window clears 2, but its confirm marginal t is undefined (the book spans
 //             every confirm row): a raw-IC confirm would admit it;
 //   sign      rank(neg) is admitted with sign -1; rank(flip) (sign -1 frozen from discover) reads
-//             a confirm t / F of about -3.6 and is rejected: a confirm on |t| would admit it;
+//             a confirm t / Fc below -2 (about -5.6 raw) and is rejected: a confirm on |t| would
+//             admit it;
 //   N         the hurdle is mined_hurdle(--budget), not that of the 88 trials recorded, and the
 //             shortlist is exactly the evaluated rows with f2 / F at or above it, by f2;
 //   copy      rank(copy) clears the hurdle on f1 and not on f2, so it never reaches the rho step
@@ -698,18 +769,24 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   cfg.stage2_generations = 0;
   cfg.race_strides.clear();
   cfg.max_promotions = 64; // above the 27 rows the replica shortlists: no cap
-  cfg.budget = st::kMinedMaxBudget; // 1000: Ruling PM4-13's ceiling itself is accepted
+  // The 1,000 band (F 1.54). At the 10,000 ceiling the hurdle is 4.56 x 1.63, which the replica's
+  // rank(swap) does not clear.
+  cfg.budget = 1000U;
   std::ostringstream progress;
   const auto status = st::run_mine(cfg, progress);
   ASSERT_TRUE(status) << status.error().to_string() << "\n" << progress.str();
   const fs::path out(cfg.output_directory);
   const Json campaign = read_json(out / "campaign.json");
   const auto rows = read_trials(out / "trials.csv");
-  // Ruling PM4-13: the ceiling is in the recipe (so its identity) and in the hurdle, beside F.
-  EXPECT_EQ(campaign.at("budget").get<u64>(), st::kMinedMaxBudget);
+  // Ruling PM4-13 lifted by the table (lane MINE-STAT): the ceiling and both factor tables are in
+  // the recipe (so its identity), the ceiling and the factor of the budget's band in the hurdle.
+  EXPECT_EQ(campaign.at("budget").get<u64>(), 1000U);
   EXPECT_EQ(campaign.at("recipe").at("max_budget").get<u64>(), st::kMinedMaxBudget);
   EXPECT_EQ(campaign.at("hurdle").at("max_budget").get<u64>(), st::kMinedMaxBudget);
-  EXPECT_EQ(campaign.at("recipe").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
+  EXPECT_EQ(campaign.at("recipe").at("overlap_bands"), bands_of(st::kMinedOverlapBands));
+  EXPECT_EQ(campaign.at("recipe").at("confirm_bands"), bands_of(st::kMinedConfirmBands));
+  const f64 factor = st::mined_overlap_factor(1000U);
+  EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), factor);
   ASSERT_EQ(rows.size(), 88U);
   ASSERT_EQ(campaign.at("registry").at("n_raw").get<u64>(), 88U);
   // N: the declared budget's Bonferroni value.
@@ -720,7 +797,7 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   std::vector<const TrialRow *> expected;
   for (const TrialRow &row : rows)
     if (row.status == "evaluated" && std::isfinite(row.f2) &&
-        st::mined_overlap_corrected(row.f2) >= hurdle)
+        st::mined_overlap_corrected(row.f2, factor) >= hurdle)
       expected.push_back(&row);
   std::sort(expected.begin(), expected.end(), [](const TrialRow *a, const TrialRow *b) {
     return a->f2 != b->f2 ? a->f2 > b->f2 : a->canon_hash < b->canon_hash;
@@ -737,7 +814,8 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   EXPECT_TRUE(swapped->at("confirm_read").get<bool>());
   EXPECT_TRUE(swapped->at("confirm_defined").get<bool>());
   EXPECT_TRUE(swapped->at("confirm_marginal_t").is_null());
-  EXPECT_GE(st::mined_overlap_corrected(swapped->at("confirm_ic_t").get<f64>()),
+  EXPECT_GE(st::mined_overlap_corrected(swapped->at("confirm_ic_t").get<f64>(),
+                                        swapped->at("confirm_factor").get<f64>()),
             st::kMinedConfirmT);
   EXPECT_FALSE(swapped->at("admitted").get<bool>());
   // Sign: frozen from discover.
@@ -758,8 +836,8 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
                                  [](const TrialRow &row) { return row.dsl == "rank(copy)"; });
   ASSERT_NE(copy, rows.end());
   EXPECT_EQ(copy->status, "evaluated");
-  EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle);
-  EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle);
+  EXPECT_GE(st::mined_overlap_corrected(copy->f1, factor), hurdle);
+  EXPECT_LT(st::mined_overlap_corrected(copy->f2, factor), hurdle);
   EXPECT_TRUE(promotion_of(campaign, "rank(copy)") == nullptr);
   // Admitted: only expressions of p1, p2, p3 or neg, and each of them.
   const Json mined = read_json(out / "mined_members.json");
@@ -894,14 +972,14 @@ TEST(StrategyMineCampaign, RefusesAMissingBudgetOrOneBelowTheCapacity) {
   EXPECT_EQ(st::mine_trial_capacity(cfg), templates);
 }
 
-// Ruling PM4-13: the overlap factor is validated to --budget kMinedMaxBudget (1000) only, so
-// 1001 is refused before any payload -- here the role and pool manifests do not even exist --
-// and writes nothing (RulePinsOnTheTemplates runs at 1000 itself). The ledger twin refuses a
-// line above the ceiling in campaign_line's words and accepts one at it.
+// Ruling PM4-13, lifted by lane MINE-STAT's table: the overlap factors are validated to --budget
+// kMinedMaxBudget (10,000) only, so 10,001 is refused before any payload -- here the role and
+// pool manifests do not even exist -- and writes nothing. The ledger twin refuses a line above
+// the ceiling in campaign_line's words and accepts one at it.
 TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
   Fixture f;
   ASSERT_TRUE(f.ok);
-  EXPECT_EQ(st::kMinedMaxBudget, 1000U);
+  EXPECT_EQ(st::kMinedMaxBudget, 10000U);
   auto cfg = f.config("ceiling", 1, 1);
   cfg.budget = st::kMinedMaxBudget + 1U;
   cfg.role.manifest = (f.dir.path / "absent-role.json").string();
@@ -910,7 +988,7 @@ TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
   const auto refused = st::run_mine(cfg, progress);
   ASSERT_FALSE(refused);
   const std::string message = refused.error().message();
-  EXPECT_NE(message.find("--budget 1001 is above kMinedMaxBudget 1000 (Ruling PM4-13)"),
+  EXPECT_NE(message.find("--budget 10001 is above kMinedMaxBudget 10000 (Ruling PM4-13)"),
             std::string::npos)
       << message;
   EXPECT_NE(message.find("validated to that budget only"), std::string::npos) << message;
@@ -935,7 +1013,7 @@ TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
   const auto above = st::mine_ledger_line(line);
   ASSERT_FALSE(above);
   EXPECT_NE(above.error().message().find(
-                "budget is at most 1000 (kMinedMaxBudget, Ruling PM4-13: the overlap factor is "
+                "budget is at most 10000 (kMinedMaxBudget, Ruling PM4-13: the overlap factor is "
                 "validated to that budget only)"),
             std::string::npos)
       << above.error().to_string();

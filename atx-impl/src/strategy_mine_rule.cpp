@@ -10,6 +10,16 @@
 #include "atx/engine/eval/stats_ext.hpp"
 
 namespace atx::impl::strategy {
+namespace {
+// The factor of the band `count` falls in: the first band whose top is at or above it; NaN for 0
+// or a count above the last top.
+f64 band_factor(std::span<const MinedFactorBand> bands, u64 count) noexcept {
+  if (count == 0U) return std::numeric_limits<f64>::quiet_NaN();
+  for (const MinedFactorBand &band : bands)
+    if (count <= band.top) return band.factor;
+  return std::numeric_limits<f64>::quiet_NaN();
+}
+} // namespace
 
 f64 mined_hurdle(u64 trials) noexcept {
   if (trials == 0U) return std::numeric_limits<f64>::quiet_NaN();
@@ -22,12 +32,19 @@ bool mined_confirm_defined(bool ic_defined, usize ic_dates, usize marginal_dates
          marginal_dates == label_rows;
 }
 
-f64 mined_overlap_corrected(f64 t) noexcept { return t / kMinedOverlapFactor; }
+f64 mined_overlap_factor(u64 budget) noexcept { return band_factor(kMinedOverlapBands, budget); }
 
-std::vector<usize> mined_shortlist(std::span<const MinedRead> reads, f64 hurdle, usize cap) {
+f64 mined_confirm_factor(usize reads) noexcept {
+  return band_factor(kMinedConfirmBands, static_cast<u64>(reads));
+}
+
+f64 mined_overlap_corrected(f64 t, f64 factor) noexcept { return t / factor; }
+
+std::vector<usize> mined_shortlist(std::span<const MinedRead> reads, f64 hurdle, f64 factor,
+                                   usize cap) {
   std::vector<usize> out;
   for (usize i = 0; i < reads.size(); ++i)
-    if (std::isfinite(reads[i].f2) && mined_overlap_corrected(reads[i].f2) >= hurdle)
+    if (std::isfinite(reads[i].f2) && mined_overlap_corrected(reads[i].f2, factor) >= hurdle)
       out.push_back(i);
   std::sort(out.begin(), out.end(), [&reads](usize a, usize b) {
     if (reads[a].f2 != reads[b].f2) return reads[a].f2 > reads[b].f2;
@@ -63,11 +80,13 @@ std::vector<MinedRho> mined_rho_select(const atx::engine::combine::PairwiseRowCo
 std::vector<MinedConfirm> mined_confirm(std::span<const f64> oriented_t) {
   std::vector<MinedConfirm> out(oriented_t.size());
   std::vector<f64> p(oriented_t.size());
+  const f64 factor = mined_confirm_factor(oriented_t.size());
   for (usize k = 0; k < oriented_t.size(); ++k) {
     const f64 t = oriented_t[k];
-    const f64 corrected = mined_overlap_corrected(t);
+    const f64 corrected = mined_overlap_corrected(t, factor);
     p[k] = std::isfinite(corrected) ? atx::engine::eval::norm_cdf(-corrected) : 1.0;
     out[k].t = t;
+    out[k].factor = factor;
     out[k].t_corrected = corrected;
     out[k].p = p[k];
   }

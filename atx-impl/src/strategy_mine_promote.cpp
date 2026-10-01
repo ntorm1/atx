@@ -100,7 +100,8 @@ co::Result<std::vector<Promotion>> promote(const std::vector<MinedTrial> &trials
     evaluated.push_back(i);
     reads.push_back(MinedRead{trials[i].canon_hash, ex::research_ic_f2(trials[i].read->read)});
   }
-  const std::vector<usize> shortlist = mined_shortlist(reads, hurdle, context.max_promotions);
+  const std::vector<usize> shortlist =
+      mined_shortlist(reads, hurdle, context.overlap_factor, context.max_promotions);
   std::vector<Promotion> out(shortlist.size());
   if (shortlist.empty()) return co::Ok(std::move(out));
   std::vector<const ex::Genome *> genomes;
@@ -143,7 +144,8 @@ co::Result<std::vector<Promotion>> promote(const std::vector<MinedTrial> &trials
 }
 
 Json promotions_json(const std::vector<MinedTrial> &trials,
-                     const std::vector<Promotion> &promotions, const MinePool &pool) {
+                     const std::vector<Promotion> &promotions, const MinePool &pool,
+                     f64 overlap_factor) {
   // The rho rows by name: the pool members, then the shortlist.
   std::vector<std::string> rows;
   for (const auto &member : pool.members) rows.push_back("pool:" + member.name);
@@ -158,8 +160,8 @@ Json promotions_json(const std::vector<MinedTrial> &trials,
     out.push_back(Json{{"canon_hash", hex16(t.canon_hash)}, {"dsl", t.dsl}, {"sign", r.sign},
                        {"f1", finite_or_null(ex::research_ic_f1(r))},
                        {"f2", finite_or_null(ex::research_ic_f2(r))},
-                       {"f2_corrected",
-                        finite_or_null(mined_overlap_corrected(ex::research_ic_f2(r)))},
+                       {"f2_corrected", finite_or_null(mined_overlap_corrected(
+                                            ex::research_ic_f2(r), overlap_factor))},
                        {"max_abs_rho", finite_or_null(p.rho.max_abs)}, {"max_rho_row", against},
                        {"rho_pass", p.rho.pass}, {"confirm_read", p.confirm_read},
                        {"confirm_defined", p.confirm_defined},
@@ -168,6 +170,7 @@ Json promotions_json(const std::vector<MinedTrial> &trials,
                        {"confirm_marginal_dates", p.confirm.marginal_dates},
                        {"confirm_ic_t", finite_or_null(confirm_ic_t)},
                        {"confirm_marginal_t", finite_or_null(p.decision.t)},
+                       {"confirm_factor", finite_or_null(p.decision.factor)},
                        {"confirm_t_corrected", finite_or_null(p.decision.t_corrected)},
                        {"p", finite_or_null(p.decision.p)},
                        {"p_by", finite_or_null(p.decision.p_by)},
@@ -188,6 +191,7 @@ Json members_json(const std::vector<MinedTrial> &trials,
                        {"origin", "mined"}, {"canon_hash", hex16(t.canon_hash)},
                        {"discover_f2", finite_or_null(ex::research_ic_f2(t.read->read))},
                        {"confirm_marginal_t", finite_or_null(p.decision.t)},
+                       {"confirm_factor", finite_or_null(p.decision.factor)},
                        {"confirm_t_corrected", finite_or_null(p.decision.t_corrected)}});
   }
   return out;
