@@ -11,6 +11,8 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <map>
@@ -221,6 +223,99 @@ TEST(SpoV3, ZeroCostNoLimitsReturnsAimTo1e8) {
   EXPECT_DOUBLE_EQ(r.tracking_error_current, c.aim_vol); // from flat: the aim's own vol
   EXPECT_EQ(engine.horizon(), sp::v3_horizon);            // fixed, not 1 / theta (4 here)
   EXPECT_DOUBLE_EQ(engine.gross_budget(), sp::v3_gross_bound_multiple * cfg.target.aim_leverage);
+}
+
+// A payload the fixture's risk model wrote, read back as raw values (not through RiskStore).
+template <class T>
+std::vector<T> read_values(const std::filesystem::path& file) {
+  std::vector<T> out(static_cast<usize>(std::filesystem::file_size(file) / sizeof(T)));
+  std::ifstream in(file, std::ios::binary);
+  // SAFETY: char reads into the object representation of trivially copyable fixture values.
+  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size() * sizeof(T)));
+  if (!in) {
+    ADD_FAILURE() << "short read of " << file.string();
+  }
+  return out;
+}
+
+// Review T-4: gamma's units against an independent dense Sigma. sigma_aim is the aim's ANNUAL
+// ex-ante vol sqrt(252 a' Sigma a), Sigma = X F X' + D of the risk row at the decision, built
+// here from the files the fixture's risk model wrote (intercept, the industry slot's column,
+// the 11 styles), and gamma = S_prior / sigma_aim with S_prior = 20 (Ruling E-14). An
+// unannualised vol (gamma sqrt(252) = 15.87 times too large), 252 without the root, or a
+// dropped industry or style column fails here.
+TEST(SpoV3, GammaIsSPriorOverTheAnnualisedAimVolOfADenseSigma) {
+  const Directory dir;
+  const Role role(20, 12, 83);
+  const auto risk = clean_model(dir, role, 13);
+  ASSERT_NE(risk, nullptr);
+  sp::Engine engine(sp::v3_params(), risk);
+  const auto cfg = nav_config();
+  const auto x = role.target();
+  const usize n = role.n, d = 2; // every name a member with a risk row at d
+  std::vector<f64> desired(n);
+  f64 mean = 0;
+  for (usize i = 0; i < n; ++i) {
+    desired[i] = role.signal[d * n + i];
+    mean += desired[i];
+  }
+  for (f64& v : desired) v -= mean / static_cast<f64>(n);
+  f64 gross = 0;
+  for (const f64 v : desired) gross += std::abs(v);
+  for (f64& v : desired) v /= gross;
+  const st::cost_v2::DecisionLiquidity liquidity{std::vector<f64>(n, 1e15),
+                                                 std::vector<f64>(n, 0.02)};
+  const sp::BookDecision in{x, cfg, cfg.scenario, d, 1e8, desired, {}, {}, liquidity, "S2"};
+  std::vector<f64> planned(n, 0.0);
+  st::TargetReplayDay day;
+  const auto status = engine.plan(in, planned, day);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto& c = engine.calibration();
+  ASSERT_TRUE(c.done);
+  // The aim the tracker received: L x desired.
+  std::vector<f64> aim(n);
+  for (usize i = 0; i < n; ++i) aim[i] = cfg.target.aim_leverage * desired[i];
+  const auto received = engine.last_aim();
+  ASSERT_EQ(received.size(), n);
+  for (usize i = 0; i < n; ++i) EXPECT_EQ(std::bit_cast<u64>(received[i]), std::bit_cast<u64>(aim[i])) << i;
+  // Sigma at d, dense, from the store's files.
+  constexpr usize k = sp::risk_factors, styles = sp::risk_styles, style_column = 1 + sp::risk_industry_slots;
+  const auto covariance = read_values<f64>(dir.path / "factor_covariance.f64");
+  const auto specific = read_values<f64>(dir.path / "specific_variance.f64");
+  const auto exposure = read_values<f32>(dir.path / "style_exposures.f32");
+  const auto slot = read_values<u8>(dir.path / "industry_slot.u8");
+  ASSERT_EQ(covariance.size(), role.d * k * k);
+  ASSERT_EQ(specific.size(), role.d * n);
+  ASSERT_EQ(exposure.size(), role.d * n * styles);
+  ASSERT_EQ(slot.size(), role.d * n);
+  std::vector<f64> loading(n * k, 0.0); // X
+  for (usize i = 0; i < n; ++i) {
+    ASSERT_LT(static_cast<usize>(slot[d * n + i]), sp::risk_industry_slots);
+    loading[i * k] = 1.0;
+    loading[i * k + 1 + slot[d * n + i]] = 1.0;
+    for (usize s = 0; s < styles; ++s)
+      loading[i * k + style_column + s] = static_cast<f64>(exposure[(d * n + i) * styles + s]);
+  }
+  const usize f = d * k * k; // F at d
+  f64 daily = 0.0;
+  for (usize i = 0; i < n; ++i)
+    for (usize j = 0; j < n; ++j) {
+      f64 sigma = i == j ? specific[d * n + i] : 0.0;
+      for (usize r = 0; r < k; ++r)
+        for (usize q = 0; q < k; ++q)
+          sigma += loading[i * k + r] * covariance[f + r * k + q] * loading[j * k + q];
+      daily += aim[i] * sigma * aim[j];
+    }
+  ASSERT_GT(daily, 0.0);
+  const f64 sigma_aim = std::sqrt(252.0 * daily);
+  EXPECT_NEAR(c.aim_vol, sigma_aim, 1e-12 * sigma_aim);
+  EXPECT_NEAR(c.aim_vol / std::sqrt(daily), 15.874507866387544, 1e-11); // sqrt(252), pinned
+  EXPECT_EQ(sp::v3_sharpe_prior, 20.0);                                  // Ruling E-14
+  EXPECT_NEAR(c.gamma, 20.0 / sigma_aim, 1e-12 * c.gamma);
+  const auto record = engine.rule_calibration_json();
+  EXPECT_EQ(record.at("sigma_aim").get<f64>(), c.aim_vol);
+  EXPECT_EQ(record.at("gamma").get<f64>(), c.gamma);
+  EXPECT_EQ(record.at("sharpe_prior").get<f64>(), 20.0);
 }
 
 // The gross cap is the sanity bound 2 x L, never a solver constraint: on the fixture's replay
