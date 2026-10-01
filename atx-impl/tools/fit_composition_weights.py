@@ -179,6 +179,7 @@ import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
 import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
 import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pure functions in this directory)
+import composition_resid  # noqa: E402  (v8 R-11: --theme-resid theme-resid-v1, the theme_residualise block)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -1800,6 +1801,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(prior == (args.composition in PRIOR_COMPOSITIONS),
             "--composition ew-theme-v1|ew-theme-aim-v1|ew-theme-v6 and --screen v4-prior-v1/v2 go together")
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
+    require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
     require(args.work_dir is not None or (args.max_seconds is None and args.max_new_candidates is None),
@@ -2227,6 +2229,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                                      priors["recipe_sha256"])
     if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
         composition_rules.attach_std(document, std)
+    composition_resid.apply(args, document, summary, FitError)  # v8 R-11 --theme-resid; absent: no change
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
@@ -2374,6 +2377,7 @@ def parse_args(argv):
                    help="v8 H-1: an era pooled before the --train role (date order; repeatable): its role manifest, "
                         "TRAIN orientations.json and runner summary.json with their SHA-256 pins")
     p.add_argument("--era-id", default=None, help="v8 H-1: the era id of the --train role (the anchor, last era)")
+    composition_resid.add_argument(p)  # v8 R-11: --theme-resid theme-resid-v1
     return p.parse_args(argv)
 
 

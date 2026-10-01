@@ -37,6 +37,7 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "base-b0c.json": CHILD_NULLS, "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS,
              "r3-aim-gain.json": CHILD_NULLS, "r4-hold-band.json": CHILD_NULLS, "r5-adv-hold.json": CHILD_NULLS,
              "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS}
+NULL_PINS["r11.json"] = CHILD_NULLS                                                       # v8 R-11 (lane ORTH)
 FILLS = {"r6-spo-v3.json": ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]}
 FIT_DOWN = {"fit.output", "card.output", "ic.w_output", "nav.output", "monitor.output"}   # downstream of the fit
 LIB_DOWN = FIT_DOWN | {"ic.u_output"}                                                       # downstream of the library
@@ -51,6 +52,8 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
                     "r2-lib-v80.json": LIB_CHANGE, "r3-aim-gain.json": FIT_DOWN | {"fit.flags"},
                     "r4-hold-band.json": {"nav.output", "nav.flags"}, "r5-adv-hold.json": {"nav.output", "nav.flags"},
                     "r6-spo-v3.json": {"nav.output", "nav.flags", "nav.rule"}, "r7-lib-v81.json": LIB_CHANGE}
+EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                                   # v8 R-11 (lane ORTH)
+FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 MISSING = object()
 
 
@@ -151,7 +154,8 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
                      "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"]}
     assert cn == nav_delta.get(name, pn)
     comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v1"}
-    assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]]
+    assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]] + \
+        FIT_APPENDED.get(name, [])
     assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
 
 
@@ -312,6 +316,28 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
         path.write_text(json.dumps(dict(doc, parent=f"scripts/specs/v8/{parent}")), encoding="utf-8")
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
+
+
+def test_r11_appends_theme_resid_to_the_parents_fit(tmp_path):
+    """v8 R-11 (lane ORTH): theme-resid-v1 keeps the parent's composition (its member weights and theme shares) and adds
+    the fitter flag --theme-resid; on an R-1 parent the w pass inherits Ruling E-28's 3,072 MiB."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((V8 / "r11.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "r1-comp-v8.json" and "requires" not in doc
+    path = tmp_path / "r11-on-r1.json"
+    path.write_text(json.dumps(dict(doc, parent="scripts/specs/v8/r1-comp-v8.json")), encoding="utf-8")
+    spec = RC.load_spec(path)
+    assert RC.option_value(spec["fit"]["flags"], "--composition") == "ew-theme-std-v1"
+    assert RC.option_value(spec["fit"]["flags"], "--theme-resid") == "theme-resid-v1"
+    required = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+    assert fcw.parse_args(required + ["--theme-resid", "theme-resid-v1"]).theme_resid == "theme-resid-v1"  # the fitter's
+    assert fcw.parse_args(required).theme_resid is None                                                    # flag absent
+    root, spec = fake_root(tmp_path / "root", spec)
+    c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
+    assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
 
 
 def test_null_fields_pin_plans_unlocked_and_lock_fills_it(tmp_path):
