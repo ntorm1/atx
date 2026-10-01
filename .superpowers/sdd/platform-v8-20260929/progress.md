@@ -537,3 +537,37 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Dispatched from b44774d6: integrator part B (H3 339c07b1, root), lane ERA (pool 3, E-35 + P-1), lane FIX-2
   (pool 7, P-2, P-3, T-1, T-2, T-4, N-1, N-2, N-3), scoped re-review of the fix lanes plus first read of the R45
   and A2 follow-up code (reader on pool 10 detached at b44774d6; output review-w1-fixes.md).
+
+## 2026-09-30 owner directive: more parallel lanes on alpha generation (atx-engine + atx-impl)
+- Ruling E-38 (new cells and the N budget, declared before any read): the registration holds N <= 51 with R-8 at 48
+  and R-9's three theta cells at 49-51. E-37 makes R-9 undefined on an spo-v3 parent. Therefore: if R-6 is accepted,
+  slots 49-51 run, in order, R-10 (`ic-shrink-v1`), R-11 (`theme-resid-v1`), R-12 (one add-alpha cell on the
+  library v8.2 candidates that pass the screen; the three remaining admission trials; if none passes, slot 51 is
+  unused); if R-6 is rejected, R-9 runs as registered and R-10..R-12 are not run in v8 (registered for v9). Each
+  rule's constants are fixed blind by its lane and written in its report before any cell read (E-30 precedent)
+  -- the hard budget is the owner's; the slots exist only where R-9 is undefined -- cost if wrong: three cells of
+  combination work deferred to v9.
+- Ruling E-39 (lo1 delisting returns; runbook R15 open question): linked-operating-v1 gains `--delisting-returns`
+  (returns corrected as v3 does, membership unchanged) so B0c's label role exists whichever of lo1 / lo3 wins B0b;
+  lane DLRET builds it blind -- B0c is the baseline and must not depend on which role wins -- cost if wrong: one
+  lane-day; if lo3 wins the path is unused in v8.
+- Ruling E-40 (R-8 built): the optional R-8 (ex-ante risk target, plan rule verbatim: sigma_star 5.0%, b 1.15,
+  clip [.8, 1.25] L, 21-session cadence, book_variance on the gross-1 book) is built as an atx-engine scaler plus a
+  flag, so it can run at N 48 after R-7 -- it is registered; the plan's D15 is the only variance-reduction lever in
+  the registration -- cost if wrong: one lane-day.
+- Dispatched (briefs in task-ALPHA-briefs.md): RISK (pool 9, from 28051c4c), DLRET (pool 4, from fd2ff7a8),
+  LIB2 (pool 8), COMB2 (pool 11), ORTH (pool 10). All Opus 5.5. Merge after FIX-2 and ERA (integration 6).
+- Scoped re-review of the fix lanes done (review-w1-fixes.md, at b44774d6): part 1 21 ADDRESSED, 0 NOT ADDRESSED
+  (all I/M of W1 A/B/C plus E-33; NOT A DEFECT verdicts upheld; integration fixes agreed). Residuals F-1 (M: rerun_of
+  checked only for existence/kind/window; unbounded blind re-runs each add 0), F-2..F-7 (m). Part 2 (R45 session 3,
+  A2 follow-up): F-8 (M: add-alpha child of a labelled parent runs `ref` without --label-role; R-2 / R-7 would
+  hard-stop at ref-s2-daily), F-9 (M: template cells hash only the template; parent chain unpinned; matching spec
+  digest skips the argv check), F-10 (M: ew-theme-aim-v1 normalises gains across themes, no 1/(2T) cap), F-11..F-14
+  (m; F-14: the r6 template removes --capacity-curve against E-37).
+- Ruling E-27a (F-10): E-27 applies whichever parent R-3 runs on: `ew-theme-aim-v1` renormalises the gains inside
+  each theme (theme share 1 / T kept) and applies the member cap 1 / (2T) after, exactly as `ew-theme-std-aim-v1`
+  -- "on top of the parent's weights" cannot move weight across themes -- cost if wrong: R-3 on a rejected R-1 is
+  not separable; it binds only if R-1 is rejected.
+- Ruling PM3-6: lane FIX-3 (pool 10, from fd2ff7a8) fixes F-1, F-8, F-9, F-10 (E-27a), F-14 and the cheap minors
+  F-2..F-7, F-11..F-13; it is on the critical path (R-2, R-7, N integrity), so it takes pool 10 ahead of lane ORTH,
+  which starts when ERA or FIX-2 frees a pool -- cost if wrong: ORTH starts one lane-turn later.
