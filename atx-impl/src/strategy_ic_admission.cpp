@@ -486,14 +486,26 @@ co::Status theme_indices(const Json& rows,const Library& lib,const std::vector<f
 // (IcThemeRule::standardise); `verify` (null: none) checks the pinned weights against the
 // rule's own fitted inputs recorded in the block, before any payload; `rerank_off` says
 // whether the block may switch the re-rank off (ew-theme-std-v1's R-1 identity device).
+// Finding R6B-C-5: a fitter file records its rule (provenance.rule); a row is written by the
+// fitter rule of its own id and by `also_written_by` (empty: none), and its rerank-off identity
+// device grafts the block onto files of `identity_source` (empty: none).
 using StandardiseVerify=co::Status(*)(const Json& block,const Library& lib,const std::vector<f64>& weights);
-struct StandardiseRule { std::string_view id; bool rerank_off; StandardiseVerify verify; };
+struct StandardiseRule {
+  std::string_view id; bool rerank_off; StandardiseVerify verify;
+  std::string_view also_written_by; std::string_view identity_source;
+};
 co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights);
+// R-3's fitter rule ew-theme-std-aim-v1 writes the ew-theme-std-v1 block (its gains stay in the
+// weights); the R-1 identity device (composition_rules.identity_document) grafts a rerank-off
+// ew-theme-std-v1 block onto accepted ew-theme-v1 weights.
+constexpr std::string_view std_aim_fitter_rule="ew-theme-std-aim-v1";
+constexpr std::string_view ew_theme_fitter_rule="ew-theme-v1";
 constexpr std::array<StandardiseRule,3> standardise_rules{{
-    {theme_standardise_rule,true,nullptr},              // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 files too)
-    {ic_shrink_rule,false,&verify_ic_shrink},           // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
-    {ic_shrink_aim_rule,false,&verify_ic_shrink_aim}}}; // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
+    // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 files too)
+    {theme_standardise_rule,true,nullptr,std_aim_fitter_rule,ew_theme_fitter_rule},
+    {ic_shrink_rule,false,&verify_ic_shrink,{},{}},           // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
+    {ic_shrink_aim_rule,false,&verify_ic_shrink_aim,{},{}}}}; // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
 // The row the block names (null: none, or a block that is not an object or has no string rule).
 const StandardiseRule* standardise_row(const Json& block) {
   if (!block.is_object() || !block.contains("rule") || !block.at("rule").is_string()) return nullptr;
@@ -631,6 +643,35 @@ co::Status composition_standardise(const Json& j,const Library& lib,PinnedWeight
   if (rerank) { pinned.std_themes=std::move(index); pinned.std_theme_count=count; }
   return co::Ok();
 }
+// Finding R6B-C-5 (every row of the rule table): the fitter rule a weights file records
+// (provenance.rule, a string) must write its theme_standardise block. A file recording a rule
+// that writes a row carries exactly that row's block; a file carrying a row's block records a
+// rule that writes it, or is that row's rerank-off identity device on its identity_source. So
+// a file recording ic-shrink-v1 under an ew-theme-std-v1 block (the ic-shrink verify skipped,
+// ew-theme-std-v1 recorded) is refused. A file without a string provenance.rule (hand-written
+// weights) is not checked. Runs after composition_standardise (the block is validated), before
+// any role payload.
+co::Status composition_recorded_rule(const Json& j) {
+  if (!j.contains("provenance") || !j.at("provenance").is_object() || !j.at("provenance").contains("rule") ||
+      !j.at("provenance").at("rule").is_string())
+    return co::Ok();
+  const std::string& recorded=j.at("provenance").at("rule").get_ref<const std::string&>();
+  const StandardiseRule* block=j.contains("theme_standardise")?standardise_row(j.at("theme_standardise")):nullptr;
+  const StandardiseRule* writer=nullptr;
+  for (const auto& row:standardise_rules)
+    if (recorded==row.id || (!row.also_written_by.empty() && recorded==row.also_written_by)) writer=&row;
+  if (writer==block) return co::Ok();
+  const std::string carried=block==nullptr?std::string("no theme_standardise block")
+                                          :"theme_standardise rule "+std::string(block->id);
+  if (writer!=nullptr)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights record provenance.rule "+recorded+
+        ", which writes theme_standardise rule "+std::string(writer->id)+", but carry "+carried);
+  const bool identity=!j.at("theme_standardise").at("rerank").get<bool>() && !block->identity_source.empty() &&
+      recorded==block->identity_source;
+  if (identity) return co::Ok();
+  return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights carry "+carried+
+      ", which their provenance.rule "+recorded+" does not write");
+}
 } // namespace
 // Runs before any role payload load (including under --plan-only); every refusal
 // is loud. Selection hygiene: the file must name the TRAIN role manifest it was
@@ -670,6 +711,7 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   ATX_TRY(pinned.signs,composition_signs(j,lib,weights));
   ATX_TRY_VOID(composition_themes(j,lib,pinned));
   ATX_TRY_VOID(composition_standardise(j,lib,pinned));
+  ATX_TRY_VOID(composition_recorded_rule(j));          // finding R6B-C-5: provenance.rule writes the block
   ATX_TRY_VOID(composition_residualise(j,lib,pinned)); // v8 R-11 theme-resid-v1 (strategy_ic_theme_resid.cpp)
   const bool v2=j.at("schema")==weights_schema_v2;
   const bool standardise=!pinned.standardise.empty();

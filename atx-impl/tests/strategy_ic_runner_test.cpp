@@ -3538,6 +3538,75 @@ TEST(CompositionV8, IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput) {
     }
   }
 }
+// Finding R6B-C-5: for every row of the rule table, the fitter rule a weights file records
+// (provenance.rule) must write its theme_standardise block, refused before any payload or output.
+// Admitted: each row under the rule that writes it (ew-theme-std-v1 also under R-3's
+// ew-theme-std-aim-v1), the rerank-off identity device on ew-theme-v1 weights, a file without a
+// block under a rule that writes none, and a file without provenance (hand-written weights).
+TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const auto attempt=[&](const Json& doc,bool plan_only,std::ostringstream& log) {
+    cfg.plan_only=plan_only;
+    if (!text_file(path,doc.dump(),cfg.composition_weights_sha256)) return std::string("unwritable");
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    return status?std::string{}:status.error().to_string();
+  };
+  // The shrink members' file of `block` (its weights pass that row's verify; `aim`: the variant's
+  // weights) recording `recorded` (empty: no provenance); `plain`: schema v1, no block.
+  const auto doc=[&](const std::string& block,const std::string& recorded,bool aim=false,bool plain=false) {
+    auto d=shrink_doc(cfg,block,aim);
+    if (!recorded.empty()) d["provenance"]["rule"]=recorded;
+    if (plain) { d.erase("theme_standardise"); d["schema"]=weights_v1; }
+    return d;
+  };
+  auto identity=doc("ew-theme-std-v1","ew-theme-v1");
+  identity["theme_standardise"]["rerank"]=false;
+  const std::vector<Json> admitted{
+      doc("ew-theme-std-v1","ew-theme-std-v1"),doc("ew-theme-std-v1","ew-theme-std-aim-v1",true),
+      doc("ic-shrink-v1","ic-shrink-v1"),doc("ic-shrink-aim-v1","ic-shrink-aim-v1"),identity,
+      doc("ew-theme-std-v1","ew-theme-v1",false,true),doc("ic-shrink-v1","")};
+  for (const auto& d:admitted) {
+    std::ostringstream log; EXPECT_EQ(attempt(d,true,log),"") << d.dump();
+  }
+  const auto writes=[](const std::string& recorded,const std::string& row,const std::string& carried) {
+    return "IC runner: composition weights record provenance.rule "+recorded+", which writes theme_standardise "
+           "rule "+row+", but carry "+carried;
+  };
+  const auto unwritten=[](const std::string& row,const std::string& recorded) {
+    return "IC runner: composition weights carry theme_standardise rule "+row+", which their provenance.rule "+
+           recorded+" does not write";
+  };
+  const std::string none="no theme_standardise block";
+  const std::vector<std::pair<Json,std::string>> cases{
+      {doc("ew-theme-std-v1","ic-shrink-v1"),writes("ic-shrink-v1","ic-shrink-v1","theme_standardise rule ew-theme-std-v1")},
+      {doc("ic-shrink-aim-v1","ic-shrink-v1"),
+       writes("ic-shrink-v1","ic-shrink-v1","theme_standardise rule ic-shrink-aim-v1")},
+      {doc("ic-shrink-v1","ic-shrink-aim-v1"),
+       writes("ic-shrink-aim-v1","ic-shrink-aim-v1","theme_standardise rule ic-shrink-v1")},
+      {doc("ic-shrink-v1","ew-theme-std-v1"),
+       writes("ew-theme-std-v1","ew-theme-std-v1","theme_standardise rule ic-shrink-v1")},
+      {doc("ic-shrink-aim-v1","ew-theme-std-aim-v1"),
+       writes("ew-theme-std-aim-v1","ew-theme-std-v1","theme_standardise rule ic-shrink-aim-v1")},
+      {doc("ew-theme-std-v1","ic-shrink-v1",false,true),writes("ic-shrink-v1","ic-shrink-v1",none)},
+      {doc("ew-theme-std-v1","ic-shrink-aim-v1",false,true),writes("ic-shrink-aim-v1","ic-shrink-aim-v1",none)},
+      {doc("ew-theme-std-v1","ew-theme-std-aim-v1",false,true),writes("ew-theme-std-aim-v1","ew-theme-std-v1",none)},
+      {doc("ew-theme-std-v1","ew-theme-v1"),unwritten("ew-theme-std-v1","ew-theme-v1")}, // rerank true: no identity
+      {doc("ic-shrink-v1","ew-theme-v1"),unwritten("ic-shrink-v1","ew-theme-v1")},
+      {doc("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1"),unwritten("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1")}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [d,reason]:cases) {
+      std::ostringstream log;
+      const auto error=attempt(d,plan_only,log);
+      ASSERT_FALSE(error.empty()) << d.dump();
+      EXPECT_NE(error.find(reason),std::string::npos) << d.dump() << " -> " << error;
+      EXPECT_TRUE(log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
 // ---- Platform v8 R-11 on an R-10 parent (finding R6B-O-1; Rulings E-44, E-45) ----
 // The shrink members' file under registered theme names: liquidity -> value, size ->
 // price_momentum (the same first-appearance order, so the same rule weights and verify).
