@@ -1001,3 +1001,52 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   into the shared `strategy_spo_cli_fixture.hpp` are accepted (tests only; the pinned `strategy_spo_fixture.hpp`
   untouched; `SpoTripwire.*` re-checks the old user) -- cost if wrong: none, it is a test-file move.
 - Dispatched: integrator 6C (root; brief task-INT6C-brief.md; tag prefix v8-11): merge 98ef8d89 then 0b093a4c.
+
+## 2026-10-01 integration 6 part C closed (log "integration 6 part C"; head 3298ea8a, code 41ef00fb, build v8-11)
+- Merged FIX-4a 98ef8d89 (c17fb449), FIX-4b 0b093a4c (41ef00fb); one conflict (import block of
+  test_research_spec.py, union). 0 compile fixes, 0 test fixes: all lane C++ compiled first time under /W4 /WX.
+  C++: ic 145, target 259, impl 1012 / 5 skipped / 1 known; lane filters FIX-4a 79 / 79, FIX-4b 22 / 22; spo
+  pins hold. Not rebuilt, not re-run: book, strategy, mine, factory, combine (targets, risk and mine executables
+  keep their v8-10 bytes). Python: strategies 163 + 9, engine tools 253, impl tools 567 / 1 skipped, scripts 182
+  / 3 skipped; tiny_world unmoved. The CLI void test (exit 3, status void, voided limits_unmet, no NAV or returns
+  file) ran and passed unedited: the open item "E-31a void exit path untested end to end" is closed. Identity 4
+  PASS (step 1 weights byte-identical to part B; step 2 differs in timing fields only). Identity 1 not run: no
+  NAV source changed (FIX-4a IC runner sources only; FIX-4b tests and Python only). Review range
+  9c5cfa0c..41ef00fb. Open: executables are on two build tags (v8-10, v8-11); integration 7 rebuilds all on one.
+
+## 2026-10-01 owner directive and re-design (entries parked while root was held; all before any read)
+- Ruling PM5-5 (scoped FIX-4 review runs beside integration 6 part C, on the frozen lane heads; parked while
+  root was held): one read-only reader, Opus 5.5, on pool 4 `43a0447d..98ef8d89` and pool 10
+  `43a0447d..0b093a4c`: the tie rule PM4-12 in the Python fitter and the C++ kernel (same expression, same order,
+  no-tie bit identity), the theme order PM4-11, the pooled fit PM4-7, the ladder criteria PM4-8 / PM4-9 against
+  E-43, E-44, E-45, and the O-5 template path (PM5-2). Output review-6c-fix4.md, written outside the repository
+  and folded in when root is free. The integrator's compile fixes get a short diff read by the PM after part C
+  closes -- PM4-6 precedent: the lane code is frozen and is the whole diff; a finding found now is fixed before
+  Wave 0 part 2b pins the executables -- cost if wrong: a defect that exists only in integration code is seen one
+  step later (still before the locks).
+- Owner directive (2026-10-01, during integration 6 part C): spawn more subagents; the sprint / goal design may change
+  to prioritise real progress in the core alpha-generation features of atx-engine and atx-impl.
+- Ruling PM5-6 (integration 7 moves before the locks; supersedes the timing of PM4-2): MINE-FIX 20e7bd19 merges
+  right after integration 6 part C and before Wave 0 part 2b writes any lock -- PM4-2's reason was pins moving
+  under locked specs; no lock exists yet, MINE-FIX changes strategy_research_role and an engine header, and this
+  is the last point before the freeze gate where the executables can still change; the mining verb is then
+  compiled and its golden checked in v8, and the AG lanes build on a verified base; identities 1, 4, 7, 8 re-run
+  on the new executables -- cost if wrong: one wide rebuild (about 40 minutes of root) before the cells; if the
+  golden fails and the fix is not a slip, the merge is reverted and PM4-2's timing returns.
+- Ruling PM5-7 (wave AG, alpha generation, beside the cells): four lanes, registered for v9, merged after the
+  freeze gate (integration 8): MINE-MEM (pool 8), MINE-STAT (pool 9), MINE-RUN (pool 3), LIB3 (pool 11); brief
+  task-AG-brief.md. The v8 trial program is untouched (N <= 51; prereg rule 10 stands; no mined campaign in v8
+  without an owner ruling on OD-7 and a memory cap, E-6) -- root is serial by memory and by the parent chain, so
+  more agents cannot shorten the cells; they can make the miner runnable and the next library wave ready --
+  cost if wrong: four lanes' tokens.
+- Ruling PM5-8 (MINE-15, declared before any campaign): an undefined rho pair fails the rho rule; id mined-v1
+  unchanged (never run) -- the rule says 'to every member' -- cost if wrong: a thin-coverage candidate is not
+  promoted.
+- Ruling PM5-9 (MINE-14): the greedy rho step runs over the whole above-hurdle list, then the cap -- the cap
+  otherwise fills with variants of one field -- cost if wrong: none (only promotions were lost).
+- Ruling PM5-10 (mining memory target): the default 4-year campaign must fit 2,560 MiB or the lane states the
+  smallest bit-identical footprint; no owner memory ruling is assumed -- 10.85 GiB cannot run on this host --
+  cost if wrong: the campaign needs an owner cap above OD-2's.
+- Dispatched: MINE-MEM, MINE-STAT, MINE-RUN (from 20e7bd19), LIB3 (from 67f04389).
+- Dispatched: integrator 7 (root; brief task-INT7-brief.md; tag prefix v8-12): merge 20e7bd19, one tag for every
+  research executable, golden at 1 and 4 workers, every suite, identities 1, 4, 7, 8.
