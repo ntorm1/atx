@@ -15,14 +15,17 @@
 // Registry: every distinct expression of the campaign is one trial of a V3 TrialRegistry
 // (--registry; an existing log is reopened only against --registry-head), in first-seen order:
 // evaluated trials with their oriented daily h 21 rank IC over the discover label rows (NaN as
-// 0), screen-rejected, racing-rejected and failed ones as screened observations. The chain head
-// is written to OUTPUT/registry_head.txt and copied into campaign.json and ledger_line.json.
+// 0), screen-rejected, racing-rejected and failed ones as screened observations. The registry's
+// own chain head (records, u64) is written to OUTPUT/registry_head.txt (the next campaign's
+// --registry-head); the ledger's chain head is the SHA-256 of the registry log's bytes as the
+// campaign left it (review MINE-1), in campaign.json with the byte count and in ledger_line.json.
 //
 // Outputs (OUTPUT must be new): campaign.json (atx.mine-campaign/v1), trials.csv,
 // mined_members.json (atx.mined-members/v1, theme `mined`), ledger_line.json (the Ruling E-33
-// atx.trial-ledger/v1 line of backtest_integrity.campaign_line: kind mining-campaign, count 0,
-// registry {path, chain_head, count = n_raw}; `research_cycle.py ledger-campaign --campaign OUTPUT`
-// rebuilds it from campaign.json, checks it and appends it chained) and registry_head.txt.
+// atx.trial-ledger/v1 line of backtest_integrity.campaign_line, strategy_mine_ledger.hpp: kind
+// mining-campaign, count 0, registry {path, chain_head, bytes, count = n_raw};
+// `research_cycle.py ledger-campaign --campaign OUTPUT` rebuilds it from campaign.json, checks
+// the registry bytes against the head, and appends it chained) and registry_head.txt.
 #include <iosfwd>
 #include <span>
 #include <string>

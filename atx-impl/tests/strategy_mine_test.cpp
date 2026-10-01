@@ -11,6 +11,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -18,6 +19,7 @@
 #include "atx/engine/combine/marginal_rank_ic.hpp"
 #include "atx/engine/eval/trial_registry.hpp"
 #include "strategy_mine.hpp"
+#include "strategy_mine_ledger.hpp"
 #include "strategy_mine_rule.hpp"
 
 // platform v8 H-3: `atx-equity-strategy-mine` on a synthetic role (the sprint plan's fixture
@@ -317,6 +319,54 @@ std::vector<TrialRow> read_trials(const fs::path &path) {
   return out;
 }
 
+// The SHA-256 of a file's first `bytes` bytes (empty when the file is shorter).
+std::string prefix_sha256(const fs::path &path, u64 bytes) {
+  const std::string text = text_of(path);
+  if (text.size() < bytes) return {};
+  const auto sha = core::sha256_hex(std::string_view(text).substr(0, static_cast<usize>(bytes)));
+  return sha ? *sha : std::string{};
+}
+
+// Review MINE-1 / Ruling E-33: ledger_line.json is the line backtest_integrity.campaign_line
+// writes for campaign.json -- by the verb's own check (mine_ledger_line_problem) and by an
+// independent mirror here -- and its chain head is the SHA-256 of the registry log's first
+// `bytes` bytes. The pre-fix verb's 16-hex head is a line that check refuses.
+void expect_campaign_line(const st::MineConfig &cfg, const Json &campaign, const fs::path &out,
+                          const std::string &context) {
+  const std::string text = text_of(out / "ledger_line.json");
+  EXPECT_EQ(st::mine_ledger_line_problem(text), "") << context;
+  const Json &registry = campaign.at("registry");
+  const auto head_hex = registry.at("head").get<std::string>();
+  const auto bytes = registry.at("bytes").get<u64>();
+  ASSERT_EQ(head_hex.size(), 64U) << context;
+  EXPECT_EQ(head_hex, prefix_sha256(cfg.registry_path, bytes)) << context;
+  std::string registry_path = cfg.registry_path;
+  std::replace(registry_path.begin(), registry_path.end(), '\\', '/');
+  const auto ident = core::sha256_hex(Json::array({"mining-campaign", head_hex}).dump());
+  ASSERT_TRUE(ident.has_value());
+  const Json expected{{"schema", "atx.trial-ledger/v1"},
+                      {"kind", "mining-campaign"},
+                      {"count", 0},
+                      {"campaign", campaign.at("campaign_id")},
+                      {"origin", "mined"},
+                      {"window_id", campaign.at("research_window").at("id")},
+                      {"registry",
+                       {{"path", registry_path},
+                        {"chain_head", head_hex},
+                        {"bytes", bytes},
+                        {"count", registry.at("n_raw")}}},
+                      {"trial_id", ident->substr(0, 16)}};
+  EXPECT_EQ(Json::parse(text), expected) << context;
+  std::string old_form = text;
+  old_form.replace(old_form.find(head_hex), head_hex.size(), head_hex.substr(0, 16));
+  EXPECT_NE(st::mine_ledger_line_problem(old_form), "") << context;
+  const auto head = ev::read_chain_head(out / "registry_head.txt");
+  ASSERT_TRUE(head.has_value()) << context;
+  EXPECT_EQ(head->records, registry.at("records").get<u64>()) << context;
+  EXPECT_EQ(head->head, std::stoull(registry.at("chain").get<std::string>(), nullptr, 16))
+      << context;
+}
+
 // ---- mined-v1 arithmetic ---------------------------------------------------------------------
 TEST(StrategyMineRule, HurdleIsTheBonferroniValueOfThePlan) {
   EXPECT_NEAR(st::mined_hurdle(100), 3.4808, 1e-3);
@@ -425,28 +475,7 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_EQ(copy->status, "evaluated") << "seed " << seed;
     EXPECT_GE(copy->f1, hurdle) << "seed " << seed;
     EXPECT_LT(copy->f2, hurdle) << "seed " << seed;
-    // Ruling E-33: exactly backtest_integrity.campaign_line(campaign_id, registry path, head,
-    // n_raw, research_window_id) -- count 0, the registry count beside it, trial_id (kind, head).
-    const Json ledger = read_json(out / "ledger_line.json");
-    std::string registry_path = cfg.registry_path;
-    std::replace(registry_path.begin(), registry_path.end(), '\\', '/');
-    const auto head_hex = registry.at("head").get<std::string>();
-    const auto ident = core::sha256_hex(Json::array({"mining-campaign", head_hex}).dump());
-    ASSERT_TRUE(ident.has_value());
-    const Json expected_line{
-        {"schema", "atx.trial-ledger/v1"},
-        {"kind", "mining-campaign"},
-        {"count", 0},
-        {"campaign", "fixture"},
-        {"origin", "mined"},
-        {"window_id", campaign.at("research_window").at("id")},
-        {"registry",
-         {{"path", registry_path}, {"chain_head", head_hex}, {"count", registry.at("n_raw")}}},
-        {"trial_id", ident->substr(0, 16)}};
-    EXPECT_EQ(ledger, expected_line) << "seed " << seed;
-    const auto head = ev::read_chain_head(out / "registry_head.txt");
-    ASSERT_TRUE(head.has_value());
-    EXPECT_EQ(head->records, registry.at("records").get<u64>());
+    expect_campaign_line(cfg, campaign, out, "seed " + std::to_string(seed));
   }
 }
 

@@ -34,9 +34,11 @@ appends one chained defect line (review C-3; backtest_integrity.defect_line): th
   research_cycle.py ledger-campaign --ledger PATH --campaign DIR [--date D] [--root R]
 
 appends one chained mining campaign line (Ruling E-33; backtest_integrity.campaign_line) for the output DIR of
-atx-equity-strategy-mine: built from DIR/campaign.json (campaign_id, registry path and chain head, registry count =
-n_raw, the mined-v1 Bonferroni count; research window id) and refused unless the campaign is complete and the line
-equals the verb's DIR/ledger_line.json. It adds 0 to every N; the same registry head is never appended twice.
+atx-equity-strategy-mine: built from DIR/campaign.json (campaign_id, registry path, chain head and byte count,
+registry count = n_raw, the mined-v1 Bonferroni count; research window id) and refused unless the campaign is
+complete, the registry's first bytes still hash to the chain head (review MINE-1; a relative registry path is read
+from --root), DIR/registry_head.txt names the same registry head, and the line equals the verb's
+DIR/ledger_line.json. It adds 0 to every N; the same registry head is never appended twice.
 """
 from __future__ import annotations
 
@@ -216,14 +218,52 @@ def defect_main(argv=None) -> int:
 MINE_CAMPAIGN_SCHEMA = "atx.mine-campaign/v1"   # atx-equity-strategy-mine's campaign.json (platform v8 H-3)
 
 
-def campaign_record(directory: Path, date: str | None = None) -> dict:
+REGISTRY_HEAD_TAG = "ATXTRGH1"                  # eval::write_chain_head's sidecar line (registry_head.txt)
+
+
+def registry_prefix_sha256(path: Path, size: int) -> str:
+    """SHA-256 of the first ``size`` bytes of ``path`` (the campaign registry as the campaign left it; the log is
+    append-only, so a later campaign's records follow those bytes). LedgerError when the file is shorter."""
+    digest = hashlib.sha256()
+    remaining = size
+    with open(path, "rb") as f:
+        while remaining > 0:
+            block = f.read(min(1 << 20, remaining))
+            if not block:
+                raise LedgerError(f"{path}: the registry holds fewer than the campaign's {size} bytes")
+            digest.update(block)
+            remaining -= len(block)
+    return digest.hexdigest()
+
+
+def check_campaign_registry(directory: Path, reg: dict, root: Path) -> None:
+    """Review MINE-1 / MINE-13: the registry's first ``bytes`` bytes hash to the campaign's chain head, and the
+    output's registry_head.txt (the registry's own head, the next campaign's --registry-head) names the campaign's
+    record count and chain value."""
+    registry = Path(reg["path"])
+    registry = registry if registry.is_absolute() else root / registry
+    if not registry.is_file():
+        raise LedgerError(f"{directory}: the campaign registry {registry} is not readable, so its head cannot be checked")
+    if registry_prefix_sha256(registry, int(reg["bytes"])) != reg["head"]:
+        raise LedgerError(f"{directory}: the first {reg['bytes']} bytes of {registry} do not hash to the campaign's "
+                          "chain head (the registry was edited, or campaign.json was)")
+    tokens = (directory / "registry_head.txt").read_text(encoding="utf-8").split()
+    if len(tokens) != 4 or tokens[0] != REGISTRY_HEAD_TAG or int(tokens[1], 16) != int(reg["records"]) or \
+            int(tokens[2], 16) != int(reg["chain"], 16):
+        raise LedgerError(f"{directory}: registry_head.txt does not name the campaign's registry head")
+
+
+def campaign_record(directory: Path, date: str | None = None, root: Path = research_tree.REPO) -> dict:
     """The Ruling E-33 ledger line of one atx-equity-strategy-mine output directory, built by
-    ``backtest_integrity.campaign_line`` from its campaign.json and checked against the verb's own ledger_line.json."""
+    ``backtest_integrity.campaign_line`` from its campaign.json and checked against the verb's own ledger_line.json.
+    The registry it names (root-relative or absolute) must still begin with the bytes the campaign hashed."""
     campaign = json.loads((directory / "campaign.json").read_text(encoding="utf-8"))
     if campaign.get("schema") != MINE_CAMPAIGN_SCHEMA or campaign.get("status") != "complete":
         raise LedgerError(f"{directory}: campaign.json is not a complete {MINE_CAMPAIGN_SCHEMA} campaign")
     reg = campaign["registry"]
+    check_campaign_registry(directory, reg, root)
     rec = backtest_integrity().campaign_line(campaign["campaign_id"], reg["path"], reg["head"], reg["n_raw"],
+                                             registry_bytes=reg["bytes"],
                                              research_window_id=campaign["research_window"]["id"], date=date)
     verb = json.loads((directory / "ledger_line.json").read_text(encoding="utf-8"))
     own = {k: v for k, v in rec.items() if k != "date"}
@@ -246,7 +286,7 @@ def campaign_main(argv=None) -> int:
     try:
         if a.date is not None:
             dt.date.fromisoformat(a.date)
-        rec = campaign_record(a.campaign if a.campaign.is_absolute() else a.root / a.campaign, a.date)
+        rec = campaign_record(a.campaign if a.campaign.is_absolute() else a.root / a.campaign, a.date, a.root)
         ledger = Path(a.ledger) if Path(a.ledger).is_absolute() else a.root / a.ledger
         written = append(ledger, rec)
     except (OSError, ValueError, LookupError, TypeError) as exc:  # missing or malformed output, a chain refusal

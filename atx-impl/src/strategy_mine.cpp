@@ -31,6 +31,7 @@
 #include "atx/engine/factory/fidelity.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 #include "strategy_mine_detail.hpp"
+#include "strategy_mine_ledger.hpp"
 
 namespace atx::impl::strategy {
 using namespace mine_detail;
@@ -52,8 +53,6 @@ constexpr std::array<std::string_view, 6> kMinerDeny{"trade_when", "hump",   "ka
                                                      "ou_filter",  "kalman", "split2"};
 constexpr std::string_view kCampaignSchema = "atx.mine-campaign/v1";
 constexpr std::string_view kMembersSchema = "atx.mined-members/v1";
-constexpr std::string_view kLedgerSchema = "atx.trial-ledger/v1";
-constexpr std::string_view kLedgerKind = "mining-campaign";
 
 f64 seconds_since(steady::time_point from) {
   return std::chrono::duration<f64>(steady::now() - from).count();
@@ -388,15 +387,14 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     if (!fs::create_directory(out_dir, ec))
       return co::Err(fail(co::ErrorCode::AlreadyExists,
                           "output directory must be new; " + ec.message()));
-    ATX_TRY(auto registry, open_registry(cfg, label_rows, anchor));
-    ATX_TRY(const usize inserted,
-            record_trials(registry, trials, recipe_sha, cfg.campaign_id, label_rows));
-    const ev::TrialChainHead head = registry.chain_head();
-    const u64 n_raw = registry.summary().n_raw;
-    ATX_TRY_VOID(ev::write_chain_head(out_dir / "registry_head.txt", head));
+    ATX_TRY(const RegistryReceipt registry,
+            record_campaign(cfg, trials, recipe_sha, label_rows, anchor));
+    const u64 n_raw = registry.n_raw;
+    ATX_TRY_VOID(ev::write_chain_head(out_dir / "registry_head.txt", registry.chain));
     const Counts counts = count_statuses(trials);
-    progress << "mine: registry records=" << head.records << " n_raw=" << n_raw
-             << " new=" << inserted << '\n' << std::flush;
+    progress << "mine: registry records=" << registry.chain.records << " n_raw=" << n_raw
+             << " new=" << registry.inserted << " sha256=" << registry.sha256 << '\n'
+             << std::flush;
 
     // mined-v1 at the Bonferroni value of the registry's trial count.
     const f64 hurdle = mined_hurdle(n_raw);
@@ -414,7 +412,6 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     const Json members = members_json(trials, promotions);
 
     // Outputs.
-    const std::string head_hex = hex16(head.head);
     const Json anchor_json = anchor ? Json{{"records", anchor->records},
                                            {"head", hex16(anchor->head)}}
                                     : Json(nullptr);
@@ -459,10 +456,12 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                     {"failed", counts.failed}}},
         {"registry", {{"path", cfg.registry_path},
                       {"format", "V3"},
-                      {"records", head.records},
-                      {"head", head_hex},
+                      {"records", registry.chain.records},
+                      {"chain", hex16(registry.chain.head)},
+                      {"head", registry.sha256},
+                      {"bytes", registry.bytes},
                       {"n_raw", n_raw},
-                      {"new_records", inserted},
+                      {"new_records", registry.inserted},
                       {"anchor", anchor_json}}},
         {"hurdle", {{"trials", n_raw},
                     {"family_alpha", kMinedFamilyAlpha},
@@ -474,30 +473,24 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                      {"campaign_id", cfg.campaign_id},
                      {"rule", std::string(kMinedRule)},
                      {"theme", std::string(kMinedTheme)},
-                     {"registry_head", head_hex},
+                     {"registry_head", registry.sha256},
                      {"members", members}};
-    // Ruling E-33: the line backtest_integrity.campaign_line builds (count 0: it adds no trial to
-    // any ledger N; registry.count = n_raw, the mined-v1 Bonferroni count, the campaign's own
-    // budget), trial_id = sha256 of the compact ["mining-campaign", head], first 16 hex digits.
-    // `research_cycle.py ledger-campaign` rebuilds it from campaign.json through campaign_line,
-    // refuses a difference, and appends it chained (prev_sha256).
-    const Json ident = Json::array({std::string(kLedgerKind), head_hex});
-    ATX_TRY(const std::string ident_sha, co::sha256_hex(ident.dump()));
-    std::string ledger_registry_path = cfg.registry_path;
-    std::replace(ledger_registry_path.begin(), ledger_registry_path.end(), '\\', '/');
-    const Json ledger{
-        {"schema", std::string(kLedgerSchema)},
-        {"kind", std::string(kLedgerKind)},
-        {"count", 0},
-        {"campaign", cfg.campaign_id},
-        {"origin", "mined"},
-        {"window_id", std::string(dt::kResearchWindowId)},
-        {"registry",
-         {{"path", ledger_registry_path}, {"chain_head", head_hex}, {"count", n_raw}}},
-        {"trial_id", ident_sha.substr(0, 16)}};
+    // Ruling E-33: the line backtest_integrity.campaign_line builds (strategy_mine_ledger.hpp;
+    // count 0: it adds no trial to any ledger N; registry.count = n_raw, the mined-v1
+    // Bonferroni count). `research_cycle.py ledger-campaign` rebuilds it from campaign.json
+    // through campaign_line, checks the registry against its head, refuses a difference, and
+    // appends it chained (prev_sha256).
+    MineLedgerLine line;
+    line.campaign_id = cfg.campaign_id;
+    line.registry_path = cfg.registry_path;
+    line.registry_head = registry.sha256;
+    line.registry_bytes = registry.bytes;
+    line.registry_count = n_raw;
+    line.window_id = std::string(dt::kResearchWindowId);
+    ATX_TRY(const std::string ledger, mine_ledger_line(line));
     ATX_TRY_VOID(write_text(out_dir / "trials.csv", trials_csv(trials)));
     ATX_TRY_VOID(write_text(out_dir / "mined_members.json", mined.dump(2) + "\n"));
-    ATX_TRY_VOID(write_text(out_dir / "ledger_line.json", ledger.dump() + "\n"));
+    ATX_TRY_VOID(write_text(out_dir / "ledger_line.json", ledger + "\n"));
     ATX_TRY_VOID(write_text(out_dir / "campaign.json", campaign.dump(2) + "\n"));
     progress << "mine: admitted=" << members.size() << " hurdle=" << hurdle << " wrote "
              << out_dir.string() << '\n' << std::flush;

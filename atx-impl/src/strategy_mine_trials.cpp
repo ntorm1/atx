@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/unparse.hpp"
 #include "strategy_mine_detail.hpp"
 
@@ -214,6 +215,32 @@ co::Result<usize> record_trials(ev::TrialRegistry &registry, std::vector<MinedTr
     inserted += recorded.inserted ? 1U : 0U;
   }
   return co::Ok(inserted);
+}
+
+co::Result<RegistryReceipt> record_campaign(const MineConfig &cfg, std::vector<MinedTrial> &trials,
+                                            const std::string &recipe_sha, usize rows,
+                                            const std::optional<ev::TrialChainHead> &anchor) {
+  RegistryReceipt out;
+  {
+    ATX_TRY(auto registry, open_registry(cfg, rows, anchor));
+    ATX_TRY(out.inserted, record_trials(registry, trials, recipe_sha, cfg.campaign_id, rows));
+    out.chain = registry.chain_head();
+    out.n_raw = registry.summary().n_raw;
+  } // the log's handle closes here
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(cfg.registry_path, ec);
+  if (ec) return co::Err(fail(co::ErrorCode::IoError, "registry size: " + ec.message()));
+  out.bytes = static_cast<u64>(size);
+  ATX_TRY(out.sha256, co::sha256_file(cfg.registry_path));
+  // Reopened against the head just recorded: a log that another writer extended since (before
+  // or during the digest) holds more records than that head and is refused.
+  ATX_TRY(const auto reopened,
+          open_registry(cfg, rows, std::optional<ev::TrialChainHead>{out.chain}));
+  if (!(reopened.chain_head() == out.chain))
+    return co::Err(fail(co::ErrorCode::Unavailable,
+                        "the registry changed while the campaign recorded (another writer "
+                        "appended to " + cfg.registry_path + ")"));
+  return co::Ok(std::move(out));
 }
 
 std::string trials_csv(const std::vector<MinedTrial> &trials) {

@@ -84,6 +84,24 @@ open_registry(const MineConfig &cfg, usize pnl_len,
                                               std::vector<MinedTrial> &trials,
                                               const std::string &recipe_sha,
                                               const std::string &campaign_id, usize rows);
+// What the campaign left in its registry (review MINE-1). `sha256` is the SHA-256 of the log's
+// first `bytes` bytes, the whole append-only log after this campaign's records: the ledger's
+// chain head. `chain` is the registry's own tamper-evident head (the --registry-head anchor).
+struct RegistryReceipt {
+  ev::TrialChainHead chain{};
+  u64 n_raw{};
+  usize inserted{};
+  std::string sha256;
+  u64 bytes{};
+};
+// Opens the registry (against `anchor` when it exists), records the trials (record_trials),
+// closes it, digests the log and reopens it against the new chain head: Err when the log no
+// longer ends at that head (another writer appended), since the digest would not be this
+// campaign's.
+[[nodiscard]] co::Result<RegistryReceipt>
+record_campaign(const MineConfig &cfg, std::vector<MinedTrial> &trials,
+                const std::string &recipe_sha, usize rows,
+                const std::optional<ev::TrialChainHead> &anchor);
 [[nodiscard]] std::string trials_csv(const std::vector<MinedTrial> &trials);
 
 // ---- strategy_mine_promote.cpp -----------------------------------------------------------------

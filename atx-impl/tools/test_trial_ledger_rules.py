@@ -245,10 +245,10 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
     BI.ledger_append(ledger, [record(c[0], 0.6)], chain=True)
     v7_text = BI.appendix_a(BI.ledger_read(ledger), "t")
     camp = BI.campaign_line("mined-q1", "build-equity/mine/q1/registry.jsonl", "ab" * 32, 1000,
-                            research_window_id=WID, date="2026-10-02")
+                            registry_bytes=96048, research_window_id=WID, date="2026-10-02")
     assert camp == {"schema": BI.LEDGER_SCHEMA, "kind": "mining-campaign", "count": 0, "campaign": "mined-q1",
                     "origin": "mined", "registry": {"path": "build-equity/mine/q1/registry.jsonl",
-                                                    "chain_head": "ab" * 32, "count": 1000},
+                                                    "chain_head": "ab" * 32, "bytes": 96048, "count": 1000},
                     "window_id": WID, "date": "2026-10-02", "trial_id": BI.trial_id("mining-campaign", "ab" * 32)}
     BI.ledger_append(ledger, [camp, record(c[1], 0.9)], chain=True)
     records = BI.ledger_read(ledger)
@@ -268,6 +268,9 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
     with pytest.raises(ValueError, match="is not the trial_id of a ledgered cell line"):  # no defect of a campaign
         BI.ledger_append(ledger, [BI.defect_line(camp["trial_id"], "budget overrun")], chain=True)
     for args, needle in ((("", "r", "ab" * 32, 5), "needs a name"), (("m", "r", "xyz", 5), "chain head"),
+                         (("m", "r", "ab" * 16, 5), "chain head"),         # review MINE-1: the pre-fix 16-hex head
                          (("m", "r", "ab" * 32, 0), "positive integer")):
         with pytest.raises(ValueError, match=needle):
-            BI.campaign_line(*args)
+            BI.campaign_line(*args, registry_bytes=96048)
+    with pytest.raises(ValueError, match="byte count"):
+        BI.campaign_line("m", "r", "ab" * 32, 5, registry_bytes=0)

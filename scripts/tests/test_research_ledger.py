@@ -121,7 +121,8 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
     assert records[-1]["kind"] == "defect" and records[-1]["defect_of"] == b["trial_id"] and "prev_sha256" in records[-1]
     assert BI.trial_counts(records) == [1, 0, 0] and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]      # the cell listing skips the event line
-    BI.ledger_append(ledger, [BI.campaign_line("mined-q1", "mine/registry.jsonl", "cd" * 32, 250),   # Ruling E-33
+    BI.ledger_append(ledger, [BI.campaign_line("mined-q1", "mine/registry.jsonl", "cd" * 32, 250,     # Ruling E-33
+                                               registry_bytes=4096),
                               {"schema": BI.LEDGER_SCHEMA, "kind": "validation", "count": 0,       # review C-11
                                "owner_ruling": {"path": "r.json", "sha256": "ef" * 32}, "trial_id": "v" * 16}],
                      chain=True)
@@ -132,19 +133,45 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
         assert RC.main(args) == 2
 
 
-def mine_output(directory: Path, head: str, n_raw: int, **ledger_override) -> Path:
-    """The two files of an atx-equity-strategy-mine output that the campaign line reads, as the verb writes them
-    (strategy_mine.cpp: campaign.json, and ledger_line.json in the Ruling E-33 form, compact sorted keys)."""
+REGISTRY_REL = "mine/registry-w1a.atxtrg"
+
+
+def grow_registry(root: Path, rel: str, records: int) -> tuple[str, int]:
+    """Appends ``records`` 96-byte records to the registry log at root/rel (created with its 48-byte header) and returns
+    (SHA-256 of the whole log, its byte count): the verb's chain head and byte count after a campaign."""
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(b"ATXTRG03" + bytes(40))
+    start = path.stat().st_size
+    with open(path, "ab") as f:
+        for k in range(records):
+            f.write(hashlib.sha256(f"{start}:{k}".encode()).digest() * 3)
+    data = path.read_bytes()
+    return hashlib.sha256(data).hexdigest(), len(data)
+
+
+def mine_output(root: Path, rel: str, records: int, campaign_id: str = "fixture", registry_rel: str = REGISTRY_REL,
+                **ledger_override) -> Path:
+    """An atx-equity-strategy-mine output directory exactly as the verb writes it (strategy_mine.cpp and
+    strategy_mine_ledger.cpp; review MINE-1), after the campaign appended ``records`` records to its registry:
+    campaign.json, registry_head.txt (eval::write_chain_head's line) and ledger_line.json (compact sorted keys), whose
+    line is built here independently of backtest_integrity.campaign_line, as the C++ verb builds it."""
+    head, size = grow_registry(root, registry_rel, records)
+    directory = root / rel
     directory.mkdir(parents=True)
-    campaign = {"schema": "atx.mine-campaign/v1", "status": "complete", "campaign_id": "fixture",
+    chain = hashlib.sha256(head.encode()).hexdigest()[:16]
+    campaign = {"schema": "atx.mine-campaign/v1", "status": "complete", "campaign_id": campaign_id,
                 "rule": "mined-v1", "research_window": {"id": BI.window_id(), "seal_begin": "2024-01-01"},
-                "registry": {"path": "C:\\mine\\registry-w1a.atxtrg", "format": "V3", "records": n_raw, "head": head,
-                             "n_raw": n_raw, "new_records": n_raw, "anchor": None}}
+                "registry": {"path": registry_rel, "format": "V3", "records": records,
+                             "chain": chain, "head": head, "bytes": size, "n_raw": records, "new_records": records,
+                             "anchor": None}}
     (directory / "campaign.json").write_text(json.dumps(campaign, indent=2) + "\n", encoding="utf-8")
+    (directory / "registry_head.txt").write_text(f"ATXTRGH1 {records:x} {int(chain, 16):x} 1f2e3d\n", encoding="utf-8")
     ident = hashlib.sha256(json.dumps(["mining-campaign", head], separators=(",", ":")).encode()).hexdigest()
-    line = {"schema": "atx.trial-ledger/v1", "kind": "mining-campaign", "count": 0, "campaign": "fixture",
+    line = {"schema": "atx.trial-ledger/v1", "kind": "mining-campaign", "count": 0, "campaign": campaign_id,
             "origin": "mined", "window_id": BI.window_id(), "trial_id": ident[:16],
-            "registry": {"path": "C:/mine/registry-w1a.atxtrg", "chain_head": head, "count": n_raw}}
+            "registry": {"path": registry_rel, "chain_head": head, "bytes": size, "count": records}}
     line.update(ledger_override)
     (directory / "ledger_line.json").write_text(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n",
                                                 encoding="utf-8")
@@ -152,16 +179,20 @@ def mine_output(directory: Path, head: str, n_raw: int, **ledger_override) -> Pa
 
 
 def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
-    """Ruling E-33 (FIX-C) x H-3: `research_cycle.py ledger-campaign` appends the mine verb's campaign line through
+    """Ruling E-33 (FIX-C) x H-3 x review MINE-1: `research_cycle.py ledger-campaign` appends the line the mine verb
+    writes (its real format: a 64-hex chain head = SHA-256 of the registry's first bytes) through
     backtest_integrity.campaign_line, chained; it equals the verb's ledger_line.json, adds 0 to every N and carries
-    the registry count (n_raw); the same registry head is never appended twice; a verb line that differs (the
-    pre-E-33 count = new records), an incomplete campaign and a missing output are refused and append nothing."""
+    the registry count (n_raw); a registry extended by a later campaign still verifies; the same registry head is never
+    appended twice. Refused, appending nothing: the pre-fix verb's 16-hex head, a line that differs, an edited registry,
+    a registry_head.txt of another head, a missing registry, an incomplete campaign and a missing output."""
     root, sp = make_root(tmp_path, summ={"script": "scripts/summ.py", "dsr_n": "ledger+1", "ledger": "trials.jsonl"})
     ledger = root / "trials.jsonl"
     nav_cell(root, "prior/a", 0)
     BI.ledger_append(ledger, [record(root, "prior/a")], chain=True)
     assert cycle_n(root, sp) == 2
-    out = mine_output(root / "mine" / "out-w1a", "ab" * 32, 81)
+    out = mine_output(root, "mine/out-w1a", 81)
+    campaign = json.loads((out / "campaign.json").read_text(encoding="utf-8"))
+    grow_registry(root, REGISTRY_REL, 5)                          # a later campaign appends: the prefix still verifies
     argv = ["ledger-campaign", "--ledger", "trials.jsonl", "--campaign", "mine/out-w1a", "--root", str(root)]
     head_before = BI.ledger_head(ledger)
     assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("appended: ")
@@ -169,23 +200,45 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     line = records[-1]
     verb = json.loads((out / "ledger_line.json").read_text(encoding="utf-8"))
     assert {k: v for k, v in line.items() if k != "prev_sha256"} == verb
-    assert line == dict(BI.campaign_line("fixture", "C:\\mine\\registry-w1a.atxtrg", "ab" * 32, 81,
+    reg = campaign["registry"]
+    assert len(line["registry"]["chain_head"]) == 64
+    assert line == dict(BI.campaign_line("fixture", reg["path"], reg["head"], 81, registry_bytes=reg["bytes"],
                                          research_window_id=BI.window_id()), prev_sha256=head_before)
     assert BI.trial_counts(records) == [1, 0] and BI.campaign_registry_count(records) == 81 and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a"]
     assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("already present")      # a rerun, same head
     before = ledger.read_bytes()
-    mine_output(root / "mine" / "old-form", "cd" * 32, 81, count=81)                            # H-3's pre-E-33 count
     bad = list(argv)
-    bad[bad.index("--campaign") + 1] = "mine/old-form"
-    assert RC.main(bad) == 2 and "differs from campaign_line on count" in capsys.readouterr().err
-    partial = mine_output(root / "mine" / "partial", "ef" * 32, 81)
+
+    def refused(rel: str, needle: str) -> None:
+        bad[bad.index("--campaign") + 1] = rel
+        assert RC.main(bad) == 2 and needle in capsys.readouterr().err, rel
+        assert ledger.read_bytes() == before
+
+    sixteen = mine_output(root, "mine/sixteen", 3, registry_rel="mine/r16.atxtrg")           # the pre-fix verb's head
+    head64 = json.loads((sixteen / "campaign.json").read_text(encoding="utf-8"))["registry"]["head"]
+    for name in ("campaign.json", "ledger_line.json"):
+        text = (sixteen / name).read_text(encoding="utf-8")
+        (sixteen / name).write_text(text.replace(head64, head64[:16]), encoding="utf-8")
+    refused("mine/sixteen", "chain head")
+    mine_output(root, "mine/old-form", 4, registry_rel="mine/r-old.atxtrg", count=99)       # a line that differs
+    refused("mine/old-form", "differs from campaign_line on count")
+    edited = mine_output(root, "mine/edited", 4, registry_rel="mine/r-edit.atxtrg")
+    log = bytearray((root / "mine" / "r-edit.atxtrg").read_bytes())
+    log[60] ^= 1
+    (root / "mine" / "r-edit.atxtrg").write_bytes(bytes(log))
+    refused("mine/edited", "do not hash to the campaign's chain head")
+    sidecar = mine_output(root, "mine/sidecar", 4, registry_rel="mine/r-side.atxtrg")
+    (sidecar / "registry_head.txt").write_text("ATXTRGH1 3 abc 1\n", encoding="utf-8")
+    refused("mine/sidecar", "registry_head.txt")
+    mine_output(root, "mine/gone", 4, registry_rel="mine/r-gone.atxtrg")
+    (root / "mine" / "r-gone.atxtrg").unlink()
+    refused("mine/gone", "is not readable")
+    partial = mine_output(root, "mine/partial", 4, registry_rel="mine/r-part.atxtrg")
     text = (partial / "campaign.json").read_text(encoding="utf-8").replace('"complete"', '"running"')
     (partial / "campaign.json").write_text(text, encoding="utf-8")
-    for directory in ("mine/partial", "mine/absent"):
-        bad[bad.index("--campaign") + 1] = directory
-        assert RC.main(bad) == 2
-    assert ledger.read_bytes() == before
+    refused("mine/partial", "not a complete")
+    refused("mine/absent", "campaign.json")
 
 
 def test_the_gate_ledgers_the_admission_trials(tmp_path):
