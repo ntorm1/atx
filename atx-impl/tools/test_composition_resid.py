@@ -18,6 +18,7 @@ import unittest.mock
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import composition_ic_shrink as cis  # noqa: E402
 import composition_resid as cres  # noqa: E402
 import composition_rules as cr  # noqa: E402
 import fit_composition_weights as fcw  # noqa: E402
@@ -93,6 +94,8 @@ class DeclaredRule(unittest.TestCase):
                          ("theme-resid-v1", "theme_residualise", 1e-10))
         self.assertEqual(cres.REGISTERED_THEME_ORDER, fcw.PRIOR_THEMES)     # v4 list + the v7 appended theme
         self.assertEqual(cres.STD_RULE_ID, cr.STD_RULE_ID)
+        # rule 6 (E-44, E-45): every rerank-true theme_standardise rule the fitter writes (R-1 / R-3, then R-10)
+        self.assertEqual(cres.STANDARDISE_RULES, (cr.STD_RULE_ID,) + cis.RULES)
         self.assertEqual(len(cres.RULE_TEXT), 5)
         registry = REPO / "atx-impl" / "strategies" / "alphas" / "registry.json"
         if registry.is_file():                                              # the registry's themes table, file order
@@ -185,6 +188,11 @@ class FitterEndToEnd(unittest.TestCase):
         with unittest.mock.patch.object(cr, "REGISTRY_PATH", cls.root / "no-registry.json"):
             cls.std_code, cls.std_summary = fcw.fit(cls.fx.args(cls.root / "std", **STD_ARGS))
             cls.code, cls.summary = fcw.fit(cls.fx.args(cls.root / "resid", theme_resid=cres.RULE_ID, **STD_ARGS))
+            # R-11 on an accepted R-10 parent (Rulings E-44, E-45): ic-shrink-v1's rerank-true block
+            shrink = dict(STD_ARGS, composition=cis.RULE_ID)
+            cls.shrink_code, _ = fcw.fit(cls.fx.args(cls.root / "shrink", **shrink))
+            cls.shrink_resid_code, _ = fcw.fit(cls.fx.args(cls.root / "shrink-resid", theme_resid=cres.RULE_ID,
+                                                           **shrink))
         cls.std_bytes = {p.name: p.read_bytes() for p in (cls.root / "std").iterdir()}
         cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "resid").iterdir()}
         cls.std = json.loads(cls.std_bytes[fcw.OUTPUT_WEIGHTS])
@@ -233,11 +241,29 @@ class FitterEndToEnd(unittest.TestCase):
         self.assertFalse((self.root / "v1-resid").exists())
         self.assertFalse((self.root / "mv-resid").exists())
 
+    def test_an_ic_shrink_parent_is_a_standardised_parent(self):
+        """Rulings E-44, E-45: R-10's ic-shrink-v1 file carries a rerank-true theme_standardise (the runner's per-date
+        standardisation unchanged), so R-11 attaches its block on it; the file minus the block and provenance.resid is
+        the plain ic-shrink-v1 file byte for byte."""
+        self.assertEqual((self.shrink_code, self.shrink_resid_code), (fcw.EXIT_OK, fcw.EXIT_OK))
+        plain = (self.root / "shrink" / fcw.OUTPUT_WEIGHTS).read_bytes()
+        doc = json.loads((self.root / "shrink-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual((doc["theme_standardise"]["rule"], doc["theme_standardise"]["rerank"]), (cis.RULE_ID, True))
+        self.assertEqual(doc[cres.BLOCK], {"rule": "theme-resid-v1", "order": ["value", "reversal_seasonality"]})
+        self.assertEqual(doc["provenance"]["resid"]["parent_composition"], cis.RULE_ID)
+        del doc[cres.BLOCK]
+        del doc["provenance"]["resid"]
+        self.assertEqual(fcw.canonical_bytes(doc), plain)
+
     def test_attach_refuses_rerank_off_and_unregistered_themes(self):
         off = json.loads(json.dumps(self.std))
         off["theme_standardise"]["rerank"] = False
         with self.assertRaises(cres.ResidError):
             cres.attach(off)
+        unknown = json.loads(json.dumps(self.std))                             # a rule outside the runner's table
+        unknown["theme_standardise"]["rule"] = "ew-theme-std-v9"
+        with self.assertRaises(cres.ResidError):
+            cres.attach(unknown)
         alien = json.loads(json.dumps(self.std))
         first = next(i for i, w in alien["weights"].items() if w > 0)
         alien["theme_standardise"]["themes"][first] = "liquidity"

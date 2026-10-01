@@ -20,7 +20,8 @@ Registration (lane ORTH, task-R-11-report.md; every constant fixed blind, declar
      (the sum of the theme's member weights). Member weights inside each theme, signs, tiers and the member cap are the
      parent's, unchanged: the fitter writes the parent composition's weights file plus the ``theme_residualise`` block.
   6. Defined only on a parent whose weights file carries ``theme_standardise`` with rerank true (ew-theme-std-v1 and the
-     compositions that write its block); the fitter refuses ``--theme-resid`` otherwise.
+     compositions that write its block, and R-10's ic-shrink-v1 / ic-shrink-aim-v1 blocks, whose per-date
+     standardisation is the same: ``STANDARDISE_RULES``); the fitter refuses ``--theme-resid`` otherwise.
 
 Split of work. The fitter (``fit_composition_weights.py --theme-resid theme-resid-v1``) fits the parent's composition
 unchanged and attaches ``theme_residualise`` {rule, order} and ``provenance.resid`` (``attach``). The IC runner
@@ -41,6 +42,11 @@ import numpy as np
 RULE_ID = "theme-resid-v1"
 BLOCK = "theme_residualise"
 STD_RULE_ID = "ew-theme-std-v1"   # composition_rules.STD_RULE_ID: the runner block the rule rides on
+# Rule 6 (Rulings E-44, E-45): every theme_standardise rule of the IC runner's table (strategy_ic_admission.cpp
+# standardise_rules) runs ew-theme-std-v1's per-date standardisation, so a rerank-true block of any of them is a
+# standardised parent: ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 writes it too) and R-10's ic-shrink-v1 /
+# ic-shrink-aim-v1 (composition_ic_shrink.RULES; tested against it).
+STANDARDISE_RULES = (STD_RULE_ID, "ic-shrink-v1", "ic-shrink-aim-v1")
 WEIGHTS_SCHEMA_V2 = "atx.dsl-composition-weights/v2"
 # Rule 1 (blind, the registered order): fit_composition_weights.PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES.
 REGISTERED_THEME_ORDER = ("value", "profitability_quality", "investment_issuance", "earnings_momentum",
@@ -89,7 +95,7 @@ def theme_order(themes, error: type[Exception] = ResidError) -> list[str]:
 def resid_block(document: dict, error: type[Exception] = ResidError) -> dict:
     """The ``theme_residualise`` block for a weights document that carries a rerank-true ``theme_standardise``."""
     std = document.get("theme_standardise") if isinstance(document, dict) else None
-    if not (isinstance(std, dict) and std.get("rule") == STD_RULE_ID and std.get("rerank") is True and
+    if not (isinstance(std, dict) and std.get("rule") in STANDARDISE_RULES and std.get("rerank") is True and
             isinstance(std.get("themes"), dict) and document.get("schema") == WEIGHTS_SCHEMA_V2):
         raise error(f"{RULE_ID}: {PRIOR_ONLY}")
     weights = document.get("weights", {})
