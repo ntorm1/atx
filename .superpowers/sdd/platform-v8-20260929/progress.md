@@ -760,3 +760,28 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Next: part B after FIX-2 r1, FIX-3 r1, COMB2 r1 (merge FIX-2, FIX-3, COMB2, ORTH; drop ERA's pooled aim elif;
   E-27b id alignment; un-skip the equality test; build; suites); then Wave 0 part 2 (R10-R14). MINE-FIX merges in
   integration 7 (off the v8 critical path).
+- COMB2 round 1 done 1e8af5b8 (C++ variant 4ca3ab4c, fitter / r10.json 2cf5ca89): ic-shrink-aim-v1 = share x gain
+  renormalised inside each theme (1 / T), engine cap 1 / (2T); runner re-applies with recorded gains (1e-12);
+  r10.json maps the parent's composition to the variant. 145 + 165 + 33 tests pass. Part B edits: delete the
+  ew-theme-v1 and ew-theme-aim-v1 entries of the r10 parent map (E-45: R-10 only on a standardised parent) and
+  rename any ew-theme-aim-v1 reference to v2 (E-27b).
+- FIX-3 round 1 done 75acb091 (00e710ec: ew-theme-aim-v1 back to v5 bytes; ew-theme-aim-v2 = E-27a via the shared
+  theme_gain_weights; v8 specs refuse aim-v1 naming v2; r3 template maps an ew-theme-v1 parent to v2). 130 + 31 +
+  186 tests pass. No C++ carries the id. Part B: ERA's pooled list takes aim-v2 (drops the v1 elif), pooled path
+  refuses aim-v1 for v8.
+- FIX-2 round 1 complete de32b9ad (E-31a / SPO-1 / SPO-5 ad50e574, SPO-4 dd1b923e, E-14a 8ca8326e, fixture
+  f1cd0e43). E-15 stands as recorded (ADV cap at the run's initial NAV at every multiple); the round-1 message's
+  "own NAV" wording applied to the trade limit and impact only, which the lane already had. Not compiled.
+- MINE-FIX stopped d7f98f1b at the owner stop: MINE-1 73a0da26, MINE-5 7ea78ade, MINE-4 5858228f, MINE-3 45a0dc9c,
+  MINE-2 631a81a0 done; MINE-7, 8, 6, 9, 10 remain (report says so). Off the v8 critical path.
+
+## 2026-09-30 STOP at owner instruction (PM session 3); status 3 written
+- Owner: "stop here and write a status file and goal prompt for the next parent agent". Every agent stopped at a
+  clean boundary; every tree clean. Root head after this commit: see git log (code head 48c625fc, build v8-9a).
+- Unmerged finished lanes: FIX-2 de32b9ad (pool 7), FIX-3 75acb091 (pool 10), COMB2 1e8af5b8 (pool 11), ORTH
+  c1cc57ce (pool 4); MINE-FIX d7f98f1b (pool 8) half done. Merged this session: FIX-C, FIX-AB, R45, A2, H3, DLRET,
+  ERA (with round 1), RISK, LIB2.
+- Wave 0: R1-R9 built; R10-R14 pending (after integration 6 part B). No statistic from 2020-2023 read. N 37;
+  admission trials 0; history reads 0; validation reads 2 (before v8); 2024+ never opened (LIB2 disclosure above).
+- Pitch determination unchanged: no v8 metric exists.
+- Status: docs/plans/2026-09-30-platform-v8-status-3.md. Goal prompt: docs/plans/2026-09-30-platform-v8-next-goal-prompt-3.md.
