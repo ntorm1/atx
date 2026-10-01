@@ -44,6 +44,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_spo.cpp
     # platform v8 R-6: spo-v3, target tracking (its published blocks; the engine's solver)
     src/strategy_spo_v3.cpp
+    # platform v8 R-8: risk-target-v1, the NAV hook's ex-ante risk target (the engine's kernel)
+    src/strategy_risk_target.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp

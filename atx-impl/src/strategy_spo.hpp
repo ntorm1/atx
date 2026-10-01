@@ -277,6 +277,11 @@ struct BookDecision {
   std::span<const atx::u8> no_locate; // decide --locates only (empty in the replay)
   const cost_v2::DecisionLiquidity& liquidity; // decision window [d - w, d)
   std::string_view book;
+  // v8 R-8 (risk-target-v1, strategy_risk_target.hpp): the run's --aim-leverage L when cfg
+  // carries the book's scaled leverage L_t instead (NaN: no risk target, L is cfg's). spo-v3's
+  // gross sanity bound 2 x L and its gamma calibration on L x desired read it; its aim is L_t x
+  // desired. spo-v1/v2 never read it (the risk target refuses them).
+  atx::f64 base_leverage{unset};
 };
 // One diagnostics row per (rebalance decision, book).
 struct DiagnosticRow {

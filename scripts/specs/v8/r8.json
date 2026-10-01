@@ -1,0 +1,16 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r8-risk-target",
+  "description": "Cell R-8 (plan section 7 'Task R-8 (optional)', N 48 after R-7; Rulings E-38, E-40; lane RISK, task-R-8-report.md): ex-ante risk target risk-target-v1 (D15). Registration, every constant fixed blind before any read: L_t = clip(S / (b x sigma_hat_t), .8 L, 1.25 L) with S = .05 (annualised), b = 1.15 (declared bias, realised / ex-ante), L = the parent's --aim-leverage; sigma_hat_t = sqrt(252 x book_variance) of each book's current weights (its DECIDE's, after the session's fills) scaled to gross 1 over the whole book, on the atx-risk-v1.1 store of the 4-year role (the names with a risk row; no specific ceiling), estimated at the book's first decision with a forecast, a book and a positive variance, then at the first one at least 21 sessions after the previous estimate, held between (L before the first; the warm-up included, each book and pass on its own state). L_t replaces --aim-leverage in the book's rule: aim-partial-v5 moves toward L_t x desired; spo-v3 (if R-6 is the parent) tracks L_t x desired with its gamma (calibrated on L x desired) and its gross bound 2 x L unchanged. The shared desired target and its ADV cap (read at L) are unchanged. The change: nav --risk-target .05 --risk-target-bias 1.15 --risk-target-cadence 21 --risk-model <the atx-risk-v1.1 store of the 4-year role> --risk-model-sha256 <pin> (root fills both; on an spo-v3 parent the same store it already pins) and --capacity-curve (Ruling E-29: the 4x NAV report; a no-op when the parent carries it). NAV-only: u, fit, card and w are the parent's. Outputs beside the parent's: rule id +risk-target-0.05, risk_target blocks in recipe.json / summary.json / v7_extras.json, <nav>/risk_target.csv (sigma_hat and L_t per scored decision and book). Before any return: identity (the flag absent is byte-identical: atx-impl-strategy-target-tests RiskTarget.* and SpoV3.V1AndV2DigestsUnchanged; the parent's NAV argv re-run reproduces the parent's files). Acceptance (plan R-8; report only in the lane): realised volatility of the S2 net daily returns (nav_summ --protocol v8 year table, column vol) inside [.04, .06] = [.8, 1.2] x S in EACH calendar year 2020-2023 AND paired S2 net dSR against the parent not lower than minus one paired SE (dSR >= -SE), with mechanics. Open for root before any read: pre-registration rule 5 asks paired dSR > 0 of every cell, the plan's R-8 text dSR >= -SE. Expected [est]: Sharpe -.01 to -.04; net return up with the target.",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-r8-rt.05-b1.15-c21-L1.247"
+    },
+    "flags": {
+      "nav": {"--risk-target": ".05", "--risk-target-bias": "1.15", "--risk-target-cadence": "21",
+              "--risk-model": null, "--risk-model-sha256": null, "--capacity-curve": true}
+    }
+  }
+}

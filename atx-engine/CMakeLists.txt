@@ -167,6 +167,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/book/replay_cost.cpp
     # v8 R-4/R-5: desired-target shaping kernels (hold band, capped pro rata redistribution)
     src/book/target_shaping.cpp
+    # v8 R-8: ex-ante risk target (risk-target-v1: the aim's leverage from the gross-1 book's vol)
+    src/book/risk_target.cpp
     src/cost/cost_surface.cpp
     src/cost/spread_estimators.cpp
     src/cost/borrow_tiers.cpp
