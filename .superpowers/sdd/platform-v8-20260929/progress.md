@@ -1050,3 +1050,102 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Dispatched: MINE-MEM, MINE-STAT, MINE-RUN (from 20e7bd19), LIB3 (from 67f04389).
 - Dispatched: integrator 7 (root; brief task-INT7-brief.md; tag prefix v8-12): merge 20e7bd19, one tag for every
   research executable, golden at 1 and 4 workers, every suite, identities 1, 4, 7, 8.
+
+## 2026-10-01 integration 7 closed (log "integration 7"; head 8f5e35e2, code 807af678, build v8-12); review 6C; wave AG results (entries parked while root was held)
+- Integration 7 (PM5-6): MINE-FIX 20e7bd19 merged as 807af678; 2 Python conflicts (backtest_integrity.py,
+  test_trial_ledger_rules.py), both unions; 0 compile fixes, 0 test fixes. Build v8-12, twelve targets, one tag,
+  246 s. Executables (all v8-12): IC ab7e2cbd...1615452d; NAV / targets 5497c89d...35b9bca6; risk
+  8967952c...a7eed258; mine cd661fe9...8588c91d. Golden 0x889874a3b9b29c55 holds at 1 and 4 workers. C++: mine
+  31, factory 390, target 259, book 155, strategy 46, ic 145, combine 233, impl 1,022 / 5 skipped / 1 known.
+  Python: strategies 163 + 9, engine tools 253, impl tools 571 / 1 skipped, scripts 183 / 3 skipped; tiny_world
+  unmoved; spo pins hold. Identities 1, 4, 7, 8 PASS on v8-12 (identity 4: timing fields only): the
+  strategy_research_role and engine header changes moved no byte of an IC or NAV output with the flags absent.
+  No revert. Nothing dated 2024+ opened; no cell, no Wave 0 step, no campaign on real data.
+- Scoped review of FIX-4 done (review-6c-fix4.md; pool 4 43a0447d..98ef8d89, pool 10 43a0447d..0b093a4c): I 0,
+  M 2, m 5; likely compile failures 0 (confirmed by build v8-11). Tie rule PM4-12: MATCH in both languages (same
+  key, exact ==, sum from the first name ascending, divided by block size, same centred rank); no-tie bit
+  identity holds; first theme untouched. Theme order PM4-11: MATCH. Pooled fit PM4-7: MATCH (a history read can
+  still produce theme-resid-v1; the cycle never passes the parent flags to a pooled fit). Parent check: MATCH
+  (unchecked paths are those accepted by PM5-2). C-5, C-4: MATCH. Ladder: MISMATCH on two points: R6C-1 (M) a
+  cell recorded accepted whose rule is n/a (missing year_table, TRAIN year or nav_summ row) passes
+  ladder_checks; R6C-2 (M) the R-1 / R-10 / R-11 texts say 'planned turnover' over a check that reads executed
+  turnover (same root as T-10, never ruled). Minors: R6C-3 tie fixture does not pin the mean's divisor, no C++
+  summation-order case; R6C-4 R-11's order reads the PRIOR_THEMES constant while admission reads registry.json;
+  R6C-5 'N after' static after an undefined cell; R6C-6 an own-verdict 'undefined' is unchecked; R6C-7 a file
+  without provenance.rule skips the C-5 check.
+- Ruling PM5-11 (R6C-2 and T-10; the statistic of R-1's criterion, declared before any read): 'planned turnover
+  per unit gross' in R-1, R-10 and R-11 is nav_summ's tau_gmv_mean / mean_gross_leverage_all_rows on S2
+  (executed one-way GMV turnover per unit of gross), cell against parent, 'not higher' meaning <=. The three
+  texts drop the word 'planned' and name the statistic -- plan 12.1 registers 'turnover per unit gross';
+  nav_summ carries no planned-turnover statistic; every other turnover criterion (R-2, R-4, R-7, R-12) reads
+  executed turnover; the cell and its parent trade through the same execution, and cost is paid on executed
+  trades -- cost if wrong: where caps or blocked orders make planned and executed turnover disagree in sign
+  against the parent, the three composition cells are judged on the executed number; disclosed in the scorecard.
+- Ruling PM5-12 (fix round FIX-5, Python only, before the locks): R6C-1 (an accepted non-baseline, non-report
+  row whose rule is n/a is refused, naming the missing part), R6C-2 texts per PM5-11, R6C-3 Python fixture (a
+  date with unequal blocks beside singletons that fails under a block sum and under mean-of-ranks), R6C-4
+  (under --theme-resid the registry's theme tuple must equal PRIOR_THEMES before anything is computed), R6C-5
+  (N after computed from the cell states), R6C-6 (an own-verdict undefined cell whose paired file exists is
+  refused). Deferred to integration 8 with wave AG: the C++ halves of R6C-3 and R6C-7 (reachable only through a
+  hand-edited weights file; the lock pins the fitter's output) -- no executable changes after integration 7, so
+  Wave 0 part 2b pins final binaries; the report tools are fixed before any scorecard is read -- cost if wrong:
+  the C++ tie kernel keeps one unpinned property (divisor, summation order) that the reviewer verified by
+  reading and by hand examples.
+- Dispatched: FIX-5 (pool 10, feat/platform-v8-fix5-20261001, from 41ef00fb).
+- MINE-RUN done 6ea76460 (pool 3): prereg draft docs/plans/2026-10-01-v9-mine-campaign-prereg.md (15 owner
+  decisions with recommended values), spec template scripts/specs/v9/mine-c1.json, runbook, scripts/research_mine.py
+  (research_cycle.py mine lock|pool|probe|plan|run|wave), 32 tests; pytest 169 passed / 3 skipped. Blocks on a
+  real campaign: memory 7.3-10.1 GiB at the C1 shape against the runner's 8,192 MiB; about 1,050 s at 1 worker
+  against 600 s; PM5-9's rho step must be streamed (relayed to MINE-STAT and MINE-MEM: at most shortlist cap + 1
+  panels held; the memory model carries that term).
+- LIB3 done e9e1ee20 (pool 11): docs/plans/2026-10-01-v9-library-draft.md, 10 prior-class candidates: READY
+  stmom, ind_leadlag; NEEDS-FIELD nt_late (sec_filings events carry NT 10-K / NT 10-Q with an acceptance clock),
+  earn_season; NEEDS-DATA lazy_prices, tnic_mom (text landing at 7%), conn_rev, fund_fit (N-PORT not built),
+  tax_book (fundamentals_notes not built), iv_skew (no put-wing IV source). No data read. Disclosures: the lane
+  saw CZ statistics for 2005-2024 printed in the v8 literature note and filing-metadata counts for 2024-2026 in
+  two atx-db docs (no return or signal figure); none used. Open points LIB3-a..h (theme texts, the v7 cost
+  exclusion against stmom and conn_rev, C+ candidates without a post-2004 test, roster 70 above the cap of 64,
+  ind_leadlag at the 7-slot limit) are v9 registration matters: recorded, not ruled in v8; nothing in v8 reads
+  the draft.
+- Ruling PM5-13 (lane FIELDS-V9, pool 11): the two NEEDS-FIELD candidates get their field builders now, as new
+  module files with synthetic tests, off by default and in no v8 field list, merged at integration 8 -- a draft
+  that waits on a field is not progress; new files leave every existing module fingerprint and the v10 / v11 /
+  v12 reuse counts unchanged -- cost if wrong: one lane's tokens. The four data asks (filing text, N-PORT,
+  fundamentals notes, put-wing implied volatility) go to the owner in handoff 2 (OD-6 form).
+- MINE-MEM done 57bb5abb (pool 8): memory 449a78a8, MINE-16 86be4ab1 (rung failures get their own status).
+  Default 4-year campaign: 8,421 MiB (1 worker) / 11,111 MiB (4 workers) -> 5,319 MiB at both; the first
+  campaign's shape (mine-c1) 9,164-9,426 MiB -> 6,034-6,296 MiB at 4 workers, inside the runner's 8,192 MiB.
+  PM5-10's 2,560 MiB is NOT met: the peak is the promotion phase (strategy_mine_promote.cpp, MINE-STAT's file).
+  Remaining levers named by the lane: streaming the members by date in rho_check (3,226 MiB at 1 worker, 4,572
+  at 4; mine-c1 3,978 MiB); mapped extra fields (needs an owner ruling on whether mapped pages count against
+  the cap); a shared VM slot budget. Uncompiled; pinned byte counts and rung_failed == 0 on the fixture come
+  from reading (STOP case at integration 8 if rung_failed != 0). Performance note: on the racing path engines
+  and rung panels are rebuilt each generation (mine-c1 has racing off). Term to reconcile at the MINE-STAT
+  merge: shortlist (K + 1) panels, rho rows M + K.
+- MINE-STAT done c4bd8d09 (pool 9): overlap factor tables 781b6bea; MINE-14 / MINE-15 f6e0b985 (+ c4bd8d09).
+  F by budget band on the 504-row floor, importance-sampled tails, ratio + 2 SE rounded up: 1-100 1.47;
+  101-1,000 1.54; 1,001-10,000 1.63. kMinedMaxBudget and MINED_MAX_BUDGET 10,000 (lifts PM4-13). The confirm
+  read gets its own factor Fc on the 200-row floor, keyed on m (reads reaching the confirm): m <= 16 1.77,
+  m <= 64 1.96, m <= 256 2.15. PM5-9 streamed: at most max_promotions panels held; no new memory term. Pytest 20
+  passed. C++ uncompiled. Golden untouched (atx-engine not edited); the impl mine fixture's registry heads move
+  (recipe gained keys; no test pins them). Cross-lane edits in MINE-MEM's files (strategy_mine.cpp,
+  strategy_mine_detail.hpp, strategy_mine_test.cpp).
+- Ruling PM5-14 (mined-v1 silent points, declared before any campaign; id unchanged, never run): (a) a
+  candidate whose rho against an earlier KEPT candidate is undefined also fails (the lane's stricter reading
+  of PM5-8); (b) the confirm read uses Fc by m as derived, the discover hurdle uses F by budget band; (c) the
+  recipe carries both tables and campaign.json records the factors used -- (a) decorrelation that cannot be
+  computed is not shown; (b) the 200-row confirm tail ratio is higher than the discover one, so one factor
+  would make BY's p too small; (c) a recipe keyed on the budget's F would let a second budget buy a second
+  confirm read on the same expressions (MINE-3) -- cost if wrong: fewer promotions; the tables are conservative
+  (30 names, floor lengths).
+- Ruling PM5-15 (lane MINE-JOIN, pool 8): one lane joins MINE-MEM 57bb5abb, MINE-STAT c4bd8d09 and MINE-RUN
+  6ea76460 into one branch (lane-local merge, conflicts resolved by reading both reports), then streams the
+  members by date in rho_check (MINE-MEM's named lever: default 3,226 MiB at 1 worker, mine-c1 3,978 MiB),
+  reconciles the memory model with the streamed rho step (K panels, not K + 1), and aligns research_mine.py
+  and the prereg draft with the new ceiling, F / Fc tables and footprint -- integration 8 then merges one SHA
+  whose three parts were reconciled by a lane that read all three, not by the integrator at build time --
+  cost if wrong: one lane's tokens.
+- Dispatched: MINE-JOIN (pool 8, feat/platform-v8-minejoin-20261001, from 57bb5abb); FIELDS-V9 (pool 11).
+- Dispatched: integrator W0-2b (root; task-W0-run-brief.md, dispatch 2b, on build v8-12). FIX-5 (Python only)
+  merges inside this dispatch before R14 and before any lock: its SHA is sent to the integrator when the lane
+  reports; without it the integrator stops after the overlap reports.
