@@ -2049,3 +2049,71 @@ this one, `git add -f`).
 - PM4-14's check: if integration 6 part C changes a field module fingerprint, fields v9 is rebuilt once (FIX-4 lists
   none); R10 / R11 bound `prepare_research_fields.py` `b44cff42`, `research_fields_sec.py` `27034019`,
   `research_fields_holdings.py` `edfd1967`.
+
+## Wave 0 part 2a: regsho decomposition (Ruling PM4-15) (2026-10-01)
+
+Same integrator, root `C:/atx-wt/pool-2`, start `9f593ef7` (PM4-15 ledger commit, clean). One bounded run; nothing else.
+
+### 1. The reference build is on the republished stage (PM4-15 item 2)
+
+`build-equity/v8-i3p4-c-fields2` (integration 3 identity c, run 2), manifest `5e5def8dfddca125b9c4c400d94dcc8873cdc417fa8a98e51898b559472be699`:
+its `regsho_threshold_days63` entry pins **`regsho_threshold` `fb073c6222cb16cb27968c067d45ecd2ffe50cf10958391cae8d6417ad9e6f4f`
+= the live (republished) stage**, the same pin as fields v9 lo1; `seal.exclusive_end` 2024-01-01; role the v7.1 3-year
+lo1 `3e79978a` (1,155 x 5,627). The test therefore separates the causes. Entry metadata of the field in the three builds:
+
+| item | v7.1 fields `8fd00e9f` | i3p4-c-fields2 `5e5def8d` | fields v9 lo1 `888e6616` |
+|---|---|---|---|
+| regsho stage pin | `68f431f0...` (old) | `fb073c62...` (live) | `fb073c62...` (live) |
+| source files `lists.parquet`, `year=2018..2022/threshold.parquet` | v7.1 bytes (`53516f65`, `e0015576`, `cbf46515`, `bf80c89b`, `aca16c04`, `3a718282`) | republished bytes (`4ebd1881`, `060b20bb`, `0effca3c`, `55973ec7`, `dc757417`, `b835e62d`) | the same republished bytes, plus `year=2023` `e05c7f91` |
+| security_master pin / `finra_names.parquet` | `3afe0660` / `1acfed75` | equal | equal |
+| seal | 2025-01-01 | 2024-01-01 | 2024-01-01 (entry `seal_date` 2024-01-01, N-1) |
+| role sessions | 1,155 to 2022-12-30 | 1,155 to 2022-12-30 | 1,405 to 2023-12-29 |
+| holdings module (producer) blob | `8ba94e78` | `32ed34d3` | `b5bde414` (N-1 + LIB2 xsw) |
+| `formula_id`, `definition`, `clock`, `visibility_rule`, `staleness`, `source_columns`, `caveats` | equal in all three | | |
+
+### 2. Decomposition overlap
+
+`compare_window_overlap.py --kind field --old build-equity/v8-i3p4-c-fields2 --new build-equity/train-2020-2023-lo1-fields-v9
+--out build-equity/w0-2-overlap-field-lo1-i3p4.json --per-key`, runner 180 s / 1,536 MiB / 512; bindings tool
+`b4d7f2e8...`, old manifest `5e5def8d...`, new `888e6616...`; payload SHA-256s verified, no `--before`.
+
+| step | receipt dir | source | outcome / ExitCode | s | peak MiB | argv digest | receipt.json SHA-256 | report SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| PM4-15 decomposition | `w0-2-overlap-field-lo1-i3p4-run` | `9f593ef7` | completed / 0 | 21.8 | 154 | `15a1d0caa2cd110095c0c24ec2848cf7b9d913a8aee5a00eb92b9400ac258107` | `30cb18a7ee976c6d83ff73a6eef1d34a589b1a9f1c1c2a10a4a454736a798edd` | `afb12af11bf7b646d50e8e7bd32c0a1dd57c163eea57fbf516d2406fc2d8473c` |
+
+- Alignment: 1,155 common sessions (2018-06-01..2022-12-30), 5,627 common instruments, old-only sessions 0, old-only
+  instruments 0; new-only 250 sessions, 295 instruments (counted only).
+- **`regsho_threshold_days63`: 6,499,185 cells compared, `bit_identical` true, 0 differing cells (0 NaN against a
+  value), `max_abs_diff` none, no first differing cell; `old_cells_missing_in_new` 0.**
+- **Every other field: 62 of 62 bit-identical**, 6,499,185 cells each (no key without cells). Totals: 63 keys
+  compared, 409,448,655 cells, 0 unequal, `bit_identical` true, `w0a_class` **identical**.
+- stdout / stderr scanned for dates 2024+: 0 hits.
+
+### 3. Outcome (a)
+
+**The whole `regsho_threshold_days63` difference against the v7.1 fields (3,006,158 of 6,499,185 common cells; 3,006,153
+NaN against a value, 5 value changes up to 5.0; first cell 2018-06-04 / id 2234) is caused by the republished
+regsho_threshold stage** (`68f431f0` -> `fb073c62`, runbook blocker 1, Ruling W0-n): on the same republished stage the
+3-year build and the 4-year build agree on every common cell. Extending the role (wider instrument axis, 250 more
+sessions), the seal move (2025 -> 2024) with N-1's seal pin, and the holdings module changes (`32ed34d3` -> `b5bde414`)
+moved no common cell of any field. Per PM4-15 the cause is found and the 4-year values are the reference; nothing else
+was run.
+
+### 4. Candidates that read `regsho_threshold_days63` (registry and drafts only, no data)
+
+**None.**
+- v8 alpha registry `atx-impl/strategies/alphas/registry.json` (`e985aefc`, A-1): 48 alphas and 43 declared fields; the
+  field is not declared and no alpha DSL names it (0 occurrences of "regsho").
+- v8 library draft `library-v8-draft.md`: 0 occurrences (LIB2's iv_vol_of_vol, day_rev_freq, exch_switch included).
+- v7.1 library `787c802e`: 0 occurrences; its recipe lists the field "at 0 trials". `library-v7-draft.md:215`:
+  "conditioning input only (0 trials, no library member) ... reserved as a borrow-tier input (special tier for shorts)
+  in a separately registered cost trial". No v8 alpha, library draft or spec reads it: in the v8 specs the field
+  appears only in the 63-name `fields.list` of `base-lo1.json` / `base-lo3.json`.
+
+### Fixes, disk, hidden data
+
+No fix; no source changed. Disk unchanged (report < 1 MiB). Read: manifest metadata of the field (pins, source-file
+SHA-256s, seal, role, producer, definition text) and the overlap report (cell counts and difference sizes on the
+2018-06-01..2022-12-30 common cells); registry and library text. No return, Sharpe or IC statistic was read; nothing
+dated 2024-01-01 or later was opened. Not run: R12, the u pass, the signal and daily IC overlap reports, R14, R15, any
+cell.
