@@ -5,6 +5,11 @@ return, an IC or any statistic of the 2020-2023 window: it rests on the verb's c
 metadata, the field names and units of the fields v9 manifest, and calendar arithmetic. It binds only if the owner
 grants OD-7 for it. Until then v8 pre-registration rule 10 ("v8 runs no mined campaign") stands and nothing here runs.
 
+Aligned on 2026-10-01 by lane MINE-JOIN to the joined head of lanes MINE-MEM, MINE-STAT and MINE-RUN: the overlap
+factor F by budget band and the confirm factor Fc by reads (MINE-STAT, Ruling PM5-14), the ceiling 10,000, the
+rung-failed status (MINE-16) and the memory model with the members streamed by date (MINE-MEM, MINE-JOIN). No
+recommended value changed; the reasons and derived numbers that moved are marked "(joined head)".
+
 Companion files (lane MINE-RUN, wave AG):
 - `scripts/specs/v9/mine-c1.json`: this registration as data;
 - `docs/plans/2026-10-01-v9-mine-campaign-runbook.md`: the commands, in order;
@@ -24,18 +29,18 @@ merged output (section 3), not by the owner.
 | # | choice | recommended | reason |
 |---|---|---|---|
 | D1 | campaigns on research-window-v2 | **one** (C1) | TRAIN has one confirm year (2023). A second campaign would read it again: MINE-3 refuses only the same recipe, and the BY level of .10 holds per read. |
-| D2 | operator grammar | **stage 1 only**: the 11 templates `rank(f)`, `rank(ts_mean(f, w))`, `rank(delta(f, w))`, w in {5, 21, 63, 126, 252}; `--stage2-generations 0` | Plan section 13 bars a free-form search over all operators. Stage 2's op-swap draws from every same-bucket built-in op plus 5 literature ops, less a 6-op deny list. Stage 1 is a closed list, written out here in full (132 expressions). It does not depend on the seed. It is the configuration `StrategyMineCampaign.RulePinsOnTheTemplates` pins (stage 2 off, no racing). Every template fits the house budget (2-3 slots, lookback at most 252). Alternative: stage 2 at the verb defaults adds 96 trials (budget 228; z 3.696). |
+| D2 | operator grammar | **stage 1 only**: the 11 templates `rank(f)`, `rank(ts_mean(f, w))`, `rank(delta(f, w))`, w in {5, 21, 63, 126, 252}; `--stage2-generations 0` | Plan section 13 bars a free-form search over all operators. Stage 2's op-swap draws from every same-bucket built-in op plus 5 literature ops, less a 6-op deny list. Stage 1 is a closed list, written out here in full (132 expressions). It does not depend on the seed. It is the configuration `StrategyMineCampaign.RulePinsOnTheTemplates` pins (stage 2 off, no racing). Every template fits the house budget (2-3 slots, lookback at most 252). Alternative: stage 2 at the verb defaults adds 96 trials (budget 228; z 3.696, F 1.54: raw discover t 5.69). |
 | D3 | mined fields | **12**: `iv_atm_63d, iv_atm_126d, ea_delay_days, ins_net_buy_ratio, ins_n_buyers, ins_n_sellers, k8_count_63, k8_days_since_any, inst_breadth_chg, inst_own_chg_q, regsho_threshold_days63, sv_offexchange_share126` | The rule in item 4 picks breadth: fields v9 rows that no book member reads and that are continuous, per name and free of scale. If a field the book reads were mined, the search would mostly re-find members, which the rho rule and the marginal term then reject at a cost to the budget. |
-| D4 | budget N | **132** = 11 x 12, equal to the capacity | Any slack above the capacity only raises the hurdle. 132 is under the ceiling in force (1,000, Ruling PM4-13). |
-| D5 | windows | **discover [TRAIN begin, 2023-01-01), confirm [2023-01-01, TRAIN end)** | Label rows by calendar count: 734 and 228, above the floors (504 and 200). At N 132 and F 1.55, both gates bind at the same per-row strength (t / sqrt(rows) .203 discover, .205 confirm). A split at 2022-07-01 binds at .224 (607 / 355 rows), about 9% less power. |
+| D4 | budget N | **132** = 11 x 12, equal to the capacity | Any slack above the capacity only raises the hurdle, and past a band top the factor too (F 1.47 / 1.54 / 1.63 for budgets up to 100 / 1,000 / 10,000). 132 is under the ceiling in force (10,000, `kMinedMaxBudget`; MINE-STAT's table lifts Ruling PM4-13) and in the 101-1,000 band, F 1.54 (joined head). |
+| D5 | windows | **discover [TRAIN begin, 2023-01-01), confirm [2023-01-01, TRAIN end)** | Label rows by calendar count: 734 and 228, above the floors (504 and 200). The confirm window is the one calendar year TRAIN leaves after a three-year discover (D1). Per-row strength each gate asks (raw t / sqrt(rows)), joined head (F 1.54 at N 132, Fc 1.77 for m <= 16): discover 5.474 / sqrt(734) = .202, confirm 3.54 / sqrt(228) = .234, so the confirm gate binds. A split at 2022-07-01 (607 / 355 rows) binds at .222 (discover; confirm .188), about 5% less per-row strength than .234; the balanced split, about 678 / 284 rows (late 2022), binds at .210. At `20e7bd19` (one F 1.55) the two gates balanced at .203 / .205 and 2022-07-01 bound at .224: MINE-STAT's confirm factor reversed that comparison. **Recheck for the owner:** keep the calendar-year confirm (recommended, unchanged), or take 2022-07-01 for about 5% less per-row strength at the cost of a confirm window that is not a calendar year. |
 | D6 | pool regressors | **1: the book composite** (the source cell's saved combined signal; the K6 regressor without `--themes`) | `mine pool` builds it today. The rho rule against every member stops copies of members, and the whole mined theme takes 1/T of the book. Weakness, stated: a candidate spanned by a theme composite, but by no single member and not by the book composite, can pass. Alternative: K6's theme composites as further regressors (up to 11). That needs an exporter that does not exist (C++, one task). |
 | D7 | pool members | **every member with a positive composition weight in the source cell** (at most 64) | mined-v1 checks rho "to every member", and PM5-8 says every member is checked. |
 | D8 | name and date floors | `--min-names` **1,000** (the u pass's floor; precedent A2 deviation 2), `--min-dates` **128** (the verb default) | The mined IC uses the book's name floor. Under PM5-8, a member pair with no date of 1,000 jointly ranked names fails the candidate. That costs promotions only, so the risk is conservative. |
-| D9 | shortlist cap | **16** (the verb default) | The BY m that reaches the confirm read is at most 16. Under PM5-9, the rho step runs over the whole above-hurdle list before the cap. |
-| D10 | racing | **off** (`--race-strides none`) | 132 full reads are affordable. Racing adds an early rejection and the rung-failure path that MINE-16 is changing, and the fixture pin configuration excludes it. |
-| D11 | workers | **the largest of 4, 2, 1 that fits the memory cap** (the probe) | The worker count changes no bit: the golden digest is equal at 1 and 4 workers. Time needs more workers (D13). |
-| D12 | memory cap | `--max-memory-mib` = **the probe's required MiB** at the chosen workers, rounded up to 64, **at most 7,680**. Runner RSS cap 8,192 MiB (its maximum), free floor 512 MiB. | The bounded runner cannot hold a process above 8,192 MiB. The 512 MiB margin covers what the model does not count (code, DLLs, allocator slack). The probe value is a *param* (MINE-MEM). |
-| D13 | time cap | **600 s** (the runner's maximum) | [est] A 3-year u pass (about 50 candidates, 1,155 dates) took 82 s at 4 workers, so C1 takes about 260 s at 4 workers and about 1,050 s at 1. A run that hits the cap is a blind re-run with more workers, or it waits for a runner change (owner ruling). |
+| D9 | shortlist cap | **16** (the verb default) | The BY m that reaches the confirm read is at most 16. Under PM5-9, the rho step runs over the whole above-hurdle list before the cap. Joined head: every m up to 16 reads the confirm factor Fc 1.77; a cap of 17-64 would let m reach the 1.96 band (raw confirm t 3.92 instead of 3.54). The cap also sizes the promotion's signal panels (16 x 65.4 MiB). |
+| D10 | racing | **off** (`--race-strides none`) | 132 full reads are affordable. Racing adds an early rejection and the rung-failure path (MINE-16 gave a failed rung read its own status, `rung-failed`), and the fixture pin configuration excludes it. With racing off the mechanics require racing-rejected 0 and rung-failed 0. |
+| D11 | workers | **the largest of 4, 2, 1 that fits the memory cap** (the probe) | The worker count changes no bit: the golden digest is equal at 1 and 4 workers. Time needs more workers (D13). Joined head: all three fit (3,979 / 2,784 / 2,765 MiB at 4 / 2 / 1 workers), so W = 4. |
+| D12 | memory cap | `--max-memory-mib` = **the probe's required MiB** at the chosen workers, rounded up to 64, **at most 7,680**: **4,032** at 4 workers at the joined head. Runner RSS cap 8,192 MiB (its maximum), free floor 512 MiB. | The bounded runner cannot hold a process above 8,192 MiB. The 512 MiB margin covers what the model does not count (code, DLLs, allocator slack). The probe value is a *param* (the memory model, section 3); at the joined head it does not depend on the member count. |
+| D13 | time cap | **600 s** (the runner's maximum) | [est] A 3-year u pass (about 50 candidates, 1,155 dates) took 82 s at 4 workers, so C1 takes about 260 s at 4 workers and about 1,050 s at 1. Joined head, not in that estimate: the member payloads (53 x 68.6 MB) are read and hashed once before the registry is written and once per rho batch (one batch when at most 16 trials clear the hurdle or none of a batch fails rho; each failure leaves a slot the next batch refills). A run that hits the cap is a blind re-run with more workers, or it waits for a runner change (owner ruling). |
 | D14 | entry into the book | **one add-alpha wave** of all admitted members: new registry theme `mined`, tier `C+`, origin `mined`, prior sign 1 with the discover sign embedded in the DSL. **One construction cell**, accepted on paired S2 net dSR > 0 against its parent AND mechanics AND turnover not higher. | This is R-2's precedent: a library wave judged whole as one trial. The turnover criterion guards against the fast `delta(f, 5)` templates. The lowest tier and one theme bound the mined share of the book. |
 | D15 | order against the v9 prior wave | **campaign after the v9 prior-class wave's cell. Pool = the last accepted cell at the campaign. The mined wave comes next, with no wave between.** | The members are then checked against the very book they enter. The prior members (1 trial each) are judged before the mined ones. |
 
@@ -68,8 +73,9 @@ Root copies this block into the v9 pre-registration with the pins, as v8-prereg.
    ea_window_post3, ins_cluster_buy, k8_item_material_21), the 13F holder count (inst_n_holders, scales with
    size), and ea_days_since, inst_own_share (read by the v8.0 library wave).
 5. Budget and hurdle. N = 11 x (fields) = 132, fixed now (pre-registration rule 10, Ruling E-32a); at most the
-   ceiling in force (kMinedMaxBudget). Discover hurdle: f2 / F >= z(N) = -Phi^-1(.05 / (2 N)) = 3.5544, F the
-   overlap factor in force at N (item 13); with today's F 1.55 a raw marginal HAC t of 5.51.
+   ceiling in force (kMinedMaxBudget, 10,000). Discover hurdle: f2 / F >= z(N) = -Phi^-1(.05 / (2 N)) = 3.5544,
+   F the overlap factor of N's band (item 13): 1.54 for budgets 101..1,000 (kMinedOverlapBands), so a raw
+   marginal HAC t of z(N) x F = 3.554438 x 1.54 = 5.4738 (5.51 at the single F 1.55 of 20e7bd19).
 6. Windows. Discover [2020-01-01, 2023-01-01), confirm [2023-01-01, 2024-01-01): the research window's TRAIN
    bounds (never typed: "{train_begin}", "{train_end}" in the spec) split at 2023-01-01. Labels are h 21 with
    delay 1 and mature inside their window (ic_screen maturity_end = window end): the last 22 discover decision
@@ -85,14 +91,15 @@ Root copies this block into the v9 pre-registration with the pins, as v8-prereg.
    (d) confirm: one read per kept candidate, the marginal IC HAC t on the confirm window oriented by the discover
        sign, counted only on its full window (mined_confirm_defined, at least 200 label rows), read as t / F_c;
        p = Phi(-t / F_c); Benjamini-Yekutieli over the m candidates read; admitted iff t / F_c >= 2 and
-       p_BY <= .10 (F_c the confirm factor in force, item 13);
+       p_BY <= .10 (F_c the confirm factor of m, item 13: 1.77 for every m <= 16, so a raw t of at least 3.54);
    (e) the sign is frozen from discover; theme mined.
 8. Pool. atx.mine-pool/v1 built by `research_cycle.py mine pool` from the source cell (item 15 of section 1:
    the last accepted cell at the campaign): regressor `book` = the cell's saved combined signal; members = every
    library candidate with a positive weight in the cell's composition weights, each its candidate-cache payload
    named by the cell's w pass summary (at most 64). Pinned by SHA-256 before the run.
 9. Caps. Workers: the largest of 4, 2, 1 whose probe fits. --max-memory-mib: the probe's required MiB at those
-   workers (rounded up to 64), at most 7,680. Bounded runner: 600 s, 8,192 MiB RSS, 512 MiB free floor.
+   workers (rounded up to 64), at most 7,680 (at the joined head: 4 workers, 3,979 MiB, cap 4,032). Bounded
+   runner: 600 s, 8,192 MiB RSS, 512 MiB free floor.
 10. Counting. The campaign line (kind mining-campaign, count 0; Rulings E-33, E-33a) adds 0 to the construction
     N; its registry count (the records the campaign added, at most N) is printed beside N in the Appendix A block
     and gates nothing. The mined-wave cell (item 11) adds 1 to N; each listed mined member is one admission trial
@@ -105,14 +112,19 @@ Root copies this block into the v9 pre-registration with the pins, as v8-prereg.
     net dSR > 0 against its parent AND mechanics AND turnover not higher. A member the wave's gate does not
     admit with its sign leaves the wave (0 extra trials). Rejected, the wave is not retried.
 12. Order of reads. (1) the runner receipt; (2) the ledger line, appended by `mine run` before anything else;
-    (3) the mechanics `mine run` prints and checks (trial identity, distinct = 132, racing-rejected 0, registry
-    new records = distinct, hurdle z = z(132), recipe pins and windows = this registration); (4) only then,
+    (3) the mechanics `mine run` prints and checks (trial identity distinct = evaluated + screen-rejected +
+    racing-rejected + rung-failed + failed, distinct = 132, racing-rejected 0 and rung-failed 0, registry new
+    records = distinct, hurdle z = z(132), hurdle overlap factor = F(132) = 1.54, the recipe's factor tables and
+    ceiling = item 13's, every confirm read at F_c of m, recipe pins and windows = this registration); (4) only then,
     in order: the promotion count, rho passes and confirm reads (campaign.json promotions), the admitted members
     (mined_members.json), and last the numeric columns of trials.csv (diagnostic, select nothing). stdout.log of
     the run (it names the admitted count) is not opened before (3) passes.
-13. Factors and memory in force (bound to lanes MINE-STAT and MINE-MEM, section 3): F = the overlap factor at
-    N = 132, F_c = the confirm factor, the ceiling kMinedMaxBudget, and the memory model behind the probe, as
-    merged and built before the lock; campaign.json records each (hurdle, recipe).
+13. Factors and memory in force (lanes MINE-STAT and MINE-MEM as joined, section 3; Ruling PM5-14):
+    kMinedOverlapBands, budget band -> F: 1..100 1.47, 101..1,000 1.54, 1,001..10,000 1.63 (F = 1.54 at N = 132);
+    kMinedConfirmBands, m -> F_c: 1..16 1.77, 17..64 1.96, 65..256 2.15 (F_c = 1.77 under the cap of 16); the
+    ceiling kMinedMaxBudget 10,000; and the memory model behind the probe, as merged and built before the lock.
+    The recipe carries both tables and the ceiling; campaign.json records F (hurdle.overlap_factor) and each
+    confirm read's F_c (promotions[].confirm_factor).
 14. Voids. As section 2a of docs/plans/2026-10-01-v9-mine-campaign-prereg.md, which is part of this
     registration: a failed run without campaign.json is a blind re-run on the same spec; a complete campaign is
     final, and void (its members never enter the book; its ledger line stays) when an input differed from this
@@ -151,32 +163,27 @@ admitted <a>).
 
 ## 3. Parameters bound to lanes MINE-MEM and MINE-STAT
 
-| parameter | today (20e7bd19) | whose output | how it enters |
+| parameter | at `20e7bd19` | at the joined head (MINE-MEM, MINE-STAT, MINE-JOIN) | how it enters |
 |---|---|---|---|
-| overlap factor F at N = 132 | 1.55 (one constant, checked to N = 1,000) | MINE-STAT: the table from budget band to F in `strategy_mine_rule.hpp` | the discover hurdle reads f2 / F; campaign.json `hurdle.overlap_factor` |
-| confirm factor F_c | the same 1.55 (the 200-row ratio is 1.70 at 99%: MINE-FIX concern 1) | MINE-STAT: a confirm factor if one is needed | confirm t / F_c and BY p |
-| budget ceiling | 1,000 (`kMinedMaxBudget`, `MINED_MAX_BUDGET`) | MINE-STAT: the largest budget the table covers | `validate` and the verb refuse a budget above it; C1 (132) is under any ceiling |
-| PM5-8, PM5-9 | not coded (an undefined pair passes; the cap comes before rho) | MINE-STAT | item 7(b), (c) |
-| memory model, `required_bytes` | 7,568 MiB at 1 worker, 9,360 MiB at 4, for 52 members (formula of the MINE-FIX report at C1's geometry: 1,405 x 6,100, 12 fields, 1 regressor, 0 rungs, shortlist 16, T 132) | MINE-MEM: the reduced, exact model | `mine probe` reads it from the verb's own refusal; D11 and D12 |
-| rung-failure status | n/a with racing off | MINE-MEM (MINE-16) | the identity in item 12(3) gains a rung-failed count of 0 |
+| overlap factor F at N = 132 | 1.55 (one constant, checked to N = 1,000) | **1.54**: `kMinedOverlapBands` 1..100 1.47, 101..1,000 1.54, 1,001..10,000 1.63 (504-row floor, 2-se upper bound) | the discover hurdle reads f2 / F (raw t 5.4738); campaign.json `hurdle.overlap_factor` |
+| confirm factor F_c | the same 1.55 (the 200-row ratio is 1.70 at 99%: MINE-FIX concern 1) | **1.77** for m <= 16: `kMinedConfirmBands` 1..16 1.77, 17..64 1.96, 65..256 2.15 (200-row floor) | confirm t / F_c and BY p; each promotion's `confirm_factor` |
+| budget ceiling | 1,000 (`kMinedMaxBudget`, `MINED_MAX_BUDGET`) | **10,000** (both) | `validate` and the verb refuse a budget above it; C1 (132) is under it |
+| PM5-8, PM5-9 | not coded (an undefined pair passes; the cap comes before rho) | coded (MINE-STAT); PM5-14 (a): an undefined pair against an earlier kept candidate fails too | item 7(b), (c) |
+| memory model, `required_bytes` | 7,568 MiB at 1 worker, 9,360 MiB at 4, for 52 members (formula of the MINE-FIX report at C1's geometry: 1,405 x 6,100, 12 fields, 1 regressor, 0 rungs, shortlist 16, T 132) | **2,765 MiB at 1 worker, 2,784 at 2, 3,979 at 4, for any 1..64 members** (MINE-MEM's phases; the rho step holds 16 signals and streams the members by date, MINE-JOIN) | `mine probe` reads it from the verb's own refusal; D11 and D12 |
+| rung-failure status | n/a with racing off | `rung-failed` (MINE-16); campaign.json `trials.rung_failed` | the identity in item 12(3) gains a rung-failed count, 0 with racing off |
 
-Today's model at C1's geometry, in MiB, for workers 1 / 2 / 4:
-- 48 members: 7,306 / 7,903 / 9,098
-- 52 members: 7,568 / 8,165 / 9,360
-- 57 members: 7,895 / 8,492 / 9,687
-- 64 members: 8,353 / 8,950 / 10,145
-
-Each member adds 65.4 MiB and each worker 597.5 MiB. The role with its 12 fields takes 1,054 MiB. The pool takes 66 MiB
-per row.
-
-So, before MINE-MEM, C1 fits the 7,680 MiB cap only at 1 worker and at most 53 members, and 1 worker probably exceeds
-the 600 s runner cap (D13). **MINE-MEM's reduction is a precondition in practice.** One more term matters: under PM5-9
-the rho step holds the whole above-hurdle list (at most 132 here), not 16 signals, so the model must bound it.
+The joined model at C1's geometry, in MiB, for workers 1 / 2 / 4: 2,765.0 / 2,783.1 / 3,978.1 at every member count
+from 1 to 64 (`task-MINE-JOIN-report.md`). The phases at 4 workers: resident 1,187.5 (the role with its 12 fields
+1,054.1); search 2,790.6 (the full-pass engines 2,125.1), the peak; promotion 1,577.5 (16 signal panels 1,046.2 and the
+promotion engine 531.3). A member adds 8 B per name (one date of its payload while the rho step streams it), so the
+member count no longer moves the footprint. The runner's 8,192 MiB and the 7,680 MiB cap leave room at every worker
+count; time (D13) is now the binding constraint.
 
 ## 4. Preconditions (the spec's `requires`; `mine run` refuses while any is listed)
 
 1. The owner grants OD-7 for C1. Root deletes the line and cites the ruling id in the commit.
-2. MINE-MEM and MINE-STAT are merged and built, and the runbook's fixture acceptance (step 1) passed on that build.
+2. MINE-MEM and MINE-STAT are merged and built (the head lane MINE-JOIN reconciled), and the runbook's fixture
+   acceptance (step 1) passed on that build.
 3. The source cell exists. `pool_source` names its files, and `inputs.role` / `inputs.fields` are its role and fields.
    The freeze gate passed if V8-F is the source.
 4. The field rule (item 4) is re-applied to the registry of record. The list can only shrink, and the budget follows as
@@ -200,3 +207,8 @@ and section 13, progress E-6, E-32, E-32a, E-33, E-33a and PM4-13, the brief's P
 A2 report's root command sequence. Also: the alpha registry (48 alphas, field tokens of their DSL), the field names
 and units of the fields v9 manifest (`point_in_time` all true; no value, coverage or count was read), and one 3-year u
 pass receipt's wall seconds (D13).
+
+Alignment (lane MINE-JOIN): the joined head's `strategy_mine_rule.hpp`, `strategy_mine_promote.cpp`,
+`strategy_mine.{hpp,cpp}` and `strategy_mine_pool.{hpp,cpp}`, and the reports `task-MINE-MEM-report.md`,
+`task-MINE-STAT-report.md`, `task-MINE-RUN-report.md`, with Rulings PM5-8..PM5-10, PM5-14 and PM5-15. Code and
+arithmetic only; no data.

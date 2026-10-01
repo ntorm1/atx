@@ -28,14 +28,17 @@ pool   writes the atx.mine-pool/v1 manifest the verb reads (strategy_mine_pool.h
        order. Payloads are hard-linked (copied when a link is impossible) and re-hashed. Manifests and payload bytes
        only: nothing here reads or prints a statistic.
 probe  runs the verb with --max-memory-mib 64 once per worker count: it refuses before any payload and names its
-       required_bytes (run_mine), the campaign's footprint under the built memory model (lane MINE-MEM).
-plan   prints the pins, the registration's numbers (capacity, budget, Bonferroni z of the budget, windows resolved) and
-       the exact run and ledger lines; executes nothing.
+       required_bytes (run_mine), the campaign's footprint under the built memory model (lanes MINE-MEM, MINE-JOIN).
+plan   prints the pins, the registration's numbers (capacity, budget, Bonferroni z of the budget, the overlap factor F
+       of its band and the raw discover t it implies, the confirm factor Fc, windows resolved) and the exact run and
+       ledger lines; executes nothing.
 run    refuses an open `requires`, a value to fill, an unlocked or different pin, an existing output or a dirty tree;
        runs the verb through the bounded runner; then, before anything prints a statistic, appends the campaign's
-       ledger line (research_ledger.campaign_record, Ruling E-33) and checks and prints the mechanics only (counts,
-       registry, rule constants, trial status / reason counts). A mechanics miss is a hard stop (exit 4). Promotions,
-       mined_members.json and the numeric columns of trials.csv are read afterwards, in the runbook's order.
+       ledger line (research_ledger.campaign_record, Ruling E-33) and checks and prints the mechanics only (counts and
+       the registry identity with its rung-failed status, registry, rule constants -- hurdle z, F of the budget's band,
+       both factor tables, Fc of every confirm read -- and trial status / reason counts). A mechanics miss is a hard
+       stop (exit 4). Promotions, mined_members.json and the numeric columns of trials.csv are read afterwards, in the
+       runbook's order.
 wave   prints (never runs) the one add-alpha wave of the admitted members (prereg item 11): theme mined, tier C+,
        origin mined, prior sign 1 with the discover sign embedded in the DSL ("(-1 * (dsl))" for a sign of -1).
 """
@@ -72,11 +75,14 @@ RUNNER_MAX_SECONDS, RUNNER_MAX_RSS_MIB = 600, 8192     # run_bounded_research.py
 RSS_HEADROOM_MIB = 512                                 # runner cap minus the verb's cap: what the model does not count
 PROBE_MIB = 64                                         # the verb's smallest --max-memory-mib: refuses before payload
 FAMILY_ALPHA = 0.05                                    # strategy_mine_rule.hpp kMinedFamilyAlpha
+CONFIRM_T = 2.0                                        # strategy_mine_rule.hpp kMinedConfirmT
 INPUTS = ("role", "fields", "pool")
 SOURCES = ("combined", "weights", "summary")
 SEARCH_KEYS = ("seed", "workers", "stage2_seeds", "stage2_population", "stage2_generations", "race_strides",
                "race_keep")
 RULE_KEYS = ("min_names", "min_dates", "max_promotions")
+# campaign.json trials: the registry identity n_raw = the sum of these (review MINE-16 added rung_failed).
+STATUS_KEYS = ("evaluated", "screen_rejected", "racing_rejected", "rung_failed", "failed")
 REQUIRED = {"schema", "name", "campaign_id", "registration", "python", "build", "exe", "runner", "inputs",
             "pool_source", "fields", "windows", "budget", "search", "rule", "max_memory_mib", "registry", "output",
             "ledger"}
@@ -123,13 +129,52 @@ def capacity(spec: dict) -> int:
 
 
 def bonferroni_z(budget: int) -> float:
-    """mined_hurdle(N) = -norm_ppf(.05 / (2 N)); the verb reads every discover t as t / F against it."""
+    """mined_hurdle(N) = -norm_ppf(.05 / (2 N)); the verb reads every discover f2 as f2 / F against it."""
     return -NormalDist().inv_cdf(FAMILY_ALPHA / (2.0 * budget))
 
 
 def max_budget() -> int:
     """The budget ceiling in force (backtest_integrity.MINED_MAX_BUDGET, the twin of kMinedMaxBudget)."""
     return research_ledger.backtest_integrity().MINED_MAX_BUDGET
+
+
+def factor_tables() -> tuple[tuple, tuple]:
+    """(overlap bands, confirm bands), each ((top, factor), ...): mined-v1's label-overlap tables as
+    atx-impl/tools/mine_overlap_factor.py pins them (OVERLAP_BANDS, CONFIRM_BANDS; its test pins them to
+    strategy_mine_rule.hpp kMinedOverlapBands and kMinedConfirmBands). Imported on first use, as backtest_integrity."""
+    tools = str(research_ledger.TOOLS)
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import mine_overlap_factor as MOF  # noqa: PLC0415
+    return MOF.OVERLAP_BANDS, MOF.CONFIRM_BANDS
+
+
+def band_factor(bands, count: int) -> float | None:
+    """strategy_mine_rule.cpp band_factor: the factor of the first band whose top is at or above `count`; None for 0
+    or a count above the last top (the verb reads NaN there, which no hurdle passes)."""
+    if count >= 1:
+        for top, factor in bands:
+            if count <= top:
+                return factor
+    return None
+
+
+def overlap_factor(budget: int) -> float | None:
+    """F of the budget's band (mined_overlap_factor): the discover hurdle reads f2 / F >= z(budget)."""
+    return band_factor(factor_tables()[0], budget)
+
+
+def confirm_factor(reads: int) -> float | None:
+    """Fc of m confirm reads (mined_confirm_factor): the confirm read is t / Fc, BY over the m reads."""
+    return band_factor(factor_tables()[1], reads)
+
+
+def raw_hurdle(budget: int) -> float:
+    """The raw marginal HAC t the discover hurdle asks for: z(budget) x F(budget)."""
+    factor = overlap_factor(budget)
+    if factor is None:
+        fail(f"budget {budget} is outside the overlap table (1..{max_budget()})")
+    return bonferroni_z(budget) * factor
 
 
 def check_item(where: str, item, fill_ok: bool) -> None:
@@ -436,14 +481,29 @@ def ledger_argv(spec: dict, date: str | None = None) -> list[str]:
     return argv + (["--date", date] if date else [])
 
 
+def confirm_bands_line(cap: int) -> str:
+    """The confirm factors a campaign capped at `cap` reads can meet (m = the reads reaching the confirm <= cap)."""
+    out, low = [], 1
+    for top, factor in factor_tables()[1]:
+        if low > cap:
+            break
+        out.append(f"m {low}..{min(top, cap)}: {factor}")
+        low = top + 1
+    return ", ".join(out)
+
+
 def header(spec: dict, spec_path: Path, res: RC.Resolver) -> list[str]:
     w, budget = windows(spec), spec["budget"]
+    cap = spec["rule"]["max_promotions"]
     lines = [f"# mine campaign {spec['campaign_id']} ({spec_path}); registration {spec['registration']}",
              f"# fields {len(spec['fields'])}: {', '.join(spec['fields'])}",
              f"# capacity {capacity(spec)} (templates {PER_FIELD} x {len(spec['fields'])}"
              f"{' + stage 2' if capacity(spec) > PER_FIELD * len(spec['fields']) else ', stage 2 off'}); budget "
              f"{budget} (ceiling in force {max_budget()}); Bonferroni z {bonferroni_z(budget):.4f} = mined_hurdle("
-             f"{budget}), read on t / F (F from strategy_mine_rule.hpp as built; campaign.json hurdle names it)",
+             f"{budget}), read on f2 / F, F {overlap_factor(budget)} (kMinedOverlapBands at {budget}): raw discover t "
+             f"{raw_hurdle(budget):.4f}",
+             f"# confirm: t / Fc >= {CONFIRM_T} and BY p <= .10 over the m reads, Fc by m ({confirm_bands_line(cap)}; "
+             f"cap {cap})",
              f"# discover [{w['discover'][0]}, {w['discover'][1]}), confirm [{w['confirm'][0]}, {w['confirm'][1]})",
              f"# memory: --max-memory-mib {spec['max_memory_mib']}, runner {spec['runner']['max_rss_mib']} MiB / "
              f"{spec['runner']['seconds']} s; registry {spec['registry']['path']} "
@@ -535,8 +595,10 @@ def mechanics(spec: dict, pinned: dict, out_dir: Path) -> tuple[list[str], list[
             problems.append(what)
     need(c.get("status") == "complete" and c.get("campaign_id") == spec["campaign_id"], "status / campaign id")
     need(c.get("budget") == spec["budget"] == hur.get("budget"), "budget differs from the registration")
-    # evaluated, screen-rejected, racing-rejected, failed, and any status a later verb adds (MINE-16's rung failures)
-    statuses = {k: v for k, v in t.items() if k != "distinct"}
+    # The registry identity as the verb codes it (review MINE-16): n_raw = evaluated + screen-rejected +
+    # racing-rejected + rung-failed + failed; a verb without the rung-failed count is not the registered verb.
+    need(set(t) == {"distinct", *STATUS_KEYS}, f"trial statuses are not {', '.join(STATUS_KEYS)} (MINE-16)")
+    statuses = {k: t.get(k, 0) for k in STATUS_KEYS}
     need(t["distinct"] == sum(statuses.values()), "distinct != the sum of the trial statuses")
     need(t["distinct"] <= spec["budget"] and search.get("capacity") == capacity(spec), "trials above the budget or "
          "capacity differs")
@@ -545,10 +607,26 @@ def mechanics(spec: dict, pinned: dict, out_dir: Path) -> tuple[list[str], list[
         need(t["distinct"] == capacity(spec) and search.get("stage2") is None, "stage-1-only campaign: distinct "
              "trials != templates, or a stage 2 ran")
     if spec["search"]["race_strides"] == "none":
-        need(t["racing_rejected"] == 0, "racing off but trials were racing-rejected")
+        need(statuses["racing_rejected"] == 0 and statuses["rung_failed"] == 0,
+             "racing off but trials were racing-rejected or rung-failed")
     need(reg["new_records"] == t["distinct"] and (spec["registry"]["head"] or reg["n_raw"] == reg["new_records"]),
          "registry records differ from the distinct trials")
+    # Rule constants as lane MINE-STAT codes them: hurdle.t the Bonferroni z of the budget, hurdle.overlap_factor F of
+    # the budget's band, both tables and the ceiling in the recipe, and every confirm read at Fc of the m reads that
+    # reached the confirm (m is checked, never printed: it is a result, read in the runbook's step 11).
+    overlap, confirm = factor_tables()
     need(abs(float(hur["t"]) - bonferroni_z(spec["budget"])) < 1e-8, "hurdle t is not mined_hurdle(budget)")
+    need(hur.get("overlap_factor") == overlap_factor(spec["budget"]), "hurdle overlap_factor is not F of the "
+         "budget's band")
+    need(hur.get("max_budget") == recipe.get("max_budget") == max_budget(), "budget ceiling differs from the one in "
+         "force")
+    need(recipe.get("overlap_bands") == [list(b) for b in overlap] and
+         recipe.get("confirm_bands") == [list(b) for b in confirm], "recipe factor tables differ from mined-v1's")
+    reads = [p for p in c.get("promotions", []) if p.get("confirm_read")]
+    fc = confirm_factor(len(reads))
+    need(all(p.get("confirm_factor") == fc for p in reads) and
+         all(p.get("confirm_factor") is None for p in c.get("promotions", []) if not p.get("confirm_read")),
+         "a confirm read's factor is not Fc of the reads that reached the confirm")
     need(recipe["role_manifest_sha256"] == pinned["role"][1] and recipe["fields_manifest_sha256"] ==
          pinned["fields"][1] and recipe["pool_sha256"] == pinned["pool"][1], "recipe pins differ from the spec's")
     need((recipe["discover"]["begin"], recipe["discover"]["end"]) == w["discover"] and
@@ -558,8 +636,8 @@ def mechanics(spec: dict, pinned: dict, out_dir: Path) -> tuple[list[str], list[
              f" (budget {c['budget']}, capacity {search.get('capacity')})",
              f"   registry: new {reg['new_records']}, n_raw {reg['n_raw']}, bytes {reg['bytes']}, head {reg['head']}",
              f"   rule constants: hurdle z {hur['t']}, overlap factor {hur.get('overlap_factor')}, ceiling "
-             f"{hur.get('max_budget')}; label rows discover {recipe['discover']['label_rows']}, confirm "
-             f"{recipe['confirm']['label_rows']}",
+             f"{hur.get('max_budget')}; confirm factors by m {recipe.get('confirm_bands')}; label rows discover "
+             f"{recipe['discover']['label_rows']}, confirm {recipe['confirm']['label_rows']}",
              f"   footprint: required_bytes {search.get('required_bytes')}, seconds {c.get('seconds')}"]
     for (status, reason), n in sorted(status_counts(out_dir / "trials.csv").items()):
         lines.append(f"   status {status}{' / ' + reason if reason else ''}: {n}")

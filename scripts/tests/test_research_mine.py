@@ -299,9 +299,11 @@ def test_probe_reads_the_verbs_required_bytes(tmp_path):
         M.probe(spec, root, [4], executor=lambda *a: done(0, out="mine: wrote"), log=lambda *_: None)
 
 
-def fake_campaign(root: Path, spec: dict, pinned: dict, distinct: int = 132) -> None:
+def fake_campaign(root: Path, spec: dict, pinned: dict, distinct: int = 132, edit=None) -> None:
     """The verb's output directory as strategy_mine.cpp writes it, for a stage-1-only campaign of `distinct` trials
-    on a new registry inside it (campaign.json, trials.csv, registry_head.txt, ledger_line.json)."""
+    on a new registry inside it (campaign.json, trials.csv, registry_head.txt, ledger_line.json). The recipe, the
+    hurdle and the promotions carry lane MINE-STAT's keys (the factor tables, F of the budget's band, Fc per confirm
+    read) and the trial counts MINE-16's rung-failed status; `edit(campaign)` breaks one for a test."""
     out, w = root / spec["output"], M.windows(spec)
     head, size = grow_registry(root, spec["registry"]["path"], distinct)
     recipe = {"schema": "atx.mine-trial/v1", "rule": "mined-v1", "role_manifest_sha256": pinned["role"][1],
@@ -309,20 +311,27 @@ def fake_campaign(root: Path, spec: dict, pinned: dict, distinct: int = 132) -> 
               "window_id": BI.window_id(),
               "discover": {"begin": w["discover"][0], "end": w["discover"][1], "label_rows": 734},
               "confirm": {"begin": w["confirm"][0], "end": w["confirm"][1], "label_rows": 228},
-              "overlap_factor": 1.55, "max_budget": BI.MINED_MAX_BUDGET}
-    recipe_sha = research_ledger.recipe_sha256(recipe)
+              "overlap_bands": [[100, 1.47], [1000, 1.54], [10000, 1.63]],
+              "confirm_bands": [[16, 1.77], [64, 1.96], [256, 2.15]], "max_budget": BI.MINED_MAX_BUDGET}
     chain = "0123456789abcdef"
     campaign = {"schema": "atx.mine-campaign/v1", "status": "complete", "campaign_id": spec["campaign_id"],
                 "rule": "mined-v1", "budget": spec["budget"], "research_window": {"id": BI.window_id()},
-                "inputs": {"fields": {"names": spec["fields"]}}, "recipe_sha256": recipe_sha, "recipe": recipe,
+                "inputs": {"fields": {"names": spec["fields"]}}, "recipe_sha256": None, "recipe": recipe,
                 "search": {"capacity": M.capacity(spec), "stage2": None, "required_bytes": 7 << 30},
                 "trials": {"distinct": distinct, "evaluated": distinct - 2, "screen_rejected": 2,
-                           "racing_rejected": 0, "failed": 0},
+                           "racing_rejected": 0, "rung_failed": 0, "failed": 0},
                 "registry": {"path": spec["registry"]["path"], "records": distinct, "chain": chain, "head": head,
                              "bytes": size, "n_raw": distinct, "new_records": distinct, "anchor": None},
-                "hurdle": {"budget": spec["budget"], "t": M.bonferroni_z(spec["budget"]), "overlap_factor": 1.55,
-                           "max_budget": BI.MINED_MAX_BUDGET},
-                "promotions": [{"dsl": "NOT TO BE PRINTED"}], "admitted": 1, "seconds": 300.0}
+                "hurdle": {"budget": spec["budget"], "t": M.bonferroni_z(spec["budget"]), "overlap_factor": 1.54,
+                           "max_budget": BI.MINED_MAX_BUDGET, "reads": "f2 / overlap_factor"},
+                "promotions": [{"dsl": "NOT TO BE PRINTED", "rho_read": True, "rho_pass": True, "confirm_read": True,
+                                "confirm_factor": 1.77, "confirm_marginal_t": 9.87},
+                               {"dsl": "NOT TO BE PRINTED EITHER", "rho_read": True, "rho_pass": False,
+                                "confirm_read": False, "confirm_factor": None, "confirm_marginal_t": None}],
+                "admitted": 1, "seconds": 300.0}
+    if edit is not None:
+        edit(campaign)
+    recipe_sha = campaign["recipe_sha256"] = research_ledger.recipe_sha256(campaign["recipe"])  # as the verb hashes it
     write(root, f"{spec['output']}/campaign.json", campaign)
     rows = ["canon_hash,stage,status,reason,ic_mean,ic_t,f1,marginal_mean,marginal_t,f2,sign,dsl"]
     rows += [f"{k:016x},1,evaluated,,0.123,9.87,9.87,0.1,8.8,8.8,1,\"rank(x)\"" for k in range(distinct - 2)]
@@ -336,7 +345,7 @@ def fake_campaign(root: Path, spec: dict, pinned: dict, distinct: int = 132) -> 
                                           encoding="utf-8")
 
 
-def fake_tools(root: Path, spec: dict, distinct: int = 132, outcome: str = "completed"):
+def fake_tools(root: Path, spec: dict, distinct: int = 132, outcome: str = "completed", edit=None):
     """An executor standing in for the verb's --help, the bounded runner and the verb it runs."""
     calls = []
     usage = " ".join(sorted(verb_options()))
@@ -352,7 +361,7 @@ def fake_tools(root: Path, spec: dict, distinct: int = 132, outcome: str = "comp
         pinned = {key: (verb[verb.index(opt) + 1], verb[verb.index(opt + "-sha256") + 1], "") for key, opt in
                   (("role", "--role"), ("fields", "--role-fields"), ("pool", "--pool"))}
         if outcome == "completed":
-            fake_campaign(root, spec, pinned, distinct)
+            fake_campaign(root, spec, pinned, distinct, edit)
         (run_dir / "receipt.json").write_text(json.dumps({"outcome": outcome, "exit_code": 0 if outcome ==
                                                           "completed" else None, "wall_seconds": 300.0,
                                                           "sampled_peak_tree_rss_bytes": 7 << 30}))
@@ -365,6 +374,8 @@ def test_plan_prints_the_registration_and_the_lines(tmp_path, capsys):
     assert RC.main(["mine", "plan", str(sp), "--root", str(root)]) == 0
     out = capsys.readouterr().out
     assert "budget 132" in out and "Bonferroni z 3.5544" in out and "stage 2 off" in out
+    assert "ceiling in force 10000" in out and "F 1.54" in out and "raw discover t 5.4738" in out
+    assert "Fc by m (m 1..16: 1.77; cap 16)" in out
     assert "== run (bounded)" in out and "run_bounded_research.py" in out and "ledger-campaign" in out
     assert "[locked, verified]" in out and "UNLOCKED" not in out
 
@@ -404,9 +415,12 @@ def test_run_ledgers_the_campaign_then_prints_mechanics_only(tmp_path):
     assert BI.trial_counts(records) == [0] and BI.campaign_registry_count(records) == 132
     text = "\n".join(log)
     assert "== ledger: appended" in text and \
-        "distinct 132 = evaluated 130 + screen_rejected 2 + racing_rejected 0 + failed 0" in text
+        "distinct 132 = evaluated 130 + screen_rejected 2 + racing_rejected 0 + rung_failed 0 + failed 0" in text
     assert "status screen-rejected / ic-undefined: 2" in text and "hurdle z 3.554" in text
+    assert "overlap factor 1.54, ceiling 10000" in text
     assert "NOT TO BE PRINTED" not in text and "9.87" not in text and "admitted" not in text
+    # m (the reads reaching the confirm) and the rho step are results, read in the runbook's step 11
+    assert "confirm_read" not in text and "rho_pass" not in text and "reads 1" not in text
     assert text.index("== ledger") < text.index("== mechanics")
     with pytest.raises(RC.CycleError, match="exists"):
         M.run(spec, sp, root, executor=executor, clean=lambda r: ([], []), log=lambda *_: None)
@@ -424,6 +438,41 @@ def test_run_stops_on_a_mechanics_miss_and_on_a_failed_receipt(tmp_path):
     with pytest.raises(RC.CycleError, match="outcome time-limit"):
         M.run(spec, sp, root, executor=executor, clean=lambda r: ([], []), log=lambda *_: None)
     assert not (root / spec["ledger"]).exists()
+
+
+@pytest.mark.parametrize("edit, needle", [
+    (lambda c: c["trials"].pop("rung_failed"), "trial statuses are not"),           # a verb before MINE-16
+    (lambda c: c["trials"].update(rung_failed=1, evaluated=129), "racing-rejected or rung-failed"),
+    (lambda c: c["hurdle"].update(overlap_factor=1.55), "overlap_factor is not F"),  # the pre-MINE-STAT constant
+    (lambda c: c["recipe"].update(confirm_bands=[[16, 1.55]]), "recipe factor tables"),
+    (lambda c: c["promotions"][0].update(confirm_factor=1.96), "Fc of the reads"),
+    (lambda c: c["promotions"][1].update(confirm_factor=1.77), "Fc of the reads"),
+    (lambda c: c["hurdle"].update(max_budget=1000), "budget ceiling"),
+])
+def test_run_stops_when_the_rule_constants_are_not_mined_v1s(tmp_path, edit, needle):
+    """Lanes MINE-STAT and MINE-MEM as merged: the mechanics read hurdle.t, hurdle.overlap_factor (F of the budget's
+    band), the recipe's factor tables and ceiling, Fc of every confirm read, and the five-status registry identity
+    with rung-failed 0 when racing is off; a miss stops the run after the ledger line, before any statistic."""
+    root, sp, spec = ready(tmp_path)
+    executor, _ = fake_tools(root, spec, edit=edit)
+    with pytest.raises(RC.CycleError) as err:
+        M.run(spec, sp, root, executor=executor, clean=lambda r: ([], []), log=lambda *_: None)
+    assert err.value.code == RC.EXIT_STOP and needle in str(err.value)
+    assert "NOT TO BE PRINTED" not in str(err.value)
+
+
+def test_factors_and_hurdle_of_the_registration():
+    """Prereg items 5 and 7(d) at the merged head: F 1.54 at budget 132 (band 101..1,000), so the raw discover t is
+    3.5544 x 1.54 = 5.4738; Fc 1.77 for every m the cap of 16 allows (raw confirm t 3.54); the ceiling 10,000; a band's
+    top belongs to it and a count outside the table has no factor."""
+    assert M.factor_tables() == (((100, 1.47), (1000, 1.54), (10000, 1.63)), ((16, 1.77), (64, 1.96), (256, 2.15)))
+    assert M.max_budget() == 10000 and M.overlap_factor(132) == 1.54
+    assert round(M.raw_hurdle(132), 4) == 5.4738 and round(M.raw_hurdle(228), 4) == 5.6913
+    assert {M.confirm_factor(m) for m in range(1, 17)} == {1.77} and M.confirm_factor(17) == 1.96
+    assert [M.overlap_factor(n) for n in (0, 1, 100, 101, 1000, 1001, 10000, 10001)] == \
+        [None, 1.47, 1.47, 1.54, 1.54, 1.63, 1.63, None]
+    assert M.confirm_factor(0) is None and M.confirm_factor(257) is None
+    assert M.confirm_bands_line(16) == "m 1..16: 1.77" and M.confirm_bands_line(20) == "m 1..16: 1.77, m 17..20: 1.96"
 
 
 def test_run_refuses_a_stale_verb(tmp_path):

@@ -4,8 +4,9 @@ This runbook runs the campaign registered in `docs/plans/2026-10-01-v9-mine-camp
 the spec `scripts/specs/v9/mine-c1.json`, through `research_cycle.py mine` (`scripts/research_mine.py`). Nothing in it
 runs before the owner grants OD-7.
 
-Root works in pool-2, at the merged head that holds MINE-MEM, MINE-STAT and MINE-RUN. Every step is serial, and no other
-real-data run or build is active while step 8 runs (E-6).
+Root works in pool-2, at the merged head that holds MINE-MEM, MINE-STAT and MINE-RUN as joined by lane MINE-JOIN (one
+reconciled SHA; `task-MINE-JOIN-report.md`). Every step is serial, and no other real-data run or build is active while
+step 8 runs (E-6).
 
 ```bash
 PY="C:/Program Files/Python312/python.exe"
@@ -23,19 +24,21 @@ powershell -File scripts\research-build.ps1 -Tag v9-mine-1 -Targets "atx-impl-st
 ```
 
 ```bash
-build-equity/bin/atx-impl-strategy-mine-tests.exe --gtest_filter='StrategyMine*:SignalFitness*:ResearchIc*:OpCatalogCfgTest.*'
+build-equity/bin/atx-impl-strategy-mine-tests.exe
 build-equity/bin/atx-engine-factory-tests.exe
 "$PY" -m pytest -q -p no:cacheprovider scripts/tests/test_research_mine.py scripts/tests/test_research_ledger.py \
   atx-impl/tools/test_trial_ledger_rules.py atx-impl/tools/test_mine_overlap_factor.py
 ```
 
 Each of these must pass:
-- every case of the first filter, including `StrategyMineCampaign.RulePinsOnTheTemplates` (C1's configuration: stage 2
-  off, racing off, exact shortlist) and the MINE-MEM and MINE-STAT cases (memory model sum, rung-failed 0, PM5-8 and
-  PM5-9 fixtures);
+- every case of the mine test binary, including `StrategyMineCampaign.RulePinsOnTheTemplates` (C1's configuration:
+  stage 2 off, racing off, exact shortlist), the MINE-MEM cases (the memory model term by term,
+  `ModelTermsAreTheFixtureAllocations`, rung-failed 0 in `PromotesThePlantedSignalsOnlyInFiveSeeds`), the MINE-STAT
+  cases (factor tables, PM5-8 and PM5-9 fixtures) and the MINE-JOIN case `MembersStreamByDateAsStored` (the rho
+  step's members, streamed);
 - the golden chain head `0x889874a3b9b29c55` at 1 and 4 workers (`SignalFitnessDefaults.*`,
   `NsgaSearch.ScalarRaw_ReproducesGoldenDigest`) and the whole factory suite;
-- the pytest files, plus MINE-STAT's own pytest files.
+- the pytest files (MINE-STAT's `test_mine_overlap_factor.py` among them).
 
 A failure stops the runbook here. Record the build tag and the test counts in progress.md.
 
@@ -92,6 +95,11 @@ prints `required_bytes`. Then:
 - set `search.workers` = W;
 - set `max_memory_mib` = the required MiB at W, rounded up to a multiple of 64. `runner.max_rss_mib` stays 8,192.
 
+Expected at the joined head (the model of `task-MINE-JOIN-report.md`; C1's shape 1,405 x 6,100, 12 fields, 1
+regressor, no racing, cap 16, 132 trials): 3,979 MiB at 4 workers, 2,784 at 2, 2,765 at 1, the same for any member
+count 1..64 (the rho step streams the members by date). So W = 4 and `max_memory_mib` 4,032. A probe that prints other
+numbers means the build is not the joined head: STOP and report.
+
 If no worker count fits, STOP and report the three numbers to the PM. Do not drop members (D7), do not raise the
 runner cap, and do not run.
 
@@ -118,8 +126,9 @@ $RC mine plan $SPEC
 
 Check the header before going on:
 - every input and `pool_source` line reads `[locked, verified]`;
-- `capacity 132 (templates 11 x 12, stage 2 off); budget 132`;
-- `Bonferroni z 3.5544`;
+- `capacity 132 (templates 11 x 12, stage 2 off); budget 132 (ceiling in force 10000)`;
+- `Bonferroni z 3.5544`, `F 1.54` and `raw discover t 5.4738`;
+- `Fc by m (m 1..16: 1.77; cap 16)`;
 - `discover [2020-01-01, 2023-01-01), confirm [2023-01-01, 2024-01-01)`;
 - `--max-memory-mib` is the step-5 value, `runner 8192 MiB / 600 s`, and the registry is `new`.
 
@@ -127,8 +136,8 @@ The plan also prints the probe line, the bounded run line and the ledger line.
 
 ## 8. Run
 
-Before the run, free memory must be at least `max_memory_mib` + 1,536 MiB: the runner stops the run below 512 MiB free.
-Stop any idle session that holds memory.
+Before the run, free memory must be at least `max_memory_mib` + 1,536 MiB (5,568 MiB at the expected 4,032): the
+runner stops the run below 512 MiB free. Stop any idle session that holds memory.
 
 ```bash
 $RC mine run $SPEC --date <YYYY-MM-DD>
@@ -142,13 +151,17 @@ $RC mine run $SPEC --date <YYYY-MM-DD>
    the registry bytes against the chain head, the recipe against its SHA-256, the verb's `ledger_line.json` byte for
    byte);
 4. prints and checks the mechanics only:
-   - trial identity, distinct = 132, racing-rejected 0;
+   - the registry identity distinct = evaluated + screen-rejected + racing-rejected + rung-failed + failed (exactly
+     these five, MINE-16), distinct = 132, racing-rejected 0 and rung-failed 0 (racing is off);
    - registry new records = distinct;
-   - hurdle z = z(132);
+   - `hurdle.t` = z(132), `hurdle.overlap_factor` = F of the budget's band (1.54), the ceiling 10,000 in the hurdle
+     and the recipe, the recipe's `overlap_bands` and `confirm_bands` = mined-v1's tables;
+   - every promotion with a confirm read carries `confirm_factor` = Fc of the m reads that reached the confirm (1.77
+     for any m the cap allows) and every other none (m is checked, not printed);
    - recipe pins and windows = the spec, fields = the spec;
    - the counts of `trials.csv`'s `status` / `reason` columns.
 
-It prints no promotion, no admitted count and no IC.
+It prints no promotion, no admitted count, no count of confirm reads and no IC.
 
 ## 9. When `mine run` stops (exit 4)
 
