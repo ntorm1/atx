@@ -16,6 +16,8 @@
                            (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell)
   research_cycle.py ledger-campaign --ledger PATH --campaign DIR [--date D] [--root R]
                            (research_ledger.py, Ruling E-33: a mine output's campaign line; count 0, registry count)
+  research_cycle.py mine {lock,pool,probe,plan,run} SPEC [--root R] [...]
+                           (research_mine.py, v9 MINE-RUN: one mined campaign as a pinned cell, ledgered on completion)
 
 Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
   --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's
@@ -1758,6 +1760,9 @@ def main(argv=None) -> int:
     if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock
         import research_add_alpha  # noqa: PLC0415  (imports this module)
         return research_add_alpha.main(argv[1:])
+    if argv[:1] == ["mine"]:                 # v9 MINE-RUN: a mined campaign cell (atx-equity-strategy-mine)
+        import research_mine  # noqa: PLC0415  (imports this module)
+        return research_mine.main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("verb", choices=("plan", "run", "status", "lock"))
