@@ -41,8 +41,8 @@
 // (mine_trial_capacity: the templates plus the stage-2 population times its generations), so
 // no search can exceed it; the mined-v1 hurdle is computed from N, never from the realised or
 // the registry's count, so neither a fresh registry nor a small search lowers it. campaign.json
-// and the ledger line carry N. Ruling PM4-13: N is at most kMinedMaxBudget (1,000; the budget
-// the overlap factor is validated to), refused before any payload; the ceiling is in the recipe
+// and the ledger line carry N. Ruling PM4-13: N is at most kMinedMaxBudget (10,000; the budget
+// the overlap table is validated to), refused before any payload; the ceiling is in the recipe
 // and in campaign.json's hurdle, and campaign_line refuses a line above it.
 //
 // Pool (Ruling E-32a; review MINE-7): --pool is mandatory and its manifest names at least one
@@ -50,11 +50,12 @@
 // marginal t is the raw IC t and the rho check meets no member, so mined-v1 would admit a copy of
 // the book (the case Ruling E-32 exists for): no pool, no campaign.
 //
-// Label overlap (Ruling E-32a; review MINE-6): both mined-v1 reads are taken as t /
-// kMinedOverlapFactor (strategy_mine_rule.hpp), a factor derived on discover windows of at least
-// kMinedMinDiscoverRows and confirm windows of at least kMinedMinConfirmRows mature h 21 label
-// rows; a shorter window is refused before any search. The factor is in the recipe and in
-// campaign.json's hurdle.
+// Label overlap (Ruling E-32a; review MINE-6; lane MINE-STAT): the discover hurdle reads f2 / F,
+// F the kMinedOverlapBands factor of the budget's band, and the confirm read t / Fc, Fc the
+// kMinedConfirmBands factor of its reads (strategy_mine_rule.hpp), factors derived on discover
+// windows of kMinedMinDiscoverRows and confirm windows of kMinedMinConfirmRows mature h 21 label
+// rows; a shorter window is refused before any search. The tables are in the recipe; F is in
+// campaign.json's hurdle and Fc in each promotion.
 //
 // Memory (review MINE-10, lane MINE-MEM): mine_working_bytes, the peak of mine_memory's phases,
 // is checked against --max-memory-mib before any payload. The search holds no pool member (each
@@ -91,7 +92,7 @@ struct MineConfig {
   atx::f64 race_keep{1.0 / 3.0};         // promoted fraction per rung
   atx::usize min_names{50};
   atx::usize min_dates{128};
-  atx::usize max_promotions{16}; // shortlist cap (each costs one signal in memory)
+  atx::usize max_promotions{16}; // confirm-read cap after the rho step (PM5-9); signals held
   atx::u64 max_working_bytes{2048ULL << 20};
 };
 

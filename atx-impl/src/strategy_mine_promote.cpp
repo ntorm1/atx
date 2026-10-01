@@ -1,6 +1,7 @@
 // mined-v1 applied to a campaign's evaluated trials (platform v8 H-3). The rule's arithmetic is in
 // strategy_mine_rule.cpp; this file reads the signals it needs. Contracts in
 // strategy_mine_detail.hpp.
+#include <algorithm>
 #include <limits>
 #include <span>
 #include <string>
@@ -36,14 +37,22 @@ evaluate_signals(const al::Panel &panel, std::span<const u8> mask,
   return co::Ok(std::move(out));
 }
 
-// Rows: the pool members, then the shortlist; each ranked over the decision members on every
-// discover decision row.
+// Rows: the pool members, the candidates kept so far (`held`), then `batch`; each ranked over the
+// decision members on every discover decision row. The batch is checked greedily against every
+// earlier row (mined_rho_select), at most `slots` of it passing.
 co::Result<std::vector<MinedRho>> rho_check(const PromotionContext &context,
-                                            const std::vector<std::vector<f64>> &signals) {
+                                            const std::vector<std::vector<f64>> &held,
+                                            const std::vector<std::vector<f64>> &batch,
+                                            usize slots) {
   const std::vector<MinePoolColumn> &members = context.pool->members;
-  const usize rows = members.size() + signals.size();
+  const usize fixed = members.size() + held.size();
+  const usize rows = fixed + batch.size();
   const usize names = context.role->panel().instruments();
   const std::span<const u8> member = context.role->member();
+  std::vector<std::span<const f64>> sources;
+  for (const MinePoolColumn &column : members) sources.emplace_back(column.values);
+  for (const std::vector<f64> &signal : held) sources.emplace_back(signal);
+  for (const std::vector<f64> &signal : batch) sources.emplace_back(signal);
   cb::PairwiseRowCorrelation rho(rows, context.min_names);
   std::vector<std::vector<f64>> ranks(rows, std::vector<f64>(names));
   std::vector<std::span<const f64>> views;
@@ -51,15 +60,59 @@ co::Result<std::vector<MinedRho>> rho_check(const PromotionContext &context,
   std::vector<std::pair<f64, usize>> sorted;
   for (usize d = context.discover->begin; d < context.discover->end; ++d) {
     const std::span<const u8> eligible = member.subspan(d * names, names);
-    for (usize r = 0; r < rows; ++r) {
-      const std::vector<f64> &source =
-          r < members.size() ? members[r].values : signals[r - members.size()];
-      ATX_TRY_VOID(cb::centred_tied_ranks(std::span<const f64>(source).subspan(d * names, names),
-                                          eligible, ranks[r], sorted));
-    }
+    for (usize r = 0; r < rows; ++r)
+      ATX_TRY_VOID(cb::centred_tied_ranks(sources[r].subspan(d * names, names), eligible,
+                                          ranks[r], sorted));
     ATX_TRY_VOID(rho.add_date(views));
   }
-  return co::Ok(mined_rho_select(rho, members.size(), signals.size()));
+  return co::Ok(mined_rho_select(rho, fixed, batch.size(), context.min_dates, slots));
+}
+
+// The candidates that reach the confirm read, in shortlist order, with their signals.
+struct Kept {
+  std::vector<usize> positions; // into the shortlist
+  std::vector<std::vector<f64>> signals;
+};
+
+// Review MINE-14 (Ruling PM5-9): the greedy rho step over the whole shortlist, then the cap of
+// context.max_promotions. Read in batches that, with the candidates kept so far, never hold more
+// than max_promotions signals (what the memory admission counts): each batch is checked against
+// the pool members and every kept candidate, and the step stops once max_promotions have passed.
+// A pair's rho reads only its own two rows, so the batches give the values one pass over the
+// whole list would; a list that fits the cap is one batch, the pre-PM5-9 pass. A candidate the
+// step never reaches keeps rho.read false. Rows are renumbered to the campaign's: the pool
+// members, then the shortlist (promotions_json names them).
+co::Result<Kept> rho_step(const std::vector<MinedTrial> &trials, const PromotionContext &context,
+                          std::vector<Promotion> &shortlist) {
+  const usize cap = context.max_promotions;
+  const usize members = context.pool->members.size();
+  Kept kept;
+  usize next = 0;
+  while (next < shortlist.size() && kept.positions.size() < cap) {
+    const usize held = kept.positions.size();
+    const usize batch = std::min(cap - held, shortlist.size() - next);
+    std::vector<const ex::Genome *> genomes;
+    for (usize j = 0; j < batch; ++j) genomes.push_back(trials[shortlist[next + j].trial].genome);
+    ATX_TRY(auto signals,
+            evaluate_signals(context.role->panel(), context.role->member(), genomes));
+    ATX_TRY(const auto rho, rho_check(context, kept.signals, signals, cap - held));
+    const auto campaign_row = [&kept, members, held, next](usize row) -> usize {
+      if (row == kMinedNoRow || row < members) return row;
+      if (row < members + held) return members + kept.positions[row - members];
+      return members + next + (row - members - held);
+    };
+    for (usize j = 0; j < batch; ++j) {
+      MinedRho r = rho[j];
+      r.against = campaign_row(r.against);
+      r.undefined = campaign_row(r.undefined);
+      shortlist[next + j].rho = r;
+      if (!r.pass) continue;
+      kept.positions.push_back(next + j);
+      kept.signals.push_back(std::move(signals[j]));
+    }
+    next += batch;
+  }
+  return co::Ok(std::move(kept));
 }
 
 struct ConfirmReads {
@@ -67,11 +120,10 @@ struct ConfirmReads {
   usize label_rows{}; // the confirm window's mature h 21 label rows
 };
 
-// One confirm read per candidate `which[j]`: the IC runner's recipe and the marginal term on the
-// confirm window, against the same regressors.
+// One confirm read per signal: the IC runner's recipe and the marginal term on the confirm
+// window, against the same regressors.
 co::Result<ConfirmReads> confirm_reads(const PromotionContext &context,
-                                       const std::vector<std::vector<f64>> &signals,
-                                       const std::vector<usize> &which) {
+                                       const std::vector<std::vector<f64>> &signals) {
   const MineWindow &confirm = *context.confirm;
   const ex::ResearchIcWindow window{confirm.begin, confirm.end, context.min_names,
                                     context.min_dates, context.max_cache_bytes};
@@ -83,8 +135,8 @@ co::Result<ConfirmReads> confirm_reads(const PromotionContext &context,
   ATX_TRY_VOID(scorer.bind(1U));
   ConfirmReads out;
   out.label_rows = scorer.label_rows();
-  for (const usize k : which) {
-    ATX_TRY(const auto read, scorer.read(signals[k], true, 0U));
+  for (const std::vector<f64> &signal : signals) {
+    ATX_TRY(const auto read, scorer.read(signal, true, 0U));
     out.reads.push_back(read);
   }
   return co::Ok(std::move(out));
@@ -100,26 +152,16 @@ co::Result<std::vector<Promotion>> promote(const std::vector<MinedTrial> &trials
     evaluated.push_back(i);
     reads.push_back(MinedRead{trials[i].canon_hash, ex::research_ic_f2(trials[i].read->read)});
   }
-  const std::vector<usize> shortlist = mined_shortlist(reads, hurdle, context.max_promotions);
+  // Ruling PM5-9: every trial above the hurdle; the cap applies after the rho step (rho_step).
+  const std::vector<usize> shortlist = mined_shortlist(reads, hurdle, context.overlap_factor);
   std::vector<Promotion> out(shortlist.size());
-  if (shortlist.empty()) return co::Ok(std::move(out));
-  std::vector<const ex::Genome *> genomes;
-  for (usize k = 0; k < shortlist.size(); ++k) {
-    out[k].trial = evaluated[shortlist[k]];
-    genomes.push_back(trials[out[k].trial].genome);
-  }
-  ATX_TRY(const auto signals,
-          evaluate_signals(context.role->panel(), context.role->member(), genomes));
-  ATX_TRY(const auto rho, rho_check(context, signals));
-  std::vector<usize> passed;
-  for (usize k = 0; k < out.size(); ++k) {
-    out[k].rho = rho[k];
-    if (rho[k].pass) passed.push_back(k);
-  }
+  for (usize k = 0; k < shortlist.size(); ++k) out[k].trial = evaluated[shortlist[k]];
+  ATX_TRY(const auto kept, rho_step(trials, context, out));
+  const std::vector<usize> &passed = kept.positions;
   if (passed.empty()) return co::Ok(std::move(out));
-  ATX_TRY(const auto confirms, confirm_reads(context, signals, passed));
+  ATX_TRY(const auto confirms, confirm_reads(context, kept.signals));
   // Sign frozen from the discover window; a read short of its full window (review MINE-2) has no
-  // t and is unconfirmed.
+  // t and is unconfirmed. The m reads are the candidates kept (BY and the confirm factor).
   std::vector<f64> oriented;
   for (usize j = 0; j < passed.size(); ++j) {
     Promotion &p = out[passed[j]];
@@ -143,7 +185,8 @@ co::Result<std::vector<Promotion>> promote(const std::vector<MinedTrial> &trials
 }
 
 Json promotions_json(const std::vector<MinedTrial> &trials,
-                     const std::vector<Promotion> &promotions, const MinePool &pool) {
+                     const std::vector<Promotion> &promotions, const MinePool &pool,
+                     f64 overlap_factor) {
   // The rho rows by name: the pool members, then the shortlist.
   std::vector<std::string> rows;
   for (const auto &member : pool.members) rows.push_back("pool:" + member.name);
@@ -155,12 +198,16 @@ Json promotions_json(const std::vector<MinedTrial> &trials,
     const f64 confirm_ic_t = p.confirm_read ? static_cast<f64>(r.sign) * p.confirm.ic_t
                                             : std::numeric_limits<f64>::quiet_NaN();
     const Json against = p.rho.against < rows.size() ? Json(rows[p.rho.against]) : Json(nullptr);
+    const Json undefined =
+        p.rho.undefined < rows.size() ? Json(rows[p.rho.undefined]) : Json(nullptr);
     out.push_back(Json{{"canon_hash", hex16(t.canon_hash)}, {"dsl", t.dsl}, {"sign", r.sign},
                        {"f1", finite_or_null(ex::research_ic_f1(r))},
                        {"f2", finite_or_null(ex::research_ic_f2(r))},
-                       {"f2_corrected",
-                        finite_or_null(mined_overlap_corrected(ex::research_ic_f2(r)))},
+                       {"f2_corrected", finite_or_null(mined_overlap_corrected(
+                                            ex::research_ic_f2(r), overlap_factor))},
+                       {"rho_read", p.rho.read}, // Ruling PM5-9: the step stops at the cap
                        {"max_abs_rho", finite_or_null(p.rho.max_abs)}, {"max_rho_row", against},
+                       {"rho_undefined_row", undefined}, // Ruling PM5-8: an undefined pair fails
                        {"rho_pass", p.rho.pass}, {"confirm_read", p.confirm_read},
                        {"confirm_defined", p.confirm_defined},
                        {"confirm_rows", p.confirm_rows},
@@ -168,6 +215,7 @@ Json promotions_json(const std::vector<MinedTrial> &trials,
                        {"confirm_marginal_dates", p.confirm.marginal_dates},
                        {"confirm_ic_t", finite_or_null(confirm_ic_t)},
                        {"confirm_marginal_t", finite_or_null(p.decision.t)},
+                       {"confirm_factor", finite_or_null(p.decision.factor)},
                        {"confirm_t_corrected", finite_or_null(p.decision.t_corrected)},
                        {"p", finite_or_null(p.decision.p)},
                        {"p_by", finite_or_null(p.decision.p_by)},
@@ -188,6 +236,7 @@ Json members_json(const std::vector<MinedTrial> &trials,
                        {"origin", "mined"}, {"canon_hash", hex16(t.canon_hash)},
                        {"discover_f2", finite_or_null(ex::research_ic_f2(t.read->read))},
                        {"confirm_marginal_t", finite_or_null(p.decision.t)},
+                       {"confirm_factor", finite_or_null(p.decision.factor)},
                        {"confirm_t_corrected", finite_or_null(p.decision.t_corrected)}});
   }
   return out;

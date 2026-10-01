@@ -140,14 +140,19 @@ struct PromotionContext {
   usize min_dates{};
   usize max_promotions{};
   u64 max_cache_bytes{};
+  f64 overlap_factor{}; // mined_overlap_factor(--budget): the shortlist reads f2 / it (MINE-STAT)
 };
 
-// Shortlist at `hurdle`, the greedy rho check, one confirm read each, Benjamini-Yekutieli.
+// Shortlist at `hurdle`, the greedy rho check over the whole shortlist, then the cap of
+// max_promotions (Ruling PM5-9; at most max_promotions signals held at once), one confirm read
+// each, Benjamini-Yekutieli.
 [[nodiscard]] co::Result<std::vector<Promotion>>
 promote(const std::vector<MinedTrial> &trials, f64 hurdle, const PromotionContext &context);
-// campaign.json promotions (every shortlisted trial) and mined_members.json members (admitted).
+// campaign.json promotions (every shortlisted trial; f2 read on `overlap_factor`) and
+// mined_members.json members (admitted).
 [[nodiscard]] Json promotions_json(const std::vector<MinedTrial> &trials,
-                                   const std::vector<Promotion> &promotions, const MinePool &pool);
+                                   const std::vector<Promotion> &promotions, const MinePool &pool,
+                                   f64 overlap_factor);
 [[nodiscard]] Json members_json(const std::vector<MinedTrial> &trials,
                                 const std::vector<Promotion> &promotions);
 

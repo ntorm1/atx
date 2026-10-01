@@ -125,14 +125,14 @@ co::Status check_config(const MineConfig &cfg) {
                         "(2..4096); at most 2 --race-strides; --race-keep in (0, 1]; --min-names "
                         ">= 3; --min-dates >= 8; --max-promotions 1..256; --max-memory-mib "
                         "64..65536)"));
-  // Ruling PM4-13: the overlap factor holds to kMinedMaxBudget only; refused before any payload.
+  // Ruling PM4-13: the overlap table covers kMinedMaxBudget only; refused before any payload.
   if (cfg.budget > kMinedMaxBudget)
     return co::Err(fail(co::ErrorCode::InvalidArgument,
                         "--budget " + std::to_string(cfg.budget) + " is above kMinedMaxBudget " +
                             std::to_string(kMinedMaxBudget) +
-                            " (Ruling PM4-13): the mined-v1 overlap factor kMinedOverlapFactor is "
+                            " (Ruling PM4-13): the mined-v1 overlap table kMinedOverlapBands is "
                             "validated to that budget only; a larger campaign waits until the "
-                            "factor is re-derived at its own Bonferroni level"));
+                            "table is extended at its own Bonferroni level"));
   // Pre-registration rule 10 (Ruling E-32a): the budget is fixed in advance and binds the search.
   const u64 capacity = mine_trial_capacity(cfg);
   if (cfg.budget < capacity)
@@ -354,7 +354,16 @@ Json stage_json(const StageRun &stage) {
               {"racing_evaluations", stage.result.fidelity_evals}, {"seconds", stage.seconds}};
 }
 
-// The campaign's trial recipe (review MINE-3): what one confirm read of an expression is.
+// A mined-v1 factor table as [[top, factor], ...] (strategy_mine_rule.hpp; lane MINE-STAT).
+Json bands_json(std::span<const MinedFactorBand> bands) {
+  Json out = Json::array();
+  for (const MinedFactorBand &band : bands) out.push_back(Json::array({band.top, band.factor}));
+  return out;
+}
+
+// The campaign's trial recipe (review MINE-3): what one confirm read of an expression is. It
+// carries the factor tables, not the factor of --budget's band, so a re-run under another budget
+// is the same identity (lane MINE-STAT).
 Json recipe_json(const MineConfig &cfg, const ResearchRole &role, const MinePool &pool,
                  const MineWindows &windows, usize label_rows, usize confirm_rows) {
   const IcCacheVmIdentity vm = ic_cache_vm_identity();
@@ -378,8 +387,9 @@ Json recipe_json(const MineConfig &cfg, const ResearchRole &role, const MinePool
              "membership and research return guard"},
       {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
                    "summarize_rank_ic Bartlett lag 21"},
-      {"overlap_factor", kMinedOverlapFactor},
-      {"max_budget", kMinedMaxBudget}, // Ruling PM4-13: the budget F is validated to
+      {"overlap_bands", bands_json(kMinedOverlapBands)}, // F by --budget band
+      {"confirm_bands", bands_json(kMinedConfirmBands)}, // Fc by band of confirm reads
+      {"max_budget", kMinedMaxBudget}, // Ruling PM4-13: the budget the overlap table covers
       {"min_discover_rows", kMinedMinDiscoverRows},
       {"min_confirm_rows", kMinedMinConfirmRows},
       {"min_names", cfg.min_names},
@@ -590,7 +600,8 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
              << std::flush;
 
     // mined-v1 at the Bonferroni value of the campaign's budget (Ruling E-32a: never the realised
-    // count, never the registry's), read on f2 / kMinedOverlapFactor (review MINE-6).
+    // count, never the registry's), read on f2 / F, F the overlap factor of the budget's band
+    // (review MINE-6; lane MINE-STAT).
     const f64 hurdle = mined_hurdle(cfg.budget);
     PromotionContext context;
     context.role = role.get();
@@ -602,6 +613,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     context.min_dates = cfg.min_dates;
     context.max_promotions = cfg.max_promotions;
     context.max_cache_bytes = cfg.max_working_bytes;
+    context.overlap_factor = mined_overlap_factor(cfg.budget);
     ATX_TRY(const auto promotions, promote(trials, hurdle, context));
     const Json members = members_json(trials, promotions);
 
@@ -669,10 +681,10 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"hurdle", {{"budget", cfg.budget},
                     {"family_alpha", kMinedFamilyAlpha},
                     {"t", finite_or_null(hurdle)},
-                    {"overlap_factor", kMinedOverlapFactor},
+                    {"overlap_factor", finite_or_null(context.overlap_factor)},
                     {"max_budget", kMinedMaxBudget},
                     {"reads", "f2 / overlap_factor"}}},
-        {"promotions", promotions_json(trials, promotions, pool)},
+        {"promotions", promotions_json(trials, promotions, pool, context.overlap_factor)},
         {"admitted", members.size()},
         {"seconds", seconds_since(started)}};
     const Json mined{{"schema", std::string(kMembersSchema)},
@@ -749,7 +761,7 @@ constexpr const char *kUsage =
     "  session at or after the seal is refused. --budget N fixes the campaign's trial budget in\n"
     "  advance (pre-registration rule 10): N covers the templates plus the stage-2 population\n"
     "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N; N is at\n"
-    "  most 1000 (Ruling PM4-13: the overlap factor is validated to that budget). --pool is\n"
+    "  most 10000 (Ruling PM4-13: the overlap table is validated to that budget). --pool is\n"
     "  required and names at least one regressor and one member (Ruling E-32a). Writes\n"
     "  NEWDIR/campaign.json, trials.csv, mined_members.json, ledger_line.json and\n"
     "  registry_head.txt (rule mined-v1).\n";
