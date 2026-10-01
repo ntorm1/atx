@@ -131,8 +131,10 @@ partial-pass marker: rerun the same command to resume.
 Report only (v8 C-2): ``--report-f-theta`` adds ``f_theta`` / ``f_theta_hac_t`` to every admission row (the factor
 return of the theta-averaged sleeve book, theta .05, horizon_stats.theta_book_returns, over live TRAIN decisions, and
 its Newey-West t) and a ``report_only`` block; they are computed after every verdict and nothing reads them back.
-Era pools (v8 H-1; prior screens with ew-theme-v1 / ew-theme-v6 only): ``--era ID ROLE ROLE_SHA ORIENT ORIENT_SHA
-SUMMARY SUMMARY_SHA`` (repeatable, date order) adds an era scored by its own TRAIN-only IC run, and ``--era-id ID``
+Era pools (v8 H-1; prior screens with POOLED_COMPOSITIONS only, Ruling E-35: ew-theme-v1, ew-theme-v6,
+ew-theme-std-v1 and ew-theme-std-aim-v1; any other --composition is refused by name):
+``--era ID ROLE ROLE_SHA ORIENT ORIENT_SHA SUMMARY SUMMARY_SHA`` (repeatable, date order) adds an era scored by its own
+TRAIN-only IC run, and ``--era-id ID``
 names the main --train role (the anchor, the last era). Each era keeps its own RoleManifest, orientations, cache layout
 and factor records (its own role-keyed WorkStore under --work-dir); the era windows (first to one day after the last
 scored decision) pass era_pool.check_windows. The factor series are concatenated in date order
@@ -142,6 +144,12 @@ pooled decision is scored (an explicit all-True mask: each lies in its own era's
 end); rules.train_window_ns lists the era windows; admission.json and provenance carry a ``pool`` block; one extra
 ``composition_weights.<id>.json`` per non-anchor era differs from composition_weights.json only in
 train_manifest_sha256 (the runner binds weights to its role). Without --era / --era-id the bytes are unchanged.
+The weights are the single-window code's on the pooled admission (fit_prior): ew-theme-std-v1 is
+composition_rules.ew_theme_std, and ew-theme-std-aim-v1 feeds it the aim gains of the pooled decisions (Ruling E-35):
+each era stores its lag correlations c_j(d) over every scored decision of its role (``era_aim_part``, store kind
+``aim-era``), the eras' c sit side by side in date order (no lag pair crosses an era) and ``correlation_profile`` (the
+code of ``aim_profile``) gives rho, g and the half-sample gains over every pooled decision. One era scored inside
+TRAIN gives the single-window aim record bit for bit.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -209,6 +217,9 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
 PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,),  # v8 R-3, Ruling E-27
                                     COMPOSITIONS + (composition_rules.STD_AIM_RULE_ID,))
 AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID)  # the compositions that read the aim gains
+# v8 H-1 + Ruling E-35: the compositions the pooled (era) fit implements, each by the single-window code on the pooled
+# decisions. Any other id is refused by name: never a fall-back to another rule.
+POOLED_COMPOSITIONS = (EW_THEME_RULE_ID, V6_RULE_ID, composition_rules.STD_RULE_ID, composition_rules.STD_AIM_RULE_ID)
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -251,6 +262,9 @@ CACHE_LAYOUT = "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"
 VM_EVAL_MODE = "ResearchFast;full-historical-asof-member-mask"
 FACTOR_SCHEMA = "atx.fit-candidate-factor/v1"  # pre-v8 WorkStore records (book_monitor still reads that layout)
 FACTOR_KEY_SCHEMA, AIM_KEY_SCHEMA = "atx.fit-candidate-factor/v2", "atx.fit-candidate-aim/v2"  # v8 store record keys
+# Ruling E-35: one era's share of a pooled aim record (era_aim_part), store kind AIM_ERA_KIND, every scored decision.
+AIM_ERA_KIND, AIM_ERA_KEY_SCHEMA = "aim-era", "atx.fit-candidate-aim-era/v1"
+AIM_ERA_MASK = "every scored decision of the role (v8 H-1 era pool)"
 CONTEXT_SCHEMA = "atx.fit-price-risk-context/v1"
 # Bump these when anything that changes the context or a factor record changes: old work is ignored.
 CONTEXT_SEMANTICS = ("price-risk-v1;beta252-min126-all-instrument-market;vol63-min32;ladv63;"
@@ -294,6 +308,7 @@ FACTOR_PRODUCERS = ("factor_record", "Context", "PricePanel", "neutralization_ba
 HORIZON_PRODUCERS = ("theta_book_returns",)  # in horizon_stats.py: its code is part of every factor record's key
 CONTEXT_PRODUCERS = ("Context",)
 AIM_PRODUCERS = ("aim_record", "Context")
+AIM_ERA_PRODUCERS = ("era_aim_part", "Context")
 # Alpha registry (task A-1, atx.alpha-registry/v1): when present, its themes table is the admissible theme list.
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "strategies" / "alphas" / "registry.json"
 REGISTRY_SCHEMA = "atx.alpha-registry/v1"
@@ -1074,26 +1089,53 @@ def _floats_or_none(values) -> list:
     return [float(x) if math.isfinite(x) else None for x in values]
 
 
-def aim_record(context: Context, signal: np.ndarray, train_mask: np.ndarray) -> dict:
-    """The candidate's ew-theme-aim-v1 inputs (R4'): rho at the exact lags, g, half-sample gains, coverage.
-
-    ``train_mask`` flags the context decisions inside TRAIN; every other decision's ranks are NaN. Only
-    second moments of the TRAIN signal ranks are read (no returns, no means, no covariances).
-    """
+def aim_ranks(context: Context, signal: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(z, coverage) of a candidate: its per-decision standardized ranks over the used rows with a finite signal, NaN
+    on every decision outside ``mask``, and its coverage (live / used rows) on every decision."""
     slab = signal[context.begin:context.end][:, context.columns]
     live = context.used & np.isfinite(slab)
     used = context.used_rows
     coverage = np.where(used > 0, live.sum(axis=1) / np.maximum(used, 1), 0.0)
     z = standardized_ranks(slab, live)
     del slab, live
-    z[~np.asarray(train_mask, dtype=bool)] = np.nan
-    profile = aim_profile(z, train_mask)
-    del z
-    return {"context_sha256": context.digest, "decisions": int(context.end - context.begin), "theta": AIM_THETA,
+    z[~np.asarray(mask, dtype=bool)] = np.nan
+    return z, coverage
+
+
+def aim_body(digest: str, decisions: int, profile: dict, coverage) -> dict:
+    """An aim record (the store body and the fitter's input) from an aim profile and the per-decision coverage."""
+    return {"context_sha256": digest, "decisions": int(decisions), "theta": AIM_THETA,
             "lags": list(AIM_LAGS), "rho": _floats_or_none(profile["rho"]),
             "rho_half": [_floats_or_none(r) for r in profile["rho_half"]], "gain": profile["gain"],
             "gain_unclipped": profile["gain_unclipped"], "gain_half": profile["gain_half"],
             "rank_decisions": profile["rank_decisions"], "half_split_decision": profile["half_split_decision"],
+            "coverage": [float(x) for x in coverage]}
+
+
+def aim_record(context: Context, signal: np.ndarray, train_mask: np.ndarray) -> dict:
+    """The candidate's ew-theme-aim-v1 inputs (R4'): rho at the exact lags, g, half-sample gains, coverage.
+
+    ``train_mask`` flags the context decisions inside TRAIN; every other decision's ranks are NaN. Only
+    second moments of the TRAIN signal ranks are read (no returns, no means, no covariances).
+    """
+    z, coverage = aim_ranks(context, signal, train_mask)
+    profile = aim_profile(z, train_mask)
+    del z
+    return aim_body(context.digest, context.end - context.begin, profile, coverage)
+
+
+def era_aim_part(context: Context, signal: np.ndarray) -> dict:
+    """One era's share of a pooled aim record (v8 H-1, Ruling E-35): the lag correlations c_j(d) of ``aim_profile``
+    over every scored decision of the era's role (each pooled decision is scored: the pool's explicit all-True mask),
+    the decisions with a rank and the coverage. ``pool_aims`` sets the eras' c side by side, so no lag pair crosses an
+    era. Second moments of the signal ranks only, as ``aim_record``."""
+    decisions = context.end - context.begin
+    z, coverage = aim_ranks(context, signal, np.ones(decisions, dtype=bool))
+    c = lag_correlations(z, AIM_LAGS)
+    ranked = ranked_decisions(z)
+    del z
+    return {"context_sha256": context.digest, "decisions": int(decisions), "lags": list(AIM_LAGS),
+            "mask": AIM_ERA_MASK, "c": [_floats_or_none(row) for row in c], "rank_decisions": ranked,
             "coverage": [float(x) for x in coverage]}
 
 
@@ -1111,6 +1153,21 @@ def aim_record_valid(j, role: RoleManifest) -> bool:
                 type(j.get("gain_unclipped")) is float and isinstance(half, list) and len(half) == 2 and
                 all(type(g) is float for g in half) and type(j.get("rank_decisions")) is int and
                 type(j.get("half_split_decision")) is int and isinstance(cov, list) and len(cov) == t and
+                all(type(v) is float for v in cov))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
+def era_aim_part_valid(j, role: RoleManifest) -> bool:
+    """Shape and type checks of a stored era aim part (``era_aim_part``; key and content SHA checked by the store)."""
+    try:
+        t = role.end - role.begin
+        c, cov = j.get("c"), j.get("coverage")
+        return (is_hash(j.get("context_sha256")) and j.get("decisions") == t and j.get("lags") == AIM_LAGS and
+                j.get("mask") == AIM_ERA_MASK and isinstance(c, list) and len(c) == len(AIM_LAGS) and
+                all(isinstance(row, list) and len(row) == t and all(v is None or type(v) is float for v in row)
+                    for row in c) and
+                type(j.get("rank_decisions")) is int and isinstance(cov, list) and len(cov) == t and
                 all(type(v) is float for v in cov))
     except (ValueError, TypeError, KeyError, AttributeError):
         return False
@@ -1134,12 +1191,16 @@ class WorkStore:
     """Persistent incremental state shared by every library fitted on one role and research window (v8 C-1).
 
     Root ``<work>/<role sha16>-<window id>/``: ``context/<CONTEXT_PRODUCERS fingerprint>/`` holds the price-risk
-    context; the record store (record_store.RecordStore) holds kinds ``factor`` and ``aim``. A record's key is the
-    signal payload SHA-256 and the producer fingerprint of the code that computes it (FACTOR_PRODUCERS,
-    AIM_PRODUCERS), plus the full role SHA-256, the window id, the semantics tag and, for aim records, the TRAIN
-    window: the same signal in another library, another screen or another VM build is a hit; another role, window or
-    producing code is a miss. A record carries its key and is verified on read. The store is a cache: deleting any
-    part of it at any time only costs a recompute, and a hit and a recompute give the same record."""
+    context; the record store (record_store.RecordStore) holds kinds ``factor``, ``aim`` and ``aim-era``. A record's
+    key is the signal payload SHA-256 and the producer fingerprint of the code that computes it (FACTOR_PRODUCERS,
+    AIM_PRODUCERS, AIM_ERA_PRODUCERS), plus the full role SHA-256, the window id, the semantics tag and, for aim
+    records, the TRAIN window (an era aim part: its mask, every scored decision of the role): the same signal in another
+    library, another screen or another VM build is a hit; another role, window or producing code is a miss. A record
+    carries its key and is verified on read. The store is a cache: deleting any part of it at any time only costs a
+    recompute, and a hit and a recompute give the same record."""
+
+    KINDS = {"factor": (FACTOR_KEY_SCHEMA, FACTOR_PRODUCERS), "aim": (AIM_KEY_SCHEMA, AIM_PRODUCERS),
+             AIM_ERA_KIND: (AIM_ERA_KEY_SCHEMA, AIM_ERA_PRODUCERS)}
 
     def __init__(self, root: Path, role: RoleManifest, window: str | None = None):
         self.role, self.window = role, window if window is not None else window_id()
@@ -1148,12 +1209,15 @@ class WorkStore:
         self.context_dir = self.base / "context" / producer_fingerprint(CONTEXT_PRODUCERS)
 
     def key(self, entry: dict, kind: str) -> dict:
-        key = {"schema": FACTOR_KEY_SCHEMA if kind == "factor" else AIM_KEY_SCHEMA, "semantics_tag": SEMANTICS_TAG,
+        schema, producers = self.KINDS[kind]
+        key = {"schema": schema, "semantics_tag": SEMANTICS_TAG,
                "role_manifest_sha256": self.role.sha, "window_id": self.window,
                "cache_payload_sha256": entry["payload_sha256"],
-               "producer_fingerprint": producer_fingerprint(FACTOR_PRODUCERS if kind == "factor" else AIM_PRODUCERS)}
+               "producer_fingerprint": producer_fingerprint(producers)}
         if kind == "aim":
             key.update(aim_tag=AIM_TAG, train_window_ns=[FIT_BEGIN_NS, TRAIN_END_NS])
+        elif kind == AIM_ERA_KIND:
+            key.update(aim_tag=AIM_TAG, mask=AIM_ERA_MASK)
         else:
             key["horizon_fingerprint"] = horizon_fingerprint()
         return key
@@ -1162,15 +1226,18 @@ class WorkStore:
         j = self.records.get("factor", self.key(entry, "factor"))
         return j if j is not None and record_valid(j, self.role) else None
 
-    def get_aim(self, entry: dict) -> dict | None:
-        j = self.records.get("aim", self.key(entry, "aim"))
-        return j if j is not None and aim_record_valid(j, self.role) else None
+    def get_aim(self, entry: dict, era: bool = False) -> dict | None:
+        """The aim record (``era``: the era aim part) of the entry, or None."""
+        kind, valid = (AIM_ERA_KIND, era_aim_part_valid) if era else ("aim", aim_record_valid)
+        j = self.records.get(kind, self.key(entry, kind))
+        return j if j is not None and valid(j, self.role) else None
 
     def put(self, entry: dict, record: dict) -> None:
         self.records.put("factor", self.key(entry, "factor"), record)
 
-    def put_aim(self, entry: dict, record: dict) -> None:
-        self.records.put("aim", self.key(entry, "aim"), record)
+    def put_aim(self, entry: dict, record: dict, era: bool = False) -> None:
+        kind = AIM_ERA_KIND if era else "aim"
+        self.records.put(kind, self.key(entry, kind), record)
 
     def load_context(self) -> Context | None:
         return Context.load(self.context_dir, self.role)
@@ -1269,14 +1336,26 @@ def aim_gain(rho_at_lags: np.ndarray, lags: list[int], theta: float = AIM_THETA,
     return float(min(1.0, max(AIM_GAIN_MIN, g))) if clip else g
 
 
+def ranked_decisions(z: np.ndarray) -> int:
+    """The decisions with at least one finite standardized rank."""
+    return int(np.isfinite(z).any(axis=1).sum())
+
+
 def aim_profile(z: np.ndarray, train_mask: np.ndarray, lags: list[int] = AIM_LAGS) -> dict:
-    """rho and g over all TRAIN decisions, plus the two half-sample versions (report only).
+    """rho and g over all TRAIN decisions, plus the two half-sample versions (report only): ``correlation_profile``
+    of the lag correlations of ``z``."""
+    return correlation_profile(lag_correlations(z, lags), train_mask, ranked_decisions(z), lags)
+
+
+def correlation_profile(c: np.ndarray, train_mask: np.ndarray, rank_decisions: int,
+                        lags: list[int] = AIM_LAGS) -> dict:
+    """rho and g from the lag correlations ``c`` (len(lags) x decisions, ``lag_correlations``) over all TRAIN decisions,
+    plus the two half-sample versions (report only). The pooled aim (Ruling E-35) passes the eras' c side by side.
 
     Halves split the TRAIN decisions at h = first + floor(n / 2): a lag-j pair (d, d-j) belongs to the
     first half when d < h and to the second when d - j >= h (pairs straddling h are in neither).
     """
     train = np.flatnonzero(np.asarray(train_mask, dtype=bool))
-    c = lag_correlations(z, lags)
     rho = _finite_row_means(c)
     h = int(train[0] + len(train) // 2) if train.size else 0
     first = _finite_row_means(c[:, :h])
@@ -1287,7 +1366,7 @@ def aim_profile(z: np.ndarray, train_mask: np.ndarray, lags: list[int] = AIM_LAG
     return {"rho": rho, "rho_half": [first, second], "gain": aim_gain(rho, lags),
             "gain_unclipped": aim_gain(rho, lags, clip=False),
             "gain_half": [aim_gain(first, lags), aim_gain(second, lags)],
-            "rank_decisions": int(np.isfinite(z).any(axis=1).sum()), "half_split_decision": h}
+            "rank_decisions": int(rank_decisions), "half_split_decision": h}
 
 
 def shrink_solution(mu: np.ndarray, cov: np.ndarray) -> np.ndarray:
@@ -1646,16 +1725,19 @@ class Incomplete(Exception):
 
 
 def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[dict], vm_identity: str,
-                   started: float, log, aim: bool = False) -> tuple[list[dict], int, int, list[dict] | None]:
+                   started: float, log, aim: bool = False,
+                   era_aim: bool = False) -> tuple[list[dict], int, int, list[dict] | None]:
     """Every candidate's factor record (and, with ``aim``, its aim record) under one context.
 
     Returns (records, computed now, reused, aim records or None). Without ``aim`` this is exactly the
     pre-v5 path: no aim record is read, computed or written. Records are keyed by the signal payload
     SHA-256 and the producer fingerprint (WorkStore), so ``vm_identity`` and the screen do not enter them.
+    ``era_aim`` (an era of a pool, Ruling E-35): the aim records are era aim parts (``era_aim_part``).
     """
     store = WorkStore(args.work_dir, role) if args.work_dir else None
     records: list[dict | None] = [store.get(e) if store else None for e in entries]
-    aims: list[dict | None] | None = ([store.get_aim(e) if store else None for e in entries] if aim else None)
+    aims: list[dict | None] | None = ([store.get_aim(e, era_aim) if store else None for e in entries]
+                                      if aim else None)
     digests = {r["context_sha256"] for r in records if r is not None}
     if aims is not None:
         digests |= {a["context_sha256"] for a in aims if a is not None}
@@ -1692,14 +1774,14 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
             if store:
                 store.put(entries[k], records[k])  # type: ignore[arg-type]
         if aims is not None and stale(aims[k]):
-            aims[k] = aim_record(context, signal, train_mask)
+            aims[k] = era_aim_part(context, signal) if era_aim else aim_record(context, signal, train_mask)
             if store:
-                store.put_aim(entries[k], aims[k])  # type: ignore[arg-type]
+                store.put_aim(entries[k], aims[k], era_aim)  # type: ignore[arg-type]
         del signal
         computed += 1
         slowest = max(slowest, time.perf_counter() - tick)
         if log:
-            extra = "" if aims is None else f" g={aims[k]['gain']:.3f}"  # type: ignore[index]
+            extra = "" if aims is None or era_aim else f" g={aims[k]['gain']:.3f}"  # type: ignore[index]
             log(f"fit: {k + 1}/{len(library)} {library[k]['id']} tau={records[k]['tau']:.4f} "  # type: ignore[index]
                 f"live={records[k]['live_decisions']}{extra} seconds={time.perf_counter() - tick:.2f}")  # type: ignore[index]
     remaining = [library[k]["id"] for k in todo if stale(records[k]) or (aims is not None and stale(aims[k]))]
@@ -1719,23 +1801,25 @@ def pooled(args) -> bool:
 
 def era_state(args, library: list[dict], eid: str, role_path, role_sha: str, orient, orient_sha: str, summary,
               summary_sha: str, started: float, log) -> dict:
-    """One era of a pool: its role, orientations, cache layout and factor records (in its role-keyed WorkStore)."""
+    """One era of a pool: its role, orientations, cache layout and factor records (in its role-keyed WorkStore); for an
+    aim composition also its era aim parts (Ruling E-35)."""
     runner_signs, orientation_recipe = load_orientations(Path(orient), orient_sha, library, args.library_sha256,
                                                          role_sha)
     role = RoleManifest(Path(role_path), role_sha)
     layout = CacheLayout(Path(summary), summary_sha, role, orient_sha, orientation_recipe)
     entries = [layout.resolve(c, role) for c in library]
-    records, computed, reused, _ = ensure_records(args, role, library, entries, layout.vm_identity, started, log)
+    records, computed, reused, aims = ensure_records(args, role, library, entries, layout.vm_identity, started, log,
+                                                     aim=args.composition in AIM_RULES, era_aim=True)
     return era_entry(eid, role, layout, entries, records, runner_signs, orient_sha, orientation_recipe, summary_sha,
-                     computed, reused)
+                     computed, reused, aims)
 
 
 def era_entry(eid: str, role: RoleManifest, layout: CacheLayout, entries: list[dict], records: list[dict],
               runner_signs: list[int], orient_sha: str, orientation_recipe: str, summary_sha: str, computed: int,
-              reused: int) -> dict:
+              reused: int, aims: list[dict] | None = None) -> dict:
     return {"id": eid, "role": role, "layout": layout, "entries": entries, "records": records,
             "runner_signs": runner_signs, "orientations_sha256": orient_sha, "orientations_recipe": orientation_recipe,
-            "runner_summary_sha256": summary_sha, "computed": computed, "reused": reused}
+            "runner_summary_sha256": summary_sha, "computed": computed, "reused": reused, "aims": aims}
 
 
 def era_window(role: RoleManifest) -> tuple[int, int]:
@@ -1746,7 +1830,8 @@ def era_window(role: RoleManifest) -> tuple[int, int]:
 
 def pool_eras(eras: list[dict]) -> dict:
     """The pooled fit inputs of the eras (date order): factor rows and sessions (era_pool.pool_matrix), taus (mean by
-    transitions), pooled records (context digest, f_theta, refused decisions tagged by era) and the pool block."""
+    transitions), pooled records (context digest, f_theta, refused decisions tagged by era), the pooled aim records of
+    an aim composition (``pool_aims``, else None) and the pool block."""
     try:
         era_pool.check_windows([(e["id"], *era_window(e["role"])) for e in eras], rw.TRAIN_BEGIN_NS,
                                rw.TRAIN_END_NS, rw.SEAL_NS)
@@ -1782,14 +1867,37 @@ def pool_eras(eras: list[dict]) -> dict:
                        "window": e["role"].window(), "segment_start": int(s),
                        "cache_payload_sha256": {c["id"]: c["payload_sha256"] for c in e["entries"]}}
                       for e, w, s in zip(eras, windows, starts)]}
+    aims = None if eras[-1]["aims"] is None else pool_aims(eras, digest)
     return {"sessions": sessions, "factors": factors, "taus": taus, "records": records, "windows": windows,
             "block": block, "window": {"decisions": int(len(sessions)),
                                        "eras": [dict(e["role"].window(), id=e["id"]) for e in eras]},
-            "roles": {e["id"]: e["role"].sha for e in eras[:-1]}}
+            "roles": {e["id"]: e["role"].sha for e in eras[:-1]}, "aims": aims}
+
+
+def pool_aims(eras: list[dict], digest: str) -> list[dict]:
+    """Per candidate, the aim record of the pooled decisions (Ruling E-35): the eras' lag correlations c_j(d)
+    (``era_aim_part``) side by side in date order (era_pool.pool_matrix: no lag pair crosses an era), then
+    ``correlation_profile`` with every pooled decision in the mask (the pool's explicit mask) and the eras' ranked
+    decisions summed; coverage concatenated; ``digest`` = the pooled context digest. One era scored inside TRAIN: the
+    single-window ``aim_record`` bit for bit."""
+    out = []
+    for k in range(len(eras[0]["aims"])):
+        parts = [(e["id"], e["role"].sessions[e["role"].begin:e["role"].end],
+                  np.array([[np.nan if v is None else v for v in row] for row in e["aims"][k]["c"]], dtype=np.float64))
+                 for e in eras]
+        _, c, _ = era_pool.pool_matrix(parts)
+        profile = correlation_profile(c, np.ones(c.shape[1], dtype=bool),
+                                      sum(e["aims"][k]["rank_decisions"] for e in eras))
+        out.append(aim_body(digest, c.shape[1], profile, [x for e in eras for x in e["aims"][k]["coverage"]]))
+    return out
 
 
 def fit(args, log=None) -> tuple[int, dict]:
     started = time.perf_counter()
+    if pooled(args):  # v8 H-1, Ruling E-35: an explicit list, checked first so every other id is refused by its name
+        require(args.composition in POOLED_COMPOSITIONS,
+                f"--era pools the prior screens with {', '.join(POOLED_COMPOSITIONS)} only: --composition "
+                f"{args.composition} is not implemented by the pooled fit (no fall-back to another rule)")
     require(args.screen in SCREENS, f"--screen must be one of {SCREENS}")
     require(args.composition in COMPOSITIONS, f"--composition must be one of {COMPOSITIONS}")
     orientation = getattr(args, "orientation", "train")
@@ -1807,9 +1915,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(args.max_seconds is None or (math.isfinite(args.max_seconds) and args.max_seconds > 0),
             "--max-seconds must be finite and > 0")
     require(args.max_new_candidates is None or args.max_new_candidates >= 0, "--max-new-candidates must be >= 0")
-    if pooled(args):  # v8 H-1
-        require(prior and args.composition != AIM_RULE_ID, "--era pools the prior screens with ew-theme-v1 or "
-                "ew-theme-v6 only (ew-theme-aim-v1 reads TRAIN signal ranks; v3/none estimate signs)")
+    if pooled(args):  # v8 H-1 (POOLED_COMPOSITIONS are prior compositions: the pairing above makes the screen prior)
         ids = [e[0] for e in (args.era or [])] + [args.era_id]
         require(args.era_id is not None, "--era needs --era-id (the id of the --train role, the last era)")
         try:
@@ -1831,7 +1937,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     entries = [layout.resolve(c, role) for c in library]
     shas = [e["payload_sha256"] for e in entries]
     records, computed, reused, aims = ensure_records(args, role, library, entries, layout.vm_identity, started, log,
-                                                     aim=args.composition in AIM_RULES)
+                                                     aim=args.composition in AIM_RULES, era_aim=pooled(args))
 
     ids = [c["id"] for c in library]
     factors = np.array([[np.nan if v is None else v for v in r["f_unsigned"]] for r in records], dtype=np.float64)
@@ -1853,12 +1959,12 @@ def fit(args, log=None) -> tuple[int, dict]:
     if pooled(args):  # v8 H-1: the other eras, then the pooled prior fit (the anchor = the --train role, last)
         eras = [era_state(args, library, *e, started, log) for e in (args.era or [])]
         eras.append(era_entry(args.era_id, role, layout, entries, records, runner_signs, args.orientations_sha256,
-                              orientation_recipe, args.runner_summary_sha256, computed, reused))
+                              orientation_recipe, args.runner_summary_sha256, computed, reused, aims))
         pool = pool_eras(eras)
         return fit_prior(args, library, priors, runner_signs, pool["factors"], pool["taus"], shas, cache_entry,
                          pool["records"], dict(inputs, context_sha256=pool["block"]["context_sha256"]), pool["window"],
                          pool["sessions"], sum(e["computed"] for e in eras), sum(e["reused"] for e in eras), out,
-                         started, None, pool=pool)
+                         started, pool["aims"], pool=pool)
     if prior:
         return fit_prior(args, library, priors, runner_signs, factors, taus, shas, cache_entry, records, inputs,
                          window, decision_sessions, computed, reused, out, started, aims)
@@ -2018,7 +2124,9 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     ``ew-theme-v6`` (v6 V6-W) re-weights the same member set by ``ew_theme_v6_weights`` and adds the top-level
     ``theme_redistribution`` block and ``provenance.v6``; the admission table is again identical.
     ``pool`` (v8 H-1, ``pool_eras``): the pooled era decisions, every one scored (explicit all-True mask), the era
-    windows as the train window, a ``pool`` block and one weights file per non-anchor era; None: unchanged bytes.
+    windows as the train window, a ``pool`` block and one weights file per non-anchor era; None: unchanged bytes. Every
+    composition of POOLED_COMPOSITIONS runs the code below unchanged on the pooled inputs (an aim composition's ``aims``
+    are ``pool_aims``'s pooled records; Ruling E-35).
     """
     ids = [c["id"] for c in library]
     screen = args.screen
@@ -2160,6 +2268,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
         weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
     else:
+        require(args.composition == EW_THEME_RULE_ID,  # Ruling E-35: nothing falls back to ew-theme-v1
+                f"fit: --composition {args.composition} has no prior weight rule")
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
         composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
                             "no mean or covariance estimation")
@@ -2217,7 +2327,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             cost_rejected=[row["id"] for row in weight_rows if row["status"] == "reject_turnover_cost"])
     if aim:  # ew-theme-v1 bytes carry no aim key
         document["provenance"]["aim"] = aim_provenance(ids, themes, aims, active, weights,  # type: ignore[arg-type]
-                                                       decision_sessions)
+                                                       decision_sessions, train_mask)
     if v6:  # ew-theme-v1 / ew-theme-aim-v1 bytes carry neither key and stay schema v1
         document["schema"] = WEIGHTS_SCHEMA_V2
         document["theme_redistribution"] = {
@@ -2292,10 +2402,12 @@ def v6_provenance(detail: dict, theme_table: dict, admission_sha: str, args, inp
 
 
 def aim_provenance(ids: list[str], themes: list[str], aims: list[dict], active: list[int], weights: np.ndarray,
-                   decision_sessions: np.ndarray) -> dict:
+                   decision_sessions: np.ndarray, mask: np.ndarray | None = None) -> dict:
     """``provenance.aim``: the R4' constants and, report only, rho/g per candidate, half-sample gains and the
-    coverage-effective theme weight. Nothing here feeds back into the weights."""
-    train = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    coverage-effective theme weight. Nothing here feeds back into the weights. ``mask`` (fit_prior's: the TRAIN
+    decisions, or every pooled decision of an era pool) defaults to the TRAIN decisions of ``decision_sessions``."""
+    train = ((decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS) if mask is None
+             else np.asarray(mask, dtype=bool))
     coverage = np.array([aims[k]["coverage"] for k in active], dtype=np.float64)  # members x decisions
     w = np.asarray(weights, dtype=np.float64)
     total = w @ coverage

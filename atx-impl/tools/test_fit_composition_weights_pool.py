@@ -5,18 +5,27 @@ Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider at
 Synthetic data only (test_fit_composition_weights.Fixture: role dir, library, orientations, candidate cache and TRAIN
 summary per era). Two history eras (2014-2015) of 178 scored decisions each: alone, every member is insufficient (and
 the single path's TRAIN mask drops every decision: finding 3); pooled, the prior screen reads 356 decisions.
+
+Ruling E-35 (the v8 compositions ew-theme-std-v1 and ew-theme-std-aim-v1): a one-era pool of a role scored inside TRAIN
+(test_fit_composition_weights.aim_world, the R-1 fitter world of test_composition_rules) against the single-window fit
+of that role, and the two history eras pooled against composition_rules.ew_theme_std and the aim gain of the
+block-diagonal rank panel of the eras.
 """
 from __future__ import annotations
 
 import json
 import math
 from pathlib import Path
+import re
 import time
+import unittest.mock
 
 import numpy as np
 import pytest
 
+import composition_rules as cr
 import fit_composition_weights as fcw
+import test_fit_composition_weights as tfw
 from test_fit_composition_weights import DAY, NAN, Fixture, runner_accepts, store_base
 
 NAMES, DATES, SCORE_BEGIN = 60, 330, 150
@@ -27,17 +36,19 @@ EXTRA = {i: {"theme": t, "tier": g, "prior_sign": s} for i, (t, g, s) in META.it
 V4 = ["--orientation", "prior", "--composition", "ew-theme-v1"]
 
 
+def ar_panel(rng, phi: float = 0.97) -> np.ndarray:
+    """A DATES x NAMES AR(phi) panel of unit-variance names."""
+    z = np.empty((DATES, NAMES))
+    z[0] = rng.normal(size=NAMES)
+    for t in range(1, DATES):
+        z[t] = phi * z[t - 1] + math.sqrt(1 - phi * phi) * rng.normal(size=NAMES)
+    return z
+
+
 def era_world(seed: int, start: str):
     """A calendar-day panel with persistent planted alphas (screen_world's recipe), beginning at ``start``."""
     rng = np.random.default_rng(seed)
-
-    def ar(phi=0.97):
-        z = np.empty((DATES, NAMES))
-        z[0] = rng.normal(size=NAMES)
-        for t in range(1, DATES):
-            z[t] = phi * z[t - 1] + math.sqrt(1 - phi * phi) * rng.normal(size=NAMES)
-        return z
-    z1, z2, u, v, w = ar(), ar(), ar(), ar(), ar()
+    z1, z2, u, v, w = (ar_panel(rng) for _ in range(5))
     ret = rng.uniform(0.5, 1.5, NAMES)[None, :] * rng.normal(0.0003, 0.01, DATES)[:, None]
     ret = ret + rng.normal(0, 0.015, (DATES, NAMES))
     ret[1:] += 0.004 * (z1[:-1] + z2[:-1])
@@ -224,3 +235,229 @@ def test_overlapping_eras_are_refused(eras, tmp_path):
 def test_without_era_flags_the_parse_is_the_single_path(eras):
     args = eras["e2"].args(Path("x"), "v4-prior-v1")
     assert args.era is None and args.era_id is None and not fcw.pooled(args)
+
+
+# ------------------------------------------------------------------ Ruling E-35: the v8 compositions
+STD, STD_AIM = cr.STD_RULE_ID, cr.STD_AIM_RULE_ID
+# The keys a pool adds or replaces (H-1): everything else of a one-era pool is the single-window fit's.
+POOL_KEYS_WEIGHTS = (("provenance", "pool"), ("provenance", "window"), ("provenance", "admission_sha256"))
+POOL_KEYS_ADMISSION = (("pool",), ("window",), ("rules", "train_window_ns"))
+
+
+def without(doc: dict, paths) -> dict:
+    out = json.loads(json.dumps(doc))
+    for path in paths:
+        node = out
+        for key in path[:-1]:
+            node = node[key]
+        node.pop(path[-1], None)
+    return out
+
+
+def outputs(out: Path) -> dict:
+    return {p.name: p.read_bytes() for p in sorted(out.iterdir())}
+
+
+@pytest.fixture(scope="module")
+def train_world(tmp_path_factory):
+    """The R-1 fitter world (test_composition_rules.FitterEndToEnd): one role scored inside TRAIN; each v8
+    composition fitted on the single window and as a one-era pool (--era-id E3), registry absent."""
+    root = tmp_path_factory.mktemp("e35")
+    panel, signals, ids, extra = tfw.aim_world()
+    extra = dict(extra)
+    extra["flip"] = dict(extra["flip"], theme="value")           # two themes, five admitted members: M > 2T
+    extra["medium_half"] = dict(extra["medium_half"], tier="C+")  # a scored grade
+    fx = Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                 candidate_extra=extra)
+    runs = {}
+    with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
+        for comp in (STD, STD_AIM):
+            flags = ["--orientation", "prior", "--composition", comp]
+            for kind, extra_flags in (("single", []), ("pool", ["--era-id", "E3"])):
+                out = root / f"{kind}-{comp}"
+                runs[comp, kind] = fcw.fit(fcw.parse_args(fx.argv(out, "v4-prior-v1", [*flags, *extra_flags]))) + (
+                    outputs(out),)
+    return {"root": root, "fx": fx, "ids": ids, "runs": runs}
+
+
+def one_era_equals_single(t: dict, comp: str) -> tuple[dict, dict]:
+    """The one-era pool's outputs equal the single-window fit's byte for byte once the pool's own keys are removed."""
+    (c1, s1, single), (c2, s2, pooled) = t["runs"][comp, "single"], t["runs"][comp, "pool"]
+    assert (c1, c2) == (fcw.EXIT_OK, fcw.EXIT_OK) and s1["composition"] == s2["composition"] == comp
+    assert sorted(single) == sorted(pooled) == sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV,
+                                                       fcw.OUTPUT_WEIGHTS])        # one era: no era weights file
+    assert single[fcw.OUTPUT_ADMISSION_CSV] == pooled[fcw.OUTPUT_ADMISSION_CSV]
+    a, b = (json.loads(x[fcw.OUTPUT_WEIGHTS]) for x in (single, pooled))
+    assert fcw.canonical_bytes(without(a, POOL_KEYS_WEIGHTS)) == fcw.canonical_bytes(without(b, POOL_KEYS_WEIGHTS))
+    for key in ("schema", "weights", "signs", "theme_standardise"):             # nothing removed from these
+        assert fcw.canonical_bytes({key: a[key]}) == fcw.canonical_bytes({key: b[key]}), key
+    assert fcw.canonical_bytes(a["provenance"]["std"]) == fcw.canonical_bytes(b["provenance"]["std"])
+    adm_a, adm_b = (json.loads(x[fcw.OUTPUT_ADMISSION]) for x in (single, pooled))
+    assert fcw.canonical_bytes(without(adm_a, POOL_KEYS_ADMISSION)) == fcw.canonical_bytes(
+        without(adm_b, POOL_KEYS_ADMISSION))
+    # the removed keys are the pool's: its block, the era window as the train window, the window of the era list
+    role = fcw.RoleManifest(t["fx"].manifest, t["fx"].train_sha)
+    assert adm_b["rules"]["train_window_ns"] == [list(fcw.era_window(role))] and adm_b["pool"]["anchor"] == "E3"
+    assert b["provenance"]["pool"] == adm_b["pool"] and [e["id"] for e in b["provenance"]["window"]["eras"]] == ["E3"]
+    assert b["provenance"]["admission_sha256"] == s2["admission_sha256"] != s1["admission_sha256"]
+    return a, b
+
+
+def test_pooled_std_fit_over_one_era_equals_the_single_window_fit(train_world):
+    """(a) ew-theme-std-v1: the five registered rules (composition_rules.ew_theme_std) on the pooled admission."""
+    a, b = one_era_equals_single(train_world, STD)
+    assert b["provenance"]["rule"] == STD and b["theme_standardise"]["rule"] == STD and "aim" not in b["provenance"]
+    assert sum(1 for w in b["weights"].values() if w > 0) == 5
+
+
+def test_pooled_std_aim_fit_over_one_era_equals_the_single_window_fit(train_world):
+    """(b) ew-theme-std-aim-v1: E-27's gains inside each theme, from the pooled aim records (one era = the era's)."""
+    a, b = one_era_equals_single(train_world, STD_AIM)
+    assert fcw.canonical_bytes(a["provenance"]["aim"]) == fcw.canonical_bytes(b["provenance"]["aim"])
+    assert b["provenance"]["rule"] == STD_AIM and b["theme_standardise"]["rule"] == STD
+    std = json.loads(train_world["runs"][STD, "pool"][2][fcw.OUTPUT_WEIGHTS])
+    assert b["weights"] != std["weights"]                                       # the gains moved weight
+    gains = b["provenance"]["aim"]["gain"]
+    assert b["provenance"]["std"]["aim_gains"] == {i: gains[i] for i in b["provenance"]["std"]["aim_gains"]}
+
+
+@pytest.mark.parametrize("comp", ["ew-theme-new-v9", "ew-theme-aim-v1", "mv-shrink-0.9-nonneg-v1"])
+def test_a_composition_the_pooled_fit_does_not_implement_is_refused_by_name(eras, comp, tmp_path):
+    """(c) an id outside POOLED_COMPOSITIONS (unknown, or registered for the single window only) is refused, named."""
+    args = fcw.parse_args(pooled_argv(eras, tmp_path / "o"))
+    args.composition = comp
+    with pytest.raises(fcw.FitError, match=f"--composition {re.escape(comp)} is not implemented by the pooled fit"):
+        fcw.fit(args)
+    assert not (tmp_path / "o").exists()
+    assert fcw.POOLED_COMPOSITIONS == ("ew-theme-v1", "ew-theme-v6", STD, STD_AIM)
+
+
+def test_a_prior_composition_without_a_weight_rule_never_falls_back_to_ew_theme_v1(train_world, eras, tmp_path,
+                                                                                    monkeypatch):
+    """A prior composition registered without a rule: the single window refuses it in fit_prior (no silent ew-theme-v1
+    weights) and the pooled fit refuses it by name before reading anything."""
+    monkeypatch.setattr(fcw, "PRIOR_COMPOSITIONS", fcw.PRIOR_COMPOSITIONS + ("ew-theme-new-v9",))
+    monkeypatch.setattr(fcw, "COMPOSITIONS", fcw.COMPOSITIONS + ("ew-theme-new-v9",))
+    args = fcw.parse_args(train_world["fx"].argv(tmp_path / "s", "v4-prior-v1", V4))
+    args.composition = "ew-theme-new-v9"
+    with pytest.raises(fcw.FitError, match="--composition ew-theme-new-v9 has no prior weight rule"):
+        fcw.fit(args)
+    args = fcw.parse_args(pooled_argv(eras, tmp_path / "p"))
+    args.composition = "ew-theme-new-v9"
+    with pytest.raises(fcw.FitError, match="ew-theme-new-v9 is not implemented by the pooled fit"):
+        fcw.fit(args)
+    assert not (tmp_path / "s").exists() and not (tmp_path / "p").exists()
+
+
+def block_ranks(fx_list: list[Fixture], k: int) -> np.ndarray:
+    """Candidate k's standardized ranks of every era (every scored decision, used rows with a finite signal) on one
+    block-diagonal panel: decisions in date order, each era's names its own columns, NaN elsewhere."""
+    blocks = []
+    for fx in fx_list:
+        ctx = fcw.Context.build(fcw.RoleManifest(fx.manifest, fx.train_sha), None)
+        slab = fx.signals[k][ctx.begin:ctx.end][:, ctx.columns]
+        blocks.append(fcw.standardized_ranks(slab, ctx.used & np.isfinite(slab)))
+    rows, cols = sum(b.shape[0] for b in blocks), sum(b.shape[1] for b in blocks)
+    z, r, c = np.full((rows, cols), np.nan), 0, 0
+    for b in blocks:
+        z[r:r + b.shape[0], c:c + b.shape[1]] = b
+        r, c = r + b.shape[0], c + b.shape[1]
+    return z
+
+
+# Two history eras whose pooled admission holds five members in two themes (M > 2T: the member cap 1/(2T) is
+# feasible): era_world's planted slow_a / slow_b and three independent AR(.97) panels (no return loading, no veto).
+V8_META = {"val_a": ("value", "A", 1), "val_b": ("value", "B+", 1), "val_c": ("value", "C+", 1),
+           "mom_a": ("price_momentum", "A-", 1), "mom_b": ("price_momentum", "B", 1)}
+V8_IDS = list(V8_META)
+
+
+def v8_fixture(root: Path, seed: int, start: str) -> Fixture:
+    panel, signals = era_world(seed, start)
+    rng = np.random.default_rng(seed + 100)
+    live = panel["member"] == 1
+    p1, p2, p3 = (np.where(live, ar_panel(rng), NAN) for _ in range(3))
+    planted = dict(zip(IDS, signals))
+    v8 = [planted["slow_a"], p1, p2, planted["slow_b"], p3]
+    extra = {i: {"theme": t, "tier": g, "prior_sign": s} for i, (t, g, s) in V8_META.items()}
+    return Fixture(root, panel, v8, [1] * len(V8_IDS), ids=V8_IDS, families=["fam"] * len(V8_IDS),
+                   candidate_extra=extra, layout="v2")
+
+
+@pytest.fixture(scope="module")
+def pooled_v8(tmp_path_factory):
+    root = tmp_path_factory.mktemp("v8pool")
+    e1 = v8_fixture(root / "e1", 61, "2014-01-01")      # seeds with every member admitted (HAC t > -2 each)
+    e2 = v8_fixture(root / "e2", 62, next_start("2014-01-01"))
+    runs = {"root": root, "e1": e1, "e2": e2}
+    with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
+        for comp in (STD, STD_AIM):
+            out = root / f"P-{comp}"
+            argv = e2.argv(out, "v4-prior-v1", ["--orientation", "prior", "--composition", comp, *era_argv("E1", e1),
+                                                "--era-id", "E2", "--work-dir", str(root / "work")])
+            runs[comp] = fcw.fit(fcw.parse_args(argv)) + (out,)
+    return runs
+
+
+def test_two_history_eras_pooled_std_is_the_rule_on_the_pooled_admission(pooled_v8):
+    t = pooled_v8
+    code, summary, out = t[STD]
+    assert code == fcw.EXIT_OK and summary["pool"]["eras"] == ["E1", "E2"]
+    adm_bytes = (out / fcw.OUTPUT_ADMISSION).read_bytes()
+    assert adm_bytes == (t[STD_AIM][2] / fcw.OUTPUT_ADMISSION).read_bytes()   # the screen never sees the rule
+    adm, doc = json.loads(adm_bytes), json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+    rows = {c["id"]: c for c in adm["candidates"]}
+    assert sorted(adm["admitted"]) == sorted(V8_IDS) and all(r["train_days"] == 356 for r in rows.values())
+    weighted = {c["id"]: c for c in doc["provenance"]["candidates"]}
+    members = [i for i in adm["admitted"] if weighted[i]["status"] == "fitted"]     # fit_prior's order
+    with unittest.mock.patch.object(cr, "REGISTRY_PATH", t["root"] / "no-registry.json"):
+        want = cr.ew_theme_std(members, [rows[i]["theme"] for i in members], [rows[i]["tier"] for i in members])
+    assert doc["weights"] == {i: float(dict(zip(members, want.weights)).get(i, 0.0)) for i in V8_IDS}
+    assert doc["theme_standardise"] == want.block and doc["schema"] == cr.WEIGHTS_SCHEMA_V2
+    assert doc["provenance"]["std"] == json.loads(json.dumps(want.provenance))
+    assert doc["provenance"]["rule"] == STD and doc["provenance"]["pool"]["anchor"] == "E2"
+    era1 = json.loads((out / "composition_weights.E1.json").read_bytes())    # the E1 w pass reads the same rule
+    assert era1 == dict(doc, train_manifest_sha256=t["e1"].train_sha)
+
+
+def test_two_history_eras_pooled_std_aim_gains_are_the_block_panel_gains(pooled_v8):
+    """The pooled gain of each member is aim_gain of the rank autocorrelation of the eras' block-diagonal rank panel
+    (every scored decision of each era; no lag pair across eras); the weights are ew_theme_std on those gains."""
+    t = pooled_v8
+    code, summary, out = t[STD_AIM]
+    assert code == fcw.EXIT_OK
+    doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+    aim = doc["provenance"]["aim"]
+    for k, cid in enumerate(V8_IDS):
+        rho = fcw.rank_autocorrelation(block_ranks([t["e1"], t["e2"]], k), fcw.AIM_LAGS)
+        assert aim["gain"][cid] == pytest.approx(fcw.aim_gain(rho, fcw.AIM_LAGS), rel=0, abs=1e-12), cid
+        np.testing.assert_allclose([np.nan if v is None else v for v in aim["rho"][cid]], rho, rtol=0, atol=1e-12)
+    assert aim["half_split_decision_index"] == 178                 # 356 pooled decisions, all in the mask
+    assert min(aim["gain"].values()) > 0.5 > fcw.AIM_GAIN_MIN        # history ranks read (a TRAIN mask reads none)
+    assert all(0 < v <= 1 for v in aim["coverage_mean"].values())
+    adm = json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes())
+    rows = {c["id"]: c for c in adm["candidates"]}
+    members = list(doc["provenance"]["std"]["aim_gains"])
+    with unittest.mock.patch.object(cr, "REGISTRY_PATH", t["root"] / "no-registry.json"):
+        want = cr.ew_theme_std(members, [rows[i]["theme"] for i in members], [rows[i]["tier"] for i in members],
+                               gains=[aim["gain"][i] for i in members])
+    assert doc["weights"] == {i: float(dict(zip(members, want.weights)).get(i, 0.0)) for i in V8_IDS}
+    std = json.loads((t[STD][2] / fcw.OUTPUT_WEIGHTS).read_bytes())
+    assert sorted(members) == sorted(i for i in V8_IDS if std["weights"][i] > 0) and doc["weights"] != std["weights"]
+    assert (doc["provenance"]["rule"], doc["theme_standardise"]) == (STD_AIM, std["theme_standardise"])
+    assert summary["aim_gain_min"] == min(aim["gain"][i] for i in members)
+
+
+def test_era_aim_parts_live_in_each_eras_store_and_a_rerun_reuses_them(pooled_v8, tmp_path):
+    t = pooled_v8
+    work = t["root"] / "work"
+    for fx in (t["e1"], t["e2"]):
+        base = store_base(work, fx.train_sha)
+        assert len(list((base / fcw.AIM_ERA_KIND).glob("*.json"))) == len(V8_IDS) and not (base / "aim").exists()
+    out = tmp_path / "again"
+    argv = t["e2"].argv(out, "v4-prior-v1", ["--orientation", "prior", "--composition", STD_AIM,
+                                             *era_argv("E1", t["e1"]), "--era-id", "E2", "--work-dir", str(work)])
+    with unittest.mock.patch.object(cr, "REGISTRY_PATH", t["root"] / "no-registry.json"):
+        code, summary = fcw.fit(fcw.parse_args(argv))
+    assert code == fcw.EXIT_OK and summary["computed_this_run"] == 0 and summary["reused"] == 2 * len(V8_IDS)
+    assert outputs(out) == outputs(t[STD_AIM][2])
