@@ -43,7 +43,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
   summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
                   "verdict": true spec, or --protocol v8 in summ.extra) always runs nav_summ --protocol v8 (seed
-                  20260929, 4,999 draws) and, with a ledger, --origin summ.origin; a verdict spec's summ also passes
+                  20260929, 4,999 draws, block 21: summ.extra may not set --seed, --draws or --block, review F-2)
+                  and, with a ledger, --origin summ.origin; a verdict spec's summ also passes
                   --dsr-ledger <the ledger> and the verdict's DSR is nav_summ's deflated_ledger (review C-1)
   build          "equity" | "equity-rel": resolves exes (defaults or bare names) and env_path_prepend (BUILDS)
   out_root        a root-relative dir every relative output name is placed under; ic.cache and fit.work_dir, when
@@ -201,6 +202,7 @@ SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("la
                 ("finra_short_volume", "--finra-short-volume"))
 DSR_FROM_LEDGER = "ledger+1"           # summ.dsr_n: resolved at scoring time from the trial ledger
 SUMM_V8 = "v8"                         # nav_summ --protocol v8: seed 20260929, 4,999 draws, origin + window_id lines
+V8_FIXED_FLAGS = ("--seed", "--draws", "--block")   # review F-2: v8-prereg item 4's bootstrap; never in a v8 summ.extra
 DEFAULT_OUT_ROOT = "build-equity"      # derived cache / fit roots and the cycle dir when the spec has no out_root
 RECEIPT_MODES = ("every-phase",)       # spec "receipts": the direct phases run through the bounded runner too
 CAP_KEYS = ("seconds", "max_rss_mib", "min_free_mib")
@@ -433,6 +435,11 @@ def validate_summ_protocol(spec: dict) -> None:
     if spec.get("verdict") is True and option_value(extra, "--protocol") not in (None, SUMM_V8):
         raise CycleError("spec verdict: a verdict cell is scored under nav_summ --protocol v8 (the v8 "
                          "pre-registration); summ.extra asks for another protocol", EXIT_USAGE)
+    fixed = [x for x in extra if isinstance(x, str) and x.split("=", 1)[0] in V8_FIXED_FLAGS]
+    if fixed and summ_protocol(spec) == SUMM_V8:
+        raise CycleError(f"spec summ: a v8 scoring step runs the pre-registered paired bootstrap (v8-prereg item 4: "
+                         f"seed 20260929, 4,999 draws, block 21); summ.extra may not set {', '.join(fixed)}",
+                         EXIT_USAGE)
 
 
 def validate_marginal(spec: dict) -> None:

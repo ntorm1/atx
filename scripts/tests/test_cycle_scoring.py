@@ -82,7 +82,8 @@ def test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value(t
     SR0 1.10 annual and DSR .42; the pre-registered cross-trial variance (SD .15 annual over the ledgered cells)
     gives SR0 .33 and DSR .91. The verdict carries the second."""
     prior = [1.15] * 20 + [0.85] * 20            # with this cell's 1.0: 41 SRs, mean 1.0, sample SD .15 exactly
-    root, sp = scoring_root(tmp_path, sr_annual=1.0, t=1006, prior_srs=prior, summ_extra=["--draws", "99"])
+    root, sp = scoring_root(tmp_path, sr_annual=1.0, t=1006, prior_srs=prior, summ_extra=[])
+    monkeypatch.setattr(NS, "V8_DRAWS", 99)       # speed only: a v8 spec may not pass --draws (review F-2)
     argv, rows = run_summ(root, sp, monkeypatch)
     capsys.readouterr()
     k = argv.index("--dsr-ledger")
@@ -144,15 +145,20 @@ def test_v8_summ_step_carries_the_protocol_and_the_origin(tmp_path):
         summ_argv(*bare)
     assert e.value.code == RC.EXIT_USAGE
     spec = json.loads(sp.read_text())
+    boot = "pre-registered paired bootstrap"                                          # review F-2
     for summ, verdict, needle in (({"origin": "lucky"}, None, "summ.origin must be one of"),
                                   ({"origin": "prior", "extra": ["--origin", "grid"]}, None, "not both"),
-                                  ({"extra": ["--protocol", "v7"]}, True, "--protocol v8")):
+                                  ({"extra": ["--protocol", "v7"]}, True, "--protocol v8"),
+                                  ({"extra": ["--draws", "99"]}, True, f"{boot}.*may not set --draws"),
+                                  ({"extra": ["--protocol", "v8", "--seed", "7"]}, None, f"{boot}.*--seed"),
+                                  ({"extra": ["--block=5"]}, True, f"{boot}.*--block=5")):
         bad = dict(spec, summ=dict(spec["summ"], **summ))
         if verdict:
             bad["verdict"] = verdict
         with pytest.raises(RC.CycleError, match=needle) as e:
             RC.validate_spec(bad)
         assert e.value.code == RC.EXIT_USAGE
+    RC.validate_spec(dict(spec, summ=dict(spec["summ"], extra=["--draws", "99", "--seed", "7"])))   # a v7 spec: as before
 
 
 def test_add_alpha_from_a_v8_parent_inherits_the_v8_protocol(tmp_path):
