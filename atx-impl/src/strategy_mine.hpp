@@ -125,7 +125,9 @@ struct MineFootprint {
 // rung (instrument stride >= 2), F = 3 + extras panel fields, S = kMineMaxProgramSlots, W workers,
 // R rungs, T trials, P prior records, G regressors, M members, K the shortlist (max_promotions).
 // A workspace is 128 B per name (IC rows, marginal kernel, rank row and sort buffer) and 80 B
-// per date (calendar and daily series); a label row count is at most dates.
+// per date (calendar and daily series); a label row count is at most dates. The metadata
+// allowance also holds the member checks' 1 MiB read buffer and the member stream's file and
+// SHA-256 state (one per member, at most 64; lane MINE-JOIN).
 struct MineMemory {
   // Resident: from the role load to the end of the campaign.
   atx::u64 metadata{};    // 64 MiB: library, catalogue, populations, genomes, I/O buffers, JSON
@@ -148,21 +150,24 @@ struct MineMemory {
   atx::u64 race_signals{};        // W x H x 8 when R > 0: one rung signal per worker
   atx::u64 full_engines{};        // W x C x (8 S + 1): full-pass engines' slot pools, mask copies
   atx::u64 full_signals{};        // W x C x 8: one full-pass signal per worker
-  // Promotion: after the search, the fitness released.
-  atx::u64 members{};          // M x C x 8: loaded after the search
-  atx::u64 shortlist{};        // (K + 1) x C x 8: the signals the rho step and the confirm read
-                               // hold at once (Ruling PM5-9: streamed, at most K + 1)
-  atx::u64 promotion_engine{}; // C x (8 S + 1): while the shortlist is evaluated
-  atx::u64 rho_rows{};         // (M + K) x names x 8 + (M + K)^2 x 16 + 16 names: rank rows,
-                               // pair sums and counts, sort buffer
+  // Promotion: after the search, the fitness released. No member panel is held (lane MINE-JOIN).
+  atx::u64 shortlist{};        // K x C x 8: the signals held at once -- the kept candidates plus
+                               // the batch being evaluated or rho-checked (Ruling PM5-9 as coded:
+                               // kept + batch <= K), then the K at most that reach the confirm
+  atx::u64 promotion_engine{}; // C x (8 S + 1): while a batch is evaluated
+  atx::u64 member_rows{};      // M x names x 8: one date of every member while the rho step
+                               // streams them (stream_mine_pool_members)
+  atx::u64 rho_rows{};         // (M + K) x names x 8 + (M + K)^2 x 16 + 16 names: the rho
+                               // step's rank rows (members, kept, batch), pair sums and counts,
+                               // sort buffer
   atx::u64 confirm_cache{};    // 49 C + 32 dates + one workspace: the confirm read
 
   [[nodiscard]] atx::u64 resident() const noexcept;
   // The fitness plus the largest of the bind, race (race_*) and full-pass (full_*) sub-phases:
   // with racing on, the race and the full pass never hold each other's engines or panels.
   [[nodiscard]] atx::u64 search() const noexcept;
-  // The members and the shortlist plus the largest of the promotion engine, the rho step and
-  // the confirm read (strategy_mine_promote.cpp holds them one after another).
+  // The shortlist plus the largest of the promotion engine, the rho step (member_rows +
+  // rho_rows) and the confirm read (strategy_mine_promote.cpp holds them one after another).
   [[nodiscard]] atx::u64 promotion() const noexcept;
   // The campaign's peak: resident() + max(search(), promotion()).
   [[nodiscard]] atx::u64 peak() const noexcept;

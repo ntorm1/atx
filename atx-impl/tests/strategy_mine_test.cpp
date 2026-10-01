@@ -718,15 +718,17 @@ st::MineFootprint fixture_footprint(usize workers) {
 
 // Review MINE-10, lane MINE-MEM: the memory admission is the peak of the phases documented in
 // strategy_mine.hpp -- resident terms plus the larger of the search (the fitness and the largest
-// of its bind, race and full-pass sub-phases) and the promotion (members, shortlist and the
-// largest of its engine, rho and confirm steps). The pinned values come from the lane report's
-// Python mirror of that model. One more trial costs its daily IC, its allowance and its registry
-// row; one more prior record its registry row. On the 4-year role the promotion is the peak at 1
-// and 4 workers alike (5,319 MiB; the old sum was 11,111 MiB at 4 workers). The shortlist term
-// is the cap plus one signals (Ruling PM5-9). The first real campaign's shape (12 fields, one
-// regressor, 53 members, stage 1 only, no racing) needs 6,296 MiB at 1 and 4 workers, inside
-// its 7,680 MiB ceiling. The configuration bounds need far more than the 64 GiB
-// --max-memory-mib ceiling, so such a campaign is refused before any payload.
+// of its bind, race and full-pass sub-phases) and the promotion (the shortlist and the largest of
+// its engine, rho and confirm steps). The pinned values come from the Python mirror of that model
+// (lane reports MINE-MEM, MINE-JOIN). One more trial costs its daily IC, its allowance and its
+// registry row; one more prior record its registry row. Lane MINE-JOIN: the shortlist term is the
+// cap of signals (MINE-STAT's rho step keeps kept + batch <= K) and the members are streamed one
+// date at a time (member_rows), so on the 4-year role the peak is 3,161 MiB at 1 worker (the
+// promotion) and 4,572 MiB at 4 (the search); MINE-MEM had 5,319 at both, the old sum 11,111 at
+// 4. The first real campaign's shape (12 fields, one regressor, 53 members, stage 1 only, no
+// racing) needs 2,765 MiB at 1 worker and 3,978 MiB at 4, whatever its member count. The
+// configuration bounds need far more than the 64 GiB --max-memory-mib ceiling, so such a
+// campaign is refused before any payload.
 TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(st::kMineMaxProgramSlots, 8U);
   st::MineFootprint small;
@@ -770,9 +772,9 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(m.race_signals, u64{137'128'000});
   EXPECT_EQ(m.full_engines, u64{2'228'330'000});
   EXPECT_EQ(m.full_signals, u64{274'256'000});
-  EXPECT_EQ(m.members, u64{2'194'048'000});
-  EXPECT_EQ(m.shortlist, u64{1'165'588'000});
+  EXPECT_EQ(m.shortlist, u64{1'097'024'000});
   EXPECT_EQ(m.promotion_engine, u64{557'082'500});
+  EXPECT_EQ(m.member_rows, u64{1'561'600});
   EXPECT_EQ(m.rho_rows, u64{2'476'864});
   EXPECT_EQ(m.confirm_cache, u64{420'892'660});
   // The phases, summed here independently of MineMemory's own sums.
@@ -782,22 +784,22 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   const u64 full = m.full_engines + m.full_signals;
   const u64 search = fitness + std::max({m.bind_transient, race, full});
   const u64 promotion =
-      m.members + m.shortlist + std::max({m.promotion_engine, m.rho_rows, m.confirm_cache});
+      m.shortlist + std::max({m.promotion_engine, m.member_rows + m.rho_rows, m.confirm_cache});
   EXPECT_EQ(m.resident(), resident);
   EXPECT_EQ(m.search(), search);
   EXPECT_EQ(m.promotion(), promotion);
   EXPECT_EQ(m.peak(), resident + std::max(search, promotion));
   EXPECT_EQ(m.resident(), u64{1'660'442'932});
   EXPECT_EQ(m.search(), u64{3'133'906'420});
-  EXPECT_EQ(m.promotion(), u64{3'916'718'500});
-  EXPECT_EQ(st::mine_working_bytes(four_year_footprint(4)).value(), u64{5'577'161'432});
+  EXPECT_EQ(m.promotion(), u64{1'654'106'500});
+  EXPECT_EQ(st::mine_working_bytes(four_year_footprint(4)).value(), u64{4'794'349'352});
   const auto one = st::mine_memory(four_year_footprint(1));
   ASSERT_TRUE(one.has_value()) << one.error().to_string();
   EXPECT_EQ(one->search(), u64{1'595'598'920});
-  EXPECT_EQ(one->promotion(), u64{3'916'718'500});
-  EXPECT_EQ(one->peak(), u64{5'577'161'432});
-  // The first real campaign (lane MINE-RUN's mine-c1): 12 fields, one regressor, at most 53
-  // members, the 132 stage-1 templates, no racing, the cap of 16.
+  EXPECT_EQ(one->promotion(), u64{1'654'106'500});
+  EXPECT_EQ(one->peak(), u64{3'314'549'432});
+  // The first real campaign (lane MINE-RUN's mine-c1): 12 fields, one regressor, 53 members, the
+  // 132 stage-1 templates, no racing, the cap of 16. The member count no longer moves the peak.
   for (const usize workers : {usize{1}, usize{4}}) {
     auto c1 = four_year_footprint(workers);
     c1.extras = 12;
@@ -809,9 +811,13 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
     ASSERT_TRUE(first.has_value()) << first.error().to_string();
     EXPECT_EQ(first->resident(), u64{1'245'173'652});
     EXPECT_EQ(first->search(), workers == 1U ? u64{1'046'539'160} : u64{2'926'158'260});
-    EXPECT_EQ(first->promotion(), u64{5'356'562'500});
-    EXPECT_EQ(first->peak(), u64{6'601'736'152});
+    EXPECT_EQ(first->promotion(), u64{1'654'106'500});
+    EXPECT_EQ(first->peak(), workers == 1U ? u64{2'899'280'152} : u64{4'171'331'912});
     EXPECT_LE(first->peak(), u64{7680} << 20);
+    for (const usize members : {usize{1}, st::kMaxMinePoolMembers}) {
+      c1.members = members;
+      EXPECT_EQ(st::mine_working_bytes(c1).value(), first->peak()) << members;
+    }
   }
   // Without racing the race terms vanish and the search is the fitness and the full pass.
   auto unraced = four_year_footprint(4);
@@ -825,7 +831,7 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
                                  plain->full_engines + plain->full_signals);
   // The fixture campaigns (StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers reads
   // these back from campaign.json).
-  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(1)).value(), u64{95'671'872});
+  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(1)).value(), u64{95'199'808});
   EXPECT_EQ(st::mine_working_bytes(fixture_footprint(4)).value(), u64{101'584'960});
 
   st::MineFootprint bounds;
@@ -884,7 +890,7 @@ TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
         return core::Ok();
       });
   ASSERT_TRUE(stream) << stream.error().to_string();
-  EXPECT_EQ(streamed, u64{1} * N * sizeof(f64));
+  EXPECT_EQ(streamed, memory->member_rows);
   // The racing rung: the strided panel (every field and its universe) exactly, and with the
   // strided member and guard the fitness's bind transient exactly.
   const u32 stride = cfg.race_strides.front();
@@ -1442,7 +1448,7 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
     const Json campaign = read_json(out / "campaign.json");
     heads.push_back(campaign.at("registry").at("head").get<std::string>());
     // Lane MINE-MEM: the admission campaign.json records is the model's peak at this worker
-    // count (95,435,840 B at 1 worker, 101,584,960 at 4).
+    // count (95,199,808 B at 1 worker, 101,584,960 at 4; lane MINE-JOIN).
     EXPECT_EQ(campaign.at("search").at("required_bytes").get<u64>(),
               st::mine_working_bytes(fixture_footprint(workers)).value())
         << tag;

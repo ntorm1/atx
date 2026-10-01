@@ -430,7 +430,7 @@ u64 MineMemory::search() const noexcept {
 }
 
 u64 MineMemory::promotion() const noexcept {
-  return members + shortlist + std::max({promotion_engine, rho_rows, confirm_cache});
+  return shortlist + std::max({promotion_engine, member_rows + rho_rows, confirm_cache});
 }
 
 u64 MineMemory::peak() const noexcept { return resident() + std::max(search(), promotion()); }
@@ -471,11 +471,12 @@ co::Result<MineMemory> mine_memory(const MineFootprint &f) {
   m.race_signals = rungs == 0U ? u64{0} : workers * strided * sizeof(f64);
   m.full_engines = workers * cells * slot_cell;
   m.full_signals = workers * cells * sizeof(f64);
-  m.members = static_cast<u64>(f.members) * cells * sizeof(f64);
-  // Ruling PM5-9: the rho step runs over every trial above the hurdle, streamed so that at most
-  // the cap plus one signals are held at once.
-  m.shortlist = (static_cast<u64>(f.shortlist) + 1U) * cells * sizeof(f64);
+  // Ruling PM5-9: the rho step runs over every trial above the hurdle in batches that, with the
+  // candidates kept so far, never hold more than the cap of signals (strategy_mine_promote.cpp
+  // rho_step); the members are streamed one date at a time (lane MINE-JOIN).
+  m.shortlist = static_cast<u64>(f.shortlist) * cells * sizeof(f64);
   m.promotion_engine = cells * slot_cell;
+  m.member_rows = static_cast<u64>(f.members) * names * sizeof(f64);
   m.rho_rows = rho * names * sizeof(f64) + rho * rho * kPairBytes + kSortPairBytes * names;
   m.confirm_cache = kIcCacheCellBytes * cells + kIcCacheDateBytes * dates + full_workspace;
   return co::Ok(m);
