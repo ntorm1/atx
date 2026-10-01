@@ -1483,3 +1483,15 @@ no build.
 Brief caps: preparation steps (R1-R8: projection, role, scan, repair, bridge, events, grp fields, lo1, lo3) run under
 600 s / 2,560 MiB; R9 (IC exe, plan-only) under the IC cap 300 s / 2,560 MiB. The free-memory floor and the tools'
 own inner limits are the runbook's argv unchanged (`--min-free-mib` 768 for R2, 512 elsewhere).
+
+### Runs
+
+Every run: `scripts/run_bounded_research.py` on a clean tree (the source column), one at a time, argv = runbook
+section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sampled peak tree RSS.
+
+| step | receipt dir | source | outcome / ExitCode | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|
+| R1 | `recent-projection-v2-run` | `a5ba41c5` | completed / 0 | 53.9 | 766 | `fc4d312193ad89fb9a289546805a988d0159969044ed6ed004df4cc2a0a88c5d` | `931b54ef8412b9f61ae4b9c67d663a265604209bc2639c81046669b591fc2ea5` |
+
+- **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
+  250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
