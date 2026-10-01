@@ -96,14 +96,24 @@ co::Status check_config(const MineConfig &cfg) {
                       cfg.race_keep <= 1.0;
   const bool rule = cfg.min_names >= 3U && cfg.min_dates >= 2U && cfg.max_promotions >= 1U &&
                     cfg.max_promotions <= 256U && cfg.max_working_bytes >= (64ULL << 20) &&
-                    cfg.max_working_bytes <= (64ULL << 30);
+                    cfg.max_working_bytes <= (64ULL << 30) && cfg.budget >= 1U &&
+                    cfg.budget <= kMineMaxBudget;
   if (!inputs || !search || !rule)
     return co::Err(fail(co::ErrorCode::InvalidArgument,
                         "bounded config (needs --role, --registry, --campaign-id [a-z0-9_-]{1,64}, "
-                        "--output, 1..64 distinct --fields, --pool with --pool-sha256; --workers "
-                        "1..64; --stage2-seeds <= --stage2-population (2..4096); at most 2 "
-                        "--race-strides; --race-keep in (0, 1]; --min-names >= 3; "
-                        "--max-promotions 1..256; --max-memory-mib 64..65536)"));
+                        "--output, 1..64 distinct --fields, --pool with --pool-sha256, --budget "
+                        "1..10000000; --workers 1..64; --stage2-seeds <= --stage2-population "
+                        "(2..4096); at most 2 --race-strides; --race-keep in (0, 1]; --min-names "
+                        ">= 3; --max-promotions 1..256; --max-memory-mib 64..65536)"));
+  // Pre-registration rule 10 (Ruling E-32a): the budget is fixed in advance and binds the search.
+  const u64 capacity = mine_trial_capacity(cfg);
+  if (cfg.budget < capacity)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "--budget " + std::to_string(cfg.budget) +
+                            " is below the configuration's trial capacity " +
+                            std::to_string(capacity) +
+                            " (templates plus stage-2 population x generations): the budget is "
+                            "fixed in advance and the search must not be able to exceed it"));
   return co::Ok();
 }
 
@@ -254,6 +264,14 @@ std::vector<std::string> mine_templates(std::span<const std::string> fields) {
   return out;
 }
 
+u64 mine_trial_capacity(const MineConfig &cfg) {
+  const u64 templates =
+      static_cast<u64>(cfg.role.fields.size()) * (1U + 2U * static_cast<u64>(kTemplateWindows.size()));
+  const bool stage2 = cfg.stage2_seeds > 0U && cfg.stage2_generations > 0U;
+  return templates +
+         (stage2 ? static_cast<u64>(cfg.stage2_population) * cfg.stage2_generations : u64{0});
+}
+
 co::Result<u64> mine_working_bytes(const MineFootprint &f) {
   if (f.workers == 0U || f.workers > 64U || f.rungs > 2U ||
       f.regressors > cb::kMaxMarginalRegressors || f.members > kMaxMinePoolMembers ||
@@ -361,6 +379,11 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     std::unordered_map<u64, usize> index;
     classify(stage1, 1U, trials, index);
     if (explore) classify(stage2, 2U, trials, index);
+    // The capacity check bounds this already; a breach would make the hurdle anti-conservative.
+    if (trials.size() > cfg.budget)
+      return co::Err(fail(co::ErrorCode::Internal,
+                          "the search evaluated " + std::to_string(trials.size()) +
+                              " distinct trials, above --budget " + std::to_string(cfg.budget)));
 
     // The scoring recipe every trial of this campaign is an expression under.
     Json payloads = Json::object();
@@ -406,8 +429,9 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
              << " new=" << registry.inserted << " sha256=" << registry.sha256 << '\n'
              << std::flush;
 
-    // mined-v1 at the Bonferroni value of the registry's trial count.
-    const f64 hurdle = mined_hurdle(n_raw);
+    // mined-v1 at the Bonferroni value of the campaign's budget (Ruling E-32a: never the realised
+    // count, never the registry's).
+    const f64 hurdle = mined_hurdle(cfg.budget);
     PromotionContext context;
     context.role = role.get();
     context.pool = &pool;
@@ -441,6 +465,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"seed", cfg.seed},
         {"workers", cfg.workers},
         {"templates", templates.size()},
+        {"capacity", mine_trial_capacity(cfg)},
         {"stage1", stage_json(stage1)},
         {"stage2", explore ? stage_json(stage2) : Json(nullptr)},
         {"stage2_config", {{"seeds", cfg.stage2_seeds},
@@ -452,6 +477,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"status", "complete"},
         {"campaign_id", cfg.campaign_id},
         {"rule", std::string(kMinedRule)},
+        {"budget", cfg.budget},
         {"research_window", {{"id", std::string(dt::kResearchWindowId)},
                              {"seal_begin", std::string(dt::kSealBeginDate)}}},
         {"inputs", inputs_json},
@@ -473,7 +499,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                       {"n_raw", n_raw},
                       {"new_records", registry.inserted},
                       {"anchor", anchor_json}}},
-        {"hurdle", {{"trials", n_raw},
+        {"hurdle", {{"budget", cfg.budget},
                     {"family_alpha", kMinedFamilyAlpha},
                     {"t", finite_or_null(hurdle)}}},
         {"promotions", promotions_json(trials, promotions, pool)},
@@ -497,6 +523,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     line.registry_bytes = registry.bytes;
     line.registry_count = registry.inserted;
     line.registry_total = n_raw;
+    line.budget = cfg.budget;
     line.window_id = std::string(dt::kResearchWindowId);
     ATX_TRY(const std::string ledger, mine_ledger_line(line));
     ATX_TRY_VOID(write_text(out_dir / "trials.csv", trials_csv(trials)));
@@ -538,15 +565,18 @@ constexpr const char *kUsage =
     "atx-equity-strategy-mine --role MANIFEST --role-sha256 SHA [--role-fields DIR\n"
     "    --role-fields-sha256 SHA] --fields NAME[,NAME...] --discover-begin YYYY-MM-DD\n"
     "    --discover-end YYYY-MM-DD --confirm-begin YYYY-MM-DD --confirm-end YYYY-MM-DD\n"
-    "    --registry PATH [--registry-head FILE] --campaign-id ID --output NEWDIR\n"
+    "    --registry PATH [--registry-head FILE] --campaign-id ID --output NEWDIR --budget N\n"
     "    [--pool MANIFEST --pool-sha256 SHA] [--seed N (1)] [--workers N (1)]\n"
     "    [--stage2-seeds N (12)] [--stage2-population N (24)] [--stage2-generations N (4)]\n"
     "    [--race-strides S[,S] (4) | none] [--race-keep F (0.333)] [--min-names N (50)]\n"
     "    [--min-dates N (128)] [--max-promotions N (16)] [--max-memory-mib N (2048)]\n"
     "  Mines the --fields of a pinned research role (platform v8 H-3; real data only under\n"
     "  owner decision OD-7). Windows lie inside TRAIN of research-window-v2; a role with a\n"
-    "  session at or after the seal is refused. Writes NEWDIR/campaign.json, trials.csv,\n"
-    "  mined_members.json, ledger_line.json and registry_head.txt (rule mined-v1).\n";
+    "  session at or after the seal is refused. --budget N fixes the campaign's trial budget in\n"
+    "  advance (pre-registration rule 10): N covers the templates plus the stage-2 population\n"
+    "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N. Writes\n"
+    "  NEWDIR/campaign.json, trials.csv, mined_members.json, ledger_line.json and\n"
+    "  registry_head.txt (rule mined-v1).\n";
 } // namespace
 
 int dispatch_mine(int argc, char **argv, std::ostream &out, std::ostream &err) {
@@ -578,6 +608,7 @@ int dispatch_mine(int argc, char **argv, std::ostream &out, std::ostream &err) {
       else if (key == "--registry-head") cfg.registry_head_path = value;
       else if (key == "--campaign-id") cfg.campaign_id = value;
       else if (key == "--output") cfg.output_directory = value;
+      else if (key == "--budget") cfg.budget = parse_unsigned(key, value);
       else if (key == "--seed") cfg.seed = parse_unsigned(key, value);
       else if (key == "--workers") cfg.workers = count();
       else if (key == "--stage2-seeds") cfg.stage2_seeds = count();

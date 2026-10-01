@@ -122,7 +122,7 @@ def test_ledger_defect_marks_a_ledgered_cell_invalid(tmp_path, capsys):
     assert BI.trial_counts(records) == [1, 0, 0] and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a", "prior/b"]      # the cell listing skips the event line
     BI.ledger_append(ledger, [BI.campaign_line("mined-q1", "mine/registry.jsonl", "cd" * 32, 250,     # Ruling E-33
-                                               registry_total=250, registry_bytes=4096),
+                                               registry_total=250, registry_bytes=4096, budget=400),
                               {"schema": BI.LEDGER_SCHEMA, "kind": "validation", "count": 0,       # review C-11
                                "owner_ruling": {"path": "r.json", "sha256": "ef" * 32}, "trial_id": "v" * 16}],
                      chain=True)
@@ -153,7 +153,7 @@ def grow_registry(root: Path, rel: str, records: int) -> tuple[str, int]:
 
 
 def mine_output(root: Path, rel: str, records: int, campaign_id: str = "fixture", registry_rel: str = REGISTRY_REL,
-                **ledger_override) -> Path:
+                budget: int = 128, **ledger_override) -> Path:
     """An atx-equity-strategy-mine output directory exactly as the verb writes it (strategy_mine.cpp and
     strategy_mine_ledger.cpp; review MINE-1), after the campaign appended ``records`` records to its registry:
     campaign.json, registry_head.txt (eval::write_chain_head's line) and ledger_line.json (compact sorted keys), whose
@@ -165,7 +165,8 @@ def mine_output(root: Path, rel: str, records: int, campaign_id: str = "fixture"
     directory.mkdir(parents=True)
     chain = hashlib.sha256(head.encode()).hexdigest()[:16]
     campaign = {"schema": "atx.mine-campaign/v1", "status": "complete", "campaign_id": campaign_id,
-                "rule": "mined-v1", "research_window": {"id": BI.window_id(), "seal_begin": "2024-01-01"},
+                "rule": "mined-v1", "budget": budget,
+                "research_window": {"id": BI.window_id(), "seal_begin": "2024-01-01"},
                 "registry": {"path": registry_rel, "format": "V3", "records": total,
                              "chain": chain, "head": head, "bytes": size, "n_raw": total, "new_records": records,
                              "anchor": None if total == records else {"records": total - records, "head": "0" * 16}}}
@@ -173,7 +174,7 @@ def mine_output(root: Path, rel: str, records: int, campaign_id: str = "fixture"
     (directory / "registry_head.txt").write_text(f"ATXTRGH1 {total:x} {int(chain, 16):x} 1f2e3d\n", encoding="utf-8")
     ident = hashlib.sha256(json.dumps(["mining-campaign", head], separators=(",", ":")).encode()).hexdigest()
     line = {"schema": "atx.trial-ledger/v1", "kind": "mining-campaign", "count": 0, "campaign": campaign_id,
-            "origin": "mined", "window_id": BI.window_id(), "trial_id": ident[:16],
+            "origin": "mined", "budget": budget, "window_id": BI.window_id(), "trial_id": ident[:16],
             "registry": {"path": registry_rel, "chain_head": head, "bytes": size, "count": records, "total": total}}
     line.update(ledger_override)
     (directory / "ledger_line.json").write_text(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n",
@@ -206,8 +207,9 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     reg = campaign["registry"]
     assert len(line["registry"]["chain_head"]) == 64
     assert line == dict(BI.campaign_line("fixture", reg["path"], reg["head"], 81, registry_total=81,
-                                         registry_bytes=reg["bytes"], research_window_id=BI.window_id()),
+                                         registry_bytes=reg["bytes"], budget=128, research_window_id=BI.window_id()),
                         prev_sha256=head_before)
+    assert line["budget"] == campaign["budget"] == 128                                       # Ruling E-32a
     assert BI.trial_counts(records) == [1, 0] and BI.campaign_registry_count(records) == 81 and cycle_n(root, sp) == 2
     assert research_ledger.cells(ledger) == ["prior/a"]
     assert RC.main(argv) == 0 and capsys.readouterr().out.startswith("already present")      # a rerun, same head
@@ -227,6 +229,8 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     refused("mine/sixteen", "chain head")
     mine_output(root, "mine/old-form", 4, registry_rel="mine/r-old.atxtrg", count=99)       # a line that differs
     refused("mine/old-form", "differs from campaign_line on count")
+    mine_output(root, "mine/overspent", 4, registry_rel="mine/r-over.atxtrg", budget=3)     # rule 10: over budget
+    refused("mine/overspent", "budget is fixed in advance")
     edited = mine_output(root, "mine/edited", 4, registry_rel="mine/r-edit.atxtrg")
     log = bytearray((root / "mine" / "r-edit.atxtrg").read_bytes())
     log[60] ^= 1

@@ -27,6 +27,13 @@
 // added, total = n_raw} (Ruling E-33a; a campaign that adds no record is refused);
 // `research_cycle.py ledger-campaign --campaign OUTPUT` rebuilds it from campaign.json, checks
 // the registry bytes against the head, and appends it chained) and registry_head.txt.
+//
+// Budget (pre-registration rule 10, Ruling E-32a; review MINE-4): --budget N is mandatory and
+// fixed before the search. It must cover the configuration's trial capacity
+// (mine_trial_capacity: the templates plus the stage-2 population times its generations), so
+// no search can exceed it; the mined-v1 hurdle is computed from N, never from the realised or
+// the registry's count, so neither a fresh registry nor a small search lowers it. campaign.json
+// and the ledger line carry N.
 #include <iosfwd>
 #include <span>
 #include <string>
@@ -47,6 +54,7 @@ struct MineConfig {
   std::string registry_head_path; // required when the registry exists: its exported chain head
   std::string campaign_id;        // [a-z0-9_-], at most 64 characters
   std::string output_directory;   // must not exist
+  atx::u64 budget{}; // --budget: the campaign's trial budget N (required; >= the capacity)
   atx::u64 seed{1};
   atx::usize workers{1};
   atx::usize stage2_seeds{12};       // stage-1 front members that seed stage 2 (0: no stage 2)
@@ -62,6 +70,12 @@ struct MineConfig {
 
 // The stage-1 templates of `fields`, in field order.
 [[nodiscard]] std::vector<std::string> mine_templates(std::span<const std::string> fields);
+
+// The most distinct trials `cfg` can evaluate: its templates (stage 1, one generation) plus, when
+// stage 2 runs, its population times its generations (each generation evaluates at most one
+// population of new candidates; no immigrants, no grammar fill).
+[[nodiscard]] atx::u64 mine_trial_capacity(const MineConfig &cfg);
+inline constexpr atx::u64 kMineMaxBudget = 10'000'000ULL;
 
 // A campaign's shape, known before any payload.
 struct MineFootprint {

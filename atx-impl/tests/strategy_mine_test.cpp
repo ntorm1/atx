@@ -48,6 +48,8 @@ constexpr i64 day = 86'400'000'000'000LL;
 constexpr i64 first_day = 17879; // 2018-12-14
 constexpr usize D = 1844, N = 16, score_begin = 383;
 constexpr f64 missing = std::numeric_limits<f64>::quiet_NaN();
+// The fixture campaigns' --budget: above their capacity (templates + 16 x 2 stage-2 candidates).
+constexpr u64 kBudget = 128;
 
 struct Directory {
   fs::path path;
@@ -265,6 +267,7 @@ struct Fixture {
     cfg.registry_path = (dir.path / ("registry-" + tag + ".atxtrg")).string();
     cfg.campaign_id = "fixture";
     cfg.output_directory = (dir.path / ("out-" + tag)).string();
+    cfg.budget = kBudget;
     cfg.seed = seed;
     cfg.workers = workers;
     cfg.stage2_seeds = 8;
@@ -350,6 +353,7 @@ void expect_campaign_line(const st::MineConfig &cfg, const Json &campaign, const
                       {"count", 0},
                       {"campaign", campaign.at("campaign_id")},
                       {"origin", "mined"},
+                      {"budget", campaign.at("budget")},
                       {"window_id", campaign.at("research_window").at("id")},
                       {"registry",
                        {{"path", registry_path},
@@ -456,7 +460,12 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_GT(trials.at("racing_rejected").get<u64>(), 0U) << "seed " << seed;
     EXPECT_EQ(rows.size(), trials.at("distinct").get<usize>()) << "seed " << seed;
     EXPECT_EQ(registry.at("new_records"), registry.at("n_raw")) << "seed " << seed;
-    EXPECT_GT(hurdle, 3.0);
+    // Ruling E-32a: the hurdle is the Bonferroni value of the declared budget, not of n_raw.
+    EXPECT_EQ(campaign.at("budget").get<u64>(), kBudget);
+    EXPECT_EQ(campaign.at("hurdle").at("budget").get<u64>(), kBudget);
+    EXPECT_LE(registry.at("n_raw").get<u64>(), kBudget);
+    EXPECT_LE(campaign.at("search").at("capacity").get<u64>(), kBudget);
+    EXPECT_EQ(hurdle, st::mined_hurdle(kBudget)) << "seed " << seed;
     std::array<bool, 3> planted_read{};
     for (const Json &member : mined.at("members")) {
       const auto dsl = member.at("dsl").get<std::string>();
@@ -557,8 +566,35 @@ TEST(StrategyMineCampaign, SharedRegistryLinesCountEachCampaignsOwnRecords) {
   EXPECT_EQ(a_line.at("registry").at("count").get<u64>() +
                 b_line.at("registry").at("count").get<u64>(),
             b_total);
+  // Ruling E-32a: both hurdles are the budget's, whatever the registry held before.
+  EXPECT_EQ(a.at("hurdle").at("t").get<f64>(), st::mined_hurdle(kBudget));
+  EXPECT_EQ(b.at("hurdle").at("t").get<f64>(), st::mined_hurdle(kBudget));
   expect_campaign_line(first, a, first.output_directory, "first");
   expect_campaign_line(second, b, second.output_directory, "second");
+}
+
+// Pre-registration rule 10 (Ruling E-32a): --budget is required and must cover the
+// configuration's trial capacity (the templates plus the stage-2 population times its
+// generations); otherwise the campaign is refused before any payload and writes nothing.
+TEST(StrategyMineCampaign, RefusesAMissingBudgetOrOneBelowTheCapacity) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  auto cfg = f.config("budget", 1, 1);
+  const u64 templates = cfg.role.fields.size() * 11U;
+  const u64 capacity = st::mine_trial_capacity(cfg);
+  EXPECT_EQ(capacity, templates + 16U * 2U);
+  std::ostringstream progress;
+  for (const u64 budget : {u64{0}, capacity - 1U}) {
+    cfg.budget = budget;
+    const auto refused = st::run_mine(cfg, progress);
+    ASSERT_FALSE(refused) << budget;
+    EXPECT_NE(refused.error().message().find("--budget"), std::string::npos)
+        << refused.error().to_string();
+    EXPECT_FALSE(fs::exists(cfg.output_directory));
+    EXPECT_FALSE(fs::exists(cfg.registry_path));
+  }
+  cfg.stage2_generations = 0; // no stage 2: the templates alone
+  EXPECT_EQ(st::mine_trial_capacity(cfg), templates);
 }
 
 // Research window: a role with a session on 2024-01-02 is refused from its manifest, before any

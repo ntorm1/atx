@@ -7,8 +7,9 @@
 //    discover window; one confirm read at HAC t 2.0 with Benjamini-Yekutieli p at or below .10;
 //    abs(rho) at most .70 to every member; all mined members share one theme."
 //
-// As coded: the Bonferroni value is -norm_ppf(.05 / (2 N)) with N the campaign registry's raw
-// trial count after the campaign's trials are recorded. The discover statistic is f2 = the sign
+// As coded: the Bonferroni value is -norm_ppf(.05 / (2 N)) with N the campaign's --budget, fixed
+// before the search and covering every trial it can evaluate (pre-registration rule 10, Ruling
+// E-32a; never the realised or the registry's count). The discover statistic is f2 = the sign
 // of the discover h 21 rank IC times the marginal IC HAC t (research_ic_fitness.hpp); the
 // shortlist is every evaluated trial with f2 at or above the value, in f2 order. The rho check is
 // greedy in that order against every pool member and every earlier kept candidate (mean daily

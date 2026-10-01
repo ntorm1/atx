@@ -245,9 +245,10 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
     BI.ledger_append(ledger, [record(c[0], 0.6)], chain=True)
     v7_text = BI.appendix_a(BI.ledger_read(ledger), "t")
     camp = BI.campaign_line("mined-q1", "build-equity/mine/q1/registry.jsonl", "ab" * 32, 1000,
-                            registry_total=1250, registry_bytes=96048, research_window_id=WID, date="2026-10-02")
+                            registry_total=1250, registry_bytes=96048, budget=2048, research_window_id=WID,
+                            date="2026-10-02")
     assert camp == {"schema": BI.LEDGER_SCHEMA, "kind": "mining-campaign", "count": 0, "campaign": "mined-q1",
-                    "origin": "mined", "registry": {"path": "build-equity/mine/q1/registry.jsonl",
+                    "origin": "mined", "budget": 2048, "registry": {"path": "build-equity/mine/q1/registry.jsonl",
                                                     "chain_head": "ab" * 32, "bytes": 96048, "count": 1000,
                                                     "total": 1250},
                     "window_id": WID, "date": "2026-10-02", "trial_id": BI.trial_id("mining-campaign", "ab" * 32)}
@@ -272,8 +273,11 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
                          (("m", "r", "ab" * 16, 5), "chain head"),         # review MINE-1: the pre-fix 16-hex head
                          (("m", "r", "ab" * 32, 0), "positive integer")):
         with pytest.raises(ValueError, match=needle):
-            BI.campaign_line(*args, registry_total=5, registry_bytes=96048)
+            BI.campaign_line(*args, registry_total=5, registry_bytes=96048, budget=8)
     with pytest.raises(ValueError, match="byte count"):
-        BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=5, registry_bytes=0)
+        BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=5, registry_bytes=0, budget=8)
     with pytest.raises(ValueError, match="E-33a"):                      # the total is the registry, >= the count
-        BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=4, registry_bytes=96048)
+        BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=4, registry_bytes=96048, budget=8)
+    for budget in (4, 0, True):                                         # review MINE-4: rule 10's budget covers it
+        with pytest.raises(ValueError, match="budget is fixed in advance"):
+            BI.campaign_line("m", "r", "ab" * 32, 5, registry_total=5, registry_bytes=96048, budget=budget)

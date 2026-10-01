@@ -756,7 +756,7 @@ def positive_int(value) -> bool:
 
 
 def campaign_line(campaign: str, registry_path: str, registry_head: str, registry_count: int, *,
-                  registry_total: int, registry_bytes: int, research_window_id: str | None = None,
+                  registry_total: int, registry_bytes: int, budget: int, research_window_id: str | None = None,
                   date: str | None = None, note: str | None = None) -> dict:
     """A mining campaign's ledger line (Ruling E-33; plan: the campaign registry's chain head copied to the cycle
     ledger). kind mining-campaign, origin mined, count 0: it adds no trial to any N of the ledger, the construction N
@@ -766,7 +766,9 @@ def campaign_line(campaign: str, registry_path: str, registry_head: str, registr
     trials (campaign_registry_count sums the counts). Review MINE-1: ``registry.chain_head`` is the SHA-256 of the
     registry log's first ``registry.bytes`` bytes (the append-only log as the campaign left it;
     atx-equity-strategy-mine writes it, and its C++ twin strategy_mine_ledger.cpp writes this line byte for byte).
-    Its trial_id is (mining-campaign, chain head)."""
+    Ruling E-32a (review MINE-4): ``budget`` is the campaign's --budget, fixed before its search (pre-registration
+    rule 10; the mined-v1 hurdle is computed from it), at least its registry count. Its trial_id is
+    (mining-campaign, chain head)."""
     if not (isinstance(campaign, str) and campaign.strip()):
         raise ValueError("ledger: a mining campaign needs a name")
     if not (isinstance(registry_head, str) and len(registry_head) == 64 and set(registry_head) <= set("0123456789abcdef")):
@@ -775,9 +777,13 @@ def campaign_line(campaign: str, registry_path: str, registry_head: str, registr
         raise ValueError("ledger: a mining campaign's registry count is a positive integer")
     if not positive_int(registry_total) or registry_total < registry_count:
         raise ValueError("ledger: a mining campaign's registry total is at least its count (Ruling E-33a)")
+    if not positive_int(budget) or budget < registry_count:
+        raise ValueError("ledger: a mining campaign's budget is fixed in advance and covers its registry count "
+                         "(pre-registration rule 10)")
     if not positive_int(registry_bytes):
         raise ValueError("ledger: a mining campaign's registry byte count is a positive integer")
     rec = {"schema": LEDGER_SCHEMA, "kind": MINING_CAMPAIGN, "count": 0, "campaign": campaign, "origin": "mined",
+           "budget": budget,
            "registry": {"path": str(registry_path).replace("\\", "/"), "chain_head": registry_head,
                         "bytes": registry_bytes, "count": registry_count, "total": registry_total}}
     rec.update(ledger_record_fields(note=note, research_window_id=research_window_id))

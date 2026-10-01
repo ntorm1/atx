@@ -34,6 +34,9 @@ std::string field_problem(const MineLedgerLine &line) {
   if (line.registry_count < 1U) return "a mining campaign's registry count is a positive integer";
   if (line.registry_total < line.registry_count)
     return "a mining campaign's registry total is at least its count (Ruling E-33a)";
+  if (line.budget < line.registry_count)
+    return "a mining campaign's budget is fixed in advance and covers its registry count "
+           "(pre-registration rule 10)";
   if (line.registry_bytes < 1U) return "a mining campaign's registry byte count is a positive integer";
   if (line.window_id.empty()) return "a mining campaign names its research window";
   return {};
@@ -50,6 +53,7 @@ co::Result<std::string> line_text(const MineLedgerLine &line) {
                  {"count", 0},
                  {"campaign", line.campaign_id},
                  {"origin", "mined"},
+                 {"budget", line.budget},
                  {"window_id", line.window_id},
                  {"registry",
                   {{"path", path},
@@ -93,6 +97,7 @@ std::string mine_ledger_line_problem(std::string_view text) {
     line.registry_bytes = unsigned_at(registry, "bytes");
     line.registry_count = unsigned_at(registry, "count");
     line.registry_total = unsigned_at(registry, "total");
+    line.budget = unsigned_at(j, "budget");
     line.window_id = text_at(j, "window_id");
     if (const std::string problem = field_problem(line); !problem.empty()) return problem;
     const auto expected = line_text(line);
