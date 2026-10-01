@@ -77,6 +77,12 @@ def is_history(role: dict) -> bool:
     return era_ns(role)[1] <= window()["TRAIN_BEGIN_NS"]
 
 
+def begins_before_train(roles: list[dict]) -> bool:
+    """Ruling E-41, nav_summ's rule at plan time: the pooled series begins before TRAIN (its first era's begin), so the
+    pooled summ is a history read and its ledger N takes no + 1. A pool of eras inside TRAIN is no history read."""
+    return min(era_ns(r)[0] for r in roles) < window()["TRAIN_BEGIN_NS"]
+
+
 def validate_roles(spec: dict, keep_fields: bool = False, reuse_fields: str | None = None) -> list[dict]:
     """The roles of SPEC, checked (exit 2 on a refusal): shape, pins, windows and, with two or more roles, the
     single-role sections and options."""
@@ -194,6 +200,7 @@ def roles_cycle(spec: dict, res: RC.Resolver, **kw):
             check_history_ledger(cycle, role)
             cycle.summ_pool = [(role["id"], cycle.out(cycle.spec["nav"]["output"]),
                                 f"{fit_weights_dir(cycle)}/{cycle.weights_name}")]
+            cycle.summ_history = begins_before_train([role])   # Ruling E-41: a history read adds 0 to N
     return cycle
 
 
@@ -246,6 +253,7 @@ class RolesCycle:
             w_dir = fit_weights_dir(anchor)
             anchor.summ_pool = [(c.role_key, c.out(c.spec["nav"]["output"]), f"{w_dir}/{c.weights_name}")
                                 for c in self.eras]
+            anchor.summ_history = begins_before_train(self.roles)   # Ruling E-41: a history read adds 0 to N
         per[anchor.role_key] = anchor.steps()
         out = []
         for phase in ORDER:

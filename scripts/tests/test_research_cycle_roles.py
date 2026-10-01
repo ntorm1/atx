@@ -322,6 +322,46 @@ def test_a_history_role_alone_pools_its_fit_and_summ(tmp_path):
     assert "--era-of" not in next(st for st in cycle_of(root, sp).steps() if st.phase == "summ").argv
 
 
+TRAIN_CELL = {"kind": "construction", "trial_id": "0123456789abcdef", "cell": "out/TRAIN", "count": 1}
+
+
+def plan_dsr_n(root: Path, sp: Path, spec: dict) -> str:
+    sp.write_text(json.dumps(spec))
+    summ = next(st for st in cycle_of(root, sp).steps() if st.phase == "summ")
+    return summ.argv[summ.argv.index("--dsr-n") + 1]
+
+
+def test_e41_a_history_read_adds_no_trial_to_the_plan_time_ledger_n(tmp_path):
+    """Ruling E-41 (ERA concern 3): summ.dsr_n "ledger+1" resolves at plan time to the ledger's N with no + 1 for a
+    history read (one era or a pool whose series begins before TRAIN), as nav_summ --dsr-ledger's pooled row; a pool
+    of eras inside TRAIN still adds its own trial."""
+    root = make_root(tmp_path)
+    roles = []
+    for name, begin, end in (("E1", "2014-01-01", "2015-01-01"), ("E2", "2015-01-01", "2016-01-01")):
+        doc = {"universe": {"id": "u-v1"}, "dates": 700, "score_begin": 400,
+               "score_start_ns": TW.session_ns(dt.date.fromisoformat(begin) + dt.timedelta(days=1)),
+               "score_end_ns": TW.session_ns(dt.date.fromisoformat(end))}
+        (root / name.lower()).mkdir()
+        (root / name.lower() / "manifest.json").write_text(json.dumps(doc))
+        roles.append({"id": name, "dir": name.lower(), "begin": begin, "end": end, "universe": "u-v1"})
+    (root / "trials.jsonl").write_text(json.dumps(TRAIN_CELL) + "\n")     # the TRAIN cell the read re-reads: N 1
+    sp = tmp_path / "s.json"
+    one = base_spec(roles=roles[1:])
+    one["summ"].update(dsr_n="ledger+1", extra=["--era-of", TRAIN_CELL["trial_id"]])
+    assert RR.begins_before_train(roles[1:]) and RR.begins_before_train(roles)
+    assert plan_dsr_n(root, sp, one) == "1"                               # one era: N, not N + 1
+    two = base_spec(roles=roles)
+    two["summ"]["dsr_n"] = "ledger+1"
+    assert plan_dsr_n(root, sp, two) == "1"                               # a two-era history pool: N, not N + 1
+    # the TRAIN split (two eras inside TRAIN) is no history read: its pooled line is a trial, N + 1
+    train_root, train_sp, train_roles = two_era_root(tmp_path / "train")
+    (train_root / "trials.jsonl").write_text(json.dumps(TRAIN_CELL) + "\n")
+    spec = json.loads(train_sp.read_text())
+    spec["summ"]["dsr_n"] = "ledger+1"
+    assert not RR.begins_before_train(train_roles)
+    assert plan_dsr_n(train_root, train_sp, spec) == "2"
+
+
 # ------------------------------------------------------------------ refusals and lock
 @pytest.mark.parametrize("change, needle", [
     (lambda s, r: r[1].update(begin="2021-01-04"), "date order"),

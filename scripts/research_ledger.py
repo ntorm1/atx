@@ -152,10 +152,13 @@ def pooled_trial_id(nav_dirs: list[Path]) -> str | None:
     return backtest_integrity().pooled_trial_id(N_KIND, shas) if shas else None
 
 
-def ledger_n(path: Path, cell: str, nav_dir: Path | None = None, pool_dirs: list[Path] | None = None) -> int:
+def ledger_n(path: Path, cell: str, nav_dir: Path | None = None, pool_dirs: list[Path] | None = None,
+             history: bool = False) -> int:
     """N for summ.dsr_n "ledger+1": backtest_integrity.ledger_n over every line (the defect rule), the scored cell
     matched by its daily series' trial_id once ``nav_dir`` holds the NAV output (nav_summ's rule), else by its name.
-    ``pool_dirs`` (task H-1, a pooled era cell named ``cell``): matched by the pooled trial_id."""
+    ``pool_dirs`` (task H-1, a pooled era cell named ``cell``): matched by the pooled trial_id. ``history`` (Ruling
+    E-41): the scored cell is a history read (a pool whose series begins before TRAIN); it adds no trial, so N takes
+    no + 1, as nav_summ --dsr-ledger's ``ledger_dsr(..., history)``."""
     records = [rec for _, rec in read_lines(path)]
     tid = pooled_trial_id(pool_dirs) if pool_dirs else scored_trial_id(nav_dir)
 
@@ -163,7 +166,7 @@ def ledger_n(path: Path, cell: str, nav_dir: Path | None = None, pool_dirs: list
         if rec.get("kind", N_KIND) != N_KIND:
             return False
         return rec["trial_id"] == tid if tid is not None and "trial_id" in rec else rec.get("cell") == cell
-    return backtest_integrity().ledger_n(records, any(scored(rec) for rec in records), N_KIND)
+    return backtest_integrity().ledger_n(records, history or any(scored(rec) for rec in records), N_KIND)
 
 
 def protocol_line(window_id: str, owner_ruling: str, date: str, research_window_sha256: str) -> dict:

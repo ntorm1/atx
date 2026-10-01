@@ -33,8 +33,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   (--<key> DIR --<key>-sha256 PIN) and reuse_fields (--reuse DIR --reuse-sha256 PIN, --reuse-hardlink
                   with fields.reuse_hardlink) reach the fields builder
   summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
-                  construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
-                  research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
+                  construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered,
+                  0 for a history read, Ruling E-41; research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
   resume          (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec and argv
                   SHA-256); a done NAV is scored only when its spec digest (else its argv digest, from the binding or
                   its receipt's command) matches the current spec: a mismatch is a pin stop (exit 3) naming both
@@ -645,6 +645,8 @@ class Cycle:
         self.role_key, self.weights_name = role_key, "composition_weights.json"
         self.fit_pool: tuple[list[str], list[str]] | None = None
         self.summ_pool: list[tuple[str, str, str]] | None = None
+        # Ruling E-41: the pooled summ is a history read (its series begins before TRAIN, research_roles): N takes no + 1
+        self.summ_history = False
         # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
         self.pins = self.verify_inputs() if verify else {}
 
@@ -1110,7 +1112,8 @@ class Cycle:
     def ledger_cells(self, n_out: str) -> tuple[list[str], int]:
         """summ.cells_from_ledger / dsr_n "ledger+1": (every trial line's cell, in ledger order, this cycle's own cell
         excluded (protocol lines are no trial: research_ledger), the ledger's N); N is backtest_integrity.ledger_n
-        (the defect rule, + 1 for this cell when not yet ledgered: nav_summ's N) and an integer dsr_n must equal it."""
+        (the defect rule, + 1 for this cell when not yet ledgered: nav_summ's N; a history read adds 0, Ruling E-41)
+        and an integer dsr_n must equal it."""
         sm = self.spec["summ"]
         rel = self.ledger or sm["ledger"]
         p = self.res.path(rel)
@@ -1119,7 +1122,8 @@ class Cycle:
         navs = [nav for _, nav, _ in self.summ_pool or []]   # H-1: the pooled cell, by its pooled trial_id
         try:
             cells = research_ledger.cells(p)
-            n = (research_ledger.ledger_n(p, research_ledger.pool_label(navs), pool_dirs=[self.res.path(d) for d in navs])
+            n = (research_ledger.ledger_n(p, research_ledger.pool_label(navs), pool_dirs=[self.res.path(d) for d in navs],
+                                          history=self.summ_history)
                  if navs else research_ledger.ledger_n(p, n_out, self.res.path(n_out)))
         except research_ledger.LedgerError as exc:
             raise CycleError(f"summ.cells_from_ledger: {exc}", EXIT_PIN) from exc
