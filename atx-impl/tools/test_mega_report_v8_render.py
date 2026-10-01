@@ -273,7 +273,7 @@ def test_v7_config_is_untouched_and_has_no_v8_block():
 
 # ============================================================================================ registered criteria
 TEMPLATE = REPO / 'docs/plans/mega-alpha-scorecard-v8.template.md'
-# review P-2: every registered part of each cell's mechanical criterion (plan section 9; rulings E-14, E-31, E-36), as
+# review P-2: every registered part of each cell's mechanical criterion (plan section 9; rulings E-14/E-14a, E-31, E-36), as
 # the committed config's checks (texts and labels aside; a manual part is {'met': None} until the PM reads it)
 REGISTERED_CHECKS = {
     'R-1': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
@@ -285,7 +285,7 @@ REGISTERED_CHECKS = {
     'R-6': [{'metric': 'cost_bps_traded', 'op': 'le'},
             {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
             {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.limits_unmet', 'op': 'eq', 'value': 0},
-            {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_criterion.value', 'op': 'ge',
+            {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean', 'op': 'ge',
              'value': 0.9}],
     'R-7': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}
 
@@ -297,7 +297,7 @@ def test_committed_criteria_carry_every_registered_part():
         assert got == want, key
     assert 'S3 not lower' in crit['R-5']['text']
     assert all(s in crit['R-6']['text'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'E-31',
-                                                  '>= .9', 'E-14'))
+                                                  'E-31a', '>= .9', 'E-14', 'E-14a'))
     assert crit['R-7']['text'].startswith('turnover not higher') and 'E-36' in crit['R-7']['text']
     assert 'marginal' not in json.dumps(crit['R-7']['checks'])  # rule 8: marginal IC gates nothing (Ruling E-36)
     # the E-14 threshold is the C++ registered constant v3_aim_correlation_min
@@ -309,12 +309,12 @@ def test_scorecard_template_carries_every_registered_part():
     rows = {ln.split('|')[1].strip(): ln for ln in text.splitlines() if re.match(r'\| R-\d \| `mega-nav-v8-r', ln)}
     assert 'S3 not lower' in rows['R-5']
     assert all(s in rows['R-6'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'limits_unmet 0',
-                                          'E-31', '>= .9', 'E-14'))
+                                          'E-31', 'E-31a', '>= .9', 'E-14', 'E-14a'))
     assert 'turnover not higher' in rows['R-7'] and 'E-36' in rows['R-7'] and 'marginal t' not in rows['R-7']
     ladder = {ln.split('|')[2].strip(): ln for ln in text.splitlines() if re.match(r'\| \d+ \| R-\d \|', ln)}
     assert 'S3 not lower ({{NAV[R-5].scenarios[S3].net_sharpe}} vs parent' in ladder['R-5']
     for part in ('{{NAV[R-6].v7.spo_v3_tripwire.status}}', '.limits_unmet}}',
-                 '.aim_correlation_criterion.value}}'):
+                 '.aim_correlation_traded_after.mean}}'):
         assert part in ladder['R-6'], part
     assert 'turnover not higher' in ladder['R-7'] and 'report only, gates nothing' in ladder['R-7']
     assert '| `NAV[K]` | `<cell K dir>/summary.json` |' in text
@@ -330,8 +330,8 @@ def test_r5_and_r6_criteria_read_their_nav_summaries(root):
     s3 = next(s['id'] for s in cfg['scenarios'] if s['key'] == 'S3')
     for edit in (lambda d: d['v7']['spo_v3_tripwire'].update(status='tripped (not voiding)'),
                  lambda d: next(iter(d['v7']['spo_v3_books'].values())).update(limits_unmet=1),
-                 lambda d: next(iter(d['v7']['spo_v3_books'].values()))['aim_correlation_criterion'].update(
-                     value=0.89)):
+                 lambda d: next(iter(d['v7']['spo_v3_books'].values()))['aim_correlation_traded_after'].update(
+                     mean=0.89)):
         doc = T.nav_summary(cfg)
         edit(doc)
         T.put(root, 'build-equity/mega-nav-v8-r6/summary.json', doc)

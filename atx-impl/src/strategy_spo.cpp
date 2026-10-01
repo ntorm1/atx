@@ -924,6 +924,17 @@ f64 correlation(std::span<const f64> a, std::span<const f64> b) {
   }
   return aa > 0 && bb > 0 ? ab / std::sqrt(aa * bb) : nan;
 }
+// spo-v3: Pearson correlation of a held book and an aim over every name either holds (review
+// A-4; Ruling E-14a).
+f64 traded_correlation(std::span<const f64> book, std::span<const f64> aim) {
+  std::vector<f64> held, aimed;
+  for (usize i = 0; i < aim.size(); ++i) {
+    if (aim[i] == 0 && book[i] == 0) continue;
+    held.push_back(book[i]);
+    aimed.push_back(aim[i]);
+  }
+  return correlation(held, aimed);
+}
 // Per-session financing rate of the book's scenario (annual bps x (365/252) / day count, the
 // replay's calendar-day accrual averaged per session).
 f64 per_session(f64 bps, u32 day_count) {
@@ -971,9 +982,14 @@ struct Engine::Impl {
     usize members{}, unpriced_members{};
   };
   struct BookState {
+    static constexpr usize no_row = std::numeric_limits<usize>::max();
     Multipliers warm;
     std::vector<f64> shadow; // the plan-level aim-partial-v5 shadow book (weights)
     std::vector<f64> dual;   // spo-v3: the last solve's dual per instrument (a warm start)
+    // spo-v3, Ruling E-14a: the aim of the book's last scored decision and that decision's
+    // tracking row (no_row: none), paired with the book its next rebalance decision reads.
+    std::vector<f64> aim_before;
+    usize row_before{no_row};
   };
   // Positions outside the problem at d (every rule): nonmembers follow aim-partial-v5's exit
   // rule, members without a risk row keep their weight.
@@ -1442,15 +1458,10 @@ TrackingRow Engine::Impl::tracking_row(const BookDecision& in, const tt::Trackin
   row.tracking_error = tracking_error(r, next, aim, gap);
   row.tracking_error_current = tracking_error(r, current, aim, gap);
   row.aim_correlation = correlation(sol.w, p.target);
-  // Review A-4: the traded book DECIDE read (filled, capped, blocked, drifted) against the
-  // aim over every name either holds; the E-14 criterion reads this, not the plan's.
-  std::vector<f64> held, aimed;
-  for (usize i = 0; i < aim.size(); ++i) {
-    if (aim[i] == 0 && current[i] == 0) continue;
-    held.push_back(current[i]);
-    aimed.push_back(aim[i]);
-  }
-  row.aim_correlation_traded = correlation(held, aimed);
+  // Review A-4: the book DECIDE read (filled, capped, blocked, drifted) against the aim over
+  // every name either holds. Ruling E-14a's criterion reads aim_correlation_traded_after
+  // (plan_tracking fills it in at the book's next decision).
+  row.aim_correlation_traded = traded_correlation(current, aim);
   row.objective = sol.terms.objective; row.amortized_cost = sol.terms.trade_cost;
   row.trade_cost = sol.terms.trade_cost * horizon; row.borrow = sol.terms.borrow;
   f64 aim_gross = 0, beta = 0;
@@ -1497,6 +1508,12 @@ co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>&
   const tt::TrackingProblem p = tracking_problem(aim, current, fixed, market);
   const auto& names = date.names;
   auto& book = books[std::string(in.book)];
+  // Ruling E-14a (review SPO-2): the book this decision reads is the traded book after the
+  // book's previous scored decision's trades (both known now, nothing later): its row pairs it
+  // with that decision's aim.
+  if (book.row_before < tracking_rows.size() && book.aim_before.size() == n_all)
+    tracking_rows[book.row_before].aim_correlation_traded_after =
+        traded_correlation(current, book.aim_before);
   std::vector<f64> warm; // the book's last dual on today's names (cold: empty)
   if (book.dual.size() == n_all) {
     warm.resize(names.size());
@@ -1537,7 +1554,11 @@ co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>&
   row.tracking_error_shadow = tracking_error(date.slice, book.shadow, aim, gap);
   row.aim_correlation_shadow = correlation(held, p.target);
   // Scored decisions only (v8 D-0), as spo-v1/v2.
-  if (d >= x.decision_begin) tracking_rows.push_back(std::move(row));
+  if (d >= x.decision_begin) {
+    book.row_before = tracking_rows.size(); // Ruling E-14a: filled in at the next decision
+    book.aim_before.assign(aim.begin(), aim.end());
+    tracking_rows.push_back(std::move(row));
+  }
   planned = std::move(next);
   return co::Ok();
 }

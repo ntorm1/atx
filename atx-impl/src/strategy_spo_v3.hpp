@@ -57,8 +57,10 @@ inline constexpr atx::f64 v3_horizon = 20.0; // H, sessions: fixed, not 1 / thet
 // declared. On the lane's synthetic prototype S_prior 1 traded factor loadings only
 // (corr(w, w_aim) .35, gross .37 L) while 20 tracked at .96; no TRAIN statistic informed it.
 // The cell's mechanical criterion (mean correlation of the traded book with the aim over
-// scored decisions >= v3_aim_correlation_min; review A-4: aim_correlation_traded, not the
-// plan's aim_correlation) is read from the tripwire record's report (tracking_tripwire_json,
+// scored decisions >= v3_aim_correlation_min; Ruling E-14a, review SPO-2: the traded book
+// after decision d's trades against the aim at d, aim_correlation_traded_after, not the plan's
+// aim_correlation nor review A-4's aim_correlation_traded, which lags the trades one decision)
+// is read from the tripwire record's report (tracking_tripwire_json,
 // aim_correlation_criterion), never enforced here.
 inline constexpr atx::f64 v3_sharpe_prior = 20.0;
 inline constexpr atx::f64 v3_aim_correlation_min = 0.9; // Ruling E-14's criterion threshold
@@ -93,9 +95,10 @@ inline constexpr atx::f64 v3_gross_bound_multiple = 2.0; // breach: planned gros
 [[nodiscard]] std::string tracking_csv(std::span<const TrackingRow> rows);
 [[nodiscard]] nlohmann::json tracking_units_json();
 // Per book: decisions, convergence, tracking error mean / max, share at the trade limit
-// mean / max, aim correlation mean / min of the plan and of the traded book, the E-14
-// criterion on the traded one, cost, gross, turnover, holding period, gross-bound breaches,
-// clamps, and the shadow book with the cost ratio.
+// mean / max, aim correlation mean / min of the plan, of the book DECIDE read and of the
+// traded book after the trades, the E-14 criterion on the last (Ruling E-14a), cost, gross,
+// turnover, holding period, gross-bound breaches, clamps, and the shadow book with the cost
+// ratio.
 [[nodiscard]] nlohmann::json tracking_summary_json(std::span<const TrackingRow> rows);
 // The tripwire, read after the replay and before anything is published. Ruling E-31a, whatever
 // the void flag: Unavailable when a scored decision of `primary_book` did not meet its net or

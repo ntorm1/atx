@@ -88,14 +88,15 @@ def bundle_doc(final_dir: str, base_dir: str, dsr: float = 0.05, p1: float = 0.2
 def nav_summary(cfg: dict, s3: float = 0.9) -> dict:
     """A synthetic NAV summary.json of a cell: every configured scenario's net Sharpe (S3's ``s3``) with its TRAIN
     calendar years, and the spo-v3 report of the primary book (tripwire clear, limits met on every scored decision,
-    traded-book aim correlation .95), as the criteria of R-5 and R-6 read them."""
+    traded-book aim correlation .95 after decision d's trades, Ruling E-14a), as the criteria of R-5 and R-6 read them."""
     primary = next(s['id'] for s in cfg['scenarios'] if s['key'] == cfg['primary_scenario'])
     scen = [{'scenario': s['id'], 'net_sharpe': s3 if s['key'] == 'S3' else 1.1,
              'calendar_year_returns': [{'year': y, 'net_compounded_return': 0.05} for y in V.train_years()]}
             for s in cfg['scenarios']]
     book = {'decisions': 1004, 'unconverged': 0, 'limits_unmet': 0,
-            'aim_correlation_criterion': {'reads': 'aim_correlation_traded.mean', 'threshold': 0.9, 'value': 0.95,
-                                          'met': True}}
+            'aim_correlation_traded_after': {'mean': 0.95, 'min': 0.91, 'n': 1003},
+            'aim_correlation_criterion': {'reads': 'aim_correlation_traded_after.mean', 'threshold': 0.9,
+                                          'value': 0.95, 'met': True}}
     return {'primary_scenario': primary, 'scenarios': scen,
             'v7': {'spo_v3_books': {primary: book}, 'spo_v3_tripwire': {'status': 'clear', 'report_only': {primary: book}}}}
 
@@ -388,7 +389,8 @@ PRIMARY_ID = 'modeled.1bn+swap-fin-v1'  # an id holding a dot: {primary} is one 
 
 
 def spo_summary(s3: float = 0.9, status: str = 'clear', unmet: int = 0, corr: float = 0.95) -> dict:
-    book = {'limits_unmet': unmet, 'aim_correlation_criterion': {'value': corr, 'met': corr >= 0.9}}
+    book = {'limits_unmet': unmet, 'aim_correlation_traded_after': {'mean': corr},
+            'aim_correlation_criterion': {'value': corr, 'met': corr >= 0.9}}
     return {'scenarios': [{'scenario': PRIMARY_ID, 'net_sharpe': 1.1}, {'scenario': 's3.id', 'net_sharpe': s3}],
             'v7': {'spo_v3_tripwire': {'status': status}, 'spo_v3_books': {PRIMARY_ID: book}}}
 
@@ -397,7 +399,7 @@ SPO_DOCS = {'scenarios': {'S2': PRIMARY_ID, 'S3': 's3.id'}, 'primary': PRIMARY_I
 R6_CHECKS = {'checks': [
     {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
     {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.limits_unmet', 'op': 'eq', 'value': 0},
-    {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_criterion.value', 'op': 'ge',
+    {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean', 'op': 'ge',
      'value': 0.9}]}
 
 
@@ -406,7 +408,7 @@ def test_criterion_eval_summary_checks_against_a_value():
     ok = V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=spo_summary()))
     assert ok['met'] is True and ok['unread'] == []
     assert 'v7.spo_v3_tripwire.status clear eq clear' in ok['detail']
-    assert 'v7.spo_v3_books.{primary}.aim_correlation_criterion.value 0.95 ge 0.9' in ok['detail']
+    assert 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean 0.95 ge 0.9' in ok['detail']
     for bad in (spo_summary(status='tripped (not voiding: --specific-ceiling-void off)'), spo_summary(unmet=2),
                 spo_summary(corr=0.85)):
         assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=bad))['met'] is False

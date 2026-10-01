@@ -573,14 +573,16 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     }
     by_book[r.book].push_back(&r);
   }
-  // One CSV row per scored (decision, book); 42 columns (review A-4 added
-  // aim_correlation_traded after aim_correlation).
+  // One CSV row per scored (decision, book); 43 columns (review A-4 added
+  // aim_correlation_traded after aim_correlation, Ruling E-14a aim_correlation_traded_after
+  // after it).
   EXPECT_EQ(static_cast<usize>(std::count(run.csv.begin(), run.csv.end(), '\n')),
             run.rows.size() + 1);
   const std::string header = run.csv.substr(0, run.csv.find('\n'));
-  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 41);
+  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 42);
   for (const char* column : {",tracking_error,", ",tracking_error_current,", ",aim_correlation,",
-                             ",aim_correlation_traded,", ",at_trade_limit,",
+                             ",aim_correlation_traded,", ",aim_correlation_traded_after,",
+                             ",at_trade_limit,",
                              ",trade_limit_share,", ",gross_bound_breached,",
                              ",tracking_error_shadow,", ",aim_correlation_shadow"})
     EXPECT_NE(header.find(column), std::string::npos) << column;
@@ -699,71 +701,98 @@ TEST(SpoV3, WarmStartCalibratesOnTheFirstScoredDecision) {
   expect_clear_or_limits_void(warmed);
 }
 
-// Review A-4: Ruling E-14's criterion reads the traded book, not the plan. Each row's
-// aim_correlation_traded is the correlation of the holdings its DECIDE read (the observed
-// book's held weights, which the holdings stream reports as the plan's current weights bit for
-// bit) with the aim the tracker received, over every name either holds: recomputed here from
-// the stream. From flat (the first decision) it is NaN; on later decisions it differs from the
-// plan's aim_correlation (fills trail the plan under the 1% ADV trade limit, and the book
-// drifts). The report carries both, and its criterion is the traded mean against .9.
-TEST(SpoV3, CriterionReadsTheTradedBook) {
+// Review A-4 and Ruling E-14a (review SPO-2): Ruling E-14's criterion reads the traded book
+// after decision d's trades against the aim at d. Each row's aim_correlation_traded_after is the
+// correlation of the holdings the book's NEXT rebalance decision's DECIDE read (the observed
+// book's held weights there, which the holdings stream reports as the plan's current weights
+// bit for bit) with the aim the tracker received at d, over every name either holds: recomputed
+// here from the stream; NaN on the book's last scored decision. Review A-4's
+// aim_correlation_traded (the book DECIDE read at d against the aim at d, one decision behind
+// the trades; NaN from flat) stays beside it, as does the plan's aim_correlation. The report
+// carries all three and its criterion is the traded-after mean against .9.
+TEST(SpoV3, CriterionReadsTheTradedBookAfterTheTrades) {
   const Directory dir;
   const Role role(40, 12, 53);
   const auto risk = clean_model(dir, role, 3);
   ASSERT_NE(risk, nullptr);
   Recorder recorder(role.n);
   const Replay run = replay_v3(role, risk, sp::v3_params(), nav_config(), &recorder);
-  ASSERT_FALSE(run.rows.empty());
+  ASSERT_GT(run.rows.size(), 2U);
   std::map<i64, usize> row_of;
   for (usize t = 0; t < role.d; ++t) row_of[role.sessions[t]] = t;
-  usize compared = 0, differ = 0;
-  f64 sum = 0, lowest = 2.0;
-  for (const auto& r : run.rows) {
+  const auto traded = [&](const std::vector<f64>& held, const std::vector<f64>& aim) {
+    std::vector<f64> book, aimed;
+    for (usize i = 0; i < role.n; ++i) {
+      if (aim[i] == 0 && held[i] == 0) continue;
+      book.push_back(held[i]);
+      aimed.push_back(aim[i]);
+    }
+    return pearson(book, aimed);
+  };
+  usize compared = 0, compared_after = 0, differ = 0;
+  f64 sum_after = 0, lowest_after = 2.0;
+  for (usize k = 0; k < run.rows.size(); ++k) {
+    const auto& r = run.rows[k];
     const usize t = row_of.at(r.session);
     ASSERT_EQ(recorder.held.count(t), 1U) << t;
     ASSERT_EQ(recorder.aim.count(t), 1U) << t;
-    const auto& held = recorder.held.at(t);
     const auto& aim = recorder.aim.at(t);
     ASSERT_EQ(aim.size(), role.n) << t;
-    std::vector<f64> traded, aimed;
-    for (usize i = 0; i < role.n; ++i) {
-      if (aim[i] == 0 && held[i] == 0) continue;
-      traded.push_back(held[i]);
-      aimed.push_back(aim[i]);
-    }
-    const f64 expected = pearson(traded, aimed);
-    if (std::isnan(expected)) {
+    // Review A-4: the book DECIDE read at d.
+    const f64 at_d = traded(recorder.held.at(t), aim);
+    if (std::isnan(at_d)) {
       EXPECT_TRUE(std::isnan(r.aim_correlation_traded)) << t;
+    } else {
+      EXPECT_NEAR(r.aim_correlation_traded, at_d, 1e-12) << t;
+      ++compared;
+    }
+    // Ruling E-14a: the book the next decision read, after d's trades.
+    if (k + 1 == run.rows.size()) {
+      EXPECT_TRUE(std::isnan(r.aim_correlation_traded_after)) << "the last scored decision";
       continue;
     }
-    EXPECT_NEAR(r.aim_correlation_traded, expected, 1e-12) << t;
-    ++compared;
-    sum += r.aim_correlation_traded;
-    lowest = std::min(lowest, r.aim_correlation_traded);
-    if (std::isfinite(r.aim_correlation) &&
-        std::abs(r.aim_correlation_traded - r.aim_correlation) > 1e-9)
+    const usize next = row_of.at(run.rows[k + 1].session);
+    ASSERT_GT(next, t);
+    ASSERT_EQ(recorder.held.count(next), 1U) << next;
+    const f64 after = traded(recorder.held.at(next), aim);
+    if (std::isnan(after)) {
+      EXPECT_TRUE(std::isnan(r.aim_correlation_traded_after)) << t;
+      continue;
+    }
+    EXPECT_NEAR(r.aim_correlation_traded_after, after, 1e-12) << t;
+    ++compared_after;
+    sum_after += r.aim_correlation_traded_after;
+    lowest_after = std::min(lowest_after, r.aim_correlation_traded_after);
+    if (std::isfinite(r.aim_correlation_traded) &&
+        std::abs(r.aim_correlation_traded_after - r.aim_correlation_traded) > 1e-9)
       ++differ;
   }
   EXPECT_TRUE(std::isnan(run.rows.front().aim_correlation_traded)); // the book is flat
+  EXPECT_TRUE(std::isnan(run.rows.back().aim_correlation_traded_after));
   ASSERT_GT(compared, 0U);
-  EXPECT_GT(differ, 0U) << "the traded book never differs from the plan";
-  // The report (one book): both correlations; the criterion reads the traded mean.
+  ASSERT_GT(compared_after, 0U);
+  EXPECT_GT(differ, 0U) << "the book after the trades never differs from the one DECIDE read";
+  // The report (one book): the three correlations; the criterion reads the traded-after mean.
   ASSERT_EQ(run.summary.size(), 1U);
   const auto& entry = run.summary.begin().value();
-  EXPECT_EQ(entry.at("aim_correlation_traded").at("n"), compared);
-  EXPECT_NEAR(entry.at("aim_correlation_traded").at("mean").get<f64>(),
-              sum / static_cast<f64>(compared), 1e-12);
-  EXPECT_EQ(entry.at("aim_correlation_traded").at("min").get<f64>(), lowest);
   EXPECT_TRUE(entry.contains("aim_correlation")); // the plan's, as before
+  EXPECT_EQ(entry.at("aim_correlation_traded").at("n"), compared);
+  EXPECT_EQ(entry.at("aim_correlation_traded_after").at("n"), compared_after);
+  EXPECT_NEAR(entry.at("aim_correlation_traded_after").at("mean").get<f64>(),
+              sum_after / static_cast<f64>(compared_after), 1e-12);
+  EXPECT_EQ(entry.at("aim_correlation_traded_after").at("min").get<f64>(), lowest_after);
   const auto& criterion = entry.at("aim_correlation_criterion");
-  EXPECT_EQ(criterion.at("reads"), "aim_correlation_traded.mean");
+  EXPECT_EQ(criterion.at("reads"), "aim_correlation_traded_after.mean");
+  EXPECT_NE(criterion.at("rule").get<std::string>().find("E-14a"), std::string::npos);
   EXPECT_EQ(criterion.at("threshold").get<f64>(), sp::v3_aim_correlation_min);
   EXPECT_EQ(sp::v3_aim_correlation_min, 0.9);
   const f64 value = criterion.at("value").get<f64>();
-  EXPECT_EQ(value, entry.at("aim_correlation_traded").at("mean").get<f64>());
+  EXPECT_EQ(value, entry.at("aim_correlation_traded_after").at("mean").get<f64>());
   EXPECT_EQ(criterion.at("met").get<bool>(), value >= 0.9);
   EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_criterion"),
             criterion);
+  EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_traded_after"),
+            entry.at("aim_correlation_traded_after"));
 }
 
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta
