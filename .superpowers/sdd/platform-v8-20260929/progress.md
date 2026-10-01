@@ -588,3 +588,74 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   is not captured and the mismatch is the finding.
 - Dispatched: integrator part C (identities 1-8, PM3-5 expectation 45 / 18, PM3-7), reader MINE (mining verb),
   reader SPO (optimiser: solve_tracking, spo-v3, E-14, E-26, E-31, FIX-AB A-2 / A-4), both read-only at d22b735a.
+- DLRET done f51c5fd8 (pool 4; tests 5db4ce53). Finding: the brief premise was stale -- linked-operating-v1 has taken
+  --delisting / --delisting-returns since F-0 (872b7125, merged 33742f7a), same function as v3, manifest records
+  returns_applied and the events digest; runbook R15's "no lo1 rule" is wrong (corrected by this line). Added:
+  Python test of an lo1 decision / label pair under the E-25 payload rule with a committed fixture
+  (atx-impl/tests/fixtures/lo1_label_role_pair), three NavLabelRoleLo1 gtests. 28 pytest pass. Not compiled.
+  B0c registration must name the delisting stage ($DL, as lo3) and build the label role from the same pins and
+  tool commit as train-2020-2023-lo1. E-39 stands as the ruling that B0c's label role exists for either winner.
+- ORTH dispatched on pool 4 (branch feat/platform-v8-orth-20260930 from fd2ff7a8).
+- ERA done cddb5c8e (pool 3; E-35 80112395, P-1 dc84f27f). Pooled fit implements ew-theme-v1, v6, ew-theme-std-v1,
+  ew-theme-std-aim-v1; any other id refused by name; fit_prior no longer falls back silently. History lines carry
+  era_of; dsr_variance / cells / ledger_net_series skip every history line. 666 passed 6 skipped. Scratch identity
+  against b44774d6: single-window fitter byte-identical on all 8 compositions; H-1 pooled v1 / v6 fits identical.
+  Cross-lane: backtest_integrity.py (FIX-C contracts kept), research_roles.py. Aim-record cache fingerprint changed
+  (one recompute, no output change).
+- Ruling E-41 (history-read accounting; ERA concern 1, declared before any read): an OD-3 history read, one era or
+  pooled, adds 0 to the construction N (prereg rule 2: re-runs of ledgered cells add 0) and 1 to a separate
+  "history reads" count printed in the Appendix A block beside the validation reads; the task-H brief's "costs 1
+  trial" is read as this count -- the cell-count DSR is a construction-trial statistic; a history read selects
+  nothing -- cost if wrong: the DSR N is one lower than a stricter reading; disclosed in the block.
+- Ruling E-35a (ERA concern 2): the pooled fit also implements `ew-theme-aim-v1` under E-27a (ew-theme-v1 base
+  weights, gains inside each theme, cap after) through the same path as the std-aim variant; ERA adds it now --
+  an OD-3 read of a V8-F on a rejected R-1 must not block -- cost if wrong: one test.
+- Review of the optimiser done (review-spo.md at d22b735a): I 0, M 1, m 5. SPO-1 (M): E-31 is not self-enforced --
+  a primary-book run with limits_unmet > 0 on scored decisions exits 0, writes NAV and returns, prints S2 net
+  Sharpe, tripwire "clear". Objective is the registered one; no worker-count dependence (book-workers > 1 refused);
+  warm-up never touches the dual; no look-ahead; gamma and S_prior units consistent (annual Sharpe 20). Minors
+  SPO-2 (E-14 correlation lags one decision), SPO-3 (NaN iterate reads converged), SPO-4 (capacity-pass traps for
+  N-2: rows enter the tripwire; capacity books planned with the base-NAV trade limit), SPO-5 (--spo-tol /
+  --spo-iters loosen convergence from argv), SPO-6 (risk model version unchecked).
+- Ruling E-14a (SPO-2, declared before any read): the E-14 criterion compares the traded book after decision d's
+  trades with the aim at d (both known at d's close; no look-ahead); the planned-weights value stays beside it --
+  a one-decision lag would measure aim drift, not tracking -- cost if wrong: none to the book; the criterion only.
+- Ruling E-31a (SPO-1): a run whose primary book has limits_unmet > 0 on any scored decision voids itself before
+  any return file is written or printed (exit non-zero, `voided: limits_unmet` in the manifest), independent of
+  --specific-ceiling-void; the r6 template's pre-return check names it; `--spo-tol` and `--spo-iters` are refused
+  under spo-v3 (the registered tolerances are constants) -- E-31 is a mechanics rule and must bind the run, not
+  the reader -- cost if wrong: an R-6 rerun after a blind fix, no new trial. Fix: FIX-2 round 1 (owns the spo-v3
+  files), with SPO-4's two traps on the capacity pass.
+- Review of the mining verb done (review-mine.md at d22b735a): I 0, M 10, m 8. MINE-1 ledger-campaign refuses every
+  real campaign (16-hex head vs 64-hex required; tests work around it); MINE-2 confirm t has no date floor; MINE-3
+  confirm window in no identity (re-run makes a second confirm read, line skipped as present); MINE-4 rule 10 has
+  no budget input (hurdle from realised n_raw; fresh registry resets it); MINE-5 E-33a not implemented; MINE-6
+  Bonferroni on a Bartlett lag-21 t on overlapping h21 labels is about 1.2x anti-conservative [unverified]; MINE-7
+  without --pool the "marginal" t is the raw t and rho has no members; MINE-8 ResearchRole::load never calls the
+  B-3 refusal; MINE-9 fixture tests cannot fail a wrong promotion rule; MINE-10 memory estimate guessed. Clean:
+  hook off is identical at 1 and 4 workers; windows cannot overlap or pass the seal. No campaign runs in v8 (OD-7).
+- Ruling E-32a (MINE-4, MINE-6, MINE-7; binds only under OD-7): a campaign declares `--budget N` in advance and the
+  Bonferroni hurdle is computed from the budget, never from the realised count; `--pool` is mandatory for mined-v1
+  (no pool, no campaign); the confirm t's hurdle is corrected for label overlap by a factor the MINE-FIX lane
+  derives by simulation under the null on overlapping h21 labels and pins as a constant (written in its report)
+  -- rule 10 says the budget is fixed in advance; E-32 says the confirm is the marginal statistic -- cost if wrong:
+  a stricter campaign; nothing in v8.
+- Ruling PM3-8: lane MINE-FIX fixes MINE-1..MINE-10 (E-32a, E-33a) on the next free pool; it is not on the v8
+  critical path (no campaign runs in v8) and merges in integration 6 or later -- cost if wrong: none to v8 cells.
+
+## 2026-09-30 integration 5 part C closed (log "integration 5 part C: identities"; head 64a23b34)
+- Identities 1-8 all PASS on v8-7a exes through the bounded runner: NAV flags absent 12/12 files and holdings 4/4
+  identical to v7-w4-holdings (holdings.f64 ce5523c6); hold-band 0 identical; adv-hold-q 1e9 identical (0 clipped);
+  composition v8 re-rank/cap off identical (combined f64 1cf245b1); H3 warm u pass 48/48 hits, 0 VM runs; field
+  reuse step 2: 49 reused / 14 recomputed, 63/63 payloads identical; spo-v2 side files 9/9 identical; --label-role
+  equal to --role 10/10 identical. spo-v2 pin captured 3bfd293e (weights 0xb039820b40d5cf24, replay
+  0xd24b61721a7c698c); target-tests 234/234 on v8-8.
+- Ruling PM3-5a: PM3-5 withdrawn -- the four calendar-pinned price fields are not in the 63-field argv of the
+  3-year role, so identity 6's expectation was and is 49 / 14 (F-3's number). On the 4-year window fields v9 is
+  built fresh with the pin in the fingerprint, so v10 from v9 reuses 49 / computes 21 and v11 from v10 reuses 70 /
+  computes 3 (F-3) -- cost if wrong: one reuse count re-read.
+- Ruling PM3-9 (Wave 0 split): Wave 0 R1-R9 (projection, base role, repair, bridge, fundamental events, roles lo1
+  and lo3, admission probe) runs now on the current head; R10-R14 (fields v9, plan-only, cold u pass, overlap
+  reports, pins) run after integration 6 merges FIX-2 (N-1 seal pin in the holdings fields), FIX-3 and ERA, so
+  fields v9 is built once on final code -- root would otherwise idle for an hour -- cost if wrong: R1-R9 are
+  rebuilt (about 10 minutes) if integration 6 changes a role builder, which no pending lane touches.
