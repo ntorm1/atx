@@ -1492,6 +1492,8 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | step | receipt dir | source | outcome / ExitCode | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
 |---|---|---|---|---|---|---|---|
 | R1 | `recent-projection-v2-run` | `a5ba41c5` | completed / 0 | 53.9 | 766 | `fc4d312193ad89fb9a289546805a988d0159969044ed6ed004df4cc2a0a88c5d` | `931b54ef8412b9f61ae4b9c67d663a265604209bc2639c81046669b591fc2ea5` |
+| R2 | `train-2020-2023-base-v1-run` | `f92e09e4` | completed / 0 | 18.9 | 374 | `9a84e921ee595902b1c9a467ea77bc2d2538359229ef5c733a60889ed90091d9` | `6688677096b6a5692f0040ea9ed54df9da938566a062d9ab1ffd873d53636678` |
+| R3 scan | `train-2020-2023-scan-run` | `0aac5f22` | completed / 0 | 1.9 | 237 | `16b767c76fd217c9f75bbeae796370f2c90ccb036d98232ce842bf124ede297c` | (none; verdict on stdout) |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1500,3 +1502,6 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   `6688677096b6a5692f0040ea9ed54df9da938566a062d9ab1ffd873d53636678`). Prints `1405 5922 399 1704067200000000000`:
   **n = 5,922** (3-year union 5,627; runbook estimate 6,100, open question 7). Overlap check:
   `score_member_counts[:756]` equals the v1 role's 756-entry list (True). 207 MiB on disk.
+- **R3 scan PASS.** `verdict factor-break-v1: MASS 1 session(s): 2021-01-04` (v2 detector the same). Largest jump count
+  outside the mass session 44 on 2022-12-29 against the threshold 50 (the T12 margin is unchanged by the new columns);
+  no 2023 session above 32. Proceeding to the repair with `--expect-sessions 2021-01-04`.
