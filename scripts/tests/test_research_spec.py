@@ -544,6 +544,46 @@ def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_excep
         RC.compare_files(RC.Resolver(root), check)
 
 
+def test_add_alpha_child_of_a_labelled_parent_labels_its_ref_and_nav(tmp_path):
+    """Review F-8: the child of a labelled parent (inputs.label_role, e.g. B0c) reproduces the parent's NAV in its ref
+    phase and compares it byte for byte with the parent's labelled S2 daily CSV; so ref (and nav) carry --label-role and
+    --label-role-sha256 with the parent's own pin, and a label role changed since the parent ran stops `lock`."""
+    root, parent = v8_root(tmp_path)
+    label = "build-equity/train-2020-2023-lo1-dlret"
+    (root / label).mkdir(parents=True)
+    (root / label / "manifest.json").write_text('{"labels": "delisting returns"}')
+    doc = json.loads(parent.read_text(encoding="utf-8"))
+    doc["inputs"]["label_role"] = {"dir": label, "path": f"{label}/manifest.json", "sha256": None}
+    parent.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    assert RC.main(["lock", str(parent), "--root", str(root), "--write"]) == RC.EXIT_OK
+    pin = json.loads(parent.read_text(encoding="utf-8"))["inputs"]["label_role"]["sha256"]
+    assert pin == RC.sha256_file(root / label / "manifest.json")
+    parent_cell(root, parent)
+    f2 = "build-equity/train-2020-2023-lo1-fields-v9-b"                 # other fields: the ref is not skipped
+    (root / f2).mkdir(parents=True)
+    (root / f2 / "manifest.json").write_text(json.dumps({"fields": [{"name": n} for n in doc["fields"]["list"]],
+                                                         "build": "b"}))
+    probe = ("v8_probe", "rank(decay_linear((be / at_lag4), 21))", "--fields", f2)
+    (root / label / "manifest.json").write_text('{"labels": "rebuilt"}')   # not the label the parent's NAV used
+    assert add(root, parent, *probe) == RC.EXIT_PIN                     # the child keeps the parent's pin: unlocked
+    (root / label / "manifest.json").write_text('{"labels": "delisting returns"}')
+    assert add(root, parent, *probe) == RC.EXIT_OK                       # the same wave, now locked
+    sp = root / SPECS / "lib-v80.json"
+    spec = RC.load_spec(sp)
+    assert spec["inputs"]["label_role"] == {"dir": label, "path": f"{label}/manifest.json", "sha256": pin}
+    assert spec["compare"][0]["name"] == "ref-s2-daily" and spec["compare"][0]["a"] == "{input:reference_daily}"
+    steps = {st.phase: st for st in RC.Cycle(spec, RC.Resolver(root), spec_path=sp, capabilities=T.CAPS).steps()}
+    assert steps["ref"].state == "pending"                              # the parent's fields differ: ref runs
+    want = ["--label-role", f"{label}/manifest.json", "--label-role-sha256", pin]
+    for phase in ("ref", "nav"):
+        argv = steps[phase].argv
+        assert argv[-4:] == want and ["--bind", f"{label}/manifest.json"] == argv[argv.index("--") - 2:argv.index("--")]
+    (root / label / "manifest.json").write_text('{"labels": "rebuilt"}')   # not the label the parent's NAV used
+    with pytest.raises(RC.CycleError, match="label_role pin") as e:
+        RC.lock(sp, root)
+    assert e.value.code == RC.EXIT_PIN
+
+
 # ------------------------------------------------------------------ cache gc on the v8 specs (A2 follow-up, task 2)
 def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monkeypatch):
     """C-1: the v8 specs name the store base build-equity/fit-work; the fitter, the card and the monitor extend it with

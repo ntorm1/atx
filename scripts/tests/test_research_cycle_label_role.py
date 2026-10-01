@@ -1,10 +1,11 @@
-"""research_cycle.py inputs.label_role (platform v8 Ruling E-25, cell B0c): the nav phase's --label-role pair.
+"""research_cycle.py inputs.label_role (platform v8 Ruling E-25, cell B0c): the NAV phases' --label-role pair.
 
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider scripts/tests/test_research_cycle_label_role.py
 
-Hash-only (no file is read beyond the pins): the spec key is accepted, the nav phase appends
---label-role PATH --label-role-sha256 PIN and binds the manifest in the runner line, the ref phase never gets them, a
-spec without the key plans the same argv minus exactly those tokens, and a wrong pin stops before any phase.
+Hash-only (no file is read beyond the pins): the spec key is accepted, the nav and ref phases append
+--label-role PATH --label-role-sha256 PIN and bind the manifest in the runner line (review F-8: the ref of a labelled
+parent reproduces a labelled NAV), a spec without the key plans the same argv minus exactly those tokens, and a wrong
+pin stops before any phase.
 """
 from __future__ import annotations
 
@@ -45,20 +46,22 @@ def nav_argv(cycle: RC.Cycle, phase: str = "nav") -> list[str]:
                           "F/manifest.json", "role/manifest.json", "b" * 64).argv
 
 
-def test_label_role_spec_key_reaches_the_nav_phase_only(tmp_path):
+def test_label_role_spec_key_reaches_every_nav_replay(tmp_path):
     RC.validate_spec(spec(True))                                   # the key is known
     on = RC.Cycle(spec(True), RC.Resolver(tmp_path, PINS))
     off = RC.Cycle(spec(False), RC.Resolver(tmp_path, PINS))
     assert on.pins["label_role"][:2] == ("label/manifest.json", "c" * 64)
-    a, b = nav_argv(on), nav_argv(off)
-    assert a[-4:] == ["--label-role", "label/manifest.json", "--label-role-sha256", "c" * 64]
-    k = a.index("--")
-    assert a[k - 2:k] == ["--bind", "label/manifest.json"]         # the manifest is bound in the receipt
-    # flag off: the same argv minus exactly the bind pair and the two flags
-    assert a[:k - 2] + a[k:-4] == b and "--label-role" not in b and "label/manifest.json" not in b
-    # the ref phase (an identity against the unlabelled parent) never takes the label role
-    assert nav_argv(on, "ref") == nav_argv(off, "ref")
-    assert "--label-role" not in nav_argv(on, "ref")
+    # review F-8: the ref phase reproduces the (labelled) parent's NAV, so it marks its books with the label role too
+    for phase in ("nav", "ref"):
+        a, b = nav_argv(on, phase), nav_argv(off, phase)
+        assert a[-4:] == ["--label-role", "label/manifest.json", "--label-role-sha256", "c" * 64]
+        k = a.index("--")
+        assert a[k - 2:k] == ["--bind", "label/manifest.json"]     # the manifest is bound in the receipt
+        # flag off: the same argv minus exactly the bind pair and the two flags
+        assert a[:k - 2] + a[k:-4] == b and "--label-role" not in b and "label/manifest.json" not in b
+    # the plan's ref step (built from the spec's ref section) carries the pair as well
+    ref = next(st for st in on.steps() if st.phase == "ref")
+    assert ref.argv[-4:] == ["--label-role", "label/manifest.json", "--label-role-sha256", "c" * 64]
     # the plan header lists the pin like every input
     assert any(line.startswith("# pin label_role: label/manifest.json " + "c" * 64) for line in RC.header(on))
 

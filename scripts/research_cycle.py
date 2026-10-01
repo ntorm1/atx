@@ -178,9 +178,12 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
               "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
     ("reuse_fields", "label_role")
-# label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): the nav phase MARKS its books
-# with it (nav --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner receipt); signals, fields and
-# every decision input stay on inputs.role, and the ref phase (an identity against the unlabelled parent) never gets it.
+# label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): every phase that replays the
+# book MARKS it with it (nav and ref: --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner receipt;
+# the NAV verb's capacity pass forwards both); signals, fields and every decision input stay on inputs.role. Review F-8:
+# a spec with a ref phase and a label role is an add-alpha child of a labelled parent (a template drops its parent's ref,
+# research_spec.IDENTITY_SECTIONS), so its ref reproduces a labelled NAV and is compared with that NAV's labelled S2
+# daily CSV on equal footing.
 # F-2's marginal IC verb (atx-impl/src/strategy_marginal_ic.cpp, dispatch_marginal_ic / run_marginal_ic): every option
 # takes one value and a run without MARGINAL_REQUIRED is refused. The step builds MARGINAL_BUILT from the spec (paths and
 # pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
@@ -1090,7 +1093,7 @@ class Cycle:
         run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
         flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
         binds, label = [s["exes"]["nav"], comb, fdm], []
-        if phase == "nav" and "label_role" in s["inputs"]:  # v8 E-25: the label role marks the cell's books
+        if "label_role" in s["inputs"]:   # v8 E-25: the label role marks every replayed book (review F-8: ref too)
             binds.append(self.ipath("label_role"))
             label = ["--label-role", self.ipath("label_role"), "--label-role-sha256", self.pin("label_role")]
         argv = self.runner(run_dir, binds, phase) + [

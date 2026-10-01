@@ -25,7 +25,9 @@
    precondition) by the name rule (derive_name): every token PARENT of an output name becomes NAME, a name without the
    token gets "-NAME" appended; the parent's cycle outputs become the reference inputs (admission, cell, combined signal,
    S2 daily CSV, orientations, daily IC, composition weights); every other parent input that no fields build reads is
-   kept (the role; a NAV label role); the parent's fields dir is pinned as built, or --fields DIR (an as-built dir, e.g.
+   kept (the role; a NAV label role, with the parent's own pin: review F-8, the child's nav and ref mark their books
+   with the label role the parent's NAV was marked with, so the ref identity against the parent's labelled S2 daily
+   CSV is on equal footing); the parent's fields dir is pinned as built, or --fields DIR (an as-built dir, e.g.
    fields v9 + grp_ff12f49 built with --reuse from v9; sticky: a later add into the same wave keeps it) with the
    parent's as the baseline of the ref identity; a parent on the shared stores (fit.work_dir = <out base>/fit-work, C-1) passes its candidate cache and fit store base on, a parent
    on per-version stores gets them derived from the role; the gate lists the new members that are admission trials
@@ -64,6 +66,7 @@ FIELD_BUILDER_INPUTS = ("identity_bridge", "fund_events", "sic_events", "reuse_f
     RC.HOLDINGS_INPUTS                   # a child pins its parent's fields as built: nothing is rebuilt
 REBUILT_INPUTS = ("library", "recipe", "baseline_library", "baseline_fields")   # + every reference_* input
 SHARED_FIT_STORE = "fit-work"           # C-1: the fitter / card / monitor store base <out base>/fit-work
+PARENT_PINNED = ("label_role",)         # review F-8: kept with the parent's pin (a changed file stops `lock`, exit 3)
 
 
 class AddAlphaError(Exception):
@@ -153,7 +156,7 @@ def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_
     if fields_sha is None:
         raise AddAlphaError(f"the fields manifest {fdm} is missing: the child pins it as built")
     pin = lambda path, **extra: dict(extra, path=path, sha256=None)  # noqa: E731
-    keep = {k: dict(v, sha256=None) for k, v in parent["inputs"].items()
+    keep = {k: dict(v, sha256=v.get("sha256") if k in PARENT_PINNED else None) for k, v in parent["inputs"].items()
             if k not in REBUILT_INPUTS and not k.startswith("reference_") and k not in FIELD_BUILDER_INPUTS}
     s["inputs"] = {"library": pin(lib_rel), "recipe": pin(recipe_rel), "baseline_library": pin(parent_lib_rel),
                    **keep, "baseline_fields": pin(f"{base_fields}/manifest.json", dir=base_fields),
