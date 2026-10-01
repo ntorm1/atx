@@ -137,3 +137,71 @@ New tests:
    a v7 cell that has not been re-run yet. The claim is now once-only and names its target's cell in the ledger.
 4. **R-6 depends on lane FIX-2.** The R-6 template carries `--capacity-curve`; spo-v3 accepts it only after FIX-2's
    N-2 merges.
+
+## Round 1 (Ruling E-27b)
+
+Commit `00e710ec`: `fix(fit): ew-theme-aim-v1 keeps v5; the E-27a rule is ew-theme-aim-v2, v1 refused in v8 specs
+(Ruling E-27b, review F-10)`. This supersedes the F-10 commit `c9a154c2`; open risk 1 is closed by the ruling.
+
+### What changed
+
+- **v5 restored.** `ew-theme-aim-v1` is back to the code at fd2ff7a8, the same as at 04e9d5bc: `ew_theme_aim_weights`,
+  with the gains normalised globally. `test_fit_composition_weights.py` is back to base. `V1BytesUnchangedByV6`
+  (aim-v1 bytes against base 04e9d5bc) passes again.
+- **New rule `ew-theme-aim-v2`.**
+  - `composition_rules.py`: `AIM_V2_RULE_ID`, `AIM_V2_TEXT`, `AIM_V2_FIT_SERIES`, and
+    `ew_theme_aim_v2(ids, themes, gains, error)`.
+  - The weights come from the shared `theme_gain_weights`, which `ew-theme-std-aim-v1` also uses. The rule is
+    w_k = (1/T) g_k / sum_theme g, then the member cap 1/(2T).
+  - The weights file is schema v1 with no theme block.
+- **Fitter.**
+  - `fit_composition_weights.py` adds `ew-theme-aim-v2` to `PRIOR_COMPOSITIONS` and `COMPOSITIONS`.
+  - New `AIM_RULES` = (aim-v1, std-aim-v1, aim-v2): the compositions that read aim gains.
+  - New dispatch branch for aim-v2; the docstring has a v8 paragraph.
+- **Refusal in v8 specs.**
+  - `research_cycle.validate_v8_keys` refuses `fit --composition ew-theme-aim-v1` when `summ_protocol(spec) == "v8"`
+    (`verdict: true`, or `--protocol v8` in `summ.extra`). It exits with EXIT_USAGE and the message names
+    `ew-theme-aim-v2`.
+  - The check runs at plan, run, lock and add-alpha.
+  - v5 and v7 specs still accept aim-v1.
+- **r3 template.** `scripts/specs/v8/r3-aim-gain.json` maps `ew-theme-v1 -> ew-theme-aim-v2` and
+  `ew-theme-std-v1 -> ew-theme-std-aim-v1`; the description has been updated. The doc example in `research_spec.py`
+  is updated to match.
+- **C++.** No `.cpp`/`.hpp`/`.h` file carries `ew-theme-aim` (grep across atx-impl, atx-engine, atx-core), so there is
+  nothing for the integrator to rebuild. The remaining JSON and Python hits are v5/v6/v7 history and are left as they
+  were: the v6/v7 pitch configs, `fund_industry_ic_v5.recipe.json`, `generate_fund_ic_v5.py`, and the
+  `test_nav_summ.py` fixture.
+
+### Tests
+
+- `test_fit_composition_weights.py`: `test_declared_constants` (`PRIOR_COMPOSITIONS`, `AIM_RULES`) and
+  `test_aim_v2_weights_within_theme_then_capped`.
+  - Two themes, hand-computed weights and capped set.
+  - The v5 rule gives a different theme mass.
+  - Equal tiers give the same bits as `ew_theme_std`; equal gains give ew-theme-v1.
+  - A NaN gain or a single theme is refused.
+- `test_composition_rules.py` `test_aim_v2_fit_is_the_within_theme_rule_on_the_aim_gains`, an end-to-end fitter run on
+  the two-theme aim world:
+  - Same admission and gains as aim-v1.
+  - Weights match the cap loop port and `cr.ew_theme_aim_v2`, and differ from v5.
+  - Schema v1, no theme block.
+- `test_research_spec.py`: r3 on base-b0c resolves to `ew-theme-aim-v2`. A v8 spec with aim-v1 is refused, through
+  `verdict` and through `--protocol v8`; a v7 spec with aim-v1 is accepted.
+
+Command: `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider <files>`
+
+- `atx-impl/tools`: test_fit_composition_weights, test_composition_rules, test_fit_composition_weights_pool,
+  test_fit_composition_weights_store: **130 passed**.
+- `scripts/tests/test_research_spec.py`: **31 passed**.
+- research_spec, research_cycle, research_cycle_label_role, research_cycle_roles, cycle_scoring, cycle_resume,
+  cycle_e2e, research_ledger, atx-impl/tools/test_nav_summ: **186 passed, 4 skipped**.
+
+### Round 1 risks
+
+1. **The fitter has no protocol input**, so the v8 refusal lives in research_cycle spec validation. A direct
+   `fit_composition_weights.py --composition ew-theme-aim-v1` call outside a spec is not guarded.
+2. **The pooled fit (H-1, ERA's path) refuses only aim-v1.** aim-v2 and std-aim-v1 go through it unchecked. That
+   condition belongs to ERA, so I left it alone.
+3. **The aim-v2 cap has the same feasibility limit as std.** On an ew-theme-v1 parent the cap binds on single-member
+   themes, and when M < 2T the fit is refused.
+4. Phase-1 risks 2 to 4 still stand.
