@@ -521,11 +521,16 @@ def test_r11_appends_theme_resid_to_the_parents_fit(tmp_path):
     import fit_composition_weights as fcw
     doc = json.loads((V8 / "r11.json").read_text(encoding="utf-8"))
     assert doc["nominal_parent"] == "r1-comp-v8.json" and "requires" not in doc
-    # Rulings E-44, PM4-4: R-10 and R-11 record rule 5 AND R-1's mechanical criterion, in the same words
-    r1_criterion = ("paired S2 net dSR > 0 against the parent AND mechanics AND planned turnover per unit gross not "
-                    "higher than the parent's (the composition-cell criterion of R-1, plan 12.1)")
+    # Rulings E-44, PM4-4: R-10 and R-11 record rule 5 AND R-1's mechanical criterion, in R-1's words; Ruling PM5-11:
+    # the criterion names its statistic (executed turnover per unit gross on S2), never "planned" turnover
+    r1_criterion = ("paired S2 net dSR > 0 against the parent AND mechanics AND turnover per unit gross (executed: "
+                    "tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent")
     r10_doc = json.loads((V8 / "r10.json").read_text(encoding="utf-8"))
-    assert r1_criterion in doc["description"] and r1_criterion in r10_doc["description"]
+    r1_doc = json.loads((V8 / "r1-comp-v8.json").read_text(encoding="utf-8"))
+    for d in (doc, r10_doc, r1_doc):
+        assert r1_criterion in d["description"] and "planned turnover" not in d["description"], d["name"]
+        assert "PM5-11" in d["description"], d["name"]
+    assert all("composition-cell criterion of R-1, plan 12.1" in d["description"] for d in (doc, r10_doc))
     assert "gates nothing" not in doc["description"] and "E-45" in doc["description"]
     path = tmp_path / "r11-on-r1.json"
     path.write_text(json.dumps(dict(doc, parent="scripts/specs/v8/r1-comp-v8.json")), encoding="utf-8")

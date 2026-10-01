@@ -322,6 +322,9 @@ REGISTERED_CHECKS = {
     'R-10': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
     'R-11': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
     'R-12': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}
+# Ruling PM5-11: the statistic of R-1's criterion (also R-10's and R-11's), named in every text that registers it
+TURNOVER_PER_GROSS = ('turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher '
+                      'than the parent')
 # Rulings E-38 / E-45 / E-37: when each optional cell is defined; R-8 always (E-40)
 DEFINED_IF = {'R-9a': {'rejected': ['R-6']}, 'R-9b': {'rejected': ['R-6']}, 'R-9c': {'rejected': ['R-6']},
               'R-10': {'accepted': ['R-6', 'R-1']}, 'R-11': {'accepted': ['R-6', 'R-1']}, 'R-12': {'accepted': ['R-6']}}
@@ -346,6 +349,10 @@ def test_committed_criteria_carry_every_registered_part():
     assert by['R-10']['defined_if']['ruling'] == by['R-11']['defined_if']['ruling'] == 'E-38, E-45'
     assert by['R-12']['defined_if']['ruling'] == 'E-38' and 'PM4-9' in crit['R-12']['text']
     assert 'E-43' in crit['R-8']['text'] and all('E-44' in crit[k]['text'] for k in ('R-10', 'R-11'))
+    # Ruling PM5-11: R-1's criterion (and R-10's and R-11's) names the statistic its check reads; never "planned"
+    for k in ('R-1', 'R-10', 'R-11'):
+        assert crit[k]['text'].startswith(TURNOVER_PER_GROSS) and 'PM5-11' in crit[k]['text'], k
+        assert 'planned' not in crit[k]['text'], k
     assert [by[k]['n'] for k in OPTIONAL] == [48, 49, 50, 51, 49, 50, 51]            # N <= 51 in either branch
     assert 'S3 not lower' in crit['R-5']['text']
     assert all(s in crit['R-6']['text'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'E-31',
@@ -381,8 +388,12 @@ def test_scorecard_template_carries_every_registered_part():
                    for rows in (cells, ladder)), k
         assert 'PAIRED[' not in ladder[k], k
     for k in ('R-10', 'R-11'):
-        assert all('planned turnover per unit gross not higher' in rows[k] and 'E-44' in rows[k] and
+        assert all(TURNOVER_PER_GROSS in rows[k] and 'E-44' in rows[k] and 'PM5-11' in rows[k] and
                    'R-6 and R-1 are accepted' in rows[k] for rows in (cells, ladder)), k
+    for k in ('R-1', 'R-10', 'R-11'):   # Ruling PM5-11: the statistic named, "planned" dropped, the disclosure stated
+        assert all(TURNOVER_PER_GROSS in rows[k] and 'PM5-11' in rows[k] and 'planned' not in rows[k]
+                   for rows in (cells, ladder)), k
+    assert 'judged on the executed number' in text and 'nav_summ carries no planned-turnover statistic' in text
     assert all('turnover not higher' in rows['R-12'] and 'PM4-9' in rows['R-12'] and 'R-6 is accepted' in rows['R-12']
                for rows in (cells, ladder))
     assert 'undefined (<ruling id>)' in text and 'PM4-10' in text
@@ -693,17 +704,20 @@ def test_accepted_optional_cells_whose_parent_row_is_missing_are_refused(root):
             (f'v8.cells[{key}].verdict', f"{head}the parent's nav_summ row ({name}) is missing from {summ}")], key
 
 
-# the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL; its
-# verdicts recorded as v8_config records them, on full_world. The normalised HTML's SHA-256 and length.
+# the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL and with
+# R-1's criterion text of then (Ruling PM5-11 renamed it, a text only); its verdicts recorded as v8_config records them,
+# on full_world. The normalised HTML's SHA-256 and length.
 PRE_PM4_8_SHA256 = 'ae009759f39ce7d12e2452f497bb083974b1f6910de0be0c933a59a6e2891e2f'
 PRE_PM4_8_BYTES = 643481
+R1_TEXT_PRE_PM5_11 = 'turnover per unit gross not higher'
 
 
 def test_v8_pitch_without_the_optional_cells_renders_the_pre_pm4_8_bytes(root):
-    """Identity: the ladder machinery of Ruling PM4-8 (branch states, years checks, report-only cells) moves no byte of
-    a config that carries none of the new cells."""
+    """Identity: the ladder machinery of Ruling PM4-8 (branch states, years checks, report-only cells) and of Ruling
+    PM5-12 (an accept whose rule is n/a refused) moves no byte of a config that carries none of the new cells."""
     cfg = v8_config()
     cfg['v8']['cells'] = [c for c in cfg['v8']['cells'] if c['key'] not in OPTIONAL]
+    next(c for c in cfg['v8']['cells'] if c['key'] == 'R-1')['criterion']['text'] = R1_TEXT_PRE_PM5_11
     full_world(root, cfg)
     norm = T._normalise(T.build(root, cfg), root)
     assert (len(norm), hashlib.sha256(norm.encode('utf-8')).hexdigest()) == (PRE_PM4_8_BYTES, PRE_PM4_8_SHA256)
