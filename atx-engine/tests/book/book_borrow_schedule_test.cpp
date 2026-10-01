@@ -163,4 +163,27 @@ TEST(BookBorrowSchedule, DollarNeutralBookEarnsThePolicyRateOnlyOnceOnNav) {
   EXPECT_NEAR(result->intervals[0].borrow_cost, -1000.0 * 0.036 / 360.0, 1.0e-12);
 }
 
+TEST(BookBorrowSchedule, NegativeNetRebate_ChargesHardToBorrowShortOnceAcrossWeekend) {
+  const auto panel = flat_panel(2, 2);
+  auto borrow = schedule(2, 2);
+  borrow.financing = book::ShortFinancing::FeeOnceV2;
+  borrow.rebate_bps = -720.0;
+  borrow.cash_bps = 360.0;
+  auto cfg = immediate();
+  cfg.borrow_schedule = &borrow;
+  const std::vector<atx::i64> times{0, 3 * kDay};
+  const std::vector<atx::usize> decisions{0};
+  const std::vector<atx::f64> targets{0.5, -0.5};
+  const auto result = book::replay_scheduled_targets(panel, times, decisions, targets, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result->intervals.size(), 1U);
+  // $500 short pays 7.2%; the remaining $500 free cash earns 3.6%.
+  const auto expected = (500.0 * 0.072 - 500.0 * 0.036) * 3.0 / 360.0;
+  EXPECT_NEAR(result->intervals.front().borrow_cost, expected, 1e-12);
+  EXPECT_NEAR(result->final_cash, 1000.0 - expected, 1e-12);
+  EXPECT_NEAR(result->final_nav, 1000.0 - expected, 1e-12);
+  borrow.default_fee_bps = 1.0;
+  EXPECT_FALSE(book::replay_scheduled_targets(panel, times, decisions, targets, cfg));
+}
+
 } // namespace atx_test_l8_e2e_borrow_schedule

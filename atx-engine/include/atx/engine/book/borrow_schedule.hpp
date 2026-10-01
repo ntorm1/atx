@@ -15,6 +15,7 @@
 //   rebate_bps   annual rebate earned on total short dollars (reduces the charge),
 //                in the usual rebate = policy rate - borrow fee definition: the
 //                fee is ALREADY netted inside a quoted rebate.
+//                May be negative when the borrow fee exceeds proceeds interest.
 //   cash_bps     annual rate earned on positive FREE cash and paid on negative
 //                free cash (a margin loan), after the trade.
 //
@@ -83,7 +84,7 @@ struct BorrowSchedule {
   }
 
   // Shape must match the replay panel; fees are finite and >= 0; locates are
-  // >= 0 (inf allowed); rebate and cash rates are finite (any sign for cash);
+  // >= 0 (inf allowed); rebate and cash rates are finite (either sign);
   // the financing rule is recognized, and under FeeOnceV2 a fee and a rebate
   // are not both quoted.
   [[nodiscard]] atx::core::Status validate(atx::usize panel_dates,
@@ -109,7 +110,7 @@ struct BorrowSchedule {
       }
     }
     if (!std::isfinite(default_fee_bps) || default_fee_bps < 0.0 ||
-        !std::isfinite(rebate_bps) || rebate_bps < 0.0 || !std::isfinite(cash_bps)) {
+        !std::isfinite(rebate_bps) || !std::isfinite(cash_bps)) {
       return Err(ErrorCode::InvalidArgument, "borrow schedule: invalid scalar rate");
     }
     if (financing != ShortFinancing::FeeAndRebateV1 && financing != ShortFinancing::FeeOnceV2) {

@@ -80,9 +80,9 @@
 //  are inherently approximate market statistics — an exact type would be false
 //  precision, matching Market's f64 book and Portfolio's f64 mark-to-market). The
 //  RESULT crosses into exact Decimal at exactly two points: the fill PRICE and the
-//  commission FEE, both via Decimal::from_double(...).value_or(...). A finite
-//  positive price/fee always converts; the value_or fallback is a defensive floor
-//  that is unreachable for in-range inputs (documented at each call site).
+//  commission FEE, both via checked Decimal::from_double conversions. Invalid
+//  modeled prices, fees or permanent marks retain the order without a fill,
+//  liquidity consumption or impact; they never become synthetic zero prices.
 //
 // ===========================================================================
 //  Zero steady-state allocation (per-slice hot path)
@@ -104,6 +104,7 @@
 //  sims fed identical orders + market produce bit-for-bit identical fills.
 
 #include <cmath>  // std::pow (√-impact term), std::isnan (unpriced-mark guard)
+#include <limits> // checked share-count conversion and latency arithmetic
 #include <span>   // std::span (order input + fill output view)
 #include <vector> // std::vector (reserved-once open set + scratch buffers)
 
@@ -322,7 +323,7 @@ private:
       return false; // firewall / latency not satisfied — stays open
     }
     const atx::f64 ref = market.mark(order.id);
-    if (std::isnan(ref) || !limit_marketable(order, ref)) {
+    if (!std::isfinite(ref) || ref <= 0.0 || !limit_marketable(order, ref)) {
       return false; // unpriced or limit not penetrated — no fill, stays open
     }
 
@@ -331,7 +332,10 @@ private:
       return false; // cap exhausted / zero bar volume — stays open for next slice
     }
 
-    emit_fill(order, fillable, ref, now, market);
+    if (!emit_fill(order, fillable, ref, now, market)) {
+      return false; // invalid modeled economics: retain intent without consuming liquidity
+    }
+    add_vol_filled(order.id, static_cast<atx::f64>(fillable));
 
     // Reduce the SIGNED remainder's MAGNITUDE toward zero. `fillable` is a positive
     // magnitude (<= |order.qty|), so a buy (qty > 0) subtracts it and a sell
@@ -350,8 +354,12 @@ private:
     const atx::i64 queued_ns = order.queued_at.unix_nanos();
     const bool past_firewall =
         fill_cfg_.allow_same_bar_fill ? (now_ns >= queued_ns) : (now_ns > queued_ns);
-    const bool past_latency = now_ns >= queued_ns + latency_cfg_.latency_nanos;
-    return past_firewall && past_latency;
+    if (!past_firewall) return false;
+    // Ordered timestamps may straddle zero; adding latency to queued_at can
+    // overflow i64 and admit an order before its requested latency has elapsed.
+    const auto elapsed = static_cast<atx::u64>(now_ns) - static_cast<atx::u64>(queued_ns);
+    return latency_cfg_.latency_nanos <= 0 ||
+           elapsed >= static_cast<atx::u64>(latency_cfg_.latency_nanos);
   }
 
   /// Limit-order penetration gate (Market orders always pass). Buy fills only when
@@ -371,28 +379,27 @@ private:
 
   /// Shares fillable on this slice: min(|open_qty|, max(0, vlim*bar_vol - already
   /// filled this bar)), as an integer (truncated toward zero — never over-fill the
-  /// cap). Accumulates the granted amount into the per-bar tally.
+  /// cap). Liquidity is consumed only after a valid fill is emitted.
   [[nodiscard]] atx::i64 volume_capped_qty(const OrderPayload &order,
                                            const Market &market) noexcept {
     const atx::f64 bar_vol = market.bar_volume(order.id);
     const atx::f64 already = vol_filled_for(order.id);
     const atx::f64 budget = cap_cfg_.volume_limit * bar_vol - already;
-    if (budget <= 0.0) {
+    if (!std::isfinite(budget) || budget <= 0.0) {
       return 0; // zero bar volume, or this instrument's per-bar cap is exhausted
     }
     const atx::i64 open_mag = abs_i64(order.qty);
     // Truncate the f64 budget to whole shares; never round up past the cap.
-    const atx::i64 budget_shares = static_cast<atx::i64>(budget);
+    const auto maximum = std::numeric_limits<atx::i64>::max();
+    const atx::i64 budget_shares = budget >= static_cast<atx::f64>(maximum)
+        ? maximum : static_cast<atx::i64>(budget);
     const atx::i64 fillable = (open_mag < budget_shares) ? open_mag : budget_shares;
-    if (fillable > 0) {
-      add_vol_filled(order.id, static_cast<atx::f64>(fillable));
-    }
     return fillable;
   }
 
   /// Price the fill (slippage + temporary impact), apply permanent impact to the
   /// mark, compute the commission, and append the FillPayload to the scratch buffer.
-  void emit_fill(const OrderPayload &order, atx::i64 fillable, atx::f64 ref,
+  [[nodiscard]] bool emit_fill(const OrderPayload &order, atx::i64 fillable, atx::f64 ref,
                  atx::core::time::Timestamp now, Market &market) noexcept {
     const int dir = is_buy(order.qty) ? 1 : -1;
     const InstrumentStats &st = market.stats(order.id);
@@ -401,6 +408,10 @@ private:
 
     const atx::f64 slip = slippage_fraction(fillable, ref, bar_vol, st);
     const atx::f64 temp = temporary_impact(part, st);
+    if (!std::isfinite(slip) || slip < 0.0 || !std::isfinite(temp) || temp < 0.0 ||
+        (dir < 0 && (slip >= 1.0 || temp >= 1.0))) {
+      return false;
+    }
 
     // Both are fractional adverse moves on ref: a buy (dir +1) pays more, a sell
     // (dir -1) receives less. Compose multiplicatively in fraction-of-ref units.
@@ -425,18 +436,30 @@ private:
                           : (fill_px > limit ? fill_px : limit); // sell: never receive < limit
     }
 
-    apply_permanent_impact(order.id, part, ref, dir, st, market);
-
+    if (!std::isfinite(fill_px) || fill_px <= 0.0) return false;
     const atx::f64 fee = commission(fillable, fill_px);
+    const atx::f64 shift = part > 0.0
+        ? ref * (0.5 * impact_cfg_.gamma * st.sigma * part) * static_cast<atx::f64>(dir)
+        : 0.0;
+    if (!std::isfinite(fee) || fee < 0.0 || !std::isfinite(shift) ||
+        !std::isfinite(ref + shift) || ref + shift <= 0.0) return false;
+
+    const auto price_decimal = atx::core::Decimal::from_double(fill_px);
+    const auto fee_decimal = atx::core::Decimal::from_double(fee);
+    if (!price_decimal || *price_decimal <= atx::core::Decimal{} || !fee_decimal) {
+      return false;
+    }
 
     FillPayload f{};
     f.id = order.id;
     f.qty = static_cast<atx::i64>(dir) * fillable; // restore signed direction
-    f.price = to_decimal_price(fill_px);
-    f.fee = to_decimal_fee(fee);
+    f.price = *price_decimal;
+    f.fee = *fee_decimal;
     f.impact = temp; // temporary-impact fraction recorded for cost attribution
     f.t = now;
     fills_.push_back(f);
+    if (shift != 0.0) market.shift_mark(order.id, shift);
+    return true;
   }
 
   /// Slippage as a fraction of ref, floored at half the spread (always cross the
@@ -470,21 +493,6 @@ private:
     return impact_cfg_.Y * st.sigma * std::pow(part, impact_cfg_.delta);
   }
 
-  /// Permanent impact: shift the mark by ref * (0.5*gamma*sigma*part) * sign. Only
-  /// applied when the move is non-zero and the mark is priced (shift_mark asserts
-  /// a priced mark; we already gated on a non-NaN ref in settle_one).
-  void apply_permanent_impact(InstrumentId id, atx::f64 part, atx::f64 ref, int dir,
-                              const InstrumentStats &st, Market &market) const noexcept {
-    if (part <= 0.0) {
-      return; // no participation -> no permanent footprint
-    }
-    const atx::f64 perm = 0.5 * impact_cfg_.gamma * st.sigma * part;
-    const atx::f64 delta = ref * perm * static_cast<atx::f64>(dir);
-    if (delta != 0.0) {
-      market.shift_mark(id, delta);
-    }
-  }
-
   /// Commission (>= 0), exact at the Decimal boundary by the caller. PerShare:
   /// clamp(max(|qty|*per_share, min_fee), 0, max_pct*notional). PerDollar:
   /// |notional|*per_dollar_bps/1e4. notional = |fillable| * fill_px. Exhaustive
@@ -506,22 +514,6 @@ private:
     }
     }
     return 0.0; // unreachable for a valid CommissionMode (bit-corrupted sentinel)
-  }
-
-  // ---- Decimal money boundary -----------------------------------------------
-
-  /// Convert an f64 fill price to exact Decimal. A finite positive price always
-  /// converts; value_or supplies a defensive floor for the (unreachable) failure.
-  [[nodiscard]] static atx::core::Decimal to_decimal_price(atx::f64 px) noexcept {
-    // SAFETY: px derives from a finite mark * finite fractional factors, so it is
-    // finite and positive in range; from_double can only fail on NaN/inf/range,
-    // none of which arise here. The value_or(0) is a defensive sentinel.
-    return atx::core::Decimal::from_double(px).value_or(atx::core::Decimal{});
-  }
-
-  /// Convert an f64 fee (>= 0) to exact Decimal. Same boundary discipline.
-  [[nodiscard]] static atx::core::Decimal to_decimal_fee(atx::f64 fee) noexcept {
-    return atx::core::Decimal::from_double(fee).value_or(atx::core::Decimal{});
   }
 
   // ---- per-bar volume accumulator (deterministic, reset-per-bar) -------------
@@ -564,9 +556,12 @@ private:
   /// True for a buy (qty > 0); a sell has qty < 0 (zero-qty never reaches here).
   [[nodiscard]] static bool is_buy(atx::i64 qty) noexcept { return qty > 0; }
 
-  /// |x| for an i64 share count. Counts are bounded well below INT64_MAX in any
-  /// realistic universe, so the negate is safe (matches Portfolio::abs_i64).
-  [[nodiscard]] static atx::i64 abs_i64(atx::i64 x) noexcept { return (x < 0) ? -x : x; }
+  /// Largest representable fill magnitude. INT64_MIN can fill in multiple
+  /// chunks, but its positive magnitude cannot be represented as one i64 fill.
+  [[nodiscard]] static atx::i64 abs_i64(atx::i64 x) noexcept {
+    if (x == std::numeric_limits<atx::i64>::min()) return std::numeric_limits<atx::i64>::max();
+    return (x < 0) ? -x : x;
+  }
 
   // ---- config (held by value) -----------------------------------------------
   FillCfg fill_cfg_{};
