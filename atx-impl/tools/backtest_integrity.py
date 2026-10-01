@@ -862,9 +862,9 @@ def check_rerun(before: dict, rec: dict) -> None:
     if rec.get("rerun_basis") in ("blind", "returns"):
         found = before.get(trial_id(DEFECT, tid))
         if not target.get("defect") and found is None:
-            raise ValueError(f"ledger: a {rec['rerun_basis']} re-run replaces an invalid cell (v8-prereg item 7); trial "
-                             f"{tid} has no defect on an earlier line (research_cycle.py ledger-defect --trial-id {tid} "
-                             "--reason ... --ruling ... first)")
+            raise ValueError(f"ledger: a {rec['rerun_basis']} re-run replaces an invalid cell (v8-prereg item 7); "
+                             f"trial {tid} has no defect on an earlier line (research_cycle.py ledger-defect "
+                             f"--trial-id {tid} --reason ... --ruling ... first)")
         if found is None or not found.get("ruling"):
             raise ValueError(f"ledger: a {rec['rerun_basis']} re-run needs the owner ruling that declared trial {tid} "
                              "invalid: its defect line carries no ruling id (research_cycle.py ledger-defect "

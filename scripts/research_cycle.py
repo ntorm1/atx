@@ -34,9 +34,11 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   summ.dsr_n      "ledger+1" resolves at scoring time to nav_summ's N (backtest_integrity.ledger_n: the defect-rule
                   construction trials, protocol lines and window re-runs 0, + 1 for this cell when not yet ledgered;
                   research_ledger.py); summ.ledger_copy copies the ledger (into the sprint dir) after summ
-  resume          (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec and argv
-                  SHA-256); a done NAV is scored only when its spec digest (else its argv digest, from the binding or
-                  its receipt's command) matches the current spec: a mismatch is a pin stop (exit 3) naming both
+  resume          (review C-13) a NAV step run by the cycle records <run dir>/cycle_binding.json (spec digest and argv
+                  SHA-256); a done NAV is scored only when its spec digest matches the current spec's AND its argv
+                  digest (from the binding or its receipt's command) the NAV command the spec runs now (review F-9: a
+                  template's spec digest, also the verdict's spec_sha256, covers every parent up its chain,
+                  research_spec.spec_digest): a mismatch is a pin stop (exit 3) naming both
   admission lines (review C-7) the gate of a v8 cycle with a ledger first appends one chained admission line per
                   listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
   summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
@@ -180,11 +182,11 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
               "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
     ("reuse_fields", "label_role")
 # label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): every phase that replays the
-# book MARKS it with it (nav and ref: --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner receipt;
-# the NAV verb's capacity pass forwards both); signals, fields and every decision input stay on inputs.role. Review F-8:
-# a spec with a ref phase and a label role is an add-alpha child of a labelled parent (a template drops its parent's ref,
-# research_spec.IDENTITY_SECTIONS), so its ref reproduces a labelled NAV and is compared with that NAV's labelled S2
-# daily CSV on equal footing.
+# book MARKS it with it (nav and ref: --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner
+# receipt; the NAV verb's capacity pass forwards both); signals, fields and every decision input stay on inputs.role.
+# Review F-8: a spec with a ref phase and a label role is an add-alpha child of a labelled parent (a template drops its
+# parent's ref, research_spec.IDENTITY_SECTIONS), so its ref reproduces a labelled NAV and is compared with that NAV's
+# labelled S2 daily CSV on equal footing.
 # F-2's marginal IC verb (atx-impl/src/strategy_marginal_ic.cpp, dispatch_marginal_ic / run_marginal_ic): every option
 # takes one value and a run without MARGINAL_REQUIRED is refused. The step builds MARGINAL_BUILT from the spec (paths and
 # pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
@@ -1459,7 +1461,10 @@ def compare(cycle: Cycle, st: Step, log=print) -> None:
 # ------------------------------------------------------------------ plan / status / run
 def header(cycle: Cycle) -> list[str]:
     spec_sha = sha256_file(cycle.spec_path) if cycle.spec_path else None
-    lines = [f"# research_cycle {cycle.spec['name']}: spec {cycle.spec_path} sha256 {spec_sha}; root {cycle.res.root}; "
+    cell = cycle_resume.spec_digest(cycle)      # review F-9: a template's digest covers its parent chain
+    chain = f" (spec digest over the template chain {cell})" if cell and cell != spec_sha else ""
+    lines = [f"# research_cycle {cycle.spec['name']}: spec {cycle.spec_path} sha256 {spec_sha}{chain}; "
+             f"root {cycle.res.root}; "
              f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
              f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
              f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"]
@@ -1651,7 +1656,7 @@ def admission_trials(cycle, w_dir: str, log) -> None:
 
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
     try:
-        return _write_verdict(cycle, timings, sha256_file(cycle.spec_path) if cycle.spec_path else None, log,
+        return _write_verdict(cycle, timings, cycle_resume.spec_digest(cycle), log,   # F-9: the template chain's
                               ledger_state(cycle))
     except ValueError as exc:     # review C-1: no verdict DSR from a cell count; C-6: a broken ledger chain
         raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
