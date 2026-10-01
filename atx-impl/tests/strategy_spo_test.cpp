@@ -31,6 +31,7 @@
 #include "../src/strategy_spo.hpp"
 #include "../src/strategy_target_replay.hpp"
 #include "../src/strategy_target_replay_detail.hpp"
+#include "strategy_spo_cli_fixture.hpp"
 #include "strategy_spo_fixture.hpp"
 
 namespace {
@@ -1156,79 +1157,8 @@ TEST(SpoTripwire, TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture) {
 // spo-v2's defaults exits 3 with spo_diagnostics.csv, v7_transfer_coefficient.csv and
 // v7_extras.json (status void) and no recipe, summary, daily or events file; the clean model
 // and the corrupt model with the void off complete (exit 0), and G is recorded in the recipe,
-// the extras and the summary under spo_v2 keys.
-std::string write_json_file(const std::filesystem::path& path, const Json& value) {
-  std::ofstream out(path, std::ios::binary);
-  out << value.dump(2) << '\n';
-  out.close();
-  if (!out) throw std::runtime_error("fixture JSON write");
-  return co::sha256_file(path.string()).value();
-}
-Json read_json_file(const std::filesystem::path& path) {
-  std::ifstream in(path);
-  Json j;
-  in >> j;
-  return j;
-}
-// The pinned combined blend and price role of `r` (the layout of strategy_nav_replay_test.cpp's
-// write_artifact).
-struct RunInputs {
-  std::string combined, combined_sha256, role, role_sha256;
-};
-RunInputs write_run_inputs(const std::filesystem::path& dir, const Role& r) {
-  std::vector<u8> finite(r.signal.size());
-  u64 finite_count = 0, members = 0;
-  for (usize k = 0; k < finite.size(); ++k) {
-    finite[k] = static_cast<u8>(std::isfinite(r.signal[k]));
-    finite_count += finite[k]; members += r.member[k];
-  }
-  Json files;
-  files["train_combined.f64"] = write_payload(dir / "train_combined.f64", r.signal);
-  files["train_combined_member.u8"] = write_payload(dir / "train_combined_member.u8", r.member);
-  files["train_combined_finite.u8"] = write_payload(dir / "train_combined_finite.u8", finite);
-  files["train_combined_sessions.i64"] =
-      write_payload(dir / "train_combined_sessions.i64", r.sessions);
-  files["train_combined_ids.u64"] = write_payload(dir / "train_combined_ids.u64", r.ids);
-  const std::string pin(64, 'a');
-  Json manifest{{"schema", "atx.dsl-combined-signal/v1"}, {"status", "complete"},
-      {"role", "train"}, {"layout", "date-major-little-endian"}, {"dates", r.d},
-      {"instruments", r.n}, {"score_begin", 0}, {"score_end", r.d},
-      {"role_manifest_sha256", pin}, {"source_sha256", pin}, {"library_sha256", pin},
-      {"train_manifest_sha256", pin}, {"run_recipe_sha256", pin},
-      {"orientation_candidates_sha256", pin}, {"orientations_artifact_sha256", nullptr},
-      {"role_window_required", true},
-      {"signal_semantics", "exact-pre-target-composition;equal-family/equal-within;"
-                           "missing-or-unoriented-neutral-fixed-denominator"},
-      {"member_semantics", "decision-member-and-source-present-and-finite-positive-close;"
-                           "independent-of-component-coverage"},
-      {"finite_semantics",
-       "one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal"},
-      {"actual_trades_or_returns", false}, {"finite_cells", finite_count},
-      {"member_cells", members}, {"files", std::move(files)}};
-  Json role_files;
-  role_files["sessions.i64"] = write_payload(dir / "sessions.i64", r.sessions);
-  role_files["ids.u64"] = write_payload(dir / "ids.u64", r.ids);
-  role_files["close.f64"] = write_payload(dir / "close.f64", r.close);
-  role_files["raw_close.f64"] = write_payload(dir / "raw_close.f64", r.raw);
-  role_files["present.u8"] = write_payload(dir / "present.u8", r.present);
-  role_files["member.u8"] = write_payload(dir / "member.u8", r.member);
-  role_files["volume.f64"] = write_payload(dir / "volume.f64", r.volume);
-  const Json role{{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
-      {"source_sha256", pin}, {"instrument_namespace", "spiderrock.securityID"},
-      {"close_basis", "f64(raw-f32-close)*f64-cumulReturnFactor"},
-      {"volume_basis", "raw-share-volume"},
-      {"clock_recipe", "modeled-session+22h-mark+23h-decision-v1"},
-      {"common_stock_verified", false}, {"historical_vintage_verified", false},
-      {"dates", r.d}, {"instruments", r.n}, {"score_begin", 0}, {"score_end", r.d},
-      {"files", std::move(role_files)}};
-  RunInputs in;
-  in.role = (dir / "role.json").string();
-  in.role_sha256 = write_json_file(in.role, role);
-  manifest["role_manifest_sha256"] = in.role_sha256;
-  in.combined = (dir / "train_combined.json").string();
-  in.combined_sha256 = write_json_file(in.combined, manifest);
-  return in;
-}
+// the extras and the summary under spo_v2 keys. The run inputs (write_run_inputs) and the JSON
+// file helpers are strategy_spo_cli_fixture.hpp's.
 TEST(SpoTripwire, AVoidRunExitsThreeWithDiagnosticsAndNoNavOrReturnFile) {
   const Directory dir;
   const Role role(30, 12, 71);
