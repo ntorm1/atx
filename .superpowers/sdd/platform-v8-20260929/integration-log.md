@@ -2557,3 +2557,120 @@ content printed).
   R14 as dispatched can lock base-lo1 only; base-lo3 needs a PM ruling (lock after B0a, or drop
   `inputs.reference_cell` as the runbook Q4 note allows).
 - Carried from 2a: R11 has no overlap report (open question 30).
+
+## integration 6 part D (FIX-5) (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `d19f9638` (clean; code head `807af678`, every
+research executable on v8-12). Scope (PM dispatch, Ruling PM5-12, step D of Wave 0 part 2b only): merge FIX-5 `d2304773`
+by SHA; the lane's Python suites, then every Python suite; executables check (no build); identity 4 with the argv of
+integration 7. Not run: any Wave 0 step (no u pass, no overlap report, no pin, no protocol line, no lock), any cell,
+anything on the 4-year roles.
+
+### Merge (`--no-ff` by SHA)
+
+| lane (findings) | lane SHA | merge | conflicts and resolution |
+|---|---|---|---|
+| FIX-5 (R6C-1..R6C-6 Python; R6C-3 Python half; PM5-11 texts) | `d2304773` (pool 10, from `41ef00fb`; not an ancestor of `d19f9638`) | `1cc4c6c9` | **None** (ort, auto-merged). 12 files, +644 / -52: `atx-impl/tools/fit_composition_weights.py`, `mega_report/v8.py`, `test_composition_resid.py`, `test_mega_report_v8.py`, `test_mega_report_v8_render.py`, `scripts/tests/test_research_spec.py` (the lane's hunk is inside `test_r11_appends_theme_resid_to_the_parents_fit`; no textual overlap with integration 7), `docs/plans/mega-alpha-scorecard-v8.template.md`, `docs/plans/mega-alpha-v8-pitch.config.json`, `scripts/specs/v8/r1-comp-v8.json`, `r10.json`, `r11.json`, `task-FIX-5-report.md`. **No C++, header or CMake file** (checked on the lane diff before the merge and on `d19f9638..1cc4c6c9` after). |
+
+New code head (`research_tree.CODE_PATHSPEC`: atx-core, atx-tsdb, atx-engine, atx-impl, scripts, CMake files):
+**`1cc4c6c9`**. `git diff --name-only 807af678 1cc4c6c9` outside `.superpowers/` = the 11 lane files above, nothing else.
+No integrator code commit.
+
+### Build: none (no C++ changed)
+
+Executables on disk re-hashed after the merge, **all four equal v8-12** (receipt `build-equity/mega-v8-12-receipt.json`
+SHA-256 `e44344bfaf6da4d76f0d1e7cf44cef68e10a1c5954639ea99282ccc204ba6b5a`, unchanged; bin timestamps 2026-10-01
+18:54:48 .. 18:55:05, unchanged):
+
+| executable | SHA-256 on disk | v8-12 |
+|---|---|---|
+| atx-equity-strategy-ic | `ab7e2cbda3c87f74be7cd1d66725b7eb99b95a5182898c44aa465bbd1615452d` | equal |
+| atx-equity-strategy-targets (NAV, targets) | `5497c89d5141ae5f40d72ad2bef427cf9d6bf5462236b0a6d648765435b9bca6` | equal |
+| atx-equity-strategy-risk | `8967952c5c2054170d02466f121fc66122a2b3daa34d7bb99fe63a94a7eed258` | equal |
+| atx-equity-strategy-mine | `cd661fe99ad06d592af2886eb6491d853c5acfd35a40f27f34f5f9088588c91d` | equal |
+
+### Tests (no test fix)
+
+`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs`, `ATX_EQUITY_BIN` and
+`ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bin dirs on PATH, on `1cc4c6c9`.
+
+| suite | result | against the baseline |
+|---|---|---|
+| the lane's 23 files (`task-FIX-5-report.md` "How root verifies", verbatim) | **604 passed, 3 skipped**, 20 subtests | lane: 603 / 4 on the same 607 tests. The 3 skips here are the RESEARCH_CYCLE_LIVE_ROOT tests; the lane's fourth is `test_exposures_export.py:234` (skips without `ATX_EQUITY_TARGETS_EXE`, which the lane did not set and root does) |
+| atx-impl/strategies (whole) | **163 passed** | = 163 |
+| `test_generate_library.py` with `ATX_V71_PLAN_JSON=build-equity/v8-i3-plan-v71.json` | **9 passed** | = 9 |
+| atx-engine/tools (whole) | **253 passed**, 6 subtests | = 253 |
+| atx-impl/tools (whole) | **578 passed, 1 skipped**, 17 subtests | 571 + 7 = the lane's new test functions (`test_composition_resid.py` 21 -> 23, `test_mega_report_v8.py` 42 -> 45, `test_mega_report_v8_render.py` 22 -> 24); subtests 14 -> 17 in the lane's tests. Skip: `test_nav_summ_v8.py:72` (`ATX_EQUITY_ROOT` unset), as before |
+| scripts/tests (whole) | **183 passed, 3 skipped** | = 183 / 3 (the lane edited `test_r11_appends_theme_resid_to_the_parents_fit`, added none); skips: the three RESEARCH_CYCLE_LIVE_ROOT tests. tiny_world `test_cycle_e2e.py` in it: **no golden moved**, `git status --porcelain` empty after every suite |
+
+### Identity 4 (bounded runner, one at a time, clean tree, source `1cc4c6c9`)
+
+Argv read from integration 7's receipts (`build-equity/v8-i7-i4w-run/receipt.json` step 1,
+`build-equity/v8-i7-i4-run/receipt.json` step 2), only the output paths renamed `v8-i7-` -> `v8-i6d-`; runner
+`--seconds 180 --max-rss-mib 1536 --min-free-mib 512`. Inputs re-hashed before the run, equal to integration 7: library
+`787c802e`, role lo1 `3e79978a`, fields-v9 manifest `8fd00e9f`, v7.1 weights `7b0a59c9`, part C weights `88635696`
+(3-year role and existing caches only). Both receipts: outcome completed, exit 0, `git: clean in the code pathspec`,
+stderr empty.
+
+| id | receipt.json SHA-256 | exe | wall s | peak MiB | result |
+|---|---|---|---|---|---|
+| 4 step 1 | `437cdf76045618b855c996f485d3b45680d4d007030003495e998d861808b7bc` | python `624bbc05` | 0.25 | 5 | **byte-identical** (see the finding below) |
+| 4 step 2 | `07d9ae2347105f1f14be1db653a1e1523f1765486aee700c466d783a27f95d46` | ic `ab7e2cbd` (v8-12) | 18.1 | 507 | **PASS** |
+
+- **Step 1** (`composition_rules.py identity-weights --weights build-equity/mega-weights-v71-ew/composition_weights.json
+  --weights-sha256 7b0a59c9... --out build-equity/v8-i6d-i4-identity-weights.json`): `d49e208c...2eae`,
+  **byte-identical to integration 7's `v8-i7-i4-identity-weights.json`; no key differs.** Console line differs from
+  integration 7's only in the `out` path.
+- **Finding (premise of the expectation, not a mismatch):** the dispatch expected this weights file to differ in
+  `provenance.script_sha256` and `provenance.admission_sha256`. Identity 4's argv never runs
+  `fit_composition_weights.py`: step 1 runs `composition_rules.py` (unchanged since `807af678`, module SHA
+  `a8b35a6b...5bfd`, recorded as `provenance.std_identity.module_sha256`), which copies the pinned v7.1 weights document
+  and grafts the identity block. Checked (keys and SHA strings only): the file's `provenance.script_sha256`
+  (`4cff96b6...399d`) and `provenance.admission_sha256` (`6d68892f...cbb0`) are present and equal to those of the
+  pinned source `mega-weights-v71-ew/composition_weights.json` (v7.1's fit), not computed from today's fitter (`14e157b2`
+  at `807af678`, `8860483c` at `1cc4c6c9`). So the two-key move FIX-5 announces happens only in a weights file the fitter
+  writes; no identity argv on record runs the fitter, and none was run here (not dispatched). The fitter's
+  flag-absent behaviour is covered by the suites above (`test_fit_composition_weights*.py`, `test_composition_resid.py`
+  pass; the new check returns at once without `--theme-resid`, read in the diff).
+- **Step 2** (the exact integration 7 argv, `--composition-weights build-equity/v8-i5c-i4-identity-weights.json
+  --composition-weights-sha256 88635696...`, `--output build-equity/v8-i6d-i4-w`): against `v8-i7-i4-w` **10 of 12
+  byte-identical** (`recipe.json` `15b200d8...6410`, `orientations.json` `6d0d1be9...849d`, `train_combined.json`
+  `2831faf0...3e17`, `train_combined.f64` `1cf245b1...3912`, `_member.u8` / `_finite.u8` `732f47b7...f1a4`,
+  `_ids.u64` `102e89c6...741c`, `_sessions.i64` `89af5340...2830`, `train_planned_targets.csv` `e6dbd9a8...5297`,
+  `train_daily_ic.csv` `7e6e596f...bce6`); `summary.json` (`2c33a9fc...` vs `ad8a5ad6...`; 6,031 paths, 200 differ) and
+  `train_candidates.jsonl` (`59618f3a...` vs `963d150b...`; 5,424 paths, 191 differ) differ **only in timing paths**
+  (`stage_seconds.*`, `wall_seconds`, `hash_seconds`; no other path). As in integration 7 and part C: data files
+  identical, timing fields only.
+
+### Disk
+
+C: free 43,065,264 KiB (41.1 GiB) after identity 4. New: `v8-i6d-i4-w` (72 MiB, = `v8-i7-i4-w`), two run dirs and one weights
+file (< 1 MiB each).
+
+### Hidden-data record
+
+- Inputs opened by tools: the TRAIN 2020-2022 role lo1 (`3e79978a`), its fields v7 / v9, the v7.1 library and weights,
+  the part C identity weights, `mega-candidate-cache-v71` (identity 4); synthetic fixtures and tiny_world (suites).
+- Logs: the two runs' stdout / stderr and runner consoles scanned for dates in 2024 or later: the consoles carry only
+  the runs' own `started_utc` (2026-10-01); the IC stdout has no date-shaped token (its four pattern hits are digits
+  inside decimal numbers; the lines were not printed).
+- **Disclosure:** while locating integration 7's identity 4 argv I printed `build-equity/v8-i7-i4-run/stdout.log` (the
+  IC exe's console of integration 7's step 2), which carries per-candidate lines of the v7.1 TRAIN 2020-2022 lo1 pass
+  (`ic=`, `composition=`, `sign=`, `reason=` for the 48 candidates). The dispatch forbids reading IC statistics. Nothing
+  was derived, recorded or used from it; no other IC or return statistic was read. The data are TRAIN 2020-2022 (no
+  session on or after the seal).
+- **Nothing dated 2024-01-01 or later was opened.** No Wave 0 step, no cell, nothing on the 4-year roles.
+
+### Ledger
+
+`build-equity/trials.jsonl` not touched (no cell, no lock).
+
+### Open items
+
+- Identity 4's step 1 cannot show the fitter's `script_sha256` move (above). If the PM wants that move checked on a
+  real weights file, it needs a dispatched fitter run (e.g. a re-fit of a pinned v8 weights file under the bounded
+  runner) and a comparison by JSON path; not run here.
+- Spec digests of R-1, R-10, R-11 move with the PM5-11 description edits (lane open risk); nothing was bound, run or
+  locked on them before this merge.
+- Carried: the W0-a stop at report 3 (Wave 0 part 2b) still needs its ruling before step E (R14); the base-lo3 lock
+  question; deferred to integration 8 with wave AG: the C++ halves of R6C-3 and R6C-7.
