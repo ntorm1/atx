@@ -58,11 +58,13 @@ def year_table(i: int, years=None) -> list[dict]:
 
 
 def summ_rows(cfg: dict) -> list[dict]:
+    """One nav_summ row per configured cell, in order: each cell's turnover 20% below the one before it and its cost
+    lower, so every turnover and cost criterion of the committed config holds (R-4's "15% lower" included)."""
     rows = []
     for i, c in enumerate(cfg['v8']['cells']):
         rows.append({'dir': c['dir'].replace('/', '\\'), 'net_sharpe': 0.95 + 0.05 * i, 'gross_sharpe': 1.3,
                      'mean_gross_leverage_all_rows': 0.97, 'mean_net_leverage_all_rows': 0.004,
-                     'tau_gmv_mean': 0.040 - 0.002 * i, 'tau_gmv_p95': 0.05, 'cost_bps_traded': 13.0 - 0.3 * i,
+                     'tau_gmv_mean': 0.040 * 0.8 ** i, 'tau_gmv_p95': 0.05, 'cost_bps_traded': 13.0 - 0.3 * i,
                      'deflated_ledger': {'n': 37 + len(cfg['v8']['cells']), 'dsr': 0.96, 'legacy_dsr': 0.9},
                      'year_table': year_table(i)})
     return rows
@@ -509,12 +511,78 @@ def test_ladder_checks_final_must_be_the_last_accepted_cell(root):
     assert _checks(root, cfg) == []
     assert _checks(root, cfg_for(final='B0c')) == [('v8.final', "'B0c' is not the last accepted cell of the ladder "
                                                                 "('R-1')")]
-    rej = cfg_for()
-    rej['v8']['cells'][1]['verdict'] = 'REJECTED (dSR < 0)'
-    assert _checks(root, rej) == [('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
     kind = cfg_for()
     kind['v8']['cells'][1].update(verdict='kept', verdict_kind='accepted')  # an explicit kind overrides the text
     assert _checks(root, kind) == []
+    rej = cfg_for()
+    rej['v8']['cells'][1]['verdict'] = 'REJECTED (dSR < 0)'
+    put(root, 'b/paired-r1.json', bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c', dsr=-0.02))  # the rule rejects
+    assert _checks(root, rej) == [('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
+
+
+# review P-3: the recorded verdict against the rule of v8-prereg item 5, and the parent against the ladder
+def test_ladder_checks_refuse_a_verdict_the_rule_contradicts(root):
+    cfg = cfg_for()
+    world(root, cfg)
+    assert _checks(root, cfg) == []
+    # an accept the rule rejects (dSR < 0)
+    put(root, 'b/paired-r1.json', bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c', dsr=-0.02))
+    assert _checks(root, cfg) == [
+        ('v8.cells[R-1].verdict', "recorded accepted ('ACCEPTED') but the rule of v8-prereg item 5 rejects it "
+                                  "(dSR > 0 no, mechanics yes, criterion yes)")]
+    # a reject the rule accepts (dSR > 0, mechanics, criterion); v8.final then has no accepted R-1
+    world(root, cfg)
+    rej = cfg_for()
+    rej['v8']['cells'][1]['verdict'] = 'REJECTED'
+    assert _checks(root, rej) == [
+        ('v8.cells[R-1].verdict', "recorded rejected ('REJECTED') but the rule of v8-prereg item 5 accepts it "
+                                  "(dSR > 0 yes, mechanics yes, criterion yes)"),
+        ('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
+    # an accept whose rule is n/a because a manual criterion part is unread; read, it passes
+    unread = cfg_for()
+    unread['v8']['cells'][1]['criterion']['checks'].append({'text': 'net at 4x higher', 'met': None})
+    assert _checks(root, unread) == [
+        ('v8.cells[R-1].verdict', "recorded accepted ('ACCEPTED') but its criterion is not read: net at 4x higher "
+                                  "(set the part's met)")]
+    unread['v8']['cells'][1]['criterion']['checks'][-1]['met'] = True
+    assert _checks(root, unread) == []
+    unread['v8']['cells'][1]['criterion']['checks'][-1]['met'] = False
+    assert [w for w, _ in _checks(root, unread)] == ['v8.cells[R-1].verdict']  # the rule rejects
+    # an accept whose rule is n/a for a missing input: that input's own unavailable block, no refusal here
+    (root / 'b/paired-r1.json').unlink()
+    assert _checks(root, cfg) == []
+
+
+def three_cells(r1_verdict: str = 'ACCEPTED', r2_parent: str = 'R-1') -> dict:
+    """cfg_for() plus R-2 (parented on ``r2_parent``, accepted, the final cell)."""
+    cfg = cfg_for(final='R-2')
+    r2 = copy.deepcopy(cfg['v8']['cells'][1])
+    r2.update(key='R-2', label='R-2 library v8.0', dir='b/mega-nav-v8-r2', parent=r2_parent, n=42,
+              paired='b/paired-r2.json', verdict='ACCEPTED')
+    cfg['v8']['cells'][1]['verdict'] = r1_verdict
+    cfg['v8']['cells'].append(r2)
+    return cfg
+
+
+def test_ladder_checks_the_parent_is_the_last_accepted_cell(root):
+    def parents(cfg, r1_dsr=0.05):
+        world(root, cfg)
+        put(root, 'b/paired-r1.json', bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c', dsr=r1_dsr))
+        return [(w, why) for w, why in _checks(root, cfg) if w.endswith('.parent')]
+    assert parents(three_cells()) == []
+    assert parents(three_cells('REJECTED (dSR < 0)'), r1_dsr=-0.02) == [
+        ('v8.cells[R-2].parent', "'R-1' is rejected: a rejected cell is never a parent")]
+    assert parents(three_cells('REJECTED (dSR < 0)', r2_parent='B0c'), r1_dsr=-0.02) == []
+    assert parents(three_cells(r2_parent='B0c')) == [
+        ('v8.cells[R-2].parent', "'B0c' is not the last accepted cell before 'R-2' ('R-1')")]
+    # an undecided cell before it: the ladder is not settled up to R-2, the parent check waits
+    pending = three_cells('pending run', r2_parent='B0c')
+    assert parents(pending) == []
+    assert [w for w, _ in _checks(root, pending)] == ['v8.cells[R-1].verdict']  # its read paired test, pending
+    # the whole ladder, all accepted and consistent, renders with no refusal
+    cfg = three_cells()
+    world(root, cfg)
+    assert [n for n, _ in unavailable(build(root, cfg))] == []
 
 
 def test_ladder_checks_a_read_paired_test_needs_a_verdict(root):

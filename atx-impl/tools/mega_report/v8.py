@@ -30,8 +30,10 @@ shows n/a with a note instead. Content seal: a year or a session at or after the
 refused (ValueError), so nothing sealed is rendered even from a file whose name passed the path check.
 
 The ladder refuses, with a visible block of the unavailable class (counted by the CLI), a ``v8.final`` that is not the
-last accepted cell of the ladder, a top-level ``final`` (page header, book sections) that is not v8.final's cell, and a
-cell whose paired test was read but whose verdict is missing or still pending.
+last accepted cell of the ladder, a top-level ``final`` (page header, book sections) that is not v8.final's cell, a
+cell whose paired test was read but whose verdict is missing or still pending, a recorded verdict the rule of
+v8-prereg item 5 contradicts (an accept the rule rejects or cannot read for an unread criterion part, a reject the rule
+accepts), and a parent that is not the last accepted cell before its cell (a rejected cell is never a parent).
 
 ``v8_book`` (layout ``{"type": "v8_book", "block": NAME, ...}``) runs one of the v7 pitch's book-level blocks
 (``BOOK_BLOCKS``: equity curve, drawdowns, returns, costs, turnover, capacity curve, exposures, signal correlation) on
@@ -633,10 +635,65 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
     return rows, unav, notes, srcs
 
 
+DECIDED = ('accepted', 'rejected', 'defect')  # verdict kinds that settle a cell (a defect cell is excluded, item 7)
+
+
+def _rule_text(r: dict) -> str:
+    def s(v):
+        return C.NA_TEXT if v is None else ('yes' if v else 'no')
+    return f"dSR > 0 {s(r.get('pos'))}, mechanics {s(r.get('mech'))}, criterion {s(r.get('crit_met'))}"
+
+
+def verdict_rule_checks(rows: list[dict], kinds: dict) -> list[tuple[str, str]]:
+    """Review P-3, v8-prereg item 5: a recorded verdict against the computed rule (paired S2 net dSR > 0 against the
+    parent AND mechanics AND the cell's criterion). Refused: an accepted cell the rule rejects; an accepted cell whose
+    rule is n/a because a manual criterion part is unread (a missing input is its own unavailable block); a rejected
+    cell the rule accepts. Baselines (no parent) carry no rule."""
+    out = []
+    for r in rows:
+        k, rule, key = kinds[r['key']], r.get('rule'), f"v8.cells[{r['key']}].verdict"
+        if rule == '':
+            continue
+        if k == 'accepted' and rule is False:
+            out.append((key, f"recorded accepted ({r.get('verdict')!r}) but the rule of v8-prereg item 5 rejects it "
+                             f"({_rule_text(r)})"))
+        elif k == 'accepted' and rule is None and r.get('crit_unread'):
+            out.append((key, f"recorded accepted ({r.get('verdict')!r}) but its criterion is not read: "
+                             f"{'; '.join(r['crit_unread'])} (set the part's met)"))
+        elif k == 'rejected' and rule is True:
+            out.append((key, f"recorded rejected ({r.get('verdict')!r}) but the rule of v8-prereg item 5 accepts it "
+                             f"({_rule_text(r)})"))
+    return out
+
+
+def parent_checks(cells: list[dict], kinds: dict) -> list[tuple[str, str]]:
+    """Review P-3, plan section 9 ("Parent = the last accepted cell"): a configured parent that is rejected (or a
+    defect) is refused; once every cell before a cell is settled, its parent must be the last accepted one of them.
+    While an earlier cell is still undecided the second check waits (the committed config pre-fills the chain)."""
+    out = []
+    for i, c in enumerate(cells):
+        parent = c.get('parent')
+        if not parent:  # a baseline by declaration
+            continue
+        key = f"v8.cells[{c.get('key')}].parent"
+        if kinds.get(parent) in ('rejected', 'defect'):
+            out.append((key, f"{parent!r} is {kinds[parent]}: a rejected cell is never a parent"))
+            continue
+        prior = [p.get('key') for p in cells[:i]]
+        if any(kinds.get(p) not in DECIDED for p in prior):
+            continue
+        accepted = [p for p in prior if kinds.get(p) == 'accepted']
+        last = accepted[-1] if accepted else None
+        if parent != last:
+            out.append((key, f"{parent!r} is not the last accepted cell before {c.get('key')!r} ({last!r})"))
+    return out
+
+
 def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
     """(config key, reason) of every consistency error of the ladder: a cell whose paired test was read but whose
-    verdict is missing or still pending; ``v8.final`` not the last accepted cell; a top-level ``final`` (page header,
-    book sections) that is not v8.final's cell."""
+    verdict is missing or still pending; a recorded verdict the rule of v8-prereg item 5 contradicts
+    (``verdict_rule_checks``); a parent that is not the last accepted cell before it (``parent_checks``); ``v8.final``
+    not the last accepted cell; a top-level ``final`` (page header, book sections) that is not v8.final's cell."""
     v8 = _v8(ctx)
     rules = ctx.verdict_rules()
     kinds = {r['key']: r.get('verdict_kind') or C.verdict_kind(r.get('verdict'), rules) for r in rows}
@@ -647,6 +704,8 @@ def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
             state = 'missing' if k is None else f"still pending ({r.get('verdict')!r})"
             out.append((f"v8.cells[{r['key']}].verdict",
                         f"its paired test {r.get('paired_src')} was read but the verdict is {state}"))
+    out += verdict_rule_checks(rows, kinds)
+    out += parent_checks(_cells(v8), kinds)
     final = v8.get('final')
     accepted = [r['key'] for r in rows if kinds[r['key']] == 'accepted']
     if not accepted:
