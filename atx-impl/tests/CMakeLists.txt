@@ -94,6 +94,8 @@ atx_impl_test_target_environment(atx-impl-strategy-tests)
 # Small postimplementation checks for the fast research path and its actual DSLs.
 add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
     strategy_ic_composition_test.cpp
+    strategy_ic_theme_resid_test.cpp  # platform v8 R-11 (theme-resid-v1)
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_group_residualise_test.cpp"
     strategy_ic_runner_test.cpp
     strategy_marginal_ic_test.cpp
     # platform v8 R-10: composition ic-shrink-v1 (the rule and its engine kernel)

@@ -3066,6 +3066,119 @@ TEST(CompositionV8, ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput) {
     }
   }
 }
+// ---- Platform v8 R-11: composition theme-resid-v1 (theme_residualise block) ----
+std::string resid_block(const std::string& order,const std::string& rule="theme-resid-v1") {
+  return ",\"theme_residualise\":{\"rule\":\""+rule+"\",\"order\":"+order+"}";
+}
+// Two themes of the vee library: a = volume_level + volume_vee (a composite that is no rank
+// grid), b = volume_rank. Order [a, b] re-ranks b's residual on a, order [b, a] a's on b, so
+// both blends differ from ew-theme-std-v1's and from each other (the block's order is the
+// rule's, not the library's); member IC rows never see the composition; recipe, combined
+// manifest and summary record the rule. With one theme the rule is ew-theme-std-v1 byte for
+// byte: the first theme in order is its standardised composite.
+TEST(ThemeResidRunner, ResidualisesInTheBlockOrderAndRecordsTheRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=R"({"volume_level":"a","volume_rank":"b","volume_vee":"a"})";
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true))));
+  const auto plain=run_named(dir,cfg,"std"); ASSERT_TRUE(plain.ok) << plain.error;
+  ASSERT_TRUE(pin("ab.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true)+resid_block(R"(["a","b"])"))));
+  const auto ab=run_named(dir,cfg,"ab"); ASSERT_TRUE(ab.ok) << ab.error;
+  ASSERT_TRUE(pin("ba.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true)+resid_block(R"(["b","a"])"))));
+  const auto ba=run_named(dir,cfg,"ba"); ASSERT_TRUE(ba.ok) << ba.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    const auto combined=role_name+"_combined.f64";
+    ASSERT_FALSE(file_sha(dir.path/"std"/combined).empty());
+    EXPECT_NE(file_sha(dir.path/"ab"/combined),file_sha(dir.path/"std"/combined));
+    EXPECT_NE(file_sha(dir.path/"ba"/combined),file_sha(dir.path/"std"/combined));
+    EXPECT_NE(file_sha(dir.path/"ab"/combined),file_sha(dir.path/"ba"/combined));
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_EQ(member_rows(dir.path/"ab"/daily),member_rows(dir.path/"std"/daily));
+    const auto manifest=read_json(dir.path/"ab"/(role_name+"_combined.json"));
+    EXPECT_EQ(manifest.at("composition_residualise"),"theme-resid-v1");
+    EXPECT_EQ(manifest.at("composition_standardise"),"ew-theme-std-v1");
+    EXPECT_FALSE(read_json(dir.path/"std"/(role_name+"_combined.json")).contains("composition_residualise"));
+  }
+  auto ab_recipe=read_json(dir.path/"ab"/"recipe.json"),std_recipe=read_json(dir.path/"std"/"recipe.json");
+  EXPECT_EQ(ab_recipe.at("composition_residualise"),"theme-resid-v1");
+  EXPECT_FALSE(std_recipe.contains("composition_residualise"));
+  ab_recipe.erase("composition_residualise"); ab_recipe.erase("composition_weights_sha256");
+  std_recipe.erase("composition_weights_sha256");
+  EXPECT_EQ(ab_recipe,std_recipe); // every other method statement is ew-theme-std-v1's
+  EXPECT_EQ(read_json(dir.path/"ab"/"summary.json").at("composition_weights").at("residualise"),"theme-resid-v1");
+  EXPECT_FALSE(read_json(dir.path/"std"/"summary.json").at("composition_weights").contains("residualise"));
+  const std::string one=R"({"volume_level":"a","volume_rank":"a","volume_vee":"a"})";
+  ASSERT_TRUE(pin("one-std.json",themed_text(weights_v2,cfg,weights,signs+std_block(one,true))));
+  const auto one_std=run_named(dir,cfg,"one-std"); ASSERT_TRUE(one_std.ok) << one_std.error;
+  ASSERT_TRUE(pin("one-resid.json",themed_text(weights_v2,cfg,weights,signs+std_block(one,true)+resid_block(R"(["a"])"))));
+  const auto one_resid=run_named(dir,cfg,"one-resid"); ASSERT_TRUE(one_resid.ok) << one_resid.error;
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_finite.u8","_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/"one-resid"/(role_name+suffix)),file_sha(dir.path/"one-std"/(role_name+suffix)))
+          << role_name << suffix;
+}
+TEST(ThemeResidRunner, BlockRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Payloads are absent: every refusal below must precede any role payload read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const std::string equal=R"({"volume_level":0.5,"volume_rank":0.5})";
+  const std::string two=R"({"volume_level":"a","volume_rank":"b"})";
+  const auto plan=[&](const std::string& text,Json& printed) {
+    if (!text_file(path,text,cfg.composition_weights_sha256)) return std::string("unwritable");
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    if (!status) return status.error().to_string();
+    printed=Json::parse(log.str()); return std::string{};
+  };
+  // Admitted: the block adds the regression scratch, N x (8 x themes + 8) B per role.
+  Json with,without;
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,equal,std_block(two,true)+resid_block(R"(["b","a"])")),with),"");
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,equal,std_block(two,true)),without),"");
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(with.at("roles").at(r).at("required_bytes").get<u64>()-
+              without.at("roles").at(r).at("required_bytes").get<u64>(),N*(8U*2U+8U)) << r;
+  EXPECT_EQ(with.at("composition_weights").at("residualise"),"theme-resid-v1");
+  EXPECT_FALSE(without.at("composition_weights").contains("residualise"));
+  const std::string shape="theme_residualise must be {rule: theme-resid-v1, order: [theme, ...]}";
+  const std::string needs="theme_residualise needs a theme_standardise block with rerank true";
+  const std::string order="theme_residualise order must name each weighted theme of theme_standardise exactly once";
+  const auto std_on=std_block(two,true);
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {themed_text(weights_v2,cfg,equal,resid_block(R"(["a","b"])")),needs},
+      {themed_text(weights_v2,cfg,equal,std_block(two,false)+resid_block(R"(["a","b"])")),needs},
+      {themed_text(weights_v2,cfg,equal,theme_block(two)+resid_block(R"(["a","b"])")),needs},
+      {themed_text(weights_v1,cfg,equal,std_on+resid_block(R"(["a","b"])")),
+       "theme_standardise requires composition weights schema atx.dsl-composition-weights/v2"},
+      {themed_text(weights_v2,cfg,equal,std_on+resid_block(R"(["a","b"])","theme-resid-v2")),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+R"(,"theme_residualise":{"rule":"theme-resid-v1"})"),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+R"(,"theme_residualise":{"rule":"theme-resid-v1","order":"a,b"})"),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+R"(,"theme_residualise":[1])"),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+resid_block(R"(["a"])")),order},
+      {themed_text(weights_v2,cfg,equal,std_on+resid_block(R"(["a","b","c"])")),order},
+      {themed_text(weights_v2,cfg,equal,std_on+resid_block(R"(["a","a"])")),order+" (repeated: a)"},
+      {themed_text(weights_v2,cfg,equal,std_on+resid_block(R"(["a","c"])")),order+" (not a weighted theme: c)"},
+      {themed_text(weights_v2,cfg,equal,std_on+resid_block(R"(["a",1])")),order+" (an entry is not a string)"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [text,reason]:cases) {
+      ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+      cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+      ASSERT_FALSE(status) << text;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << text << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
 // Review B-3 (Ruling E-10): a role built with --delisting-returns is refused as a signal
 // role at admission, train or validation, before any payload or output; a role whose
 // delisting block only marks terminations (returns_applied false) is admitted.

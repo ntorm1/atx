@@ -8,6 +8,7 @@
 #include <utility>
 #include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
+#include "strategy_ic_theme_resid.hpp"
 
 namespace atx::impl::strategy {
 namespace {
@@ -37,9 +38,9 @@ template<class F> void each_centered_rank(const std::vector<Ranked>& v, F&& appl
   }
 }
 // f64 planes per theme: redistribute keeps a blend and a present-weight plane,
-// standardise one summed-rank plane (NaN = no member present).
+// standardise (and residualise) one summed-rank plane (NaN = no member present).
 constexpr u64 theme_planes(IcThemeRule rule) noexcept {
-  return rule == IcThemeRule::standardise ? 1U : 2U;
+  return rule == IcThemeRule::redistribute ? 2U : 1U;
 }
 // ew-theme-std-v1 pooled add: dates split into contiguous bands as the pinned path splits
 // them (quotient/remainder, no count*band), one ranked row per worker, allocated once.
@@ -89,6 +90,11 @@ co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize cou
   // one summed-rank f64 plane (standardise); none: +0.
   if (themes && !add(dates * names, theme_planes(rule) * sizeof(f64) * static_cast<u64>(themes)))
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
+  // theme-resid-v1: per name the earlier themes' columns and the dependent (8 B per theme) and the
+  // support index (add_theme_residualised's scratch); none otherwise.
+  if (themes && rule == IcThemeRule::residualise &&
+      !add(names, sizeof(f64) * static_cast<u64>(themes) + sizeof(usize)))
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
   return co::Ok(total);
 }
 
@@ -110,6 +116,7 @@ struct IcComposition::Impl {
   std::vector<usize> std_theme;
   std::vector<f64> std_mass;
   std::vector<std::vector<f64>> std_plane;
+  bool residualise{}; // theme-resid-v1 on the std planes (theme index = registered-order position)
   IcCompositionResult result;
   usize next{};
   bool finished{};
@@ -137,7 +144,7 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
       return co::Err(co::ErrorCode::InvalidArgument, "IC composition: themes without a weighted candidate");
   }
   ATX_TRY(auto bytes, ic_composition_working_bytes(cfg.dates, cfg.instruments, candidates.size(), themes, rule));
-  const bool standardise = themes && rule == IcThemeRule::standardise;
+  const bool standardise = themes && rule != IcThemeRule::redistribute; // standardise or residualise
   if (bytes > cfg.max_working_bytes)
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working budget exceeded");
   const usize cells = cfg.dates * cfg.instruments;
@@ -184,6 +191,7 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
         if (pinned[i] > 0) p->std_mass[pinned_themes[i]] += pinned[i];
       p->std_plane.resize(themes);
       for (auto& plane : p->std_plane) plane.assign(cells, nan);
+      p->residualise = rule == IcThemeRule::residualise;
     } else if (themes) {
       p->theme.assign(pinned_themes.begin(), pinned_themes.end());
       p->theme_mass.assign(themes, 0.0);
@@ -325,9 +333,14 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   // ew-theme-std-v1 (else no-op): each theme's plane re-ranked per date over the names
   // with a present member, W_theme * rank added in theme index order; planes released
   // before the target pass. Nonmember cells are never present, so they stay NaN.
-  for (usize t = 0; t < p.std_plane.size(); ++t)
-    ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
-                                      out.signal, p.row));
+  // theme-resid-v1 instead residualises the re-ranked planes in index order per date.
+  if (p.residualise) {
+    ATX_TRY_VOID(add_theme_residualised(p.std_plane, p.std_mass, p.cfg.instruments, out.signal, p.row));
+  } else {
+    for (usize t = 0; t < p.std_plane.size(); ++t)
+      ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
+                                        out.signal, p.row));
+  }
   std::vector<std::vector<f64>>().swap(p.std_plane);
   for (usize d = 0; d < p.cfg.dates; ++d)
     out.contribution_fraction[d] = out.eligible_names[d]

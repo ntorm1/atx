@@ -21,7 +21,9 @@ struct IcCompositionConfig {
 // Rule applied to pinned_themes (see create; ignored without themes).
 //   redistribute  fitter ew-theme-v6, rule within-theme-v1.
 //   standardise   fitter ew-theme-std-v1 (platform v8 R-1).
-enum class IcThemeRule : atx::u8 { redistribute, standardise };
+//   residualise   standardise, then theme-resid-v1 (platform v8 R-11; theme index = position
+//                 in the registered order, strategy_ic_theme_resid.hpp).
+enum class IcThemeRule : atx::u8 { redistribute, standardise, residualise };
 struct IcCompositionResult {
   std::vector<atx::f64> signal; // date-major; nonmembers NaN, missing contributions zero (pinned themes: see create)
   std::vector<atx::f64> planned_turnover, contribution_fraction;
@@ -33,7 +35,8 @@ struct IcCompositionResult {
 // Conservative owned allocation envelope, including result + scratch and bounded
 // candidate strings. Excludes caller Panel, VM, labels and incoming signal.
 // `themes` > 0 (pinned themes, at most 32) adds two f64 planes per theme under
-// `redistribute` and one under `standardise`; 0 is the unchanged envelope.
+// `redistribute` and one under `standardise`; `residualise` adds to that one plane per theme
+// the regression scratch, instruments x (8 x themes + 8) B; 0 is the unchanged envelope.
 [[nodiscard]] atx::core::Result<atx::u64> ic_composition_working_bytes(
     atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes = 0,
     IcThemeRule rule = IcThemeRule::redistribute);
@@ -68,6 +71,10 @@ struct IcCompositionResult {
 // W_theme = the sum of its pinned weights; a name with no present member of a theme gets
 // nothing from it. Every theme so enters with the same dispersion whatever its member
 // count. Member ranks are the pinned path's expression; themes fold in index order.
+// `rule` residualise (theme-resid-v1, platform v8 R-11) builds the same planes; per date the
+// theme at index 0 adds what standardise adds for it, and the theme at index t > 0 adds W_theme
+// times the re-ranked least-squares residual of its re-ranked composite on an intercept and the
+// re-ranked composites of themes 0..t-1 (add_theme_residualised, strategy_ic_theme_resid.hpp).
 class IcComposition {
  public:
   ~IcComposition();
