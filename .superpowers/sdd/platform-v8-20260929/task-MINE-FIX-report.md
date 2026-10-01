@@ -84,6 +84,44 @@ extras, S = 8, W workers, R rungs, T = `mine_trial_capacity`, P = records of a r
 | same, T 9,968 (a 10,000-trial search) | 11,920,254,774 (11.10 GiB; trial reads 263 MiB) |
 | configuration bounds: 4,096 x 20,000, 64 fields, 11 / 64, W 64, R 2, shortlist 256, T 1,049,280 | 1,184,945,709,312 (1.1 TB): refused against the 64 GiB `--max-memory-mib` ceiling |
 
+Since Round 1 the 10,000-trial row is refused by its budget (Ruling PM4-13, next section) before the memory check. The
+row stays as a worked number for v9.
+
+## Round 1 (Ruling PM4-13)
+
+Ruling PM4-13 binds only under OD-7. It answers concern 1: a campaign's `--budget` above 1,000 is refused until the
+overlap factor is re-derived at the campaign's own Bonferroni level (v9). Commit `28a928a1`
+(`fix(mine): --budget above 1000 refused until the overlap factor is re-derived (Ruling PM4-13)`).
+
+- `kMinedMaxBudget = 1000` sits in `strategy_mine_rule.hpp`, beside `kMinedOverlapFactor` and `kMinedMinDiscoverRows`.
+- `check_config` refuses `--budget` > 1000 right after the bounded-config check and before the capacity check, the
+  role, the pool manifest or any payload. The message is "--budget N is above kMinedMaxBudget 1000 (Ruling PM4-13):
+  the mined-v1 overlap factor kMinedOverlapFactor is validated to that budget only; ...". The general bound
+  `kMineMaxBudget` (10,000,000) is unchanged and is now dominated by the ceiling. The usage text and the
+  `strategy_mine.hpp` budget paragraph say so.
+- The ceiling is in the recipe as `max_budget`, beside `overlap_factor`, so a later change of the ceiling changes
+  `recipe_sha256`. It is also in `campaign.json` `hurdle.max_budget`, beside F.
+- Ledger: `backtest_integrity.campaign_line` refuses a budget above `MINED_MAX_BUDGET = 1000` with "budget is at most
+  1000 (kMinedMaxBudget, Ruling PM4-13: the overlap factor is validated to that budget only)".
+  `research_cycle.py ledger-campaign` rebuilds the line through `campaign_line`, so it refuses too. The C++ twin
+  `field_problem` refuses in the same words and the same order (after the rule-10 check), so the verb never writes a
+  line the ledger would refuse.
+- Tests (C++ not compiled; written for `/W4 /WX`):
+  - `StrategyMineCampaign.RefusesABudgetAboveTheCeilingBeforeAnyPayload`: 1001 is refused even with absent role and
+    pool manifests, and nothing is written; the ledger twin refuses 1001 and accepts 1000, both through
+    `mine_ledger_line` and through `mine_ledger_line_problem`.
+  - `RulePinsOnTheTemplates` now runs at `kMinedMaxBudget` (acceptance at 1000) and asserts `budget`,
+    `recipe.max_budget` and `hurdle.max_budget`.
+  - pytest: `campaign_line` refuses 1001, and the E-33 test now accepts at 1000 (it was 2048). `ledger-campaign`
+    refuses an output with budget 1001 and appends nothing. `test_mine_overlap_factor.py` pins the header constant to
+    `MINED_MAX_BUDGET == 1000`.
+  - The `mine_recipe` fixture of `test_research_ledger.py` now follows `recipe_json`'s layout (F, ceiling, floors).
+- Basis of the ceiling: the one-off 200,000-draw null at the 504-row discover floor (MINE-6 table above). The |t| ratio
+  is 1.46 at the 99.95% level and 1.51 at the 99.99% level, both under F = 1.55. The per-trial rate of t / 1.55 >= z is
+  .000045 at N = 1,000 against a nominal .00005, so the hurdle is conservative up to about N = 1,000 and nominal near
+  it. Past it the ratio keeps rising and the hurdle is no longer shown to hold.
+- pytest after the change: 16 passed (the same three files).
+
 ## Deviations from the design notes (and why)
 
 - MINE-6: implemented as t / F >= z (the ruling's words) rather than f2 >= z x F; `mined_hurdle(N)` stays the plan's
@@ -103,6 +141,7 @@ extras, S = 8, W workers, R rungs, T = `mine_trial_capacity`, P = records of a r
 
 - `atx-impl/CMakeLists.txt` (one source line, `src/strategy_mine_ledger.cpp`; MINE-1).
 - `atx-impl/tools/test_trial_ledger_rules.py` (FIX-C's E-33 test, new `campaign_line` keywords; FIX-C contracts kept).
+  Round 1 changed its example budget from 2,048 to 1,000 (Ruling PM4-13) and added the 1001 refusal.
 - `atx-engine/include/atx/engine/factory/search_driver.hpp`, `atx-engine/src/factory/search_driver.cpp` beyond the hook
   itself: the race's fresh-list rebuild became the shared `drop_fresh` lambda (same operations), and MINE-11 refuses a
   mask or catalogue with a checkpoint on the legacy path too.
@@ -130,6 +169,8 @@ extras, S = 8, W workers, R rungs, T = `mine_trial_capacity`, P = records of a r
 
 ## Not done
 
+MINE-14, MINE-15 and MINE-16 are deferred to v9 (Round 1). They are not part of this lane.
+
 - MINE-14 (m, cap before the rho step): needs `promote` to stream candidates in f2 order (the cap bounds the signals
   held in memory, which the admission counts); not cheap.
 - MINE-15 (m, an undefined rho pair does not block): needs a ruling (fail the pair, or require joint dates >=
@@ -139,13 +180,14 @@ extras, S = 8, W workers, R rungs, T = `mine_trial_capacity`, P = records of a r
 
 ## Open risks and concerns for the project manager
 
-1. MINE-6 tail: F = 1.55 is derived at the confirm gate (95.4%) and the 99.8% discover tail. The Bonferroni hurdle of
-   any N > 25 lies deeper; on the 504-row floor the ratio rises (1.46 at 99.95%, 1.51 at 99.99%) and the per-trial
-   rate reaches nominal near N = 1,000 (9 of 200,000 null draws). For budgets in the thousands on discover windows near
-   504 rows the hurdle may be anti-conservative. Options (ruling): raise `kMinedMinDiscoverRows` toward ~750 (about the
-   most TRAIN leaves beside a 200-row confirm), cap N on short windows, or derive F at the budget's own level. The
-   confirm's BY p = Phi(-t / F) also sits in the tail where the 200-row ratio is 1.70 (99%), so BY at short confirm
-   windows is approximate.
-2. A real 4-year campaign at the default search needs about 10.9 GiB: `--max-memory-mib` (default 2,048) must be
-   raised, against the 15.7 GB host (E-6).
+1. MINE-6 tail (answered by Ruling PM4-13, Round 1): F = 1.55 is derived at the confirm gate (95.4%) and at the 99.8%
+   discover tail. The Bonferroni hurdle of any N > 25 lies deeper. On the 504-row floor the ratio rises (1.46 at
+   99.95%, 1.51 at 99.99%) and the per-trial rate reaches nominal near N = 1,000 (9 of 200,000 null draws). Budgets
+   above 1,000 are now refused until F is re-derived at the budget's own level (v9). What remains: the confirm's BY
+   p = Phi(-t / F) sits in the tail, where the 200-row ratio is 1.70 (99%), so BY on short confirm windows is
+   approximate.
+2. OD-7 precondition, memory: a real 4-year campaign at the default search needs about 10.85 GiB
+   (11,651,171,382 B; MINE-10 table). `--max-memory-mib` (default 2,048) must be raised to an owner-approved cap,
+   against the 15.7 GB host (E-6), before any OD-7 campaign. No code change is made for it: the verb already refuses a
+   footprint above `--max-memory-mib` before any payload.
 3. Real stage-2 searches may file `slot-bound` failures (counted in N, conservative); the fixture asserts none.
