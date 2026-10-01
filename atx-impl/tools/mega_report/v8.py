@@ -32,8 +32,10 @@ refused (ValueError), so nothing sealed is rendered even from a file whose name 
 The ladder refuses, with a visible block of the unavailable class (counted by the CLI), a ``v8.final`` that is not the
 last accepted cell of the ladder, a top-level ``final`` (page header, book sections) that is not v8.final's cell, a
 cell whose paired test was read but whose verdict is missing or still pending, a recorded verdict the rule of
-v8-prereg item 5 contradicts (an accept the rule rejects or cannot read for an unread criterion part, a reject the rule
-accepts), and a parent that is not the last accepted cell before its cell (a rejected cell is never a parent).
+v8-prereg item 5 contradicts (an accept the rule rejects; an accept whose rule is n/a, naming the part: an unread
+criterion part, a nav_summ row of the cell or its parent, a year table or TRAIN year missing, unless the n/a input is
+its own unavailable block; a reject the rule accepts), and a parent that is not the last accepted cell before its cell
+(a rejected cell is never a parent).
 
 The optional cells are part of the ladder (Rulings E-38, E-45, PM4-8, PM4-10). A cell with ``defined_if`` ({"accepted":
 [keys], "rejected": [keys], "ruling": id}) is undefined once a named earlier cell's recorded verdict settles against it
@@ -435,13 +437,37 @@ def summary_checks(crit: dict | None) -> list[dict]:
     return [ch for ch in (crit or {}).get('checks') or [] if ch.get('source') == 'summary' and 'metric' in ch]
 
 
+def _years_by(row: dict | None) -> dict | None:
+    """{year: row} of a nav_summ row's ``year_table``; None when the row carries no year table."""
+    table = (row or {}).get('year_table')
+    if not isinstance(table, list):
+        return None
+    return {int(y['year']): y for y in table if isinstance(y, dict) and C.is_num(y.get('year'))}
+
+
 def year_values(row: dict | None, metric: str) -> dict:
     """{TRAIN year: ``metric`` of that year's row in a nav_summ ``year_table``}; None for a year without a row or a
     value. The years are the research window's TRAIN years (never a literal)."""
-    table = (row or {}).get('year_table')
-    by = {int(y['year']): y for y in table if isinstance(y, dict) and C.is_num(y.get('year'))} \
-        if isinstance(table, list) else {}
+    by = _years_by(row) or {}
     return {y: by.get(y, {}).get(metric) for y in train_years()}
+
+
+def years_na(row: dict | None, metric: str) -> list[str]:
+    """Why a ``source: years`` check is n/a on a nav_summ row that was read (Ruling PM5-12, finding R6C-1): the row has
+    no year table, a TRAIN year has no row (no return rows that year), or a TRAIN year's ``metric`` is n/a (nav_summ's
+    volatility needs 2 return rows). A missing row is named by the ladder (``ladder_rows``), not here."""
+    if row is None:
+        return []
+    by = _years_by(row)
+    if by is None:
+        return ['its nav_summ row has no year_table (run nav_summ with --protocol v8)']
+    out = []
+    for y in train_years():
+        if y not in by:
+            out.append(f'TRAIN year {y} is not in its year table (no return rows)')
+        elif not C.is_num(by[y].get(metric)):
+            out.append(f"TRAIN year {y}: {metric} n/a ({_short(by[y].get('return_rows'))} return rows)")
+    return out
 
 
 def years_eval(row: dict | None, ch: dict, name: str) -> tuple[bool | None, str]:
@@ -468,15 +494,19 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs:
     ``v7.spo_v3_books.{primary}``). ``"source": "years"`` reads the cell's nav_summ ``year_table``: every TRAIN year's
     value inside [lo, hi] (``years_eval``; no parent read). A check without ``metric`` ({text, met}) is a part the
     report cannot compute (a capacity-curve reading): its ``met`` is the PM's reading, None until set and then listed in
-    ``unread``. Without checks ``met`` is the configured reading of the whole criterion (or None, then unread)."""
+    ``unread``. Without checks ``met`` is the configured reading of the whole criterion (or None, then unread).
+    ``na`` names every computed part that is n/a on a document that was read (Ruling PM5-12, finding R6C-1): a value
+    missing from the cell's or the parent's nav_summ row or NAV summary.json, two values that do not compare, a TRAIN
+    year missing from the year table (``years_na``). A document that was not read is named where it is missing (its
+    own unavailable block, or the missing nav_summ row ``ladder_rows`` names)."""
     crit, docs = crit or {}, docs or {}
     checks = crit.get('checks') or []
     if not checks:
         met = crit.get('met')
         return {'text': crit.get('text'), 'met': met if isinstance(met, bool) else None,
                 'detail': 'as configured' if isinstance(met, bool) else None,
-                'unread': [] if isinstance(met, bool) else [crit.get('text') or 'the criterion']}
-    parts, res, unread = [], [], []
+                'unread': [] if isinstance(met, bool) else [crit.get('text') or 'the criterion'], 'na': []}
+    parts, res, unread, na = [], [], [], []
     for ch in checks:
         if 'metric' not in ch:
             met = ch.get('met') if isinstance(ch.get('met'), bool) else None
@@ -494,12 +524,19 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs:
             if source == 'summary':
                 return _summary_metric(docs.get(which), ch, docs)
             return _metric(row if which == 'cell' else prow, ch)
+
+        def read(which, source=source):  # the document a side is read from; None when it was not read
+            if source == 'summary':
+                return 'NAV summary.json' if isinstance(docs.get(which), dict) else None
+            return 'nav_summ row' if (row if which == 'cell' else prow) is not None else None
         name = ch.get('label') or ((f"{ch['scenario']} " if ch.get('scenario') else '') + ch['metric']
                                    + (f" / {ch['per']}" if ch.get('per') else ''))
         if source == 'years':
             met, text = years_eval(row, ch, name)
             res.append(met)
             parts.append(text)
+            if met is None:
+                na += [f'{name}: {why}' for why in years_na(row, ch['metric'])]
             continue
         v = value_of('cell')
         if 'value' in ch:
@@ -507,6 +544,8 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs:
                 raise ValueError(f"mechanical criterion: unknown op {ch.get('op')!r}")
             res.append(_cmp(v, ch['op'], ch['value']))
             parts.append(f"{name} {_short(v)} {ch['op']} {_short(ch['value'])}")
+            if res[-1] is None:
+                na += _check_na(name, [('cell', v)], read, _short(ch['value']))
             continue
         if ch.get('op') not in RELATIVE_OPS:
             raise ValueError(f"mechanical criterion: unknown op {ch.get('op')!r}")
@@ -515,8 +554,19 @@ def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs:
         ref = pv * f if C.is_num(pv) else None
         res.append(_cmp(v, ch['op'], ref))
         parts.append(f"{name} {_short(v)} {ch['op']} parent {_short(pv)}" + (f' x {f:g}' if f != 1.0 else ''))
+        if res[-1] is None:
+            na += _check_na(name, [('cell', v), ('parent', pv)], read, f'parent {_short(pv)}')
     return {'text': crit.get('text'), 'met': None if any(r is None for r in res) else all(res),
-            'detail': '; '.join(parts), 'unread': unread}
+            'detail': '; '.join(parts), 'unread': unread, 'na': na}
+
+
+def _check_na(name: str, sides: list[tuple[str, object]], read, against: str) -> list[str]:
+    """Why a computed check is n/a: each side's value missing from a document that was read (``read(which)`` names
+    the document; None when it was not read, then it is named where it is missing), else the values do not compare."""
+    out = [f'{name} of the {which} n/a in its {read(which)}' for which, v in sides if v is None and read(which)]
+    if not out and all(read(which) for which, _ in sides):
+        out.append(f'{name} {_short(sides[0][1])} does not compare with {against}')
+    return out
 
 
 def mechanics_eval(row: dict | None, checks: list[dict]) -> dict:
@@ -677,6 +727,12 @@ def cell_states(cells: list[dict], rules) -> dict:
     return out
 
 
+def _reads_parent_row(crit: dict | None) -> bool:
+    """A criterion check compares the cell's nav_summ row with its parent's (source summ, no fixed value)."""
+    return any('metric' in ch and ch.get('source', 'summ') == 'summ' and 'value' not in ch
+               for ch in (crit or {}).get('checks') or [])
+
+
 def defined_cells(cells: list[dict], rules) -> list[dict]:
     """The cells of the ladder that are not undefined (``cell_states``): the ones whose inputs are read."""
     states = cell_states(cells, rules)
@@ -701,9 +757,41 @@ def _report_text(r: dict | None) -> str:
             f"{_short(r.get('tau_gmv_mean'))}, cost {_short(r.get('cost_bps_traded'))} bps per traded dollar")
 
 
+def _rule_na(v8: dict, c: dict, par: dict, sm: dict | None, rows: tuple, mech: dict, ce: dict, pd: dict | None,
+             docs: dict) -> tuple[list[str], list[str]]:
+    """(parts, inputs) of a rule-bearing row (Ruling PM5-12, finding R6C-1): ``parts`` names every input of the rule
+    that is n/a with no unavailable block of its own (a nav_summ row of the cell or of the parent the criterion
+    compares with, a mechanics metric, no mechanics or paired test configured, a paired dSR missing from its file, a
+    criterion value or TRAIN year, ``criterion_eval``'s ``na``); ``inputs`` the inputs whose own unavailable block
+    already explains an n/a (the nav_summ JSON, a paired test file, a NAV summary.json)."""
+    r, pr = rows
+    parts, inputs = [], []
+    if sm is None:
+        inputs.append(_rel(v8['summ']) if v8.get('summ') else 'v8.summ')
+    else:
+        if r is None:
+            parts.append(f"its nav_summ row ({_base(c.get('dir'))}) is missing from {sm['rel']}")
+        elif mech['passed'] is None:
+            parts += [f"mechanics {g['name']} n/a in its nav_summ row" for g in mech['items'] if g['passed'] is None] \
+                or ['no mechanics configured (v8.mechanics)']
+        if pr is None and _reads_parent_row(c.get('criterion')):
+            parts.append(f"the parent's nav_summ row ({_base(par.get('dir'))}) is missing from {sm['rel']}")
+    inputs += [summary_path(cell) for which, cell in (('cell', c), ('parent', par))
+               if which in docs and docs[which] is None]
+    parts += ce['na']
+    if not c.get('paired'):
+        parts.append('no paired test configured (v8.cells[].paired)')
+    elif pd is None:
+        inputs.append(_rel(c['paired']))
+    elif not C.is_num(pd.get('dsr')):
+        parts.append(f"the paired dSR is n/a in {_rel(c['paired'])}")
+    return parts, inputs
+
+
 def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
     """(rows, unavailable blocks of missing paired or NAV-summary inputs, notes, sources) of the configured v8 cells;
-    an undefined cell (``cell_states``) reads nothing and renders "undefined (ruling)"."""
+    an undefined cell (``cell_states``) reads nothing and renders "undefined (ruling)". A rule-bearing row carries
+    ``na_parts`` / ``na_inputs`` (``_rule_na``) for ``verdict_rule_checks``."""
     v8 = _v8(ctx)
     cells = _cells(v8)
     by_key = {c.get('key'): c for c in cells}
@@ -777,6 +865,8 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
             continue
         parts = [row['pos'], row['mech'], row['crit_met']]
         row['rule'] = None if any(x is None for x in parts) else all(parts)
+        if row['rule'] is None:
+            row['na_parts'], row['na_inputs'] = _rule_na(v8, c, par, sm, (r, pr), mech, ce, pd, docs)
         rows.append(row)
     return rows, unav, notes, srcs
 
@@ -787,11 +877,27 @@ def _rule_text(r: dict) -> str:
     return f"dSR > 0 {s(r.get('pos'))}, mechanics {s(r.get('mech'))}, criterion {s(r.get('crit_met'))}"
 
 
+def _na_why(r: dict) -> str | None:
+    """Why an accepted row's rule is n/a, naming each part (Ruling PM5-12, finding R6C-1): the unread manual criterion
+    parts, then every input with no unavailable block of its own (``_rule_na``); None when every n/a input is already
+    its own unavailable block."""
+    why = []
+    if r.get('crit_unread'):
+        why.append(f"its criterion is not read: {'; '.join(r['crit_unread'])} (set the part's met)")
+    if r.get('na_parts'):
+        why.append(f"the rule of v8-prereg item 5 is n/a: {'; '.join(r['na_parts'])}")
+    if not why and not r.get('na_inputs'):  # nothing named and no input missing: still never accepted unread
+        why.append(f'the rule of v8-prereg item 5 is n/a ({_rule_text(r)})')
+    return '; and '.join(why) or None
+
+
 def verdict_rule_checks(rows: list[dict], kinds: dict) -> list[tuple[str, str]]:
     """Review P-3, v8-prereg item 5: a recorded verdict against the computed rule (paired S2 net dSR > 0 against the
     parent AND mechanics AND the cell's criterion). Refused: an accepted cell the rule rejects; an accepted cell whose
-    rule is n/a because a manual criterion part is unread (a missing input is its own unavailable block); a rejected
-    cell the rule accepts. Baselines (no parent) carry no rule."""
+    rule is n/a (Ruling PM5-12, finding R6C-1: every rule-bearing cell, naming the part: an unread manual criterion
+    part, a missing nav_summ row of the cell or of its parent, a missing year table or TRAIN year, a year whose value
+    is n/a; an input that is its own unavailable block is counted there instead); a rejected cell the rule accepts.
+    Baselines (no parent), report-only and undefined cells carry no rule."""
     out = []
     for r in rows:
         k, rule, key = kinds[r['key']], r.get('rule'), f"v8.cells[{r['key']}].verdict"
@@ -800,9 +906,8 @@ def verdict_rule_checks(rows: list[dict], kinds: dict) -> list[tuple[str, str]]:
         if k == 'accepted' and rule is False:
             out.append((key, f"recorded accepted ({r.get('verdict')!r}) but the rule of v8-prereg item 5 rejects it "
                              f"({_rule_text(r)})"))
-        elif k == 'accepted' and rule is None and r.get('crit_unread'):
-            out.append((key, f"recorded accepted ({r.get('verdict')!r}) but its criterion is not read: "
-                             f"{'; '.join(r['crit_unread'])} (set the part's met)"))
+        elif k == 'accepted' and rule is None and (why := _na_why(r)):
+            out.append((key, f"recorded accepted ({r.get('verdict')!r}) but {why}"))
         elif k == 'rejected' and rule is True:
             out.append((key, f"recorded rejected ({r.get('verdict')!r}) but the rule of v8-prereg item 5 accepts it "
                              f"({_rule_text(r)})"))

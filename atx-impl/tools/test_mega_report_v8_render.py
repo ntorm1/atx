@@ -673,6 +673,26 @@ def test_v8_pitch_branch_errors_are_refused_visibly(root):
     assert [n for n, _ in na if n.startswith('v8_')] == ['v8_ladder']
 
 
+def test_accepted_optional_cells_whose_parent_row_is_missing_are_refused(root):
+    """Ruling PM5-12, finding R6C-1: R-10, R-11 and R-12 recorded accepted while the parent's nav_summ row their
+    criterion compares with is missing from the v8 nav_summ JSON (a note, no unavailable block of its own) are refused,
+    naming that row; the parent, accepted with its own row missing, is refused too. Before the fix both rules were n/a
+    with nothing unread, and nothing was refused."""
+    a = PITCH_BRANCHES['R-6 and R-1 accepted']
+    cfg = v8_config(*a[:3])
+    T.world(root, cfg)
+    summ, by = cfg['v8']['summ'], {c['key']: c for c in cfg['v8']['cells']}
+    head = "recorded accepted ('ACCEPTED') but the rule of v8-prereg item 5 is n/a: "
+    assert T._checks(root, cfg) == []
+    for key in ('R-10', 'R-11', 'R-12'):
+        par = by[key]['parent']
+        name = V._base(by[par]['dir'])
+        T.put(root, summ, [r for r in T.summ_rows(cfg) if V._base(r['dir']) != name])
+        assert T._checks(root, cfg) == [
+            (f'v8.cells[{par}].verdict', f'{head}its nav_summ row ({name}) is missing from {summ}'),
+            (f'v8.cells[{key}].verdict', f"{head}the parent's nav_summ row ({name}) is missing from {summ}")], key
+
+
 # the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL; its
 # verdicts recorded as v8_config records them, on full_world. The normalised HTML's SHA-256 and length.
 PRE_PM4_8_SHA256 = 'ae009759f39ce7d12e2452f497bb083974b1f6910de0be0c933a59a6e2891e2f'

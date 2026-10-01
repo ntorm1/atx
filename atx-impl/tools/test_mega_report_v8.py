@@ -374,7 +374,7 @@ def test_criterion_eval_ops_per_and_factor():
     assert V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'le', 'factor': 0.7}]}, row, par)['met'] is False
     assert V.criterion_eval({'checks': [{'metric': 'c', 'op': 'le'}]}, row, None)['met'] is None
     assert V.criterion_eval({'text': 'capacity at 4x', 'met': True}, None, None) == {
-        'text': 'capacity at 4x', 'met': True, 'detail': 'as configured', 'unread': []}
+        'text': 'capacity at 4x', 'met': True, 'detail': 'as configured', 'unread': [], 'na': []}
     assert V.criterion_eval(None, row, par)['met'] is None
     mixed = {'checks': [{'metric': 'tau', 'op': 'lt'}, {'text': 'net at 2x not lower', 'met': None}]}
     ce = V.criterion_eval(mixed, row, par)
@@ -559,6 +559,64 @@ def test_ladder_checks_refuse_a_verdict_the_rule_contradicts(root):
     assert _checks(root, cfg) == []
 
 
+NA_HEAD = "recorded accepted ('ACCEPTED') but the rule of v8-prereg item 5 is n/a: "
+
+
+def test_an_accept_whose_rule_is_na_is_refused_naming_the_part(root):
+    """Ruling PM5-12, finding R6C-1: an accepted rule-bearing cell whose rule is n/a for an input with no unavailable
+    block of its own is refused, naming the part (its nav_summ row or its parent's, a metric of either, a mechanics
+    metric, no paired test configured, a paired dSR missing from its file); an n/a whose input is its own unavailable
+    block (the nav_summ JSON, the paired test, a NAV summary.json) is counted there and not refused twice."""
+    cfg = cfg_for()
+
+    def checks_with(edit=None, conf=cfg):
+        world(root, conf)
+        rows = summ_rows(conf)
+        if edit:
+            edit(rows)
+        put(root, 'b/summ.json', rows)
+        return _checks(root, conf)
+    r1 = 'v8.cells[R-1].verdict'
+    assert checks_with() == []
+    assert checks_with(lambda rows: rows.pop(1)) == [
+        (r1, f'{NA_HEAD}its nav_summ row (mega-nav-v8-r1) is missing from b/summ.json')]
+    assert checks_with(lambda rows: rows.pop(0)) == [   # the baseline carries no rule; R-1 compares with its row
+        (r1, f"{NA_HEAD}the parent's nav_summ row (mega-nav-v8-b0c) is missing from b/summ.json")]
+    assert checks_with(lambda rows: rows[1].pop('tau_gmv_mean')) == [
+        (r1, f'{NA_HEAD}tau_gmv_mean / mean_gross_leverage_all_rows of the cell n/a in its nav_summ row')]
+    assert checks_with(lambda rows: rows[0].update(mean_gross_leverage_all_rows=0.0)) == [
+        (r1, f'{NA_HEAD}tau_gmv_mean / mean_gross_leverage_all_rows of the parent n/a in its nav_summ row')]
+    assert checks_with(lambda rows: rows[1].pop('mean_net_leverage_all_rows')) == [
+        (r1, f'{NA_HEAD}mechanics Net leverage, mean over all rows n/a in its nav_summ row')]
+    assert checks_with(conf=cfg_for(mechanics=[])) == [(r1, f'{NA_HEAD}no mechanics configured (v8.mechanics)')]
+    no_paired = cfg_for()
+    del no_paired['v8']['cells'][1]['paired']
+    assert checks_with(conf=no_paired) == [(r1, f'{NA_HEAD}no paired test configured (v8.cells[].paired)')]
+    world(root, cfg)
+    doc = bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c')
+    doc['paired']['dsr'] = None
+    put(root, 'b/paired-r1.json', doc)
+    assert _checks(root, cfg) == [(r1, f'{NA_HEAD}the paired dSR is n/a in b/paired-r1.json')]
+    # an unread manual part and a missing row: both named
+    unread = cfg_for()
+    unread['v8']['cells'][1]['criterion']['checks'].append({'text': 'net at 4x higher', 'met': None})
+    assert checks_with(lambda rows: rows.pop(1), unread) == [
+        (r1, "recorded accepted ('ACCEPTED') but its criterion is not read: net at 4x higher (set the part's met); and "
+             "the rule of v8-prereg item 5 is n/a: its nav_summ row (mega-nav-v8-r1) is missing from b/summ.json")]
+    # a missing input is its own unavailable block: no refusal on top of it
+    world(root, cfg)
+    (root / 'b/summ.json').unlink()
+    rows = V.ladder_rows(make_ctx(root, cfg))[0]
+    assert rows[1]['rule'] is None and (rows[1]['na_parts'], rows[1]['na_inputs']) == ([], ['b/summ.json'])
+    assert _checks(root, cfg) == []
+    nav = summary_cfg()
+    world(root, nav)
+    (root / 'b/mega-nav-v8-b0c/summary.json').unlink()
+    rows = V.ladder_rows(make_ctx(root, nav))[0]
+    assert rows[1]['na_parts'] == [] and rows[1]['na_inputs'] == ['b/mega-nav-v8-b0c/summary.json']
+    assert _checks(root, nav) == []
+
+
 def three_cells(r1_verdict: str = 'ACCEPTED', r2_parent: str = 'R-1') -> dict:
     """cfg_for() plus R-2 (parented on ``r2_parent``, accepted, the final cell)."""
     cfg = cfg_for(final='R-2')
@@ -643,7 +701,7 @@ def test_years_check_reads_every_train_year_of_the_cells_own_year_table():
         return {'year_table': [dict(r, ann_vol=vol(r['year'])) for r in year_table(0)]}
     ok = V.criterion_eval(crit, table(lambda y: 0.045), None)
     each = ', '.join(f'{y} 0.045' for y in ys)
-    assert ok == {'text': 'vol band', 'met': True, 'unread': [],
+    assert ok == {'text': 'vol band', 'met': True, 'unread': [], 'na': [],
                   'detail': f'realised vol by TRAIN year ({each}) between 0.04 and 0.06'}
     for vol, met in ((0.06, True), (0.04, True), (0.0601, False), (0.0399, False), (None, None)):
         got = V.criterion_eval(crit, table(lambda y, v=vol: v if y == ys[2] else 0.05), None)['met']
@@ -819,6 +877,35 @@ def test_r8_accepted_against_its_volatility_band_is_refused(root):
     rows = {r['key']: r for r in V.ladder_rows(make_ctx(root, cfg))[0]}
     assert (rows['R-8']['pos'], rows['R-8']['crit_met'], rows['R-8']['rule']) == (False, False, False)
     assert _checks(root, cfg) == []
+
+
+def test_r8_accepted_with_its_band_unread_is_refused_naming_the_year(root):
+    """Ruling PM5-12, finding R6C-1: R-8 recorded accepted while its band cannot be read on its own year table (a TRAIN
+    year missing, a year whose volatility is n/a for one return row, no year table) is refused, naming the year or the
+    table; the ladder shows the refusal. Before the fix the rule was n/a with nothing unread, and nothing was refused.
+    Recorded rejected, the n/a rule does not contradict it."""
+    ys = V.train_years()
+
+    def r8_checks(cfg, edit):
+        world(root, cfg)
+        rows = summ_rows(cfg)
+        edit(next(r for r in rows if r['dir'].endswith('mega-nav-v8-r-8')))
+        put(root, 'b/summ.json', rows)
+        return _checks(root, cfg)
+
+    def drop_last_year(r):
+        r['year_table'] = [y for y in r['year_table'] if y['year'] != ys[-1]]
+    cfg = optional_cfg(ALL_ACCEPTED, final='R-12')
+    r8 = 'v8.cells[R-8].verdict'
+    assert r8_checks(cfg, drop_last_year) == [
+        (r8, f'{NA_HEAD}realised vol: TRAIN year {ys[-1]} is not in its year table (no return rows)')]
+    assert [n for n, _ in unavailable(build(root, cfg)) if n.startswith('v8_')] == ['v8_ladder']
+    assert r8_checks(cfg, lambda r: r['year_table'][1].update(return_rows=1, ann_vol=None)) == [
+        (r8, f'{NA_HEAD}realised vol: TRAIN year {ys[1]}: ann_vol n/a (1 return rows)')]
+    assert r8_checks(cfg, lambda r: r.pop('year_table')) == [
+        (r8, f'{NA_HEAD}realised vol: its nav_summ row has no year_table (run nav_summ with --protocol v8)')]
+    rejected = optional_cfg(dict(ALL_ACCEPTED, **{'R-8': 'REJECTED (vol band)'}), {'R-10': 'R-6'}, 'R-12')
+    assert r8_checks(rejected, drop_last_year) == []
 
 
 def test_config_without_optional_cells_is_unchanged_by_the_branch_machinery():
