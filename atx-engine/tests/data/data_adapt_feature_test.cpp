@@ -248,8 +248,11 @@ TEST(DataAdaptFeature, InstrumentIdentitySurvivesIngestionAndLearning) {
   for (atx::usize r = 0; r < features.value().n_rows(); ++r) {
     const auto &matrix = features.value();
     EXPECT_EQ(matrix.row_valid[r], atx::u8{1});
+    // FeatureMatrix retains the terminal feature row even when its forward
+    // label is unavailable. Date 3 sees the new value; future date 4 never leaks.
+    const atx::usize date_increment = matrix.row_date[r] == 2U ? 2U : 0U;
     EXPECT_DOUBLE_EQ(matrix.X[r * matrix.n_features + 1],
-                     static_cast<atx::f64>(matrix.row_inst[r] + 1));
+                     static_cast<atx::f64>(matrix.row_inst[r] + 1U + date_increment));
   }
 }
 

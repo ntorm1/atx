@@ -259,6 +259,26 @@ if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-ic-screen-tests REUSE_FROM atx-engine-test-pch)
 endif()
 
+# Focused equity review regressions link the production library without building
+# every owning test group. Keep ordinary group registration unchanged.
+add_executable(atx-engine-equity-review-tests EXCLUDE_FROM_ALL
+    risk/risk_constraint_dispatch_test.cpp
+    core/execution_sim_test.cpp
+    core/backtest_accounting_test.cpp
+    core/backtest_integration_test.cpp
+    book/book_borrow_schedule_test.cpp
+    book/book_w0b0_borrow_single_count_test.cpp
+    factory/factory_fitness_test.cpp
+    factory/factory_cpcv_cache_test.cpp
+    combine/combine_walk_forward_test.cpp
+    data/data_align_test.cpp
+    data/data_adapt_feature_test.cpp)
+atx_engine_test_compile_environment(atx-engine-equity-review-tests)
+target_link_libraries(atx-engine-equity-review-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-equity-review-tests REUSE_FROM atx-engine-test-pch)
+endif()
+
 # Bounded W1 qualification on production libraries, including existing oracle,
 # streaming and walk-forward checks. Ordinary owning suites remain registered.
 add_executable(atx-engine-w1-foundation-tests EXCLUDE_FROM_ALL
