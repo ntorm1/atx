@@ -239,7 +239,8 @@ def test_without_era_flags_the_parse_is_the_single_path(eras):
 
 
 # ------------------------------------------------------------------ Ruling E-35: the v8 compositions
-STD, STD_AIM, AIM = cr.STD_RULE_ID, cr.STD_AIM_RULE_ID, fcw.AIM_RULE_ID
+# AIM: Ruling E-27a's aim rule on an ew-theme-v1 parent, ew-theme-aim-v2 (Ruling E-27b; the pool's E-35a rule).
+STD, STD_AIM, AIM = cr.STD_RULE_ID, cr.STD_AIM_RULE_ID, cr.AIM_V2_RULE_ID
 # The keys a pool adds or replaces (H-1): everything else of a one-era pool is the single-window fit's.
 POOL_KEYS_WEIGHTS = (("provenance", "pool"), ("provenance", "window"), ("provenance", "admission_sha256"))
 POOL_KEYS_ADMISSION = (("pool",), ("window",), ("rules", "train_window_ns"))
@@ -340,8 +341,8 @@ def aim_members(doc: dict, adm: dict) -> tuple[list[str], dict, dict]:
 
 
 def test_pooled_aim_fit_over_one_era_is_e27a_on_the_single_window_gains(train_world):
-    """Ruling E-35a: ew-theme-aim-v1 in the pool, by E-27a's rule, on the gains of the pooled aim records (one era:
-    the single window's gains and admission, byte for byte once the pool's own keys are removed)."""
+    """Rulings E-35a, E-27b: ew-theme-aim-v2 in the pool, by E-27a's rule, on the gains of the pooled aim records (one
+    era: the single window's gains and admission, byte for byte once the pool's own keys are removed)."""
     (c1, _, single), (c2, summary, pooled) = train_world["runs"][AIM, "single"], train_world["runs"][AIM, "pool"]
     assert (c1, c2) == (fcw.EXIT_OK, fcw.EXIT_OK)
     a, b = (json.loads(x[fcw.OUTPUT_WEIGHTS]) for x in (single, pooled))
@@ -356,21 +357,34 @@ def test_pooled_aim_fit_over_one_era_is_e27a_on_the_single_window_gains(train_wo
     for i, w in b["weights"].items():
         assert w == pytest.approx(want.get(i, 0.0), rel=0, abs=1e-15), i
     assert max(b["weights"].values()) <= 0.25 * (1 + cr.CAP_TOLERANCE)        # the member cap 1/(2T) holds
-    assert b["provenance"]["composition"] == fcw.POOLED_AIM_TEXT and b["schema"] == fcw.WEIGHTS_SCHEMA
+    assert b["provenance"]["composition"] == cr.AIM_V2_TEXT and b["schema"] == fcw.WEIGHTS_SCHEMA
     themes_doc = b["provenance"]["themes"]
     assert summary["aim_theme_weights"] == {t: e["aim_theme_weight"] for t, e in sorted(themes_doc.items())}
 
 
-def test_pooled_aim_fit_over_one_era_equals_the_single_window_fit(train_world):
-    """Ruling E-35a: once the single-window ew-theme-aim-v1 follows E-27a (lane FIX-3), the one-era pool equals it as
-    tests (a) and (b). Before that merge the single window still normalises across themes: skipped, never weakened."""
+@pytest.mark.parametrize("comp", [STD, STD_AIM, AIM])
+def test_pooled_aim_fit_over_one_era_equals_the_single_window_fit(train_world, comp):
+    """Rulings E-35a, E-27b (integration 6 part B): the pooled path runs the single-window code (FIX-3's shared
+    theme_gain_weights for ew-theme-aim-v2), so the one-era pool equals the single-window fit byte for byte once the
+    pool's own keys are removed, for ew-theme-std-v1, ew-theme-std-aim-v1 and ew-theme-aim-v2 alike; the single
+    window's ew-theme-aim-v2 is E-27a written out (no skip)."""
     single = json.loads(train_world["runs"][AIM, "single"][2][fcw.OUTPUT_WEIGHTS])
     adm = json.loads(train_world["runs"][AIM, "single"][2][fcw.OUTPUT_ADMISSION])
     want = e27a_reference(*aim_members(single, adm))
-    if any(abs(w - want.get(i, 0.0)) > 1e-15 for i, w in single["weights"].items()):
-        pytest.skip("single-window ew-theme-aim-v1 still normalises across themes (Ruling E-27a lands with lane "
-                    "FIX-3): re-run this test after FIX-3 merges")
-    one_era_equals_single(train_world, AIM)
+    for i, w in single["weights"].items():
+        assert w == pytest.approx(want.get(i, 0.0), rel=0, abs=1e-15), i
+    a, b = one_era_equals_single(train_world, comp)
+    assert a["provenance"]["rule"] == b["provenance"]["rule"] == comp
+
+
+def test_the_pooled_fit_refuses_the_v5_aim_rule_naming_v2(eras, tmp_path):
+    """Ruling E-27b: ew-theme-aim-v1 keeps the v5 rule and is never pooled; the refusal names ew-theme-aim-v2 and
+    happens before anything is read or written."""
+    args = fcw.parse_args(pooled_argv(eras, tmp_path / "o"))
+    args.composition = fcw.AIM_RULE_ID
+    with pytest.raises(fcw.FitError, match=r"ew-theme-aim-v1 is not implemented by the pooled fit.*ew-theme-aim-v2"):
+        fcw.fit(args)
+    assert not (tmp_path / "o").exists() and fcw.AIM_RULE_ID not in fcw.POOLED_COMPOSITIONS
 
 
 @pytest.mark.parametrize("comp", ["ew-theme-new-v9", "mv-shrink-0.9-nonneg-v1", "mv-shrink-0.9-nonneg-netcost-v1"])
@@ -501,7 +515,7 @@ def test_two_history_eras_pooled_std_aim_gains_are_the_block_panel_gains(pooled_
 
 
 def test_two_history_eras_pooled_aim_is_e27a_on_the_pooled_gains(pooled_v8):
-    """Ruling E-35a on two history eras: ew-theme-aim-v1 reads the same pooled aim records as ew-theme-std-aim-v1 (its
+    """Ruling E-35a on two history eras: ew-theme-aim-v2 reads the same pooled aim records as ew-theme-std-aim-v1 (its
     era aim parts are reused from the store) and weights them by E-27a; each era's file carries the same weights."""
     t = pooled_v8
     code, summary, out = t[AIM]
