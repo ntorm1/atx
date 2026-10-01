@@ -952,3 +952,19 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   code changes moved no common cell. No registered or drafted v8 candidate reads the field (registry 48 alphas,
   43 fields; v8 draft never names it). The re-base continues; the 4-year values are the reference; the signal
   overlap (R13 report 2) must be bit-identical.
+
+## 2026-10-01 STOP at owner instruction (PM session 4); status 4 written
+- Owner: "at the next logical breakpoint stop; if enough information exists to build the v8 report, build it,
+  otherwise write a status file", then "stop here". No v8 cell has run, so no v8 metric exists and no report
+  was built. Both FIX-4 agents were stopped at once (not at a boundary of their choosing); neither wrote a report.
+- FIX-4a (pool 4) at the stop: R6B-O-1 test d9726cfa, O-2 e8997d64 (PM4-11), O-3 72696785 (PM4-12), O-4 263077f8
+  committed; the unfinished O-5 saved as WIP commit b8b68f4e (7 files, incomplete, untested; committed by the PM
+  so the tree is clean and nothing is lost); O-6, O-7, C-1, C-5 and the report not started.
+- FIX-4b (pool 10) at the stop: C-2 f408a6f1, C-4 cf15052d committed, tree clean; S-1, S-2 and the report not
+  started. The lanes' last pytest results did not reach the PM: unverified until the lanes resume.
+- MINE-FIX finished 20e7bd19 (pool 8), unmerged by Ruling PM4-2.
+- Wave 0: R1-R11 built (fields v9 on lo1 and lo3), field overlap explained (PM4-15); R12-R14 pending after
+  integration 6 part C. No statistic from 2020-2023 read. N 37; admission trials 0; history reads 0; validation
+  reads 2 (before v8); 2024+ never opened (one disclosure: progress-line row counts past the seal, no value).
+- Root code head 9c5cfa0c (build v8-10); every tree clean.
+- Status: docs/plans/2026-10-01-platform-v8-status-4.md. Goal prompt: docs/plans/2026-10-01-platform-v8-next-goal-prompt-4.md.
