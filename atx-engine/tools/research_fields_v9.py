@@ -1,5 +1,6 @@
-"""Platform v9 draft research fields (lane FIELDS-V9, ruling PM5-13): ``nt_first_126``, the field the library v9
-draft candidate C-3 ``nt_late`` waits on (spec F-L1 of docs/plans/2026-10-01-v9-library-draft.md, section 3).
+"""Platform v9 draft research fields (lane FIELDS-V9, ruling PM5-13): ``nt_first_126`` and ``earn_season_rank``, the
+fields the library v9 draft candidates C-3 ``nt_late`` and C-4 ``earn_season`` wait on (specs F-L1 and F-L2 of
+docs/plans/2026-10-01-v9-library-draft.md, section 3).
 
 Draft and off by default. ``prepare_research_fields.py`` does not register this module, so the plain builder, every
 v8 field list (fields v9 to v12), every existing field's formula and every existing producer fingerprint are exactly as
@@ -18,16 +19,23 @@ Fields:
   ``filings.parquet`` (the periodic-filer presence), and the SEC identity bridge (``--sec-identity-bridge``). Clock and
   session assignment: research_fields_sec.py's ``SEC_CLOCK`` and its ``Calendar`` (a row is usable at session t iff its
   available_at < 22:00 UTC of session t-1: a notice accepted after the close of d is usable from d+2).
+* ``earn_season_rank`` (F-L2): Chang-Hartzmark-Solomon-Soltes (2017) EarnRank on quarterly net income, on the issuer
+  fields' events rows and their fiscal-quarter view (research_fields_v8.py ``QUARTER_RULE``, Ruling E-30): the mean
+  ascending rank of the upcoming quarter's same fiscal quarter in each of the past five years among the 20 quarters
+  U-23..U-4. Inputs: the builder's own ``--identity-bridge``, ``--fund-events`` and ``--fund-lag-sessions``. The
+  expected-announcement window of the candidate comes from the existing v9 field ``ea_days_to_expected``
+  (research_fields_sec.py: the yoy_364 expectation of past announcements, never the realised date).
 
-Seal: every source row with available_at on or after the builder's ``SEAL_NS`` (research_window.py) is dropped
-before use and counted; the stage files are single files, so they are opened whole and filtered by the reader, as the
-8-K fields read ``eight_k_items.parquet``.
+Seal: every source row with available_at (or accepted_utc) on or after the builder's ``SEAL_NS`` (research_window.py)
+is dropped before use and counted; the stage files are single files, so they are opened whole and filtered by the
+reader, as the 8-K fields read ``eight_k_items.parquet``; the fundamental events are dropped by the builder's own
+``load_events``.
 
 ``--reuse`` (v8 C-3 contract): ``PRODUCERS``, ``HOST_HANDLES``, ``producer_group``, ``field_spec``, ``reuse_inputs`` and
-``entry_inputs``; every computed entry records ``producer`` (this module's code identity). The producer calls code
-imported from research_fields_sec.py, which no producer fingerprint covers (the fingerprint follows no import; review
-B-1 of F-1): the AST closure of those imported names, with the builder definitions they read through ``h``, is an
-input pin of each entry (``imported_code``), so an edit there recomputes the field.
+``entry_inputs``; every computed entry records ``producer`` (this module's code identity). The producers call code
+imported from research_fields_sec.py and research_fields_v8.py, which no producer fingerprint covers (the fingerprint
+follows no import; review B-1 of F-1): the AST closure of those imported names, with the builder definitions they read
+through ``h``, is an input pin of each entry (``imported_code``), so an edit there recomputes the field.
 """
 from __future__ import annotations
 
@@ -41,11 +49,15 @@ import pyarrow.parquet as pq
 
 import code_fingerprint  # same directory: the AST closure fingerprints --reuse keys on
 import research_fields_sec  # same directory; neither imports this module
+import research_fields_v8
 from research_fields_sec import (_Host, Calendar, LINK_NOTE, Latest, SEC_CLOCK, STAGES, Windowed, accession_keys,
                                  cik_positions)
+from research_fields_v8 import (ISSUER_CLOCK, ISSUER_STALENESS, QUARTER_CAVEATS, QUARTER_RULE, LatestRows,
+                                QuarterIndex, gathered, issuer_history, picked)
 
 GROUP = "v9"
-OPTIONS = ("sec_stages", "sec_identity_bridge", "sec_identity_bridge_sha256", "sec_filings_sha256")
+OPTIONS = ("sec_stages", "sec_identity_bridge", "sec_identity_bridge_sha256", "sec_filings_sha256",
+           "identity_bridge", "identity_bridge_sha256", "fund_events", "fund_events_sha256", "fund_lag_sessions")
 HOST_HANDLES = ("h",)
 BUILDER = "prepare_research_fields.py"            # the builder these producers are bound into (same directory)
 BUILDER_ORCHESTRATION = frozenset({"run", "main"})  # its PRODUCER_ORCHESTRATION (never followed by a fingerprint)
@@ -91,6 +103,25 @@ NT_CAVEATS = [
     "co-registrant notices count for each registrant CIK",
     LINK_NOTE]
 
+# ---- F-L2 earn_season_rank ------------------------------------------------------------------------------------------
+EARN_ITEMS = ("ni_q",)
+EARN_QUARTERS = 23                    # the selected row's fiscal quarters k = 0..22 (k = 0 is A)
+EARN_FIRST, EARN_LAST = 3, 22         # k = 3..22 are quarters U-4..U-23 (U = A + 1): the 20 ranked quarters
+EARN_SAME = (0, 4, 8, 12, 16)         # their positions of k = 3, 7, 11, 15, 19: U-4, U-8, U-12, U-16, U-20
+EARN_DOMAIN = (3.0, 18.0)             # the mean of 5 of the average ranks 1..20
+EARN_CHUNK = 1 << 15                  # events rows per vectorised block
+ANCHOR_SPAN = (1 << 22) + 1           # period_end days + 1 stay below it (QuarterIndex asserts days < 2^22)
+EARN_REASONS = ("value", "anchor_not_latest_quarter", "fewer_than_20_finite_quarters")
+EARN_RULE = (
+    "chss-earnrank-ni20q-v1 on the selected events row's quarter view (QUARTER_RULE): A = the row's anchor (fiscal "
+    "quarter k = 0), the latest fiscal quarter visible at t; U = A + 1, the quarter announced next; x_k = ni_q of "
+    "fiscal quarter k for k = 3..22 (U-4..U-23), all 20 finite; r_k = the ascending average rank of x_k among the 20 "
+    "(1..20; tied values share the mean of their ranks); value = (r_3 + r_7 + r_11 + r_15 + r_19) / 5, the mean rank "
+    "of quarters U-4, U-8, U-12, U-16, U-20 (the fiscal quarter of U in each of the past five years); NaN when any of "
+    "the 20 is missing or not finite, or when the selected row's anchor is earlier than the latest period_end among "
+    "the CIK's rows up to it (an amendment of an older quarter: A + 1 is then not the quarter announced next); a value "
+    "outside the domain [3, 18] -> NaN (cannot occur)")
+
 FIELDS: dict = {
     "nt_first_126": {
         "group": "v9_nt", "point_in_time": True, "lagged": False, "stages": [NT_STAGE],
@@ -104,13 +135,34 @@ FIELDS: dict = {
         "lag": NT_LAG,
         "min_history": NT_MIN_HISTORY,
     },
-
+    "earn_season_rank": {
+        "group": "v9_earnseason", "point_in_time": True, "lagged": False,
+        "units": ("mean rank in [3, 18] (neutral 10.5): EarnRank (Chang-Hartzmark-Solomon-Soltes 2017) of the upcoming "
+                  "fiscal quarter on quarterly net income"),
+        "clock": ISSUER_CLOCK,
+        "staleness": ISSUER_STALENESS + "; any of the 20 quarters missing, or an older-quarter anchor -> NaN",
+        "definition": EARN_RULE + ". " + QUARTER_RULE,
+        "source_columns": list(EARN_ITEMS) + ["cik", "accepted_utc", "accession", "period_end", "staleness_days"],
+        "caveats": [
+            "declared deviations from Chang et al. (2017): quarterly net income ni_q, not split-adjusted EPS excluding "
+            "extraordinary items (their footnote 3: robust to the earnings measure; net income needs no split "
+            "restatement across 20 quarters); fiscal quarters matched by period_end within +-20 days (Ruling E-30); "
+            "the announcement window is the candidate's (ea_days_to_expected), not part of this field",
+            "U = A + 1 is the quarter announced next only until its own events row is visible: between the earnings "
+            "release and the 10-Q / 10-K filing the field still ranks the quarter just announced",
+            *QUARTER_CAVEATS],
+        "formula_id": "chss-earnrank-ni20q-v1",
+        "min_history": ("23 fiscal quarters of events rows (A and the 22 before it); the events emit rows from "
+                        "2014-06-01, so the field is defined from about 2019Q4"),
+        "domain": EARN_DOMAIN,
+    },
 }
 # The producing code of each field group (contract of task C-3: {group: (entry names,)}); compute() orchestrates.
-PRODUCERS = {"v9_nt": ("nt_rows",)}
+PRODUCERS = {"v9_nt": ("nt_rows",), "v9_earnseason": ("earn_season_rows",)}
 # The names each producer group imports from another field module (their closure is an input pin, imported_code).
 IMPORTS: dict = {
-    "v9_nt": (research_fields_sec, ("Calendar", "Latest", "Windowed", "accession_keys", "cik_positions"))}
+    "v9_nt": (research_fields_sec, ("Calendar", "Latest", "Windowed", "accession_keys", "cik_positions")),
+    "v9_earnseason": (research_fields_v8, ("issuer_history", "LatestRows", "QuarterIndex", "gathered", "picked"))}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -338,6 +390,75 @@ def nt_rows(h, role, output: Path, budget, options: dict) -> tuple:
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# F-L2 earn_season_rank
+# ---------------------------------------------------------------------------------------------------------------
+
+def latest_anchor(ev: dict) -> np.ndarray:
+    """Per clock-ordered events row: True when its period_end is known and is the latest period_end among the CIK's
+    rows up to it (clock order)."""
+    n = len(ev["cidx"])
+    known, anchor = ev["known"], ev["period_end"]
+    if n and known.any() and (anchor[known].min() < 0 or anchor[known].max() >= ANCHOR_SPAN - 1):
+        raise ValueError("v9 earn_season_rank: period_end days outside the key range")
+    o = np.lexsort((np.arange(n), ev["cidx"]))         # each CIK's rows in clock order
+    base = ev["cidx"][o] * ANCHOR_SPAN
+    key = base + np.where(known[o], anchor[o] + 1, 0)  # 0: no known anchor
+    best = np.maximum.accumulate(key) - base if n else np.zeros(0, dtype=np.int64)   # earlier CIKs stay <= base
+    out = np.empty(n, dtype=bool)
+    out[o] = known[o] & (anchor[o] + 1 == best)
+    return out
+
+
+def average_ranks(x: np.ndarray) -> np.ndarray:
+    """Per row: the ascending average ranks 1..m of the m values (ties share the mean of their ranks); exact."""
+    less = (x[:, None, :] < x[:, :, None]).sum(axis=2)
+    equal = (x[:, None, :] == x[:, :, None]).sum(axis=2)
+    return 1.0 + less + 0.5 * (equal - 1)
+
+
+def earn_rank_history(ev: dict, index) -> tuple:
+    """``EARN_RULE`` for every events row: (value, reason code into EARN_REASONS)."""
+    n = len(ev["clock"])
+    value, reason = np.full(n, np.nan), np.zeros(n, dtype=np.int8)
+    ni = ev["values"]["ni_q"]
+    newest = latest_anchor(ev)
+    for lo in range(0, n, EARN_CHUNK):
+        r = np.arange(lo, min(lo + EARN_CHUNK, n))
+        x = gathered(ni, index.rows(r, EARN_QUARTERS)[:, EARN_FIRST:EARN_LAST + 1])
+        full = np.isfinite(x).all(axis=1)
+        mean = average_ranks(x)[:, list(EARN_SAME)].sum(axis=1) / len(EARN_SAME)
+        ok = newest[r] & full & (mean >= EARN_DOMAIN[0]) & (mean <= EARN_DOMAIN[1])
+        value[r] = np.where(ok, mean, np.nan)
+        reason[r] = np.select([~newest[r], ~full], [1, 2], 0).astype(np.int8)
+    return value, reason
+
+
+def earn_season_rows(h, hist: dict, role, output: Path, budget, lag: int) -> dict:
+    """``earn_season_rank`` (its field definition) from the issuer history."""
+    value, reason = earn_rank_history(hist["ev"], QuarterIndex(hist["ev"]))
+    budget.check("v9-earn-history")
+    sel = LatestRows(h, hist, lag)
+    counts = dict.fromkeys(("no_usable_row",) + EARN_REASONS[1:], 0)
+    w = h.FieldWriter(output, "earn_season_rank", role)
+    try:
+        for t in range(role.n_dates):
+            e, use, pline = sel.at(t, int(role.days[t]))
+            w.write(picked(value, e, use))
+            member = role.member[t] != 0
+            counts["no_usable_row"] += int(np.count_nonzero(member & pline & ~use))
+            code = np.where(use, reason[e], 0) if len(reason) else np.zeros(role.n, dtype=np.int8)
+            for k, key in enumerate(EARN_REASONS[1:], start=1):
+                counts[key] += int(np.count_nonzero(member & (code == k)))
+            if t % 256 == 0:
+                budget.check("v9-earn-write")
+    except BaseException:
+        w.f.close()   # refused: the partial file stays unpublished (no manifest), handle released
+        raise
+    w.close()
+    return {"earn_season_rank": (w, list(hist["sources"]), {"nan_reasons_member_cells": counts})}
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # The module object the builder binds, and the --reuse interface (v8 C-3)
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -361,18 +482,27 @@ def field_spec(name: str) -> dict:
 
 
 def reuse_inputs(name: str, options: dict) -> dict:
-    """This run's input pins of a field: its stage manifest and SEC bridge; and the code its producer imports
-    (imported_code)."""
+    """This run's input pins of a field: its stage manifest and SEC bridge (nt_first_126) or the issuer bridge, events
+    and declared lag (earn_season_rank); and the code its producer imports (imported_code)."""
     lower = lambda k: str(options.get(k) or "").lower()
-    pins = {NT_STAGE: lower(f"{NT_STAGE}_sha256"), "sec_identity_bridge": lower("sec_identity_bridge_sha256")}
+    if name == "nt_first_126":
+        pins = {NT_STAGE: lower(f"{NT_STAGE}_sha256"), "sec_identity_bridge": lower("sec_identity_bridge_sha256")}
+    else:
+        pins = {"identity_bridge": lower("identity_bridge_sha256"), "fund_events": lower("fund_events_sha256"),
+                "fund_lag_sessions": options.get("fund_lag_sessions")}
     return {**pins, "imported_code": imported_code(producer_group(name))}
 
 
 def entry_inputs(entry: dict) -> dict:
     """The same pins as a manifest entry records them."""
-    stages = entry.get("stage_manifests") if isinstance(entry.get("stage_manifests"), dict) else {}
-    pins = {NT_STAGE: (stages.get(NT_STAGE) or {}).get("sha256"),
-            "sec_identity_bridge": entry.get("identity_bridge_manifest_sha256")}
+    if entry.get("name") == "nt_first_126":
+        stages = entry.get("stage_manifests") if isinstance(entry.get("stage_manifests"), dict) else {}
+        pins = {NT_STAGE: (stages.get(NT_STAGE) or {}).get("sha256"),
+                "sec_identity_bridge": entry.get("identity_bridge_manifest_sha256")}
+    else:
+        pins = {"identity_bridge": entry.get("identity_bridge_manifest_sha256"),
+                "fund_events": entry.get("fund_events_manifest_sha256"),
+                "fund_lag_sessions": entry.get("fund_lag_sessions")}
     return {**pins, "imported_code": entry.get("imported_code")}
 
 
@@ -385,7 +515,8 @@ class V9FieldModule:
     @staticmethod
     def add_arguments(parser):
         """No new options: nt_first_126 reads the SEC module's --sec-stages, --sec-identity-bridge(-sha256) and
-        --sec-filings-sha256 (OPTIONS)."""
+        --sec-filings-sha256; earn_season_rank the builder's --identity-bridge(-sha256), --fund-events(-sha256) and
+        --fund-lag-sessions (OPTIONS)."""
 
     @staticmethod
     def check(selected, options: dict):
@@ -393,21 +524,36 @@ class V9FieldModule:
         need = []
         if "nt_first_126" in selected:
             need += ["sec_stages", "sec_identity_bridge", "sec_identity_bridge_sha256", "sec_filings_sha256"]
+        if "earn_season_rank" in selected:
+            need += ["identity_bridge", "identity_bridge_sha256", "fund_events", "fund_events_sha256",
+                     "fund_lag_sessions"]
         missing = ["--" + k.replace("_", "-") for k in need if options.get(k) in (None, "")]
         if missing:
             names = [x for x in FIELDS if x in selected]
             raise ValueError(f"--fields: {', '.join(names)} need {', '.join(missing)} (run() callers pass them in "
                              "module_options)")
+        if "earn_season_rank" in selected:
+            lag = options["fund_lag_sessions"]
+            if isinstance(lag, bool) or not isinstance(lag, int) or not 0 <= lag <= 5:
+                raise ValueError("--fund-lag-sessions must be an integer in [0, 5] (declared: 1)")
 
     def compute(self, names, role, output: Path, budget, options: dict, outcome: dict, source_checks: dict,
                 field_extras: dict):
         if not names:
             return
         h = self.h
-        results, checks = {}, {}
+        results, checks, pins = {}, {}, {}
         if "nt_first_126" in names:
             got, checks["nt_first_126"] = nt_rows(h, role, output, budget, options)
             results.update(got)
+        if "earn_season_rank" in names:
+            lag = options["fund_lag_sessions"]
+            hist = issuer_history(h, role, budget, options, list(EARN_ITEMS))
+            results.update(earn_season_rows(h, hist, role, output, budget, lag))
+            pins = {**hist["pins"], "fund_lag_sessions": lag}
+            checks["earn_season_rank"] = {"fund_lag_sessions": lag, "clock": ISSUER_CLOCK,
+                                          "quarter_rule": QUARTER_RULE, **hist["checks"]}
+            del hist
         source_checks[GROUP] = checks
         producer = {"module": Path(__file__).name, **h.module_code_identity(sys.modules[__name__])}
         for x in names:
@@ -415,7 +561,9 @@ class V9FieldModule:
             spec = FIELDS[x]
             field_extras[x] = {"producer": producer, "formula_id": spec["formula_id"],
                                "formula_sha256": h.formula_id(x, h.spec_definition(x, 0)),
-                               "min_history": spec["min_history"], **extra,
-                               "imported_code": imported_code(spec["group"])}
+                               "min_history": spec["min_history"], **(pins if x == "earn_season_rank" else {}),
+                               **extra, "imported_code": imported_code(spec["group"])}
+            if "domain" in spec:
+                field_extras[x]["domain"] = list(spec["domain"])
             outcome[x] = (w, sources, w.coverage())
         budget.report("v9-complete", fields=len(names))

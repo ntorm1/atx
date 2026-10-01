@@ -7,10 +7,10 @@ exactly as they are, so the reuse counts of the v8 builds cannot move. Run this 
 module as ``producer``):
 
   python atx-engine/tools/prepare_research_fields_draft.py --role ...
-      --fields <fields v12>,nt_first_126 --reuse <the fields v12 directory> ...
+      --fields <fields v12>,nt_first_126,earn_season_rank --reuse <the fields v12 directory> ...
 
 * ``FIELDS_V13_DRAFT``: fields v13 (draft) = fields v12 + these, in this order. ``nt_first_126`` (library v9 draft C-3
-  ``nt_late``) of research_fields_v9.py; uncompiled DSL, unrun on data.
+  ``nt_late``) and ``earn_season_rank`` (C-4 ``earn_season``) of research_fields_v9.py; uncompiled DSL, unrun on data.
 
 ``register`` binds each draft module into a builder namespace exactly as the builder binds its own modules (``bind``
 appends the module's ``FIELDS`` to ``ALL_FIELDS`` after every field registered before; the module object joins
@@ -24,7 +24,7 @@ import research_fields_v9                  # same directory
 
 DRAFT_VERSION = "v13"
 DRAFT_MODULES = (research_fields_v9,)
-FIELDS_V13_DRAFT = ("nt_first_126",)
+FIELDS_V13_DRAFT = ("nt_first_126", "earn_season_rank")
 
 
 def register(host_namespace: dict) -> list:
