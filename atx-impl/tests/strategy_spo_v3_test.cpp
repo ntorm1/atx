@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <span>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -523,8 +524,9 @@ TEST(SpoV3, CriterionReadsTheTradedBook) {
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta
 // .02, ceiling 1 with the void on); --spo-alpha implied-aim is its only alpha (refused with
 // spo-v1/v2 and for any other value); every spo flag that would move a registered constant is
-// refused; the allowed flags override; as spo-v1/v2 it refuses the capacity curve, a per-name
-// rate and the holdings stream with the void on; its blocks are keyed spo_v3.
+// refused; the allowed flags override; as spo-v1/v2 it refuses a per-name rate and the holdings
+// stream with the void on, and unlike them it accepts the capacity curve (Ruling E-37); its
+// blocks are keyed spo_v3.
 TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
   const std::vector<std::string> tail{"--risk-model", "risk", "--risk-model-sha256", "abc",
                                       "--output", "x"};
@@ -601,8 +603,20 @@ TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
     EXPECT_FALSE(v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data())); // no model
     EXPECT_TRUE(v7::claims_nav_args(static_cast<int>(argv.size()), argv.data()));
   }
-  // As spo-v1/v2: no capacity curve, the fixed rate, no holdings stream with the void on.
-  EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--capacity-curve"}));
+  // As spo-v1/v2: the fixed rate, no holdings stream with the void on. Unlike them (Ruling
+  // E-37), the capacity curve runs, as a report-only pass (SpoV3.CapacityPass...).
+  const auto curve = parse({"nav", "--rule", "spo-v3", "--capacity-curve"});
+  ASSERT_TRUE(curve) << curve.error().to_string();
+  EXPECT_TRUE(curve->options.capacity);
+  EXPECT_EQ(curve->args, (std::vector<std::string>{"nav", "--rule", "aim-partial-v5",
+                                                   "--output", "x"}));
+  for (const char* spo : {"spo-v1", "spo-v2"}) {
+    const auto refused = parse({"nav", "--rule", spo, "--capacity-curve"});
+    ASSERT_FALSE(refused) << spo;
+    EXPECT_NE(refused.error().message().find("capacity curve"), std::string::npos)
+        << refused.error().to_string();
+  }
+  EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--capacity-curve", "--rate", "per-name-v1"}));
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--rate", "per-name-v1"}));
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--emit-holdings", "h"}));
   EXPECT_TRUE(parse({"nav", "--rule", "spo-v3", "--emit-holdings", "h",
@@ -794,5 +808,162 @@ TEST(SpoV3, ShapingFlagsPassThroughAndSpoV1V2RefuseThem) {
       }
     }
   }
+}
+
+// Ruling E-37 (review N-2): spo-v3 runs --capacity-curve as a report-only pass. A capacity book
+// plans on the extension's capacity engine as the tracker of the NAV-m book (the primary S2 law
+// at m x NAV_post: trade limit p ADV / (m NAV), impact at m NAV): x1 is the main pass's S2 book
+// bit for bit (its tracking rows too, relabelled), x4 at NAV V is the spo-v3 book replayed at 4V
+// divided by 4, and the tracker planned at the base NAV under the x4 fills is another book. The
+// main engine keeps exactly the rows, summary and tripwire of a run without the capacity pass;
+// the capacity engine's gamma is the main pass's bit for bit and its tripwire never voids. A
+// capacity pass on a book that is not a capacity book is refused.
+TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  const auto params = sp::v3_params();
+  const auto base = nav_config();
+  const auto books = st::cost_v2::capacity_scenarios(base.scenario);
+  ASSERT_EQ(books[1].id, "capacity-x1-v1");
+  ASSERT_EQ(books[3].id, "capacity-x4-v1");
+  const Replay alone = replay_v3(role, risk, params); // no capacity pass
+  auto genuine_cfg = base;
+  genuine_cfg.initial_nav = 4.0 * base.initial_nav;
+  const Replay genuine = replay_v3(role, risk, params, genuine_cfg); // the NAV-4 tracker
+  auto shortcut_cfg = base;
+  shortcut_cfg.scenario = books[3];
+  const Replay shortcut = replay_v3(role, risk, params, shortcut_cfg); // planned at base NAV
+  ASSERT_FALSE(alone.rows.empty());
+  v7::NavV7Options o;
+  o.spo_v1 = true;
+  o.capacity = true;
+  o.spo_params = params;
+  o.spo_risk = risk;
+  v7::ScopedNavExtension extension(o);
+  const auto* engine = extension.spo_engine();
+  const auto* capacity = extension.spo_capacity_engine();
+  ASSERT_NE(engine, nullptr);
+  ASSERT_NE(capacity, nullptr);
+  EXPECT_TRUE(engine->params().void_on_capped);
+  EXPECT_FALSE(capacity->params().void_on_capped); // report only: never voids
+  const auto pass = [&](v7::NavV7Pass p, const st::NavScenario& s) {
+    extension.begin_run(p);
+    auto cfg = base;
+    cfg.scenario = s;
+    return st::replay_nav(role.nav(), cfg);
+  };
+  const auto primary = pass(v7::NavV7Pass::Main, base.scenario);
+  const auto unit = pass(v7::NavV7Pass::Capacity, books[1]);
+  const auto x4 = pass(v7::NavV7Pass::Capacity, books[3]);
+  ASSERT_TRUE(primary) << primary.error().to_string();
+  ASSERT_TRUE(unit) << unit.error().to_string();
+  ASSERT_TRUE(x4) << x4.error().to_string();
+  // The main pass: the engine's rows, summary and tripwire are a plain run's, after both passes.
+  EXPECT_EQ(engine->rows_csv(), alone.csv);
+  EXPECT_EQ(engine->rows_summary_json().dump(), alone.summary.dump());
+  EXPECT_EQ(engine->rows_tripwire_json().dump(), alone.tripwire.dump());
+  EXPECT_TRUE(v7::capture({}, {}, {})); // the main tripwire still reads clear
+  // gamma = S_prior / sigma_aim is scale free: the capacity engine's is the main pass's.
+  ASSERT_TRUE(capacity->calibration().done);
+  EXPECT_EQ(bits(capacity->calibration().gamma), bits(engine->calibration().gamma));
+  EXPECT_EQ(bits(genuine.calibration.gamma), bits(engine->calibration().gamma));
+  // x1: the main pass's S2 book bit for bit, and its tracking rows the main rows.
+  ASSERT_EQ(primary->days.size(), alone.result.days.size());
+  ASSERT_EQ(unit->days.size(), primary->days.size());
+  for (usize t = 0; t < primary->days.size(); ++t) {
+    const auto& a = primary->days[t];
+    const auto& u = unit->days[t];
+    EXPECT_EQ(bits(a.net_return), bits(alone.result.days[t].net_return)) << t;
+    EXPECT_EQ(bits(u.net_return), bits(a.net_return)) << t;
+    EXPECT_EQ(bits(u.planned_gross), bits(a.planned_gross)) << t;
+    EXPECT_EQ(bits(u.traded_dollars), bits(a.traded_dollars)) << t;
+  }
+  std::vector<sp::TrackingRow> unit_rows;
+  usize x4_rows = 0;
+  for (const auto& r : capacity->tracking_rows()) {
+    if (r.book.rfind(books[1].id + "+", 0) == 0) {
+      auto row = r;
+      row.book = alone.rows.front().book;
+      unit_rows.push_back(std::move(row));
+    } else if (r.book.rfind(books[3].id + "+", 0) == 0) {
+      ++x4_rows;
+    }
+  }
+  EXPECT_EQ(sp::tracking_csv(unit_rows), alone.csv);
+  EXPECT_EQ(x4_rows, alone.rows.size());
+  EXPECT_EQ(capacity->rows_tripwire_json().at("status"), "clear");
+  // x4 at NAV V is the NAV-4V tracker divided by 4; planned at the base NAV it is another book.
+  const auto& g4 = genuine.result.days;
+  ASSERT_EQ(x4->days.size(), g4.size());
+  ASSERT_EQ(shortcut.result.days.size(), g4.size());
+  usize trading = 0;
+  f64 shortcut_gap = 0;
+  for (usize t = 0; t < g4.size(); ++t) {
+    const auto& g = g4[t];
+    const auto& s = x4->days[t];
+    EXPECT_NEAR(s.net_return, g.net_return, 1e-9 + 1e-6 * std::abs(g.net_return)) << t;
+    EXPECT_NEAR(s.planned_gross, g.planned_gross, 1e-9 + 1e-6 * g.planned_gross) << t;
+    EXPECT_NEAR(4.0 * s.traded_dollars, g.traded_dollars, 1.0 + 1e-5 * g.traded_dollars) << t;
+    trading += g.traded_dollars > 0 ? 1U : 0U;
+    shortcut_gap =
+        std::max(shortcut_gap, std::abs(shortcut.result.days[t].planned_gross - g.planned_gross));
+  }
+  EXPECT_GT(trading, 0U);
+  EXPECT_GT(shortcut_gap, 1e-4) << "the base-NAV plan is the NAV-4V tracker's plan";
+  // A capacity pass on a book that is no capacity book: refused before any plan.
+  extension.begin_run(v7::NavV7Pass::Capacity);
+  const auto stray = st::replay_nav(role.nav(), base);
+  ASSERT_FALSE(stray);
+  EXPECT_NE(stray.error().message().find("Ruling E-37"), std::string::npos)
+      << stray.error().to_string();
+}
+
+// Ruling E-37 (review N-2): theta (--trade-fraction) has no effect on spo-v3 -- H is the
+// registered 20 and the tracker never reads theta -- so the book replayed at theta .25 and at
+// theta .1 is the same bit for bit (every day's net return, plan and trades, every tracking row's
+// plan columns); only the aim-partial-v5 shadow book's diagnostics move. The verb's help says so.
+TEST(SpoV3, TradeFractionHasNoEffectOnTheBook) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  const auto params = sp::v3_params();
+  auto slow = nav_config();
+  ASSERT_EQ(slow.target.trade_fraction, 0.25);
+  slow.target.trade_fraction = 0.1;
+  const Replay fast_run = replay_v3(role, risk, params);
+  const Replay slow_run = replay_v3(role, risk, params, slow);
+  ASSERT_FALSE(fast_run.rows.empty());
+  ASSERT_EQ(slow_run.rows.size(), fast_run.rows.size());
+  ASSERT_EQ(slow_run.result.days.size(), fast_run.result.days.size());
+  for (usize t = 0; t < fast_run.result.days.size(); ++t) {
+    const auto& a = fast_run.result.days[t];
+    const auto& b = slow_run.result.days[t];
+    EXPECT_EQ(bits(a.net_return), bits(b.net_return)) << t;
+    EXPECT_EQ(bits(a.planned_gross), bits(b.planned_gross)) << t;
+    EXPECT_EQ(bits(a.traded_dollars), bits(b.traded_dollars)) << t;
+  }
+  bool shadow_moved = false;
+  for (usize k = 0; k < fast_run.rows.size(); ++k) {
+    const auto& a = fast_run.rows[k];
+    const auto& b = slow_run.rows[k];
+    EXPECT_EQ(bits(a.tracking_error), bits(b.tracking_error)) << k;
+    EXPECT_EQ(bits(a.gross), bits(b.gross)) << k;
+    EXPECT_EQ(bits(a.turnover), bits(b.turnover)) << k;
+    EXPECT_EQ(bits(a.trade_cost), bits(b.trade_cost)) << k;
+    EXPECT_EQ(a.iterations, b.iterations) << k;
+    shadow_moved = shadow_moved || bits(a.turnover_shadow) != bits(b.turnover_shadow);
+  }
+  EXPECT_TRUE(shadow_moved) << "theta never reached the shadow book";
+  EXPECT_EQ(fast_run.horizon, sp::v3_horizon);
+  EXPECT_EQ(slow_run.horizon, sp::v3_horizon);
+  std::ostringstream help;
+  v7::append_help(help);
+  EXPECT_NE(help.str().find("--trade-fraction (theta) has no effect on spo-v3"),
+            std::string::npos);
+  EXPECT_NE(help.str().find("R-9 is undefined on it (Ruling E-37)"), std::string::npos);
+  EXPECT_NE(help.str().find("[--capacity-curve] runs report only"), std::string::npos);
 }
 } // namespace

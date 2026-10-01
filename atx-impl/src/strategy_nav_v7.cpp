@@ -30,6 +30,13 @@ using Json = nlohmann::json;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr usize no_decision = std::numeric_limits<usize>::max();
 std::string book_label(const NavScenario& s) { return s.id + "+" + s.financing.id; }
+// spo-v3's capacity engine (Ruling E-37): the rule's parameters with the void off -- a
+// report-only pass records its tripwire and never voids the run (the void flag is read by the
+// tripwire only, never by the plan).
+spo::SpoParams capacity_params(spo::SpoParams p) {
+  p.void_on_capped = false;
+  return p;
+}
 } // namespace
 
 // Per-thread extension state. The decision-liquidity cache is keyed by the input's price
@@ -37,7 +44,11 @@ std::string book_label(const NavScenario& s) { return s.id + "+" + s.financing.i
 struct ScopedNavExtension::State {
   explicit State(const NavV7Options& o)
       : options(o), s2(fixed_nav_scenarios()[nav_primary_scenario_index]),
-        engine(o.spo_v1 ? std::make_unique<spo::Engine>(o.spo_params, o.spo_risk) : nullptr) {}
+        engine(o.spo_v1 ? std::make_unique<spo::Engine>(o.spo_params, o.spo_risk) : nullptr),
+        capacity_engine(o.spo_v1 && o.capacity
+                            ? std::make_unique<spo::Engine>(capacity_params(o.spo_params),
+                                                            o.spo_risk)
+                            : nullptr) {}
   NavV7Options options;
   NavScenario s2; // the primary S2 law: the v6 marginal cost c_i of every book
   NavV7Pass pass{NavV7Pass::Main};
@@ -50,6 +61,9 @@ struct ScopedNavExtension::State {
   std::vector<f64> costs;
   cost_v2::AimV6Decision decision;
   std::unique_ptr<spo::Engine> engine; // --rule spo-v1
+  // spo-v3 --capacity-curve (Ruling E-37): the capacity pass plans on this engine (its own
+  // rows, duals and timing), so `engine` keeps the main pass's rows, tripwire and summary.
+  std::unique_ptr<spo::Engine> capacity_engine;
   std::string void_reason;             // capture(): the tripwire voided the run
   [[nodiscard]] co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                                 bool rebalance, f64 spent, f64 nav_post,
@@ -141,6 +155,16 @@ constexpr const char* capacity_v6_declaration =
     "with impact_y * m^0.5), which at the base-scale reference trade q equals the S2 law at the "
     "NAV-m trade m q, so c_i/c_bar, band_i, theta_t and target_i are the NAV-m book's (the main "
     "pass prices every book with the primary S2 law); x1 is the main pass's S2 v6 book bit for bit";
+constexpr const char* capacity_spo_v3_declaration =
+    "spo-v3 in the capacity pass (Ruling E-37, report only; the primary series and the main "
+    "pass's spo_diagnostics.csv, tripwire and summary are unchanged): each capacity book is the "
+    "spo-v3 tracker of the NAV-m book, planned on its own engine under the primary S2 law at NAV "
+    "m x NAV_post, so its trade limit p ADV_i / (m NAV) and its impact impact_y sigma_i sqrt(m "
+    "NAV / ADV_i) are the NAV-m book's; the aim is the run's L x desired, whose ADV cap "
+    "(--adv-hold-q) reads the initial NAV for every multiple (Ruling E-15); gamma is calibrated "
+    "on the same first scored decision as the main pass (gamma_equals_main); the capacity "
+    "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
+    "voiding the run; x1 is the main pass's S2 book bit for bit";
 constexpr const char* v6_declaration =
     "aim-partial-v6 (R2.2 + R2.3): on a rebalance decision d, c_i = marginal cost per dollar of "
     "the primary S2 law (half spread 5 + commission 1 bps + 1.5 * 0.6 * sigma_i * (q/ADV_i)^0.5) "
@@ -175,6 +199,7 @@ Json declarations(const ScopedNavExtension::State& s) {
     j["capacity_multiples"] = Json(std::vector<f64>(cost_v2::capacity_multiples.begin(),
                                                     cost_v2::capacity_multiples.end()));
     if (s.options.aim_v6) j["capacity_aim_partial_v6"] = capacity_v6_declaration;
+    if (s.capacity_engine) j["capacity_spo_v3"] = capacity_spo_v3_declaration;
   }
   if (s.options.aim_v6)
     j["aim_partial_v6"] = Json{{"rule", v6_declaration}, {"kappa", v6.kappa},
@@ -278,7 +303,7 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
     extras["status"] = "void";
     extras["void_reason"] = void_reason;
   }
-  if (o.capacity) {
+  if (o.capacity && void_reason.empty()) { // a void run stops before the capacity pass
     Json rows = Json::array();
     const BookRecord* primary = nullptr;
     const BookRecord* unit = nullptr;
@@ -310,6 +335,20 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
              {"diagnostics_units", engine->rows_units_json()},
              {"books", engine->rows_summary_json()}};
   }
+  // spo-v3's capacity pass (Ruling E-37): the capacity engine's report, beside (never in) the
+  // main pass's spo block above.
+  const auto* main_engine = ext.spo_engine();
+  if (const auto* capacity = ext.spo_capacity_engine();
+      capacity && main_engine && o.capacity && void_reason.empty()) {
+    const u64 capacity_gamma = std::bit_cast<u64>(capacity->calibration().gamma);
+    const u64 main_gamma = std::bit_cast<u64>(main_engine->calibration().gamma);
+    extras["capacity_" + std::string(spo::json_key(capacity->params()))] =
+        Json{{"rule", capacity_spo_v3_declaration},
+             {"calibration", capacity->rule_calibration_json()},
+             {"gamma_equals_main", capacity_gamma == main_gamma},
+             {"tripwire", capacity->rows_tripwire_json()},
+             {"books", capacity->rows_summary_json()}};
+  }
   extras["files"] = std::move(files);
   return write_text(dir / "v7_extras.json", extras.dump(2) + "\n");
 }
@@ -330,11 +369,26 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
     return co::Err(co::ErrorCode::InvalidArgument,
                    "aim-partial-v6 / spo-v1: the per-name rate is not part of the rule "
                    "(--rate fixed)");
+  // The spo rule's engine and NAV. Capacity pass (Ruling E-37, spo-v3 only): a book here is the
+  // NAV-m book at the initial NAV, so it plans on the capacity engine as the tracker of NAV m x
+  // NAV_post under the primary S2 law: its trade limit p ADV / (m NAV) and its impact
+  // impact_y sigma sqrt(m NAV / ADV) are the NAV-m book's (m = 1: the main pass bit for bit).
+  spo::Engine* rule = engine.get();
+  f64 rule_nav = nav_post;
+  if (engine && pass == NavV7Pass::Capacity) {
+    const f64 m = cost_v2::capacity_multiple(cfg.scenario.id);
+    if (!capacity_engine || engine->params().version != 3 || !std::isfinite(m))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "spo capacity pass: spo-v3 only, on a capacity book (Ruling E-37); book " +
+                         cfg.scenario.id);
+    rule = capacity_engine.get();
+    rule_nav = m * nav_post;
+  }
   // Non-rebalance decisions keep every member and only trade exits: aim-partial-v5's move
   // (spo: its shadow book makes the same move).
   if (!rebalance || (!v6 && !engine && !observe)) {
-    if (engine && !rebalance)
-      ATX_TRY_VOID(engine->hold(x, cfg, d, desired, book_label(cfg.scenario)));
+    if (rule && !rebalance)
+      ATX_TRY_VOID(rule->hold(x, cfg, d, desired, book_label(cfg.scenario)));
     return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
   }
   const usize n = x.instruments;
@@ -379,9 +433,9 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
     ATX_TRY_VOID(cost_v2::aim_partial_v6_weights(x, cfg.target, d, true, decision, planned, out));
     record.c_bar = c_bar; record.c_ref = c_ref; record.theta = decision.theta;
     record.costed = decision.costed;
-  } else if (engine) {
-    const spo::BookDecision in{x, cfg, s2, d, nav_post, desired, tier, no_locate, liquidity, book};
-    ATX_TRY_VOID(engine->plan(in, planned, out));
+  } else if (rule) {
+    const spo::BookDecision in{x, cfg, s2, d, rule_nav, desired, tier, no_locate, liquidity, book};
+    ATX_TRY_VOID(rule->plan(in, planned, out));
   } else {
     ATX_TRY_VOID(detail::update_weights(x, cfg.target, d, true, spent, desired, planned, out, rates));
   }
@@ -404,10 +458,14 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
   state_->liquidity_decision = no_decision;
   state_->c_history.clear();
   if (state_->engine) state_->engine->begin_run();
+  if (state_->capacity_engine) state_->capacity_engine->begin_run();
 }
 std::span<const TcRecord> ScopedNavExtension::tc_records() const noexcept { return state_->tc; }
 std::span<const BookRecord> ScopedNavExtension::books() const noexcept { return state_->books; }
 const spo::Engine* ScopedNavExtension::spo_engine() const noexcept { return state_->engine.get(); }
+const spo::Engine* ScopedNavExtension::spo_capacity_engine() const noexcept {
+  return state_->capacity_engine.get();
+}
 const std::string& ScopedNavExtension::void_reason() const noexcept { return state_->void_reason; }
 
 bool claims_nav_args(int argc, char** argv) {
@@ -459,7 +517,9 @@ co::Status capture(std::span<const NavScenario> scenarios,
   if (!s) return co::Ok();
   // The spo specific-ceiling tripwire (R2 M-1), read before any byte is published: the
   // replay returns this error before its output directory exists, so no NAV or return file
-  // (and no return statistic on the console) exists for a void run.
+  // (and no return statistic on the console) exists for a void run. It reads the main pass's
+  // rows only: spo-v3's capacity pass (Ruling E-37, report only) plans on capacity_engine,
+  // whose tripwire is recorded in v7_extras.json and never voids the run.
   if (s->engine) {
     auto tripwire = s->engine->rows_tripwire();
     if (!tripwire) {
@@ -532,10 +592,14 @@ void extend_summary(Json& summary) {
       {"extras", "v7_transfer_coefficient.csv, capacity_curve.csv (with --capacity-curve), "
                  "spo_diagnostics.csv (spo-v1/v2) and v7_extras.json are written after this "
                  "summary"}};
-  if (s->engine) {
-    const std::string key = spo::json_key(s->engine->params());
-    summary["v7"][key + "_books"] = s->engine->rows_summary_json();
-    summary["v7"][key + "_tripwire"] = s->engine->rows_tripwire_json();
+  // The pass's own engine: spo-v3's capacity pass (Ruling E-37) summarises its capacity books.
+  const spo::Engine* engine =
+      s->pass == NavV7Pass::Capacity && s->capacity_engine ? s->capacity_engine.get()
+                                                           : s->engine.get();
+  if (engine) {
+    const std::string key = spo::json_key(engine->params());
+    summary["v7"][key + "_books"] = engine->rows_summary_json();
+    summary["v7"][key + "_tripwire"] = engine->rows_tripwire_json();
   }
   if (const char* id = rule_id(s->options);
       id && summary.contains("rule") && summary.at("rule").is_string())
@@ -581,7 +645,12 @@ void append_help(std::ostream& out) {
          "S_prior 20, H 20, --adv-trade-p .01, beta .02: --gamma, --ic-book, --w-max, "
          "--adv-cap-q, --adv-trade-p, --target-vol, --spo-horizon, --alpha-horizon and "
          "--spo-gross are refused; [--hold-band B] [--adv-hold-q Q] shape desired as "
-         "aim-partial-v5 does (refused with spo-v1/v2); fixed rate only)]\n";
+         "aim-partial-v5 does (refused with spo-v1/v2); [--capacity-curve] runs report only "
+         "(Ruling E-37: each capacity book is the NAV-m tracker, its trade limit and impact at "
+         "m x NAV, on its own engine; v7_extras.json capacity_spo_v3; refused with spo-v1/v2); "
+         "--trade-fraction (theta) has no effect on spo-v3 (H is the registered 20; theta moves "
+         "only the warm-up decisions, which are aim-partial-v5's, and the shadow book's "
+         "diagnostics), so R-9 is undefined on it (Ruling E-37); fixed rate only)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -723,7 +792,9 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
           if (args[k] == "--hold-band" || args[k] == "--adv-hold-q")
             throw std::invalid_argument(args[k] + " needs --rule spo-v3 (spo-v1/v2 refuse the "
                                                   "desired-target shaping)");
-      if (o.capacity)
+      // Ruling E-37: spo-v3 runs the capacity curve as a report-only pass (its capacity books
+      // plan on their own engine as the NAV-m tracker); spo-v1/v2 do not run it.
+      if (o.capacity && spo_version != 3)
         throw std::invalid_argument("spo-v1 does not run the capacity curve (--capacity-curve)");
       if (rate && *rate != "fixed") throw std::invalid_argument("spo-v1 needs the fixed rate");
       if (risk_model.empty() || risk_model_sha256.empty())

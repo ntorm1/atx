@@ -50,6 +50,11 @@
 //                             aim-partial-v5's (the shared construction, detail::form_desired),
 //                             so the aim is L x the shaped desired and the rule id carries
 //                             +hold-band-B / +adv-hold-Q; both refused with spo-v1/v2.
+//                             v8 E-37: --capacity-curve runs report only: each capacity book
+//                             is the NAV-m tracker (trade limit and impact at m x NAV) on its
+//                             own engine, recorded in v7_extras.json capacity_spo_v3; the main
+//                             pass's rows, tripwire and summary are unchanged. --trade-fraction
+//                             has no effect on the spo-v3 plan (H 20 is registered).
 //   spo-v1 / spo-v2 / spo-v3 blocks are keyed "spo_v1" / "spo_v2" / "spo_v3" (recipe v7,
 //   summary v7, extras); the Engine's rule_* / rows_* members produce them.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
@@ -126,6 +131,9 @@ public:
   [[nodiscard]] std::span<const BookRecord> books() const noexcept;
   // The spo-v1 engine (nullptr without --rule spo-v1).
   [[nodiscard]] const spo::Engine* spo_engine() const noexcept;
+  // spo-v3 --capacity-curve (Ruling E-37): the engine the capacity pass plans on (nullptr
+  // without the spo rule and the capacity curve); spo_engine() keeps the main pass's rows.
+  [[nodiscard]] const spo::Engine* spo_capacity_engine() const noexcept;
   // Why capture() voided the run (the spo specific-ceiling tripwire); empty otherwise.
   [[nodiscard]] const std::string& void_reason() const noexcept;
   struct State;
