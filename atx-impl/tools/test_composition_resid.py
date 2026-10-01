@@ -52,6 +52,21 @@ TIE_EXPECTED = [Fraction(-3, 20), Fraction(-1, 4), Fraction(3, 20), Fraction(7, 
                 Fraction(-1, 4), Fraction(-1, 4), Fraction(7, 20), Fraction(-3, 20), Fraction(1, 20), Fraction(1, 4)]
 TIE_SPREAD = [Fraction(-1, 5), Fraction(-2, 5), Fraction(3, 10), Fraction(2, 5), Fraction(-1, 10), Fraction(0),
               Fraction(-3, 10), Fraction(-3, 10), Fraction(2, 5), Fraction(0), Fraction(1, 10), Fraction(1, 10)]
+# Finding R6C-3 (Ruling PM5-12, the Python half; the C++ kernel case is deferred to integration 8): one date, eight
+# names, W = 1/2 each; theme 1's composite has a tie block of three names (2, 4, 6) and one of two (5, 7) beside three
+# singletons (0, 1, 3). The block means order the theme's add name 0 < name 1 < {5, 7} < {2, 4, 6} < name 3; a block
+# sum (no division by the block size) lifts both blocks above name 3; averaging the residual's ranks per block (then
+# re-ranking) puts {5, 7} level with name 3, below {2, 4, 6}. Exact values (rational arithmetic) of the rule and of
+# the two wrong tie steps.
+UNEQUAL_NAMES = 8
+UNEQUAL_PLANES = [[5, 3, 6, 0, 4, 2, 7, 1], [0, 2, 1, 4, 1, 3, 1, 3]]
+UNEQUAL_EXPECTED = [Fraction(-1, 7), Fraction(-3, 14), Fraction(2, 7), Fraction(0), Fraction(1, 7), Fraction(-5, 28),
+                    Fraction(5, 14), Fraction(-1, 4)]
+UNEQUAL_WRONG = {
+    "block sum": [Fraction(-1, 7), Fraction(-3, 14), Fraction(5, 14), Fraction(-5, 14), Fraction(3, 14),
+                  Fraction(-3, 28), Fraction(3, 7), Fraction(-5, 28)],
+    "mean of ranks": [Fraction(-1, 7), Fraction(-3, 14), Fraction(5, 14), Fraction(-2, 7), Fraction(3, 14),
+                      Fraction(-1, 7), Fraction(3, 7), Fraction(-3, 14)]}
 # Finding R6B-O-7 kernel fixture (strategy_ic_theme_resid_test.cpp SmallCaseSeparatesTheRegisteredRegressors): one
 # date, five names, three themes without a tie, W = .3 / .45 / .25; theme 1 is absent on name 4, theme 2 on name 2.
 # Exact values (rational arithmetic) of the rule and of the plausible wrong rules (a) regressing on the earlier themes'
@@ -106,6 +121,34 @@ def registered_without_tie_step(planes, mass, names: int) -> np.ndarray:
             full[names_t], keep[names_t] = e, True
             row[names_t] += mass[t] * cres.centred_tied_ranks(full, keep)[names_t]
     return out
+
+
+def _tie_blocks(z) -> list[list[int]]:
+    """The names of each run of exactly equal ``z`` of two or more (the rule's tie blocks)."""
+    by: dict = {}
+    for k, v in enumerate(z):
+        by.setdefault(float(v), []).append(k)
+    return [b for b in by.values() if len(b) > 1]
+
+
+def tie_block_sums(e, z) -> np.ndarray:
+    """Wrong tie step (finding R6C-3): each tie block's residuals replaced by their sum, not divided by the block size."""
+    out = np.array(e, dtype=np.float64)
+    for b in _tie_blocks(z):
+        out[b] = float(np.sum(out[b]))
+    return out
+
+
+def tie_block_rank_means(e, z) -> np.ndarray:
+    """Wrong tie step (finding R6C-3): the raw residual's centred ranks, each tie block's replaced by their mean (the
+    rule's next step re-ranks them with the singletons' ranks)."""
+    out = cres.centred_tied_ranks(np.asarray(e, dtype=np.float64), np.ones(len(e), dtype=bool))
+    for b in _tie_blocks(z):
+        out[b] = float(np.mean(out[b]))
+    return out
+
+
+WRONG_TIE_STEPS = {"block sum": tie_block_sums, "mean of ranks": tie_block_rank_means}
 
 
 def plausible_wrong_rule(planes, mass, names: int, variant: str) -> np.ndarray:
@@ -321,6 +364,29 @@ class RunnerReference(unittest.TestCase):
         self.assertEqual(list(got[[0, 2, 3]]), [0.0, 0.0, 0.0])               # ((1e16 + 1) - 1e16) / 3 in this order
         self.assertNotEqual((1e16 + -1e16 + 1.0) / 3, 0.0)                    # another order gives 1/3
         np.testing.assert_array_equal(cres.tie_block_means(e, np.arange(4.0)), e)
+
+    def test_unequal_tie_blocks_beside_singletons_pin_the_block_mean(self):
+        """Finding R6C-3 (Ruling PM5-12, the Python half): tie blocks of three and two names beside three singletons,
+        where the order of the block means differs from the block sums' and from the per-block mean of the residual's
+        ranks (UNEQUAL_*). The rule gives UNEQUAL_EXPECTED, one value per block; a block sum or rank averaging gives
+        UNEQUAL_WRONG, each at least 2/7 away on some name; without the tie step the blocks spread."""
+        mass = [0.5, 0.5]
+        got = cres.kernel(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
+        np.testing.assert_allclose(got, [float(x) for x in UNEQUAL_EXPECTED], rtol=0, atol=1e-15)
+        first = cres.centred_tied_ranks(np.array(UNEQUAL_PLANES[0], dtype=float), np.ones(UNEQUAL_NAMES, dtype=bool))
+        add = got - mass[0] * first                                            # theme 1's add per name
+        blocks = _tie_blocks(UNEQUAL_PLANES[1])
+        self.assertEqual(sorted(map(len, blocks)), [2, 3])                    # unequal blocks beside 3 singletons
+        for b in blocks:
+            self.assertLess(np.ptp(add[b]), 1e-15, b)                          # one value per block
+        self.assertEqual(sorted(range(UNEQUAL_NAMES), key=lambda k: (add[k], k)), [0, 1, 5, 7, 2, 4, 6, 3])
+        for variant, values in UNEQUAL_WRONG.items():
+            with unittest.mock.patch.object(cres, "tie_block_means", WRONG_TIE_STEPS[variant]):
+                wrong = cres.kernel(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
+            np.testing.assert_allclose(wrong, [float(x) for x in values], rtol=0, atol=1e-15, err_msg=variant)
+            self.assertGreater(np.max(np.abs(wrong - got)), 2 / 7 - 1e-12, variant)
+        spread = registered_without_tie_step(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
+        self.assertGreater(np.max(np.abs(spread - got)), 0.1)
 
     def test_no_tie_composite_is_the_registered_rule_bit_for_bit(self):
         """Ruling PM4-12: a composite without ties gives the registered text bit for bit (strategy_ic_theme_resid_test.cpp
@@ -593,9 +659,17 @@ class FitterEndToEnd(unittest.TestCase):
             self.resid_fit("refused-no-flag", parent, theme_resid=None)
         self.assertFalse((self.root / "refused-half").exists() or (self.root / "refused-no-flag").exists())
 
+    def registry(self, name: str, themes) -> Path:
+        """An alpha registry (task A-1 schema) whose themes table lists ``themes`` in order."""
+        path = self.root / name
+        path.write_text(json.dumps({"schema": fcw.REGISTRY_SCHEMA, "alphas": [], "fields": {},
+                                    "themes": {t: f"{t} text" for t in themes}}), encoding="utf-8")
+        return path
+
     def test_the_fitter_derives_the_order_from_prior_themes(self):
         """Ruling PM4-11 (finding R6B-O-2): the fitter passes its PRIOR_THEMES, so a theme registered later (E7's
-        filing_events) is placed last once it is registered, and a weighted member of it is refused before."""
+        filing_events, in the registry and in V7_APPENDED_THEMES: finding R6C-4) is placed last once it is registered,
+        and a weighted member of it is refused before."""
         later = fcw.PRIOR_THEMES + ("filing_events",)
         doc = json.loads(json.dumps(self.std))
         weighted = [i for i, w in doc["weights"].items() if w > 0]
@@ -604,12 +678,40 @@ class FitterEndToEnd(unittest.TestCase):
         with self.assertRaises(cres.ResidError):
             cres.attach(doc, fcw.PRIOR_THEMES)
         with unittest.mock.patch.object(fcw, "PRIOR_THEMES", later), \
+                unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry("later.json", later)), \
                 unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
             code, _ = fcw.fit(self.fx.args(self.root / "later-resid", theme_resid=cres.RULE_ID, **STD_ARGS))
         self.assertEqual(code, fcw.EXIT_OK)
         resid = json.loads((self.root / "later-resid" / fcw.OUTPUT_WEIGHTS).read_bytes())["provenance"]["resid"]
         self.assertEqual(resid["registered_order"], list(later))
         self.assertEqual(resid["order"], ["value", "reversal_seasonality"])
+
+    def test_the_registry_themes_must_be_prior_themes_under_theme_resid(self):
+        """Finding R6C-4 (Ruling PM5-12): under --theme-resid the registry's theme tuple must equal PRIOR_THEMES, the
+        registered order, before anything is computed (here before the parent flags are even read): a theme registered
+        without extending V7_APPENDED_THEMES (E7's filing_events), PRIOR_THEMES extended without the registry, or the
+        same themes in another order are refused naming both tuples, with no output. Flag absent: not checked."""
+        later = fcw.PRIOR_THEMES + ("filing_events",)
+        reordered = fcw.PRIOR_THEMES[1:] + fcw.PRIOR_THEMES[:1]
+        bogus_parent = {"theme_resid_parent": str(self.root / "no-parent.json"), "theme_resid_parent_sha256": "0" * 64}
+        for name, registered, constant in (("registered-only", later, fcw.PRIOR_THEMES),
+                                           ("constant-only", fcw.PRIOR_THEMES, later),
+                                           ("reordered", reordered, fcw.PRIOR_THEMES)):
+            with self.subTest(name), unittest.mock.patch.object(fcw, "PRIOR_THEMES", constant), \
+                    unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry(f"{name}.json", registered)), \
+                    unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+                with self.assertRaises(fcw.FitError) as caught:
+                    fcw.fit(self.fx.args(self.root / f"order-{name}", theme_resid=cres.RULE_ID, **bogus_parent,
+                                         **STD_ARGS))
+                msg = str(caught.exception)
+                self.assertIn(f"the admissible themes (registry {name}.json: {', '.join(registered)}) are not "
+                              f"PRIOR_THEMES", msg)
+                self.assertIn(f"(Ruling PM4-11: {', '.join(constant)})", msg)
+                self.assertFalse((self.root / f"order-{name}").exists())
+        with unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry("plain.json", later)), \
+                unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
+            code, _ = fcw.fit(self.fx.args(self.root / "order-plain", **STD_ARGS))   # no --theme-resid: no check
+        self.assertEqual(code, fcw.EXIT_OK)
 
 
 if __name__ == "__main__":

@@ -322,6 +322,9 @@ REGISTERED_CHECKS = {
     'R-10': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
     'R-11': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
     'R-12': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}
+# Ruling PM5-11: the statistic of R-1's criterion (also R-10's and R-11's), named in every text that registers it
+TURNOVER_PER_GROSS = ('turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher '
+                      'than the parent')
 # Rulings E-38 / E-45 / E-37: when each optional cell is defined; R-8 always (E-40)
 DEFINED_IF = {'R-9a': {'rejected': ['R-6']}, 'R-9b': {'rejected': ['R-6']}, 'R-9c': {'rejected': ['R-6']},
               'R-10': {'accepted': ['R-6', 'R-1']}, 'R-11': {'accepted': ['R-6', 'R-1']}, 'R-12': {'accepted': ['R-6']}}
@@ -346,6 +349,10 @@ def test_committed_criteria_carry_every_registered_part():
     assert by['R-10']['defined_if']['ruling'] == by['R-11']['defined_if']['ruling'] == 'E-38, E-45'
     assert by['R-12']['defined_if']['ruling'] == 'E-38' and 'PM4-9' in crit['R-12']['text']
     assert 'E-43' in crit['R-8']['text'] and all('E-44' in crit[k]['text'] for k in ('R-10', 'R-11'))
+    # Ruling PM5-11: R-1's criterion (and R-10's and R-11's) names the statistic its check reads; never "planned"
+    for k in ('R-1', 'R-10', 'R-11'):
+        assert crit[k]['text'].startswith(TURNOVER_PER_GROSS) and 'PM5-11' in crit[k]['text'], k
+        assert 'planned' not in crit[k]['text'], k
     assert [by[k]['n'] for k in OPTIONAL] == [48, 49, 50, 51, 49, 50, 51]            # N <= 51 in either branch
     assert 'S3 not lower' in crit['R-5']['text']
     assert all(s in crit['R-6']['text'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'E-31',
@@ -381,8 +388,12 @@ def test_scorecard_template_carries_every_registered_part():
                    for rows in (cells, ladder)), k
         assert 'PAIRED[' not in ladder[k], k
     for k in ('R-10', 'R-11'):
-        assert all('planned turnover per unit gross not higher' in rows[k] and 'E-44' in rows[k] and
+        assert all(TURNOVER_PER_GROSS in rows[k] and 'E-44' in rows[k] and 'PM5-11' in rows[k] and
                    'R-6 and R-1 are accepted' in rows[k] for rows in (cells, ladder)), k
+    for k in ('R-1', 'R-10', 'R-11'):   # Ruling PM5-11: the statistic named, "planned" dropped, the disclosure stated
+        assert all(TURNOVER_PER_GROSS in rows[k] and 'PM5-11' in rows[k] and 'planned' not in rows[k]
+                   for rows in (cells, ladder)), k
+    assert 'judged on the executed number' in text and 'nav_summ carries no planned-turnover statistic' in text
     assert all('turnover not higher' in rows['R-12'] and 'PM4-9' in rows['R-12'] and 'R-6 is accepted' in rows['R-12']
                for rows in (cells, ladder))
     assert 'undefined (<ruling id>)' in text and 'PM4-10' in text
@@ -673,17 +684,68 @@ def test_v8_pitch_branch_errors_are_refused_visibly(root):
     assert [n for n, _ in na if n.startswith('v8_')] == ['v8_ladder']
 
 
-# the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL; its
-# verdicts recorded as v8_config records them, on full_world. The normalised HTML's SHA-256 and length.
+def test_accepted_optional_cells_whose_parent_row_is_missing_are_refused(root):
+    """Ruling PM5-12, finding R6C-1: R-10, R-11 and R-12 recorded accepted while the parent's nav_summ row their
+    criterion compares with is missing from the v8 nav_summ JSON (a note, no unavailable block of its own) are refused,
+    naming that row; the parent, accepted with its own row missing, is refused too. Before the fix both rules were n/a
+    with nothing unread, and nothing was refused."""
+    a = PITCH_BRANCHES['R-6 and R-1 accepted']
+    cfg = v8_config(*a[:3])
+    T.world(root, cfg)
+    summ, by = cfg['v8']['summ'], {c['key']: c for c in cfg['v8']['cells']}
+    head = "recorded accepted ('ACCEPTED') but the rule of v8-prereg item 5 is n/a: "
+    assert T._checks(root, cfg) == []
+    for key in ('R-10', 'R-11', 'R-12'):
+        par = by[key]['parent']
+        name = V._base(by[par]['dir'])
+        T.put(root, summ, [r for r in T.summ_rows(cfg) if V._base(r['dir']) != name])
+        assert T._checks(root, cfg) == [
+            (f'v8.cells[{par}].verdict', f'{head}its nav_summ row ({name}) is missing from {summ}'),
+            (f'v8.cells[{key}].verdict', f"{head}the parent's nav_summ row ({name}) is missing from {summ}")], key
+
+
+def test_n_after_is_counted_from_the_cell_states(root):
+    """Ruling PM5-12, finding R6C-5: "N after" is the previous cell's N plus 1 and an undefined cell adds 0 (Rulings
+    E-38, E-45, PM4-10) in every branch; a configured n that differs is noted. While R-6 is pending the optional cells'
+    branch is open and N after is the configured n (the plan). Before the fix it was the configured n in every branch."""
+    want = {'R-6 and R-1 accepted': {'R-8': 48, 'R-10': 49, 'R-11': 50, 'R-12': 51},
+            'R-6 accepted, R-1 rejected': {'R-8': 48, 'R-12': 49},
+            'R-6 rejected': {'R-8': 48, 'R-9a': 49, 'R-9b': 50, 'R-9c': 51},
+            'PM4-10, R-10 not formed': {'R-8': 48, 'R-11': 49, 'R-12': 50}}
+    for name, (verdicts, parents, final, undefined) in PITCH_BRANCHES.items():
+        cfg = v8_config(verdicts, parents, final)
+        T.world(root, cfg)
+        rows, _, notes, _ = V.ladder_rows(T.make_ctx(root, cfg))
+        n = {r['key']: r['n'] for r in rows}
+        assert [n[k] for k in ('B0a', 'B0b', 'B0c', *(f'R-{i}' for i in range(1, 8)))] == list(range(38, 48)), name
+        assert {k: v for k, v in n.items() if k in OPTIONAL and v != ''} == want[name], name
+        assert all(n[k] == '' for k in undefined), name
+        conf = {c['key']: c['n'] for c in cfg['v8']['cells']}
+        assert [x for x in notes if 'N after' in x] == [
+            f'{k}: N after {v} from the cell states (an undefined cell adds 0), the configured n is {conf[k]}'
+            for k, v in want[name].items() if v != conf[k]], name
+    cfg = committed_config()   # every verdict pending: R-6 open, the optional cells as configured
+    T.world(root, cfg)
+    rows, _, notes, _ = V.ladder_rows(T.make_ctx(root, cfg))
+    assert [r['n'] for r in rows] == [c['n'] for c in cfg['v8']['cells']]
+    assert not [x for x in notes if 'N after' in x]
+
+
+# the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL and with
+# R-1's criterion text of then (Ruling PM5-11 renamed it, a text only); its verdicts recorded as v8_config records them,
+# on full_world. The normalised HTML's SHA-256 and length.
 PRE_PM4_8_SHA256 = 'ae009759f39ce7d12e2452f497bb083974b1f6910de0be0c933a59a6e2891e2f'
 PRE_PM4_8_BYTES = 643481
+R1_TEXT_PRE_PM5_11 = 'turnover per unit gross not higher'
 
 
 def test_v8_pitch_without_the_optional_cells_renders_the_pre_pm4_8_bytes(root):
-    """Identity: the ladder machinery of Ruling PM4-8 (branch states, years checks, report-only cells) moves no byte of
-    a config that carries none of the new cells."""
+    """Identity: the ladder machinery of Ruling PM4-8 (branch states, years checks, report-only cells) and of Ruling
+    PM5-12 (an accept whose rule is n/a refused, N after from the cell states) moves no byte of a config that carries
+    none of the new cells."""
     cfg = v8_config()
     cfg['v8']['cells'] = [c for c in cfg['v8']['cells'] if c['key'] not in OPTIONAL]
+    next(c for c in cfg['v8']['cells'] if c['key'] == 'R-1')['criterion']['text'] = R1_TEXT_PRE_PM5_11
     full_world(root, cfg)
     norm = T._normalise(T.build(root, cfg), root)
     assert (len(norm), hashlib.sha256(norm.encode('utf-8')).hexdigest()) == (PRE_PM4_8_BYTES, PRE_PM4_8_SHA256)

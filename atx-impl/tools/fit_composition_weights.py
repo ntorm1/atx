@@ -427,6 +427,20 @@ def prior_themes() -> tuple[tuple, str]:
     return tuple(themes), f"registry {REGISTRY_PATH.name}"
 
 
+def require_resid_order(args) -> None:
+    """v8 R-11, finding R6C-4 (Ruling PM5-12): theme-resid-v1 takes its order from PRIOR_THEMES (Ruling PM4-11) while
+    admission reads prior_themes() (the registry's themes table when present). Under --theme-resid the two tuples must
+    be equal before anything is computed: a theme registered without extending V7_APPENDED_THEMES (E7's filing_events)
+    would otherwise be admitted and fitted, then refused as outside the registered order."""
+    if getattr(args, "theme_resid", None) is None:
+        return
+    themes, source = prior_themes()
+    require(tuple(themes) == PRIOR_THEMES,
+            f"--theme-resid {args.theme_resid}: the admissible themes ({source}: {', '.join(themes)}) are not "
+            f"PRIOR_THEMES, the registered theme order (Ruling PM4-11: {', '.join(PRIOR_THEMES)}); extend "
+            f"V7_APPENDED_THEMES to the registry's themes, in its order, before a theme-resid fit")
+
+
 def appended_themes(themes: tuple) -> tuple:
     """The admissible themes beyond the v4 list, in their declared order (themes_preregistered appends the used ones)."""
     return tuple(t for t in themes if t not in V4_THEMES)
@@ -1969,6 +1983,7 @@ def fit(args, log=None) -> tuple[int, dict]:
             "--composition ew-theme-v1|ew-theme-aim-v1|ew-theme-v6 and --screen v4-prior-v1/v2 go together")
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
+    require_resid_order(args)  # v8 R-11, finding R6C-4: the registry's themes are PRIOR_THEMES, before any compute
     resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
