@@ -364,17 +364,20 @@ states the number of gold features per family and `c_all` TRAIN IC / NW t at 5, 
 **Why.** Brings Task 2 and Task 6 into the panel so gold features use FX-converted, better-covered fundamentals and
 point-in-time issuer links.
 
-**Owns:** `atx-db/src/atx_db/alpha_panel/panel.py` (identity and fundamentals inputs only), its tests, stage
-`panel/` (re-assembled in place under the stage's resumable scheme, keeping the previous manifest as
-`panel/manifest.v2.json`), then reruns `metrics/`.
+**Owns:** `atx-db/src/atx_db/alpha_panel/panel.py` (identity and fundamentals inputs, and an output-stage option),
+its tests, new stage dir `panel_v3/`. **Ruling P3:** the gold lane reads `panel/` concurrently, so this task never
+writes `panel/`: it assembles into `panel_v3/` (same layout and manifest scheme; output stage selectable by flag or
+env, default `panel`). The swap (`panel/` → `_archive_panel_v2/`, `panel_v3/` → `panel/`) and the metrics rerun
+happen at the start of Task 9, when no job reads the panel.
 
 **Rules.** Fundamentals input configurable (env or flag) and defaulting to `fundamentals_v10/`; issuer links from
 `identity/link_table_v3.parquet` PIT tiers (strict, dated, name) with `link_tier` carried; `backfill` tier no
 longer used for issuer joins (survivorship). Column names and types unchanged except new columns appended
 (`fx_converted`, `link_basis` if needed). Re-assemble 2018-2021 and 2022-2026 (one heavy job at a time).
 
-**Done when:** panel rc 0 for 2018-2026 with manifest; report the per-year share of `member_equity` cells with non-null
-`cik`, `be`, `sale_ttm`, `ni_ttm` (before vs after); metrics rc 0; schema diff (only appended columns).
+**Done when:** `panel_v3/` rc 0 for 2018-2026 with manifest; `panel/` untouched (manifest SHA unchanged); report the
+per-year share of `member_equity` cells with non-null `cik`, `be`, `sale_ttm`, `ni_ttm` (`panel/` vs `panel_v3/`);
+schema diff (only appended columns); row counts per year equal between the two (same price spine).
 
 ### Task 9: Gold v3 rebuild, consumer export, docs and notice
 
@@ -385,7 +388,10 @@ existing `align` cannot carry `g_*`/`c_*` columns), stages `export/gold-lo1-v1/`
 `atx-db/docs/ALPHA_PANEL_GOLD.md`, `docs/plans/2026-09-30-atx-db-gold-panel-notice.md`. `export_impl` may read the
 `gold/` stage in addition to `panel/` (the smallest change: a `--stage` option on `align`/`export`).
 
-**Steps.** Rebuild characteristics (2019-2026) and gold (2020-2026) on panel v3; rerun `ic_eval` and selection (same
+**Steps.** First, with no job reading the panel: swap `panel/` → `_archive_panel_v2/` and `panel_v3/` → `panel/`
+(directory renames), rerun `metrics` (guard 1.0) and the lo1 aligned export (Task 1 command); delete
+`_archive_panel_v2/` only after this task's rebuilds pass. Then rebuild characteristics (2019-2026) and gold
+(2020-2026) on panel v3; rerun `ic_eval` and selection (same
 rules); write the before/after IC and coverage comparison; export gold fields (`g_*`, `c_*`, `ctl_*`; names must
 match `[a-z_][a-z0-9_]{0,63}`, ≤ 1024 fields, each with `point_in_time: true` and its clock) in the consumer layout
 (`atx.research-role-fields/v1`, one `<name>.f64` per field, date-major on the role's axes) (a) aligned to the lo1
