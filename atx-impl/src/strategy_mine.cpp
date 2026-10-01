@@ -108,7 +108,8 @@ co::Status check_config(const MineConfig &cfg) {
                       cfg.stage2_seeds <= cfg.stage2_population &&
                       cfg.race_strides.size() <= 2U && cfg.race_keep > 0.0 &&
                       cfg.race_keep <= 1.0;
-  const bool rule = cfg.min_names >= 3U && cfg.min_dates >= 2U && cfg.max_promotions >= 1U &&
+  // --min-dates >= 8: the IC recipe's own floor (ic_screen validate), refused here before payload.
+  const bool rule = cfg.min_names >= 3U && cfg.min_dates >= 8U && cfg.max_promotions >= 1U &&
                     cfg.max_promotions <= 256U && cfg.max_working_bytes >= (64ULL << 20) &&
                     cfg.max_working_bytes <= (64ULL << 30) && cfg.budget >= 1U &&
                     cfg.budget <= kMineMaxBudget;
@@ -118,7 +119,8 @@ co::Status check_config(const MineConfig &cfg) {
                         "--output, 1..64 distinct --fields, --pool with --pool-sha256, --budget "
                         "1..10000000; --workers 1..64; --stage2-seeds <= --stage2-population "
                         "(2..4096); at most 2 --race-strides; --race-keep in (0, 1]; --min-names "
-                        ">= 3; --max-promotions 1..256; --max-memory-mib 64..65536)"));
+                        ">= 3; --min-dates >= 8; --max-promotions 1..256; --max-memory-mib "
+                        "64..65536)"));
   // Pre-registration rule 10 (Ruling E-32a): the budget is fixed in advance and binds the search.
   const u64 capacity = mine_trial_capacity(cfg);
   if (cfg.budget < capacity)

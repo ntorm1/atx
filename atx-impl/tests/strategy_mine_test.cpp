@@ -969,6 +969,48 @@ TEST(StrategyMineCampaign, RefusesSealedRolesAndWindowsPastTrain) {
   EXPECT_FALSE(fs::exists(short_discover.registry_path));
 }
 
+// Review MINE-18: the window and bound refusals, one row each, all from the configuration before
+// any payload (no output, no registry, no admission line): overlapping windows, confirm before
+// discover, a discover window before TRAIN, a confirm window past it, an impossible date, and
+// --min-dates under the IC recipe's floor of 8.
+TEST(StrategyMineCampaign, RefusesBadWindowsAndBoundsBeforeAnyPayload) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  struct Case {
+    const char *tag;
+    void (*edit)(st::MineConfig &);
+    const char *message;
+  };
+  const std::array<Case, 6> cases{{
+      {"overlap", [](st::MineConfig &m) { m.discover_end = "2022-08-01"; }, "non-overlapping"},
+      {"order",
+       [](st::MineConfig &m) {
+         m.discover_begin = "2022-07-01";
+         m.discover_end = "2024-01-01";
+         m.confirm_begin = "2020-01-01";
+         m.confirm_end = "2022-07-01";
+       },
+       "chronological"},
+      {"early", [](st::MineConfig &m) { m.discover_begin = "2019-12-31"; }, "inside TRAIN"},
+      {"late", [](st::MineConfig &m) { m.confirm_end = "2024-01-02"; }, "inside TRAIN"},
+      {"date", [](st::MineConfig &m) { m.confirm_begin = "2022-02-30"; },
+       "--confirm-begin must be a YYYY-MM-DD date"},
+      {"min-dates", [](st::MineConfig &m) { m.min_dates = 7; }, "--min-dates >= 8"},
+  }};
+  for (const Case &c : cases) {
+    auto cfg = f.config(c.tag, 1, 1);
+    c.edit(cfg);
+    std::ostringstream progress;
+    const auto refused = st::run_mine(cfg, progress);
+    ASSERT_FALSE(refused) << c.tag;
+    EXPECT_NE(refused.error().message().find(c.message), std::string::npos)
+        << c.tag << ": " << refused.error().to_string();
+    EXPECT_FALSE(fs::exists(cfg.output_directory)) << c.tag;
+    EXPECT_FALSE(fs::exists(cfg.registry_path)) << c.tag;
+    EXPECT_TRUE(progress.str().empty()) << c.tag;
+  }
+}
+
 // Review MINE-8 (Ruling E-10, review B-3): the shared research-role loader refuses a role built
 // with --delisting-returns from its manifest, before any payload -- geometry(), load() and so the
 // mining verb, which writes nothing. The same role declaring returns_applied false is read.
