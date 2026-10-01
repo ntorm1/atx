@@ -770,7 +770,10 @@ def test_cell_states_follow_the_recorded_branch():
         assert {k for k, v in kinds.items() if v == 'undefined'} == undefined, name
     st = V.cell_states(optional_cfg(ALL_ACCEPTED)['v8']['cells'], [])
     assert st['R-9a'] == {'kind': 'undefined', 'recorded': 'pending', 'verdict': 'undefined (E-38, E-37)',
-                          'why': 'defined only if R-6 is rejected (E-38, E-37); R-6 is accepted'}
+                          'why': 'defined only if R-6 is rejected (E-38, E-37); R-6 is accepted', 'open': False}
+    assert not any(s['open'] for s in st.values())                       # R-6 and R-1 settled: no branch open
+    open_ = V.cell_states(optional_cfg({})['v8']['cells'], [])            # R-6 pending: every optional cell open
+    assert {k for k, s in open_.items() if s['open']} == {'R-9a', 'R-10', 'R-12'}
     st = V.cell_states(optional_cfg(BRANCHES['R-1 rejected'][0])['v8']['cells'], [])
     assert st['R-10']['why'] == 'defined only if R-6 is accepted and R-1 is accepted (E-38, E-45); R-1 is rejected'
     st = V.cell_states(optional_cfg(BRANCHES['R-6 rejected'][0])['v8']['cells'], [])

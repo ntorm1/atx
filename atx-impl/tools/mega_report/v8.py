@@ -42,7 +42,9 @@ The optional cells are part of the ladder (Rulings E-38, E-45, PM4-8, PM4-10). A
 (R-9 only if R-6 was rejected; R-10 and R-11 only if R-6 and R-1 were accepted; R-12 only if R-6 was accepted), and a
 cell whose own verdict reads "undefined ..." could not be formed (Ruling PM4-10: the member cap 1/(2T) infeasible). An
 undefined cell keeps its row, rendered "undefined (ruling)": it adds 0, reads no input, is never a parent and is never
-an unavailable block; a decided verdict recorded on it is refused. A ``report_only`` cell (R-9's frontier cells) has no
+an unavailable block; a decided verdict recorded on it is refused. "N after" is counted from the cell states (Ruling
+PM5-12: the previous cell's N plus 1, an undefined cell 0; the configured ``n`` while a branch is still open). A
+``report_only`` cell (R-9's frontier cells) has no
 acceptance: no rule, and an accepted or rejected verdict on it is refused. A ``source: years`` criterion check reads the
 cell's own nav_summ year table: every TRAIN year inside [lo, hi] (R-8's realised volatility band, Ruling E-43).
 
@@ -706,24 +708,44 @@ def _defined(cond: dict, kinds: dict, key) -> tuple[bool | None, str]:
 def cell_states(cells: list[dict], rules) -> dict:
     """The E-38 / E-45 branch of the ladder from the recorded verdicts (Ruling PM4-8), in ladder order: {key: {'kind':
     the cell's effective verdict kind, 'recorded': its recorded kind, 'why': why it is undefined (None when defined),
-    'verdict': the verdict it renders}}. A cell is undefined when its ``defined_if`` has settled against it (it renders
-    "undefined (ruling)") or when its own verdict records it undefined (a cell that could not be formed, Ruling
-    PM4-10). A defined ``report_only`` cell (plan R-9's frontier cells: no acceptance) with a recorded verdict settles
-    as 'report'. Every other cell keeps its recorded kind."""
+    'verdict': the verdict it renders, 'open': True while its ``defined_if`` names a cell not yet settled}}. A cell is
+    undefined when its ``defined_if`` has settled against it (it renders "undefined (ruling)") or when its own verdict
+    records it undefined (a cell that could not be formed, Ruling PM4-10). A defined ``report_only`` cell (plan R-9's
+    frontier cells: no acceptance) with a recorded verdict settles as 'report'. Every other cell keeps its recorded
+    kind."""
     kinds, out = {}, {}
     for c in cells:
         key, rec = c.get('key'), _recorded_kind(c, rules)
-        kind, why, verdict, cond = rec, None, c.get('verdict'), c.get('defined_if')
+        kind, why, verdict, cond, is_open = rec, None, c.get('verdict'), c.get('defined_if'), False
         if rec == UNDEFINED:
             why = 'its verdict records it undefined (not formed, no trial)'
         elif cond:
             ok, text = _defined(cond, kinds, key)
             if ok is False:
                 kind, why, verdict = UNDEFINED, text, f"undefined ({cond.get('ruling') or 'no ruling'})"
+            is_open = ok is None
         if kind != UNDEFINED and c.get('report_only') and rec not in (None, 'pending', 'defect'):
             kind = REPORT
         kinds[key] = kind
-        out[key] = {'kind': kind, 'recorded': rec, 'why': why, 'verdict': verdict}
+        out[key] = {'kind': kind, 'recorded': rec, 'why': why, 'verdict': verdict, 'open': is_open}
+    return out
+
+
+def n_after(cells: list[dict], states: dict) -> dict:
+    """"N after" each cell from the cell states (Ruling PM5-12, finding R6C-5), in ladder order: the first cell's
+    configured ``n`` anchors the count; every later cell adds 1 (a construction cell, v8-prereg item 2: accepted,
+    rejected, report only, pending, or a defect whose blind rerun takes its slot, item 7) and an undefined cell adds 0
+    (Rulings E-38, E-45, PM4-10). From the first cell whose branch is still open (``cell_states`` 'open') on, the count
+    is not known yet and N after is the configured ``n`` (the plan). {key: N after; None when nothing is configured}."""
+    first = cells[0].get('n') if cells else None
+    n = int(first) - 1 if C.is_num(first) else None
+    out, planned = {}, n is None
+    for c in cells:
+        st = states[c.get('key')]
+        planned = planned or st['open']
+        if n is not None and st['kind'] != UNDEFINED:
+            n += 1
+        out[c.get('key')] = c.get('n') if planned else n
     return out
 
 
@@ -791,11 +813,13 @@ def _rule_na(v8: dict, c: dict, par: dict, sm: dict | None, rows: tuple, mech: d
 def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
     """(rows, unavailable blocks of missing paired or NAV-summary inputs, notes, sources) of the configured v8 cells;
     an undefined cell (``cell_states``) reads nothing and renders "undefined (ruling)". A rule-bearing row carries
-    ``na_parts`` / ``na_inputs`` (``_rule_na``) for ``verdict_rule_checks``."""
+    ``na_parts`` / ``na_inputs`` (``_rule_na``) for ``verdict_rule_checks``. "N after" comes from the cell states
+    (``n_after``); a configured ``n`` that differs from it is noted."""
     v8 = _v8(ctx)
     cells = _cells(v8)
     by_key = {c.get('key'): c for c in cells}
     states = cell_states(cells, ctx.verdict_rules())
+    n_of = n_after(cells, states)
     sm, why = _summ(ctx)
     notes = [f'{why}; mechanics and the metric criteria are n/a'] if why else []
     mech_checks = v8.get('mechanics') or []
@@ -817,9 +841,13 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
         r, pr = row_of(c), row_of(par)
         if sm and r is None:
             notes.append(f"{c.get('key')}: {_base(c.get('dir'))} is not a row of the nav_summ JSON")
+        n = n_of[c.get('key')]
+        if C.is_num(c.get('n')) and n != c['n']:  # Ruling PM5-12: an undefined cell before it added 0
+            notes.append(f"{c.get('key')}: N after {n} from the cell states (an undefined cell adds 0), the configured "
+                         f"n is {c['n']}")
         mech = mechanics_eval(r, mech_checks) if r else {'passed': None}
         row = {'k': i, 'key': c.get('key'), 'label': c.get('label'), 'name': _base(c.get('dir')),
-               'parent': (par.get('label') or par.get('key')) if par else 'none (baseline)', 'n': c.get('n'),
+               'parent': (par.get('label') or par.get('key')) if par else 'none (baseline)', 'n': n,
                'mech': mech['passed'],
                'verdict': c.get('verdict'), 'verdict_kind': c.get('verdict_kind')}
         if not par:  # a baseline: no paired test, no acceptance rule

@@ -704,6 +704,33 @@ def test_accepted_optional_cells_whose_parent_row_is_missing_are_refused(root):
             (f'v8.cells[{key}].verdict', f"{head}the parent's nav_summ row ({name}) is missing from {summ}")], key
 
 
+def test_n_after_is_counted_from_the_cell_states(root):
+    """Ruling PM5-12, finding R6C-5: "N after" is the previous cell's N plus 1 and an undefined cell adds 0 (Rulings
+    E-38, E-45, PM4-10) in every branch; a configured n that differs is noted. While R-6 is pending the optional cells'
+    branch is open and N after is the configured n (the plan). Before the fix it was the configured n in every branch."""
+    want = {'R-6 and R-1 accepted': {'R-8': 48, 'R-10': 49, 'R-11': 50, 'R-12': 51},
+            'R-6 accepted, R-1 rejected': {'R-8': 48, 'R-12': 49},
+            'R-6 rejected': {'R-8': 48, 'R-9a': 49, 'R-9b': 50, 'R-9c': 51},
+            'PM4-10, R-10 not formed': {'R-8': 48, 'R-11': 49, 'R-12': 50}}
+    for name, (verdicts, parents, final, undefined) in PITCH_BRANCHES.items():
+        cfg = v8_config(verdicts, parents, final)
+        T.world(root, cfg)
+        rows, _, notes, _ = V.ladder_rows(T.make_ctx(root, cfg))
+        n = {r['key']: r['n'] for r in rows}
+        assert [n[k] for k in ('B0a', 'B0b', 'B0c', *(f'R-{i}' for i in range(1, 8)))] == list(range(38, 48)), name
+        assert {k: v for k, v in n.items() if k in OPTIONAL and v != ''} == want[name], name
+        assert all(n[k] == '' for k in undefined), name
+        conf = {c['key']: c['n'] for c in cfg['v8']['cells']}
+        assert [x for x in notes if 'N after' in x] == [
+            f'{k}: N after {v} from the cell states (an undefined cell adds 0), the configured n is {conf[k]}'
+            for k, v in want[name].items() if v != conf[k]], name
+    cfg = committed_config()   # every verdict pending: R-6 open, the optional cells as configured
+    T.world(root, cfg)
+    rows, _, notes, _ = V.ladder_rows(T.make_ctx(root, cfg))
+    assert [r['n'] for r in rows] == [c['n'] for c in cfg['v8']['cells']]
+    assert not [x for x in notes if 'N after' in x]
+
+
 # the v8 pitch before Ruling PM4-8 (root 43a0447d): the committed config of then is today's without OPTIONAL and with
 # R-1's criterion text of then (Ruling PM5-11 renamed it, a text only); its verdicts recorded as v8_config records them,
 # on full_world. The normalised HTML's SHA-256 and length.
@@ -714,7 +741,8 @@ R1_TEXT_PRE_PM5_11 = 'turnover per unit gross not higher'
 
 def test_v8_pitch_without_the_optional_cells_renders_the_pre_pm4_8_bytes(root):
     """Identity: the ladder machinery of Ruling PM4-8 (branch states, years checks, report-only cells) and of Ruling
-    PM5-12 (an accept whose rule is n/a refused) moves no byte of a config that carries none of the new cells."""
+    PM5-12 (an accept whose rule is n/a refused, N after from the cell states) moves no byte of a config that carries
+    none of the new cells."""
     cfg = v8_config()
     cfg['v8']['cells'] = [c for c in cfg['v8']['cells'] if c['key'] not in OPTIONAL]
     next(c for c in cfg['v8']['cells'] if c['key'] == 'R-1')['criterion']['text'] = R1_TEXT_PRE_PM5_11
