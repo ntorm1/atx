@@ -1263,6 +1263,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     }
     const std::vector<atx::u64> rejected =
         fidelity_reject(*race_candidates, cfg, gen_fit, det_pool, res);
+    if (res.signal_path_invalid) {
+      return {}; // review MINE-12: a rung could not be masked; nothing from this generation
+    }
     // v8 H-3: every racing rejection's identity (sorted at the merge below).
     res.fidelity_rejected_hashes.insert(res.fidelity_rejected_hashes.end(), rejected.begin(),
                                         rejected.end());
@@ -2335,7 +2338,11 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
       rung_engines[r].push_back(std::make_unique<alpha::Engine>(*rp[r]));
       // v8 H-3: the run's eligibility, strided like the rung panel (no-op without a mask).
       if (!apply_mask(*rung_engines[r].back(), cfg.cross_section_mask, panel_, fc.rungs[r])) {
-        return {}; // fail-open like an unbuildable sub-panel (the mask was validated in run)
+        // Review MINE-12: never race (or fully score) unmasked. run() validated the mask, so
+        // this is unreachable; evaluate_generation stops the run on the flag.
+        res.signal_path_invalid = true;
+        res.signal_path_error = "racing rung: the cross_section_mask could not be applied";
+        return {};
       }
     }
   }
