@@ -1495,3 +1495,8 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
+- **R2 PASS** (`train-2020-2023-base-v1-run`, source `f92e09e4`, completed / 0, 18.9 s, 374 MiB, receipt
+  `9a84e921ee595902b1c9a467ea77bc2d2538359229ef5c733a60889ed90091d9`, manifest
+  `6688677096b6a5692f0040ea9ed54df9da938566a062d9ab1ffd873d53636678`). Prints `1405 5922 399 1704067200000000000`:
+  **n = 5,922** (3-year union 5,627; runbook estimate 6,100, open question 7). Overlap check:
+  `score_member_counts[:756]` equals the v1 role's 756-entry list (True). 207 MiB on disk.
