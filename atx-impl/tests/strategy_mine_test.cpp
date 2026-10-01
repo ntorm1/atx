@@ -441,13 +441,14 @@ TEST(StrategyMineRule, HurdleIsTheBonferroniValueOfThePlan) {
 
 // Review MINE-6: the hurdle is read on f2 / F, so with F 1.55 at a hurdle of 3 an f2 of 4.6 is
 // out and one of 4.7 is in; a NaN factor (a budget the table does not cover) shortlists nothing.
-TEST(StrategyMineRule, ShortlistIsByF2ThenHashAndCapped) {
+// Ruling PM5-9: the shortlist is every read above the hurdle (the cap applies after the rho
+// step, StrategyMineRule.RhoStepRunsOverTheWholeShortlistThenCaps).
+TEST(StrategyMineRule, ShortlistIsByF2ThenHash) {
   const std::vector<st::MinedRead> reads{{9, 5.0}, {3, missing}, {2, 7.0}, {1, 5.0},
                                          {4, 3.0}, {5, 4.6},     {6, 4.7}};
-  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 1.55, 8), (std::vector<usize>{2, 3, 0, 6}));
-  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 1.55, 2), (std::vector<usize>{2, 3}));
-  EXPECT_TRUE(st::mined_shortlist(reads, missing, 1.55, 8).empty());
-  EXPECT_TRUE(st::mined_shortlist(reads, 3.0, missing, 8).empty());
+  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 1.55), (std::vector<usize>{2, 3, 0, 6}));
+  EXPECT_TRUE(st::mined_shortlist(reads, missing, 1.55).empty());
+  EXPECT_TRUE(st::mined_shortlist(reads, 3.0, missing).empty());
 }
 
 // Review MINE-6 (Ruling E-32a): the label-overlap factors and the window floors they were derived
@@ -485,8 +486,12 @@ TEST(StrategyMineRule, RhoIsGreedyAgainstMembersAndKeptCandidates) {
   cb::PairwiseRowCorrelation rho(4, 3);
   const std::vector<std::span<const f64>> rows{m, c, c, m};
   for (int d = 0; d < 3; ++d) ASSERT_TRUE(rho.add_date(rows));
-  const auto out = st::mined_rho_select(rho, 1, 3);
+  const auto out = st::mined_rho_select(rho, 1, 3, 3, 8); // every pair defined on 3 dates
   ASSERT_EQ(out.size(), 3U);
+  for (const auto &r : out) {
+    EXPECT_TRUE(r.read);
+    EXPECT_EQ(r.undefined, st::kMinedNoRow);
+  }
   EXPECT_TRUE(out[0].pass);
   EXPECT_NEAR(out[0].max_abs, 0.0, 1e-12);
   EXPECT_FALSE(out[1].pass); // blocked by candidate 0 (row 1), which passed
@@ -580,6 +585,79 @@ TEST(StrategyMineRule, ConfirmFactorFollowsTheReadsThatReachIt) {
     EXPECT_TRUE(std::isnan(read.factor));
     EXPECT_FALSE(read.confirmed);
   }
+}
+
+// Ruling PM5-9 (review MINE-14): the greedy rho step runs over the whole shortlist and the cap
+// applies to the candidates that pass. Row 0 a pool member m; candidates c (orthogonal to m), c
+// again, then d (orthogonal to both). Cap 2: c passes, its copy is blocked by c, d passes, so two
+// reads reach the confirm; the pre-PM5-9 rule capped the shortlist to {c, c} first and kept one.
+// Cap 1: the step stops at c and never reads the rest.
+TEST(StrategyMineRule, RhoStepRunsOverTheWholeShortlistThenCaps) {
+  const std::vector<f64> m{1, -1, 1, -1, 1, -1, 1, -1}, c{1, 1, -1, -1, 1, 1, -1, -1},
+      d{1, -1, -1, 1, 1, -1, -1, 1};
+  cb::PairwiseRowCorrelation rho(4, 3);
+  const std::vector<std::span<const f64>> rows{m, c, c, d};
+  for (int day = 0; day < 3; ++day) ASSERT_TRUE(rho.add_date(rows));
+  const auto two = st::mined_rho_select(rho, 1, 3, 3, 2);
+  ASSERT_EQ(two.size(), 3U);
+  EXPECT_TRUE(two[0].read && two[0].pass);
+  EXPECT_TRUE(two[1].read);
+  EXPECT_FALSE(two[1].pass);
+  EXPECT_EQ(two[1].against, 1U);
+  EXPECT_TRUE(two[2].read && two[2].pass);
+  EXPECT_NEAR(two[2].max_abs, 0.0, 1e-12);
+  const auto one = st::mined_rho_select(rho, 1, 3, 3, 1);
+  EXPECT_TRUE(one[0].read && one[0].pass);
+  for (usize k = 1; k < 3U; ++k) {
+    EXPECT_FALSE(one[k].read) << k;
+    EXPECT_FALSE(one[k].pass) << k;
+    EXPECT_EQ(one[k].against, st::kMinedNoRow) << k;
+  }
+}
+
+// Ruling PM5-8 (review MINE-15): every row a candidate is checked against must give a defined rho
+// -- on at least min_dates dates, a date counting when at least min_names names are joint -- or
+// the candidate fails, whatever its other pairs read; the first such row is reported. The
+// pre-PM5-8 rule let an undefined pair pass.
+TEST(StrategyMineRule, UndefinedRhoFailsTheCandidate) {
+  const std::vector<f64> m{1, -1, 1, -1, 1, -1, 1, -1}, c{1, 1, -1, -1, 1, 1, -1, -1};
+  // A member on two names only (min_names 3): its pair with any candidate is never defined.
+  const std::vector<f64> sparse{1, -1, missing, missing, missing, missing, missing, missing};
+  cb::PairwiseRowCorrelation narrow(3, 3);
+  const std::vector<std::span<const f64>> narrow_rows{sparse, m, c};
+  for (int day = 0; day < 3; ++day) ASSERT_TRUE(narrow.add_date(narrow_rows));
+  EXPECT_EQ(narrow.dates(0, 2), 0U);
+  for (const usize min_dates : {usize{0}, usize{3}}) {
+    const auto out = st::mined_rho_select(narrow, 2, 1, min_dates, 8);
+    ASSERT_EQ(out.size(), 1U);
+    EXPECT_TRUE(out[0].read);
+    EXPECT_FALSE(out[0].pass) << min_dates; // defined and 0 to m, undefined to the sparse member
+    EXPECT_EQ(out[0].undefined, 0U);
+    EXPECT_EQ(out[0].against, 1U);
+    EXPECT_NEAR(out[0].max_abs, 0.0, 1e-12);
+  }
+  // Defined on 3 dates: fails under min_dates 4, passes under 3.
+  cb::PairwiseRowCorrelation brief(2, 3);
+  const std::vector<std::span<const f64>> brief_rows{m, c};
+  for (int day = 0; day < 3; ++day) ASSERT_TRUE(brief.add_date(brief_rows));
+  const auto short_of = st::mined_rho_select(brief, 1, 1, 4, 8);
+  EXPECT_FALSE(short_of[0].pass);
+  EXPECT_EQ(short_of[0].undefined, 0U);
+  const auto enough = st::mined_rho_select(brief, 1, 1, 3, 8);
+  EXPECT_TRUE(enough[0].pass);
+  EXPECT_EQ(enough[0].undefined, st::kMinedNoRow);
+  // An earlier kept candidate is checked like a member: x is defined against m (names 4..7) but
+  // shares no name with the kept c (names 0..3), so x fails on c's row.
+  const std::vector<f64> half_c{1, 1, -1, -1, missing, missing, missing, missing};
+  const std::vector<f64> x{missing, missing, missing, missing, 1, 1, -1, -1};
+  cb::PairwiseRowCorrelation kept(3, 3);
+  const std::vector<std::span<const f64>> kept_rows{m, half_c, x};
+  for (int day = 0; day < 3; ++day) ASSERT_TRUE(kept.add_date(kept_rows));
+  const auto out = st::mined_rho_select(kept, 1, 2, 3, 8);
+  EXPECT_TRUE(out[0].pass);
+  EXPECT_FALSE(out[1].pass);
+  EXPECT_EQ(out[1].undefined, 1U);
+  EXPECT_EQ(out[1].against, 0U);
 }
 
 TEST(StrategyMine, TemplatesAreTheHouseSet) {
@@ -856,6 +934,127 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
       EXPECT_EQ(dsl.find(field), std::string::npos) << dsl;
   }
   EXPECT_TRUE(read_field[0] && read_field[1] && read_field[2] && read_field[3]);
+}
+
+// The stage-1 campaign of the rule's fixture tests below: fields p1 and p2, one generation of the
+// templates, no racing, --budget 1000 (so every template is read in full).
+st::MineConfig templates_only(const Fixture &f, const std::string &tag) {
+  auto cfg = f.config(tag, 1, 1);
+  cfg.role.fields = {"p1", "p2"};
+  cfg.stage2_generations = 0;
+  cfg.race_strides.clear();
+  cfg.budget = 1000U;
+  return cfg;
+}
+
+// Ruling PM5-9 (review MINE-14): the greedy rho step runs over the whole shortlist, then the cap
+// applies. A first campaign names the template that leads the shortlist (rank(p1) or rank(p2);
+// the pool's members do not enter f2); the second makes that field a pool member beside m2 and
+// caps the confirm at one read (--max-promotions 1). The lead is blocked (|rho| 1 to its own
+// field), so the one confirm read goes to the first candidate further down that passes, and the
+// step reads nothing after it. The pre-PM5-9 rule capped first: its shortlist was the blocked
+// lead alone and it admitted nothing.
+TEST(StrategyMineCampaign, RhoStepReadsTheWholeShortlistBeforeTheCap) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  const fs::path pool = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool, f.pool_files, "p1.f64", world.p1));
+  ASSERT_TRUE(payload(pool, f.pool_files, "p2.f64", world.p2));
+  std::ostringstream progress;
+  const auto first = templates_only(f, "lead");
+  const auto first_status = st::run_mine(first, progress);
+  ASSERT_TRUE(first_status) << first_status.error().to_string();
+  const auto first_rows = read_trials(fs::path(first.output_directory) / "trials.csv");
+  const TrialRow *lead = nullptr;
+  for (const TrialRow &row : first_rows) {
+    if (row.status != "evaluated" || !std::isfinite(row.f2)) continue;
+    if (lead == nullptr || row.f2 > lead->f2 ||
+        (row.f2 == lead->f2 && row.canon_hash < lead->canon_hash))
+      lead = &row;
+  }
+  ASSERT_TRUE(lead != nullptr);
+  ASSERT_TRUE(lead->dsl == "rank(p1)" || lead->dsl == "rank(p2)") << lead->dsl;
+  const std::string field = lead->dsl.substr(5U, 2U);
+  std::string sha;
+  ASSERT_TRUE(f.write_pool_manifest("lead.json", {"book"}, {"m2", field}, sha));
+  auto cfg = templates_only(f, "capped");
+  cfg.pool_path = (pool / "lead.json").string();
+  cfg.pool_sha256 = sha;
+  cfg.max_promotions = 1;
+  const auto status = st::run_mine(cfg, progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const fs::path out(cfg.output_directory);
+  const Json campaign = read_json(out / "campaign.json");
+  const Json &promotions = campaign.at("promotions");
+  ASSERT_GE(promotions.size(), 2U);
+  const Json &blocked = promotions[0];
+  EXPECT_EQ(blocked.at("dsl").get<std::string>(), lead->dsl);
+  EXPECT_TRUE(blocked.at("rho_read").get<bool>());
+  EXPECT_FALSE(blocked.at("rho_pass").get<bool>());
+  EXPECT_EQ(blocked.at("max_rho_row").get<std::string>(), "pool:" + field);
+  EXPECT_GT(blocked.at("max_abs_rho").get<f64>(), st::kMinedMaxAbsRho);
+  // Every row up to the first that passes is read; that one alone is confirmed-read; none after
+  // it is read.
+  usize reached = promotions.size();
+  for (usize k = 0; k < promotions.size(); ++k) {
+    const Json &row = promotions[k];
+    if (k < reached) {
+      EXPECT_TRUE(row.at("rho_read").get<bool>()) << k;
+      if (row.at("rho_pass").get<bool>()) reached = k;
+    } else {
+      EXPECT_FALSE(row.at("rho_read").get<bool>()) << k;
+    }
+    EXPECT_EQ(row.at("confirm_read").get<bool>(), k == reached) << k;
+  }
+  ASSERT_LT(reached, promotions.size());
+  EXPECT_GT(reached, 0U);
+  const Json &passed = promotions[reached];
+  EXPECT_EQ(passed.at("confirm_factor").get<f64>(), st::mined_confirm_factor(1U));
+  EXPECT_TRUE(passed.at("admitted").get<bool>()) << passed.dump();
+  EXPECT_EQ(campaign.at("admitted").get<usize>(), 1U);
+}
+
+// Ruling PM5-8 (review MINE-15): "to every member" means every member is checked and passes, so a
+// candidate whose rho against a member is undefined fails. Two pools, each the independent m2 and
+// one member no candidate can be checked against: `sparse` (m2 on 5 names, under --min-names 10:
+// no date has enough joint names) and `brief` (m2 on the first 100 discover rows only, under
+// --min-dates 128). Every shortlisted template fails on that member and nothing is admitted. The
+// pre-PM5-8 rule let the undefined pair pass and admitted the planted fields.
+TEST(StrategyMineCampaign, UndefinedRhoAgainstAMemberFails) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  std::vector<f64> sparse(world.m2.size(), missing), brief(world.m2.size(), missing);
+  for (usize c = 0; c < world.m2.size(); ++c) {
+    if (c % N < 5U) sparse[c] = world.m2[c];
+    if (c / N >= score_begin && c / N < score_begin + 100U) brief[c] = world.m2[c];
+  }
+  const fs::path pool = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool, f.pool_files, "sparse.f64", sparse));
+  ASSERT_TRUE(payload(pool, f.pool_files, "brief.f64", brief));
+  for (const char *name : {"sparse", "brief"}) {
+    const std::string member(name);
+    std::string sha;
+    ASSERT_TRUE(f.write_pool_manifest(member + ".json", {"book"}, {"m2", member}, sha));
+    auto cfg = templates_only(f, "undefined-" + member);
+    cfg.pool_path = (pool / (member + ".json")).string();
+    cfg.pool_sha256 = sha;
+    std::ostringstream progress;
+    const auto status = st::run_mine(cfg, progress);
+    ASSERT_TRUE(status) << member << ": " << status.error().to_string();
+    const Json campaign = read_json(fs::path(cfg.output_directory) / "campaign.json");
+    const Json &promotions = campaign.at("promotions");
+    ASSERT_FALSE(promotions.empty()) << member;
+    for (const Json &row : promotions) {
+      const std::string dsl = row.at("dsl").get<std::string>();
+      EXPECT_TRUE(row.at("rho_read").get<bool>()) << member << " " << dsl;
+      EXPECT_FALSE(row.at("rho_pass").get<bool>()) << member << " " << dsl;
+      EXPECT_EQ(row.at("rho_undefined_row").get<std::string>(), "pool:" + member) << dsl;
+      EXPECT_FALSE(row.at("confirm_read").get<bool>()) << member << " " << dsl;
+    }
+    EXPECT_EQ(campaign.at("admitted").get<usize>(), 0U) << member;
+  }
 }
 
 // Same seed twice and at 1 and 4 workers: the same registry chain head, trial log and members.

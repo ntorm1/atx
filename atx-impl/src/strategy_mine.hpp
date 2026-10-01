@@ -83,7 +83,7 @@ struct MineConfig {
   atx::f64 race_keep{1.0 / 3.0};         // promoted fraction per rung
   atx::usize min_names{50};
   atx::usize min_dates{128};
-  atx::usize max_promotions{16}; // shortlist cap (each costs one signal in memory)
+  atx::usize max_promotions{16}; // confirm-read cap after the rho step (PM5-9); signals held
   atx::u64 max_working_bytes{2048ULL << 20};
 };
 

@@ -12,13 +12,18 @@
 // E-32a; never the realised or the registry's count). The discover statistic is f2 = the sign
 // of the discover h 21 rank IC times the marginal IC HAC t (research_ic_fitness.hpp); the
 // shortlist is every evaluated trial with f2 / F at or above the value (F the label-overlap
-// factor of N's budget band, below), in f2 order. The rho check is greedy in that order against
-// every pool member and every earlier kept candidate (mean daily correlation of centred ranks on
-// the discover decision rows). The confirm read is the marginal IC HAC t on the confirm window,
-// oriented by the discover sign, and counts only on its full window (mined_confirm_defined;
-// otherwise t is NaN, unconfirmed); it is read as t / Fc, Fc the confirm factor of the m reads
-// that reach it: one-sided p = Phi(-t / Fc), Benjamini-Yekutieli over the m reads, confirmed iff
-// t / Fc >= 2 and the adjusted p <= .10. The theme is `mined`.
+// factor of N's budget band, below), in f2 order. The rho check is greedy in that order over the
+// whole shortlist (Ruling PM5-9, review MINE-14) against every pool member and every earlier kept
+// candidate (mean daily correlation of centred ranks on the discover decision rows); "to every
+// member" means every one is checked and passes, so a pair whose rho is undefined -- defined on
+// fewer than --min-dates discover dates, a date counting when at least --min-names names are
+// joint and the correlation is defined -- fails the candidate (Ruling PM5-8, review MINE-15).
+// The first --max-promotions candidates to pass reach the confirm read (the cap applies after
+// the rho step). The confirm read is the marginal IC HAC t on the confirm window, oriented by the
+// discover sign, and counts only on its full window (mined_confirm_defined; otherwise t is NaN,
+// unconfirmed); it is read as t / Fc, Fc the confirm factor of the m reads that reach it:
+// one-sided p = Phi(-t / Fc), Benjamini-Yekutieli over the m reads, confirmed iff t / Fc >= 2 and
+// the adjusted p <= .10. The theme is `mined`.
 //
 // Ruling E-32a (review MINE-6): label overlap. Both reads are Bartlett lag-21 HAC t's of a daily
 // series on h 21 labels (neighbouring rows share 20 of 21 returns), which lag 21 under-corrects
@@ -112,26 +117,33 @@ struct MinedRead {
 };
 
 // Indices of `reads` with a finite f2 whose overlap-corrected value f2 / `factor` is at or above
-// `hurdle`, by f2 descending then canonical hash ascending, at most `cap`.
+// `hurdle`, by f2 descending then canonical hash ascending: the whole shortlist (Ruling PM5-9:
+// the cap applies after the rho step, mined_rho_select).
 [[nodiscard]] std::vector<atx::usize> mined_shortlist(std::span<const MinedRead> reads,
-                                                      atx::f64 hurdle, atx::f64 factor,
-                                                      atx::usize cap);
+                                                      atx::f64 hurdle, atx::f64 factor);
 
 inline constexpr atx::usize kMinedNoRow = std::numeric_limits<atx::usize>::max();
 
-// The largest |rho| a candidate met (NaN: no defined pair) and the row it met it on.
+// A candidate's rho step: whether the greedy step reached it (Ruling PM5-9: it stops once the cap
+// is filled), the largest defined |rho| it met (NaN: none) and that row, and the first row whose
+// pair was undefined (Ruling PM5-8: such a candidate fails; kMinedNoRow: none).
 struct MinedRho {
+  bool read{};
   bool pass{};
   atx::f64 max_abs = std::numeric_limits<atx::f64>::quiet_NaN();
   atx::usize against{kMinedNoRow};
+  atx::usize undefined{kMinedNoRow};
 };
 
-// Rows [0, pool_rows) of `rho` are the pool members, row pool_rows + k is shortlist candidate k.
-// Candidate k passes iff |rho| <= .70 to every member and every earlier passing candidate; an
-// undefined pair (no date with enough jointly ranked names) does not block.
+// Rows [0, fixed_rows) of `rho` are the rows every candidate is checked against (the pool
+// members, then any candidates an earlier step kept), row fixed_rows + k is candidate k, in
+// shortlist order. Greedy in that order: candidate k passes iff its pair with every fixed row and
+// every earlier passing candidate is defined on at least max(min_dates, 1) dates
+// (PairwiseRowCorrelation::dates; Ruling PM5-8) and |rho| <= .70 on each. Once `cap` candidates
+// have passed, the rest are not read (Ruling PM5-9: the cap applies after the rho step).
 [[nodiscard]] std::vector<MinedRho>
-mined_rho_select(const atx::engine::combine::PairwiseRowCorrelation &rho, atx::usize pool_rows,
-                 atx::usize candidates);
+mined_rho_select(const atx::engine::combine::PairwiseRowCorrelation &rho, atx::usize fixed_rows,
+                 atx::usize candidates, atx::usize min_dates, atx::usize cap);
 
 struct MinedConfirm {
   atx::f64 t = std::numeric_limits<atx::f64>::quiet_NaN();           // oriented HAC t
