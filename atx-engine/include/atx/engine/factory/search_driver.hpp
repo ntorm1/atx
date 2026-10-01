@@ -408,6 +408,12 @@ struct SearchResult {
   // Platform v8 review MINE-10: complete, sorted identities of the candidates refused by
   // SearchConfig::max_program_slots (each one is also in unscored_hashes).
   std::vector<atx::u64> slot_refused_hashes;
+  // Platform v8 review MINE-16 (signal-fitness path): complete, sorted identities of the
+  // racing rejections whose rung read failed -- a compile or VM failure on the rung engine (an
+  // empty signal set included) or a functor Err -- rather than scored and lost. A subset of
+  // fidelity_rejected_hashes: the race still treats such a read as NaN, so no other result
+  // changes. Empty when a race rejects nothing (it fails open).
+  std::vector<atx::u64> rung_failed_hashes;
   // A refused cross_section_mask / signal_fitness configuration, a failed bind, or a
   // functor Err while scoring: nothing from the failing generation is admitted.
   bool signal_path_invalid{false};

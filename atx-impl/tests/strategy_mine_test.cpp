@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -33,6 +34,8 @@
 #include "atx/engine/factory/genome.hpp"
 #include "atx/engine/factory/ic_research.hpp"
 #include "strategy_mine_pool.hpp"
+// Review MINE-16: the trial log's rung-failed status.
+#include "strategy_mine_detail.hpp"
 
 // platform v8 H-3: `atx-equity-strategy-mine` on a synthetic role (the sprint plan's fixture
 // acceptance) and the mined-v1 arithmetic.
@@ -788,6 +791,64 @@ TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
   EXPECT_EQ(memory->full_engines / cfg.workers, memory->promotion_engine);
 }
 
+// ---- rung failures (review MINE-16) -----------------------------------------------------------
+// A racing rejection whose rung read failed (SearchResult::rung_failed_hashes, a subset of
+// fidelity_rejected_hashes) is its own trial status, rung-failed, counted apart from the
+// racing-rejected ones; a slot-bound refusal stays failed. Seen in two stages, an expression keeps
+// its better status: racing-rejected over rung-failed, whichever stage saw which.
+TEST(StrategyMine, RungFailuresAreTheirOwnTrialStatus) {
+  namespace md = st::mine_detail;
+  const atx::engine::alpha::Library lib{};
+  const auto stage_of = [&lib](const std::vector<std::string> &dsl) {
+    md::StageRun stage;
+    for (usize k = 0; k < dsl.size(); ++k) {
+      auto ast = atx::engine::alpha::parse_expr(dsl[k], lib);
+      EXPECT_TRUE(ast.has_value()) << dsl[k];
+      if (!ast.has_value()) continue;
+      auto genome = ex::analyze_into(std::move(*ast));
+      EXPECT_TRUE(genome.has_value()) << dsl[k];
+      if (!genome.has_value()) continue;
+      genome->canon_hash = 101U + k;
+      stage.result.all_scored.push_back(std::move(*genome));
+    }
+    return stage;
+  };
+  // 101 raced and lost, 102 failed at the rung, 103 refused by the slot bound.
+  md::StageRun first = stage_of({"rank(p1)", "rank(p2)", "rank(p3)"});
+  first.result.fidelity_rejected_hashes = {101U, 102U};
+  first.result.rung_failed_hashes = {102U};
+  first.result.slot_refused_hashes = {103U};
+  first.result.unscored_hashes = {103U};
+  std::vector<md::MinedTrial> trials;
+  std::unordered_map<u64, usize> index;
+  md::classify(first, 1U, trials, index);
+  ASSERT_EQ(trials.size(), 3U);
+  EXPECT_EQ(trials[0].status, md::TrialStatus::RacingRejected);
+  EXPECT_EQ(trials[0].reason, "racing-rejected");
+  EXPECT_EQ(trials[1].status, md::TrialStatus::RungFailed);
+  EXPECT_EQ(trials[1].reason, "rung-failed");
+  EXPECT_EQ(md::status_name(md::TrialStatus::RungFailed), "rung-failed");
+  EXPECT_EQ(trials[2].status, md::TrialStatus::Failed);
+  EXPECT_EQ(trials[2].reason, "slot-bound");
+  const md::Counts counts = md::count_statuses(trials);
+  EXPECT_EQ(counts.racing_rejected, 1U);
+  EXPECT_EQ(counts.rung_failed, 1U);
+  EXPECT_EQ(counts.failed, 1U);
+  EXPECT_EQ(counts.evaluated + counts.screen_rejected, 0U);
+  EXPECT_NE(md::trials_csv(trials).find("0000000000000066,1,rung-failed,rung-failed,"),
+            std::string::npos);
+  // Stage 2 races 101 again and the rung fails it; 102 is raced and lost this time.
+  md::StageRun second = stage_of({"rank(p1)", "rank(p2)"});
+  second.result.fidelity_rejected_hashes = {101U, 102U};
+  second.result.rung_failed_hashes = {101U};
+  md::classify(second, 2U, trials, index);
+  ASSERT_EQ(trials.size(), 3U);
+  EXPECT_EQ(trials[0].status, md::TrialStatus::RacingRejected);
+  EXPECT_EQ(trials[1].status, md::TrialStatus::RacingRejected);
+  EXPECT_EQ(trials[1].reason, "racing-rejected");
+  EXPECT_EQ(md::count_statuses(trials).rung_failed, 0U);
+}
+
 // ---- the fixture acceptance --------------------------------------------------------------------
 // The shortlist row of `dsl` in campaign.json's promotions (null when it is not shortlisted).
 const Json *promotion_of(const Json &campaign, const std::string &dsl) {
@@ -798,7 +859,8 @@ const Json *promotion_of(const Json &campaign, const std::string &dsl) {
 
 // 3 planted signals promoted, the planted copy stopped by the marginal term alone (the pool's
 // member m2 is independent of it, so no rho step could), no noise expression promoted, in 5
-// seeds; registry count = evaluated + racing-rejected + screen-rejected. Review MINE-9: stage 1
+// seeds; registry count = evaluated + racing-rejected + screen-rejected + rung-failed, with no
+// rung failure (review MINE-16). Review MINE-9: stage 1
 // (the templates, one generation, no mutation) does not depend on the seed, so the seeds differ
 // in stage 2 only; the test pins that stage 1 is the same in every seed rather than counting it
 // five times.
@@ -819,10 +881,13 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     const f64 hurdle = campaign.at("hurdle").at("t").get<f64>();
     const Json &trials = campaign.at("trials");
     const Json &registry = campaign.at("registry");
+    // Review MINE-16: the registry identity counts the rung failures apart, and the fixture has
+    // none (a failure would change its reason tag and so the chain head).
     EXPECT_EQ(registry.at("n_raw").get<u64>(),
               trials.at("evaluated").get<u64>() + trials.at("screen_rejected").get<u64>() +
-                  trials.at("racing_rejected").get<u64>())
+                  trials.at("racing_rejected").get<u64>() + trials.at("rung_failed").get<u64>())
         << "seed " << seed;
+    EXPECT_EQ(trials.at("rung_failed").get<u64>(), 0U) << "seed " << seed;
     EXPECT_EQ(trials.at("failed").get<u64>(), 0U) << "seed " << seed; // none past the slot bound
     EXPECT_EQ(campaign.at("search").at("max_program_slots").get<u32>(), st::kMineMaxProgramSlots);
     EXPECT_GT(trials.at("racing_rejected").get<u64>(), 0U) << "seed " << seed;

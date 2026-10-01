@@ -653,6 +653,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                     {"evaluated", counts.evaluated},
                     {"screen_rejected", counts.screen_rejected},
                     {"racing_rejected", counts.racing_rejected},
+                    {"rung_failed", counts.rung_failed}, // review MINE-16
                     {"failed", counts.failed}}},
         {"registry", {{"path", cfg.registry_path},
                       {"format", "V3"},

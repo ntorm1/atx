@@ -50,8 +50,10 @@ struct StageRun {
 };
 
 // ---- strategy_mine_trials.cpp ------------------------------------------------------------------
-// Ordered best first: an expression seen in both stages keeps its best status.
-enum class TrialStatus : u8 { Evaluated, ScreenRejected, RacingRejected, Failed };
+// Ordered best first: an expression seen in both stages keeps its best status. Review MINE-16:
+// RungFailed is a racing rejection whose rung read failed (compile, VM or functor error;
+// SearchResult::rung_failed_hashes) rather than one scored and lost.
+enum class TrialStatus : u8 { Evaluated, ScreenRejected, RacingRejected, RungFailed, Failed };
 [[nodiscard]] std::string_view status_name(TrialStatus status) noexcept;
 
 // One distinct expression of the campaign. The pointers borrow the stage results.
@@ -59,15 +61,18 @@ struct MinedTrial {
   u64 canon_hash{};
   usize stage{}; // the stage that first saw it (1 or 2)
   TrialStatus status{TrialStatus::Failed};
-  // screen name, racing-rejected, unscored, slot-bound, degenerate-series (empty: none)
+  // screen name, racing-rejected, rung-failed, unscored, slot-bound, degenerate-series (empty:
+  // none)
   std::string reason;
   std::string dsl;
   const ex::Genome *genome{};
   const ex::ResearchIcTrial *read{}; // the full-pass read (evaluated or screened), else null
 };
 
+// The registry identity (review MINE-16): n_raw = evaluated + screen_rejected + racing_rejected
+// + rung_failed + failed.
 struct Counts {
-  usize evaluated{}, screen_rejected{}, racing_rejected{}, failed{};
+  usize evaluated{}, screen_rejected{}, racing_rejected{}, rung_failed{}, failed{};
 };
 
 // Adds the stage's distinct expressions in all_scored order (worker-invariant), first seen first.

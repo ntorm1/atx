@@ -179,26 +179,35 @@ void score_signal(const Genome &g, const alpha::SignalSet &signals, const Search
   slot = std::move(full);
 }
 
-// A racing rung's score of `g` on the signal-fitness path: evaluate on the rung's engine, then
-// the functor's raw. NaN (a rung rejection) for a compile or VM failure, a rejected or
-// non-finite score, and a functor Err (the race's evaluator carries a score only).
-[[nodiscard]] atx::f64 signal_rung_score(const Genome &g, alpha::Engine &engine,
-                                         SignalFitness &fitness, const SignalLevel &level,
-                                         atx::usize wid) {
-  constexpr atx::f64 kReject = std::numeric_limits<atx::f64>::quiet_NaN();
+// A racing rung's read of `g` on the signal-fitness path: evaluate on the rung's engine, then
+// the functor's raw. The score is NaN (a rung rejection) for a compile or VM failure, a rejected
+// or non-finite score, and a functor Err (the race's evaluator carries a score only). Review
+// MINE-16: `failed` tells the failures -- compile, VM (an empty signal set included) and functor
+// Err -- from a score that was read and lost; it changes nothing the race sees.
+struct RungRead {
+  atx::f64 score{std::numeric_limits<atx::f64>::quiet_NaN()};
+  bool failed{};
+};
+[[nodiscard]] RungRead signal_rung_read(const Genome &g, alpha::Engine &engine,
+                                        SignalFitness &fitness, const SignalLevel &level,
+                                        atx::usize wid) {
+  const RungRead failure{std::numeric_limits<atx::f64>::quiet_NaN(), true};
   auto prog = alpha::compile(g.ast, g.analysis);
   if (!prog.has_value()) {
-    return kReject;
+    return failure;
   }
   auto ss = engine.evaluate(*prog);
   if (!ss.has_value() || ss->alphas.empty()) {
-    return kReject;
+    return failure;
   }
   auto scored = fitness.score(g, ss->alphas.front().values, level, wid);
-  if (!scored || scored->rejected || !std::isfinite(scored->raw)) {
-    return kReject;
+  if (!scored) {
+    return failure;
   }
-  return scored->raw;
+  if (scored->rejected || !std::isfinite(scored->raw)) {
+    return RungRead{};
+  }
+  return RungRead{scored->raw, false};
 }
 } // namespace
 
@@ -1545,6 +1554,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // v8 H-3 identity lists (empty on the legacy path except the racing rejections).
   std::sort(res.unscored_hashes.begin(), res.unscored_hashes.end());
   std::sort(res.slot_refused_hashes.begin(), res.slot_refused_hashes.end());
+  std::sort(res.rung_failed_hashes.begin(), res.rung_failed_hashes.end()); // review MINE-16
   std::sort(res.fidelity_rejected_hashes.begin(), res.fidelity_rejected_hashes.end());
   res.fidelity_rejected_hashes.erase(
       std::unique(res.fidelity_rejected_hashes.begin(), res.fidelity_rejected_hashes.end()),
@@ -2421,11 +2431,18 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
   };
   // v8 H-3: on the signal-fitness path the functor scores the rung signal instead
   // (same reentrancy: worker `wid` touches only rung_engines[r][wid] and its own
-  // functor state).
+  // functor state). Review MINE-16: a failed read is also noted in the worker's own list
+  // (failed_by_worker[wid]: disjoint single owner), which never reaches the race.
+  std::vector<std::vector<atx::u64>> failed_by_worker(
+      cfg.signal_fitness != nullptr ? det_pool.n_workers() : atx::usize{0});
   const RungEvaluator signal_eval = [&](const Genome &g, atx::usize r, const Rung &rung,
                                         atx::usize wid) -> atx::f64 {
-    return signal_rung_score(g, *rung_engines[r][wid], *cfg.signal_fitness,
-                             SignalLevel{r, rung.inst_stride, false}, wid);
+    const RungRead rung_read = signal_rung_read(g, *rung_engines[r][wid], *cfg.signal_fitness,
+                                                SignalLevel{r, rung.inst_stride, false}, wid);
+    if (rung_read.failed) {
+      failed_by_worker[wid].push_back(g.canon_hash);
+    }
+    return rung_read.score;
   };
   const RaceResult rr = race(cands, fc, cfg.signal_fitness != nullptr ? signal_eval : legacy_eval,
                              n_low, &det_pool, /*promote_after_last=*/true);
@@ -2437,11 +2454,19 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
   for (const GenomeId id : rr.survivors) {
     alive[id] = std::uint8_t{1};
   }
+  std::unordered_set<atx::u64> failed;
+  for (const std::vector<atx::u64> &worker : failed_by_worker) {
+    failed.insert(worker.begin(), worker.end());
+  }
   std::vector<atx::u64> rejected;
   rejected.reserve(rr.n_rejected);
   for (atx::usize i = 0; i < cands.size(); ++i) {
     if (alive[i] == std::uint8_t{0}) {
       rejected.push_back(cands[i].canon_hash);
+      // Review MINE-16: rejected because its read failed (sorted at the merge).
+      if (failed.find(cands[i].canon_hash) != failed.end()) {
+        res.rung_failed_hashes.push_back(cands[i].canon_hash);
+      }
     }
   }
   res.fidelity_rejected += rejected.size();

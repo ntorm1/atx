@@ -16,7 +16,10 @@
 // Registry: every distinct expression of the campaign is one trial of a V3 TrialRegistry
 // (--registry; an existing log is reopened only against --registry-head), in first-seen order:
 // evaluated trials with their oriented daily h 21 rank IC over the discover label rows (NaN as
-// 0), screen-rejected, racing-rejected and failed ones as screened observations. A trial's
+// 0), screen-rejected, racing-rejected, rung-failed (review MINE-16: rejected at a racing rung
+// because the read failed there, not scored and lost) and failed ones as screened observations,
+// so the registry's count is evaluated + screen-rejected + racing-rejected + rung-failed +
+// failed (campaign.json trials). A trial's
 // identity is (recipe, canonical expression hash; review MINE-17); the recipe (campaign.json recipe, recipe_sha256) binds the
 // role, the fields manifest, the library (VM and IC source pins), the pool and both windows, so a
 // campaign any of whose trials the registry holds under its recipe is a second confirm read on
