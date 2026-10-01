@@ -8,6 +8,7 @@
 #include <chrono>
 #include <limits>
 #include <string>
+#include <unordered_set>
 
 #include "atx/core/error.hpp"
 
@@ -99,7 +100,22 @@ atx::core::Result<Dataset> Dataset::create(DatasetSchema schema, std::vector<Dat
                               std::to_string(schema.columns.size()) + ")");
   }
 
+  // Identity must be unambiguous before any adapter constructs an InstKey map.
+  std::unordered_set<InstKey> unique_instruments;
+  unique_instruments.reserve(instruments.size());
+  for (const InstKey instrument : instruments) {
+    if (!unique_instruments.insert(instrument).second) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Dataset::create: duplicate instrument key");
+    }
+  }
+
   // 3. Every column must have exactly dates*instruments cells (no ragged).
+  if (!instruments.empty() && dates.size() >
+      std::numeric_limits<atx::usize>::max() / instruments.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "Dataset::create: dates*instruments overflows");
+  }
   const atx::usize expected_cells = dates.size() * instruments.size();
   for (atx::usize c = 0; c < columns.size(); ++c) {
     if (columns[c].size() != expected_cells) {
@@ -117,6 +133,13 @@ atx::core::Result<Dataset> Dataset::create(DatasetSchema schema, std::vector<Dat
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "Dataset::create: mask.size() (" + std::to_string(mask.size()) +
                               ") != dates*instruments (" + std::to_string(expected_cells) + ")");
+  }
+
+  for (const std::uint8_t membership : mask) {
+    if (membership > 1U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Dataset::create: mask must contain only 0 or 1");
+    }
   }
 
   Dataset ds;

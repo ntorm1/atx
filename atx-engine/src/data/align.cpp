@@ -54,14 +54,17 @@ build_plug_index(std::span<const InstKey> plug_instruments) {
   DropReport drops;
   const std::span<const InstKey> plug_instruments = plug.instruments();
   const std::span<const DateKey> plug_dates = plug.available_dates();
+  // Availability dates are sorted (validated by align_onto). Count the future
+  // suffix once instead of scanning every date for every instrument.
+  const atx::usize future_dates = no_canonical_dates ? plug_dates.size() :
+      static_cast<atx::usize>(plug_dates.end() -
+          std::upper_bound(plug_dates.begin(), plug_dates.end(), max_canonical_date));
   for (atx::usize pi = 0; pi < plug_instruments.size(); ++pi) {
     const bool in_universe = canonical_universe.contains(plug_instruments[pi]);
-    for (atx::usize pd = 0; pd < plug_dates.size(); ++pd) {
-      if (!in_universe) {
-        ++drops.extra_instrument_cells;
-      } else if (no_canonical_dates || plug_dates[pd] > max_canonical_date) {
-        ++drops.extra_date_cells;
-      }
+    if (!in_universe) {
+      drops.extra_instrument_cells += plug_dates.size();
+    } else {
+      drops.extra_date_cells += future_dates;
     }
   }
   return drops;
@@ -101,6 +104,15 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
   const std::span<const InstKey> canonical_instruments = canonical_price.instruments();
   const atx::usize plug_ni = plug.num_instruments();
   constexpr atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
+  // Identity mapping is independent of date. Resolve it once, outside the
+  // date/instrument/column loop (plug_ni is an out-of-range missing sentinel).
+  std::vector<atx::usize> instrument_index(ni, plug_ni);
+  for (atx::usize i = 0; i < ni; ++i) {
+    const auto found = plug_index.find(canonical_instruments[i]);
+    if (found != plug_index.end()) {
+      instrument_index[i] = found->second;
+    }
+  }
 
   // D-05 coverage guard: a canonical date after the plug's last availability date
   // would otherwise silently forward-fill (freeze) the plug's final row.
@@ -143,11 +155,11 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
                                      : d - first_session;
     const atx::usize pd_base = *pd * plug_ni;
     for (atx::usize i = 0; i < ni; ++i) {
-      const auto found = plug_index.find(canonical_instruments[i]);
-      if (found == plug_index.end()) {
+      const atx::usize pi = instrument_index[i];
+      if (pi == plug_ni) {
         continue; // missing coverage — cell stays NaN
       }
-      const atx::usize flat = pd_base + found->second;
+      const atx::usize flat = pd_base + pi;
       const atx::usize out = (d * ni) + i;
       for (atx::usize c = 0; c < ncols; ++c) {
         const bool unbounded = max_stale[c] == kAlignUnboundedStaleness;
