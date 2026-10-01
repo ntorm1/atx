@@ -123,7 +123,8 @@ def daily_text(seed: int, sessions: list[int]) -> str:
         vals = (s, 0 if k == 0 else 1, 1, r, r + 0.0002, 0.0 if k == 0 else 0.97 * v, 4e7, 0.04 + 0.001 * (k % 7),
                 0.97, 0.001, v, v, 0.49 * v, 0.48 * v, 800, 5 + k % 3, 1e5, k % 2, 1, 1500, 0, 1e6, 4e7, 1e-4,
                 3e3, 2e3, 5e3, 100.0, 50.0, 10.0, 2e-5, 0.0, 1e-5)
-        lines.append(','.join(repr(x) if isinstance(x, float) else str(x) for x in vals))
+        # float(x): numpy 2's repr of an np.float64 is 'np.float64(...)'; the same digits under numpy 1
+        lines.append(','.join(repr(float(x)) if isinstance(x, float) else str(x) for x in vals))
     return '\n'.join(lines) + '\n'
 
 
