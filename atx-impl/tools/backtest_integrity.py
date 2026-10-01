@@ -16,7 +16,8 @@
                   stays counted and its blind re-run adds 0; a re-run decided because the returns looked wrong is a
                   new trial beside it. Without the v8 fields every line adds its count, as before.
   defect line     (review C-3) kind defect, count 0, defect_of = a ledgered cell's trial_id, reason, ruling (the owner
-                  ruling's id, review F-1): that cell is invalid, found after it was ledgered (research_cycle.py
+                  ruling's id, review F-1) and date (review F-5; the v8 Appendix A block counts these lines): that cell
+                  is invalid, found after it was ledgered (research_cycle.py
                   ledger-defect), or, for a cell ledgered invalid at once (its own defect flag), the ruling its re-run
                   needs. A cell line whose trial_id is ledgered already is skipped only when its defect / re-run flags
                   equal the ledgered line's; flags that would be dropped are refused (ledger_append raises, nav_summ
@@ -737,23 +738,25 @@ def trial_id(kind: str, series_sha256: str) -> str:
     return hashlib.sha256(json.dumps([kind, series_sha256], separators=(",", ":")).encode()).hexdigest()[:16]
 
 
-def defect_line(target: str, reason: str, date: str | None = None, ruling: str | None = None) -> dict:
+def defect_line(target: str, reason: str, date: str, ruling: str) -> dict:
     """A defect event line (review C-3): the ledgered cell whose trial_id is ``target`` is invalid (v8-prereg item 7),
     found after it was ledgered. kind defect, count 0, no cell and no series; its trial_id is (defect, target), so a
-    cell has at most one. ``ruling`` (review F-1) is the owner ruling's id that declared the cell invalid: a blind or
-    returns re-run of the cell needs it. ledger_append refuses a target that is not a ledgered cell line, and one
-    ledgered invalid already unless the line brings the ruling (``check_line``)."""
+    cell has at most one. ``ruling`` (reviews F-1, F-5) is the id of the owner ruling that declared the cell invalid
+    and ``date`` (YYYY-MM-DD) the day it did: prereg item 7 and E-31 require the invalidity to be decided without
+    seeing returns, and a blind or returns re-run of the cell needs the ruling. ledger_append refuses a target that is
+    not a ledgered cell line, and one ledgered invalid already unless the line brings the ruling (``check_line``)."""
     if not (isinstance(target, str) and target):
         raise ValueError("ledger: a defect line names the trial_id of a ledgered cell")
     if not (isinstance(reason, str) and reason.strip()):
         raise ValueError("ledger: a defect needs a reason")
-    if ruling is not None and not (isinstance(ruling, str) and ruling.strip()):
-        raise ValueError("ledger: a defect's ruling is the owner ruling's id (non-empty text)")
-    rec = {"schema": LEDGER_SCHEMA, "kind": DEFECT, "count": 0, "defect_of": target, "reason": reason}
-    if date is not None:
-        rec["date"] = date
-    if ruling is not None:
-        rec["ruling"] = ruling
+    if not (isinstance(ruling, str) and ruling.strip()):
+        raise ValueError("ledger: a defect line cites the owner ruling that declared the cell invalid (its id)")
+    try:
+        dt.date.fromisoformat(date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"ledger: a defect line carries the ruling's date YYYY-MM-DD, got {date!r}") from exc
+    rec = {"schema": LEDGER_SCHEMA, "kind": DEFECT, "count": 0, "defect_of": target, "reason": reason, "date": date,
+           "ruling": ruling}
     rec["trial_id"] = trial_id(DEFECT, target)
     return rec
 
@@ -1079,7 +1082,9 @@ def appendix_a(records: list[dict], path: str) -> list[str]:
 
 def appendix_a_v8(records: list[dict]) -> str:
     """The v8 Appendix A block (v8-prereg, 'on every result'): construction trials by the defect rule, this window's
-    admission trials, and the window statement, every window date taken from the research window."""
+    admission trials, and the window statement, every window date taken from the research window. Review F-5: with a
+    defect line in the ledger (a cell ruled invalid after it was scored, out of N and V[SR]) the block ends with their
+    count; without one it is unchanged."""
     rw, wid = research_window(), window_id()
     counts = trial_counts(records)
     n = sum(c for r, c in zip(records, counts) if r.get("kind") == "construction")
@@ -1090,6 +1095,8 @@ def appendix_a_v8(records: list[dict]) -> str:
     never = (rw.load().get("hidden") or {}).get("never_read") or [None]
     never_year = dt.date.fromisoformat(never[0]).year if never[0] else None
     tail = f"; {never_year}+ never read" if never_year else ""
+    defects = sum(1 for r in records if r.get("kind") == DEFECT)
+    tail += f"; defect lines {defects} (cells ruled invalid after scoring)" if defects else ""
     return (f"TRAIN construction cells {n}; admission trials this sprint {k}; window {wid} ({first}-{last}); "
             f"hidden {sealed}+ unread in this sprint; validation reads before v8: {PRIOR_VALIDATION_READS}{tail}.")
 

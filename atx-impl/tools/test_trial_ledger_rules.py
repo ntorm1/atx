@@ -23,6 +23,7 @@ import nav_summ as NS
 from test_nav_summ import SCEN, write_nav
 
 WID = BI.window_id()
+DAY, RULING = "2026-10-01", "E-31"        # review F-5: a defect line cites the owner ruling and its date
 
 
 def cells(tmp_path: Path, k: int, prefix: str = "c") -> list[Path]:
@@ -72,7 +73,9 @@ def test_a_defect_found_later_is_a_defect_line(tmp_path):
     BI.ledger_append(ledger, recs, chain=True)
     before = BI.ledger_read(ledger)
     assert BI.trial_counts(before) == [1, 1, 1] and BI.dsr_variance(before, WID)["cells"] == 3
-    line = BI.defect_line(recs[1]["trial_id"], "role built without the delisting returns", "2026-10-01")
+    assert "defect lines" not in BI.appendix_a_v8(before)                 # review F-5: no defect line, block as before
+    line = BI.defect_line(recs[1]["trial_id"], "role built without the delisting returns", DAY, RULING)
+    assert (line["ruling"], line["date"]) == (RULING, DAY)
     appended, skipped = BI.ledger_append(ledger, [line], chain=True)
     assert [a["trial_id"] for a in appended] == [line["trial_id"]] and skipped == []
     after = BI.ledger_read(ledger)
@@ -86,18 +89,25 @@ def test_a_defect_found_later_is_a_defect_line(tmp_path):
     assert BI.ledger_counts(after) == {"construction": {k: 2 for k in BI.ledger_counts(after)["construction"]}}
     text = BI.appendix_a(after, "t.jsonl")
     assert text[-1] == "   adding no trial: 2 line(s) (2 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
+    assert BI.appendix_a_v8(after).endswith("; defect lines 1 (cells ruled invalid after scoring).")   # review F-5
     assert BI.ledger_append(ledger, [line], chain=True)[0] == []      # the same line again: a no-op
     for target, reason, needle in ((recs[1]["trial_id"], "another reason", "has a defect line already"),
                                    ("0" * 16, "typo", "is not the trial_id of a ledgered cell line"),
                                    (line["trial_id"], "an event", "is not the trial_id of a ledgered cell line")):
         with pytest.raises(ValueError, match=needle):
-            BI.ledger_append(ledger, [BI.defect_line(target, reason)], chain=True)
+            BI.ledger_append(ledger, [BI.defect_line(target, reason, DAY, RULING)], chain=True)
     flagged = record(c[3], 0.3, defect="cost model misread")          # ledgered invalid at first
     BI.ledger_append(ledger, [flagged], chain=True)
+    bare = {k: v for k, v in BI.defect_line(flagged["trial_id"], "twice", DAY, RULING).items() if k != "ruling"}
     with pytest.raises(ValueError, match="was ledgered invalid already"):
-        BI.ledger_append(ledger, [BI.defect_line(flagged["trial_id"], "twice")], chain=True)
+        BI.ledger_append(ledger, [bare], chain=True)                   # a line without a ruling adds nothing
+    BI.ledger_append(ledger, [BI.defect_line(flagged["trial_id"], "twice", DAY, RULING)], chain=True)  # brings it
     with pytest.raises(ValueError, match="needs a reason"):
-        BI.defect_line(recs[0]["trial_id"], " ")
+        BI.defect_line(recs[0]["trial_id"], " ", DAY, RULING)
+    for date, ruling, needle in ((DAY, " ", "cites the owner ruling"), (DAY, None, "cites the owner ruling"),
+                                 ("01/10/2026", RULING, "YYYY-MM-DD"), (None, RULING, "YYYY-MM-DD")):   # review F-5
+        with pytest.raises(ValueError, match=needle):
+            BI.defect_line(recs[0]["trial_id"], "stale", date, ruling)
     assert json.loads(ledger.read_text(encoding="utf-8").splitlines()[3])["reason"] == \
         "role built without the delisting returns"
 
@@ -214,7 +224,7 @@ def test_a_blind_rerun_needs_a_defect_and_never_lowers_n(tmp_path):
         with pytest.raises(ValueError, match=f"a {basis} re-run replaces an invalid cell.*ledger-defect --trial-id"):
             BI.ledger_append(ledger, [record(c[1], 0.9, rerun_of=r3["trial_id"], rerun_basis=basis)], chain=True)
     assert BI.ledger_n(BI.ledger_read(ledger), True) == 1
-    BI.ledger_append(ledger, [BI.defect_line(r3["trial_id"], "stale borrow table", ruling="E-31")], chain=True)
+    BI.ledger_append(ledger, [BI.defect_line(r3["trial_id"], "stale borrow table", DAY, RULING)], chain=True)
     assert BI.ledger_n(BI.ledger_read(ledger), True) == 0                             # an invalid cell leaves N
     retry = record(c[1], 0.9, rerun_of=r3["trial_id"], rerun_basis="blind")
     BI.ledger_append(ledger, [retry], chain=True)
@@ -273,8 +283,9 @@ def test_a_rerun_names_a_ledgered_target_once_and_pins_it(tmp_path):
     BI.ledger_append(ledger, [bad], chain=True)
     for basis in ("blind", "returns"):
         refused(record(c[5], 0.6, rerun_of=bad["trial_id"], rerun_basis=basis), "carries no ruling id")
-    refused(BI.defect_line(bad["trial_id"], "limits unmet"), "was ledgered invalid already")   # brings no ruling
-    BI.ledger_append(ledger, [BI.defect_line(bad["trial_id"], "limits unmet", ruling="E-31")], chain=True)
+    ruled = BI.defect_line(bad["trial_id"], "limits unmet", DAY, RULING)
+    refused({k: v for k, v in ruled.items() if k != "ruling"}, "was ledgered invalid already")   # brings no ruling
+    BI.ledger_append(ledger, [ruled], chain=True)
     blind = record(c[5], 0.6, rerun_of=bad["trial_id"], rerun_basis="blind")
     BI.ledger_append(ledger, [blind], chain=True)
     assert BI.ledger_read(ledger)[-1]["rerun_cell"] == bad["cell"]
@@ -283,8 +294,8 @@ def test_a_rerun_names_a_ledgered_target_once_and_pins_it(tmp_path):
                 f"{blind['trial_id']}")
     valid = record(c[6], 0.7)
     BI.ledger_append(ledger, [valid], chain=True)
-    no_ruling = {k: v for k, v in BI.defect_line(valid["trial_id"], "stale fields", ruling="x").items()
-                 if k != "ruling"}                                      # a defect line written without a ruling
+    no_ruling = {k: v for k, v in BI.defect_line(valid["trial_id"], "stale fields", DAY, RULING).items()
+                 if k != "ruling"}                                      # a line written before rulings were required
     BI.ledger_append(ledger, [no_ruling], chain=True)
     refused(record(c[7], 0.8, rerun_of=valid["trial_id"], rerun_basis="blind"), "carries no ruling id")
     records = BI.ledger_read(ledger)
@@ -323,7 +334,7 @@ def test_a_mining_campaign_line_adds_nothing_to_n_and_carries_its_registry_count
         BI.ledger_record("mining-campaign", str(c[0]), c[0] / "summary.json", c[0] / f"daily_{SCEN}.csv", SCEN,
                          NS.net_series(NS.load_daily(c[0], SCEN)), 0.6)
     with pytest.raises(ValueError, match="is not the trial_id of a ledgered cell line"):  # no defect of a campaign
-        BI.ledger_append(ledger, [BI.defect_line(camp["trial_id"], "budget overrun")], chain=True)
+        BI.ledger_append(ledger, [BI.defect_line(camp["trial_id"], "budget overrun", DAY, RULING)], chain=True)
     for args, needle in ((("", "r", "ab" * 32, 5), "needs a name"), (("m", "r", "xyz", 5), "chain head"),
                          (("m", "r", "ab" * 32, 0), "positive integer")):
         with pytest.raises(ValueError, match=needle):

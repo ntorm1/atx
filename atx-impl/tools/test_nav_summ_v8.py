@@ -273,11 +273,11 @@ def test_defect_rule_appendix_a(tmp_path):
     after = record(c[3], 0.9, research_window_id=wid, origin="grid", rerun_of=looked["trial_id"],
                    rerun_basis="returns")
     replaced = record(c[4], 0.3, research_window_id=wid, origin="mined")
-    found = BI.defect_line(replaced["trial_id"], "borrow fee table misread", ruling="E-31")
+    found = BI.defect_line(replaced["trial_id"], "borrow fee table misread", "2026-10-01", "E-31")
     blind2 = record(c[5], 0.5, research_window_id=wid, origin="mined", rerun_of=replaced["trial_id"],
                     rerun_basis="blind")
     # review F-1: a re-run of a cell ledgered invalid at once needs the owner ruling's id, on a defect line
-    rulings = [BI.defect_line(x["trial_id"], x["defect"]["reason"], ruling="E-31") for x in (bad, looked)]
+    rulings = [BI.defect_line(x["trial_id"], x["defect"]["reason"], "2026-10-01", "E-31") for x in (bad, looked)]
     ledger = tmp_path / "t.jsonl"
     BI.ledger_append(ledger, [bad, rulings[0], blind, looked, rulings[1], after, replaced, found, blind2], chain=True)
     recs = BI.ledger_read(ledger)
