@@ -32,6 +32,8 @@ std::string field_problem(const MineLedgerLine &line) {
   if (!lower_hex(line.registry_head, 64U))
     return "a mining campaign names its registry's chain head (a SHA-256 hex digest)";
   if (line.registry_count < 1U) return "a mining campaign's registry count is a positive integer";
+  if (line.registry_total < line.registry_count)
+    return "a mining campaign's registry total is at least its count (Ruling E-33a)";
   if (line.registry_bytes < 1U) return "a mining campaign's registry byte count is a positive integer";
   if (line.window_id.empty()) return "a mining campaign names its research window";
   return {};
@@ -53,7 +55,8 @@ co::Result<std::string> line_text(const MineLedgerLine &line) {
                   {{"path", path},
                    {"chain_head", line.registry_head},
                    {"bytes", line.registry_bytes},
-                   {"count", line.registry_count}}},
+                   {"count", line.registry_count},
+                   {"total", line.registry_total}}},
                  {"trial_id", ident.substr(0, kTrialIdDigits)}};
   return co::Ok(out.dump());
 }
@@ -89,6 +92,7 @@ std::string mine_ledger_line_problem(std::string_view text) {
     line.registry_head = text_at(registry, "chain_head");
     line.registry_bytes = unsigned_at(registry, "bytes");
     line.registry_count = unsigned_at(registry, "count");
+    line.registry_total = unsigned_at(registry, "total");
     line.window_id = text_at(j, "window_id");
     if (const std::string problem = field_problem(line); !problem.empty()) return problem;
     const auto expected = line_text(line);

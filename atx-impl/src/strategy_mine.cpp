@@ -389,6 +389,16 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                           "output directory must be new; " + ec.message()));
     ATX_TRY(const RegistryReceipt registry,
             record_campaign(cfg, trials, recipe_sha, label_rows, anchor));
+    // Ruling E-33a: a campaign's line counts the records it added; one that added none is a
+    // re-run of a recorded campaign, which has no line to write and is refused before any read
+    // of the confirm window.
+    if (registry.inserted == 0U) {
+      static_cast<void>(fs::remove(out_dir, ec)); // empty: nothing was written into it
+      return co::Err(fail(co::ErrorCode::AlreadyExists,
+                          "the campaign added no record to " + cfg.registry_path +
+                              ": every trial is registered already (a re-run of a recorded "
+                              "campaign)"));
+    }
     const u64 n_raw = registry.n_raw;
     ATX_TRY_VOID(ev::write_chain_head(out_dir / "registry_head.txt", registry.chain));
     const Counts counts = count_statuses(trials);
@@ -476,16 +486,17 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                      {"registry_head", registry.sha256},
                      {"members", members}};
     // Ruling E-33: the line backtest_integrity.campaign_line builds (strategy_mine_ledger.hpp;
-    // count 0: it adds no trial to any ledger N; registry.count = n_raw, the mined-v1
-    // Bonferroni count). `research_cycle.py ledger-campaign` rebuilds it from campaign.json
-    // through campaign_line, checks the registry against its head, refuses a difference, and
-    // appends it chained (prev_sha256).
+    // count 0: it adds no trial to any ledger N; Ruling E-33a: registry.count = the records this
+    // campaign added, registry.total = n_raw). `research_cycle.py ledger-campaign` rebuilds it
+    // from campaign.json through campaign_line, checks the registry against its head, refuses a
+    // difference, and appends it chained (prev_sha256).
     MineLedgerLine line;
     line.campaign_id = cfg.campaign_id;
     line.registry_path = cfg.registry_path;
     line.registry_head = registry.sha256;
     line.registry_bytes = registry.bytes;
-    line.registry_count = n_raw;
+    line.registry_count = registry.inserted;
+    line.registry_total = n_raw;
     line.window_id = std::string(dt::kResearchWindowId);
     ATX_TRY(const std::string ledger, mine_ledger_line(line));
     ATX_TRY_VOID(write_text(out_dir / "trials.csv", trials_csv(trials)));

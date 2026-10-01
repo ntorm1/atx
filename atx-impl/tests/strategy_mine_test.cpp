@@ -330,7 +330,8 @@ std::string prefix_sha256(const fs::path &path, u64 bytes) {
 // Review MINE-1 / Ruling E-33: ledger_line.json is the line backtest_integrity.campaign_line
 // writes for campaign.json -- by the verb's own check (mine_ledger_line_problem) and by an
 // independent mirror here -- and its chain head is the SHA-256 of the registry log's first
-// `bytes` bytes. The pre-fix verb's 16-hex head is a line that check refuses.
+// `bytes` bytes. The pre-fix verb's 16-hex head is a line that check refuses. Ruling E-33a:
+// registry.count is the campaign's new records, registry.total the registry's size.
 void expect_campaign_line(const st::MineConfig &cfg, const Json &campaign, const fs::path &out,
                           const std::string &context) {
   const std::string text = text_of(out / "ledger_line.json");
@@ -354,7 +355,8 @@ void expect_campaign_line(const st::MineConfig &cfg, const Json &campaign, const
                        {{"path", registry_path},
                         {"chain_head", head_hex},
                         {"bytes", bytes},
-                        {"count", registry.at("n_raw")}}},
+                        {"count", registry.at("new_records")},
+                        {"total", registry.at("n_raw")}}},
                       {"trial_id", ident->substr(0, 16)}};
   EXPECT_EQ(Json::parse(text), expected) << context;
   std::string old_form = text;
@@ -480,7 +482,8 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
 }
 
 // Same seed twice and at 1 and 4 workers: the same registry chain head, trial log and members.
-// An existing registry reopens only against its exported head, and a rerun adds no trial.
+// An existing registry reopens only against its exported head, and a re-run of the recorded
+// campaign (it would add no record, Ruling E-33a) is refused, writing nothing.
 TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
   Fixture f;
   ASSERT_TRUE(f.ok);
@@ -509,12 +512,53 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
   EXPECT_NE(refused.error().message().find("--registry-head"), std::string::npos);
   EXPECT_FALSE(fs::exists(again.output_directory));
   again.registry_head_path = (f.dir.path / "out-w1a" / "registry_head.txt").string();
-  const auto status = st::run_mine(again, progress);
-  ASSERT_TRUE(status) << status.error().to_string();
-  const Json campaign = read_json(fs::path(again.output_directory) / "campaign.json");
-  EXPECT_EQ(campaign.at("registry").at("new_records").get<u64>(), 0U);
-  EXPECT_EQ(campaign.at("registry").at("head").get<std::string>(), heads[0]);
-  EXPECT_FALSE(campaign.at("registry").at("anchor").is_null());
+  const std::string log_before = text_of(again.registry_path);
+  const auto rerun = st::run_mine(again, progress);
+  ASSERT_FALSE(rerun);
+  EXPECT_NE(rerun.error().message().find("registered already"), std::string::npos)
+      << rerun.error().to_string();
+  EXPECT_FALSE(fs::exists(again.output_directory));
+  EXPECT_EQ(text_of(again.registry_path), log_before);
+}
+
+// Ruling E-33a: two campaigns on one registry. The second (other windows, so other trial
+// identities) reopens the registry against the first one's head; each line counts only the
+// records its campaign added and carries the registry's size as its total, so the two counts
+// sum to the registry once.
+TEST(StrategyMineCampaign, SharedRegistryLinesCountEachCampaignsOwnRecords) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const auto first = f.config("shared-a", 3, 1);
+  std::ostringstream progress;
+  const auto a_status = st::run_mine(first, progress);
+  ASSERT_TRUE(a_status) << a_status.error().to_string();
+  auto second = f.config("shared-b", 3, 1);
+  second.campaign_id = "fixture-b";
+  second.registry_path = first.registry_path;
+  second.registry_head_path = (fs::path(first.output_directory) / "registry_head.txt").string();
+  second.discover_end = "2022-07-01";
+  second.confirm_begin = "2022-07-01";
+  const auto b_status = st::run_mine(second, progress);
+  ASSERT_TRUE(b_status) << b_status.error().to_string();
+  const Json a = read_json(fs::path(first.output_directory) / "campaign.json");
+  const Json b = read_json(fs::path(second.output_directory) / "campaign.json");
+  const u64 a_new = a.at("registry").at("new_records").get<u64>();
+  const u64 b_new = b.at("registry").at("new_records").get<u64>();
+  const u64 b_total = b.at("registry").at("n_raw").get<u64>();
+  EXPECT_EQ(a_new, a.at("registry").at("n_raw").get<u64>()); // a fresh registry
+  EXPECT_EQ(b_new, b.at("trials").at("distinct").get<u64>());
+  EXPECT_EQ(b_total, a_new + b_new);
+  EXPECT_FALSE(b.at("registry").at("anchor").is_null());
+  const Json a_line = read_json(fs::path(first.output_directory) / "ledger_line.json");
+  const Json b_line = read_json(fs::path(second.output_directory) / "ledger_line.json");
+  EXPECT_EQ(a_line.at("registry").at("count").get<u64>(), a_new);
+  EXPECT_EQ(b_line.at("registry").at("count").get<u64>(), b_new);
+  EXPECT_EQ(b_line.at("registry").at("total").get<u64>(), b_total);
+  EXPECT_EQ(a_line.at("registry").at("count").get<u64>() +
+                b_line.at("registry").at("count").get<u64>(),
+            b_total);
+  expect_campaign_line(first, a, first.output_directory, "first");
+  expect_campaign_line(second, b, second.output_directory, "second");
 }
 
 // Research window: a role with a session on 2024-01-02 is refused from its manifest, before any

@@ -35,7 +35,8 @@ appends one chained defect line (review C-3; backtest_integrity.defect_line): th
 
 appends one chained mining campaign line (Ruling E-33; backtest_integrity.campaign_line) for the output DIR of
 atx-equity-strategy-mine: built from DIR/campaign.json (campaign_id, registry path, chain head and byte count,
-registry count = n_raw, the mined-v1 Bonferroni count; research window id) and refused unless the campaign is
+registry count = the records the campaign added and total = n_raw, Ruling E-33a; research window id) and refused
+unless the campaign is
 complete, the registry's first bytes still hash to the chain head (review MINE-1; a relative registry path is read
 from --root), DIR/registry_head.txt names the same registry head, and the line equals the verb's
 DIR/ledger_line.json. It adds 0 to every N; the same registry head is never appended twice.
@@ -262,8 +263,8 @@ def campaign_record(directory: Path, date: str | None = None, root: Path = resea
         raise LedgerError(f"{directory}: campaign.json is not a complete {MINE_CAMPAIGN_SCHEMA} campaign")
     reg = campaign["registry"]
     check_campaign_registry(directory, reg, root)
-    rec = backtest_integrity().campaign_line(campaign["campaign_id"], reg["path"], reg["head"], reg["n_raw"],
-                                             registry_bytes=reg["bytes"],
+    rec = backtest_integrity().campaign_line(campaign["campaign_id"], reg["path"], reg["head"], reg["new_records"],
+                                             registry_total=reg["n_raw"], registry_bytes=reg["bytes"],
                                              research_window_id=campaign["research_window"]["id"], date=date)
     verb = json.loads((directory / "ledger_line.json").read_text(encoding="utf-8"))
     own = {k: v for k, v in rec.items() if k != "date"}

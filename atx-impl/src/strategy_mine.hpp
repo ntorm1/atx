@@ -23,7 +23,8 @@
 // Outputs (OUTPUT must be new): campaign.json (atx.mine-campaign/v1), trials.csv,
 // mined_members.json (atx.mined-members/v1, theme `mined`), ledger_line.json (the Ruling E-33
 // atx.trial-ledger/v1 line of backtest_integrity.campaign_line, strategy_mine_ledger.hpp: kind
-// mining-campaign, count 0, registry {path, chain_head, bytes, count = n_raw};
+// mining-campaign, count 0, registry {path, chain_head, bytes, count = the records this campaign
+// added, total = n_raw} (Ruling E-33a; a campaign that adds no record is refused);
 // `research_cycle.py ledger-campaign --campaign OUTPUT` rebuilds it from campaign.json, checks
 // the registry bytes against the head, and appends it chained) and registry_head.txt.
 #include <iosfwd>
