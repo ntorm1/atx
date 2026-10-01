@@ -61,6 +61,18 @@
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
 // the replay's own summary.json.
+//   --risk-target S [--risk-target-bias 1.15] [--risk-target-cadence 21]   (platform v8 R-8,
+//                             risk-target-v1, strategy_risk_target.hpp) with --risk-model DIR
+//                             --risk-model-sha256 SHA (the spo rules' atx-risk-v1 store and
+//                             check, shared with spo-v3): every book's aim leverage becomes
+//                             L_t = clip(S / (b sigma_hat_t), .8 L, 1.25 L), sigma_hat_t the
+//                             gross-1 current book's ex-ante vol, re-estimated every C sessions;
+//                             aim-partial-v5 and spo-v3 only (aim-partial-v6, spo-v1/v2 and the
+//                             other target rules refused); recipe.json, summary.json and the
+//                             holdings manifest get a "risk_target" block and the rule id
+//                             "+risk-target-S"; <output>/risk_target.csv (one row per scored
+//                             decision and book: sigma_hat, L_t) beside v7_extras.json. Absent:
+//                             nothing of it runs and no byte moves.
 // Warm start (v8 D-0, --warm-start-sessions K): the decisions before the role's
 // decision_begin plan the books but are not scored, so every v7 side file (the transfer
 // coefficients, spo_diagnostics.csv, the spo summary blocks) and the spo tripwire cover
@@ -79,6 +91,7 @@
 #include "atx/engine/book/replay_cost.hpp"
 #include "strategy_cost_v2.hpp"
 #include "strategy_nav_replay.hpp"
+#include "strategy_risk_target.hpp"
 #include "strategy_spo.hpp"
 #include "strategy_target_replay.hpp"
 
@@ -91,7 +104,9 @@ struct NavV7Options {
   cost_v2::AimV6Params v6{};
   bool spo_v1{};   // --rule spo-v1, spo-v2 or spo-v3 (spo_params.version tells which)
   spo::SpoParams spo_params{};
-  std::shared_ptr<const spo::RiskStore> spo_risk; // opened by dispatch_nav_v7
+  // opened by dispatch_nav_v7; the spo rules' and the risk target's (one store, one check)
+  std::shared_ptr<const spo::RiskStore> spo_risk;
+  risk_target::Options risk_target{}; // --risk-target (v8 R-8)
 };
 enum class NavV7Pass : atx::u8 { Main = 0, Capacity = 1 };
 
@@ -134,6 +149,9 @@ public:
   // spo-v3 --capacity-curve (Ruling E-37): the engine the capacity pass plans on (nullptr
   // without the spo rule and the capacity curve); spo_engine() keeps the main pass's rows.
   [[nodiscard]] const spo::Engine* spo_capacity_engine() const noexcept;
+  // The risk-target-v1 scaler (nullptr without --risk-target): its records are the main pass's
+  // scored decisions.
+  [[nodiscard]] const risk_target::Scaler* risk_target_scaler() const noexcept;
   // Why capture() voided the run (the spo specific-ceiling tripwire); empty otherwise.
   [[nodiscard]] const std::string& void_reason() const noexcept;
   struct State;
@@ -151,7 +169,7 @@ struct NavV7Command {
   NavV7Options options;
   std::vector<std::string> args;
   std::string output;
-  std::string risk_model, risk_model_sha256; // the spo rules only
+  std::string risk_model, risk_model_sha256; // the spo rules and the risk target
 };
 [[nodiscard]] atx::core::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv);
 

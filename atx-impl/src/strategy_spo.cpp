@@ -1477,7 +1477,11 @@ co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>&
                                        TargetReplayDay& out) {
   const auto& x = in.x;
   const usize n_all = x.instruments, d = in.d;
-  budget = v3_gross_bound_multiple * in.cfg.target.aim_leverage; // checked, never imposed
+  // v8 R-8 (risk-target-v1): in.cfg may carry the book's scaled leverage L_t (the aim below);
+  // the gross sanity bound and gamma's one calibration read the run's L (in.base_leverage; NaN:
+  // no risk target, L = in.cfg's), so the tracker differs from its parent's only by the aim.
+  const f64 base = std::isnan(in.base_leverage) ? in.cfg.target.aim_leverage : in.base_leverage;
+  budget = v3_gross_bound_multiple * base; // checked, never imposed
   ATX_TRY_VOID(prepare(in));
   const auto member = x.member.subspan(d * n_all, n_all);
   // The aim L x desired, with desired the NAV replay's shared desired target as aim-partial-v5
@@ -1487,7 +1491,14 @@ co::Status Engine::Impl::plan_tracking(const BookDecision& in, std::vector<f64>&
   aim.assign(n_all, 0.0);
   for (usize i = 0; i < n_all; ++i)
     if (member[i]) aim[i] = in.cfg.target.aim_leverage * in.desired[i];
-  if (!calibration.done) ATX_TRY_VOID(calibrate_tracking(in, aim));
+  if (!calibration.done && base == in.cfg.target.aim_leverage) {
+    ATX_TRY_VOID(calibrate_tracking(in, aim));
+  } else if (!calibration.done) { // R-8: gamma on the parent's aim L x desired
+    std::vector<f64> parent_aim(n_all, 0.0);
+    for (usize i = 0; i < n_all; ++i)
+      if (member[i]) parent_aim[i] = base * in.desired[i];
+    ATX_TRY_VOID(calibrate_tracking(in, parent_aim));
+  }
   const std::vector<f64> current(planned);
   FixedPositions fixed;
   ATX_TRY_VOID(fixed_positions(in, current, fixed));
