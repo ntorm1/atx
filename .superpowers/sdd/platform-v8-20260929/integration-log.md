@@ -1055,3 +1055,129 @@ counts; no statistic). Tests used synthetic fixtures and tiny_world. Nothing dat
   (`ew-theme-std-v1`) carried.
 - Carried: `ConfigJsonNotInDiscoverDigest` (known), `ParallelLockstepGrid` group unconfigured, build provenance records
   `5c6efcd4` for v8-6 / v8-6a (sources `d833b25f` / `229f8e78`).
+
+## integration 5 part B (2026-09-30)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `fd2ff7a8` (clean). Tag prefix v8-7.
+Scope: merge H3 by SHA, build, own build-fix pass, mine tests and fixture acceptance, default-off golden digests, the
+FIX-C / Ruling E-33 campaign-line wiring, wider suites. No identity run and no real-data run.
+
+### Merge
+
+| lane (tasks) | lane SHA | merge | conflicts |
+|---|---|---|---|
+| H3 (H-3 parts 2 and 3: engine signal-fitness search path, research IC fitness, `OpCatalogCfg`; research-role loader, `atx-equity-strategy-mine`, rule `mined-v1`) | `339c07b1` | `e2bb716b` | none (26 files, +4125 / -227) |
+
+Merge base `95859cc9` (H3's own merge of integration 3), so part 1 (`11ff84c3`: `role_panel`, `ResearchIcCache`
+accessors, `instrument_rungs`) was on root already. `strategy_ic_signal_cache.cpp` did not move: root's 33-path
+`dsl_vm_sources` list with FIX-AB's digest `ad6c4ca7...3d62` stands, so H3's "tripwire fails until root re-pins" note is
+stale. No path of the merge diff (`fd2ff7a8..HEAD`) is in the pinned list; `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion`
+and `IcSourcesPinnedToSemanticsVersion` pass on v8-7a. No re-pin, no semantics bump.
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-7 | `e2bb716b` clean | atx-engine-factory-tests, atx-impl-strategy-mine-tests, atx-equity-strategy-mine | ok, exit 0, 154 s, 50 TUs, 5 links, 4 jobs (reconfigure: CMakeLists changed; provenance now `e2bb716b`) |
+| **v8-7a** | `ccb66a87` clean | atx-impl-strategy-mine-tests, atx-equity-strategy-mine, atx-impl-strategy-ic-tests, -strategy-tests, -strategy-target-tests, atx-impl-tests, atx-equity-strategy-ic, -targets, -risk | ok, exit 0, 77 s, 13 TUs, 11 links, 3 jobs |
+
+**H3 compiled first time under `/W4 /WX`** (it was never compiled in the lane): every new TU of parts 2 and 3
+(`research_ic_fitness.cpp`, `search_driver.cpp`, `op_catalog.cpp`, `strategy_mine*.cpp`, `strategy_research_role.cpp`,
+`equity_strategy_mine.cpp`, both test files). No build fix was needed; none of the report's "first things to check"
+fired. Executables: v8-7 factory-tests `c4a70660...39df`, mine-tests `da43c229...9ca7`, mine `53903a75...ba08`; v8-7a
+mine-tests `9f20972c...8947`, mine `ac463657...8d03`, ic `39bc5f33...ce2b`, targets `474fabb0...b3d1`, risk
+`15fb74d5...c56a`, ic-tests `cea55898...bb30`, strategy-tests `2e3181f4...8dd8c`, target-tests `575539e2...7f71`,
+impl-tests `25bde20d...bc15b`. The engine library is the same in v8-7 and v8-7a (the fix touches atx-impl only).
+
+### Integration edit (FIX-C cross-lane note: the mining verb must write `campaign_line`)
+
+| commit | lane | files | what |
+|---|---|---|---|
+| `ccb66a87` | H3 x FIX-C (Ruling E-33) | `atx-impl/src/strategy_mine.{cpp,hpp}`, `atx-impl/tests/strategy_mine_test.cpp`, `scripts/research_ledger.py`, `scripts/research_cycle.py`, `scripts/tests/test_research_ledger.py` | see below |
+
+- Why: H3's `ledger_line.json` contradicted E-33. It had `count` = new records, no `registry.count`
+  (`campaign_registry_count` would read 0), and the trial_id rule `(kind, campaign_id, head)`, where `campaign_line`
+  uses `(kind, head)`. So the verb's line and the writer's line for the same campaign had different identities,
+  which risked a double campaign line.
+- C++ (smallest change): `ledger_line.json` is now exactly `backtest_integrity.campaign_line(campaign_id, registry
+  path, head, n_raw, research_window_id)`:
+  - schema, kind `mining-campaign`, `count` 0, `campaign`, origin `mined`, `window_id`;
+  - `registry {path (with / separators), chain_head, count = n_raw}`;
+  - `trial_id` = sha256(`["mining-campaign",head]`)[:16].
+  - `campaign.json` is unchanged.
+- Python (the wiring): a new verb `research_cycle.py ledger-campaign --ledger L --campaign DIR [--date D]`
+  (`research_ledger.campaign_main`):
+  - it rebuilds the line from `DIR/campaign.json` through `campaign_line`;
+  - it refuses an incomplete campaign, a line that differs from the verb's `ledger_line.json` (the error names the
+    keys), a missing output or a broken chain (exit 2, nothing appended);
+  - otherwise it appends the line with `chain=True`. A rerun with the same registry head is "already present".
+- The C++ verb cannot append to the cycle ledger itself in integration: the chained JSONL append (legacy fold, C-6
+  chain verification, `check_line`) lives only in Python. So the verb writes the line and the ledger verb appends it.
+- Tests:
+  - `StrategyMineCampaign.PromotesThePlantedSignalsOnlyInFiveSeeds` now pins the full line (JSON equality,
+    5 seeds), in place of the old `count == new_records` check.
+  - New `test_ledger_campaign_appends_the_mine_verbs_campaign_line`. It checks:
+    - the appended line equals the verb's line plus `prev_sha256`, and equals `campaign_line(...)`;
+    - `trial_counts` [1, 0], `campaign_registry_count` 81 and `cycle_n` are unchanged;
+    - a rerun is skipped;
+    - the pre-E-33 form (`count` 81), an incomplete campaign and an absent directory are each refused, with the
+      ledger bytes unchanged.
+
+### Tests
+
+| exe / suite | build | result |
+|---|---|---|
+| atx-impl-strategy-mine-tests (whole) | v8-7 | 18/18 |
+| atx-impl-strategy-mine-tests (whole) | v8-7a | **18/18** (with the E-33 line pinned) |
+| atx-engine-factory-tests (whole) | v8-7 | **387/387** (377 + H3's 10 through the factory glob) |
+| atx-engine-factory-tests `NsgaSearch.*:FactoryFidelity*:SignalFitness*:OpCatalogCfgTest.*:ResearchIc*` | v8-7 | 44/44 |
+| atx-impl-strategy-ic-tests | v8-7a | 105/105 (both source pins included) |
+| atx-impl-strategy-tests | v8-7a | 46/46 |
+| atx-impl-strategy-target-tests | v8-7a | 234 run: 233 passed, 1 skipped (SpoV3 v2 placeholder) |
+| atx-impl-tests | v8-7a | 973 run: **965 passed, 7 skipped, 1 failed: the known `ConfigJsonNotInDiscoverDigest`** (+8 = `strategy_mine_test.cpp` through the glob; the skips are part A's 7) |
+| scripts/tests (whole, `ATX_EQUITY_BIN` = v8-7a bin) | v8-7a | 164 passed, 3 skipped (part A 163 + the new test; the 3 RESEARCH_CYCLE_LIVE_ROOT skips); tiny_world `test_cycle_e2e.py` in it: no golden moved, `git status` clean after |
+| atx-impl/tools (whole) | - | 465 passed, 2 skipped (as part A) |
+
+**Default-off golden digests (1 and 4 workers): hold.**
+- `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest` and
+  `SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (the 1- and 4-worker runs) pass in
+  mine-tests (v8-7 and v8-7a) and factory-tests (v8-7).
+- `NsgaSearch.ScalarRaw_ReproducesGoldenDigest` passes.
+- `kGoldenDigest = 0x889874a3b9b29c55` is the same in `factory_nsga_search_test.cpp` (untouched by the merge) and
+  `factory_signal_fitness_test.cpp`. No pin was edited.
+
+**Fixture acceptance (`StrategyMineCampaign.*`, the report's three tests): pass.**
+
+| test | v8-7 | v8-7a | what it shows |
+|---|---|---|---|
+| `PromotesThePlantedSignalsOnlyInFiveSeeds` | 9.3 s | 10.0 s | over seeds 1..5: p1, p2 and p3 each admitted; no admitted member without a planted field; `rank(copy)` evaluated with f1 >= hurdle and f2 < hurdle; n_raw = evaluated + screen-rejected + racing-rejected; failed 0 |
+| `SameSeedSameChainHeadAtOneAndFourWorkers` | 8.8 s | 8.4 s | the same head, trials.csv bytes and members at 1, 1 and 4 workers; a reuse without `--registry-head` is refused and writes nothing; with the head, 0 new records |
+| `RefusesSealedRolesAndWindowsPastTrain` | 0.7 s | 0.7 s | the 2024-01-02 role is refused before any payload; the confirm end 2024-01-02 is refused |
+
+The whole mine binary takes 19 s in Debug. The report estimated 20 to 60 s.
+
+### Hidden-data record
+
+No real-data run. Read: the H-3 and FIX-C reports, sources, build receipts and logs. The tests used synthetic
+fixtures and tiny_world. The mine fixture builds its own synthetic role (and a synthetic sealed role to 2024-01-02
+for the refusal test); none of it is data. Nothing dated 2024-01-01 or later was opened. **No disclosure.**
+
+### Open items
+
+- E-33 registry count: `registry.count` = `n_raw` (the mined-v1 Bonferroni count the hurdle used). When several
+  campaigns share one registry (reopened with `--registry-head`), `n_raw` is cumulative, so
+  `campaign_registry_count` over their lines counts the earlier campaigns again.
+  - The owner should rule whether the count is `n_raw` or `new_records`.
+  - A campaign that records 0 trials has `n_raw` 0, and `campaign_line` refuses it.
+  - Binds only under OD-7.
+- Nothing appends campaign lines automatically: `ledger-campaign` is a manual verb, and the cycle has no mining step
+  (no campaign runs in v8).
+- H3 open risks carried, unmeasured on real fields:
+  - the stage-2 literature ops and deny list;
+  - the `mine_working_bytes` admission estimate (8 VM slots per cell; measure before OD-7);
+  - the IC runner does not use `ResearchRole` yet (follow-up).
+- H3's interpretations (confirm on the marginal t: this is Ruling E-32; rho before confirm; an undefined rho does not
+  block) stand as coded.
+- Part C item 5 (H3 warm u pass, 48 of 48 cache hits) was not run (part C).
+- Carried: `ConfigJsonNotInDiscoverDigest` (known), the spo-v2 pin (part C item 7), and the `ParallelLockstepGrid`
+  group (unconfigured). Build provenance is `e2bb716b` for v8-7 and v8-7a (v8-7a source `ccb66a87`).
