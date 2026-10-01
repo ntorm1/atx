@@ -83,6 +83,21 @@ def bundle_doc(final_dir: str, base_dir: str, dsr: float = 0.05, p1: float = 0.2
                         'rule': 'cumulative paired S2 net dSR > 0 and one-sided p < alpha'}}
 
 
+def nav_summary(cfg: dict, s3: float = 0.9) -> dict:
+    """A synthetic NAV summary.json of a cell: every configured scenario's net Sharpe (S3's ``s3``) with its TRAIN
+    calendar years, and the spo-v3 report of the primary book (tripwire clear, limits met on every scored decision,
+    traded-book aim correlation .95), as the criteria of R-5 and R-6 read them."""
+    primary = next(s['id'] for s in cfg['scenarios'] if s['key'] == cfg['primary_scenario'])
+    scen = [{'scenario': s['id'], 'net_sharpe': s3 if s['key'] == 'S3' else 1.1,
+             'calendar_year_returns': [{'year': y, 'net_compounded_return': 0.05} for y in V.train_years()]}
+            for s in cfg['scenarios']]
+    book = {'decisions': 1004, 'unconverged': 0, 'limits_unmet': 0,
+            'aim_correlation_criterion': {'reads': 'aim_correlation_traded.mean', 'threshold': 0.9, 'value': 0.95,
+                                          'met': True}}
+    return {'primary_scenario': primary, 'scenarios': scen,
+            'v7': {'spo_v3_books': {primary: book}, 'spo_v3_tripwire': {'status': 'clear', 'report_only': {primary: book}}}}
+
+
 def diagnostics_doc(sealed: bool = False) -> dict:
     ses = [session_ns(2023, 6, 1), session_ns(2024 if sealed else 2023, 6, 2)]
     members = [{'id': 'bm', 'theme': 'value', 'weight': 0.05, 'sign': 1, 'ic1': 0.01, 'ic21': 0.02, 'ic_theta': 0.009,
@@ -169,6 +184,9 @@ def world(root: Path, cfg: dict, skip: tuple = ()) -> None:
             continue
         if key == 'v8.trial_ledger':
             write_ledger(root / rel, cfg)
+            continue
+        if re.fullmatch(r'v8\.cells\[(.+)\]\.summary', key):
+            put(root, rel, nav_summary(cfg))
             continue
         m = re.fullmatch(r'v8\.cells\[(.+)\]\.paired', key)
         if m:
@@ -349,17 +367,103 @@ def test_criterion_eval_ops_per_and_factor():
     assert V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'le', 'factor': 0.7}]}, row, par)['met'] is False
     assert V.criterion_eval({'checks': [{'metric': 'c', 'op': 'le'}]}, row, None)['met'] is None
     assert V.criterion_eval({'text': 'capacity at 4x', 'met': True}, None, None) == {
-        'text': 'capacity at 4x', 'met': True, 'detail': 'as configured'}
+        'text': 'capacity at 4x', 'met': True, 'detail': 'as configured', 'unread': []}
     assert V.criterion_eval(None, row, par)['met'] is None
     mixed = {'checks': [{'metric': 'tau', 'op': 'lt'}, {'text': 'net at 2x not lower', 'met': None}]}
     ce = V.criterion_eval(mixed, row, par)
     assert ce['met'] is None and 'net at 2x not lower: to be read (config met)' in ce['detail']
+    assert ce['unread'] == ['net at 2x not lower']
     mixed['checks'][1]['met'] = True
     assert V.criterion_eval(mixed, row, par)['met'] is True
     mixed['checks'][1]['met'] = False
     assert V.criterion_eval(mixed, row, par)['met'] is False
     with pytest.raises(ValueError, match='unknown op'):
-        V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'eq'}]}, row, par)
+        V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'eq'}]}, row, par)  # eq only against a fixed value
+
+
+# review P-2: the registered parts the nav_summ row does not carry are read from the cell's NAV summary.json
+PRIMARY_ID = 'modeled.1bn+swap-fin-v1'  # an id holding a dot: {primary} is one key
+
+
+def spo_summary(s3: float = 0.9, status: str = 'clear', unmet: int = 0, corr: float = 0.95) -> dict:
+    book = {'limits_unmet': unmet, 'aim_correlation_criterion': {'value': corr, 'met': corr >= 0.9}}
+    return {'scenarios': [{'scenario': PRIMARY_ID, 'net_sharpe': 1.1}, {'scenario': 's3.id', 'net_sharpe': s3}],
+            'v7': {'spo_v3_tripwire': {'status': status}, 'spo_v3_books': {PRIMARY_ID: book}}}
+
+
+SPO_DOCS = {'scenarios': {'S2': PRIMARY_ID, 'S3': 's3.id'}, 'primary': PRIMARY_ID}
+R6_CHECKS = {'checks': [
+    {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
+    {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.limits_unmet', 'op': 'eq', 'value': 0},
+    {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_criterion.value', 'op': 'ge',
+     'value': 0.9}]}
+
+
+def test_criterion_eval_summary_checks_against_a_value():
+    """R-6's tripwire, E-31 limits and E-14 correlation: fixed thresholds on the cell's own summary (no parent read)."""
+    ok = V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=spo_summary()))
+    assert ok['met'] is True and ok['unread'] == []
+    assert 'v7.spo_v3_tripwire.status clear eq clear' in ok['detail']
+    assert 'v7.spo_v3_books.{primary}.aim_correlation_criterion.value 0.95 ge 0.9' in ok['detail']
+    for bad in (spo_summary(status='tripped (not voiding: --specific-ceiling-void off)'), spo_summary(unmet=2),
+                spo_summary(corr=0.85)):
+        assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=bad))['met'] is False
+    assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=None))['met'] is None  # summary not read
+    assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=spo_summary(), primary='S9'))['met'] is None
+    with pytest.raises(ValueError, match='unknown source'):
+        V.criterion_eval({'checks': [{'source': 'card', 'metric': 'x', 'op': 'le'}]}, None, None)
+    with pytest.raises(ValueError, match='unknown op'):
+        V.criterion_eval({'checks': [{'metric': 'x', 'op': 'between', 'value': 1}]}, None, None)
+
+
+def test_criterion_eval_summary_scenario_against_the_parent():
+    """R-5's "S3 not lower": a cost scenario's net Sharpe in the cell's summary against the parent's."""
+    s3 = {'checks': [{'label': 'S3 net Sharpe', 'source': 'summary', 'scenario': 'S3', 'metric': 'net_sharpe',
+                      'op': 'ge'}]}
+    equal = V.criterion_eval(s3, None, None, dict(SPO_DOCS, cell=spo_summary(0.8), parent=spo_summary(0.8)))
+    assert equal['met'] is True and equal['detail'] == 'S3 net Sharpe 0.8 ge parent 0.8'
+    assert V.criterion_eval(s3, None, None, dict(SPO_DOCS, cell=spo_summary(0.7), parent=spo_summary(0.8)))['met'] \
+        is False
+    assert V.criterion_eval(s3, None, None, dict(SPO_DOCS, cell=spo_summary(0.8)))['met'] is None  # parent not read
+    other = dict(SPO_DOCS, scenarios={'S3': 'not-a-scenario'})
+    assert V.criterion_eval(s3, None, None, dict(other, cell=spo_summary(), parent=spo_summary()))['met'] is None
+
+
+def summary_cfg() -> dict:
+    """cfg_for() with an R-1 criterion that reads the NAV summaries (R-5 / R-6 style)."""
+    cfg = cfg_for()
+    cfg['v8']['cells'][1]['criterion'] = {'text': 'cost not higher; tripwire clear; S2 not lower', 'checks': [
+        {'metric': 'cost_bps_traded', 'op': 'le'},
+        {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
+        {'source': 'summary', 'scenario': 'S2', 'metric': 'net_sharpe', 'op': 'ge'}]}
+    return cfg
+
+
+def test_ladder_reads_the_nav_summaries_its_criteria_name(root):
+    cfg = summary_cfg()
+    assert [k for _, k, _ in V.inputs(cfg)][:4] == ['v8.summ', 'v8.cells[B0c].summary', 'v8.cells[R-1].paired',
+                                                    'v8.cells[R-1].summary']
+    world(root, cfg)
+    rows, unav, _, srcs = V.ladder_rows(make_ctx(root, cfg))
+    assert unav == [] and rows[1]['crit_met'] is True and rows[1]['rule'] is True
+    assert any(s.startswith('b/mega-nav-v8-r1/summary.json (sha256 ') for s in srcs)
+    doc = nav_summary(cfg)
+    doc['v7']['spo_v3_tripwire']['status'] = 'tripped (not voiding: --specific-ceiling-void off)'
+    put(root, 'b/mega-nav-v8-r1/summary.json', doc)
+    rows = V.ladder_rows(make_ctx(root, cfg))[0]
+    assert rows[1]['crit_met'] is False and rows[1]['rule'] is False
+    (root / 'b/mega-nav-v8-b0c/summary.json').unlink()  # the parent's: one unavailable block, the part n/a
+    rows, unav, _, _ = V.ladder_rows(make_ctx(root, cfg))
+    assert len(unav) == 1 and 'b/mega-nav-v8-b0c/summary.json' in unav[0] and rows[1]['crit_met'] is None
+    sealed = nav_summary(cfg)
+    sealed['scenarios'][0]['calendar_year_returns'].append({'year': 2024, 'net_compounded_return': 0.01})
+    put(root, 'b/mega-nav-v8-b0c/summary.json', sealed)
+    unav = V.ladder_rows(make_ctx(root, cfg))[1]
+    assert len(unav) == 1 and 'sealed' in unav[0]
+    world(root, cfg)
+    html = build(root, cfg)
+    assert unavailable(html) == []
+    assert 'v7.spo_v3_tripwire.status clear eq clear' in htmllib.unescape(section(html, 'cells'))
 
 
 def test_ladder_rows_rule_and_verdicts(root):
