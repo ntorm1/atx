@@ -23,6 +23,16 @@
 #include "strategy_mine_ledger.hpp"
 #include "strategy_mine_rule.hpp"
 #include "strategy_research_role.hpp"
+// Lane MINE-MEM: the memory model against the fixture's allocations.
+#include "atx/engine/alpha/bytecode.hpp"
+#include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/vm.hpp"
+#include "atx/engine/factory/fidelity.hpp"
+#include "atx/engine/factory/genome.hpp"
+#include "atx/engine/factory/ic_research.hpp"
+#include "strategy_mine_pool.hpp"
 
 // platform v8 H-3: `atx-equity-strategy-mine` on a synthetic role (the sprint plan's fixture
 // acceptance) and the mined-v1 arithmetic.
@@ -534,13 +544,48 @@ TEST(StrategyMine, TemplatesAreTheHouseSet) {
   EXPECT_EQ(t[21], "rank(delta(b, 252))");
 }
 
-// Review MINE-10: the memory admission is the derived sum documented in strategy_mine.hpp. The
-// pinned totals come from the MINE-FIX report's Python mirror of that formula: a small footprint
-// and the report's worked example (the 4-year role, 1,405 x 6,100, 16 fields, 4 workers, one
-// rung, the default search's 272 trials). One more trial costs its daily IC, its allowance and
-// its registry row; one more prior record its registry row. The configuration bounds need far
-// more than the 64 GiB --max-memory-mib ceiling, so such a campaign is refused before payload.
-TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
+// The 4-year role of the MINE-10 table: 1,405 x 6,100, 16 fields, 3 regressors, 32 members, one
+// rung, a shortlist of 16, the default search's 272 trials.
+st::MineFootprint four_year_footprint(usize workers) {
+  st::MineFootprint role;
+  role.dates = 1405;
+  role.names = 6100;
+  role.extras = 16;
+  role.regressors = 3;
+  role.members = 32;
+  role.workers = workers;
+  role.rungs = 1;
+  role.shortlist = 16;
+  role.trials = 16U * 11U + 24U * 4U;
+  return role;
+}
+
+// The fixture campaign's footprint (Fixture::config: five fields, one regressor, one member, one
+// rung, 16 promotions, 55 templates + 16 x 2 stage-2 trials, a fresh registry).
+st::MineFootprint fixture_footprint(usize workers) {
+  st::MineFootprint fx;
+  fx.dates = D;
+  fx.names = N;
+  fx.extras = 5;
+  fx.regressors = 1;
+  fx.members = 1;
+  fx.workers = workers;
+  fx.rungs = 1;
+  fx.shortlist = 16;
+  fx.trials = 5U * 11U + 16U * 2U;
+  return fx;
+}
+
+// Review MINE-10, lane MINE-MEM: the memory admission is the peak of the phases documented in
+// strategy_mine.hpp -- resident terms plus the larger of the search (the fitness and the largest
+// of its bind, race and full-pass sub-phases) and the promotion (members, shortlist and the
+// largest of its engine, rho and confirm steps). The pinned values come from the lane report's
+// Python mirror of that model. One more trial costs its daily IC, its allowance and its registry
+// row; one more prior record its registry row. On the 4-year role the promotion is the peak at 1
+// and 4 workers alike (5,253 MiB; the old sum was 11,111 MiB at 4 workers). The configuration
+// bounds need far more than the 64 GiB --max-memory-mib ceiling, so such a campaign is refused
+// before any payload.
+TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(st::kMineMaxProgramSlots, 8U);
   st::MineFootprint small;
   small.dates = 100;
@@ -555,7 +600,7 @@ TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
   small.prior_records = 7;
   const auto base = st::mine_working_bytes(small);
   ASSERT_TRUE(base.has_value()) << base.error().to_string();
-  EXPECT_EQ(*base, u64{85'689'444});
+  EXPECT_EQ(*base, u64{85'422'464});
   auto more_trials = small;
   more_trials.trials += 1U;
   EXPECT_EQ(st::mine_working_bytes(more_trials).value() - *base,
@@ -563,17 +608,67 @@ TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
   auto more_prior = small;
   more_prior.prior_records += 1U;
   EXPECT_EQ(st::mine_working_bytes(more_prior).value() - *base, u64{128});
-  st::MineFootprint role;
-  role.dates = 1405;
-  role.names = 6100;
-  role.extras = 16;
-  role.regressors = 3;
-  role.members = 32;
-  role.workers = 4;
-  role.rungs = 1;
-  role.shortlist = 16;
-  role.trials = 16U * 11U + 24U * 4U;
-  EXPECT_EQ(st::mine_working_bytes(role).value(), u64{11'651'171'382});
+
+  const auto four = st::mine_memory(four_year_footprint(4));
+  ASSERT_TRUE(four.has_value()) << four.error().to_string();
+  const st::MineMemory &m = *four;
+  // The terms of the report's table (bytes).
+  EXPECT_EQ(m.metadata, u64{67'108'864});
+  EXPECT_EQ(m.role, u64{1'379'569'236});
+  EXPECT_EQ(m.regressors, u64{205'692'000});
+  EXPECT_EQ(m.trial_reads, u64{7'513'728});
+  EXPECT_EQ(m.registry, u64{559'104});
+  EXPECT_EQ(m.discover_cache, u64{419'999'460});
+  EXPECT_EQ(m.discover_workspaces, u64{3'572'800});
+  EXPECT_EQ(m.rung_caches, u64{205'736'960});
+  EXPECT_EQ(m.rung_workspaces, u64{2'011'200});
+  EXPECT_EQ(m.bind_transient, u64{677'069'500});
+  EXPECT_EQ(m.race_panels, u64{655'643'250});
+  EXPECT_EQ(m.race_engines, u64{1'114'165'000});
+  EXPECT_EQ(m.race_signals, u64{137'128'000});
+  EXPECT_EQ(m.full_engines, u64{2'228'330'000});
+  EXPECT_EQ(m.full_signals, u64{274'256'000});
+  EXPECT_EQ(m.members, u64{2'194'048'000});
+  EXPECT_EQ(m.shortlist, u64{1'097'024'000});
+  EXPECT_EQ(m.promotion_engine, u64{557'082'500});
+  EXPECT_EQ(m.rho_rows, u64{2'476'864});
+  EXPECT_EQ(m.confirm_cache, u64{420'892'660});
+  // The phases, summed here independently of MineMemory's own sums.
+  const u64 resident = m.metadata + m.role + m.regressors + m.trial_reads + m.registry;
+  const u64 fitness = m.discover_cache + m.discover_workspaces + m.rung_caches + m.rung_workspaces;
+  const u64 race = m.race_panels + m.race_engines + m.race_signals;
+  const u64 full = m.full_engines + m.full_signals;
+  const u64 search = fitness + std::max({m.bind_transient, race, full});
+  const u64 promotion =
+      m.members + m.shortlist + std::max({m.promotion_engine, m.rho_rows, m.confirm_cache});
+  EXPECT_EQ(m.resident(), resident);
+  EXPECT_EQ(m.search(), search);
+  EXPECT_EQ(m.promotion(), promotion);
+  EXPECT_EQ(m.peak(), resident + std::max(search, promotion));
+  EXPECT_EQ(m.resident(), u64{1'660'442'932});
+  EXPECT_EQ(m.search(), u64{3'133'906'420});
+  EXPECT_EQ(m.promotion(), u64{3'848'154'500});
+  EXPECT_EQ(st::mine_working_bytes(four_year_footprint(4)).value(), u64{5'508'597'432});
+  const auto one = st::mine_memory(four_year_footprint(1));
+  ASSERT_TRUE(one.has_value()) << one.error().to_string();
+  EXPECT_EQ(one->search(), u64{1'595'598'920});
+  EXPECT_EQ(one->promotion(), u64{3'848'154'500});
+  EXPECT_EQ(one->peak(), u64{5'508'597'432});
+  // Without racing the race terms vanish and the search is the fitness and the full pass.
+  auto unraced = four_year_footprint(4);
+  unraced.rungs = 0;
+  const auto plain = st::mine_memory(unraced);
+  ASSERT_TRUE(plain.has_value());
+  EXPECT_EQ(plain->bind_transient + plain->race_panels + plain->race_engines +
+                plain->race_signals + plain->rung_caches + plain->rung_workspaces,
+            u64{0});
+  EXPECT_EQ(plain->search(), plain->discover_cache + plain->discover_workspaces +
+                                 plain->full_engines + plain->full_signals);
+  // The fixture campaigns (StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers reads
+  // these back from campaign.json).
+  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(1)).value(), u64{95'435'840});
+  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(4)).value(), u64{101'584'960});
+
   st::MineFootprint bounds;
   bounds.dates = 4096;
   bounds.names = 20000;
@@ -584,10 +679,113 @@ TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
   bounds.rungs = 2;
   bounds.shortlist = 256;
   bounds.trials = 64U * 11U + 4096U * 256U;
-  EXPECT_EQ(st::mine_working_bytes(bounds).value(), u64{1'184'945'709'312});
+  EXPECT_EQ(st::mine_working_bytes(bounds).value(), u64{517'571'694'848});
   EXPECT_GT(st::mine_working_bytes(bounds).value(), u64{64} << 30);
   bounds.trials = (u64{1} << 32) + 1U;
   EXPECT_FALSE(st::mine_working_bytes(bounds).has_value());
+}
+
+// Lane MINE-MEM: the model's terms against the allocations they stand for, measured on the
+// fixture (1,844 x 16, the five mined fields, one regressor, one member, one rung of stride 2, 4
+// workers). Equal where the allocation is a function of the geometry -- the pool payloads, the
+// strided rung panel with its member and guard, a signal set -- and at most the term where it
+// depends on the window's rows or on the program -- an IC cache (label rows <= dates) or a VM slot
+// pool (a template's slots <= kMineMaxProgramSlots). The search holds no member: bind_mine_pool
+// leaves them to load_mine_pool_members.
+TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
+  namespace al = atx::engine::alpha;
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const auto cfg = f.config("memory", 1, 4);
+  const auto memory = st::mine_memory(fixture_footprint(cfg.workers));
+  ASSERT_TRUE(memory.has_value()) << memory.error().to_string();
+  const auto role = st::ResearchRole::load(cfg.role);
+  ASSERT_TRUE(role.has_value()) << role.error().to_string();
+  const al::Panel &panel = (*role)->panel();
+  ASSERT_EQ(panel.cells(), D * N);
+  ASSERT_EQ(panel.num_fields(), 3U + cfg.role.fields.size());
+  // The pool: the regressor now, the member after the search; each payload exactly.
+  const auto manifest = st::read_mine_pool_manifest(cfg.pool_path, cfg.pool_sha256);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().to_string();
+  auto pool = st::bind_mine_pool(*manifest, **role);
+  ASSERT_TRUE(pool.has_value()) << pool.error().to_string();
+  const auto bytes_of = [](const std::vector<st::MinePoolColumn> &columns) {
+    u64 out = 0;
+    for (const st::MinePoolColumn &column : columns) out += column.values.size() * sizeof(f64);
+    return out;
+  };
+  EXPECT_TRUE(pool->members.empty());
+  EXPECT_EQ(bytes_of(pool->regressors), memory->regressors);
+  const auto loaded = st::load_mine_pool_members(*manifest, **role, *pool);
+  ASSERT_TRUE(loaded) << loaded.error().to_string();
+  EXPECT_EQ(bytes_of(pool->members), memory->members);
+  // The racing rung: the strided panel (every field and its universe) exactly, and with the
+  // strided member and guard the fitness's bind transient exactly.
+  const u32 stride = cfg.race_strides.front();
+  const auto rung = ex::strided_panel(panel, 1U, stride);
+  ASSERT_TRUE(rung.has_value()) << rung.error().to_string();
+  u64 rung_bytes = rung->cells(); // the universe, one byte per cell
+  for (usize k = 0; k < rung->num_fields(); ++k)
+    rung_bytes += rung->field_all(static_cast<al::FieldId>(k)).size() * sizeof(f64);
+  EXPECT_EQ(rung_bytes, memory->race_panels);
+  const auto rung_member = ex::strided_cells((*role)->member(), D, N, 1U, stride);
+  const auto rung_guard = ex::strided_cells((*role)->guard(), D, N, 1U, stride);
+  ASSERT_TRUE(rung_member.has_value() && rung_guard.has_value());
+  EXPECT_EQ(rung_bytes + rung_member->size() + rung_guard->size() * sizeof(u32),
+            memory->bind_transient);
+  // The IC caches, with the scorer's member rows on the full panel: discover [2020-01-01,
+  // 2022-07-01) and confirm [2022-07-01, 2024-01-01); the rung's discover cache on the strided
+  // panel with min_names scaled by the stride, as ResearchIcFitness prepares it.
+  const auto cache_bytes = [&cfg](const al::Panel &on, usize begin, usize end, usize min_names,
+                                  std::span<const u8> eligible, std::span<const u32> guard,
+                                  bool member_rows) -> u64 {
+    const auto recipe = ex::research_window_ic_config(begin, end, min_names, cfg.min_dates,
+                                                      cfg.max_working_bytes);
+    const auto cache = ex::prepare_research_ic(on, recipe, {3, true, 1}, eligible, guard);
+    EXPECT_TRUE(cache.has_value()) << cache.error().to_string();
+    if (!cache.has_value()) return u64{0};
+    const u64 rows =
+        member_rows ? cache->label_rows(ex::kResearchIcHorizon) * on.instruments() : u64{0};
+    return cache->bytes() + rows;
+  };
+  const u64 workspace = memory->discover_workspaces / cfg.workers;
+  EXPECT_LE(cache_bytes(panel, score_begin, kConfirmRow, cfg.min_names, (*role)->member(),
+                        (*role)->guard(), true),
+            memory->discover_cache);
+  EXPECT_LE(cache_bytes(panel, kConfirmRow, D, cfg.min_names, (*role)->member(),
+                        (*role)->guard(), true),
+            memory->confirm_cache - workspace);
+  const usize rung_names = std::max<usize>(3U, (cfg.min_names + stride - 1U) / stride);
+  EXPECT_LE(cache_bytes(*rung, score_begin, kConfirmRow, rung_names, *rung_member, *rung_guard,
+                        false),
+            memory->rung_caches);
+  // A full-pass engine: every template's program on the role panel, masked as the search masks
+  // it. Its signal is exactly one worker's share of full_signals; its slot pool with the mask
+  // copy is within one worker's share of full_engines, the promotion engine's term.
+  const al::Library lib{};
+  const std::span<const u8> eligible = (*role)->member();
+  u64 largest = 0;
+  for (const std::string &dsl : st::mine_templates(cfg.role.fields)) {
+    auto ast = al::parse_expr(dsl, lib);
+    ASSERT_TRUE(ast.has_value()) << dsl;
+    auto genome = ex::analyze_into(std::move(*ast));
+    ASSERT_TRUE(genome.has_value()) << dsl;
+    const auto program = al::compile(genome->ast, genome->analysis);
+    ASSERT_TRUE(program.has_value()) << dsl;
+    al::Engine engine{panel};
+    ASSERT_TRUE(engine.set_cross_section_mask(std::vector<u8>(eligible.begin(), eligible.end())));
+    const auto signals = engine.evaluate(*program);
+    ASSERT_TRUE(signals.has_value()) << dsl;
+    ASSERT_EQ(signals->alphas.size(), 1U) << dsl;
+    EXPECT_EQ(signals->alphas.front().values.size() * sizeof(f64),
+              memory->full_signals / cfg.workers)
+        << dsl;
+    largest = std::max<u64>(largest, engine.pool_capacity() * panel.cells() * sizeof(f64) +
+                                         panel.cells());
+  }
+  EXPECT_GT(largest, u64{0});
+  EXPECT_LE(largest, memory->full_engines / cfg.workers);
+  EXPECT_EQ(memory->full_engines / cfg.workers, memory->promotion_engine);
 }
 
 // ---- the fixture acceptance --------------------------------------------------------------------
@@ -795,7 +993,13 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
     const auto status = st::run_mine(cfg, progress);
     ASSERT_TRUE(status) << status.error().to_string();
     const fs::path out(cfg.output_directory);
-    heads.push_back(read_json(out / "campaign.json").at("registry").at("head").get<std::string>());
+    const Json campaign = read_json(out / "campaign.json");
+    heads.push_back(campaign.at("registry").at("head").get<std::string>());
+    // Lane MINE-MEM: the admission campaign.json records is the model's peak at this worker
+    // count (95,435,840 B at 1 worker, 101,584,960 at 4).
+    EXPECT_EQ(campaign.at("search").at("required_bytes").get<u64>(),
+              st::mine_working_bytes(fixture_footprint(workers)).value())
+        << tag;
     logs.push_back(text_of(out / "trials.csv"));
     members.push_back(read_json(out / "mined_members.json").at("members").dump());
   }

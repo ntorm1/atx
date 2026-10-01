@@ -54,15 +54,19 @@ constexpr std::array<std::string_view, 6> kMinerDeny{"trade_when", "hump",   "ka
                                                      "ou_filter",  "kalman", "split2"};
 constexpr std::string_view kCampaignSchema = "atx.mine-campaign/v1";
 constexpr std::string_view kMembersSchema = "atx.mined-members/v1";
-// The derived terms of mine_working_bytes (review MINE-10; strategy_mine.hpp).
+// The derived terms of mine_memory (review MINE-10, lane MINE-MEM; strategy_mine.hpp).
 constexpr u64 kMetadataBytes = 64ULL << 20;
-constexpr u64 kIcCacheCellBytes = 49;    // 3 horizons x (label + rank) x 8, + 1 member byte
-constexpr u64 kRungScorerCellBytes = 54; // strided member 1, guard 4, presence 1, IC cache 48
-constexpr u64 kScratchNameBytes = 128;   // IC and marginal row buffers per name
-constexpr u64 kScratchDateBytes = 80;    // calendar series and label-row counts per date
+constexpr u64 kIcLabelCellBytes = 48; // 3 horizons x (label + rank) x 8
+constexpr u64 kIcCacheCellBytes = kIcLabelCellBytes + 1U; // + the scorer's member row byte
+constexpr u64 kIcCacheDateBytes = 32; // per row: eligible names, 3 horizons' label names (usize)
+constexpr u64 kBindCellBytes = 6;     // a strided panel's universe 1, member 1, guard 4
+constexpr u64 kScratchNameBytes = 128; // IC and marginal row buffers per name
+constexpr u64 kScratchDateBytes = 80;  // calendar series and label-row counts per date
 constexpr u64 kTrialAllowanceBytes = 16ULL << 10;
 constexpr u64 kRegistryGramBytes = 512ULL << 10; // the registry's 256 x 256 f64 Gram
 constexpr u64 kRegistryRecordBytes = 128;        // TrialInfo (72 B) and its dedup-set entry
+constexpr u64 kPairBytes = 16;     // PairwiseRowCorrelation: a pair's sum (f64) and count (usize)
+constexpr u64 kSortPairBytes = 16; // centred_tied_ranks' (value, name) sort buffer per name
 
 f64 seconds_since(steady::time_point from) {
   return std::chrono::duration<f64>(steady::now() - from).count();
@@ -284,6 +288,61 @@ co::Result<StageRun> run_stage(const al::Library &lib, const al::Panel &panel,
   return co::Ok(std::move(out));
 }
 
+// Both search stages and the discover fitness they score on. Lane MINE-MEM: the fitness -- the
+// discover IC cache, the rung scorers and their worker scratch -- lives in run_search only, so the
+// promotion never holds it. Stage 1's driver is gone (run_stage) before stage 2's is built.
+struct MineSearch {
+  StageRun stage1, stage2;
+  bool explore{};
+};
+
+co::Result<MineSearch> run_search(const MineConfig &cfg, const ResearchRole &role,
+                                  const std::vector<std::span<const f64>> &regressors,
+                                  const MineWindow &discover, const al::Library &lib,
+                                  const std::vector<std::string> &templates,
+                                  std::ostream &progress) {
+  // Fitness on the discover window against the pool's regressors (borrowed from the pool).
+  ex::ResearchIcFitnessInputs inputs;
+  inputs.panel = &role.panel();
+  inputs.window = ex::ResearchIcWindow{discover.begin, discover.end, cfg.min_names,
+                                       cfg.min_dates, cfg.max_working_bytes};
+  inputs.member = role.member();
+  inputs.guard = role.guard();
+  inputs.regressors = regressors;
+  ATX_TRY(auto fitness, ex::ResearchIcFitness::prepare(std::move(inputs)));
+  ATX_TRY(const auto race, race_config(cfg));
+
+  // Stage 1: the templates, one generation. Stage 2: NSGA-II from the stage-1 front.
+  const std::vector<std::string> &fields = cfg.role.fields;
+  MineSearch out;
+  ex::SearchConfig first = stage_config(cfg, race, fitness, role.member(), false);
+  first.master_seed = cfg.seed;
+  first.population = templates.size();
+  first.generations = 1U;
+  ATX_TRY(out.stage1, run_stage(lib, role.panel(), templates, fields, first, fitness));
+  progress << "mine: stage=1 templates=" << templates.size()
+           << " trials=" << out.stage1.result.trial_count
+           << " racing_rejected=" << out.stage1.result.fidelity_rejected
+           << " seconds=" << out.stage1.seconds << '\n' << std::flush;
+  std::vector<std::string> seeds;
+  for (const ex::Genome &g : out.stage1.result.admitted_candidates) {
+    if (seeds.size() >= cfg.stage2_seeds) break;
+    seeds.push_back(al::unparse(g.ast));
+  }
+  out.explore = !seeds.empty() && cfg.stage2_generations > 0U;
+  if (out.explore) {
+    ex::SearchConfig second = stage_config(cfg, race, fitness, role.member(), true);
+    second.master_seed = ex::detail::seed_for(cfg.seed, 2U, 0U);
+    second.population = cfg.stage2_population;
+    second.generations = cfg.stage2_generations;
+    ATX_TRY(out.stage2, run_stage(lib, role.panel(), std::move(seeds), fields, second, fitness));
+    progress << "mine: stage=2 trials=" << out.stage2.result.trial_count
+             << " racing_rejected=" << out.stage2.result.fidelity_rejected
+             << " seconds=" << out.stage2.seconds << '\n' << std::flush;
+  }
+  return co::Ok(std::move(out));
+}
+
 Json window_json(const MineWindow &w, usize label_rows) {
   return Json{{"begin", w.begin_date}, {"end", w.end_date},
               {"rows", Json::array({w.begin, w.end})}, {"label_rows", label_rows}};
@@ -349,7 +408,24 @@ u64 mine_trial_capacity(const MineConfig &cfg) {
          (stage2 ? static_cast<u64>(cfg.stage2_population) * cfg.stage2_generations : u64{0});
 }
 
-co::Result<u64> mine_working_bytes(const MineFootprint &f) {
+u64 MineMemory::resident() const noexcept {
+  return metadata + role + regressors + trial_reads + registry;
+}
+
+u64 MineMemory::search() const noexcept {
+  const u64 fitness = discover_cache + discover_workspaces + rung_caches + rung_workspaces;
+  const u64 race = race_panels + race_engines + race_signals;
+  const u64 full = full_engines + full_signals;
+  return fitness + std::max({bind_transient, race, full});
+}
+
+u64 MineMemory::promotion() const noexcept {
+  return members + shortlist + std::max({promotion_engine, rho_rows, confirm_cache});
+}
+
+u64 MineMemory::peak() const noexcept { return resident() + std::max(search(), promotion()); }
+
+co::Result<MineMemory> mine_memory(const MineFootprint &f) {
   if (f.workers == 0U || f.workers > 64U || f.rungs > 2U ||
       f.regressors > cb::kMaxMarginalRegressors || f.members > kMaxMinePoolMembers ||
       f.shortlist > 256U || f.trials > (1ULL << 32) || f.prior_records > (1ULL << 40))
@@ -358,26 +434,44 @@ co::Result<u64> mine_working_bytes(const MineFootprint &f) {
   // Every factor is bounded above, so no product below can overflow u64.
   const u64 dates = f.dates;
   const u64 names = f.names;
+  const u64 half = (names + 1U) / 2U; // a racing rung's names: instrument stride >= 2
   const u64 cells = dates * names;
-  const u64 strided = dates * ((names + 1U) / 2U); // a racing rung: instrument stride >= 2
+  const u64 strided = dates * half;
   const u64 fields = 3U + static_cast<u64>(f.extras);
   const u64 workers = f.workers;
   const u64 rungs = f.rungs;
+  // A VM slot pool of S panels and the engine's copy of the eligibility mask, per cell.
   const u64 slot_cell = static_cast<u64>(kMineMaxProgramSlots) * sizeof(f64) + 1U;
-  u64 total = kMetadataBytes;
-  total += role;
-  total += (static_cast<u64>(f.regressors) + f.members) * cells * sizeof(f64);
-  total += 2U * kIcCacheCellBytes * cells;
-  total += rungs * strided * (fields * sizeof(f64) + kRungScorerCellBytes);
-  total += rungs * strided * (fields * sizeof(f64) + 1U);
-  total += ((workers + 1U) * cells + workers * rungs * strided) * slot_cell;
-  total += workers * (cells + rungs * strided) * sizeof(f64);
-  total += (workers * (1U + rungs) + 1U) * (kScratchNameBytes * names + kScratchDateBytes * dates);
-  total += f.trials * (dates * sizeof(f64) + kTrialAllowanceBytes);
-  total += kRegistryGramBytes + (f.prior_records + f.trials) * kRegistryRecordBytes;
-  total += static_cast<u64>(f.shortlist) * cells * sizeof(f64);
-  total += (static_cast<u64>(f.members) + f.shortlist) * names * sizeof(f64);
-  return co::Ok(total);
+  const u64 full_workspace = kScratchNameBytes * names + kScratchDateBytes * dates;
+  const u64 rung_workspace = kScratchNameBytes * half + kScratchDateBytes * dates;
+  const u64 rho = static_cast<u64>(f.members) + f.shortlist;
+  MineMemory m;
+  m.metadata = kMetadataBytes;
+  m.role = role;
+  m.regressors = static_cast<u64>(f.regressors) * cells * sizeof(f64);
+  m.trial_reads = f.trials * (dates * sizeof(f64) + kTrialAllowanceBytes);
+  m.registry = kRegistryGramBytes + (f.prior_records + f.trials) * kRegistryRecordBytes;
+  m.discover_cache = kIcCacheCellBytes * cells + kIcCacheDateBytes * dates;
+  m.discover_workspaces = workers * full_workspace;
+  m.rung_caches = rungs * (kIcLabelCellBytes * strided + kIcCacheDateBytes * dates);
+  m.rung_workspaces = workers * rungs * rung_workspace;
+  m.bind_transient = rungs == 0U ? u64{0} : strided * (fields * sizeof(f64) + kBindCellBytes);
+  m.race_panels = rungs * strided * (fields * sizeof(f64) + 1U);
+  m.race_engines = workers * rungs * strided * slot_cell;
+  m.race_signals = rungs == 0U ? u64{0} : workers * strided * sizeof(f64);
+  m.full_engines = workers * cells * slot_cell;
+  m.full_signals = workers * cells * sizeof(f64);
+  m.members = static_cast<u64>(f.members) * cells * sizeof(f64);
+  m.shortlist = static_cast<u64>(f.shortlist) * cells * sizeof(f64);
+  m.promotion_engine = cells * slot_cell;
+  m.rho_rows = rho * names * sizeof(f64) + rho * rho * kPairBytes + kSortPairBytes * names;
+  m.confirm_cache = kIcCacheCellBytes * cells + kIcCacheDateBytes * dates + full_workspace;
+  return co::Ok(m);
+}
+
+co::Result<u64> mine_working_bytes(const MineFootprint &footprint) {
+  ATX_TRY(const MineMemory memory, mine_memory(footprint));
+  return co::Ok(memory.peak());
 }
 
 co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
@@ -405,7 +499,8 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     footprint.shortlist = cfg.max_promotions;
     footprint.trials = mine_trial_capacity(cfg);
     footprint.prior_records = anchor ? anchor->records : u64{0};
-    ATX_TRY(const u64 required, mine_working_bytes(footprint));
+    ATX_TRY(const MineMemory memory, mine_memory(footprint));
+    const u64 required = memory.peak();
     if (required > cfg.max_working_bytes)
       return co::Err(fail(co::ErrorCode::Unavailable,
                           "required_bytes=" + std::to_string(required) +
@@ -420,57 +515,25 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     // kMinedMinConfirmRows label rows.
     ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", kMinedMinDiscoverRows));
     ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm", kMinedMinConfirmRows));
-    ATX_TRY(const auto pool, load_mine_pool(pool_manifest, *role));
+    // Lane MINE-MEM: the regressors now; the members checked now and loaded after the search.
+    ATX_TRY(auto pool, bind_mine_pool(pool_manifest, *role));
     const usize label_rows = windows.discover.end - windows.discover.begin - kLabelLag;
     const usize confirm_rows = windows.confirm.end - windows.confirm.begin - kLabelLag;
 
-    // Fitness on the discover window against the pool's regressors (borrowed from `pool`).
+    // The fitness's and the confirm read's regressors, borrowed from `pool` (whose regressor
+    // columns are never resized again: loading the members fills another vector).
     std::vector<std::span<const f64>> regressors;
     for (const auto &column : pool.regressors) regressors.emplace_back(column.values);
-    ex::ResearchIcFitnessInputs inputs;
-    inputs.panel = &role->panel();
-    inputs.window = ex::ResearchIcWindow{windows.discover.begin, windows.discover.end,
-                                         cfg.min_names, cfg.min_dates, cfg.max_working_bytes};
-    inputs.member = role->member();
-    inputs.guard = role->guard();
-    inputs.regressors = regressors;
-    ATX_TRY(auto fitness, ex::ResearchIcFitness::prepare(std::move(inputs)));
-    ATX_TRY(const auto race, race_config(cfg));
-
-    // Stage 1: the templates, one generation. Stage 2: NSGA-II from the stage-1 front.
+    // The Library outlives every genome the search keeps (their ops borrow its rows).
     const al::Library lib{};
     const std::vector<std::string> &fields = cfg.role.fields;
     const std::vector<std::string> templates = mine_templates(fields);
-    ex::SearchConfig first = stage_config(cfg, race, fitness, role->member(), false);
-    first.master_seed = cfg.seed;
-    first.population = templates.size();
-    first.generations = 1U;
-    ATX_TRY(const auto stage1, run_stage(lib, role->panel(), templates, fields, first, fitness));
-    progress << "mine: stage=1 templates=" << templates.size()
-             << " trials=" << stage1.result.trial_count
-             << " racing_rejected=" << stage1.result.fidelity_rejected
-             << " seconds=" << stage1.seconds << '\n' << std::flush;
-    std::vector<std::string> seeds;
-    for (const ex::Genome &g : stage1.result.admitted_candidates) {
-      if (seeds.size() >= cfg.stage2_seeds) break;
-      seeds.push_back(al::unparse(g.ast));
-    }
-    StageRun stage2;
-    const bool explore = !seeds.empty() && cfg.stage2_generations > 0U;
-    if (explore) {
-      ex::SearchConfig second = stage_config(cfg, race, fitness, role->member(), true);
-      second.master_seed = ex::detail::seed_for(cfg.seed, 2U, 0U);
-      second.population = cfg.stage2_population;
-      second.generations = cfg.stage2_generations;
-      ATX_TRY(stage2, run_stage(lib, role->panel(), std::move(seeds), fields, second, fitness));
-      progress << "mine: stage=2 trials=" << stage2.result.trial_count
-               << " racing_rejected=" << stage2.result.fidelity_rejected
-               << " seconds=" << stage2.seconds << '\n' << std::flush;
-    }
+    ATX_TRY(const auto search, run_search(cfg, *role, regressors, windows.discover, lib,
+                                          templates, progress));
     std::vector<MinedTrial> trials;
     std::unordered_map<u64, usize> index;
-    classify(stage1, 1U, trials, index);
-    if (explore) classify(stage2, 2U, trials, index);
+    classify(search.stage1, 1U, trials, index);
+    if (search.explore) classify(search.stage2, 2U, trials, index);
     // The capacity check bounds this already; a breach would make the hurdle anti-conservative.
     if (trials.size() > cfg.budget)
       return co::Err(fail(co::ErrorCode::Internal,
@@ -494,6 +557,10 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                           "under its recipe " + recipe_sha.substr(0, 16) + " (role, fields, "
                           "library, pool, discover and confirm windows): a second confirm read on "
                           "the same identity is refused"));
+    // Lane MINE-MEM: the members, which only the promotion's rho check reads, are loaded now --
+    // the search and its fitness are gone -- and before anything is written, so a member that
+    // changed since its check is refused with the registry and OUTPUT untouched.
+    ATX_TRY_VOID(load_mine_pool_members(pool_manifest, *role, pool));
 
     // Registry: every distinct expression once; the chain head leaves the log at once.
     const fs::path out_dir(cfg.output_directory);
@@ -559,8 +626,11 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"capacity", mine_trial_capacity(cfg)},
         {"max_program_slots", kMineMaxProgramSlots},
         {"required_bytes", required},
-        {"stage1", stage_json(stage1)},
-        {"stage2", explore ? stage_json(stage2) : Json(nullptr)},
+        {"memory", {{"resident", memory.resident()},
+                    {"search", memory.search()},
+                    {"promotion", memory.promotion()}}},
+        {"stage1", stage_json(search.stage1)},
+        {"stage2", search.explore ? stage_json(search.stage2) : Json(nullptr)},
         {"stage2_config", {{"seeds", cfg.stage2_seeds},
                            {"population", cfg.stage2_population},
                            {"generations", cfg.stage2_generations}}},

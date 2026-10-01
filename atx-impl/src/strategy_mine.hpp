@@ -52,6 +52,12 @@
 // kMinedMinDiscoverRows and confirm windows of at least kMinedMinConfirmRows mature h 21 label
 // rows; a shorter window is refused before any search. The factor is in the recipe and in
 // campaign.json's hurdle.
+//
+// Memory (review MINE-10, lane MINE-MEM): mine_working_bytes, the peak of mine_memory's phases,
+// is checked against --max-memory-mib before any payload. The search holds no pool member (each
+// is checked before it and loaded after it, before the registry is written), the discover
+// fitness is released before the promotion, and with racing on the race and the full pass never
+// hold each other's engines. None of this changes an evaluation or its order.
 #include <iosfwd>
 #include <span>
 #include <string>
@@ -107,27 +113,58 @@ struct MineFootprint {
   atx::u64 trials{};        // the most full-pass reads: mine_trial_capacity
   atx::u64 prior_records{}; // the records a reopened registry holds (its anchor)
 };
-// Peak bytes, derived term by term (review MINE-10). C = dates x names panel cells, H = dates x
-// ceil(names / 2) cells of a racing rung (instrument stride >= 2), F = 3 + extras panel fields,
-// S = kMineMaxProgramSlots, W workers, R rungs, T trials:
-//   64 MiB                                   metadata: library, catalogue, populations
-//   + research_role_bytes(dates, names, extras)
-//   + (regressors + members) x C x 8         pool payloads
-//   + 2 x 49 x C                             discover and confirm IC caches (3 horizons x label
-//                                            and rank x 8) with their member rows
-//   + R x H x (8 F + 54)                     the fitness's rung scorers: strided panel, member,
-//                                            guard, presence and IC cache
-//   + R x H x (8 F + 1)                      the search driver's strided rung panels
-//   + ((W + 1) x C + W x R x H) x (8 S + 1)  VM slot pools and mask copies of the W full-pass
-//                                            engines, the promotion engine and W x R rung engines
-//   + W x (C + R x H) x 8                    one signal set per search engine
-//   + (W x (1 + R) + 1) x (128 names + 80 dates)  IC row scratch per scorer workspace
-//   + T x (8 dates + 16 KiB)                 per trial: the daily h 21 IC every full-pass read
-//                                            keeps (label rows <= dates), genome and log rows
-//   + 512 KiB + 128 x (prior_records + T)    the registry's Gram and per-record index
-//   + shortlist x C x 8                      the shortlist's signals
-//   + (members + shortlist) x names x 8      rank rows
+
+// The campaign's memory term by term (review MINE-10), grouped by the phase that holds it (lane
+// MINE-MEM). Each term is the bytes of one group of allocations of the verb as coded, or a stated
+// upper bound of them. C = dates x names panel cells, H = dates x ceil(names / 2) cells of a racing
+// rung (instrument stride >= 2), F = 3 + extras panel fields, S = kMineMaxProgramSlots, W workers,
+// R rungs, T trials, P prior records, G regressors, M members, K the shortlist (max_promotions).
+// A workspace is 128 B per name (IC rows, marginal kernel, rank row and sort buffer) and 80 B
+// per date (calendar and daily series); a label row count is at most dates.
+struct MineMemory {
+  // Resident: from the role load to the end of the campaign.
+  atx::u64 metadata{};    // 64 MiB: library, catalogue, populations, genomes, I/O buffers, JSON
+  atx::u64 role{};        // research_role_bytes(dates, names, extras)
+  atx::u64 regressors{};  // G x C x 8: the pool's regressor payloads (the fitness borrows them)
+  atx::u64 trial_reads{}; // T x (8 dates + 16 KiB): each full-pass read's daily h 21 IC, its
+                          // genome and log rows
+  atx::u64 registry{};    // 512 KiB + 128 x (P + T): the registry's Gram and record index
+  // Search: one stage at a time (stage 1's driver is gone before stage 2's). The discover
+  // fitness lives through both stages and is released before the promotion.
+  atx::u64 discover_cache{};      // 49 C + 32 dates: IC labels and ranks (3 horizons x 2 x 8 B),
+                                  // member rows (1 B) and per-row counts (4 x 8 B)
+  atx::u64 discover_workspaces{}; // W workspaces of names
+  atx::u64 rung_caches{};         // R x (48 H + 32 dates): the rung scorers' IC caches
+  atx::u64 rung_workspaces{};     // W x R workspaces of ceil(names / 2)
+  atx::u64 bind_transient{};      // H x (8 F + 6) when R > 0: one rung's strided panel, member
+                                  // and guard while the fitness builds its cache (no engine yet)
+  atx::u64 race_panels{};         // R x H x (8 F + 1): the driver's strided rung panels
+  atx::u64 race_engines{};        // W x R x H x (8 S + 1): rung engines' slot pools, mask copies
+  atx::u64 race_signals{};        // W x H x 8 when R > 0: one rung signal per worker
+  atx::u64 full_engines{};        // W x C x (8 S + 1): full-pass engines' slot pools, mask copies
+  atx::u64 full_signals{};        // W x C x 8: one full-pass signal per worker
+  // Promotion: after the search, the fitness released.
+  atx::u64 members{};          // M x C x 8: loaded after the search
+  atx::u64 shortlist{};        // K x C x 8: the shortlist's signals
+  atx::u64 promotion_engine{}; // C x (8 S + 1): while the shortlist is evaluated
+  atx::u64 rho_rows{};         // (M + K) x names x 8 + (M + K)^2 x 16 + 16 names: rank rows,
+                               // pair sums and counts, sort buffer
+  atx::u64 confirm_cache{};    // 49 C + 32 dates + one workspace: the confirm read
+
+  [[nodiscard]] atx::u64 resident() const noexcept;
+  // The fitness plus the largest of the bind, race (race_*) and full-pass (full_*) sub-phases:
+  // with racing on, the race and the full pass never hold each other's engines or panels.
+  [[nodiscard]] atx::u64 search() const noexcept;
+  // The members and the shortlist plus the largest of the promotion engine, the rho step and
+  // the confirm read (strategy_mine_promote.cpp holds them one after another).
+  [[nodiscard]] atx::u64 promotion() const noexcept;
+  // The campaign's peak: resident() + max(search(), promotion()).
+  [[nodiscard]] atx::u64 peak() const noexcept;
+};
 // Err on a geometry outside the configuration bounds.
+[[nodiscard]] atx::core::Result<MineMemory> mine_memory(const MineFootprint &footprint);
+// The memory admission: mine_memory(footprint)->peak(), compared with --max-memory-mib before
+// any payload.
 [[nodiscard]] atx::core::Result<atx::u64> mine_working_bytes(const MineFootprint &footprint);
 
 [[nodiscard]] atx::core::Status run_mine(const MineConfig &cfg, std::ostream &progress);

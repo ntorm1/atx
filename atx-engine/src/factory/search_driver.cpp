@@ -140,6 +140,16 @@ void set_parsimony(CachedScore &score, const Genome &g) {
   return engine.set_cross_section_mask(std::move(strided));
 }
 
+// One full-pass engine of the run: bound to `panel` with the run's eligibility mask (a no-op
+// without one). run() builds one per worker and the signal-fitness path rebuilds them after each
+// race (lane MINE-MEM) through this one function, so both sites construct the same engine.
+[[nodiscard]] atx::core::Result<std::unique_ptr<alpha::Engine>>
+make_full_engine(const alpha::Panel &panel, std::span<const atx::u8> mask) {
+  auto engine = std::make_unique<alpha::Engine>(panel);
+  ATX_TRY_VOID(apply_mask(*engine, mask, panel, Rung{}));
+  return atx::core::Ok(std::move(engine));
+}
+
 // The full-pass score of a representative on the signal-fitness path. The slot keeps the
 // unscored sentinel for an empty signal set or a non-finite score; a functor Err goes to `error`.
 void score_signal(const Genome &g, const alpha::SignalSet &signals, const SearchConfig &cfg,
@@ -477,14 +487,15 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   std::vector<std::unique_ptr<alpha::Engine>> engines;
   engines.reserve(det_pool.n_workers());
   for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
-    engines.push_back(std::make_unique<alpha::Engine>(panel_));
-    // v8 H-3: no-op without a cross_section_mask (validated by signal_path_refusal).
-    const auto masked = apply_mask(*engines.back(), cfg.cross_section_mask, panel_, Rung{});
-    if (!masked) {
+    // v8 H-3: the mask is a no-op without a cross_section_mask (validated by
+    // signal_path_refusal).
+    auto engine = make_full_engine(panel_, cfg.cross_section_mask);
+    if (!engine) {
       res.signal_path_invalid = true;
-      res.signal_path_error = masked.error().to_string();
+      res.signal_path_error = engine.error().to_string();
       return res;
     }
+    engines.push_back(std::move(*engine));
   }
 
   // S4.2 behavioral archive: a per-RUN ring of past-elite descriptors (declared
@@ -1261,10 +1272,36 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
       race_candidates = &slot_survivors;
     }
+    // Lane MINE-MEM (signal-fitness path only): the race and the full pass never hold each
+    // other's buffers. The full-pass engines are released for the race (their grown slot pools
+    // and mask copies) and rebuilt for the full pass by make_full_engine, as run() builds them;
+    // the strided rung panels are released after the race and rebuilt by the next one
+    // (strided_panel is a pure copy of panel_). Engine::evaluate depends only on (program,
+    // panel_, mask) -- the EVAL-PATH NOTE above -- so a rebuilt engine computes the bits the
+    // reused one would, and no ordering changes: every release and rebuild is serial, between
+    // the parallel regions.
+    if (signal_on) {
+      for (std::unique_ptr<alpha::Engine> &engine : engines) {
+        engine.reset();
+      }
+    }
     const std::vector<atx::u64> rejected =
         fidelity_reject(*race_candidates, cfg, gen_fit, det_pool, res);
     if (res.signal_path_invalid) {
       return {}; // review MINE-12: a rung could not be masked; nothing from this generation
+    }
+    if (signal_on) {
+      rung_panels_.clear();
+      rung_keys_.clear();
+      for (std::unique_ptr<alpha::Engine> &engine : engines) {
+        auto rebuilt = make_full_engine(panel_, cfg.cross_section_mask);
+        if (!rebuilt) {
+          res.signal_path_invalid = true; // unreachable: run() built the same engines
+          res.signal_path_error = rebuilt.error().to_string();
+          return {};
+        }
+        engine = std::move(*rebuilt);
+      }
     }
     // v8 H-3: every racing rejection's identity (sorted at the merge below).
     res.fidelity_rejected_hashes.insert(res.fidelity_rejected_hashes.end(), rejected.begin(),

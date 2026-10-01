@@ -333,6 +333,11 @@ struct SearchConfig {
   // weak panel, an active or injected IC screen, output dedup, deflation, capacity or
   // turnover objectives, a checkpoint sink or resume, a CPCV DateV2 plan, and any low
   // rung that is not instrument_only (a date stride changes every time-series operator).
+  // Memory (lane MINE-MEM): with racing on, the race and the full pass never hold each
+  // other's buffers -- the full-pass engines are released for each race and rebuilt for the
+  // full pass, and the strided rung panels are released after each race. A rebuilt engine
+  // computes the bits a reused one does (Engine::evaluate depends only on program, panel and
+  // mask), so this changes no result.
   SignalFitness *signal_fitness{nullptr};
   // op_catalog: the op-swap catalogue, rebuilt at the top of run(); the default is the
   // constructor's catalogue exactly.
@@ -779,7 +784,9 @@ private:
                   SearchResult &res);
   CanonCfg canon_cfg_{};
   FingerprintIndex fp_index_{};
-  // Strided sub-panels per low rung (lazily built, keyed by the rung strides).
+  // Strided sub-panels per low rung (lazily built, keyed by the rung strides). On the
+  // signal-fitness path they are released after each race (lane MINE-MEM) and rebuilt by the
+  // next one: strided_panel is a pure copy of panel_.
   std::vector<Rung> rung_keys_;
   std::vector<alpha::Panel> rung_panels_;
 };
