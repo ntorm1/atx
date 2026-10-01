@@ -909,3 +909,149 @@ holdout, 2023-2024, 2024 and 2025. Tests used synthetic fixtures and tiny_world.
   pooled read with a v8 composition).
 - Carried: `ConfigJsonNotInDiscoverDigest` (known), `ParallelLockstepGrid` group unconfigured, build provenance records
   `5c6efcd4` for v8-5 (source `37e84d81`).
+
+## integration 5 part A (2026-09-30)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `d22c8e99` (clean). Tag prefix v8-6.
+Scope: four merges by SHA, three integration edits, build, tests. No identity run and no real-data run.
+
+### Merges (in order, each `--no-ff` by SHA)
+
+| # | lane (tasks) | lane SHA | merge | conflicts |
+|---|---|---|---|---|
+| 1 | FIX-C (C-1..C-7, C-9..C-13, E-33) | `d0d081f2` | `d3b9513d` | none (20 files) |
+| 2 | FIX-AB (A-1..A-4, B-1..B-4) | `dd677d3b` | `d3e6d855` | none (24 files) |
+| 3 | R45 (E-25 `nav --label-role`, sessions 1-3) | `9cc0d3cb` | `4b57a6af` | 4 hunks, below |
+| 4 | A2 (follow-up tasks 1-4, v8 specs and templates) | `79440cfa` | `67c5aff0` | 7 hunks, below |
+
+R45 x FIX-AB (both sides kept, all additive):
+- `strategy_nav_replay.hpp`: the `execution` paragraph is FIX-AB's A-3 warm-start text followed by R45's
+  `execution.label_role` paragraph; the grid paragraph names both `leverage_groups` (A-1) and `label_role_sha256`.
+- `strategy_nav_replay.cpp`: FIX-AB's `score_begin_gross` and R45's `label_record` both kept; `publish_nav` writes
+  the A-3 `warm_start` block (with `score_begin_gross_leverage`) and then R45's `label_role`.
+- Auto-merged and read: A-1's `leverage_groups` copies each variant's `Ctx` into its group, so R45's `ctx.mark` (set
+  in the shared ctx loop) reaches every group; A-3's inert-warm-start check sits in `run_books`, R45's marks in MARK.
+
+A2 x FIX-C / H1 (A2's base was `5c6efcd4`, so it saw neither FIX-C nor H1):
+- `research_add_alpha.py`: docstring = A2's text plus FIX-C's `summ.origin` sentence; `derive_spec` takes A2's
+  `(lib, parent_members, ..., fields_dir)` plus FIX-C's `origin`; the call passes both (`origin = wave_origin` of the
+  new members, re-screens included).
+- `research_gc.py`: A2's `users()` (store-base rule) now compares by FIX-C's `path_key` (C-12), signature
+  `users(root, rel, keep)`; the store base is `os.path.dirname` of the key, shown root-relative.
+- `research_cycle.py`: docstring keeps H1's `roles` entry then A2's `templates` / `fields pin` / `ic.w_flags`; the w
+  pass keeps H1's `self.weights_name` with A2's E-28 `w_flags`; `lock()` runs H1's `roles` branch first, then A2's
+  template branch and as-built fields pin.
+
+### Integration edits
+
+| commit | lane | file | what |
+|---|---|---|---|
+| `7c77fac2` | A2 (per FIX-C cross-lane) | `scripts/specs/v8/base-lo1.json`, `base-lo3.json`, `scripts/tests/test_research_spec.py` | `summ.origin "prior"` on both base specs (every v7.1 member is `prior` in the registry; the library draft's v8.0 / v8.1 members are `prior` too). `--origin` is not in either `summ.extra`; both verdict specs already name `summ.ledger` (`build-equity/trials.jsonl`). Templates inherit the summ block (every template plans with `--origin prior`). Before the edit `test_every_v8_spec_loads_and_plans[base-b0c.json]` failed on "set summ.origin" (the first failure under `-x`). The ruled-settings test pins the three rules |
+| `d833b25f` | FIX-AB B-3 into R45 | `atx-impl/src/strategy_target_replay.cpp`, `_detail.hpp`, `atx-impl/tests/strategy_live_test.cpp` | `check_label_manifests(role, label, role_path)` calls `refuse_delisting_returns_signal_role(role.dump(), role_path)` right after the JSON-object test, before the seal and membership rules; applied to `role` only, never to `label`; the refusal keeps B-3's own message. New test `NavLabelRole.RefusesADelistingReturnsSignalRole`; `AdmitsOnlyTheDeclaredDelistingClearing` still runs a label role that declares `returns_applied true` (the label is not checked) |
+| `229f8e78` | FIX-AB A-3 x R45 test | `atx-impl/tests/strategy_live_test.cpp` | `NavLabelRole.SameRoleIsIdentity` failed on v8-6: its 10-session warm start on PinBench's score_begin 20 had no price-risk exposures (126 return pairs), so A-3 refused the plain run ("the warm start built no book"). The test now uses `PinBench(140)`, the fixture change FIX-AB made to `StrategyLive.RecipePinBackwardCompatibleWithNewConstructionFields`. No production code changed |
+
+Pins (edit 3): no pinned source set moved after the merges. `dsl_vm_sources_sha256` root `f24cfbbe...55c` (integration
+4 part A) -> FIX-AB's re-pin `ad6c4ca710606ab2602f9bb27bc2cd593e46fd104c308c2d1198651d96113d62` (lane commit
+`dd9cbcf2`, B-3's `strategy_data.hpp/.cpp`); `git diff d22c8e99 HEAD` over the 33 listed paths touches only those two
+files; `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion` passes on v8-6, so FIX-AB's digest is confirmed by a
+build. `ic_result_sources` (10 paths, `e7a40331...579a`): no listed file changed; `IcSourcesPinnedToSemanticsVersion`
+passes. No re-pin by root, no semantics bump. FactoryOos (E-22a) pins hold (factory-tests 377/377).
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`)
+
+| tag | source | result |
+|---|---|---|
+| v8-6 | `d833b25f` clean | ok, exit 0, 121 s, 45 TUs, 14 links, 3 jobs; no `/W4 /WX` finding (FIX-AB, R45 sessions 1-3 and the B-3 wiring compiled first time) |
+| **v8-6a** | `229f8e78` clean | ok, exit 0, 21 s, 2 TUs, 2 links (target-tests, impl-tests) |
+
+Targets of v8-6: atx-equity-strategy-ic, -targets, -risk, atx-engine-data-tests, -combine-tests, -factory-tests,
+-book-tests, atx-impl-strategy-ic-tests, -target-tests, -strategy-tests, atx-impl-tests. `ConfiguredProvenance` stays
+`5c6efcd4` (no reconfigure). Executables: ic `e839aebd40fe1c3a770c89de7799c6e6806f1ef68f0b7f1b2afceaa93ea4428b`,
+targets `5fa4913e07103d89e6b44d35e7221be804526c6ce739011d5f615e3b3d913bf1`, risk
+`4abbff6e7219f182cd2f9ccbb10e686bf87587f049bbb0ca5205f0a5d442aca3` (v8-6, unchanged by v8-6a); target-tests
+`d1eaaba4...0a721`, impl-tests `79990590...a52ab` (v8-6a).
+
+### Tests
+
+Lane filters ("how root verifies"):
+
+| exe (build) | filter | result |
+|---|---|---|
+| strategy-ic-tests (v8-6) | `MarginalIc.*:CompositionV8.*` (B-2) | 11/11 |
+| strategy-tests (v8-6) | `StrategyResearchRole.*` (B-3) | 3/3 |
+| strategy-ic-tests (v8-6) | `StrategyIcRunner.DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput:StrategyIcRunner.VmSourcesPinnedToSemanticsVersion:MarginalIc.DelistingReturnsRoleIsRefused` (B-3) | 3/3 |
+| strategy-ic-tests (v8-6) | `FieldCaps.*:StrategyIcRunner.*` (B-4) | 54/54 |
+| strategy-target-tests (v8-6) | `SpoV3.*:SpoPin.*:NavV7Hook.SideFilesExcludeWarmUp:SpoHook.*` (A-2) | 24 run: 23 passed, 1 skipped (SpoV3 v2 placeholder) |
+| strategy-target-tests (v8-6) | `NavWarmStart.*:StrategyLive.RecipePinBackwardCompatibleWithNewConstructionFields` (A-3) | 6/6 |
+| strategy-target-tests (v8-6) | `SpoV3.CriterionReadsTheTradedBook:SpoV3.ReportsTrackingErrorAndShareAtTradeLimit` (A-4) | 2/2 |
+| strategy-target-tests (v8-6) | `AdvHold.GridCapsEachVariantAtItsOwnLeverage:ConstructionGrid.*:HoldBand.GridSharesTheBandAndOneCadence:NavTimers.*` (A-1) | 7/7 |
+| strategy-target-tests (v8-6) | `NavLabelRole.*` (R45) | 6 run: 5 passed, **1 failed** `SameRoleIsIdentity` (fixed `229f8e78`) |
+| strategy-target-tests (v8-6a) | `NavLabelRole.*` (R45: the five + the integration test) | 6/6 |
+| strategy-target-tests (v8-6a) | `NavV6.OrderBasisTargetAndExitRateOneAreBitIdentical` (flag-off recipe SHAs) | 1/1 |
+| strategy-target-tests (v8-6a) | `NavLabelRole.*:NavV6.*:StrategyLive.*:HoldBand.*:AdvHold.*` (R45's `-R` set) | 55/55 |
+| strategy-target-tests (v8-6a) | `Spo*:NavV7Hook.*:HoldBand.*:AdvHold.*` (integration 4 part B set) | 65 run: 64 passed, 1 skipped |
+| impl-tests (v8-6a) | `NavLabelRole.*` | 6/6 |
+
+Whole executables:
+
+| exe | build | result |
+|---|---|---|
+| atx-engine-data-tests | v8-6 | 299 run: 285 passed, 14 skipped (+1: B-3) |
+| atx-engine-combine-tests | v8-6 | 220/220 |
+| atx-engine-factory-tests | v8-6 | 377/377 |
+| atx-engine-book-tests | v8-6 | 147/147 |
+| atx-impl-strategy-ic-tests | v8-6 | 105/105 (+4: B-2, B-3 x2, B-4) |
+| atx-impl-strategy-tests | v8-6 | 46/46 (+1: B-3) |
+| atx-impl-strategy-target-tests | v8-6a | 234 run: 233 passed, 1 skipped (part B 223 + FIX-AB 5 + R45 5 + integration 1) |
+| atx-impl-tests | v8-6 | 965 run: 956 passed, 7 skipped, 2 failed (`ConfigJsonNotInDiscoverDigest`, `SameRoleIsIdentity`) |
+| atx-impl-tests | v8-6a | 965 run: **957 passed, 7 skipped, 1 failed: the known `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`** |
+
+impl-tests skips (all environment-dependent, none in a merged lane's tests): Alpha101Orats x2, AtxImplDiscover.W6,
+SingleAlphaCapacity (ATX_ALPHA101_PANEL), FundamentalZoo (opt-in), SpoV3.V1AndV2DigestsUnchanged (placeholder),
+TrialLedgerRepository.ExistingCp14Ledger_StillVerifies ("not run from the repository root": run here from
+`build-equity/bin`, the likely difference from part A's 6).
+
+SpoPin v1 pins pass unchanged (`weights=0xda6b6871e7e267c5`, `replay=0xaabdbb72f99a6e13`); v8-6a prints `[spo-v3-pin] v2
+weights=0xb039820b40d5cf24 (40 diagnostics rows) replay=0xd24b61721a7c698c (30 days)`, the same as v8-4e and v8-5 (A-2
+changes only warm-start runs). **spo-v2 pin: not captured.** The skip reason is "spo-v2 digests unpinned (placeholder
+0): capture them on the pre-R6 tree with this file and strategy_spo_digest.hpp (protocol at the top), then pin": it
+needs a pre-R6 build, so the skip stays (part C, item 7).
+
+Python (`pytest -q -p no:cacheprovider`, `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin`, v8-6/v8-6a exes):
+
+| paths | result |
+|---|---|
+| atx-impl/strategies | 163 passed |
+| atx-impl/strategies/test_generate_library.py with `ATX_V71_PLAN_JSON=build-equity/v8-i3-plan-v71.json` (E-19) | 9 passed |
+| atx-engine/tools | 241 passed (6 subtests) = part B 240 + B-1 `test_reuse_pins_the_session_calendar` |
+| atx-impl/tools | 465 passed, 2 skipped (`ATX_EQUITY_TARGETS_EXE`, `ATX_EQUITY_ROOT` unset) |
+| `test_exposures_export.py` with `ATX_EQUITY_TARGETS_EXE` = v8-6 targets | 3 passed |
+| scripts/tests (before edit 2) | `test_every_v8_spec_loads_and_plans[base-b0c.json]` failed first (`-x`): FIX-C's C-2 refusal, fixed by `7c77fac2` |
+| scripts/tests (spec + cycle tests after edit 2: research_spec, research_cycle, cycle_scoring, cycle_resume, roles, label_role) | 154 passed, 3 skipped |
+| scripts/tests (whole, v8-6a) | 163 passed, 3 skipped (the three RESEARCH_CYCLE_LIVE_ROOT tests) |
+
+- tiny_world: `test_cycle_e2e.py` 5/5 (`-rs -v`, live on the v8-6 exes), including
+  `test_cycle_e2e_goldens_redundant_copy_and_idempotent_rerun`: **no golden moved**; `git status` clean after every set.
+- A2's `test_research_spec.py` autouse fixture `label_role_input` is now a no-op (R45's `INPUT_KEYS` has the key); left
+  in place.
+
+### Hidden-data record
+
+No real-data run. Read: lane reports, the alpha registry and library definitions (code), build receipts, and
+integration 3's saved `--plan-only` JSON for 2020-2022 through the E-19 test (DSL SHAs, lookbacks, slot and node
+counts; no statistic). Tests used synthetic fixtures and tiny_world. Nothing dated 2024-01-01 or later was opened.
+**No disclosure.**
+
+### Open items
+
+- spo-v2 pin: the test's skip needs a pre-R6 build (part C item 7).
+- Part C identities (none run here): R45's flag-absent and `--label-role` = `--role` NAV identities, A-2/A-3 change
+  warm-start outputs only (no accepted warm-start spo cell), A-4 changes the spo-v3 CSV/JSON shape.
+- B0c: A-3 refuses a warm start that leaves every book flat on `score_begin`; B0c's `--warm-start-sessions 60` must
+  build a book (FIX-AB measured `score_begin` 399 on the 3-year TRAIN role, forecasts from row 315).
+- FIX-C cross-lane notes for H3 (campaign writer `campaign_line`, chain=True) and any `holdout_gate.py` caller
+  (`--ledger` required): nothing in this part.
+- A2 open risks 6 (attempt-1 `reference_combined`) and 7 (template rename discipline) stand; H1 x R-1 pooled fit
+  (`ew-theme-std-v1`) carried.
+- Carried: `ConfigJsonNotInDiscoverDigest` (known), `ParallelLockstepGrid` group unconfigured, build provenance records
+  `5c6efcd4` for v8-6 / v8-6a (sources `d833b25f` / `229f8e78`).
