@@ -534,6 +534,62 @@ TEST(StrategyMine, TemplatesAreTheHouseSet) {
   EXPECT_EQ(t[21], "rank(delta(b, 252))");
 }
 
+// Review MINE-10: the memory admission is the derived sum documented in strategy_mine.hpp. The
+// pinned totals come from the MINE-FIX report's Python mirror of that formula: a small footprint
+// and the report's worked example (the 4-year role, 1,405 x 6,100, 16 fields, 4 workers, one
+// rung, the default search's 272 trials). One more trial costs its daily IC, its allowance and
+// its registry row; one more prior record its registry row. The configuration bounds need far
+// more than the 64 GiB --max-memory-mib ceiling, so such a campaign is refused before payload.
+TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
+  EXPECT_EQ(st::kMineMaxProgramSlots, 8U);
+  st::MineFootprint small;
+  small.dates = 100;
+  small.names = 10;
+  small.extras = 2;
+  small.regressors = 1;
+  small.members = 1;
+  small.workers = 2;
+  small.rungs = 1;
+  small.shortlist = 3;
+  small.trials = 40;
+  small.prior_records = 7;
+  const auto base = st::mine_working_bytes(small);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  EXPECT_EQ(*base, u64{85'689'444});
+  auto more_trials = small;
+  more_trials.trials += 1U;
+  EXPECT_EQ(st::mine_working_bytes(more_trials).value() - *base,
+            u64{100} * 8U + (u64{16} << 10) + 128U);
+  auto more_prior = small;
+  more_prior.prior_records += 1U;
+  EXPECT_EQ(st::mine_working_bytes(more_prior).value() - *base, u64{128});
+  st::MineFootprint role;
+  role.dates = 1405;
+  role.names = 6100;
+  role.extras = 16;
+  role.regressors = 3;
+  role.members = 32;
+  role.workers = 4;
+  role.rungs = 1;
+  role.shortlist = 16;
+  role.trials = 16U * 11U + 24U * 4U;
+  EXPECT_EQ(st::mine_working_bytes(role).value(), u64{11'651'171'382});
+  st::MineFootprint bounds;
+  bounds.dates = 4096;
+  bounds.names = 20000;
+  bounds.extras = 64;
+  bounds.regressors = 11;
+  bounds.members = 64;
+  bounds.workers = 64;
+  bounds.rungs = 2;
+  bounds.shortlist = 256;
+  bounds.trials = 64U * 11U + 4096U * 256U;
+  EXPECT_EQ(st::mine_working_bytes(bounds).value(), u64{1'184'945'709'312});
+  EXPECT_GT(st::mine_working_bytes(bounds).value(), u64{64} << 30);
+  bounds.trials = (u64{1} << 32) + 1U;
+  EXPECT_FALSE(st::mine_working_bytes(bounds).has_value());
+}
+
 // ---- the fixture acceptance --------------------------------------------------------------------
 // The shortlist row of `dsl` in campaign.json's promotions (null when it is not shortlisted).
 const Json *promotion_of(const Json &campaign, const std::string &dsl) {
@@ -569,7 +625,8 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
               trials.at("evaluated").get<u64>() + trials.at("screen_rejected").get<u64>() +
                   trials.at("racing_rejected").get<u64>())
         << "seed " << seed;
-    EXPECT_EQ(trials.at("failed").get<u64>(), 0U) << "seed " << seed;
+    EXPECT_EQ(trials.at("failed").get<u64>(), 0U) << "seed " << seed; // none past the slot bound
+    EXPECT_EQ(campaign.at("search").at("max_program_slots").get<u32>(), st::kMineMaxProgramSlots);
     EXPECT_GT(trials.at("racing_rejected").get<u64>(), 0U) << "seed " << seed;
     EXPECT_EQ(rows.size(), trials.at("distinct").get<usize>()) << "seed " << seed;
     EXPECT_EQ(registry.at("new_records"), registry.at("n_raw")) << "seed " << seed;

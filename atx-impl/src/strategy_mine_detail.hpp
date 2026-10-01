@@ -59,7 +59,8 @@ struct MinedTrial {
   u64 canon_hash{};
   usize stage{}; // the stage that first saw it (1 or 2)
   TrialStatus status{TrialStatus::Failed};
-  std::string reason; // screen name, racing-rejected, unscored, degenerate-series (empty: none)
+  // screen name, racing-rejected, unscored, slot-bound, degenerate-series (empty: none)
+  std::string reason;
   std::string dsl;
   const ex::Genome *genome{};
   const ex::ResearchIcTrial *read{}; // the full-pass read (evaluated or screened), else null

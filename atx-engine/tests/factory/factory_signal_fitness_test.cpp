@@ -10,7 +10,9 @@
 //   * OpCatalogCfgTest.*        literature rows and the deny list.
 //   * ResearchIcAccessors.*     labels() are what evaluate_research_ic correlates; the
 //                               research_window_ic_config recipe.
-//   * ResearchIcFitnessTest.*   f1/f2 of a planted signal, the spanned screen, rungs, trials.
+//   * ResearchIcFitnessTest.*   f1/f2 of a planted signal, the spanned screen, rungs, trials,
+//                               f2 of a partly spanned and of a negative-IC candidate (MINE-9).
+//   * SignalFitnessPath.ProgramSlotBound*  max_program_slots (review MINE-10).
 
 #include <algorithm>
 #include <array>
@@ -28,6 +30,7 @@
 #include "atx/core/random.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
@@ -707,6 +710,67 @@ TEST(ResearchIcFitnessTest, PartlySpannedAndNegativeCandidatesScoreTheDirectMarg
     EXPECT_NEAR(scored->objectives[1], static_cast<f64>(c.sign) * direct, 1e-12) << c.hash;
     EXPECT_NEAR(ex::research_ic_f2(read), static_cast<f64>(c.sign) * direct, 1e-12) << c.hash;
   }
+}
+
+// Review MINE-10: SearchConfig::max_program_slots refuses, before the race and the full pass, a
+// candidate whose compiled program needs more VM slots than the bound: the functor never sees
+// it, it stays a trial (all_scored) listed in slot_refused_hashes and unscored_hashes, and every
+// other candidate is scored as before. The bound needs the signal-fitness path.
+TEST(SignalFitnessPath, ProgramSlotBoundRefusesLargerProgramsBeforeEvaluation) {
+  const Golden g;
+  std::vector<std::string> seeds = cs_seeds();
+  seeds.emplace_back("rank(max(close, rev))"); // two loads live under one op: more slots
+  // The bound: the fewest slots any seed's program needs.
+  u32 bound = std::numeric_limits<u32>::max();
+  for (const std::string &seed : seeds) {
+    const ex::Genome genome = genome_of(seed, g.lib, 0);
+    const auto program = atx::engine::alpha::compile(genome.ast, genome.analysis);
+    ASSERT_TRUE(program.has_value()) << seed;
+    bound = std::min(bound, program->num_slots);
+  }
+  RecordingFitness fitness;
+  ex::SearchConfig cfg = one_generation_cfg(seeds.size());
+  cfg.signal_fitness = &fitness;
+  cfg.max_program_slots = bound;
+  cfg.fidelity.enabled = true;
+  const std::vector<u32> strides{2};
+  const auto rungs = ex::instrument_rungs(strides);
+  ASSERT_TRUE(rungs.has_value());
+  cfg.fidelity.rungs = *rungs;
+  const ex::SearchResult r = g.run(cfg, seeds);
+  ASSERT_FALSE(r.signal_path_invalid) << r.signal_path_error;
+  std::vector<u64> larger;
+  std::vector<u64> others;
+  for (const ex::Genome &genome : r.all_scored) {
+    const auto program = atx::engine::alpha::compile(genome.ast, genome.analysis);
+    ASSERT_TRUE(program.has_value());
+    (program->num_slots > bound ? larger : others).push_back(genome.canon_hash);
+  }
+  std::sort(larger.begin(), larger.end());
+  std::sort(others.begin(), others.end());
+  ASSERT_FALSE(larger.empty());
+  ASSERT_FALSE(others.empty());
+  EXPECT_EQ(r.slot_refused_hashes, larger);
+  for (const u64 hash : larger) {
+    EXPECT_TRUE(std::binary_search(r.unscored_hashes.begin(), r.unscored_hashes.end(), hash));
+    EXPECT_FALSE(std::binary_search(r.fidelity_rejected_hashes.begin(),
+                                    r.fidelity_rejected_hashes.end(), hash));
+  }
+  std::vector<u64> seen;
+  for (const auto &call : fitness.calls()) {
+    seen.push_back(call.hash);
+  }
+  std::sort(seen.begin(), seen.end());
+  seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+  EXPECT_EQ(seen, others); // raced or scored: every candidate within the bound, no other
+  // Without a signal functor the bound is refused before any candidate.
+  ex::SearchConfig legacy = legacy_pin_cfg(777);
+  legacy.max_program_slots = bound;
+  const ex::SearchResult refused = g.run(legacy);
+  EXPECT_TRUE(refused.signal_path_invalid);
+  EXPECT_NE(refused.signal_path_error.find("max_program_slots"), std::string::npos)
+      << refused.signal_path_error;
+  EXPECT_TRUE(refused.all_scored.empty());
 }
 
 } // namespace atxtest_factory_signal_fitness

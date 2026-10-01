@@ -11,7 +11,8 @@
 // w in {5, 21, 63, 126, 252}, over the mined fields in one generation; stage 2 is an NSGA-II run
 // seeded with the stage-1 front (parsimony on, novelty off, literature operators on, the miner's
 // deny list). Both run on the signal-fitness path of SearchDriver with the role's decision
-// membership as the cross-section mask and race on instrument strides only.
+// membership as the cross-section mask and race on instrument strides only; a program that needs
+// more than kMineMaxProgramSlots VM slots is refused before any evaluation (review MINE-10).
 // Registry: every distinct expression of the campaign is one trial of a V3 TrialRegistry
 // (--registry; an existing log is reopened only against --registry-head), in first-seen order:
 // evaluated trials with their oriented daily h 21 rank IC over the discover label rows (NaN as
@@ -92,14 +93,39 @@ struct MineConfig {
 [[nodiscard]] atx::u64 mine_trial_capacity(const MineConfig &cfg);
 inline constexpr atx::u64 kMineMaxBudget = 10'000'000ULL;
 
+// Review MINE-10: the most VM slots a mined program may claim (SearchConfig::max_program_slots).
+// A template needs two or three; a larger program is refused before any evaluation and filed as
+// a failed trial (reason slot-bound), so no engine's slot pool exceeds this many panel columns.
+inline constexpr atx::u32 kMineMaxProgramSlots = 8;
+
 // A campaign's shape, known before any payload.
 struct MineFootprint {
   atx::usize dates{}, names{}, extras{}, regressors{}, members{}, workers{1}, rungs{};
   atx::usize shortlist{};
+  atx::u64 trials{};        // the most full-pass reads: mine_trial_capacity
+  atx::u64 prior_records{}; // the records a reopened registry holds (its anchor)
 };
-// Conservative peak bytes: the role (research_role_bytes), the pool, the discover and confirm IC
-// caches, per worker one VM engine (8 slots per cell assumed) and one signal set per racing rung
-// and the full panel, the strided rung panels and caches, the shortlist's signals and rank rows.
+// Peak bytes, derived term by term (review MINE-10). C = dates x names panel cells, H = dates x
+// ceil(names / 2) cells of a racing rung (instrument stride >= 2), F = 3 + extras panel fields,
+// S = kMineMaxProgramSlots, W workers, R rungs, T trials:
+//   64 MiB                                   metadata: library, catalogue, populations
+//   + research_role_bytes(dates, names, extras)
+//   + (regressors + members) x C x 8         pool payloads
+//   + 2 x 49 x C                             discover and confirm IC caches (3 horizons x label
+//                                            and rank x 8) with their member rows
+//   + R x H x (8 F + 54)                     the fitness's rung scorers: strided panel, member,
+//                                            guard, presence and IC cache
+//   + R x H x (8 F + 1)                      the search driver's strided rung panels
+//   + ((W + 1) x C + W x R x H) x (8 S + 1)  VM slot pools and mask copies of the W full-pass
+//                                            engines, the promotion engine and W x R rung engines
+//   + W x (C + R x H) x 8                    one signal set per search engine
+//   + (W x (1 + R) + 1) x (128 names + 80 dates)  IC row scratch per scorer workspace
+//   + T x (8 dates + 16 KiB)                 per trial: the daily h 21 IC every full-pass read
+//                                            keeps (label rows <= dates), genome and log rows
+//   + 512 KiB + 128 x (prior_records + T)    the registry's Gram and per-record index
+//   + shortlist x C x 8                      the shortlist's signals
+//   + (members + shortlist) x names x 8      rank rows
+// Err on a geometry outside the configuration bounds.
 [[nodiscard]] atx::core::Result<atx::u64> mine_working_bytes(const MineFootprint &footprint);
 
 [[nodiscard]] atx::core::Status run_mine(const MineConfig &cfg, std::ostream &progress);

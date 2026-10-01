@@ -52,7 +52,9 @@ MinedTrial classify_one(const StageRun &stage, usize stage_number, const ex::Gen
   const auto listed = [&g](const std::vector<u64> &sorted) {
     return std::binary_search(sorted.begin(), sorted.end(), g.canon_hash);
   };
-  if (listed(stage.result.fidelity_rejected_hashes)) {
+  if (listed(stage.result.slot_refused_hashes)) {
+    t.reason = "slot-bound"; // failed: refused before any evaluation (review MINE-10)
+  } else if (listed(stage.result.fidelity_rejected_hashes)) {
     t.status = TrialStatus::RacingRejected;
     t.reason = "racing-rejected";
   } else if (listed(stage.result.unscored_hashes)) {

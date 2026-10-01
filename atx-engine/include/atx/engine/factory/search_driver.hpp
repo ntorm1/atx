@@ -337,6 +337,15 @@ struct SearchConfig {
   // op_catalog: the op-swap catalogue, rebuilt at the top of run(); the default is the
   // constructor's catalogue exactly.
   OpCatalogCfg op_catalog{};
+  // max_program_slots (platform v8 review MINE-10): 0 is off. Otherwise, on the
+  // signal-fitness path only, a fresh candidate whose compiled program needs more VM slots
+  // (alpha::Program::num_slots: the SlotPool every engine that evaluates it would grow to) is
+  // refused before any evaluation -- never raced, evaluated or folded into the digest -- and
+  // stays a trial with the unscored sentinel (canon, all_scored, trial_count,
+  // unscored_hashes), listed in SearchResult::slot_refused_hashes. A caller's memory
+  // admission can then count slots x cells per engine. Refused (signal_path_invalid) without
+  // signal_fitness.
+  atx::u32 max_program_slots{0};
 };
 
 // =========================================================================
@@ -391,6 +400,9 @@ struct SearchResult {
   // score (ScoreOrigin::Unscored). A signal-fitness rejection is in ic_rejected_hashes.
   std::vector<atx::u64> fidelity_rejected_hashes;
   std::vector<atx::u64> unscored_hashes;
+  // Platform v8 review MINE-10: complete, sorted identities of the candidates refused by
+  // SearchConfig::max_program_slots (each one is also in unscored_hashes).
+  std::vector<atx::u64> slot_refused_hashes;
   // A refused cross_section_mask / signal_fitness configuration, a failed bind, or a
   // functor Err while scoring: nothing from the failing generation is admitted.
   bool signal_path_invalid{false};

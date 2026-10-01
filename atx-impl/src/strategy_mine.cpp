@@ -54,6 +54,15 @@ constexpr std::array<std::string_view, 6> kMinerDeny{"trade_when", "hump",   "ka
                                                      "ou_filter",  "kalman", "split2"};
 constexpr std::string_view kCampaignSchema = "atx.mine-campaign/v1";
 constexpr std::string_view kMembersSchema = "atx.mined-members/v1";
+// The derived terms of mine_working_bytes (review MINE-10; strategy_mine.hpp).
+constexpr u64 kMetadataBytes = 64ULL << 20;
+constexpr u64 kIcCacheCellBytes = 49;    // 3 horizons x (label + rank) x 8, + 1 member byte
+constexpr u64 kRungScorerCellBytes = 54; // strided member 1, guard 4, presence 1, IC cache 48
+constexpr u64 kScratchNameBytes = 128;   // IC and marginal row buffers per name
+constexpr u64 kScratchDateBytes = 80;    // calendar series and label-row counts per date
+constexpr u64 kTrialAllowanceBytes = 16ULL << 10;
+constexpr u64 kRegistryGramBytes = 512ULL << 10; // the registry's 256 x 256 f64 Gram
+constexpr u64 kRegistryRecordBytes = 128;        // TrialInfo (72 B) and its dedup-set entry
 
 f64 seconds_since(steady::time_point from) {
   return std::chrono::duration<f64>(steady::now() - from).count();
@@ -236,6 +245,7 @@ ex::SearchConfig stage_config(const MineConfig &cfg, const ex::FidelityCfg &race
   sc.fidelity = race;
   sc.cross_section_mask = mask;
   sc.signal_fitness = &fitness;
+  sc.max_program_slots = kMineMaxProgramSlots; // review MINE-10: the admitted slot pools
   sc.enable_parsimony = explore;
   sc.mutate_seed_copies = explore;
   if (explore) {
@@ -321,8 +331,8 @@ std::vector<std::string> mine_templates(std::span<const std::string> fields) {
 }
 
 u64 mine_trial_capacity(const MineConfig &cfg) {
-  const u64 templates =
-      static_cast<u64>(cfg.role.fields.size()) * (1U + 2U * static_cast<u64>(kTemplateWindows.size()));
+  const u64 per_field = 1U + 2U * static_cast<u64>(kTemplateWindows.size());
+  const u64 templates = static_cast<u64>(cfg.role.fields.size()) * per_field;
   const bool stage2 = cfg.stage2_seeds > 0U && cfg.stage2_generations > 0U;
   return templates +
          (stage2 ? static_cast<u64>(cfg.stage2_population) * cfg.stage2_generations : u64{0});
@@ -331,22 +341,31 @@ u64 mine_trial_capacity(const MineConfig &cfg) {
 co::Result<u64> mine_working_bytes(const MineFootprint &f) {
   if (f.workers == 0U || f.workers > 64U || f.rungs > 2U ||
       f.regressors > cb::kMaxMarginalRegressors || f.members > kMaxMinePoolMembers ||
-      f.shortlist > 256U)
+      f.shortlist > 256U || f.trials > (1ULL << 32) || f.prior_records > (1ULL << 40))
     return co::Err(fail(co::ErrorCode::InvalidArgument, "working-bytes geometry"));
   ATX_TRY(const u64 role, research_role_bytes(f.dates, f.names, f.extras));
   // Every factor is bounded above, so no product below can overflow u64.
-  const u64 cells = static_cast<u64>(f.dates) * f.names;
-  const u64 engines = static_cast<u64>(f.workers) * (1U + f.rungs);
+  const u64 dates = f.dates;
+  const u64 names = f.names;
+  const u64 cells = dates * names;
+  const u64 strided = dates * ((names + 1U) / 2U); // a racing rung: instrument stride >= 2
   const u64 fields = 3U + static_cast<u64>(f.extras);
-  u64 total = 64ULL << 20;                                      // metadata, genomes, search
-  total += role;                                                // role, extras, guard, overlay
-  total += (f.regressors + f.members) * cells * sizeof(f64);    // pool payloads
-  total += 2U * (3U * cells * sizeof(f64) + cells);             // discover + confirm IC caches
-  total += engines * (8U * cells * sizeof(f64) + cells);        // VM slot pools + mask copies
-  total += engines * cells * sizeof(f64);                       // one signal set per engine
-  total += f.rungs * (cells / 2U) * (fields * sizeof(f64) + 30U); // strided panels and caches
-  total += f.shortlist * cells * sizeof(f64);                   // the shortlist's signals
-  total += (f.members + f.shortlist) * static_cast<u64>(f.names) * sizeof(f64); // rank rows
+  const u64 workers = f.workers;
+  const u64 rungs = f.rungs;
+  const u64 slot_cell = static_cast<u64>(kMineMaxProgramSlots) * sizeof(f64) + 1U;
+  u64 total = kMetadataBytes;
+  total += role;
+  total += (static_cast<u64>(f.regressors) + f.members) * cells * sizeof(f64);
+  total += 2U * kIcCacheCellBytes * cells;
+  total += rungs * strided * (fields * sizeof(f64) + kRungScorerCellBytes);
+  total += rungs * strided * (fields * sizeof(f64) + 1U);
+  total += ((workers + 1U) * cells + workers * rungs * strided) * slot_cell;
+  total += workers * (cells + rungs * strided) * sizeof(f64);
+  total += (workers * (1U + rungs) + 1U) * (kScratchNameBytes * names + kScratchDateBytes * dates);
+  total += f.trials * (dates * sizeof(f64) + kTrialAllowanceBytes);
+  total += kRegistryGramBytes + (f.prior_records + f.trials) * kRegistryRecordBytes;
+  total += static_cast<u64>(f.shortlist) * cells * sizeof(f64);
+  total += (static_cast<u64>(f.members) + f.shortlist) * names * sizeof(f64);
   return co::Ok(total);
 }
 
@@ -373,6 +392,8 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     footprint.workers = cfg.workers;
     footprint.rungs = cfg.race_strides.size();
     footprint.shortlist = cfg.max_promotions;
+    footprint.trials = mine_trial_capacity(cfg);
+    footprint.prior_records = anchor ? anchor->records : u64{0};
     ATX_TRY(const u64 required, mine_working_bytes(footprint));
     if (required > cfg.max_working_bytes)
       return co::Err(fail(co::ErrorCode::Unavailable,
@@ -525,6 +546,8 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"workers", cfg.workers},
         {"templates", templates.size()},
         {"capacity", mine_trial_capacity(cfg)},
+        {"max_program_slots", kMineMaxProgramSlots},
+        {"required_bytes", required},
         {"stage1", stage_json(stage1)},
         {"stage2", explore ? stage_json(stage2) : Json(nullptr)},
         {"stage2_config", {{"seeds", cfg.stage2_seeds},
