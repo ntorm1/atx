@@ -68,7 +68,8 @@ void set_parsimony(CachedScore &score, const Genome &g) {
 // ---- platform v8 H-3: cross-section mask and signal-fitness path ---------------------------
 
 // Why the v8 H-3 members of `cfg` cannot run; empty when accepted. With the defaults (no mask,
-// no functor, no slot bound) this returns after three checks, so the legacy path is untouched.
+// default catalogue, no functor, no slot bound) this returns after four checks, so the legacy
+// path is untouched.
 [[nodiscard]] std::string signal_path_refusal(const SearchConfig &cfg, const alpha::Panel &panel,
                                               bool weak_panel, const combine::AlphaStore &pool,
                                               bool checkpointing, bool injected_ic_cache,
@@ -82,6 +83,13 @@ void set_parsimony(CachedScore &score, const Genome &g) {
     if (weak_panel) {
       return "cross_section_mask has the search panel's geometry; a weak panel would run unmasked";
     }
+  }
+  // Review MINE-11: neither the mask nor the op catalogue is in the checkpoint identity, so a run
+  // that sets either takes no progress sink and no resume, on any fitness path.
+  const bool catalogue = cfg.op_catalog.literature_ops || !cfg.op_catalog.deny.empty();
+  if ((!mask.empty() || catalogue) && checkpointing) {
+    return "cross_section_mask and op_catalog are outside the checkpoint identity: no progress "
+           "sink and no resume";
   }
   if (cfg.max_program_slots != 0U && cfg.signal_fitness == nullptr) {
     return "max_program_slots bounds the signal-fitness path only";

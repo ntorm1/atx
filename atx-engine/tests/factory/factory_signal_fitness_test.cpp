@@ -44,6 +44,7 @@
 #include "atx/engine/factory/op_catalog.hpp"
 #include "atx/engine/factory/research_ic_fitness.hpp"
 #include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/factory/search_progress.hpp"
 #include "atx/engine/factory/signal_fitness.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
@@ -367,6 +368,44 @@ TEST(SignalFitnessPath, RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors
   const ex::SearchResult r = g.run(failed, cs_seeds());
   EXPECT_TRUE(r.signal_path_invalid);
   EXPECT_NE(r.signal_path_error.find("planted failure"), std::string::npos) << r.signal_path_error;
+}
+
+// Accepts every generation snapshot.
+class NullSink final : public ex::SearchProgressSink {
+public:
+  atx::core::Status on_generation(const ex::GenerationSnapshot &) override {
+    return atx::core::Ok();
+  }
+};
+
+// Review MINE-11: the mask and a non-default op catalogue are outside the checkpoint identity,
+// so a run that sets either refuses a progress sink on the legacy path too; without them the
+// sink is accepted as before.
+TEST(SignalFitnessPath, MaskAndCatalogueRefuseAProgressSink) {
+  const Golden g;
+  NullSink sink;
+  const auto run_with_sink = [&g, &sink](const ex::SearchConfig &cfg) {
+    ex::SearchDriver driver{g.lib, g.panel, g.policy, g.sim, golden_seeds(), {"close", "rev"}};
+    const AlphaStore pool{};
+    return driver.run(cfg, pool, &sink);
+  };
+  const std::vector<u8> mask(g.panel.cells(), 1);
+  ex::SearchConfig masked = legacy_pin_cfg(777);
+  masked.cross_section_mask = mask;
+  ex::SearchConfig catalogued = legacy_pin_cfg(777);
+  catalogued.op_catalog.literature_ops = true;
+  ex::SearchConfig denied = legacy_pin_cfg(777);
+  denied.op_catalog.deny = {"ts_mean"};
+  for (const ex::SearchConfig *cfg : {&masked, &catalogued, &denied}) {
+    const ex::SearchResult r = run_with_sink(*cfg);
+    EXPECT_TRUE(r.signal_path_invalid);
+    EXPECT_NE(r.signal_path_error.find("checkpoint identity"), std::string::npos)
+        << r.signal_path_error;
+    EXPECT_TRUE(r.all_scored.empty());
+  }
+  const ex::SearchResult plain = run_with_sink(legacy_pin_cfg(777));
+  EXPECT_FALSE(plain.signal_path_invalid) << plain.signal_path_error;
+  EXPECT_FALSE(plain.all_scored.empty());
 }
 
 // =============================================================================
