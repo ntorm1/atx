@@ -83,13 +83,17 @@ co::Status write_text(const fs::path &path, const std::string &text) {
 
 // ---- configuration and windows -----------------------------------------------------------------
 co::Status check_config(const MineConfig &cfg) {
+  // Ruling E-32a (review MINE-7): mined-v1's marginal term and rho check read the book.
+  if (cfg.pool_path.empty() || cfg.pool_sha256.empty())
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "mined-v1 needs --pool with --pool-sha256 (Ruling E-32a: without the "
+                        "book the marginal t is the raw IC t and the rho check meets no member)"));
   std::vector<std::string> fields = cfg.role.fields;
   std::sort(fields.begin(), fields.end());
   const bool distinct = std::adjacent_find(fields.begin(), fields.end()) == fields.end();
   const bool inputs = !cfg.role.manifest.empty() && !cfg.registry_path.empty() &&
                       !cfg.output_directory.empty() && safe_id(cfg.campaign_id) &&
-                      !fields.empty() && fields.size() <= 64U && distinct &&
-                      cfg.pool_path.empty() == cfg.pool_sha256.empty();
+                      !fields.empty() && fields.size() <= 64U && distinct;
   const bool search = cfg.workers >= 1U && cfg.workers <= 64U && cfg.stage2_population >= 2U &&
                       cfg.stage2_population <= 4096U && cfg.stage2_generations <= 256U &&
                       cfg.stage2_seeds <= cfg.stage2_population &&
@@ -115,6 +119,18 @@ co::Status check_config(const MineConfig &cfg) {
                             std::to_string(capacity) +
                             " (templates plus stage-2 population x generations): the budget is "
                             "fixed in advance and the search must not be able to exceed it"));
+  return co::Ok();
+}
+
+// Ruling E-32a (review MINE-7): the pool's manifest names the book -- at least one regressor for
+// the marginal term and one member for the rho check -- checked before any payload.
+co::Status check_pool(const MinePoolManifest &pool) {
+  if (pool.regressors.empty() || pool.members.empty())
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "mined-v1 needs --pool with at least one regressor and one member "
+                        "(Ruling E-32a); " + pool.path + " has " +
+                            std::to_string(pool.regressors.size()) + " and " +
+                            std::to_string(pool.members.size())));
   return co::Ok();
 }
 
@@ -344,6 +360,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     ATX_TRY(const auto anchor, registry_anchor(cfg));
     ATX_TRY(const auto geometry, ResearchRole::geometry(cfg.role));
     ATX_TRY(const auto pool_manifest, read_mine_pool_manifest(cfg.pool_path, cfg.pool_sha256));
+    ATX_TRY_VOID(check_pool(pool_manifest));
     MineFootprint footprint;
     footprint.dates = geometry.dates;
     footprint.names = geometry.instruments;
@@ -608,7 +625,7 @@ constexpr const char *kUsage =
     "    --role-fields-sha256 SHA] --fields NAME[,NAME...] --discover-begin YYYY-MM-DD\n"
     "    --discover-end YYYY-MM-DD --confirm-begin YYYY-MM-DD --confirm-end YYYY-MM-DD\n"
     "    --registry PATH [--registry-head FILE] --campaign-id ID --output NEWDIR --budget N\n"
-    "    [--pool MANIFEST --pool-sha256 SHA] [--seed N (1)] [--workers N (1)]\n"
+    "    --pool MANIFEST --pool-sha256 SHA [--seed N (1)] [--workers N (1)]\n"
     "    [--stage2-seeds N (12)] [--stage2-population N (24)] [--stage2-generations N (4)]\n"
     "    [--race-strides S[,S] (4) | none] [--race-keep F (0.333)] [--min-names N (50)]\n"
     "    [--min-dates N (128)] [--max-promotions N (16)] [--max-memory-mib N (2048)]\n"
@@ -616,7 +633,8 @@ constexpr const char *kUsage =
     "  owner decision OD-7). Windows lie inside TRAIN of research-window-v2; a role with a\n"
     "  session at or after the seal is refused. --budget N fixes the campaign's trial budget in\n"
     "  advance (pre-registration rule 10): N covers the templates plus the stage-2 population\n"
-    "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N. Writes\n"
+    "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N. --pool is\n"
+    "  required and names at least one regressor and one member (Ruling E-32a). Writes\n"
     "  NEWDIR/campaign.json, trials.csv, mined_members.json, ledger_line.json and\n"
     "  registry_head.txt (rule mined-v1).\n";
 } // namespace

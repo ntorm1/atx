@@ -202,6 +202,7 @@ struct Fixture {
   Directory dir;
   std::string role_sha, fields_sha, pool_sha;
   bool ok{};
+  Json pool_files = Json::object(); // the pool payloads: name -> {bytes, sha256}
   Fixture() {
     if (dir.path.empty()) return;
     const World world;
@@ -236,20 +237,29 @@ struct Fixture {
   bool write_pool(const World &world) {
     const auto pool = dir.path / "pool";
     if (!fs::create_directory(pool)) return false;
-    Json files = Json::object();
-    if (!payload(pool, files, "book.f64", world.book) || !payload(pool, files, "m1.f64", world.m1))
+    if (!payload(pool, pool_files, "book.f64", world.book) ||
+        !payload(pool, pool_files, "m1.f64", world.m1))
       return false;
-    const auto row = [&files](const char *name) {
-      const std::string file = std::string(name) + ".f64";
-      return Json{{"name", name}, {"file", file}, {"sha256", files[file]["sha256"]},
-                  {"bytes", files[file]["bytes"]}};
+    return write_pool_manifest("manifest.json", {"book"}, {"m1"}, pool_sha);
+  }
+  // An atx.mine-pool/v1 manifest `name` in the pool directory over the payloads written there.
+  bool write_pool_manifest(const std::string &name, const std::vector<std::string> &regressors,
+                           const std::vector<std::string> &members, std::string &sha) const {
+    const auto rows = [this](const std::vector<std::string> &names) {
+      Json out = Json::array();
+      for (const std::string &row : names) {
+        const std::string file = row + ".f64";
+        out.push_back(Json{{"name", row}, {"file", file},
+                           {"sha256", pool_files.at(file).at("sha256")},
+                           {"bytes", pool_files.at(file).at("bytes")}});
+      }
+      return out;
     };
-    return json_file(pool / "manifest.json",
+    return json_file(dir.path / "pool" / name,
                      {{"schema", "atx.mine-pool/v1"}, {"status", "complete"},
                       {"role_manifest_sha256", role_sha}, {"dates", D}, {"instruments", N},
-                      {"regressors", Json::array({row("book")})},
-                      {"members", Json::array({row("m1")})}},
-                     pool_sha);
+                      {"regressors", rows(regressors)}, {"members", rows(members)}},
+                     sha);
   }
   st::MineConfig config(const std::string &tag, u64 seed, usize workers) const {
     st::MineConfig cfg;
@@ -622,6 +632,39 @@ TEST(StrategyMineCampaign, RefusesAMissingBudgetOrOneBelowTheCapacity) {
   }
   cfg.stage2_generations = 0; // no stage 2: the templates alone
   EXPECT_EQ(st::mine_trial_capacity(cfg), templates);
+}
+
+// Ruling E-32a (review MINE-7): mined-v1 reads the book. A campaign without --pool, or with a
+// pool that names no member or no regressor, is refused before any payload and writes nothing.
+TEST(StrategyMineCampaign, RefusesACampaignWithoutTheBook) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  std::ostringstream progress;
+  auto cfg = f.config("nopool", 1, 1);
+  cfg.pool_path.clear();
+  cfg.pool_sha256.clear();
+  const auto missing = st::run_mine(cfg, progress);
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().message().find("mined-v1 needs --pool"), std::string::npos)
+      << missing.error().to_string();
+  EXPECT_FALSE(fs::exists(cfg.output_directory));
+  EXPECT_FALSE(fs::exists(cfg.registry_path));
+  const auto refused = [&](const std::string &manifest, const std::vector<std::string> &regressors,
+                           const std::vector<std::string> &members) {
+    std::string sha;
+    ASSERT_TRUE(f.write_pool_manifest(manifest, regressors, members, sha)) << manifest;
+    cfg.pool_path = (f.dir.path / "pool" / manifest).string();
+    cfg.pool_sha256 = sha;
+    const auto status = st::run_mine(cfg, progress);
+    ASSERT_FALSE(status) << manifest;
+    EXPECT_NE(status.error().message().find("at least one regressor and one member"),
+              std::string::npos)
+        << status.error().to_string();
+    EXPECT_FALSE(fs::exists(cfg.output_directory)) << manifest;
+    EXPECT_FALSE(fs::exists(cfg.registry_path)) << manifest;
+  };
+  refused("no-member.json", {"book"}, {});
+  refused("no-regressor.json", {}, {"m1"});
 }
 
 // Research window: a role with a session on 2024-01-02 is refused from its manifest, before any

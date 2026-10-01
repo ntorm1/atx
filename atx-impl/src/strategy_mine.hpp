@@ -38,6 +38,11 @@
 // no search can exceed it; the mined-v1 hurdle is computed from N, never from the realised or
 // the registry's count, so neither a fresh registry nor a small search lowers it. campaign.json
 // and the ledger line carry N.
+//
+// Pool (Ruling E-32a; review MINE-7): --pool is mandatory and its manifest names at least one
+// regressor and one member, checked from the manifest before any payload. Without the book the
+// marginal t is the raw IC t and the rho check meets no member, so mined-v1 would admit a copy of
+// the book (the case Ruling E-32 exists for): no pool, no campaign.
 #include <iosfwd>
 #include <span>
 #include <string>
@@ -51,7 +56,7 @@ namespace atx::impl::strategy {
 
 struct MineConfig {
   ResearchRoleSpec role;            // role.fields: the fields mined (base or pinned extras)
-  std::string pool_path, pool_sha256; // optional atx.mine-pool/v1 manifest
+  std::string pool_path, pool_sha256; // required atx.mine-pool/v1 manifest (Ruling E-32a)
   // YYYY-MM-DD, [begin, end): chronological, non-overlapping, inside TRAIN.
   std::string discover_begin, discover_end, confirm_begin, confirm_end;
   std::string registry_path;      // the campaign's trial registry (created when absent)
