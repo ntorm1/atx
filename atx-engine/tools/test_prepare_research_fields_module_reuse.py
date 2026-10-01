@@ -163,7 +163,7 @@ class ModuleReuse(unittest.TestCase):
         options = dict(fx.hold)
         moved = hold.dt.date(hold.SEAL.year + 1, 1, 1)
         moved_ns = (moved - hold.EPOCH).days * hold.DAY_NS
-        for name in hold.HOLD_FIELDS:
+        for name in HOLD_V9:   # the recipe's holdings fields (LIB2's exch_up_365d is a v12 field, not in RECIPE)
             e = entry(prior, name)
             self.assertEqual(e["seal_date"], hold.SEAL.isoformat(), name)
             self.assertEqual(hold.reuse_inputs(name, options), hold.entry_inputs(e), name)   # same seal: same pins
@@ -178,7 +178,7 @@ class ModuleReuse(unittest.TestCase):
         with mock.patch.object(hold, "SEAL", moved), mock.patch.object(hold, "SEAL_NS", moved_ns):
             again = fx.run("seal-moved", fields=RECIPE, reuse=fx.base / "full")
         block = again["reuse"]
-        holdings = list(hold.HOLD_FIELDS)
+        holdings = list(HOLD_V9)
         self.assertEqual(block["computed"], holdings)
         self.assertEqual(block["reused"], [x for x in RECIPE if x not in hold.HOLD_FIELDS])
         for name in holdings:

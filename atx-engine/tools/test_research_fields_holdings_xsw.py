@@ -298,7 +298,8 @@ class Reuse(unittest.TestCase):
             self.assertEqual((again["reuse"]["reused"], again["reuse"]["computed"]), ([FIELD], []))
             self.assertEqual(again["files"], first["files"])
             e = next(x for x in again["fields"] if x["name"] == FIELD)
-            self.assertEqual(e["reused_from"]["inputs"], {"security_master": w.stage_sha})
+            # its stage pin and, like every holdings kind (FIX-2 review N-1; build_xsw drops rows at or after it), the seal
+            self.assertEqual(e["reused_from"]["inputs"], {"security_master": w.stage_sha, "seal": hold.SEAL.isoformat()})
             # another security_master stage (pin) recomputes the field
             other = w.base / "security_master_2"
             rows = world_rows() + [(101, dt.date(2021, 8, 30), mark(dt.date(2021, 8, 30)), "NYSE")]
