@@ -432,6 +432,8 @@ def load_resid_parent(args) -> dict | None:
     if path is None:
         return None
     require(getattr(args, "theme_resid", None) is not None, "--theme-resid-parent needs --theme-resid")
+    require(not pooled(args), "--theme-resid-parent checks a single-window re-fit against the parent cell's file; the "
+                              "pooled (era) fit never takes it")
     weights = pinned_bytes(Path(path), pin, "--theme-resid-parent")
     doc = unique_json(weights, "--theme-resid-parent")
     provenance = doc.get("provenance") if isinstance(doc, dict) else None

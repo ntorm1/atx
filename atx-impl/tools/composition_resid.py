@@ -162,6 +162,12 @@ def _text(value) -> str:
     return json.dumps(value, sort_keys=True, allow_nan=False)
 
 
+def _differing(a: dict, b: dict, prefix: str = "") -> list[str]:
+    """The keys of ``a`` and ``b`` present in only one of them or with different canonical JSON values."""
+    return [f"{prefix}{k}" for k in sorted(set(a) | set(b))
+            if k not in a or k not in b or _text(a[k]) != _text(b[k])]
+
+
 def parent_check(document: dict, admission: bytes, parent: bytes, parent_admission: bytes,
                  error: type[Exception] = ResidError) -> None:
     """Finding R6B-O-5: R-11's weights are a re-fit of its parent cell's argv plus the block, so ``document`` (the
@@ -188,15 +194,13 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
     for doc in (child_adm, mother_adm):
         if isinstance(doc.get("inputs"), dict):
             doc["inputs"].pop("script_sha256", None)
-    adm_differ = sorted(k for k in set(child_adm) | set(mother_adm) if _text(child_adm.get(k)) != _text(mother_adm.get(k)))
+    adm_differ = _differing(child_adm, mother_adm)
     _require(not adm_differ, f"{RULE_ID}: --theme-resid-parent: the re-fit's admission.json differs from the parent's "
                              f"beyond inputs.script_sha256 (keys {adm_differ})", error)
     for doc in (child, mother):
         doc["provenance"].pop("admission_sha256", None)
-    differ = sorted({k for k in set(child) | set(mother) if k != "provenance" and
-                     _text(child.get(k)) != _text(mother.get(k))} |
-                    {f"provenance.{k}" for k in set(child["provenance"]) | set(mother["provenance"])
-                     if _text(child["provenance"].get(k)) != _text(mother["provenance"].get(k))})
+    differ = sorted([k for k in _differing(child, mother) if k != "provenance"] +
+                    _differing(child["provenance"], mother["provenance"], "provenance."))
     _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus the "
                          f"block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
 
@@ -227,7 +231,8 @@ def apply(args, document: dict, summary: dict, registered, error: type[Exception
         return
     attach(document, registered, error)
     if parent is not None:
-        _require(admission is not None, f"{RULE_ID}: --theme-resid-parent needs the re-fit's admission table", error)
+        if admission is None:
+            raise error(f"{RULE_ID}: --theme-resid-parent needs the re-fit's admission table")
         parent_check(document, admission, parent["weights"], parent["admission"], error)
         document["provenance"]["resid"].update(parent_weights_sha256=parent["sha256"], parent_check=PARENT_CHECK)
         summary["theme_residualise_parent_sha256"] = parent["sha256"]

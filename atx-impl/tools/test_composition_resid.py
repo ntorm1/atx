@@ -430,8 +430,9 @@ class FitterEndToEnd(unittest.TestCase):
         self.assertNotEqual(moved["admission_sha256"], before["admission_sha256"])
 
     def test_a_re_fit_that_is_not_the_parent_cells_file_is_refused(self):
-        """Finding R6B-O-5: another composition's file, a parent whose weights or admission were changed, a parent that
-        already carries the block, a wrong pin and incomplete flags are refused before any output."""
+        """Finding R6B-O-5: another composition's file, a parent whose weights or admission were changed, a parent with
+        a key the re-fit lacks (even a null one), a parent that already carries the block, a wrong pin, a pooled (era)
+        fit and incomplete flags are refused before any output."""
         parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
         tampered = self.root / "tampered"
         tampered.mkdir()
@@ -448,11 +449,19 @@ class FitterEndToEnd(unittest.TestCase):
         doc = json.loads(parent.read_bytes())
         doc["provenance"]["admission_sha256"] = hashlib.sha256(fcw.canonical_bytes(adm)).hexdigest()
         (moved / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
+        extra = self.root / "extra-null"                                   # a key the re-fit lacks, even as null
+        extra.mkdir()
+        doc = json.loads(parent.read_bytes())
+        doc["provenance"]["note"] = None
+        (extra / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
+        (extra / fcw.OUTPUT_ADMISSION).write_bytes((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
         cases = [("other-rule", self.root / cis.RULE_ID / fcw.OUTPUT_WEIGHTS, {}, "is not the parent cell's"),
                  ("tampered", tampered / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['weights'"),
                  ("moved", moved / fcw.OUTPUT_WEIGHTS, {}, r"admission.json differs .*\['rules'\]"),
+                 ("extra-null", extra / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['provenance.note'\]"),
                  ("resid-parent", self.root / "resid" / fcw.OUTPUT_WEIGHTS, {}, "already carries theme_residualise"),
-                 ("bad-pin", parent, {"sha": "0" * 64}, "SHA-256 pin differs")]
+                 ("bad-pin", parent, {"sha": "0" * 64}, "SHA-256 pin differs"),
+                 ("pooled", parent, {"era_id": "E3"}, "the pooled .era. fit never takes it")]
         for name, path, extra, needle in cases:
             with self.subTest(name), self.assertRaisesRegex(fcw.FitError, needle):
                 self.resid_fit(f"refused-{name}", path, **extra)
