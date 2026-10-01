@@ -63,7 +63,7 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
     const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
-    bool themed=false,bool standardised=false) {
+    bool themed=false,std::string_view standardised={}) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -125,8 +125,10 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   // inside its theme (per name and date); signal_semantics stays admissible to the
   // replay consumers and this key (absent otherwise) states the redistribution.
   if (themed) manifest["composition_redistribution"]=theme_redistribution_rule;
-  // Same for ew-theme-std-v1 with rerank on (absent otherwise, and with rerank off).
-  if (standardised) manifest["composition_standardise"]=theme_standardise_rule;
+  // Same for a theme_standardise rule with rerank on (absent otherwise, and with rerank off):
+  // ew-theme-std-v1, or ic-shrink-v1 / ic-shrink-aim-v1 (platform v8 R-10; the same per-date
+  // standardisation).
+  if (!standardised.empty()) manifest["composition_standardise"]=std::string(standardised);
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -235,11 +237,13 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 }
 // `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
 // `themes`: pinned themes under `rule` (empty = none; redistribute: ew-theme-v6,
-// standardise: ew-theme-std-v1).
+// standardise: ew-theme-std-v1's per-date rule, run for the theme_standardise rule `std_rule`
+// that the combined manifest records).
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
     const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
     std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
-    std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute) {
+    std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute,
+    std::string_view std_rule=theme_standardise_rule) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -490,7 +494,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto save_started=std::chrono::steady_clock::now();
     const bool themed=!themes.empty();
     ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
-        !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,themed && rule==IcThemeRule::standardise));
+        !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,
+        (themed && rule==IcThemeRule::standardise)?std_rule:std::string_view{}));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -646,7 +651,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       }
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
-    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),!pinned.std_themes.empty());
+    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),pinned.standardise_rule());
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -687,7 +692,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     for (const auto& role:roles) {
       auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress,pinned.composition_themes(),
-          pinned.theme_rule());
+          pinned.theme_rule(),pinned.standardise_rule());
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -757,6 +762,9 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    keeps a missing member's mass inside its theme per name and date; or optional theme_standardise\n"
                "    {rule: ew-theme-std-v1, rerank: true|false, themes: {id: theme}} re-ranks each theme's weighted rank\n"
                "    sum per date and adds W_theme times that rank (rerank false: the plain pinned blend, bit for bit);\n"
+               "    rule ic-shrink-v1 (rerank true) runs the same and adds ic_shrink {intensity, floor, members: {id:\n"
+               "    {theme, ic}}}: the weights must be that rule on those inputs (verified before any payload);\n"
+               "    rule ic-shrink-aim-v1 likewise, each member also carrying the parent's aim gain {theme, ic, gain};\n"
                "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none.\n";
         return 0;
       }

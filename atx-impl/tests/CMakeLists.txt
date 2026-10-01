@@ -96,6 +96,9 @@ add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
     strategy_ic_composition_test.cpp
     strategy_ic_runner_test.cpp
     strategy_marginal_ic_test.cpp
+    # platform v8 R-10: composition ic-shrink-v1 (the rule and its engine kernel)
+    strategy_ic_shrink_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_group_shrink_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_screen_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_research_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_marginal_rank_ic_test.cpp")

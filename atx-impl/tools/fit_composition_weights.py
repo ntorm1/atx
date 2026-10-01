@@ -193,6 +193,7 @@ import record_store  # noqa: E402
 from engine_tools import research_window as rw  # noqa: E402  TRAIN and the seal (research_window.json)
 import horizon_stats  # noqa: E402  (same directory: the report-only traded-horizon statistics, v8 C-2)
 import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pure functions in this directory)
+import composition_ic_shrink  # noqa: E402  (v8 R-10: composition ic-shrink-v1, pure functions in this directory)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -226,7 +227,12 @@ PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_rules.STD_
 # the member cap 1/(2T), composition_rules.ew_theme_aim_v2 (the code of ew-theme-std-aim-v1); ew-theme-aim-v1 keeps v5.
 AIM_V2_RULE_ID = composition_rules.AIM_V2_RULE_ID
 PRIOR_COMPOSITIONS, COMPOSITIONS = PRIOR_COMPOSITIONS + (AIM_V2_RULE_ID,), COMPOSITIONS + (AIM_V2_RULE_ID,)
+PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.RULE_ID,),  # v8 R-10, Ruling E-38
+                                    COMPOSITIONS + (composition_ic_shrink.RULE_ID,))
+PRIOR_COMPOSITIONS, COMPOSITIONS = (PRIOR_COMPOSITIONS + (composition_ic_shrink.AIM_RULE_ID,),  # R-10 on an aim
+                                    COMPOSITIONS + (composition_ic_shrink.AIM_RULE_ID,))      # parent, Ruling E-44
 AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID, AIM_V2_RULE_ID)  # the compositions that read aim gains
+AIM_RULES += (composition_ic_shrink.AIM_RULE_ID,)  # v8 R-10's aim variant (Ruling E-44)
 # v8 H-1 + Ruling E-35: the compositions the pooled (era) fit implements, each by the single-window code on the pooled
 # decisions (E-35a adds ew-theme-aim-v1, by Ruling E-27a's definition: ``pooled_aim_weights``). Any other id is refused
 # by name: never a fall-back to another rule.
@@ -2313,6 +2319,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         weights, theme_table = composition_rules.ew_theme_aim_v2([ids[k] for k in active], [themes[k] for k in active],
                                                                  gains, error=FitError)
         composition_text, fit_series = composition_rules.AIM_V2_TEXT, composition_rules.AIM_V2_FIT_SERIES
+    elif args.composition in composition_ic_shrink.RULES:  # v8 R-10: the admission rows' train_mean are the ICs
+        std = composition_ic_shrink.ic_shrink([ids[k] for k in active], [themes[k] for k in active],
+                                              [rows[k]["train_mean"] for k in active], error=FitError,
+                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
+        weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
     else:
         require(args.composition == EW_THEME_RULE_ID,  # Ruling E-35: nothing falls back to ew-theme-v1
                 f"fit: --composition {args.composition} has no prior weight rule")
@@ -2383,6 +2394,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                                      priors["recipe_sha256"])
     if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
         composition_rules.attach_std(document, std)
+    if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
+        composition_ic_shrink.attach(document, std)
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)

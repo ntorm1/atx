@@ -1,0 +1,19 @@
+{
+  "about": "Composition rule ic-shrink-aim-v1 (platform v8 R-10 on an aim parent, fix round 1, Ruling E-44; the E-27a gains mechanism). Shared by atx-impl/tests/strategy_ic_shrink_test.cpp (the C++ rule, IcShrinkAimV1.*) and atx-impl/tools/test_composition_ic_shrink.py (the fitter's rule): both must reproduce these exact fractions [numerator, denominator] to 1e-15, so the Python fitter equals the C++ rule on this fixture. Derivation (T = 2 themes, cap 1/4, intensity 1/2, floor 0): value ic {.003, .001, .002}, mean 1/500, shrunk {1/400, 3/2000, 1/500}, shares {5/12, 1/4, 1/3}; momentum {.004, .002, -.003}, mean 1/1000, shrunk {1/400, 3/2000, -1/1000}, floored shares {5/8, 3/8, 0}. Gains g {.6, .5, .8 | .9, 1, .8}: share x g = {1/4, 1/8, 4/15 | 9/16, 3/8, 0}, theme sums 77/120 and 15/16, w = share x g / (2 x theme sum) = {15/77, 15/154, 16/77 | 3/10, 1/5, 0} (each theme 1/2). b1 = 3/10 is above 1/4, capped; its excess 1/20 goes to the three value members pro rata (their mass 1/2): each x 11/10. One capping pass. Without the gains the rule gives {15/64, 9/64, 3/16 | 1/4, 3/16, 0} (ic-shrink-v1).",
+  "intensity": 0.5,
+  "floor": 0.0,
+  "theme_order": ["value", "momentum"],
+  "cap": [1, 4],
+  "cap_passes": 1,
+  "equal_share_themes": [],
+  "capped": ["b1"],
+  "members": [
+    {"id": "a1", "theme": "value", "ic": 0.003, "gain": 0.6, "shrunk": [1, 400], "share": [5, 12], "weight_before_cap": [15, 77], "weight": [3, 14]},
+    {"id": "a2", "theme": "value", "ic": 0.001, "gain": 0.5, "shrunk": [3, 2000], "share": [1, 4], "weight_before_cap": [15, 154], "weight": [3, 28]},
+    {"id": "a3", "theme": "value", "ic": 0.002, "gain": 0.8, "shrunk": [1, 500], "share": [1, 3], "weight_before_cap": [16, 77], "weight": [8, 35]},
+    {"id": "b1", "theme": "momentum", "ic": 0.004, "gain": 0.9, "shrunk": [1, 400], "share": [5, 8], "weight_before_cap": [3, 10], "weight": [1, 4]},
+    {"id": "b2", "theme": "momentum", "ic": 0.002, "gain": 1.0, "shrunk": [3, 2000], "share": [3, 8], "weight_before_cap": [1, 5], "weight": [1, 5]},
+    {"id": "b3", "theme": "momentum", "ic": -0.003, "gain": 0.8, "shrunk": [-1, 1000], "share": [0, 1], "weight_before_cap": [0, 1], "weight": [0, 1]}
+  ],
+  "ic_shrink_v1_weights": [[15, 64], [9, 64], [3, 16], [1, 4], [3, 16], [0, 1]]
+}

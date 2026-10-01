@@ -44,7 +44,9 @@ inline constexpr f64 quiet_nan=std::numeric_limits<f64>::quiet_NaN();
 inline constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-member-mask";
 // ew-theme-v6 (v4-prereg v6 revision V6-W): the only admitted theme_redistribution rule.
 inline constexpr const char* theme_redistribution_rule="within-theme-v1";
-// ew-theme-std-v1 (platform v8 R-1): the only admitted theme_standardise rule.
+// ew-theme-std-v1 (platform v8 R-1): the theme_standardise rule whose per-date standardisation
+// every row of the rule table runs (strategy_ic_admission.cpp; platform v8 R-10 adds ic-shrink-v1
+// and its aim variant ic-shrink-aim-v1).
 inline constexpr const char* theme_standardise_rule="ew-theme-std-v1";
 inline constexpr const char* fields_schema="atx.research-role-fields/v1";
 inline constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";
@@ -148,6 +150,12 @@ struct PinnedWeights {
   }
   [[nodiscard]] usize composition_theme_count() const noexcept {
     return std_themes.empty()?theme_count:std_theme_count;
+  }
+  // The theme_standardise rule the composition runs under ("" unless standardised, i.e. a block
+  // with rerank true; then `standardise` is exactly the block's rule), recorded by the recipe and
+  // the combined manifest. A view of `standardise`: valid while this object lives unchanged.
+  [[nodiscard]] std::string_view standardise_rule() const noexcept {
+    return std_themes.empty()?std::string_view{}:std::string_view(standardise);
   }
 };
 // ---- Candidate signal cache (layout: strategy_ic_signal_cache.cpp) ----------
@@ -258,8 +266,9 @@ co::Status check_field_extents(const Role& spec);
 co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& meter,
                          std::vector<std::optional<FileStamp>>& verified);
 // ---- strategy_ic_admission.cpp -----------------------------------------------
+// `standardised`: the theme_standardise rule of a standardised composition ("" none).
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false,
-                   bool standardised=false);
+                   std::string_view standardised={});
 Json fields_recipe(Json pins,const Library& lib);
 Json fields_pins(const IcRunnerConfig& cfg);
 bool fields_pinned(const IcRunnerConfig& cfg);
