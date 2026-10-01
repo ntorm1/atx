@@ -139,10 +139,12 @@ struct FrozenTrain {
 // pinned-weights path, the ew-theme-v1 blend bit for bit); `standardise` records a present
 // block for the summary ("" absent; else the rule, suffixed ";rerank-off" when off).
 // `residualise`: a theme_residualise block (theme-resid-v1, v8 R-11) rides on that rerank-true
-// block; std_themes are then each theme's position in the block's registered order.
+// block; std_themes are then each theme's position in the block's registered order, and
+// `residualise_order` that order (the recipe and the combined manifest record it; empty: no block).
 struct PinnedWeights {
   std::vector<f64> values; std::vector<int> signs; Json provenance; std::vector<usize> themes; usize theme_count{};
   std::vector<usize> std_themes; usize std_theme_count{}; std::string standardise; bool residualise{};
+  std::vector<std::string> residualise_order;
   // What the composition and admission receive: the standardised themes under their rule,
   // else the (possibly empty) within-theme-v1 themes under redistribute.
   [[nodiscard]] IcThemeRule theme_rule() const noexcept {
@@ -271,9 +273,12 @@ co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& met
                          std::vector<std::optional<FileStamp>>& verified);
 // ---- strategy_ic_admission.cpp -----------------------------------------------
 // `standardised`: the theme_standardise rule of a standardised composition ("" none);
-// `residualised`: the composition also runs theme-resid-v1 (v8 R-11).
+// `residualised`: the theme order of theme-resid-v1 (v8 R-11) when the composition also runs it
+// (empty: it does not).
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false,
-                   std::string_view standardised={},bool residualised=false);
+                   std::string_view standardised={},std::span<const std::string> residualised={});
+// The JSON array of a theme order (the recipe's and the combined manifest's record of theme-resid-v1).
+Json theme_order_json(std::span<const std::string> order);
 Json fields_recipe(Json pins,const Library& lib);
 Json fields_pins(const IcRunnerConfig& cfg);
 bool fields_pinned(const IcRunnerConfig& cfg);

@@ -28,8 +28,13 @@ constexpr const char* theme_redistribution_composition="ew-theme-v6";
 constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by-name;NaN-where-not-visible;"
     "role-presence-mask;decision-member-mask-unchanged";
 } // namespace
+Json theme_order_json(std::span<const std::string> order) {
+  Json out=Json::array();
+  for (const auto& theme:order) out.push_back(theme);
+  return out;
+}
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed,
-                   std::string_view standardised,bool residualised) {
+                   std::string_view standardised,std::span<const std::string> residualised) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -73,8 +78,12 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
           "centered-tied-rank;theme-weighted-rank-sum-missing-neutral;"
           "theme-rerank-centered-tied-over-names-with-a-present-member;theme-weight-sum-of-member-weights";
       recipe["composition_standardise"]=std::string(standardised);
-      // theme-resid-v1 (v8 R-11) on top of it; absent otherwise, so the bytes above are unchanged.
-      if (residualised) recipe["composition_residualise"]=theme_residualise_rule;
+      // theme-resid-v1 (v8 R-11) on top of it, with its theme order (finding R6B-O-4); absent
+      // otherwise, so the bytes above are unchanged.
+      if (!residualised.empty()) {
+        recipe["composition_residualise"]=theme_residualise_rule;
+        recipe["composition_residualise_order"]=theme_order_json(residualised);
+      }
     }
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }

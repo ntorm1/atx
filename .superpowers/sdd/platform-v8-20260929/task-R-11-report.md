@@ -168,7 +168,10 @@ stands except where this amendment replaces it.
 
 Implementation: C++ `strategy_ic_theme_resid.cpp` `mean_over_tie_blocks` (in `add_theme`, after the residual, before the
 re-rank); Python reference `composition_resid.tie_block_means` (in `add_session`), the same expression in the same
-summation order. Fixtures: the existing three-theme fixture has a tied composite (theme b ties names 2 / 4 and 5 / 6 on
+summation order. The runner holds a copy of the registered order (`strategy_ic_theme_resid.hpp` `theme_resid_order`: the
+ten, then `filing_events`), refuses a weighted theme outside it and any `order` other than it restricted to the weighted
+themes, and records the order in the recipe and the combined manifest (`composition_residualise_order`; finding
+R6B-O-4); `test_composition_resid.py` pins the copy against `PRIOR_THEMES`. Fixtures: the existing three-theme fixture has a tied composite (theme b ties names 2 / 4 and 5 / 6 on
 dates 0 and 1), so its dates 0 and 1 changed and date 2 kept its values; new kernel fixtures pin a sparse flag theme
 and a three-level theme (`ThemeResid.TiedCompositeStaysTiedAfterResidualisation`, Python
 `test_tied_composite_stays_tied_after_residualisation`) and the no-tie bit identity
