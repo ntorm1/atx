@@ -1,4 +1,5 @@
-"""Resume check of a done NAV output (platform v8 review W1-C, C-13), used by research_cycle.run_cycle.
+"""Resume check of a done NAV output (platform v8 review W1-C, C-13; the ref phase's too, review F-6), used by
+research_cycle.run_cycle.
 
 A NAV step is done when its output has summary.json; resume then scores it (summ). Before this check nothing tied that
 output to the spec being run: a spec re-locked after its library or weights changed, output names unchanged, bound
@@ -57,8 +58,10 @@ def file_digest(cycle) -> str | None:
 
 
 def write_binding(cycle, st) -> dict:
-    """<run dir>/cycle_binding.json of a NAV step this invocation ran (review C-13)."""
-    doc = {"schema": SCHEMA, "output": st.output, "spec_sha256": spec_digest(cycle)}
+    """<run dir>/cycle_binding.json of a NAV step this invocation ran (review C-13): the cell (nav) binds its spec
+    digest and argv; the reference construction (ref, review F-6) its argv only, since its identity compare depends on
+    nothing else and a spec edit elsewhere must not force it to run again."""
+    doc = {"schema": SCHEMA, "output": st.output, "spec_sha256": spec_digest(cycle) if st.phase == "nav" else None}
     if doc["spec_sha256"] is not None:
         doc["spec_rule"] = SPEC_RULE
     doc["argv_sha256"] = argv_digest(step_args(st))

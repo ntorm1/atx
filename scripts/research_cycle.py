@@ -38,7 +38,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   SHA-256); a done NAV is scored only when its spec digest matches the current spec's AND its argv
                   digest (from the binding or its receipt's command) the NAV command the spec runs now (review F-9: a
                   template's spec digest, also the verdict's spec_sha256, covers every parent up its chain,
-                  research_spec.spec_digest): a mismatch is a pin stop (exit 3) naming both
+                  research_spec.spec_digest): a mismatch is a pin stop (exit 3) naming both; the ref phase's NAV
+                  records and is checked on its argv digest alone (review F-6)
   admission lines (review C-7) the gate of a v8 cycle with a ledger first appends one chained admission line per
                   listed candidate (cycle_admission.py): the ledger's admission trials of v8 Appendix A
   summ.origin     (review C-2) prior | grid | mined, the cell's origin class (contract K5). A v8 scoring step (a
@@ -1582,8 +1583,8 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase == "nav":           # review C-13: scored only when made from this spec
-                try:
+            if st.phase in ("nav", "ref"):  # review C-13: scored only when made from this spec (F-6: ref compared
+                try:                        # only when made by the NAV command the spec runs now)
                     log(f"   binding: {cycle_resume.check_binding(cycle, st)}")
                 except cycle_resume.ResumeError as exc:
                     raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
@@ -1635,7 +1636,7 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase == "nav":           # review C-13: what a later resume checks before scoring it
+            if st.phase in ("nav", "ref"):  # review C-13 (F-6: ref too): what a later resume checks
                 cycle_resume.write_binding(cycle, st)
             if st.phase == "summ":
                 copy_ledger(cycle, log)
