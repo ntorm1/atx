@@ -39,32 +39,42 @@ evaluate_signals(const al::Panel &panel, std::span<const u8> mask,
 
 // Rows: the pool members, the candidates kept so far (`held`), then `batch`; each ranked over the
 // decision members on every discover decision row. The batch is checked greedily against every
-// earlier row (mined_rho_select), at most `slots` of it passing.
+// earlier row (mined_rho_select), at most `slots` of it passing. Lane MINE-JOIN: the members are
+// streamed date by date from their pinned payloads (stream_mine_pool_members, every payload
+// verified), so one date of each is held and never a whole panel; each discover date is ranked and
+// added exactly as by the in-memory pass -- the same row bytes, the same rows in the same order,
+// the dates ascending -- so every pair's sums are bit for bit the same.
 co::Result<std::vector<MinedRho>> rho_check(const PromotionContext &context,
                                             const std::vector<std::vector<f64>> &held,
                                             const std::vector<std::vector<f64>> &batch,
                                             usize slots) {
-  const std::vector<MinePoolColumn> &members = context.pool->members;
-  const usize fixed = members.size() + held.size();
+  const usize members = context.pool->members.size();
+  const usize fixed = members + held.size();
   const usize rows = fixed + batch.size();
   const usize names = context.role->panel().instruments();
-  const std::span<const u8> member = context.role->member();
-  std::vector<std::span<const f64>> sources;
-  for (const MinePoolColumn &column : members) sources.emplace_back(column.values);
-  for (const std::vector<f64> &signal : held) sources.emplace_back(signal);
-  for (const std::vector<f64> &signal : batch) sources.emplace_back(signal);
+  const std::span<const u8> membership = context.role->member();
   cb::PairwiseRowCorrelation rho(rows, context.min_names);
   std::vector<std::vector<f64>> ranks(rows, std::vector<f64>(names));
   std::vector<std::span<const f64>> views;
   for (const auto &rank : ranks) views.emplace_back(rank);
   std::vector<std::pair<f64, usize>> sorted;
-  for (usize d = context.discover->begin; d < context.discover->end; ++d) {
-    const std::span<const u8> eligible = member.subspan(d * names, names);
-    for (usize r = 0; r < rows; ++r)
-      ATX_TRY_VOID(cb::centred_tied_ranks(sources[r].subspan(d * names, names), eligible,
-                                          ranks[r], sorted));
-    ATX_TRY_VOID(rho.add_date(views));
-  }
+  // Candidate row r >= members on date d: the kept signals first, then the batch.
+  const auto candidate_row = [&held, &batch, members, fixed, names](usize r, usize d) {
+    const std::vector<f64> &signal = r < fixed ? held[r - members] : batch[r - fixed];
+    return std::span<const f64>(signal).subspan(d * names, names);
+  };
+  const auto on_date = [&ranks, &rho, &views, &sorted, &candidate_row, membership, names, members,
+                        rows](usize d, std::span<const std::span<const f64>> member_rows)
+      -> co::Status {
+    const std::span<const u8> eligible = membership.subspan(d * names, names);
+    for (usize r = 0; r < rows; ++r) {
+      const std::span<const f64> source = r < members ? member_rows[r] : candidate_row(r, d);
+      ATX_TRY_VOID(cb::centred_tied_ranks(source, eligible, ranks[r], sorted));
+    }
+    return rho.add_date(views);
+  };
+  ATX_TRY_VOID(stream_mine_pool_members(*context.pool, context.discover->begin,
+                                        context.discover->end, on_date));
   return co::Ok(mined_rho_select(rho, fixed, batch.size(), context.min_dates, slots));
 }
 

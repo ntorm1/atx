@@ -58,10 +58,11 @@
 // campaign.json's hurdle and Fc in each promotion.
 //
 // Memory (review MINE-10, lane MINE-MEM): mine_working_bytes, the peak of mine_memory's phases,
-// is checked against --max-memory-mib before any payload. The search holds no pool member (each
-// is checked before it and loaded after it, before the registry is written), the discover
-// fitness is released before the promotion, and with racing on the race and the full pass never
-// hold each other's engines. None of this changes an evaluation or its order.
+// is checked against --max-memory-mib before any payload. No pool member is ever held whole (each
+// is checked before the search and again before the registry is written, and the promotion's rho
+// check streams them date by date; lane MINE-JOIN), the discover fitness is released before the
+// promotion, and with racing on the race and the full pass never hold each other's engines. None
+// of this changes an evaluation or its order.
 #include <iosfwd>
 #include <span>
 #include <string>

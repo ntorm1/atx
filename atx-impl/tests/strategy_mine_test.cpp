@@ -849,8 +849,8 @@ TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
 // workers). Equal where the allocation is a function of the geometry -- the pool payloads, the
 // strided rung panel with its member and guard, a signal set -- and at most the term where it
 // depends on the window's rows or on the program -- an IC cache (label rows <= dates) or a VM slot
-// pool (a template's slots <= kMineMaxProgramSlots). The search holds no member: bind_mine_pool
-// leaves them to load_mine_pool_members.
+// pool (a template's slots <= kMineMaxProgramSlots). No member is ever held whole: bind_mine_pool
+// loads the regressor only, and the rho check streams one date of each member (lane MINE-JOIN).
 TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
   namespace al = atx::engine::alpha;
   Fixture f;
@@ -863,21 +863,28 @@ TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
   const al::Panel &panel = (*role)->panel();
   ASSERT_EQ(panel.cells(), D * N);
   ASSERT_EQ(panel.num_fields(), 3U + cfg.role.fields.size());
-  // The pool: the regressor now, the member after the search; each payload exactly.
+  // The pool: the regressor payload exactly; the member bound, never loaded, and streamed one date
+  // at a time over the discover rows (the rows the stream hands over are what it holds).
   const auto manifest = st::read_mine_pool_manifest(cfg.pool_path, cfg.pool_sha256);
   ASSERT_TRUE(manifest.has_value()) << manifest.error().to_string();
-  auto pool = st::bind_mine_pool(*manifest, **role);
+  const auto pool = st::bind_mine_pool(*manifest, **role);
   ASSERT_TRUE(pool.has_value()) << pool.error().to_string();
-  const auto bytes_of = [](const std::vector<st::MinePoolColumn> &columns) {
-    u64 out = 0;
-    for (const st::MinePoolColumn &column : columns) out += column.values.size() * sizeof(f64);
-    return out;
-  };
-  EXPECT_TRUE(pool->members.empty());
-  EXPECT_EQ(bytes_of(pool->regressors), memory->regressors);
-  const auto loaded = st::load_mine_pool_members(*manifest, **role, *pool);
-  ASSERT_TRUE(loaded) << loaded.error().to_string();
-  EXPECT_EQ(bytes_of(pool->members), memory->members);
+  u64 regressor_bytes = 0;
+  for (const st::MinePoolColumn &column : pool->regressors)
+    regressor_bytes += column.values.size() * sizeof(f64);
+  EXPECT_EQ(regressor_bytes, memory->regressors);
+  ASSERT_EQ(pool->members.size(), 1U);
+  u64 streamed = 0;
+  const auto stream = st::stream_mine_pool_members(
+      *pool, score_begin, kConfirmRow,
+      [&streamed](usize, std::span<const std::span<const f64>> rows) -> core::Status {
+        u64 held = 0;
+        for (const std::span<const f64> &row : rows) held += row.size() * sizeof(f64);
+        streamed = std::max(streamed, held);
+        return core::Ok();
+      });
+  ASSERT_TRUE(stream) << stream.error().to_string();
+  EXPECT_EQ(streamed, u64{1} * N * sizeof(f64));
   // The racing rung: the strided panel (every field and its universe) exactly, and with the
   // strided member and guard the fitness's bind transient exactly.
   const u32 stride = cfg.race_strides.front();
@@ -945,6 +952,84 @@ TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
   EXPECT_GT(largest, u64{0});
   EXPECT_LE(largest, memory->full_engines / cfg.workers);
   EXPECT_EQ(memory->full_engines / cfg.workers, memory->promotion_engine);
+}
+
+// Lane MINE-JOIN: the rho check's members, streamed. Every date of [begin, end) comes once and in
+// order, each member's row bit for bit as stored (the fixture's m2, then p1), so the rho step ranks
+// the bytes the whole-panel load gave it. The caller's Err ends the stream and is returned as is; a
+// range past the pool's dates is refused; and a payload changed after the bind (same extent, one
+// value) is refused when the stream ends, in load_pinned_f64's words, as the pre-write check
+// refuses it.
+TEST(StrategyMineCampaign, MembersStreamByDateAsStored) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  const fs::path pool_dir = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool_dir, f.pool_files, "p1.f64", world.p1));
+  std::string sha;
+  ASSERT_TRUE(f.write_pool_manifest("stream.json", {"book"}, {"m2", "p1"}, sha));
+  const auto cfg = f.config("stream", 1, 1);
+  const auto role = st::ResearchRole::load(cfg.role);
+  ASSERT_TRUE(role.has_value()) << role.error().to_string();
+  const auto manifest = st::read_mine_pool_manifest((pool_dir / "stream.json").string(), sha);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().to_string();
+  const auto pool = st::bind_mine_pool(*manifest, **role);
+  ASSERT_TRUE(pool.has_value()) << pool.error().to_string();
+  ASSERT_EQ(pool->members.size(), 2U);
+  EXPECT_EQ(pool->dates, D);
+  EXPECT_EQ(pool->instruments, N);
+  const std::array<const std::vector<f64> *, 2> stored{&world.m2, &world.p1};
+  std::vector<usize> seen;
+  usize differ = 0;
+  const auto compare = [&seen, &differ, &stored](usize d,
+                                                 std::span<const std::span<const f64>> rows)
+      -> core::Status {
+    seen.push_back(d);
+    if (rows.size() != stored.size()) ++differ;
+    for (usize k = 0; k < std::min(rows.size(), stored.size()); ++k) {
+      const auto got = std::as_bytes(rows[k]);
+      const auto want = std::as_bytes(std::span<const f64>(*stored[k]).subspan(d * N, N));
+      if (!std::equal(got.begin(), got.end(), want.begin(), want.end())) ++differ;
+    }
+    return core::Ok();
+  };
+  const auto status = st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, compare);
+  ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(differ, 0U);
+  ASSERT_EQ(seen.size(), kConfirmRow - score_begin);
+  for (usize k = 0; k < seen.size(); ++k) EXPECT_EQ(seen[k], score_begin + k) << k;
+  const auto ignore = [](usize, std::span<const std::span<const f64>>) -> core::Status {
+    return core::Ok();
+  };
+  usize calls = 0;
+  const auto stopped = st::stream_mine_pool_members(
+      *pool, score_begin, kConfirmRow,
+      [&calls](usize, std::span<const std::span<const f64>>) -> core::Status {
+        ++calls;
+        return core::Err(core::ErrorCode::Internal, "stop here");
+      });
+  ASSERT_FALSE(stopped);
+  EXPECT_EQ(stopped.error().message(), "stop here");
+  EXPECT_EQ(calls, 1U);
+  EXPECT_FALSE(st::stream_mine_pool_members(*pool, 0U, D + 1U, ignore));
+  EXPECT_FALSE(st::stream_mine_pool_members(*pool, kConfirmRow, score_begin, ignore));
+  EXPECT_TRUE(st::stream_mine_pool_members(*pool, score_begin, score_begin, ignore));
+  EXPECT_TRUE(st::check_mine_pool_members(*pool));
+  std::vector<f64> changed = world.p1;
+  changed[score_begin * N] += 1.0;
+  {
+    std::ofstream out(pool_dir / "p1.f64", std::ios::binary | std::ios::trunc);
+    const auto bytes = std::as_bytes(std::span<const f64>(changed));
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+  }
+  for (const auto &refused : {st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, ignore),
+                              st::check_mine_pool_members(*pool)}) {
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().message().find("mine pool payload p1 SHA256 mismatch: p1.f64"),
+              std::string::npos)
+        << refused.error().to_string();
+  }
 }
 
 // ---- rung failures (review MINE-16) -----------------------------------------------------------

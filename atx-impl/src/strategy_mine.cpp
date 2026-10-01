@@ -527,13 +527,14 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     // kMinedMinConfirmRows label rows.
     ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", kMinedMinDiscoverRows));
     ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm", kMinedMinConfirmRows));
-    // Lane MINE-MEM: the regressors now; the members checked now and loaded after the search.
+    // Lane MINE-MEM: the regressors now; the members checked now, never loaded whole (the rho
+    // check streams them date by date; lane MINE-JOIN).
     ATX_TRY(auto pool, bind_mine_pool(pool_manifest, *role));
     const usize label_rows = windows.discover.end - windows.discover.begin - kLabelLag;
     const usize confirm_rows = windows.confirm.end - windows.confirm.begin - kLabelLag;
 
     // The fitness's and the confirm read's regressors, borrowed from `pool` (whose regressor
-    // columns are never resized again: loading the members fills another vector).
+    // columns are never resized again).
     std::vector<std::span<const f64>> regressors;
     for (const auto &column : pool.regressors) regressors.emplace_back(column.values);
     // The Library outlives every genome the search keeps (their ops borrow its rows).
@@ -569,10 +570,11 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                           "under its recipe " + recipe_sha.substr(0, 16) + " (role, fields, "
                           "library, pool, discover and confirm windows): a second confirm read on "
                           "the same identity is refused"));
-    // Lane MINE-MEM: the members, which only the promotion's rho check reads, are loaded now --
-    // the search and its fitness are gone -- and before anything is written, so a member that
-    // changed since its check is refused with the registry and OUTPUT untouched.
-    ATX_TRY_VOID(load_mine_pool_members(pool_manifest, *role, pool));
+    // Lanes MINE-MEM and MINE-JOIN: the members, which only the promotion's rho check reads
+    // (streamed date by date and verified again there), are checked again now -- the search and
+    // its fitness are gone -- and before anything is written, so a member that changed during the
+    // search is refused with the registry and OUTPUT untouched.
+    ATX_TRY_VOID(check_mine_pool_members(pool));
 
     // Registry: every distinct expression once; the chain head leaves the log at once.
     const fs::path out_dir(cfg.output_directory);
