@@ -9,7 +9,9 @@ the single path's TRAIN mask drops every decision: finding 3); pooled, the prior
 Ruling E-35 (the v8 compositions ew-theme-std-v1 and ew-theme-std-aim-v1): a one-era pool of a role scored inside TRAIN
 (test_fit_composition_weights.aim_world, the R-1 fitter world of test_composition_rules) against the single-window fit
 of that role, and the two history eras pooled against composition_rules.ew_theme_std and the aim gain of the
-block-diagonal rank panel of the eras.
+block-diagonal rank panel of the eras. Ruling PM4-7 (finding R6B-C-1): the same one-era equality for ic-shrink-v1,
+ic-shrink-aim-v1 and --theme-resid theme-resid-v1 on each of its parents, and the two history eras pooled against
+composition_ic_shrink.ic_shrink on the pooled admission.
 """
 from __future__ import annotations
 
@@ -23,6 +25,8 @@ import unittest.mock
 import numpy as np
 import pytest
 
+import composition_ic_shrink as cis
+import composition_resid as cres
 import composition_rules as cr
 import fit_composition_weights as fcw
 import test_fit_composition_weights as tfw
@@ -241,6 +245,16 @@ def test_without_era_flags_the_parse_is_the_single_path(eras):
 # ------------------------------------------------------------------ Ruling E-35: the v8 compositions
 # AIM: Ruling E-27a's aim rule on an ew-theme-v1 parent, ew-theme-aim-v2 (Ruling E-27b; the pool's E-35a rule).
 STD, STD_AIM, AIM = cr.STD_RULE_ID, cr.STD_AIM_RULE_ID, cr.AIM_V2_RULE_ID
+SHRINK, SHRINK_AIM = cis.RULE_ID, cis.AIM_RULE_ID                       # R-10 (Ruling PM4-7)
+STANDARDISED = (STD, STD_AIM, SHRINK, SHRINK_AIM)                       # the parents --theme-resid rides on
+RESID = cres.RULE_ID
+
+
+def resid_key(parent: str) -> str:
+    """The train_world run key of --theme-resid theme-resid-v1 on ``parent``."""
+    return f"{parent}+{RESID}"
+
+
 # The keys a pool adds or replaces (H-1): everything else of a one-era pool is the single-window fit's.
 POOL_KEYS_WEIGHTS = (("provenance", "pool"), ("provenance", "window"), ("provenance", "admission_sha256"))
 POOL_KEYS_ADMISSION = (("pool",), ("window",), ("rules", "train_window_ns"))
@@ -263,7 +277,8 @@ def outputs(out: Path) -> dict:
 @pytest.fixture(scope="module")
 def train_world(tmp_path_factory):
     """The R-1 fitter world (test_composition_rules.FitterEndToEnd): one role scored inside TRAIN; each v8
-    composition fitted on the single window and as a one-era pool (--era-id E3), registry absent."""
+    composition fitted on the single window and as a one-era pool (--era-id E3), registry absent; --theme-resid on each
+    standardised parent too (Ruling PM4-7, key ``resid_key(parent)``)."""
     root = tmp_path_factory.mktemp("e35")
     panel, signals, ids, extra = tfw.aim_world()
     extra = dict(extra)
@@ -273,27 +288,31 @@ def train_world(tmp_path_factory):
                  candidate_extra=extra)
     runs = {}
     with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
-        for comp in (STD, STD_AIM, AIM):
-            flags = ["--orientation", "prior", "--composition", comp]
-            for kind, extra_flags in (("single", []), ("pool", ["--era-id", "E3"])):
-                out = root / f"{kind}-{comp}"
-                runs[comp, kind] = fcw.fit(fcw.parse_args(fx.argv(out, "v4-prior-v1", [*flags, *extra_flags]))) + (
-                    outputs(out),)
+        for comp in (STD, STD_AIM, AIM, SHRINK, SHRINK_AIM):
+            for key, resid in ((comp, []),) + (((resid_key(comp), ["--theme-resid", RESID]),)
+                                               if comp in STANDARDISED else ()):
+                flags = ["--orientation", "prior", "--composition", comp, *resid]
+                for kind, extra_flags in (("single", []), ("pool", ["--era-id", "E3"])):
+                    out = root / f"{kind}-{key}"
+                    runs[key, kind] = fcw.fit(fcw.parse_args(fx.argv(out, "v4-prior-v1", [*flags, *extra_flags]))) + (
+                        outputs(out),)
     return {"root": root, "fx": fx, "ids": ids, "runs": runs}
 
 
-def one_era_equals_single(t: dict, comp: str) -> tuple[dict, dict]:
-    """The one-era pool's outputs equal the single-window fit's byte for byte once the pool's own keys are removed."""
-    (c1, s1, single), (c2, s2, pooled) = t["runs"][comp, "single"], t["runs"][comp, "pool"]
+def one_era_equals_single(t: dict, run: str) -> tuple[dict, dict]:
+    """The one-era pool's outputs equal the single-window fit's byte for byte once the pool's own keys are removed
+    (``run``: a composition, or ``resid_key(parent)``)."""
+    comp = run.split("+")[0]
+    (c1, s1, single), (c2, s2, pooled) = t["runs"][run, "single"], t["runs"][run, "pool"]
     assert (c1, c2) == (fcw.EXIT_OK, fcw.EXIT_OK) and s1["composition"] == s2["composition"] == comp
     assert sorted(single) == sorted(pooled) == sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV,
                                                        fcw.OUTPUT_WEIGHTS])        # one era: no era weights file
     assert single[fcw.OUTPUT_ADMISSION_CSV] == pooled[fcw.OUTPUT_ADMISSION_CSV]
     a, b = (json.loads(x[fcw.OUTPUT_WEIGHTS]) for x in (single, pooled))
     assert fcw.canonical_bytes(without(a, POOL_KEYS_WEIGHTS)) == fcw.canonical_bytes(without(b, POOL_KEYS_WEIGHTS))
-    for key in ("schema", "weights", "signs", "theme_standardise"):             # nothing removed from these
+    for key in ("schema", "weights", "signs", "theme_standardise", cres.BLOCK):   # nothing removed from these
         assert fcw.canonical_bytes({key: a.get(key)}) == fcw.canonical_bytes({key: b.get(key)}), key
-    for key in ("std", "aim"):
+    for key in ("std", "aim", "ic_shrink", "resid"):
         assert fcw.canonical_bytes({key: a["provenance"].get(key)}) == fcw.canonical_bytes(
             {key: b["provenance"].get(key)}), key
     adm_a, adm_b = (json.loads(x[fcw.OUTPUT_ADMISSION]) for x in (single, pooled))
@@ -377,6 +396,41 @@ def test_pooled_aim_fit_over_one_era_equals_the_single_window_fit(train_world, c
     assert a["provenance"]["rule"] == b["provenance"]["rule"] == comp
 
 
+@pytest.mark.parametrize("comp", [SHRINK, SHRINK_AIM])
+def test_pooled_ic_shrink_fit_over_one_era_equals_the_single_window_fit(train_world, comp):
+    """Ruling PM4-7 (finding R6B-C-1): ic-shrink-v1 and ic-shrink-aim-v1 in the pool, through
+    composition_ic_shrink.ic_shrink on the pooled admission rows' train_mean (the variant also on the pooled aim gains,
+    as ew-theme-std-aim-v1 reads them): the one-era pool equals the single-window fit byte for byte once the pool's own
+    keys are removed, and the block records the pooled admission's ICs."""
+    a, b = one_era_equals_single(train_world, comp)
+    assert a["provenance"]["rule"] == b["provenance"]["rule"] == b["theme_standardise"]["rule"] == comp
+    assert ("aim" in b["provenance"]) == (comp == SHRINK_AIM)
+    adm = json.loads(train_world["runs"][comp, "pool"][2][fcw.OUTPUT_ADMISSION])
+    rows = {c["id"]: c for c in adm["candidates"]}
+    members = b["theme_standardise"]["ic_shrink"]["members"]
+    assert len(members) == 5 and all(m["ic"] == rows[i]["train_mean"] for i, m in members.items())
+    if comp == SHRINK_AIM:
+        assert all(m["gain"] == b["provenance"]["aim"]["gain"][i] for i, m in members.items())
+        std_aim = json.loads(train_world["runs"][STD_AIM, "pool"][2][fcw.OUTPUT_WEIGHTS])
+        assert b["provenance"]["aim"]["gain"] == std_aim["provenance"]["aim"]["gain"]
+    std = json.loads(train_world["runs"][STD, "pool"][2][fcw.OUTPUT_WEIGHTS])
+    assert b["weights"] != std["weights"]                                       # the ICs moved weight
+
+
+@pytest.mark.parametrize("parent", STANDARDISED)
+def test_pooled_theme_resid_over_one_era_equals_the_single_window_fit(train_world, parent):
+    """Ruling PM4-7 (finding R6B-C-1): --theme-resid theme-resid-v1 in the pool on each of its parents
+    (ew-theme-std-v1, ew-theme-std-aim-v1, ic-shrink-v1, ic-shrink-aim-v1), through composition_resid.apply on the
+    pooled document as in the single window: the one-era pool equals the single-window fit byte for byte once the pool's
+    own keys are removed, and the pooled file minus the block and provenance.resid is the pooled parent's file."""
+    a, b = one_era_equals_single(train_world, resid_key(parent))
+    assert b[cres.BLOCK]["rule"] == RESID and b["provenance"]["resid"]["parent_composition"] == parent
+    plain = train_world["runs"][parent, "pool"][2][fcw.OUTPUT_WEIGHTS]
+    del b[cres.BLOCK]
+    del b["provenance"]["resid"]
+    assert fcw.canonical_bytes(b) == plain
+
+
 def test_the_pooled_fit_refuses_the_v5_aim_rule_naming_v2(eras, tmp_path):
     """Ruling E-27b: ew-theme-aim-v1 keeps the v5 rule and is never pooled; the refusal names ew-theme-aim-v2 and
     happens before anything is read or written."""
@@ -395,7 +449,17 @@ def test_a_composition_the_pooled_fit_does_not_implement_is_refused_by_name(eras
     with pytest.raises(fcw.FitError, match=f"--composition {re.escape(comp)} is not implemented by the pooled fit"):
         fcw.fit(args)
     assert not (tmp_path / "o").exists()
-    assert fcw.POOLED_COMPOSITIONS == ("ew-theme-v1", AIM, "ew-theme-v6", STD, STD_AIM)
+    assert fcw.POOLED_COMPOSITIONS == ("ew-theme-v1", AIM, "ew-theme-v6", STD, STD_AIM, SHRINK, SHRINK_AIM)
+    assert fcw.POOLED_THEME_RESID == (RESID,)
+
+
+def test_a_theme_resid_rule_the_pooled_fit_does_not_implement_is_refused_by_name(eras, tmp_path):
+    """Ruling PM4-7: a --theme-resid id outside POOLED_THEME_RESID is refused by name before anything is read."""
+    args = fcw.parse_args(pooled_argv(eras, tmp_path / "o"))
+    args.composition, args.theme_resid = STD, "theme-resid-v9"
+    with pytest.raises(fcw.FitError, match="--theme-resid theme-resid-v9 is not implemented by the pooled fit"):
+        fcw.fit(args)
+    assert not (tmp_path / "o").exists()
 
 
 def test_a_prior_composition_without_a_weight_rule_never_falls_back_to_ew_theme_v1(train_world, eras, tmp_path,
@@ -457,7 +521,7 @@ def pooled_v8(tmp_path_factory):
     e2 = v8_fixture(root / "e2", 62, next_start("2014-01-01"))
     runs = {"root": root, "e1": e1, "e2": e2}
     with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
-        for comp in (STD, STD_AIM, AIM):
+        for comp in (STD, STD_AIM, AIM, SHRINK, SHRINK_AIM):
             out = root / f"P-{comp}"
             argv = e2.argv(out, "v4-prior-v1", ["--orientation", "prior", "--composition", comp, *era_argv("E1", e1),
                                                 "--era-id", "E2", "--work-dir", str(root / "work")])
@@ -529,6 +593,34 @@ def test_two_history_eras_pooled_aim_is_e27a_on_the_pooled_gains(pooled_v8):
     assert all(doc["weights"][i] == pytest.approx(want.get(i, 0.0), rel=0, abs=1e-15) for i in V8_IDS)
     assert doc["weights"] != std_aim["weights"]                                  # equal base weights, not tiers
     assert doc["provenance"]["rule"] == AIM and "theme_standardise" not in doc
+    era1 = json.loads((out / "composition_weights.E1.json").read_bytes())
+    assert era1 == dict(doc, train_manifest_sha256=t["e1"].train_sha)
+
+
+@pytest.mark.parametrize("comp", [SHRINK, SHRINK_AIM])
+def test_two_history_eras_pooled_ic_shrink_is_the_rule_on_the_pooled_admission(pooled_v8, comp):
+    """Ruling PM4-7 on two history eras: the ICs are the pooled admission rows' train_mean (356 decisions each) and the
+    weights and block are composition_ic_shrink.ic_shrink on them (the variant also on the pooled aim gains, the ones
+    ew-theme-std-aim-v1 reads); each era's file carries the same weights and block."""
+    t = pooled_v8
+    code, _, out = t[comp]
+    assert code == fcw.EXIT_OK
+    doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+    adm = json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes())
+    assert adm == json.loads((t[STD][2] / fcw.OUTPUT_ADMISSION).read_bytes())    # the screen never sees the rule
+    rows = {c["id"]: c for c in adm["candidates"]}
+    weighted = {c["id"]: c for c in doc["provenance"]["candidates"]}
+    members = [i for i in adm["admitted"] if weighted[i]["status"] == "fitted"]  # fit_prior's order
+    gains = None
+    if comp == SHRINK_AIM:
+        std_aim = json.loads((t[STD_AIM][2] / fcw.OUTPUT_WEIGHTS).read_bytes())
+        assert doc["provenance"]["aim"]["gain"] == std_aim["provenance"]["aim"]["gain"]
+        gains = [doc["provenance"]["aim"]["gain"][i] for i in members]
+    want = cis.ic_shrink(members, [rows[i]["theme"] for i in members], [rows[i]["train_mean"] for i in members],
+                         gains=gains)
+    assert all(rows[i]["train_days"] == 356 for i in members) and len(members) == 5
+    assert doc["weights"] == {i: float(dict(zip(members, want.weights)).get(i, 0.0)) for i in V8_IDS}
+    assert doc["theme_standardise"] == json.loads(json.dumps(want.block)) and doc["provenance"]["rule"] == comp
     era1 = json.loads((out / "composition_weights.E1.json").read_bytes())
     assert era1 == dict(doc, train_manifest_sha256=t["e1"].train_sha)
 
