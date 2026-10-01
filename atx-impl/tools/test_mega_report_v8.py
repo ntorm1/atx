@@ -58,11 +58,13 @@ def year_table(i: int, years=None) -> list[dict]:
 
 
 def summ_rows(cfg: dict) -> list[dict]:
+    """One nav_summ row per configured cell, in order: each cell's turnover 20% below the one before it and its cost
+    lower, so every turnover and cost criterion of the committed config holds (R-4's "15% lower" included)."""
     rows = []
     for i, c in enumerate(cfg['v8']['cells']):
         rows.append({'dir': c['dir'].replace('/', '\\'), 'net_sharpe': 0.95 + 0.05 * i, 'gross_sharpe': 1.3,
                      'mean_gross_leverage_all_rows': 0.97, 'mean_net_leverage_all_rows': 0.004,
-                     'tau_gmv_mean': 0.040 - 0.002 * i, 'tau_gmv_p95': 0.05, 'cost_bps_traded': 13.0 - 0.3 * i,
+                     'tau_gmv_mean': 0.040 * 0.8 ** i, 'tau_gmv_p95': 0.05, 'cost_bps_traded': 13.0 - 0.3 * i,
                      'deflated_ledger': {'n': 37 + len(cfg['v8']['cells']), 'dsr': 0.96, 'legacy_dsr': 0.9},
                      'year_table': year_table(i)})
     return rows
@@ -81,6 +83,22 @@ def bundle_doc(final_dir: str, base_dir: str, dsr: float = 0.05, p1: float = 0.2
             'year_table': {'base': year_table(0, ys), 'final': year_table(1, ys)},
             'verdict': {'dsr_positive': dsr > 0, 'p_one_sided': p1, 'alpha': 0.1, 'pass': dsr > 0 and p1 < 0.1,
                         'rule': 'cumulative paired S2 net dSR > 0 and one-sided p < alpha'}}
+
+
+def nav_summary(cfg: dict, s3: float = 0.9) -> dict:
+    """A synthetic NAV summary.json of a cell: every configured scenario's net Sharpe (S3's ``s3``) with its TRAIN
+    calendar years, and the spo-v3 report of the primary book (tripwire clear, limits met on every scored decision,
+    traded-book aim correlation .95 after decision d's trades, Ruling E-14a), as the criteria of R-5 and R-6 read them."""
+    primary = next(s['id'] for s in cfg['scenarios'] if s['key'] == cfg['primary_scenario'])
+    scen = [{'scenario': s['id'], 'net_sharpe': s3 if s['key'] == 'S3' else 1.1,
+             'calendar_year_returns': [{'year': y, 'net_compounded_return': 0.05} for y in V.train_years()]}
+            for s in cfg['scenarios']]
+    book = {'decisions': 1004, 'unconverged': 0, 'limits_unmet': 0,
+            'aim_correlation_traded_after': {'mean': 0.95, 'min': 0.91, 'n': 1003},
+            'aim_correlation_criterion': {'reads': 'aim_correlation_traded_after.mean', 'threshold': 0.9,
+                                          'value': 0.95, 'met': True}}
+    return {'primary_scenario': primary, 'scenarios': scen,
+            'v7': {'spo_v3_books': {primary: book}, 'spo_v3_tripwire': {'status': 'clear', 'report_only': {primary: book}}}}
 
 
 def diagnostics_doc(sealed: bool = False) -> dict:
@@ -169,6 +187,9 @@ def world(root: Path, cfg: dict, skip: tuple = ()) -> None:
             continue
         if key == 'v8.trial_ledger':
             write_ledger(root / rel, cfg)
+            continue
+        if re.fullmatch(r'v8\.cells\[(.+)\]\.summary', key):
+            put(root, rel, nav_summary(cfg))
             continue
         m = re.fullmatch(r'v8\.cells\[(.+)\]\.paired', key)
         if m:
@@ -349,17 +370,104 @@ def test_criterion_eval_ops_per_and_factor():
     assert V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'le', 'factor': 0.7}]}, row, par)['met'] is False
     assert V.criterion_eval({'checks': [{'metric': 'c', 'op': 'le'}]}, row, None)['met'] is None
     assert V.criterion_eval({'text': 'capacity at 4x', 'met': True}, None, None) == {
-        'text': 'capacity at 4x', 'met': True, 'detail': 'as configured'}
+        'text': 'capacity at 4x', 'met': True, 'detail': 'as configured', 'unread': []}
     assert V.criterion_eval(None, row, par)['met'] is None
     mixed = {'checks': [{'metric': 'tau', 'op': 'lt'}, {'text': 'net at 2x not lower', 'met': None}]}
     ce = V.criterion_eval(mixed, row, par)
     assert ce['met'] is None and 'net at 2x not lower: to be read (config met)' in ce['detail']
+    assert ce['unread'] == ['net at 2x not lower']
     mixed['checks'][1]['met'] = True
     assert V.criterion_eval(mixed, row, par)['met'] is True
     mixed['checks'][1]['met'] = False
     assert V.criterion_eval(mixed, row, par)['met'] is False
     with pytest.raises(ValueError, match='unknown op'):
-        V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'eq'}]}, row, par)
+        V.criterion_eval({'checks': [{'metric': 'tau', 'op': 'eq'}]}, row, par)  # eq only against a fixed value
+
+
+# review P-2: the registered parts the nav_summ row does not carry are read from the cell's NAV summary.json
+PRIMARY_ID = 'modeled.1bn+swap-fin-v1'  # an id holding a dot: {primary} is one key
+
+
+def spo_summary(s3: float = 0.9, status: str = 'clear', unmet: int = 0, corr: float = 0.95) -> dict:
+    book = {'limits_unmet': unmet, 'aim_correlation_traded_after': {'mean': corr},
+            'aim_correlation_criterion': {'value': corr, 'met': corr >= 0.9}}
+    return {'scenarios': [{'scenario': PRIMARY_ID, 'net_sharpe': 1.1}, {'scenario': 's3.id', 'net_sharpe': s3}],
+            'v7': {'spo_v3_tripwire': {'status': status}, 'spo_v3_books': {PRIMARY_ID: book}}}
+
+
+SPO_DOCS = {'scenarios': {'S2': PRIMARY_ID, 'S3': 's3.id'}, 'primary': PRIMARY_ID}
+R6_CHECKS = {'checks': [
+    {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
+    {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.limits_unmet', 'op': 'eq', 'value': 0},
+    {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean', 'op': 'ge',
+     'value': 0.9}]}
+
+
+def test_criterion_eval_summary_checks_against_a_value():
+    """R-6's tripwire, E-31 limits and E-14 correlation: fixed thresholds on the cell's own summary (no parent read)."""
+    ok = V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=spo_summary()))
+    assert ok['met'] is True and ok['unread'] == []
+    assert 'v7.spo_v3_tripwire.status clear eq clear' in ok['detail']
+    assert 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean 0.95 ge 0.9' in ok['detail']
+    for bad in (spo_summary(status='tripped (not voiding: --specific-ceiling-void off)'), spo_summary(unmet=2),
+                spo_summary(corr=0.85)):
+        assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=bad))['met'] is False
+    assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=None))['met'] is None  # summary not read
+    assert V.criterion_eval(R6_CHECKS, None, None, dict(SPO_DOCS, cell=spo_summary(), primary='S9'))['met'] is None
+    with pytest.raises(ValueError, match='unknown source'):
+        V.criterion_eval({'checks': [{'source': 'card', 'metric': 'x', 'op': 'le'}]}, None, None)
+    with pytest.raises(ValueError, match='unknown op'):
+        V.criterion_eval({'checks': [{'metric': 'x', 'op': 'between', 'value': 1}]}, None, None)
+
+
+def test_criterion_eval_summary_scenario_against_the_parent():
+    """R-5's "S3 not lower": a cost scenario's net Sharpe in the cell's summary against the parent's."""
+    s3 = {'checks': [{'label': 'S3 net Sharpe', 'source': 'summary', 'scenario': 'S3', 'metric': 'net_sharpe',
+                      'op': 'ge'}]}
+    equal = V.criterion_eval(s3, None, None, dict(SPO_DOCS, cell=spo_summary(0.8), parent=spo_summary(0.8)))
+    assert equal['met'] is True and equal['detail'] == 'S3 net Sharpe 0.8 ge parent 0.8'
+    assert V.criterion_eval(s3, None, None, dict(SPO_DOCS, cell=spo_summary(0.7), parent=spo_summary(0.8)))['met'] \
+        is False
+    assert V.criterion_eval(s3, None, None, dict(SPO_DOCS, cell=spo_summary(0.8)))['met'] is None  # parent not read
+    other = dict(SPO_DOCS, scenarios={'S3': 'not-a-scenario'})
+    assert V.criterion_eval(s3, None, None, dict(other, cell=spo_summary(), parent=spo_summary()))['met'] is None
+
+
+def summary_cfg() -> dict:
+    """cfg_for() with an R-1 criterion that reads the NAV summaries (R-5 / R-6 style)."""
+    cfg = cfg_for()
+    cfg['v8']['cells'][1]['criterion'] = {'text': 'cost not higher; tripwire clear; S2 not lower', 'checks': [
+        {'metric': 'cost_bps_traded', 'op': 'le'},
+        {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
+        {'source': 'summary', 'scenario': 'S2', 'metric': 'net_sharpe', 'op': 'ge'}]}
+    return cfg
+
+
+def test_ladder_reads_the_nav_summaries_its_criteria_name(root):
+    cfg = summary_cfg()
+    assert [k for _, k, _ in V.inputs(cfg)][:4] == ['v8.summ', 'v8.cells[B0c].summary', 'v8.cells[R-1].paired',
+                                                    'v8.cells[R-1].summary']
+    world(root, cfg)
+    rows, unav, _, srcs = V.ladder_rows(make_ctx(root, cfg))
+    assert unav == [] and rows[1]['crit_met'] is True and rows[1]['rule'] is True
+    assert any(s.startswith('b/mega-nav-v8-r1/summary.json (sha256 ') for s in srcs)
+    doc = nav_summary(cfg)
+    doc['v7']['spo_v3_tripwire']['status'] = 'tripped (not voiding: --specific-ceiling-void off)'
+    put(root, 'b/mega-nav-v8-r1/summary.json', doc)
+    rows = V.ladder_rows(make_ctx(root, cfg))[0]
+    assert rows[1]['crit_met'] is False and rows[1]['rule'] is False
+    (root / 'b/mega-nav-v8-b0c/summary.json').unlink()  # the parent's: one unavailable block, the part n/a
+    rows, unav, _, _ = V.ladder_rows(make_ctx(root, cfg))
+    assert len(unav) == 1 and 'b/mega-nav-v8-b0c/summary.json' in unav[0] and rows[1]['crit_met'] is None
+    sealed = nav_summary(cfg)
+    sealed['scenarios'][0]['calendar_year_returns'].append({'year': 2024, 'net_compounded_return': 0.01})
+    put(root, 'b/mega-nav-v8-b0c/summary.json', sealed)
+    unav = V.ladder_rows(make_ctx(root, cfg))[1]
+    assert len(unav) == 1 and 'sealed' in unav[0]
+    world(root, cfg)
+    html = build(root, cfg)
+    assert unavailable(html) == []
+    assert 'v7.spo_v3_tripwire.status clear eq clear' in htmllib.unescape(section(html, 'cells'))
 
 
 def test_ladder_rows_rule_and_verdicts(root):
@@ -405,12 +513,78 @@ def test_ladder_checks_final_must_be_the_last_accepted_cell(root):
     assert _checks(root, cfg) == []
     assert _checks(root, cfg_for(final='B0c')) == [('v8.final', "'B0c' is not the last accepted cell of the ladder "
                                                                 "('R-1')")]
-    rej = cfg_for()
-    rej['v8']['cells'][1]['verdict'] = 'REJECTED (dSR < 0)'
-    assert _checks(root, rej) == [('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
     kind = cfg_for()
     kind['v8']['cells'][1].update(verdict='kept', verdict_kind='accepted')  # an explicit kind overrides the text
     assert _checks(root, kind) == []
+    rej = cfg_for()
+    rej['v8']['cells'][1]['verdict'] = 'REJECTED (dSR < 0)'
+    put(root, 'b/paired-r1.json', bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c', dsr=-0.02))  # the rule rejects
+    assert _checks(root, rej) == [('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
+
+
+# review P-3: the recorded verdict against the rule of v8-prereg item 5, and the parent against the ladder
+def test_ladder_checks_refuse_a_verdict_the_rule_contradicts(root):
+    cfg = cfg_for()
+    world(root, cfg)
+    assert _checks(root, cfg) == []
+    # an accept the rule rejects (dSR < 0)
+    put(root, 'b/paired-r1.json', bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c', dsr=-0.02))
+    assert _checks(root, cfg) == [
+        ('v8.cells[R-1].verdict', "recorded accepted ('ACCEPTED') but the rule of v8-prereg item 5 rejects it "
+                                  "(dSR > 0 no, mechanics yes, criterion yes)")]
+    # a reject the rule accepts (dSR > 0, mechanics, criterion); v8.final then has no accepted R-1
+    world(root, cfg)
+    rej = cfg_for()
+    rej['v8']['cells'][1]['verdict'] = 'REJECTED'
+    assert _checks(root, rej) == [
+        ('v8.cells[R-1].verdict', "recorded rejected ('REJECTED') but the rule of v8-prereg item 5 accepts it "
+                                  "(dSR > 0 yes, mechanics yes, criterion yes)"),
+        ('v8.final', "'R-1' is not the last accepted cell of the ladder ('B0c')")]
+    # an accept whose rule is n/a because a manual criterion part is unread; read, it passes
+    unread = cfg_for()
+    unread['v8']['cells'][1]['criterion']['checks'].append({'text': 'net at 4x higher', 'met': None})
+    assert _checks(root, unread) == [
+        ('v8.cells[R-1].verdict', "recorded accepted ('ACCEPTED') but its criterion is not read: net at 4x higher "
+                                  "(set the part's met)")]
+    unread['v8']['cells'][1]['criterion']['checks'][-1]['met'] = True
+    assert _checks(root, unread) == []
+    unread['v8']['cells'][1]['criterion']['checks'][-1]['met'] = False
+    assert [w for w, _ in _checks(root, unread)] == ['v8.cells[R-1].verdict']  # the rule rejects
+    # an accept whose rule is n/a for a missing input: that input's own unavailable block, no refusal here
+    (root / 'b/paired-r1.json').unlink()
+    assert _checks(root, cfg) == []
+
+
+def three_cells(r1_verdict: str = 'ACCEPTED', r2_parent: str = 'R-1') -> dict:
+    """cfg_for() plus R-2 (parented on ``r2_parent``, accepted, the final cell)."""
+    cfg = cfg_for(final='R-2')
+    r2 = copy.deepcopy(cfg['v8']['cells'][1])
+    r2.update(key='R-2', label='R-2 library v8.0', dir='b/mega-nav-v8-r2', parent=r2_parent, n=42,
+              paired='b/paired-r2.json', verdict='ACCEPTED')
+    cfg['v8']['cells'][1]['verdict'] = r1_verdict
+    cfg['v8']['cells'].append(r2)
+    return cfg
+
+
+def test_ladder_checks_the_parent_is_the_last_accepted_cell(root):
+    def parents(cfg, r1_dsr=0.05):
+        world(root, cfg)
+        put(root, 'b/paired-r1.json', bundle_doc('b/mega-nav-v8-r1', 'b/mega-nav-v8-b0c', dsr=r1_dsr))
+        return [(w, why) for w, why in _checks(root, cfg) if w.endswith('.parent')]
+    assert parents(three_cells()) == []
+    assert parents(three_cells('REJECTED (dSR < 0)'), r1_dsr=-0.02) == [
+        ('v8.cells[R-2].parent', "'R-1' is rejected: a rejected cell is never a parent")]
+    assert parents(three_cells('REJECTED (dSR < 0)', r2_parent='B0c'), r1_dsr=-0.02) == []
+    assert parents(three_cells(r2_parent='B0c')) == [
+        ('v8.cells[R-2].parent', "'B0c' is not the last accepted cell before 'R-2' ('R-1')")]
+    # an undecided cell before it: the ladder is not settled up to R-2, the parent check waits
+    pending = three_cells('pending run', r2_parent='B0c')
+    assert parents(pending) == []
+    assert [w for w, _ in _checks(root, pending)] == ['v8.cells[R-1].verdict']  # its read paired test, pending
+    # the whole ladder, all accepted and consistent, renders with no refusal
+    cfg = three_cells()
+    world(root, cfg)
+    assert [n for n, _ in unavailable(build(root, cfg))] == []
 
 
 def test_ladder_checks_a_read_paired_test_needs_a_verdict(root):

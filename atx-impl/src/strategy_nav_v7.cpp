@@ -53,7 +53,11 @@ struct ScopedNavExtension::State {
                             : nullptr),
         scaler(o.risk_target.on
                    ? std::make_unique<risk_target::Scaler>(o.risk_target, o.spo_risk)
-                   : nullptr) {}
+                   : nullptr) {
+    // Review SPO-4: the capacity engine has no primary book, so Ruling E-31a never reads a
+    // capacity book's limits; it binds the main pass, whose rows hold no capacity book.
+    if (capacity_engine) capacity_engine->set_primary_book({});
+  }
   NavV7Options options;
   NavScenario s2; // the primary S2 law: the v6 marginal cost c_i of every book
   NavV7Pass pass{NavV7Pass::Main};
@@ -126,11 +130,14 @@ bool risk_target_flag(std::string_view key) {
 bool risk_model_flag(std::string_view key) {
   return key == "--risk-model" || key == "--risk-model-sha256";
 }
-// The spo flags that would move a registered constant of spo-v3 (refused with it).
+// The spo flags that would move a registered constant of spo-v3 (refused with it). Ruling
+// E-31a: the solver's iteration cap and tolerance are registered too (review SPO-5: a looser
+// tolerance would redefine "converged" on the cell's argv).
 bool refused_with_v3(std::string_view key) {
   return key == "--gamma" || key == "--ic-book" || key == "--w-max" || key == "--adv-cap-q" ||
          key == "--adv-trade-p" || key == "--target-vol" || key == "--spo-horizon" ||
-         key == "--alpha-horizon" || key == "--spo-gross";
+         key == "--alpha-horizon" || key == "--spo-gross" || key == "--spo-iters" ||
+         key == "--spo-tol";
 }
 const char* pass_name(NavV7Pass pass) { return pass == NavV7Pass::Main ? "main" : "capacity"; }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
@@ -188,7 +195,8 @@ constexpr const char* capacity_spo_v3_declaration =
     "(--adv-hold-q) reads the initial NAV for every multiple (Ruling E-15); gamma is calibrated "
     "on the same first scored decision as the main pass (gamma_equals_main); the capacity "
     "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
-    "voiding the run; x1 is the main pass's S2 book bit for bit";
+    "voiding the run: it has no primary book, and its rows never enter the main pass's rows, "
+    "tripwire, counts or Ruling E-31a (review SPO-4); x1 is the main pass's S2 book bit for bit";
 constexpr const char* v6_declaration =
     "aim-partial-v6 (R2.2 + R2.3): on a rebalance decision d, c_i = marginal cost per dollar of "
     "the primary S2 law (half spread 5 + commission 1 bps + 1.5 * 0.6 * sigma_i * (q/ADV_i)^0.5) "
@@ -337,6 +345,18 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
   if (!void_reason.empty()) {
     extras["status"] = "void";
     extras["void_reason"] = void_reason;
+    // Ruling E-31a: a run its primary book's limits_unmet voided says so, with the count and the
+    // first session (spo-v3's tripwire record).
+    if (const auto* engine = ext.spo_engine(); engine && engine->params().version == 3) {
+      const auto trip = engine->rows_tripwire_json();
+      if (trip.contains("voided")) {
+        extras["voided"] = trip.at("voided");
+        Json unmet = trip.at("limits_unmet_primary");
+        unmet["book"] = trip.at("primary_book");
+        unmet["rule"] = trip.at("limits_unmet_rule");
+        extras["limits_unmet"] = std::move(unmet);
+      }
+    }
   }
   // v8 R-8: the risk target's series (no NAV or return quantity: also on a void run).
   if (const auto* scaler = ext.risk_target_scaler()) {
@@ -557,9 +577,12 @@ bool claims_nav_args(int argc, char** argv) {
 }
 
 std::vector<NavScenario> run_scenarios(std::vector<NavScenario> matrix) {
-  const auto* s = active_state;
+  auto* s = active_state;
   if (!s || matrix.size() <= nav_primary_scenario_index) return matrix;
   const NavScenario primary = matrix[nav_primary_scenario_index];
+  // Ruling E-31a: the main pass's primary book (this run's matrix, tiered or not) is the book
+  // whose limits_unmet voids a spo-v3 run.
+  if (s->pass == NavV7Pass::Main && s->engine) s->engine->set_primary_book(book_label(primary));
   if (s->pass == NavV7Pass::Capacity) return cost_v2::capacity_scenarios(primary);
   // spo-v1 --spo-books primary: S1 and the primary S2 only (the replay keeps S2 at index 1).
   if (s->options.spo_v1 && !s->options.spo_params.all_books)
@@ -590,7 +613,8 @@ co::Status capture(std::span<const NavScenario> scenarios,
                    std::span<const NavSummary> summaries) {
   auto* s = active_state;
   if (!s) return co::Ok();
-  // The spo specific-ceiling tripwire (R2 M-1), read before any byte is published: the
+  // The spo specific-ceiling tripwire (R2 M-1) and, under spo-v3, the primary book's
+  // limits_unmet (Ruling E-31a, whatever the void flag), read before any byte is published: the
   // replay returns this error before its output directory exists, so no NAV or return file
   // (and no return statistic on the console) exists for a void run. It reads the main pass's
   // rows only: spo-v3's capacity pass (Ruling E-37, report only) plans on capacity_engine,
@@ -718,12 +742,15 @@ void append_help(std::ostream& out) {
          "diagnostics only, no NAV or return file; not with --emit-holdings), gamma = the "
          "vol-target gamma)] [--rule spo-v3 [--spo-alpha implied-aim] (target tracking toward "
          "the aim --aim-leverage x desired, no alpha vector; --risk-model DIR "
-         "--risk-model-sha256 SHA [--spo-iters 2000] [--spo-tol 1e-9] [--spo-books "
-         "all|primary] [--specific-ceiling 1] [--specific-ceiling-void on|off (default on: a "
-         "clamp or a planned gross above 2 x --aim-leverage voids the run)]; registered "
-         "S_prior 20, H 20, --adv-trade-p .01, beta .02: --gamma, --ic-book, --w-max, "
-         "--adv-cap-q, --adv-trade-p, --target-vol, --spo-horizon, --alpha-horizon and "
-         "--spo-gross are refused; [--hold-band B] [--adv-hold-q Q] shape desired as "
+         "--risk-model-sha256 SHA [--spo-books all|primary] [--specific-ceiling 1] "
+         "[--specific-ceiling-void on|off (default on: a clamp or a planned gross above 2 x "
+         "--aim-leverage voids the run)]; a scored decision of the primary book that does not "
+         "meet its net or beta limit voids the run whatever --specific-ceiling-void (Ruling "
+         "E-31a: exit 3, v7_extras.json voided limits_unmet, no NAV or return file; "
+         "--emit-holdings refused); registered S_prior 20, H 20, --adv-trade-p .01, beta .02, "
+         "2000 iterations, tolerance 1e-9: --gamma, --ic-book, --w-max, --adv-cap-q, "
+         "--adv-trade-p, --target-vol, --spo-horizon, --alpha-horizon, --spo-gross, --spo-iters "
+         "and --spo-tol are refused; [--hold-band B] [--adv-hold-q Q] shape desired as "
          "aim-partial-v5 does (refused with spo-v1/v2); [--capacity-curve] runs report only "
          "(Ruling E-37: each capacity book is the NAV-m tracker, its trade limit and impact at "
          "m x NAV, on its own engine; v7_extras.json capacity_spo_v3; refused with spo-v1/v2); "
@@ -919,7 +946,13 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         if (!budget) throw std::invalid_argument(budget.error().to_string());
       }
       // The void promise (no NAV file before the tripwire is read) excludes the holdings
-      // stream, which writes NAV during the replay.
+      // stream, which writes NAV during the replay. spo-v3 can always void (Ruling E-31a: its
+      // primary book's limits_unmet, whatever --specific-ceiling-void), so it never streams.
+      if (spo_version == 3 && value_of("--emit-holdings"))
+        throw std::invalid_argument("spo-v3 and --emit-holdings: the holdings stream writes NAV "
+                                    "before the tripwire is read, and a spo-v3 run voids on its "
+                                    "primary book's limits_unmet whatever "
+                                    "--specific-ceiling-void (Ruling E-31a)");
       if (o.spo_params.void_on_capped && value_of("--emit-holdings"))
         throw std::invalid_argument("--specific-ceiling-void on and --emit-holdings: the "
                                     "holdings stream writes NAV before the tripwire is read "

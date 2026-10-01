@@ -11,6 +11,8 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <map>
@@ -18,6 +20,8 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -90,8 +94,20 @@ struct Replay {
   Json parameters, summary, tripwire, calibration_json;
   std::string csv, declaration;
   bool captured{};
+  usize primary_unmet{}; // Ruling E-31a: the primary book's scored rows with limits_met false
   st::NavReplayResult result; // the (first) book's
 };
+// The fixture's primary book (nav_config's S2), the book whose limits_unmet voids a run.
+std::string primary_label() {
+  const auto s = nav_config().scenario;
+  return s.id + "+" + s.financing.id;
+}
+usize count_primary_unmet(std::span<const sp::TrackingRow> rows) {
+  const std::string primary = primary_label();
+  usize n = 0;
+  for (const auto& r : rows) n += !r.limits_met && r.book == primary ? 1U : 0U;
+  return n;
+}
 Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
                  const sp::SpoParams& params, const st::NavReplayConfig& cfg = nav_config(),
                  Recorder* recorder = nullptr, usize decision_begin = 0) {
@@ -132,7 +148,26 @@ Replay replay_v3(const Role& role, std::shared_ptr<const sp::RiskStore> risk,
   out.declaration = engine->rule_declaration();
   out.calibration_json = engine->rule_calibration_json();
   out.captured = static_cast<bool>(v7::capture({}, {}, {})); // the seam before publication
+  out.primary_unmet = count_primary_unmet(out.rows);
+  EXPECT_EQ(engine->primary_book(), primary_label()); // the default: the untiered S2
   return out;
+}
+
+// Ruling E-31a on a replay of the fixture (no clamp and no breach there): the run is void
+// exactly when a scored decision of the primary book did not meet its net or beta limit (the
+// fixture redraws every style exposure daily, so a book's beta can jump by more than one
+// session's trade limits repair), and clear otherwise.
+void expect_clear_or_limits_void(const Replay& run) {
+  EXPECT_EQ(run.captured, run.primary_unmet == 0) << run.primary_unmet;
+  EXPECT_EQ(run.tripwire.at("primary_book"), primary_label());
+  EXPECT_EQ(run.tripwire.at("limits_unmet_primary").at("count"), run.primary_unmet);
+  if (run.primary_unmet == 0) {
+    EXPECT_EQ(run.tripwire.at("status"), "clear");
+    EXPECT_FALSE(run.tripwire.contains("voided"));
+  } else {
+    EXPECT_EQ(run.tripwire.at("status"), "void");
+    EXPECT_EQ(run.tripwire.at("voided"), "limits_unmet");
+  }
 }
 
 // nav_config without aim-partial-v5's dust band (dust 0, hence exit rate 1), which the desired
@@ -223,10 +258,104 @@ TEST(SpoV3, ZeroCostNoLimitsReturnsAimTo1e8) {
   EXPECT_DOUBLE_EQ(engine.gross_budget(), sp::v3_gross_bound_multiple * cfg.target.aim_leverage);
 }
 
+// A payload the fixture's risk model wrote, read back as raw values (not through RiskStore).
+template <class T>
+std::vector<T> read_values(const std::filesystem::path& file) {
+  std::vector<T> out(static_cast<usize>(std::filesystem::file_size(file) / sizeof(T)));
+  std::ifstream in(file, std::ios::binary);
+  // SAFETY: char reads into the object representation of trivially copyable fixture values.
+  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size() * sizeof(T)));
+  if (!in) {
+    ADD_FAILURE() << "short read of " << file.string();
+  }
+  return out;
+}
+
+// Review T-4: gamma's units against an independent dense Sigma. sigma_aim is the aim's ANNUAL
+// ex-ante vol sqrt(252 a' Sigma a), Sigma = X F X' + D of the risk row at the decision, built
+// here from the files the fixture's risk model wrote (intercept, the industry slot's column,
+// the 11 styles), and gamma = S_prior / sigma_aim with S_prior = 20 (Ruling E-14). An
+// unannualised vol (gamma sqrt(252) = 15.87 times too large), 252 without the root, or a
+// dropped industry or style column fails here.
+TEST(SpoV3, GammaIsSPriorOverTheAnnualisedAimVolOfADenseSigma) {
+  const Directory dir;
+  const Role role(20, 12, 83);
+  const auto risk = clean_model(dir, role, 13);
+  ASSERT_NE(risk, nullptr);
+  sp::Engine engine(sp::v3_params(), risk);
+  const auto cfg = nav_config();
+  const auto x = role.target();
+  const usize n = role.n, d = 2; // every name a member with a risk row at d
+  std::vector<f64> desired(n);
+  f64 mean = 0;
+  for (usize i = 0; i < n; ++i) {
+    desired[i] = role.signal[d * n + i];
+    mean += desired[i];
+  }
+  for (f64& v : desired) v -= mean / static_cast<f64>(n);
+  f64 gross = 0;
+  for (const f64 v : desired) gross += std::abs(v);
+  for (f64& v : desired) v /= gross;
+  const st::cost_v2::DecisionLiquidity liquidity{std::vector<f64>(n, 1e15),
+                                                 std::vector<f64>(n, 0.02)};
+  const sp::BookDecision in{x, cfg, cfg.scenario, d, 1e8, desired, {}, {}, liquidity, "S2"};
+  std::vector<f64> planned(n, 0.0);
+  st::TargetReplayDay day;
+  const auto status = engine.plan(in, planned, day);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto& c = engine.calibration();
+  ASSERT_TRUE(c.done);
+  // The aim the tracker received: L x desired.
+  std::vector<f64> aim(n);
+  for (usize i = 0; i < n; ++i) aim[i] = cfg.target.aim_leverage * desired[i];
+  const auto received = engine.last_aim();
+  ASSERT_EQ(received.size(), n);
+  for (usize i = 0; i < n; ++i) EXPECT_EQ(std::bit_cast<u64>(received[i]), std::bit_cast<u64>(aim[i])) << i;
+  // Sigma at d, dense, from the store's files.
+  constexpr usize k = sp::risk_factors, styles = sp::risk_styles, style_column = 1 + sp::risk_industry_slots;
+  const auto covariance = read_values<f64>(dir.path / "factor_covariance.f64");
+  const auto specific = read_values<f64>(dir.path / "specific_variance.f64");
+  const auto exposure = read_values<f32>(dir.path / "style_exposures.f32");
+  const auto slot = read_values<u8>(dir.path / "industry_slot.u8");
+  ASSERT_EQ(covariance.size(), role.d * k * k);
+  ASSERT_EQ(specific.size(), role.d * n);
+  ASSERT_EQ(exposure.size(), role.d * n * styles);
+  ASSERT_EQ(slot.size(), role.d * n);
+  std::vector<f64> loading(n * k, 0.0); // X
+  for (usize i = 0; i < n; ++i) {
+    ASSERT_LT(static_cast<usize>(slot[d * n + i]), sp::risk_industry_slots);
+    loading[i * k] = 1.0;
+    loading[i * k + 1 + slot[d * n + i]] = 1.0;
+    for (usize s = 0; s < styles; ++s)
+      loading[i * k + style_column + s] = static_cast<f64>(exposure[(d * n + i) * styles + s]);
+  }
+  const usize f = d * k * k; // F at d
+  f64 daily = 0.0;
+  for (usize i = 0; i < n; ++i)
+    for (usize j = 0; j < n; ++j) {
+      f64 sigma = i == j ? specific[d * n + i] : 0.0;
+      for (usize r = 0; r < k; ++r)
+        for (usize q = 0; q < k; ++q)
+          sigma += loading[i * k + r] * covariance[f + r * k + q] * loading[j * k + q];
+      daily += aim[i] * sigma * aim[j];
+    }
+  ASSERT_GT(daily, 0.0);
+  const f64 sigma_aim = std::sqrt(252.0 * daily);
+  EXPECT_NEAR(c.aim_vol, sigma_aim, 1e-12 * sigma_aim);
+  EXPECT_NEAR(c.aim_vol / std::sqrt(daily), 15.874507866387544, 1e-11); // sqrt(252), pinned
+  EXPECT_EQ(sp::v3_sharpe_prior, 20.0);                                  // Ruling E-14
+  EXPECT_NEAR(c.gamma, 20.0 / sigma_aim, 1e-12 * c.gamma);
+  const auto record = engine.rule_calibration_json();
+  EXPECT_EQ(record.at("sigma_aim").get<f64>(), c.aim_vol);
+  EXPECT_EQ(record.at("gamma").get<f64>(), c.gamma);
+  EXPECT_EQ(record.at("sharpe_prior").get<f64>(), 20.0);
+}
+
 // The gross cap is the sanity bound 2 x L, never a solver constraint: on the fixture's replay
 // (every book from flat, the S2 law's costs and the 1% ADV trade limit) the planned gross stays
-// well inside it on every scored decision and the tripwire is clear. A breach (forced on the
-// recorded rows) voids the run with the void on and is recorded, not voiding, with it off.
+// well inside it on every scored decision and the tripwire is clear unless Ruling E-31a voids
+// it. A breach (forced on the recorded rows, every limit met) voids the run with the void on and
+// is recorded, not voiding, with it off.
 TEST(SpoV3, GrossCapIsSlackOnFixture) {
   const Directory dir;
   const Role role(40, 12, 53);
@@ -246,25 +375,141 @@ TEST(SpoV3, GrossCapIsSlackOnFixture) {
   }
   EXPECT_GT(largest, 0.0);
   EXPECT_LT(largest, 0.75 * bound) << "the bound is slack, not near binding";
-  EXPECT_TRUE(run.captured);
-  EXPECT_EQ(run.tripwire.at("status"), "clear");
+  expect_clear_or_limits_void(run); // no breach: only Ruling E-31a can void it
   EXPECT_EQ(run.tripwire.at("gross_bound_breaches"), 0U);
   EXPECT_EQ(run.tripwire.at("capped_specific_decisions"), 0U);
+  // The breach alone (every limit met, so Ruling E-31a stays silent).
   auto breached = run.rows;
+  for (auto& r : breached) r.limits_met = true;
   breached[breached.size() / 2].gross_bound_breached = true;
-  const auto status = sp::tracking_tripwire(params, breached);
+  const std::string primary = primary_label();
+  const auto status = sp::tracking_tripwire(params, breached, primary);
   ASSERT_FALSE(status);
   EXPECT_EQ(status.error().code(), co::ErrorCode::Unavailable);
   EXPECT_NE(status.error().message().find("VOID"), std::string::npos) << status.error().message();
-  const auto record = sp::tracking_tripwire_json(params, breached);
+  const auto record = sp::tracking_tripwire_json(params, breached, primary);
   EXPECT_EQ(record.at("status"), "void");
   EXPECT_EQ(record.at("gross_bound_breaches"), 1U);
+  EXPECT_FALSE(record.contains("voided")); // the breach, not limits_unmet
   auto off = params;
   off.void_on_capped = false;
-  EXPECT_TRUE(sp::tracking_tripwire(off, breached));
-  EXPECT_EQ(sp::tracking_tripwire_json(off, breached).at("status").get<std::string>().rfind(
-                "tripped", 0),
-            0U);
+  EXPECT_TRUE(sp::tracking_tripwire(off, breached, primary));
+  const auto tripped = sp::tracking_tripwire_json(off, breached, primary);
+  EXPECT_EQ(tripped.at("status").get<std::string>().rfind("tripped", 0), 0U);
+}
+
+// Ruling E-31a (review SPO-1) on recorded rows: one scored decision of the primary book with its
+// net or beta limit unmet voids the run (Unavailable: the replay returns before its output
+// directory, so no NAV or return file and no Sharpe on the console), with the void flag on or
+// off, and the record says "voided": "limits_unmet" with the count and the first session. The
+// same rows with the unmet decision on another book (a capacity book, S1, S3) do not void.
+TEST(SpoV3, PrimaryBookLimitsUnmetVoidsTheRunWhateverTheVoidFlag) {
+  const std::string primary = primary_label();
+  std::vector<sp::TrackingRow> rows(6);
+  for (usize k = 0; k < rows.size(); ++k) {
+    rows[k].session = 20200102 + static_cast<i64>(k);
+    rows[k].book = k % 2 == 0 ? primary : std::string("capacity-x4-v1+flat-300-v0");
+    rows[k].limits_met = true;
+    rows[k].converged = true;
+    rows[k].gross = 1.0;
+  }
+  auto params = sp::v3_params();
+  for (const bool flag : {true, false}) {
+    params.void_on_capped = flag;
+    ASSERT_TRUE(sp::tracking_tripwire(params, rows, primary)) << flag; // every limit met
+    const auto clear = sp::tracking_tripwire_json(params, rows, primary);
+    EXPECT_EQ(clear.at("status"), "clear") << flag;
+    EXPECT_EQ(clear.at("limits_unmet_primary").at("count"), 0U) << flag;
+    EXPECT_TRUE(clear.at("limits_unmet_primary").at("first_session").is_null()) << flag;
+    EXPECT_FALSE(clear.contains("voided")) << flag;
+    auto other = rows; // unmet on another book only: reported, never voiding
+    other[1].limits_met = false;
+    other[3].limits_met = false;
+    EXPECT_TRUE(sp::tracking_tripwire(params, other, primary)) << flag;
+    EXPECT_EQ(sp::tracking_tripwire_json(params, other, primary).at("status"), "clear") << flag;
+    auto unmet = rows; // the primary book, twice: sessions 2 and 4
+    unmet[4].limits_met = false;
+    unmet[2].limits_met = false;
+    const auto status = sp::tracking_tripwire(params, unmet, primary);
+    ASSERT_FALSE(status) << flag;
+    EXPECT_EQ(status.error().code(), co::ErrorCode::Unavailable) << flag;
+    const auto& message = status.error().message();
+    EXPECT_NE(message.find("Ruling E-31a"), std::string::npos) << message;
+    EXPECT_NE(message.find("VOID"), std::string::npos) << message;
+    EXPECT_NE(message.find(primary), std::string::npos) << message;
+    EXPECT_NE(message.find("on 2 scored decisions (first session 20200104)"), std::string::npos)
+        << message;
+    const auto record = sp::tracking_tripwire_json(params, unmet, primary);
+    EXPECT_EQ(record.at("status"), "void") << flag;
+    EXPECT_EQ(record.at("voided"), "limits_unmet") << flag;
+    EXPECT_EQ(record.at("primary_book"), primary) << flag;
+    EXPECT_EQ(record.at("limits_unmet_primary").at("count"), 2U) << flag;
+    EXPECT_EQ(record.at("limits_unmet_primary").at("first_session"), 20200104) << flag;
+    EXPECT_NE(record.at("limits_unmet_rule").get<std::string>().find("Ruling E-31a"),
+              std::string::npos);
+    EXPECT_EQ(record.at("report_only").at(primary).at("limits_unmet"), 2U) << flag;
+  }
+  EXPECT_EQ(sp::default_primary_book(), primary); // the untiered matrix's S2
+}
+
+// Ruling E-31a through the engine: a book whose net cannot be restored inside one session's
+// trade limit (every name long .01 of NAV, ADV $1, so p ADV / NAV = 1e-10) plans with its limits
+// unmet. Labelled as the engine's primary book its row voids the engine's tripwire, the void
+// flag on or off; labelled as any other book it does not. The v7 hook's capture reads exactly
+// this tripwire (spo::Engine::rows_tripwire) before anything is published.
+TEST(SpoV3, EngineVoidsOnItsPrimaryBooksLimitsUnmet) {
+  const Directory dir;
+  const Role role(20, 12, 83);
+  const auto risk = clean_model(dir, role, 13);
+  ASSERT_NE(risk, nullptr);
+  const auto cfg = nav_config();
+  const auto x = role.target();
+  const usize n = role.n, d = 2;
+  std::vector<f64> desired(n);
+  f64 mean = 0;
+  for (usize i = 0; i < n; ++i) {
+    desired[i] = role.signal[d * n + i];
+    mean += desired[i];
+  }
+  for (f64& v : desired) v -= mean / static_cast<f64>(n);
+  f64 gross = 0;
+  for (const f64 v : desired) gross += std::abs(v);
+  for (f64& v : desired) v /= gross;
+  const st::cost_v2::DecisionLiquidity liquidity{std::vector<f64>(n, 1.0),
+                                                 std::vector<f64>(n, 0.02)};
+  const auto plan_one = [&](bool void_flag, std::string_view label, std::string_view primary) {
+    auto params = sp::v3_params();
+    params.void_on_capped = void_flag;
+    sp::Engine engine(params, risk);
+    if (!primary.empty()) engine.set_primary_book(std::string(primary));
+    const sp::BookDecision in{x, cfg, cfg.scenario, d, 1e8, desired, {}, {}, liquidity, label};
+    std::vector<f64> planned(n, 0.01); // net .01 n: the trade limit cannot restore it
+    st::TargetReplayDay day;
+    const auto status = engine.plan(in, planned, day);
+    EXPECT_TRUE(status) << status.error().to_string();
+    const auto rows = engine.tracking_rows();
+    EXPECT_EQ(rows.size(), 1U);
+    const bool unmet = rows.size() == 1 && !rows.front().limits_met;
+    return std::make_tuple(unmet, static_cast<bool>(engine.rows_tripwire()),
+                           engine.rows_tripwire_json());
+  };
+  const std::string primary = primary_label();
+  for (const bool flag : {true, false}) {
+    const auto [unmet, ok, record] = plan_one(flag, primary, {}); // the default primary
+    ASSERT_TRUE(unmet) << "premise: the net is not restorable inside the trade limit";
+    EXPECT_FALSE(ok) << flag;
+    EXPECT_EQ(record.at("voided"), "limits_unmet") << flag;
+    EXPECT_EQ(record.at("limits_unmet_primary").at("count"), 1U) << flag;
+    EXPECT_EQ(record.at("limits_unmet_primary").at("first_session"), role.sessions[d]) << flag;
+    const auto [unmet_s1, ok_s1, record_s1] = plan_one(flag, "S1", {}); // not the primary
+    ASSERT_TRUE(unmet_s1);
+    EXPECT_TRUE(ok_s1) << flag;
+    EXPECT_FALSE(record_s1.contains("voided")) << flag;
+    const auto [unmet_set, ok_set, record_set] = plan_one(flag, "S1", "S1"); // set_primary_book
+    ASSERT_TRUE(unmet_set);
+    EXPECT_FALSE(ok_set) << flag;
+    EXPECT_EQ(record_set.at("primary_book"), "S1") << flag;
+  }
 }
 
 // The diagnostics: the annualised tracking error of the plan and of the current book to the
@@ -328,14 +573,16 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     }
     by_book[r.book].push_back(&r);
   }
-  // One CSV row per scored (decision, book); 42 columns (review A-4 added
-  // aim_correlation_traded after aim_correlation).
+  // One CSV row per scored (decision, book); 43 columns (review A-4 added
+  // aim_correlation_traded after aim_correlation, Ruling E-14a aim_correlation_traded_after
+  // after it).
   EXPECT_EQ(static_cast<usize>(std::count(run.csv.begin(), run.csv.end(), '\n')),
             run.rows.size() + 1);
   const std::string header = run.csv.substr(0, run.csv.find('\n'));
-  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 41);
+  EXPECT_EQ(std::count(header.begin(), header.end(), ','), 42);
   for (const char* column : {",tracking_error,", ",tracking_error_current,", ",aim_correlation,",
-                             ",aim_correlation_traded,", ",at_trade_limit,",
+                             ",aim_correlation_traded,", ",aim_correlation_traded_after,",
+                             ",at_trade_limit,",
                              ",trade_limit_share,", ",gross_bound_breached,",
                              ",tracking_error_shadow,", ",aim_correlation_shadow"})
     EXPECT_NE(header.find(column), std::string::npos) << column;
@@ -377,7 +624,7 @@ TEST(SpoV3, ReportsTrackingErrorAndShareAtTradeLimit) {
     EXPECT_EQ(report.at(book).at("tracking_error"), entry.at("tracking_error")) << book;
     EXPECT_EQ(report.at(book).at("trade_limit_share"), entry.at("trade_limit_share")) << book;
   }
-  EXPECT_EQ(run.tripwire.at("status"), "clear");
+  expect_clear_or_limits_void(run);
 }
 
 // Review A-2 (v8 D-0 warm start): the warm-up decisions move the book as aim-partial-v5 and read
@@ -451,82 +698,110 @@ TEST(SpoV3, WarmStartCalibratesOnTheFirstScoredDecision) {
             std::string(sp::warm_up_calibration_text));
   EXPECT_FALSE(flat.calibration_json.contains("warm_up"));
   EXPECT_EQ(warmed.calibration_json.at("session"), role.sessions[begin]);
-  EXPECT_TRUE(warmed.captured);
+  expect_clear_or_limits_void(warmed);
 }
 
-// Review A-4: Ruling E-14's criterion reads the traded book, not the plan. Each row's
-// aim_correlation_traded is the correlation of the holdings its DECIDE read (the observed
-// book's held weights, which the holdings stream reports as the plan's current weights bit for
-// bit) with the aim the tracker received, over every name either holds: recomputed here from
-// the stream. From flat (the first decision) it is NaN; on later decisions it differs from the
-// plan's aim_correlation (fills trail the plan under the 1% ADV trade limit, and the book
-// drifts). The report carries both, and its criterion is the traded mean against .9.
-TEST(SpoV3, CriterionReadsTheTradedBook) {
+// Review A-4 and Ruling E-14a (review SPO-2): Ruling E-14's criterion reads the traded book
+// after decision d's trades against the aim at d. Each row's aim_correlation_traded_after is the
+// correlation of the holdings the book's NEXT rebalance decision's DECIDE read (the observed
+// book's held weights there, which the holdings stream reports as the plan's current weights
+// bit for bit) with the aim the tracker received at d, over every name either holds: recomputed
+// here from the stream; NaN on the book's last scored decision. Review A-4's
+// aim_correlation_traded (the book DECIDE read at d against the aim at d, one decision behind
+// the trades; NaN from flat) stays beside it, as does the plan's aim_correlation. The report
+// carries all three and its criterion is the traded-after mean against .9.
+TEST(SpoV3, CriterionReadsTheTradedBookAfterTheTrades) {
   const Directory dir;
   const Role role(40, 12, 53);
   const auto risk = clean_model(dir, role, 3);
   ASSERT_NE(risk, nullptr);
   Recorder recorder(role.n);
   const Replay run = replay_v3(role, risk, sp::v3_params(), nav_config(), &recorder);
-  ASSERT_FALSE(run.rows.empty());
+  ASSERT_GT(run.rows.size(), 2U);
   std::map<i64, usize> row_of;
   for (usize t = 0; t < role.d; ++t) row_of[role.sessions[t]] = t;
-  usize compared = 0, differ = 0;
-  f64 sum = 0, lowest = 2.0;
-  for (const auto& r : run.rows) {
+  const auto traded = [&](const std::vector<f64>& held, const std::vector<f64>& aim) {
+    std::vector<f64> book, aimed;
+    for (usize i = 0; i < role.n; ++i) {
+      if (aim[i] == 0 && held[i] == 0) continue;
+      book.push_back(held[i]);
+      aimed.push_back(aim[i]);
+    }
+    return pearson(book, aimed);
+  };
+  usize compared = 0, compared_after = 0, differ = 0;
+  f64 sum_after = 0, lowest_after = 2.0;
+  for (usize k = 0; k < run.rows.size(); ++k) {
+    const auto& r = run.rows[k];
     const usize t = row_of.at(r.session);
     ASSERT_EQ(recorder.held.count(t), 1U) << t;
     ASSERT_EQ(recorder.aim.count(t), 1U) << t;
-    const auto& held = recorder.held.at(t);
     const auto& aim = recorder.aim.at(t);
     ASSERT_EQ(aim.size(), role.n) << t;
-    std::vector<f64> traded, aimed;
-    for (usize i = 0; i < role.n; ++i) {
-      if (aim[i] == 0 && held[i] == 0) continue;
-      traded.push_back(held[i]);
-      aimed.push_back(aim[i]);
-    }
-    const f64 expected = pearson(traded, aimed);
-    if (std::isnan(expected)) {
+    // Review A-4: the book DECIDE read at d.
+    const f64 at_d = traded(recorder.held.at(t), aim);
+    if (std::isnan(at_d)) {
       EXPECT_TRUE(std::isnan(r.aim_correlation_traded)) << t;
+    } else {
+      EXPECT_NEAR(r.aim_correlation_traded, at_d, 1e-12) << t;
+      ++compared;
+    }
+    // Ruling E-14a: the book the next decision read, after d's trades.
+    if (k + 1 == run.rows.size()) {
+      EXPECT_TRUE(std::isnan(r.aim_correlation_traded_after)) << "the last scored decision";
       continue;
     }
-    EXPECT_NEAR(r.aim_correlation_traded, expected, 1e-12) << t;
-    ++compared;
-    sum += r.aim_correlation_traded;
-    lowest = std::min(lowest, r.aim_correlation_traded);
-    if (std::isfinite(r.aim_correlation) &&
-        std::abs(r.aim_correlation_traded - r.aim_correlation) > 1e-9)
+    const usize next = row_of.at(run.rows[k + 1].session);
+    ASSERT_GT(next, t);
+    ASSERT_EQ(recorder.held.count(next), 1U) << next;
+    const f64 after = traded(recorder.held.at(next), aim);
+    if (std::isnan(after)) {
+      EXPECT_TRUE(std::isnan(r.aim_correlation_traded_after)) << t;
+      continue;
+    }
+    EXPECT_NEAR(r.aim_correlation_traded_after, after, 1e-12) << t;
+    ++compared_after;
+    sum_after += r.aim_correlation_traded_after;
+    lowest_after = std::min(lowest_after, r.aim_correlation_traded_after);
+    if (std::isfinite(r.aim_correlation_traded) &&
+        std::abs(r.aim_correlation_traded_after - r.aim_correlation_traded) > 1e-9)
       ++differ;
   }
   EXPECT_TRUE(std::isnan(run.rows.front().aim_correlation_traded)); // the book is flat
+  EXPECT_TRUE(std::isnan(run.rows.back().aim_correlation_traded_after));
   ASSERT_GT(compared, 0U);
-  EXPECT_GT(differ, 0U) << "the traded book never differs from the plan";
-  // The report (one book): both correlations; the criterion reads the traded mean.
+  ASSERT_GT(compared_after, 0U);
+  EXPECT_GT(differ, 0U) << "the book after the trades never differs from the one DECIDE read";
+  // The report (one book): the three correlations; the criterion reads the traded-after mean.
   ASSERT_EQ(run.summary.size(), 1U);
   const auto& entry = run.summary.begin().value();
-  EXPECT_EQ(entry.at("aim_correlation_traded").at("n"), compared);
-  EXPECT_NEAR(entry.at("aim_correlation_traded").at("mean").get<f64>(),
-              sum / static_cast<f64>(compared), 1e-12);
-  EXPECT_EQ(entry.at("aim_correlation_traded").at("min").get<f64>(), lowest);
   EXPECT_TRUE(entry.contains("aim_correlation")); // the plan's, as before
+  EXPECT_EQ(entry.at("aim_correlation_traded").at("n"), compared);
+  EXPECT_EQ(entry.at("aim_correlation_traded_after").at("n"), compared_after);
+  EXPECT_NEAR(entry.at("aim_correlation_traded_after").at("mean").get<f64>(),
+              sum_after / static_cast<f64>(compared_after), 1e-12);
+  EXPECT_EQ(entry.at("aim_correlation_traded_after").at("min").get<f64>(), lowest_after);
   const auto& criterion = entry.at("aim_correlation_criterion");
-  EXPECT_EQ(criterion.at("reads"), "aim_correlation_traded.mean");
+  EXPECT_EQ(criterion.at("reads"), "aim_correlation_traded_after.mean");
+  EXPECT_NE(criterion.at("rule").get<std::string>().find("E-14a"), std::string::npos);
   EXPECT_EQ(criterion.at("threshold").get<f64>(), sp::v3_aim_correlation_min);
   EXPECT_EQ(sp::v3_aim_correlation_min, 0.9);
   const f64 value = criterion.at("value").get<f64>();
-  EXPECT_EQ(value, entry.at("aim_correlation_traded").at("mean").get<f64>());
+  EXPECT_EQ(value, entry.at("aim_correlation_traded_after").at("mean").get<f64>());
   EXPECT_EQ(criterion.at("met").get<bool>(), value >= 0.9);
   EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_criterion"),
             criterion);
+  EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_traded_after"),
+            entry.at("aim_correlation_traded_after"));
 }
 
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta
 // .02, ceiling 1 with the void on); --spo-alpha implied-aim is its only alpha (refused with
 // spo-v1/v2 and for any other value); every spo flag that would move a registered constant is
-// refused; the allowed flags override; as spo-v1/v2 it refuses a per-name rate and the holdings
-// stream with the void on, and unlike them it accepts the capacity curve (Ruling E-37); its
-// blocks are keyed spo_v3.
+// refused, the solver's --spo-iters and --spo-tol included (Ruling E-31a, review SPO-5); the
+// allowed flags override; as spo-v1/v2 it refuses a per-name rate, and it refuses the holdings
+// stream whatever the void flag (Ruling E-31a: its primary book's limits_unmet always voids);
+// unlike them it accepts the capacity curve (Ruling E-37); its blocks are keyed spo_v3.
 TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
   const std::vector<std::string> tail{"--risk-model", "risk", "--risk-model-sha256", "abc",
                                       "--output", "x"};
@@ -560,20 +835,21 @@ TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
                                                 "x"}));
   EXPECT_TRUE(parse({"nav", "--rule", "spo-v3"})); // --spo-alpha is optional
   // The allowed flags override the rule's defaults.
-  const auto allowed = parse({"nav", "--rule", "spo-v3", "--spo-iters", "3000", "--spo-tol",
-                              "1e-10", "--spo-books", "primary", "--specific-ceiling", "2",
-                              "--specific-ceiling-void", "off"});
+  const auto allowed = parse({"nav", "--rule", "spo-v3", "--spo-books", "primary",
+                              "--specific-ceiling", "2", "--specific-ceiling-void", "off"});
   ASSERT_TRUE(allowed) << allowed.error().to_string();
   const auto& a = allowed->options.spo_params;
-  EXPECT_EQ(a.max_iterations, 3000U);
-  EXPECT_EQ(a.tolerance, 1e-10);
+  EXPECT_EQ(a.max_iterations, registered.max_iterations); // registered (Ruling E-31a)
+  EXPECT_EQ(a.tolerance, registered.tolerance);
   EXPECT_FALSE(a.all_books);
   EXPECT_EQ(a.specific_ceiling, 2.0);
   EXPECT_FALSE(a.void_on_capped);
   EXPECT_EQ(a.sharpe_prior, sp::v3_sharpe_prior);
-  // Refused with spo-v3: every flag that would move a registered constant (still spo-v2's).
+  // Refused with spo-v3: every flag that would move a registered constant (still spo-v2's),
+  // the solver's iteration cap and tolerance included (Ruling E-31a).
   for (const char* flag : {"--gamma", "--ic-book", "--w-max", "--adv-cap-q", "--adv-trade-p",
-                           "--target-vol", "--spo-horizon", "--alpha-horizon", "--spo-gross"}) {
+                           "--target-vol", "--spo-horizon", "--alpha-horizon", "--spo-gross",
+                           "--spo-iters", "--spo-tol"}) {
     const auto refused = parse({"nav", "--rule", "spo-v3", flag, "0.5"});
     ASSERT_FALSE(refused) << flag;
     EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument) << flag;
@@ -583,6 +859,7 @@ TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
     EXPECT_FALSE(early) << flag;
   }
   EXPECT_TRUE(parse({"nav", "--rule", "spo-v2", "--gamma", "5"}));
+  EXPECT_TRUE(parse({"nav", "--rule", "spo-v2", "--spo-iters", "3000", "--spo-tol", "1e-10"}));
   // --spo-alpha: implied-aim only, spo-v3 only, once.
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--spo-alpha", "fitted"}));
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v1", "--spo-alpha", "implied-aim"}));
@@ -603,8 +880,9 @@ TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
     EXPECT_FALSE(v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data())); // no model
     EXPECT_TRUE(v7::claims_nav_args(static_cast<int>(argv.size()), argv.data()));
   }
-  // As spo-v1/v2: the fixed rate, no holdings stream with the void on. Unlike them (Ruling
-  // E-37), the capacity curve runs, as a report-only pass (SpoV3.CapacityPass...).
+  // As spo-v1/v2: the fixed rate. Unlike them, no holdings stream even with the void off (Ruling
+  // E-31a), and the capacity curve runs, as a report-only pass (Ruling E-37,
+  // SpoV3.CapacityPass...).
   const auto curve = parse({"nav", "--rule", "spo-v3", "--capacity-curve"});
   ASSERT_TRUE(curve) << curve.error().to_string();
   EXPECT_TRUE(curve->options.capacity);
@@ -619,8 +897,14 @@ TEST(SpoV3, ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim) {
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--capacity-curve", "--rate", "per-name-v1"}));
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--rate", "per-name-v1"}));
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--emit-holdings", "h"}));
-  EXPECT_TRUE(parse({"nav", "--rule", "spo-v3", "--emit-holdings", "h",
-                     "--specific-ceiling-void", "off"}));
+  const auto holdings = parse({"nav", "--rule", "spo-v3", "--emit-holdings", "h",
+                               "--specific-ceiling-void", "off"});
+  ASSERT_FALSE(holdings);
+  EXPECT_EQ(holdings.error().code(), co::ErrorCode::InvalidArgument);
+  EXPECT_NE(holdings.error().message().find("Ruling E-31a"), std::string::npos)
+      << holdings.error().to_string();
+  EXPECT_TRUE(parse({"nav", "--rule", "spo-v2", "--emit-holdings", "h",
+                     "--specific-ceiling-void", "off"})); // spo-v1/v2 unchanged
   EXPECT_FALSE(parse({"nav", "--rule", "spo-v3", "--rule", "aim-partial-v6"}));
   // The blocks are keyed spo_v3 and the rule is relabelled.
   Json recipe{{"rule", "aim-partial-v5+neutral-price-risk-v1"}};
@@ -815,9 +1099,11 @@ TEST(SpoV3, ShapingFlagsPassThroughAndSpoV1V2RefuseThem) {
 // at m x NAV_post: trade limit p ADV / (m NAV), impact at m NAV): x1 is the main pass's S2 book
 // bit for bit (its tracking rows too, relabelled), x4 at NAV V is the spo-v3 book replayed at 4V
 // divided by 4, and the tracker planned at the base NAV under the x4 fills is another book. The
-// main engine keeps exactly the rows, summary and tripwire of a run without the capacity pass;
-// the capacity engine's gamma is the main pass's bit for bit and its tripwire never voids. A
-// capacity pass on a book that is not a capacity book is refused.
+// main engine keeps exactly the rows, summary and tripwire of a run without the capacity pass
+// (review SPO-4: no capacity row in its rows or counts); the capacity engine's gamma is the main
+// pass's bit for bit and its tripwire never voids (no primary book). x4's first trading row is
+// the NAV-4V tracker's (its own trade limit). A capacity pass on a book that is not a capacity
+// book is refused.
 TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
   const Directory dir;
   const Role role(40, 12, 53);
@@ -864,7 +1150,8 @@ TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
   EXPECT_EQ(engine->rows_csv(), alone.csv);
   EXPECT_EQ(engine->rows_summary_json().dump(), alone.summary.dump());
   EXPECT_EQ(engine->rows_tripwire_json().dump(), alone.tripwire.dump());
-  EXPECT_TRUE(v7::capture({}, {}, {})); // the main tripwire still reads clear
+  // The main tripwire reads the main rows alone: void exactly when a plain run's is (E-31a).
+  EXPECT_EQ(static_cast<bool>(v7::capture({}, {}, {})), alone.primary_unmet == 0);
   // gamma = S_prior / sigma_aim is scale free: the capacity engine's is the main pass's.
   ASSERT_TRUE(capacity->calibration().done);
   EXPECT_EQ(bits(capacity->calibration().gamma), bits(engine->calibration().gamma));
@@ -880,20 +1167,51 @@ TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
     EXPECT_EQ(bits(u.planned_gross), bits(a.planned_gross)) << t;
     EXPECT_EQ(bits(u.traded_dollars), bits(a.traded_dollars)) << t;
   }
-  std::vector<sp::TrackingRow> unit_rows;
-  usize x4_rows = 0;
+  std::vector<sp::TrackingRow> unit_rows, x4_rows;
   for (const auto& r : capacity->tracking_rows()) {
     if (r.book.rfind(books[1].id + "+", 0) == 0) {
       auto row = r;
       row.book = alone.rows.front().book;
       unit_rows.push_back(std::move(row));
     } else if (r.book.rfind(books[3].id + "+", 0) == 0) {
-      ++x4_rows;
+      x4_rows.push_back(r);
     }
   }
   EXPECT_EQ(sp::tracking_csv(unit_rows), alone.csv);
-  EXPECT_EQ(x4_rows, alone.rows.size());
+  EXPECT_EQ(x4_rows.size(), alone.rows.size());
   EXPECT_EQ(capacity->rows_tripwire_json().at("status"), "clear");
+  // Review SPO-4: no capacity row reaches the main pass's rows, tripwire or counts (Ruling
+  // E-31a included), and the capacity engine, which has no primary book, never voids.
+  for (const auto& r : engine->tracking_rows())
+    EXPECT_NE(r.book.rfind("capacity-", 0), 0U) << r.book;
+  EXPECT_EQ(engine->tracking_rows().size(), alone.rows.size());
+  EXPECT_EQ(engine->rows_tripwire_json().at("limits_unmet_primary").at("count"),
+            alone.primary_unmet);
+  EXPECT_EQ(engine->primary_book(), primary_label());
+  EXPECT_TRUE(capacity->primary_book().empty());
+  EXPECT_TRUE(capacity->rows_tripwire());
+  const auto capacity_trip = capacity->rows_tripwire_json();
+  EXPECT_EQ(capacity_trip.at("limits_unmet_primary").at("count"), 0U);
+  EXPECT_FALSE(capacity_trip.contains("voided"));
+  // Review SPO-4: each capacity book plans with the trade limit of its own NAV. On x4's first
+  // trading decision (every earlier plan flat, so NAV_post is exactly the initial NAV) its row is
+  // the NAV-4V tracker's (the same names at the trade limit, turnover and cost), not the x1
+  // book's (the base-NAV limit is 4 times looser).
+  ASSERT_EQ(x4_rows.size(), genuine.rows.size());
+  ASSERT_EQ(unit_rows.size(), genuine.rows.size());
+  const auto first = std::find_if(genuine.rows.begin(), genuine.rows.end(),
+                                  [](const sp::TrackingRow& r) { return r.turnover > 0; });
+  ASSERT_NE(first, genuine.rows.end());
+  const auto k = static_cast<usize>(first - genuine.rows.begin());
+  const auto& nav4 = genuine.rows[k];
+  const auto& x4_row = x4_rows[k];
+  EXPECT_EQ(x4_row.session, nav4.session);
+  EXPECT_GT(x4_row.at_trade_limit, 0U);
+  EXPECT_EQ(x4_row.at_trade_limit, nav4.at_trade_limit);
+  EXPECT_NEAR(x4_row.turnover, nav4.turnover, 1e-12 * nav4.turnover);
+  EXPECT_NEAR(x4_row.trade_cost, nav4.trade_cost, 1e-12 * nav4.trade_cost);
+  EXPECT_NEAR(x4_row.tracking_error, nav4.tracking_error, 1e-12 * nav4.tracking_error);
+  EXPECT_NE(bits(x4_row.turnover), bits(unit_rows[k].turnover)) << "x4 planned at the base NAV";
   // x4 at NAV V is the NAV-4V tracker divided by 4; planned at the base NAV it is another book.
   const auto& g4 = genuine.result.days;
   ASSERT_EQ(x4->days.size(), g4.size());

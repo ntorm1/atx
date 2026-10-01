@@ -57,7 +57,8 @@ struct Stats {
 struct BookStats {
   usize decisions{}, unconverged{}, unmet{}, breaches{}, capped_decisions{}, capped_max{};
   Stats iterations, primal, dual, tracking_error, tracking_error_current, share, correlation;
-  Stats correlation_traded; // review A-4: the E-14 criterion's input
+  Stats correlation_traded;       // review A-4: the book DECIDE read at d (one decision late)
+  Stats correlation_traded_after; // Ruling E-14a: the E-14 criterion's input
   Stats trade_cost, gross, turnover;
   Stats te_shadow, correlation_shadow, cost_shadow, gross_shadow, turnover_shadow;
   void add(const TrackingRow& r) {
@@ -72,6 +73,7 @@ struct BookStats {
     tracking_error.add(r.tracking_error); tracking_error_current.add(r.tracking_error_current);
     share.add(r.trade_limit_share); correlation.add(r.aim_correlation);
     correlation_traded.add(r.aim_correlation_traded);
+    correlation_traded_after.add(r.aim_correlation_traded_after);
     trade_cost.add(r.trade_cost); gross.add(r.gross); turnover.add(r.turnover);
     te_shadow.add(r.tracking_error_shadow); correlation_shadow.add(r.aim_correlation_shadow);
     cost_shadow.add(r.trade_cost_shadow); gross_shadow.add(r.gross_shadow);
@@ -83,25 +85,30 @@ std::map<std::string, BookStats> by_book(std::span<const TrackingRow> rows) {
   for (const auto& r : rows) books[r.book].add(r);
   return books;
 }
-// Ruling E-14's criterion on one book (review A-4): the mean correlation of the traded book
-// with the aim (aim_correlation_traded), not the plan's (aim_correlation), against .9.
+// Ruling E-14's criterion on one book (review A-4, Ruling E-14a): the mean correlation of the
+// traded book after decision d's trades with the aim at d (aim_correlation_traded_after), not
+// the plan's (aim_correlation) nor the book DECIDE read at d (aim_correlation_traded), against
+// .9.
 Json e14_criterion(const BookStats& b) {
-  const f64 value = b.correlation_traded.mean();
-  return Json{{"rule", "Ruling E-14: mean correlation of the traded book with the aim >= .9 "
-                       "(threshold = v3_aim_correlation_min)"},
-              {"reads", "aim_correlation_traded.mean"},
+  const f64 value = b.correlation_traded_after.mean();
+  return Json{{"rule", "Ruling E-14 / E-14a: mean correlation of the traded book after decision "
+                       "d's trades with the aim at d >= .9 (threshold = "
+                       "v3_aim_correlation_min)"},
+              {"reads", "aim_correlation_traded_after.mean"},
               {"threshold", v3_aim_correlation_min}, {"value", finite_or_null(value)},
               {"met", std::isfinite(value) ? Json(value >= v3_aim_correlation_min)
                                            : Json(nullptr)}};
 }
 // The report-only block of one book (the tripwire record and the summary share it): the
-// plan's and the traded book's aim correlation, the criterion reading the traded one.
+// plan's and the traded book's aim correlations, the criterion reading the traded book after
+// the trades (Ruling E-14a).
 Json report(const BookStats& b) {
   return Json{{"decisions", b.decisions},
               {"tracking_error", b.tracking_error.mean_max()},
               {"trade_limit_share", b.share.mean_max()},
               {"aim_correlation", b.correlation.mean_min()},
               {"aim_correlation_traded", b.correlation_traded.mean_min()},
+              {"aim_correlation_traded_after", b.correlation_traded_after.mean_min()},
               {"aim_correlation_criterion", e14_criterion(b)},
               {"unconverged", b.unconverged}, {"limits_unmet", b.unmet}};
 }
@@ -127,12 +134,37 @@ Trip count_trips(std::span<const TrackingRow> rows) {
   t.capped_decisions = sessions.size();
   return t;
 }
+// Ruling E-31a (review SPO-1): the primary book's scored decisions whose net or beta limit was
+// not met, and the first such session.
+struct Unmet {
+  usize count{};
+  i64 first_session{};
+};
+Unmet primary_unmet(std::span<const TrackingRow> rows, std::string_view primary) {
+  Unmet u;
+  for (const auto& r : rows) {
+    if (r.limits_met || std::string_view(r.book) != primary) continue;
+    if (u.count == 0 || r.session < u.first_session) u.first_session = r.session;
+    ++u.count;
+  }
+  return u;
+}
+constexpr const char* limits_unmet_rule =
+    "Ruling E-31a: a scored decision of the primary book whose net or beta limit is not met "
+    "(limits_met false) voids the run, whatever --specific-ceiling-void, before any NAV or "
+    "return file is written or printed";
 constexpr const char* correlation_unit =
     "Pearson correlation over the optimized names of the planned (shadow) and the aim weights";
 constexpr const char* traded_correlation_unit =
-    "Pearson correlation of the traded book (the holdings DECIDE read at d: fills, caps, "
-    "blocks and drift of earlier decisions, nonmember exits and unpriced members included) and "
-    "the aim, over every name either holds; Ruling E-14's criterion reads its mean";
+    "Pearson correlation of the book DECIDE read at d (fills, caps, blocks and drift of earlier "
+    "decisions, nonmember exits and unpriced members included) and the aim at d, over every "
+    "name either holds (one decision behind the trades)";
+constexpr const char* traded_after_correlation_unit =
+    "Ruling E-14a: Pearson correlation of the traded book after decision d's trades (the "
+    "holdings the book's next rebalance decision's DECIDE reads: d's fills, caps and blocks with "
+    "the drift since, nonmember exits and unpriced members included) and the aim at d, over "
+    "every name either holds; NaN on the book's last scored decision; Ruling E-14's "
+    "criterion reads its mean";
 } // namespace
 
 SpoParams v3_params() {
@@ -174,12 +206,16 @@ std::string tracking_declaration(const SpoParams& p) {
          (p.void_on_capped ? "on" : "off") +
          " (on: a clamp or a breach at any scored decision voids the run, which exits non-zero "
          "after writing spo_diagnostics.csv and v7_extras.json and before any NAV or return "
-         "file); optimized names = members with a risk row; nonmembers follow aim-partial-v5's "
+         "file); a scored decision of the primary book that does not meet its net or beta limit "
+         "voids the run the same way whatever --specific-ceiling-void (Ruling E-31a); "
+         "optimized names = members with a risk row; nonmembers follow aim-partial-v5's "
          "exit rule and unpriced members keep their weight (fixed positions in the limits and, "
          "through their factor exposure, in the tracking term); a position outside its box by "
          "more than one session's trade limit moves by the limit toward it; solver: over-relaxed "
          "ADMM on the factor structure (atx::engine::book::solve_tracking), stop at primal and "
-         "dual residual <= --spo-tol or --spo-iters, warm dual per book; non-rebalance decisions "
+         "dual residual <= " + number(p.tolerance) + " or at " + std::to_string(p.max_iterations) +
+         " iterations (registered: --spo-tol and --spo-iters are refused, Ruling E-31a), warm "
+         "dual per book; non-rebalance decisions "
          "are aim-partial-v5's (exits only); diagnostics beside each book: a plan-level "
          "aim-partial-v5 shadow book (same aim, full fills, no drift) scored with the same risk "
          "model and S2 law; tracking_error columns are annualised, the other money columns per "
@@ -200,6 +236,9 @@ Json tracking_parameters_json(const SpoParams& p, f64 horizon, f64 gross_bound) 
       {"specific_ceiling", finite_or_null(p.specific_ceiling)},
       {"specific_ceiling_void", p.void_on_capped},
       {"spo_iters", p.max_iterations}, {"spo_tol", p.tolerance},
+      {"spo_iters_rule", "registered constants (Ruling E-31a: --spo-iters and --spo-tol are "
+                         "refused under spo-v3)"},
+      {"limits_unmet_rule", limits_unmet_rule},
       {"books", p.all_books ? "all" : "primary (S1, S2)"},
       {"solver", Json{{"method", "atx::engine::book::solve_tracking (over-relaxed ADMM on the "
                                  "factor structure, warm dual per book)"},
@@ -225,7 +264,8 @@ std::string tracking_csv(std::span<const TrackingRow> rows) {
   std::string text =
       "session,book,members,optimized,unpriced_members,fixed_nonmembers,gamma,iterations,"
       "converged,limits_met,primal_residual,dual_residual,limit_violation,clipped_eigenvalues,"
-      "tracking_error,tracking_error_current,aim_correlation,aim_correlation_traded,objective,"
+      "tracking_error,tracking_error_current,aim_correlation,aim_correlation_traded,"
+      "aim_correlation_traded_after,objective,"
       "trade_cost,"
       "amortized_cost,borrow,gross,aim_gross,net,long,short,abs_beta,turnover,no_trade,"
       "at_trade_limit,trade_limit_share,at_locate_floor,gross_bound_breached,nu,rho,"
@@ -241,7 +281,8 @@ std::string tracking_csv(std::span<const TrackingRow> rows) {
             number(r.limit_violation) + ',' + u(r.clipped_eigenvalues) + ',' +
             number(r.tracking_error) + ',' + number(r.tracking_error_current) + ',' +
             number(r.aim_correlation) + ',' + number(r.aim_correlation_traded) + ',' +
-            number(r.objective) + ',' + number(r.trade_cost) +
+            number(r.aim_correlation_traded_after) + ',' + number(r.objective) + ',' +
+            number(r.trade_cost) +
             ',' + number(r.amortized_cost) + ',' + number(r.borrow) + ',' + number(r.gross) +
             ',' + number(r.aim_gross) + ',' + number(r.net) + ',' + number(r.long_weight) + ',' +
             number(r.short_weight) + ',' + number(r.abs_beta) + ',' + number(r.turnover) + ',' +
@@ -265,6 +306,7 @@ Json tracking_units_json() {
               {"trade_cost", decision}, {"trade_cost_shadow", decision},
               {"aim_correlation", correlation_unit}, {"aim_correlation_shadow", correlation_unit},
               {"aim_correlation_traded", traded_correlation_unit},
+              {"aim_correlation_traded_after", traded_after_correlation_unit},
               {"primal_residual", "weight units"},
               {"dual_residual", "weight units (rho step over gamma d)"}};
 }
@@ -299,7 +341,22 @@ Json tracking_summary_json(std::span<const TrackingRow> rows) {
   return books;
 }
 
-co::Status tracking_tripwire(const SpoParams& p, std::span<const TrackingRow> rows) {
+std::string default_primary_book() {
+  const auto scenarios = fixed_nav_scenarios();
+  const auto& s = scenarios[nav_primary_scenario_index];
+  return s.id + "+" + s.financing.id;
+}
+
+co::Status tracking_tripwire(const SpoParams& p, std::span<const TrackingRow> rows,
+                             std::string_view primary_book) {
+  if (const Unmet u = primary_unmet(rows, primary_book); u.count > 0)
+    return co::Err(co::ErrorCode::Unavailable,
+                   std::string(rule_name(p)) + ": tripwire: Ruling E-31a: the primary book " +
+                       std::string(primary_book) + " did not meet its net or beta limit " +
+                       "(limits_unmet) on " + std::to_string(u.count) +
+                       " scored decisions (first session " + std::to_string(u.first_session) +
+                       "); the run is VOID whatever --specific-ceiling-void: no NAV or return " +
+                       "file is written");
   if (!p.void_on_capped) return co::Ok();
   const Trip t = count_trips(rows);
   if (t.capped_decisions == 0 && t.breaches == 0) return co::Ok();
@@ -315,22 +372,32 @@ co::Status tracking_tripwire(const SpoParams& p, std::span<const TrackingRow> ro
                      "NAV or return file is written");
 }
 
-Json tracking_tripwire_json(const SpoParams& p, std::span<const TrackingRow> rows) {
+Json tracking_tripwire_json(const SpoParams& p, std::span<const TrackingRow> rows,
+                            std::string_view primary_book) {
   const Trip t = count_trips(rows);
+  const Unmet u = primary_unmet(rows, primary_book);
   const bool tripped = t.capped_decisions > 0 || t.breaches > 0;
-  const char* status = !tripped            ? "clear"
-                       : p.void_on_capped ? "void"
-                                          : "tripped (not voiding: --specific-ceiling-void off)";
+  const bool void_run = u.count > 0 || (tripped && p.void_on_capped);
+  const char* status = void_run  ? "void"
+                       : !tripped ? "clear"
+                                  : "tripped (not voiding: --specific-ceiling-void off)";
   Json report_only = Json::object();
   for (const auto& [book, s] : by_book(rows)) report_only[book] = report(s);
-  return Json{{"specific_ceiling", finite_or_null(p.specific_ceiling)},
-              {"specific_ceiling_void", p.void_on_capped},
-              {"capped_specific_decisions", t.capped_decisions},
-              {"capped_specific_names_max", t.capped_max},
-              {"gross_bound_multiple", v3_gross_bound_multiple},
-              {"gross_bound_breaches", t.breaches}, {"max_gross", finite_or_null(t.max_gross)},
-              {"status", status},
-              {"report_only", std::move(report_only)}};
+  Json j{{"specific_ceiling", finite_or_null(p.specific_ceiling)},
+         {"specific_ceiling_void", p.void_on_capped},
+         {"capped_specific_decisions", t.capped_decisions},
+         {"capped_specific_names_max", t.capped_max},
+         {"gross_bound_multiple", v3_gross_bound_multiple},
+         {"gross_bound_breaches", t.breaches}, {"max_gross", finite_or_null(t.max_gross)},
+         {"primary_book", std::string(primary_book)},
+         {"limits_unmet_rule", limits_unmet_rule},
+         {"limits_unmet_primary",
+          Json{{"count", u.count},
+               {"first_session", u.count > 0 ? Json(u.first_session) : Json(nullptr)}}},
+         {"status", status},
+         {"report_only", std::move(report_only)}};
+  if (u.count > 0) j["voided"] = "limits_unmet";
+  return j;
 }
 
 // ---- rule-level dispatch (Engine): spo-v1/v2 unchanged, spo-v3 above ----------------------------
@@ -355,11 +422,12 @@ Json Engine::rows_summary_json() const {
   return is_tracking(params()) ? tracking_summary_json(tracking_rows()) : summary_json(rows());
 }
 Json Engine::rows_tripwire_json() const {
-  return is_tracking(params()) ? tracking_tripwire_json(params(), tracking_rows())
-                               : tripwire_json(params(), rows());
+  return is_tracking(params())
+             ? tracking_tripwire_json(params(), tracking_rows(), primary_book())
+             : tripwire_json(params(), rows());
 }
 co::Status Engine::rows_tripwire() const {
-  return is_tracking(params()) ? tracking_tripwire(params(), tracking_rows())
+  return is_tracking(params()) ? tracking_tripwire(params(), tracking_rows(), primary_book())
                                : ceiling_tripwire(params(), rows());
 }
 } // namespace atx::impl::strategy::spo

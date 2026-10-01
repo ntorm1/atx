@@ -148,11 +148,49 @@ class ModuleReuse(unittest.TestCase):
         options["ftd_sha256"] = "0" * 64
         got = hold.reuse_inputs("ftd_shares_ratio21", options)
         self.assertNotEqual(got, hold.entry_inputs(entry(prior, "ftd_shares_ratio21")))
-        self.assertEqual(hold.reuse_inputs("regsho_threshold_days63", options), e["stage_manifest_sha256"])
+        self.assertEqual(hold.reuse_inputs("regsho_threshold_days63", options),
+                         {**e["stage_manifest_sha256"], "seal": e["seal_date"]})
         s = entry(prior, "k8_count_63")
         self.assertEqual(sec.reuse_inputs("k8_count_63", sect.SecFixture.options(fx.sec)), sec.entry_inputs(s))
         self.assertNotEqual(sec.reuse_inputs("k8_count_63", sect.SecFixture.options(fx.sec, sec_filings_sha256="0" * 64)),
                             sec.entry_inputs(s))
+
+    def test_seal_move_recomputes_every_holdings_field(self):
+        """Review N-1: the seal is a --reuse input pin of every holdings field (each kind drops the rows available on
+        or after it before taking its visibility clock). Two seals give two pins; the same seal reuses."""
+        fx = self.fx
+        prior = json.loads((fx.base / "full" / "manifest.json").read_text(encoding="utf-8"))
+        options = dict(fx.hold)
+        moved = hold.dt.date(hold.SEAL.year + 1, 1, 1)
+        moved_ns = (moved - hold.EPOCH).days * hold.DAY_NS
+        for name in hold.HOLD_FIELDS:
+            e = entry(prior, name)
+            self.assertEqual(e["seal_date"], hold.SEAL.isoformat(), name)
+            self.assertEqual(hold.reuse_inputs(name, options), hold.entry_inputs(e), name)   # same seal: same pins
+            with mock.patch.object(hold, "SEAL", moved):
+                self.assertNotEqual(hold.reuse_inputs(name, options), hold.entry_inputs(e), name)
+                self.assertEqual(hold.reuse_inputs(name, options)["seal"], moved.isoformat(), name)
+        # an entry written before the seal pin records none: its field is recomputed once
+        old = {k: v for k, v in entry(prior, "ftd_shares_ratio21").items() if k != "seal_date"}
+        self.assertIsNone(hold.entry_inputs(old)["seal"])
+        self.assertNotEqual(hold.reuse_inputs("ftd_shares_ratio21", options), hold.entry_inputs(old))
+        # a --reuse after the seal moved recomputes every holdings field and reuses every other one
+        with mock.patch.object(hold, "SEAL", moved), mock.patch.object(hold, "SEAL_NS", moved_ns):
+            again = fx.run("seal-moved", fields=RECIPE, reuse=fx.base / "full")
+        block = again["reuse"]
+        holdings = list(hold.HOLD_FIELDS)
+        self.assertEqual(block["computed"], holdings)
+        self.assertEqual(block["reused"], [x for x in RECIPE if x not in hold.HOLD_FIELDS])
+        for name in holdings:
+            self.assertIn("inputs differ", block["not_reused"][name], name)
+            e = entry(again, name)
+            self.assertNotIn("reused_from", e)
+            self.assertEqual(e["seal_date"], moved.isoformat(), name)
+        # the same (moved) seal reuses them again
+        with mock.patch.object(hold, "SEAL", moved), mock.patch.object(hold, "SEAL_NS", moved_ns):
+            third = fx.run("seal-moved-again", fields=RECIPE, reuse=fx.base / "seal-moved")
+        self.assertEqual((third["reuse"]["reused"], third["reuse"]["computed"]), (RECIPE, []))
+        self.assertEqual(third["files"], again["files"])
 
 
 class SvDirectorySource(unittest.TestCase):

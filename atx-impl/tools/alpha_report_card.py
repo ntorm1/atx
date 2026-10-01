@@ -52,8 +52,10 @@ Store (v8 C-1, ``--work-dir W``, shared with the fitter): each candidate's invar
 book pnl / turnover / coverage) lives in W/<role sha16>-<window id>/card/, keyed by its signal payload SHA-256 and the
 producer fingerprint of CARD_PRODUCERS; only the correlation block is recomputed. Output bytes do not depend on it.
 Report only (off by default, bytes unchanged when off): ``--coverage-flags`` (C-1), ``--ic-theta`` and
-``--marginal-ic`` (C-2: horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h); the K6 row); f_theta / f_theta_hac_t of
-the admission row are copied when the fitter wrote them. None of them gates, selects or weights anything.
+``--marginal-ic`` (C-2: horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h); the K6 row, labelled "report-only (rule
+8)" and bound by Ruling E-36 to the card's role, window, pool and library, with its pin mandatory); f_theta /
+f_theta_hac_t of the admission row are copied when the fitter wrote them. None of them gates, selects or weights
+anything.
 Numpy only (mega_report components for the pages); BLAS pinned to one thread.
 """
 from __future__ import annotations
@@ -109,6 +111,12 @@ CARD_PRODUCERS = ("rank_signal", "invariant_block", "decay_block", "row_decay", 
                   "Geometry", "size_groups", "ff12_groups", "GroupLabels")
 # v8 C-2, report only (v8-prereg rule 8): the marginal IC contract K6 (task F-2, marginal_ic.json), copied per card.
 K6_KEYS = ("ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t", "max_abs_rho", "max_rho_member")
+K6_SCHEMA = "atx.marginal-ic/v1"
+K6_LABEL_LAG = 1 + ORIENTATION_H  # K6's h 21 labels: execution delay 1 + horizon 21 (strategy_marginal_ic.cpp)
+# Ruling E-36: pre-registration rule 8 governs; the label every card and the index carry with the K6 columns.
+K6_USE = "report-only (rule 8)"
+K6_USE_TEXT = ("report-only (rule 8): the marginal IC gates nothing and selects nothing at cell acceptance "
+               "(v8-prereg rule 8, Ruling E-36)")
 REPORT_ONLY_ADMISSION_KEYS = ("f_theta", "f_theta_hac_t")  # fitter --report-f-theta columns, copied when present
 
 
@@ -358,25 +366,65 @@ class Inputs:
         self.adm_rows = {r["id"]: r for r in self.admission.get("candidates", [])}
         self.admitted = [i for i in self.admission.get("admitted", []) if i in {c["id"] for c in self.cands}]
         self.marginal = None  # K6 rows by id (--marginal-ic), report only
+        self.marginal_binding = None  # Ruling E-36: what the K6 file was checked against
         if getattr(args, "marginal_ic", None) is not None:
-            self.marginal, m_sha = load_marginal_ic(Path(args.marginal_ic), getattr(args, "marginal_ic_sha256", None))
+            pin, pool = getattr(args, "marginal_ic_sha256", None), getattr(args, "marginal_ic_pool_sha256", None)
+            require(fcw.is_hash(pin), "marginal IC: --marginal-ic-sha256 is required (Ruling E-36: the K6 pin is "
+                                      "mandatory)")
+            require(fcw.is_hash(pool), "marginal IC: --marginal-ic-pool-sha256 is required (the pool the marginal IC "
+                                       "is measured against; Ruling E-36)")
+            self.marginal, m_sha, doc = load_marginal_ic(Path(args.marginal_ic), pin)
+            self.marginal_binding = bind_marginal_ic(doc, self.role, self.library_sha, pool, m_sha)
             self.files[str(args.marginal_ic)] = m_sha
         self.panel = self.role.payload()
 
 
-def load_marginal_ic(path: Path, pin: str | None) -> tuple[dict, str]:
-    """({id: {K6 keys}}, SHA-256) of a marginal_ic.json (contract K6: a list of rows, or {"candidates": [rows]}, each
-    {id, ic21, ic21_hac_t, marginal_ic21, marginal_hac_t, max_abs_rho, max_rho_member}; other keys are ignored)."""
+def bind_marginal_ic(doc: dict, role: fcw.RoleManifest, library_sha: str | None, pool_sha: str, k6_sha: str) -> dict:
+    """Ruling E-36: the K6 file is bound to the card's role, window, pool and library, each refused when it differs:
+    ``inputs.role`` and the pool's ``role_manifest_sha256`` are the card's TRAIN role; ``window`` is that role's score
+    window less the K6 label lag (score_begin, rows and the first / last decision sessions); ``inputs.pool.sha256`` is
+    ``--marginal-ic-pool-sha256``; ``inputs.library.sha256`` is the u pass's library. Returns the binding record the
+    index carries."""
+    def obj(parent, key):
+        v = parent.get(key) if isinstance(parent, dict) else None
+        return v if isinstance(v, dict) else {}
+    inputs = obj(doc, "inputs")
+    role_in, pool, lib, window = obj(inputs, "role"), obj(inputs, "pool"), obj(inputs, "library"), obj(doc, "window")
+    require(role_in.get("manifest_sha256") == role.sha and pool.get("role_manifest_sha256") == role.sha,
+            f"marginal IC: role {role_in.get('manifest_sha256')} (pool role {pool.get('role_manifest_sha256')}) is not "
+            f"the card's TRAIN role {role.sha}")
+    rows = role.score_end - role.score_begin - K6_LABEL_LAG
+    require(rows > 0, "marginal IC: the card's role window is shorter than the K6 label lag")
+    s = role.sessions
+    want = {"score_begin": role.score_begin, "rows": rows, "first_decision_session_ns": int(s[role.score_begin]),
+            "last_decision_session_ns": int(s[role.score_begin + rows - 1])}
+    got = {k: window.get(k) for k in want}
+    require(got == want, f"marginal IC: window {got} is not the card's role window {want}")
+    require(pool.get("sha256") == pool_sha,
+            f"marginal IC: pool {pool.get('sha256')} is not --marginal-ic-pool-sha256 {pool_sha}")
+    require(library_sha is not None and lib.get("sha256") == library_sha,
+            f"marginal IC: library {lib.get('sha256')} is not the u pass's library {library_sha}")
+    return {"sha256": k6_sha, "use": K6_USE_TEXT, "role_manifest_sha256": role.sha, "window_id": fcw.window_id(),
+            "window": want, "pool_sha256": pool_sha,
+            "pool_composition_weights_sha256": pool.get("composition_weights_sha256"), "library_sha256": library_sha}
+
+
+def load_marginal_ic(path: Path, pin: str) -> tuple[dict, str, dict]:
+    """({id: {K6 keys}}, SHA-256, the document) of a pinned marginal_ic.json (contract K6: ``atx.marginal-ic/v1``,
+    status complete, its ``inputs`` and ``window``, and ``candidates`` [rows], each {id, ic21, ic21_hac_t,
+    marginal_ic21, marginal_hac_t, max_abs_rho, max_rho_member}; other keys are ignored)."""
     data = path.read_bytes() if path.is_file() else b""
     require(data, f"marginal IC: missing {path}")
     sha = sha256_bytes(data)
-    require(pin is None or pin == sha, "marginal IC: SHA-256 pin differs")
+    require(pin == sha, "marginal IC: SHA-256 pin differs")
     try:
         j = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise CardError(f"marginal IC: JSON parse: {exc}") from exc
-    rows = j.get("candidates") if isinstance(j, dict) else j
-    require(isinstance(rows, list), "marginal IC: expected a list of K6 rows or {candidates: [...]}")
+    require(isinstance(j, dict) and j.get("schema") == K6_SCHEMA and j.get("status") == "complete" and
+            j.get("contract") == "K6", f"marginal IC: not a complete {K6_SCHEMA} (contract K6) document")
+    rows = j.get("candidates")
+    require(isinstance(rows, list), "marginal IC: expected {candidates: [K6 rows]}")
     out = {}
     for r in rows:
         require(isinstance(r, dict) and isinstance(r.get("id"), str) and all(k in r for k in K6_KEYS),
@@ -386,7 +434,7 @@ def load_marginal_ic(path: Path, pin: str | None) -> tuple[dict, str]:
                     for k in K6_KEYS[:5]) and (r["max_rho_member"] is None or isinstance(r["max_rho_member"], str)),
                 f"marginal IC: row {r['id']} has a non-numeric statistic or member")
         out[r["id"]] = {k: r[k] for k in K6_KEYS}
-    return out, sha
+    return out, sha, j
 
 
 # ------------------------------------------------------------------------------------------------ geometry
@@ -930,8 +978,9 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
             card["admission"].update({x: adm[x] for x in REPORT_ONLY_ADMISSION_KEYS if x in adm})  # C-2, report only
         else:
             card["admission"] = {"status": "not-in-admission-table"}
-        if inputs.marginal is not None:  # K6 (--marginal-ic), report only
-            card["marginal_ic"] = inputs.marginal.get(cid) or {"status": "absent from marginal_ic.json"}
+        if inputs.marginal is not None:  # K6 (--marginal-ic), report only: rule 8, Ruling E-36
+            card["marginal_ic"] = {**(inputs.marginal.get(cid) or {"status": "absent from marginal_ic.json"}),
+                                   "use": K6_USE}
         files[f"card-{cid}.json"] = canonical(card)
         files[f"card-{cid}.html"] = card_html(card).encode("utf-8")
         index_rows.append(index_row(card))
@@ -952,6 +1001,8 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
                         "admission_screen": inputs.admission.get("screen"),
                         "admission_runner_summary_sha256": inputs.admission.get("inputs", {}).get(
                             "runner_summary_sha256")}}
+    if inputs.marginal_binding is not None:  # --marginal-ic only (Ruling E-36): what the K6 file was bound to
+        index["marginal_ic"] = inputs.marginal_binding
     files["index.json"] = canonical(index)
     files["index.html"] = index_html(index).encode("utf-8")
     files["manifest.json"] = canonical({"schema": "atx.alpha-report-card-manifest/v1",
@@ -1084,6 +1135,9 @@ def card_html(card: dict) -> str:
             C.section(6, "Admission", admt))
     meta = [("theme", str(card["theme"])), ("family", str(card["family"])), ("DSL sha256", card["dsl_sha256"]),
             ("payload sha256", card["payload_sha256"]), ("runner sign", str(card["runner_sign"]))]
+    if "marginal_ic" in card:  # --marginal-ic only
+        mi = card["marginal_ic"]
+        meta.append(("marginal IC21 (K6)", f"{C.fmt(mi.get('marginal_ic21'), '+.4f') or 'n/a'}, {K6_USE}"))
     return _page(card["id"], meta, body)
 
 
@@ -1105,6 +1159,8 @@ def index_html(index: dict) -> str:
     meta = [("candidates", str(len(rows))), ("admitted", str(len(index["admitted"]))),
             ("decision rows", str(w["decision_rows"])), ("role", index["inputs"]["role_manifest_sha256"]),
             ("ranking", index["ranking"])]
+    if "marginal_ic" in index:  # --marginal-ic only
+        meta.append(("marginal IC (K6)", f"{K6_USE}; pool {index['marginal_ic']['pool_sha256'][:12]}"))
     return _page("Alpha report cards", meta, C.section(1, "Candidates", table))
 
 
@@ -1131,9 +1187,13 @@ def parse_args(argv):
                    help="report only (v8 C-2): add horizon.ic_theta = sum_h theta (1-theta)^(h-1) m(h), theta .05, "
                         "h 1..63, to each card and the index; off: bytes unchanged")
     p.add_argument("--marginal-ic", type=Path, default=None,
-                   help="report only (v8 C-2): marginal_ic.json of the marginal IC verb (contract K6); its row is "
-                        "copied into each card as marginal_ic")
-    p.add_argument("--marginal-ic-sha256", default=None, help="pin of --marginal-ic (checked when given)")
+                   help="report only (v8 C-2; rule 8, Ruling E-36): marginal_ic.json of the marginal IC verb (contract "
+                        "K6); its row is copied into each card as marginal_ic, labelled report-only (rule 8). Bound to "
+                        "the card's role, window, pool and library (refused when any differs); needs both pins below")
+    p.add_argument("--marginal-ic-sha256", default=None, help="pin of --marginal-ic (required with it)")
+    p.add_argument("--marginal-ic-pool-sha256", default=None,
+                   help="the pool (combined-signal manifest) the K6 residuals were measured against: its SHA-256, "
+                        "checked against the K6 inputs.pool.sha256 (required with --marginal-ic)")
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     return p.parse_args(argv)
 

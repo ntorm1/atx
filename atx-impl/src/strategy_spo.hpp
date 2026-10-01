@@ -326,11 +326,15 @@ struct TrackingRow {
   atx::f64 tracking_error{}, tracking_error_current{};
   // Pearson correlation of the planned and the aim weights over the optimized names.
   atx::f64 aim_correlation{};
-  // Review A-4, the Ruling E-14 criterion's input: Pearson correlation of the traded book (the
-  // holdings DECIDE read at d, after the fills, caps, blocks and drift of earlier decisions;
-  // nonmember exits and unpriced members included) and the aim, over every name either
-  // holds (NaN from a flat book).
+  // Review A-4: Pearson correlation of the book DECIDE read at d (after the fills, caps, blocks
+  // and drift of earlier decisions; nonmember exits and unpriced members included) and the aim
+  // at d, over every name either holds (NaN from a flat book). It lags the trades one decision.
   atx::f64 aim_correlation_traded{};
+  // Ruling E-14a (review SPO-2), the E-14 criterion's input: Pearson correlation of the traded
+  // book after decision d's trades (what the book's next rebalance decision's DECIDE reads: d's
+  // fills, caps and blocks, with the drift since) and the aim at d, over every name either
+  // holds; filled in at that next decision, NaN on the book's last scored decision.
+  atx::f64 aim_correlation_traded_after{unset};
   // The solver's terms (per session, NAV fractions): objective = (gamma/2) tracking variance
   // over the problem + amortized_cost + borrow; trade_cost = amortized_cost x H (unamortized).
   atx::f64 objective{}, trade_cost{}, amortized_cost{}, borrow{};
@@ -423,6 +427,12 @@ public:
   [[nodiscard]] atx::f64 horizon() const noexcept; // H in effect (NaN before the first plan)
   // G in effect, spo-v3's gross sanity bound 2 x L (NaN before the first plan).
   [[nodiscard]] atx::f64 gross_budget() const noexcept;
+  // spo-v3, Ruling E-31a: the label ("<trading id>+<financing id>") of the run's primary book,
+  // whose limits_unmet on a scored decision voids the run (tracking_tripwire). Default: the
+  // untiered primary (default_primary_book(), strategy_spo_v3.hpp); the v7 hook sets the run's
+  // own from its scenario matrix.
+  void set_primary_book(std::string book);
+  [[nodiscard]] const std::string& primary_book() const noexcept;
   // The rule's published blocks over its scored rows (strategy_spo_v3.cpp). spo-v1/v2
   // delegate unchanged to declaration(params()), parameters_json(params(), horizon(),
   // gross_budget()), calibration_json(calibration()) and diagnostics_csv,

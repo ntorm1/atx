@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <filesystem>
@@ -483,4 +484,276 @@ TEST(CompositionV8, StandardiseNeedsThemesAndPinnedWeights) {
   EXPECT_FALSE(st::IcComposition::create(f.cfg, f.candidates, f.member, {}, f.themes, std_rule));
   EXPECT_FALSE(st::IcComposition::create(f.cfg, f.candidates, f.member, zeros, f.themes, std_rule));
   EXPECT_FALSE(st::IcComposition::create(f.cfg, f.candidates, f.member, w, far, std_rule));
+}
+
+// ---- review T-1: rule 1 of ew-theme-std-v1 against the registration written out ----
+namespace {
+// The five registered rules of ew-theme-std-v1 (docs/plans/2026-09-29-atx-impl-v8-sprint-plan.md, Task R-1), written
+// out from the text, independently of the fitter (composition_rules.py) and of the runner's kernels:
+//   1. per date and theme, the weighted mean of the theme's signed member ranks; within-theme weights are
+//      proportional to the tier score;
+//   2. re-rank that composite across names with at least one present member (centred tied rank in [-.5, .5]);
+//   3. blend = sum over themes of (1/T) x re-ranked composite; missing stays neutral, nothing is redistributed
+//      inside a theme;
+//   4. member cap: no member's weight above 1/(2T); the excess goes pro rata to the other themes;
+//   5. tier re-grades: res_mom_12_1 B+ to B-, ear B+ to C+, sue C+ stays, ins_opp B- to C+.
+// Rules 5, 1 (the within-theme shares), 3 (1/T) and 4 fix one weight per member (rule_weights); rules 1-3 then apply
+// per date (rule_blend). After the cap a theme enters with W_theme = the sum of its members' weights, not 1/T.
+struct RuleMember {
+  const char* id;
+  usize theme;
+  int sign;
+  const char* source_tier;
+};
+// Rule 5, verbatim (a re-graded member must carry the declared from-grade).
+std::string rule_regraded_tier(const std::string& id, const std::string& tier) {
+  struct Regrade {
+    const char* name;
+    const char* from;
+    const char* to;
+  };
+  constexpr std::array<Regrade, 4> regrades{{{"res_mom_12_1", "B+", "B-"}, {"ear", "B+", "C+"}, {"sue", "C+", "C+"},
+                                             {"ins_opp", "B-", "C+"}}};
+  for (const auto& r : regrades) {
+    if (id != r.name) continue;
+    EXPECT_EQ(tier, r.from) << id;
+    return r.to;
+  }
+  return tier;
+}
+// The declared tier scores (registry schema, task A-1).
+f64 rule_tier_score(const std::string& tier) {
+  if (tier == "A") return 1.0;
+  if (tier == "A-") return .9;
+  if (tier == "B+") return .8;
+  if (tier == "B") return .7;
+  if (tier == "B-") return .55;
+  if (tier == "C+") return .4;
+  ADD_FAILURE() << "tier without a declared score: " << tier;
+  return 0.0;
+}
+// Rules 5, 1 and 3: w_k = (1/T) score_k / (the sum of its theme's scores). Rule 4: repeat until no member is above
+// the cap: every member above it is set to the cap (and keeps it), and each theme's excess goes to the members of the
+// other themes not at the cap, pro rata to their weights before the pass's additions.
+std::vector<f64> rule_weights(const std::vector<RuleMember>& members, usize themes) {
+  const usize n = members.size();
+  const f64 t_count = static_cast<f64>(themes);
+  std::vector<f64> score(n), theme_score(themes, 0.0), w(n);
+  for (usize k = 0; k < n; ++k) {
+    score[k] = rule_tier_score(rule_regraded_tier(members[k].id, members[k].source_tier));
+    theme_score[members[k].theme] += score[k];
+  }
+  for (usize k = 0; k < n; ++k) w[k] = score[k] / (t_count * theme_score[members[k].theme]);
+  const f64 cap = 1.0 / (2.0 * t_count);
+  std::vector<bool> capped(n, false);
+  for (usize pass = 0; pass <= n; ++pass) {
+    std::vector<f64> excess(themes, 0.0);
+    bool over = false;
+    for (usize k = 0; k < n; ++k) {
+      if (capped[k] || !(w[k] > cap * (1.0 + 1e-12))) continue;
+      excess[members[k].theme] += w[k] - cap;
+      w[k] = cap;
+      capped[k] = true;
+      over = true;
+    }
+    if (!over) break;
+    const std::vector<f64> before = w;
+    for (usize t = 0; t < themes; ++t) {
+      if (!(excess[t] > 0)) continue;
+      f64 mass = 0;
+      for (usize j = 0; j < n; ++j)
+        if (!capped[j] && members[j].theme != t) mass += before[j];
+      for (usize j = 0; j < n; ++j)
+        if (!capped[j] && members[j].theme != t) w[j] += excess[t] * before[j] / mass;
+    }
+  }
+  return w;
+}
+// Rule 1 as registered, and the wrong readings of it a test must be able to reject.
+enum class RuleOne { registered, unsigned_ranks, equal_weights, first_member_only, last_member_wins };
+// Rules 1-3 per date: a theme's composite is sum_{k present} w_k s_k r_k / W_theme (the weighted mean; a missing
+// member adds nothing), re-ranked over the names with a present member, times W_theme; nonmembers NaN. `min_gap`
+// (optional) receives the smallest gap between two present names' composites over every date and theme.
+std::vector<f64> rule_blend(usize days, usize width, const std::vector<u8>& member,
+                            const std::vector<std::vector<f64>>& signals, const std::vector<RuleMember>& members,
+                            const std::vector<f64>& w, usize themes, RuleOne variant, f64* min_gap = nullptr) {
+  const usize n = members.size();
+  std::vector<f64> mass(themes, 0.0), count(themes, 0.0), weight = w;
+  for (usize k = 0; k < n; ++k) {
+    mass[members[k].theme] += w[k];
+    count[members[k].theme] += 1.0;
+  }
+  if (variant == RuleOne::equal_weights)
+    for (usize k = 0; k < n; ++k) weight[k] = mass[members[k].theme] / count[members[k].theme];
+  std::vector<f64> out(days * width, 0.0);
+  for (usize d = 0; d < days; ++d) {
+    std::vector<std::vector<f64>> sum(themes, std::vector<f64>(width, 0.0));
+    std::vector<std::vector<bool>> present(themes, std::vector<bool>(width, false));
+    std::vector<bool> seen(themes, false);
+    for (usize k = 0; k < n; ++k) {
+      const usize t = members[k].theme;
+      if (variant == RuleOne::first_member_only && seen[t]) continue;
+      seen[t] = true;
+      std::vector<f64> row(width);
+      std::vector<bool> keep(width);
+      for (usize i = 0; i < width; ++i) {
+        row[i] = signals[k][d * width + i];
+        keep[i] = member[d * width + i] != 0 && std::isfinite(row[i]);
+      }
+      const auto r = v8_ref_ranks(row, keep);
+      const f64 s = variant == RuleOne::unsigned_ranks ? 1.0 : static_cast<f64>(members[k].sign);
+      for (usize i = 0; i < width; ++i) {
+        if (std::isnan(r[i])) continue;
+        const f64 term = s * weight[k] * r[i];
+        sum[t][i] = variant == RuleOne::last_member_wins ? term : sum[t][i] + term;
+        present[t][i] = true;
+      }
+    }
+    for (usize t = 0; t < themes; ++t) {
+      std::vector<f64> mean(width, 0.0), listed;
+      for (usize i = 0; i < width; ++i) {
+        mean[i] = sum[t][i] / mass[t];
+        if (present[t][i]) listed.push_back(mean[i]);
+      }
+      std::sort(listed.begin(), listed.end());
+      for (usize j = 1; min_gap != nullptr && j < listed.size(); ++j)
+        *min_gap = std::min(*min_gap, listed[j] - listed[j - 1]);
+      const auto rr = v8_ref_ranks(mean, present[t]);
+      for (usize i = 0; i < width; ++i)
+        if (!std::isnan(rr[i])) out[d * width + i] += mass[t] * rr[i];
+    }
+    for (usize i = 0; i < width; ++i)
+      if (!member[d * width + i]) out[d * width + i] = v8_nan;
+  }
+  return out;
+}
+} // namespace
+
+// Review T-1: rule 1 -- the weighted mean of a theme's SIGNED member ranks, each member with its OWN weight -- can
+// fail here (the V8Fixture above cannot: every sign is +1, the weights inside a theme are equal and b's three ranks
+// sum to b1's). Members disagree in order, signs are mixed inside themes b and c, the weights inside a theme are
+// unequal tier shares after the rule 5 re-grades and the rule 4 cap (which binds in two passes), a member is missing
+// for one name, a theme is absent for another, and two cells are nonmembers. The expected blend is rule_blend; each
+// wrong rule 1 (signs dropped, equal weights inside a theme, first member only, last member wins) moves it by more
+// than .2 on this fixture.
+TEST(CompositionV8, RuleOneIsTheWeightedMeanOfSignedMemberRanks) {
+  constexpr usize days = 4, width = 10, themes = 3;
+  const std::vector<RuleMember> members{{"a1", 0, 1, "A"},           {"b_lead", 1, 1, "B+"}, {"c_one", 2, -1, "B"},
+                                        {"res_mom_12_1", 1, -1, "B+"}, {"c_two", 2, 1, "A-"},  {"ins_opp", 1, 1, "B-"},
+                                        {"c_three", 2, -1, "C+"}};
+  const std::array<const char*, themes> family{"a", "b", "c"};
+  std::vector<st::IcCompositionCandidate> candidates;
+  std::vector<usize> theme_of;
+  std::vector<int> signs;
+  for (const auto& m : members) {
+    candidates.push_back({m.id, family[m.theme]});
+    theme_of.push_back(m.theme);
+    signs.push_back(m.sign);
+  }
+  // Rules 5, 1, 3 and 4. The cap (1/6) binds: a1 (1/3) is capped and pass 1 scales every other member by 1.25; then
+  // b_lead and c_two are capped, b_lead's excess 1/42 goes to c_one and c_three, c_two's 1/48 to res_mom_12_1 (B-
+  // after rule 5) and ins_opp (C+ after rule 5). Hand values:
+  const auto w = rule_weights(members, themes);
+  const std::array<f64, 7> hand{1.0 / 6, 1.0 / 6, 85.0 / 528, 11.0 / 84 + 11.0 / 912, 1.0 / 6, 2.0 / 21 + 1.0 / 114,
+                                85.0 / 924};
+  ASSERT_EQ(w.size(), hand.size());
+  f64 total = 0;
+  for (usize k = 0; k < w.size(); ++k) {
+    EXPECT_NEAR(w[k], hand[k], 1e-15) << members[k].id;
+    total += w[k];
+  }
+  EXPECT_NEAR(total, 1.0, 1e-15);
+  std::vector<u8> member(days * width, 1);
+  member[0] = 0;                 // name 0 is not a member on date 0
+  member[3 * width + 9] = 0;     // name 9 leaves on date 3
+  std::vector<std::vector<f64>> signals(members.size(), std::vector<f64>(days * width));
+  for (usize k = 0; k < members.size(); ++k)
+    for (usize d = 0; d < days; ++d)
+      for (usize i = 0; i < width; ++i) {
+        const auto kk = static_cast<f64>(k), dd = static_cast<f64>(d), ii = static_cast<f64>(i);
+        signals[k][d * width + i] = std::sin(.9 + 1.7 * kk + .61 * dd + (.37 + .23 * kk) * ii * ii);
+      }
+  signals[3][1 * width + 2] = v8_nan;                               // res_mom_12_1 missing for name 2 on date 1
+  signals[0][2 * width + 5] = v8_nan;                               // theme a absent for name 5 on date 2
+  for (const usize k : {usize{1}, usize{3}, usize{5}}) signals[k][4] = v8_nan; // theme b absent for name 4 on date 0
+  st::IcCompositionConfig cfg;
+  cfg.dates = days;
+  cfg.instruments = width;
+  cfg.decision_end = days;
+  const auto compose = [&](atx::engine::parallel::DetPool* pool) -> std::optional<st::IcCompositionResult> {
+    auto c = st::IcComposition::create(cfg, candidates, member, w, theme_of, st::IcThemeRule::standardise);
+    if (!c) return std::nullopt;
+    for (usize k = 0; k < candidates.size(); ++k)
+      if (!c->add(k, signals[k], signs[k], pool)) return std::nullopt;
+    auto out = c->finish();
+    if (!out) return std::nullopt;
+    return std::move(*out);
+  };
+  const auto got = compose(nullptr);
+  ASSERT_TRUE(got);
+  f64 gap = std::numeric_limits<f64>::infinity();
+  const auto expected = rule_blend(days, width, member, signals, members, w, themes, RuleOne::registered, &gap);
+  EXPECT_GT(gap, 1e-4); // no near tie in any composite: the weighted mean's divisor W_theme cannot change a rank
+  EXPECT_TRUE(std::isnan(expected[0]) && std::isnan(expected[3 * width + 9]));
+  const auto ref = v8_ref_blend(days, width, member, signals, w, signs, theme_of, themes); // the earlier reference
+  for (usize k = 0; k < expected.size(); ++k) {
+    if (std::isnan(expected[k])) {
+      EXPECT_TRUE(std::isnan(got->signal[k])) << k;
+      EXPECT_TRUE(std::isnan(ref[k])) << k;
+      continue;
+    }
+    EXPECT_NEAR(got->signal[k], expected[k], 1e-15) << k;
+    EXPECT_NEAR(ref[k], expected[k], 1e-15) << k;
+  }
+  // Every wrong rule 1 is rejected by this fixture.
+  for (const auto variant : {RuleOne::unsigned_ranks, RuleOne::equal_weights, RuleOne::first_member_only,
+                             RuleOne::last_member_wins}) {
+    const auto wrong = rule_blend(days, width, member, signals, members, w, themes, variant);
+    f64 moved = 0;
+    for (usize k = 0; k < wrong.size(); ++k)
+      if (!std::isnan(expected[k])) moved = std::max(moved, std::abs(wrong[k] - expected[k]));
+    EXPECT_GT(moved, .2) << "rule 1 variant " << static_cast<int>(variant);
+  }
+  // Not the degenerate fixture: on no date does the composite of theme b or c order its names as one of its members'
+  // signed ranks does.
+  for (usize d = 0; d < days; ++d) {
+    for (usize t = 1; t < themes; ++t) {
+      std::vector<f64> sum(width, 0.0);
+      std::vector<bool> present(width, false);
+      std::vector<std::vector<f64>> own;
+      for (usize k = 0; k < members.size(); ++k) {
+        if (members[k].theme != t) continue;
+        std::vector<f64> row(width), signed_rank(width, 0.0);
+        std::vector<bool> keep(width);
+        for (usize i = 0; i < width; ++i) {
+          row[i] = signals[k][d * width + i];
+          keep[i] = member[d * width + i] != 0 && std::isfinite(row[i]);
+        }
+        const auto r = v8_ref_ranks(row, keep);
+        for (usize i = 0; i < width; ++i) {
+          if (std::isnan(r[i])) continue;
+          signed_rank[i] = static_cast<f64>(members[k].sign) * r[i];
+          sum[i] += static_cast<f64>(members[k].sign) * w[k] * r[i];
+          present[i] = true;
+        }
+        own.push_back(v8_ref_ranks(signed_rank, keep));
+      }
+      const auto composite = v8_ref_ranks(sum, present);
+      for (const auto& r : own) {
+        bool same = true;
+        for (usize i = 0; i < width; ++i)
+          same = same && (std::isnan(r[i]) ? std::isnan(composite[i]) : r[i] == composite[i]);
+        EXPECT_FALSE(same) << "date " << d << " theme " << t;
+      }
+    }
+  }
+  // The pooled path equals the serial bits.
+  for (const usize workers : {usize{2}, usize{3}}) {
+    SCOPED_TRACE(workers);
+    atx::engine::parallel::DetPool pool(workers);
+    const auto pooled = compose(&pool);
+    ASSERT_TRUE(pooled);
+    for (usize k = 0; k < pooled->signal.size(); ++k)
+      EXPECT_EQ(std::bit_cast<u64>(pooled->signal[k]), std::bit_cast<u64>(got->signal[k])) << k;
+  }
 }

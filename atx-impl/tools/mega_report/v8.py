@@ -8,9 +8,11 @@ every path before it is opened and every file is hashed into the manifest, then 
 - ``v8_year_table`` <- ``v8.summ`` (nav_summ ``--protocol v8 --dsr-ledger --json`` over the v8 cells): net Sharpe by
   cell and TRAIN year, then each cell's year table (return rows, net Sharpe, return, volatility, turnover, cost per
   traded dollar);
-- ``v8_ladder`` <- ``v8.cells[].paired`` (nav_summ ``--bundle PARENT CELL --bundle-json``): every v8 cell with its
-  parent, N after it, the paired dSR and its one-sided bootstrap p, mechanics, the mechanical criterion named in its task,
-  the pre-registered rule (v8-prereg item 5) and the ledger verdict;
+- ``v8_ladder`` <- ``v8.cells[].paired`` (nav_summ ``--bundle PARENT CELL --bundle-json``) and, for a criterion with
+  ``source: summary`` checks, ``v8.cells[].summary`` (the cell's NAV ``summary.json``: a cost scenario's net Sharpe,
+  the spo-v3 tripwire and per-book report): every v8 cell with its parent, N after it, the paired dSR and its one-sided
+  bootstrap p, mechanics, the mechanical criterion named in its task, the pre-registered rule (v8-prereg item 5) and
+  the ledger verdict;
 - ``v8_bundle`` <- ``v8.bundle`` (nav_summ ``--bundle B0c V8-F --bundle-json``): the cumulative paired test and the
   freeze gate line items (v8-prereg item 9);
 - ``v8_diagnostics`` <- ``v8.diagnostics`` (``diagnostics-v8.json``, schema ``atx.book-diagnostics/v1``): G-1a..G-3d,
@@ -28,8 +30,10 @@ shows n/a with a note instead. Content seal: a year or a session at or after the
 refused (ValueError), so nothing sealed is rendered even from a file whose name passed the path check.
 
 The ladder refuses, with a visible block of the unavailable class (counted by the CLI), a ``v8.final`` that is not the
-last accepted cell of the ladder, a top-level ``final`` (page header, book sections) that is not v8.final's cell, and a
-cell whose paired test was read but whose verdict is missing or still pending.
+last accepted cell of the ladder, a top-level ``final`` (page header, book sections) that is not v8.final's cell, a
+cell whose paired test was read but whose verdict is missing or still pending, a recorded verdict the rule of
+v8-prereg item 5 contradicts (an accept the rule rejects or cannot read for an unread criterion part, a reject the rule
+accepts), and a parent that is not the last accepted cell before its cell (a rejected cell is never a parent).
 
 ``v8_book`` (layout ``{"type": "v8_book", "block": NAME, ...}``) runs one of the v7 pitch's book-level blocks
 (``BOOK_BLOCKS``: equity curve, drawdowns, returns, costs, turnover, capacity curve, exposures, signal correlation) on
@@ -364,7 +368,15 @@ def _ci(v) -> str | None:
     return None
 
 
+RELATIVE_OPS, ABSOLUTE_OPS = ('le', 'lt', 'ge', 'gt'), ('le', 'lt', 'ge', 'gt', 'eq')
+PRIMARY_BOOK = '{primary}'  # a metric path segment: the primary book's id (config primary_scenario's id)
+
+
 def _cmp(v, op: str, ref) -> bool | None:
+    if op == 'eq':  # an exact reading (a tripwire status, a count): numbers with numbers, text with text
+        if C.is_num(v) and C.is_num(ref):
+            return v == ref
+        return v == ref if isinstance(v, str) and isinstance(ref, str) else None
     if not (C.is_num(v) and C.is_num(ref)):
         return None
     return {'le': v <= ref, 'lt': v < ref, 'ge': v >= ref, 'gt': v > ref}[op]
@@ -378,35 +390,93 @@ def _metric(row, ch: dict):
     return v
 
 
-def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None) -> dict:
+def _path_value(obj, path: str, primary: str | None):
+    """``a.b.c`` into nested dicts (list index by number); the segment ``{primary}`` is the primary book's id as one
+    key (an id may hold dots); None when a step is missing."""
+    cur = obj
+    for part in path.split('.'):
+        key = primary if part == PRIMARY_BOOK else part
+        if key is None or cur is None:
+            return None
+        if isinstance(cur, dict):
+            cur = cur.get(key)
+        elif isinstance(cur, list) and key.isdigit():
+            cur = cur[int(key)] if int(key) < len(cur) else None
+        else:
+            return None
+    return cur
+
+
+def _summary_metric(doc, ch: dict, docs: dict):
+    """A ``source: summary`` check's value in a NAV ``summary.json``: ``scenario`` (a config scenario key) picks the
+    ``scenarios[]`` entry of that id first; ``metric`` is a path (``{primary}`` = the primary book's id)."""
+    if not isinstance(doc, dict):
+        return None
+    obj = doc
+    if ch.get('scenario'):
+        sid = (docs.get('scenarios') or {}).get(ch['scenario'])
+        obj = next((s for s in doc.get('scenarios') or [] if isinstance(s, dict) and sid and s.get('scenario') == sid),
+                   None)
+    return _path_value(obj, ch['metric'], docs.get('primary'))
+
+
+def summary_checks(crit: dict | None) -> list[dict]:
+    """The checks of a criterion that read the NAV ``summary.json`` of the cell (``"source": "summary"``)."""
+    return [ch for ch in (crit or {}).get('checks') or [] if ch.get('source') == 'summary' and 'metric' in ch]
+
+
+def criterion_eval(crit: dict | None, row: dict | None, prow: dict | None, docs: dict | None = None) -> dict:
     """The mechanical criterion of a cell's task: ``checks`` [{metric, per?, op le|lt|ge|gt, factor?}] compare the
-    cell's nav_summ row with its parent's x factor; a check without ``metric`` ({text, met}) is a part the report cannot
-    compute (a capacity-curve or marginal-t reading): its ``met`` is the PM's reading, None until set. Without checks
-    ``met`` is the configured reading of the whole criterion (or None)."""
-    crit = crit or {}
+    cell's nav_summ row with its parent's x factor; with ``value`` a check compares the cell's value with that fixed
+    value instead (ops le|lt|ge|gt|eq; no parent read). ``"source": "summary"`` reads the NAV verb's ``summary.json``
+    of the cell (and of its parent) instead of the nav_summ row (``docs``: {'cell', 'parent', 'scenarios': {key: id},
+    'primary': id}; ``scenario`` picks a cost scenario, ``{primary}`` names the primary book, e.g. the spo-v3 blocks
+    ``v7.spo_v3_books.{primary}``). A check without ``metric`` ({text, met}) is a part the report cannot compute (a
+    capacity-curve reading): its ``met`` is the PM's reading, None until set and then listed in ``unread``. Without
+    checks ``met`` is the configured reading of the whole criterion (or None, then unread)."""
+    crit, docs = crit or {}, docs or {}
     checks = crit.get('checks') or []
     if not checks:
         met = crit.get('met')
         return {'text': crit.get('text'), 'met': met if isinstance(met, bool) else None,
-                'detail': 'as configured' if isinstance(met, bool) else None}
-    parts, res = [], []
+                'detail': 'as configured' if isinstance(met, bool) else None,
+                'unread': [] if isinstance(met, bool) else [crit.get('text') or 'the criterion']}
+    parts, res, unread = [], [], []
     for ch in checks:
         if 'metric' not in ch:
             met = ch.get('met') if isinstance(ch.get('met'), bool) else None
             res.append(met)
+            if met is None:
+                unread.append(ch.get('text') or 'manual part')
             parts.append(f"{ch.get('text') or 'manual part'}: "
                          + {True: 'met (PM reading)', False: 'not met (PM reading)', None: 'to be read (config met)'}[met])
             continue
-        if ch.get('op') not in ('le', 'lt', 'ge', 'gt'):
+        source = ch.get('source', 'summ')
+        if source not in ('summ', 'summary'):
+            raise ValueError(f"mechanical criterion: unknown source {source!r}")
+
+        def value_of(which, ch=ch, source=source):
+            if source == 'summary':
+                return _summary_metric(docs.get(which), ch, docs)
+            return _metric(row if which == 'cell' else prow, ch)
+        name = ch.get('label') or ((f"{ch['scenario']} " if ch.get('scenario') else '') + ch['metric']
+                                   + (f" / {ch['per']}" if ch.get('per') else ''))
+        v = value_of('cell')
+        if 'value' in ch:
+            if ch.get('op') not in ABSOLUTE_OPS:
+                raise ValueError(f"mechanical criterion: unknown op {ch.get('op')!r}")
+            res.append(_cmp(v, ch['op'], ch['value']))
+            parts.append(f"{name} {_short(v)} {ch['op']} {_short(ch['value'])}")
+            continue
+        if ch.get('op') not in RELATIVE_OPS:
             raise ValueError(f"mechanical criterion: unknown op {ch.get('op')!r}")
-        v, pv = _metric(row, ch), _metric(prow, ch)
+        pv = value_of('parent')
         f = ch.get('factor', 1.0)
         ref = pv * f if C.is_num(pv) else None
         res.append(_cmp(v, ch['op'], ref))
-        name = ch['metric'] + (f" / {ch['per']}" if ch.get('per') else '')
         parts.append(f"{name} {_short(v)} {ch['op']} parent {_short(pv)}" + (f' x {f:g}' if f != 1.0 else ''))
     return {'text': crit.get('text'), 'met': None if any(r is None for r in res) else all(res),
-            'detail': '; '.join(parts)}
+            'detail': '; '.join(parts), 'unread': unread}
 
 
 def mechanics_eval(row: dict | None, checks: list[dict]) -> dict:
@@ -455,14 +525,53 @@ def render_cell_ladder(data, src: str, *, num: int | None = None) -> str:
                   caption=(f"Every v8 cell in order ({_window_text()}, scenario S2): its parent, the trial count N after "
                            f"it, the paired S2 net dSR against the parent (Memmel SE; nav_summ --bundle PARENT CELL, "
                            f"studentized circular block bootstrap as registered), mechanics, the mechanical criterion "
-                           f"named in its task (evaluated on the nav_summ rows of cell and parent where the config gives "
-                           f"checks) and the pre-registered rule: accepted iff dSR > 0 AND mechanics AND the criterion. "
+                           f"named in its task (evaluated on the nav_summ rows, or the NAV summary.json, of cell and "
+                           f"parent where the config gives checks) and the pre-registered rule: accepted iff dSR > 0 AND "
+                           f"mechanics AND the criterion. "
                            f"Single cells are sign-level evidence (plan 12.2). Sources: {src}."))
     return tab + ''.join(_note(n) for n in data.get('notes') or [])
 
 
+def summary_path(cell: dict) -> str:
+    """The NAV verb's ``summary.json`` of a v8 cell (its directory's)."""
+    return f"{str(cell.get('dir') or '').rstrip('/')}/summary.json"
+
+
+def summary_needs(cells: list[dict]) -> set:
+    """Keys of the cells whose NAV ``summary.json`` a criterion reads: the cell of a ``source: summary`` check, and
+    its parent when the check compares with the parent (no ``value``). Baselines evaluate no criterion."""
+    need = set()
+    for c in cells:
+        checks = summary_checks(c.get('criterion')) if c.get('parent') else []
+        if checks:
+            need.add(c.get('key'))
+        if any('value' not in ch for ch in checks):
+            need.add(c.get('parent'))
+    return need
+
+
+def _nav_summary(ctx, cell: dict, cache: dict, unav: list, srcs: list):
+    """A cell's NAV ``summary.json``, read once per build of the ladder: the Registry (path seal, SHA-256) and the
+    content seal (sessions and calendar years); a missing or refused file is one unavailable block naming it."""
+    rel = summary_path(cell)
+    if rel not in cache:
+        doc, err = P3._try(ctx, rel, f"NAV summary of {cell.get('key')}")
+        if doc is not None:
+            try:
+                refuse_sealed_sessions(doc, rel)
+                refuse_sealed_years(_calendar_years(doc), rel)
+            except ValueError as e:
+                doc, err = None, f'{type(e).__name__}: {e}'
+        if doc is None:
+            unav.append(unavailable(BLOCK_LADDER, rel, err))
+        else:
+            srcs.append(P3._src(ctx, rel))
+        cache[rel] = doc
+    return cache[rel]
+
+
 def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
-    """(rows, unavailable blocks of missing paired inputs, notes, sources) of the configured v8 cells."""
+    """(rows, unavailable blocks of missing paired or NAV-summary inputs, notes, sources) of the configured v8 cells."""
     v8 = _v8(ctx)
     cells = _cells(v8)
     by_key = {c.get('key'): c for c in cells}
@@ -470,6 +579,9 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
     notes = [f'{why}; mechanics and the metric criteria are n/a'] if why else []
     mech_checks = v8.get('mechanics') or []
     rows, unav, srcs = [], [], [sm['src']] if sm else []
+    summaries: dict = {}
+    scen_ids = {k: s.get('id') for k, s in (ctx.sc or {}).items()}
+    primary = ctx.primary['id'] if ctx.primary else None
 
     def row_of(c):
         return sm['by'].get(_base(c.get('dir'))) if sm and c else None
@@ -488,11 +600,17 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
         if not par:  # a baseline: no paired test, no acceptance rule
             ce = criterion_eval(c.get('criterion'), None, None)
             row.update(dsr='', p1='', pos='', rule='', crit_text=ce['text'], crit_met=ce['met'],
-                       crit_detail=ce['detail'])
+                       crit_detail=ce['detail'], crit_unread=[])
             rows.append(row)
             continue
-        ce = criterion_eval(c.get('criterion'), r, pr)
-        row.update(crit_text=ce['text'], crit_met=ce['met'], crit_detail=ce['detail'])
+        docs = {'scenarios': scen_ids, 'primary': primary}
+        checks = summary_checks(c.get('criterion'))
+        if checks:
+            docs['cell'] = _nav_summary(ctx, c, summaries, unav, srcs)
+        if any('value' not in ch for ch in checks):
+            docs['parent'] = _nav_summary(ctx, par, summaries, unav, srcs)
+        ce = criterion_eval(c.get('criterion'), r, pr, docs)
+        row.update(crit_text=ce['text'], crit_met=ce['met'], crit_detail=ce['detail'], crit_unread=ce['unread'])
         pd = None
         if c.get('paired'):
             rel = _rel(c['paired'])
@@ -517,10 +635,65 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
     return rows, unav, notes, srcs
 
 
+DECIDED = ('accepted', 'rejected', 'defect')  # verdict kinds that settle a cell (a defect cell is excluded, item 7)
+
+
+def _rule_text(r: dict) -> str:
+    def s(v):
+        return C.NA_TEXT if v is None else ('yes' if v else 'no')
+    return f"dSR > 0 {s(r.get('pos'))}, mechanics {s(r.get('mech'))}, criterion {s(r.get('crit_met'))}"
+
+
+def verdict_rule_checks(rows: list[dict], kinds: dict) -> list[tuple[str, str]]:
+    """Review P-3, v8-prereg item 5: a recorded verdict against the computed rule (paired S2 net dSR > 0 against the
+    parent AND mechanics AND the cell's criterion). Refused: an accepted cell the rule rejects; an accepted cell whose
+    rule is n/a because a manual criterion part is unread (a missing input is its own unavailable block); a rejected
+    cell the rule accepts. Baselines (no parent) carry no rule."""
+    out = []
+    for r in rows:
+        k, rule, key = kinds[r['key']], r.get('rule'), f"v8.cells[{r['key']}].verdict"
+        if rule == '':
+            continue
+        if k == 'accepted' and rule is False:
+            out.append((key, f"recorded accepted ({r.get('verdict')!r}) but the rule of v8-prereg item 5 rejects it "
+                             f"({_rule_text(r)})"))
+        elif k == 'accepted' and rule is None and r.get('crit_unread'):
+            out.append((key, f"recorded accepted ({r.get('verdict')!r}) but its criterion is not read: "
+                             f"{'; '.join(r['crit_unread'])} (set the part's met)"))
+        elif k == 'rejected' and rule is True:
+            out.append((key, f"recorded rejected ({r.get('verdict')!r}) but the rule of v8-prereg item 5 accepts it "
+                             f"({_rule_text(r)})"))
+    return out
+
+
+def parent_checks(cells: list[dict], kinds: dict) -> list[tuple[str, str]]:
+    """Review P-3, plan section 9 ("Parent = the last accepted cell"): a configured parent that is rejected (or a
+    defect) is refused; once every cell before a cell is settled, its parent must be the last accepted one of them.
+    While an earlier cell is still undecided the second check waits (the committed config pre-fills the chain)."""
+    out = []
+    for i, c in enumerate(cells):
+        parent = c.get('parent')
+        if not parent:  # a baseline by declaration
+            continue
+        key = f"v8.cells[{c.get('key')}].parent"
+        if kinds.get(parent) in ('rejected', 'defect'):
+            out.append((key, f"{parent!r} is {kinds[parent]}: a rejected cell is never a parent"))
+            continue
+        prior = [p.get('key') for p in cells[:i]]
+        if any(kinds.get(p) not in DECIDED for p in prior):
+            continue
+        accepted = [p for p in prior if kinds.get(p) == 'accepted']
+        last = accepted[-1] if accepted else None
+        if parent != last:
+            out.append((key, f"{parent!r} is not the last accepted cell before {c.get('key')!r} ({last!r})"))
+    return out
+
+
 def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
     """(config key, reason) of every consistency error of the ladder: a cell whose paired test was read but whose
-    verdict is missing or still pending; ``v8.final`` not the last accepted cell; a top-level ``final`` (page header,
-    book sections) that is not v8.final's cell."""
+    verdict is missing or still pending; a recorded verdict the rule of v8-prereg item 5 contradicts
+    (``verdict_rule_checks``); a parent that is not the last accepted cell before it (``parent_checks``); ``v8.final``
+    not the last accepted cell; a top-level ``final`` (page header, book sections) that is not v8.final's cell."""
     v8 = _v8(ctx)
     rules = ctx.verdict_rules()
     kinds = {r['key']: r.get('verdict_kind') or C.verdict_kind(r.get('verdict'), rules) for r in rows}
@@ -531,6 +704,8 @@ def ladder_checks(ctx, rows: list[dict]) -> list[tuple[str, str]]:
             state = 'missing' if k is None else f"still pending ({r.get('verdict')!r})"
             out.append((f"v8.cells[{r['key']}].verdict",
                         f"its paired test {r.get('paired_src')} was read but the verdict is {state}"))
+    out += verdict_rule_checks(rows, kinds)
+    out += parent_checks(_cells(v8), kinds)
     final = v8.get('final')
     accepted = [r['key'] for r in rows if kinds[r['key']] == 'accepted']
     if not accepted:
@@ -1254,8 +1429,11 @@ def inputs(cfg: dict) -> list[tuple[str, str, str]]:
         if spec:
             out.append((block, key, _rel(spec)))
     add(BLOCK_YEAR, 'v8.summ', v8.get('summ'))
+    need = summary_needs(v8.get('cells') or [])
     for c in v8.get('cells') or []:
         add(BLOCK_LADDER, f"v8.cells[{c.get('key')}].paired", c.get('paired'))
+        if c.get('key') in need:  # a criterion reads this cell's NAV summary.json (source: summary)
+            add(BLOCK_LADDER, f"v8.cells[{c.get('key')}].summary", summary_path(c))
     add(BLOCK_BUNDLE, 'v8.bundle', v8.get('bundle'))
     add(BLOCK_DIAG, 'v8.diagnostics', v8.get('diagnostics'))
     mh = v8.get('member_horizon') or {}

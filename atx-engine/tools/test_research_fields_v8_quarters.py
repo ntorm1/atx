@@ -64,8 +64,18 @@ def th_days():
     return [EPOCH + dt.timedelta(days=int(x)) for x in sec.nyse_sessions(dt.date(2019, 9, 2), SESSIONS[-1])]
 
 
+# Review T-2: me_company enters gscore7_lowbm only through the low-bm tercile, so the world moves one tercile line's
+# own price on one session (STEP_LINE, STEP_SESSION), and the point-in-time test moves another's (MOVED_LINE) from row
+# CUT on; a read of me_company at t or t+1 instead of t-1 then changes a value the tests pin.
+STEP_LINE, STEP_SESSION, MOVED_LINE = 9, 60, 6
+STEP_TH = th_days().index(SESSIONS[STEP_SESSION])
+
+
 def close_of(j, i):
-    return float(np.float32((10 + j) * (1 + 0.0005 * i)))
+    """Every line drifts by the same factor, except line STEP_LINE, whose price falls to 30% from role session
+    STEP_SESSION on (review T-2: its own path, so the low-bm tercile changes on one known session)."""
+    step = 0.3 if j == STEP_LINE and i >= STEP_TH else 1.0
+    return float(np.float32((10 + j) * (1 + 0.0005 * i) * step))
 
 
 def write_th(path):
@@ -361,6 +371,8 @@ class QuarterFields(unittest.TestCase):
         self.assertTrue(np.isnan(self.ec[0]).all() and np.isfinite(self.ec[1:, 0]).all())   # t < L: NaN
         self.assertTrue(np.isnan(self.gs[:5, 2]).all() and np.isnan(self.gs[20:30, 6]).all())   # non-members: NaN
         self.assertTrue(np.isfinite(self.gs[5:20, 6]).any())                   # ... and a member in the tercile
+        s = STEP_SESSION      # line STEP_LINE's price falls on session s: row s still reads s - 1, row s + 1 reads s
+        self.assertTrue(np.isfinite(self.gs[s, STEP_LINE]) and np.isnan(self.gs[s + 1:, STEP_LINE]).all())
         e = entry(self.manifest, "eps_consist_4y")
         reasons = e["nan_reasons_member_cells"]
         self.assertGreater(reasons["abs_g0_above_6"], 0)
@@ -397,7 +409,9 @@ class QuarterFields(unittest.TestCase):
                   "accession": "0000005009-21-000777", "period_end": dt.date(2021, 3, 31), "shrs_q": 1.0}]
         sic = [(c, a, 2834 if a >= cut_mark else s, acc) for c, a, s, acc in SIC_EVENTS] + [
             (5000, cut_mark, 6022, "0000005000-21-900777")]
-        mutated = World(self.w.base, rows=rows, sic_events=sic, raw_scale=1.9, name="late")   # role raw_close too
+        scale = np.full(N_LINES, 1.9)
+        scale[MOVED_LINE] = 0.5                   # role raw_close too, and one line on its own (review T-2)
+        mutated = World(self.w.base, rows=rows, sic_events=sic, raw_scale=scale, name="late")
         mutated.run("late-q")
         row = N_LINES * 8
         for name in NEW:
@@ -406,7 +420,15 @@ class QuarterFields(unittest.TestCase):
             self.assertEqual(after[:(CUT + 1) * row], before[:(CUT + 1) * row], name)   # rows 0..t bit-identical
             self.assertNotEqual(after[(CUT + 1) * row:], before[(CUT + 1) * row:], name)
         me_a, me_b = self.w.field("q", "me_company"), mutated.field("late-q", "me_company")
-        self.assertFalse(np.array_equal(me_a[CUT], me_b[CUT], equal_nan=True))   # me_company moved at t itself:
+        np.testing.assert_array_equal(me_b[:CUT], me_a[:CUT])                   # me_company moves at t itself,
+        ratio = me_b[CUT] / me_a[CUT]
+        self.assertLess(ratio[MOVED_LINE], 0.3 * ratio[1])                       # one line against the others
+        # gscore at t reads me_company of t-1 only: unchanged at t; t + 1 reads t and sees the moved line leave the
+        # low-bm tercile (a read of t or t + 1 at row t would change row t; events after t are not visible yet at t + 1)
+        gs_a, gs_b = self.gs, mutated.field("late-q", "gscore7_lowbm")
+        self.assertTrue(np.isfinite(gs_a[CUT, MOVED_LINE]) and np.isfinite(gs_a[CUT + 1, MOVED_LINE]))
+        self.assertEqual(gs_b[CUT, MOVED_LINE], gs_a[CUT, MOVED_LINE])
+        self.assertTrue(np.isnan(gs_b[CUT + 1, MOVED_LINE]))
         member = np.fromfile(mutated.role / "member.u8", dtype="u1").reshape(len(SESSIONS), N_LINES)
         gs, ec = oracle(rows, me_b, mutated.field("late-q", "grp_sic2"), member)   # ... gscore reads t-1 only
         np.testing.assert_array_equal(mutated.field("late-q", "gscore7_lowbm"), gs)

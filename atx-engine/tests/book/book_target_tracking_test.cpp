@@ -4,6 +4,7 @@
 // monotonicity in the cost, boxes / trade limits / net / beta held, the trade-limit share,
 // a clipped indefinite covariance, bit-for-bit repeats and a warm dual, refusals.
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -282,6 +283,100 @@ TEST(TargetTracking, RepeatsBitForBitAndAWarmDualAgrees) {
   ASSERT_TRUE(warm) << warm.error().to_string();
   EXPECT_TRUE(warm->converged);
   EXPECT_LT(max_abs_diff(warm->w, first->w), 1e-8);
+}
+
+// Review T-4: an optimum computed independently of the solver with the factor structure on. Two
+// names on intercept + one group + one style (name 0 in the group, name 1 in none), a dense F,
+// zero costs and an outside gap e != 0. The objective is (gamma/2) [(B'g + e)' F (B'g + e) +
+// g' D g] with g = w - a, so the free optimum is g = -S^-1 B F e and, under the net equality
+// 1'w = net, g = S^-1 (lambda 1 - B F e) with lambda = (net - 1'a + 1'S^-1 B F e) / (1'S^-1 1),
+// S = B F B' + D built densely here. A solver or tracking_terms that dropped the group column,
+// mis-signed the outside gap or ignored it misses both optima by more than 5e-4 (asserted).
+TEST(TargetTracking, TwoNameFactorProblemMatchesItsClosedForm) {
+  constexpr usize n = 2, k = 3;
+  using Rows = std::array<std::array<f64, k>, n>; // B, one row per name
+  using Factors = std::array<f64, k>;
+  using Book = std::array<f64, n>;
+  const Rows b{{{1.0, 1.0, 0.8}, {1.0, 0.0, -1.3}}};
+  const Factors v{0.010, -0.006, 0.004}, var{4e-4, 2.5e-4, 1e-4};
+  std::array<Factors, k> f{};
+  for (usize r = 0; r < k; ++r)
+    for (usize c = 0; c < k; ++c) f[r][c] = v[r] * v[c] + (r == c ? var[r] : 0.0);
+  const Book d{2.5e-4, 4e-4}, a{0.03, -0.01};
+  const Factors gap{0.02, -0.015, 0.01};
+  // The optimum for loadings `rows` and outside gap `e`; net NaN: no net limit.
+  const auto closed_form = [&](const Rows& rows, const Factors& e, f64 net) {
+    std::array<Book, n> s{};
+    Book h{}; // B F e
+    for (usize i = 0; i < n; ++i) {
+      for (usize j = 0; j < n; ++j) {
+        s[i][j] = i == j ? d[i] : 0.0;
+        for (usize r = 0; r < k; ++r)
+          for (usize c = 0; c < k; ++c) s[i][j] += rows[i][r] * f[r][c] * rows[j][c];
+      }
+      for (usize r = 0; r < k; ++r)
+        for (usize c = 0; c < k; ++c) h[i] += rows[i][r] * f[r][c] * e[c];
+    }
+    const f64 det = s[0][0] * s[1][1] - s[0][1] * s[1][0];
+    const std::array<Book, n> inverse{{{s[1][1] / det, -s[0][1] / det}, {-s[1][0] / det, s[0][0] / det}}};
+    Book sih{}, si1{}; // S^-1 h, S^-1 1
+    for (usize i = 0; i < n; ++i) {
+      sih[i] = inverse[i][0] * h[0] + inverse[i][1] * h[1];
+      si1[i] = inverse[i][0] + inverse[i][1];
+    }
+    const f64 lambda = std::isnan(net) ? 0.0 : (net - (a[0] + a[1]) + sih[0] + sih[1]) / (si1[0] + si1[1]);
+    Book w{};
+    for (usize i = 0; i < n; ++i) w[i] = a[i] + lambda * si1[i] - sih[i];
+    return w;
+  };
+  book::TrackingProblem p;
+  p.factors = book::TrackingFactors{1, 1};
+  p.n = n;
+  p.group = {1, 0};
+  p.styles = {b[0][2], b[1][2]};
+  p.covariance.resize(k * k);
+  for (usize r = 0; r < k; ++r)
+    for (usize c = 0; c < k; ++c) p.covariance[r * k + c] = f[r][c];
+  p.specific = {d[0], d[1]};
+  p.external_gap = {gap[0], gap[1], gap[2]};
+  p.target = {a[0], a[1]};
+  p.current = {0.0, 0.0};
+  zero_costs(p);
+  p.trade_limit = {inf, inf};
+  p.lower = {-inf, -inf};
+  p.upper = {inf, inf};
+  p.beta = {1.0, 1.0};
+  p.gamma = 40.0;
+  book::TrackingOptions o;
+  o.tolerance = 1e-13;
+  o.max_iterations = 100000;
+  const Factors no_gap{}, minus_gap{-gap[0], -gap[1], -gap[2]};
+  Rows no_group = b;
+  no_group[0][1] = 0.0;
+  for (const f64 net : {std::numeric_limits<f64>::quiet_NaN(), 0.01}) {
+    SCOPED_TRACE(net);
+    p.net = std::isnan(net) ? book::TrackingLimit{} : book::TrackingLimit{net, net};
+    const Book want = closed_form(b, gap, net);
+    for (const Book& wrong : {closed_form(b, minus_gap, net), closed_form(no_group, gap, net),
+                              closed_form(b, no_gap, net)})
+      EXPECT_GT(std::max(std::abs(wrong[0] - want[0]), std::abs(wrong[1] - want[1])), 5e-4);
+    const auto sol = book::solve_tracking(p, o);
+    ASSERT_TRUE(sol) << sol.error().to_string();
+    EXPECT_TRUE(sol->converged) << sol->iterations;
+    EXPECT_TRUE(sol->limits_met) << sol->limit_violation;
+    for (usize i = 0; i < n; ++i) EXPECT_NEAR(sol->w[i], want[i], 1e-11) << i;
+    if (!std::isnan(net)) EXPECT_NEAR(sol->w[0] + sol->w[1], net, 1e-12);
+    // tracking_terms at the returned book against the dense variance, the outside gap included.
+    Factors y = gap; // B'g + e
+    for (usize i = 0; i < n; ++i)
+      for (usize c = 0; c < k; ++c) y[c] += b[i][c] * (sol->w[i] - a[i]);
+    f64 variance = 0.0;
+    for (usize r = 0; r < k; ++r)
+      for (usize c = 0; c < k; ++c) variance += y[r] * f[r][c] * y[c];
+    for (usize i = 0; i < n; ++i) variance += d[i] * (sol->w[i] - a[i]) * (sol->w[i] - a[i]);
+    EXPECT_NEAR(sol->terms.tracking_variance, variance, 1e-12 * variance);
+    EXPECT_NEAR(sol->tracking_error, std::sqrt(variance), 1e-12 * std::sqrt(variance));
+  }
 }
 
 TEST(TargetTracking, RefusesMalformedProblems) {

@@ -52,10 +52,14 @@ def committed_config() -> dict:
 
 
 def v8_config() -> dict:
-    """The committed config with every cell's verdict recorded (as after the runs)."""
+    """The committed config with every cell's verdict recorded and every manual criterion part read (as after the
+    runs: the PM's capacity-curve readings)."""
     cfg = committed_config()
     for c in cfg['v8']['cells']:
         c['verdict'] = VERDICTS[c['key']]
+        for ch in (c.get('criterion') or {}).get('checks') or []:
+            if 'metric' not in ch:
+                ch['met'] = True
     return cfg
 
 
@@ -119,7 +123,8 @@ def daily_text(seed: int, sessions: list[int]) -> str:
         vals = (s, 0 if k == 0 else 1, 1, r, r + 0.0002, 0.0 if k == 0 else 0.97 * v, 4e7, 0.04 + 0.001 * (k % 7),
                 0.97, 0.001, v, v, 0.49 * v, 0.48 * v, 800, 5 + k % 3, 1e5, k % 2, 1, 1500, 0, 1e6, 4e7, 1e-4,
                 3e3, 2e3, 5e3, 100.0, 50.0, 10.0, 2e-5, 0.0, 1e-5)
-        lines.append(','.join(repr(x) if isinstance(x, float) else str(x) for x in vals))
+        # float(x): numpy 2's repr of an np.float64 is 'np.float64(...)'; the same digits under numpy 1
+        lines.append(','.join(repr(float(x)) if isinstance(x, float) else str(x) for x in vals))
     return '\n'.join(lines) + '\n'
 
 
@@ -234,9 +239,10 @@ def test_v8_config_uses_registered_blocks_and_names_every_input():
     assert all(t in P.BLOCKS for t in types)
     assert set(V.BLOCKS) <= set(types)  # every v8 section is in the pitch
     assert [k for _, k, _ in INPUTS] == [
-        'v8.summ', *[f'v8.cells[{k}].paired' for k in ('B0b', 'R-1', 'R-2', 'R-3', 'R-4', 'R-5', 'R-6', 'R-7')],
-        'v8.bundle', 'v8.diagnostics', 'v8.member_horizon.card_index', 'v8.member_horizon.admission',
-        'v8.trial_ledger', 'v8.prereg', 'v8.literature']
+        'v8.summ', *[f'v8.cells[{k}].paired' for k in ('B0b', 'R-1', 'R-2', 'R-3', 'R-4')], 'v8.cells[R-4].summary',
+        'v8.cells[R-5].paired', 'v8.cells[R-5].summary', 'v8.cells[R-6].paired', 'v8.cells[R-6].summary',
+        'v8.cells[R-7].paired', 'v8.bundle', 'v8.diagnostics', 'v8.member_horizon.card_index',
+        'v8.member_horizon.admission', 'v8.trial_ledger', 'v8.prereg', 'v8.literature']
     assert len({p for _, _, p in INPUTS}) == len(INPUTS)
     assert not any(D.path_is_sealed(p) for _, _, p in INPUTS)  # no input is refused by name
     assert cfg['v8']['re_screens'] == 8 and cfg['v8']['final'] in {c['key'] for c in cfg['v8']['cells']}
@@ -264,6 +270,78 @@ def test_v7_config_is_untouched_and_has_no_v8_block():
     assert 'v8' not in cfg
     assert not [b for sec in cfg['layout'] for b in sec['blocks']
                 if (b if isinstance(b, str) else b['type']).startswith('v8_')]
+
+
+# ============================================================================================ registered criteria
+TEMPLATE = REPO / 'docs/plans/mega-alpha-scorecard-v8.template.md'
+# review P-2: every registered part of each cell's mechanical criterion (plan section 9; rulings E-14/E-14a, E-31, E-36), as
+# the committed config's checks (texts and labels aside; a manual part is {'met': None} until the PM reads it)
+REGISTERED_CHECKS = {
+    'R-1': [{'metric': 'tau_gmv_mean', 'per': 'mean_gross_leverage_all_rows', 'op': 'le'}],
+    'R-2': [{'metric': 'tau_gmv_mean', 'op': 'le'}],
+    'R-3': [{'met': None}, {'metric': 'tau_gmv_mean', 'op': 'lt'}],
+    'R-4': [{'metric': 'tau_gmv_mean', 'op': 'le', 'factor': 0.85}],
+    'R-5': [{'met': None}, {'met': None},
+            {'source': 'summary', 'scenario': 'S3', 'metric': 'net_sharpe', 'op': 'ge'}],
+    'R-6': [{'metric': 'cost_bps_traded', 'op': 'le'},
+            {'source': 'summary', 'metric': 'v7.spo_v3_tripwire.status', 'op': 'eq', 'value': 'clear'},
+            {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.limits_unmet', 'op': 'eq', 'value': 0},
+            {'source': 'summary', 'metric': 'v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean', 'op': 'ge',
+             'value': 0.9}],
+    'R-7': [{'metric': 'tau_gmv_mean', 'op': 'le'}]}
+
+
+def test_committed_criteria_carry_every_registered_part():
+    crit = {c['key']: c.get('criterion') or {} for c in committed_config()['v8']['cells']}
+    for key, want in REGISTERED_CHECKS.items():
+        got = [{k: v for k, v in ch.items() if k not in ('text', 'label')} for ch in crit[key].get('checks') or []]
+        assert got == want, key
+    assert 'S3 not lower' in crit['R-5']['text']
+    assert all(s in crit['R-6']['text'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'E-31',
+                                                  'E-31a', '>= .9', 'E-14', 'E-14a'))
+    assert crit['R-7']['text'].startswith('turnover not higher') and 'E-36' in crit['R-7']['text']
+    assert 'marginal' not in json.dumps(crit['R-7']['checks'])  # rule 8: marginal IC gates nothing (Ruling E-36)
+    # the E-14 threshold is the C++ registered constant v3_aim_correlation_min
+    assert REGISTERED_CHECKS['R-6'][3]['value'] == 0.9
+
+
+def test_scorecard_template_carries_every_registered_part():
+    text = TEMPLATE.read_text(encoding='utf-8')
+    rows = {ln.split('|')[1].strip(): ln for ln in text.splitlines() if re.match(r'\| R-\d \| `mega-nav-v8-r', ln)}
+    assert 'S3 not lower' in rows['R-5']
+    assert all(s in rows['R-6'] for s in ('cost per traded dollar not higher', 'tripwire clear', 'limits_unmet 0',
+                                          'E-31', 'E-31a', '>= .9', 'E-14', 'E-14a'))
+    assert 'turnover not higher' in rows['R-7'] and 'E-36' in rows['R-7'] and 'marginal t' not in rows['R-7']
+    ladder = {ln.split('|')[2].strip(): ln for ln in text.splitlines() if re.match(r'\| \d+ \| R-\d \|', ln)}
+    assert 'S3 not lower ({{NAV[R-5].scenarios[S3].net_sharpe}} vs parent' in ladder['R-5']
+    for part in ('{{NAV[R-6].v7.spo_v3_tripwire.status}}', '.limits_unmet}}',
+                 '.aim_correlation_traded_after.mean}}'):
+        assert part in ladder['R-6'], part
+    assert 'turnover not higher' in ladder['R-7'] and 'report only, gates nothing' in ladder['R-7']
+    assert '| `NAV[K]` | `<cell K dir>/summary.json` |' in text
+
+
+def test_r5_and_r6_criteria_read_their_nav_summaries(root):
+    """R-6's tripwire, E-31 limits and E-14 correlation, and R-5's S3 against R-4's, on synthetic NAV summaries."""
+    cfg = v8_config()
+    T.world(root, cfg)
+    rows = {r['key']: r for r in V.ladder_rows(T.make_ctx(root, cfg))[0]}
+    assert rows['R-6']['crit_met'] is True
+    assert 'S3 net Sharpe (terminal-adverse) 0.9 ge parent 0.9' in rows['R-5']['crit_detail']
+    s3 = next(s['id'] for s in cfg['scenarios'] if s['key'] == 'S3')
+    for edit in (lambda d: d['v7']['spo_v3_tripwire'].update(status='tripped (not voiding)'),
+                 lambda d: next(iter(d['v7']['spo_v3_books'].values())).update(limits_unmet=1),
+                 lambda d: next(iter(d['v7']['spo_v3_books'].values()))['aim_correlation_traded_after'].update(
+                     mean=0.89)):
+        doc = T.nav_summary(cfg)
+        edit(doc)
+        T.put(root, 'build-equity/mega-nav-v8-r6/summary.json', doc)
+        assert {r['key']: r for r in V.ladder_rows(T.make_ctx(root, cfg))[0]}['R-6']['crit_met'] is False
+    lower = T.nav_summary(cfg, s3=0.5)
+    assert next(s for s in lower['scenarios'] if s['scenario'] == s3)['net_sharpe'] == 0.5
+    T.put(root, 'build-equity/mega-nav-v8-r5/summary.json', lower)
+    r5 = {r['key']: r for r in V.ladder_rows(T.make_ctx(root, cfg))[0]}['R-5']
+    assert 'S3 net Sharpe (terminal-adverse) 0.5 ge parent 0.9' in r5['crit_detail'] and r5['crit_met'] is False
 
 
 # ============================================================================================ render

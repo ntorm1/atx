@@ -8,8 +8,9 @@ this module writes its ``<field>.f64`` payloads into the same exclusive output d
 (registry order, after the builder's) and ``source_checks.holdings``, and only then is the manifest published. A run
 that requests only holdings fields carries the builder's cheapest field (``mkt_ret``) and drops it before publication.
 With ``--reuse`` (v8 C-3) a holdings field is copied from the prior directory when its producing code (``PRODUCERS``
-kind closure plus the builder code it reads through ``ns``), stage manifest pins, formula and dependencies are
-unchanged (prepare_research_fields.REUSE_MODULE_RULE); every other holdings field is computed.
+kind closure plus the builder code it reads through ``ns``), stage manifest pins, research seal (review N-1: each
+entry records ``seal_date``), formula and dependencies are unchanged (prepare_research_fields.REUSE_MODULE_RULE); every
+other holdings field is computed.
 
 Sources (atx-db alpha panel v1 stages, read-only; each pinned by the SHA-256 of its ``manifest.json``, which must be a
 complete manifest of the declared schema with the declared clock and staleness rules; every file read is hash-checked
@@ -1220,15 +1221,28 @@ def field_spec(name: str) -> dict:
     return HOLD_FIELDS[name]
 
 
+def seal_pin() -> str:
+    """The research seal a holdings payload is computed under (review N-1). Every kind drops the stage rows available
+    on or after it before it takes a date's or a session's visibility clock (the latest available_at of the kept rows),
+    so a seal move can change a payload of a role that ends before both seals."""
+    return SEAL.isoformat()
+
+
 def reuse_inputs(name: str, inputs: dict) -> dict:
-    """This run's stage manifest pins of a holdings field (the --reuse source check; a manifest pins every file)."""
-    return {k: str(inputs.get(k + "_sha256") or "").lower() for k in KIND_STAGES[HOLD_FIELDS[name]["kind"]]}
+    """This run's input pins of a holdings field: its stage manifest pins (the --reuse source check; a manifest pins
+    every file) and the research seal (``seal_pin``, review N-1)."""
+    pins = {k: str(inputs.get(k + "_sha256") or "").lower() for k in KIND_STAGES[HOLD_FIELDS[name]["kind"]]}
+    pins["seal"] = seal_pin()
+    return pins
 
 
 def entry_inputs(entry: dict) -> dict:
-    """The same pins as a manifest entry of a holdings field records them."""
+    """The same pins as a manifest entry of a holdings field records them (an entry written before review N-1 records
+    no seal: None, so its field is recomputed once)."""
     pins = entry.get("stage_manifest_sha256")
-    return dict(pins) if isinstance(pins, dict) else {}
+    out = dict(pins) if isinstance(pins, dict) else {}
+    out["seal"] = entry.get("seal_date")
+    return out
 
 
 def validate(fields, selected_other, inputs: dict):
@@ -1356,7 +1370,8 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
                  "non_pit_aspects": [], "definition": spec["definition"], "formula_id": spec["formula_id"],
                  "visibility_rule": VISIBILITY_RULE, "producer": {"module": Path(__file__).name, **code},
                  "stage_manifest_sha256": {k: stages[k].manifest_source["sha256"]
-                                           for k in KIND_STAGES[spec["kind"]]}}
+                                           for k in KIND_STAGES[spec["kind"]]},
+                 "seal_date": seal_pin()}  # review N-1: the --reuse input pin (entry_inputs)
         if "requires" in spec:
             entry["depends_on"] = spec["requires"]
         entry.update(extras.get(x, {}))

@@ -42,10 +42,13 @@
 //                             sigma_aim (S_prior 20, Ruling E-14), H 20, trade limit .01 ADV,
 //                             beta .02, no holding cap, gross above 2 x --aim-leverage a
 //                             breach; its own spo_diagnostics.csv columns and tripwire (a
-//                             clamp or a breach voids the run with the void on, the default).
-//                             Allowed: --risk-model(-sha256), --spo-iters, --spo-tol,
-//                             --spo-books, --specific-ceiling(-void); every other spo flag is
-//                             refused. --spo-alpha is refused with spo-v1/v2. v8 E-26: the
+//                             clamp or a breach voids the run with the void on, the default;
+//                             v8 E-31a: a scored decision of the primary book whose net or
+//                             beta limit is not met voids it whatever the flag, so
+//                             --emit-holdings is refused). Allowed: --risk-model(-sha256),
+//                             --spo-books, --specific-ceiling(-void); every other spo flag
+//                             (--spo-iters and --spo-tol included, E-31a) is refused.
+//                             --spo-alpha is refused with spo-v1/v2. v8 E-26: the
 //                             replay's --hold-band B / --adv-hold-q Q shape desired exactly as
 //                             aim-partial-v5's (the shared construction, detail::form_desired),
 //                             so the aim is L x the shaped desired and the rule id carries
@@ -53,8 +56,11 @@
 //                             v8 E-37: --capacity-curve runs report only: each capacity book
 //                             is the NAV-m tracker (trade limit and impact at m x NAV) on its
 //                             own engine, recorded in v7_extras.json capacity_spo_v3; the main
-//                             pass's rows, tripwire and summary are unchanged. --trade-fraction
-//                             has no effect on the spo-v3 plan (H 20 is registered).
+//                             pass's rows, tripwire, counts and summary are unchanged (review
+//                             SPO-4: the capacity engine has no primary book, so E-31a binds the
+//                             main pass only); the aim's --adv-hold-q cap reads the run's initial
+//                             NAV at every multiple (Ruling E-15). --trade-fraction has no
+//                             effect on the spo-v3 plan (H 20 is registered).
 //   spo-v1 / spo-v2 / spo-v3 blocks are keyed "spo_v1" / "spo_v2" / "spo_v3" (recipe v7,
 //   summary v7, extras); the Engine's rule_* / rows_* members produce them.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
