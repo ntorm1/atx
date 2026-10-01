@@ -838,6 +838,30 @@ def test_branch_checks_refuse_a_verdict_an_undefined_or_report_only_cell_cannot_
     assert _checks(root, cfg) == []
 
 
+def test_an_own_undefined_verdict_on_a_cell_that_ran_is_refused(root):
+    """Ruling PM5-12, finding R6C-6: a cell whose own verdict records it undefined (Ruling PM4-10: it could not be
+    formed) while its configured paired test exists was run: refused, visibly. With no paired file the verdict stands.
+    The path is only stat-ed (never read, not in the manifest); a cell undefined by its branch is not stat-ed."""
+    verdicts, parents, final, _ = BRANCHES['PM4-10']
+    cfg = optional_cfg(verdicts, parents, final)
+    world(root, cfg)
+    (root / 'b/paired-r-10.json').unlink(missing_ok=True)
+    assert _checks(root, cfg) == []
+    put(root, 'b/paired-r-10.json', bundle_doc('b/mega-nav-v8-r-10', 'b/mega-nav-v8-r-8'))
+    assert _checks(root, cfg) == [
+        ('v8.cells[R-10].verdict', f"recorded undefined ({verdicts['R-10']!r}) but its paired test b/paired-r-10.json "
+                                   f"exists: the cell was run, and an undefined verdict records a cell that could not "
+                                   f"be formed (Ruling PM4-10)")]
+    ctx = make_ctx(root, cfg)
+    V.ladder_rows(ctx)
+    assert not [k for k in ctx.reg.files if 'paired-r-10' in k]
+    assert [n for n, _ in unavailable(build(root, cfg)) if n.startswith('v8_')] == ['v8_ladder']
+    verdicts, parents, final, _ = BRANCHES['R-1 rejected']   # R-10 undefined by its branch (E-45): not stat-ed
+    cfg = optional_cfg(verdicts, parents, final)
+    world(root, cfg)
+    assert (root / 'b/paired-r-10.json').exists() and _checks(root, cfg) == []
+
+
 def test_parent_checks_skip_undefined_cells_and_never_take_one_as_parent(root):
     """Plan section 9, parent = the last accepted cell: an undefined cell is never a parent and is skipped when the
     last accepted cell is found; a report-only cell is never a parent either."""

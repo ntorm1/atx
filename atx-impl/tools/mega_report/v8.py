@@ -42,11 +42,12 @@ The optional cells are part of the ladder (Rulings E-38, E-45, PM4-8, PM4-10). A
 (R-9 only if R-6 was rejected; R-10 and R-11 only if R-6 and R-1 were accepted; R-12 only if R-6 was accepted), and a
 cell whose own verdict reads "undefined ..." could not be formed (Ruling PM4-10: the member cap 1/(2T) infeasible). An
 undefined cell keeps its row, rendered "undefined (ruling)": it adds 0, reads no input, is never a parent and is never
-an unavailable block; a decided verdict recorded on it is refused. "N after" is counted from the cell states (Ruling
-PM5-12: the previous cell's N plus 1, an undefined cell 0; the configured ``n`` while a branch is still open). A
-``report_only`` cell (R-9's frontier cells) has no
-acceptance: no rule, and an accepted or rejected verdict on it is refused. A ``source: years`` criterion check reads the
-cell's own nav_summ year table: every TRAIN year inside [lo, hi] (R-8's realised volatility band, Ruling E-43).
+an unavailable block; a decided verdict recorded on it is refused, and so is an own "undefined ..." verdict on a cell
+whose configured paired test exists (Ruling PM5-12: the path is stat-ed, never read). "N after" is counted from the
+cell states (Ruling PM5-12: the previous cell's N plus 1, an undefined cell 0; the configured ``n`` while a branch is
+still open). A ``report_only`` cell (R-9's frontier cells) has no acceptance: no rule, and an accepted or rejected
+verdict on it is refused. A ``source: years`` criterion check reads the cell's own nav_summ year table: every TRAIN year
+inside [lo, hi] (R-8's realised volatility band, Ruling E-43).
 
 ``v8_book`` (layout ``{"type": "v8_book", "block": NAME, ...}``) runs one of the v7 pitch's book-level blocks
 (``BOOK_BLOCKS``: equity curve, drawdowns, returns, costs, turnover, capacity curve, exposures, signal correlation) on
@@ -755,6 +756,12 @@ def _reads_parent_row(crit: dict | None) -> bool:
                for ch in (crit or {}).get('checks') or [])
 
 
+def _exists(ctx, rel: str) -> bool:
+    """``rel`` exists: stat-ed after the Registry's seal check, never read or hashed (a sealed path is not stat-ed; the
+    Registry records its refusal)."""
+    return not ctx.reg.sealed(rel) and ctx.reg.path(rel).exists()
+
+
 def defined_cells(cells: list[dict], rules) -> list[dict]:
     """The cells of the ladder that are not undefined (``cell_states``): the ones whose inputs are read."""
     states = cell_states(cells, rules)
@@ -836,7 +843,10 @@ def ladder_rows(ctx) -> tuple[list[dict], list[str], list[str], list[str]]:
             raise KeyError(f"v8 cell {c.get('key')!r}: parent {c.get('parent')!r} not in v8.cells")
         st = states[c.get('key')]
         if st['kind'] == UNDEFINED:  # Rulings E-38, E-45, PM4-10: adds 0, nothing read, never a parent
-            rows.append(_undefined_row(i, c, st))
+            row = _undefined_row(i, c, st)
+            if st['recorded'] == UNDEFINED and c.get('paired') and _exists(ctx, _rel(c['paired'])):
+                row['ran'] = _rel(c['paired'])  # Ruling PM5-12: a run cell is not "not formed" (branch_checks)
+            rows.append(row)
             continue
         r, pr = row_of(c), row_of(par)
         if sm and r is None:
@@ -944,13 +954,19 @@ def verdict_rule_checks(rows: list[dict], kinds: dict) -> list[tuple[str, str]]:
 
 def branch_checks(rows: list[dict]) -> list[tuple[str, str]]:
     """Ruling PM4-8: an undefined cell (E-38, E-45: its branch was not taken; PM4-10: it could not be formed) adds 0
-    and carries no decided verdict; a report-only cell (plan R-9's frontier) is never accepted or rejected."""
+    and carries no decided verdict; a report-only cell (plan R-9's frontier) is never accepted or rejected. Ruling
+    PM5-12 (finding R6C-6): a cell whose own verdict records it undefined while its configured paired test exists was
+    run, so it is not "not formed" and is refused."""
     out = []
     for r in rows:
         key, rec = f"v8.cells[{r['key']}].verdict", r.get('recorded_kind')
         if r.get('verdict_kind') == UNDEFINED and rec in DECIDED:
             out.append((key, f"recorded {rec} ({r.get('recorded')!r}) but the cell is undefined ({r['undefined']}): "
                              f"an undefined cell adds 0 and has no verdict"))
+        elif r.get('ran'):
+            out.append((key, f"recorded undefined ({r.get('recorded')!r}) but its paired test {r['ran']} exists: the "
+                             f"cell was run, and an undefined verdict records a cell that could not be formed (Ruling "
+                             f"PM4-10)"))
         elif r.get('report_only') and rec in ('accepted', 'rejected'):
             out.append((key, f"recorded {rec} ({r.get('recorded')!r}) but {r['key']} is a report-only cell: no "
                              f"acceptance (plan R-9; Ruling PM4-8)"))
