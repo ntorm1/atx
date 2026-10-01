@@ -21,6 +21,7 @@
 #include "strategy_mine.hpp"
 #include "strategy_mine_ledger.hpp"
 #include "strategy_mine_rule.hpp"
+#include "strategy_research_role.hpp"
 
 // platform v8 H-3: `atx-equity-strategy-mine` on a synthetic role (the sprint plan's fixture
 // acceptance) and the mined-v1 arithmetic.
@@ -162,9 +163,10 @@ struct World {
   }
 };
 
-// Writes an atx.recent-research-role/v1 role of `days` daily sessions from 2018-12-14.
+// Writes an atx.recent-research-role/v1 role of `days` daily sessions from 2018-12-14, with the
+// manifest block `universe` when it is not null.
 bool write_role(const fs::path &dir, usize days, const std::vector<f64> &close, std::string &sha,
-                Json &files) {
+                Json &files, const Json &universe = Json()) {
   if (!fs::create_directory(dir)) return false;
   std::vector<u8> member(days * N, 0), present(days * N, 1);
   for (usize t = 63; t < days; ++t)
@@ -183,19 +185,19 @@ bool write_role(const fs::path &dir, usize days, const std::vector<f64> &close, 
                         {"ties", "securityID-ascending"},
                         {"missing", "complete-prior-calendar-window-required"},
                         {"common_stock_verified", false}};
-  return json_file(dir / "manifest.json",
-                   {{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
-                    {"instrument_namespace", "spiderrock.securityID"}, {"dates", days},
-                    {"instruments", N}, {"score_begin", score_begin}, {"score_end", days},
-                    {"score_start_ns", keys[score_begin]}, {"score_end_ns", keys.back() + day},
-                    {"source_sha256", std::string(64, 'a')},
-                    {"membership_recipe", membership.dump()},
-                    {"clock_recipe", "modeled-session+22h-mark+23h-decision-v1"},
-                    {"close_basis", "f64(raw-f32-close)*f64-cumulReturnFactor"},
-                    {"volume_basis", "raw-share-volume"}, {"common_stock_verified", false},
-                    {"historical_vintage_verified", false},
-                    {"declared_output_bytes", days * N * 26 + days * 8 + N * 8}, {"files", files}},
-                   sha);
+  Json manifest{{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
+                {"instrument_namespace", "spiderrock.securityID"}, {"dates", days},
+                {"instruments", N}, {"score_begin", score_begin}, {"score_end", days},
+                {"score_start_ns", keys[score_begin]}, {"score_end_ns", keys.back() + day},
+                {"source_sha256", std::string(64, 'a')},
+                {"membership_recipe", membership.dump()},
+                {"clock_recipe", "modeled-session+22h-mark+23h-decision-v1"},
+                {"close_basis", "f64(raw-f32-close)*f64-cumulReturnFactor"},
+                {"volume_basis", "raw-share-volume"}, {"common_stock_verified", false},
+                {"historical_vintage_verified", false},
+                {"declared_output_bytes", days * N * 26 + days * 8 + N * 8}, {"files", files}};
+  if (!universe.is_null()) manifest["universe"] = universe;
+  return json_file(dir / "manifest.json", manifest, sha);
 }
 
 struct Fixture {
@@ -702,5 +704,48 @@ TEST(StrategyMineCampaign, RefusesSealedRolesAndWindowsPastTrain) {
       << too_short.error().to_string();
   EXPECT_FALSE(fs::exists(short_confirm.output_directory));
   EXPECT_FALSE(fs::exists(short_confirm.registry_path));
+}
+
+// Review MINE-8 (Ruling E-10, review B-3): the shared research-role loader refuses a role built
+// with --delisting-returns from its manifest, before any payload -- geometry(), load() and so the
+// mining verb, which writes nothing. The same role declaring returns_applied false is read.
+TEST(StrategyMineCampaign, RefusesADelistingReturnsRole) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const std::vector<f64> flat(D * N, 100.0);
+  const auto role_spec = [&f, &flat](const std::string &name, bool applied) {
+    std::string sha;
+    Json files;
+    const Json universe{{"delisting", {{"returns_applied", applied}}}};
+    EXPECT_TRUE(write_role(f.dir.path / name, D, flat, sha, files, universe)) << name;
+    st::ResearchRoleSpec spec;
+    spec.manifest = (f.dir.path / name / "manifest.json").string();
+    spec.manifest_sha256 = sha;
+    return spec;
+  };
+  const st::ResearchRoleSpec listed = role_spec("listed", false);
+  const auto listed_axes = st::ResearchRole::geometry(listed);
+  ASSERT_TRUE(listed_axes) << listed_axes.error().to_string();
+  EXPECT_EQ(listed_axes->dates, D);
+  EXPECT_EQ(listed_axes->instruments, N);
+  const st::ResearchRoleSpec delisted = role_spec("delisted", true);
+  const auto delisted_axes = st::ResearchRole::geometry(delisted);
+  ASSERT_FALSE(delisted_axes);
+  EXPECT_NE(delisted_axes.error().message().find("--delisting-returns"), std::string::npos)
+      << delisted_axes.error().to_string();
+  const auto loaded = st::ResearchRole::load(delisted);
+  ASSERT_FALSE(loaded);
+  EXPECT_NE(loaded.error().message().find("--delisting-returns"), std::string::npos)
+      << loaded.error().to_string();
+  auto cfg = f.config("delisted", 1, 1);
+  cfg.role.manifest = delisted.manifest;
+  cfg.role.manifest_sha256 = delisted.manifest_sha256;
+  std::ostringstream progress;
+  const auto refused = st::run_mine(cfg, progress);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().message().find("--delisting-returns"), std::string::npos)
+      << refused.error().to_string();
+  EXPECT_FALSE(fs::exists(cfg.output_directory));
+  EXPECT_FALSE(fs::exists(cfg.registry_path));
 }
 } // namespace

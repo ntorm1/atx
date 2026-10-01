@@ -12,6 +12,7 @@
 
 #include "atx/engine/data/research_window.hpp"
 #include "atx/engine/data/role_panel.hpp"
+#include "atx/engine/data/strategy_data.hpp"
 #include "strategy_ic_detail.hpp"
 
 namespace atx::impl::strategy {
@@ -43,9 +44,13 @@ struct Pinned {
 };
 
 // The pinned manifest. A score end after the seal is refused here, from metadata alone, so
-// nothing a sealed role holds is ever opened.
+// nothing a sealed role holds is ever opened. So is a --delisting-returns role (Ruling E-10,
+// review B-3; review MINE-8): its imputed terminal returns are classified after their session,
+// so it may mark NAV books only and never feeds a research verb's signals or IC labels.
 co::Result<Pinned> pinned_manifest(const ResearchRoleSpec &spec) {
-  ATX_TRY(auto j, icd::pinned_json(spec.manifest, spec.manifest_sha256));
+  ATX_TRY(const std::string text, icd::pinned_text(spec.manifest, spec.manifest_sha256));
+  ATX_TRY_VOID(dt::refuse_delisting_returns_signal_role(text, spec.manifest));
+  Json j = Json::parse(text);
   if (!j.is_object() || !j.contains("score_end_ns") || !j.at("score_end_ns").is_number_integer() ||
       !j.contains("dates") || !j.at("dates").is_number_unsigned() || !j.contains("instruments") ||
       !j.at("instruments").is_number_unsigned())

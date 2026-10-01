@@ -10,6 +10,12 @@
 // Research window (research_window.hpp): a manifest whose score end lies after the seal is
 // refused from its metadata, before any payload is opened; every session of a loaded role is
 // checked against the seal again.
+//
+// Ruling E-10 (review B-3; review MINE-8): a role built with --delisting-returns (manifest
+// universe.delisting.returns_applied true) is refused from its metadata by geometry() and
+// load(), before any payload (engine refuse_delisting_returns_signal_role): the research verbs
+// take signals and IC labels from the same role, and its imputed terminal returns are
+// classified after their session.
 #include <memory>
 #include <optional>
 #include <span>
@@ -54,10 +60,12 @@ public:
     atx::usize dates{};
     atx::usize instruments{};
   };
-  // The pinned manifest's axes, read from its metadata only (the seal refusal applies).
+  // The pinned manifest's axes, read from its metadata only (the seal and delisting-returns
+  // refusals apply).
   [[nodiscard]] static atx::core::Result<Geometry> geometry(const ResearchRoleSpec &spec);
-  // Loads the role; refuses before any payload a pin mismatch, a score end after the seal, an
-  // unknown or non-point-in-time field and a load above spec.max_bytes.
+  // Loads the role; refuses before any payload a pin mismatch, a score end after the seal, a
+  // --delisting-returns role, an unknown or non-point-in-time field and a load above
+  // spec.max_bytes.
   [[nodiscard]] static atx::core::Result<std::unique_ptr<ResearchRole>>
   load(const ResearchRoleSpec &spec);
 
