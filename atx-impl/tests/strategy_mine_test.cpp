@@ -610,7 +610,7 @@ TEST(StrategyMineRule, RhoStepRunsOverTheWholeShortlistThenCaps) {
       d{1, -1, -1, 1, 1, -1, -1, 1};
   cb::PairwiseRowCorrelation rho(4, 3);
   const std::vector<std::span<const f64>> rows{m, c, c, d};
-  for (int day = 0; day < 3; ++day) ASSERT_TRUE(rho.add_date(rows));
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(rho.add_date(rows));
   const auto two = st::mined_rho_select(rho, 1, 3, 3, 2);
   ASSERT_EQ(two.size(), 3U);
   EXPECT_TRUE(two[0].read && two[0].pass);
@@ -638,7 +638,7 @@ TEST(StrategyMineRule, UndefinedRhoFailsTheCandidate) {
   const std::vector<f64> sparse{1, -1, missing, missing, missing, missing, missing, missing};
   cb::PairwiseRowCorrelation narrow(3, 3);
   const std::vector<std::span<const f64>> narrow_rows{sparse, m, c};
-  for (int day = 0; day < 3; ++day) ASSERT_TRUE(narrow.add_date(narrow_rows));
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(narrow.add_date(narrow_rows));
   EXPECT_EQ(narrow.dates(0, 2), 0U);
   for (const usize min_dates : {usize{0}, usize{3}}) {
     const auto out = st::mined_rho_select(narrow, 2, 1, min_dates, 8);
@@ -652,7 +652,7 @@ TEST(StrategyMineRule, UndefinedRhoFailsTheCandidate) {
   // Defined on 3 dates: fails under min_dates 4, passes under 3.
   cb::PairwiseRowCorrelation brief(2, 3);
   const std::vector<std::span<const f64>> brief_rows{m, c};
-  for (int day = 0; day < 3; ++day) ASSERT_TRUE(brief.add_date(brief_rows));
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(brief.add_date(brief_rows));
   const auto short_of = st::mined_rho_select(brief, 1, 1, 4, 8);
   EXPECT_FALSE(short_of[0].pass);
   EXPECT_EQ(short_of[0].undefined, 0U);
@@ -665,7 +665,7 @@ TEST(StrategyMineRule, UndefinedRhoFailsTheCandidate) {
   const std::vector<f64> x{missing, missing, missing, missing, 1, 1, -1, -1};
   cb::PairwiseRowCorrelation kept(3, 3);
   const std::vector<std::span<const f64>> kept_rows{m, half_c, x};
-  for (int day = 0; day < 3; ++day) ASSERT_TRUE(kept.add_date(kept_rows));
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(kept.add_date(kept_rows));
   const auto out = st::mined_rho_select(kept, 1, 2, 3, 8);
   EXPECT_TRUE(out[0].pass);
   EXPECT_FALSE(out[1].pass);
