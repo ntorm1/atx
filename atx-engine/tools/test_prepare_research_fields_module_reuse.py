@@ -17,10 +17,11 @@ import test_prepare_research_fields_sec as sect
 import test_prepare_research_fields_sv as svt
 import test_research_fields_holdings as holdt
 
-# the 63-field recipe: the default and issuer fields, sv_ratio126, every v7 SEC field and every holdings field (the v8
-# F-B field k8_item402_63 is opt-in and not in the fields-v9 recipe)
+# the 63-field recipe: the default and issuer fields, sv_ratio126, every v7 SEC field and every v7 holdings field (the
+# v8 F-B field k8_item402_63 and the v8 LIB2 field exch_up_365d are opt-in and not in the fields-v9 recipe)
 SEC_V9 = [x for x in sec.FIELDS if x != "k8_item402_63"]
-RECIPE = list(tool.DEFAULT_FIELDS) + list(tool.ISSUER_FIELDS) + ["sv_ratio126"] + SEC_V9 + list(hold.HOLD_FIELDS)
+HOLD_V9 = [x for x in hold.HOLD_FIELDS if x != "exch_up_365d"]
+RECIPE = list(tool.DEFAULT_FIELDS) + list(tool.ISSUER_FIELDS) + ["sv_ratio126"] + SEC_V9 + HOLD_V9
 HOLD_WRITERS = (("thirteenf", holdt.write_thirteenf), ("ftd", holdt.write_ftd), ("regsho_threshold", holdt.write_regsho),
                 ("security_master", holdt.write_security_master), ("short_volume_ext", holdt.write_svx))
 
@@ -87,7 +88,7 @@ class ModuleReuse(unittest.TestCase):
             rec = e.pop("reused_from")
             self.assertEqual(e, entry(self.full, name), name)
             self.assertEqual(rec["payload_sha256"], self.full["files"][f"{name}.f64"]["sha256"], name)
-        for name in SEC_V9 + list(hold.HOLD_FIELDS):   # module fields name their module producer
+        for name in SEC_V9 + HOLD_V9:   # module fields name their module producer
             rec = entry(again, name)["reused_from"]
             module = "research_fields_sec.py" if name in sec.FIELDS else "research_fields_holdings.py"
             self.assertEqual(rec["producer"]["module"], module, name)
@@ -95,7 +96,7 @@ class ModuleReuse(unittest.TestCase):
             self.assertEqual(rec["inputs"], (sec if name in sec.FIELDS else hold).entry_inputs(entry(self.full, name)))
         # the source checks of fully reused groups are the prior's; holdings keeps this run's stage pins
         self.assertEqual(again["source_checks"]["sec"], self.full["source_checks"]["sec"])
-        for key in hold.KIND_CHECK_KEY.values():
+        for key in dict.fromkeys(hold.KIND_CHECK_KEY[hold.HOLD_FIELDS[x]["kind"]] for x in HOLD_V9):
             self.assertEqual(again["source_checks"]["holdings"][key], self.full["source_checks"]["holdings"][key], key)
         self.assertEqual(again["source_checks"]["holdings"]["code"], self.full["source_checks"]["holdings"]["code"])
         self.assertIn("sec", block["source_checks_from_prior"])
