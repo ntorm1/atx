@@ -1922,3 +1922,25 @@ No merge, no build. Not run: R12, the u pass, the signal and daily IC overlap re
 | raw short volume `manifest.csv` | `8b076a16701096da19d337d31468bbec0baae21c66d4e2d6cd53189d6a851c81` | equal to the v7.1 fields' source pin |
 
 No live stage hash differs from the one recorded at R8 or from the runbook pins.
+
+### Runs
+
+`scripts/run_bounded_research.py` on a clean tree (source column), one at a time, argv = runbook section 3 R10 / R11
+verbatim (reconstructed argv; runner 600 s / 2,560 MiB / floor 512 MiB, the runbook's number and the brief's
+preparation cap; builder `--max-rss-mib 2048 --max-seconds 580`). Argv digest = SHA-256 of the receipt's `command`
+array as compact JSON (`json.dumps(command, separators=(",", ":"))`). Peak = sampled peak tree RSS.
+
+| step | receipt dir | source | outcome / ExitCode | s | peak MiB | argv digest | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| R10 | `train-2020-2023-lo1-fields-v9-run` | `814c2c0a` | completed / 0 | 166.8 | 960 | `0a5e19898e32d46cd095b155b4a8637d8d2195dc301945577d4fd7d380812a57` | `50ca556f5f2bb4c6a99d8b554ee639d90760524aa4378e81e92b06c4d1ec42e9` | `888e6616e441e863a9f91234124e1aebc907db11e18d9789d3c583cf447b8695` |
+
+- **R10 PASS.** Bindings: `prepare_research_fields.py` `b44cff42...`, `research_fields_sec.py` `27034019...`,
+  `research_fields_holdings.py` `edfd1967...`, role lo1 `2ff9d771...1e53`. Runner min free 4,407 MiB. Manifest:
+  status complete, `seal.exclusive_end` 2024-01-01, role `2ff9d771` 1,405 x 5,922 (2018-06-01..2023-12-29,
+  score 399..1405); **63 fields, names in F63 order (True)**; `reuse` null (no `--reuse`: all 63 computed); 79 source
+  paths, **none 2024-named**; stage pins in the entries = the live hashes above (regsho `fb073c62`), bridge r4-v2
+  `f598c04c`, fundamental events v3 `304d2945`, FINRA SI `a2561d75`. Code `code_sha256_lf` `74df97f9...`, blob
+  `e8b57af5`. 4,000 MiB on disk (runbook estimate ~4,120). stdout/stderr scanned for dates 2024+: 0 hits.
+  Coverage acceptance against the v7.1 fields (`8fd00e9f`) on 2020-2022 member cells: **62 of 63 within .02**; the
+  exception is the runbook's expected one, `regsho_threshold_days63` finite member fraction 0.430 / 0.444 / 0.424 ->
+  1.000 / 1.000 / 1.000 (2020 / 2021 / 2022; republished stage, blocker 1).
