@@ -1495,6 +1495,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R2 | `train-2020-2023-base-v1-run` | `f92e09e4` | completed / 0 | 18.9 | 374 | `9a84e921ee595902b1c9a467ea77bc2d2538359229ef5c733a60889ed90091d9` | `6688677096b6a5692f0040ea9ed54df9da938566a062d9ab1ffd873d53636678` |
 | R3 scan | `train-2020-2023-scan-run` | `0aac5f22` | completed / 0 | 1.9 | 237 | `16b767c76fd217c9f75bbeae796370f2c90ccb036d98232ce842bf124ede297c` | (none; verdict on stdout) |
 | R3 repair | `train-2020-2023-base-run` | `d8e67483` | completed / 0 | 3.6 | 389 | `403522ad5f1f21fe9899038ca70ba7d53a66125e7c293eb59e3fc61ad8f96ac7` | `de8d91db7e8788dc58ac1fc6aa1bedc71dc555e63039a378c2deb469f8c49029` |
+| R4 | `identity-bridge-r4-v2-run` | `4c2fcc74` | completed / 0 | 2.8 | 142 | `8fe0b16cf770aaf5f3c2c86f6a748216797d110f9ed8e7a679c3ac9ef454e2d4` | `f598c04c51e0bea33bd730a3a2beb3a9f76abe0b9630c75f21c70ad0ec3643de` |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1509,3 +1510,8 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 - **R3 repair PASS.** Same verdicts; repaired 2,178 crossing steps at 2021-01-04 (kept: 2 split-follow, 8
   distribution), 1,358,390 close cells changed, max |ln return error| 2.33e-15, post-repair max jump/session 44,
   max unexplained/session 1. `BASE = de8d91db...9029`; 207 MiB on disk.
+- **R4 PASS.** The tool verified the r4 source SHA-256 `ac9bcda7...` (`--expect-source-sha256`). Manifest `seal`
+  2024-01-01, `counts.max_end_incl` 2023-12-31, 6,368 CIKs (`ciks.txt` 6,368 lines), 6,450 lines; 2 MiB on disk. No
+  comparison with v1's CIK set was made (v1's extra CIKs are 2024-only link evidence). The optional `--check`
+  diagnostic was **skipped**: it opens the live `C:/atx/atx-db/data/warehouse.duckdb`, the atx-db session is active
+  (open question 27 unresolved), and the dispatch forbids touching `C:/atx`.
