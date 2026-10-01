@@ -86,8 +86,8 @@ namespace atx::engine::factory {
     // substrate-aware overload (bit-identical to serial by construction); else the
     // serial path, byte-identical to today (cfg.exec defaults nullptr).
     auto fr_r = (cfg.exec != nullptr)
-                    ? factory.mine_into(run_cfg, lib_, gate_, *cfg.exec)
-                    : factory.mine_into(run_cfg, lib_, gate_);
+                    ? factory.mine_research_into(run_cfg, lib_, gate_, *cfg.exec)
+                    : factory.mine_research_into(run_cfg, lib_, gate_);
     ATX_CHECK(fr_r.has_value() && "ResearchDriver: fixed-geometry library cannot mismatch");
     const FactoryReport fr = std::move(*fr_r);
 

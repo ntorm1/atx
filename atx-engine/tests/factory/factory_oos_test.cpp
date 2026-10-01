@@ -285,8 +285,8 @@ TEST(FactoryOos, MineIntoOosOff_ByteIdenticalToLegacy) {
 
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
-  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
-  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport a = f1.mine_research_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);
@@ -318,7 +318,7 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
   // init diversity.
   cfg.search.seed_from_grammar = false;
 
-  const FactoryReport rep = f.mine_into(cfg, library, gate).value();
+  const FactoryReport rep = f.mine_research_into(cfg, library, gate).value();
 
   EXPECT_EQ(rep.admitted, 0u)
       << "an alpha good on TRAIN but with no edge on the noise HOLDOUT must be rejected";
@@ -336,7 +336,7 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
   // default changes the mined candidate set; this test verifies OOS-gate LOGIC, not
   // init diversity.
   cfg_is.search.seed_from_grammar = false;
-  const FactoryReport rep_is = f_is.mine_into(cfg_is, lib_is, gate).value();
+  const FactoryReport rep_is = f_is.mine_research_into(cfg_is, lib_is, gate).value();
   EXPECT_GT(rep_is.admitted, 0u)
       << "the legacy in-sample path admits the overfit the OOS holdout rejects";
 }
@@ -355,7 +355,7 @@ TEST(FactoryOos, GoodIsGoodOos_Admitted) {
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
   cfg.oos_fraction = 0.20;
 
-  const FactoryReport rep = f.mine_into(cfg, library, gate).value();
+  const FactoryReport rep = f.mine_research_into(cfg, library, gate).value();
 
   ASSERT_GT(rep.admitted, 0u) << "a stationary edge survives the holdout confirmation";
   EXPECT_EQ(library.n_alphas(), static_cast<u64>(rep.admitted));
@@ -396,8 +396,8 @@ TEST(FactoryOos, OosDeterminism) {
 
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
-  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
-  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport a = f1.mine_research_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);
@@ -431,7 +431,7 @@ TEST(FactoryOos, MineIntoForwardsSinkPerGeneration) {
   ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path (non-OOS) for this test";
 
   CountingSink sink;
-  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr).value();
+  const FactoryReport rep = f.mine_research_into(cfg, library, gate, &sink, nullptr).value();
   (void)rep;
 
   EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
@@ -451,13 +451,13 @@ TEST(FactoryOos, MineIntoOffPathDigestUnchanged) {
   Fixture fxA{real_signal_panel()};
   lib::Library libA = lib::Library::open(tmpdir("A"), default_gate_cfg(), {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg, libA, gate).value();
 
   // Run B: explicit nullptr/nullptr — must be byte-identical to A.
   Fixture fxB{real_signal_panel()};
   lib::Library libB = lib::Library::open(tmpdir("B"), default_gate_cfg(), {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg, libB, gate, nullptr, nullptr).value();
+  const FactoryReport repB = fB.mine_research_into(cfg, libB, gate, nullptr, nullptr).value();
 
   EXPECT_EQ(repA.digest, repB.digest)
       << "off-path nullptr params must produce byte-identical digest";
@@ -479,7 +479,7 @@ TEST(FactoryOos, MineIntoOosForwardsSink) {
   cfg.oos_fraction = 0.20;
 
   CountingSink sink;
-  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr).value();
+  const FactoryReport rep = f.mine_research_into(cfg, library, gate, &sink, nullptr).value();
   (void)rep;
 
   EXPECT_GE(sink.calls, 1)
@@ -513,7 +513,7 @@ TEST(FactoryOos, AccumulationGeometryMismatchHaltsRun) {
     Factory f = fx.factory();
     FactoryConfig cfg = real_signal_cfg(/*seed*/ 101);
     cfg.oos_fraction = 0.20;
-    const FactoryReport rep = f.mine_into(cfg, library, gate).value();
+    const FactoryReport rep = f.mine_research_into(cfg, library, gate).value();
     ASSERT_GT(rep.admitted, 0u) << "run 1 must admit so t_ is fixed on the persistent library";
     ASSERT_TRUE(library.flush_all().has_value()); // make the staged alphas durable for reopen
   }
@@ -529,7 +529,7 @@ TEST(FactoryOos, AccumulationGeometryMismatchHaltsRun) {
     FactoryConfig cfg = real_signal_cfg(/*seed*/ 202);
     cfg.oos_fraction = 0.20; // same fraction, longer panel => longer holdout => != run 1's t_
 
-    auto rep_r = f.mine_into(cfg, library, gate);
+    auto rep_r = f.mine_research_into(cfg, library, gate);
     ASSERT_FALSE(rep_r.has_value())
         << "a geometry-mismatched reopened --library-dir must HALT with a clean error, "
            "not abort / read OOB";
@@ -547,7 +547,7 @@ TEST(FactoryOos, AccumulationGeometryMismatchHaltsRun) {
     FactoryConfig cfg = real_signal_cfg(/*seed*/ 303); // a DIFFERENT seed (new candidates)
     cfg.oos_fraction = 0.20;
 
-    auto rep_r = f.mine_into(cfg, library, gate);
+    auto rep_r = f.mine_research_into(cfg, library, gate);
     ASSERT_TRUE(rep_r.has_value())
         << "a matching-geometry reopen must accumulate cleanly: " << rep_r.error().to_string();
   }
@@ -606,7 +606,7 @@ TEST(FactoryOos, WalkForwardDisjointWindows) {
     FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
     cfg.oos_fraction = frac;
     // oos_n_windows stays 0 (default).
-    const FactoryReport rep = f.mine_into(cfg, lib_def, gate).value();
+    const FactoryReport rep = f.mine_research_into(cfg, lib_def, gate).value();
     digest_terminal_default = rep.digest;
   }
 
@@ -621,7 +621,7 @@ TEST(FactoryOos, WalkForwardDisjointWindows) {
     cfg.oos_fraction = frac;
     cfg.oos_n_windows = n_windows;
     cfg.oos_window    = n_windows - 1U; // terminal window
-    const FactoryReport rep = f.mine_into(cfg, lib_w2, gate).value();
+    const FactoryReport rep = f.mine_research_into(cfg, lib_w2, gate).value();
     digest_win2_run1 = rep.digest;
   }
   {
@@ -632,7 +632,7 @@ TEST(FactoryOos, WalkForwardDisjointWindows) {
     cfg.oos_fraction = frac;
     cfg.oos_n_windows = n_windows;
     cfg.oos_window    = n_windows - 1U;
-    const FactoryReport rep = f.mine_into(cfg, lib_w2, gate).value();
+    const FactoryReport rep = f.mine_research_into(cfg, lib_w2, gate).value();
     digest_win2_run2 = rep.digest;
   }
   EXPECT_EQ(digest_win2_run1, digest_win2_run2) << "window 2 must be twice-run byte-identical";
@@ -652,7 +652,7 @@ TEST(FactoryOos, WalkForwardDisjointWindows) {
       cfg.oos_fraction = frac;
       cfg.oos_n_windows = n_windows;
       cfg.oos_window    = k;
-      const FactoryReport rep = f.mine_into(cfg, lib_k, gate).value();
+      const FactoryReport rep = f.mine_research_into(cfg, lib_k, gate).value();
       if (run == 0) { d_run1 = rep.digest; }
       else          { d_run2 = rep.digest; }
     }
@@ -680,8 +680,8 @@ TEST(FactoryOos, WalkForwardDefaultByteIdentical) {
 
   FactoryConfig cfgB = cfgA; // identical
 
-  const FactoryReport repA = fA.mine_into(cfgA, libA, gate).value();
-  const FactoryReport repB = fB.mine_into(cfgB, libB, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfgA, libA, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfgB, libB, gate).value();
 
   EXPECT_EQ(repA.digest,   repB.digest)   << "default path must be byte-identical across two runs";
   EXPECT_EQ(repA.admitted, repB.admitted) << "admitted count must be identical";
@@ -715,7 +715,7 @@ TEST(FactoryOos, WalkForwardSeqParallel) {
     Fixture fxS{real_signal_panel()};
     lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});
     Factory fS = fxS.factory();
-    const FactoryReport repS = fS.mine_into(cfg, libS, gate).value();
+    const FactoryReport repS = fS.mine_research_into(cfg, libS, gate).value();
     want_digest      = repS.digest;
     want_version     = libS.snapshot().version_id;
     want_admitted    = repS.admitted;
@@ -732,7 +732,7 @@ TEST(FactoryOos, WalkForwardSeqParallel) {
         lib::Library::open(tmpdir("wfw_par" + std::to_string(w)), default_gate_cfg(), {0xC0FFEEu});
     Factory fP = fxP.factory();
     ProcessExecutor pe{ExecutorConfig{w, false}};
-    const FactoryReport repP = fP.mine_into(cfg, libP, gate, pe).value();
+    const FactoryReport repP = fP.mine_research_into(cfg, libP, gate, pe).value();
     EXPECT_EQ(repP.digest, want_digest)
         << "windowed walk-forward ProcessExecutor@" << w << " digest diverged from serial";
     EXPECT_EQ(repP.admitted, want_admitted)
@@ -758,7 +758,7 @@ TEST(FactoryOos, WalkForwardWindowOutOfRange) {
   cfg.oos_n_windows = 3U;
   cfg.oos_window    = 3U; // out of range: must be < oos_n_windows
 
-  auto rep_r = f.mine_into(cfg, library, gate);
+  auto rep_r = f.mine_research_into(cfg, library, gate);
   ASSERT_FALSE(rep_r.has_value()) << "oos_window >= oos_n_windows must return Err";
   EXPECT_EQ(rep_r.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
@@ -786,7 +786,7 @@ TEST(FactoryOos, WalkForwardGeometryGuardOverflow) {
   cfg.oos_window    = 0U; // valid index
 
   // Must return Ok with admitted == 0 (panel too short), no UB, no crash.
-  auto rep_r = f.mine_into(cfg, library, gate);
+  auto rep_r = f.mine_research_into(cfg, library, gate);
   ASSERT_TRUE(rep_r.has_value())
       << "pathological oos_n_windows must return Ok(empty report), not Err: "
       << (rep_r.has_value() ? "" : rep_r.error().to_string());
@@ -820,7 +820,7 @@ TEST(FactoryOos, R3b_PboFiniteWithTwoAdmits) {
   cfg.oos_fraction = 0.20;
   cfg.min_dsr = 0.0; // permissive deflation bar so more pass
 
-  const FactoryReport rep = f.mine_into(cfg, library, gate).value();
+  const FactoryReport rep = f.mine_research_into(cfg, library, gate).value();
 
   if (rep.admitted >= 2U) {
     // PBO must be finite and in [0, 1].
@@ -858,8 +858,8 @@ TEST(FactoryOos, R3b_PboDeterministic) {
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
 
-  const FactoryReport rep1 = f1.mine_into(cfg, lib1, gate).value();
-  const FactoryReport rep2 = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport rep1 = f1.mine_research_into(cfg, lib1, gate).value();
+  const FactoryReport rep2 = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(rep1.admitted, rep2.admitted);
   EXPECT_EQ(rep1.digest,   rep2.digest) << "digest must be byte-identical (twice-run)";
@@ -906,7 +906,7 @@ TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
   Fixture fx{real_signal_panel()};
   lib::Library lib1 = lib::Library::open(tmpdir("pbo_digest_a"), gc, {0xC0FFEEu});
   Factory f = fx.factory();
-  const FactoryReport rep = f.mine_into(cfg, lib1, gate).value();
+  const FactoryReport rep = f.mine_research_into(cfg, lib1, gate).value();
   const atx::u64 vid = lib1.snapshot().version_id;
 
   // PBO must be finite (we chose a run that admits >= 2) so the pin is over a run
@@ -950,7 +950,7 @@ TEST(FactoryOos, R3b_PboNanWithOneAdmit) {
   cfg.oos_fraction = 0.20;
   cfg.min_dsr = 0.0;
 
-  const FactoryReport rep = f.mine_into(cfg, library, gate_one).value();
+  const FactoryReport rep = f.mine_research_into(cfg, library, gate_one).value();
 
   if (rep.admitted <= 1U) {
     EXPECT_TRUE(std::isnan(rep.oos_pbo))
@@ -989,7 +989,7 @@ TEST(FactoryOos, R3b_OosPboEqualsRunPboAndGateCapable) {
   Fixture fx_a{real_signal_panel()};
   lib::Library lib_a = lib::Library::open(tmpdir("a3_pbo_default"), gc, {0xC0FFEEu});
   Factory f_a = fx_a.factory();
-  const FactoryReport rep_a = f_a.mine_into(cfg, lib_a, gate).value();
+  const FactoryReport rep_a = f_a.mine_research_into(cfg, lib_a, gate).value();
 
   ASSERT_GE(rep_a.admitted, 2U)
       << "fixture must admit >= 2 so the PBO cross-section is feasible; got "
@@ -1018,7 +1018,7 @@ TEST(FactoryOos, R3b_OosPboEqualsRunPboAndGateCapable) {
   Fixture fx_b{real_signal_panel()};
   lib::Library lib_b = lib::Library::open(tmpdir("a3_pbo_gated"), gc, {0xC0FFEEu});
   Factory f_b = fx_b.factory();
-  const FactoryReport rep_b = f_b.mine_into(cfg_b, lib_b, gate).value();
+  const FactoryReport rep_b = f_b.mine_research_into(cfg_b, lib_b, gate).value();
 
   // The digest is UNCHANGED across the gate setting — PBO never touches admission.
   EXPECT_EQ(rep_b.digest, rep_a.digest)
@@ -1108,12 +1108,12 @@ TEST(FactoryOos, PriceScaleGate_DefaultIsOff_ByteIdentical) {
   Fixture fx1{real_signal_panel()};
   lib::Library lib1 = lib::Library::open(tmpdir("r2_off_a"), gc, {0xC0FFEEu});
   Factory f1 = fx1.factory();
-  const FactoryReport ra = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport ra = f1.mine_research_into(cfg, lib1, gate).value();
 
   Fixture fx2{real_signal_panel()};
   lib::Library lib2 = lib::Library::open(tmpdir("r2_off_b"), gc, {0xC0FFEEu});
   Factory f2 = fx2.factory();
-  const FactoryReport rb = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport rb = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(ra.digest, rb.digest)
       << "two runs at default max_price_scale_corr=1.0 must be byte-identical";
@@ -1145,7 +1145,7 @@ TEST(FactoryOos, PriceScaleGate_ActiveWithRawClose_RejectsWhenLoadingHigh) {
   Fixture fxA{panel_rc};
   lib::Library libA = lib::Library::open(tmpdir("r2_gate_off"), gc, {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg_off, libA, gate).value();
   ASSERT_EQ(repA.reject_histogram[6], 0u) << "gate OFF: RejectPriceScale bucket must be 0";
   ASSERT_GT(repA.admitted, 0u)
       << "gate OFF must admit at least one candidate, else the RED->GREEN "
@@ -1157,7 +1157,7 @@ TEST(FactoryOos, PriceScaleGate_ActiveWithRawClose_RejectsWhenLoadingHigh) {
   Fixture fxB{panel_rc};
   lib::Library libB = lib::Library::open(tmpdir("r2_gate_on"), gc, {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfg_on, libB, gate).value();
 
   // If gate OFF admitted anything, gate ON at 1e-9 must reject at least some.
   if (repA.admitted > 0u) {
@@ -1196,14 +1196,14 @@ TEST(FactoryOos, PriceScaleGate_SeqEqualsParallel) {
   Fixture fxSerial{panel_rc};
   lib::Library libSerial = lib::Library::open(tmpdir("r2_seq"), gc, {0xC0FFEEu});
   Factory fSerial = fxSerial.factory();
-  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+  const FactoryReport repSerial = fSerial.mine_research_into(cfg, libSerial, gate).value();
 
   // Parallel path (ProcessExecutor, 2 workers).
   Fixture fxPar{panel_rc};
   lib::Library libPar = lib::Library::open(tmpdir("r2_par"), gc, {0xC0FFEEu});
   Factory fPar = fxPar.factory();
   ProcessExecutor execPar{ExecutorConfig{2, false}};
-  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+  const FactoryReport repPar = fPar.mine_research_into(cfg, libPar, gate, execPar).value();
 
   EXPECT_EQ(repSerial.digest, repPar.digest)
       << "seq==parallel digest must match with price-scale gate ON";
@@ -1234,12 +1234,12 @@ TEST(FactoryOos, PriceScaleGate_Deterministic) {
   Fixture fx1{panel_rc};
   lib::Library lib1 = lib::Library::open(tmpdir("r2_det_a"), gc, {0xC0FFEEu});
   Factory f1 = fx1.factory();
-  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport r1 = f1.mine_research_into(cfg, lib1, gate).value();
 
   Fixture fx2{panel_rc};
   lib::Library lib2 = lib::Library::open(tmpdir("r2_det_b"), gc, {0xC0FFEEu});
   Factory f2 = fx2.factory();
-  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport r2 = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(r1.digest, r2.digest);
   EXPECT_EQ(r1.admitted, r2.admitted);
@@ -1276,12 +1276,12 @@ TEST(FactoryOos, DsrSubwindows_DefaultIsOff_ByteIdentical) {
   Fixture fx1{real_signal_panel()};
   lib::Library lib1 = lib::Library::open(tmpdir("r3_off_a"), gc, {0xC0FFEEu});
   Factory f1 = fx1.factory();
-  const FactoryReport ra = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport ra = f1.mine_research_into(cfg, lib1, gate).value();
 
   Fixture fx2{real_signal_panel()};
   lib::Library lib2 = lib::Library::open(tmpdir("r3_off_b"), gc, {0xC0FFEEu});
   Factory f2 = fx2.factory();
-  const FactoryReport rb = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport rb = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(ra.digest, rb.digest)
       << "two runs at default dsr_subwindows=0 must be byte-identical";
@@ -1309,7 +1309,7 @@ TEST(FactoryOos, DsrSubwindows_ActiveRejectsSingleWindowLuck) {
   Fixture fxA{real_signal_panel()};
   lib::Library libA = lib::Library::open(tmpdir("r3_sw_off"), gc, {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg_off, libA, gate).value();
   ASSERT_GT(repA.admitted, 0u)
       << "gate OFF must admit at least one candidate so the active-gate test is non-vacuous";
 
@@ -1321,7 +1321,7 @@ TEST(FactoryOos, DsrSubwindows_ActiveRejectsSingleWindowLuck) {
   Fixture fxB{real_signal_panel()};
   lib::Library libB = lib::Library::open(tmpdir("r3_sw_on"), gc, {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfg_on, libB, gate).value();
 
   EXPECT_EQ(repB.admitted, 0u)
       << "K=50 over a short holdout: every candidate must be rejected by sub-windows";
@@ -1350,14 +1350,14 @@ TEST(FactoryOos, DsrSubwindows_SeqEqualsParallel) {
   Fixture fxSerial{real_signal_panel()};
   lib::Library libSerial = lib::Library::open(tmpdir("r3_seq"), gc, {0xC0FFEEu});
   Factory fSerial = fxSerial.factory();
-  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+  const FactoryReport repSerial = fSerial.mine_research_into(cfg, libSerial, gate).value();
 
   // Parallel path (ProcessExecutor, 2 workers).
   Fixture fxPar{real_signal_panel()};
   lib::Library libPar = lib::Library::open(tmpdir("r3_par"), gc, {0xC0FFEEu});
   Factory fPar = fxPar.factory();
   ProcessExecutor execPar{ExecutorConfig{2, false}};
-  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+  const FactoryReport repPar = fPar.mine_research_into(cfg, libPar, gate, execPar).value();
 
   EXPECT_EQ(repSerial.digest, repPar.digest)
       << "seq==parallel digest must match with dsr_subwindows gate ON";
@@ -1385,12 +1385,12 @@ TEST(FactoryOos, DsrSubwindows_Deterministic) {
   Fixture fx1{real_signal_panel()};
   lib::Library lib1 = lib::Library::open(tmpdir("r3_det_a"), gc, {0xC0FFEEu});
   Factory f1 = fx1.factory();
-  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport r1 = f1.mine_research_into(cfg, lib1, gate).value();
 
   Fixture fx2{real_signal_panel()};
   lib::Library lib2 = lib::Library::open(tmpdir("r3_det_b"), gc, {0xC0FFEEu});
   Factory f2 = fx2.factory();
-  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport r2 = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(r1.digest, r2.digest);
   EXPECT_EQ(r1.admitted, r2.admitted);
@@ -1428,13 +1428,13 @@ TEST(FactoryOos, DsrSubwindows_StructuralZeroOnlyFirstWindow) {
   Fixture fxA{big_panel};
   lib::Library libA = lib::Library::open(tmpdir("r3_sz_off"), gc, {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg_off, libA, gate).value();
 
   // Run B: K=2 — structural zero is properly skipped only for sub-window 0.
   Fixture fxB{big_panel};
   lib::Library libB = lib::Library::open(tmpdir("r3_sz_on"), gc, {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg, libB, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfg, libB, gate).value();
 
   // With min_dsr=0 and wide floors, K=2 over long holdout should not reject
   // everything. The admitted count may be <= repA.admitted but must be >= 0.
@@ -1502,13 +1502,13 @@ TEST(FactoryOos, SubwindowMetrics_SinglePass_BitIdentical) {
   Fixture fx1{big_panel};
   lib::Library lib1 = lib::Library::open(tmpdir("s2_sw_bit_a"), gc, {0xC0FFEEu});
   Factory f1 = fx1.factory();
-  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport r1 = f1.mine_research_into(cfg, lib1, gate).value();
 
   // Re-run: the single-pass reduction is deterministic.
   Fixture fx2{big_panel};
   lib::Library lib2 = lib::Library::open(tmpdir("s2_sw_bit_b"), gc, {0xC0FFEEu});
   Factory f2 = fx2.factory();
-  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport r2 = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(r1.digest, r2.digest)
       << "single-pass sub-window reduction must be deterministic across runs";
@@ -1545,7 +1545,7 @@ TEST(FactoryOos, PriceScaleGate_InertWhenRawCloseAbsent) {
   Fixture fxA{real_signal_panel()};
   lib::Library libA = lib::Library::open(tmpdir("r2_inert_off"), gc, {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg, libA, gate).value();
 
   // Run B: gate ON (threshold=0.5), still no raw_close -> loading=NaN -> inert.
   FactoryConfig cfg_on = cfg;
@@ -1553,7 +1553,7 @@ TEST(FactoryOos, PriceScaleGate_InertWhenRawCloseAbsent) {
   Fixture fxB{real_signal_panel()};
   lib::Library libB = lib::Library::open(tmpdir("r2_inert_on"), gc, {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfg_on, libB, gate).value();
 
   EXPECT_EQ(repA.digest, repB.digest)
       << "gate active but raw_close absent: must be byte-identical to gate OFF";
@@ -1599,8 +1599,8 @@ TEST(FactoryOos, HoldoutEngineReuse_DigestUnchanged) {
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
 
-  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
-  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport a = f1.mine_research_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_research_into(cfg, lib2, gate).value();
 
   // The OOS path must actually admit (else the holdout Engine is never exercised).
   ASSERT_GT(a.admitted, 0u) << "fixture must admit >= 1 so the holdout Engine runs";
@@ -1650,7 +1650,7 @@ TEST(FactoryOos, CsePctDenominator_CorrectOverEvaluated) {
   Fixture fx_oos{real_signal_panel()};
   lib::Library lib_oos = lib::Library::open(tmpdir("cse_oos"), default_gate_cfg(), {0xC0FFEEu});
   Factory f_oos = fx_oos.factory();
-  const FactoryReport rep_oos = f_oos.mine_into(oos_cfg, lib_oos, gate).value();
+  const FactoryReport rep_oos = f_oos.mine_research_into(oos_cfg, lib_oos, gate).value();
 
   ASSERT_GT(rep_oos.evaluated, 0u)
       << "the run must score genomes so the dropped recompile is meaningfully exercised";
@@ -1662,7 +1662,7 @@ TEST(FactoryOos, CsePctDenominator_CorrectOverEvaluated) {
   Fixture fx_leg{real_signal_panel()};
   lib::Library lib_leg = lib::Library::open(tmpdir("cse_leg"), default_gate_cfg(), {0xC0FFEEu});
   Factory f_leg = fx_leg.factory();
-  const FactoryReport rep_leg = f_leg.mine_into(cfg, lib_leg, gate).value();
+  const FactoryReport rep_leg = f_leg.mine_research_into(cfg, lib_leg, gate).value();
 
   ASSERT_GT(rep_leg.evaluated, 0u) << "the legacy run must also score genomes";
   EXPECT_EQ(rep_leg.cse_pct, 0.0)
@@ -1706,8 +1706,8 @@ TEST(FactoryOos, CascadeGate_DefaultIsOff_ByteIdentical) {
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
 
-  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
-  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport a = f1.mine_research_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);
@@ -1741,7 +1741,7 @@ TEST(FactoryOos, AdmittedSetUnchanged_AfterCascadeGate) {
   Fixture fxA{real_signal_panel()};
   lib::Library libA = lib::Library::open(tmpdir("casc_off"), default_gate_cfg(), {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg_off, libA, gate).value();
   ASSERT_GT(repA.admitted, 0u)
       << "the stationary edge must admit >= 1, else the unchanged-admitted-set proof is vacuous";
   ASSERT_EQ(repA.n_cascade_skipped, 0u) << "gate OFF must never skip";
@@ -1753,7 +1753,7 @@ TEST(FactoryOos, AdmittedSetUnchanged_AfterCascadeGate) {
   Fixture fxB{real_signal_panel()};
   lib::Library libB = lib::Library::open(tmpdir("casc_on"), default_gate_cfg(), {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfg_on, libB, gate).value();
 
   // The gate actually fired (non-vacuous): it skipped >= 1 holdout eval.
   EXPECT_GT(repB.n_cascade_skipped, 0u)
@@ -1789,14 +1789,14 @@ TEST(FactoryOos, CascadeGate_SeqEqualsParallel) {
   Fixture fxSerial{real_signal_panel()};
   lib::Library libSerial = lib::Library::open(tmpdir("casc_seq"), default_gate_cfg(), {0xC0FFEEu});
   Factory fSerial = fxSerial.factory();
-  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+  const FactoryReport repSerial = fSerial.mine_research_into(cfg, libSerial, gate).value();
 
   // Parallel path (ProcessExecutor, 2 workers).
   Fixture fxPar{real_signal_panel()};
   lib::Library libPar = lib::Library::open(tmpdir("casc_par"), default_gate_cfg(), {0xC0FFEEu});
   Factory fPar = fxPar.factory();
   ProcessExecutor execPar{ExecutorConfig{2, false}};
-  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+  const FactoryReport repPar = fPar.mine_research_into(cfg, libPar, gate, execPar).value();
 
   EXPECT_EQ(repSerial.digest, repPar.digest)
       << "seq==parallel digest must match with cascade pre-gate ON";
@@ -1833,14 +1833,14 @@ TEST(FactoryOos, AdmitLadder_SharedHelper_SeqEqualsParallel) {
   lib::Library libSerial =
       lib::Library::open(tmpdir("ladder_seq"), default_gate_cfg(), {0xC0FFEEu});
   Factory fSerial = fxSerial.factory();
-  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+  const FactoryReport repSerial = fSerial.mine_research_into(cfg, libSerial, gate).value();
 
   // Parallel path (ProcessExecutor, 2 workers) -> mine_into_oos_parallel.
   Fixture fxPar{real_signal_panel()};
   lib::Library libPar = lib::Library::open(tmpdir("ladder_par"), default_gate_cfg(), {0xC0FFEEu});
   Factory fPar = fxPar.factory();
   ProcessExecutor execPar{ExecutorConfig{2, false}};
-  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+  const FactoryReport repPar = fPar.mine_research_into(cfg, libPar, gate, execPar).value();
 
   // The config must actually exercise BOTH ladder outcomes for this to be a real proof.
   ASSERT_GT(repSerial.admitted, 0u) << "config must drive at least one Accept through the ladder";
@@ -1858,6 +1858,178 @@ TEST(FactoryOos, AdmitLadder_SharedHelper_SeqEqualsParallel) {
       << "shared admit_on_holdout: seq==parallel library version_id must match";
   EXPECT_EQ(repSerial.reject_histogram, repPar.reject_histogram)
       << "shared admit_on_holdout: seq==parallel reject_histogram must match";
+}
+
+TEST(FactoryProductionAdmission, DefaultFailsClosedAndResearchIsExplicit) {
+  Fixture fx{real_signal_panel()};
+  auto library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  AlphaGate gate{default_gate_cfg()};
+  auto cfg = real_signal_cfg(13);
+  const auto refused = fx.factory().mine_into(cfg, library, gate);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(library.n_alphas(), 0U);
+  EXPECT_EQ(library.cumulative_trials(), 0U);
+  const auto research = fx.factory().mine_research_into(cfg, library, gate);
+  ASSERT_TRUE(research.has_value());
+  EXPECT_GT(research->admitted, 0U);
+  EXPECT_EQ(research->admission_evidence,
+            atx::engine::factory::AdmissionEvidence::ResearchOnly);
+  EXPECT_EQ(research->admission_receipt_hash, 0U);
+
+  auto hold_library = lib::Library::open(tmpdir("research_holdout"), default_gate_cfg(), {0xC0FFEEu});
+  cfg.oos_fraction = 0.25;
+  const auto hold_research = fx.factory().mine_research_into(cfg, hold_library, gate);
+  ASSERT_TRUE(hold_research.has_value());
+  EXPECT_EQ(hold_research->admission_evidence,
+            atx::engine::factory::AdmissionEvidence::ResearchOnly);
+  EXPECT_EQ(hold_research->admission_receipt_hash, 0U);
+}
+
+TEST(FactoryProductionAdmission, UnsupportedEvidenceRefusesBeforeMutationOrOpen) {
+  Fixture fx{real_signal_panel()};
+  auto library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  auto audit = eval::FileLockboxAudit::open(std::filesystem::path(tmpdir("audit")) / "lockbox.log");
+  ASSERT_TRUE(audit.has_value());
+  atx::engine::factory::ProductionAdmissionPolicy policy{
+      "holdout-v1", "fixture-calendar-instruments-v1", "test", &*audit, 0U};
+  auto cfg = real_signal_cfg(13);
+  cfg.production_admission = &policy;
+  AlphaGate gate{default_gate_cfg()};
+  EXPECT_FALSE(fx.factory().mine_into(cfg, library, gate).has_value()); // no holdout
+  cfg.oos_fraction = 0.25;
+  cfg.oos_embargo = 0.001;
+  EXPECT_FALSE(fx.factory().mine_into(cfg, library, gate).has_value()); // inadequate embargo
+  cfg.oos_embargo = 0.025;
+  cfg.weak_panel = &fx.panel;
+  EXPECT_FALSE(fx.factory().mine_into(cfg, library, gate).has_value()); // full-panel side input
+  cfg.weak_panel = nullptr;
+  cfg.max_pbo = 0.5;
+  cfg.blocking_pbo = true;
+  EXPECT_FALSE(fx.factory().mine_into(cfg, library, gate).has_value()); // post-insert rejection
+  cfg.max_pbo = 1.0;
+  cfg.blocking_pbo = false;
+  policy.prior_trial_count = std::numeric_limits<usize>::max();
+  EXPECT_FALSE(fx.factory().mine_into(cfg, library, gate).has_value()); // undeclared history
+  policy.prior_trial_count = 0U;
+  ExecutionSimulator invalid_sim{FillCfg{}, SlippageCfg{}, ImpactCfg{-1.0, 0.5, 0.0},
+                                  CommissionCfg{}, LatencyCfg{}, VolumeCapCfg{1.0}};
+  Factory invalid_factory{fx.lib, fx.panel, invalid_sim, fx.policy};
+  EXPECT_FALSE(invalid_factory.mine_into(cfg, library, gate).has_value());
+  EXPECT_EQ(library.n_alphas(), 0U);
+  EXPECT_EQ(library.cumulative_trials(), 0U);
+  EXPECT_TRUE(audit->receipts().empty());
+}
+
+TEST(FactoryProductionAdmission, ConfirmsFrozenFamilyAndRejectsReopenedHoldout) {
+  Fixture fx{real_signal_panel()};
+  auto library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  const auto audit_path = std::filesystem::path(tmpdir("audit")) / "lockbox.log";
+  auto audit = eval::FileLockboxAudit::open(audit_path);
+  ASSERT_TRUE(audit.has_value());
+  atx::engine::factory::ProductionAdmissionPolicy policy{
+      "holdout-v1", "fixture-calendar-instruments-v1", "test", &*audit, 7U};
+  auto cfg = real_signal_cfg(13);
+  cfg.production_admission = &policy;
+  cfg.oos_fraction = 0.25;
+  cfg.oos_embargo = 0.025;
+  AlphaGate gate{default_gate_cfg()};
+  const auto result = fx.factory().mine_into(cfg, library, gate);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_GT(result->admitted, 0U);
+  EXPECT_EQ(result->admission_evidence,
+            atx::engine::factory::AdmissionEvidence::IndependentHoldout);
+  ASSERT_EQ(audit->receipts().size(), 1U);
+  const auto &receipt = audit->receipts().front();
+  EXPECT_TRUE(eval::verify_receipt(receipt));
+  EXPECT_EQ(receipt.candidate_hash, result->admission_family_hash);
+  EXPECT_EQ(receipt.receipt_hash, result->admission_receipt_hash);
+  EXPECT_EQ(result->admission_as_of, fx.panel.dates() - 1U);
+  EXPECT_EQ(result->admission_audit_receipts, 1U);
+  EXPECT_EQ(receipt.holdout_begin, 90U);
+  EXPECT_EQ(receipt.holdout_end, 120U);
+  EXPECT_NE(receipt.purpose.find("execution_replay=unavailable"), std::string::npos);
+  EXPECT_NE(receipt.purpose.find("prior_trials=7"), std::string::npos);
+  EXPECT_NE(receipt.purpose.find("total_trials=" + std::to_string(result->trials + 7U)),
+            std::string::npos);
+  for (u64 a = 0U; a < library.n_alphas(); ++a) {
+    const auto record = library.get(lib::AlphaId{static_cast<atx::u32>(a)});
+    EXPECT_NE(receipt.purpose.find(std::to_string(record.canon_hash)), std::string::npos);
+  }
+
+  // A fresh library and a reopened audit cannot turn the same data into new evidence.
+  auto reopened = eval::FileLockboxAudit::open(audit_path);
+  ASSERT_TRUE(reopened.has_value());
+  policy.audit = &*reopened;
+  auto second_library = lib::Library::open(tmpdir("second"), default_gate_cfg(), {0xC0FFEEu});
+  cfg.search.master_seed = 99U;
+  const auto reused = fx.factory().mine_into(cfg, second_library, gate);
+  ASSERT_FALSE(reused.has_value());
+  EXPECT_EQ(reused.error().code(), core::ErrorCode::AlreadyExists);
+  EXPECT_EQ(second_library.n_alphas(), 0U);
+  EXPECT_EQ(second_library.cumulative_trials(), 0U);
+  EXPECT_EQ(reopened->receipts().size(), 1U);
+}
+
+TEST(FactoryProductionAdmission, HoldoutCannotChangeFrozenSelection) {
+  constexpr usize dates = 120U, instruments = 8U, holdout_begin = 90U;
+  auto close = momentum_close(dates, instruments, 0xA11Cu);
+  auto perturbed = close;
+  for (usize t = holdout_begin; t < dates; ++t)
+    for (usize j = 0; j < instruments; ++j)
+      perturbed[t * instruments + j] = close[(holdout_begin - 1U) * instruments + j];
+  Fixture original{two_field_panel(dates, instruments, std::move(close))};
+  Fixture flat_holdout{two_field_panel(dates, instruments, std::move(perturbed))};
+  auto library_a = lib::Library::open(tmpdir("a"), default_gate_cfg(), {0xC0FFEEu});
+  auto library_b = lib::Library::open(tmpdir("b"), default_gate_cfg(), {0xC0FFEEu});
+  auto audit_a = eval::FileLockboxAudit::open(std::filesystem::path(tmpdir("audit_a")) / "lockbox.log");
+  auto audit_b = eval::FileLockboxAudit::open(std::filesystem::path(tmpdir("audit_b")) / "lockbox.log");
+  ASSERT_TRUE(audit_a.has_value());
+  ASSERT_TRUE(audit_b.has_value());
+  atx::engine::factory::ProductionAdmissionPolicy policy{
+      "holdout-v1", "fixture-calendar-instruments-v1", "test", &*audit_a, 0U};
+  auto cfg = real_signal_cfg(13);
+  cfg.production_admission = &policy;
+  cfg.oos_fraction = 0.25;
+  cfg.oos_embargo = 0.025;
+  AlphaGate gate{default_gate_cfg()};
+  const auto a = original.factory().mine_into(cfg, library_a, gate);
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  policy.audit = &*audit_b;
+  const auto b = flat_holdout.factory().mine_into(cfg, library_b, gate);
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_GT(a->admitted, 0U);
+  EXPECT_EQ(b->admitted, 0U);
+  EXPECT_EQ(a->scored_canon_hashes, b->scored_canon_hashes);
+  EXPECT_EQ(a->trials, b->trials);
+  EXPECT_EQ(a->admission_family_hash, b->admission_family_hash);
+  EXPECT_EQ(audit_a->receipts().front().purpose, audit_b->receipts().front().purpose);
+  EXPECT_NE(audit_a->receipts().front().content_address, audit_b->receipts().front().content_address);
+}
+
+TEST(FactoryProductionAdmission, ActivePriceScaleGateRequiresUsableEvidence) {
+  auto close = momentum_close(120U, 8U, 0xA11Cu);
+  auto rev = reversal_of(close, 120U, 8U);
+  Fixture fx{make_panel(120U, 8U, {"close", "rev", "raw_close"},
+      {std::move(close), std::move(rev),
+       std::vector<f64>(120U * 8U, std::numeric_limits<f64>::quiet_NaN())})};
+  auto library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  auto audit = eval::FileLockboxAudit::open(std::filesystem::path(tmpdir("audit")) / "lockbox.log");
+  ASSERT_TRUE(audit.has_value());
+  atx::engine::factory::ProductionAdmissionPolicy policy{
+      "holdout-v1", "fixture-calendar-instruments-v1", "test", &*audit, 0U};
+  auto cfg = real_signal_cfg(13);
+  cfg.production_admission = &policy;
+  cfg.oos_fraction = 0.25;
+  cfg.oos_embargo = 0.025;
+  cfg.max_price_scale_corr = 0.99;
+  AlphaGate gate{default_gate_cfg()};
+  const auto result = fx.factory().mine_into(cfg, library, gate);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_EQ(result->admitted, 0U);
+  EXPECT_EQ(library.n_alphas(), 0U);
+  EXPECT_GT(result->reject_histogram[static_cast<usize>(lib::AdmitKind::RejectPriceScale)], 0U);
+  EXPECT_EQ(audit->receipts().size(), 1U); // confirmation consumed despite unavailable evidence
 }
 
 } // namespace atxtest_factory_oos_test
