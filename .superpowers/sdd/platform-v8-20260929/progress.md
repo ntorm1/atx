@@ -945,3 +945,10 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   from changing silently; a field no ledgered cell reads cannot change one -- cost if wrong: a v8.0 / v8.1
   candidate that reads the field is screened on values the old stage did not have; that is the declared
   republish, disclosed here.
+- PM4-15 outcome (a) (log "Wave 0 part 2a: regsho decomposition"; head 154affe6): fields v9 lo1 against
+  v8-i3p4-c-fields2 (stage pin fb073c62, the live republished stage; v7.1 was pinned to the old 68f431f0):
+  `regsho_threshold_days63` bit-identical on 6,499,185 cells; the other 62 fields bit-identical; 409,448,655
+  cells in all. Cause found: the republished stage. The longer role, the seal move (N-1 pin) and the holdings
+  code changes moved no common cell. No registered or drafted v8 candidate reads the field (registry 48 alphas,
+  43 fields; v8 draft never names it). The re-base continues; the 4-year values are the reference; the signal
+  overlap (R13 report 2) must be bit-identical.
