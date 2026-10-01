@@ -187,7 +187,11 @@ HOLDINGS_INPUTS = ("thirteenf", "ftd", "regsho_threshold", "security_master", "s
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
               "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
-    ("reuse_fields", "label_role")
+    ("reuse_fields", "label_role", "reference_resid_parent")
+# reference_resid_parent (v8 R-11, finding R6B-O-5; derived by research_spec for the cell whose template adds
+# --theme-resid): the parent cell's composition_weights.json; the single-window fit step passes it as
+# --theme-resid-parent PATH --theme-resid-parent-sha256 PIN (the fitter refuses a re-fit that is not that file plus the
+# theme_residualise block); a pooled (era) fit never gets it.
 # label_role {dir, path (the role's manifest.json), sha256} (v8 Ruling E-25, cell B0c): every phase that replays the
 # book MARKS it with it (nav and ref: --label-role PATH --label-role-sha256 PIN, the manifest bound in the runner
 # receipt; the NAV verb's capacity pass forwards both); signals, fields and every decision input stay on inputs.role.
@@ -1288,10 +1292,15 @@ class Cycle:
         else:
             state, note = "pending", "" if j == 1 else f"resume pass {j} (previous pass exited {FIT_INCOMPLETE})"
         pool_argv, pool_binds = self.fit_pool or ([], [])   # H-1: --era ... --era-id of the anchor era
-        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm, *pool_binds], "fit") + [
+        resid_parent = "reference_resid_parent" in s["inputs"] and not self.fit_pool   # v8 R-11 (R6B-O-5)
+        parent_binds = [self.ipath("reference_resid_parent")] if resid_parent else []
+        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm, *pool_binds, *parent_binds], "fit") + [
             self.py, self.tool(fit["script"]), "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
             role_sha, "--orientations", o, "--orientations-sha256", self.rt_sha(o), "--runner-summary", sm,
             "--runner-summary-sha256", self.rt_sha(sm), *fit["flags"]]
+        if resid_parent:
+            argv += ["--theme-resid-parent", self.ipath("reference_resid_parent"), "--theme-resid-parent-sha256",
+                     self.pin("reference_resid_parent")]
         if "recipe" in s["inputs"]:
             argv += ["--recipe", self.ipath("recipe"), "--recipe-sha256", self.pin("recipe")]
         argv += ["--work-dir", self.fit_work_dir()]

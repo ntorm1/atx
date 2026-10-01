@@ -135,8 +135,9 @@ partial-pass marker: rerun the same command to resume.
 Report only (v8 C-2): ``--report-f-theta`` adds ``f_theta`` / ``f_theta_hac_t`` to every admission row (the factor
 return of the theta-averaged sleeve book, theta .05, horizon_stats.theta_book_returns, over live TRAIN decisions, and
 its Newey-West t) and a ``report_only`` block; they are computed after every verdict and nothing reads them back.
-Era pools (v8 H-1; prior screens with POOLED_COMPOSITIONS only, Rulings E-35 / E-35a / E-27b: ew-theme-v1,
-ew-theme-aim-v2, ew-theme-v6, ew-theme-std-v1 and ew-theme-std-aim-v1; any other --composition is refused by name,
+Era pools (v8 H-1; prior screens with POOLED_COMPOSITIONS only, Rulings E-35 / E-35a / E-27b / PM4-7: ew-theme-v1,
+ew-theme-aim-v2, ew-theme-v6, ew-theme-std-v1, ew-theme-std-aim-v1, ic-shrink-v1 and ic-shrink-aim-v1, and
+--theme-resid theme-resid-v1 (POOLED_THEME_RESID) on each of its parents; any other --composition is refused by name,
 ew-theme-aim-v1 (the v5 rule) with a message naming ew-theme-aim-v2):
 ``--era ID ROLE ROLE_SHA ORIENT ORIENT_SHA SUMMARY SUMMARY_SHA`` (repeatable, date order) adds an era scored by its own
 TRAIN-only IC run, and ``--era-id ID``
@@ -157,6 +158,9 @@ code of ``aim_profile``) gives rho, g and the half-sample gains over every poole
 TRAIN gives the single-window aim record bit for bit. ew-theme-aim-v2 (Rulings E-35a, E-27b) weights the same pooled
 gains by Ruling E-27a through the single-window code (composition_rules.ew_theme_aim_v2, the shared
 theme_gain_weights: within-theme renormalisation, then the member cap 1/(2T)), so one era equals the single window.
+Ruling PM4-7: ic-shrink-v1 takes its ICs from the pooled admission rows' train_mean and ic-shrink-aim-v1 also the pooled
+aim gains (composition_ic_shrink.ic_shrink, as in the single window), and --theme-resid attaches its block to the pooled
+document (composition_resid.apply); one era equals the single window for each.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -235,10 +239,16 @@ COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID) + PRIOR_COMPOSITIONS
 AIM_RULES = (AIM_RULE_ID, composition_rules.STD_AIM_RULE_ID, AIM_V2_RULE_ID, composition_ic_shrink.AIM_RULE_ID)
 # v8 H-1 + Ruling E-35: the compositions the pooled (era) fit implements, each by the single-window code on the pooled
 # decisions (E-35a's E-27a aim rule is ew-theme-aim-v2 by Ruling E-27b, fitted by composition_rules.ew_theme_aim_v2 as
-# in the single window). ew-theme-aim-v1 (v5) is refused naming ew-theme-aim-v2; any other id is refused by name:
-# never a fall-back to another rule.
+# in the single window). Ruling PM4-7 (finding R6B-C-1): R-10's ic-shrink-v1 (the pooled admission rows' train_mean are
+# the ICs) and ic-shrink-aim-v1 (those ICs with the pooled aim gains, as ew-theme-std-aim-v1 reads them) join, through
+# composition_ic_shrink.ic_shrink as in the single window. ew-theme-aim-v1 (v5) is refused naming ew-theme-aim-v2; any
+# other id is refused by name: never a fall-back to another rule.
 POOLED_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_V2_RULE_ID, V6_RULE_ID, composition_rules.STD_RULE_ID,
-                       composition_rules.STD_AIM_RULE_ID)
+                       composition_rules.STD_AIM_RULE_ID, composition_ic_shrink.RULE_ID,
+                       composition_ic_shrink.AIM_RULE_ID)
+# Ruling PM4-7: the --theme-resid rules the pooled fit implements (composition_resid.apply on the pooled document, as in
+# the single window, on each parent whose rerank-true block it accepts); any other is refused by name.
+POOLED_THEME_RESID = (composition_resid.RULE_ID,)
 AIM_FIT_SERIES = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
                   "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
@@ -423,6 +433,27 @@ def appended_themes(themes: tuple) -> tuple:
 
 
 # ---------------------------------------------------------------- pinned inputs
+def load_resid_parent(args) -> dict | None:
+    """v8 R-11, finding R6B-O-5: --theme-resid-parent (the parent cell's composition_weights.json, pinned by
+    --theme-resid-parent-sha256) and the admission.json beside it (pinned by that file's provenance.admission_sha256),
+    as bytes for composition_resid.parent_check; None without the flags. Only with --theme-resid."""
+    path, pin = getattr(args, "theme_resid_parent", None), getattr(args, "theme_resid_parent_sha256", None)
+    require((path is None) == (pin is None), "--theme-resid-parent and --theme-resid-parent-sha256 go together")
+    if path is None:
+        return None
+    require(getattr(args, "theme_resid", None) is not None, "--theme-resid-parent needs --theme-resid")
+    require(not pooled(args), "--theme-resid-parent checks a single-window re-fit against the parent cell's file; the "
+                              "pooled (era) fit never takes it")
+    weights = pinned_bytes(Path(path), pin, "--theme-resid-parent")
+    doc = unique_json(weights, "--theme-resid-parent")
+    provenance = doc.get("provenance") if isinstance(doc, dict) else None
+    admission_sha = provenance.get("admission_sha256") if isinstance(provenance, dict) else None
+    require(is_hash(admission_sha), "--theme-resid-parent: provenance.admission_sha256 must name the parent's "
+                                    "admission.json")
+    admission = pinned_bytes(Path(path).parent / OUTPUT_ADMISSION, admission_sha, "--theme-resid-parent admission.json")
+    return {"sha256": pin, "weights": weights, "admission": admission}
+
+
 def load_library(path: Path, pin: str) -> list[dict]:
     j = unique_json(pinned_bytes(path, pin, "library"), "library")
     require(j.get("schema") == LIBRARY_SCHEMA, "library: schema")
@@ -1923,6 +1954,10 @@ def fit(args, log=None) -> tuple[int, dict]:
         require(args.composition in POOLED_COMPOSITIONS,
                 f"--era pools the prior screens with {', '.join(POOLED_COMPOSITIONS)} only: --composition "
                 f"{args.composition} is not implemented by the pooled fit (no fall-back to another rule)")
+        resid = getattr(args, "theme_resid", None)  # Ruling PM4-7
+        require(resid is None or resid in POOLED_THEME_RESID,
+                f"--era pools --theme-resid {', '.join(POOLED_THEME_RESID)} only: --theme-resid {resid} is not "
+                f"implemented by the pooled fit")
     require(args.screen in SCREENS, f"--screen must be one of {SCREENS}")
     require(args.composition in COMPOSITIONS, f"--composition must be one of {COMPOSITIONS}")
     orientation = getattr(args, "orientation", "train")
@@ -1934,6 +1969,7 @@ def fit(args, log=None) -> tuple[int, dict]:
             "--composition ew-theme-v1|ew-theme-aim-v1|ew-theme-v6 and --screen v4-prior-v1/v2 go together")
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
+    resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
     require(args.work_dir is not None or (args.max_seconds is None and args.max_new_candidates is None),
@@ -1990,10 +2026,10 @@ def fit(args, log=None) -> tuple[int, dict]:
         return fit_prior(args, library, priors, runner_signs, pool["factors"], pool["taus"], shas, cache_entry,
                          pool["records"], dict(inputs, context_sha256=pool["block"]["context_sha256"]), pool["window"],
                          pool["sessions"], sum(e["computed"] for e in eras), sum(e["reused"] for e in eras), out,
-                         started, pool["aims"], pool=pool)
+                         started, pool["aims"], pool=pool, resid_parent=resid_parent)
     if prior:
         return fit_prior(args, library, priors, runner_signs, factors, taus, shas, cache_entry, records, inputs,
-                         window, decision_sessions, computed, reused, out, started, aims)
+                         window, decision_sessions, computed, reused, out, started, aims, resid_parent=resid_parent)
     files: dict[str, bytes] = {}
     admission_sha = None
     if args.screen == SCREEN_ID:
@@ -2142,7 +2178,8 @@ def fit(args, log=None) -> tuple[int, dict]:
 def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], factors: np.ndarray,
               taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
               window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
-              started: float, aims: list[dict] | None = None, pool: dict | None = None) -> tuple[int, dict]:
+              started: float, aims: list[dict] | None = None, pool: dict | None = None,
+              resid_parent: dict | None = None) -> tuple[int, dict]:
     """v4-prior-v1/v2 admission + ew-theme-v1 weights (pre-registration R3/R4, v4.2 R3'). Nothing is estimated but tau.
 
     ``ew-theme-aim-v1`` (v5 R4') scales the same member set by the aim gains in ``aims``; the admission
@@ -2151,8 +2188,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     ``theme_redistribution`` block and ``provenance.v6``; the admission table is again identical.
     ``pool`` (v8 H-1, ``pool_eras``): the pooled era decisions, every one scored (explicit all-True mask), the era
     windows as the train window, a ``pool`` block and one weights file per non-anchor era; None: unchanged bytes. Every
-    composition of POOLED_COMPOSITIONS runs the code below unchanged on the pooled inputs (an aim composition's ``aims``
-    are ``pool_aims``'s pooled records; Ruling E-35).
+    composition of POOLED_COMPOSITIONS, and --theme-resid of POOLED_THEME_RESID, runs the code below unchanged on the
+    pooled inputs (an aim composition's ``aims`` are ``pool_aims``'s pooled records; Rulings E-35, PM4-7).
     """
     ids = [c["id"] for c in library]
     screen = args.screen
@@ -2374,7 +2411,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_rules.attach_std(document, std)
     if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
         composition_ic_shrink.attach(document, std)
-    composition_resid.apply(args, document, summary, FitError)  # v8 R-11 --theme-resid; absent: no change
+    # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5); absent:
+    # no change
+    composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
+                            admission=files[OUTPUT_ADMISSION])
     if pool is not None:  # v8 H-1
         document["provenance"]["pool"] = pool["block"]
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)

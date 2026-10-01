@@ -39,8 +39,33 @@ struct Scratch {
   std::vector<usize> support;
 };
 
+// Ruling PM4-12: names tied in the theme's own standardised composite z_t stay tied. A tie block is
+// a run of exactly equal z_t over the support (sorted by (z_t, support position), so a block lists
+// its names in ascending name order); inside a block of two or more names the residual becomes the
+// block mean: the sum from the block's first name, adding the others in ascending name order, divided
+// by the block size. A block of one name is left untouched, so a composite without ties keeps the
+// registered residual bit for bit. `row` is scratch (reserved capacity: no allocation).
+void mean_over_tie_blocks(const std::vector<f64>& own, usize offset, Scratch& s, std::vector<Ranked>& row) {
+  const usize n = s.support.size();
+  row.clear();
+  for (usize k = 0; k < n; ++k) row.emplace_back(own[offset + s.support[k]], k);
+  std::sort(row.begin(), row.end());
+  for (usize b = 0; b < n;) {
+    usize end = b + 1U;
+    while (end < n && row[end].first == row[b].first) ++end;
+    if (end - b > 1U) {
+      f64 sum = s.dependent[row[b].second];
+      for (usize k = b + 1U; k < end; ++k) sum += s.dependent[row[k].second];
+      const f64 mean = sum / static_cast<f64>(end - b);
+      for (usize k = b; k < end; ++k) s.dependent[row[k].second] = mean;
+    }
+    b = end;
+  }
+}
+
 // Theme t on row `offset` (planes already standardised on that row): theme 0 adds W_0 z_0 with
-// ew-theme-std-v1's expression; theme t > 0 adds W_t times the re-rank of its residual.
+// ew-theme-std-v1's expression; theme t > 0 adds W_t times the re-rank of its residual, averaged
+// inside each tie block of z_t first (Ruling PM4-12).
 atx::core::Status add_theme(std::span<std::vector<f64>> planes, std::span<const f64> mass, usize t, usize offset,
                             usize names, std::span<f64> out, std::vector<Ranked>& row, Scratch& s) {
   const auto& own = planes[t];
@@ -66,6 +91,7 @@ atx::core::Status add_theme(std::span<std::vector<f64>> planes, std::span<const 
   }
   ATX_TRY(const auto fit, cb::residualise_in_place(s.dependent, s.columns));
   if (fit.spanned) return atx::core::Ok(); // theme t is in the span of the earlier themes today
+  mean_over_tie_blocks(own, offset, s, row);
   row.clear();
   for (usize k = 0; k < n; ++k) row.emplace_back(s.dependent[k], s.support[k]);
   cb::for_each_centered_rank(row, [&](usize i, f64 r) { out[offset + i] += mass[t] * r; });
@@ -106,8 +132,11 @@ namespace atx::impl::strategy::ic_detail {
 // {"rule":"theme-resid-v1","order":[theme, ...]} beside a theme_standardise block with rerank true,
 // `order` naming each of that block's weighted themes exactly once (the registered theme order the
 // fitter wrote). Every weighted candidate's theme index becomes its theme's position in `order`, so
-// the composition residualises the theme at position t on the themes before it. Absent: nothing
-// changes. Runs after composition_standardise, before any role payload.
+// the composition residualises the theme at position t on the themes before it. Ruling PM4-11
+// (finding R6B-O-4): every weighted theme must be in theme_resid_order and `order` must be that
+// list restricted to the weighted themes; the order is recorded (pinned.residualise_order: the
+// recipe and the combined manifest). Absent: nothing changes. Runs after composition_standardise,
+// before any role payload.
 co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeights& pinned) {
   if (!j.contains("theme_residualise")) return co::Ok();
   const auto& block=j.at("theme_residualise");
@@ -124,6 +153,18 @@ co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeight
   std::vector<std::string> names(pinned.std_theme_count);
   for (usize k=0;k<lib.candidates.size();++k)
     if (pinned.values[k]>0) names[pinned.std_themes[k]]=listed.at(lib.candidates[k].id).get<std::string>();
+  const auto registered_theme=[](std::string_view theme) {
+    return std::find(theme_resid_order.begin(),theme_resid_order.end(),theme)!=theme_resid_order.end();
+  };
+  for (const auto& theme:names)
+    if (!registered_theme(theme))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_residualise: weighted theme "+theme+
+          " is outside the registered theme order of theme-resid-v1 (Ruling PM4-11)");
+  std::vector<std::string> registered; // theme_resid_order restricted to the weighted themes
+  for (const std::string_view theme:theme_resid_order) {
+    const auto weighted=[theme](const std::string& name) { return std::string_view(name)==theme; };
+    if (std::any_of(names.begin(),names.end(),weighted)) registered.emplace_back(theme);
+  }
   const auto refuse=[](const std::string& why) {
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_residualise order must name each weighted theme "
         "of theme_standardise exactly once ("+why+")");
@@ -141,9 +182,18 @@ co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeight
     if (slot!=names.size()) return refuse("repeated: "+theme);
     slot=p;
   }
+  // `order` is a permutation of the weighted themes here; it must be the registered one.
+  for (usize p=0;p<order.size();++p)
+    if (order[p].get<std::string>()!=registered[p]) {
+      std::string want;
+      for (const auto& theme:registered) want+=(want.empty()?"":", ")+theme;
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_residualise order must be the registered "
+          "theme order restricted to the weighted themes (Ruling PM4-11): ["+want+"], not "+order.dump());
+    }
   for (usize k=0;k<lib.candidates.size();++k)
     if (pinned.values[k]>0) pinned.std_themes[k]=position[pinned.std_themes[k]];
   pinned.residualise=true;
+  pinned.residualise_order=std::move(registered);
   return co::Ok();
 }
 } // namespace atx::impl::strategy::ic_detail

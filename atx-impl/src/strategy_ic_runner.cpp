@@ -63,7 +63,7 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
     const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
-    bool themed=false,std::string_view standardised={},bool residualised=false) {
+    bool themed=false,std::string_view standardised={},std::span<const std::string> residualised={}) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -129,8 +129,11 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   // ew-theme-std-v1, or ic-shrink-v1 / ic-shrink-aim-v1 (platform v8 R-10; the same per-date
   // standardisation).
   if (!standardised.empty()) manifest["composition_standardise"]=std::string(standardised);
-  // And theme-resid-v1 on top of it (v8 R-11; absent otherwise).
-  if (residualised) manifest["composition_residualise"]=theme_residualise_rule;
+  // And theme-resid-v1 on top of it with its theme order (v8 R-11, finding R6B-O-4; absent otherwise).
+  if (!residualised.empty()) {
+    manifest["composition_residualise"]=theme_residualise_rule;
+    manifest["composition_residualise_order"]=theme_order_json(residualised);
+  }
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -240,12 +243,13 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 // `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
 // `themes`: pinned themes under `rule` (empty = none; redistribute: ew-theme-v6,
 // standardise: ew-theme-std-v1's per-date rule, run for the theme_standardise rule `std_rule`
-// that the combined manifest records; residualise: that rule then theme-resid-v1).
+// that the combined manifest records; residualise: that rule then theme-resid-v1, in the theme
+// order `resid_order` that the combined manifest also records).
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
     const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
     std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
     std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute,
-    std::string_view std_rule=theme_standardise_rule) {
+    std::string_view std_rule=theme_standardise_rule,std::span<const std::string> resid_order={}) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -498,7 +502,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
         !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,
         (themed && rule!=IcThemeRule::redistribute)?std_rule:std::string_view{},
-        themed && rule==IcThemeRule::residualise));
+        (themed && rule==IcThemeRule::residualise)?resid_order:std::span<const std::string>{}));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -655,7 +659,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
     auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),pinned.standardise_rule(),
-                              pinned.residualise);
+                              pinned.residualise_order);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -696,7 +700,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     for (const auto& role:roles) {
       auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress,pinned.composition_themes(),
-          pinned.theme_rule(),pinned.standardise_rule());
+          pinned.theme_rule(),pinned.standardise_rule(),pinned.residualise_order);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -771,8 +775,10 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    rule ic-shrink-aim-v1 likewise, each member also carrying the parent's aim gain {theme, ic, gain};\n"
                "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none. Optional beside a\n"
                "    rerank-true theme_standardise: theme_residualise {rule: theme-resid-v1, order: [theme, ...]}\n"
-               "    residualises each re-ranked theme composite per date on an intercept and the earlier themes'\n"
-               "    in that order, re-ranks the residual and adds W_theme times it (the first theme unchanged).\n";
+               "    (order: the registered theme order restricted to the weighted themes) residualises each\n"
+               "    re-ranked theme composite per date on an intercept and the earlier themes' in that order,\n"
+               "    averages it inside each tie block of the composite, re-ranks it and adds W_theme times it\n"
+               "    (the first theme unchanged).\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");
