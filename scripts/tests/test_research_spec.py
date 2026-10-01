@@ -344,15 +344,18 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
 
 
 def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_path):
-    """R-10 (Ruling E-38, lane COMB2) and Ruling E-44 (fix round 1): R-10 runs on the last accepted parent whatever its
-    composition; the fit flag derives the rule from it: a std parent (ew-theme-std-v1, ew-theme-v1) -> ic-shrink-v1,
-    an aim parent (R-3 on R-1: ew-theme-std-aim-v1; R-3 on B0c: ew-theme-aim-v1) -> ic-shrink-aim-v1, both fitter
-    compositions (the variant reads the aim gains). The w pass runs under Ruling E-28's 3,072 MiB on every parent
-    (the template sets it; R-1's chain already has it); the u pass stays 2,560."""
+    """R-10 (Ruling E-38, lane COMB2), Ruling E-44 (fix round 1) and Ruling E-45 (integration 6 part B): R-10 runs on the
+    last accepted parent and is defined only on a standardised one (rerank-true theme_standardise, R-1 accepted); the
+    fit flag derives the rule from it: ew-theme-std-v1 -> ic-shrink-v1, R-3 on R-1 (ew-theme-std-aim-v1) ->
+    ic-shrink-aim-v1, both fitter compositions (the variant reads the aim gains). B0c (ew-theme-v1), R-3 on B0c
+    (ew-theme-aim-v2) and any other composition refuse at load; no parent maps ew-theme-aim-v1 (E-27b). The w pass runs
+    under Ruling E-28's 3,072 MiB (the template sets it, as R-1's chain has it); the u pass stays 2,560."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
     doc = json.loads((V8 / "r10.json").read_text(encoding="utf-8"))
     assert "requires" not in doc and doc["nominal_parent"] == "r1-comp-v8.json"
+    assert doc["change"]["flags"]["fit"]["--composition"] == {"ew-theme-std-v1": "ic-shrink-v1",
+                                                              "ew-theme-std-aim-v1": "ic-shrink-aim-v1"}
     assert {"ic-shrink-v1", "ic-shrink-aim-v1"} <= set(fcw.PRIOR_COMPOSITIONS)
     assert "ic-shrink-aim-v1" in fcw.AIM_RULES and "ic-shrink-v1" not in fcw.AIM_RULES
     r3_doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
@@ -361,9 +364,15 @@ def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_pa
         parents[name] = tmp_path / f"{name}.json"
         parents[name].write_text(json.dumps(dict(r3_doc, parent=f"scripts/specs/v8/{grand}")), encoding="utf-8")
     cases = ((None, "ew-theme-std-v1", "ic-shrink-v1"),                         # nominal: R-1
-             ("scripts/specs/v8/base-b0c.json", "ew-theme-v1", "ic-shrink-v1"),
-             (str(parents["r3-on-r1"]), "ew-theme-std-aim-v1", "ic-shrink-aim-v1"),
-             (str(parents["r3-on-b0c"]), "ew-theme-aim-v1", "ic-shrink-aim-v1"))
+             (str(parents["r3-on-r1"]), "ew-theme-std-aim-v1", "ic-shrink-aim-v1"))
+    for parent, before in (("scripts/specs/v8/base-b0c.json", "ew-theme-v1"),   # E-45: not standardised, refused
+                           (str(parents["r3-on-b0c"]), "ew-theme-aim-v2")):
+        assert RC.option_value(RC.load_spec(Path(parent) if Path(parent).is_absolute() else
+                                            research_tree.REPO / parent)["fit"]["flags"], "--composition") == before
+        path = tmp_path / f"r10-on-{Path(parent).stem}.json"
+        path.write_text(json.dumps(dict(doc, parent=parent)), encoding="utf-8")
+        with pytest.raises(RC.CycleError, match="maps the parent's value"):
+            RC.load_spec(path)
     for k, (parent, before, want) in enumerate(cases):
         path = V8 / "r10.json"
         if parent:
