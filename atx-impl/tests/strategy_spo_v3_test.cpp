@@ -6,7 +6,8 @@
 // constants, and (v8 E-26) the aim shaped by --hold-band / --adv-hold-q exactly as the
 // aim-partial-v5 path shapes desired. Ruling E-31a outside the engine (review R6B-S-1): the
 // tiered run's primary book taken from its own matrix, and the void through the CLI (exit 3,
-// the extras only). The spo-v1 / spo-v2 digest guard is strategy_spo_v3_pin_test.cpp.
+// the extras only); Ruling E-14a's back-fill per book on two cadences (review R6B-S-2). The
+// spo-v1 / spo-v2 digest guard is strategy_spo_v3_pin_test.cpp.
 
 #include <algorithm>
 #include <array>
@@ -195,6 +196,17 @@ f64 pearson(std::span<const f64> a, std::span<const f64> b) {
     ab += x * y; aa += x * x; bb += y * y;
   }
   return aa > 0 && bb > 0 ? ab / std::sqrt(aa * bb) : std::numeric_limits<f64>::quiet_NaN();
+}
+// Pearson correlation of a held book and an aim over every name either holds, as the engine's
+// traded_correlation (review A-4, Ruling E-14a).
+f64 traded_pearson(std::span<const f64> held, std::span<const f64> aim) {
+  std::vector<f64> book, aimed;
+  for (usize i = 0; i < aim.size(); ++i) {
+    if (aim[i] == 0 && held[i] == 0) continue;
+    book.push_back(held[i]);
+    aimed.push_back(aim[i]);
+  }
+  return pearson(book, aimed);
 }
 // The fixture's desired target at a decision d where every name is a member: the signal row
 // centred and scaled to gross 1, as every desired target (detail::desired_target).
@@ -949,15 +961,6 @@ TEST(SpoV3, CriterionReadsTheTradedBookAfterTheTrades) {
   ASSERT_GT(run.rows.size(), 2U);
   std::map<i64, usize> row_of;
   for (usize t = 0; t < role.d; ++t) row_of[role.sessions[t]] = t;
-  const auto traded = [&](const std::vector<f64>& held, const std::vector<f64>& aim) {
-    std::vector<f64> book, aimed;
-    for (usize i = 0; i < role.n; ++i) {
-      if (aim[i] == 0 && held[i] == 0) continue;
-      book.push_back(held[i]);
-      aimed.push_back(aim[i]);
-    }
-    return pearson(book, aimed);
-  };
   usize compared = 0, compared_after = 0, differ = 0;
   f64 sum_after = 0, lowest_after = 2.0;
   for (usize k = 0; k < run.rows.size(); ++k) {
@@ -968,7 +971,7 @@ TEST(SpoV3, CriterionReadsTheTradedBookAfterTheTrades) {
     const auto& aim = recorder.aim.at(t);
     ASSERT_EQ(aim.size(), role.n) << t;
     // Review A-4: the book DECIDE read at d.
-    const f64 at_d = traded(recorder.held.at(t), aim);
+    const f64 at_d = traded_pearson(recorder.held.at(t), aim);
     if (std::isnan(at_d)) {
       EXPECT_TRUE(std::isnan(r.aim_correlation_traded)) << t;
     } else {
@@ -983,7 +986,7 @@ TEST(SpoV3, CriterionReadsTheTradedBookAfterTheTrades) {
     const usize next = row_of.at(run.rows[k + 1].session);
     ASSERT_GT(next, t);
     ASSERT_EQ(recorder.held.count(next), 1U) << next;
-    const f64 after = traded(recorder.held.at(next), aim);
+    const f64 after = traded_pearson(recorder.held.at(next), aim);
     if (std::isnan(after)) {
       EXPECT_TRUE(std::isnan(r.aim_correlation_traded_after)) << t;
       continue;
@@ -1022,6 +1025,78 @@ TEST(SpoV3, CriterionReadsTheTradedBookAfterTheTrades) {
             criterion);
   EXPECT_EQ(run.tripwire.at("report_only").begin().value().at("aim_correlation_traded_after"),
             entry.at("aim_correlation_traded_after"));
+}
+
+// Ruling E-14a per book (review R6B-S-2): the back-fill pairs a book's row with that same book's
+// next rebalance decision, whatever the other books on the engine do. Two books on one engine
+// decide at different cadences -- A (S2 x flat-300-v0) every session 2..11, B (S2 x
+// swap-fin-v1) every third, 2, 5, 8, 11; A first on a shared session, as the lockstep's book
+// order -- each entering a decision with its own book, drifted since its last plan. Every row's
+// aim_correlation_traded_after is the correlation of the book its own book's next decision
+// received with the aim at the row's decision, over every name either holds, and NaN on each
+// book's last row. An engine-wide back-fill (one aim and one row for every book) pairs B's rows
+// with A's books and fills A's row of session 2 from B's flat book (NaN).
+TEST(SpoV3, TradedAfterIsBackFilledPerBookAcrossCadences) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  sp::Engine engine(sp::v3_params(), risk);
+  const auto x = role.target();
+  const auto law = nav_config(); // A's book; S2's law is every book's cost model
+  auto swap_fin = law; // B's book: the tiered primary's financing
+  swap_fin.scenario = st::nav_scenario_matrix(true)[st::nav_primary_scenario_index];
+  struct Book {
+    std::string label;
+    st::NavReplayConfig cfg;
+    usize cadence{};
+    std::vector<f64> weights; // the book its next decision receives
+    std::vector<f64> aim;     // the aim at its last decision
+    usize row{};              // that decision's tracking row
+    bool decided{};
+  };
+  std::array<Book, 2> books{Book{"A", law, 1, std::vector<f64>(role.n, 0.0), {}, 0, false},
+                            Book{"B", swap_fin, 3, std::vector<f64>(role.n, 0.0), {}, 0, false}};
+  const st::cost_v2::DecisionLiquidity liquidity{std::vector<f64>(role.n, 1e9),
+                                                 std::vector<f64>(role.n, 0.02)};
+  std::vector<f64> expected;      // per row: its book's back-fill (NaN: not yet decided again)
+  std::vector<std::string> owner; // per row: its book
+  for (usize d = 2; d < 12; ++d) { // every name a member (name 11 leaves on sessions 13..19)
+    const std::vector<f64> desired = gross_one_desired(role, d);
+    for (auto& b : books) {
+      if ((d - 2) % b.cadence != 0) continue;
+      if (b.decided) expected[b.row] = traded_pearson(b.weights, b.aim);
+      const sp::BookDecision in{x, b.cfg, law.scenario, d, 1e8, desired, {}, {}, liquidity,
+                                b.label};
+      st::TargetReplayDay day;
+      const auto status = engine.plan(in, b.weights, day);
+      ASSERT_TRUE(status) << status.error().to_string();
+      ASSERT_EQ(engine.tracking_rows().size(), expected.size() + 1) << b.label << ' ' << d;
+      b.row = expected.size();
+      expected.push_back(std::numeric_limits<f64>::quiet_NaN());
+      owner.push_back(b.label);
+      const auto aim = engine.last_aim();
+      b.aim.assign(aim.begin(), aim.end());
+      b.decided = true;
+      // The book drifts until its next decision (a fixed return per name and session).
+      for (usize i = 0; i < role.n; ++i)
+        b.weights[i] *= 1.0 + 0.01 * static_cast<f64>((i + d) % 5) - 0.02;
+    }
+  }
+  const auto rows = engine.tracking_rows();
+  ASSERT_EQ(rows.size(), 14U); // A: 10 decisions, B: 4
+  usize filled = 0;
+  for (usize k = 0; k < rows.size(); ++k) {
+    EXPECT_EQ(rows[k].book, owner[k]) << k;
+    if (k == books[0].row || k == books[1].row) { // each book's last decision
+      EXPECT_TRUE(std::isnan(rows[k].aim_correlation_traded_after)) << k << ' ' << owner[k];
+      continue;
+    }
+    ASSERT_TRUE(std::isfinite(expected[k])) << "premise: a held book at row " << k;
+    EXPECT_NEAR(rows[k].aim_correlation_traded_after, expected[k], 1e-12) << k << ' ' << owner[k];
+    ++filled;
+  }
+  EXPECT_EQ(filled, rows.size() - 2);
 }
 
 // The CLI: --rule spo-v3 takes spo::v3_params (S_prior 20 by Ruling E-14, H 20, p .01, beta
