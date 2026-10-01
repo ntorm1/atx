@@ -1496,6 +1496,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
 | R3 scan | `train-2020-2023-scan-run` | `0aac5f22` | completed / 0 | 1.9 | 237 | `16b767c76fd217c9f75bbeae796370f2c90ccb036d98232ce842bf124ede297c` | (none; verdict on stdout) |
 | R3 repair | `train-2020-2023-base-run` | `d8e67483` | completed / 0 | 3.6 | 389 | `403522ad5f1f21fe9899038ca70ba7d53a66125e7c293eb59e3fc61ad8f96ac7` | `de8d91db7e8788dc58ac1fc6aa1bedc71dc555e63039a378c2deb469f8c49029` |
 | R4 | `identity-bridge-r4-v2-run` | `4c2fcc74` | completed / 0 | 2.8 | 142 | `8fe0b16cf770aaf5f3c2c86f6a748216797d110f9ed8e7a679c3ac9ef454e2d4` | `f598c04c51e0bea33bd730a3a2beb3a9f76abe0b9630c75f21c70ad0ec3643de` |
+| R5 prep | `fundamental-events-v3-run-prep` | `58a10023` | completed / 0 | 11.9 | 455 | `b0629775396545030c3d2fbfc650243dce7244f3a3d0684fdbff3fba4d821aff` | (stage; manifest at fin) |
 
 - **R1 PASS.** Projection manifest: start 2018-06-01, `end_exclusive` 2024-01-01, 1,405 sessions 2018-06-01..2023-12-29,
   250 in 2023, none on or after the seal; 13,419,299 accepted rows; 354 MiB on disk. Runner min free 1,996 MiB.
@@ -1515,3 +1516,7 @@ section 3 with the caps above. Receipt dirs under `build-equity/`. Peak = sample
   comparison with v1's CIK set was made (v1's extra CIKs are 2024-only link evidence). The optional `--check`
   diagnostic was **skipped**: it opens the live `C:/atx/atx-db/data/warehouse.duckdb`, the atx-db session is active
   (open question 27 unresolved), and the dispatch forbids touching `C:/atx`.
+- **R5 prep PASS.** The tool verified the companyfacts (`50e018e1...`) and FSDS (`2cad6134...`) staging pins.
+  `run.json` `parameters.seal` 2024-01-01, `parameters.sub_quarters` `2009q2..2023q4`; `fsds.sub_quarters` lists 59
+  quarters, the last `2023q4` (the only 2024+ date text in `run.json` is the seal itself). SIC: 6,337 CIKs, 217,340
+  rows; 366,856 unique SUB accessions.
