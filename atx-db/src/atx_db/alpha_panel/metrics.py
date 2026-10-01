@@ -30,7 +30,10 @@ from . import common as C
 KEYS = {"session_date", "security_id", "sidx", "ticker", "member", "member_equity", "cik"}
 NUMERIC = ("DOUBLE", "FLOAT", "BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT")
 QUANTILES = (0.001, 0.01, 0.5, 0.99, 0.999)
-BATCH = 24
+# fields per scan: each batch is first materialised (its columns + the basis flags) into the file-backed scratch
+# database, so the wide panel parquet is decoded once per batch and the aggregates run over a narrow table
+BATCH = 12
+BASIS_COLS = ("cik", "link_tier", "currency", "fin_template")
 REPUBLICATION_SI_BEFORE = "2021-06-01"
 # request section 6: no statistic of returns for validation / holdout years; coverage is still reported
 RETURN_FIELDS = {"ret", "mkt_ret", "ret_intraday", "ret_overnight"}
@@ -64,15 +67,15 @@ def _structural(root) -> dict[str, tuple[str, ...]]:
     return rules
 
 
-def measure(con, glob: str, schema: list[tuple[str, str]], structural: dict[str, tuple[str, ...]]):
+def measure(con, glob: str, schema: list[tuple[str, str]], structural: dict[str, tuple[str, ...]],
+            windows: list[tuple[str, str, str]] | None = None):
     names = {n for n, _ in schema}
     fields = [(n, t) for n, t in schema if n not in KEYS]
     has_template = "fin_template" in names
     cov_rows: list[dict[str, Any]] = []
     dist_rows: list[dict[str, Any]] = []
-    for label, lo, hi in _windows():
-        con.execute("DROP TABLE IF EXISTS w")
-        # the window's member_equity cells only (plus the flags the bases need); columns read lazily per batch
+    for label, lo, hi in (windows if windows is not None else _windows()):
+        # the window's member_equity cells only (plus the flags the bases need); columns read per batch
         where = f"member_equity AND session_date BETWEEN DATE '{lo}' AND DATE '{hi}'"
         n_cells = con.execute(f"SELECT count(*) FROM read_parquet('{glob}', union_by_name = true) WHERE {where}"
                               ).fetchone()[0]
@@ -100,12 +103,16 @@ def measure(con, glob: str, schema: list[tuple[str, str]], structural: dict[str,
                     parts.append(f"quantile_cont({v}, [{qs}]) FILTER (WHERE {ok}) AS \"{n}__q\"")
                     parts.append(f"count(*) FILTER (WHERE {ok} AND {v} = 0) AS \"{n}__zero\"")
                     parts.append(f"count(*) FILTER (WHERE {ok} AND {v} < 0) AS \"{n}__neg\"")
+            need = [c for c in BASIS_COLS if c in names] + [n for n, _ in batch if n not in BASIS_COLS]
+            con.execute("DROP TABLE IF EXISTS w")
+            con.execute(f"""CREATE TABLE w AS SELECT {", ".join(f'"{c}"' for c in need)}
+                FROM read_parquet('{glob}', union_by_name = true) WHERE {where}""")
             base = con.execute(f"""
                 SELECT count(*) AS n, count(*) FILTER (WHERE cik IS NOT NULL) AS nl,
                        count(*) FILTER (WHERE link_tier = 'strict') AS ns,
                        count(*) FILTER (WHERE link_tier IN ('strict', 'name')) AS np,
                        count(*) FILTER (WHERE {USD_BASIS}) AS nu, {", ".join(parts)}
-                FROM read_parquet('{glob}', union_by_name = true) WHERE {where}
+                FROM w
             """)
             row = dict(zip([d[0] for d in base.description], base.fetchone(), strict=True))
             for n, t in batch:
@@ -201,11 +208,26 @@ def changelog(root, schema: list[tuple[str, str]]) -> dict[str, Any]:
 
 def run() -> dict[str, Any]:
     root = C.build_root()
-    con = C.connect(memory="600MB", threads=2)
     glob = (root / "panel" / "*" / "*.parquet").as_posix()
+
+    def scratch():
+        return C.connect(memory="560MB", threads=1, db_file="metrics.duckdb")
+    con = scratch()
     schema = _schema(con, glob)
     names = {n for n, _ in schema}
-    cov, dist = measure(con, glob, schema, _structural(root))
+    con.close()
+    structural = _structural(root)
+    cov: list[dict[str, Any]] = []
+    dist: list[dict[str, Any]] = []
+    for w in _windows():
+        # one connection per window: the native heap of a long-lived DuckDB process keeps growing across windows and
+        # crossed the 1 GiB guard cap at the sixth (2023) window (2026-09-30); a fresh process heap per window does not
+        con = scratch()
+        c, d = measure(con, glob, schema, structural, [w])
+        cov += c
+        dist += d
+        con.close()
+    con = scratch()
     out = C.stage_dir("metrics")
     import pyarrow as pa
     import pyarrow.parquet as pq

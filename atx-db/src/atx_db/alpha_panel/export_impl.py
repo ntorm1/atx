@@ -6,8 +6,8 @@ member.u8, close.f64, raw_close.f64, volume.f64, manifest.json) and ``<out>/fiel
 the contracts read by ``atx-engine/src/data/strategy_data.cpp`` and
 ``atx-impl/src/strategy_ic_runner.cpp``.
 
-The atx-engine loader refuses any role session on or after 2025-01-01 (its holdout seal), so a
-loadable export ends by 2024-12-31. Later sessions stay available in the Parquet panel.
+The consumer's TRAIN window ends 2023-12-31 (binding OD-1): nothing on or after 2024-01-01 is delivered, so a
+loadable export ends by 2023-12-31. Later sessions stay available in the Parquet panel.
 
 ``close`` is the panel's total-return close (vendor daily total return chained, factor-break-v1
 repaired); the loader's fixed ``close_basis`` string is kept for compatibility and the actual
@@ -31,7 +31,7 @@ from . import common as C
 
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 FIELDS_SCHEMA = "atx.research-role-fields/v1"
-SEAL = dt.date(2025, 1, 1)
+SEAL = dt.date(2024, 1, 1)
 WARMUP_SESSIONS = 400
 MEMBERSHIP = {
     "common_stock_verified": False, "lag_sessions": 1, "lookback_sessions": 63, "min_adv_exclusive": 5000000,
@@ -254,7 +254,7 @@ def _role_axes(role_dir: Path) -> dict[str, Any]:
     member = np.fromfile(role_dir / "member.u8", dtype="u1").reshape(d, n)
     days = sess // NS_DAY
     if days[-1] >= (SEAL - EPOCH).days:
-        raise SystemExit("role reaches the 2025-01-01 seal")
+        raise SystemExit(f"role reaches the {SEAL} seal")
     return {"manifest_sha256": hashlib.sha256(blob).hexdigest(), "sessions_sha256": _sha(role_dir / "sessions.i64"),
             "ids_sha256": _sha(role_dir / "ids.u64"), "days": days, "ids": ids, "present": present,
             "member": member.astype(bool), "d": d, "n": n, "path": str(role_dir.resolve()),
@@ -305,7 +305,7 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
             ok = (days[ri] == dd) & (idv[ci] == ss)
             v = rows["v"]
             if hasattr(v, "filled"):
-                v = v.filled(np.nan)
+                v = v.astype("<f8").filled(np.nan)   # integer columns with NULLs come back as int masked arrays
             m[ri[ok], ci[ok]] = np.asarray(v, dtype="<f8")[ok]
         return m
 
@@ -329,6 +329,8 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
             expr = f'CASE WHEN "{name}" THEN 1.0 WHEN NOT "{name}" THEN 0.0 END'
         elif t.startswith("DATE"):
             expr = f"""date_diff('day', DATE '1970-01-01', "{name}")"""
+        elif t.startswith("TIMESTAMP"):
+            expr = f'epoch("{name}")'
         else:
             expr = f'CAST("{name}" AS DOUBLE)'
         m = matrix(expr, where)
@@ -342,18 +344,22 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
             non_pit.append(NON_PIT[name])
         if is_issuer and "backfill" in tiers:
             non_pit.append("issuer link via the snapshot-run-backfill-v1 tier (2026 snapshot choice of CIK)")
+        units = ("categorical code (see codes)" if name in codes else "days since 1970-01-01" if t.startswith("DATE")
+                 else "0/1" if t.startswith("BOOLEAN") else "seconds since 1970-01-01 UTC" if t.startswith("TIMESTAMP")
+                 else "panel units")
         rows_out.append({
             "name": name, "file": f"{name}.f64", "sha256": info["sha256"], "dtype": "<f8", "layout": "date-major",
             "shape": [d, n], "point_in_time": not non_pit, "non_pit_aspects": non_pit,
-            "units": "categorical code (see codes)" if name in codes else ("days since 1970-01-01" if t.startswith("DATE")
-                                                                           else ("0/1" if t.startswith("BOOLEAN") else "panel units")),
+            "units": units,
             "clock": ("issuer: latest event with clock < 22:00 UTC of session d-1, link known by the session mark, "
                       f"link tiers {tiers}" + ("; issuer's most liquid linked line only" if issuer_lines == "primary" else ""))
                      if is_issuer else "panel as-of rule (docs/ALPHA_PANEL.md)",
             "source_columns": [f"alpha_panel.panel.{name}"], "coverage": {"finite_member_frac": cov}})
         print(name, cov, flush=True)
     fm = {"schema": FIELDS_SCHEMA, "status": "complete",
-          "role": {k: ax[k] for k in ("path", "manifest_sha256", "sessions_sha256", "ids_sha256", "d", "n", "first", "last")},
+          "role": {**{k: ax[k] for k in ("path", "manifest_sha256", "sessions_sha256", "ids_sha256", "d", "n", "first", "last")},
+                   # consumer binding keys (strategy_ic_admission.cpp bind_fields), same as export()
+                   "dates": ax["d"], "instruments": ax["n"]},
           "fields": rows_out, "files": files, "codes": codes, "producer": "atx_db.alpha_panel.export_impl.align",
           "code": C.code_identity("export_impl", "panel", "common"), "link_tiers": tiers, "issuer_lines": issuer_lines,
           "sources": {"panel_manifest": C.output_hashes(root / "panel", "manifest.json"),
@@ -380,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--score-start", default=str(C.COVERAGE_START))
-    ap.add_argument("--end", default="2024-12-31")
+    ap.add_argument("--end", default="2023-12-31")
     ap.add_argument("--fields", default=",".join(DEFAULT_FIELDS))
     ap.add_argument("--issuer-lines", choices=("primary", "all"), default="primary",
                     help="issuer items on the issuer's most liquid line only (scorecard semantics) or on every linked line")
