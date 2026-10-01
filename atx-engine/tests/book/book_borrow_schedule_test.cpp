@@ -186,4 +186,50 @@ TEST(BookBorrowSchedule, NegativeNetRebate_ChargesHardToBorrowShortOnceAcrossWee
   EXPECT_FALSE(book::replay_scheduled_targets(panel, times, decisions, targets, cfg));
 }
 
+TEST(BookBorrowSchedule, ExplicitZeroNetRebateWithholdsProceedsInterestAndPreservesLegacyQuotes) {
+  const auto panel = flat_panel(2, 2);
+  auto borrow = schedule(2, 2);
+  borrow.financing = book::ShortFinancing::FeeOnceV2;
+  borrow.cash_bps = 360.0;
+  auto cfg = immediate();
+  cfg.borrow_schedule = &borrow;
+  const std::vector<atx::i64> times{0, 3 * kDay};
+  const std::vector<atx::usize> decisions{0};
+  const std::vector<atx::f64> targets{0.5, -0.5};
+  const auto run = [&] {
+    return book::replay_scheduled_targets(panel, times, decisions, targets, cfg);
+  };
+  const auto legacy_fee = run();
+  borrow.quote_kind = book::BorrowQuoteKind::FeeV2;
+  const auto fee = run();
+  borrow.quote_kind = book::BorrowQuoteKind::NetRebateV2;
+  const auto zero_rebate = run();
+  ASSERT_TRUE(legacy_fee.has_value());
+  ASSERT_TRUE(fee.has_value());
+  ASSERT_TRUE(zero_rebate.has_value()) << zero_rebate.error().message();
+  EXPECT_EQ(fee->final_nav, legacy_fee->final_nav);
+  EXPECT_NEAR(fee->intervals[0].borrow_cost, -1000.0 * 0.036 * 3.0 / 360.0, 1e-12);
+  EXPECT_NEAR(zero_rebate->intervals[0].borrow_cost, -500.0 * 0.036 * 3.0 / 360.0, 1e-12);
+  EXPECT_NEAR(zero_rebate->final_nav, 1000.15, 1e-12);
+
+  borrow.rebate_bps = -720.0;
+  const auto explicit_negative = run();
+  borrow.quote_kind = book::BorrowQuoteKind::LegacyInferV1;
+  const auto legacy_negative = run();
+  ASSERT_TRUE(explicit_negative.has_value());
+  ASSERT_TRUE(legacy_negative.has_value());
+  EXPECT_EQ(explicit_negative->final_nav, legacy_negative->final_nav);
+  borrow.quote_kind = book::BorrowQuoteKind::FeeV2;
+  EXPECT_FALSE(run()); // A net rebate cannot be supplied as a fee quote.
+  borrow.rebate_bps = 0.0;
+  borrow.quote_kind = book::BorrowQuoteKind::NetRebateV2;
+  borrow.default_fee_bps = 1.0;
+  EXPECT_FALSE(run()); // Even a zero rebate excludes a separately charged fee.
+  borrow.default_fee_bps = 0.0;
+  borrow.financing = book::ShortFinancing::FeeAndRebateV1;
+  EXPECT_FALSE(run()); // Explicit quote interpretation cannot be silently ignored.
+  borrow.quote_kind = static_cast<book::BorrowQuoteKind>(255);
+  EXPECT_FALSE(run());
+}
+
 } // namespace atx_test_l8_e2e_borrow_schedule
