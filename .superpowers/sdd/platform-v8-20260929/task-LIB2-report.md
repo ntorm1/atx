@@ -27,7 +27,7 @@ ALPHA_PANEL_METRICS.md section 1). Each uses a data source and horizon no roster
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | `iv_vol_of_vol` | options_implied (1 member) | B- | +1 (long low VOV) | vendor ATM implied vol `iv_atm_21d` (fields v4) | 21-session IV path | 40 | 5 | 13 | 1 | `c5ecec15fbdb4807` |
 | 2 | `day_rev_freq` | reversal_seasonality (2) | B- | +1 (long frequent reversals) | vendor open: `ret_overnight`, `ret_intraday` (F-1, fields v10) | 21-session count | 40 | 4 | 12 | 2 | `a5416c4ea13d4422` |
-| 3 | `exch_switch` | listing_events (new, 0) | C+ | +1 (short recent up-listers) | FINRA listing market (security master, `exch_up_365d`, fields v12) | 365-day event | 0 | 3 | 4 | 1 | `f433b32af008e74c` |
+| 3 | `exch_switch` | filing_events (0-1; text widened to filing and listing events, Ruling E-42) | C+ | +1 (short recent up-listers) | FINRA listing market (security master, `exch_up_365d`, fields v12) | 365-day event | 0 | 3 | 4 | 1 | `f433b32af008e74c` |
 
 Roster order (admission tie-break), appended after the parent's members: iv_vol_of_vol, day_rev_freq, exch_switch.
 Static figures from an offline mirror of the compiler (parse order, literal CSE, hparam peeling, post-order slot
@@ -93,7 +93,9 @@ rank(decay_linear(ts_mean_mp((((ret_overnight > 0) && (ret_intraday < 0)) ? 1 : 
 
 ### C-3 `exch_switch`: post-listing drift after a move up to NYSE / NYSE American
 
-- **Registration.** New theme `listing_events`; tier C+; prior sign +1; origin `prior`; 1 trial. Citation: Dharan and
+- **Registration.** Theme `filing_events` (Ruling E-42: joins the existing theme, its text widened to filing and
+  listing events; no new theme; integration 6 part A edit, the lane registered a new theme `listing_events`); tier C+;
+  prior sign +1; origin `prior`; 1 trial. Citation: Dharan and
   Ikenberry (1995, JF 50(5)) "The long-run negative drift of post-listing stock returns"; Chen-Zimmermann `ExchSwitch`.
 - **Paper (library-v8-draft section 10 "not included"; lit notes F15).** Indicator for a move from AMEX or Nasdaq to
   NYSE, or Nasdaq to AMEX, within the past year; short. Original .46%/month, t 3.61, about 3,000 events 1962-1990.
@@ -113,7 +115,8 @@ rank((-1 * exch_up_365d))
   short-only sleeve, likely hard-to-borrow names. Expected abs(rho) < .10 with every member [est]; flagged share about
   1-2% of names [est].
 - **Theme risk (as R7-b).** A one-member theme under `ew-theme-std-v1` is re-ranked and capped at 1 / (2T); it adds a
-  theme to T. Ruling LIB2-a below.
+  theme to T. Ruling LIB2-a below. Ruled by E-42: no new theme; `exch_switch` joins `filing_events` (E7, v8.1:
+  `nonreliance_402`), so no theme is added to T.
 
 ## 2. Field `exch_up_365d` (commit `b63edb31`)
 
@@ -154,11 +157,14 @@ no row dated 2024 or later):
   `xsw`, an edit in `build_regsho` or `REGSHO_NAME_MAX_AGE_DAYS` moves only `regsho`;
 - refusals (missing stage, wrong pin, no output), the CLI, manifest entry and checks.
 
-## 3. Registry edits (root applies before add-alpha; no existing theme text is edited)
+## 3. Registry edits (root applies before add-alpha)
 
-**L1 themes** (new; the fitter reads the registry's themes table, `fit_composition_weights.prior_themes`):
+**L1 themes** (Ruling E-42, integration 6 part A edit: no new theme; the existing `filing_events` text of E7 is widened
+to filing and listing events; the fitter reads the registry's themes table, `fit_composition_weights.prior_themes`, and
+its theme list takes `filing_events` under E7, so v8.2 adds no theme to either). The lane's new `listing_events` row is
+withdrawn. Replacement text for the `filing_events` row:
 ```json
-"listing_events": "Exchange listing changes: a move of the listing up to NYSE or NYSE American (from Nasdaq or NYSE American) within the last 365 days; a recent move predicts lower returns (post-listing drift)."
+"filing_events": "Adverse filing and listing events: an 8-K Item 4.02 non-reliance disclosure within the last 63 sessions, or a move of the listing up to NYSE or NYSE American (from Nasdaq or NYSE American) within the last 365 days; a recent event predicts lower returns."
 ```
 
 **L2 fields table** (rows as the v9 rows; `ret_*` after the F-1 merge and fields v10, as E6; `exch_up_365d` after
@@ -174,19 +180,20 @@ fields v12):
 ```json
 {"id": "iv_vol_of_vol", "dsl": "rank(decay_linear(((-1 * (ts_std_mp(iv_atm_21d, 21, 12) / ts_mean_mp(iv_atm_21d, 21, 12))) + (0 * log(ts_std_mp(iv_atm_21d, 21, 12)))), 21))", "theme": "options_implied", "tier": "B-", "prior_sign": 1, "citation": "Baltussen, van Bekkum and van der Grient (2018, JFQA 53(4)) Unknown unknowns: uncertainty about risk and stock returns", "prior_sign_source": "Baltussen-van Bekkum-van der Grient 2018", "form": "R(decay_linear(x, 21))", "origin": "prior", "notes": {"formula": "-VOV, VOV = sample std of iv_atm_21d over the last 21 sessions / its mean over the same sessions (each with at least 12 finite cells); long low vol-of-vol", "domain": "NaN with fewer than 12 finite IV cells in 21 sessions (iv_atm_21d is NaN outside [0.02, 5]) and on a flat window (std 0: 0 * log(0) is NaN)", "deviation": "21 sessions with 12 required (paper: 20 days, 12 required); ddof 1 (paper 1/20); vendor 21-session constant-maturity clean ATM IV (paper: OptionMetrics nearest-ATM call/put average); flat windows NaN; house 21-session decay on a monthly measure; top 3,000"}, "added_in": "v82"}
 {"id": "day_rev_freq", "dsl": "rank(decay_linear(ts_mean_mp((((ret_overnight > 0) && (ret_intraday < 0)) ? 1 : 0), 21, 15), 21))", "theme": "reversal_seasonality", "tier": "B-", "prior_sign": 1, "citation": "Akbas, Boehmer, Jiang and Koch (2022, JFE 145(3)) Overnight returns, daytime reversals, and future stock returns", "prior_sign_source": "Akbas-Boehmer-Jiang-Koch 2022", "form": "R(decay_linear(x, 21))", "origin": "prior", "notes": {"formula": "share of the last 21 sessions (at least 15 with both returns finite) with a positive overnight return followed by a negative intraday return of the same session (ret_overnight > 0 and ret_intraday < 0); a frequent tug of war predicts higher returns", "domain": "a session counts only when both returns are finite (compare and && propagate NaN); NaN with fewer than 15 such sessions; withdrawn at 0 trials if the fields lack the vendor open (FieldNeedsOpen)", "deviation": "rolling 21 sessions, not the calendar month; vendor open, not the auction print (a factor step dated t-1 sits in the overnight return); one-session field lag; house 21-session decay"}, "added_in": "v82"}
-{"id": "exch_switch", "dsl": "rank((-1 * exch_up_365d))", "theme": "listing_events", "tier": "C+", "prior_sign": 1, "citation": "Dharan and Ikenberry (1995, JF 50(5)) The long-run negative drift of post-listing stock returns; Chen-Zimmermann ExchSwitch", "prior_sign_source": "Dharan-Ikenberry 1995", "form": "R(x)", "origin": "prior", "notes": {"formula": "-1{the FINRA listing market moved up (Nasdaq -> NYSE, NYSE American -> NYSE, Nasdaq -> NYSE American) on a row disseminated within the last 365 days} (exch_up_365d, finra-listing-up-switch365-v1); prior sign negative", "domain": "NaN when the listing market is unknown (latest visible name row older than 45 days) or the name history is shorter than 410 days; a binary flag: switched names tie at the bottom rank, the rest tie above", "deviation": "FINRA short-interest market class at its semi-monthly dissemination (up to about 15 days after the move) instead of CRSP exchange codes; 365 calendar days; moves that keep the vendor line count (de-SPACs included), moves with a new line are not seen; Arca, BZX and OTC moves are not events; continuous rank, not an event-time portfolio"}, "added_in": "v82"}
+{"id": "exch_switch", "dsl": "rank((-1 * exch_up_365d))", "theme": "filing_events", "tier": "C+", "prior_sign": 1, "citation": "Dharan and Ikenberry (1995, JF 50(5)) The long-run negative drift of post-listing stock returns; Chen-Zimmermann ExchSwitch", "prior_sign_source": "Dharan-Ikenberry 1995", "form": "R(x)", "origin": "prior", "notes": {"formula": "-1{the FINRA listing market moved up (Nasdaq -> NYSE, NYSE American -> NYSE, Nasdaq -> NYSE American) on a row disseminated within the last 365 days} (exch_up_365d, finra-listing-up-switch365-v1); prior sign negative", "domain": "NaN when the listing market is unknown (latest visible name row older than 45 days) or the name history is shorter than 410 days; a binary flag: switched names tie at the bottom rank, the rest tie above", "deviation": "FINRA short-interest market class at its semi-monthly dissemination (up to about 15 days after the move) instead of CRSP exchange codes; 365 calendar days; moves that keep the vendor line count (de-SPACs included), moves with a new line are not seen; Arca, BZX and OTC moves are not events; continuous rank, not an event-time portfolio"}, "added_in": "v82"}
 ```
 
 ## 4. `add-alpha` command lines (strings frozen; `PY="C:/Program Files/Python312/python.exe"`)
 
 Run after L1 and L2, in this order. `--parent` / `--parent-spec` = the last accepted library and cell at R-12 (written
 here for an accepted v8.1; otherwise v80 or v71 and that cell's spec, as E9); `--fields` = the fields v12 dir as built.
-Only those two substitutions are allowed; every other byte is frozen.
+Only those two substitutions are allowed; every other byte is frozen. (Ruling E-42, integration 6 part A: the
+exch_switch line's `--theme listing_events` was changed to `--theme filing_events`; nothing else in the lines moved.)
 
 ```bash
 "$PY" scripts/research_cycle.py add-alpha --id iv_vol_of_vol --dsl "rank(decay_linear(((-1 * (ts_std_mp(iv_atm_21d, 21, 12) / ts_mean_mp(iv_atm_21d, 21, 12))) + (0 * log(ts_std_mp(iv_atm_21d, 21, 12)))), 21))" --theme options_implied --tier B- --prior-sign 1 --citation "Baltussen, van Bekkum and van der Grient (2018, JFQA 53(4)) Unknown unknowns: uncertainty about risk and stock returns" --origin prior --prior-sign-source "Baltussen-van Bekkum-van der Grient 2018" --form "R(decay_linear(x, 21))" --formula "-VOV, VOV = sample std of iv_atm_21d over the last 21 sessions / its mean over the same sessions (each with at least 12 finite cells); long low vol-of-vol" --domain "NaN with fewer than 12 finite IV cells in 21 sessions (iv_atm_21d is NaN outside [0.02, 5]) and on a flat window (std 0: 0 * log(0) is NaN)" --deviation "21 sessions with 12 required (paper: 20 days, 12 required); ddof 1 (paper 1/20); vendor 21-session constant-maturity clean ATM IV (paper: OptionMetrics nearest-ATM call/put average); flat windows NaN; house 21-session decay on a monthly measure; top 3,000" --parent v81 --name v82 --parent-spec <last accepted cell spec> --fields <fields v12 dir>
 "$PY" scripts/research_cycle.py add-alpha --id day_rev_freq --dsl "rank(decay_linear(ts_mean_mp((((ret_overnight > 0) && (ret_intraday < 0)) ? 1 : 0), 21, 15), 21))" --theme reversal_seasonality --tier B- --prior-sign 1 --citation "Akbas, Boehmer, Jiang and Koch (2022, JFE 145(3)) Overnight returns, daytime reversals, and future stock returns" --origin prior --prior-sign-source "Akbas-Boehmer-Jiang-Koch 2022" --form "R(decay_linear(x, 21))" --formula "share of the last 21 sessions (at least 15 with both returns finite) with a positive overnight return followed by a negative intraday return of the same session (ret_overnight > 0 and ret_intraday < 0); a frequent tug of war predicts higher returns" --domain "a session counts only when both returns are finite (compare and && propagate NaN); NaN with fewer than 15 such sessions; withdrawn at 0 trials if the fields lack the vendor open (FieldNeedsOpen)" --deviation "rolling 21 sessions, not the calendar month; vendor open, not the auction print (a factor step dated t-1 sits in the overnight return); one-session field lag; house 21-session decay" --parent v81 --name v82 --parent-spec <last accepted cell spec> --fields <fields v12 dir>
-"$PY" scripts/research_cycle.py add-alpha --id exch_switch --dsl "rank((-1 * exch_up_365d))" --theme listing_events --tier C+ --prior-sign 1 --citation "Dharan and Ikenberry (1995, JF 50(5)) The long-run negative drift of post-listing stock returns; Chen-Zimmermann ExchSwitch" --origin prior --prior-sign-source "Dharan-Ikenberry 1995" --form "R(x)" --formula "-1{the FINRA listing market moved up (Nasdaq -> NYSE, NYSE American -> NYSE, Nasdaq -> NYSE American) on a row disseminated within the last 365 days} (exch_up_365d, finra-listing-up-switch365-v1); prior sign negative" --domain "NaN when the listing market is unknown (latest visible name row older than 45 days) or the name history is shorter than 410 days; a binary flag: switched names tie at the bottom rank, the rest tie above" --deviation "FINRA short-interest market class at its semi-monthly dissemination (up to about 15 days after the move) instead of CRSP exchange codes; 365 calendar days; moves that keep the vendor line count (de-SPACs included), moves with a new line are not seen; Arca, BZX and OTC moves are not events; continuous rank, not an event-time portfolio" --parent v81 --name v82 --parent-spec <last accepted cell spec> --fields <fields v12 dir>
+"$PY" scripts/research_cycle.py add-alpha --id exch_switch --dsl "rank((-1 * exch_up_365d))" --theme filing_events --tier C+ --prior-sign 1 --citation "Dharan and Ikenberry (1995, JF 50(5)) The long-run negative drift of post-listing stock returns; Chen-Zimmermann ExchSwitch" --origin prior --prior-sign-source "Dharan-Ikenberry 1995" --form "R(x)" --formula "-1{the FINRA listing market moved up (Nasdaq -> NYSE, NYSE American -> NYSE, Nasdaq -> NYSE American) on a row disseminated within the last 365 days} (exch_up_365d, finra-listing-up-switch365-v1); prior sign negative" --domain "NaN when the listing market is unknown (latest visible name row older than 45 days) or the name history is shorter than 410 days; a binary flag: switched names tie at the bottom rank, the rest tie above" --deviation "FINRA short-interest market class at its semi-monthly dissemination (up to about 15 days after the move) instead of CRSP exchange codes; 365 calendar days; moves that keep the vendor line count (de-SPACs included), moves with a new line are not seen; Arca, BZX and OTC moves are not events; continuous rank, not an event-time portfolio" --parent v81 --name v82 --parent-spec <last accepted cell spec> --fields <fields v12 dir>
 ```
 
 Gate of the R-12 cell: admitted = the three ids minus any withdrawn at the freeze; require any; sign_agrees (as the
@@ -218,6 +225,8 @@ Coverage expectation: finite from 410 days after the first visible FINRA name ro
 - **LIB2-a:** `exch_switch` opens the new one-member theme `listing_events` -- the filing_events text (E7) is specific
   to Item 4.02 and no theme text is edited; the alternative is a ruling that re-words filing_events before v8.1's freeze
   -- cost if wrong: one more theme in T (each theme's share 1 / T shrinks; the member is capped at 1 / (2T), as R7-b).
+  **Ruled (E-42):** the alternative: `exch_switch` joins the existing `filing_events` theme, its text widened to
+  filing and listing events; no new theme (sections 1, 3 and 4 edited at integration 6 part A).
 - **LIB2-b:** the roster cap 64 (R7-a) holds for v8.2 -- mechanical -- cost if wrong: none for inference.
 - **LIB2-c:** iv_vol_of_vol's flat-window guard and ddof 1 -- a flat vendor IV is stale data, the ddof factor is
   rank-neutral on full windows -- cost if wrong: a few stale-IV names drop out; up to 2% relative distortion on windows
