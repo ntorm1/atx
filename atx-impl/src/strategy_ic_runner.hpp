@@ -93,8 +93,8 @@ struct IcCacheVmIdentity {
 // The theme grouping a composition weights document pins for the blend, read with the
 // same block checks as the runner's composition (platform v8 review B-2: the marginal
 // verb groups the book by these themes, not by the library rows). The blocks are the
-// exclusive `theme_standardise` (ew-theme-std-v1, or ic-shrink-v1 with the same per-date
-// rule) and `theme_redistribution` (ew-theme-v6). `block` names the one present, empty when
+// exclusive `theme_standardise` (ew-theme-std-v1, or ic-shrink-v1 / ic-shrink-aim-v1 with the
+// same per-date rule) and `theme_redistribution` (ew-theme-v6). `block` names the one present, empty when
 // neither is (then `themes` is empty). `rerank` is true exactly for theme_standardise with
 // rerank true: the blend
 // re-ranks each theme composite before adding it. `themes`: candidate id -> theme name

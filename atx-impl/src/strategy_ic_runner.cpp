@@ -126,7 +126,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   // replay consumers and this key (absent otherwise) states the redistribution.
   if (themed) manifest["composition_redistribution"]=theme_redistribution_rule;
   // Same for a theme_standardise rule with rerank on (absent otherwise, and with rerank off):
-  // ew-theme-std-v1, or ic-shrink-v1 (platform v8 R-10; the same per-date standardisation).
+  // ew-theme-std-v1, or ic-shrink-v1 / ic-shrink-aim-v1 (platform v8 R-10; the same per-date
+  // standardisation).
   if (!standardised.empty()) manifest["composition_standardise"]=std::string(standardised);
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
@@ -763,6 +764,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    sum per date and adds W_theme times that rank (rerank false: the plain pinned blend, bit for bit);\n"
                "    rule ic-shrink-v1 (rerank true) runs the same and adds ic_shrink {intensity, floor, members: {id:\n"
                "    {theme, ic}}}: the weights must be that rule on those inputs (verified before any payload);\n"
+               "    rule ic-shrink-aim-v1 likewise, each member also carrying the parent's aim gain {theme, ic, gain};\n"
                "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none.\n";
         return 0;
       }

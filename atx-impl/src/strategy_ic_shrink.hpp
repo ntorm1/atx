@@ -11,8 +11,12 @@
 //   4. w_k = share_k / T (theme share 1 / T, T = themes with a member), then the member cap
 //      1 / (2T) of ew-theme-std-v1 (excess pro rata to the other themes' uncapped members).
 //   5. Standardisation unchanged: the per-date rule is ew-theme-std-v1's (IcThemeRule::standardise).
+// Variant ic-shrink-aim-v1 (fix round 1, Ruling E-44: R-10 on an aim parent, ew-theme-std-aim-v1
+// or ew-theme-aim-v1): step 4 takes the parent's per-member aim gains g_k inside each theme, the
+// E-27a mechanism of composition_rules.tier_weights: w_k = share_k * g_k / (T * sum_{theme(k)}
+// share * g), so each theme keeps 1 / T; then the same member cap 1 / (2T). Steps 1-3 and 5 as above.
 // The arithmetic is atx/engine/combine/group_shrink.hpp's; the fitter's port is
-// atx-impl/tools/composition_ic_shrink.py. The IC runner verifies a weights file of this rule
+// atx-impl/tools/composition_ic_shrink.py. The IC runner verifies a weights file of either rule
 // against the inputs its theme_standardise block records (strategy_ic_admission.cpp, the
 // theme_standardise rule table).
 #include <span>
@@ -23,20 +27,23 @@
 
 namespace atx::impl::strategy {
 inline constexpr std::string_view ic_shrink_rule="ic-shrink-v1";
+inline constexpr std::string_view ic_shrink_aim_rule="ic-shrink-aim-v1"; // the variant with aim gains
 inline constexpr atx::f64 ic_shrink_intensity=0.5;          // weight of the theme mean (James-Stein target)
 inline constexpr atx::f64 ic_shrink_floor=0.0;              // shrunk ICs below it are floored to it
 inline constexpr atx::f64 ic_shrink_cap_tolerance=1e-12;    // relative (composition_rules.CAP_TOLERANCE)
 inline constexpr atx::f64 ic_shrink_weight_tolerance=1e-12; // runner check: |pinned - rule| per weight
 struct IcShrinkFit {
-  std::vector<atx::f64> shrunk,share,weights; // per member, input order
+  std::vector<atx::f64> shrunk,share,weights; // per member, input order (weights after the cap)
   std::vector<atx::u8> equal_theme;           // per theme: 1 = no positive shrunk IC, equal shares
   atx::f64 cap{};                             // 1 / (2T)
   atx::usize cap_passes{};                    // capping passes run (0: no member above the cap)
 };
 // Members in input order: ic[k] finite, theme[k] < themes and every theme index with at least
-// one member; 1..256 members, 1..32 themes. Err (InvalidArgument) on other inputs or on an
-// infeasible cap (a theme's excess with no member of another theme to take it).
+// one member; 1..256 members, 1..32 themes. `gains` empty: ic-shrink-v1; otherwise
+// ic-shrink-aim-v1 with one finite gain > 0 per member. Err (InvalidArgument) on other inputs or
+// on an infeasible cap (a theme's excess with no member of another theme to take it).
 [[nodiscard]] atx::core::Result<IcShrinkFit> ic_shrink_weights(std::span<const atx::f64> ic,
                                                                std::span<const atx::usize> theme,
-                                                               atx::usize themes);
+                                                               atx::usize themes,
+                                                               std::span<const atx::f64> gains={});
 } // namespace atx::impl::strategy

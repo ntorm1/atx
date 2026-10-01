@@ -45,7 +45,8 @@ inline constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-mem
 // ew-theme-v6 (v4-prereg v6 revision V6-W): the only admitted theme_redistribution rule.
 inline constexpr const char* theme_redistribution_rule="within-theme-v1";
 // ew-theme-std-v1 (platform v8 R-1): the theme_standardise rule whose per-date standardisation
-// every row of the rule table runs (strategy_ic_admission.cpp; platform v8 R-10 adds ic-shrink-v1).
+// every row of the rule table runs (strategy_ic_admission.cpp; platform v8 R-10 adds ic-shrink-v1
+// and its aim variant ic-shrink-aim-v1).
 inline constexpr const char* theme_standardise_rule="ew-theme-std-v1";
 inline constexpr const char* fields_schema="atx.research-role-fields/v1";
 inline constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";

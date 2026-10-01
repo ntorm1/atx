@@ -3115,22 +3115,33 @@ bool shrink_library(atx::impl::strategy::IcRunnerConfig& cfg) {
         {"dsl","delay(volume, "+std::to_string(k)+")"},{"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
   return json_file(cfg.library_path,lib,cfg.library_sha256);
 }
-struct ShrinkMember { const char* id; const char* theme; f64 ic; f64 weight; };
+// ic-shrink-aim-v1 (fix round 1, Ruling E-44) adds the parent's aim gains {.5, 1, 1, .5 | .2, .9}
+// (liquidity {level, vee, lag_1} | size {rank, lag_2, lag_3}): share x g = {7/36, 10/36, 6/36 |
+// 1/4, 3/20, 0}, w = share x g / (2 x theme sum) = {7/46, 10/46, 6/46 | 5/16, 3/16, 0};
+// volume_rank's 5/16 is capped at 1/4 and its 1/16 goes to the liquidity members (x 9/8):
+// {63/368, 45/184, 27/184 | 1/4, 3/16, 0}.
+struct ShrinkMember { const char* id; const char* theme; f64 ic; f64 weight; f64 gain; f64 aim_weight; };
 const std::vector<ShrinkMember> shrink_members{
-    {"volume_level","liquidity",.004,35.0/144},{"volume_rank","size",.001,1.0/8},
-    {"volume_vee","liquidity",.002,25.0/144},{"volume_lag_1","liquidity",.003,30.0/144},
-    {"volume_lag_2","size",.003,1.0/4},{"volume_lag_3","size",-.004,0.0}};
+    {"volume_level","liquidity",.004,35.0/144,.5,63.0/368},{"volume_rank","size",.001,1.0/8,1.0,1.0/4},
+    {"volume_vee","liquidity",.002,25.0/144,1.0,45.0/184},{"volume_lag_1","liquidity",.003,30.0/144,.5,27.0/184},
+    {"volume_lag_2","size",.003,1.0/4,.2,3.0/16},{"volume_lag_3","size",-.004,0.0,.9,0.0}};
 // The members' weights file: weights, +1 signs of the weighted members, and a theme_standardise
-// block of `rule` (rerank true) naming their themes; ic-shrink-v1 adds its ic_shrink inputs.
-Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule) {
+// block of `rule` (rerank true) naming their themes; ic-shrink-v1 adds its ic_shrink inputs,
+// ic-shrink-aim-v1 those with the gains. The weights are ic-shrink-v1's, or ic-shrink-aim-v1's
+// for that rule or with `aim_weights`.
+Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule,bool aim_weights=false) {
+  const bool aim=aim_weights || rule=="ic-shrink-aim-v1";
   Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
   for (const auto& m:shrink_members) {
-    weights[m.id]=m.weight;
+    const f64 w=aim?m.aim_weight:m.weight;
+    weights[m.id]=w;
     members[m.id]={{"theme",m.theme},{"ic",m.ic}};
-    if (m.weight>0) { signs[m.id]=1; themes[m.id]=m.theme; }
+    if (aim) members[m.id]["gain"]=m.gain;
+    if (w>0) { signs[m.id]=1; themes[m.id]=m.theme; }
   }
   Json block{{"rule",rule},{"rerank",true},{"themes",themes}};
-  if (rule=="ic-shrink-v1") block["ic_shrink"]=Json{{"intensity",.5},{"floor",0.0},{"members",members}};
+  if (rule=="ic-shrink-v1" || rule=="ic-shrink-aim-v1")
+    block["ic_shrink"]=Json{{"intensity",.5},{"floor",0.0},{"members",members}};
   return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
       {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block}};
 }
@@ -3233,6 +3244,96 @@ TEST(CompositionV8, IcShrinkRefusalsPrecedeAnyPayloadOrOutput) {
       {change([](Json& d) { d["theme_standardise"]["rule"]="ic-shrink-v2"; }),
        "theme_standardise must be {rule: ew-theme-std-v1, rerank: true|false, themes: {id: theme}} or "
        "{rule: ic-shrink-v1"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [doc,reason]:cases) {
+      std::ostringstream log;
+      const auto error=attempt(doc,plan_only,log);
+      ASSERT_FALSE(error.empty()) << doc.dump();
+      EXPECT_NE(error.find(reason),std::string::npos) << doc.dump() << " -> " << error;
+      EXPECT_TRUE(log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
+// ic-shrink-aim-v1 (fix round 1, Ruling E-44): its weights pinned under ew-theme-std-v1 and under
+// the variant give the same blend, planned targets and IC rows byte for byte; the recipe, the
+// combined manifests and the summary name the variant.
+TEST(CompositionV8, IcShrinkAimRunsTheStandardisationUnchangedAndRecordsItsRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const Json& doc) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,doc.dump(),cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",shrink_doc(cfg,"ew-theme-std-v1",true)));
+  const auto standard=run_named(dir,cfg,"std"); ASSERT_TRUE(standard.ok) << standard.error;
+  ASSERT_TRUE(pin("aim.json",shrink_doc(cfg,"ic-shrink-aim-v1")));
+  const auto aim=run_named(dir,cfg,"aim"); ASSERT_TRUE(aim.ok) << aim.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8","_planned_targets.csv"}) {
+      const auto expected=file_sha(dir.path/"std"/(role_name+suffix)); ASSERT_FALSE(expected.empty()) << suffix;
+      EXPECT_EQ(file_sha(dir.path/"aim"/(role_name+suffix)),expected) << suffix;
+    }
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_FALSE(combined_rows(dir.path/"std"/daily).empty());
+    EXPECT_EQ(combined_rows(dir.path/"aim"/daily),combined_rows(dir.path/"std"/daily));
+    EXPECT_EQ(member_rows(dir.path/"aim"/daily),member_rows(dir.path/"std"/daily));
+    EXPECT_EQ(read_json(dir.path/"aim"/(role_name+"_combined.json")).at("composition_standardise"),"ic-shrink-aim-v1");
+  }
+  EXPECT_EQ(read_json(dir.path/"aim"/"recipe.json").at("composition_standardise"),"ic-shrink-aim-v1");
+  EXPECT_EQ(read_json(dir.path/"aim"/"summary.json").at("composition_weights").at("standardise"),"ic-shrink-aim-v1");
+  const auto grouping=atx::impl::strategy::ic_weights_themes(text_of(dir.path/"aim.json"));
+  ASSERT_TRUE(grouping) << grouping.error().to_string();
+  EXPECT_EQ(grouping->block,"theme_standardise"); EXPECT_TRUE(grouping->rerank);
+  EXPECT_EQ(grouping->themes.size(),5U);
+}
+// The runner's re-application check covers the variant: the rule with the recorded gains, before
+// any payload or output. ic-shrink-v1 weights under the variant, the variant's weights under
+// ic-shrink-v1, a changed, missing or malformed gain, other constants and rerank off are refused.
+TEST(CompositionV8, IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const auto attempt=[&](const Json& doc,bool plan_only,std::ostringstream& log) {
+    cfg.plan_only=plan_only;
+    if (!text_file(path,doc.dump(),cfg.composition_weights_sha256)) return std::string("unwritable");
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    return status?std::string{}:status.error().to_string();
+  };
+  const auto good=shrink_doc(cfg,"ic-shrink-aim-v1");
+  const auto change=[&](auto&& edit) { auto doc=good; edit(doc); return doc; };
+  const auto within=change([](Json& d) { d["weights"]["volume_level"]=63.0/368+5e-13; });
+  for (const auto* doc:{&good,&within}) {
+    std::ostringstream log; EXPECT_EQ(attempt(*doc,true,log),"");
+  }
+  const std::string variant="IC runner: theme_standardise rule ic-shrink-aim-v1: ";
+  const std::string gain_shape="member volume_rank needs {theme: [a-z0-9_]{1,64}, ic: finite number, gain: finite "
+                               "number > 0}";
+  auto plain=shrink_doc(cfg,"ic-shrink-v1");
+  plain["theme_standardise"]["rule"]="ic-shrink-aim-v1";
+  plain["theme_standardise"]["ic_shrink"]=good.at("theme_standardise").at("ic_shrink");
+  const std::vector<std::pair<Json,std::string>> cases{
+      {plain,variant+"composition weight of volume_level is"},
+      {change([](Json& d) { d["theme_standardise"]["rule"]="ic-shrink-v1"; }),
+       "IC runner: theme_standardise rule ic-shrink-v1: composition weight of volume_level is"},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_lag_2"]["gain"]=.3; }),
+       variant+"composition weight of volume_level is"},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_rank"].erase("gain"); }),
+       variant+gain_shape},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_rank"]["gain"]=0.0; }),
+       variant+gain_shape},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_rank"]["gain"]=-1.0; }),
+       variant+gain_shape},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["members"]["volume_rank"]["gain"]="1"; }),
+       variant+gain_shape},
+      {change([](Json& d) { d["theme_standardise"]["ic_shrink"]["intensity"]=.25; }),
+       variant+"ic_shrink intensity and floor must be the registered 0.5 and 0"},
+      {change([](Json& d) { d["theme_standardise"].erase("ic_shrink"); }),
+       variant+"needs ic_shrink {intensity, floor, members: {id: {theme, ic, gain}}}"},
+      {change([](Json& d) { d["theme_standardise"]["rerank"]=false; }),
+       "theme_standardise rule ic-shrink-aim-v1 needs rerank true"}};
   for (const bool plan_only:{true,false}) {
     for (const auto& [doc,reason]:cases) {
       std::ostringstream log;

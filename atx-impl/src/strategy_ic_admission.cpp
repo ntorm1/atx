@@ -65,7 +65,7 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
       recipe["composition_redistribution"]=theme_redistribution_rule;
     }
     // A theme_standardise block with rerank true (`standardised` = its rule: ew-theme-std-v1,
-    // v8 R-1, or ic-shrink-v1, v8 R-10, whose per-date method is the same) likewise; with
+    // v8 R-1, or ic-shrink-v1 / ic-shrink-aim-v1, v8 R-10, whose per-date method is the same) likewise; with
     // rerank false the method is the pinned one above and only the weights pin differs.
     if (!standardised.empty()) {
       recipe["composition"]=std::string(pinned_signs?"pinned-candidate-weights;pinned-candidate-signs;"
@@ -478,9 +478,11 @@ co::Status theme_indices(const Json& rows,const Library& lib,const std::vector<f
 using StandardiseVerify=co::Status(*)(const Json& block,const Library& lib,const std::vector<f64>& weights);
 struct StandardiseRule { std::string_view id; bool rerank_off; StandardiseVerify verify; };
 co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights);
-constexpr std::array<StandardiseRule,2> standardise_rules{{
-    {theme_standardise_rule,true,nullptr},      // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 files too)
-    {ic_shrink_rule,false,&verify_ic_shrink}}}; // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
+co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights);
+constexpr std::array<StandardiseRule,3> standardise_rules{{
+    {theme_standardise_rule,true,nullptr},              // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 files too)
+    {ic_shrink_rule,false,&verify_ic_shrink},           // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
+    {ic_shrink_aim_rule,false,&verify_ic_shrink_aim}}}; // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
 // The row the block names (null: none, or a block that is not an object or has no string rule).
 const StandardiseRule* standardise_row(const Json& block) {
   if (!block.is_object() || !block.contains("rule") || !block.at("rule").is_string()) return nullptr;
@@ -495,32 +497,39 @@ const StandardiseRule* standardise_row(const Json& block) {
 // members in library order; each pinned weight must equal its rule weight within
 // ic_shrink_weight_tolerance (0 for a candidate that is not a member), a weighted candidate must
 // be a member, and its `themes` entry must name its member theme.
-co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights) {
-  const auto refuse=[](const std::string& what) {
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise rule ic-shrink-v1: "+what);
+// ic-shrink-aim-v1 (fix round 1, Ruling E-44): the same, each member also recording the parent's
+// aim gain (members: {id: {theme, ic, gain}}, gain finite > 0), and the rule takes the gains.
+co::Status verify_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights,bool aim) {
+  const std::string rule_id(aim?ic_shrink_aim_rule:ic_shrink_rule);
+  const std::string shape(aim?"{theme, ic, gain}":"{theme, ic}");
+  const auto refuse=[&rule_id](const std::string& what) {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise rule "+rule_id+": "+what);
   };
   const auto number=[](const Json& j,const char* key) {
     return j.is_object() && j.contains(key) && j.at(key).is_number()?j.at(key).get<f64>():quiet_nan;
   };
   if (!block.contains("ic_shrink") || !block.at("ic_shrink").is_object())
-    return refuse("needs ic_shrink {intensity, floor, members: {id: {theme, ic}}}");
+    return refuse("needs ic_shrink {intensity, floor, members: {id: "+shape+"}}");
   const auto& shrink=block.at("ic_shrink");
   if (!(number(shrink,"intensity")==ic_shrink_intensity) || !(number(shrink,"floor")==ic_shrink_floor))
     return refuse("ic_shrink intensity and floor must be the registered 0.5 and 0");
   if (!shrink.contains("members") || !shrink.at("members").is_object() || shrink.at("members").empty())
-    return refuse("ic_shrink.members must be a non-empty object {id: {theme, ic}}");
+    return refuse("ic_shrink.members must be a non-empty object {id: "+shape+"}");
   const auto& members=shrink.at("members");
   std::set<std::string> ids;
   for (const auto& c:lib.candidates) ids.insert(c.id);
   for (auto it=members.begin();it!=members.end();++it) {
     if (!ids.contains(it.key())) return refuse("member of unknown candidate: "+it.key());
     const auto& m=*it;
+    const f64 gain=number(m,"gain");
     if (!m.is_object() || !m.contains("theme") || !m.at("theme").is_string() ||
-        !theme_name(m.at("theme").get<std::string>()) || !std::isfinite(number(m,"ic")))
-      return refuse("member "+it.key()+" needs {theme: [a-z0-9_]{1,64}, ic: finite number}");
+        !theme_name(m.at("theme").get<std::string>()) || !std::isfinite(number(m,"ic")) ||
+        (aim && !(std::isfinite(gain) && gain>0)))
+      return refuse("member "+it.key()+" needs {theme: [a-z0-9_]{1,64}, ic: finite number"+
+                    (aim?std::string(", gain: finite number > 0}"):std::string("}")));
   }
   // The members in library order, theme indices by first appearance.
-  std::vector<f64> ic; std::vector<usize> theme,position; std::vector<std::string> names;
+  std::vector<f64> ic,gains; std::vector<usize> theme,position; std::vector<std::string> names;
   for (usize k=0;k<lib.candidates.size();++k) {
     const auto it=members.find(lib.candidates[k].id);
     if (it==members.end()) continue;
@@ -529,8 +538,9 @@ co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vect
     theme.push_back(static_cast<usize>(found-names.begin()));
     if (found==names.end()) names.push_back(name);
     ic.push_back(it->at("ic").get<f64>()); position.push_back(k);
+    if (aim) gains.push_back(it->at("gain").get<f64>());
   }
-  const auto fit=ic_shrink_weights(ic,theme,names.size());
+  const auto fit=ic_shrink_weights(ic,theme,names.size(),gains);
   if (!fit) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+fit.error().message());
   std::vector<f64> rule(lib.candidates.size(),0.0);
   for (usize m=0;m<position.size();++m) rule[position[m]]=fit->weights[m];
@@ -546,6 +556,12 @@ co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vect
       return refuse("themes."+id+" is not its ic_shrink member theme");
   }
   return co::Ok();
+}
+co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights) {
+  return verify_shrink(block,lib,weights,false);
+}
+co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights) {
+  return verify_shrink(block,lib,weights,true);
 }
 // Shapes of the two theme blocks; composition_themes, composition_standardise and
 // ic_weights_themes (the marginal verb's reader) all check a block through these.
@@ -564,8 +580,8 @@ co::Status standardise_block(const Json& block) {
   if (rule==nullptr || !block.contains("rerank") || !block.at("rerank").is_boolean() ||
       !block.contains("themes") || !block.at("themes").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise must be {rule: ew-theme-std-v1, "
-        "rerank: true|false, themes: {id: theme}} or {rule: ic-shrink-v1, rerank: true, themes: {id: theme}, "
-        "ic_shrink: {intensity, floor, members}}");
+        "rerank: true|false, themes: {id: theme}} or {rule: ic-shrink-v1|ic-shrink-aim-v1, rerank: true, themes: "
+        "{id: theme}, ic_shrink: {intensity, floor, members}}");
   if (!rule->rerank_off && !block.at("rerank").get<bool>())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise rule "+std::string(rule->id)+
         " needs rerank true (its per-date standardisation is ew-theme-std-v1's, unchanged)");
@@ -588,7 +604,7 @@ co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pi
 // pinned.std_themes (IcThemeRule::standardise); rerank false is the rule's identity
 // switch: the composition is the plain pinned-weights path, whose blend is the ew-theme-v1
 // one bit for bit. Absent: nothing changes. Schema v2 as for theme_redistribution.
-// Rule ic-shrink-v1 (platform v8 R-10, rerank true only) adds `ic_shrink`, which its verify
+// Rules ic-shrink-v1 / ic-shrink-aim-v1 (platform v8 R-10, rerank true only) add `ic_shrink`, which their verify
 // checks against the weights; its per-date path is the same (the rule table above).
 co::Status composition_standardise(const Json& j,const Library& lib,PinnedWeights& pinned) {
   if (!j.contains("theme_standardise")) return co::Ok();
