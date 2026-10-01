@@ -136,9 +136,13 @@ def test_cutoff_no_label_ends_after_cutoff(lake) -> None:
 
 
 def test_panel_scan_past_cutoff_refused(lake) -> None:
+    _, root = lake
     con = duckdb.connect()
-    with pytest.raises(L.HoldoutViolation):
-        L.scan_panel(con, [], CAL[0], CAL[CUT + 1])
+    files = [(root / "panel" / "year=2019" / "*.parquet").as_posix()]
+    with pytest.raises(L.HoldoutViolation, match="past the label cutoff"):
+        L.scan_panel(con, files, CAL[0], CAL[CUT + 1])
+    with pytest.raises(FileNotFoundError):
+        L.scan_panel(con, [], CAL[0], CAL[CUT])
 
 
 def test_manifest_written(lake) -> None:

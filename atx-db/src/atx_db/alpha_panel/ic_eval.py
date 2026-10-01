@@ -33,6 +33,7 @@ import datetime as dt
 import gc
 import itertools
 import math
+import os
 import sys
 from array import array
 from pathlib import Path
@@ -41,13 +42,12 @@ from typing import Any
 import numpy as np
 
 from . import common as C
+from .labels import HORIZONS, LABEL_CUTOFF, HoldoutViolation
 
 SCHEMA = "atx.alpha-panel.ic-eval/v2"
-LABEL_CUTOFF = dt.date(2023, 12, 29)
 FIRST_SESSION = dt.date(2019, 1, 2)
 DISCOVERY = (dt.date(2019, 1, 2), dt.date(2019, 12, 31))
 TRAIN_START = dt.date(2020, 1, 2)
-HORIZONS = (1, 5, 21, 63)
 MIN_NAMES = 100
 NW_MIN_SESSIONS = 30
 MAX_BATCH = 16
@@ -57,10 +57,6 @@ KEYS = ("session_date", "security_id")
 NUMERIC = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
            "FLOAT", "DOUBLE", "DECIMAL")
 UNIVERSES = ("member_equity", "lo")
-
-
-class HoldoutViolation(RuntimeError):
-    """A label or session that would use a return realized after the cutoff or a decision session after TRAIN end."""
 
 
 # ---------------------------------------------------------------- statistics
@@ -410,8 +406,20 @@ def _redundancy(con, cal, train_end, feats: list[tuple[str, str]], overlap: list
 
 def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
         overlap: tuple[str, list[str] | None] | None = None, memory: str = "220MB", threads: int = 2) -> dict[str, Any]:
-    root = C.build_root()
-    con = C.connect(memory=memory, threads=threads, db_file="ic_eval.duckdb")
+    """Evaluate ``features`` (and write ``out``); the DuckDB scratch file is per process and always removed."""
+    scratch = f"ic_eval-{os.getpid()}.duckdb"
+    con = C.connect(memory=memory, threads=threads, db_file=scratch)
+    try:
+        return _run(con, features, out, overlap)
+    finally:
+        con.close()
+        base = C.build_root() / "_tmp" / scratch
+        for p in (base, base.with_name(base.name + ".wal")):
+            p.unlink(missing_ok=True)
+
+
+def _run(con, features: list[tuple[str, list[str] | None]], out: Path | None,
+         overlap: tuple[str, list[str] | None] | None) -> dict[str, Any]:
     cal = C.load_calendar(con)
     train_end = check_labels(con, cal)
     notices: list[str] = []
@@ -479,6 +487,7 @@ def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
             else:
                 stage_sessions[stage] = set()
         train_end_i = int(np.datetime64(train_end).astype("datetime64[D]").astype(np.int32))
+        cutoff_i = int(np.datetime64(LABEL_CUTOFF).astype("datetime64[D]").astype(np.int32))
         first_i = int(np.datetime64(FIRST_SESSION).astype("datetime64[D]").astype(np.int32))
         for bi, (stage, cols) in enumerate(batches):
             X = _fetch_block(con, stage, year, cols, n)
@@ -495,7 +504,7 @@ def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
                 cur_ids, cur_X = ids[sl], X[sl]
                 buf = bufs[bi]
                 for lag in (1, 21):
-                    if len(buf) >= lag:
+                    if di <= cutoff_i and len(buf) >= lag:  # return-valued features: no post-cutoff sessions (GC1, R7)
                         pid, pX = buf[-lag][1], buf[-lag][2]
                         _c, ia, ib = np.intersect1d(cur_ids, pid, assume_unique=True, return_indices=True)
                         if ia.size >= MIN_NAMES:
@@ -531,13 +540,12 @@ def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
         gc.collect()
         print(f"ic_eval: year {year} done", flush=True)
     red, pair_info = _redundancy(con, cal, train_end, feats, ovl_cols, notices) if feats else ({}, {"pairs": {}, "months": [], "overlap": {}})
-    con.close()
-    (root / "_tmp" / "ic_eval.duckdb").unlink(missing_ok=True)
     result: dict[str, Any] = {
         "schema": SCHEMA, "generated_utc": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "label_cutoff": str(LABEL_CUTOFF), "train_end": str(train_end),
         "windows": {"DISCOVERY": [str(DISCOVERY[0]), str(DISCOVERY[1])], "TRAIN": [str(TRAIN_START), str(train_end)]},
         "horizons": list(HORIZONS), "universes": list(UNIVERSES), "min_names": MIN_NAMES,
+        "autocorr_window": [str(FIRST_SESSION), str(LABEL_CUTOFF)],
         "risk_adjustment": {"available": risk_ok, "inputs": list(RISK_COLS)},
         "last_panel_session": str(last_panel), "notices": notices,
         "features_requested": [f"{s}:{c}" for s, c in feats], "features": {}}

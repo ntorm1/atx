@@ -59,7 +59,7 @@ def scan_panel(con: duckdb.DuckDBPyConnection, files: list[str], lo: dt.date, hi
     if hi > LABEL_CUTOFF:
         raise HoldoutViolation(f"panel scan to {hi} is past the label cutoff {LABEL_CUTOFF}")
     if not files:
-        raise HoldoutViolation("no panel files to scan")
+        raise FileNotFoundError("no panel files to scan")
     flist = "[" + ", ".join(f"'{f}'" for f in files) + "]"
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE {table} AS

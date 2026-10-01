@@ -109,7 +109,8 @@ def lake(tmp_path, monkeypatch):
             f1 = float(rng.normal())
             f2 = float(rng.normal()) if s % 10 else None
             noise = float(rng.normal())
-            panel.setdefault(d.year, []).append((d, s, s <= 50, f"g{s % 4}", 100 + s, "strict", True, True, f1, f2))
+            panel.setdefault(d.year, []).append((d, s, s <= 50, f"g{s % 4}", 100 + s, "strict", True, True, f1, f2,
+                                              float(rng.normal()) if i <= CUT else float(s)))
             gold.setdefault(d.year, []).append((d, s, f1 + 0.3 * float(rng.normal())))
             char.setdefault(d.year, []).append((d, s, float(rng.normal()), float(rng.normal()), float(rng.normal())))
             lab = [0.3 * f1 + noise if i + 1 + h <= CUT else None for h in (1, 5, 21, 63)]
@@ -117,7 +118,7 @@ def lake(tmp_path, monkeypatch):
                 labels.setdefault(d.year, []).append((d, s, *lab, 5, 21, 63))
     for y, rows in panel.items():
         _w(con, "session_date DATE, security_id BIGINT, member_equity BOOLEAN, grp_ff49 VARCHAR, cik BIGINT, link_tier VARCHAR,"
-                " is_issuer_primary BOOLEAN, is_common BOOLEAN, f1 DOUBLE, f2 DOUBLE", rows,
+                " is_issuer_primary BOOLEAN, is_common BOOLEAN, f1 DOUBLE, f2 DOUBLE, f3 DOUBLE", rows,
            tmp_path / "panel" / f"year={y}" / "panel-01.parquet")
     for y, rows in gold.items():
         _w(con, "session_date DATE, security_id BIGINT, g1 DOUBLE", rows, tmp_path / "gold" / f"year={y}" / "g.parquet")
@@ -174,3 +175,19 @@ def test_refuses_decision_after_train_end(lake) -> None:
     _w(con, LAB_COLS, [(late, 1, 0.1, None, None, None, None, None, None)], root / "labels" / "year=2020" / "labels.parquet")
     with pytest.raises(E.HoldoutViolation):
         E.run([("panel", ["f1"])], root / "ic.json", memory="200MB")
+
+
+def test_autocorr_ignores_sessions_after_cutoff(lake) -> None:
+    """f3 is iid up to the cutoff and perfectly persistent after it: only the former may enter the autocorrelation."""
+    root, _c, _con = lake
+    res = E.run([("panel", ["f3"])], root / "ic.json", memory="200MB")
+    ac = res["features"]["panel:f3"]["rank_autocorr"]
+    assert abs(ac["lag1"]) < 0.08
+    assert res["autocorr_window"] == [str(E.FIRST_SESSION), str(CAL[CUT])]
+    assert res["features"]["panel:f3"]["coverage"]["2020"] == pytest.approx(1.0)  # coverage keeps every session
+
+
+def test_scratch_database_removed(lake) -> None:
+    root, _c, _con = lake
+    E.run([("panel", ["f1"])], root / "ic.json", memory="200MB")
+    assert not list((root / "_tmp").glob("ic_eval*"))
