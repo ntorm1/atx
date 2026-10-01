@@ -30,7 +30,9 @@
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/fidelity.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
+#include "strategy_ic_runner.hpp" // the library identity of a trial recipe (review MINE-3)
 #include "strategy_mine_detail.hpp"
+#include "strategy_mine_ledger.hpp"
 
 namespace atx::impl::strategy {
 using namespace mine_detail;
@@ -52,8 +54,15 @@ constexpr std::array<std::string_view, 6> kMinerDeny{"trade_when", "hump",   "ka
                                                      "ou_filter",  "kalman", "split2"};
 constexpr std::string_view kCampaignSchema = "atx.mine-campaign/v1";
 constexpr std::string_view kMembersSchema = "atx.mined-members/v1";
-constexpr std::string_view kLedgerSchema = "atx.trial-ledger/v1";
-constexpr std::string_view kLedgerKind = "mining-campaign";
+// The derived terms of mine_working_bytes (review MINE-10; strategy_mine.hpp).
+constexpr u64 kMetadataBytes = 64ULL << 20;
+constexpr u64 kIcCacheCellBytes = 49;    // 3 horizons x (label + rank) x 8, + 1 member byte
+constexpr u64 kRungScorerCellBytes = 54; // strided member 1, guard 4, presence 1, IC cache 48
+constexpr u64 kScratchNameBytes = 128;   // IC and marginal row buffers per name
+constexpr u64 kScratchDateBytes = 80;    // calendar series and label-row counts per date
+constexpr u64 kTrialAllowanceBytes = 16ULL << 10;
+constexpr u64 kRegistryGramBytes = 512ULL << 10; // the registry's 256 x 256 f64 Gram
+constexpr u64 kRegistryRecordBytes = 128;        // TrialInfo (72 B) and its dedup-set entry
 
 f64 seconds_since(steady::time_point from) {
   return std::chrono::duration<f64>(steady::now() - from).count();
@@ -83,28 +92,64 @@ co::Status write_text(const fs::path &path, const std::string &text) {
 
 // ---- configuration and windows -----------------------------------------------------------------
 co::Status check_config(const MineConfig &cfg) {
+  // Ruling E-32a (review MINE-7): mined-v1's marginal term and rho check read the book.
+  if (cfg.pool_path.empty() || cfg.pool_sha256.empty())
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "mined-v1 needs --pool with --pool-sha256 (Ruling E-32a: without the "
+                        "book the marginal t is the raw IC t and the rho check meets no member)"));
   std::vector<std::string> fields = cfg.role.fields;
   std::sort(fields.begin(), fields.end());
   const bool distinct = std::adjacent_find(fields.begin(), fields.end()) == fields.end();
   const bool inputs = !cfg.role.manifest.empty() && !cfg.registry_path.empty() &&
                       !cfg.output_directory.empty() && safe_id(cfg.campaign_id) &&
-                      !fields.empty() && fields.size() <= 64U && distinct &&
-                      cfg.pool_path.empty() == cfg.pool_sha256.empty();
+                      !fields.empty() && fields.size() <= 64U && distinct;
   const bool search = cfg.workers >= 1U && cfg.workers <= 64U && cfg.stage2_population >= 2U &&
                       cfg.stage2_population <= 4096U && cfg.stage2_generations <= 256U &&
                       cfg.stage2_seeds <= cfg.stage2_population &&
                       cfg.race_strides.size() <= 2U && cfg.race_keep > 0.0 &&
                       cfg.race_keep <= 1.0;
-  const bool rule = cfg.min_names >= 3U && cfg.min_dates >= 2U && cfg.max_promotions >= 1U &&
+  // --min-dates >= 8: the IC recipe's own floor (ic_screen validate), refused here before payload.
+  const bool rule = cfg.min_names >= 3U && cfg.min_dates >= 8U && cfg.max_promotions >= 1U &&
                     cfg.max_promotions <= 256U && cfg.max_working_bytes >= (64ULL << 20) &&
-                    cfg.max_working_bytes <= (64ULL << 30);
+                    cfg.max_working_bytes <= (64ULL << 30) && cfg.budget >= 1U &&
+                    cfg.budget <= kMineMaxBudget;
   if (!inputs || !search || !rule)
     return co::Err(fail(co::ErrorCode::InvalidArgument,
                         "bounded config (needs --role, --registry, --campaign-id [a-z0-9_-]{1,64}, "
-                        "--output, 1..64 distinct --fields, --pool with --pool-sha256; --workers "
-                        "1..64; --stage2-seeds <= --stage2-population (2..4096); at most 2 "
-                        "--race-strides; --race-keep in (0, 1]; --min-names >= 3; "
-                        "--max-promotions 1..256; --max-memory-mib 64..65536)"));
+                        "--output, 1..64 distinct --fields, --pool with --pool-sha256, --budget "
+                        "1..10000000; --workers 1..64; --stage2-seeds <= --stage2-population "
+                        "(2..4096); at most 2 --race-strides; --race-keep in (0, 1]; --min-names "
+                        ">= 3; --min-dates >= 8; --max-promotions 1..256; --max-memory-mib "
+                        "64..65536)"));
+  // Ruling PM4-13: the overlap factor holds to kMinedMaxBudget only; refused before any payload.
+  if (cfg.budget > kMinedMaxBudget)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "--budget " + std::to_string(cfg.budget) + " is above kMinedMaxBudget " +
+                            std::to_string(kMinedMaxBudget) +
+                            " (Ruling PM4-13): the mined-v1 overlap factor kMinedOverlapFactor is "
+                            "validated to that budget only; a larger campaign waits until the "
+                            "factor is re-derived at its own Bonferroni level"));
+  // Pre-registration rule 10 (Ruling E-32a): the budget is fixed in advance and binds the search.
+  const u64 capacity = mine_trial_capacity(cfg);
+  if (cfg.budget < capacity)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "--budget " + std::to_string(cfg.budget) +
+                            " is below the configuration's trial capacity " +
+                            std::to_string(capacity) +
+                            " (templates plus stage-2 population x generations): the budget is "
+                            "fixed in advance and the search must not be able to exceed it"));
+  return co::Ok();
+}
+
+// Ruling E-32a (review MINE-7): the pool's manifest names the book -- at least one regressor for
+// the marginal term and one member for the rho check -- checked before any payload.
+co::Status check_pool(const MinePoolManifest &pool) {
+  if (pool.regressors.empty() || pool.members.empty())
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "mined-v1 needs --pool with at least one regressor and one member "
+                        "(Ruling E-32a); " + pool.path + " has " +
+                            std::to_string(pool.regressors.size()) + " and " +
+                            std::to_string(pool.members.size())));
   return co::Ok();
 }
 
@@ -160,7 +205,10 @@ co::Result<MineWindows> parse_windows(const MineConfig &cfg) {
   return co::Ok(std::move(w));
 }
 
-co::Status bind_rows(MineWindow &w, const dt::StrategyRoleData &role, const char *name) {
+// Binds `w` to the role's decision rows; refuses rows outside the score window and fewer than
+// `min_label_rows` mature h 21 labels.
+co::Status bind_rows(MineWindow &w, const dt::StrategyRoleData &role, const char *name,
+                     usize min_label_rows) {
   const auto &sessions = role.session_keys;
   const auto row = [&sessions](i64 ns) {
     return static_cast<usize>(std::lower_bound(sessions.begin(), sessions.end(), ns) -
@@ -168,10 +216,15 @@ co::Status bind_rows(MineWindow &w, const dt::StrategyRoleData &role, const char
   };
   w.begin = row(w.begin_ns);
   w.end = row(w.end_ns);
-  if (w.begin < role.score_begin || w.end > role.score_end || w.end < w.begin + kLabelLag + 3U)
+  if (w.begin < role.score_begin || w.end > role.score_end)
     return co::Err(fail(co::ErrorCode::InvalidArgument,
-                        std::string(name) + " window: rows outside the role's score window or "
-                                            "too few for mature h 21 labels"));
+                        std::string(name) + " window: rows outside the role's score window"));
+  const usize label_rows = w.end > w.begin + kLabelLag ? w.end - w.begin - kLabelLag : 0U;
+  if (label_rows < min_label_rows)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        std::string(name) + " window: " + std::to_string(label_rows) +
+                            " mature h 21 label rows, fewer than the " +
+                            std::to_string(min_label_rows) + " the rule reads on it"));
   return co::Ok();
 }
 
@@ -202,6 +255,7 @@ ex::SearchConfig stage_config(const MineConfig &cfg, const ex::FidelityCfg &race
   sc.fidelity = race;
   sc.cross_section_mask = mask;
   sc.signal_fitness = &fitness;
+  sc.max_program_slots = kMineMaxProgramSlots; // review MINE-10: the admitted slot pools
   sc.enable_parsimony = explore;
   sc.mutate_seed_copies = explore;
   if (explore) {
@@ -240,6 +294,38 @@ Json stage_json(const StageRun &stage) {
               {"racing_rejected", stage.result.fidelity_rejected},
               {"racing_evaluations", stage.result.fidelity_evals}, {"seconds", stage.seconds}};
 }
+
+// The campaign's trial recipe (review MINE-3): what one confirm read of an expression is.
+Json recipe_json(const MineConfig &cfg, const ResearchRole &role, const MinePool &pool,
+                 const MineWindows &windows, usize label_rows, usize confirm_rows) {
+  const IcCacheVmIdentity vm = ic_cache_vm_identity();
+  const IcCacheVmIdentity ic = ic_result_cache_identity();
+  return Json{
+      {"schema", std::string(kTrialRecipe)},
+      {"rule", std::string(kMinedRule)},
+      {"role_manifest_sha256", role.data().manifest_sha256},
+      {"fields_manifest_sha256", role.fields_sha256()},
+      {"pool_sha256", pool.sha256},
+      {"library",
+       {{"vm_identity", vm.identity},
+        {"dsl_vm_sources_sha256", vm.sources_sha256},
+        {"ic_identity", ic.identity},
+        {"ic_sources_sha256", ic.sources_sha256}}},
+      {"window_id", std::string(dt::kResearchWindowId)},
+      {"discover", window_json(windows.discover, label_rows)},
+      {"confirm", window_json(windows.confirm, confirm_rows)},
+      {"ic", "research_window_ic_config (EquivalenceV3, horizons 5/21/63, delay 1, maturity at "
+             "the window end), ResearchIcOptions{3, true, 1}, h 21 rank IC; decision "
+             "membership and research return guard"},
+      {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
+                   "summarize_rank_ic Bartlett lag 21"},
+      {"overlap_factor", kMinedOverlapFactor},
+      {"max_budget", kMinedMaxBudget}, // Ruling PM4-13: the budget F is validated to
+      {"min_discover_rows", kMinedMinDiscoverRows},
+      {"min_confirm_rows", kMinedMinConfirmRows},
+      {"min_names", cfg.min_names},
+      {"min_dates", cfg.min_dates}};
+}
 } // namespace
 
 // ---- public -------------------------------------------------------------------------------------
@@ -255,25 +341,42 @@ std::vector<std::string> mine_templates(std::span<const std::string> fields) {
   return out;
 }
 
+u64 mine_trial_capacity(const MineConfig &cfg) {
+  const u64 per_field = 1U + 2U * static_cast<u64>(kTemplateWindows.size());
+  const u64 templates = static_cast<u64>(cfg.role.fields.size()) * per_field;
+  const bool stage2 = cfg.stage2_seeds > 0U && cfg.stage2_generations > 0U;
+  return templates +
+         (stage2 ? static_cast<u64>(cfg.stage2_population) * cfg.stage2_generations : u64{0});
+}
+
 co::Result<u64> mine_working_bytes(const MineFootprint &f) {
   if (f.workers == 0U || f.workers > 64U || f.rungs > 2U ||
       f.regressors > cb::kMaxMarginalRegressors || f.members > kMaxMinePoolMembers ||
-      f.shortlist > 256U)
+      f.shortlist > 256U || f.trials > (1ULL << 32) || f.prior_records > (1ULL << 40))
     return co::Err(fail(co::ErrorCode::InvalidArgument, "working-bytes geometry"));
   ATX_TRY(const u64 role, research_role_bytes(f.dates, f.names, f.extras));
   // Every factor is bounded above, so no product below can overflow u64.
-  const u64 cells = static_cast<u64>(f.dates) * f.names;
-  const u64 engines = static_cast<u64>(f.workers) * (1U + f.rungs);
+  const u64 dates = f.dates;
+  const u64 names = f.names;
+  const u64 cells = dates * names;
+  const u64 strided = dates * ((names + 1U) / 2U); // a racing rung: instrument stride >= 2
   const u64 fields = 3U + static_cast<u64>(f.extras);
-  u64 total = 64ULL << 20;                                      // metadata, genomes, search
-  total += role;                                                // role, extras, guard, overlay
-  total += (f.regressors + f.members) * cells * sizeof(f64);    // pool payloads
-  total += 2U * (3U * cells * sizeof(f64) + cells);             // discover + confirm IC caches
-  total += engines * (8U * cells * sizeof(f64) + cells);        // VM slot pools + mask copies
-  total += engines * cells * sizeof(f64);                       // one signal set per engine
-  total += f.rungs * (cells / 2U) * (fields * sizeof(f64) + 30U); // strided panels and caches
-  total += f.shortlist * cells * sizeof(f64);                   // the shortlist's signals
-  total += (f.members + f.shortlist) * static_cast<u64>(f.names) * sizeof(f64); // rank rows
+  const u64 workers = f.workers;
+  const u64 rungs = f.rungs;
+  const u64 slot_cell = static_cast<u64>(kMineMaxProgramSlots) * sizeof(f64) + 1U;
+  u64 total = kMetadataBytes;
+  total += role;
+  total += (static_cast<u64>(f.regressors) + f.members) * cells * sizeof(f64);
+  total += 2U * kIcCacheCellBytes * cells;
+  total += rungs * strided * (fields * sizeof(f64) + kRungScorerCellBytes);
+  total += rungs * strided * (fields * sizeof(f64) + 1U);
+  total += ((workers + 1U) * cells + workers * rungs * strided) * slot_cell;
+  total += workers * (cells + rungs * strided) * sizeof(f64);
+  total += (workers * (1U + rungs) + 1U) * (kScratchNameBytes * names + kScratchDateBytes * dates);
+  total += f.trials * (dates * sizeof(f64) + kTrialAllowanceBytes);
+  total += kRegistryGramBytes + (f.prior_records + f.trials) * kRegistryRecordBytes;
+  total += static_cast<u64>(f.shortlist) * cells * sizeof(f64);
+  total += (static_cast<u64>(f.members) + f.shortlist) * names * sizeof(f64);
   return co::Ok(total);
 }
 
@@ -290,6 +393,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     ATX_TRY(const auto anchor, registry_anchor(cfg));
     ATX_TRY(const auto geometry, ResearchRole::geometry(cfg.role));
     ATX_TRY(const auto pool_manifest, read_mine_pool_manifest(cfg.pool_path, cfg.pool_sha256));
+    ATX_TRY_VOID(check_pool(pool_manifest));
     MineFootprint footprint;
     footprint.dates = geometry.dates;
     footprint.names = geometry.instruments;
@@ -299,6 +403,8 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     footprint.workers = cfg.workers;
     footprint.rungs = cfg.race_strides.size();
     footprint.shortlist = cfg.max_promotions;
+    footprint.trials = mine_trial_capacity(cfg);
+    footprint.prior_records = anchor ? anchor->records : u64{0};
     ATX_TRY(const u64 required, mine_working_bytes(footprint));
     if (required > cfg.max_working_bytes)
       return co::Err(fail(co::ErrorCode::Unavailable,
@@ -309,8 +415,11 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     ResearchRoleSpec spec = cfg.role;
     spec.max_bytes = cfg.max_working_bytes;
     ATX_TRY(const auto role, ResearchRole::load(spec));
-    ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover"));
-    ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm"));
+    // Review MINE-6: the overlap factor is derived on discover windows of kMinedMinDiscoverRows
+    // label rows and more; review MINE-2: the confirm read is made on at least
+    // kMinedMinConfirmRows label rows.
+    ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", kMinedMinDiscoverRows));
+    ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm", kMinedMinConfirmRows));
     ATX_TRY(const auto pool, load_mine_pool(pool_manifest, *role));
     const usize label_rows = windows.discover.end - windows.discover.begin - kLabelLag;
     const usize confirm_rows = windows.confirm.end - windows.confirm.begin - kLabelLag;
@@ -362,44 +471,58 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     std::unordered_map<u64, usize> index;
     classify(stage1, 1U, trials, index);
     if (explore) classify(stage2, 2U, trials, index);
+    // The capacity check bounds this already; a breach would make the hurdle anti-conservative.
+    if (trials.size() > cfg.budget)
+      return co::Err(fail(co::ErrorCode::Internal,
+                          "the search evaluated " + std::to_string(trials.size()) +
+                              " distinct trials, above --budget " + std::to_string(cfg.budget)));
 
-    // The scoring recipe every trial of this campaign is an expression under.
+    // The campaign's identity: the scoring recipe every trial is an expression under. Review
+    // MINE-3: it binds the confirm window with the role, the fields manifest (which pins every
+    // field payload), the library (VM and IC sources) and the pool, so each trial's registry
+    // identity is its expression under one confirm read.
     Json payloads = Json::object();
     for (const auto &field : role->extras()) payloads[field.name] = field.sha256;
-    const Json recipe{
-        {"schema", std::string(kTrialRecipe)},
-        {"role_manifest_sha256", role->data().manifest_sha256},
-        {"fields_manifest_sha256", role->fields_sha256()},
-        {"field_payload_sha256", payloads},
-        {"pool_sha256", pool.sha256},
-        {"window_id", std::string(dt::kResearchWindowId)},
-        {"discover", window_json(windows.discover, label_rows)},
-        {"ic", "research_window_ic_config (EquivalenceV3, horizons 5/21/63, delay 1, maturity at "
-               "the window end), ResearchIcOptions{3, true, 1}, h 21 rank IC; decision "
-               "membership and research return guard"},
-        {"marginal", "combine::marginal_rank_ic_day on the pool regressors, "
-                     "summarize_rank_ic Bartlett lag 21"},
-        {"min_names", cfg.min_names},
-        {"min_dates", cfg.min_dates}};
+    const Json recipe = recipe_json(cfg, *role, pool, windows, label_rows, confirm_rows);
     ATX_TRY(const std::string recipe_sha, co::sha256_hex(recipe.dump()));
+    // A second confirm read on the same identity is refused, not skipped: no trial of this
+    // campaign may be in the registry under this recipe already.
+    ATX_TRY(const usize held, registered_trials(cfg, trials, recipe_sha, label_rows, anchor));
+    if (held != 0U)
+      return co::Err(fail(co::ErrorCode::AlreadyExists,
+                          std::to_string(held) + " of the campaign's trials are registered already "
+                          "under its recipe " + recipe_sha.substr(0, 16) + " (role, fields, "
+                          "library, pool, discover and confirm windows): a second confirm read on "
+                          "the same identity is refused"));
 
     // Registry: every distinct expression once; the chain head leaves the log at once.
     const fs::path out_dir(cfg.output_directory);
     if (!fs::create_directory(out_dir, ec))
       return co::Err(fail(co::ErrorCode::AlreadyExists,
                           "output directory must be new; " + ec.message()));
-    ATX_TRY(auto registry, open_registry(cfg, label_rows, anchor));
-    ATX_TRY(const usize inserted,
-            record_trials(registry, trials, recipe_sha, cfg.campaign_id, label_rows));
-    const ev::TrialChainHead head = registry.chain_head();
-    const u64 n_raw = registry.summary().n_raw;
-    ATX_TRY_VOID(ev::write_chain_head(out_dir / "registry_head.txt", head));
+    ATX_TRY(const RegistryReceipt registry,
+            record_campaign(cfg, trials, recipe_sha, label_rows, anchor));
+    // Ruling E-33a: a campaign's line counts the records it added; one that added none is a
+    // re-run of a recorded campaign, which has no line to write and is refused before any read
+    // of the confirm window. The identity check above refuses it first; this is the backstop
+    // against another writer registering the same trials in between.
+    if (registry.inserted == 0U) {
+      static_cast<void>(fs::remove(out_dir, ec)); // empty: nothing was written into it
+      return co::Err(fail(co::ErrorCode::AlreadyExists,
+                          "the campaign added no record to " + cfg.registry_path +
+                              ": every trial is registered already (a re-run of a recorded "
+                              "campaign)"));
+    }
+    const u64 n_raw = registry.n_raw;
+    ATX_TRY_VOID(ev::write_chain_head(out_dir / "registry_head.txt", registry.chain));
     const Counts counts = count_statuses(trials);
-    progress << "mine: registry records=" << head.records << " n_raw=" << n_raw
-             << " new=" << inserted << '\n' << std::flush;
+    progress << "mine: registry records=" << registry.chain.records << " n_raw=" << n_raw
+             << " new=" << registry.inserted << " sha256=" << registry.sha256 << '\n'
+             << std::flush;
 
-    // mined-v1 at the Bonferroni value of the registry's trial count.
-    const f64 hurdle = mined_hurdle(n_raw);
+    // mined-v1 at the Bonferroni value of the campaign's budget (Ruling E-32a: never the realised
+    // count, never the registry's), read on f2 / kMinedOverlapFactor (review MINE-6).
+    const f64 hurdle = mined_hurdle(cfg.budget);
     PromotionContext context;
     context.role = role.get();
     context.pool = &pool;
@@ -414,7 +537,6 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     const Json members = members_json(trials, promotions);
 
     // Outputs.
-    const std::string head_hex = hex16(head.head);
     const Json anchor_json = anchor ? Json{{"records", anchor->records},
                                            {"head", hex16(anchor->head)}}
                                     : Json(nullptr);
@@ -434,6 +556,9 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"seed", cfg.seed},
         {"workers", cfg.workers},
         {"templates", templates.size()},
+        {"capacity", mine_trial_capacity(cfg)},
+        {"max_program_slots", kMineMaxProgramSlots},
+        {"required_bytes", required},
         {"stage1", stage_json(stage1)},
         {"stage2", explore ? stage_json(stage2) : Json(nullptr)},
         {"stage2_config", {{"seeds", cfg.stage2_seeds},
@@ -445,12 +570,14 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
         {"status", "complete"},
         {"campaign_id", cfg.campaign_id},
         {"rule", std::string(kMinedRule)},
+        {"budget", cfg.budget},
         {"research_window", {{"id", std::string(dt::kResearchWindowId)},
                              {"seal_begin", std::string(dt::kSealBeginDate)}}},
         {"inputs", inputs_json},
         {"windows", {{"discover", window_json(windows.discover, label_rows)},
                      {"confirm", window_json(windows.confirm, confirm_rows)}}},
         {"recipe_sha256", recipe_sha},
+        {"recipe", recipe},
         {"search", search_json},
         {"trials", {{"distinct", trials.size()},
                     {"evaluated", counts.evaluated},
@@ -459,14 +586,19 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                     {"failed", counts.failed}}},
         {"registry", {{"path", cfg.registry_path},
                       {"format", "V3"},
-                      {"records", head.records},
-                      {"head", head_hex},
+                      {"records", registry.chain.records},
+                      {"chain", hex16(registry.chain.head)},
+                      {"head", registry.sha256},
+                      {"bytes", registry.bytes},
                       {"n_raw", n_raw},
-                      {"new_records", inserted},
+                      {"new_records", registry.inserted},
                       {"anchor", anchor_json}}},
-        {"hurdle", {{"trials", n_raw},
+        {"hurdle", {{"budget", cfg.budget},
                     {"family_alpha", kMinedFamilyAlpha},
-                    {"t", finite_or_null(hurdle)}}},
+                    {"t", finite_or_null(hurdle)},
+                    {"overlap_factor", kMinedOverlapFactor},
+                    {"max_budget", kMinedMaxBudget},
+                    {"reads", "f2 / overlap_factor"}}},
         {"promotions", promotions_json(trials, promotions, pool)},
         {"admitted", members.size()},
         {"seconds", seconds_since(started)}};
@@ -474,30 +606,30 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                      {"campaign_id", cfg.campaign_id},
                      {"rule", std::string(kMinedRule)},
                      {"theme", std::string(kMinedTheme)},
-                     {"registry_head", head_hex},
+                     {"registry_head", registry.sha256},
                      {"members", members}};
-    // Ruling E-33: the line backtest_integrity.campaign_line builds (count 0: it adds no trial to
-    // any ledger N; registry.count = n_raw, the mined-v1 Bonferroni count, the campaign's own
-    // budget), trial_id = sha256 of the compact ["mining-campaign", head], first 16 hex digits.
-    // `research_cycle.py ledger-campaign` rebuilds it from campaign.json through campaign_line,
-    // refuses a difference, and appends it chained (prev_sha256).
-    const Json ident = Json::array({std::string(kLedgerKind), head_hex});
-    ATX_TRY(const std::string ident_sha, co::sha256_hex(ident.dump()));
-    std::string ledger_registry_path = cfg.registry_path;
-    std::replace(ledger_registry_path.begin(), ledger_registry_path.end(), '\\', '/');
-    const Json ledger{
-        {"schema", std::string(kLedgerSchema)},
-        {"kind", std::string(kLedgerKind)},
-        {"count", 0},
-        {"campaign", cfg.campaign_id},
-        {"origin", "mined"},
-        {"window_id", std::string(dt::kResearchWindowId)},
-        {"registry",
-         {{"path", ledger_registry_path}, {"chain_head", head_hex}, {"count", n_raw}}},
-        {"trial_id", ident_sha.substr(0, 16)}};
+    // Ruling E-33: the line backtest_integrity.campaign_line builds (strategy_mine_ledger.hpp;
+    // count 0: it adds no trial to any ledger N; Ruling E-33a: registry.count = the records this
+    // campaign added, registry.total = n_raw; review MINE-3: the recipe identity and the confirm
+    // window, in the trial_id). `research_cycle.py ledger-campaign` rebuilds it from campaign.json
+    // through campaign_line, checks the registry against its head and the recipe against its
+    // SHA-256, refuses a difference or a second line on the recipe, and appends it chained.
+    MineLedgerLine line;
+    line.campaign_id = cfg.campaign_id;
+    line.registry_path = cfg.registry_path;
+    line.registry_head = registry.sha256;
+    line.registry_bytes = registry.bytes;
+    line.registry_count = registry.inserted;
+    line.registry_total = n_raw;
+    line.budget = cfg.budget;
+    line.recipe_sha256 = recipe_sha;
+    line.confirm_begin = windows.confirm.begin_date;
+    line.confirm_end = windows.confirm.end_date;
+    line.window_id = std::string(dt::kResearchWindowId);
+    ATX_TRY(const std::string ledger, mine_ledger_line(line));
     ATX_TRY_VOID(write_text(out_dir / "trials.csv", trials_csv(trials)));
     ATX_TRY_VOID(write_text(out_dir / "mined_members.json", mined.dump(2) + "\n"));
-    ATX_TRY_VOID(write_text(out_dir / "ledger_line.json", ledger.dump() + "\n"));
+    ATX_TRY_VOID(write_text(out_dir / "ledger_line.json", ledger + "\n"));
     ATX_TRY_VOID(write_text(out_dir / "campaign.json", campaign.dump(2) + "\n"));
     progress << "mine: admitted=" << members.size() << " hurdle=" << hurdle << " wrote "
              << out_dir.string() << '\n' << std::flush;
@@ -534,15 +666,20 @@ constexpr const char *kUsage =
     "atx-equity-strategy-mine --role MANIFEST --role-sha256 SHA [--role-fields DIR\n"
     "    --role-fields-sha256 SHA] --fields NAME[,NAME...] --discover-begin YYYY-MM-DD\n"
     "    --discover-end YYYY-MM-DD --confirm-begin YYYY-MM-DD --confirm-end YYYY-MM-DD\n"
-    "    --registry PATH [--registry-head FILE] --campaign-id ID --output NEWDIR\n"
-    "    [--pool MANIFEST --pool-sha256 SHA] [--seed N (1)] [--workers N (1)]\n"
+    "    --registry PATH [--registry-head FILE] --campaign-id ID --output NEWDIR --budget N\n"
+    "    --pool MANIFEST --pool-sha256 SHA [--seed N (1)] [--workers N (1)]\n"
     "    [--stage2-seeds N (12)] [--stage2-population N (24)] [--stage2-generations N (4)]\n"
     "    [--race-strides S[,S] (4) | none] [--race-keep F (0.333)] [--min-names N (50)]\n"
     "    [--min-dates N (128)] [--max-promotions N (16)] [--max-memory-mib N (2048)]\n"
     "  Mines the --fields of a pinned research role (platform v8 H-3; real data only under\n"
     "  owner decision OD-7). Windows lie inside TRAIN of research-window-v2; a role with a\n"
-    "  session at or after the seal is refused. Writes NEWDIR/campaign.json, trials.csv,\n"
-    "  mined_members.json, ledger_line.json and registry_head.txt (rule mined-v1).\n";
+    "  session at or after the seal is refused. --budget N fixes the campaign's trial budget in\n"
+    "  advance (pre-registration rule 10): N covers the templates plus the stage-2 population\n"
+    "  times its generations, and the mined-v1 hurdle is the Bonferroni value at N; N is at\n"
+    "  most 1000 (Ruling PM4-13: the overlap factor is validated to that budget). --pool is\n"
+    "  required and names at least one regressor and one member (Ruling E-32a). Writes\n"
+    "  NEWDIR/campaign.json, trials.csv, mined_members.json, ledger_line.json and\n"
+    "  registry_head.txt (rule mined-v1).\n";
 } // namespace
 
 int dispatch_mine(int argc, char **argv, std::ostream &out, std::ostream &err) {
@@ -574,6 +711,7 @@ int dispatch_mine(int argc, char **argv, std::ostream &out, std::ostream &err) {
       else if (key == "--registry-head") cfg.registry_head_path = value;
       else if (key == "--campaign-id") cfg.campaign_id = value;
       else if (key == "--output") cfg.output_directory = value;
+      else if (key == "--budget") cfg.budget = parse_unsigned(key, value);
       else if (key == "--seed") cfg.seed = parse_unsigned(key, value);
       else if (key == "--workers") cfg.workers = count();
       else if (key == "--stage2-seeds") cfg.stage2_seeds = count();

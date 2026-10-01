@@ -16,10 +16,19 @@ f64 mined_hurdle(u64 trials) noexcept {
   return -atx::engine::eval::norm_ppf(kMinedFamilyAlpha / (2.0 * static_cast<f64>(trials)));
 }
 
+bool mined_confirm_defined(bool ic_defined, usize ic_dates, usize marginal_dates,
+                           usize label_rows) noexcept {
+  return ic_defined && label_rows >= kMinedMinConfirmRows && ic_dates >= kMinedMinConfirmRows &&
+         marginal_dates == label_rows;
+}
+
+f64 mined_overlap_corrected(f64 t) noexcept { return t / kMinedOverlapFactor; }
+
 std::vector<usize> mined_shortlist(std::span<const MinedRead> reads, f64 hurdle, usize cap) {
   std::vector<usize> out;
   for (usize i = 0; i < reads.size(); ++i)
-    if (std::isfinite(reads[i].f2) && reads[i].f2 >= hurdle) out.push_back(i);
+    if (std::isfinite(reads[i].f2) && mined_overlap_corrected(reads[i].f2) >= hurdle)
+      out.push_back(i);
   std::sort(out.begin(), out.end(), [&reads](usize a, usize b) {
     if (reads[a].f2 != reads[b].f2) return reads[a].f2 > reads[b].f2;
     return reads[a].canon_hash < reads[b].canon_hash;
@@ -56,15 +65,17 @@ std::vector<MinedConfirm> mined_confirm(std::span<const f64> oriented_t) {
   std::vector<f64> p(oriented_t.size());
   for (usize k = 0; k < oriented_t.size(); ++k) {
     const f64 t = oriented_t[k];
-    p[k] = std::isfinite(t) ? atx::engine::eval::norm_cdf(-t) : 1.0;
+    const f64 corrected = mined_overlap_corrected(t);
+    p[k] = std::isfinite(corrected) ? atx::engine::eval::norm_cdf(-corrected) : 1.0;
     out[k].t = t;
+    out[k].t_corrected = corrected;
     out[k].p = p[k];
   }
   const std::vector<f64> adjusted = atx::engine::eval::p_adjust_by(p);
   for (usize k = 0; k < out.size(); ++k) {
     out[k].p_by = adjusted[k];
-    out[k].confirmed = std::isfinite(out[k].t) && out[k].t >= kMinedConfirmT &&
-                       adjusted[k] <= kMinedConfirmBy;
+    out[k].confirmed = std::isfinite(out[k].t_corrected) &&
+                       out[k].t_corrected >= kMinedConfirmT && adjusted[k] <= kMinedConfirmBy;
   }
   return out;
 }

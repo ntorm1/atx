@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/unparse.hpp"
 #include "strategy_mine_detail.hpp"
 
@@ -27,6 +28,14 @@ u64 fnv1a64(std::string_view text) {
     h *= 1099511628211ULL;
   }
   return h;
+}
+
+// A trial's registry configuration: the recipe (which binds the confirm window, review MINE-3)
+// and the expression's canonical hash. Review MINE-17: not its surface form, so canonically
+// equal expressions written differently are one trial across seeds and campaigns (the DSL text
+// stays in trials.csv as metadata).
+u64 trial_config(const std::string &recipe_sha, const MinedTrial &t) {
+  return fnv1a64(std::string(kTrialRecipe) + "|" + recipe_sha + "|" + hex16(t.canon_hash));
 }
 
 const ex::ResearchIcTrial *find_read(const std::vector<ex::ResearchIcTrial> &reads, u64 hash) {
@@ -44,7 +53,9 @@ MinedTrial classify_one(const StageRun &stage, usize stage_number, const ex::Gen
   const auto listed = [&g](const std::vector<u64> &sorted) {
     return std::binary_search(sorted.begin(), sorted.end(), g.canon_hash);
   };
-  if (listed(stage.result.fidelity_rejected_hashes)) {
+  if (listed(stage.result.slot_refused_hashes)) {
+    t.reason = "slot-bound"; // failed: refused before any evaluation (review MINE-10)
+  } else if (listed(stage.result.fidelity_rejected_hashes)) {
     t.status = TrialStatus::RacingRejected;
     t.reason = "racing-rejected";
   } else if (listed(stage.result.unscored_hashes)) {
@@ -177,8 +188,7 @@ co::Result<usize> record_trials(ev::TrialRegistry &registry, std::vector<MinedTr
   std::vector<f64> pnl(rows);
   usize inserted = 0;
   for (MinedTrial &t : trials) {
-    const u64 config = fnv1a64(std::string(kTrialRecipe) + "|" + recipe_sha + "|" +
-                               hex16(t.canon_hash) + "|" + t.dsl);
+    const u64 config = trial_config(recipe_sha, t);
     if (t.status == TrialStatus::Evaluated) {
       // The oriented daily h 21 rank IC over the discover label rows, undefined days as 0.
       const std::vector<f64> &daily = t.read->daily_rank_ic;
@@ -214,6 +224,45 @@ co::Result<usize> record_trials(ev::TrialRegistry &registry, std::vector<MinedTr
     inserted += recorded.inserted ? 1U : 0U;
   }
   return co::Ok(inserted);
+}
+
+co::Result<usize> registered_trials(const MineConfig &cfg, const std::vector<MinedTrial> &trials,
+                                    const std::string &recipe_sha, usize rows,
+                                    const std::optional<ev::TrialChainHead> &anchor) {
+  if (!anchor) return co::Ok(usize{0}); // a new registry holds nothing (and is not created here)
+  ATX_TRY(const auto registry, open_registry(cfg, rows, anchor));
+  usize found = 0;
+  for (const MinedTrial &t : trials)
+    found += registry.contains(ev::trial_id(ev::TrialKind::MinerExpr, trial_config(recipe_sha, t)))
+                 ? 1U
+                 : 0U;
+  return co::Ok(found);
+}
+
+co::Result<RegistryReceipt> record_campaign(const MineConfig &cfg, std::vector<MinedTrial> &trials,
+                                            const std::string &recipe_sha, usize rows,
+                                            const std::optional<ev::TrialChainHead> &anchor) {
+  RegistryReceipt out;
+  {
+    ATX_TRY(auto registry, open_registry(cfg, rows, anchor));
+    ATX_TRY(out.inserted, record_trials(registry, trials, recipe_sha, cfg.campaign_id, rows));
+    out.chain = registry.chain_head();
+    out.n_raw = registry.summary().n_raw;
+  } // the log's handle closes here
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(cfg.registry_path, ec);
+  if (ec) return co::Err(fail(co::ErrorCode::IoError, "registry size: " + ec.message()));
+  out.bytes = static_cast<u64>(size);
+  ATX_TRY(out.sha256, co::sha256_file(cfg.registry_path));
+  // Reopened against the head just recorded: a log that another writer extended since (before
+  // or during the digest) holds more records than that head and is refused.
+  ATX_TRY(const auto reopened,
+          open_registry(cfg, rows, std::optional<ev::TrialChainHead>{out.chain}));
+  if (!(reopened.chain_head() == out.chain))
+    return co::Err(fail(co::ErrorCode::Unavailable,
+                        "the registry changed while the campaign recorded (another writer "
+                        "appended to " + cfg.registry_path + ")"));
+  return co::Ok(std::move(out));
 }
 
 std::string trials_csv(const std::vector<MinedTrial> &trials) {

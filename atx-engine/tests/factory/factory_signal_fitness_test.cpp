@@ -10,7 +10,9 @@
 //   * OpCatalogCfgTest.*        literature rows and the deny list.
 //   * ResearchIcAccessors.*     labels() are what evaluate_research_ic correlates; the
 //                               research_window_ic_config recipe.
-//   * ResearchIcFitnessTest.*   f1/f2 of a planted signal, the spanned screen, rungs, trials.
+//   * ResearchIcFitnessTest.*   f1/f2 of a planted signal, the spanned screen, rungs, trials,
+//                               f2 of a partly spanned and of a negative-IC candidate (MINE-9).
+//   * SignalFitnessPath.ProgramSlotBound*  max_program_slots (review MINE-10).
 
 #include <algorithm>
 #include <array>
@@ -28,6 +30,7 @@
 #include "atx/core/random.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
@@ -41,6 +44,7 @@
 #include "atx/engine/factory/op_catalog.hpp"
 #include "atx/engine/factory/research_ic_fitness.hpp"
 #include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/factory/search_progress.hpp"
 #include "atx/engine/factory/signal_fitness.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
@@ -366,6 +370,44 @@ TEST(SignalFitnessPath, RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors
   EXPECT_NE(r.signal_path_error.find("planted failure"), std::string::npos) << r.signal_path_error;
 }
 
+// Accepts every generation snapshot.
+class NullSink final : public ex::SearchProgressSink {
+public:
+  atx::core::Status on_generation(const ex::GenerationSnapshot &) override {
+    return atx::core::Ok();
+  }
+};
+
+// Review MINE-11: the mask and a non-default op catalogue are outside the checkpoint identity,
+// so a run that sets either refuses a progress sink on the legacy path too; without them the
+// sink is accepted as before.
+TEST(SignalFitnessPath, MaskAndCatalogueRefuseAProgressSink) {
+  const Golden g;
+  NullSink sink;
+  const auto run_with_sink = [&g, &sink](const ex::SearchConfig &cfg) {
+    ex::SearchDriver driver{g.lib, g.panel, g.policy, g.sim, golden_seeds(), {"close", "rev"}};
+    const AlphaStore pool{};
+    return driver.run(cfg, pool, &sink);
+  };
+  const std::vector<u8> mask(g.panel.cells(), 1);
+  ex::SearchConfig masked = legacy_pin_cfg(777);
+  masked.cross_section_mask = mask;
+  ex::SearchConfig catalogued = legacy_pin_cfg(777);
+  catalogued.op_catalog.literature_ops = true;
+  ex::SearchConfig denied = legacy_pin_cfg(777);
+  denied.op_catalog.deny = {"ts_mean"};
+  for (const ex::SearchConfig *cfg : {&masked, &catalogued, &denied}) {
+    const ex::SearchResult r = run_with_sink(*cfg);
+    EXPECT_TRUE(r.signal_path_invalid);
+    EXPECT_NE(r.signal_path_error.find("checkpoint identity"), std::string::npos)
+        << r.signal_path_error;
+    EXPECT_TRUE(r.all_scored.empty());
+  }
+  const ex::SearchResult plain = run_with_sink(legacy_pin_cfg(777));
+  EXPECT_FALSE(plain.signal_path_invalid) << plain.signal_path_error;
+  EXPECT_FALSE(plain.all_scored.empty());
+}
+
 // =============================================================================
 //  OpCatalogCfg.
 // =============================================================================
@@ -584,6 +626,190 @@ TEST(ResearchIcFitnessTest, CandidateSpannedByTheRegressorsIsScreened) {
   EXPECT_FALSE(fitness->bind(ex::SignalFitnessBinding{1, Planted::d + 1, Planted::n, {}}));
   const std::vector<ex::Rung> dated{ex::Rung{2, 2, 0}};
   EXPECT_FALSE(fitness->bind(ex::SignalFitnessBinding{1, Planted::d, Planted::n, dated}));
+}
+
+// Two fields f and g, both i.i.d. uniform, r(t) = .02 (f + g)(t - 2) + .01 e(t); the regressor is
+// f's centred tied rank over the members.
+struct PlantedPair {
+  static constexpr usize d = 300;
+  static constexpr usize n = 24;
+  Panel panel;
+  std::vector<f64> f;
+  std::vector<f64> g;
+  std::vector<u8> member;
+  std::vector<f64> f_rank;
+};
+
+[[nodiscard]] PlantedPair planted_pair() {
+  constexpr usize d = PlantedPair::d;
+  constexpr usize n = PlantedPair::n;
+  Lcg rng{0xFA17ULL};
+  std::vector<f64> f(d * n);
+  std::vector<f64> g(d * n);
+  for (f64 &v : f) {
+    v = rng.next();
+  }
+  for (f64 &v : g) {
+    v = rng.next();
+  }
+  std::vector<f64> close(d * n, 100.0);
+  for (usize t = 1; t < d; ++t) {
+    for (usize i = 0; i < n; ++i) {
+      const f64 driver = t >= 2 ? f[(t - 2) * n + i] + g[(t - 2) * n + i] : 0.0;
+      close[t * n + i] = close[(t - 1) * n + i] * (1.0 + 0.02 * driver + 0.01 * rng.next());
+    }
+  }
+  auto panel = Panel::create(d, n, {"close", "f", "g"}, {close, f, g}, {});
+  EXPECT_TRUE(panel.has_value());
+  std::vector<u8> member(d * n, 1);
+  std::vector<f64> ranks(d * n, kNaN);
+  std::vector<std::pair<f64, usize>> sorted;
+  for (usize t = 0; t < d; ++t) {
+    const auto status = atx::engine::combine::centred_tied_ranks(
+        std::span<const f64>{f}.subspan(t * n, n), std::span<const u8>{member}.subspan(t * n, n),
+        std::span<f64>{ranks}.subspan(t * n, n), sorted);
+    EXPECT_TRUE(status.has_value());
+  }
+  return PlantedPair{std::move(*panel), std::move(f), std::move(g), std::move(member),
+                     std::move(ranks)};
+}
+
+// Review MINE-9: f2 is the discover sign times the marginal HAC t of the candidate's residual on
+// the regressors. Against the regressor rank(f), the half-spanned f + g (sign +1; a numpy replica
+// reads raw IC t 17.7, marginal t 7.8) and the negative-IC -2 f + g (sign -1, marginal t +8.1)
+// score exactly the direct combine::marginal_rank_ic_day + summarize_rank_ic computation on the
+// IC recipe's labels: neither the raw IC t nor |marginal t| reproduces both.
+TEST(ResearchIcFitnessTest, PartlySpannedAndNegativeCandidatesScoreTheDirectMarginalT) {
+  namespace cb = atx::engine::combine;
+  constexpr usize d = PlantedPair::d;
+  constexpr usize n = PlantedPair::n;
+  const PlantedPair p = planted_pair();
+  const Library lib{};
+  const ex::ResearchIcWindow window{30, d, 10, 100, 1ULL << 26};
+  const std::vector<std::span<const f64>> regressors{p.f_rank};
+  auto fitness = ex::ResearchIcFitness::prepare(
+      ex::ResearchIcFitnessInputs{&p.panel, window, p.member, {}, regressors});
+  ASSERT_TRUE(fitness.has_value()) << fitness.error().to_string();
+  ASSERT_TRUE(fitness->bind(ex::SignalFitnessBinding{1, d, n, {}}));
+  const auto config = ex::research_window_ic_config(window.begin, window.end, window.min_names,
+                                                    window.min_dates, window.max_cache_bytes);
+  auto cache = ex::prepare_research_ic(p.panel, config, {3, true, 1}, p.member);
+  ASSERT_TRUE(cache.has_value()) << cache.error().to_string();
+  const usize rows = cache->label_rows(ex::kResearchIcHorizon);
+  const std::span<const f64> labels = cache->labels(ex::kResearchIcHorizon);
+  ASSERT_EQ(rows, d - 30U - 22U);
+  // The K6 kernel row by row on the label rows, then the Bartlett lag-21 summary.
+  const auto direct_t = [&](const std::vector<f64> &signal) {
+    std::vector<f64> rank_row(n, kNaN);
+    std::vector<f64> daily(rows, kNaN);
+    std::vector<f64> compact;
+    std::vector<std::pair<f64, usize>> sorted;
+    cb::MarginalRankIcScratch scratch;
+    for (usize row = 0; row < rows; ++row) {
+      const usize at = (cache->first_date() + row) * n;
+      EXPECT_TRUE(cb::centred_tied_ranks(std::span<const f64>{signal}.subspan(at, n),
+                                         std::span<const u8>{p.member}.subspan(at, n), rank_row,
+                                         sorted)
+                      .has_value());
+      const std::array<std::span<const f64>, 1> regressor_rows{
+          std::span<const f64>{p.f_rank}.subspan(at, n)};
+      const auto day = cb::marginal_rank_ic_day(rank_row, regressor_rows,
+                                                labels.subspan(row * n, n), window.min_names,
+                                                scratch);
+      EXPECT_TRUE(day.has_value());
+      if (day.has_value()) {
+        daily[row] = day->marginal_ic;
+      }
+    }
+    return cb::summarize_rank_ic(daily, ex::kResearchIcHacLag, compact).hac_t;
+  };
+  struct Case {
+    f64 f_weight;
+    f64 g_weight;
+    int sign;
+    u64 hash;
+  };
+  for (const Case c : {Case{1.0, 1.0, 1, 21}, Case{-2.0, 1.0, -1, 22}}) {
+    std::vector<f64> signal(d * n);
+    for (usize k = 0; k < signal.size(); ++k) {
+      signal[k] = c.f_weight * p.f[k] + c.g_weight * p.g[k];
+    }
+    // The genome only names the trial; the fitness scores `signal`.
+    auto scored = fitness->score(genome_of("f", lib, c.hash), signal, ex::SignalLevel{}, 0);
+    ASSERT_TRUE(scored.has_value()) << scored.error().to_string();
+    EXPECT_FALSE(scored->rejected) << c.hash;
+    const auto trials = fitness->take_trials();
+    ASSERT_EQ(trials.size(), 1U);
+    const ex::ResearchIcRead &read = trials.front().read;
+    EXPECT_EQ(read.sign, c.sign) << c.hash;
+    EXPECT_EQ(read.spanned_dates, 0U) << c.hash;
+    const f64 direct = direct_t(signal);
+    EXPECT_GT(direct, 3.0) << c.hash; // g's part survives the projection on rank(f)
+    EXPECT_NEAR(read.marginal_t, direct, 1e-12) << c.hash;
+    EXPECT_NEAR(scored->objectives[1], static_cast<f64>(c.sign) * direct, 1e-12) << c.hash;
+    EXPECT_NEAR(ex::research_ic_f2(read), static_cast<f64>(c.sign) * direct, 1e-12) << c.hash;
+  }
+}
+
+// Review MINE-10: SearchConfig::max_program_slots refuses, before the race and the full pass, a
+// candidate whose compiled program needs more VM slots than the bound: the functor never sees
+// it, it stays a trial (all_scored) listed in slot_refused_hashes and unscored_hashes, and every
+// other candidate is scored as before. The bound needs the signal-fitness path.
+TEST(SignalFitnessPath, ProgramSlotBoundRefusesLargerProgramsBeforeEvaluation) {
+  const Golden g;
+  std::vector<std::string> seeds = cs_seeds();
+  seeds.emplace_back("rank(max(close, rev))"); // two loads live under one op: more slots
+  // The bound: the fewest slots any seed's program needs.
+  u32 bound = std::numeric_limits<u32>::max();
+  for (const std::string &seed : seeds) {
+    const ex::Genome genome = genome_of(seed, g.lib, 0);
+    const auto program = atx::engine::alpha::compile(genome.ast, genome.analysis);
+    ASSERT_TRUE(program.has_value()) << seed;
+    bound = std::min(bound, program->num_slots);
+  }
+  RecordingFitness fitness;
+  ex::SearchConfig cfg = one_generation_cfg(seeds.size());
+  cfg.signal_fitness = &fitness;
+  cfg.max_program_slots = bound;
+  cfg.fidelity.enabled = true;
+  const std::vector<u32> strides{2};
+  const auto rungs = ex::instrument_rungs(strides);
+  ASSERT_TRUE(rungs.has_value());
+  cfg.fidelity.rungs = *rungs;
+  const ex::SearchResult r = g.run(cfg, seeds);
+  ASSERT_FALSE(r.signal_path_invalid) << r.signal_path_error;
+  std::vector<u64> larger;
+  std::vector<u64> others;
+  for (const ex::Genome &genome : r.all_scored) {
+    const auto program = atx::engine::alpha::compile(genome.ast, genome.analysis);
+    ASSERT_TRUE(program.has_value());
+    (program->num_slots > bound ? larger : others).push_back(genome.canon_hash);
+  }
+  std::sort(larger.begin(), larger.end());
+  std::sort(others.begin(), others.end());
+  ASSERT_FALSE(larger.empty());
+  ASSERT_FALSE(others.empty());
+  EXPECT_EQ(r.slot_refused_hashes, larger);
+  for (const u64 hash : larger) {
+    EXPECT_TRUE(std::binary_search(r.unscored_hashes.begin(), r.unscored_hashes.end(), hash));
+    EXPECT_FALSE(std::binary_search(r.fidelity_rejected_hashes.begin(),
+                                    r.fidelity_rejected_hashes.end(), hash));
+  }
+  std::vector<u64> seen;
+  for (const auto &call : fitness.calls()) {
+    seen.push_back(call.hash);
+  }
+  std::sort(seen.begin(), seen.end());
+  seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+  EXPECT_EQ(seen, others); // raced or scored: every candidate within the bound, no other
+  // Without a signal functor the bound is refused before any candidate.
+  ex::SearchConfig legacy = legacy_pin_cfg(777);
+  legacy.max_program_slots = bound;
+  const ex::SearchResult refused = g.run(legacy);
+  EXPECT_TRUE(refused.signal_path_invalid);
+  EXPECT_NE(refused.signal_path_error.find("max_program_slots"), std::string::npos)
+      << refused.signal_path_error;
+  EXPECT_TRUE(refused.all_scored.empty());
 }
 
 } // namespace atxtest_factory_signal_fitness

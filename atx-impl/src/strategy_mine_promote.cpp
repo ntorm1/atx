@@ -62,11 +62,16 @@ co::Result<std::vector<MinedRho>> rho_check(const PromotionContext &context,
   return co::Ok(mined_rho_select(rho, members.size(), signals.size()));
 }
 
+struct ConfirmReads {
+  std::vector<ex::ResearchIcRead> reads;
+  usize label_rows{}; // the confirm window's mature h 21 label rows
+};
+
 // One confirm read per candidate `which[j]`: the IC runner's recipe and the marginal term on the
 // confirm window, against the same regressors.
-co::Result<std::vector<ex::ResearchIcRead>>
-confirm_reads(const PromotionContext &context, const std::vector<std::vector<f64>> &signals,
-              const std::vector<usize> &which) {
+co::Result<ConfirmReads> confirm_reads(const PromotionContext &context,
+                                       const std::vector<std::vector<f64>> &signals,
+                                       const std::vector<usize> &which) {
   const MineWindow &confirm = *context.confirm;
   const ex::ResearchIcWindow window{confirm.begin, confirm.end, context.min_names,
                                     context.min_dates, context.max_cache_bytes};
@@ -76,10 +81,11 @@ confirm_reads(const PromotionContext &context, const std::vector<std::vector<f64
   ATX_TRY(auto scorer, ex::ResearchIcScorer::prepare(role.panel(), window, role.member(),
                                                      role.guard(), std::move(regressors), true));
   ATX_TRY_VOID(scorer.bind(1U));
-  std::vector<ex::ResearchIcRead> out;
+  ConfirmReads out;
+  out.label_rows = scorer.label_rows();
   for (const usize k : which) {
     ATX_TRY(const auto read, scorer.read(signals[k], true, 0U));
-    out.push_back(read);
+    out.reads.push_back(read);
   }
   return co::Ok(std::move(out));
 }
@@ -112,17 +118,24 @@ co::Result<std::vector<Promotion>> promote(const std::vector<MinedTrial> &trials
   }
   if (passed.empty()) return co::Ok(std::move(out));
   ATX_TRY(const auto confirms, confirm_reads(context, signals, passed));
-  // Sign frozen from the discover window.
+  // Sign frozen from the discover window; a read short of its full window (review MINE-2) has no
+  // t and is unconfirmed.
   std::vector<f64> oriented;
   for (usize j = 0; j < passed.size(); ++j) {
-    const int sign = trials[out[passed[j]].trial].read->read.sign;
-    oriented.push_back(static_cast<f64>(sign) * confirms[j].marginal_t);
+    Promotion &p = out[passed[j]];
+    const ex::ResearchIcRead &c = confirms.reads[j];
+    p.confirm_rows = confirms.label_rows;
+    p.confirm_defined =
+        mined_confirm_defined(c.ic_defined, c.ic_dates, c.marginal_dates, confirms.label_rows);
+    const int sign = trials[p.trial].read->read.sign;
+    oriented.push_back(p.confirm_defined ? static_cast<f64>(sign) * c.marginal_t
+                                         : std::numeric_limits<f64>::quiet_NaN());
   }
   const std::vector<MinedConfirm> decisions = mined_confirm(oriented);
   for (usize j = 0; j < passed.size(); ++j) {
     Promotion &p = out[passed[j]];
     p.confirm_read = true;
-    p.confirm = confirms[j];
+    p.confirm = confirms.reads[j];
     p.decision = decisions[j];
     p.admitted = decisions[j].confirmed;
   }
@@ -145,10 +158,17 @@ Json promotions_json(const std::vector<MinedTrial> &trials,
     out.push_back(Json{{"canon_hash", hex16(t.canon_hash)}, {"dsl", t.dsl}, {"sign", r.sign},
                        {"f1", finite_or_null(ex::research_ic_f1(r))},
                        {"f2", finite_or_null(ex::research_ic_f2(r))},
+                       {"f2_corrected",
+                        finite_or_null(mined_overlap_corrected(ex::research_ic_f2(r)))},
                        {"max_abs_rho", finite_or_null(p.rho.max_abs)}, {"max_rho_row", against},
                        {"rho_pass", p.rho.pass}, {"confirm_read", p.confirm_read},
+                       {"confirm_defined", p.confirm_defined},
+                       {"confirm_rows", p.confirm_rows},
+                       {"confirm_ic_dates", p.confirm.ic_dates},
+                       {"confirm_marginal_dates", p.confirm.marginal_dates},
                        {"confirm_ic_t", finite_or_null(confirm_ic_t)},
                        {"confirm_marginal_t", finite_or_null(p.decision.t)},
+                       {"confirm_t_corrected", finite_or_null(p.decision.t_corrected)},
                        {"p", finite_or_null(p.decision.p)},
                        {"p_by", finite_or_null(p.decision.p_by)},
                        {"confirmed", p.decision.confirmed}, {"admitted", p.admitted}});
@@ -167,7 +187,8 @@ Json members_json(const std::vector<MinedTrial> &trials,
                        {"sign", t.read->read.sign}, {"theme", theme}, {"family", theme},
                        {"origin", "mined"}, {"canon_hash", hex16(t.canon_hash)},
                        {"discover_f2", finite_or_null(ex::research_ic_f2(t.read->read))},
-                       {"confirm_marginal_t", finite_or_null(p.decision.t)}});
+                       {"confirm_marginal_t", finite_or_null(p.decision.t)},
+                       {"confirm_t_corrected", finite_or_null(p.decision.t_corrected)}});
   }
   return out;
 }

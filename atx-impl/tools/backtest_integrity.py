@@ -823,27 +823,98 @@ def is_event(rec: dict) -> bool:
     return rec.get("kind") in EVENT_KINDS
 
 
+def positive_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+MINED_RULE = "mined-v1"                   # the rule of every mining campaign (atx-equity-strategy-mine)
+MINED_MAX_BUDGET = 1000                   # Ruling PM4-13: strategy_mine_rule.hpp kMinedMaxBudget
+
+
+def sha256_hex_digest(value) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= set("0123456789abcdef")
+
+
+def campaign_trial_id(recipe_sha256: str, registry_head: str) -> str:
+    """A mining campaign line's identity (review MINE-3): its trial recipe (which binds the confirm window) and its
+    registry chain head; the first 16 hex digits of SHA-256 of the compact ["mining-campaign", recipe, head]."""
+    ident = json.dumps([MINING_CAMPAIGN, recipe_sha256, registry_head], separators=(",", ":"))
+    return hashlib.sha256(ident.encode()).hexdigest()[:16]
+
+
+def iso_window(confirm) -> bool:
+    try:
+        return isinstance(confirm, dict) and set(confirm) == {"begin", "end"} and \
+            dt.date.fromisoformat(confirm["begin"]) < dt.date.fromisoformat(confirm["end"])
+    except (TypeError, ValueError):
+        return False
+
+
 def campaign_line(campaign: str, registry_path: str, registry_head: str, registry_count: int, *,
-                  research_window_id: str | None = None, date: str | None = None, note: str | None = None) -> dict:
+                  registry_total: int, registry_bytes: int, budget: int, recipe_sha256: str, confirm: dict,
+                  rule: str = MINED_RULE, research_window_id: str | None = None, date: str | None = None,
+                  note: str | None = None) -> dict:
     """A mining campaign's ledger line (Ruling E-33; plan: the campaign registry's chain head copied to the cycle
     ledger). kind mining-campaign, origin mined, count 0: it adds no trial to any N of the ledger, the construction N
-    included (a mined member that enters a construction cell is counted by that cell's line). It carries its own
-    registry count, ``registry.count``: the candidates the campaign tried, its own budget (pre-registration rule 10,
-    the mined-v1 Bonferroni count). Its trial_id is (mining-campaign, registry chain head)."""
+    included (a mined member that enters a construction cell is counted by that cell's line). Ruling E-33a: it carries
+    the records this campaign added to its registry, ``registry.count`` (its own trials, pre-registration rule 10),
+    and the registry's cumulative size, ``registry.total``, so campaigns sharing a registry never count each other's
+    trials (campaign_registry_count sums the counts). Review MINE-1: ``registry.chain_head`` is the SHA-256 of the
+    registry log's first ``registry.bytes`` bytes (the append-only log as the campaign left it;
+    atx-equity-strategy-mine writes it, and its C++ twin strategy_mine_ledger.cpp writes this line byte for byte).
+    Ruling E-32a (review MINE-4): ``budget`` is the campaign's --budget, fixed before its search (pre-registration
+    rule 10; the mined-v1 hurdle is computed from it), at least its registry count and, Ruling PM4-13, at most
+    MINED_MAX_BUDGET (the budget the overlap factor is validated to). Review MINE-3: ``recipe_sha256``
+    is the campaign's trial recipe, which binds its ``confirm`` window {begin, end} with the role, fields, library and
+    pool digests; the trial_id is (mining-campaign, recipe, chain head) and check_line refuses a second campaign line
+    on the same recipe (a second confirm read on the same identity) or the same campaign name."""
     if not (isinstance(campaign, str) and campaign.strip()):
         raise ValueError("ledger: a mining campaign needs a name")
-    if not (isinstance(registry_head, str) and len(registry_head) == 64 and set(registry_head) <= set("0123456789abcdef")):
+    if not sha256_hex_digest(registry_head):
         raise ValueError("ledger: a mining campaign names its registry's chain head (a SHA-256 hex digest)")
-    if not isinstance(registry_count, int) or isinstance(registry_count, bool) or registry_count < 1:
+    if not positive_int(registry_count):
         raise ValueError("ledger: a mining campaign's registry count is a positive integer")
+    if not positive_int(registry_total) or registry_total < registry_count:
+        raise ValueError("ledger: a mining campaign's registry total is at least its count (Ruling E-33a)")
+    if not positive_int(budget) or budget < registry_count:
+        raise ValueError("ledger: a mining campaign's budget is fixed in advance and covers its registry count "
+                         "(pre-registration rule 10)")
+    if budget > MINED_MAX_BUDGET:
+        raise ValueError(f"ledger: a mining campaign's budget is at most {MINED_MAX_BUDGET} (kMinedMaxBudget, Ruling "
+                         "PM4-13: the overlap factor is validated to that budget only)")
+    if not positive_int(registry_bytes):
+        raise ValueError("ledger: a mining campaign's registry byte count is a positive integer")
+    if not sha256_hex_digest(recipe_sha256):
+        raise ValueError("ledger: a mining campaign names its trial recipe (a SHA-256 hex digest)")
+    if not iso_window(confirm):
+        raise ValueError("ledger: a mining campaign names its confirm window (YYYY-MM-DD dates, begin before end)")
+    if rule != MINED_RULE:
+        raise ValueError(f"ledger: a mining campaign's rule is {MINED_RULE}")
     rec = {"schema": LEDGER_SCHEMA, "kind": MINING_CAMPAIGN, "count": 0, "campaign": campaign, "origin": "mined",
+           "rule": rule, "budget": budget, "recipe_sha256": recipe_sha256,
+           "confirm": {"begin": confirm["begin"], "end": confirm["end"]},
            "registry": {"path": str(registry_path).replace("\\", "/"), "chain_head": registry_head,
-                        "count": registry_count}}
+                        "bytes": registry_bytes, "count": registry_count, "total": registry_total}}
     rec.update(ledger_record_fields(note=note, research_window_id=research_window_id))
     if date is not None:
         rec["date"] = date
-    rec["trial_id"] = trial_id(MINING_CAMPAIGN, registry_head)
+    rec["trial_id"] = campaign_trial_id(recipe_sha256, registry_head)
     return rec
+
+
+def check_campaign(before: dict, rec: dict) -> None:
+    """Review MINE-3: a mining campaign line is appended once. A second line on its trial_id, on its recipe (the
+    same identity: role, fields, library, pool, discover and confirm windows) or under its campaign name is a second
+    confirm read on that identity, or a re-run under a ledgered name, and is refused, not skipped."""
+    for old in before.values():
+        if not is_campaign(old):
+            continue
+        same = [k for k, v in (("trial_id", rec.get("trial_id")), ("recipe_sha256", rec.get("recipe_sha256")),
+                               ("campaign", rec.get("campaign"))) if v is not None and old.get(k) == v]
+        if same:
+            raise ValueError(f"ledger: mining campaign {rec.get('campaign')!r} shares {', '.join(same)} with the "
+                             f"ledgered campaign {old.get('campaign')!r} (trial {old.get('trial_id')}): a second "
+                             "confirm read on the same identity is refused (mined-v1: one confirm read)")
 
 
 def is_campaign(rec: dict) -> bool:
@@ -852,7 +923,8 @@ def is_campaign(rec: dict) -> bool:
 
 
 def campaign_registry_count(records: list[dict]) -> int:
-    """The registry counts of the ledger's mining campaign lines, summed (never part of N)."""
+    """The registry counts of the ledger's mining campaign lines, summed (never part of N). Ruling E-33a: each count
+    is the records its campaign added, so a registry shared by campaigns is counted once."""
     return sum(int((r.get("registry") or {}).get("count", 0)) for r in records if is_campaign(r))
 
 
@@ -861,7 +933,10 @@ def check_line(before: dict, rec: dict) -> bool:
     cannot be appended as asked. Review C-3: a line whose trial_id is ledgered already is skipped only when it asks for
     nothing the ledgered line lacks; a defect or re-run flag that would be dropped is refused, and so is a second
     defect line of a cell. A defect line must name a ledgered cell line that is not invalid yet, or one ledgered invalid
-    at once whose ruling it brings (review F-1: a re-run needs the defect's ruling id)."""
+    at once whose ruling it brings (review F-1: a re-run needs the defect's ruling id). A mining campaign line is never
+    skipped: a second one on the same identity is refused (check_campaign, review MINE-3)."""
+    if is_campaign(rec):
+        check_campaign(before, rec)
     tid = rec["trial_id"]
     old = before.get(tid)
     if old is not None:

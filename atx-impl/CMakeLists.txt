@@ -25,6 +25,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     # platform v8 H-3: the shared research-role loader and the mining verb (mined-v1)
     src/strategy_research_role.cpp
     src/strategy_mine.cpp
+    src/strategy_mine_ledger.cpp
     src/strategy_mine_pool.cpp
     src/strategy_mine_promote.cpp
     src/strategy_mine_rule.cpp

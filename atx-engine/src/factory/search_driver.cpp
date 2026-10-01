@@ -68,7 +68,8 @@ void set_parsimony(CachedScore &score, const Genome &g) {
 // ---- platform v8 H-3: cross-section mask and signal-fitness path ---------------------------
 
 // Why the v8 H-3 members of `cfg` cannot run; empty when accepted. With the defaults (no mask,
-// no functor) this returns after two emptiness checks, so the legacy path is untouched.
+// default catalogue, no functor, no slot bound) this returns after four checks, so the legacy
+// path is untouched.
 [[nodiscard]] std::string signal_path_refusal(const SearchConfig &cfg, const alpha::Panel &panel,
                                               bool weak_panel, const combine::AlphaStore &pool,
                                               bool checkpointing, bool injected_ic_cache,
@@ -82,6 +83,16 @@ void set_parsimony(CachedScore &score, const Genome &g) {
     if (weak_panel) {
       return "cross_section_mask has the search panel's geometry; a weak panel would run unmasked";
     }
+  }
+  // Review MINE-11: neither the mask nor the op catalogue is in the checkpoint identity, so a run
+  // that sets either takes no progress sink and no resume, on any fitness path.
+  const bool catalogue = cfg.op_catalog.literature_ops || !cfg.op_catalog.deny.empty();
+  if ((!mask.empty() || catalogue) && checkpointing) {
+    return "cross_section_mask and op_catalog are outside the checkpoint identity: no progress "
+           "sink and no resume";
+  }
+  if (cfg.max_program_slots != 0U && cfg.signal_fitness == nullptr) {
+    return "max_program_slots bounds the signal-fitness path only";
   }
   if (cfg.signal_fitness == nullptr) {
     return {};
@@ -1144,6 +1155,49 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   gen_fit.capacity_objective = cfg.capacity_objective;
   gen_fit.turnover_objective = cfg.turnover_objective;
 
+  // Drops every fresh candidate whose canonical hash is in `dropped` (no full pass, no digest
+  // fold) and re-plans the LPT dispatch over the kept ones, in canonical order.
+  const auto drop_fresh = [&](const std::unordered_set<atx::u64> &dropped) {
+    std::vector<const Genome *> kept;
+    kept.reserve(fresh.size());
+    std::vector<atx::f64> kept_cost;
+    kept_cost.reserve(fresh.size());
+    for (const Genome *g : fresh) {
+      if (dropped.find(g->canon_hash) == dropped.end()) {
+        kept.push_back(g);
+        kept_cost.push_back(static_cast<atx::f64>(g->ast.nodes().size()));
+      }
+    }
+    fresh = std::move(kept);
+    n_fresh = fresh.size();
+    digest_slot.assign(n_fresh, atx::u64{0});
+    compiled.assign(n_fresh, std::uint8_t{0});
+    order_fresh = lpt.dispatch_order(kept_cost);
+  };
+
+  // v8 review MINE-10: the program slot bound (signal-fitness path only; 0, the default, skips
+  // this block). A representative whose program needs more VM slots than the bound is refused
+  // before the race and the full pass: it keeps the unscored sentinel in score_slot, so the
+  // merge below still files it as a trial.
+  std::unordered_set<atx::u64> slot_refused;
+  if (cfg.max_program_slots != 0U) {
+    std::vector<atx::u8> over(n_to_score, atx::u8{0});
+    det_pool.parallel_for(n_to_score, [&](atx::usize j, atx::usize) {
+      const auto prog = alpha::compile(to_score[j]->ast, to_score[j]->analysis);
+      over[j] = (prog.has_value() && prog->num_slots > cfg.max_program_slots) ? atx::u8{1}
+                                                                               : atx::u8{0};
+    });
+    for (atx::usize j = 0; j < n_to_score; ++j) {
+      if (over[j] != atx::u8{0}) {
+        slot_refused.insert(to_score[j]->canon_hash);
+        res.slot_refused_hashes.push_back(to_score[j]->canon_hash);
+      }
+    }
+    if (!slot_refused.empty()) {
+      drop_fresh(slot_refused);
+    }
+  }
+
   // IC must precede even the low-rung backtests. With both flags on, evaluate
   // distinct representatives once for the IC decision, retain only their small
   // decisions/digests, then race survivors. A surviving candidate may evaluate
@@ -1197,8 +1251,21 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
       race_candidates = &ic_survivors;
     }
+    std::vector<const Genome *> slot_survivors; // v8 MINE-10: refused programs never race
+    if (!slot_refused.empty()) {
+      slot_survivors.reserve(race_candidates->size());
+      for (const Genome *g : *race_candidates) {
+        if (slot_refused.find(g->canon_hash) == slot_refused.end()) {
+          slot_survivors.push_back(g);
+        }
+      }
+      race_candidates = &slot_survivors;
+    }
     const std::vector<atx::u64> rejected =
         fidelity_reject(*race_candidates, cfg, gen_fit, det_pool, res);
+    if (res.signal_path_invalid) {
+      return {}; // review MINE-12: a rung could not be masked; nothing from this generation
+    }
     // v8 H-3: every racing rejection's identity (sorted at the merge below).
     res.fidelity_rejected_hashes.insert(res.fidelity_rejected_hashes.end(), rejected.begin(),
                                         rejected.end());
@@ -1209,21 +1276,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
           score_slot[j] = rejected_score();
         }
       }
-      std::vector<const Genome *> kept;
-      kept.reserve(fresh.size());
-      std::vector<atx::f64> kept_cost;
-      kept_cost.reserve(fresh.size());
-      for (const Genome *g : fresh) {
-        if (rej.find(g->canon_hash) == rej.end()) {
-          kept.push_back(g);
-          kept_cost.push_back(static_cast<atx::f64>(g->ast.nodes().size()));
-        }
-      }
-      fresh = std::move(kept);
-      n_fresh = fresh.size();
-      digest_slot.assign(n_fresh, atx::u64{0});
-      compiled.assign(n_fresh, std::uint8_t{0});
-      order_fresh = lpt.dispatch_order(kept_cost);
+      drop_fresh(rej);
     }
   }
 
@@ -1454,6 +1507,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       res.ic_rejected_hashes.end());
   // v8 H-3 identity lists (empty on the legacy path except the racing rejections).
   std::sort(res.unscored_hashes.begin(), res.unscored_hashes.end());
+  std::sort(res.slot_refused_hashes.begin(), res.slot_refused_hashes.end());
   std::sort(res.fidelity_rejected_hashes.begin(), res.fidelity_rejected_hashes.end());
   res.fidelity_rejected_hashes.erase(
       std::unique(res.fidelity_rejected_hashes.begin(), res.fidelity_rejected_hashes.end()),
@@ -2284,7 +2338,11 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
       rung_engines[r].push_back(std::make_unique<alpha::Engine>(*rp[r]));
       // v8 H-3: the run's eligibility, strided like the rung panel (no-op without a mask).
       if (!apply_mask(*rung_engines[r].back(), cfg.cross_section_mask, panel_, fc.rungs[r])) {
-        return {}; // fail-open like an unbuildable sub-panel (the mask was validated in run)
+        // Review MINE-12: never race (or fully score) unmasked. run() validated the mask, so
+        // this is unreachable; evaluate_generation stops the run on the flag.
+        res.signal_path_invalid = true;
+        res.signal_path_error = "racing rung: the cross_section_mask could not be applied";
+        return {};
       }
     }
   }

@@ -10,7 +10,8 @@
 // Payloads are date-major little-endian f64 beside the manifest, NaN where undefined (inf is
 // refused). Regressors enter the marginal term as given (the book composite, theme composites;
 // at most 11); members are the book's signals, ranked over the decision members for the
-// mined-v1 rho check (at most 64). An empty pool (no --pool) has neither.
+// mined-v1 rho check (at most 64). An empty path reads as the empty pool (neither); the mining
+// verb refuses it, and a manifest without a regressor or a member (Ruling E-32a, review MINE-7).
 #include <string>
 #include <vector>
 

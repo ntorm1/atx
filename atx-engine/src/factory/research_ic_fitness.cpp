@@ -125,6 +125,7 @@ atx::core::Result<ResearchIcRead> ResearchIcScorer::read(std::span<const atx::f6
   out.reason = result.screen.reason;
   const IcScreenEstimate &rank = result.screen.horizons[kResearchIcHorizon].rank;
   out.ic_defined = rank.defined;
+  out.ic_dates = rank.valid_dates;
   if (rank.defined) {
     out.ic_mean = rank.mean;
     out.ic_se = rank.standard_error;

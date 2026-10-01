@@ -59,7 +59,8 @@ struct MinedTrial {
   u64 canon_hash{};
   usize stage{}; // the stage that first saw it (1 or 2)
   TrialStatus status{TrialStatus::Failed};
-  std::string reason; // screen name, racing-rejected, unscored, degenerate-series (empty: none)
+  // screen name, racing-rejected, unscored, slot-bound, degenerate-series (empty: none)
+  std::string reason;
   std::string dsl;
   const ex::Genome *genome{};
   const ex::ResearchIcTrial *read{}; // the full-pass read (evaluated or screened), else null
@@ -78,12 +79,37 @@ void classify(const StageRun &stage, usize stage_number, std::vector<MinedTrial>
 [[nodiscard]] co::Result<ev::TrialRegistry>
 open_registry(const MineConfig &cfg, usize pnl_len,
               const std::optional<ev::TrialChainHead> &anchor);
+// How many of `trials` the registry already holds under `recipe_sha` (0 for a new registry,
+// which is not created). Review MINE-3: the recipe binds the confirm window, so a held trial is
+// an expression whose confirm window was read already under the same identity.
+[[nodiscard]] co::Result<usize> registered_trials(const MineConfig &cfg,
+                                                  const std::vector<MinedTrial> &trials,
+                                                  const std::string &recipe_sha, usize rows,
+                                                  const std::optional<ev::TrialChainHead> &anchor);
 // Records every trial once, in order; returns how many records were new. An evaluated trial
 // whose oriented daily IC is degenerate becomes screen-rejected.
 [[nodiscard]] co::Result<usize> record_trials(ev::TrialRegistry &registry,
                                               std::vector<MinedTrial> &trials,
                                               const std::string &recipe_sha,
                                               const std::string &campaign_id, usize rows);
+// What the campaign left in its registry (review MINE-1). `sha256` is the SHA-256 of the log's
+// first `bytes` bytes, the whole append-only log after this campaign's records: the ledger's
+// chain head. `chain` is the registry's own tamper-evident head (the --registry-head anchor).
+struct RegistryReceipt {
+  ev::TrialChainHead chain{};
+  u64 n_raw{};
+  usize inserted{};
+  std::string sha256;
+  u64 bytes{};
+};
+// Opens the registry (against `anchor` when it exists), records the trials (record_trials),
+// closes it, digests the log and reopens it against the new chain head: Err when the log no
+// longer ends at that head (another writer appended), since the digest would not be this
+// campaign's.
+[[nodiscard]] co::Result<RegistryReceipt>
+record_campaign(const MineConfig &cfg, std::vector<MinedTrial> &trials,
+                const std::string &recipe_sha, usize rows,
+                const std::optional<ev::TrialChainHead> &anchor);
 [[nodiscard]] std::string trials_csv(const std::vector<MinedTrial> &trials);
 
 // ---- strategy_mine_promote.cpp -----------------------------------------------------------------
@@ -91,6 +117,8 @@ struct Promotion {
   usize trial{}; // index into the campaign's trials
   MinedRho rho{};
   bool confirm_read{};
+  bool confirm_defined{}; // the read covers its full window (mined_confirm_defined)
+  usize confirm_rows{};   // the confirm window's mature label rows
   ex::ResearchIcRead confirm{};
   MinedConfirm decision{};
   bool admitted{};
