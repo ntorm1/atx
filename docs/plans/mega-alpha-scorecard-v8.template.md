@@ -35,7 +35,7 @@ scenario **S2** = `modeled-1bn-stale5-v1` impact costs at $1bn NAV x `swap-fin-v
 | `LEDGER` | `build-equity/trials.jsonl` | the cycle's ledger lines (`--origin`, window id, hash chain) |
 | `APPX` | the Appendix A line of `nav_summ.py --protocol v8 --ledger-n build-equity/trials.jsonl` | stdout, pasted verbatim |
 | `DIAG` | `build-equity/mega-diagnostics-v8-b0c/diagnostics-v8.json` | `book_diagnostics.py run` on B0c (schema `atx.book-diagnostics/v1`) |
-| `CARDS` | `build-equity/mega-cards-v8-<final>/index.json` | `alpha_report_card.py --ic-theta --marginal-ic <K6>` on V8-F |
+| `CARDS` | `build-equity/mega-cards-v8-<final>/index.json` | `alpha_report_card.py --ic-theta --marginal-ic <K6> --marginal-ic-sha256 <its SHA> --marginal-ic-pool-sha256 <the pool's SHA>` on V8-F (Ruling E-36: K6 bound to the card's role, window, pool and library; marginal IC report-only, rule 8) |
 | `ADM` | `build-equity/mega-weights-v8-<final>-ew/admission.json` | `fit_composition_weights.py --report-f-theta` on V8-F |
 | `W` | `build-equity/mega-weights-v8-<final>-ew/composition_weights.json` | the same fit |
 | `NAVF` | `<V8-F dir>/summary.json` | the final NAV cell (cost and financing scenarios) |
