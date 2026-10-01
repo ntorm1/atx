@@ -659,3 +659,53 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   reports, pins) run after integration 6 merges FIX-2 (N-1 seal pin in the holdings fields), FIX-3 and ERA, so
   fields v9 is built once on final code -- root would otherwise idle for an hour -- cost if wrong: R1-R9 are
   rebuilt (about 10 minutes) if integration 6 changes a role builder, which no pending lane touches.
+- LIB2 done 5d64644e (pool 8; field exch_up_365d b63edb31, holdings kind xsw). Registration (task-LIB2-report.md,
+  frozen before any read): iv_vol_of_vol (options_implied, B-, +1, Baltussen et al. 2018), day_rev_freq
+  (reversal_seasonality, B-, +1, Akbas et al. 2022; needs ret_overnight / ret_intraday of fields v10), exch_switch
+  (C+, +1, Dharan and Ikenberry 1995; new field exch_up_365d, fields v12). Static budget fits (40/5/1, 40/4/2,
+  0/3/1). Expected v12 --reuse from v11: 73 reused, 1 computed. 251 engine-tool tests pass.
+- Ruling E-42 (LIB2-a..e): exch_switch joins the existing `filing_events` theme (its text widened to "filing and
+  listing events"); no new theme is opened (a one-member theme would give a sparse short-only flag a full 1 / T
+  share). Roster cap 64 (R7-a) holds (worst case 60). day_rev_freq is withdrawn at 0 trials if the vendor open is
+  absent at the v10 build. The three candidates are R-12's screen set (E-38); three admission trials -- cost if
+  wrong: one C+ member sits in a theme whose text had to be widened.
+- Disclosure (LIB2): the lane read ALPHA_PANEL_METRICS.md sections 1 and 1b, whose coverage table carries
+  availability shares for 2024, 2025 and 2026 (data presence counts, no return or signal statistic); nothing was
+  used from them. Recorded under the hidden-data rule; no selection effect.
+- MINE-FIX dispatched on pool 8 (branch feat/platform-v8-minefix-20260930 from 864b7836).
+- RISK done 35bcda95 (pool 9; scaler 9d607b0e, NAV wiring f5a8eefe, template r8.json 855b1e9b, report 2cb3cf00).
+  Registration as coded: L_t = clip(S / (b sigma_hat), .8 L, 1.25 L), S .05, b 1.15, cadence 21, 252 periods;
+  sigma_hat = sqrt(252 x book_variance) of the current gross-1 book after fills; first estimate at the first decision
+  with a forecast, non-flat book, positive variance; L_t held between estimates; aim-partial-v5 moves toward
+  L_t x desired; spo-v3 tracks L_t x desired with gamma on L x desired and gross bound 2L; ADV cap and desired
+  target read L. Refused: aim-partial-v6, spo-v1/v2. Cross-lane: strategy_spo.hpp/.cpp (value-preserving unset),
+  test_research_spec.py (union with r10 / r11). Not compiled.
+- Ruling E-43 (R-8 acceptance; RISK concern 1, declared before any read): pre-registration rule 5 governs -- R-8
+  is accepted on paired S2 net dSR > 0 against its parent AND mechanics AND realised volatility inside
+  [.8, 1.2] x sigma_star in each TRAIN year; the plan's "dSR not lower by more than one SE" is the plan's
+  expectation, not the rule (E-36 precedent) -- cost if wrong: R-8 rejected where the plan would accept; the net
+  return gain is still reported. Noted: the rule scales the aim, so realised vol is expected near S / 1.247 under
+  aim-partial-v5 (lane's first-principles estimate); if the band fails for that reason the registered rule failed
+  and is not re-parameterised (rule 5: no retry).
+- ERA round 1 done ebc254f0 (E-41 0b855971: history reads add 0, Appendix A prints `history reads K`; E-35a
+  51d59f48: pooled ew-theme-aim-v1 under E-27a through its own branch; 670 passed 7 skipped). Integration 6 items:
+  after FIX-3 merges drop `pooled_aim_weights` and its elif so both paths run FIX-3's E-27a code and un-skip the
+  one-era equality test; research_cycle plan-time `summ.dsr_n "ledger+1"` must add 0 for a history-read cell
+  (integrator fix). Noted: the 1/(2T) cap refuses a fit where every theme has one member (std-aim does the same).
+
+## 2026-09-30 Wave 0 part 1 closed (log "Wave 0 part 1 (R1-R9)"; head 351e33d9)
+- R1-R9 all pass on v8-7a exes through the bounded runner: projection 1,405 sessions to 2023-12-29; base role
+  n 5,922 (membership overlap with the old role True); one mass session 2021-01-04 repaired; bridge sealed
+  2024-01-01 (max_end 2023-12-31); fundamental events through 2023q4 (6 runs, 203 s, 657 MiB); lo1 and lo3 both
+  `1155 1405 True`; the three live stage manifest hashes equal the runbook pins at R8; R9 admission probe
+  required_bytes 1,989,405,564 (1,897 MiB) for both roles, slots 8, inside 2,560 MiB. Disk after 46 GB free.
+  Nothing dated 2024+ opened. Blockers 2, 3, 4, 6 verified fixed at head; R4 `--check` skipped (opens the live
+  warehouse, Q27).
+- Ruling W0-n (runbook Q1, regsho_threshold republished): fields v9 on the 4-year roles pins the live stage
+  manifest re-hashed immediately before R10 / R11; the R13 field overlap report under W0-a is the check that
+  the republished stage left the common 2020-2022 cells unchanged -- no reuse from the old fields dir is possible
+  anyway -- cost if wrong: the overlap report stops the re-base and names the cell.
+- Ruling PM3-10 (integration 6 split): part A merges the finished lanes DLRET f51c5fd8, ERA ebc254f0, RISK
+  35bcda95, LIB2 5d64644e and builds now (root is free); part B merges FIX-2, FIX-3, COMB2, ORTH, MINE-FIX when
+  they report, applies ERA's post-FIX-3 items, builds and runs every suite; Wave 0 part 2 (R10-R14) follows --
+  cost if wrong: one extra build tag.
