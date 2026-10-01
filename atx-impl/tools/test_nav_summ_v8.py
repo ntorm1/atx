@@ -273,18 +273,20 @@ def test_defect_rule_appendix_a(tmp_path):
     after = record(c[3], 0.9, research_window_id=wid, origin="grid", rerun_of=looked["trial_id"],
                    rerun_basis="returns")
     replaced = record(c[4], 0.3, research_window_id=wid, origin="mined")
-    found = BI.defect_line(replaced["trial_id"], "borrow fee table misread")
+    found = BI.defect_line(replaced["trial_id"], "borrow fee table misread", ruling="E-31")
     blind2 = record(c[5], 0.5, research_window_id=wid, origin="mined", rerun_of=replaced["trial_id"],
                     rerun_basis="blind")
+    # review F-1: a re-run of a cell ledgered invalid at once needs the owner ruling's id, on a defect line
+    rulings = [BI.defect_line(x["trial_id"], x["defect"]["reason"], ruling="E-31") for x in (bad, looked)]
     ledger = tmp_path / "t.jsonl"
-    BI.ledger_append(ledger, [bad, blind, looked, after, replaced, found, blind2], chain=True)
+    BI.ledger_append(ledger, [bad, rulings[0], blind, looked, rulings[1], after, replaced, found, blind2], chain=True)
     recs = BI.ledger_read(ledger)
-    assert BI.trial_counts(recs) == [1, 0, 1, 1, 1, 0, 0]
+    assert BI.trial_counts(recs) == [1, 0, 0, 1, 0, 1, 1, 0, 0]
     assert [r["trial_id"] for r in BI.excluded_lines(recs)] == [bad["trial_id"], replaced["trial_id"]]   # out of V
     assert bad["defect"] == {"invalid": True, "reason": "stale fields manifest"}
     text = BI.appendix_a(recs, "t.jsonl")
-    assert text[0] == "Appendix A (trial ledger t.jsonl): 4 trials in 7 ledger lines"
-    assert text[-1] == "   adding no trial: 3 line(s) (3 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
+    assert text[0] == "Appendix A (trial ledger t.jsonl): 4 trials in 9 ledger lines"
+    assert text[-1] == "   adding no trial: 5 line(s) (5 by the defect rule, 0 window re-run(s), 0 protocol line(s))"
     # the v8 block: every window date from research_window.py
     rw = BI.research_window()
     v8 = BI.appendix_a_v8(recs)

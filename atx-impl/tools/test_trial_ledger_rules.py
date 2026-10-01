@@ -6,6 +6,7 @@ C-3 defect and re-run flags on a ledgered cell are refused, a defect found later
 C-4 rerun_of names an earlier cell line of the same kind; a window re-run's target is on another window.
 C-5 a blind (or returns) re-run needs a defect of its target on an earlier line; a re-run never lowers N.
 C-6 the hash chain covers the legacy (unchained) lines from the first line of the ledger.
+F-1 a re-run names a target of this ledger once (a defect re-run: through a defect line with a ruling id) and pins it.
 E-33 a mining-campaign line adds 0 to N and carries its own registry count.
 Synthetic NAV cells only (test_nav_summ.write_nav: calendar-day sessions from 2020-01-02, inside TRAIN).
 """
@@ -213,7 +214,7 @@ def test_a_blind_rerun_needs_a_defect_and_never_lowers_n(tmp_path):
         with pytest.raises(ValueError, match=f"a {basis} re-run replaces an invalid cell.*ledger-defect --trial-id"):
             BI.ledger_append(ledger, [record(c[1], 0.9, rerun_of=r3["trial_id"], rerun_basis=basis)], chain=True)
     assert BI.ledger_n(BI.ledger_read(ledger), True) == 1
-    BI.ledger_append(ledger, [BI.defect_line(r3["trial_id"], "stale borrow table")], chain=True)
+    BI.ledger_append(ledger, [BI.defect_line(r3["trial_id"], "stale borrow table", ruling="E-31")], chain=True)
     assert BI.ledger_n(BI.ledger_read(ledger), True) == 0                             # an invalid cell leaves N
     retry = record(c[1], 0.9, rerun_of=r3["trial_id"], rerun_basis="blind")
     BI.ledger_append(ledger, [retry], chain=True)
@@ -233,6 +234,62 @@ def test_a_blind_rerun_needs_a_defect_and_never_lowers_n(tmp_path):
     records = BI.ledger_read(ledger)
     assert sum(BI.trial_counts(records)) == sum(trial_counts_before_c5(records)) == 1
     assert BI.trial_counts(records) != trial_counts_before_c5(records)                # attribution only
+
+
+# ------------------------------------------------------------------ review F-1
+def test_a_rerun_names_a_ledgered_target_once_and_pins_it(tmp_path):
+    """Review F-1: rerun_of was checked for existence, kind and window only, so any number of window re-runs of one v7
+    cell, or of blind siblings of one invalid cell, each added 0. Now: a legacy trial_id is a target only when its line
+    is in the ledger; a window re-run carries its window_id; a blind or returns re-run needs a defect line with the
+    owner ruling's id (a cell's own defect flag carries none); a target is re-run once, whatever the basis; the
+    appended re-run line pins its target's trial_id and cell (a declared rerun_cell must be that cell)."""
+    c = cells(tmp_path, 9, prefix="f")
+    ledger = tmp_path / "trials.jsonl"
+    legacy = record(c[0], 0.9, window_id=None)                         # a v7 cell of this ledger
+    elsewhere = record(c[1], 0.8, window_id=None)                      # a v7 cell whose line is not in it
+    BI.ledger_append(ledger, [legacy], chain=True)
+
+    def refused(rec: dict, needle: str) -> None:
+        before = ledger.read_bytes()
+        with pytest.raises(ValueError, match=needle):
+            BI.ledger_append(ledger, [rec], chain=True)
+        assert ledger.read_bytes() == before                           # nothing appended
+
+    refused(record(c[2], 1.0, rerun_of=elsewhere["trial_id"], rerun_basis="window"),
+            "is not the trial_id of an earlier construction cell line in this ledger")
+    refused(record(c[2], 1.0, window_id=None, rerun_of=legacy["trial_id"], rerun_basis="window"),
+            "carries the research window it is scored on")             # a window re-run without its window_id
+    ok = record(c[2], 1.0, rerun_of=legacy["trial_id"], rerun_basis="window")
+    refused(dict(ok, rerun_cell=str(c[5])), "is not the cell of trial")
+    appended, _ = BI.ledger_append(ledger, [ok], chain=True)
+    line = BI.ledger_read(ledger)[-1]
+    assert (line["rerun_of"], line["rerun_cell"]) == (legacy["trial_id"], legacy["cell"]) == \
+        (appended[0]["rerun_of"], appended[0]["rerun_cell"])            # the line pins its target
+    assert BI.ledger_append(ledger, [ok], chain=True)[0] == []          # the same line again: a no-op
+    refused(record(c[3], 1.1, rerun_of=legacy["trial_id"], rerun_basis="window"),
+            f"trial {legacy['trial_id']} was re-run already by trial {ok['trial_id']}")   # prereg item 2: once
+    # blind / returns: the defect line with the owner ruling's id, one re-run per defect line
+    bad = record(c[4], 0.5, defect="limits unmet on scored decisions")  # ledgered invalid at once (own flag)
+    BI.ledger_append(ledger, [bad], chain=True)
+    for basis in ("blind", "returns"):
+        refused(record(c[5], 0.6, rerun_of=bad["trial_id"], rerun_basis=basis), "carries no ruling id")
+    refused(BI.defect_line(bad["trial_id"], "limits unmet"), "was ledgered invalid already")   # brings no ruling
+    BI.ledger_append(ledger, [BI.defect_line(bad["trial_id"], "limits unmet", ruling="E-31")], chain=True)
+    blind = record(c[5], 0.6, rerun_of=bad["trial_id"], rerun_basis="blind")
+    BI.ledger_append(ledger, [blind], chain=True)
+    assert BI.ledger_read(ledger)[-1]["rerun_cell"] == bad["cell"]
+    for k, basis in ((6, "blind"), (7, "returns")):                     # a sibling re-run: refused
+        refused(record(c[k], 0.7, rerun_of=bad["trial_id"], rerun_basis=basis), "was re-run already by trial "
+                f"{blind['trial_id']}")
+    valid = record(c[6], 0.7)
+    BI.ledger_append(ledger, [valid], chain=True)
+    no_ruling = {k: v for k, v in BI.defect_line(valid["trial_id"], "stale fields", ruling="x").items()
+                 if k != "ruling"}                                      # a defect line written without a ruling
+    BI.ledger_append(ledger, [no_ruling], chain=True)
+    refused(record(c[7], 0.8, rerun_of=valid["trial_id"], rerun_basis="blind"), "carries no ruling id")
+    records = BI.ledger_read(ledger)
+    assert BI.trial_counts(records) == [1, 0, 1, 0, 0, 0, 0] and BI.ledger_n(records, True) == 2
+    assert BI.dsr_variance(records, WID)["cells"] == 2                  # the window re-run and the blind re-run
 
 
 # ------------------------------------------------------------------ Ruling E-33

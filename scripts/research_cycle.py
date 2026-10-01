@@ -12,8 +12,9 @@
                            (research_gc.py: stores no listed spec uses; deleted only with --apply)
   research_cycle.py ledger-protocol --ledger PATH --owner-ruling TEXT --date D [--window-id ID] [--root R]
                            (research_ledger.py: a window-change line that is no trial; count 0, no cell)
-  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
-                           (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell)
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--ruling ID] [--date D] [--root R]
+                           (research_ledger.py, review C-3: the ledgered cell TID is invalid; count 0, no cell; review
+                           F-1: a blind or returns re-run of TID needs the defect's ruling ID)
 
 Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
   --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's

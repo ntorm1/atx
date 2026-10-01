@@ -15,13 +15,19 @@
                   adds 0 unless a re-run names it. A re-run never lowers N (review C-5): the replaced invalid cell
                   stays counted and its blind re-run adds 0; a re-run decided because the returns looked wrong is a
                   new trial beside it. Without the v8 fields every line adds its count, as before.
-  defect line     (review C-3) kind defect, count 0, defect_of = a ledgered cell's trial_id, reason: that cell is
-                  invalid, found after it was ledgered (research_cycle.py ledger-defect). A cell line whose trial_id is
-                  ledgered already is skipped only when its defect / re-run flags equal the ledgered line's; flags that
-                  would be dropped are refused (ledger_append raises, nav_summ exits non-zero).
-  re-run check    (review C-4) rerun_of must be the trial_id of an earlier cell line of the same kind; a window
-                  re-run's target is on another window_id (or has none); (review C-5) a blind or returns re-run's
-                  target is invalid on an earlier line (its defect flag or a defect line).
+  defect line     (review C-3) kind defect, count 0, defect_of = a ledgered cell's trial_id, reason, ruling (the owner
+                  ruling's id, review F-1): that cell is invalid, found after it was ledgered (research_cycle.py
+                  ledger-defect), or, for a cell ledgered invalid at once (its own defect flag), the ruling its re-run
+                  needs. A cell line whose trial_id is ledgered already is skipped only when its defect / re-run flags
+                  equal the ledgered line's; flags that would be dropped are refused (ledger_append raises, nav_summ
+                  exits non-zero).
+  re-run check    (review C-4) rerun_of must be the trial_id of an earlier cell line of the same kind in this ledger (a
+                  legacy v7 trial_id only when its line is there); a window re-run carries a window_id and its target
+                  is on another window_id (or has none); (review C-5, F-1) a blind or returns re-run's target has a
+                  defect line with a ruling id on an earlier line. (review F-1) One re-run per target: a second line
+                  naming the same rerun_of is refused (prereg item 2: re-scored once; item 5: no retry; item 7: the
+                  re-run replaces the invalid cell). The appended re-run line pins its target: rerun_of (trial_id) and
+                  rerun_cell (the target line's cell; given by the caller, it must equal it).
   protocol line   (W0-3; written by research_cycle.py ledger-protocol, lane A) kind protocol, count 0, no cell, no
                   series: every reader here skips it when it lists cells or counts N; the hash chain covers it.
   validation line (review C-11; written by holdout_gate.py) kind validation, count 0: a hidden-block read, citing
@@ -731,17 +737,23 @@ def trial_id(kind: str, series_sha256: str) -> str:
     return hashlib.sha256(json.dumps([kind, series_sha256], separators=(",", ":")).encode()).hexdigest()[:16]
 
 
-def defect_line(target: str, reason: str, date: str | None = None) -> dict:
+def defect_line(target: str, reason: str, date: str | None = None, ruling: str | None = None) -> dict:
     """A defect event line (review C-3): the ledgered cell whose trial_id is ``target`` is invalid (v8-prereg item 7),
     found after it was ledgered. kind defect, count 0, no cell and no series; its trial_id is (defect, target), so a
-    cell has at most one. ledger_append refuses a target that is not a ledgered cell line or is invalid already."""
+    cell has at most one. ``ruling`` (review F-1) is the owner ruling's id that declared the cell invalid: a blind or
+    returns re-run of the cell needs it. ledger_append refuses a target that is not a ledgered cell line, and one
+    ledgered invalid already unless the line brings the ruling (``check_line``)."""
     if not (isinstance(target, str) and target):
         raise ValueError("ledger: a defect line names the trial_id of a ledgered cell")
     if not (isinstance(reason, str) and reason.strip()):
         raise ValueError("ledger: a defect needs a reason")
+    if ruling is not None and not (isinstance(ruling, str) and ruling.strip()):
+        raise ValueError("ledger: a defect's ruling is the owner ruling's id (non-empty text)")
     rec = {"schema": LEDGER_SCHEMA, "kind": DEFECT, "count": 0, "defect_of": target, "reason": reason}
     if date is not None:
         rec["date"] = date
+    if ruling is not None:
+        rec["ruling"] = ruling
     rec["trial_id"] = trial_id(DEFECT, target)
     return rec
 
@@ -788,7 +800,8 @@ def check_line(before: dict, rec: dict) -> bool:
     """Whether ``rec`` is new against the lines before it (``before``: trial_id -> line); raises ValueError when it
     cannot be appended as asked. Review C-3: a line whose trial_id is ledgered already is skipped only when it asks for
     nothing the ledgered line lacks; a defect or re-run flag that would be dropped is refused, and so is a second
-    defect line of a cell. A defect line must name a ledgered cell line that is not invalid yet."""
+    defect line of a cell. A defect line must name a ledgered cell line that is not invalid yet, or one ledgered invalid
+    at once whose ruling it brings (review F-1: a re-run needs the defect's ruling id)."""
     tid = rec["trial_id"]
     old = before.get(tid)
     if old is not None:
@@ -798,15 +811,17 @@ def check_line(before: dict, rec: dict) -> bool:
                              f"({', '.join(f'{k}={v!r}' for k, v in flags.items() if v is not None)}): they would be "
                              "dropped. A defect found later is a defect line (research_cycle.py ledger-defect "
                              f"--trial-id {tid} --reason ...); a re-run is a new cell line naming --rerun-of")
-        if rec.get("kind") == DEFECT and rec.get("reason") != old.get("reason"):
+        if rec.get("kind") == DEFECT and (rec.get("reason"), rec.get("ruling")) != (old.get("reason"),
+                                                                                    old.get("ruling")):
             raise ValueError(f"ledger: trial {rec.get('defect_of')} has a defect line already")
         return False
     if rec.get("kind") == DEFECT:
         target = before.get(rec.get("defect_of"))
         if target is None or is_event(target) or is_campaign(target):
             raise ValueError(f"ledger: defect_of {rec.get('defect_of')!r} is not the trial_id of a ledgered cell line")
-        if target.get("defect"):
-            raise ValueError(f"ledger: trial {rec['defect_of']} was ledgered invalid already")
+        if target.get("defect") and not rec.get("ruling"):
+            raise ValueError(f"ledger: trial {rec['defect_of']} was ledgered invalid already (a defect line on it only "
+                             "brings the ruling id its re-run needs: --ruling)")
     if rec.get("rerun_of") is not None:
         check_rerun(before, rec)
     return True
@@ -818,19 +833,50 @@ def check_rerun(before: dict, rec: dict) -> None:
     cell on another research window: its target carries another window_id, or none (a legacy line).
 
     Review C-5: a blind or returns re-run (the defect rule, v8-prereg item 7) names an invalid cell, invalid on an
-    earlier line (its own defect flag or a defect line): a valid cell is never replaced (item 5: no retry)."""
-    target = before.get(rec["rerun_of"])
+    earlier line (its own defect flag or a defect line): a valid cell is never replaced (item 5: no retry).
+
+    Review F-1: a legacy (v7) trial_id is a target only when its line is in this ledger (the check above); a window
+    re-run carries the window_id it is scored on; a blind or returns re-run's target has a defect line with the owner
+    ruling's id; a target is re-run once (a second line naming it is refused, whatever its basis: prereg item 2
+    re-scores each ledgered cell once, item 7's re-run replaces the invalid cell, item 5 forbids a retry); a re-run line
+    that names its target's cell (rerun_cell) must name that line's cell (``pin_rerun`` writes it otherwise)."""
+    tid = rec["rerun_of"]
+    target = before.get(tid)
     if target is None or is_event(target) or is_era_line(target) or target.get("kind") != rec.get("kind"):
-        raise ValueError(f"ledger: rerun_of {rec['rerun_of']!r} is not the trial_id of an earlier {rec.get('kind')} "
-                         "cell line in this ledger")
-    if rec.get("rerun_basis") == "window" and "window_id" in target and target["window_id"] == rec.get("window_id"):
-        raise ValueError(f"ledger: a window re-run re-scores a ledgered cell on another research window; trial "
-                         f"{rec['rerun_of']} was scored on {target['window_id']} already")
-    if rec.get("rerun_basis") in ("blind", "returns") and not target.get("defect") and \
-            trial_id(DEFECT, rec["rerun_of"]) not in before:
-        raise ValueError(f"ledger: a {rec['rerun_basis']} re-run replaces an invalid cell (v8-prereg item 7); trial "
-                         f"{rec['rerun_of']} has no defect on an earlier line (research_cycle.py ledger-defect "
-                         f"--trial-id {rec['rerun_of']} --reason ... first)")
+        raise ValueError(f"ledger: rerun_of {tid!r} is not the trial_id of an earlier {rec.get('kind')} cell line in "
+                         "this ledger (a legacy trial_id only when its line is in the ledger)")
+    twin = next((r for r in before.values() if r.get("rerun_of") == tid and not is_era_line(r)), None)
+    if twin is not None:
+        raise ValueError(f"ledger: trial {tid} was re-run already by trial {twin.get('trial_id')} ({twin.get('cell')}, "
+                         f"{twin.get('rerun_basis')}): one re-run per target (v8-prereg items 2, 5 and 7)")
+    if rec.get("rerun_cell") is not None and rec["rerun_cell"] != target.get("cell"):
+        raise ValueError(f"ledger: rerun_cell {rec['rerun_cell']!r} is not the cell of trial {tid} "
+                         f"({target.get('cell')!r})")
+    if rec.get("rerun_basis") == "window":
+        if not rec.get("window_id"):
+            raise ValueError(f"ledger: a window re-run of trial {tid} carries the research window it is scored on "
+                             "(window_id: nav_summ --protocol v8)")
+        if "window_id" in target and target["window_id"] == rec["window_id"]:
+            raise ValueError(f"ledger: a window re-run re-scores a ledgered cell on another research window; trial "
+                             f"{tid} was scored on {target['window_id']} already")
+    if rec.get("rerun_basis") in ("blind", "returns"):
+        found = before.get(trial_id(DEFECT, tid))
+        if not target.get("defect") and found is None:
+            raise ValueError(f"ledger: a {rec['rerun_basis']} re-run replaces an invalid cell (v8-prereg item 7); trial "
+                             f"{tid} has no defect on an earlier line (research_cycle.py ledger-defect --trial-id {tid} "
+                             "--reason ... --ruling ... first)")
+        if found is None or not found.get("ruling"):
+            raise ValueError(f"ledger: a {rec['rerun_basis']} re-run needs the owner ruling that declared trial {tid} "
+                             "invalid: its defect line carries no ruling id (research_cycle.py ledger-defect "
+                             f"--trial-id {tid} --reason ... --ruling ID)")
+
+
+def pin_rerun(before: dict, rec: dict) -> dict:
+    """Review F-1: a re-run line as appended pins its target, rerun_of (the trial_id) and rerun_cell (the target line's
+    cell); any other line is returned unchanged."""
+    if rec.get("rerun_of") is None or rec.get("rerun_cell") is not None:
+        return rec
+    return dict(rec, rerun_cell=before[rec["rerun_of"]].get("cell"))
 
 
 CHAIN_GENESIS = "0" * 64
@@ -916,7 +962,11 @@ def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tu
     appended: list[dict] = []
     skipped: list[dict] = []
     for rec in records:
-        (appended if check_line(before, rec) else skipped).append(rec)
+        if check_line(before, rec):
+            rec = pin_rerun(before, rec)                                 # review F-1: the re-run pins its target
+            appended.append(rec)
+        else:
+            skipped.append(rec)
         before.setdefault(rec["trial_id"], rec)
     if appended:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

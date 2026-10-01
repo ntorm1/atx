@@ -74,15 +74,17 @@ def test_dsr_n_equals_trial_counts_with_defect_and_rerun_lines(tmp_path):
     a, b, e = record(root, "prior/a", legacy=True), \
         record(root, "prior/b", defect="role built without the delisting returns"), \
         record(root, "prior/e", defect="cost model misread")
+    ruling = lambda x: BI.defect_line(x["trial_id"], x["defect"]["reason"], ruling="E-31")   # noqa: E731  (F-1)
     lines = [a, b,
              record(root, "prior/c", rerun_of=a["trial_id"], rerun_basis="window"),   # a on the longer window: 0
+             ruling(b),                                                                # the ruling b's re-run needs
              record(root, "prior/d", rerun_of=b["trial_id"], rerun_basis="blind"),    # replaces invalid b: b 1, d 0
-             e,
+             e, ruling(e),
              record(root, "prior/f", rerun_of=e["trial_id"], rerun_basis="returns")]  # e stays a trial: 1 + 1
     BI.ledger_append(ledger, lines, chain=True)
     assert protocol(ledger, root) == 0                                                 # protocol line: 0
     records = BI.ledger_read(ledger)
-    assert BI.trial_counts(records) == [1, 1, 0, 0, 1, 1, 0]                           # review C-5 attribution
+    assert BI.trial_counts(records) == [1, 1, 0, 0, 0, 1, 0, 1, 0]                     # review C-5 attribution
     want = sum(BI.trial_counts(records)) + 1                                           # + this cycle's cell
     assert want == 5 and len(research_ledger.cells(ledger)) + 1 == 7                   # the old line count differs
     assert cycle_n(root, sp) == want == BI.ledger_n(records, False)                   # plan time: no NAV output yet

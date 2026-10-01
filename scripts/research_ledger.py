@@ -26,10 +26,11 @@ appends one protocol line {schema, kind, count 0, window_id, owner_ruling, date,
 prev_sha256}; the window id defaults to the W0-1 window's, the window file to atx-impl/strategies/research_window.json.
 The same line is never appended twice (same trial_id).
 
-  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--date D] [--root R]
+  research_cycle.py ledger-defect --ledger PATH --trial-id TID --reason TEXT [--ruling ID] [--date D] [--root R]
 
 appends one chained defect line (review C-3; backtest_integrity.defect_line): the cell ledgered as TID is invalid
-(v8-prereg item 7). Refused when TID is not a ledgered cell line or is invalid already.
+(v8-prereg item 7), under the owner ruling ID (review F-1: a blind or returns re-run of TID needs it). Refused when TID
+is not a ledgered cell line, or is invalid already and the line brings no ruling.
 """
 from __future__ import annotations
 
@@ -189,6 +190,7 @@ def defect_main(argv=None) -> int:
     ap.add_argument("--ledger", required=True, help="the trial ledger (root-relative or absolute)")
     ap.add_argument("--trial-id", required=True, help="the invalid cell's trial_id")
     ap.add_argument("--reason", required=True)
+    ap.add_argument("--ruling", default=None, help="the owner ruling's id (a re-run of the cell needs it)")
     ap.add_argument("--date", default=None, help="YYYY-MM-DD the defect was found (optional)")
     ap.add_argument("--root", type=Path, default=research_tree.REPO)
     a = ap.parse_args(argv)
@@ -196,7 +198,7 @@ def defect_main(argv=None) -> int:
         if a.date is not None:
             dt.date.fromisoformat(a.date)
         bi = backtest_integrity()
-        rec = bi.defect_line(a.trial_id, a.reason, a.date)
+        rec = bi.defect_line(a.trial_id, a.reason, a.date, a.ruling)
         ledger = Path(a.ledger) if Path(a.ledger).is_absolute() else a.root / a.ledger
         appended, _ = bi.ledger_append(ledger, [rec], chain=True)
     except ValueError as exc:  # a malformed date, an unknown or invalid target, a broken chain
