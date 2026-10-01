@@ -36,8 +36,10 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "base-lo3.json": BASE_NULLS | {"inputs.sic_events", "inputs.reference_cell"},
              "base-b0c.json": CHILD_NULLS, "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS,
              "r3-aim-gain.json": CHILD_NULLS, "r4-hold-band.json": CHILD_NULLS, "r5-adv-hold.json": CHILD_NULLS,
-             "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS}
-FILLS = {"r6-spo-v3.json": ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]}
+             "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS,
+             "r8.json": CHILD_NULLS}
+STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
+FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FIT_DOWN = {"fit.output", "card.output", "ic.w_output", "nav.output", "monitor.output"}   # downstream of the fit
 LIB_DOWN = FIT_DOWN | {"ic.u_output"}                                                       # downstream of the library
 LIB_CHANGE = LIB_DOWN | {"inputs.library.path", "inputs.library.sha256", "inputs.recipe.path", "inputs.recipe.sha256",
@@ -50,7 +52,8 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
                     "r1-comp-v8.json": FIT_DOWN | {"fit.flags"} | W_3072,
                     "r2-lib-v80.json": LIB_CHANGE, "r3-aim-gain.json": FIT_DOWN | {"fit.flags"},
                     "r4-hold-band.json": {"nav.output", "nav.flags"}, "r5-adv-hold.json": {"nav.output", "nav.flags"},
-                    "r6-spo-v3.json": {"nav.output", "nav.flags", "nav.rule"}, "r7-lib-v81.json": LIB_CHANGE}
+                    "r6-spo-v3.json": {"nav.output", "nav.flags", "nav.rule"}, "r7-lib-v81.json": LIB_CHANGE,
+                    "r8.json": {"nav.output", "nav.flags"}}
 MISSING = object()
 
 
@@ -148,7 +151,11 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
                  "r4-hold-band.json": pn + ["--hold-band", ".1"], "r5-adv-hold.json": pn + ["--adv-hold-q", ".1"],
                  "r6-spo-v3.json": [x for x in pn if x != "--capacity-curve"] + [
                      "--spo-alpha", "implied-aim", "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
-                     "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"]}
+                     "<fill:nav.flags --risk-model-sha256>", "--spo-books", "primary"],
+                 # R-8: the registered constants spelled out; --capacity-curve (E-29) is already the parent's
+                 "r8.json": pn + ["--risk-target", ".05", "--risk-target-bias", "1.15", "--risk-target-cadence", "21",
+                                  "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
+                                  "<fill:nav.flags --risk-model-sha256>"]}
     assert cn == nav_delta.get(name, pn)
     comp = {"r1-comp-v8.json": "ew-theme-std-v1", "r3-aim-gain.json": "ew-theme-aim-v1"}
     assert child["fit"]["flags"] == [comp.get(name, x) if x == "ew-theme-v1" else x for x in parent["fit"]["flags"]]
