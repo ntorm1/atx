@@ -1191,3 +1191,25 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Dispatched: read-only investigator (orientation: how computed, every consumer, pin option; output
   orientation-consumers.md, parked); integrator D (root: merge FIX-5 d2304773, Python suites, identity 4; no
   Wave 0 step).
+
+## 2026-10-01 integration 6 part D closed (log "integration 6 part D (FIX-5)"; head a515f9d8, code 1cc4c6c9, build v8-12 unchanged); MINE-JOIN
+- FIX-5 d2304773 merged as 1cc4c6c9, no conflict, no C++, no build; the four executables still hash to v8-12.
+  Python: lane suites 604 / 3 skipped; strategies 163 + 9, engine tools 253, impl tools 578 / 1 skipped, scripts
+  183 / 3 skipped; tiny_world unmoved; 0 test fixes. Identity 4 PASS: step 2 timing fields only; step 1 weights
+  byte-identical to integration 7's (d49e208c). The expected script_sha256 move does not show there: identity
+  4's argv runs composition_rules.py, which copies both hashes from the pinned v7.1 weights; the move appears
+  only in a file the fitter writes (first at B0a's fit). Not a finding; the PM's expectation was wrong.
+- Disclosure: while finding identity 4's argv the integrator printed build-equity/v8-i7-i4-run/stdout.log,
+  which holds per-candidate ic=, composition= and sign= lines of the 3-year lo1 pass (2020-2022, the window
+  every ledgered cell already read). Not used. No 2023 value in it.
+- MINE-JOIN done 40409e30 (pool 8; PM5-15): merges 96f4422a (MINE-STAT; one comment conflict; shadow fix
+  3a5a7969), ead9e6bb (MINE-RUN) + alignment 93171677; rho members streamed by date 4c03bc8b (same pairs, dates
+  ascending, same per-pair operation order; byte test MembersStreamByDateAsStored); memory model 11399a3f.
+  Footprint: default 4-year 3,161 MiB (1 worker) / 4,572 MiB (4); mine-c1 2,765 / 3,978 MiB (2 workers 2,783).
+  PM5-10's 2,560 MiB not met on the default shape (promotion panels at 1 worker, slot pools at 4). Raw discover
+  hurdle at budget 132: 3.554438 x 1.54 = 5.4738; confirm raw t >= 2 x 1.77 = 3.54. Pytest 181 passed / 3
+  skipped. Uncompiled. Root builds atx-engine-factory-tests, atx-impl-strategy-mine-tests,
+  atx-equity-strategy-mine, atx-impl-tests at integration 8; golden at 1 and 4 workers; fixture rung_failed == 0.
+  Open: prereg decision D5 (the confirm gate now binds: owner rechecks the discover / confirm split); each rho
+  batch re-hashes all member files (about 3.6 GB a pass at mine-c1); no test yet compares one promotion engine
+  with fresh engines per batch. Follow-up sent to the lane for the last two.
