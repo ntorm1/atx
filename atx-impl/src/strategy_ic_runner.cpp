@@ -63,7 +63,7 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
     const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
-    bool themed=false,bool standardised=false) {
+    bool themed=false,bool standardised=false,bool residualised=false) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -127,6 +127,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   if (themed) manifest["composition_redistribution"]=theme_redistribution_rule;
   // Same for ew-theme-std-v1 with rerank on (absent otherwise, and with rerank off).
   if (standardised) manifest["composition_standardise"]=theme_standardise_rule;
+  // And theme-resid-v1 on top of it (v8 R-11; absent otherwise).
+  if (residualised) manifest["composition_residualise"]=theme_residualise_rule;
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -235,7 +237,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 }
 // `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
 // `themes`: pinned themes under `rule` (empty = none; redistribute: ew-theme-v6,
-// standardise: ew-theme-std-v1).
+// standardise: ew-theme-std-v1, residualise: ew-theme-std-v1 then theme-resid-v1).
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
     const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
     std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
@@ -490,7 +492,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto save_started=std::chrono::steady_clock::now();
     const bool themed=!themes.empty();
     ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
-        !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,themed && rule==IcThemeRule::standardise));
+        !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,themed && rule!=IcThemeRule::redistribute,
+        themed && rule==IcThemeRule::residualise));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -646,7 +649,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       }
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
-    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),!pinned.std_themes.empty());
+    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),!pinned.std_themes.empty(),
+                              pinned.residualise);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -757,7 +761,10 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    keeps a missing member's mass inside its theme per name and date; or optional theme_standardise\n"
                "    {rule: ew-theme-std-v1, rerank: true|false, themes: {id: theme}} re-ranks each theme's weighted rank\n"
                "    sum per date and adds W_theme times that rank (rerank false: the plain pinned blend, bit for bit);\n"
-               "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none.\n";
+               "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none. Optional beside a\n"
+               "    rerank-true theme_standardise: theme_residualise {rule: theme-resid-v1, order: [theme, ...]}\n"
+               "    residualises each re-ranked theme composite per date on an intercept and the earlier themes'\n"
+               "    in that order, re-ranks the residual and adds W_theme times it (the first theme unchanged).\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");

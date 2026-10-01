@@ -26,7 +26,8 @@ constexpr const char* theme_redistribution_composition="ew-theme-v6";
 constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by-name;NaN-where-not-visible;"
     "role-presence-mask;decision-member-mask-unchanged";
 } // namespace
-Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed,bool standardised) {
+Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed,bool standardised,
+                   bool residualised) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -69,6 +70,8 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
           "centered-tied-rank;theme-weighted-rank-sum-missing-neutral;"
           "theme-rerank-centered-tied-over-names-with-a-present-member;theme-weight-sum-of-member-weights";
       recipe["composition_standardise"]=theme_standardise_rule;
+      // theme-resid-v1 (v8 R-11) on top of it; absent otherwise, so the bytes above are unchanged.
+      if (residualised) recipe["composition_residualise"]=theme_residualise_rule;
     }
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
@@ -551,6 +554,7 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   ATX_TRY(pinned.signs,composition_signs(j,lib,weights));
   ATX_TRY_VOID(composition_themes(j,lib,pinned));
   ATX_TRY_VOID(composition_standardise(j,lib,pinned));
+  ATX_TRY_VOID(composition_residualise(j,lib,pinned)); // v8 R-11 theme-resid-v1 (strategy_ic_theme_resid.cpp)
   const bool v2=j.at("schema")==weights_schema_v2;
   const bool standardise=!pinned.standardise.empty();
   if (!pinned.themes.empty() && standardise)
@@ -582,6 +586,8 @@ Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const
   if (!pinned.themes.empty()) out["redistribution"]=theme_redistribution_rule;
   // ew-theme-std-v1 only (absent otherwise): the block's rule, ";rerank-off" when off.
   if (!pinned.standardise.empty()) out["standardise"]=pinned.standardise;
+  // theme-resid-v1 only (absent otherwise).
+  if (pinned.residualise) out["residualise"]=theme_residualise_rule;
   return out;
 }
 // Review M1 (root ruling, strict): weights applied against a frozen TRAIN artifact
