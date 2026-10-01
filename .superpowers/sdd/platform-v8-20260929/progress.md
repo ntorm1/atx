@@ -571,3 +571,20 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Ruling PM3-6: lane FIX-3 (pool 10, from fd2ff7a8) fixes F-1, F-8, F-9, F-10 (E-27a), F-14 and the cheap minors
   F-2..F-7, F-11..F-13; it is on the critical path (R-2, R-7, N integrity), so it takes pool 10 ahead of lane ORTH,
   which starts when ERA or FIX-2 frees a pool -- cost if wrong: ORTH starts one lane-turn later.
+
+## 2026-09-30 integration 5 part B closed (log "integration 5 part B"; head d22b735a)
+- H3 339c07b1 merged e2bb716b, no conflicts, 0 build fixes (v8-7, v8-7a). One integration fix ccb66a87: the mine
+  verb's ledger_line now equals `campaign_line` (E-33); new verb `research_cycle.py ledger-campaign` appends it
+  chained. mine-tests 18/18; factory 387; ic 105 (pins hold); strategy 46; target 233/1 skipped; impl 965/7/1
+  known; scripts 164/3 skipped; impl tools 465/2. Golden 0x889874a3b9b29c55 holds at 1 and 4 workers. Fixture
+  acceptance (StrategyMineCampaign x3) passes. Open: H3 memory estimate untested on real fields; IC runner does not
+  use ResearchRole yet; nothing appends a campaign line automatically (OD-7 only).
+- Ruling E-33a (campaign registry count; binds only under OD-7): a campaign line's `registry.count` is the number
+  of records this campaign added (new_records); the cumulative registry size is carried as `registry.total` --
+  shared registries must not count earlier campaigns twice -- cost if wrong: one field rename before OD-7.
+- Ruling PM3-7 (spo-v2 pin, T-3): the pin is captured from the current build after identity 7 (spo-v2 side files
+  byte-identical to the pinned v7 side files) passes; identity 7 is the proof that the current spo-v2 equals the
+  pre-R6 code, so no pre-R6 build is needed -- cost if wrong: none while identity 7 holds; if it fails the pin
+  is not captured and the mismatch is the finding.
+- Dispatched: integrator part C (identities 1-8, PM3-5 expectation 45 / 18, PM3-7), reader MINE (mining verb),
+  reader SPO (optimiser: solve_tracking, spo-v3, E-14, E-26, E-31, FIX-AB A-2 / A-4), both read-only at d22b735a.
