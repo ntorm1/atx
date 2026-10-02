@@ -2109,3 +2109,28 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   back to 2015-2019 unchanged (PM7-29 (1)); a read-only adversarial review of the rule's code path (look-ahead
   in the sleeve returns, the fit window, the runner's verify) runs before X-10 and before any report -- cost
   if wrong: none; the cell stays accepted on its registered rule unless the review finds a defect (rule 7).
+- X batch 2 dispatched in root (merge XWQ `7bf8e68e`, theme `price_volume`, fields v14, X-7). Parked meanwhile:
+- Adversarial review of X-5 delivered (`review-x5-theme-erc.md`, folded in with this entry). Verdict SOUND with
+  qualifications: no defect, no look-ahead beyond the declared full-TRAIN covariance fit, fair comparison (the
+  two NAV recipes differ only in leverage and the combined-signal hash). Decomposition of +.349: lower
+  volatility +.311 (3.50% -> 2.87% at matched gross, lower in every year), gross alpha +.080, trade cost -.042
+  (turnover +16.5%), borrow +.002. Shares after the cap: investment_issuance .141, low_risk .129,
+  reversal_seasonality .128, profitability_quality .114, ownership_flow .091, value .090, short_interest .083,
+  earnings_momentum .071, price_momentum .057, filing_events .051, options_implied .0455. In the parent 62% of
+  risk sat in price_momentum, filing_events and earnings_momentum. The size is inflated in sample: the
+  low-volatility themes were also the high-Sharpe themes in 2020-2023 (rank correlation +.65); under the rule's
+  own equal-Sharpe premise the expected gain is about +.15. Reviewer's odds: about 60% that a positive gain
+  survives out of sample, about 70% that it is well below +.35.
+- Ruling PM7-38 (after the review): X-5 stands accepted (no defect; rule 7 does not apply). Every report prints
+  the review's decomposition and the "about +.15 expected" line beside the +.349. The OD-3 read prints, for
+  X-5 against its parent on 2015-2019, the volatility ratio and the return ratio separately (a return ratio
+  under about .85 means the TRAIN gain was mostly the in-sample alignment) -- cost if wrong: none.
+- X batch 2 stopped at the theme step (head `069428e6`): XWQ merged (`03fcf92f`), suites pass (`scripts/tests` 248
+  passed after a tests-only fix `4d0c8d8f`); theme `price_volume` needs the C++ list `theme_resid_order`
+  (`strategy_ic_theme_resid.hpp`) extended, which the pin R6B-O-4 requires. Nothing screened; N 55.
+  Note for the campaign: at its lock mine-c1 loses the two fields X-3 members now read; 10 fields, B = 110.
+- Ruling PM7-39 (theme `price_volume`; before any X-7 screen): option (i). The C++ list takes `price_volume` as
+  its 12th and last entry; the ic executable and its tests are rebuilt under a new build tag; X-5's w pass,
+  fit and NAV must reproduce under the new build (PM7-30's identity rule) before fields v14 and X-7 -- the
+  registered pin keeps Python and C++ theme orders equal; relaxing the pin or moving the picks to another
+  theme would change a registration to save one build -- cost if wrong: one build and one identity run.
