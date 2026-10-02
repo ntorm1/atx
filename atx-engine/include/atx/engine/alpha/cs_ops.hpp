@@ -5,7 +5,8 @@
 // The per-date-row cross-sectional opcodes for the fast vectorized VM
 // (vm.hpp): rank / zscore / scale / normalize / winsorize / indneutralize
 // (== group demean) / group_neutralize (== demean) / group_rank / group_zscore
-// / group_count / group_mean / group_scale (the last six P3b-2). These free
+// / group_count / group_mean / group_scale (the last six P3b-2) / group_sum
+// (v8 YOPS, sharing group_count / group_mean's accumulation). These free
 // functions are the PRODUCTION-path counterparts of oracle.hpp's
 // `detail::cs_*`; vm.hpp's `Engine::eval_cross_section` slices each slot
 // buffer to a single date row and calls into them. They MUST reproduce the
@@ -745,13 +746,33 @@ inline void cs_winsorize_row(std::span<const atx::f64> x, const std::vector<atx:
 }
 
 // ===========================================================================
-//  CsCountG / CsMeanG (P3b-2) — broadcast a within-group aggregate (member
-//  count or mean) to every valid member of the group. `want_mean` selects the
-//  variant. A cell with a NaN group label has no group -> stays NaN.
+//  CsCountG / CsMeanG (P3b-2) / CsSumG (v8 YOPS) — broadcast a within-group
+//  aggregate (member count, mean or sum) to every valid member of the group. A
+//  cell with a NaN group label has no group -> stays NaN. The three share ONE
+//  accumulation pass (Σx and the count, ascending instrument order), so the Σ
+//  group_sum emits is bit-for-bit the Σ group_mean divides; a valid cell's
+//  group always holds itself, so no valid cell sees an empty group. The valid
+//  set is the house one (non-NaN x): a ±inf member propagates into the sum and
+//  the mean alike.
 // ===========================================================================
-inline void cs_group_count_mean_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
-                                    const std::vector<atx::usize> &valid, std::span<atx::f64> out,
-                                    bool want_mean, CsScratch &scratch) {
+enum class GroupAgg : atx::u8 { Count, Mean, Sum };
+
+[[nodiscard]] inline atx::f64 cs_group_agg_value(GroupAgg agg, atx::f64 sum,
+                                                 atx::usize cnt) noexcept {
+  switch (agg) {
+  case GroupAgg::Count:
+    return static_cast<atx::f64>(cnt);
+  case GroupAgg::Mean:
+    return sum / static_cast<atx::f64>(cnt);
+  case GroupAgg::Sum:
+    return sum;
+  }
+  return kCsNaN; // unreachable: every GroupAgg is handled above
+}
+
+inline void cs_group_aggregate_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                                   const std::vector<atx::usize> &valid, std::span<atx::f64> out,
+                                   GroupAgg agg, CsScratch &scratch) {
 #ifdef ATX_ALPHA_CS_REFERENCE
   (void)scratch;
   for (const atx::usize i : valid) {
@@ -766,7 +787,7 @@ inline void cs_group_count_mean_row(std::span<const atx::f64> x, std::span<const
         ++cnt;
       }
     }
-    out[i] = want_mean ? sum / static_cast<atx::f64>(cnt) : static_cast<atx::f64>(cnt);
+    out[i] = cs_group_agg_value(agg, sum, cnt);
   }
 #else
   scratch.begin_date(valid.size());
@@ -783,10 +804,17 @@ inline void cs_group_count_mean_row(std::span<const atx::f64> x, std::span<const
       continue;
     }
     const atx::usize gid = scratch.group_id(CsScratch::label_key(g[i]));
-    out[i] = want_mean ? scratch.gsum[gid] / static_cast<atx::f64>(scratch.gcnt[gid])
-                       : static_cast<atx::f64>(scratch.gcnt[gid]);
+    out[i] = cs_group_agg_value(agg, scratch.gsum[gid], scratch.gcnt[gid]);
   }
 #endif
+}
+
+// The pre-v8 entry point (count or mean), unchanged in behaviour.
+inline void cs_group_count_mean_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                                    const std::vector<atx::usize> &valid, std::span<atx::f64> out,
+                                    bool want_mean, CsScratch &scratch) {
+  cs_group_aggregate_row(x, g, valid, out, want_mean ? GroupAgg::Mean : GroupAgg::Count,
+                         scratch);
 }
 
 // ===========================================================================

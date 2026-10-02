@@ -203,6 +203,7 @@ struct RecState {
   case OpCode::CsQuantile:
   case OpCode::CsVecSum:
   case OpCode::CsVecAvg:
+  case OpCode::CsSumG: // v8 YOPS group_sum
     return true;
   default:
     return false;
@@ -212,7 +213,7 @@ struct RecState {
 [[nodiscard]] inline bool is_grouped_cs(OpCode op) noexcept {
   return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
          op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
-         op == OpCode::CsScaleG || op == OpCode::CsResidualize;
+         op == OpCode::CsScaleG || op == OpCode::CsResidualize || op == OpCode::CsSumG;
 }
 
 // Classify a Ts op exactly as vm.hpp eval_time_series routes it.
@@ -830,6 +831,9 @@ private:
       break;
     case OpCode::CsMeanG:
       detail::cs_group_count_mean_row(x, g, cs_valid_, out, /*want_mean=*/true, cs_scratch_);
+      break;
+    case OpCode::CsSumG:
+      detail::cs_group_aggregate_row(x, g, cs_valid_, out, detail::GroupAgg::Sum, cs_scratch_);
       break;
     case OpCode::CsScaleG:
       detail::cs_group_scale_row(x, g, cs_valid_, out, cs_scratch_);

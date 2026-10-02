@@ -224,6 +224,13 @@ enum class OpCode : atx::u8 {
   TsMaxMp,
   TsDecayLinearMp,
   TsCorrMp,         // ts_corr_mp(x, y, w, m)
+  // ---- platform-v8 lane YOPS formulaic ops. APPENDED after TsCorrMp so every
+  //      earlier id keeps its value. Registry rows live in detail::formulaic_ops(),
+  //      outside builtin_ops() and literature_ops(), so neither the factory's
+  //      op-swap catalogue (with or without literature_ops) nor its wrapper set
+  //      changes. Kernel: cs_ops.hpp cs_group_aggregate_row; oracle twin:
+  //      oracle.cpp cs_group_sum.
+  CsSumG, // group_sum(x, g): the group's sum over its valid members, broadcast
 };
 
 // Opcode ids are part of the wire format of serialized programs and of every
@@ -232,6 +239,7 @@ static_assert(static_cast<atx::u8>(OpCode::OuZscore) == 86, "pre-W2 opcode ids a
 static_assert(static_cast<atx::u8>(OpCode::Free) == 88, "pre-W2 opcode ids are frozen");
 static_assert(static_cast<atx::u8>(OpCode::ArgPack) == 89, "W2 opcodes start after Free");
 static_assert(static_cast<atx::u8>(OpCode::TsCorrMp) == 104, "W2 opcode ids are frozen");
+static_assert(static_cast<atx::u8>(OpCode::CsSumG) == 105, "YOPS opcodes start after TsCorrMp");
 
 // =========================================================================
 //  Shape signatures (plan §4 broadcast rules).
@@ -401,8 +409,9 @@ struct OpSig {
 class Library {
 public:
   // Registers all built-in operators (Appendix A), then the W2 literature ops
-  // (detail::literature_ops). The tables are statically valid (no duplicate
-  // names, every row has a shape_of); only the vector allocation can throw.
+  // (detail::literature_ops), then the v8 formulaic ops (detail::formulaic_ops).
+  // The tables are statically valid (no duplicate names, every row has a
+  // shape_of); only the vector allocation can throw.
   Library();
 
   // Look up an operator by name. Returns a non-owning pointer borrowed from the
@@ -462,6 +471,13 @@ namespace detail {
 // for its op-swap buckets and wrapper candidates, so these rows cannot change
 // any seeded search draw. Static storage; every `name` view is non-dangling.
 [[nodiscard]] std::span<const OpSig> literature_ops() noexcept;
+
+// The platform-v8 lane YOPS formulaic ops (group_sum; the 101-formulaic-alphas
+// constructs). Registered into every Library after the literature rows and kept
+// OUT of both tables above: OpCatalog walks only builtin_ops() (and, with
+// OpCatalogCfg::literature_ops, literature_ops()), so no op-swap bucket, wrapper
+// candidate or seeded search draw changes. Static storage.
+[[nodiscard]] std::span<const OpSig> formulaic_ops() noexcept;
 
 // ---- W2 multi-regressor ops ("pack consumers") -------------------------------
 // ts_resid_on / ts_beta_on / cs_resid_on accept more regressors than the three

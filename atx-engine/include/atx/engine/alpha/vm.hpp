@@ -854,6 +854,7 @@ private:
     case OpCode::CsVecAvg:
     case OpCode::CsBucket:  // W2: date rows (lit_ops.hpp)
     case OpCode::CsResidOn: // W2
+    case OpCode::CsSumG:    // v8 YOPS group_sum
       return true;
     default:
       return false;
@@ -1242,6 +1243,7 @@ private:
     case OpCode::CsQuantile:
     case OpCode::CsVecSum:
     case OpCode::CsVecAvg:
+    case OpCode::CsSumG: // v8 YOPS group_sum (cs_ops.hpp)
       return eval_cross_section(in, instruments, lo, hi);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -1500,7 +1502,7 @@ private:
     const bool grouped =
         (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
          in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-         in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
+         in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize || in.op == OpCode::CsSumG);
     std::span<const atx::f64> g{};
     std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
     // The scalar 2nd operand: CsScale's target L1 norm `a`, CsWinsorize's std
@@ -1643,6 +1645,9 @@ private:
       break;
     case OpCode::CsMeanG:
       detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/true, scratch);
+      break;
+    case OpCode::CsSumG:
+      detail::cs_group_aggregate_row(x, g, valid, out, detail::GroupAgg::Sum, scratch);
       break;
     case OpCode::CsScaleG:
       detail::cs_group_scale_row(x, g, valid, out, scratch);

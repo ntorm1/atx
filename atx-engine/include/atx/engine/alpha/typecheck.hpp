@@ -103,6 +103,7 @@ namespace detail {
   case OpCode::CsVecAvg:
   case OpCode::CsBucket:  // W2
   case OpCode::CsResidOn: // W2
+  case OpCode::CsSumG:    // v8 YOPS group_sum
     return true;
   default:
     return false;
@@ -111,11 +112,12 @@ namespace detail {
 
 // The group-aware cross-sectional ops: their 2nd argument must carry a Group
 // classifier dtype (the four neutralize/rank/zscore variants + the P3b-2
-// group aggregates group_count/group_mean/group_scale + S3.1 cs_residualize).
+// group aggregates group_count/group_mean/group_scale + S3.1 cs_residualize +
+// v8 group_sum).
 [[nodiscard]] inline bool needs_group_arg(OpCode op) noexcept {
   return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
          op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
-         op == OpCode::CsScaleG || op == OpCode::CsResidualize;
+         op == OpCode::CsScaleG || op == OpCode::CsResidualize || op == OpCode::CsSumG;
 }
 
 // ----- scalar-literal operand slots (W0-A0 / A-03) -------------------------

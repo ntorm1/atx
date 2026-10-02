@@ -211,14 +211,28 @@ namespace detail {
   return kLit;
 }
 
+// Platform-v8 lane YOPS formulaic ops. Same positional row layout as builtin_ops.
+// Semantics: cs_ops.hpp (group_sum).
+[[nodiscard]] std::span<const OpSig> formulaic_ops() noexcept {
+  static constexpr std::array<OpSig, 1> kFormulaic = {{
+      // group_sum(x, g): Σ x over the group's valid members (x non-NaN, the same
+      // non-NaN label), broadcast to each valid member; arg 2 is a Group classifier
+      // exactly as group_mean's (typecheck needs_group_arg).
+      {"group_sum", 2, 2, OpCode::CsSumG, DType::F64, true, {}, &shape_cross_section},
+  }};
+  return kFormulaic;
+}
+
 } // namespace detail
 
 Library::Library() {
   const std::span<const OpSig> builtins = detail::builtin_ops();
   const std::span<const OpSig> lit = detail::literature_ops();
-  ops_.reserve(builtins.size() + lit.size());
+  const std::span<const OpSig> formulaic = detail::formulaic_ops();
+  ops_.reserve(builtins.size() + lit.size() + formulaic.size());
   ops_.assign(builtins.begin(), builtins.end());
   ops_.insert(ops_.end(), lit.begin(), lit.end());
+  ops_.insert(ops_.end(), formulaic.begin(), formulaic.end());
 }
 
 atx::core::Status Library::register_op(const OpSig &sig) {

@@ -122,6 +122,7 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::CsBucket:
   case OpCode::GroupCross:
   case OpCode::CsResidOn:
+  case OpCode::CsSumG:
     return false;
   }
   return false; // unreachable for valid OpCode

@@ -380,6 +380,7 @@ private:
     case OpCode::CsQuantile:
     case OpCode::CsVecSum:
     case OpCode::CsVecAvg:
+    case OpCode::CsSumG: // v8 YOPS group_sum
       return eval_cross_section(in);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -724,6 +725,11 @@ void cs_winsorize(std::span<const atx::f64> x, const std::vector<atx::usize> &va
 void cs_group_count_mean(std::span<const atx::f64> x, std::span<const atx::f64> g,
                          const std::vector<atx::usize> &valid, std::span<atx::f64> out,
                          bool want_mean);
+
+// CsSumG (v8 YOPS group_sum): broadcast Σ x over the group's valid members
+// (ascending instrument order) to each valid member. A NaN group label -> NaN.
+void cs_group_sum(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                  const std::vector<atx::usize> &valid, std::span<atx::f64> out);
 
 // CsScaleG (P3b-2): scale within each group so Σ|x| over the group's valid
 // members == 1 (zero-L1 group -> 0). A NaN group label -> stays NaN.
