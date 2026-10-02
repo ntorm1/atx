@@ -1213,3 +1213,48 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   Open: prereg decision D5 (the confirm gate now binds: owner rechecks the discover / confirm split); each rho
   batch re-hashes all member files (about 3.6 GB a pass at mine-c1); no test yet compares one promotion engine
   with fresh engines per batch. Follow-up sent to the lane for the last two.
+
+## 2026-10-01 orientation: code facts, Ruling PM5-18 (before any IC level, orientation value or return is read); FIELDS-V9
+- FIELDS-V9 done 834d5a05 (pool 11; PM5-13): new module research_fields_v9.py with nt_first_126
+  (sec-nt-first365-126-v1) 8cfd6dc8 and earn_season_rank (chss-earnrank-ni20q-v1) a14e0b02; draft entry
+  prepare_research_fields_draft.py (FIELDS_V13_DRAFT = v12 + the two); tests aab60d2e (26 new; atx-engine/tools
+  279 pass). New files only; a test pins every existing producer fingerprint, so the v8 reuse counts cannot
+  move. nt_late and earn_season are FIELD-BUILT (DSL uncompiled, unrun on data). Readings recorded for the v9
+  registration: a notice accepted after 22:00 UTC on d is usable from d+2 (the 8-K lag rule); presence counts
+  every original domestic form; earn_season's A is the latest visible fiscal quarter; the expected window is
+  the existing ea_days_to_expected (past announcements only). nt_first_126 reads filings.parquet whole through
+  the sealed reader, as the 8-K fields read theirs: accepted (the weaker events-only presence rule is not
+  taken). Merge at integration 8.
+- Investigator (read-only, source only; orientation-consumers.md): the book B0a trades takes every member's sign
+  from the literature prior (fit --orientation prior, fit_composition_weights.py:2287, written to the weights
+  file's signs :2381; the w pass applies it, strategy_ic_runner.cpp:433; then train_combined and NAV). The
+  runner's own orientation is the sign of the mean finite daily rank IC at horizon 21 over the run's whole
+  scored window (runner.cpp:419-421); it feeds orientations.json, the oriented_rank_ic column and the u-pass
+  combined row, which are unread diagnostics (only compare_window_overlap reads them), reported fields of the
+  fit (runner_sign, sign_agrees), provenance hashes, and the spec gate's sign_agrees test (research_cycle.py
+  :1418; v4-prereg P1). No runner option pins an orientation on a scored TRAIN role. All spec-driven v6 / v7
+  cells used --orientation prior. Not established by reading: whether a flipped name sits in a v6.1 / v7.0 /
+  v7.1 gate list (deliberately not crossed).
+- Ruling PM5-18 (orientation on the 4-year window; declared blind to which names flipped and to every level):
+  (1) Book: the code as is. Every v8 cell trades prior signs; the runner's own-window orientation stays a
+  diagnostic. No orientation is pinned to the 3-year run and no executable changes -- prereg rules 10-11 and
+  plan section 13 (no member is dropped or flipped on its TRAIN sign); it is how the 37 ledgered cells were
+  run. (2) Gates: the P1 sign_agrees gate is a promotion test of a NEW member in the cell that admits it, on
+  that cell's window. It applies as registered to the members R-2, R-7 and R-12 add (4-year window). A member
+  promoted in a ledgered cell is not re-tested: in a W0-4 re-run of a ledgered cell on the longer window the
+  gate is evaluated and logged, and a sign disagreement is reported, not a stop; the member keeps its prior
+  sign and its place -- section 13 again; re-running a promotion test on a longer window with the power to
+  drop is exactly the selection on TRAIN sign the plan forbids, and a re-run adds 0 to N because it changes
+  nothing. (3) W0-a: the daily IC overlap's difference is closed by the cause test of PM5-16, part (i) required:
+  raw columns identical for all 48, oriented column equal for 45 and the exact negation on every finite common
+  cell for the three keys the overlap report named, counts and booleans only. Part (ii) (the combined row
+  rebuilt with the 3-year signs on the 4-year run, bit-identical on the common cells) is run once; if it is
+  bit-identical the cause is fully shown; if it is not, the row is recorded as 'explained by construction, not
+  reproduced' (signals bit-identical, raw IC bit-identical, three signs differ), the cause of the mismatch in
+  the reproduction path is written down from code, and the re-base continues, because nothing reads the u-pass
+  row. If part (i) fails, the re-base stays stopped. The 4-year values are the reference -- W0-a protects old
+  values that feed a paired comparison; a diagnostic that is a function of the window is not one -- cost if
+  wrong: a real per-cell change hidden behind the sign flips would pass (ii)'s fallback; part (i) on the raw
+  columns of all 48 candidates is the guard.
+- Dispatched: integrator W0-2c (root): cause test (i), (ii); then R14 (pins, protocol line, lock base-lo1 only,
+  PM5-17).
