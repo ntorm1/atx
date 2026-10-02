@@ -11,6 +11,13 @@ Run from the repository root (no arguments; synthetic data only, reads no data p
    window is under 10 sessions, rank(decay_linear(x, 21)) otherwise), against the house budget.
 3. SELECTION: the rule of task-XWQ-report.md section 3, coded (eligibility filters, one pick per cluster, fixed
    tie-break); it reads only this table and the mirror's static figures (no return, IC or Sharpe of any window).
+4. CLASSES (synthetic world with splits, dividends and a different vendor factor anchor per line): every exact
+   transcription evaluates in its house form and is free of the anchor; every class-L one depends on it without its
+   raw_close / close rebase.
+5. PICKS: each picked string, unwrapped and in its house form, equals cell for cell (and in its NaN pattern) a direct
+   numpy implementation of the printed formula evaluated on prices re-adjusted as of every evaluation day; a raw-basis
+   probe and a mutation probe (plausible transcription mistakes and the other house form) must fail. The frozen
+   add-alpha lines are printed with a SHA-256 prefix each.
 K1 (``--plan-only`` through add-alpha) remains the checker of record; this file states what K1 should print.
 """
 from __future__ import annotations
@@ -466,6 +473,439 @@ def select(st: dict) -> tuple[list, dict]:
     return picks, why
 
 
+# ------------------------------------------------------------------------------------------------ the registration
+BASIS = ("prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); "
+         "the formula is scale-free, so it equals the paper's prices adjusted as of each day")
+PICKS = {   # paper number -> registration; rank order = the rule's output order (longest printed window first)
+    99: {"id": "wq_099", "theme": "price_volume", "nearest": "stmom",
+         "formula": "-1 when the cross-sectional rank of the 8-session correlation between the 19-session sums of the "
+                    "mid price (high + low) / 2 and of 60-session dollar ADV is below the rank of the 6-session "
+                    "correlation of the low with share volume, else 0 (Alpha#99; written b > a for the 7-slot budget, "
+                    "same semantics)",
+         "domain": "NaN while a window is short or holds a NaN (104 bars) or a correlation window is flat; values -1 "
+                   "and 0",
+         "deviation": "adv60 = mean of raw close x share volume over 60 sessions (paper: average daily dollar "
+                      "volume); fractional windows floored as the paper states (19.8975 -> 19, 8.8136 -> 8, 6.28259 "
+                      "-> 6); " + BASIS + "; house form decay_linear 21 then rank (paper: raw alpha, delay 1)"},
+    35: {"id": "wq_035", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx",
+         "formula": "ts_rank(volume, 32) x (1 - ts_rank(close + high - low, 16)) x (1 - ts_rank(daily return, 32)) "
+                    "(Alpha#35): unusually high volume with a price and a return low against their own recent history",
+         "domain": "NaN until 32 sessions of every input; values in [0, 1]",
+         "deviation": "ts_rank = average-tie percentile of today in its window, in [0, 1] (the paper's 1 - Ts_Rank "
+                      "implies [0, 1]); returns = adjusted close-to-close; volume = raw shares; " + BASIS +
+                      "; house form decay_linear 21 then rank"},
+    55: {"id": "wq_055", "theme": "price_volume", "nearest": "high_52w",
+         "formula": "-correlation over 6 sessions of the cross-sectional rank of the 12-session stochastic %K, (close - "
+                    "min low) / (max high - min low), with the rank of share volume (Alpha#55)",
+         "domain": "NaN while a window is short, holds a NaN or is flat; a 12-session range of zero gives NaN",
+         "deviation": BASIS + "; house form decay_linear 21 then rank"},
+    6: {"id": "wq_006", "theme": "price_volume", "nearest": "stmom",
+        "formula": "-correlation(open, volume, 10) (Alpha#6): open prices that move with share volume predict lower "
+                   "returns",
+        "domain": "NaN while the window is short, holds a NaN or is flat",
+        "deviation": BASIS + "; volume = raw shares (a split inside the window shifts its level); house form "
+                             "decay_linear 21 then rank"},
+    2: {"id": "wq_002", "theme": "price_volume", "nearest": "stmom",
+        "formula": "-correlation over 6 sessions of rank(2-session change of log volume) with rank((close - open) / "
+                   "open) (Alpha#2): volume surges that coincide with intraday gains predict lower returns",
+        "domain": "NaN while a window is short, holds a NaN or is flat; a zero volume gives a log of -inf",
+        "deviation": "same-session price ratio only (no adjustment enters); house form decay_linear 5 (longest printed "
+                     "window 6) then rank"},
+    101: {"id": "wq_101", "theme": "price_momentum", "nearest": "stmom",
+          "formula": "(close - open) / ((high - low) + 0.001) on the session's own prices (Alpha#101, the paper's "
+                     "delay-1 momentum example): the day's body relative to its range",
+          "domain": "NaN without the session bar; values in about [-1, 1]",
+          "deviation": "level-dependent through the 0.001 dollar term: computed on the session's raw prices (close - "
+                       "open and high - low rebased by raw_close / close); house form decay_linear 5 then rank"},
+}
+EXPECTED = {  # (bars, slots, nodes, extra fields) of the wrapped house strings: what K1 should print
+    99: (104, 7, 28, ["high_adj", "low_adj"]), 35: (52, 7, 22, ["high_adj", "low_adj"]),
+    55: (36, 6, 19, ["high_adj", "low_adj"]), 6: (29, 5, 9, ["open_adj"]), 2: (11, 5, 17, ["open_adj"]),
+    101: (4, 5, 16, ["high_adj", "low_adj", "open_adj"]),
+}
+MUTANTS = {   # plausible transcription mistakes; each must fail the semantic check
+    99: ["(-1 * ((rank(correlation({L}, volume, 6)) > rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum(ts_mean((raw_close * volume), 59), 19), 8))) ? 1 : 0))",
+         "(-1 * ((rank(correlation({L}, volume, 6)) < rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV60}, "
+         "19), 8))) ? 1 : 0))",
+         "(-1 * ((rank(correlation({H}, volume, 6)) > rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV60}, "
+         "19), 8))) ? 1 : 0))"],
+    35: ["((ts_rank(volume, 31) * (1 - ts_rank(((close + {H}) - {L}), 16))) * (1 - ts_rank({R}, 32)))",
+         "((ts_rank(volume, 32) * ts_rank(((close + {H}) - {L}), 16)) * (1 - ts_rank({R}, 32)))",
+         "((ts_rank(volume, 32) * (1 - ts_rank(((close + {L}) - {H}), 16))) * (1 - ts_rank({R}, 32)))"],
+    55: ["(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 11) - ts_min({L}, 12)))), rank(volume), 6))",
+         "(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 12) - ts_min({L}, 12)))), volume, 6))",
+         "(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 12) - ts_min({L}, 12)))), rank(volume), 5))"],
+    6: ["(-1 * correlation({H}, volume, 10))", "(-1 * correlation({O}, volume, 9))", "correlation({O}, volume, 10)"],
+    2: ["(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - {O}) / {O})), 7))",
+        "(1 * correlation(rank(delta(log(volume), 2)), rank(((close - {O}) / {O})), 6))",
+        "(-1 * correlation(rank(delta(log(volume), 1)), rank(((close - {O}) / {O})), 6))",
+        "(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - {H}) / {H})), 6))"],
+    101: ["((close - {O}) / (({H} - {L}) + 0.001))",
+          "(((close - {O}) * {K}) / ((({H} - {L}) * {K}) + 0.01))",
+          "((({O} - close) * {K}) / ((({H} - {L}) * {K}) + 0.001))"],
+}
+
+
+# ------------------------------------------------------------------------------------------------ synthetic world
+def synthetic(seed: int = 20261002, T: int = 180, N: int = 33) -> dict:
+    """Raw daily bars with splits (2:1, 3:1, 1:2 reverse) and cash dividends, vendor-style cumulative factors F with a
+    different arbitrary anchor per line, raw share volume (a split multiplies it), and the house fields built exactly
+    as the role and research_fields_ohlc.py build them (close = raw close x F; x_adj = x x close / raw_close)."""
+    rng = np.random.default_rng(seed)
+    f = np.exp(rng.uniform(np.log(0.02), np.log(50.0), N))           # anchors differ by line (vendor-like)
+    c = np.exp(rng.uniform(np.log(5.0), np.log(400.0), N))
+    shares = np.exp(rng.uniform(np.log(1e7), np.log(1e9), N))
+    split_at = np.where(rng.random(N) < 0.4, rng.integers(30, T - 5, N), -1)
+    split_k = rng.choice([2.0, 3.0, 0.5], N)
+    div_lines = rng.random(N) < 0.4
+    raw = {k: np.empty((T, N)) for k in "ohlc"}
+    F, V = np.empty((T, N)), np.empty((T, N))
+    vol_scale = np.ones(N)
+    for t in range(T):
+        o = c * np.exp(rng.normal(0.0, 0.012, N))
+        hit = split_at == t
+        o, f, vol_scale = np.where(hit, o / split_k, o), np.where(hit, f * split_k, f), np.where(hit, vol_scale * split_k,
+                                                                                                vol_scale)
+        if t % 63 == 17:
+            y = np.where(div_lines, rng.uniform(0.002, 0.02, N), 0.0)
+            o, f = o * (1.0 - y), f / (1.0 - y)
+        c = o * np.exp(rng.normal(0.0, 0.02, N))
+        raw["o"][t], raw["c"][t] = o, c
+        raw["h"][t] = np.maximum(o, c) * np.exp(np.abs(rng.normal(0.0, 0.008, N)))
+        raw["l"][t] = np.minimum(o, c) * np.exp(-np.abs(rng.normal(0.0, 0.008, N)))
+        F[t] = f
+        V[t] = vol_scale * np.exp(rng.normal(11.0, 0.5, N)) * np.where(rng.random(N) < 0.05, 4.0, 1.0)
+    return {"raw": raw, "F": F, "V": V, "shares": shares, "T": T, "N": N,
+            "grp": {g: rng.integers(1, k + 1, N).astype(float) for g, k in (("grp_ff12", 12), ("grp_ff49", 49),
+                                                                             ("grp_sic2", 70))}}
+
+
+def house_env(w: dict, anchor=None, raw_basis: bool = False) -> dict:
+    """The DSL fields of world ``w``: the house basis (optionally with every line's factor anchor multiplied by
+    ``anchor``), or the raw prices put in their place (``raw_basis``: what a missing split adjustment would read)."""
+    F = w["F"] * (1.0 if anchor is None else anchor)
+    raw_close = w["raw"]["c"]
+    close = raw_close if raw_basis else raw_close * F
+    k = close / raw_close
+    env = {"close": close, "raw_close": raw_close, "volume": w["V"], "open_adj": w["raw"]["o"] * k,
+           "high_adj": w["raw"]["h"] * k, "low_adj": w["raw"]["l"] * k, "me_company": raw_close * w["shares"]}
+    env.update({g: np.broadcast_to(v, (w["T"], w["N"])).copy() for g, v in w["grp"].items()})
+    return env
+
+
+# ------------------------------------------------------------------------------------------------ DSL interpreter
+# House semantics (atx-engine oracle.hpp contract): NaN propagates; masks are 1 / 0 / NaN; select on a NaN mask is NaN;
+# cross-sectional ops over the non-NaN cells of a row; time-series ops need a full NaN-free trailing window (sum, mean,
+# std also refuse a non-finite cell); rank = average-tie percentile (n-1 denominator, a single cell 0.5); ts_rank the
+# same within the window; ts_argmax / ts_argmin = 1-based position of the first extreme from the oldest day;
+# correlation = Pearson, NaN on a flat window (sqrt(ss / n) <= 1e-10 |mean|); stddev ddof 1; decay_linear weights
+# 1..d, newest heaviest, accumulated oldest first; scale to unit L1 (zero L1 -> 0); indneutralize = group demean.
+def _rank_row(v):
+    out = np.full(v.shape, np.nan)
+    ok = ~np.isnan(v)
+    x = v[ok]
+    if len(x):
+        less = (x[None, :] < x[:, None]).sum(axis=1)
+        eq = (x[None, :] == x[:, None]).sum(axis=1)
+        out[ok] = 0.5 if len(x) == 1 else (less + (eq - 1) / 2.0) / (len(x) - 1)
+    return out
+
+
+def _flat(ss, mean, n):
+    return np.sqrt(ss / n) <= 1e-10 * np.abs(mean)
+
+
+def _ts(x, d, fn, finite=False):
+    out = np.full(x.shape, np.nan)
+    for t in range(d - 1, x.shape[0]):
+        w = x[t - d + 1:t + 1]
+        bad = np.isnan(w).any(axis=0) | (~np.isfinite(w).all(axis=0) if finite else False)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[t] = np.where(bad, np.nan, fn(w))
+    return out
+
+
+def _corr(a, b, d, cov=False):
+    out = np.full(a.shape, np.nan)
+    for t in range(d - 1, a.shape[0]):
+        wa, wb = a[t - d + 1:t + 1], b[t - d + 1:t + 1]
+        bad = np.isnan(wa).any(axis=0) | np.isnan(wb).any(axis=0)
+        ma, mb = wa.mean(axis=0), wb.mean(axis=0)
+        sab = ((wa - ma) * (wb - mb)).sum(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            if cov:
+                out[t] = np.where(bad, np.nan, sab / (d - 1))
+                continue
+            saa, sbb = ((wa - ma) ** 2).sum(axis=0), ((wb - mb) ** 2).sum(axis=0)
+            flat = _flat(saa, ma, d) | _flat(sbb, mb, d)
+            den = np.sqrt(saa * sbb)
+            out[t] = np.where(bad | flat | (den == 0), np.nan, sab / den)
+    return out
+
+
+def _decay(w):
+    acc = np.zeros(w.shape[1:])
+    for i in range(w.shape[0]):
+        acc = acc + (i + 1) * w[i]
+    return acc / (w.shape[0] * (w.shape[0] + 1) / 2.0)
+
+
+def _tsrank(w):
+    last = w[-1]
+    less, eq = (w < last).sum(axis=0), (w == last).sum(axis=0)
+    return (less + (eq - 1) / 2.0) / (w.shape[0] - 1)
+
+
+def _std(w):
+    m = w.mean(axis=0)
+    ss = ((w - m) ** 2).sum(axis=0)
+    return np.where(_flat(ss, m, w.shape[0]), 0.0, np.sqrt(ss / (w.shape[0] - 1)))
+
+
+TS_UNARY = {"ts_sum": (lambda w: w.sum(axis=0), True), "ts_mean": (lambda w: w.mean(axis=0), True),
+            "stddev": (_std, True), "ts_std": (_std, True), "ts_min": (lambda w: w.min(axis=0), False),
+            "ts_max": (lambda w: w.max(axis=0), False), "ts_rank": (_tsrank, False),
+            "ts_argmax": (lambda w: np.argmax(w, axis=0) + 1.0, False),
+            "ts_argmin": (lambda w: np.argmin(w, axis=0) + 1.0, False),
+            "product": (lambda w: np.prod(w, axis=0), False), "decay_linear": (_decay, False)}
+
+
+def _nan2(a, b, v):
+    return np.where(np.isnan(a) | np.isnan(b), np.nan, v)
+
+
+def ev(node, env):
+    k = node["key"]
+    if k[0] == "num":
+        return k[1]
+    if k[0] == "field":
+        return env[k[1]]
+    a = [ev(c, env) for c in node["kids"]]
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        if k[0] == "bin":
+            return {"+": np.add, "-": np.subtract, "*": np.multiply, "/": np.divide}[k[1]](a[0], a[1])
+        if k[0] == "cmp":
+            op = {"<": np.less, ">": np.greater, "<=": np.less_equal, ">=": np.greater_equal, "==": np.equal,
+                  "!=": np.not_equal}[k[1]]
+            return _nan2(a[0], a[1], op(a[0], a[1]).astype(float))
+        if k[0] == "logic":
+            x, y = ((np.asarray(v) != 0) & ~np.isnan(v) for v in (a[0], a[1]))
+            return _nan2(a[0], a[1], (x & y if k[1] == "&&" else x | y).astype(float))
+        if k[0] == "sel":
+            return np.where(np.isnan(a[0]), np.nan, np.where(a[0] != 0, a[1], a[2]))
+        name = k[1]
+        if name in TS_UNARY:
+            fn, finite = TS_UNARY[name]
+            return _ts(a[0], int(a[1]), fn, finite)
+        if name in ("delay", "delta"):
+            d, x = int(a[1]), a[0]
+            sh = np.full(x.shape, np.nan)
+            sh[d:] = x[:-d]
+            return sh if name == "delay" else x - sh
+        if name in ("correlation", "ts_corr", "covariance"):
+            return _corr(a[0], a[1], int(a[2]), cov=name == "covariance")
+        if name == "rank":
+            return np.array([_rank_row(r) for r in a[0]])
+        if name == "scale":
+            x, s = a[0], (a[1] if len(a) > 1 else 1.0)
+            l1 = np.nansum(np.abs(x), axis=1, keepdims=True)
+            return np.where(np.isnan(x), np.nan, x * np.where(l1 == 0, 0.0, s / np.where(l1 == 0, 1.0, l1)))
+        if name == "indneutralize":
+            x, g = a
+            out = np.full(x.shape, np.nan)
+            for t in range(x.shape[0]):
+                ok = ~np.isnan(x[t]) & ~np.isnan(g[t])
+                for lab in np.unique(g[t][ok]):
+                    m = ok & (g[t] == lab)
+                    out[t, m] = x[t, m] - x[t, m].mean()
+            return out
+        unary = {"abs": np.abs, "sign": np.sign, "log": np.log}
+        if name in unary:
+            return unary[name](a[0])
+        if name == "power":
+            return np.power(a[0], a[1])
+        if name == "signedpower":
+            return _nan2(a[0], a[1], np.sign(a[0]) * np.power(np.abs(a[0]), a[1]))
+        if name in ("min", "max"):
+            return _nan2(a[0], a[1], (np.minimum if name == "min" else np.maximum)(a[0], a[1]))
+    raise NotImplementedError(k)
+
+
+def run(text: str, env: dict) -> np.ndarray:
+    return np.broadcast_to(ev(xs.parse(text), env), env["close"].shape).astype(float)
+
+
+# ------------------------------------------------------------------------------------------------ the printed formulas,
+# implemented directly (numpy, sliding windows) on prices adjusted AS OF each evaluation day (reading A: the paper's
+# section 2), evaluated row by row; written independently of the interpreter above.
+def _w(x, d):
+    pad = np.full((d - 1,) + x.shape[1:], np.nan)
+    return np.lib.stride_tricks.sliding_window_view(np.concatenate([pad, x]), d, axis=0)   # (T, N, d), oldest first
+
+
+def d_sum(x, d):
+    w = _w(x, d)
+    return np.where(np.isfinite(w).all(axis=-1), w.sum(axis=-1), np.nan)
+
+
+def d_mean(x, d):
+    return d_sum(x, d) / d
+
+
+def d_min(x, d):
+    w = _w(x, d)
+    return np.where(np.isfinite(w).all(axis=-1), w.min(axis=-1), np.nan)
+
+
+def d_max(x, d):
+    w = _w(x, d)
+    return np.where(np.isfinite(w).all(axis=-1), w.max(axis=-1), np.nan)
+
+
+def d_tsrank(x, d):
+    w = _w(x, d)
+    last = w[..., -1:]
+    r = ((w < last).sum(axis=-1) + ((w == last).sum(axis=-1) - 1) / 2.0) / (d - 1)
+    return np.where(np.isfinite(w).all(axis=-1), r, np.nan)
+
+
+def d_corr(x, y, d):
+    wx, wy = _w(x, d), _w(y, d)
+    ok = np.isfinite(wx).all(axis=-1) & np.isfinite(wy).all(axis=-1)
+    dx, dy = wx - wx.mean(axis=-1, keepdims=True), wy - wy.mean(axis=-1, keepdims=True)
+    sxx, syy, sxy = (dx * dx).sum(axis=-1), (dy * dy).sum(axis=-1), (dx * dy).sum(axis=-1)
+    flat = (np.sqrt(sxx / d) <= 1e-10 * np.abs(wx.mean(axis=-1))) | (np.sqrt(syy / d) <= 1e-10 * np.abs(wy.mean(axis=-1)))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(ok & ~flat, sxy / np.sqrt(sxx * syy), np.nan)
+
+
+def d_decay(x, d):
+    w = _w(x, d)
+    wts = np.arange(1, d + 1, dtype=float)
+    return np.where(np.isfinite(w).all(axis=-1), (w * wts).sum(axis=-1) / wts.sum(), np.nan)
+
+
+def d_rank(x):
+    out = np.full(x.shape, np.nan)
+    for t, row in enumerate(x):
+        idx = np.flatnonzero(np.isfinite(row))
+        for i in idx:
+            less = np.count_nonzero(row[idx] < row[i])
+            eq = np.count_nonzero(row[idx] == row[i])
+            out[t, i] = 0.5 if len(idx) == 1 else (less + (eq - 1) / 2.0) / (len(idx) - 1)
+    return out
+
+
+def d_shift(x, k):
+    out = np.full(x.shape, np.nan)
+    out[k:] = x[:-k]
+    return out
+
+
+PRINTED_NUMPY = {   # each: (P = prices adjusted as of the row, V = share volume, RC = raw close) -> alpha panel
+    99: lambda P, V, RC: -1.0 * _cmp_lt(d_rank(d_corr(d_sum((P["h"] + P["l"]) / 2.0, 19), d_sum(d_mean(RC * V, 60), 19),
+                                                       8)), d_rank(d_corr(P["l"], V, 6))),
+    35: lambda P, V, RC: (d_tsrank(V, 32) * (1.0 - d_tsrank((P["c"] + P["h"]) - P["l"], 16))
+                          * (1.0 - d_tsrank(P["c"] / d_shift(P["c"], 1) - 1.0, 32))),
+    55: lambda P, V, RC: -1.0 * d_corr(d_rank((P["c"] - d_min(P["l"], 12)) / (d_max(P["h"], 12) - d_min(P["l"], 12))),
+                                       d_rank(V), 6),
+    6: lambda P, V, RC: -1.0 * d_corr(P["o"], V, 10),
+    2: lambda P, V, RC: -1.0 * d_corr(d_rank(np.log(V) - d_shift(np.log(V), 2)), d_rank((P["c"] - P["o"]) / P["o"]), 6),
+    101: lambda P, V, RC: (P["c"] - P["o"]) / ((P["h"] - P["l"]) + 0.001),
+}
+
+
+def _cmp_lt(a, b):
+    return np.where(np.isnan(a) | np.isnan(b), np.nan, (a < b).astype(float))
+
+
+def printed_alpha(n: int, w: dict) -> np.ndarray:
+    """Alpha #n of the paper on world ``w``: at each row t every price is adjusted as of t (raw x F(s) / F(t)), the
+    formula is evaluated on that history and its row t kept."""
+    T = w["T"]
+    out = np.full((T, w["N"]), np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for t in range(T):
+            g = w["F"][:t + 1] / w["F"][t]
+            P = {k: w["raw"][k][:t + 1] * g for k in "ohlc"}
+            out[t] = PRINTED_NUMPY[n](P, w["V"][:t + 1], w["raw"]["c"][:t + 1])[-1]
+    return out
+
+
+def same(a, b, tol=1e-9) -> bool:
+    return bool(np.array_equal(np.isnan(a), np.isnan(b)) and np.allclose(a[~np.isnan(a)], b[~np.isnan(b)], rtol=0,
+                                                                         atol=tol))
+
+
+def semantic_checks(w: dict) -> list:
+    """Each pick against the printed formula, unwrapped and in its house form; the anchor and raw-basis probes; the
+    mutation probe. Returns report lines."""
+    env = house_env(w)
+    other_anchor = house_env(w, anchor=np.exp(np.random.default_rng(3).uniform(-3.0, 3.0, w["N"])))
+    raw_env = house_env(w, raw_basis=True)
+    split_lines = int(np.count_nonzero((np.diff(np.log(w["F"]), axis=0) > np.log(1.4)).any(axis=0)))
+    lines, mutants = [], 0
+    for n in PICKS:
+        text = dsl(n)
+        wrapped, d = house_form(text)
+        alpha, house = run(text, env), run(wrapped, env)
+        ref = printed_alpha(n, w)
+        ref_house = d_rank(d_decay(ref, d))
+        assert same(alpha, ref), f"#{n}: the DSL alpha differs from the printed formula"
+        assert same(house, ref_house), f"#{n}: the house form differs from rank(decay_linear(printed, {d}))"
+        assert same(run(wrapped, other_anchor), house), f"#{n}: depends on the vendor factor anchor"
+        if n != 2 and n != 101:   # #2 and #101 read same-session prices only: a split cannot enter their windows
+            assert not same(run(text, raw_env), ref), f"#{n}: the raw-basis probe does not move it"
+        for m in MUTANTS[n]:
+            mt = _t(m)
+            assert not (same(run(mt, env), ref) and same(run(house_form(mt)[0], env), ref_house)), f"#{n}: {m}"
+            mutants += 1
+        other = f"rank(decay_linear({text}, {26 - d}))"
+        assert not same(run(other, env), ref_house), f"#{n}: the other house form passes"
+        mutants += 1
+        finite = int(np.isfinite(ref_house).sum())
+        lines.append(f"#{n}: DSL == printed formula on {int(np.isfinite(ref).sum())} alpha cells and {finite} house "
+                     f"cells; anchor-free; {len(MUTANTS[n]) + 1} mutants fail")
+    bad_alt = _t(ALT_ORDER[99]).replace(") > rank(", ") < rank(")
+    assert canonical(xs.parse(bad_alt)) != canonical(xs.parse(_t(TABLE[99][2]))), "the canonical check has no teeth"
+    no_rebase = _t(MUTANTS[101][0])
+    assert not same(run(no_rebase, other_anchor), run(no_rebase, env)), "#101 without the rebase is anchor-free"
+    lines.append(f"mutation probe: {mutants} mutants, every one fails; synthetic world {w['T']} x {w['N']}, "
+                 f"{split_lines} lines with a split")
+    return lines
+
+
+def classes_hold(w: dict) -> int:
+    """The exactness classes, checked on every exact transcription in its house form: each evaluates (finite cells)
+    and is free of the vendor factor's per-line anchor (S as written, L with its rebase), and every L transcription
+    with the rebase removed ({K} -> 1) depends on the anchor (it really is level-dependent)."""
+    env = house_env(w)
+    moved = house_env(w, anchor=np.exp(np.random.default_rng(11).uniform(-3.0, 3.0, w["N"])))
+    for n in sorted(statics()):
+        text = house_form(dsl(n))[0]
+        out = run(text, env)
+        assert np.isfinite(out).any(), f"#{n}: no finite cell"
+        # #45 (degenerate): its 2-session correlations are +-1 up to rounding, so their cross-sectional rank is a tie
+        # that rounding breaks; the class holds in exact arithmetic but cannot be shown cell for cell.
+        assert n == 45 or same(run(text, moved), out), f"#{n}: depends on the factor anchor"
+        if TABLE[n][0] == "L":
+            bare = house_form(_t(ALT_ORDER.get(n, TABLE[n][2]).replace("{K}", "1")))[0]
+            assert not same(run(bare, moved), run(bare, env)), f"#{n}: anchor-free without the rebase (not class L)"
+    return len(statics())
+
+
+def add_alpha_line(n: int) -> str:
+    p = PICKS[n]
+    wrapped, d = house_form(dsl(n))
+    return (f'"$PY" scripts/research_cycle.py add-alpha --id {p["id"]} --dsl "{wrapped}" --theme {p["theme"]} '
+            f'--tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, '
+            f'Alpha#{n}" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" '
+            f'--form "R(decay_linear(x, {d}))" --formula "{p["formula"]}" --domain "{p["domain"]}" '
+            f'--deviation "{p["deviation"]}" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> '
+            f'--fields <X-7 fields dir>')
+
+
 def main():
     for n, alt in ALT_ORDER.items():
         assert canonical(xs.parse(_t(alt))) == canonical(xs.parse(_t(TABLE[n][2]))), f"#{n}: budget order changes it"
@@ -482,6 +922,22 @@ def main():
               f"{'ok' if s['budget'] else 'OVER BUDGET'} sha256 {s['sha256'][:16]}")
     picks, why = select(st)
     print(f"selection rule: {len(picks)} picks {picks}")
+    assert picks == list(PICKS), f"the rule's picks {picks} are not the registration {list(PICKS)}"
+    for n in picks:
+        s = st[n]
+        assert (s["bars"], s["slots"], s["nodes"], s["extra_fields"]) == EXPECTED[n], (n, s)
+        print(f"pick #{n:3d} {PICKS[n]['id']:7s} form {s['form']:2d} bars {s['bars']:3d} slots {s['slots']} nodes "
+              f"{s['nodes']:2d} bytes {s['bytes']:3d} extra {s['extra_fields']} sha256 {s['sha256']}")
+    print("not picked (exact): " + "; ".join(f"#{n} {why[n]}" for n in sorted(why) if TABLE[n][0] in "SL"))
+    print(f"classes: {classes_hold(synthetic(T=320))} exact transcriptions evaluate in their house form on a 320-session "
+          "synthetic world, all free of the factor anchor; every L one depends on it without its rebase")
+    for line in semantic_checks(synthetic()):
+        print(line)
+    for n in picks:
+        line = add_alpha_line(n)
+        assert '"' not in "".join(PICKS[n][k] for k in ("formula", "domain", "deviation")), n
+        print("add-alpha " + hashlib.sha256(line.encode()).hexdigest()[:16] + " " + line)
+    print("xwq_check: PASS")
     return 0
 
 
