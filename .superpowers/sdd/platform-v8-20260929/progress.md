@@ -1609,3 +1609,14 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   template are not edited (the interim config is a copy). The 2026-10-01 interim files are removed (they were
   incomplete) -- the owner asked for a report that loads and renders; R-2 is what the program has accepted --
   cost if wrong: an interim headline on a book that the cumulative test has not yet judged; the report says so.
+- Interim render 3 done (owner scope cut to stats and equity curves): `docs/plans/2026-10-02-mega-alpha-v8-interim-pitch.html`
+  (2,057,347 B, sha256 `fd3a415e`), 0 unavailable blocks, 22 figures; screenshots viewed by the render integrator
+  and the equity / drawdown figure by the PM. The render integrator's `git merge` of FIX-6 round 5 was refused
+  by the permission classifier; the PM merged it at the owner's direct request to merge all work into local main
+  (`1a504629`, tests only). `scripts/tests` 17 failed / 174 passed / 3 skipped (one cause: `r3-aim-gain-gm.json`
+  missing from the test's spec list); `atx-impl/strategies` 163 passed.
+- Owner request (2026-10-02): merge all work into local main, including the HTML report. Ruling PM6-12: local
+  `main` is fast-forwarded to the v8 branch head (main is an ancestor; no conflict possible; no push); the
+  mining branch `1bd448cd` (C++ never compiled) and FIELDS-V9 / LIB3 `834d5a05` stay on their branches for
+  integration 8 -- an uncompiled C++ merge could leave main unbuildable -- cost if wrong: the owner wanted them
+  on main now; they are one merge away. Status 6 and goal prompt 6: `docs/plans/2026-10-02-platform-v8-status-6.md`.
