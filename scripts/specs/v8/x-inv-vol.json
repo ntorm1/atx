@@ -2,14 +2,34 @@
   "schema": "atx.research-cycle-template/v1",
   "name": "v8x-inv-vol",
   "description": "Expansion X cell (lane XCOMB, task-XCOMB-report.md; runs only after V8-F and integration 8, under v8x-prereg.md; parent = the book at that point): capacity rule inv-vol-v1, every constant registered blind before any read. Hypothesis: sizing each name's desired weight inversely to its execution volatility (h proportional to score / sigma, Grinold and Kahn) moves the book's dollars toward the names whose square-root impact per traded dollar (proportional to sigma) is lowest, so the cost per traded dollar falls and the net Sharpe at 4x NAV rises. Rule: on every rebalance decision each member's centred tied rank r_i becomes r_i x median / max(s_i, .25 x median) BEFORE the demean; s_i = the sample SD of the daily returns the S2 execution cost model reads for this decision's fills (session d + 1: the NAV replay's liquidity window, rows <= d, at least min_vol_pairs pairs), median over the members with a finite s_i > 0 (the middle one, or the mean of the two middle ones; a member without one takes the median: multiplier 1; no member with one: the ranks are left as they are); then the parent's demean, gross 1, locate zeroing, neutralization and trading rule unchanged; one shared target for every scenario and capacity book. Registered constants: the floor fraction .25 (multiplier at most 4), the median, the fill-session window. The change: nav --vol-scale inv-vol-v1 (aim-partial-v5, or spo-v3 whose aim it shapes; refused with --hold-band, with spo-v1/v2 and by the target replay); --capacity-curve (Ruling E-29) is the parent's. NAV-only: u, fit, card and w are the parent's. Gross matching (Ruling PM6-6): a calibration run at the parent's L (mechanics only: all-rows S2 gross G_cal, no return read), then the trial at L = L_parent x G_parent / G_cal (4 decimals), set by root as nav.leverage in a -gm copy as for R-1 and R-3. Identity before the cell: the parent's NAV argv re-run on the new build reproduces the parent's files byte for byte (flag absent; atx-impl-strategy-target-tests InvVol.* and BookInverseVol.*). Decide is out of scope (no nav.vol_scale deploy key: a manifest pinned to this run is refused as a recipe pin mismatch). Acceptance (pre-registration rule 5 and the capacity criterion): paired S2 net dSR > 0 against the parent AND mechanics AND net Sharpe at 4x NAV (capacity_curve.csv, the x4 book) higher than the parent's AND S2 cost_bps_traded (nav_summ: 1e4 x sum trade_cost_dollars / sum traded_dollars over executed sessions) lower than the parent's.",
-  "parent": null,
+  "parent": "x-theme-erc-gm.json",
   "nominal_parent": "base-b0c.json",
   "change": {
     "set": {
       "nav.output": "build-equity/mega-nav-v8x-inv-vol"
     },
     "flags": {
-      "nav": {"--vol-scale": "inv-vol-v1"}
+      "nav": {
+        "--vol-scale": "inv-vol-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1720/summary.json",
+      "sha256": "a03937cf410dfdba75d503f2108c973a881f1d34afcb36a4c20a5e500e6f804d"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/admission.json",
+      "sha256": "5f5b3edb280cb44ff64fa3208cecc319f166d8eae1c1326c526f455a74f2b196"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8xw-train-theme-erc-1/train_combined.json",
+      "sha256": "2a442f560982749b74283f16ef3060656f270d6130628c64fcd4bde77259cb86"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/composition_weights.json",
+      "sha256": "8310da2c05aa8e46573aaa2f7660a8a635b5f6c44c6f758c495c3d719710d699"
     }
   }
 }
