@@ -8,7 +8,8 @@ identity in the manifest; each draft field's entry names research_fields_xdata.p
   python atx-engine/tools/prepare_research_fields_xdata.py --role ... --price-source <the role's TickerHistory3>
       --fields <the base list>,div_month_pred,beta_dvol_21,season_y2_5 --reuse <the base fields directory> ...
 
-``FIELDS_XDATA_DRAFT`` lists the fields in registry order. ``register`` binds the module into a builder namespace exactly
+``FIELDS_XDATA_DRAFT`` lists the TickerHistory3 fields in registry order; ``FIELDS_GOLD_DRAFT`` the sealed gold-panel
+reader's fields (research_fields_gold.py; they also need ``--gold-panel-root`` and the stage manifest pins). ``register`` binds the module into a builder namespace exactly
 as the builder binds its own modules (``bind`` appends its ``FIELDS`` to ``ALL_FIELDS``; the module object joins
 ``FIELD_MODULES``, whose hooks then check, reuse and compute its fields). At integration 8 this entry folds into the
 FIELDS-V9 draft entry (``prepare_research_fields_draft.DRAFT_MODULES``, branch ``834d5a05``): one tuple element.
@@ -16,10 +17,12 @@ FIELDS-V9 draft entry (``prepare_research_fields_draft.DRAFT_MODULES``, branch `
 from __future__ import annotations
 
 import prepare_research_fields as builder  # same directory: the builder (it does not import this module)
+import research_fields_gold                 # same directory (task GOLD, Ruling PM7-19)
 import research_fields_xdata                # same directory
 
-DRAFT_MODULES = (research_fields_xdata,)
+DRAFT_MODULES = (research_fields_xdata, research_fields_gold)
 FIELDS_XDATA_DRAFT = ("div_month_pred", "beta_dvol_21", "season_y2_5")
+FIELDS_GOLD_DRAFT = ("gp_hl_spread_21", "gp_iv_term_slope")   # need --gold-panel-root and the stage pins
 
 
 def register(host_namespace: dict) -> list:

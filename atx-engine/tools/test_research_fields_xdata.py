@@ -530,7 +530,8 @@ class XdataFields(unittest.TestCase):
             self.assertEqual(tuple(xdata.FIELDS), xreg.FIELDS_XDATA_DRAFT)
             with registered():
                 names = list(tool.ALL_FIELDS)
-                self.assertEqual(names[-len(FIELDS):], FIELDS)            # after every existing field
+                tail = FIELDS + list(xreg.FIELDS_GOLD_DRAFT)             # after every existing field, in order
+                self.assertEqual(names[-len(tail):], tail)
                 before = len(tool.FIELD_MODULES)
                 xreg.register(vars(tool))                                 # idempotent
                 self.assertEqual(len(tool.FIELD_MODULES), before)
