@@ -2016,3 +2016,8 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   correction). NOT ACCEPTED, N 53 (dSR, not the capacity criterion). S2 net Sharpe 1.3627 (parent 1.4205); dSR
   -.0578, SE .0374, p one-sided .943 (two-sided .121); mechanics pass; criterion (turnover per unit gross .02311
   against .02336) met, printed only. Parent stays X-3.
+- X-5 (theme-erc-v1; log "X batch 1"): `x-theme-erc.json` on X-3, calibration gross .96042 at L 1.1414 -> the cell is
+  `x-theme-erc-gm.json`, L 1.1720, gross .98623 against .98617. ACCEPTED, N 54. S2 net Sharpe 1.7695 (parent
+  1.4205); dSR +.3490, SE .2011, p one-sided .029 (two-sided .078); mechanics pass; capacity criterion (turnover per
+  unit gross .02722 against .02336) unmet, printed only (PM7-34); 4x 1.655 (1.316). Net annual 5.08% (4.97%), gross
+  of cost 6.45% (6.22%), max drawdown 2.06%. DSR at N 54 .829. Parent is X-5 (`x-theme-erc-gm.json`).

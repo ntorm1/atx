@@ -5855,3 +5855,49 @@ max drawdown 2.86%; gross Sharpe 1.720. Years: 2020 +.0149 / .409; 2021 +.0960 /
 / .779 (net return / net Sharpe; tau .0250 / .0218 / .0227 / .0218; cost bps 14.94 / 11.53 / 12.09 / 11.49). Capacity: .5x
 1.395, 1x 1.363, 2x 1.321, 4x 1.259, 8x 1.171.
 
+### Cell X-5 (composition rule theme-erc-v1, XCOMB; template `x-theme-erc.json` on X-3): N 54
+
+**Spec:** `scripts/specs/v8/x-theme-erc.json` with `"parent": "lib-v8x3b-gm.json"` (X-3, the last accepted cell; X-4 not
+accepted), `lock --write` (commit `6a98af47`; reference_weights `82685a22`, reference_cell X-3's summary `e342db4f`). The
+registered change verbatim (fit `--theme-erc theme-erc-v1`; outputs renamed); u and marginal are X-3's (done).
+
+**Calibration (PM6-6 step 1, not a trial):** `run --stop-after nav` at the parent's L 1.1414: fit .8 s, card 16.3 s, gate
+p1-v8x3b re-read PASS (0 appended, 0 status changes), w 43.0 s / 1,371 MiB, nav 45.1 s / 586 MiB
+(`mega-nav-v8x-theme-erc`). Mechanics only (mech.py): all-rows S2 gross **.9604183310** vs G_parent .9861733264, |diff|
+.0258 > .005 -> L' = 1.1414 x .9861733264 / .9604183310 = 1.17201 -> **1.1720**, set as nav.leverage in the template copy
+`x-theme-erc-gm.json` (nav.output `mega-nav-v8x-theme-erc-L1.1720`; R-3 precedent; commit `9dde65fd`; lock verified).
+
+**Theme shares (fit provenance, TRAIN decisions 1,004):** 11 themes, ERC dispersion 4.4e-16 (tolerance 1e-10), 10,000
+sweeps: earnings_momentum .068, filing_events .048, investment_issuance .142, low_risk .123, options_implied .058,
+ownership_flow .113, price_momentum .054, profitability_quality .108, reversal_seasonality .121, short_interest .079, value
+.086 (parent: 1/11 = .091 each). Member cap 1/22 = .0455 bound on issuance_xbrl, iv_rv_spread, ins_opp_buy, inst_best_ideas
+(one cap iteration); runner re-check to 1e-12.
+
+**Matched run** (`run --stop-after nav`, then `run`; source `9dde65fd`): nav 45.4 s / 586 MiB at --aim-leverage 1.1720;
+G **.9862260459** vs .9861733264, |diff| **.00005** <= .005 (no further correction). **Mechanics (S2, read before any
+return): PASS.** All-rows gross .9862 (post-ramp .9917); net +.0051; tau .02684 / p95 .03073; max gross 1.112; max |net|
+.027; score_begin .943 (all 5 scenarios .941 - .945); gross by year .967 / .995 / .985 / .997; accounting 1.1e-13 /
+3.9e-16. monitor 1.3 s; summ 33.8 s / 603 MiB (`--dsr-n 54`, reference X-3's NAV). Spec sha256 `92131961`.
+
+**Statistics of record** (S2; bundle `scratchpad/bundle.sh` X-3 vs X-5, block 21, seed 20260929, 4,999 resamples, bundle
+`7805e136`): net Sharpe **X-5 +1.7695** vs X-3 +1.4205: **dSR +.3490**, rho .920, **Memmel SE .2011** (t +1.74); CBB 95%
+[-.017, +.703]; LW SE .1868, 95% [-.041, +.740]; **bootstrap p one-sided .0288, two-sided .0782**. DSR (N 54): ledger
+**.8291** (V[SR] 1.239e-03 per session, 25 research-window-v2 lines); effective-N .9405 (4 clusters); legacy .9580; PBO
+.0384.
+
+**Capacity criterion (registered: turnover per unit gross not higher than the parent's; printed, decides nothing under
+PM7-34): .027219 vs .023355 -> unmet.** 4x net Sharpe 1.6549 vs 1.3159; cost per traded dollar 12.56 vs 12.53 bps.
+
+**Verdict (PM7-34): dSR +.349 > 0 AND mechanics PASS -> ACCEPTED, N 54** (the registered turnover criterion is unmet; under
+PM7-34 it decides nothing). Ledger trial `269cfc47be86d4a7` (s2_net_sr 1.76945, prev `be896680`); ledger 97 lines (62
+construction incl. 8 W0-4 re-runs, 34 admission, 1 protocol), file `9f4aa4d9`, head `877cf36f`. Calibration run
+`mega-nav-v8x-theme-erc` not ledgered (PM6-6).
+
+Returns (S2): net 5.08% (CAGR 5.17%); gross of cost 6.45%; trade cost .84%, borrow .33%, long financing .20%; vol 2.87%;
+max drawdown 2.06%; gross Sharpe 2.247. Years: 2020 +.0130 / .478; 2021 +.1038 / 3.282; 2022 +.0684 / 2.171; 2023 +.0232
+/ .926 (net return / net Sharpe; tau .0290 / .0260 / .0265 / .0259; cost bps 14.95 / 11.61 / 12.20 / 11.58). Capacity: .5x
+1.809, 1x 1.769, 2x 1.727, 4x 1.655, 8x 1.553. Read: the gain is a risk reduction (vol 2.87% vs 3.50%, net return 5.08% vs
+4.97%) bought with 16% more turnover per unit gross.
+
+**Next parent: `scripts/specs/v8/x-theme-erc-gm.json`, library v8x3b, theme-erc-v1, L 1.1720, G .9862260459.**
+
