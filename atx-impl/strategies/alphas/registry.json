@@ -1996,6 +1996,210 @@
         "deviation": null
       },
       "added_in": "v8x4"
+    },
+    {
+      "id": "wq_099",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#99",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-1 when the cross-sectional rank of the 8-session correlation between the 19-session sums of the mid price (high + low) / 2 and of 60-session dollar ADV is below the rank of the 6-session correlation of the low with share volume, else 0 (Alpha#99; written b > a for the 7-slot budget, same semantics)",
+        "domain": "NaN while a window is short or holds a NaN (104 bars) or a correlation window is flat; values -1 and 0",
+        "deviation": "adv60 = mean of raw close x share volume over 60 sessions (paper: average daily dollar volume); fractional windows floored as the paper states (19.8975 -> 19, 8.8136 -> 8, 6.28259 -> 6); prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank (paper: raw alpha, delay 1)"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_035",
+      "dsl": "rank(decay_linear(((ts_rank(volume, 32) * (1 - ts_rank(((close + high_adj) - low_adj), 16))) * (1 - ts_rank(((close / delay(close, 1)) - 1), 32))), 21))",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#35",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "ts_rank(volume, 32) x (1 - ts_rank(close + high - low, 16)) x (1 - ts_rank(daily return, 32)) (Alpha#35): unusually high volume with a price and a return low against their own recent history",
+        "domain": "NaN until 32 sessions of every input; values in [0, 1]",
+        "deviation": "ts_rank = average-tie percentile of today in its window, in [0, 1] (the paper's 1 - Ts_Rank implies [0, 1]); returns = adjusted close-to-close; volume = raw shares; prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_055",
+      "dsl": "rank(decay_linear((-1 * correlation(rank(((close - ts_min(low_adj, 12)) / (ts_max(high_adj, 12) - ts_min(low_adj, 12)))), rank(volume), 6)), 21))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#55",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-correlation over 6 sessions of the cross-sectional rank of the 12-session stochastic %K, (close - min low) / (max high - min low), with the rank of share volume (Alpha#55)",
+        "domain": "NaN while a window is short, holds a NaN or is flat; a 12-session range of zero gives NaN",
+        "deviation": "prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_006",
+      "dsl": "rank(decay_linear((-1 * correlation(open_adj, volume, 10)), 21))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#6",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-correlation(open, volume, 10) (Alpha#6): open prices that move with share volume predict lower returns",
+        "domain": "NaN while the window is short, holds a NaN or is flat",
+        "deviation": "prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; volume = raw shares (a split inside the window shifts its level); house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_002",
+      "dsl": "rank(decay_linear((-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open_adj) / open_adj)), 6)), 5))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#2",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 5))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-correlation over 6 sessions of rank(2-session change of log volume) with rank((close - open) / open) (Alpha#2): volume surges that coincide with intraday gains predict lower returns",
+        "domain": "NaN while a window is short, holds a NaN or is flat; a zero volume gives a log of -inf",
+        "deviation": "same-session price ratio only (no adjustment enters); house form decay_linear 5 (longest printed window 6) then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_101",
+      "dsl": "rank(decay_linear((((close - open_adj) * (raw_close / close)) / (((high_adj - low_adj) * (raw_close / close)) + 0.001)), 5))",
+      "theme": "price_momentum",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#101",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 5))",
+      "origin": "prior",
+      "notes": {
+        "formula": "(close - open) / ((high - low) + 0.001) on the session's own prices (Alpha#101, the paper's delay-1 momentum example): the day's body relative to its range",
+        "domain": "NaN without the session bar; values in about [-1, 1]",
+        "deviation": "level-dependent through the 0.001 dollar term: computed on the session's raw prices (close - open and high - low rebased by raw_close / close); house form decay_linear 5 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_095",
+      "dsl": "rank(decay_linear(((rank(((open_adj - ts_min(open_adj, 12)) * (raw_close / close))) < ts_rank(power(rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 40), 19), 12)), 5), 11)) ? 1 : 0), 21))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#95",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "1 when the rank of open minus its 12-session minimum (in the session's own dollars) is below the 11-session ts_rank of rank(correlation(19-session sum of the mid price (high + low) / 2, 19-session sum of 40-session dollar ADV, 12))^5, else 0 (Alpha#95)",
+        "domain": "NaN while a window is short, holds a NaN or is flat (98 bars); values 0 and 1",
+        "deviation": "adv40 = mean of raw close x share volume over 40 sessions; fractional windows floored as the paper states (12.4105 -> 12, 19.1351 -> 19, 12.8742 -> 12, 11.7584 -> 11); the dollar term open - ts_min(open, 12) is rebased by raw_close / close to the session's prices (class L); house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_085",
+      "dsl": "rank(decay_linear(power(rank(correlation(((high_adj * 0.876703) + (close * (1 - 0.876703))), ts_mean((raw_close * volume), 30), 9)), rank(correlation(ts_rank(((high_adj + low_adj) / 2), 3), ts_rank(volume, 10), 7))), 21))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#85",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "rank(correlation(high x 0.876703 + close x (1 - 0.876703), 30-session dollar ADV, 9)) raised to rank(correlation(ts_rank(mid price, 3), ts_rank(volume, 10), 7)) (Alpha#85)",
+        "domain": "NaN while a window is short, holds a NaN or is flat (57 bars); values in [0, 1]",
+        "deviation": "adv30 = mean of raw close x share volume over 30 sessions; fractional windows floored as the paper states (9.61331 -> 9, 3.70596 -> 3, 10.1595 -> 10, 7.11408 -> 7); prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_030",
+      "dsl": "rank(decay_linear((((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20)), 21))",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#30",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "(1 - rank(sum of the signs of the last three daily close changes)) x 5-session volume / 20-session volume (Alpha#30): down streaks on rising volume",
+        "domain": "NaN while a window is short or holds a NaN; ties at the seven streak values",
+        "deviation": "signs of adjusted close changes (basis-free); volume = raw shares; house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_043",
+      "dsl": "rank(decay_linear((ts_rank((volume / ts_mean((raw_close * volume), 20)), 20) * ts_rank((-1 * delta(close, 7)), 8)), 21))",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#43",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "ts_rank(volume / adv20, 20) x ts_rank(-(7-session close change), 8) (Alpha#43): a 7-session decline high in its own history on volume high against its own dollar ADV",
+        "domain": "NaN while a window is short or holds a NaN (58 bars); values in [0, 1]",
+        "deviation": "adv20 = mean of raw close x share volume over 20 sessions; volume / adv20 is shares over dollars as printed (ranked within each line's own history); prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_014",
+      "dsl": "rank(decay_linear(((-1 * rank(delta(((close / delay(close, 1)) - 1), 3))) * correlation(open_adj, volume, 10)), 21))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#14",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "(-1 x rank(3-session change of the daily return)) x correlation(open, volume, 10) (Alpha#14)",
+        "domain": "NaN while a window is short, holds a NaN or is flat",
+        "deviation": "returns = adjusted close-to-close; volume = raw shares; prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank"
+      },
+      "added_in": "v8x7"
+    },
+    {
+      "id": "wq_044",
+      "dsl": "rank(decay_linear((-1 * correlation(high_adj, rank(volume), 5)), 5))",
+      "theme": "price_volume",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#44",
+      "prior_sign_source": "Kakushadze 2016 (printed sign)",
+      "form": "R(decay_linear(x, 5))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-correlation over 5 sessions of the high with the cross-sectional rank of share volume (Alpha#44)",
+        "domain": "NaN while the window is short, holds a NaN or is flat",
+        "deviation": "prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 5 (longest printed window 5) then rank"
+      },
+      "added_in": "v8x7"
     }
   ]
 }

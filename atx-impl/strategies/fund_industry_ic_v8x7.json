@@ -1,0 +1,1398 @@
+{
+  "schema": "atx.dsl-ic-library/v1",
+  "id": "fund_industry_ic_v8x7",
+  "fields": [
+    {
+      "name": "close",
+      "basis": "role adjusted close (split and dividend continuous)"
+    },
+    {
+      "name": "raw_close",
+      "basis": "role raw close (unadjusted)"
+    },
+    {
+      "name": "volume",
+      "basis": "role raw share volume"
+    },
+    {
+      "name": "mkt_ret",
+      "basis": "equal-weight mean adjusted close-to-close return (close[d] / close[d-1] - 1) over the previous session's (d-1) as-of members, broadcast to every name present at d; produced upstream"
+    },
+    {
+      "name": "si_shares",
+      "basis": "FINRA consolidated shares short (currentShortPositionQuantity); as-of: latest row with available_at strictly before date(session), NaN when older than 45 calendar days"
+    },
+    {
+      "name": "si_dtc",
+      "basis": "FINRA days to cover (daysToCoverQuantity, floored at 1.00 by FINRA); as si_shares"
+    },
+    {
+      "name": "iv_atm_21d",
+      "basis": "vendor ATM implied volatility, annualized decimal, 21-session constant maturity; producer domain [0.02, 5] else NaN; candidates also apply the v3 guard"
+    },
+    {
+      "name": "earn_recent",
+      "basis": "indicator: 1 on the vendor earnings price-reaction session (earnFlag 0) and the session after (earnFlag 1), 0 otherwise; NaN when the vendor row is absent"
+    },
+    {
+      "name": "shares_out",
+      "basis": "vendor shares outstanding of the last line row dated <= date(session) - 90 calendar days (A8 lag), restated to the session share basis"
+    },
+    {
+      "name": "be",
+      "basis": "book equity at the anchor period_end A: stockholders equity (else equity including minority interest minus minority interest) minus preferred stock, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "at",
+      "basis": "total assets at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "at_lag4",
+      "basis": "total assets at the balance date nearest A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "che",
+      "basis": "cash and short-term investments at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "debt",
+      "basis": "short-term plus long-term debt at A, each zero-filled (flagged) when absent while assets exist, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "sale_ttm",
+      "basis": "revenue, trailing twelve months ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "gp_ttm",
+      "basis": "gross profit (else revenue minus cost of revenue), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "oi_ttm",
+      "basis": "operating income (EBIT), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "ni_ttm",
+      "basis": "net income, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "ni_q",
+      "basis": "net income of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "ni_q_lag4",
+      "basis": "net income of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "be_lag1q",
+      "basis": "book equity at the balance date nearest A - 91 d (opening equity of the quarter), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "be_lag1q_lag4",
+      "basis": "book equity at the balance date nearest A - 456 d (opening equity of the quarter one year earlier), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "cfo_ttm",
+      "basis": "net cash from operating activities, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "capx_ttm",
+      "basis": "capital expenditure (payments for PP&E, positive), trailing twelve months, USD; NaN when not reported; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "xrd_ttm",
+      "basis": "research and development expense, trailing twelve months, USD; NaN when not reported; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "dvc_ttm",
+      "basis": "common dividends paid, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "prstkc_ttm",
+      "basis": "purchases of common stock (buybacks), trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "sstk_ttm",
+      "basis": "proceeds from issuance of common stock, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "txt_q",
+      "basis": "income tax expense of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "txt_q_lag4",
+      "basis": "income tax expense of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "shrs_q",
+      "basis": "weighted-average diluted shares (else basic) of the fiscal quarter ending at A (else the fiscal year ending at A), shares; as reported, split-restated by the reporting filing; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "shrs_q_lag4",
+      "basis": "the same concept and duration class ending near A - 365 d, as known at the row clock (latest filing reporting that period, so the anchor filing's split-restated comparative); the pair is NaN when abs(log10 ratio) >= 2 (XBRL scale error); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "noa",
+      "basis": "net operating assets at A: at - che - lt + debt (Hirshleifer, Hou, Teoh and Zhang 2004), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "sue",
+      "basis": "standardized unexpected earnings of the quarter ending at A: seasonal random walk on first-reported quarterly net income, (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences (>= 4 required); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "fscore",
+      "basis": "Piotroski (2000) F-score 0-9 at A, all nine signals required, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "me_company",
+      "basis": "company market equity: sum over the issuer's role lines of shares_out x raw_close (NaN if any linked line is NaN), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "grp_ff12",
+      "basis": "Fama-French 12-industry code of the latest visible SUB SIC (T21 grp group); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "grp_ff49",
+      "basis": "Fama-French 49-industry code of the latest visible SUB SIC (T21 grp group); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
+      "name": "sv_ratio126",
+      "basis": "FINRA consolidated NMS daily short sale volume ratio: sum(ShortVolume) / sum(TotalVolume) of the CNMSshvol files dated on the sessions d-126..d-1 on which the line's PIT ticker appears (the short-interest producer's symbol map); NaN below 63 such sessions or on a zero TotalVolume sum; the file dated d is never used at d (formula id finra-cnms-ratio126-lag1-v1; producer atx-engine/tools/prepare_research_fields.py, fields-v7)"
+    },
+    {
+      "name": "ins_opportunistic_net",
+      "basis": "(P - S shares) of Form 4 open-market trades by insiders classified opportunistic for the trade year Y (Cohen-Malloy-Pomorski 2012: traded in each of Y-1..Y-3 with no calendar month repeated in all three; routine and unclassified owners excluded) with transaction_date in the 126 sessions t-126..t-1 and visible at t, divided by shares_out[t]; directors and officers on original Form 4s, joint filings with a 10% owner dropped (W5a rule 1); NaN outside [-1, 1] (W5a rule 2), without a visible insider row within 365 days (Section 16 presence) or before 2018 (formula id sec-ins-opportunistic-net126-cmp3y-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"
+    },
+    {
+      "name": "inst_best_ideas",
+      "basis": "Cohen-Polk-Silli conviction at the anchor 13F quarter P: sum over filers m holding the security of max(0, w_m - mw), w_m = the security's screened value / m's total screened long value, mw = its share of the total screened mapped 13F value of P (13F-universe market weight); all 13F filers pooled; NaN without a screened mapped row in a fresh quarter (150-day staleness) (formula id 13f-asof45-best-ideas-cps-v1; producer atx-engine/tools/research_fields_holdings.py, fields-v9)"
+    },
+    {
+      "name": "ftd_shares_ratio21",
+      "basis": "SEC CNS fails-to-deliver quantity summed over the 21 settlement dates ending at S*(t), the latest settlement date up to which every date is visible (no row = 0 fail), / shares_out at the last role session on or before S*(t); NaN when date(t) - S*(t) > 60 days or shares_out is not finite and positive (formula id sec-ftd-sum21-over-shares-v1; producer atx-engine/tools/research_fields_holdings.py, fields-v9)"
+    },
+    {
+      "name": "ea_days_to_expected",
+      "basis": "signed sessions from t to the expected next earnings announcement E* (0 = expected today, negative = overdue): E* = the earliest pending yoy_364 date of the CIK's visible primary 8-K item 2.02 rows more than 45 days after the latest announcement A, else A + 91 days; NaN without a visible primary 2.02 within 200 days or when overdue by more than 63 sessions (formula id sec-ea-days-to-expected-yoy364-consume45-fb91-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"
+    },
+    {
+      "name": "ea_days_since",
+      "basis": "t minus the reaction_session (atx-db: session_date for pre-market, intraday and closed-day releases, the next session for post-market) of the latest visible primary announcement A (formula id sec-ea-days-since-reaction-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"
+    },
+    {
+      "name": "inst_own_share",
+      "basis": "13F institutional ownership at the anchor quarter P: agg_asof45 inst_shares of the security / this run's shares_out at the last role session on or before P (both in P's share basis); NaN when that session is before the role, shares_out there is not finite and positive, or the ratio exceeds 2 (declared plausibility, counted) (formula id 13f-asof45-io-share-qe-v1; producer atx-engine/tools/research_fields_holdings.py, fields-v9)"
+    },
+    {
+      "name": "grp_ff12f49",
+      "basis": "ff12-money-ff49-v1, cellwise on row t: ff12 = grp_ff12[t], ff49 = grp_ff49[t]; 100 + ff49 when ff12 == 11 (Money) and ff49 in {45, 46, 47, 48} (145 Banks, 146 Insur, 147 RlEst, 148 Fin); otherwise ff12 (a Money SIC that Siccodes49 does not list -> 11; every non-Money cell -> ff12 bit for bit, 1-10 and 12; ff12 NaN -> NaN) (formula id ff12-money-ff49-v1; producer atx-engine/tools/research_fields_v8.py, fields-v10)"
+    },
+    {
+      "name": "k8_count_63",
+      "basis": "distinct original 8-K accessions of the CIK that became usable within the last 63 sessions (usable from session e: counted at t for e <= t < e + 63; a filing is usable from the session after its event session, the first session whose 22:00 UTC mark follows its acceptance); NaN unless the CIK has a visible original 8-K with available_at within 365 days before the 22:00 UTC mark of t-1 (formula id sec-k8-count63-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"
+    },
+    {
+      "name": "inst_own_chg_q",
+      "basis": "inst_own_share(P) - inst_own_share(P-1) for the anchor quarter P and the preceding calendar quarter P-1, each at its own quarter-end session (share-basis invariant); NaN when either is NaN (formula id 13f-asof45-io-chg-q-v1; producer atx-engine/tools/research_fields_holdings.py, fields-v9)"
+    },
+    {
+      "name": "nt_first_126",
+      "basis": "sec-nt-first365-126-v1 on the sec_filings stage: notices = events.parquet rows whose form, upper-cased and trimmed, is 'NT 10-K', 'NT 10-Q' or 'NT 20-F' with is_amendment false (a null is_amendment or a '/A' form is an amendment: dropped), one row per (cik, accession) with the later available_at if rows disagree; a notice is first when no other notice of the same CIK has available_at in [available_at - 365 days, available_at); a first NT 10-K or NT 10-Q is usable from session e = the session after the first session whose 22:00 UTC mark follows its available_at (SEC_CLOCK); value at t = 1 if a first NT 10-K or NT 10-Q of the line's CIK has e <= t < e + 126, else 0 (formula id sec-nt-first365-126-v1; producer atx-engine/tools/research_fields_v9.py, fields-v13)"
+    },
+    {
+      "name": "div_month_pred",
+      "basis": "hs-divseason-q3-6-9-12-v1. Ledger: for each line and each observed extended session s with an earlier observation p (the line's previous one), y = 1 - F_p / F_s; s is an ex-date iff 0.0001 <= y <= 0.04, no kept_gap step lies in (p, s], and (p, s) is not a factor-break-v1 jump cell (|ln F_s/F_p| > 0.01 and |ln P_s/P_p| > |ln C_s/C_p| + 0.01, P = C F: a factor step with no matching raw price drop). Row t: M = the calendar month of session t; paid(m) = an ex-date in month m at an extended row <= t - 1; n_paid = the number of months m in M-12..M-1 with paid(m); a quarterly payer has 3 <= n_paid <= 6 and its first observation at or before the first session of month M-12; value = 1 if paid(M-k) for some k in (3, 6, 9, 12), else 0, for a quarterly payer; NaN otherwise (non-payers, annual and semiannual payers, monthly payers, short history). vendor observations of the role's lines on the extended axis (NYSE rule sessions before the role, the role's sessions inside it): research_fields_price SOURCE_RULE (unique positive key, finite positive close and cumulReturnFactor, finite volume >= 0; F = the chained factor with every factor-break-v1 repaired step divided out; a span across a kept_gap step is unusable) (formula id hs-divseason-q3-6-9-12-v1; producer atx-engine/tools/research_fields_xdata.py, fields-v13)"
+    },
+    {
+      "name": "beta_dvol_21",
+      "basis": "ahxz-beta-dvol-spy21-v1. Market line: the unique vendor securityID whose ticker_tk is 'SPY' on every row read (another securityID with that ticker -> refused). Per extended session s: r_SPY(s) = P_s / P_(s-1) - 1 of the SPY line (observations at s and the previous extended session; excluded when |ln P ratio| > 1.5, > |ln C ratio| + 0.10, or a factor-break-v1 jump cell); dIV(s) = IV_s - IV_(s-1), IV = atmCenI_21d kept iff float32(0.02) <= v <= float32(5.0) (IV_DOMAIN). Line return r(s) = P_s / P_(s-1) - 1 with observations at s and s-1, no kept_gap step in (s-1, s] and the house guard (|ln P ratio| <= 1.5 and <= |ln C ratio| + 0.10). Row t: the days s in t-21..t-1 with r, r_SPY and dIV finite (K days); OLS r = a + b1 r_SPY + b2 dIV on them; value = b2 when K >= 17 and the two regressors are not collinear (det > 1e-10 s11 s22 of their centred cross-products), else NaN. Raw returns (no risk-free rate: a constant shift moves only the intercept). vendor observations of the role's lines on the extended axis (NYSE rule sessions before the role, the role's sessions inside it): research_fields_price SOURCE_RULE (unique positive key, finite positive close and cumulReturnFactor, finite volume >= 0; F = the chained factor with every factor-break-v1 repaired step divided out; a span across a kept_gap step is unusable) (formula id ahxz-beta-dvol-spy21-v1; producer atx-engine/tools/research_fields_xdata.py, fields-v13)"
+    },
+    {
+      "name": "season_y2_5",
+      "basis": "hs-season-y2-5-v1. Row t, e = its extended row: for k in 2..5, b = e - 252 k, a = b + 21; r_k = P_a / P_b - 1 with observations at a and b, no kept_gap step in (b, a], |ln P_a/P_b| <= |ln C_a/C_b| + 0.10 (the coskew monthly guard) and a <= e - 1; value = the mean of the finite r_k when at least 3 of the 4 are finite, else NaN. vendor observations of the role's lines on the extended axis (NYSE rule sessions before the role, the role's sessions inside it): research_fields_price SOURCE_RULE (unique positive key, finite positive close and cumulReturnFactor, finite volume >= 0; F = the chained factor with every factor-break-v1 repaired step divided out; a span across a kept_gap step is unusable) (formula id hs-season-y2-5-v1; producer atx-engine/tools/research_fields_xdata.py, fields-v13)"
+    },
+    {
+      "name": "open_adj",
+      "basis": "the session's vendor open x close.f64 / raw_close.f64 of the row (the role close's split-and-dividend basis); NaN unless the role has the line present with a finite positive close, the vendor key is unique, open, high and low are finite and positive, and low <= min(open, raw close) <= max(open, raw close) <= high (formula id ohlc-open-adj-v1; producer atx-engine/tools/research_fields_ohlc.py, lane XWQ)"
+    },
+    {
+      "name": "high_adj",
+      "basis": "the session's vendor high x close.f64 / raw_close.f64 of the row; same cell rule as open_adj (formula id ohlc-high-adj-v1)"
+    },
+    {
+      "name": "low_adj",
+      "basis": "the session's vendor low x close.f64 / raw_close.f64 of the row; same cell rule as open_adj (formula id ohlc-low-adj-v1)"
+    }
+  ],
+  "families": [
+    {
+      "id": "value",
+      "description": "Price-scaled fundamentals (book, earnings, cash flow, free cash flow, EBIT/EV, net payout, sales, R&D) and a composite of the book, earnings and cash-flow yields, ranked within FF12 industry; high value predicts higher returns."
+    },
+    {
+      "id": "profitability_quality",
+      "description": "Profitability and quality (gross, operating, cash-based operating, ROE, ROA, low accruals, F-score) and operating leverage (operating costs to assets), ranked within FF12 industry; high quality and high operating leverage predict higher returns."
+    },
+    {
+      "id": "investment_issuance",
+      "description": "Low asset growth, low net operating assets and low share issuance (XBRL and split-neutral vendor), and high expected investment growth (Hou-Mo-Xue-Zhang Eg: published slopes on log q, cash profitability and change in ROE), ranked within FF12 industry; low investment and issuance and high expected growth predict higher returns."
+    },
+    {
+      "id": "earnings_momentum",
+      "description": "Earnings news: SUE, change in ROE, change in tax expense, the 3-day earnings announcement return, the streak of year-on-year quarterly earnings increases and an overdue earnings announcement (the expected 8-K 2.02 date passed); good news predicts continuation and a late announcement predicts lower returns."
+    },
+    {
+      "id": "price_momentum",
+      "description": "12-1 momentum, 12-1 residual momentum, industry 12-1 momentum, within-industry momentum, nearness to the 52-week high and standardized 12-1 FF49-industry-residual momentum; winners continue."
+    },
+    {
+      "id": "low_risk",
+      "description": "Betting against correlation (low correlation with the market), low scaled MAX (largest daily return per unit of volatility), low MAX5 per unit of one-month volatility and QMJ safety (low beta, low leverage, low ROE volatility); low risk predicts higher risk-adjusted returns."
+    },
+    {
+      "id": "short_interest",
+      "description": "FINRA short interest ratio, days to cover, one-month change in short interest, the 126-session FINRA shorting flow (short sale volume / volume, within FF12) and SEC fails-to-deliver per share outstanding (21 settlement dates); heavy or rising shorting and delivery failures predict lower returns."
+    },
+    {
+      "id": "reversal_seasonality",
+      "description": "Industry-adjusted short-term reversal and same-calendar-month seasonality."
+    },
+    {
+      "id": "options_implied",
+      "description": "Implied-minus-realized volatility spread; high implied volatility relative to realized volatility predicts higher returns."
+    },
+    {
+      "id": "ownership_flow",
+      "description": "Informed-owner flows from SEC ownership filings: opportunistic insider net buying (Form 4) and 13F manager conviction; informed buying predicts higher returns."
+    },
+    {
+      "id": "filing_events",
+      "description": "Adverse SEC filing events: an 8-K Item 4.02 non-reliance disclosure within the last 63 sessions; a recent event predicts lower returns."
+    },
+    {
+      "id": "price_volume",
+      "description": "Formulaic price-volume structure (Kakushadze 2016, 101 Formulaic Alphas): short-window time-series correlation of a price, range position or dollar liquidity with trading volume, and of volume changes with the intraday return; prices that move with volume predict lower returns."
+    }
+  ],
+  "candidates": [
+    {
+      "id": "value_composite",
+      "family": "value",
+      "dsl": "(((group_rank(decay_linear((be / me_company), 21), grp_ff12) + group_rank(decay_linear((ni_ttm / me_company), 21), grp_ff12)) + group_rank(decay_linear((cfo_ttm / me_company), 21), grp_ff12)) / 3)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Fama and French (1992, JF); Lakonishok, Shleifer and Vishny (1994, JF); Israel, Laursen and Richardson (2021, JPM) composite value; Asness and Frazzini (2013, JPM) current price"
+    },
+    {
+      "id": "bm",
+      "family": "value",
+      "dsl": "group_rank(decay_linear(((be / me_company) + (0 * log(be))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Rosenberg, Reid and Lanstein (1985, JPM); Fama and French (1992, JF); robust pre-1963 (Linnainmaa and Roberts 2018), weak 2017-2020"
+    },
+    {
+      "id": "ep",
+      "family": "value",
+      "dsl": "group_rank(decay_linear(((ni_ttm / me_company) + (0 * log(ni_ttm))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Basu (1977, JF); Fama and French (1992, JF) E/P for positive earnings"
+    },
+    {
+      "id": "cfp",
+      "family": "value",
+      "dsl": "group_rank(decay_linear(((cfo_ttm / me_company) + (0 * log(cfo_ttm))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Lakonishok, Shleifer and Vishny (1994, JF) cash flow to price; operating cash flow as in Desai, Rajgopal and Venkatachalam (2004, TAR)"
+    },
+    {
+      "id": "fcfp",
+      "family": "value",
+      "dsl": "group_rank(decay_linear(((cfo_ttm - capx_ttm) / me_company), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Lakonishok, Shleifer and Vishny (1994, JF); free cash flow yield (Hackel, Livnat and Rai 1994, FAJ)"
+    },
+    {
+      "id": "ebit_ev_f49",
+      "family": "value",
+      "dsl": "group_rank(decay_linear((((oi_ttm / ((me_company + debt) - che)) + (0 * log(oi_ttm))) + (0 * log(((me_company + debt) - che)))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials"
+    },
+    {
+      "id": "net_payout",
+      "family": "value",
+      "dsl": "group_rank(decay_linear((((dvc_ttm + prstkc_ttm) - sstk_ttm) / me_company), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "citation": "Boudoukh, Michaely, Richardson and Roberts (2007, JF) net payout yield"
+    },
+    {
+      "id": "sp",
+      "family": "value",
+      "dsl": "group_rank(decay_linear(((sale_ttm / me_company) + (0 * log(sale_ttm))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Barbee, Mukherji and Raines (1996, FAJ) sales to price"
+    },
+    {
+      "id": "rd_me",
+      "family": "value",
+      "dsl": "group_rank(decay_linear(((xrd_ttm / me_company) + (0 * log(xrd_ttm))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "value",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Chan, Lakonishok and Sougiannis (2001, JF) R&D to market equity"
+    },
+    {
+      "id": "gpa_f49",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear(((gp_ttm / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020); S-12 FF49 financials"
+    },
+    {
+      "id": "opbe",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear(((oi_ttm / be) + (0 * log(be))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Fama and French (2015, JFE) operating profitability (RMW)"
+    },
+    {
+      "id": "cbop_f49",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear((((cfo_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE); S-12 FF49 financials"
+    },
+    {
+      "id": "roe_q",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear(((ni_q / be_lag1q) + (0 * log(be_lag1q))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Hou, Xue and Zhang (2015, RFS) q-factor ROE"
+    },
+    {
+      "id": "roa",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear(((ni_ttm / at) + (0 * log(at))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Balakrishnan, Bartov and Faurel (2010, JAE); Chen, Novy-Marx and Zhang (2011, WP)"
+    },
+    {
+      "id": "accruals_f49",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear(((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))) + (0 * log(((at + at_lag4) / 2)))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS); S-12 FF49 financials"
+    },
+    {
+      "id": "fscore",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear(fscore, 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Piotroski (2000, JAR) F-score"
+    },
+    {
+      "id": "asset_growth_f49",
+      "family": "investment_issuance",
+      "dsl": "group_rank(decay_linear(((-1 * ((at / at_lag4) - 1)) + (0 * log(at_lag4))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "investment_issuance",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008); S-12 FF49 financials"
+    },
+    {
+      "id": "noa_f49",
+      "family": "investment_issuance",
+      "dsl": "group_rank(decay_linear(((-1 * (noa / at_lag4)) + (0 * log(at_lag4))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets; S-12 FF49 financials"
+    },
+    {
+      "id": "issuance_xbrl",
+      "family": "investment_issuance",
+      "dsl": "group_rank(decay_linear((-1 * log((shrs_q / shrs_q_lag4))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "investment_issuance",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "citation": "Pontiff and Woodgate (2008, JF) share issuance; Daniel and Titman (2006, JF); present in big stocks (Fama and French 2008)"
+    },
+    {
+      "id": "issuance_vendor",
+      "family": "investment_issuance",
+      "dsl": "group_rank(decay_linear((-1 * log((((shares_out * raw_close) / close) / delay(((shares_out * raw_close) / close), 252)))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "investment_issuance",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Daniel and Titman (2006, JF) composite equity issuance over one year; Pontiff and Woodgate (2008, JF)"
+    },
+    {
+      "id": "ear",
+      "family": "earnings_momentum",
+      "dsl": "rank(decay_linear(ts_backfill((ts_sum((((close / delay(close, 1)) - 1) - mkt_ret), 3) + (0 * log((earn_recent * delay(earn_recent, 1))))), 126), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Chan, Jegadeesh and Lakonishok (1996, JF) earnings announcement return; Brandt, Kishore, Santa-Clara and Venkatachalam (2008, WP)"
+    },
+    {
+      "id": "res_mom_12_1",
+      "family": "price_momentum",
+      "dsl": "rank(decay_linear(delay((((ts_sum(((close / delay(close, 1)) - 1), 231) / stddev(((close / delay(close, 1)) - 1), 231)) - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * (ts_sum(mkt_ret, 231) / stddev(mkt_ret, 231)))) / signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 231)))), 0.5)), 21), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Blitz, Huij and Martens (2011, JEF) residual momentum; Blitz, Hanauer and Vidojevic (2020, JEF) idiosyncratic momentum; Grundy and Martin (2001, RFS)"
+    },
+    {
+      "id": "mom_12_1",
+      "family": "price_momentum",
+      "dsl": "rank(decay_linear(((delay(close, 21) / delay(close, 252)) - 1), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Jegadeesh and Titman (1993, JF); 12-1 as in Fama-French UMD; crash risk: Daniel and Moskowitz (2016, JFE)"
+    },
+    {
+      "id": "ind_mom_12_1",
+      "family": "price_momentum",
+      "dsl": "decay_linear(rank(group_mean(((delay(close, 21) / delay(close, 252)) - 1), grp_ff49)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Moskowitz and Grinblatt (1999, JF) industry momentum"
+    },
+    {
+      "id": "within_ind_mom",
+      "family": "price_momentum",
+      "dsl": "decay_linear(rank(group_neutralize(((delay(close, 21) / delay(close, 252)) - 1), grp_ff49)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Asness, Porter and Stevens (2000, WP) within-industry momentum"
+    },
+    {
+      "id": "high_52w",
+      "family": "price_momentum",
+      "dsl": "rank(decay_linear((close / ts_max(close, 252)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "George and Hwang (2004, JF) 52-week high"
+    },
+    {
+      "id": "bac",
+      "family": "low_risk",
+      "dsl": "rank(decay_linear((-1 * correlation(ts_sum(((close / delay(close, 1)) - 1), 3), ts_sum(mkt_ret, 3), 250)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) betting against correlation; correlation of overlapping 3-day returns: Frazzini and Pedersen (2014, JFE)"
+    },
+    {
+      "id": "smax",
+      "family": "low_risk",
+      "dsl": "rank(decay_linear((-1 * ((ts_max(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 252)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 252))))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) scaled MAX (SMAX); Bali, Cakici and Whitelaw (2011, JFE) MAX"
+    },
+    {
+      "id": "si_ratio",
+      "family": "short_interest",
+      "dsl": "rank(decay_linear((-1 * (si_shares / shares_out)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asquith, Pathak and Ritter (2005, JFE); Boehmer, Huszar and Jordan (2010, JFE)"
+    },
+    {
+      "id": "dtc",
+      "family": "short_interest",
+      "dsl": "rank(decay_linear((-1 * si_dtc), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Hong, Li, Ni, Scheinkman and Yan (2015, WP) days to cover"
+    },
+    {
+      "id": "si_change",
+      "family": "short_interest",
+      "dsl": "rank((-1 * ((si_shares / shares_out) - delay((si_shares / shares_out), 21))))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Rapach, Ringgenberg and Zhou (2016, JFE) short interest predicts lower returns (direction)"
+    },
+    {
+      "id": "ind_adj_rev_5",
+      "family": "reversal_seasonality",
+      "dsl": "rank((-1 * group_neutralize(((close / delay(close, 5)) - 1), grp_ff49)))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Da, Liu and Schaumburg (2014, MS); Hameed and Mian (2015, JFQA) within-industry reversal"
+    },
+    {
+      "id": "seasonality_same_month",
+      "family": "reversal_seasonality",
+      "dsl": "rank(((delay(close, 231) / delay(close, 252)) - 1))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Heston and Sadka (2008, JFE) seasonality"
+    },
+    {
+      "id": "iv_rv_spread",
+      "family": "options_implied",
+      "dsl": "rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (stddev(((close / delay(close, 1)) - 1), 21) * 15.874507866387544)))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "options_implied",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower returns"
+    },
+    {
+      "id": "opex_at_f49",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear((((sale_ttm - oi_ttm) / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm; S-12 FF49 financials"
+    },
+    {
+      "id": "sv_flow",
+      "family": "short_interest",
+      "dsl": "rank((-1 * group_neutralize(sv_ratio126, grp_ff12)))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Wang, Yan and Zheng (2020, JFE) long-term shorting flows predict negative returns; FINRA Reg SHO daily short sale volume (consolidated NMS)"
+    },
+    {
+      "id": "qmj_safety",
+      "family": "low_risk",
+      "dsl": "(((rank(decay_linear((-1 * ts_beta_on(((close / delay(close, 1)) - 1), mkt_ret, 252)), 21)) + rank(decay_linear(((-1 * (debt / at)) + (0 * log(at))), 21))) + rank(decay_linear((-1 * stddev(((ni_q / be_lag1q) + (0 * log(be_lag1q))), 252)), 21))) / 3)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "low_risk",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini and Pedersen (2019, RAS) quality minus junk, safety component (BAB, LEV, EVOL); Frazzini and Pedersen (2014, JFE) betting against beta"
+    },
+    {
+      "id": "nincr",
+      "family": "earnings_momentum",
+      "dsl": "rank(decay_linear((max(sign((ni_q - ni_q_lag4)), 0) * (1 + (delay(max(sign((ni_q - ni_q_lag4)), 0), 63) * (1 + (delay(max(sign((ni_q - ni_q_lag4)), 0), 126) * (1 + (delay(max(sign((ni_q - ni_q_lag4)), 0), 189) * (1 + delay(max(sign((ni_q - ni_q_lag4)), 0), 252))))))))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Barth, Elliott and Finn (1999, JAR) consecutive earnings increases; Green, Hand and Zhang (2017, RFS) nincr; counter-evidence Han, He, Rapach and Zhou (2018 WP)"
+    },
+    {
+      "id": "q5_eg_f49g",
+      "family": "investment_issuance",
+      "dsl": "group_rank(decay_linear((((((-0.029 * log((me_company / at))) + (0.516 * (cfo_ttm / at))) + (0.771 * ((ni_q / be_lag1q) - delay((ni_q / be_lag1q), 252)))) + (0 * log(be_lag1q))) + (0 * log(delay(be_lag1q, 252)))), 21), grp_ff12f49)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials"
+    },
+    {
+      "id": "smax5",
+      "family": "low_risk",
+      "dsl": "rank(decay_linear((-1 * ((ts_topk_mean(((close / delay(close, 1)) - 1), 21, 5) / stddev(((close / delay(close, 1)) - 1), 21)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 21))))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) scaled MAX with MAX5; Bali, Cakici and Whitelaw (2011, JFE) MAX"
+    },
+    {
+      "id": "res_mom_ind",
+      "family": "price_momentum",
+      "dsl": "rank(decay_linear(delay((ts_mean_mp((((close / delay(close, 1)) - 1) - group_mean(((close / delay(close, 1)) - 1), grp_ff49)), 231, 116) / ts_std_mp((((close / delay(close, 1)) - 1) - group_mean(((close / delay(close, 1)) - 1), grp_ff49)), 231, 116)), 21), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Blitz, Huij and Martens (2011, JEF) residual momentum; Blitz, Hanauer and Vidojevic (2020, JEF) idiosyncratic momentum; FF49 industry residual (loading 1)"
+    },
+    {
+      "id": "ins_opp_buy",
+      "family": "ownership_flow",
+      "dsl": "rank(max(ins_opportunistic_net, 0))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "ownership_flow",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Lakonishok and Lee (2001, RFS) insider purchases, not sales, are informative; Jeng, Metrick and Zeckhauser (2003, REStat); Cohen, Malloy and Pomorski (2012, JF 67(3)) opportunistic insiders"
+    },
+    {
+      "id": "inst_best_ideas",
+      "family": "ownership_flow",
+      "dsl": "rank(decay_linear(inst_best_ideas, 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "ownership_flow",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Cohen, Polk and Silli (2010, LSE WP) Best Ideas; Anton, Cohen and Polk (2021 WP); crowding: Brown, Howard and Lundblad (2022, RFS)"
+    },
+    {
+      "id": "ftd_fail",
+      "family": "short_interest",
+      "dsl": "rank((-1 * ftd_shares_ratio21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Evans, Geczy, Musto and Reed (2009, RFS) Failure Is an Option; Miller (1977, JF); Autore, Boulton and Braga-Alves (2015, FinRev); \"Informed short selling, fails-to-deliver, and abnormal returns\" (JEF 2016)"
+    },
+    {
+      "id": "ea_overdue",
+      "family": "earnings_momentum",
+      "dsl": "rank((-1 * max(sign((-1 * ea_days_to_expected)), 0)))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Johnson and So (2018, JFQA 53(6)) Time Will Tell: information in the timing of scheduled earnings news; Bagnoli, Kross and Watts (2002, JAR)"
+    },
+    {
+      "id": "ear_mom_12m",
+      "family": "earnings_momentum",
+      "dsl": "rank(ts_mean_mp((((ea_days_since == 2) ? (((close / delay(close, 5)) - 1) - ts_sum(mkt_ret, 5)) : 0)), 252, 126))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Gerard and Jehl (2025, FAJ) The Many Facets of Stock Momentum; Chan, Jegadeesh and Lakonishok (1996, JF)"
+    },
+    {
+      "id": "earn_surprise_comp",
+      "family": "earnings_momentum",
+      "dsl": "rank(decay_linear((((rank(sue) + rank(((((ni_q / be_lag1q) - (ni_q_lag4 / be_lag1q_lag4)) + (0 * log(be_lag1q))) + (0 * log(be_lag1q_lag4))))) + rank((((txt_q - txt_q_lag4) / at_lag4) + (0 * log(at_lag4))))) / 3), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Bernard and Thomas (1989, JAR); Hou, Mo, Xue and Zhang (2021, RF); Thomas and Zhang (2011, JAR); composite: Novy-Marx (2015, WP); Martineau (2022, CFR)"
+    },
+    {
+      "id": "op_rd",
+      "family": "profitability_quality",
+      "dsl": "group_rank(decay_linear((((oi_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Novy-Marx and Medhat (2025, NBER WP 33601); Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)"
+    },
+    {
+      "id": "dtc_slow",
+      "family": "short_interest",
+      "dsl": "rank(decay_linear((-1 * (si_shares / ts_mean(volume, 126))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Hong, Li, Ni, Scheinkman and Yan (2015, NBER WP 21166) Days to cover and stock returns"
+    },
+    {
+      "id": "pct_accruals",
+      "family": "profitability_quality",
+      "dsl": "rank(decay_linear(((-1 * ((ni_ttm - cfo_ttm) / abs(ni_ttm))) + (0 * log(abs(ni_ttm)))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "profitability_quality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Hafzalla, Lundholm and Van Winkle (2011, TAR) Percent accruals"
+    },
+    {
+      "id": "fip_id",
+      "family": "price_momentum",
+      "dsl": "rank(decay_linear(delay(ts_mean(sign(((close / delay(close, 1)) - 1)), 231), 21), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Da, Gurun and Warachka (2014, RFS) Frog in the pan"
+    },
+    {
+      "id": "si_low_io",
+      "family": "short_interest",
+      "dsl": "rank(decay_linear((-1 * ((si_shares / shares_out) / inst_own_share)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Asquith, Pathak and Ritter (2005, JFE); Nagel (2005, JFE)"
+    },
+    {
+      "id": "k8_intensity",
+      "family": "filing_events",
+      "dsl": "rank(decay_linear((-1 * (((k8_count_63 + delay(k8_count_63, 63)) + delay(k8_count_63, 126)) + delay(k8_count_63, 189))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "filing_events",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Zhao (2017, Management Science 63(5)) Does information intensity matter for stock returns? Evidence from Form 8-K filings"
+    },
+    {
+      "id": "inst_persist",
+      "family": "reversal_seasonality",
+      "dsl": "rank(decay_linear((((((((max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 252)), 0) + 1) * max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 189)), 0)) + 1) * max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 126)), 0)) + 2) * max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 63)), 0)) * sign((0.5 - rank(inst_own_chg_q)))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Dasgupta, Prat and Verardo (2011, JF 66(2)) Institutional trade persistence and long-term equity returns"
+    },
+    {
+      "id": "nt_late",
+      "family": "filing_events",
+      "dsl": "rank((-1 * nt_first_126))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "filing_events",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Bartov and Konchitchki (2017, Accounting Horizons 31(4)) SEC filings, regulatory deadlines, and capital market consequences"
+    },
+    {
+      "id": "div_season",
+      "family": "reversal_seasonality",
+      "dsl": "rank(div_month_pred)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Hartzmark and Solomon (2013, JFE) The dividend month premium"
+    },
+    {
+      "id": "vol_beta",
+      "family": "low_risk",
+      "dsl": "rank(decay_linear((-1 * beta_dvol_21), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "low_risk",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Ang, Hodrick, Xing and Zhang (2006, JF) The cross-section of volatility and expected returns"
+    },
+    {
+      "id": "season_y2_5",
+      "family": "reversal_seasonality",
+      "dsl": "rank(season_y2_5)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Heston and Sadka (2008, JFE) Seasonality in the cross-section of stock returns; Keloharju, Linnainmaa and Nyberg (2016, JF) Return seasonalities"
+    },
+    {
+      "id": "wq_099",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#99"
+    },
+    {
+      "id": "wq_035",
+      "family": "reversal_seasonality",
+      "dsl": "rank(decay_linear(((ts_rank(volume, 32) * (1 - ts_rank(((close + high_adj) - low_adj), 16))) * (1 - ts_rank(((close / delay(close, 1)) - 1), 32))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#35"
+    },
+    {
+      "id": "wq_055",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear((-1 * correlation(rank(((close - ts_min(low_adj, 12)) / (ts_max(high_adj, 12) - ts_min(low_adj, 12)))), rank(volume), 6)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#55"
+    },
+    {
+      "id": "wq_006",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear((-1 * correlation(open_adj, volume, 10)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#6"
+    },
+    {
+      "id": "wq_002",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear((-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open_adj) / open_adj)), 6)), 5))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#2"
+    },
+    {
+      "id": "wq_101",
+      "family": "price_momentum",
+      "dsl": "rank(decay_linear((((close - open_adj) * (raw_close / close)) / (((high_adj - low_adj) * (raw_close / close)) + 0.001)), 5))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#101"
+    },
+    {
+      "id": "wq_095",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear(((rank(((open_adj - ts_min(open_adj, 12)) * (raw_close / close))) < ts_rank(power(rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 40), 19), 12)), 5), 11)) ? 1 : 0), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#95"
+    },
+    {
+      "id": "wq_085",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear(power(rank(correlation(((high_adj * 0.876703) + (close * (1 - 0.876703))), ts_mean((raw_close * volume), 30), 9)), rank(correlation(ts_rank(((high_adj + low_adj) / 2), 3), ts_rank(volume, 10), 7))), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#85"
+    },
+    {
+      "id": "wq_030",
+      "family": "reversal_seasonality",
+      "dsl": "rank(decay_linear((((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#30"
+    },
+    {
+      "id": "wq_043",
+      "family": "reversal_seasonality",
+      "dsl": "rank(decay_linear((ts_rank((volume / ts_mean((raw_close * volume), 20)), 20) * ts_rank((-1 * delta(close, 7)), 8)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#43"
+    },
+    {
+      "id": "wq_014",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear(((-1 * rank(delta(((close / delay(close, 1)) - 1), 3))) * correlation(open_adj, volume, 10)), 21))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#14"
+    },
+    {
+      "id": "wq_044",
+      "family": "price_volume",
+      "dsl": "rank(decay_linear((-1 * correlation(high_adj, rank(volume), 5)), 5))",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21",
+      "theme": "price_volume",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#44"
+    }
+  ]
+}
