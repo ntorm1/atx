@@ -6056,3 +6056,36 @@ withdrawn by PM7-36 (c)) wait for the PM's ruling on step 2: the dispatch orders
 - Head `4d0c8d8f` before this log commit; ledger 98 lines (`e8d9dcac`), N 55, X hand-written admission trials 13.
 - Disk 121,810,661,376 B free (113.4 GiB).
 
+## X batch 2, resumed (PM7-39, PM session 8): identity under v8-15, fields v14, X-7, campaign v9-mine-c1, X-9 (2026-10-02)
+
+Integrator (root) in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `798d3b23` (clean). Read: CLAUDE.md
+build rules, integrator-rules, progress "PM session 7" to the end (PM7-1..39), `v8x-prereg.md` (whole), this log from V8-F
+to the end, `task-XWQ-report.md` (sections 1-3, 5-11), `review-x5-theme-erc.md`. Rulings PM8-1..PM8-4 recorded verbatim in
+`progress.md` ("PM session 8", commit `183d9184`) before any measurement. Parent X-5 (`x-theme-erc-gm.json`), N 55.
+
+### 1. Identity under build v8-15 (PM7-39 / PM7-30): verified from disk, tests run, logged
+
+A previous root session built and ran the identity but did not log it. Verified from disk, not from its report:
+- **Build v8-15** (`scripts/research-build.ps1`, receipt `build-equity/mega-v8-15-receipt.json` `afca7cbe`): source
+  `798d3b23` (theme `price_volume` 12th and last in `theme_resid_order`), DirtyEntries 0, preset equity-dev, targets
+  `atx-equity-strategy-ic`, `atx-impl-strategy-ic-tests`, exit 0, 10.4 s, 3 TUs, 3 links; ConfiguredProvenance `5c65cee8`
+  (configure-time, as v8-14). Executables re-hashed on disk = the receipt: **atx-equity-strategy-ic `6aac48f2...1d59`**,
+  ic-tests `d6cc36ae...7dd1`. Unchanged from v8-14 (re-hashed): targets `a95f6f0a`, mine `2176fa4a`, risk `d7e424b2`.
+- **X-5 identity** (bounded runner, source `798d3b23` clean, argv = X-5's recorded receipt with only `--output`
+  renamed, checked token by token: 1 differing token each):
+
+| pass | X-5 receipt | new receipt (`receipt.json` SHA-256) | exe | s / MiB | result |
+|---|---|---|---|---|---|
+| fit (180 / 1,536) | `mega-weights-v8x-theme-erc-run1` | `v8-i15-x5fit-run` `f3da276b69a3b04366d8bd232c8454878d81f10ca29892238fe3941d6d7ca1e9` | python (fitter) | 0.8 / 57 | `admission.csv` byte-identical; `admission.json` differs only in `inputs/script_sha256` (`4c529f5f` -> `270068c8`: `fit_composition_weights.py` gained `price_volume` in `V7_APPENDED_THEMES`); `composition_weights.json` only in `provenance/script_sha256`, `provenance/admission_sha256` (`5f5b3edb` -> `209e0b26`) and `provenance/std/registry_sha256` (`7ff10f4e` -> `19b01d11`: the `price_volume` theme row). **Both files byte-identical after substituting those values back** (weights `8310da2c`, admission `5f5b3edb`), the PM7-30 allowed list; stdout one JSON line differing in those hashes, output path and seconds |
+| w (300 / 3,072) | `mega-v8xw-train-theme-erc-run1` | `v8-i15-x5w-run` `ae7f49f5311dd3ceb350e83d637a0e6aeda15cb27b9b2d3cb7295607597635f9` | ic v8-15 `6aac48f2` (X-5 ran v8-14 `67f72921`) | 39.6 / 1,370 | **10 of 12 byte-identical**; `summary.json` (238 paths) and `train_candidates.jsonl` (229) differ **only in timing paths** (`stage_seconds.*`, `wall_seconds`, `hash_seconds`); stdout 117 of 177 lines differ only in the timing tokens `seconds=`, `ic=` (ic seconds), `composition=` (composition seconds) |
+| NAV (180 / 1,536) | `mega-nav-v8x-theme-erc-L1.1720-run` | `v8-i15-x5nav-run` `4b093261c7f5099db493e571176a8c32aa26a028e6fc9f45f9b77bda73cb9fa2` | targets `a95f6f0a` | 45.4 / 586 | **27 of 27 byte-identical** (S2 daily, `summary.json`, `capacity/`); stdout 1 of 17 lines differs, on the output path only |
+
+- **Tests on v8-15 (run now; none had been recorded):** `atx-impl-strategy-ic-tests` whole **159 / 159** (xml
+  `build-equity/v8-i15-ic-tests.xml` `dcc6e4c9`); `atx-impl/tools` whole (`ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE`
+  absolute) **612 passed, 1 skipped**; `atx-impl/strategies` **163 passed**; `scripts/tests` whole **248 passed, 3
+  skipped, 0 failed**.
+
+**X-5 reproduces under v8-15** (w and NAV byte for byte; fit with the three provenance hashes of the PM7-30 kind). X-7
+runs on v8-15. No statistic was read (comparisons by SHA-256, JSON paths and masked log tokens only). Disk 122,762,747,904
+B free (114.3 GiB).
+
