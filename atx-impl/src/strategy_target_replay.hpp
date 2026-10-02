@@ -95,11 +95,26 @@ struct TargetReplayConfig {
   // pass that clips nothing leaves the desired target bit for bit. Writes recipe, rule-id and
   // summary keys.
   atx::f64 adv_hold_q{};
+  // inv-vol-v1 (v8 X, lane XCOMB, capacity; aim-partial-v5, NAV replay only; nav --vol-scale
+  // inv-vol-v1). false (default): off, every output unchanged. On: on every rebalance decision the
+  // members' centred tied ranks r_i pass engine::book::scale_inverse_vol BEFORE the demean:
+  // r_i *= median / max(s_i, inv_vol_floor_fraction x median), s_i the sample SD of daily returns
+  // the execution cost model reads for this decision's fills (session d + 1: the NAV replay's
+  // liquidity window, rows <= d), median over the members with a finite s_i > 0 (a member without
+  // one takes the median); then the unchanged demean, gross 1, locate zeroing, neutralization and
+  // ADV cap. Not with hold_band (both act between the ranks and the demean). Writes recipe,
+  // rule-id and summary keys.
+  bool inv_vol{};
 };
+// inv-vol-v1's registered floor: s_i is raised to at least this fraction of the median (so the
+// multiplier is at most 4).
+inline constexpr atx::f64 inv_vol_floor_fraction = 0.25;
 // adv-hold-v1 is on (Q > 0).
 [[nodiscard]] constexpr bool adv_hold_on(const TargetReplayConfig& c) noexcept {
   return c.adv_hold_q > 0;
 }
+// inv-vol-v1 is on.
+[[nodiscard]] constexpr bool inv_vol_on(const TargetReplayConfig& c) noexcept { return c.inv_vol; }
 // hold-band-v1 is on (the kernel runs) / declared (b > 0: recipe, rule id and summary keys).
 [[nodiscard]] constexpr bool hold_band_on(const TargetReplayConfig& c) noexcept {
   return c.hold_band.has_value();
@@ -150,6 +165,11 @@ struct ConstructionDay {
   // the cap). 0 unless the cap pass ran; no CSV column.
   atx::usize adv_clipped{}, adv_residual_names{};
   atx::f64 adv_clipped_mass{}, adv_unplaced_mass{}, adv_residual_mass{}, adv_residual_max{};
+  // inv-vol-v1 (v8 X): members scaled, of them filled (no usable s_i) and floored, the median s
+  // (NaN when no member had a usable one: the ranks were left as they are) and the largest
+  // multiplier. 0 unless the kernel ran (every cadence decision with the rule on); no CSV column.
+  atx::usize inv_vol_scaled{}, inv_vol_filled{}, inv_vol_floored{};
+  atx::f64 inv_vol_median{}, inv_vol_max_multiplier{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input

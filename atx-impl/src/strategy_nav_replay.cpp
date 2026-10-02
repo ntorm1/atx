@@ -782,6 +782,7 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
 // locate-in-aim, shared.no_short (the special tier at d) zeroes negative aims first.
 // v8 adv-hold-v1: the cap's inputs are every member's raw-dollar ADV the EXECUTE of this
 // decision's fills reads (window_liquidity at session d + 1: rows <= d) and the run's NAV.
+// v8 X inv-vol-v1: its input is the sigma of the same window.
 co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                      usize d, Construction& shared, ConstructionDay& out) {
   if (cfg.target.adv_hold_q > 0) {
@@ -791,6 +792,15 @@ co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplay
       if (x.member[d * x.instruments + i])
         adv[i] = window_liquidity(x, x.volume, cfg, d + 1, i).adv;
     shared.state.nav = cfg.initial_nav;
+  }
+  // v8 X inv-vol-v1: every member's execution volatility for this decision's fills (the same
+  // window, NaN where the scenario's fallback sigma applies; the book-independent window).
+  if (inv_vol_on(cfg.target)) {
+    auto& sigma = shared.state.sigma;
+    sigma.assign(x.instruments, nan);
+    for (usize i = 0; i < x.instruments; ++i)
+      if (x.member[d * x.instruments + i])
+        sigma[i] = window_liquidity(x, x.volume, cfg, d + 1, i).sigma;
   }
   return detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
                               shared.no_short, &shared.state);
@@ -2204,15 +2214,15 @@ bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b)
 // cadence, trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage,
 // exit_rate) and the scenario: the shared construction, the shared liquidity windows and
 // the book-independent settings are then one. The v8 construction options (hold band, ADV
-// cap) shape the shared desired target, so they are shared too. The ADV cap Q ADV /
-// (aim_leverage NAV) also reads aim_leverage, a variant flag: replay_books then forms one
+// cap, v8 X inv-vol-v1) shape the shared desired target, so they are shared too. The ADV cap
+// Q ADV / (aim_leverage NAV) also reads aim_leverage, a variant flag: replay_books then forms one
 // construction per distinct leverage (review A-1).
 bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
   const auto& s = a.target; const auto& t = b.target;
   return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
          s.neutralize_max_amplification == t.neutralize_max_amplification &&
          s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
-         s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q &&
+         s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q && s.inv_vol == t.inv_vol &&
          s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
          s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
          a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
@@ -3314,6 +3324,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--adv-hold-q Q (aim-partial-v5; v8 adv-hold-v1 holding cap Q x ADV, 0 = off; "
                "the cap uses the run's initial NAV for every book, each --capacity-curve book "
                "included)] "
+               "[--vol-scale inv-vol-v1 (aim-partial-v5, not with --hold-band; v8 X: each "
+               "member's tied rank x median sigma / max(sigma, .25 median sigma) before the "
+               "demean, sigma the execution cost model's for the decision's fills)] "
                "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
                "bit-identical; fixed rate only)] [--stage-timers (summary.json "
                "stage_seconds: load, exposures, construction, books, hash, write)] "
@@ -3376,7 +3389,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
         execution.book_workers = static_cast<usize>(x);
       } else if (key == "--hold-band") cfg.target.hold_band = real(); // v8 R-4 hold-band-v1
       else if (key == "--adv-hold-q") cfg.target.adv_hold_q = real(); // v8 R-5 adv-hold-v1
-      else if (key == "--warm-start-sessions") {
+      else if (key == "--vol-scale") { // v8 X (lane XCOMB) inv-vol-v1
+        if (value != "inv-vol-v1") throw std::invalid_argument("unknown --vol-scale (inv-vol-v1)");
+        cfg.target.inv_vol = true;
+      } else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
         execution.warm_start_sessions = static_cast<usize>(x);

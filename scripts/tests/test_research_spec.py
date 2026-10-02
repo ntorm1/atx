@@ -67,7 +67,8 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
 NULL_PINS["x-theme-erc.json"] = CHILD_NULLS                 # v8 X (lane XCOMB): theme-erc-v1, planned on R-1
-STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
+NULL_PINS["x-inv-vol.json"] = CHILD_NULLS                   # v8 X (lane XCOMB): inv-vol-v1, planned on B0c
+STORE_FILLS =["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 
 
@@ -102,6 +103,7 @@ EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                         
 # Ruling PM6-6: R-1's registered change at the aim leverage that matches the parent's all-rows S2 gross
 EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
 EXPECTED_CHANGES["x-theme-erc.json"] = FIT_DOWN | {"fit.flags"}                          # v8 X (lane XCOMB)
+EXPECTED_CHANGES["x-inv-vol.json"] = {"nav.output", "nav.flags"}                          # v8 X (lane XCOMB)
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
 MISSING = object()
@@ -546,9 +548,11 @@ def check_registered_change(specs: Path, name: str) -> None:
                  # R-8: the registered constants spelled out; --capacity-curve (E-29) is already the parent's
                  "r8.json": pn + ["--risk-target", ".05", "--risk-target-bias", "1.15", "--risk-target-cadence", "21",
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
-                                  "<fill:nav.flags --risk-model-sha256>"]}
+                                  "<fill:nav.flags --risk-model-sha256>"],
+                 "x-inv-vol.json": pn + ["--vol-scale", "inv-vol-v1"]}                  # v8 X (lane XCOMB)
     assert cn == nav_delta.get(name, pn)
-    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
+    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json",   # E-29: the 4x report
+                                                    "x-inv-vol.json")
     comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"),
             "r1-comp-v8-gm.json": ("ew-theme-v1", "ew-theme-std-v1"),                     # PM6-6: R-1's change
             "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v2"),                       # E-27b
@@ -1316,3 +1320,21 @@ def test_x_theme_erc_appends_its_flag_to_the_parents_fit(tmp_path, authored_v8):
     root, spec = fake_root(tmp_path / "root", spec)
     c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
     assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
+
+
+def test_x_inv_vol_appends_its_flag_to_the_parents_nav(tmp_path, authored_v8):
+    """v8 X (lane XCOMB): inv-vol-v1 is a NAV-only change, nav --vol-scale inv-vol-v1 after the parent's flags (the
+    4x NAV report --capacity-curve is the parent's); the description registers the rule's constants, the gross
+    matching and the capacity criterion."""
+    doc = json.loads((authored_v8 / "x-inv-vol.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "base-b0c.json" and doc["parent"] is None and "requires" not in doc
+    for text in (".25 x median", "session d + 1", "PM6-6", "net Sharpe at 4x NAV", "cost_bps_traded",
+                 "paired S2 net dSR > 0 against the parent AND mechanics", "recipe pin mismatch"):
+        assert text in doc["description"], text
+    path = tmp_path / "x-inv-vol-on-b0c.json"
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "base-b0c.json"))), encoding="utf-8")
+    spec = RC.load_spec(path)
+    parent = RC.load_spec(authored_v8 / "base-b0c.json")
+    assert spec["nav"]["flags"] == parent["nav"]["flags"] + ["--vol-scale", "inv-vol-v1"]
+    assert "--capacity-curve" in spec["nav"]["flags"]
+    assert spec["fit"]["flags"] == parent["fit"]["flags"] and spec["fit"]["output"] == parent["fit"]["output"]

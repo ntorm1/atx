@@ -750,8 +750,9 @@ void append_help(std::ostream& out) {
          "--emit-holdings refused); registered S_prior 20, H 20, --adv-trade-p .01, beta .02, "
          "2000 iterations, tolerance 1e-9: --gamma, --ic-book, --w-max, --adv-cap-q, "
          "--adv-trade-p, --target-vol, --spo-horizon, --alpha-horizon, --spo-gross, --spo-iters "
-         "and --spo-tol are refused; [--hold-band B] [--adv-hold-q Q] shape desired as "
-         "aim-partial-v5 does (refused with spo-v1/v2); [--capacity-curve] runs report only "
+         "and --spo-tol are refused; [--hold-band B] [--adv-hold-q Q] [--vol-scale inv-vol-v1] "
+         "shape desired as aim-partial-v5 does (refused with spo-v1/v2); [--capacity-curve] "
+         "runs report only "
          "(Ruling E-37: each capacity book is the NAV-m tracker, its trade limit and impact at "
          "m x NAV, on its own engine; v7_extras.json capacity_spo_v3; refused with spo-v1/v2); "
          "--trade-fraction (theta) has no effect on spo-v3 (H is the registered 20; theta moves "
@@ -921,11 +922,12 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       else throw std::invalid_argument("--spo-books all|primary");
     }
     if (o.spo_v1) {
-      // v8 E-26: the desired-target shaping (hold-band-v1, adv-hold-v1) passes through to the
-      // replay, whose shared construction forms spo-v3's aim with it; spo-v1/v2 refuse it.
+      // v8 E-26: the desired-target shaping (hold-band-v1, adv-hold-v1; v8 X inv-vol-v1) passes
+      // through to the replay, whose shared construction forms spo-v3's aim with it; spo-v1/v2
+      // refuse it.
       if (spo_version != 3)
         for (usize k = 1; k < args.size(); ++k)
-          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q")
+          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q" || args[k] == "--vol-scale")
             throw std::invalid_argument(args[k] + " needs --rule spo-v3 (spo-v1/v2 refuse the "
                                                   "desired-target shaping)");
       // Ruling E-37: spo-v3 runs the capacity curve as a report-only pass (its capacity books
