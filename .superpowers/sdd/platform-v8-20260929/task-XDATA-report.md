@@ -214,3 +214,143 @@ post-filing drift I could cite); S-3 / 424B offering events (inside investment_i
 text not parsed; the long-run drift weakened after 2003, Fu and Huang 2016, as recalled); 13D activism (Brav, Jiang,
 Partnoy and Thomas 2008: the return is at the filing, with no later drift); TH3 `iEMove` (the vendor's forward
 earnings calendar is not shown to be point in time).
+
+## 4. Builders for the top three in-house families
+
+New files only (`atx-engine/tools/`); no existing file changed:
+
+| file | role |
+|---|---|
+| `research_fields_xdata.py` | the field module: `FIELDS` (the field spec entries), `PRODUCERS`, `HOST_HANDLES`, `bind`, `producer_group`, `field_spec`, `reuse_inputs`, `entry_inputs`, `imported_code`, `XdataFieldModule` (`check`, `compute`, no CLI option) |
+| `prepare_research_fields_xdata.py` | the draft registration entry: `DRAFT_MODULES`, `FIELDS_XDATA_DRAFT = ("div_month_pred", "beta_dvol_21", "season_y2_5")`, `register(host_namespace)`, `main(argv)` = register then the builder's own `main` (the FIELDS-V9 pattern; at integration 8 it folds into `prepare_research_fields_draft.DRAFT_MODULES` of `834d5a05` as one tuple element) |
+| `test_research_fields_xdata.py` | 7 synthetic tests (below) |
+
+All three fields read the role's own vendor source through research_fields_price.py's `--price-source` (its SHA-256
+must equal the role's `source_sha256`) and its panel machinery (`source_panel`: the observation contract, duplicate
+quarantine, factor-break-v1 chaining, kept-gap spans; `extended_days`: NYSE rule sessions before the role). No new CLI
+option.
+
+### 4a. The fields as coded
+
+| field | formula id | definition | stamping (when known) |
+|---|---|---|---|
+| `div_month_pred` | `hs-divseason-q3-6-9-12-v1` | Ex-date ledger: an observed session s of a line whose step from its previous observation p has y = 1 - F_p/F_s in [1 bp, 4%], no kept-gap step in (p, s], and is not a factor-break-v1 jump cell (a factor step with no matching raw drop). Row t, M = the month of session t: n_paid = months of M-12..M-1 holding an ex-date; a quarterly payer has 3 <= n_paid <= 6 and a first observation at or before month M-12's first session; value 1 if an ex-date is in M-3, M-6, M-9 or M-12, else 0; NaN for non-payers, annual, semiannual and monthly payers, short history | an ex-date is stamped at its own session (the vendor applies the factor on the ex-date; the dividend was declared before it); only months before the decision month are read, so every row used is at or before t-1. Constant within a month |
+| `beta_dvol_21` | `ahxz-beta-dvol-spy21-v1` | OLS of the line's daily adjusted return on [1, r_SPY, dIV_SPY] over sessions t-21..t-1 (at least 17 usable days, regressors not collinear); value = the dIV slope. SPY = the unique securityID with `ticker_tk` 'SPY' (else refused); r_SPY its adjusted return (house guard, jump cells excluded); dIV the daily change of its `atmCenI_21d` inside `IV_DOMAIN`; line returns with the house guard and no kept-gap step | rows t-22..t-1 only: line and SPY closes at their 22:00 UTC marks; SPY's IV of session s is delivered by 04:00 UTC of s+1 (22:00 America/Chicago), before the mark of t |
+| `season_y2_5` | `hs-season-y2-5-v1` | for k = 2..5: b = e - 252k, a = b + 21 (e = row t on the extended axis); r_k = P_a/P_b - 1 with both observations, no kept-gap step, the monthly divergence guard; value = mean of the finite r_k when at least 3 | rows t-1260..t-483 only |
+
+Seal (reader side, research_window): `compute` refuses with `SealError` unless the builder's `SEAL` is
+`research_window.SEAL`; the panel and the SPY reader skip and count every vendor row dated on or after it and never
+read past the role's last session (`source_checks.xdata.source.rows_on_or_after_seal_skipped`,
+`source_checks.xdata.vol_line.rows_on_or_after_seal_skipped`).
+
+Reuse fingerprint: `PRODUCERS` = `x_div` (`div_events`, `div_month_rows`), `x_dvol` (`vol_line`, `line_returns`,
+`dvol_beta_rows`), `x_season` (`season_rows`), each with the builder closure read through `h`; `reuse_inputs` =
+`session_calendar` (the NYSE rule calendar of the extended axis, research_fields_price review B-1) and
+`imported_code` (SHA-256 of the AST closure of the seven names imported from research_fields_price.py with the builder
+definitions they read; an edit of `source_panel` changes it and recomputes the field). The price source needs no pin
+beyond the role binding. Manifest entry extras: `producer`, `formula_id`, `formula_sha256`, `lag_sessions` 1,
+`min_history`, `session_calendar`, `imported_code`, and per field: `ledger` stats and payer / predicted / non-payer /
+infrequent / monthly / short-history member-cell counts (`div_month_pred`, domain [0, 1]); `short_window_member_cells`
+and `vol_line_security_id` (`beta_dvol_21`); `short_history_member_cells` (`season_y2_5`).
+
+### 4b. Registration (every constant, fixed blind)
+
+| constant | value | basis |
+|---|---|---|
+| `LAG_SESSIONS` | 1 | the house t-1 clock (F-1) |
+| `DIV_YIELD_MIN` | 1e-4 | mechanical: above the vendor factor's print precision (cumulative ratios agree with 1/returnFactor to 1.3e-7, TH3 audit) and below any regular payment |
+| `DIV_YIELD_MAX` | 0.04 | mechanical: a regular quarterly payment above 4% of price is over 16% a year; specials, spin-offs and stock dividends of 5% or more (1 - 1/1.05 = 4.76%) fall outside |
+| `DIV_PRED_MONTHS` | 3, 6, 9, 12 | Hartzmark-Solomon (2013), as recalled (the lag set of the CZ `DivSeason` replication); root verifies against the paper |
+| `DIV_PAYER_MONTHS`, `DIV_MIN_PAID`, `DIV_MONTHLY_MAX` | 12, 3, 6 | mechanical: the lag set predicts a quarterly cycle; a quarterly payer shows 4 paid months a year, 3 when one is skipped or moved across a window edge, at most two extras; annual and semiannual payers (1-2) would be flagged in months they never pay, monthly payers (7+) have no off month |
+| `VOL_LINE_TICKER`, `VOL_COLUMN` | SPY, `atmCenI_21d` | AHXZ use VXO (S&P 100, 30-day ATM implied volatility); SPY's 30-day (21 trading days) ATM IV is the in-house analogue; atx-db's `reference/vix_daily` (Cboe VIX, a variance-swap index) is the alternative |
+| `DVOL_WINDOW` | 21 | AHXZ: daily returns within one month |
+| `DVOL_MIN_DAYS` | 17 | declared: about 80% of the window, the house ratio of F-1's 48 of 60; AHXZ's own minimum not verified |
+| `DVOL_DET_TOL` | 1e-10 | numerical guard only (collinear regressors on a line's days) |
+| `SEASON_YEARS` | 2, 3, 4, 5 | Heston-Sadka (2008); the CZ `MomSeason` "years 2 to 5" form |
+| `SEASON_YEAR_SESSIONS`, `SEASON_WINDOW` | 252, 21 | the alignment of the roster member `seasonality_same_month` (delay 252 / 231) |
+| `SEASON_MIN_YEARS` | 3 | declared: a majority of the four windows (one halt or listing gap does not drop the name) |
+
+Candidate signals the fields serve (suggested frozen strings for the PM's registration; not registered here):
+
+| candidate | DSL | theme (suggested) | prior | budget |
+|---|---|---|---|---|
+| `div_season` | `rank(div_month_pred)` | reversal_seasonality (a calendar effect beside `seasonality_same_month`; avoids a one-member theme) | +1, Hartzmark-Solomon (2013, JFE) | 1 field, lookback 0 |
+| `vol_beta` | `rank(decay_linear((-1 * beta_dvol_21), 21))` | low_risk (or a new `macro_vol_risk`) | +1 on the negated beta, Ang-Hodrick-Xing-Zhang (2006, JF) | 1 field, lookback 20 |
+| `season_y2_5` | `rank(season_y2_5)` | reversal_seasonality | +1, Heston-Sadka (2008, JFE); Keloharju-Linnainmaa-Nyberg (2016, JF) | 1 field, lookback 0 |
+
+Each needs a registry fields-table row (formula id, clock and basis copied from the built manifest) before `add-alpha`.
+
+### 4c. Tests (`test_research_fields_xdata.py`, synthetic world 2012-06..2019-05, role 2018-07-02..2019-04-30)
+
+- `test_values_match_definitions`: all three fields cell by cell (every third row, every line) against independent
+  definitions written in the test (a numpy `lstsq` for the beta), at least 150 finite cells each; the payer rules
+  (monthly 33, annual 44 and non-payer 55 all NaN; the initiation 66 NaN until its third payment, 0 the month after,
+  1 three months later; quarterly payers always defined); the 6% special, the sub-1-bp step and the no-raw-drop jump
+  are not ex-dates; SPY's duplicate session quarantined, two out-of-domain IV prints and one missing print counted;
+  sealed-row counts; entry extras (`producer`, `formula_sha256`, `lag_sessions`, `imported_code`,
+  `session_calendar`).
+- `test_point_in_time_probe`: every vendor row (all lines, SPY and QQQ, close, factor, volume, IV) dated on or after
+  role session 120 is moved at random; rows 0..120 of `div_month_pred` and `beta_dvol_21` stay bit-identical and later
+  rows move. `season_y2_5` reads nothing after t-483, so its probe moves rows from the first session row 120 does not
+  read: rows 0..120 identical, later rows move.
+- `test_probe_fails_on_leaky_variants`: the probe has teeth. With `LAG_SESSIONS` 0 (`beta_dvol_21`: the same-session
+  window), or a 21-session lead plus the current month (`div_month_pred`) or the current year's window
+  (`season_y2_5`), rows at or before the cut move, so the probe fails; the module as written passes the same probe.
+- `test_seal_and_refusals`: no `--price-source` (refused before any output); the builder's seal differing from
+  research_window's (`SealError`, no manifest); a source without `atmCenI_21d` (refused before output for
+  `beta_dvol_21`, the other two still build); `SPY` on two securityIDs (refused, no manifest); the CLI equals the API.
+- `test_repository_window_fresh_interpreter`: a fresh interpreter (no test harness) under the repository window
+  (seal 2024-01-01 from `research_window.json`) drops the synthetic 2024 rows as sealed (SPY 2 rows, panel 4) and
+  writes byte-identical payloads; its manifest seal is the repository seal.
+- `test_reuse`: self reuse copies all three byte for byte with entries verbatim and `reused_from.inputs` =
+  {`session_calendar`, `imported_code`}; a mixed prior reuses one and computes two; a changed `imported_code`
+  recomputes all three with identical bytes; an edit of `source_panel`'s signature moves `imported_code`.
+- `test_registration_is_opt_in`: the plain builder lacks the three names and the module; registered, they follow
+  every existing field; `register` is idempotent; unregistered again on exit.
+
+Results: `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider test_research_fields_xdata.py`
+-> 7 passed (19 s). Whole `atx-engine/tools` directory -> 260 passed, 6 subtests passed (253 before + 7).
+
+### 4d. How root verifies
+
+1. The tests above, from `atx-engine/tools`.
+2. Identity: `git diff --stat 3c6ae225 HEAD -- atx-engine/tools` lists only the three new files. The plain builder
+   never imports the module (`test_registration_is_opt_in`), so every v8 field list, manifest byte, producer
+   fingerprint and reuse count (v10 63 / 7, v11 70 / 3, v12 73 / 1) is unchanged by construction; flag absent =
+   the module not registered.
+3. Build (after V8-F and integration 8; not run by this lane), from whichever lo3 fields directory is current
+   (`$FBASE`, its pin `$FB`), with that build's full argv (as the FIELDS-V9 report section 3 shows for v12) and the
+   entry swapped:
+   ```bash
+   FX=$("$PY" -c "import json,sys;n=[f['name'] for f in json.load(open(sys.argv[1],encoding='utf-8'))['fields']];print(','.join(n+['div_month_pred','beta_dvol_21','season_y2_5']))" $FBASE/manifest.json)
+   "$PY" scripts/run_bounded_research.py --seconds 900 --max-rss-mib 2560 --min-free-mib 512 \
+     --output build-equity/train-2020-2023-lo3-fields-x-run \
+     --bind atx-engine/tools/prepare_research_fields_xdata.py --bind atx-engine/tools/research_fields_xdata.py \
+     --bind atx-engine/tools/prepare_research_fields.py --bind atx-engine/tools/research_fields_price.py \
+     --bind atx-engine/tools/research_fields_sec.py --bind build-equity/train-2020-2023-lo3/manifest.json \
+     --bind $FBASE/manifest.json -- \
+     "$PY" atx-engine/tools/prepare_research_fields_xdata.py <the base build's argv with --output
+       build-equity/train-2020-2023-lo3-fields-x --fields $FX --reuse $FBASE --reuse-sha256 $FB --reuse-hardlink
+       --price-source C:/Users/natha/Downloads/TickerHistory3.parquet --max-rss-mib 2048 --max-seconds 880>
+   ```
+   Expected: `reuse.reused` = the base names; `reuse.computed` = the three new names; `seal.exclusive_end`
+   2024-01-01; `source_checks.xdata.vol_line.security_id` is SPY's vendor line; sealed-row counts are counts only.
+   Memory [est] for the 4-year role (about 1,400 sessions x 5,627 lines, 1,260 sessions of history): panel about
+   210 MB, dividend ledger about 75 MB, beta returns about 65 MB, so about 0.4 GiB above the builder. Time [est]: the
+   TickerHistory3 hash (about 20 s), the SPY scan of `ticker_tk` over 32 M rows (one to two minutes), the panel scan
+   (about a minute), the three producers (seconds).
+
+### 4e. Deviations, with reasons
+
+1. Draft registration entry, not a builder hook (the FIELDS-V9 precedent): the plain builder and every v8 build stay
+   byte-identical. The entry duplicates the FIELDS-V9 entry's 20 lines because that file is not on this base; fold
+   at integration 8.
+2. The field spec entries live in the module's `FIELDS` (definition, units, clock, staleness, caveats, formula id,
+   min history), as every field module; there is no separate spec document.
+3. Dividends come from the vendor's chained factor, not a dividend file (none in house): a cash distribution inside
+   the band counts whatever its kind; the jump-cell rule removes factor steps with no raw drop of more than 1%.
+4. The dividend field's cross-section is quarterly payers (a registered choice: the 3 / 6 / 9 / 12 lag set flags an
+   annual payer in four months a year).
+5. SPY's ATM IV stands in for VXO; SPY's adjusted return for the CRSP value-weighted market.
+
+Cross-lane edits: none. Open risks: section 7.
