@@ -1,0 +1,36 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8x-inv-vol-gm",
+  "description": "Cell X-6 at matched gross (Ruling PM6-6; v8x-prereg.md section 14, N 55): the registered change of x-inv-vol.json unchanged (nav --vol-scale inv-vol-v1; NAV-only, u / fit / card / w are the parent's), plus the aim leverage set so that its all-rows S2 gross matches the parent X-5 (x-theme-erc-gm.json, G .9862260459) within .005. Calibration step (1) = x-inv-vol.json's NAV at the parent L 1.1720 (mechanics only: all-rows gross 1.0099371711, no return read); L = 1.1720 x .9862260459 / 1.0099371711 = 1.14448 -> 1.1445. The cell is ledgered once, from this run. Acceptance (Ruling PM7-34): paired S2 net dSR > 0 against the parent AND mechanics; the registered capacity criterion (net Sharpe at 4x NAV higher AND S2 cost_bps_traded lower) is computed and printed and decides nothing.",
+  "parent": "x-theme-erc-gm.json",
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8x-inv-vol-L1.1445",
+      "nav.leverage": "1.1445"
+    },
+    "flags": {
+      "nav": {
+        "--vol-scale": "inv-vol-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1720/summary.json",
+      "sha256": "a03937cf410dfdba75d503f2108c973a881f1d34afcb36a4c20a5e500e6f804d"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/admission.json",
+      "sha256": "5f5b3edb280cb44ff64fa3208cecc319f166d8eae1c1326c526f455a74f2b196"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8xw-train-theme-erc-1/train_combined.json",
+      "sha256": "2a442f560982749b74283f16ef3060656f270d6130628c64fcd4bde77259cb86"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/composition_weights.json",
+      "sha256": "8310da2c05aa8e46573aaa2f7660a8a635b5f6c44c6f758c495c3d719710d699"
+    }
+  }
+}
