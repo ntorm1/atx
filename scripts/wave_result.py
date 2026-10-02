@@ -23,7 +23,8 @@ def _f(x, spec: str = ".4f") -> str:
     return format(x, spec) if isinstance(x, (int, float)) and not isinstance(x, bool) else "na"
 
 
-def build(w, done: dict, ledger: dict) -> dict:
+def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
+    """``seal``: the record stage's scan of every log the wave produced (the hidden-data line)."""
     m, pre = w.manifest, done["preflight"]
     sc, sp, mt = done.get("screen") or {}, done.get("spec") or {}, done.get("match") or {}
     jd, vf = done.get("judge") or {}, done.get("verify") or {}
@@ -53,7 +54,7 @@ def build(w, done: dict, ledger: dict) -> dict:
                         "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
                         "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
             "cell": cell, "marginal": marginal_rows(sc, sp), "mechanics": vf.get("mechanics"),
-            "seal_scan": vf.get("seal_scan"),
+            "seal_scan": seal if seal is not None else vf.get("seal_scan"),
             "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
             "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
             "next_parent": ({"spec": cell["spec"], "library": cell["library"]} if accepted and cell else
@@ -140,7 +141,8 @@ def log_section(doc: dict) -> str:
                 for r in doc["timings"]]
         out.append("")
     seal = doc.get("seal_scan") or {}
-    out += [f"Hidden-data record: seal scan of {seal.get('files', 0)} run log(s): "
+    out += [f"Hidden-data record: seal scan of {seal.get('files', 0)} log(s) (every run dir, reader and console of the "
+            f"wave): "
             f"{seal.get('tokens_at_or_after_seal', 0)} date token(s) at or after {seal.get('seal', 'the seal')}.",
             f"**Next parent: `{doc['next_parent']['spec']}`, library {doc['next_parent']['library']}.**", ""]
     return "\n".join(out)

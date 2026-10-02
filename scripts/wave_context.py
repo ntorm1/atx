@@ -116,10 +116,46 @@ class Wave:
                 "leverage": str(spec["nav"].get("leverage")), "ledger": (spec.get("summ") or {}).get("ledger"),
                 "reference_nav": (spec["inputs"].get("reference_cell") or {}).get("dir")}
 
+    def phase_bases(self, spec_rel: str) -> dict:
+        """{phase: output base} of a cell spec's bounded phases (their run dirs are ``<base>-run[<k>]``)."""
+        spec = self.load_spec(spec_rel)
+        c = RC.Cycle(spec, RC.Resolver(self.root), verify=False)
+        bases = {"u": c.out(spec["ic"]["u_output"]), "fit": c.out(spec["fit"]["output"], keyed=False),
+                 "w": c.out(spec["ic"]["w_output"]), "nav": c.out(spec["nav"]["output"])}
+        for key in ("card", "marginal", "ref", "monitor"):
+            if key in spec:
+                bases[key] = c.out(spec[key]["output"])
+        for phase in ("check", "summ"):
+            bases[phase] = f"{c.cycle_dir()}/{phase}"
+        return bases
+
+    def run_dirs(self, base: str) -> list[str]:
+        """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in name order."""
+        p = self.path(f"{base}-run")
+        if not p.parent.is_dir():
+            return []
+        return [self.rel(d) for d in sorted(p.parent.glob(p.name + "*"))
+                if d.is_dir() and (d.name == p.name or d.name[len(p.name):].isdigit())]
+
     # -------------------------------------------------------------- processes
+    def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str:
+        """Keep a command's stdout and stderr under <out_dir>/consoles/ (the seal scan reads every one)."""
+        d = self.path(self.wave_path("consoles"))
+        d.mkdir(parents=True, exist_ok=True)
+        slug = "".join(ch if ch.isalnum() else "-" for ch in what.lower()).strip("-")[:48] or "command"
+        k = len(list(d.glob("*.log"))) + 1
+        while (d / f"{k:03d}-{slug}.log").exists():
+            k += 1
+        p = d / f"{k:03d}-{slug}.log"
+        with p.open("x", encoding="utf-8", newline="\n") as f:
+            f.write(f"$ {WS.fmt_argv(argv)}\n# exit {done.returncode}\n# stdout\n{done.stdout or ''}\n# stderr\n"
+                    f"{done.stderr or ''}\n")
+        return self.rel(p)
+
     def run(self, argv: list[str], what: str, ok=(0,)) -> subprocess.CompletedProcess:
         self.log(WS.fmt_argv(argv))
         done = self.executor(argv, self.root, self.env())
+        self.console(argv, what, done)
         if done.returncode not in ok:
             tail = ((done.stderr or "") + (done.stdout or ""))[-600:]
             raise stage_chain.StageError(f"{what}: exit {done.returncode} ({WS.fmt_argv(argv)[:200]}) {tail}")

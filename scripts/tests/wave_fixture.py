@@ -198,8 +198,10 @@ class FakeCycle:
     dSR the cell's summ reports; ``fail`` = {argv token: exit} forces an exit."""
 
     def __init__(self, root: Path, admission: dict, *, gross_per_l: dict | None = None, dsr: float = 0.05,
-                 gate_exit: int = 0, accounting: float = 1e-14, fail: dict | None = None, listed: set | None = None):
+                 gate_exit: int = 0, accounting: float = 1e-14, fail: dict | None = None, listed: set | None = None,
+                 screen_log: str = "u pass 2020-01-02 .. 2023-12-29\n"):
         self.root, self.admission, self.gross_per_l, self.listed = root, admission, gross_per_l or {}, listed
+        self.screen_log = screen_log
         self.dsr, self.gate_exit, self.accounting, self.fail = dsr, gate_exit, accounting, fail or {}
         self.calls: list[list[str]] = []
 
@@ -243,6 +245,11 @@ class FakeCycle:
             member = {"id": "m1", "status": "admitted", "runner_sign": 1, "s_k": 1}
             write_json(self.root, f"{fit}/admission.json", {"candidates": [member] + rows})
             write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": listed, "marginal": marginal})
+            u_run = self.root / f"{c.out(spec['ic']['u_output'])}-run"
+            u_run.mkdir(parents=True, exist_ok=True)
+            write(self.root, f"{c.out(spec['ic']['u_output'])}-run/stdout.log", self.screen_log)
+            write_json(self.root, f"{c.out(spec['ic']['u_output'])}-run/receipt.json",
+                       {"outcome": "completed", "exit_code": 0, "wall_seconds": 12.0, "sampled_peak_tree_rss_bytes": 1 << 30})
             BI.ledger_append(self.root / LEDGER, [admission_line(spec["name"], r["id"], role_sha=role_sha(self.root))
                                                   for r in listed], chain=True)
             return self.ok(args, self.gate_exit)

@@ -178,3 +178,59 @@ def test_a_retry_after_the_stage_failed_commits_exactly_its_files(tmp_path):
     assert code == 0, out
     head = F.git(root, "show", "--name-only", "--format=%s", "HEAD").split("\n")
     assert head[0].startswith("wave w1: register library w1") and set(filter(None, head[1:])) == ADD_ALPHA_W1
+
+
+# ------------------------------------------------------------------ MAJOR 4: the seal scan covers every log of the wave
+ONE_DROPPED = {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", -1), "alpha_c": ("admitted", 1)}
+
+
+def test_the_screen_librarys_logs_are_scanned_in_a_b_library_wave(tmp_path):
+    root = F.build(tmp_path / "r", speed={"screen_first": False})                  # the b library screens nothing
+    fake = F.FakeCycle(root, ONE_DROPPED, screen_log="u pass through 2024-02-01\n")
+    code, _ = wave(root, fake, "run")
+    err = failed(root, "07-verify.failed-1.json")
+    assert code == 4 and "1 date token(s) at or after the seal 2024-01-01" in err and "out/u-w1-run/stdout.log" in err
+    assert receipt(root, "04-spec.json")["outputs"]["cell_spec"].endswith("lib-w1b.json")   # not the cell's own dir
+
+
+class LoudAddAlpha(F.FakeCycle):
+    def add_alpha(self, args):
+        done = super().add_alpha(args)
+        return F.subprocess.CompletedProcess(done.args, 0, "K1 plan: 3 rows, last 2024-06-28\n", "")
+
+
+def test_every_command_console_is_kept_and_scanned(tmp_path):
+    root = F.build(tmp_path / "r")
+    code, _ = wave(root, LoudAddAlpha(root, KEPT_ALL), "run")
+    err = failed(root, "07-verify.failed-1.json")
+    assert code == 4 and "out/waves/w1/consoles/001-add-alpha-alpha-a.log" in err
+    consoles = sorted(p.name for p in (root / STATE / "consoles").glob("*.log"))
+    assert consoles[:3] == ["001-add-alpha-alpha-a.log", "002-add-alpha-alpha-b.log", "003-add-alpha-alpha-c.log"]
+
+
+class LoudBundle(F.FakeCycle):
+    def bounded(self, argv):
+        done = super().bounded(argv)
+        run_dir = argv[argv.index("--output") + 1]
+        if "bundle-run" in run_dir:
+            F.write(self.root, f"{run_dir}/stdout.log", "paired sessions 2020-01-02 .. 2024-01-05\n")
+        return done
+
+
+def test_the_record_stage_rescans_after_the_judge_before_the_hidden_data_line(tmp_path):
+    root = F.build(tmp_path / "r")
+    code, _ = wave(root, LoudBundle(root, KEPT_ALL), "run")
+    err = failed(root, "09-record.failed-1.json")
+    assert code == 4 and "out/waves/w1/bundle-run1/stdout.log" in err and "no wave result is written" in err
+    assert receipt(root, "07-verify.json")["outputs"]["seal_scan"]["tokens_at_or_after_seal"] == 0
+    assert not (root / STATE / "wave-result.json").exists()
+
+
+def test_the_hidden_data_line_counts_the_records_scan(tmp_path):
+    root = F.build(tmp_path / "r")
+    assert wave(root, F.FakeCycle(root, KEPT_ALL), "run")[0] == 0
+    res = json.loads((root / STATE / "wave-result.json").read_text())
+    seal = res["seal_scan"]
+    verified = receipt(root, "07-verify.json")["outputs"]["seal_scan"]["files"]
+    assert seal["tokens_at_or_after_seal"] == 0 and seal["files"] > verified                # the judge's logs too
+    assert f"seal scan of {seal['files']} log(s)" in (root / STATE / "wave-log.md").read_text()

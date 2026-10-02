@@ -17,11 +17,13 @@
   match      gross matching by the named mode: the mechanics reader (keys only) on the calibration NAV and the parent's;
              within tolerance the calibration run is the cell, else the -gm copy at L', locked, committed, run
   verify     the mechanics rule on the cell's mechanics keys (before any return is read), the NAV's C-13 binding, a
-             scan of every run log for a date at or after the seal; a failure stops for a ruling (no ledger line)
+             scan of every log the wave produced for a date at or after the seal (wave_seal.py); a failure stops for
+             a ruling (no ledger line)
   judge      research_cycle.py run CELL (monitor and summ: nav_summ scores and ledgers the cell), the PM5-23 bundle
              against the parent, the book reader, the verdict by the named acceptance rule
-  record     the ledger re-read (chain, the cell's line, N advanced by exactly the cell), wave-result.json, the
-             ready-to-paste log section, copies to record.copy_to
+  record     the ledger re-read (chain, the cell's line, N advanced by exactly the cell), the seal scan again over
+             every log (the judge's included: the hidden-data line), wave-result.json, the ready-to-paste log
+             section, copies to record.copy_to
 A stage that does not apply (no strings in a rule wave, no cell after the gate) records why and passes.
 """
 from __future__ import annotations
@@ -42,6 +44,7 @@ import wave_manifest as WM
 import wave_queue
 import wave_result
 import wave_rules as WR
+import wave_seal
 import wave_steps as WS
 from wave_context import Wave, stage_chain
 
@@ -52,7 +55,6 @@ Stage = stage_chain.Stage
 EXIT_PIN = 3
 SPECS_V8 = "scripts/specs/v8"
 YEAR = re.compile(r"(?<![0-9])((?:19|20)[0-9]{2})(?![0-9])")
-DATE = re.compile(r"(?<![0-9])((?:19|20)[0-9]{2}-[01][0-9]-[0-3][0-9])(?![0-9])")
 ROW_KEYS = ("id", "status", "runner_sign", "s_k", "sign_agrees", "failed_checks", "redundant_with")
 MARGINAL_KEYS = ("id", "ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t", "max_abs_rho", "max_rho_member")
 
@@ -431,31 +433,15 @@ def spec_plan(w: Wave, done: dict) -> list[str]:
 # ------------------------------------------------------------------ run
 def phase_rows(w: Wave, spec_rel: str) -> list[dict]:
     """The bounded-runner receipts of a cell's phases (timings: seconds, peak MiB, outcome), every attempt."""
-    spec = w.load_spec(spec_rel)
-    c = RC.Cycle(spec, RC.Resolver(w.root), verify=False)
-    bases = {"u": c.out(spec["ic"]["u_output"]), "fit": c.out(spec["fit"]["output"], keyed=False),
-             "w": c.out(spec["ic"]["w_output"]), "nav": c.out(spec["nav"]["output"])}
-    for key, phase in (("card", "card"), ("marginal", "marginal"), ("ref", "ref"), ("monitor", "monitor")):
-        if key in spec:
-            bases[phase] = c.out(spec[key]["output"])
     rows = []
-    for phase, base in bases.items():
-        rows += _receipts(w, phase, f"{base}-run")
-    for phase in ("check", "summ"):
-        rows += _receipts(w, phase, f"{c.cycle_dir()}/{phase}-run")
+    for phase, base in w.phase_bases(spec_rel).items():
+        for d in w.run_dirs(base):
+            r = w.read_json(f"{d}/receipt.json")
+            if isinstance(r, dict):
+                rows.append({"phase": phase, "run_dir": d, "outcome": r.get("outcome"), "exit_code": r.get("exit_code"),
+                             "seconds": r.get("wall_seconds"),
+                             "peak_mib": (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20})
     return rows
-
-
-def _receipts(w: Wave, phase: str, prefix: str) -> list[dict]:
-    p = w.path(prefix)
-    out = []
-    for d in sorted(p.parent.glob(p.name + "*")) if p.parent.is_dir() else []:
-        tail = d.name[len(p.name):]
-        r = w.read_json(f"{w.rel(d)}/receipt.json") if d.is_dir() and (tail == "" or tail.isdigit()) else None
-        if isinstance(r, dict):
-            out.append({"phase": phase, "run_dir": w.rel(d), "outcome": r.get("outcome"), "exit_code": r.get("exit_code"),
-                        "seconds": r.get("wall_seconds"), "peak_mib": (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20})
-    return out
 
 
 def screen_first(w: Wave, done: dict) -> bool:
@@ -563,21 +549,6 @@ def match_plan(w: Wave, done: dict) -> list[str]:
 
 
 # ------------------------------------------------------------------ verify
-def seal_scan(w: Wave, run_dirs: list[str]) -> dict:
-    """Date tokens at or after the seal in the run logs (counts and file names only; no content is reported)."""
-    files, hits = 0, []
-    for d in sorted(set(run_dirs)):
-        for name in ("stdout.log", "stderr.log"):
-            p = w.path(f"{d}/{name}")
-            if p.is_file():
-                files += 1
-                n = sum(1 for t in DATE.findall(p.read_text(encoding="utf-8", errors="replace")) if t >= RW.SEAL_DATE)
-                if n:
-                    hits.append({"file": f"{d}/{name}", "tokens": n})
-    return {"files": files, "seal": RW.SEAL_DATE, "tokens_at_or_after_seal": sum(h["tokens"] for h in hits),
-            "where": hits}
-
-
 def verify(w: Wave, done: dict, log) -> dict:
     if no_cell(done):
         return skipped("no cell")
@@ -587,16 +558,13 @@ def verify(w: Wave, done: dict, log) -> dict:
         log(f"   mechanics {r['check']}: {r['value']} {r['limit']} -> {'pass' if r['pass'] else 'FAIL'}")
     nav_run = f"{mt['nav']}-run"
     binding = w.read_json(f"{nav_run}/cycle_binding.json")
-    readers = [w.rel(p) for p in sorted(w.path(w.wave_path("readers")).glob("*-run*")) if p.is_dir()]
-    seal = seal_scan(w, [r["run_dir"] for r in done["run"]["phases"] + mt["phases"]] + readers)
+    seal = wave_seal.scan(w, wave_seal.wave_logs(w, done))
     problems = []
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
         problems.append(f"the cell's NAV has no C-13 binding {nav_run}/cycle_binding.json")
-    if seal["tokens_at_or_after_seal"]:
-        problems.append(f"{seal['tokens_at_or_after_seal']} date token(s) at or after the seal {RW.SEAL_DATE} in "
-                        f"{[h['file'] for h in seal['where']]} (inspect: a data date is a seal breach)")
+    problems += wave_seal.problems(seal)
     if problems:
         raise StageError("verify: " + "; ".join(problems) + ": stop for the PM's ruling (the cell ran; no ledger "
                          "line was written)")
@@ -608,7 +576,8 @@ def verify(w: Wave, done: dict, log) -> dict:
 
 
 def verify_plan(w: Wave, done: dict) -> list[str]:
-    return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; seal scan of every run log"]
+    return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; seal scan of every log the "
+            "wave produced (run dirs of the screen, the cell and its -gm copy, readers, consoles)"]
 
 
 # ------------------------------------------------------------------ judge
@@ -689,7 +658,11 @@ def record(w: Wave, done: dict, log) -> dict:
     ledger = {"path": led["path"], "lines_before": pre["lines"], "lines_after": led["lines"], "head": led["head"],
               "n_before": pre["n_before"], "n_after": led["n"], "trial_id": trial,
               "admission_lines": [r.get("candidate") for r in new_lines if r.get("kind") == "admission"]}
-    doc = wave_result.build(w, done, ledger)
+    seal = wave_seal.scan(w, wave_seal.wave_logs(w, done))     # again, after the judge's runs: the hidden-data line
+    bad = wave_seal.problems(seal)
+    if bad:
+        raise StageError("record: " + "; ".join(bad) + ": stop for the PM's ruling (no wave result is written)")
+    doc = wave_result.build(w, done, ledger, seal)
     path, md = w.wave_path(wave_result.RESULT), w.wave_path(wave_result.LOG)
     sha = w.write_json(path, doc)
     w.path(md).write_text(wave_result.log_section(doc), encoding="utf-8", newline="\n")
