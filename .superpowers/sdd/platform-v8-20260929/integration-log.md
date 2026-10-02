@@ -4935,3 +4935,53 @@ Receipt: completed, `clean in the code pathspec`, source `59a27af8`, NAV exe `54
   score_begin 1.171; by year 1.083 / 1.182 / 1.040 / 1.192; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows;
   accounting 7.8e-14 / 4.3e-16 (tol 1e-9); `construction.v5.aim_leverage` 1.1474 (base), theta .05.
 
+Commit `9df90d63`, then the cycle resumed (monitor = R-2's, done):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| summ | 180 / 1,536 | 19.5 | 610 | 0 | `7f475126a3af03341f52ef1ddbc8385c2ab99533167014e591e3da7f408e90b1` | `cycle-v8-r8-risk-target/summ.json` `61612188`, `pbo.json` `f7729e5c`, `cycle_verdict.json` `e4f65be7` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 461 | 0 | `9815d5be2739b55fae89de83b676c0c6e642de84524c10e2e1e508c5e4e0ec4e` | `v8-cells-r8-bundle.json` `608b51ec` (no `--ledger`) |
+
+**Statistics of record** (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`): net Sharpe **R-8 +1.2449** vs R-2 +1.2559. Paired
+(studentized CBB, block 21, seed 20260929, 4,999 resamples; 1,005 sessions): **dSR -.0111**; rho .9958; **Memmel SE
+.0460** (t -.24); CBB 95% [-.1149, +.0905]; LW SE .0539, 95% [-.1247, +.1026]; **bootstrap p one-sided .5826, two-sided
+.8428** (the bundle reproduces the cycle's dSR, SE, CI and two-sided p exactly). DSR (N 48, verdict `--dsr-ledger`): ledger
+DSR .9635 (V[SR] 7.77e-05 from 11 cells on research-window-v2); legacy (37) .7609; effective-N .7466 (N_eff 4); PSR vs 0
+.9919; PBO .3169. **All-rows gross: R-8 1.1244, R-2 .9860** (PM7-20: the paired dSR compares books of different dollar
+gross).
+
+**Criterion (E-43):** realised volatility of the S2 net daily returns (summ year table `ann_vol`): 2020 **.0401**, 2021
+**.0433**, 2022 **.0441**, 2023 **.0365** -> inside [.04, .06] in 2020-2022, **below .04 in 2023 -> FAIL**. (Plan
+expectation, gates nothing: dSR -.0111 >= -SE -.0460, met.)
+
+**Verdict (rule 5, E-43): dSR -.011 <= 0 AND volatility band FAIL (2023) -> NOT ACCEPTED** (mechanics PASS). Recorded by
+the tooling: `cycle-v8-r8-risk-target/cycle_verdict.json` (spec `fe60420e`; ledger head `3b00257b`, 61 lines) and the
+ledger line (trial `c360f66b7af19aae`, cell = the R-8 NAV dir, s2_net_sr 1.24487, origin prior, window research-window-v2,
+prev `a11bcbb1` = R-7's head). **N after: 48** (ledger 61 lines = 48 construction + 12 admission + 1 protocol; file
+`2dcecbc3`). Matches the brief. Not retried, not re-parameterised (E-43). **Parent stays R-2.**
+
+Returns (S2, annual): net **5.13%** (CAGR 5.17%) vs R-2 4.54%; gross of cost 6.61% (R-2 5.81%); trade cost .87% (.74%),
+borrow .38%, long financing .23%; vol 4.12% (R-2 3.62%); max drawdown 3.26%; gross Sharpe 1.606 (R-2 1.610). Scenarios
+(cell / R-2): linear-6bps 1.358 / 1.371; S3 terminal-adverse .239 / .216; flat-300 1.024 / 1.031; engine-tiers 1.172 /
+1.185.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0124 | -.292 | .0401 | .0270 | 14.82 |
+| 2021 | 252 | +.1153 | +2.541 | .0433 | .0231 | 11.84 |
+| 2022 | 251 | +.0846 | +1.869 | .0441 | .0237 | 12.33 |
+| 2023 | 250 | +.0235 | +.660 | .0365 | .0234 | 12.00 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.277 (1.289), 1x 1.245 (1.256), 2x 1.211 (1.223), **4x 1.166
+(1.178)**, 8x 1.095 (1.100); cost bps per traded dollar 10.87 / 12.73 / 14.93 / 17.05 / 18.77 (R-2 10.67 / 12.47 / 14.66 /
+16.87 / 18.67); capped share .0011 / .0048 / .0263 / .0997 / .2366 (R-2 .0010 / .0034 / .0190 / .0802 / .2083).
+
+**Appendix A:** `TRAIN construction cells 48; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none (no refusal, no fix).
+
+v9 note (from a result, not a spec): the rule is mostly a leverage raise: L_t averages 1.308 (1.14 x base), at the upper
+clip on 37% of decisions; the ex-ante vol of the gross-1 book is low in calm spells (sigma_hat .017-.025), so S / (b
+sigma_hat) exceeds 1.25 L there and the clip, not the target, sets the leverage; 2023's realised vol .0365 stays under .04
+with the clip binding from May. Net return rises .59 pt for .011 of Sharpe -- the PM7-3 leverage question, not alpha.
+

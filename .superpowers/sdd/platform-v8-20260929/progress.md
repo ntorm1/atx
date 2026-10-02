@@ -1849,3 +1849,9 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   Tests (PM7-22): `test_v71_library_byte_identical` compares the v7.1 library byte for byte and the recipe except the
   roster cap (regenerated at the committed cap 56 in a copy of the tree, byte for byte; both `--check` calls there);
   `scripts/tests` 195 passed, 3 skipped, 0 failed; `atx-impl/strategies` 163 passed, 0 failed.
+  R-8 (`r8.json`, risk target S .05 / b 1.15 / cadence 21, base L 1.1474, not gross matched, PM7-20): NOT accepted, N 48.
+  Before any return: risk_target S2 1,004 decisions, 48 estimates, 0 before the first, clip hi 374 / lo 21, L_t mean 1.308,
+  priced_share .9986; mechanics PASS (all-rows gross 1.1244 in [.784, 1.237]; net +.0050; tau .02428 / .03061). S2 net
+  Sharpe 1.2449 (parent 1.2559); dSR -.0111, SE .0460, p one-sided .583 (two-sided .843); all-rows gross R-8 1.1244, R-2
+  .9860; realised vol 2020 .0401 / 2021 .0433 / 2022 .0441 / 2023 .0365 -> band [.04, .06] fails in 2023. Net annual
+  return 5.13% (R-2 4.54%); net Sharpe at 4x 1.166 (1.178). Parent stays R-2.
