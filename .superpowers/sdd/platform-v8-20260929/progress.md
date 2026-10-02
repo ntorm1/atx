@@ -1990,3 +1990,8 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   under-weighted inside their themes; no result was seen. Fields v13 by one bounded run registering both
   entry modules is accepted (no file change). Confirmed readings: A-1 runs without `--rescreen` (PM7-18 a);
   a replacing wave's marginal refusal takes the PM6-8 (i) spec-only fix; X-4's statistic is PM5-11's.
+- X batch 1 preconditions (log "X batch 1"): registry X field rows (`297c5d55`; XSIG L2 verbatim for k8_count_63 /
+  inst_own_chg_q, the five v13 fields from the v13 manifest rows). X list pinned (P4): `v8x-prereg.md` section 14
+  (`3603845b`), file SHA-256 `25ba909f95bfc42722fece5dda0501ec8d12700d038fcfb8794ae344df68ecd4`; 27 items (X-2 5,
+  X-3 8, X-4 9, X-5, X-6). Fields v13 lo3 (P6): manifest `e5f7f28c`, 70 reused / 5 computed, the 70 byte-identical.
+  K1: all 22 strings plan on v13 (X-2 5, X-3 8, X-4 9); none void.
