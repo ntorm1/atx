@@ -1823,3 +1823,25 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   blind before any screen -- the hidden block is the only untouched test the book has; an approval to read
   panels does not say to spend it -- cost if wrong: the owner meant the holdout rows too; one line from the
   owner opens them, nothing is lost.
+- Batch 2f read by the PM: fields v11 70 / 3 (manifest `5826c02a`); R-7 not accepted (N 47; dSR -.0662, p one-sided
+  .732; turnover criterion met); admission trials 12 of 15 (the 3 of v8.2 lapse with R-12). R-8 stopped before
+  its run for a ruling; R-9 not started. Book R-2.
+- Ruling PM7-20 (R-8 and PM6-6; ruled before any R-8 number exists): reading B. R-8 is the registered leverage
+  rule; it runs once with the parent's L 1.1474 as the scaler's base and is not gross matched -- its hypothesis
+  is the leverage path itself; where the clip does not bind L_t does not depend on L, so matching would test
+  the clip, not the rule. The mechanics gross limit for this cell is restated, from the registered clip only:
+  all-rows gross inside [.8, 1.25] x G_parent, widened by .005: [.784, 1.237]. Acceptance is E-43 unchanged (dSR
+  > 0, mechanics, realised volatility in [.04, .06] each year). The verdict line prints both books' all-rows
+  gross, because the paired dSR here compares books of different dollar gross -- cost if wrong: a dSR partly
+  due to mean leverage; the Sharpe ratio is first-order invariant to it and the gross is printed.
+- Ruling PM7-21 (R-9, ruled before any R-9 number exists): (1) R-9 runs on the parent's rule aim-partial-v5,
+  theta = `--trade-fraction`; spo-v3 is not involved (E-37; the PM's dispatch text was wrong). (2) Each cell is
+  the parent's NAV argv with theta .03 / .04; its frontier point is the capacity curve's x4 row (E-29); report
+  only, the deployed book does not change. (3) R-9c (theta .05) is the parent byte for byte: it is read from
+  the parent and adds 0; the program ends at N 50, not 51. (4) No gross matching: parent's L; the cells are
+  report-only and their gross is printed. (5) Spec-only templates with `"verdict": false`; each takes its
+  construction line (N 49, N 50) -- cost if wrong: one unused trial.
+- Ruling PM7-22 (tests): `test_v71_library_byte_identical` compares the library bytes and the recipe except the
+  roster-cap field, which R7-a raised from 56 to 64 (tests only) -- the library regenerates byte for byte; the
+  cap is not content -- cost if wrong: none.
+- Note for X: R-7's marginal phase took 170.3 s of its 180 s cap; the X waves' cap is restated at integration 8.
