@@ -2029,3 +2029,83 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   cost 6.45%, x4 1.655, turnover .02684, max drawdown 2.06%. Cumulative against R-2: dSR +.5135, SE .1841, p
   one-sided .0032 (two-sided .0098). Admission lines 34 (v8 12, X hand-written 13 of 13, X-4 re-screens 9); ledger 98
   lines, head `a190f7ef`.
+- X batch 1 resumed in root (X-2..X-6). Parked while it holds root:
+- XPRE delivered the OD-3 tooling (pool 7: `f68058e2` T1-T5, `846941d2` protocol as ruled with the runbook,
+  `a7671d1a` report; 31 new tests pass; `atx-impl/tools` 609 passed; flags absent byte-identical). It merges
+  after the last X cell and before the history read. Limit: a book whose NAV reads `--risk-model` cannot be
+  read on the history (no per-era risk store); the runbook stops on it.
+- Owner directive (2026-10-02): "we should try world quant style alphas based on ohlcv data to see if we can
+  build more alphas. 101 formulaic alphas pdf is good place to start. Could help improve v8 sharpe".
+- Ruling PM7-33 (formulaic-alpha wave, cell X-7; ruled before the lane starts and before any X result is read
+  by the PM): lane XWQ translates Kakushadze (2016), "101 Formulaic Alphas", into the DSL, blind. Every formula
+  that the op catalog and the fields in house can express exactly is listed. From those the lane selects, by a
+  rule fixed in its report before selection and using no return of any window, at most 20 strings for the
+  wave: the roster cap is 80 (PM7-13), the roster after X-3 is 60. Each selected string is one admission
+  trial (X hand-written admission trials 13 -> at most 33; this replaces the 10 lapsed trials, PM7-18) and
+  enters N_tot; the wave is one construction cell, X-7, after X-6 and before the mined wave, judged by PM7-10
+  (dSR > 0, mechanics, net Sharpe at 4x NAV not lower than the parent's; turnover printed). The published
+  formulas trade at horizons of days; the book trades slowly, so each string is taken with the library's
+  standard smoothing (the house `decay_linear` 21 form), fixed blind, no per-alpha tuning. The formulas not
+  selected are not screened in v8 and are listed for v9 -- the owner asks for more alphas and for
+  statistical significance; 101 screened strings would add 101 to the deflation count for signals whose
+  published holding period the book cannot trade; 20 chosen blind is the largest wave the cap admits --
+  cost if wrong: a good formula among the unselected waits for v9.
+- Lane XWQ dispatched (pool 12, branch `feat/platform-v8-xwq-20261002`).
+- Owner directive (2026-10-02): "we can relax significance and capacity and push more weight towards sharpe and
+  gross return. We need to meet a minimum baseline to get started capacity is a bonus."
+- Ruling PM7-34 (made blind: the PM has seen no X result; sent to the running integrator and to XWQ by message
+  at once, recorded here when root was free). (1) Cell acceptance, for every X cell whose verdict is not yet
+  written: dSR > 0 AND mechanics. Each cell's registered capacity, turnover or cost criterion is computed and
+  printed as "capacity criterion: met / unmet" and no longer decides (amends PM7-10, PM7-24). A cell already
+  rejected only on such a criterion is reported to the PM and re-ruled before the next cell runs. (2) Adoption
+  (replaces PM7-8): the accepted X book is the deployable book if S2 net Sharpe >= 1.0 (the "minimum
+  baseline", the registered first part of the freeze gate) AND mechanics; the cumulative p against R-2,
+  DSR_tot, DSR_hand and the 4x net Sharpe are printed beside it and do not gate. (3) Leverage cell X-10
+  (amends PM7-11): accepted on net annual return higher AND S2 net Sharpe not lower than the parent's by more
+  than .100 AND mechanics; the 4x guard is printed. (4) X-7 (amends PM7-33): fast formulas are not excluded;
+  two house smoothing forms fixed before selection, assigned by the formula's printed look-backs
+  (longest window under 10 sessions: `decay_linear` 5; else 21). (5) Unchanged: every trial is still counted
+  and every statistic still printed; one variant per hypothesis; no retry of a rejected cell; the hidden
+  block stays closed; the OD-3 read stays last and informational. The reports say in plain words that the
+  book was adopted on the owner's relaxed rule and what the significance statistics are -- the owner sets
+  the risk appetite; the PM's part is that the numbers stay honest -- cost if wrong: a book adopted on a
+  gain that is noise; the printed p and deflated Sharpe show exactly that risk.
+- X-2 screen (gate p1-v8x2 PASS; 5 admission lines ledgered): all 5 status admitted; runner sign agrees with
+  the prior for q5_eg_f49g and ins_opp_buy; against it (-1) for bac_vq, ind_adj_rev_5_nx, iv_rv_spread_xe. The
+  integrator stopped: "a refinement the gate does not admit" had two readings, written down by it before it
+  read the gate.
+- Ruling PM7-35 (made with the screen's signs known and no w, NAV or return in existence): reading R-a. For a
+  replacement, "admitted" means status admitted AND runner sign agrees with the prior; the three leave the
+  wave and bac, ind_adj_rev_5, iv_rv_spread keep their pre-X strings (PM7-18 b). X-2 runs on v8x2b = v80 with
+  q5_eg_f49g and ins_opp_buy replaced. Additions (X-3, X-7): runner sign 0 stays (R-2 precedent); runner sign
+  opposite to the prior is dropped; fixed before X-3's screen. X-4's re-screened replacements take the same
+  reading -- a replacement must show its registered sign to displace a member that holds its admission; the
+  fit would otherwise weight it against its own evidence -- cost if wrong: three refinements left out,
+  listed for v9.
+- XWQ delivered (pool 12; tier 1 `387ed0e9`, `5b8e7b55`, `46225af7`, `1f8bf582`, `63e39f9c`; tier 2 `0fcb9f2c`,
+  `7bf8e68e`; report `task-XWQ-report.md`). Of the 101 formulas 46 are expressible exactly, 55 are not (43 need
+  vwap, 12 rank a price level inside a time-series op). Tier 1: 6 picks (#99, #35, #55, #6, #2, #101), one per
+  mechanism group. Tier 2 (asked by the PM after the owner relaxed significance): 8 more (#95, #85, #30, #43,
+  #14, #38, #44, #33). `xwq_check.py` PASS (cell for cell against numpy; 59 planted errors fail). New fields
+  `open_adj`, `high_adj`, `low_adj`. No result was read by the lane.
+- Ruling PM7-36 (XWQ, before any X-7 screen): (a) new theme `price_volume`, appended after `filing_events`;
+  (b) the bar fields are same-session like `close`, stamped and clocked as `close` is (report section 7 cites
+  the lines); (c) #33 and #38 are withdrawn at 0 trials: they short the strong intraday days that tier-1 #101
+  buys, so the wave would hold two opposite priors on one mechanism -- one variant per hypothesis; (d) #14 and
+  #44 stay: overlap with #6 is bounded by the theme share and the member cap. X-7 screens 12 strings
+  (X hand-written admission trials 13 + 12 = 25). The 43 formulas that need vwap are a data ask for the
+  owner (handoff 2) -- cost if wrong: (c) the reversal reading of the bar was the right one and is not
+  screened; it is listed for v9.
+- X batch 1 read by the PM (head `2397b33f`): X-2 accepted (N 51, dSR +.011); X-3 accepted (N 52, dSR +.154, p
+  one-sided .098; 6 of 8 new members); X-4 not accepted (N 53, dSR -.058); X-5 `theme-erc-v1` accepted under
+  PM7-34 (N 54, dSR +.349, p one-sided .029; capacity criterion unmet: turnover per unit gross .02722 against
+  .02336); X-6 not accepted (N 55, dSR -.095). Accepted X book = X-5: S2 net Sharpe 1.7695, net annual 5.08%,
+  gross of cost 6.45%, x4 net 1.655, turnover .02684, maximum drawdown 2.06%; cumulative paired against R-2
+  dSR +.5135, SE .1841, p one-sided .0032.
+- Ruling PM7-37 (how X-5 is reported; written when its number was read): `theme-erc-v1` sets ten theme shares
+  from the sleeve covariance of the same four years the book is then scored on. It reads no mean return, but
+  the shares are fitted in sample, and one risk-only reweighting giving +.349 is larger than the PM's prior.
+  The X-5 gain is therefore reported as in-sample until the OD-3 read, where the TRAIN shares are carried
+  back to 2015-2019 unchanged (PM7-29 (1)); a read-only adversarial review of the rule's code path (look-ahead
+  in the sleeve returns, the fit window, the runner's verify) runs before X-10 and before any report -- cost
+  if wrong: none; the cell stays accepted on its registered rule unless the review finds a defect (rule 7).
