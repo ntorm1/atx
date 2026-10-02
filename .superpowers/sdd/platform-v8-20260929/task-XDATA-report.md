@@ -429,3 +429,135 @@ Sources: [ORATS near-EOD data](https://orats.com/near-eod-data),
    their admission trials come out of the X budget XPRE proposes.
 7. Gold alpha panels (another session, uncommitted): their file names point at holdout evaluation; a PM ruling should
    require proof of no label / IC column and no 2024+ row before any X consumer binds one.
+
+## GOLD (task GOLD, Ruling PM7-19)
+
+Read under the ruling, read only, in place: `C:/atx/atx-db/docs/ALPHA_PANEL_GOLD.md`, `ALPHA_PANEL_VALIDATION.md`;
+the source of `src/atx_db/alpha_panel/gold.py`, `char_registry.py` (the 100-feature registry, loaded by `exec` of its
+text with bytecode writing off), parts of `characteristics.py`, `common.py`, `export_impl.py` and
+`scripts/build_gold_alpha_panels.py`; directory listings of the build root `C:/atx/atx-db/data/alpha_panel/v1`;
+`validation/gold_pipeline/authorized_plan.json` and `implementation_handoff.json` (keys and status values only, with
+IC-like keys filtered out of the print); `panel_goldready/refresh_progress.json` (keys and status); the parquet
+schema of one silver file (`panel_goldready/year=2021/panel-01.parquet`: names, types, row and row-group counts). No
+row of any atx-db file was read. Not opened: `labels/`, `labels_goldready/`, `labels_holdout/`,
+`validation/ic_v2_smoke.json`, `validation/fundamentals.json`, any IC / OOS / scorecard file, `holdout_eval.py`,
+`labels_holdout.py`, `ic_report.py`. Nothing was written under `atx-db/` or in `C:/atx` (the existing
+`char_registry` bytecode cache is dated 2026-09-30 and was not rewritten).
+
+### G1. What the panels hold
+
+**State: the gold panels do not exist yet.** The build root holds no `gold/` and no `characteristics/` stage.
+`validation/gold_pipeline/` holds only the dry-run plan (`dry_run: true`, `outcome_access_executed: false`) and the
+implementation handoff (`status: tooling-tested-source-build-active-production-artifacts-pending`,
+`real_oos_measurement_executed: false`; remaining: finish the silver refresh, build characteristics 2019-2026, then
+labels, IC, gold, freeze). The silver input `panel_goldready/` is mid-build: `refresh_progress.json` says `status:
+building` (rule `pit-silver-cache-refresh-v1`, 47 months done, 2018-01 .. 2021-11), year directories 2018-2021 only,
+no `manifest.json`. Nothing can be bound today; everything below is the contract read from docs and source.
+
+**Stages** (build root `atx-db/data/alpha_panel/v1`; all keyed `(session_date, security_id)`, `security_id` =
+TickerHistory3 `securityID`; year partitions):
+
+| stage | file | content | window |
+|---|---|---|---|
+| `panel_goldready/` (silver) | `year=YYYY/panel-MM.parquet` | 191 columns (schema read): prices (OHLC, ret, volume, dollar volume), ATM IV at 5/10/21/42/63/126/252 d, fundamentals v10 items (incl. `xsga_ttm`, `cogs_ttm`, `invt`, `rect`, `ppe`, `gdwl`, `intan`, `drev`, `ebitda_*`, `xint_*`, `dvt_*`, `act`, `lct`, `ap`, `buyback_authorized`, `buyback_remaining`, F-score parts), SIC / FF groups, short interest and short volume, FTD, Reg SHO, 13F (`inst_*` incl. `inst_top10_share`), earnings calendar (`earn_next_expected_date`, `earn_day_offset`), insider last trade, security-type flags, identity (link table v3 tiers), `member`, `member_equity`, `me_company`, vendor audit columns | 2018 on (2012-2017 in `prices_history/`) |
+| `characteristics/` | `year=YYYY/characteristics.parquet` | the 100 registry features, raw and prior-signed (90 signals, 10 controls), with `member`, `member_equity`, groups and repair flags | 2019-2026 |
+| `gold/` | `year=YYYY/gold.parquet` | `cik`, `grp_ff49`, `grp_ff12`; `g_<feature>`: the same-session member_equity score (1/99 winsorised, average-tie rank, inverse normal, centred, unit SD; FF49-demeaned in the industry variant) of each ADMITTED feature; `c_<family>` (>= 2 admitted, equal weight); `c_all` (>= 3 families); `ctl_<control>` raw controls | 2020-2026 |
+| `labels*/`, `validation/gold_pipeline/*ic*`, `frozen_oos_*` | forward returns, IC and OOS evidence | closed to this lane |
+
+**Universe.** `member` = the scorecard universe (top 3,000 by prior 63-session dollar volume, ADV > $5M, raw price
+> $5, one-session lag); `member_equity` = member AND operating AND not an index line (operating from SEC periodic
+filings and security type, not the vendor earnFlag). Gold keeps member_equity rows, drops rows whose identity was
+repaired at the decision, and leaves scores null through a 1,260-session repair quarantine. The v8 store's universe
+is the role's (`linked-operating-v3`); the sets overlap but differ.
+
+**Admission (what decides which `g_*` exist; `gold.select`).** Coverage >= 50% on average and >= 30% in each of
+2019-2021; for some horizon h in {5, 21, 63} and variant (raw / industry): prior-signed purged SELECTION IC > 0 with
+Newey-West t >= 2.5 over 2020-2021 decisions whose labels end before 2022, and a positive 2019 discovery IC; then a
+walk by decreasing t rejecting |pair correlation| >= .90. The frozen recipe records horizon, variant and weights. The
+owner authorized a later frozen evaluation on 2024-2026 (not run).
+
+**Stamping by column family** (`char_registry.py`, `characteristics.py`, `gold.py`):
+
+| family | rule |
+|---|---|
+| price, return, volume, liquidity, risk, momentum, reversal, seasonality | rows of the same line with `session_date <= d` (closes known at d's 22:00 UTC mark); `lint_sql` refuses `lead(`, `FOLLOWING`, negative lags and unordered whole-history windows; `characteristics.pit_check` tests the property on data |
+| options (`iv_*`) | the line's previous-session IV (lag 1; the vendor delivers at 22:00 Chicago) |
+| fundamentals | panel fundamentals with clock < 22:00 UTC of d-1 |
+| short side, ownership, insider, events | the panel's as-of rules, `available_at < 22:00 UTC of d-1` per source (short volume trade date d-1; 13F after its 45-day deadline) |
+| event time (`ea_window_ahead_5`, `earn_days_since`) | expected date = +364 days of a visible SEC 8-K 2.02 primary announcement; reaction session known at its mark |
+| gold `g_*`, `c_*` | the same-session member_equity cross section (normalisation and FF49 demeaning use session d only) |
+
+**Point in time: provable or not.**
+- Provable from source (cell values): every `characteristics` column and every gold `ctl_*` control, under the same
+  source-vintage caveats the v8 store carries (vendor prices, IV and identity have no vintage proof; `shares_out` is
+  the lag-90 vendor proxy; borrow inputs are proxies).
+- Values provable, selection not admissible: gold `g_*` and `c_*`. Which features exist, and their horizon and
+  variant, were chosen with 2019-2021 forward returns, inside this program's TRAIN window; for 2020-2021 rows the
+  selection saw those rows' own outcomes. Binding one imports a mined screen (90 signals x 3 horizons x 2 variants)
+  that no v8 trial count records. **Owner / PM question:** refuse them, or count the screen in deflation.
+- Not point in time, never to bind: the silver panel's vendor audit columns (`earn_flag_vendor` and
+  `earn_recent_vendor`, whose earnFlag presumes future dates; `is_operating_vendor`; `delisting_date`, a future event
+  on earlier rows; `directory_type` / `directory_etf`, a snapshot; `gics`, vendor current) and the legacy `panel/`
+  stage (snapshot identity backfills; the gold doc forbids it for the new release).
+- Not bindable now: `panel_goldready/` (no manifest, writer active), and so `characteristics/` and `gold/` (not
+  built). **Owner questions:** when they publish; whether the frozen 2024-2026 evaluation runs before X measures
+  anything (it would make 2024+ non-pristine, to the owner, for those features).
+
+**How they differ from the v8 store.** A re-computation from sources v8 already binds (TickerHistory3, FINRA, SEC
+stages, 13F, fundamentals), not a new source. New relative to the v8 field list: ATM IV at 5, 10, 42 and 252 days
+(`iv_term_slope`), `inst_top10_share`, the fundamentals v10 items in the silver panel (SG&A, COGS, inventory,
+receivables, goodwill, deferred revenue, interest, buyback authorizations), the Corwin-Schultz spread, SPY-market
+coskewness. Every other registry feature is a v8 roster member, an X candidate, or a DSL expression of v8 fields.
+
+### G2. Sealed reader `research_fields_gold.py`
+
+New files `atx-engine/tools/research_fields_gold.py` and `test_research_fields_gold.py`; the draft entry
+`prepare_research_fields_xdata.py` registers it too (`DRAFT_MODULES` = (xdata, gold), `FIELDS_GOLD_DRAFT`).
+
+- **Flag-gated twice:** the plain builder never registers it; a gold field also needs `--gold-panel-root` and its stage
+  pin (`--gold-sha256` / `--gold-characteristics-sha256`), else refused before any output.
+- **Stages:** `gold` (`atx.alpha-panel.gold/v1`) and `characteristics` (`atx.alpha-panel.characteristics/v2`) only;
+  the manifest must match its pin, its schema and `status: complete`; each file opened must match the manifest's bytes
+  and SHA-256 and stay unchanged while read.
+- **Refusals by name** (`refused_reason`, `declare`): any other stage (labels, labels_holdout, validation, panel); any
+  column with a token `label(s)`, `fwd`, `forward`, `future`, `ic`, `oos`, `holdout`, `target`, `outcome`, `lead(s)`
+  (optionally with digits); gold `g_*` / `c_*` (`GoldSelectionColumn`; `ALLOW_ADMITTED_SCORES = False` until a PM
+  ruling). Only the two keys and the declared columns are read (column projection).
+- **Seal (research_window):** builder seal must equal `research_window.SEAL`; partitions beginning on or after the
+  seal are never opened; `session_date < SEAL` and the role's range are pushed down into `pq.read_table(filters=)`
+  (row groups wholly past the seal skipped by statistics and counted from metadata); a result row on or after the
+  seal raises `SealError` (`assert_sealed`).
+- **Clock:** `gold-panel-lag1-v1`: row t = the panel value of the previous session (the house t-1 clock on top of
+  atx-db's own stamping).
+- **Reuse fingerprint:** `PRODUCERS = {"gold_cols": (stage_manifest, stage_partitions, read_stage_columns,
+  previous_sessions, gold_rows)}` with the builder closure through `h`; `reuse_inputs` = {stage, its manifest SHA-256,
+  the NYSE rule calendar digest}.
+- **Field spec entries:** `gp_hl_spread_21` (gold `ctl_hl_spread_21`: Corwin-Schultz spread, a cost and capacity
+  input shipped regardless of IC; formula `gold-ctl-hl-spread-21-lag1-v1`) and `gp_iv_term_slope` (characteristics
+  `iv_term_slope`: the 252-day tenor the v8 store lacks; `gold-char-iv-term-slope-lag1-v1`). Neither is a candidate
+  below; they are the reader's declared surface, buildable the day the stages publish.
+
+Tests (`test_research_fields_gold.py`, 7, a synthetic build root):
+- values equal an independent previous-session lookup; duplicates quarantined; an off-role line ignored; the seal-year
+  garbage partition never opened; the sealed row group pruned (3 rows, from statistics); pins recorded;
+- the look-ahead probe: values dated on or after role session 100 moved, rows 0..100 bit-identical, later rows move;
+  with `LAG_SESSIONS` 0 (the same-session clock) row 100 moves, so the probe fails on that leak;
+- label columns refused by name (`fwd_ret_21`, `label_h21`, `ic_mean`, `holdout_ic`, `ret_forward_5`, `oos_score`,
+  `target`, `lead_ret`), non-feature stages refused, `g_*` / `c_*` refused; a labels-schema manifest, an unfinished
+  stage, a wrong pin, a missing root or pin refused with no output directory; a stage file differing from its
+  manifest refused with nothing published;
+- sealed rows: a read reaching past the seal returns no row on or after it; `assert_sealed` refuses a sealed row; the
+  builder seal differing from research_window's raises `SealError`;
+- a fresh interpreter under the repository window (seal 2024-01-01): the 2024 partition never opened, a 2024 row group
+  pruned, payloads byte-identical;
+- reuse (self copy; a republished gold manifest recomputes only its field); opt-in registration.
+
+Results: `test_research_fields_gold.py` + `test_research_fields_xdata.py` 14 passed; `atx-engine/tools` 267 passed, 6
+subtests passed.
+
+Root verifies: the tests; `git diff --stat` shows the gold module, its test, the draft entry's extension and the
+xdata registration test's expected tail. Build, once `gold/` and `characteristics/` publish:
+`prepare_research_fields_xdata.py <base argv> --fields <base>,gp_hl_spread_21,gp_iv_term_slope --gold-panel-root
+C:/atx/atx-db/data/alpha_panel/v1 --gold-sha256 <sha of gold/manifest.json> --gold-characteristics-sha256 <sha of
+characteristics/manifest.json>`; expected `source_checks.gold.stages.*.sealed_partitions_never_opened` >= 3
+(2024-2026) and `partitions_read` only years before 2024.
