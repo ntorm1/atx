@@ -1762,3 +1762,64 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   PM ruling needed. R-9a-c not started (after R-8; open choices: "NAV 4x" exists only as the capacity curve's x4 row;
   theta .05 equals the parent's; PM6-6 on theta; no template and no report-only verdict in the cycle; spo-v3 not
   involved per E-37).
+- Integrator batch 2f dispatched in root (fields v11, R-7, R-8, R-9a-c). Rulings below were parked while it held
+  root.
+- XDATA delivered (pool 14: `1df3da62`, `e035a773`, `71238bb4`, `d44fa7f6`; report `task-XDATA-report.md`):
+  dataset map, status of the data asks, 8 field families ranked, 3 builders with look-ahead probes
+  (`div_month_pred`, `beta_dvol_21`, `season_y2_5`; `atx-engine/tools` 260 passed), 5 external datasets (ORATS
+  options history, S&P Global Securities Finance, Zacks estimates, USPTO PatentsView with the KPSS match,
+  Hoberg-Phillips TNIC-3). No result was read. Two atx-db documents the lane read print data-presence counts for
+  2024-2026 (no return, no signal statistic); disclosed, nothing used them.
+- Ruling PM7-16 (XDATA, before any screen): (a) the three built fields and their candidates `div_season`,
+  `vol_beta`, `season_y2_5` enter wave X-3 with XSIG's five (8 strings, 8 admission trials of the 23);
+  (b) the two constants the lane recalled are confirmed by the PM from the literature and stand as registered:
+  predicted dividend month = a dividend 3, 6, 9 or 12 months before (Hartzmark-Solomon 2013, quarterly payers),
+  and the aggregate-volatility beta needs more than 17 daily observations in the window (Ang-Hodrick-Xing-Zhang
+  2006); (c) `season_y2_5` stays in `reversal_seasonality`: new by horizon only, the fitter's member cap bounds
+  the theme; (d) no X consumer binds a gold alpha panel of atx-db: they are uncommitted, sit beside holdout
+  evaluation code, and no proof exists that they hold no label, no IC column and no row dated 2024 or later --
+  hidden-data rule -- cost if wrong: a usable in-house panel waits for v9; (e) the families that need a
+  warehouse change (filing text, N-PORT flows, tax and pension items, 13F manager types, TNIC peers) and the 5
+  external datasets go to handoff 2 as owner decisions; nothing is built for them in v8.
+- XPRE follow-up delivered (pool 7): `57157a05` (`v8x-prereg.md` with the rulings written in, 258 lines),
+  `44a27d5d` (`nav_summ.py --dsr-total LEDGER [--dsr-hand DIR ...]`, logic in the new module
+  `atx-impl/tools/dsr_total.py`; `test_dsr_total.py` 8 passed; `atx-impl/tools` 592 passed / 2 skipped; flags
+  absent byte-identical on 4 argv sets), `da3bb239` (report). Merges at integration 8 (PM5-21).
+- Ruling PM7-17 (amends the wording of PM7-11): the leverage cell's gross limit is all-rows gross inside
+  [.90, 1.05] x 2.0 / L_parent, where L_parent is the parent's matched L; the words "x the parent's matched gross
+  ratio" are struck -- they named nothing defined; the limit scales the registered one by the leverage ratio
+  and nothing else -- cost if wrong: none; ruled before the cell exists. The total count includes legacy
+  composition, universe and data lines of the ledger (PM7-7: every trial the defect rule counts); the printed
+  breakdown shows them.
+- XIMP delivered (pool 15: `6f7bae47`, `c622b4ab`, `3db253d5`; report `task-XIMP-report.md`; no code). 52 roster
+  strings audited: 0 sign, lag, skip, denominator or look-ahead defects; 1 domain-guard gap (A-1, `q5_eg_f49`:
+  the year-ago ROE has no book-equity guard); 4 refinements (B-1 `iv_rv_spread_xe`, B-2 `ind_adj_rev_5_nx`, B-3
+  `ins_opp_buy`, B-4 `bac_vq`); 1 processing variant (C-1: the nine value members ranked within FF49). Disclosed
+  by the lane: `code-review-v8-signal.md`, which the brief named, quotes TRAIN statistics for bac, iv_rv_spread,
+  ins_opp and some value members; the lane's selection rule (report B.0) does not use them.
+- Ruling PM7-18 (XIMP, before any screen): (a) A-1 is NOT a rule-7 repair: the PM read the proof; the guard gap
+  is real, but the member's registration disclosed it, so the registered string computes its registered
+  definition and the change is a variant. `q5_eg_f49g` takes 1 admission trial and enters wave X-2 with the
+  refinements; cell X-1 (repairs) is empty and is dropped (construction cells at most 9) -- PM7-9's test is
+  "does not compute its own stated definition"; the stricter reading costs 1 trial and keeps the count honest
+  -- cost if wrong: 1 trial of 23. (b) B-1..B-4 are 4 admission trials, one wave (X-2), 5 strings with A-1; a
+  vetoed replacement restores its original member at 0 trials (the original holds its own admission). Because
+  the review file the lane read prints TRAIN statistics on three of the four replaced members, the X report
+  marks B-1, B-3 and B-4 as "chosen with TRAIN statistics in view" and prints the book with and without them.
+  (c) C-1 is 9 re-screens (R2-e precedent) and 1 construction cell, after X-2; the re-screens are ledger lines
+  and so count in N_tot (PM7-7). (d) B-1 stands with the producer's caveat on `iv_atm_21d` printed. (e) `smax`
+  beside `smax5`: no change; a removal is not a hypothesis any lane registered. Hand-written admission trials
+  allotted: X-2 5, X-3 8; 13 of 23; the other 10 lapse -- cost if wrong: none measured.
+- Owner ruling (2026-10-02, on PM7-16 (d)): "approved to read these" -- the gold alpha panels of atx-db may be
+  read by X.
+- Ruling PM7-19 (replaces PM7-16 (d); how the approval is used): X may read the gold alpha panels, read-only, in
+  place (the owner's tree; nothing under `atx-db/` is written, in any worktree). The approval is taken as access
+  to the panels, not as a lift of the hidden-data rule or of the seal, which the owner did not name: every
+  reader takes the seal from `research_window`, pushes the date filter down so that no row dated 2024-01-01 or
+  later is loaded, and refuses, by name, every label, forward-return, IC and holdout column; the holdout
+  evaluation code and its outputs stay closed. Schema and file metadata are read first; a panel whose
+  point-in-time stamping cannot be shown from its documentation or source is not bound. Strings on panel
+  fields come from the 10 lapsed hand-written admission trials (PM7-18), at most 6, in wave X-3, frozen
+  blind before any screen -- the hidden block is the only untouched test the book has; an approval to read
+  panels does not say to spend it -- cost if wrong: the owner meant the holdout rows too; one line from the
+  owner opens them, nothing is lost.
