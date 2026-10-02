@@ -357,6 +357,46 @@ TEST(ThemeResid, TiedCompositeStaysTiedAfterResidualisation) {
   }
 }
 
+// Finding R6C-3 (Ruling PM5-12, the C++ half): one date, eight names, W = 1/2 each; the second
+// theme's composite has a tie block of three names (2, 4, 6) and one of two (5, 7) beside three
+// singletons (0, 1, 3), where the order of the block means differs from that of the block sums
+// and from the per-block mean of the residual's ranks. The rule gives one value per block, the
+// exact fractions test_composition_resid.py UNEQUAL_EXPECTED pins (rational arithmetic), and the
+// second theme's add orders the names 0 < 1 < {5, 7} < {2, 4, 6} < 3; a block sum or a rank
+// average (UNEQUAL_WRONG there) moves some name by at least 2/7. The 1e16 summation-order pin of
+// the block mean stays Python-only (test_tie_block_means_sum_in_ascending_name_order): the
+// kernel's residuals are of ranks, so the file-local mean_over_tie_blocks never sees 1e16 here.
+TEST(ThemeResid, UnequalTieBlocksBesideSingletonsPinTheBlockMean) {
+  constexpr usize names = 8;
+  const std::vector<std::vector<f64>> input{{5, 3, 6, 0, 4, 2, 7, 1}, {0, 2, 1, 4, 1, 3, 1, 3}};
+  const std::vector<f64> mass{.5, .5};
+  const std::vector<f64> expected{-1.0 / 7, -3.0 / 14, 2.0 / 7, 0.0, 1.0 / 7, -5.0 / 28, 5.0 / 14, -1.0 / 4};
+  const std::vector<std::vector<f64>> wrong{
+      {-1.0 / 7, -3.0 / 14, 5.0 / 14, -5.0 / 14, 3.0 / 14, -3.0 / 28, 3.0 / 7, -5.0 / 28},  // block sum
+      {-1.0 / 7, -3.0 / 14, 5.0 / 14, -2.0 / 7, 3.0 / 14, -1.0 / 7, 3.0 / 7, -3.0 / 14}};   // mean of ranks
+  auto planes = input;
+  std::vector<f64> out(names, 0.0);
+  std::vector<std::pair<f64, usize>> row;
+  ASSERT_TRUE(st::add_theme_residualised(planes, mass, names, out, row));
+  for (usize k = 0; k < names; ++k) EXPECT_NEAR(out[k], expected[k], 1e-15) << k;
+  for (const auto& w : wrong) EXPECT_GT(max_abs_difference(out, w), 2.0 / 7 - 1e-12);
+  EXPECT_GT(max_abs_difference(out, registered_without_tie_step(input, mass, names)), .1);
+  // The second theme's add (out minus the first theme's W z): one value per tie block, and the
+  // names in the order of the block means (ties by name, keys rounded to 1e-9).
+  const auto z = ref_ranks(input[0], std::vector<bool>(names, true));
+  std::vector<std::pair<long long, usize>> add(names);
+  for (usize i = 0; i < names; ++i) {
+    const f64 a = out[i] - .5 * z[i];
+    add[i] = {std::llround(a * 1e9), i};
+    for (usize j = 0; j < i; ++j)
+      if (input[1][i] == input[1][j]) EXPECT_NEAR(a, out[j] - .5 * z[j], 1e-15) << i << ' ' << j;
+  }
+  std::sort(add.begin(), add.end());
+  std::vector<usize> order(names);
+  for (usize k = 0; k < names; ++k) order[k] = add[k].second;
+  EXPECT_EQ(order, (std::vector<usize>{0, 1, 5, 7, 2, 4, 6, 3}));
+}
+
 // Ruling PM4-12: a composite without ties gives the registered text bit for bit (a block of one
 // name is untouched): three themes, two dates, distinct values in every row, absent cells.
 TEST(ThemeResid, NoTieCompositeIsTheRegisteredRuleBitForBit) {
