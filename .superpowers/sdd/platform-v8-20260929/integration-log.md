@@ -5023,4 +5023,22 @@ Commit `6ac2fda5` (specs, tests, this text). **R-9a** `run --stop-after nav`:
 Receipt: completed, `clean in the code pathspec`, source `6ac2fda5`. **Mechanics (S2): PASS.** All-rows gross **.9350** in
 [.90, 1.05] (post-ramp .9432); net +.0032; tau mean .01796, p95 .02124 (flags true); max gross 1.070, max |net| .030;
 score_begin .812; by year .903 / .960 / .929 / .948; 1,006 CSV rows, 1,005 return rows; accounting 6.8e-14 / 4.3e-16.
+Commit `104a750c`; cycle resumed: summ 19.7 s, 613 MiB, exit 0 (receipt `b7f6683e1ffab0abf2d3e3f77387543b73bda4bff01a5445f77abd928e698ff1`;
+no summ.json: no verdict, `cycle_verdict.json` without scoring blocks); bundle (PM5-23) 0.8 s, 475 MiB, exit 0 (receipt
+`1523993543673c9a45698d14fe3ca0697a407352a1cadd4108fd4cafae8c6fa8`, `v8-cells-r9a-bundle.json` `06c6efda`). Ledger line
+trial `a9d199bf9616015b` (cell = the R-9a NAV dir, s2_net_sr 1.24329, window research-window-v2, prev `3b00257b` = R-8's
+head); **N 49** (62 lines = 49 + 12 + 1; file `874e986c`).
+
+**R-9a (theta .03), report only:** S2 ($1bn) net Sharpe **1.2433** (R-2 1.2559); **x4 row net Sharpe 1.1966** (R-2 1.1784),
+cost per traded dollar 15.89 bps (16.87), capped share .044 (.080); all-rows gross .9350 (R-2 .9860); tau .01796 (.02393);
+net annual return 4.27% (4.54%), gross of cost 5.27%, trade cost .49%; vol 3.44%; max drawdown 3.35%. Against R-2
+(information only): dSR -.0127, Memmel SE .0573, p one-sided .563, two-sided .844. Capacity .5x 1.265, 1x 1.243, 2x 1.230,
+4x 1.197, 8x 1.121; cost bps 10.15 / 11.73 / 13.71 / 15.89 / 17.84.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0133 | -.435 | .0298 | .0203 | 13.87 |
+| 2021 | 252 | +.0934 | +2.580 | .0348 | .0169 | 10.77 |
+| 2022 | 251 | +.0755 | +1.782 | .0415 | .0176 | 11.39 |
+| 2023 | 250 | +.0196 | +.669 | .0298 | .0171 | 10.84 |
 
