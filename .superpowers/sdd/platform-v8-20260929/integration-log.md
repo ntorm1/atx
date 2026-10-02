@@ -5485,3 +5485,97 @@ inputs (pool from H-F, H-F's fields) do not exist before X-2..X-8. The dispatch'
 - Known: `ConfigJsonNotInDiscoverDigest` (1). The bare `atx-equity-strategy` was not built (no research script uses it).
 - Disk 125,337,964,544 B free (116.7 GiB).
 
+## X batch 1 (cells X-2..X-6): fields v13 built; K1 pre-checks; STOPPED before the X list pin (P4) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `3d12d495` (clean; build v8-14, nothing
+built). Read: integrator-rules, `v8x-prereg.md` (whole), progress "PM session 7" to the end (PM7-1..31), the XIMP, XSIG,
+XDATA, XCOMB reports, this log's integration 8, batches 2c, 2d (R-2..R-4) and 2f. Baseline / first parent R-2
+(`lib-v80.json`, L 1.1474, G .9859903463), N 50. Scratch readers as batches 2c-2f (`k1plan.py`, PM6-9 route).
+
+**No X cell ran. No admission line, no construction line, no ledger write (ledger 71 lines, `2b0cdd18`, N 50). No
+IC, return, Sharpe, turnover or NAV number of any X candidate exists or was read.**
+
+### Registration gaps raised to the PM before any X read
+
+1. XDATA's three X-3 candidates (`div_season`, `vol_beta`, `season_y2_5`) carry no tier, no settled theme for
+   `vol_beta` ("low_risk (or a new macro_vol_risk)") and no add-alpha text (report section 4b: "suggested frozen
+   strings for the PM's registration; not registered here"); PM7-16 (a) fixed none of them. Tier sets the
+   within-theme share under ew-theme-std-v1 (registry `tier_scores`), so it is a constant root cannot choose.
+2. Fields v13 (P6) needs both draft entry modules in one builder process; the fold XDATA named for integration 8
+   (one tuple element in `prepare_research_fields_draft.DRAFT_MODULES`) was not made. Route used (no file changed):
+   one bounded `python -c` run calling the two entries' own `register` on the builder namespace, then the builder's
+   own `main` (below).
+
+The PM answered by message and asked root to write its ruling into `progress.md` before pinning the X list (P4). **The
+session's permission system refused that edit.** By the PM's order (ruling first, then P4) P4 was not pinned, and
+every X cell needs P4 before its first measurement (`v8x-prereg.md` section 11 (1)): **X-2..X-6 not started.** The
+decision on how to proceed is the PM's / owner's.
+
+### 0. Fields v13 on lo3 (precondition P6; 0 trials)
+
+Command = v11's recorded argv (receipt `train-2020-2023-lo3-fields-v11-run`) with `--output
+build-equity/train-2020-2023-lo3-fields-v13`, `--fields` = v10's 70 names in v10's argv order +
+`nt_first_126,earn_season_rank` (LIB3 / FIELDS-V9, `research_fields_v9.py`) + `div_month_pred,beta_dvol_21,season_y2_5`
+(XDATA, `research_fields_xdata.py`), `--reuse build-equity/train-2020-2023-lo3-fields-v10 --reuse-sha256 a4a060ae...70809
+--reuse-hardlink`; builder `--max-rss-mib 2048 --max-seconds 580`; runner `--seconds 600 --max-rss-mib 2560 --min-free-mib
+512` (W0-i), binds the ten tool modules (plain builder, sec, holdings, price, v8, both draft entries, v9, xdata, gold),
+the role manifest and v10's manifest. Driver (whole): `import sys; sys.path.insert(0, 'atx-engine/tools'); import
+prepare_research_fields as b; import prepare_research_fields_draft as d; import prepare_research_fields_xdata as x;
+d.register(vars(b)); x.register(vars(b)); b.main(sys.argv[1:])`. Script `scratchpad/fv13.sh`.
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|
+| fields v13 lo3 | `train-2020-2023-lo3-fields-v13-run` | `3d12d495` | completed / 0 | **44.0** | **543** | `b08496275758521c278a206fd4f6c7e5ebae340aed72cc2826c3be4fe12425a1` | **`e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, min system free 5,863 MiB; stdout `7dff1514`, stderr empty.
+Manifest (metadata only): status complete, `seal.exclusive_end` 2024-01-01, role lo3 (1,405 dates, first session
+2018-06-01), **75 rows**, builder `code_sha256_lf` `74df97f9` (= v10's / v11's), 633,772 B; no 2024- or 2025-named
+source. **Counts: reused 70, computed 5 = the expected 70 / 5** (`nt_first_126` `3532615a` sec-nt-first365-126-v1,
+`earn_season_rank` `fca9f725` chss-earnrank-ni20q-v1, producer module `research_fields_v9.py`; `div_month_pred`
+`06535cab` hs-divseason-q3-6-9-12-v1, `beta_dvol_21` `f4a1cf31` ahxz-beta-dvol-spy21-v1, `season_y2_5` `ce5b9286`
+hs-season-y2-5-v1, producer `research_fields_xdata.py`). The 70 v10 payloads: entry sha256 = v10's (70 / 70), hardlinks
+of the v10 files (70 / 70); all 75 payloads re-hash to their pins. New rows at 62-66 (registry order). Dir 4.7 GiB
+apparent (hardlinks). Logs scanned for 2024-2029 date tokens: none.
+
+### K1 pre-checks (metadata only; PM6-9 route; nothing written to the tree; plans in the scratchpad, not of record)
+
+Each frozen string as its own add-alpha argv on v80 (R-2) with fields v13 through `k1plan.py` (the exe's `--plan-only
+--max-memory-mib 2560` on the exact library bytes). The plans of record are re-made call by call at registration.
+
+- **X-2 (XIMP, verbatim; A-1 without `--rescreen`): 5 / 5 plan.** DSL sha16 / bars / slots / nodes / extra fields =
+  the XIMP tables exactly: q5_eg_f49g `07a61a9e` 272/7/33/6 (exception inherited from q5_eg_f49), iv_rv_spread_xe
+  `29e7d9cf` 21/7/31/2, ind_adj_rev_5_nx `9c1d051d` 5/6/21/2, ins_opp_buy `981d01b2` 0/3/4/1, bac_vq `116135c0`
+  272/6/20/1. Library 52 members, max slots 8 (qmj_safety), lookback 272.
+- **X-3 XSIG (frozen lines parsed verbatim; placeholders substituted only): 5 / 5 plan** once the four fields have
+  registry rows (added in memory for the check: without them the exe refuses "undeclared DSL field", the expected
+  state before the wave's registry edit). Rows = XSIG section 5: stmom `06dc6238` 41/5/shares_out, earn_season
+  `64a0be8f` 0/5/ea_days_to_expected+earn_season_rank, k8_intensity `0b7d6cde` 209/5/k8_count_63, inst_persist
+  `ea338c04` 272/6/inst_own_chg_q, nt_late `bafc4e3a` 0/3/nt_first_126; exe node counts 22 / 11 / 16 / 34 / 5 against the
+  mirror's 21 / 11 / 15 / 34 / 4 (no node budget exists; as R-7).
+- **X-3 XDATA (3): not checked** (their registration is the PM's ruling of the message above).
+- **X-4 (XIMP C-1 table, verbatim; replaced member's theme / tier / sign): 9 / 9 plan**, rows = the C-1 table:
+  value_composite_v49 `09fb156c` 20/6/19/5, bm_v49 `a37c3eca` 20/4/11/3, ep_v49 `0d1975e5` 20/4/11/3, cfp_v49 `86aed322`
+  20/4/11/3, fcfp_v49 `408ba943` 20/3/9/4, ebit_ev_v49 `4a2b9ba7` 20/5/18/5, net_payout_v49 `8b6e8423` 20/3/11/5, sp_v49
+  `1153ac46` 20/4/11/3, rd_me_v49 `bf89d6a6` 20/4/11/3.
+
+So no X string is void at K1 on the evidence so far.
+
+### Hidden-data record (X batch 1)
+
+- Inputs opened by tools: role lo3, fields v10 (reuse) and the sealed atx-db stages / fundamental events / vendor
+  TickerHistory3 file through the field builder's sealed readers (read only; nothing under `atx-db/` written); fields
+  v13 metadata for the K1 plans.
+- Read by me: lane reports, rulings, sources, the v13 receipt and manifest metadata (status, seal, names, entry
+  sha256 / formula / producer, reuse lists; not the coverage blocks), plan rows (metadata).
+- **Nothing dated 2024-01-01 or later was opened. No X statistic exists.**
+
+### Open items (X batch 1)
+
+- **For the PM / owner:** the refused `progress.md` edit (above); P4, then X-2..X-6, wait on it. Fields v13 is ready
+  (manifest `e5f7f28c`); the K1 evidence above needs no re-run beyond the plans of record at registration.
+- Before X-3's add-alpha: registry field rows for `k8_count_63`, `inst_own_chg_q` (XSIG L2), `nt_first_126`,
+  `earn_season_rank`, `div_month_pred`, `beta_dvol_21`, `season_y2_5` (clock / basis from the v13 manifest rows); the
+  IC-pass memory re-probe (PM7-31) on X-3's cumulative K1 plan.
+- Current accepted parent: **R-2** (`lib-v80.json`), N 50, admission trials 12 of 15 (v8) + 0 of 13 (X hand-written).
+  Disk 124,832,608,256 B free (116.3 GiB).
+
