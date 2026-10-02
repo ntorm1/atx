@@ -5088,3 +5088,52 @@ v9 note (from a result, not a spec): at 4x a slower tracker gains .018 of net Sh
 loses .003-.010 and gross falls with theta (the book is not gross matched); at matched gross the x4 ranking is not
 measured.
 
+Commit `96bdba9d` (R-9 report, ledger lines).
+
+### 4. W0-4 re-runs of the ledgered v7 cells on the 4-year roles (PM5-22, PM5-18; add 0 to N)
+
+**Cells (PM5-22's list = the 8 legacy construction lines):** v6.1 `a04a3d9cbf5d76a7`, C1 `ebd8da9260b0a80a`, C2
+`1873d32cd7019870`, C3 `479049dd2f2b58c4`, spo-v1 `554b0d8ad9304ea5` (all v6.1's combined, role lo1), v7.0
+`2b4de3cc3aaaebf2` (lo1), v7.0-lo3 `741d9c05a871a5d5`, spo-v2 `9e1ad5f7ac4b9937` (v7.0-lo3's combined). v7.1's two lines are
+re-based as B0a / B0b (N 38, 39) already.
+
+**Mechanism (tooling as built, no code change; PM5-21):** each re-run is a cycle spec whose summ ledgers one construction
+line through `nav_summ --rerun-of <trial_id> --rerun-basis window` (backtest_integrity: a window re-run adds 0 to N, carries
+window_id research-window-v2, enters V[SR] of prereg item 3; one re-run per target; its target is the legacy line). New
+spec-only templates under `scripts/specs/v8-rerun/` (outside `scripts/specs/v8/`, so the v8 spec registry and its tests are
+untouched): the library re-runs are templates on `base-lo1.json` / `base-lo3.json` (B0a / B0b: the 4-year role, fields v9,
+candidate cache, IC caps, the v7 NAV argv aim-partial-v5 L 1.247) with the original library and recipe pinned
+(`change.inputs`), outputs renamed, `card` / `monitor` unset (report-only phases, not part of the NAV), the derived paired
+references unset (a re-run is scored alone, FIX-3 procedure), `verdict` false, `summ.cells_from_ledger` unset, `summ.dsr_n`
+50, `summ.extra` `--protocol v8 --psr --json <cycle dir>/summ.json --rerun-of <id> --rerun-basis window`; the gate reads
+out the original gate's members with `admitted []` (no admission line can be written: PM5-18, "evaluated and logged" by
+root from admission.json, never a stop). The NAV-only cells (C1-C3, spo-v1, spo-v2) are templates on the library re-run
+with the recorded NAV options.
+
+| spec (scripts/specs/v8-rerun/) | file sha256 (16) | chain digest (16) | re-runs | parent |
+|---|---|---|---|---|
+| w04-v61-lo1.json | `73446559a264feff` | `c694a303b133d114` | v6.1 | base-lo1.json |
+| w04-v61-c1-lo1.json | `6bb9f0749f368d28` | `44a73c5fc5ec6fcc` | C1 | w04-v61-lo1.json |
+| w04-v61-c2-lo1.json | `5ca2e68f4f24ff18` | `ecbaa6e838c5f635` | C2 | w04-v61-lo1.json |
+| w04-v61-c3-lo1.json | `5f471606c33078ce` | `8408b4e15188403e` | C3 | w04-v61-lo1.json |
+| w04-v70-lo1.json | `2de4b3fa674139fb` | `9f4c28b648b2008e` | v7.0 | base-lo1.json |
+| w04-v70-lo3.json | `c2b5092cbe93739b` | `1d4e97d31fa4bafd` | v7.0-lo3 | base-lo3.json |
+| w04-v70-spo2-lo3.json | `e0a6871c13113109` | `cedff0782cbb089d` | spo-v2 | w04-v70-lo3.json |
+| (spo-v1: written after its risk store exists) | | | spo-v1 | w04-v61-lo1.json |
+
+Plans exit 0 (pins `[locked, verified]`: library / recipe of v6.1 `db35c276` / `9bf278a6`, v7.0 `e7bae75c` / `60b82300`; role
+lo1 `2ff9d771` or lo3 `e1c67101`; identity bridge, fundamental events (and on lo3 the sic events manifest, read for its pin
+only, as B0b / B0c); fields v9 lo1 `888e6616` / lo3 `9f156363` pinned and done). **NAV argv against each original's
+receipt (by script): equal except `--combined` (new), `--role` / `--fields` and their pins (the window) and `--output`**;
+C1-C3 equal as option maps (order differs: the cycle writes `--rule` after `--output`); spo-v2 also its store: the recorded
+store argv (`risk --role R --fields F --emit-exposures all`) on this role and fields is `build-equity/b0c-risk` (lo3, fields v9,
+manifest `5dd560d7`; its `--book-weights` adds only the bias files; model files byte-identical to `v8-risk-lo3-v10`, batch 2e).
+
+**Reading, fixed before any re-run:** (1) a re-run carries no acceptance and no limit of its own (PM5-22: the same trials on
+a longer window; prereg item 3 puts every ledgered cell's re-run into V[SR], invalid lines only left out); mechanics are read
+before its summ (mech.py) and printed, and a value outside the v8 cell limits is reported, not a stop -- the v7 spo-v1 trial
+itself was ledgered at all-rows gross .6465 on 2020-2022 (and spo-v2 .9735, v6.1 .9683); (2) a re-run that cannot complete
+(refusal, void, non-zero exit) is "a cell that cannot be reproduced" (PM5-22): listed with the reason and left out, never
+fixed in code; (3) the admission rows of the original gate members are logged (status, runner sign against prior, sign
+agreement); a disagreement is reported, not a stop (PM5-18); (4) N stays 50 after every re-run (checked by the ledger count).
+

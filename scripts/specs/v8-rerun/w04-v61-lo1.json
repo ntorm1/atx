@@ -1,0 +1,27 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-w04-v61-lo1",
+  "description": "W0-4 step 4 re-run (Rulings PM5-22, PM5-18; v8-prereg item 2: a window re-run adds 0 to N): the ledgered v7 cell v6.1 (trial a04a3d9cbf5d76a7, scripts/specs/v61.json, build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247) re-run on the 4-year role lo1 (2020-2023) as B0a re-ran v7.1: base-lo1.json's role, fields v9 lo1, candidate cache, caps and NAV argv (aim-partial-v5, L 1.247, the v7 protocol), with v6.1's library and recipe. Gate: v6.1's p1 members are read out only (admitted [] so no admission line; PM5-18: evaluated and logged by root from admission.json, never a stop). card and monitor are not run (v61.json had neither; report-only phases). Scored alone (no paired reference); the summ ledgers one construction line with --rerun-of a04a3d9cbf5d76a7 --rerun-basis window (N unchanged; the line enters V[SR] on research-window-v2). No verdict.",
+  "parent": "scripts/specs/v8/base-lo1.json",
+  "nominal_parent": "scripts/specs/v8/base-lo1.json",
+  "change": {
+    "unset": ["card", "monitor", "inputs.reference_cell", "inputs.reference_admission", "summ.cells_from_ledger"],
+    "set": {
+      "ic.u_output": "build-equity/mega-v8-w04-v61-lo1-train-u",
+      "ic.w_output": "build-equity/mega-v8-w04-v61-lo1w-train-ew",
+      "fit.output": "build-equity/mega-weights-v8-w04-v61-lo1-ew",
+      "nav.output": "build-equity/mega-nav-v8-w04-v61-lo1-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "gate": {"name": "w04-v61-readout", "admitted": [], "report": ["sv_flow", "si_ratio", "dtc", "si_change"]},
+      "summ.dsr_n": 50,
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v61-lo1/summ.json",
+                     "--rerun-of", "a04a3d9cbf5d76a7", "--rerun-basis", "window"],
+      "verdict": false
+    },
+    "inputs": {
+      "library": {"path": "atx-impl/strategies/fund_industry_ic_v61.json",
+                  "sha256": "db35c2769f6c13a8d9d5b2897a9e6968855bffbe6214ff96a12f6869cb59f9b5"},
+      "recipe": {"path": "atx-impl/strategies/fund_industry_ic_v61.recipe.json",
+                 "sha256": "9bf278a6f3dfa78edd506ab3e499b2e8dd1ce34899752fe81df573e65550f547"}
+    }
+  }
+}

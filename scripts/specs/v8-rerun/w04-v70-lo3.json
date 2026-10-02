@@ -1,0 +1,27 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-w04-v70-lo3",
+  "description": "W0-4 step 4 re-run (Rulings PM5-22, PM5-18; v8-prereg item 2: a window re-run adds 0 to N): the ledgered v7 cell v7.0-lo3 (trial 741d9c05a871a5d5, scripts/specs/v70-lo3.json (v7u-lo3), build-equity/mega-nav-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247) re-run on the 4-year role lo3 (2020-2023) as B0b re-ran v7.1: base-lo3.json's role, fields v9 lo3, candidate cache, caps and NAV argv (aim-partial-v5, L 1.247, the v7 protocol), with v7.0's library and recipe. Gate as v7u-lo3: a read-out with nothing admitted or listed. card and monitor are not run (v7u-lo3 had neither). Scored alone (no paired reference); the summ ledgers one construction line with --rerun-of 741d9c05a871a5d5 --rerun-basis window. No verdict.",
+  "parent": "scripts/specs/v8/base-lo3.json",
+  "nominal_parent": "scripts/specs/v8/base-lo3.json",
+  "change": {
+    "unset": ["card", "monitor", "inputs.reference_cell", "inputs.reference_admission", "summ.cells_from_ledger"],
+    "set": {
+      "ic.u_output": "build-equity/mega-v8-w04-v70-lo3-train-u",
+      "ic.w_output": "build-equity/mega-v8-w04-v70-lo3w-train-ew",
+      "fit.output": "build-equity/mega-weights-v8-w04-v70-lo3-ew",
+      "nav.output": "build-equity/mega-nav-v8-w04-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "gate": {"name": "w04-v70-lo3-readout", "admitted": [], "report": []},
+      "summ.dsr_n": 50,
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v70-lo3/summ.json",
+                     "--rerun-of", "741d9c05a871a5d5", "--rerun-basis", "window"],
+      "verdict": false
+    },
+    "inputs": {
+      "library": {"path": "atx-impl/strategies/fund_industry_ic_v70.json",
+                  "sha256": "e7bae75c9dc3c4ac6b826289f39a50e26dc9c41ca80df4b272395a3e7362c162"},
+      "recipe": {"path": "atx-impl/strategies/fund_industry_ic_v70.recipe.json",
+                 "sha256": "60b823004cc40b105781262c530cc7c23b77c149d1135d3886d61a47b69820fc"}
+    }
+  }
+}

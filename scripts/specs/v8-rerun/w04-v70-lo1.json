@@ -1,0 +1,29 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-w04-v70-lo1",
+  "description": "W0-4 step 4 re-run (Rulings PM5-22, PM5-18; v8-prereg item 2: a window re-run adds 0 to N): the ledgered v7 cell v7.0 (trial 2b4de3cc3aaaebf2, scripts/specs/v70.json, build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247) re-run on the 4-year role lo1 (2020-2023) as B0a re-ran v7.1: base-lo1.json's role, fields v9 lo1, candidate cache, caps and NAV argv (aim-partial-v5, L 1.247, the v7 protocol), with v7.0's library and recipe. Gate: v7.0's p1-v70 members are read out only (admitted [] so no admission line; PM5-18: evaluated and logged by root from admission.json, never a stop). card and monitor are not run (report-only phases; they do not feed the NAV). Scored alone (no paired reference); the summ ledgers one construction line with --rerun-of 2b4de3cc3aaaebf2 --rerun-basis window. No verdict.",
+  "parent": "scripts/specs/v8/base-lo1.json",
+  "nominal_parent": "scripts/specs/v8/base-lo1.json",
+  "change": {
+    "unset": ["card", "monitor", "inputs.reference_cell", "inputs.reference_admission", "summ.cells_from_ledger"],
+    "set": {
+      "ic.u_output": "build-equity/mega-v8-w04-v70-lo1-train-u",
+      "ic.w_output": "build-equity/mega-v8-w04-v70-lo1w-train-ew",
+      "fit.output": "build-equity/mega-weights-v8-w04-v70-lo1-ew",
+      "nav.output": "build-equity/mega-nav-v8-w04-v70-lo1-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "gate": {"name": "w04-v70-readout", "admitted": [],
+               "report": ["qmj_safety", "nincr", "q5_eg", "smax5", "res_mom_ind", "bac", "smax", "droe", "sue", "cbop",
+                          "res_mom_12_1", "within_ind_mom"]},
+      "summ.dsr_n": 50,
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v70-lo1/summ.json",
+                     "--rerun-of", "2b4de3cc3aaaebf2", "--rerun-basis", "window"],
+      "verdict": false
+    },
+    "inputs": {
+      "library": {"path": "atx-impl/strategies/fund_industry_ic_v70.json",
+                  "sha256": "e7bae75c9dc3c4ac6b826289f39a50e26dc9c41ca80df4b272395a3e7362c162"},
+      "recipe": {"path": "atx-impl/strategies/fund_industry_ic_v70.recipe.json",
+                 "sha256": "60b823004cc40b105781262c530cc7c23b77c149d1135d3886d61a47b69820fc"}
+    }
+  }
+}
