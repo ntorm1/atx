@@ -5014,3 +5014,13 @@ cost per traded dollar), all-rows gross, turnover, the bundle against R-2 (PM5-2
 verdict, nothing accepted or rejected, the deployed book stays R-2; (4) each cell's ledger line is written by its summ
 (construction, N 49 / N 50).
 
+Commit `6ac2fda5` (specs, tests, this text). **R-9a** `run --stop-after nav`:
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (theta .03, L 1.1474) | 180 / 1,536 | 43.8 | 586 | 0 | `43c9ad1a4d59306856c2c705fd6f6f7661719b562256686856c8a91714f340c2` | `build-equity/mega-nav-v8-r9a-t.03-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`; rule `aim-partial-v5+neutral-price-risk-v1`, theta .03 |
+
+Receipt: completed, `clean in the code pathspec`, source `6ac2fda5`. **Mechanics (S2): PASS.** All-rows gross **.9350** in
+[.90, 1.05] (post-ramp .9432); net +.0032; tau mean .01796, p95 .02124 (flags true); max gross 1.070, max |net| .030;
+score_begin .812; by year .903 / .960 / .929 / .948; 1,006 CSV rows, 1,005 return rows; accounting 6.8e-14 / 4.3e-16.
+
