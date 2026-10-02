@@ -6189,3 +6189,23 @@ block only).
 
 A failed run with no output (rule 7 blind re-run, adds nothing). Waited until no compiler ran and 7.7 GiB were free; the
 receipt dir is never overwritten, so `marginal.output` -> `...-v8x7-marginal-poolonly-c` (spec-only, pins unchanged).
+
+| phase (source `6c3ad86c`) | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| marginal (pool only, `-poolonly-c`) | 360 / 1,536 | 331.5 | 296 | 0 | `faef9217df83b5cfc252c0c548925269e6538b515b5aa3387e5bbb6136068a5e` | report only (92% of the 360 s cap) |
+| gate p1-v8x7 | internal | - | - | PASS | - | **12 admission lines ledgered** (ledger 98 -> 110 lines, file `8bc57f2f`, head `af281c31`) |
+
+**Admission (gate p1-v8x7, v4-prior-v1): PASS, 8 of 12 with the prior sign.** Status admitted, runner sign +1 = prior:
+wq_099, wq_035, wq_055, wq_006, wq_095, wq_085, wq_043, wq_044. **wq_002: status admitted, runner sign -1 against +1.**
+**wq_101: status reject_turnover (tau .7042 > .70), runner sign -1 against +1.** wq_030: reject_redundant (with wq_035),
+runner sign +1. wq_014: reject_redundant (with wq_006), runner sign +1. Reference members vs X-5's admission: 0 status
+changes. **Admission trials: X hand-written 13 + 12 = 25** (v8 12; X-4 re-screens 9; 46 admission lines).
+
+**Wave composition (PM7-35, applied as ruled; the readings were stated before X-3's screen):** wq_002 and wq_101 have a
+runner sign opposite to their prior -> **dropped** (PM7-35: "Additions (X-3, X-7): ... runner sign opposite to the prior
+is dropped"; wq_101 is also not admitted, so under the other wording of the X-3 statement, "a non-admitted addition
+stays at weight 0", it would sit in the library at weight 0: the fit gives it no weight, theme-erc-v1 counts only
+weighted members, and the combined signal and NAV are the same either way, so no number depends on the reading).
+wq_030 and wq_014 (status reject_redundant, prior sign) **stay at weight 0** (R-2 / R-7 precedent). The cell runs on
+**library v8x7b = v8x3b + wq_099, wq_035, wq_055, wq_006, wq_095, wq_085, wq_030, wq_043, wq_014, wq_044** (68; the same
+strings and trial ids: 0 new admission lines).
