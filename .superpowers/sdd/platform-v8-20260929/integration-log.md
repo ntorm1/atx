@@ -4496,4 +4496,76 @@ before any return (same keys):
   p95 .09721 <= .30 (1,004 sessions; summary flags true); max gross 1.074, max |net| .021; score_begin .901; by year
   .980 / .993 / .998 / .974; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows; accounting 4.7e-14 / 3.5e-16.
   (Executed turnover is 2.6 x R-2's .0239: not a criterion of this cell; reported.)
+Commit `2d39d532`, then the cycle resumed (monitor = R-2's, done):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| summ | 180 / 1,536 | 22.1 | 557 | 0 | `9e8d1f4d974a0035042b8c3ff6d3aefc19adb286f25dd943c305ac97098d3ee5` | `cycle-v8-r6-spo-v3-gm/summ.json` `8397ec3a`, `pbo.json` `71426cd0`, `cycle_verdict.json` `60dff79e` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 506 | 0 | `0513a7466b2abde0d1ed0bb6bd9f4c2c7462df71641ae83fdeeeae2e56ea3553` | `v8-cells-r6-bundle.json` `74929849` (no `--ledger`) |
+
+Files: `summary.json` `4c8770cf`, S2 daily `fce81ca2`, `capacity_curve.csv` `c4408d80`, `recipe.json` `07439591`,
+`v7_extras.json` `00e1f58f`, `spo_diagnostics.csv` `f85a8b78`.
+
+**Statistics of record** (S2): net Sharpe **R-6 +.7606** vs R-2 +1.2559. Paired (1,005 sessions, 4,999 valid
+resamples): **dSR -.4954**; rho .936; **Memmel SE .1798** (t -2.76); CBB 95% [-.896, -.116]; LW SE .1988, 95% [-.905,
+-.086]; **bootstrap p one-sided .9956, two-sided .0210** (the bundle reproduces the cycle exactly). DSR (N 46): ledger
+DSR .7964 (V[SR] from 9 cells on research-window-v2); legacy .4134; effective-N .3930; PSR vs 0 .9339; PBO .2637.
+
+**Criterion (registered; reading fixed above):**
+- (a) cost per traded dollar (`cost_bps_traded`, S2): **18.791 bps vs R-2 12.466: higher -> FAIL.**
+- (b) tripwire status **clear -> pass**. (c) primary `limits_unmet` **0 -> pass** (no void).
+- (d) `aim_correlation_traded_after.mean` **.9601 >= .9 -> pass.**
+
+**Verdict (rule 5): dSR -.495 <= 0 AND criterion (a) FAIL -> NOT ACCEPTED.** Ledger line trial `81fe22855e797aa1` (cell =
+the L1.0996 NAV dir, s2_net_sr .76057, prev `e57a2802` = R-5's head); **N after 46** (ledger 54 lines: 46 construction +
+7 admission + 1 protocol; file `0c1df8bd`; head `986d8b58`). Matches the brief. The L 1.1474 calibration run of
+r6-spo-v3.json stays unledgered (PM6-6). Not retried. **Parent stays R-2.**
+
+Returns (S2, annual): net 3.13% (CAGR 3.10%) vs R-2 4.54%; **gross of cost 6.63%** (R-2 5.81%); trade cost **2.96%**
+(R-2 .74%), borrow .33%, long financing .20%; vol 4.12%; max drawdown 5.12%; gross Sharpe 1.609 (R-2 1.610).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0265 | -.526 | .0489 | .0787 | 22.27 |
+| 2021 | 252 | +.0826 | +2.083 | .0384 | .0596 | 18.74 |
+| 2022 | 251 | +.0593 | +1.349 | .0436 | .0597 | 17.28 |
+| 2023 | 250 | +.0116 | +.382 | .0318 | .0541 | 15.94 |
+
+Capacity (report only, E-37; R-2 beside): net Sharpe .5x .773 (1.289), 1x .761 (1.256), 2x .783 (1.223), **4x .807
+(1.178)**, 8x .814 (1.100); cost bps per traded dollar 17.09 / 18.79 / 20.00 / 20.70 / 21.00 (R-2 10.67 / 12.47 / 14.66
+/ 16.87 / 18.67); capped fill share .0088 / .0253 / .0591 / .1120 / .1815.
+
+**Appendix A:** `TRAIN construction cells 46; admission trials this sprint 7 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none (no void, no refusal). Consequences (E-38, E-45, E-37): R-6 rejected ->
+R-10, R-11 and R-12 are undefined; R-9 (three report-only theta cells) is defined (the parent R-2's rule
+aim-partial-v5 reads theta). Remaining: R-7 (47), R-8 (48), R-9a-c (49-51): N 51 exactly.
+
+v9 note (from a result, not a spec): at S_prior 20 the tracker holds the aim (corr .96) but trades 2.6 x the
+aim-partial book (tau .063 vs .024; holding period 15.7 sessions) and at 1.5 x the cost per dollar; gross-of-cost
+Sharpe is unchanged (1.609 / 1.610), so the whole loss is trading cost: gamma = 20 / sigma_aim (about 870) dominates the
+cost / H term; v7's aim-partial theta .05 is the cheaper tracker of the same aim.
+
+### Hidden-data record (batch 2e)
+
+- Inputs opened by the tools: role lo3, the lo3-dlret label role, fields v10 lo3 (the risk verb's descriptors and every
+  NAV), the R-2 combined signal and weights, the new risk store `v8-risk-lo3-v10` (seal begin 2024-01-01, role last
+  session 2023-12-29), the ledger and the ledgered NAV dirs of the summ grid, each cell's own outputs. No atx-db stage
+  was opened.
+- Consoles scanned for 2024-2029 date tokens (R-5 plan / runs; risk run; R-6 and R-6-gm plans / runs; risk stdout):
+  none except the runner's own start stamp 2026-10-02. Last NAV session in every run 2023-12-29
+  (`last_session_ns` 1703808000000000000). **Nothing dated 2024-01-01 or later was opened.** No `stdout.log` of a NAV
+  run was opened. **The R-6 calibration run (L 1.1474) was read for tripwire, convergence and mechanics keys only.**
+
+### Open items (batch 2e)
+
+- `scripts/tests` 194 passed / 3 skipped / 0 failed with `r6-spo-v3-gm.json` registered (tests only, commit
+  `3f1f63dc`); `atx-impl/strategies` 163 passed (step 1).
+- Two template outputs carry a cosmetic "L1.247" in their names though they ran at 1.1474 (`r5-adv-hold.json`, the R-6
+  calibration `r6-spo-v3.json`).
+- The new risk store `build-equity/v8-risk-lo3-v10` (manifest `862515d9`, 481 MiB) is the one R-8 fills (`r8.json`
+  `--risk-model`); keep it.
+- **Current accepted parent: R-2** (`scripts/specs/v8/lib-v80.json`), L 1.1474, G .9859903463; S2 net Sharpe +1.2559,
+  net annual return 4.54%, net Sharpe at 4x 1.178, tau_gmv_mean .02393. **N 46**; admission trials 7 of 15 (plus 8
+  re-screens); history reads 0. Disk 124,736,080 KiB free (119.0 GiB).
 

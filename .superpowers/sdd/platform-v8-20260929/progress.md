@@ -1671,3 +1671,10 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   R-5 (`r5-adv-hold.json`, `--adv-hold-q .1`, L 1.1474, gross .98393 against .98599): NOT accepted, N 45. S2 net
   Sharpe 1.2019 (parent 1.2559); dSR -.0540, SE .0226, p one-sided .977 (two-sided .040); criterion failed (4x net
   Sharpe 1.1268 against 1.1785; dSR below minus one SE; S3 .1692 against .2163). Parent stays R-2.
+  Risk model atx-risk-v1.1 on the 4-year role (role lo3, fields v10): `build-equity/v8-risk-lo3-v10`, manifest
+  `862515d9`; complete, 0 invariant refusals, bias factor / random ok; model files byte-identical to B0c's `b0c-risk`.
+  R-6 (`r6-spo-v3-gm.json`, spo-v3, S_prior 20, L 1.0996 after one correction from 1.1474, gross .98630 against
+  .98599): NOT accepted, N 46. Before any return: tripwire clear, primary limits_unmet 0, unconverged 0 (mean 82
+  iterations), no void. S2 net Sharpe .7606 (parent 1.2559); dSR -.4954, SE .1798, p one-sided .996 (two-sided .021);
+  criterion failed on cost per traded dollar (18.79 bps against 12.47); aim correlation .960 >= .9 met. Parent stays
+  R-2. E-38 / E-45: R-10, R-11, R-12 undefined; R-9 defined.
