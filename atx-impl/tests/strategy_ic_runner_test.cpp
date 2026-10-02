@@ -2935,6 +2935,35 @@ TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
   EXPECT_EQ(cli("16385","16",printed),2); // the CLI's memory bound
   EXPECT_EQ(cli("2560","17",printed),1);  // bounded config
 }
+// Task H-2: --eval-mode audit-exact evaluates every candidate under the VM's AuditExact mode and
+// names it in the recipe's vm; absent, the recipe keeps ResearchFast. It is refused with
+// --candidate-cache (entries keyed on ResearchFast) before any output, and the CLI takes no
+// other mode.
+TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndRefusedWithTheCache) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const auto fast=run_named(dir,cfg,"fast"); ASSERT_TRUE(fast.ok) << fast.error;
+  auto exact=cfg; exact.audit_exact=true;
+  const auto audit=run_named(dir,exact,"audit"); ASSERT_TRUE(audit.ok) << audit.error;
+  EXPECT_EQ(read_json(dir.path/"fast"/"recipe.json").at("vm"),"ResearchFast;full-historical-asof-member-mask");
+  EXPECT_EQ(read_json(dir.path/"audit"/"recipe.json").at("vm"),"AuditExact;full-historical-asof-member-mask");
+  auto cached=exact; cached.candidate_cache_directory=(dir.path/"cache").string();
+  const auto refused=run_named(dir,cached,"cached");
+  EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("--eval-mode audit-exact is refused with --candidate-cache"),std::string::npos)
+      << refused.error;
+  EXPECT_TRUE(refused.log.empty());
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"cached")); EXPECT_FALSE(std::filesystem::exists(dir.path/"cache"));
+  const auto cli=[&](const std::string& mode) {
+    std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
+        cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
+        "--min-dates","8","--eval-mode",mode,"--plan-only"};
+    std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+    std::ostringstream stdout_log,stderr_log;
+    return atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),stdout_log,stderr_log);
+  };
+  EXPECT_EQ(cli("audit-exact"),0);
+  EXPECT_EQ(cli("research-fast"),2); // the CLI takes audit-exact only
+}
 // ---- Platform v8 R-1: composition ew-theme-std-v1 (theme_standardise block) ----
 std::string std_block(const std::string& themes,bool rerank,const std::string& rule="ew-theme-std-v1") {
   return ",\"theme_standardise\":{\"rule\":\""+rule+"\",\"rerank\":"+(rerank?"true":"false")+",\"themes\":"+themes+"}";

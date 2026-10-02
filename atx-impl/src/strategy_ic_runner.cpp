@@ -220,7 +220,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
     // Engine's own ensure_pool otherwise retains both during construction.
     vm.reset();
     vm=std::make_unique<al::Engine>(*panel);
-    vm->set_eval_mode(al::EvalMode::ResearchFast);
+    vm->set_eval_mode(cfg.audit_exact?al::EvalMode::AuditExact:al::EvalMode::ResearchFast);
     if (pool) { vm->set_cs_pool(pool); vm->set_ts_pool(pool); }
     ATX_TRY_VOID(vm->set_cross_section_mask(role.decision_member));
     progress<<"IC VM-arena previous_slots="<<previous_slots
@@ -582,6 +582,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (cfg.no_composition && !cfg.composition_weights_path.empty())
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --no-composition builds no blend, so "
           "--composition-weights (which only weight the blend) is refused with it");
+    if (cfg.audit_exact && !cfg.candidate_cache_directory.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --eval-mode audit-exact is refused with "
+          "--candidate-cache (its entries are keyed on ResearchFast)");
     ATX_TRY(auto lib,library(cfg));
     // Both new options are fully validated here, before any role payload.
     ATX_TRY(const auto pinned,composition_weights(cfg,lib));
@@ -748,12 +751,14 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
-               "[--no-composition]\n"
+               "[--no-composition] [--eval-mode audit-exact]\n"
                "  verbs: marginal (marginal IC of each candidate against a saved blend, contract K6; see\n"
                "    `atx-equity-strategy-ic marginal --help`); ic (this option list, also the default).\n"
                "  --no-composition: screening pass; member IC rows and orientations only (byte-identical to a full\n"
                "    run's), no blend, __combined__ rows, planned targets or saved blend; with --candidate-cache a\n"
                "    candidate whose signal and IC result are both cached is not loaded. Refuses --composition-weights.\n"
+               "  --eval-mode audit-exact: task H-2 cost measurement; every candidate under the VM's AuditExact mode\n"
+               "    (the recipe's vm names it); refused with --candidate-cache (its entries are keyed on ResearchFast).\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
                "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
                "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
@@ -811,6 +816,10 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--min-names") cfg.min_names=static_cast<usize>(integer());
       else if (key=="--min-dates") cfg.min_dates=static_cast<usize>(integer());
       else if (key=="--workers") cfg.workers=static_cast<usize>(integer());
+      else if (key=="--eval-mode") {   // task H-2: the AuditExact cost measurement only
+        if (value!="audit-exact") throw std::invalid_argument("--eval-mode takes audit-exact");
+        cfg.audit_exact=true;
+      }
       else throw std::invalid_argument("unknown option: "+key);
     }
     const auto result=run_ic(cfg,out);

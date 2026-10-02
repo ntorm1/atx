@@ -31,6 +31,11 @@ struct IcRunnerConfig {
   // With --candidate-cache, a candidate whose signal and IC result are both cached is
   // never loaded. Not a method input; refuses --composition-weights.
   bool no_composition{false};
+  // Cost measurement (platform v8 task H-2, --eval-mode audit-exact): every candidate is
+  // evaluated under the VM's AuditExact mode instead of ResearchFast, and the recipe's "vm"
+  // names it. Refused with --candidate-cache, whose entries are keyed on ResearchFast. False:
+  // the runner is unchanged.
+  bool audit_exact{false};
   // Optional reusable raw DSL signals under ROOT = DIR[/<vm-identity>] (the
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1).
   // Content-keyed layout (atx.dsl-candidate-signal/v2, written by this runner):

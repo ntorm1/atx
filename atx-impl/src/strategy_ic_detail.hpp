@@ -42,6 +42,8 @@ using Json=nlohmann::json;
 // ---- Shared constants ------------------------------------------------------
 inline constexpr f64 quiet_nan=std::numeric_limits<f64>::quiet_NaN();
 inline constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-member-mask";
+// Task H-2 (IcRunnerConfig::audit_exact): the recipe's "vm" of an AuditExact measurement run.
+inline constexpr const char* vm_eval_mode_audit="AuditExact;full-historical-asof-member-mask";
 // ew-theme-v6 (v4-prereg v6 revision V6-W): the only admitted theme_redistribution rule.
 inline constexpr const char* theme_redistribution_rule="within-theme-v1";
 // ew-theme-std-v1 (platform v8 R-1): the theme_standardise rule whose per-date standardisation
