@@ -471,3 +471,164 @@ exactly the input it saw before, and its arithmetic is untouched.
 2. Engine slot reuse (`pool_`) is the one carry path. It is safe only while every op fully writes its destination
    slot. The new test pins this for the fixture's templates, not for every op.
 3. A single rho pass still reads about 1.96 GB at mine-c1. Batches remain one per rho failure in the worst case.
+
+## ENG-SLOT
+
+Lane ENG-SLOT (wave AG). Base `3f35349f`. It answers Round 1 concern 2 for every op, not only the fixture's
+templates. Tests only: no engine source changed.
+
+| task | commit |
+|---|---|
+| the property test | `cc3e3c6e` |
+| this section | the report commit |
+
+### What root builds
+
+- New file `atx-engine/tests/alpha/alpha_vm_slot_reuse_test.cpp`, in the `alpha` group. No CMake line is needed:
+  `atx-engine/tests/CMakeLists.txt` globs `alpha/*_test.cpp` (CONFIGURE_DEPENDS) into `atx-engine-alpha-tests`.
+  This is a deviation from the brief ("then the CMake line"), because the glob is the local idiom. A worktree
+  configured with `-DATX_TEST_GROUPS` must include `alpha`.
+- check: `powershell scripts\atx-build.ps1 check atx-engine\tests\alpha\alpha_vm_slot_reuse_test.cpp`
+- build: `powershell scripts\atx-build.ps1 build atx-engine-alpha-tests`
+- gtest: `atx-engine-alpha-tests --gtest_filter=AlphaVmSlotReuse.*`. Run the binary directly: one process builds
+  the variant fixture once. Under ctest, each of the six tests is its own process and rebuilds the fixture.
+
+The six tests:
+
+| test | pins |
+|---|---|
+| `Catalogue_EveryRowAndOperator_HasAnEvaluatedVariant` | every catalogue row and operator reaches an evaluated program; it records `forms`, `variants`, `max_target_slots` (`--gtest_output=xml`) |
+| `Poisons_SpanEveryTargetSlot_DistinctFromAFreshPool` | a one-slot poison exists; both poisons are wider than every target by 4; finite poison finite and non-zero; NaN poison has NaN, +inf, -inf and finite cells and no 0.0 |
+| `EveryOp_DirtyPoolAuditExact_ByteEqualToAFreshEngine` | the property, AuditExact |
+| `EveryOp_DirtyPoolResearchFast_ByteEqualToAFreshEngine` | the property, ResearchFast |
+| `EveryOp_DirtyPoolMaskedAuditExact_ByteEqualToAFreshEngine` | the property, AuditExact with a cross-section mask |
+| `EveryOp_DirtyPoolMaskedResearchFast_ByteEqualToAFreshEngine` | the property, ResearchFast with the mask |
+
+Expected: all six pass, because the reading below finds no op that leaves stale cells. On a property failure the
+first 25 lines read `<call> [<arm>]: alpha '<root>' date d name j: fresh Engine v (bits), dirty Engine v (bits)`.
+After that the failures are only counted.
+
+### What the test does
+
+- **The ops are iterated, never listed.**
+  - Every row of `alpha::detail::builtin_ops()` and `literature_ops()`: the 74 + 17 rows the Library registers,
+    a superset of the factory `OpCatalog`, which drops record and hparam rows.
+  - Every infix and prefix operator that `detail::binary_op_text` / `unary_op_text` (unparse.hpp) spell, over
+    all 256 `OpCode` values.
+  - The ternary, the one construct spelled by hand.
+  - A new row or operator is covered without editing the test. If none of its variants is accepted,
+    `Catalogue_...` fails and names it.
+- **The variants.**
+  - Each operand position is probed with four kinds: a numeric field (`x y z u`, rotated by position), a Group
+    field (`grp_a grp_b`), a mask (`(x > y)`, `(z <= u)`, `(y >= z)`) and a literal (`5` or `0.5`). This covers
+    every arity in `[min_arity, max_arity]`, so default-filled optionals and parser-made packs are included.
+  - Every probe that `parse_program` + `analyze` accept is expanded. Each literal position takes
+    `{1, 2, 3, 5, 20, 0.5}`: windows of one bar, short, 5, beyond the 12-date history, and hparams. The vector
+    positions are either rotated or all `x` (ties, identical and collinear inputs).
+  - A call of literals only is kept as probed.
+  - A variant whose code does not run the op is dropped: the parser folds `abs(5)`, and the DAG
+    strength-reduces `x ^ 2`.
+  - Record ops are rooted once per pin (`split2(x).hi`, `kalman(..).alpha`, `pack2(x, y).p0`, ...). A pack is
+    also reached through `ts_resid_on`, `ts_beta_on` and `cs_resid_on` with 2 to 4 regressors.
+  - By hand count there are about 1,300 variants; `RecordProperty("variants")` gives the real number.
+- **The keep root.** Each target carries a second root `keep = x + y + z + u`. The fields stay live past the op,
+  so the op's destination (and a record op's block) is a slot that this target has not written before. A cell
+  the op skipped would read 0.0 on the fresh Engine and a poison value on a dirty one.
+- **The panel** is 12 dates x 7 names. It holds:
+  - ties across names and dates, zeros, negatives and a flat run (zero variance);
+  - single holes, an all-NaN name, and a name whose history starts at date 8, shorter than a 5-bar window;
+  - a late listing and a universe gap;
+  - group labels with NaN labels and a label change;
+  - in the masked configs, a cross-section mask that excludes three names on some dates.
+- **The arms.** The reference is a fresh `Engine`. The same `Program` then runs on:
+  1. a new Engine after the tightest finite poison: the pool is reused at about the target's size and does not
+     grow;
+  2. the same with the NaN poison;
+  3. a new Engine after the widest NaN poison: reused, larger;
+  4. a new Engine after a one-slot poison: the pool grows. This arm passes by construction, because a new pool is
+     zero-filled, but the growth is asserted;
+  5. one long-lived Engine that ran the widest NaN poison and then every earlier variant in catalogue order.
+     This arm also exercises the engine's grow-only scratch and `ts_exp_coeff_`.
+
+  Arms 1 to 4 also assert `pool_capacity()`: unchanged for the reuse arms, larger for the growth arm. Every alpha
+  of every arm must be byte-equal to the reference (`memcmp`; the first differing cell is reported with its bits).
+- **The poisons.**
+  - Finite: n distinct constants, each bound as a root and combined by nested `max`. A call is not folded, so n
+    leaves fill n + 1 slots.
+  - NaN: n leaves over a field `pz` that is NaN in every third cell. By leaf kind they give finite positive
+    values, negated values (NaN with the sign bit set), `(pz - c) / (pz - pz)` (+inf, -inf, NaN) and
+    `log(pz - c)`, combined by nested `+`.
+  - Both are compiled at 1, 2, ... leaves until they reach the widest target + 4 slots.
+
+### Ops whose destination write is conditional, found by reading
+
+No op leaves stale cells on `Engine::evaluate`. The conditional writes are all covered by a prefill in the VM:
+
+| ops | where the kernel skips cells | what covers them |
+|---|---|---|
+| every Cs* op: rank, zscore, scale, normalize, winsorize, indneutralize, group_neutralize, group_rank, group_zscore, group_count, group_mean, group_scale, cs_residualize, quantile, vec_sum, vec_avg | the row kernels write only the valid set. They return early on an empty set (`cs_ops.hpp:332`, `700`, `723`; quantile `535-542`), skip NaN group labels (`cs_ops.hpp:382`, `401`, `409`, `596-671`, `758-826`), and cs_residualize writes only its regression set (`474`, `515`) | `cs_one_date` sets every cell of the row to NaN before dispatch, `vm.hpp:1596-1598`. Every Cs op goes through it (`eval_cross_section` -> `cs_rows`) |
+| bucket, cs_resid_on (W2) | `lit_bucket_row` (`lit_ops.hpp:443-460`) and `lit_cs_resid_row` (`465-501`; a degenerate date returns at `498`) write only the valid / regression set | `eval_lit_cs` sets the row to NaN first, `vm.hpp:1379` |
+
+Every other kernel writes each cell of its range on every branch, and its gate cells are written as NaN
+explicitly, not skipped:
+
+- the Ts online sweeps: `ts_ops.hpp:545`, `624`, `651`, `720`, and the Welford `emit` at `923`;
+- the order-stat sweep: `ts_order_stat.hpp:319`, `338`, `382`;
+- the sliding sweeps, d == 0: `ts_sliding.hpp:707`, `746`;
+- ResearchFast `ts_decay_exp` with d > dates: `vm.hpp:1714`;
+- `eval_lit_ts`: `vm.hpp:1432`;
+- `eval_ts_lookback`'s warm-up rows: `vm.hpp:1887`, `1891`;
+- the recurrences, Kalman, Split2, ArgPack, Pin, Const, LoadField and the element-wise map, which loop over the
+  whole range unconditionally.
+
+So no fix is proposed. Out of scope: `evaluate_nodes` (Lane 2) skips dead instructions by design
+(`vm.hpp:1021`). Their slots are never read.
+
+**Carry paths not in the Round 1 table**, found while reading:
+
+- `ordstat::sweep_scratch()` is `thread_local` (`ts_order_stat.hpp:269`). It is shared by every Engine on a
+  thread, for ts_rank, ts_med and ts_quantile. It is rebuilt per column:
+  - `SortedWindow::reset` sets n to 0;
+  - `FenwickWindow::reset` zero-fills its tree;
+  - `compress_column` rewrites every date's rank.
+
+  So it does not carry. The test cannot reset it, so the fresh reference shares it with the dirty arms. It is
+  exercised only by running different programs first (arm 5).
+- `compile_cache()` is `thread_local` (`bytecode.hpp:398`). It is used only by `compile_cached`, with a
+  structural key and an equality check; the mine calls `compile`.
+
+### Where a first compile is most likely to fail (uncompiled, per lane rules; clang-cl `/W4 /WX`)
+
+1. `constexpr std::array<FieldDef, 7> kFields`, whose member is `f64 (*)(usize, usize) noexcept` and whose
+   values are the addresses of the `[[nodiscard]]` field functions.
+2. The `<charconv>` calls:
+   - `std::to_chars(double)`, with and without `std::chars_format::fixed`;
+   - `std::to_chars(u64, 16)`.
+3. `Fixture`:
+   - an aggregate holding a `Panel`, whose default constructor is private: `Fixture fx{make_panel(), ...}`;
+   - `return fx;` needs Fixture's implicit move constructor;
+   - `static const Fixture fx = build_fixture();`.
+4. The `Form{...}` braced inits: `sig.min_arity` (u8) into `usize` is widening, not narrowing; the literals
+   `2, 2` and `{}` go to `std::span`.
+5. In `configure`, `return s ? std::string{} : s.error().message();` on a `const tl::expected<void, Error>`.
+6. `args.emplace_back(kLiteralValues[i])`: an explicit `std::string` from `std::string_view` through
+   `emplace_back`.
+7. `++(v > 0.0 ? c.pos_inf : c.neg_inf);`.
+8. `return std::move(*prog);` into `std::optional<Program>`, and `return std::move(*p);` into `Panel`.
+9. `RecordProperty(key, std::to_string(n))` inside TEST bodies in a named namespace.
+10. `alpha::detail::binary_op_text` / `unary_op_text`, inline in `unparse.hpp`.
+
+### ENG-SLOT concerns
+
+1. **Uncompiled and unrun.** Neither the variant count (about 1,300) nor the runtime is measured. Each config
+   runs about 10 evaluations per variant, and the fixture runs about 17k probe compiles. The cost is seconds in
+   Debug, not measured.
+2. **An abort is an engine finding.** A type-checker-accepted variant that trips an `ATX_ASSERT` or
+   `ATX_UNREACHABLE` in a Debug kernel aborts the binary. This would mean "analyze-valid implies VM-safe" is
+   broken. Variants include unusual but accepted programs: masks and groups in element-wise and pair-series
+   operands, scalar-only calls, windows of 1 and of 20 > dates, `ts_decay_exp` with f = 20, and `ou_filter` with
+   theta = 20.
+3. **What the census test rests on.** It assumes the NaN poison's leaves hold no exact 0.0 and include +inf, -inf,
+   NaN and finite cells. This is argued from the panel arithmetic in the file comment, not run.
+4. **No poisoning of thread-local scratch.** The order-stat scratch is not poisoned between the reference and the
+   arms. By reading it does not carry.
