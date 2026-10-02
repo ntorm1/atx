@@ -4176,3 +4176,40 @@ v9 note (from a result, not a spec): the band holds 88% of names' desired values
 1.3%; under aim-partial-v5 (theta .05) the traded book already lags the aim, so desired-side hysteresis barely reaches
 fills.
 
+### Owner stop (coordinator message after R-4's log commit `7863dbf8`): R-5 NOT STARTED
+
+The halt reached the batch at a clean boundary: R-2, R-3 and R-4 finished, ledgered and logged (sections above). For
+R-5 only the template edit had been made, uncommitted: `"parent": null -> "lib-v80.json"` and a `lock --write` (pins
+only, no run, no plan, no output). It was restored byte for byte to HEAD's
+`scripts/specs/v8/r5-adv-hold.json` (blob `520772da`, sha256 `0a60b415...b79d`, parent null). No R-5 phase ran;
+no `build-equity/*r5*` or `cycle-v8-r5*` output exists; nothing read, nothing ledgered, no trial burned. **A resume
+starts R-5 from its template:** set the parent (the last accepted cell, R-2 `lib-v80.json` today), lock, commit, plan,
+`run --stop-after nav` at the inherited L 1.1474 (the ADV cap reads that L, memo follow-up point 4), then gross
+matching. Criterion inputs a resume needs from the parent (not read here): R-2's 4x net Sharpe 1.178 (read in R-2's
+cell) and R-2's S3 (terminal-adverse) net Sharpe (not yet read).
+
+### Hidden-data record (batch 2d)
+
+- Inputs opened by the tools: role lo3, the lo3-dlret label role, fields v10 lo3, the lo3 candidate cache, R-2's u /
+  fit / card / marginal / w outputs, the ledger, the ledgered NAV dirs of the summ grid, each cell's own outputs, the
+  15 committed K1 plan files. No atx-db stage was opened.
+- Every console of this batch (R-2 resume, R-3 and R-3-gm plan / runs, R-4 plan / runs) scanned for 2024-2029 date
+  tokens: none. Bundles carry only the bootstrap seed 20260929. Last NAV session in every cell 2023-12-29
+  (`last_session_ns` 1703808000000000000). **Nothing dated 2024-01-01 or later was opened. No R-1 (L 1.247) return was
+  opened. R-3's step-(1) run (L 1.1474) was read for mechanics keys only.** No `stdout.log` of a NAV run was opened.
+
+### Open items (batch 2d)
+
+- R-5 not started (owner stop); resume as above. N 44 leaves 7 trials of the 51 budget; R-5 would be 45.
+- `scripts/tests` after round 4: 17 failed / 171 passed / 3 skipped (above), all PM6-10's. Not re-run since; expected
+  further impact on the same file (not verified): `test_every_v8_spec_loads_and_plans` does not know the new
+  `r3-aim-gain-gm.json`; the add-alpha template test copies the live `r4-hold-band.json` expecting `"parent": null`,
+  which is now `lib-v80.json` (`r3-aim-gain.json` likewise). The round-5 lane should take the current head.
+- Three spec files carry a cosmetic "L1.247" in their nav.output name though they ran at 1.1474 (`r3-aim-gain.json`'s
+  step-(1), `r4-hold-band.json`); `r5-adv-hold.json` will too unless a `-gm` spec renames it.
+- K1 `--max-memory-mib` in add-alpha (batch 2c item) stands; PM6-9 route used.
+- **Current accepted parent: R-2** (`scripts/specs/v8/lib-v80.json`, spec name `v80`, file `306a070b`), NAV output
+  `build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`, L 1.1474, G .9859903463; S2 net
+  Sharpe +1.2559, net annual return 4.54%, net Sharpe at 4x 1.178. **N 44**; admission trials 7 of 15 (plus 8
+  re-screens); history reads 0. Disk 126,526,756 KiB free (120.7 GiB).
+
