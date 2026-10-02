@@ -77,6 +77,12 @@ NULL_PINS["lib-v81-gm.json"] = {"inputs.role", "inputs.label_role", "inputs.base
                                 "inputs.reference_daily_ic"}
 NULL_PINS["x-theme-erc.json"] = CHILD_NULLS                 # v8 X (lane XCOMB): theme-erc-v1, planned on R-1
 NULL_PINS["x-inv-vol.json"] = CHILD_NULLS                   # v8 X (lane XCOMB): inv-vol-v1, planned on B0c
+# X batch 1 at matched gross (PM6-6), by hand: X-3 (add-alpha's lib-v8x3b.json copied, as lib-v81-gm.json), X-5 and X-6
+# (the XCOMB templates copied with nav.leverage / nav.output)
+NULL_PINS["lib-v8x3b-gm.json"] = NULL_PINS["lib-v81-gm.json"]
+NULL_PINS["x-theme-erc-gm.json"] = CHILD_NULLS
+NULL_PINS["x-inv-vol-gm.json"] = CHILD_NULLS
+ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json"}  # an add-alpha spec copied by hand: no base-only pins
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
@@ -263,7 +269,9 @@ def check_nominal_plan(tmp_path: Path, specs: Path, name: str) -> None:
         assert e.value.code == RC.EXIT_PIN and not (root / "calls.log").exists()
     else:
         assert refusal is None and not any(x.startswith("# template") for x in lines)
-    assert all(st.kind != "skipped" or st.phase == "marginal" for st in c.steps())
+    same_fields = (spec["inputs"].get("baseline_fields") or {}).get("path") == f"{spec['fields']['output']}/manifest.json"
+    assert all(st.kind != "skipped" or st.phase == "marginal" or       # ref: skipped on the parent's fields (X-3 gm)
+               (same_fields and st.phase in ("ref", "ref" + RC.COMPARE_SUFFIX)) for st in c.steps())
 
 
 def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
@@ -282,9 +290,10 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
     held = {f"inputs.{k}" for k, item in spec["inputs"].items()
             if item["sha256"] and committed(item["path"]) is not None}
     links = RS.chain(path, research_tree.REPO)
-    if {p.name for p, _, _, _ in links} | {links[-1][2].name if links else name} <= set(NULL_PINS):
-        # (an add-alpha parent, lib-v80.json, has fewer; a lock's pin on a committed file, e.g. R-2's library once
-        # add-alpha wrote it (PM6-10), is checked against its bytes, not a stand-in: it may stand LOCKED)
+    above = ({p.name for p, _, _, _ in links} | {links[-1][2].name if links else name}) - {name}
+    if name in NULL_PINS and above <= set(NULL_PINS) - ADD_ALPHA_COPIES:
+        # (an add-alpha parent, lib-v80.json, or a hand copy of one, has fewer; a lock's pin on a committed file, e.g.
+        # R-2's library once add-alpha wrote it (PM6-10), is checked against its bytes, not a stand-in: it may stand LOCKED)
         assert unlocked_pins(c, spec) >= NULL_PINS[name] - held, name
     for section, option in fill_options():                    # PM5-24: a value root fills is its placeholder or well
         value = RC.option_value((spec.get(section) or {}).get("flags") or [], option)          # formed (own, inherited)

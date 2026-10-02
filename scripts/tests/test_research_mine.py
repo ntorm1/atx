@@ -80,11 +80,13 @@ def test_fields_are_the_rule_applied_to_the_registry():
     reads, less the excluded classes and the two fields the v8.0 library wave adds; every one is a fields v9 row."""
     v9 = json.loads((REPO / "scripts" / "specs" / "v8" / "base-lo1.json").read_text(encoding="utf-8"))["fields"]["list"]
     registry = json.loads((REPO / "atx-impl" / "strategies" / "alphas" / "registry.json").read_text(encoding="utf-8"))
-    read = set()
-    for a in registry["alphas"]:
-        read |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a["dsl"]))
+    read, read_x = set(), set()
+    for a in registry["alphas"]:                # v8x prereg A3: the X members' fields leave the list at the lock (H-F)
+        (read_x if str(a.get("added_in", "")).startswith("v8x") else read).update(
+            re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a["dsl"]))
     rule = [f for f in v9 if f not in read and f not in EXCLUDED_BY_CLASS and f not in HELD_BY_V8_LIBRARY]
     assert template()["fields"] == rule and len(rule) == 12
+    assert [f for f in rule if f not in read_x] == [f for f in rule if f not in read | read_x]   # X only removes
     assert set(EXCLUDED_BY_CLASS) <= set(v9) - read
     assert set(HELD_BY_V8_LIBRARY) <= set(v9)            # R-2 was accepted: the book reads them (no longer unread)
 
