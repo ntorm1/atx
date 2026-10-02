@@ -4761,3 +4761,90 @@ share (the one-member `filing_events` theme sits at its cap .045 on a flag that 
 - `scripts/tests` (whole): **195 passed, 3 skipped, 0 failed** (130.5 s; skips: the three RESEARCH_CYCLE_LIVE_ROOT tests).
 - `atx-impl/strategies` (whole): **162 passed, 1 failed** -- `test_v71_library_byte_identical` (the R7-a finding above).
 
+### Cell R-8 (ex-ante risk target, `r8.json`): STOPPED BEFORE THE RUN (how PM6-6 applies is not settled)
+
+Nothing was edited, locked, planned or run for R-8; `r8.json` is unchanged (parent null). N 47; no trial burned.
+
+**What is settled.** Parent = R-2 (`lib-v80.json`, L 1.1474; R-7 was not accepted). Store: `build-equity/v8-risk-lo3-v10`
+(manifest `862515d9`; batch 2e: 0 invariant refusals, no specific variance clamped, max daily D .361 < 1.0; R-6's spo-v3
+runs on it reported capped_specific_decisions 0), so the brief's "check the risk store's capped_specific count first" is
+met from records. Acceptance: **Ruling E-43 settles it** -- prereg rule 5 governs: paired S2 net dSR > 0 against the
+parent AND mechanics AND realised volatility of the S2 net series inside [.04, .06] (= [.8, 1.2] x sigma_star .05) in
+each TRAIN year 2020-2023; the plan's "dSR not lower by more than one SE" (repeated in the dispatch) is the plan's
+expectation, not the rule (pitch config R-8 check: `ann_vol` between .04 and .06 from the nav_summ year table).
+
+**What is not settled: PM6-6 on a cell whose purpose is to set leverage.** PM6-6 says "every construction cell runs at the
+L that puts its all-rows gross within +/- .005 of its parent's"; R-8's registered rule (E-40, task-R-8-report, `r8.json`
+description) is `L_t = clip(S / (b sigma_hat_t), .8 L, 1.25 L)`, S .05, b 1.15, cadence 21, with L = the parent's
+`--aim-leverage`. No brief, ruling or report says which governs (grep of PM6-6 across the sprint directory: no R-8
+mention; PM7-3 / PM7-11 restate the gross limit for the X leverage cell only). The two readings, both fixed here before
+any R-8 number exists:
+
+- **Reading A (PM6-6 applies as written):** step (1) = `r8.json` on R-2 at L 1.1474, mechanics only; if |G - .98599| >
+  .005, L' = L x G_parent / G in a `-gm` spec (`nav.leverage`, which here is the scaler's base L: the clip band
+  [.8 L', 1.25 L'] and the leverage before the first estimate), at most two corrections; then rule 5 and the volatility
+  band on the matched run. Mechanical consequence (from the registered rule only): wherever the clip does not bind, L_t =
+  S / (b sigma_hat_t) does not depend on L, so gross does not move with L and the linear correction need not converge
+  (PM6-6: a cell that misses +/- .005 after two corrections fails mechanics and is ledgered rejected); where matching
+  succeeds it does so through the clip, so the book's mean leverage is set by the parent's gross, not by S, and the cell
+  tests the timing of leverage at the parent's dollar gross.
+- **Reading B (PM6-6 does not apply; R-8 is the registered leverage rule):** one run at the parent's L 1.1474 as the
+  scaler's base; gross is what the rule gives. Open inside B: whether the mechanics gross limit [.90, 1.05] binds
+  unchanged (PM6-6: "the mechanics limits are unchanged") or is restated for this cell before the run, as PM7-11 did for
+  the X leverage cell. The registered clip allows aim leverage .918 to 1.434 (.8 and 1.25 x 1.1474); at the parent's
+  gross / L ratio (.98599 / 1.1474 = .859) that is all-rows gross from about .79 to 1.23 -- outside [.90, 1.05] at both
+  ends of the band. Under B the paired dSR compares books of different dollar gross (PM6-6's reason for matching).
+
+Per the dispatch, R-8 stops here for the PM's reading (and, under B, the gross limit). Nothing else of R-8 depends on a
+choice: once ruled, the sequence is `r8.json` parent -> `lib-v80.json`, fills `--risk-model build-equity/v8-risk-lo3-v10
+--risk-model-sha256 862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a`, lock, commit, plan, `run
+--stop-after nav`; mechanics and the `risk_target` blocks (decisions_before_first_estimate, estimates about scored
+sessions / 21, clip counts, priced_share) before any return; then summ, bundle, year table.
+
+### Cells R-9a-c: NOT STARTED
+
+They follow R-8 (order; their parent is "the final construction" = the last accepted cell after R-8, and N 49-51 follow
+N 48). Open choices found in the brief while preparing (for the PM's next dispatch; nothing was written or run):
+1. **Machinery:** the dispatch says R-9 needs R-6's spo-v3 machinery; Ruling E-37 defines R-9 only on a parent whose rule
+   reads theta (aim-partial-v5) and calls theta meaningless in the tracker. R-6 was rejected, so the parent's rule is
+   aim-partial-v5 and spo-v3 is not involved (`--trade-fraction` = theta).
+2. **"With NAV 4x":** the NAV executable has no NAV-size flag (the $1bn is fixed by the scenarios); 4x exists only as the
+   capacity curve's x4 row (E-29). Reading: each cell is the parent's NAV argv with `--trade-fraction` .03 / .04 / .05 and
+   its frontier point is the x4 row; its $1bn row is a different book from the deployed one, which "does not change"
+   (report only).
+3. **theta .05 is the parent's theta:** R-9c reproduces the parent's NAV byte for byte (its x4 row = R-2's 1.178); run and
+   counted (N 51, as the brief's "3 cells") or read from the parent (adds 0).
+4. **PM6-6 on theta .03 / .04:** a lower theta lowers gross (the book lags the aim more); matched L or the parent's L.
+5. **Spec form:** no R-9 template exists (a spec-only template is allowed); the cycle has no report-only mode: with
+   `"verdict": true` it writes an accepted / rejected verdict, which the report tool refuses on a report-only cell
+   (PM4-8); with `"verdict": false` research_cycle still passes summ its `--ledger` (the construction line, N + 1) and writes no
+   verdict.
+
+### Hidden-data record (batch 2f)
+
+- Inputs opened by the tools: role lo3, the lo3-dlret label role, fields v10 / v11 lo3, the lo3 candidate cache, R-2's
+  u / fit / w / NAV outputs, the atx-db stages and fundamental events v3 through the fields builder's sealed readers
+  (read only; nothing under `atx-db/` written), the vendor TickerHistory3 file (reader-side seal), the ledger and the
+  ledgered NAV dirs of the summ grid, the cell's own outputs.
+- Consoles scanned for 2024-2029 date tokens (fields v11 runner console and logs, add-alpha consoles, R-7 plan / screen /
+  three run consoles): none except the runner's own start stamp 2026-10-02. Last NAV session in every run 2023-12-29
+  (`last_session_ns` 1703808000000000000). Fields v11 manifest: seal 2024-01-01, no 2024-named source.
+- Disclosure: while finding the manifest keys for the registry rows I printed the full v10 manifest rows of
+  grp_ff12f49, ceq_iss_5y and coskew_60m once, which include their `coverage` blocks (finite-cell counts and value
+  quantiles per year 2018-2023; no return, IC or Sharpe); nothing was used from them.
+- **Nothing dated 2024-01-01 or later was opened.** No `stdout.log` of a NAV run was opened. **The R-7 step-(1) run of
+  lib-v81.json (L 1.1474) was read for mechanics keys only.**
+
+### Open items (batch 2f)
+
+- **PM ruling needed (R-8):** reading A or B of PM6-6 above (and, under B, the gross limit). R-9 waits on R-8 and on
+  choices 2-5.
+- `atx-impl/strategies` `test_v71_library_byte_identical` fails since R7-a's roster cap 64 (the v7.1 slim recipe records
+  `house_budget`); tests-only fix or a ruling.
+- R-7's marginal phase took 170.3 s of its 180 s cap (full pool, 11 regressors; add-alpha gives `marginal` the runner's
+  default caps, while W0-c allows the IC phases 300 s / 2,560 MiB). A later wave on a larger pool may time out there.
+- `r7-lib-v81.json` stays unrun (parent null), as `r2-lib-v80.json`.
+- **Current accepted parent: R-2** (`scripts/specs/v8/lib-v80.json`), L 1.1474, G .9859903463; S2 net Sharpe +1.2559,
+  net annual return 4.54%, net Sharpe at 4x 1.178, tau_gmv_mean .02393. **N 47**; admission trials 12 of 15 (plus 8
+  re-screens; the 3 left lapse with R-12); history reads 0. Disk 123,940,056 KiB free (118.2 GiB).
+

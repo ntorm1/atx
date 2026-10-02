@@ -1753,3 +1753,12 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   .02317 <= .02393) met; mechanics pass. Net Sharpe at 4x 1.103 (parent 1.178). One spec-only fix before any phase ran
   (`ref.leverage` 1.1474: the cycle refused the ref binding). Parent stays R-2. Tests: `scripts/tests` 195 passed, 3
   skipped; `atx-impl/strategies` 162 passed, 1 failed (the R7-a finding).
+  R-8: STOPPED before the run (nothing edited, run or ledgered; N 47). Acceptance is settled by E-43 (dSR > 0 AND
+  mechanics AND S2 realised vol in [.04, .06] each year; the plan's "dSR >= -1 SE" is expectation). Not settled: how
+  PM6-6 applies to a cell whose rule sets leverage. Reading A: match gross through the scaler's base L (clip band
+  [.8 L, 1.25 L]); where the clip does not bind L_t = S / (b sigma_hat) ignores L, so matching may not converge
+  (PM6-6: rejected after two corrections). Reading B: one run at L 1.1474, gross as the rule gives; then whether the
+  gross limit [.90, 1.05] binds or is restated (the clip spans all-rows gross about .79 to 1.23 at R-2's gross / L).
+  PM ruling needed. R-9a-c not started (after R-8; open choices: "NAV 4x" exists only as the capacity curve's x4 row;
+  theta .05 equals the parent's; PM6-6 on theta; no template and no report-only verdict in the cycle; spo-v3 not
+  involved per E-37).
