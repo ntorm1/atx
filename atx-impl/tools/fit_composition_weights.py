@@ -165,6 +165,11 @@ v8 X (lane XCOMB) ``--theme-erc theme-erc-v1`` (composition_theme_erc; single wi
 ic-shrink-v1, not with --theme-resid): the parent's pre-cap within-theme shares times equal-risk-contribution theme
 shares of the theme sleeves' TRAIN covariance, then the member cap 1/(2T); the block and provenance.theme_erc replace
 the parent's block and provenance.rule. Absent: every byte as before (but script_sha256).
+v8 Y (lane YCOMB) ``--theme-tsmom theme-tsmom-v1`` (composition_theme_tsmom; single window, --composition
+ew-theme-std-v1 or ic-shrink-v1 with or without --theme-erc, not with --theme-resid): a walk-forward theme mass
+schedule (every 21 decisions from decision 254, a theme whose sleeve's trailing 252-decision return is not positive
+gets mass 0); the top-level theme_schedule block and provenance.theme_tsmom are added, weights, signs, the
+theme_standardise block and provenance.rule stay the parent's. Absent: every byte as before (but script_sha256).
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -205,6 +210,7 @@ import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pu
 import composition_ic_shrink  # noqa: E402  (v8 R-10: composition ic-shrink-v1, pure functions in this directory)
 import composition_resid  # noqa: E402  (v8 R-11: --theme-resid theme-resid-v1, the theme_residualise block)
 import composition_theme_erc  # noqa: E402  (v8 X, lane XCOMB: --theme-erc theme-erc-v1, ERC theme shares)
+import composition_theme_tsmom  # noqa: E402  (v8 Y, lane YCOMB: --theme-tsmom theme-tsmom-v1, theme schedule)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -1992,6 +1998,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
     require_resid_order(args)  # v8 R-11, finding R6C-4: the registry's themes are PRIOR_THEMES, before any compute
     composition_theme_erc.check_args(args, prior, pooled(args), FitError)  # v8 X (XCOMB): --theme-erc's parents
+    composition_theme_tsmom.check_args(args, prior, pooled(args), FitError)  # v8 Y (YCOMB): --theme-tsmom's parents
     resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
@@ -2444,6 +2451,12 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_theme_erc.attach(document, erc)
         summary["theme_erc"] = {"parent_rule": args.composition,
                                 "theme_shares": erc.provenance["theme_shares"]}
+    if getattr(args, "theme_tsmom", None) is not None:  # v8 Y (YCOMB): the schedule on the final weights (check_args ran)
+        tsmom = composition_theme_tsmom.schedule(
+            [ids[k] for k in active], [themes[k] for k in active], weights, matrix, decision_sessions, train_mask,
+            composition_theme_erc.RULE_ID if erc is not None else args.composition, error=FitError)
+        composition_theme_tsmom.attach(document, tsmom)
+        summary["theme_tsmom"] = tsmom.summary
     # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5); absent:
     # no change
     composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
@@ -2599,6 +2612,7 @@ def parse_args(argv):
     p.add_argument("--era-id", default=None, help="v8 H-1: the era id of the --train role (the anchor, last era)")
     composition_resid.add_argument(p)  # v8 R-11: --theme-resid theme-resid-v1
     composition_theme_erc.add_argument(p)  # v8 X (XCOMB): --theme-erc theme-erc-v1
+    composition_theme_tsmom.add_argument(p)  # v8 Y (YCOMB): --theme-tsmom theme-tsmom-v1
     return p.parse_args(argv)
 
 

@@ -84,6 +84,7 @@ NULL_PINS["x-theme-erc-gm.json"] = CHILD_NULLS
 NULL_PINS["x-inv-vol-gm.json"] = CHILD_NULLS
 NULL_PINS["y-vol-target.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): vol-target-v1, planned on B0c
 NULL_PINS["y-norm-score.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): norm-score-v1, planned on B0c
+NULL_PINS["y-theme-tsmom.json"] = CHILD_NULLS              # v8 Y (lane YCOMB): theme-tsmom-v1, planned on X-5
 ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json"}  # an add-alpha spec copied by hand: no base-only pins
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
@@ -130,8 +131,10 @@ EXPECTED_CHANGES["x-theme-erc.json"] = FIT_DOWN | {"fit.flags"}                 
 EXPECTED_CHANGES["x-inv-vol.json"] = {"nav.output", "nav.flags"}                          # v8 X (lane XCOMB)
 EXPECTED_CHANGES["y-vol-target.json"] = {"nav.output", "nav.flags", "nav.leverage"}       # v8 Y: X-10's L, managed
 EXPECTED_CHANGES["y-norm-score.json"] = {"nav.output", "nav.flags"}                       # v8 Y (lane YCOMB)
+EXPECTED_CHANGES["y-theme-tsmom.json"] = FIT_DOWN | {"fit.flags"}                        # v8 Y (lane YCOMB)
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
+FIT_APPENDED["y-theme-tsmom.json"] = ["--theme-tsmom", "theme-tsmom-v1"]                 # v8 Y (lane YCOMB)
 MISSING = object()
 
 

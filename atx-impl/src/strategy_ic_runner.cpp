@@ -63,7 +63,8 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
     const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
-    bool themed=false,std::string_view standardised={},std::span<const std::string> residualised={}) {
+    bool themed=false,std::string_view standardised={},std::span<const std::string> residualised={},
+    std::string_view scheduled={}) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -134,6 +135,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
     manifest["composition_residualise"]=theme_residualise_rule;
     manifest["composition_residualise_order"]=theme_order_json(residualised);
   }
+  // And theme-tsmom-v1's mass schedule on it (v8 Y-2; absent otherwise).
+  if (!scheduled.empty()) manifest["composition_schedule"]=std::string(scheduled);
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -249,7 +252,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
     std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
     std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute,
-    std::string_view std_rule=theme_standardise_rule,std::span<const std::string> resid_order={}) {
+    std::string_view std_rule=theme_standardise_rule,std::span<const std::string> resid_order={},
+    std::string_view schedule_rule={},std::span<const i64> schedule_from={},
+    std::span<const std::vector<f64>> schedule_mass={}) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -321,6 +326,18 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
     ATX_TRY(auto created,IcComposition::create(cc,candidates,effective,weights,themes,rule));
     composition.emplace(std::move(created));
+    // theme-tsmom-v1 (v8 Y-2): each block starts at the first session of this role at or after its
+    // from_session (a role after the last block keeps the last block's masses).
+    if (!schedule_from.empty()) {
+      if (schedule_mass.size()!=schedule_from.size())
+        return co::Err(co::ErrorCode::Internal,"IC runner: theme schedule geometry");
+      const std::span<const i64> keys(role.session_keys);
+      std::vector<IcThemeBlock> blocks; blocks.reserve(schedule_from.size());
+      for (usize b=0;b<schedule_from.size();++b)
+        blocks.push_back({static_cast<usize>(std::lower_bound(keys.begin(),keys.end(),schedule_from[b])-keys.begin()),
+                          schedule_mass[b]});
+      ATX_TRY_VOID(composition->schedule_theme_masses(blocks));
+    }
   }
   // One key per candidate (empty = cache off); directories are created on write.
   const bool signal_cache=!cache.keys.empty();
@@ -502,7 +519,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
         !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,
         (themed && rule!=IcThemeRule::redistribute)?std_rule:std::string_view{},
-        (themed && rule==IcThemeRule::residualise)?resid_order:std::span<const std::string>{}));
+        (themed && rule==IcThemeRule::residualise)?resid_order:std::span<const std::string>{},
+        (themed && rule==IcThemeRule::standardise)?schedule_rule:std::string_view{}));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -662,7 +680,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
     auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),pinned.standardise_rule(),
-                              pinned.residualise_order);
+                              pinned.residualise_order,pinned.schedule);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -703,7 +721,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     for (const auto& role:roles) {
       auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress,pinned.composition_themes(),
-          pinned.theme_rule(),pinned.standardise_rule(),pinned.residualise_order);
+          pinned.theme_rule(),pinned.standardise_rule(),pinned.residualise_order,pinned.schedule,
+          pinned.schedule_from,pinned.schedule_mass);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());

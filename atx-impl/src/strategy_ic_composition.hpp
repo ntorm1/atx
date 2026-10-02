@@ -24,6 +24,13 @@ struct IcCompositionConfig {
 //   residualise   standardise, then theme-resid-v1 (platform v8 R-11; theme index = position
 //                 in the registered order, strategy_ic_theme_resid.hpp).
 enum class IcThemeRule : atx::u8 { redistribute, standardise, residualise };
+// One block of a theme-mass schedule (theme-tsmom-v1, platform v8 Y-2; strategy_ic_theme_tsmom.hpp):
+// from date `begin` until the next block's begin (the last: to the end) the standardised themes
+// enter with `mass` (one finite value >= 0 per theme index) in place of W_theme.
+struct IcThemeBlock {
+  atx::usize begin{};
+  std::vector<atx::f64> mass;
+};
 struct IcCompositionResult {
   std::vector<atx::f64> signal; // date-major; nonmembers NaN, missing contributions zero (pinned themes: see create)
   std::vector<atx::f64> planned_turnover, contribution_fraction;
@@ -105,6 +112,13 @@ class IcComposition {
   // planned gross/net are reported, not promised to stay1/0 between rebalances.
   // Initial deployment is included in both daily and total turnover.
   [[nodiscard]] atx::core::Result<IcCompositionResult> finish();
+  // theme-tsmom-v1 (platform v8 Y-2): optional, before finish, IcThemeRule::standardise only.
+  // Blocks in non-decreasing `begin` (each <= dates); dates before the first block keep W_theme.
+  // finish then adds, per date and theme, the mass in force at that date times the same re-rank
+  // (a zero mass adds nothing); dates are independent, so blocks repeating W_theme leave the blend
+  // bit for bit unchanged. Not called (or empty): finish is unchanged. Refuses (InvalidArgument)
+  // under another rule, after finish, or on a malformed block; nothing is kept on refusal.
+  [[nodiscard]] atx::core::Status schedule_theme_masses(std::span<const IcThemeBlock> blocks);
  private:
   struct Impl;
   explicit IcComposition(std::unique_ptr<Impl>);

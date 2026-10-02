@@ -117,6 +117,7 @@ struct IcComposition::Impl {
   std::vector<f64> std_mass;
   std::vector<std::vector<f64>> std_plane;
   bool residualise{}; // theme-resid-v1 on the std planes (theme index = registered-order position)
+  std::vector<IcThemeBlock> schedule; // theme-tsmom-v1 mass schedule on the std planes (empty: W_theme throughout)
   IcCompositionResult result;
   usize next{};
   bool finished{};
@@ -317,6 +318,31 @@ co::Status IcComposition::add_standardised(usize index, std::span<const f64> sig
   ++p.next; return co::Ok();
 }
 
+co::Status IcComposition::schedule_theme_masses(std::span<const IcThemeBlock> blocks) {
+  if (!impl_ || impl_->finished)
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme schedule after finish");
+  auto& p = *impl_;
+  if (p.std_mass.empty() || p.residualise)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: a theme schedule (theme-tsmom-v1) needs the standardise rule");
+  usize last = 0;
+  for (const auto& block : blocks) {
+    if (block.begin < last || block.begin > p.cfg.dates || block.mass.size() != p.std_mass.size() ||
+        std::any_of(block.mass.begin(), block.mass.end(), [](f64 m) { return !std::isfinite(m) || m < 0; }))
+      return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme schedule blocks need a non-decreasing "
+                     "begin <= dates and one finite mass >= 0 per theme");
+    last = block.begin;
+  }
+  try {
+    p.schedule.assign(blocks.begin(), blocks.end());
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: theme schedule allocation");
+  } catch (const std::length_error&) {
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: theme schedule allocation");
+  }
+  return co::Ok();
+}
+
 co::Result<IcCompositionResult> IcComposition::finish() {
   if (!impl_ || impl_->finished || impl_->next != impl_->candidates.size())
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: incomplete/finished input");
@@ -336,11 +362,24 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   // theme-resid-v1 instead residualises the re-ranked planes in index order per date.
   if (p.residualise) {
     ATX_TRY_VOID(add_theme_residualised(p.std_plane, p.std_mass, p.cfg.instruments, out.signal, p.row));
-  } else {
+  } else if (p.schedule.empty()) {
     for (usize t = 0; t < p.std_plane.size(); ++t)
       ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
                                         out.signal, p.row));
+  } else {
+    // theme-tsmom-v1: the same re-rank, times the mass in force at each date (W_theme before the
+    // first block). Each cell still receives its themes in index order, so a schedule repeating
+    // W_theme is the branch above bit for bit; a zero mass adds nothing.
+    for (usize t = 0; t < p.std_plane.size(); ++t)
+      for (usize b = 0; b <= p.schedule.size(); ++b) {
+        const usize begin = b == 0 ? 0 : p.schedule[b - 1].begin;
+        const usize end = b == p.schedule.size() ? p.cfg.dates : p.schedule[b].begin;
+        const f64 mass = b == 0 ? p.std_mass[t] : p.schedule[b - 1].mass[t];
+        if (begin == end || !(mass > 0)) continue;
+        ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, begin, end, mass, out.signal, p.row));
+      }
   }
+  std::vector<IcThemeBlock>().swap(p.schedule);
   std::vector<std::vector<f64>>().swap(p.std_plane);
   for (usize d = 0; d < p.cfg.dates; ++d)
     out.contribution_fraction[d] = out.eligible_names[d]

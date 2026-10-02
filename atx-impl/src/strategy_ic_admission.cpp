@@ -35,7 +35,8 @@ Json theme_order_json(std::span<const std::string> order) {
   return out;
 }
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed,
-                   std::string_view standardised,std::span<const std::string> residualised) {
+                   std::string_view standardised,std::span<const std::string> residualised,
+                   std::string_view scheduled) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -85,6 +86,9 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
         recipe["composition_residualise"]=theme_residualise_rule;
         recipe["composition_residualise_order"]=theme_order_json(residualised);
       }
+      // theme-tsmom-v1 (v8 Y-2) schedules the theme masses of that standardisation; absent
+      // otherwise, so the bytes above are unchanged (the schedule itself is pinned by the weights SHA).
+      if (!scheduled.empty()) recipe["composition_schedule"]=std::string(scheduled);
     }
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
@@ -809,6 +813,7 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   ATX_TRY_VOID(composition_standardise(j,lib,pinned));
   ATX_TRY_VOID(composition_recorded_rule(j));          // finding R6B-C-5: provenance.rule writes the block
   ATX_TRY_VOID(composition_residualise(j,lib,pinned)); // v8 R-11 theme-resid-v1 (strategy_ic_theme_resid.cpp)
+  ATX_TRY_VOID(composition_schedule(j,lib,pinned));    // v8 Y-2 theme-tsmom-v1 (strategy_ic_theme_tsmom.cpp)
   const bool v2=j.at("schema")==weights_schema_v2;
   const bool standardise=!pinned.standardise.empty();
   if (!pinned.themes.empty() && standardise)
@@ -842,6 +847,10 @@ Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const
   if (!pinned.standardise.empty()) out["standardise"]=pinned.standardise;
   // theme-resid-v1 only (absent otherwise).
   if (pinned.residualise) out["residualise"]=theme_residualise_rule;
+  // theme-tsmom-v1 only (absent otherwise): its rule, blocks, first block session, theme-blocks off.
+  if (!pinned.schedule.empty())
+    out["schedule"]=Json{{"rule",pinned.schedule},{"blocks",pinned.schedule_from.size()},
+        {"first_session",pinned.schedule_from.front()},{"theme_blocks_off",pinned.schedule_off}};
   return out;
 }
 // Review M1 (root ruling, strict): weights applied against a frozen TRAIN artifact
