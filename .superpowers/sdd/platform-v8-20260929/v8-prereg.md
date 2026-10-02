@@ -180,3 +180,34 @@ hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2
   spec `lib-v8x4b.json` with PM6-8 (i) before any run.
 - Pins: library `fund_industry_ic_v8x4b.json` `78dc39ad9da708dab2812168edb9336d89bd9b3924bcf4a95ee24c31eb298bc2`; recipe
   `c45e92e6` (rescreens 3, unchanged 55); definition `fbbe2b09`; stub `fc0a0395`; registry `7ff10f4e` (unchanged).
+
+## Library v8x7 (cell X-7, formulaic-alpha wave, lane XWQ), registered 2026-10-02 before any IC read of a new member
+- Registration text: `task-XWQ-report.md` sections 3, 5, 6 (the add-alpha lines verbatim, tier 1 and tier 2), PM7-33,
+  PM7-34 (4) (house forms decay_linear 5 / 21 fixed before selection), PM7-36 (theme `price_volume` appended; bar fields
+  stamped as `close`; #33 and #38 withdrawn at 0 trials). Parent X-5 (`x-theme-erc-gm.json`: library v8x3b,
+  theme-erc-v1, L 1.1720; accepted, N 54). Fields v14 (`4b12c0e1`).
+- Members: v8x3b (58, unchanged) + 12 admission trials in the report's order wq_099, wq_035, wq_055, wq_006, wq_002,
+  wq_101, wq_095, wq_085, wq_030, wq_043, wq_014, wq_044 = 70 (roster cap 80). `research_cycle.py add-alpha --parent
+  v8x3b --name v8x7 --parent-spec scripts/specs/v8/x-theme-erc-gm.json --fields build-equity/train-2020-2023-lo3-fields-v14
+  --plan-json .superpowers/sdd/platform-v8-20260929/x7-plans/<id>.json` (12 calls, `scratchpad/x7_add.py`; every other
+  byte of each line as printed in the report, each line verified against its printed SHA-256 prefix). K1 rows (DSL sha16 /
+  bars / slots / extra fields) = XWQ section 6 except wq_099: wq_099 `8f56e936` 104/6/2 (the mechanical rewrite
+  `(x * -1)` for `(-1 * x)`, XWQ section 6 / E5, `x7-wq099-variants.json`: the frozen string plans 8 slots in the exe);
+  wq_035 `cf7571dd` 52/7/2, wq_055 `e9b110e3` 36/6/2, wq_006 `9393d144` 29/5/1, wq_002 `9fdd5972` 11/5/1, wq_101
+  `88e1e37a` 4/5/3, wq_095 `f1f9d043` 98/7/3, wq_085 `d01d6894` 57/6/2, wq_030 `c8c2edf5` 39/6/0, wq_043 `21026ffb`
+  58/5/0, wq_014 `5fa625c8` 29/5/1, wq_044 `bc2db9e7` 8/5/1. Themes: price_volume wq_099, wq_055, wq_006, wq_002, wq_095,
+  wq_085, wq_014, wq_044; reversal_seasonality wq_035, wq_030, wq_043; price_momentum wq_101. Tier C+, prior sign +1,
+  origin prior. No budget exception.
+- Pins: library `fund_industry_ic_v8x7.json` `fd96638487581988e5d5ebd6b1106aae4013400639b3be14e99c85554c556e84`; recipe
+  `6131f1ad` (admission_trials 12, new 12, unchanged 58); definition `5fb4d29b`; stub `32ba7f41`; registry `f0ee2288`
+  (12 alpha rows added); fields v14 `4b12c0e1`; spec `lib-v8x7.json` `07adb67c` (12 pins locked; fit `--theme-erc
+  theme-erc-v1` inherited from X-5; nav L 1.1720); commit `a12854ff`.
+- IC-pass memory (mechanics only; the exe's metadata-only `--plan-only`, 70 members, fields v14, `--workers 4`): passes
+  at `--max-memory-mib 2560`; refuses at 1,024 with required_bytes 2,122,543,388 (2,024.2 MiB), max_compiled_slots 8: the
+  cap 2,560 MiB (W0-c) holds.
+- Gate p1-v8x7 requires any of the 12 with its prior sign; wave composition PM7-35 (status admitted and runner sign
+  opposite to the prior: dropped; sign 0 stays; a non-admitted addition stays at weight 0); marginal IC report only;
+  theme-erc-v1 re-solved by the fitter on the themes with a weighted member (T = 12 with a `price_volume` member, cap
+  1/(2T)); PM6-6 gross matching against X-5's all-rows gross .9862260459 starting at L 1.1720; acceptance PM7-34 /
+  PM8-1 (dSR > 0 AND mechanics); the capacity criterion of PM7-10 (net Sharpe at 4x NAV not lower than the parent's)
+  and turnover printed.
