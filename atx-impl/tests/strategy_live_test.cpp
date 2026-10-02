@@ -2867,3 +2867,297 @@ TEST(NavLabelRole, RefusesADelistingReturnsSignalRole) {
   EXPECT_NE(err.str().find(a.cfg.role_path), std::string::npos) << err.str();
   EXPECT_FALSE(std::filesystem::exists(out_dir));
 }
+
+// ---- v8 X (lane XCOMB): inv-vol-v1 (inverse-volatility desired target, capacity) ----
+namespace {
+// v61_book without the neutralization (and the locate-in-aim, which needs it): the desired target
+// is then the demeaned gross-1 row of the scaled ranks, checkable in closed form.
+st::NavReplayConfig plain_v5_book(f64 nav) {
+  auto c = v61_book(nav);
+  c.target.neutralize = st::TargetNeutralize::None;
+  c.locate_in_aim = false;
+  return c;
+}
+// The 70 x 12 market panel with name 0 barely moving (a daily volatility near 1e-7, below the
+// floor) and name 2 entering at row 15 (fewer than min_vol_pairs return pairs before row 35, so it
+// has no volatility of its own: filled).
+Panel vol_panel() {
+  auto p = market_panel(70, 12, 5, 2e5);
+  for (usize t = 0; t < p.d; ++t) {
+    const f64 level = 40.0 * (1.0 + 1e-7 * static_cast<f64>(t % 2));
+    p.close[p.k(t, 0)] = level;
+    p.raw[p.k(t, 0)] = level;
+  }
+  for (usize t = 0; t < 15; ++t) p.absent(t, 2);
+  return p;
+}
+// inv-vol-v1's desired target at decision d recomputed from its definition: the members' centred
+// tied ranks (distinct signals), each times median / max(s, .25 median) on `sigma` (a member
+// without a finite s > 0 takes the median), demeaned and scaled to gross 1, over the members in
+// ascending signal order (the replay's).
+std::vector<f64> scaled_desired(const Panel& p, usize d, const std::vector<f64>& sigma) {
+  std::vector<std::pair<f64, usize>> row;
+  for (usize i = 0; i < p.n; ++i)
+    if (p.member[p.k(d, i)]) row.emplace_back(p.signal[p.k(d, i)], i);
+  std::sort(row.begin(), row.end());
+  const auto usable = [&sigma](usize i) { return std::isfinite(sigma[i]) && sigma[i] > 0; };
+  std::vector<f64> found;
+  for (const auto& v : row)
+    if (usable(v.second)) found.push_back(sigma[v.second]);
+  std::sort(found.begin(), found.end());
+  const usize m = found.size(), mid = m / 2;
+  f64 median = missing;
+  if (m % 2U == 1U) median = found[mid];
+  else if (m > 0) median = (found[mid - 1] + found[mid]) / 2.0;
+  std::vector<f64> out(p.n, 0.0);
+  const usize count = row.size();
+  for (usize k = 0; k < count; ++k) {
+    const usize i = row[k].second;
+    const f64 rank = (static_cast<f64>(k) + static_cast<f64>(k)) /
+                     (2.0 * static_cast<f64>(count - 1)) - 0.5;
+    const f64 s = usable(i) ? std::max(sigma[i], 0.25 * median) : median;
+    out[i] = m == 0 ? rank : rank * (median / s);
+  }
+  f64 sum = 0;
+  for (const auto& v : row) sum += out[v.second];
+  const f64 mean = sum / static_cast<f64>(count);
+  f64 gross = 0;
+  for (const auto& v : row) {
+    out[v.second] -= mean;
+    gross += std::abs(out[v.second]);
+  }
+  for (const auto& v : row) out[v.second] /= gross;
+  return out;
+}
+} // namespace
+
+// inv-vol-v1 at the library level (nav_decide, the replay's own DECIDE): on decisions with
+// volatility history the shared desired target is the demeaned gross-1 row of rank x median /
+// max(s, .25 median), s the execution volatility of the fill session (the sigma nav_decide reports
+// for row d + 1), with name 0 floored (multiplier 4) and name 2 filled; the rule moves the
+// target. On row 10 no name has min_vol_pairs pairs: the ranks are left as they are, the target
+// is the one without the rule bit for bit.
+TEST(InvVol, DesiredIsTheScaledRankOfTheFillSessionVolatility) {
+  const auto p = vol_panel();
+  const Fields f(p, 9);
+  const st::NavReplayInput in{p.target(), p.volume, f.view()};
+  const auto off = plain_v5_book(1e7);
+  auto on = off;
+  on.target.inv_vol = true;
+  const std::vector<f64> flat(p.n, 0.0);
+  for (const usize d : {usize{20}, usize{25}, usize{30}}) {
+    const auto dec = st::detail::nav_decide(in, on, d, flat, 1e7);
+    const auto plain = st::detail::nav_decide(in, off, d, flat, 1e7);
+    const auto next = st::detail::nav_decide(in, off, d + 1, flat, 1e7);
+    ASSERT_TRUE(dec) << d << ": " << dec.error().to_string();
+    ASSERT_TRUE(plain) << d << ": " << plain.error().to_string();
+    ASSERT_TRUE(next) << d << ": " << next.error().to_string();
+    ASSERT_TRUE(dec->rebalance) << d;
+    for (usize i = 0; i < p.n; ++i) ASSERT_EQ(p.member[p.k(d, i)], p.member[p.k(d + 1, i)]) << d;
+    const auto expected = scaled_desired(p, d, next->sigma);
+    f64 moved = 0;
+    for (usize i = 0; i < p.n; ++i) {
+      EXPECT_NEAR(dec->desired[i], expected[i], 1e-15) << d << ' ' << i;
+      moved = std::max(moved, std::abs(dec->desired[i] - plain->desired[i]));
+    }
+    EXPECT_GT(moved, 1e-3) << d;
+    const auto& c = dec->construction;
+    EXPECT_EQ(c.inv_vol_scaled, dec->members) << d;
+    EXPECT_EQ(c.inv_vol_filled, 1U) << d;  // name 2
+    EXPECT_EQ(c.inv_vol_floored, 1U) << d; // name 0
+    EXPECT_EQ(c.inv_vol_max_multiplier, 4.0) << d;
+    EXPECT_TRUE(std::isfinite(c.inv_vol_median)) << d;
+  }
+  const auto early = st::detail::nav_decide(in, on, 10, flat, 1e7);
+  const auto early_off = st::detail::nav_decide(in, off, 10, flat, 1e7);
+  ASSERT_TRUE(early) << early.error().to_string();
+  ASSERT_TRUE(early_off) << early_off.error().to_string();
+  for (usize i = 0; i < p.n; ++i)
+    EXPECT_EQ(bits(early->desired[i]), bits(early_off->desired[i])) << i;
+  EXPECT_TRUE(std::isnan(early->construction.inv_vol_median));
+  EXPECT_EQ(early->construction.inv_vol_scaled, 0U);
+}
+
+// Every name's price is a power-of-two multiple of one path, so every return series, hence every
+// execution volatility, is the same bit for bit: each rank is multiplied by exactly 1 and the
+// replay with inv-vol-v1 is the replay without it bit for bit (NAV, fills, costs, plans), while
+// the kernel ran on every decision with history.
+TEST(InvVol, EqualVolatilitiesReplayTheBookBitForBit) {
+  Panel p(70, 12);
+  Lcg g{31};
+  f64 level = 50;
+  for (usize t = 0; t < p.d; ++t) {
+    if (t) level *= 1 + 0.02 * (g.next() - 0.5);
+    for (usize i = 0; i < p.n; ++i) {
+      const f64 close = level * static_cast<f64>(1U << (i % 4));
+      p.close[p.k(t, i)] = close;
+      p.raw[p.k(t, i)] = close;
+      p.volume[p.k(t, i)] = 2e5 * (0.5 + g.next());
+      p.signal[p.k(t, i)] = g.next() - 0.5;
+    }
+  }
+  const Fields f(p, 9);
+  const st::NavReplayInput in{p.target(), p.volume, f.view()};
+  const auto off = plain_v5_book(1e7);
+  auto on = off;
+  on.target.inv_vol = true;
+  const std::array<st::NavScenario, 1> one{off.scenario};
+  const auto a = st::replay_nav_scenarios(in, off, one);
+  const auto b = st::replay_nav_scenarios(in, on, one);
+  ASSERT_TRUE(a) << a.error().to_string();
+  ASSERT_TRUE(b) << b.error().to_string();
+  const auto& x = a->front().days;
+  const auto& y = b->front().days;
+  ASSERT_EQ(x.size(), y.size());
+  usize scaled = 0;
+  for (usize t = 0; t < x.size(); ++t) {
+    EXPECT_EQ(bits(x[t].pretrade_nav), bits(y[t].pretrade_nav)) << t;
+    EXPECT_EQ(bits(x[t].posttrade_nav), bits(y[t].posttrade_nav)) << t;
+    EXPECT_EQ(bits(x[t].traded_dollars), bits(y[t].traded_dollars)) << t;
+    EXPECT_EQ(bits(x[t].trade_cost_dollars), bits(y[t].trade_cost_dollars)) << t;
+    EXPECT_EQ(bits(x[t].planned_gross), bits(y[t].planned_gross)) << t;
+    EXPECT_EQ(bits(x[t].planned_net), bits(y[t].planned_net)) << t;
+    EXPECT_EQ(bits(x[t].net_return), bits(y[t].net_return)) << t;
+    const auto& c = y[t].construction;
+    scaled += c.inv_vol_scaled;
+    if (c.inv_vol_scaled) {
+      EXPECT_EQ(c.inv_vol_max_multiplier, 1.0) << t;
+    }
+  }
+  EXPECT_GT(scaled, 0U);
+}
+
+// The nav CLI: --vol-scale inv-vol-v1 adds the rule id suffix, the recipe keys (vol_scale, its
+// floor fraction and its declaration) and the summary block construction.vol_scale, in the main
+// pass and in every --capacity-curve book (the v7 parser passes the flag through); the run
+// without the flag carries none of them, and the daily CSV header is the same. The decide path is
+// out of scope: a deploy manifest has no vol_scale key, so the recomputed recipe never matches a
+// run with the rule (refused as a recipe pin mismatch; the control verifies).
+TEST(InvVol, NavRunRecordsTheRuleInBothPassesAndDecideRefusesIt) {
+  PinBench bench;
+  const auto plain = bench.nav_recipe("plain", {});
+  const auto root = bench.dir.path / "curve";
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, root,
+                             {"--vol-scale", "inv-vol-v1", "--capacity-curve"}), out, err), 0)
+      << err.str();
+  const auto base = read_json(bench.dir.path / "plain" / "recipe.json");
+  EXPECT_FALSE(base.contains("vol_scale"));
+  EXPECT_FALSE(base.contains("vol_scale_rule"));
+  EXPECT_EQ(base.at("rule").get<std::string>().find("inv-vol"), std::string::npos);
+  const std::array<std::filesystem::path, 2> passes{root, root / "capacity"};
+  for (const auto& dir : passes) {
+    const auto recipe = read_json(dir / "recipe.json");
+    EXPECT_EQ(recipe.at("vol_scale"), "inv-vol-v1") << dir;
+    EXPECT_EQ(recipe.at("vol_scale_floor_fraction"), 0.25) << dir;
+    EXPECT_NE(recipe.at("vol_scale_rule").get<std::string>().find("median"), std::string::npos)
+        << dir;
+    EXPECT_NE(recipe.at("rule").get<std::string>().find("+inv-vol-v1"), std::string::npos)
+        << dir;
+    const auto summary = read_json(dir / "summary.json");
+    ASSERT_FALSE(summary.at("scenarios").empty()) << dir;
+    for (const auto& s : summary.at("scenarios")) {
+      const auto& scale = s.at("construction").at("vol_scale");
+      EXPECT_EQ(scale.at("id"), "inv-vol-v1") << dir;
+      EXPECT_EQ(scale.at("floor_fraction"), 0.25) << dir;
+      EXPECT_GT(scale.at("scaled_decisions").get<usize>(), 0U) << dir;
+    }
+  }
+  EXPECT_EQ(read_json(root / "capacity" / "summary.json").at("scenarios").size(),
+            st::cost_v2::capacity_multiples.size());
+  usize headers = 0;
+  for (const auto& e : std::filesystem::directory_iterator(bench.dir.path / "plain")) {
+    const auto name = e.path().filename().string();
+    if (name.rfind("daily_", 0) != 0) continue;
+    ASSERT_TRUE(std::filesystem::exists(root / name)) << name;
+    EXPECT_EQ(lines(e.path()).front(), lines(root / name).front()) << name;
+    ++headers;
+  }
+  EXPECT_GT(headers, 0U);
+  const auto scaled = read_json(root / "summary.json").at("recipe_sha256").get<std::string>();
+  EXPECT_NE(scaled, plain);
+  EXPECT_EQ(outcome_text(bench.decide(plain, [](Json&) {})), "verified");
+  EXPECT_TRUE(recipe_mismatch(bench.decide(scaled, [](Json&) {})));
+  std::ostringstream help, quiet;
+  ASSERT_EQ(nav_cli({"nav", "--help"}, help, quiet), 0);
+  EXPECT_NE(help.str().find("[--vol-scale inv-vol-v1"), std::string::npos);
+}
+
+// inv-vol-v1 is a NAV replay option on aim-partial-v5 without the hold band: the target replay
+// refuses it (and its CLI has no such flag); baseline-v1, and the hold band beside it, are refused
+// by the NAV replay and decide (the target replay refuses baseline-v1 the same way); form_desired
+// refuses it without the NAV replay's volatility row; the nav CLI refuses another value (usage) and
+// the hold band (exit 1) before its output exists; spo-v1 refuses the flag. The configurations
+// without the rule run (the controls), so each refusal is the rule's.
+TEST(InvVol, RefusedOutsideItsDomain) {
+  const CapBench bench;
+  const auto in = bench.input();
+  const std::array<st::NavScenario, 1> one{v61_book(1e7).scenario};
+  const auto text = [](const auto& r) {
+    return r ? std::string("accepted") : r.error().to_string();
+  };
+  const std::string domain = "vol_scale inv-vol-v1 needs aim-partial-v5 and no hold_band";
+  auto v5 = v61_book(1e7).target;
+  EXPECT_EQ(text(st::replay_targets(in.target, v5)), "accepted");
+  v5.inv_vol = true;
+  EXPECT_NE(text(st::replay_targets(in.target, v5)).find("is a NAV replay option"),
+            std::string::npos);
+  st::TargetReplayConfig baseline;
+  baseline.inv_vol = true;
+  EXPECT_NE(text(st::replay_targets(in.target, baseline)).find(domain), std::string::npos);
+  auto nav_baseline = v61_book(1e7);
+  nav_baseline.target.rule = st::TargetReplayRule::BaselineTargetV1;
+  nav_baseline.target.dust_multiple = 0;
+  nav_baseline.target.aim_leverage = 1;
+  nav_baseline.target.exit_rate = 1;
+  EXPECT_EQ(text(st::replay_nav_scenarios(in, nav_baseline, one)), "accepted");
+  nav_baseline.target.inv_vol = true;
+  EXPECT_NE(text(st::replay_nav_scenarios(in, nav_baseline, one)).find(domain),
+            std::string::npos);
+  auto held = v61_book(1e7);
+  held.target.hold_band = 0.1;
+  EXPECT_EQ(text(st::replay_nav_scenarios(in, held, one)), "accepted");
+  held.target.inv_vol = true;
+  EXPECT_NE(text(st::replay_nav_scenarios(in, held, one)).find(domain), std::string::npos);
+  const std::vector<f64> flat(bench.panel.n, 0.0);
+  EXPECT_NE(text(st::detail::nav_decide(in, held, 40, flat, 1e7)).find(domain),
+            std::string::npos);
+  auto on = v61_book(1e7).target;
+  on.inv_vol = true;
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(bench.panel.n);
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay record;
+  st::detail::DesiredState state; // no sigma row
+  const std::string row_missing = "needs the NAV replay's volatility row";
+  EXPECT_NE(text(st::detail::form_desired(in.target, on, 40, row, desired, scratch, record, {},
+                                          &state)).find(row_missing), std::string::npos);
+  EXPECT_NE(text(st::detail::form_desired(in.target, on, 40, row, desired, scratch, record))
+                .find(row_missing), std::string::npos);
+  std::ostringstream out, err;
+  std::vector<std::string> targets{"targets", "--vol-scale", "inv-vol-v1"};
+  std::vector<char*> argv;
+  for (auto& arg : targets) argv.push_back(arg.data());
+  EXPECT_EQ(st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err), 2);
+  EXPECT_NE(err.str().find("unknown flag: --vol-scale"), std::string::npos) << err.str();
+  PinBench pins;
+  const auto other = pins.dir.path / "other";
+  std::ostringstream nav_out, nav_err;
+  EXPECT_EQ(nav_cli(nav_args(pins.artifact, other, {"--vol-scale", "inv-vol-v2"}), nav_out,
+                    nav_err), 2);
+  EXPECT_NE(nav_err.str().find("unknown --vol-scale (inv-vol-v1)"), std::string::npos)
+      << nav_err.str();
+  EXPECT_FALSE(std::filesystem::exists(other));
+  const auto banded = pins.dir.path / "banded";
+  std::ostringstream band_out, band_err;
+  EXPECT_EQ(nav_cli(nav_args(pins.artifact, banded,
+                             {"--vol-scale", "inv-vol-v1", "--hold-band", ".1"}), band_out,
+                    band_err), 1);
+  EXPECT_NE(band_err.str().find(domain), std::string::npos) << band_err.str();
+  EXPECT_FALSE(std::filesystem::exists(banded));
+  std::ostringstream spo_out, spo_err;
+  EXPECT_EQ(nav_cli({"nav", "--rule", "spo-v1", "--vol-scale", "inv-vol-v1", "--output",
+                     (pins.dir.path / "spo").string()}, spo_out, spo_err), 2);
+  EXPECT_NE(spo_err.str().find("--vol-scale needs --rule spo-v3"), std::string::npos)
+      << spo_err.str();
+}

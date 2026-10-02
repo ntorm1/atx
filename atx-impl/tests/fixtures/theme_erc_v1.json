@@ -1,0 +1,28 @@
+{
+  "description": "Shared fixture of composition rule theme-erc-v1 (platform v8 X, lane XCOMB): read by atx-impl/tests/strategy_ic_theme_erc_test.cpp (ThemeErcV1.SharedFixtureFractions) and atx-impl/tools/test_composition_theme_erc.py (test_shared_fixture_fractions). Three themes; the covariance (recorded in the order quality, value, momentum, unlike the members' first appearance value, momentum, quality) is built so that the equal risk contribution shares are exactly value 1/2, momentum 1/3, quality 1/6: with b = (1/2, 1/3, 1/6) over (value, momentum, quality) and off-diagonals 1, -1, 2, the diagonal solves b_t (C b)_t = 1 (11/3, 13/2, 35). Weights before the cap a_k * b_t; the cap 1/(2T) = 1/6 binds on value_a (1/5): its excess 1/30 goes to the momentum and quality members pro rata (x 16/15), one pass. Numbers are [numerator, denominator] pairs.",
+  "sweeps": 10000,
+  "dispersion": 1e-10,
+  "covariance": {
+    "themes": ["quality", "value", "momentum"],
+    "matrix": [
+      [[35, 1], [-1, 1], [2, 1]],
+      [[-1, 1], [11, 3], [1, 1]],
+      [[2, 1], [1, 1], [13, 2]]
+    ]
+  },
+  "theme_shares": {"quality": [1, 6], "value": [1, 2], "momentum": [1, 3]},
+  "members": [
+    {"id": "value_a", "theme": "value", "share": [2, 5], "weight_before_cap": [1, 5], "weight": [1, 6]},
+    {"id": "momentum_a", "theme": "momentum", "share": [2, 5], "weight_before_cap": [2, 15], "weight": [32, 225]},
+    {"id": "quality_a", "theme": "quality", "share": [1, 2], "weight_before_cap": [1, 12], "weight": [4, 45]},
+    {"id": "value_b", "theme": "value", "share": [1, 5], "weight_before_cap": [1, 10], "weight": [1, 10]},
+    {"id": "momentum_b", "theme": "momentum", "share": [3, 10], "weight_before_cap": [1, 10], "weight": [8, 75]},
+    {"id": "quality_b", "theme": "quality", "share": [1, 2], "weight_before_cap": [1, 12], "weight": [4, 45]},
+    {"id": "value_c", "theme": "value", "share": [1, 5], "weight_before_cap": [1, 10], "weight": [1, 10]},
+    {"id": "momentum_c", "theme": "momentum", "share": [3, 10], "weight_before_cap": [1, 10], "weight": [8, 75]},
+    {"id": "value_d", "theme": "value", "share": [1, 5], "weight_before_cap": [1, 10], "weight": [1, 10]}
+  ],
+  "cap": [1, 6],
+  "cap_passes": 1,
+  "capped": ["value_a"]
+}

@@ -25,6 +25,7 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/book/inverse_vol.hpp"     // v8 X (lane XCOMB): inv-vol-v1's kernel
 #include "atx/engine/data/research_window.hpp" // v8 E-25: the seal a label role may not reach
 #include "atx/engine/data/strategy_data.hpp"   // review B-3: --role is never a delisting-returns role
 
@@ -145,6 +146,11 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "target replay: adv_hold_q must be finite >= 0 (0 = off) and needs "
                    "aim-partial-v5");
+  // inv-vol-v1 (v8 X): aim-partial-v5 only, and not with the hold band (both act between the
+  // tied ranks and the demean, so their order would be a new rule).
+  if (inv_vol_on(cfg) && (!aim_partial(cfg) || hold_band_on(cfg)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: vol_scale inv-vol-v1 needs aim-partial-v5 and no hold_band");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
@@ -160,9 +166,11 @@ u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64) + groups;
 }
 // The v8 construction state per name (detail::DesiredState): hold-band-v1's rank_set and
-// desired_prev, adv-hold-v1's ADV row and caps. Zero with every v8 option off.
+// desired_prev, adv-hold-v1's ADV row and caps, inv-vol-v1's volatility row and its sorted
+// scratch. Zero with every v8 option off.
 u64 desired_state_bytes(const TargetReplayConfig& cfg, usize instruments) {
-  const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U);
+  const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U) +
+                       (inv_vol_on(cfg) ? 2U : 0U);
   return u64{instruments} * per_name * sizeof(f64);
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
@@ -253,6 +261,25 @@ co::Status held_desired(std::span<const f64> signal, std::span<const u8> member,
   ATX_TRY(const auto counts, eb::apply_hold_band(desired, desired, member, band, state->hold));
   out.hold_moved = counts.moved; out.hold_kept = counts.kept;
   out.hold_first_set = counts.first_set;
+  demean_gross_one(row, desired);
+  return co::Ok();
+}
+// inv-vol-v1 (TargetReplayConfig::inv_vol): the tied ranks, each member's rank times median /
+// max(s_i, inv_vol_floor_fraction x median) on the NAV replay's execution volatilities
+// (state->sigma, engine::book::scale_inverse_vol), then the unchanged demean and gross 1. The
+// kernel's record goes to `out`.
+co::Status vol_scaled_desired(std::span<const f64> signal, std::span<const u8> member,
+                              detail::DesiredState* state, std::vector<Ranked>& row,
+                              std::vector<f64>& desired, ConstructionDay& out) {
+  if (!state || state->sigma.size() != signal.size())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: vol_scale inv-vol-v1 needs the NAV replay's volatility row");
+  member_ranks(signal, member, row, desired);
+  ATX_TRY(const auto stats, eb::scale_inverse_vol(desired, state->sigma, member,
+                                                  inv_vol_floor_fraction, state->sigma_sorted));
+  out.inv_vol_scaled = stats.scaled; out.inv_vol_filled = stats.filled;
+  out.inv_vol_floored = stats.floored; out.inv_vol_median = stats.median;
+  out.inv_vol_max_multiplier = stats.max_multiplier;
   demean_gross_one(row, desired);
   return co::Ok();
 }
@@ -448,7 +475,8 @@ co::Result<bool> finish_desired(const TargetReplayConfig& cfg, detail::DesiredSt
 }
 // v8 hold-band-v1: the band acts on the members' tied ranks inside the desired target (between
 // the ranks and the demean), on `state`; adv-hold-v1 caps the result of a rebalance that
-// proceeds (finish_desired). Both off, the construction is the pre-v8 one.
+// proceeds (finish_desired). Both off, the construction is the pre-v8 one. v8 X inv-vol-v1
+// scales the tied ranks at the band's seam (the two are never on together).
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                               usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
                               PriceRiskScratch& scratch, ConstructionDay& out,
@@ -461,6 +489,9 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   if (hold_band_on(cfg)) {
     ATX_TRY_VOID(held_desired(in.signal.subspan(offset, n), member, *cfg.hold_band, state, row,
                               desired, out));
+  } else if (inv_vol_on(cfg)) { // v8 X inv-vol-v1 (validate_config: never with the hold band)
+    ATX_TRY_VOID(vol_scaled_desired(in.signal.subspan(offset, n), member, state, row, desired,
+                                    out));
   } else {
     desired_target(in.signal.subspan(offset, n), member, row, desired);
   }
@@ -549,6 +580,11 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
     if (adv_hold_on(cfg))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: adv_hold_q is a NAV replay option (ADV and NAV)");
+    // inv-vol-v1 reads the execution volatility of the NAV replay's liquidity window (v8 X).
+    if (inv_vol_on(cfg))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: vol_scale inv-vol-v1 is a NAV replay option (the execution "
+                     "volatility)");
     std::vector<f64> current(in.instruments), desired(in.instruments);
     std::vector<Ranked> row; row.reserve(in.instruments);
     PriceRiskScratch price; // grows only when neutralizing
@@ -974,6 +1010,7 @@ std::string rule_id(const TargetReplayConfig& c) {
   if (c.band_multiple > 0) id += "+band-" + decimal(c.band_multiple);
   if (hold_band_declared(c)) id += "+hold-band-" + decimal(*c.hold_band);
   if (adv_hold_on(c)) id += "+adv-hold-" + decimal(c.adv_hold_q);
+  if (inv_vol_on(c)) id += "+inv-vol-v1"; // v8 X (lane XCOMB)
   return id;
 }
 const char* outcome_label(NeutralizeOutcome outcome) {
@@ -1023,6 +1060,17 @@ constexpr const char* adv_hold_rule_declaration =
     "E-15: the cap uses the run's initial NAV for every capacity book, so the capacity book at "
     "multiple m holds up to m x adv_hold_q of ADV (the initial-NAV rule stressed at NAV x m, "
     "not a cap set per multiple)";
+constexpr const char* inv_vol_rule_declaration =
+    "inv-vol-v1 (v8 X, lane XCOMB, capacity): on every rebalance decision each member's centred "
+    "tied rank r_i is multiplied by m_i = median / max(s_i, vol_scale_floor_fraction * median) "
+    "before the demean; s_i = the sample SD of the adjacent present, unguarded adjusted simple "
+    "returns the execution cost model reads for this decision's fills (session d + 1: rows "
+    "[d + 1 - w, d + 1), w = liquidity_window, at least min_vol_pairs pairs; rows <= d only); "
+    "median = the median of the members' finite s_i > 0 (the middle one, or the mean of the two "
+    "middle ones); a member without one takes s_i = median (m = 1); with no member having one "
+    "the ranks stay as they are; then the unchanged demean, gross 1, locate zeroing, "
+    "neutralization and ADV cap. Book-independent: every scenario and capacity book holds the "
+    "same scaled target (summary construction.vol_scale)";
 // The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
 // default text byte for byte) or, below 1, a pointer to exit_rate_rule.
 const char* nonmember_exit(const TargetReplayConfig& c) {
@@ -1092,6 +1140,11 @@ Json construction_recipe(const TargetReplayConfig& c) {
   if (adv_hold_on(c)) { // v8 R-5; absent at Q = 0 (off)
     j["adv_hold_q"] = c.adv_hold_q;
     j["adv_hold_rule"] = adv_hold_rule_declaration;
+  }
+  if (inv_vol_on(c)) { // v8 X (lane XCOMB); absent when off
+    j["vol_scale"] = "inv-vol-v1";
+    j["vol_scale_floor_fraction"] = inv_vol_floor_fraction;
+    j["vol_scale_rule"] = inv_vol_rule_declaration;
   }
   return j;
 }
@@ -1183,6 +1236,36 @@ Json adv_hold_summary(const TargetReplayConfig& c, std::span<const ConstructionD
                            {"names_max", over_max}, {"mass_mean", mean(residual)},
                            {"mass_max", residual_max}, {"excess_max", excess_max}}}};
 }
+// inv-vol-v1 (v8 X) over the decisions the kernel ran on: decisions scaled and decisions without
+// a usable volatility (ranks left as they are), the members scaled, filled (no volatility: m = 1)
+// and floored (m = 1 / floor fraction), the spread of the decisions' median volatility and the
+// largest multiplier.
+Json inv_vol_summary(std::span<const ConstructionDay> decisions) {
+  usize scaled_days = 0, bare_days = 0, scaled = 0, filled = 0, floored = 0;
+  f64 multiplier_max = 0;
+  std::vector<f64> medians;
+  for (const auto& d : decisions) {
+    if (std::isnan(d.inv_vol_median)) { ++bare_days; continue; }
+    if (!d.inv_vol_scaled) continue;
+    ++scaled_days; scaled += d.inv_vol_scaled; filled += d.inv_vol_filled;
+    floored += d.inv_vol_floored; medians.push_back(d.inv_vol_median);
+    multiplier_max = std::max(multiplier_max, d.inv_vol_max_multiplier);
+  }
+  std::sort(medians.begin(), medians.end());
+  const auto share = [scaled](usize count) {
+    return scaled ? Json(static_cast<f64>(count) / static_cast<f64>(scaled)) : Json(nullptr);
+  };
+  const Json lowest = medians.empty() ? Json(nullptr) : Json(medians.front());
+  const Json highest = medians.empty() ? Json(nullptr) : Json(medians.back());
+  return Json{{"id", "inv-vol-v1"}, {"rule", "recipe vol_scale_rule"},
+      {"floor_fraction", inv_vol_floor_fraction}, {"scaled_decisions", scaled_days},
+      {"decisions_without_volatility", bare_days}, {"scaled_names_total", scaled},
+      {"filled_names_total", filled}, {"floored_names_total", floored},
+      {"filled_share", share(filled)}, {"floored_share", share(floored)},
+      {"median_volatility", {{"min", lowest}, {"median", finite_or_null(quantile(medians, .5))},
+                             {"max", highest}}},
+      {"max_multiplier", multiplier_max}};
+}
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
   usize too_few = 0, excluded = 0, refused = 0, amplified = 0;
@@ -1233,6 +1316,7 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
     body["neutralize_industry"] = industry_summary(decisions);
   if (hold_band_declared(c)) body["hold_band"] = hold_band_summary(c, decisions);
   if (adv_hold_on(c)) body["adv_hold"] = adv_hold_summary(c, decisions);
+  if (inv_vol_on(c)) body["vol_scale"] = inv_vol_summary(decisions);
   return Json{{"construction", std::move(body)}};
 }
 // The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows

@@ -425,7 +425,7 @@ public:
 // bit-identical to replay_nav_scenarios(in, variants[v], scenarios)[k]. The variants may
 // differ only in the target construction keys of nav_grid_variant_flags (rule, cadence,
 // trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage, exit_rate);
-// any other difference (the v8 hold_band and adv_hold_q included) is InvalidArgument, and
+// any other difference (the v8 hold_band, adv_hold_q and inv_vol included) is InvalidArgument, and
 // with a hold band every variant has the base's cadence (the band's state advances on the
 // shared cadence decisions). With adv_hold_q > 0 the cap Q ADV / (aim_leverage NAV) reads a
 // variant flag: the variants then run in one lockstep per distinct aim_leverage, each

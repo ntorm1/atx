@@ -75,6 +75,8 @@ NULL_PINS["lib-v81-gm.json"] = {"inputs.role", "inputs.label_role", "inputs.base
                                 "inputs.reference_admission", "inputs.reference_cell", "inputs.reference_combined",
                                 "inputs.reference_weights", "inputs.reference_daily", "inputs.reference_orientations",
                                 "inputs.reference_daily_ic"}
+NULL_PINS["x-theme-erc.json"] = CHILD_NULLS                 # v8 X (lane XCOMB): theme-erc-v1, planned on R-1
+NULL_PINS["x-inv-vol.json"] = CHILD_NULLS                   # v8 X (lane XCOMB): inv-vol-v1, planned on B0c
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
@@ -115,7 +117,10 @@ EXPECTED_CHANGES["r6-spo-v3-gm.json"] = EXPECTED_CHANGES["r6-spo-v3.json"] | {"n
 # Ruling PM7-21: R-9a / R-9b change theta (--trade-fraction) and are report-only ("verdict": false)
 EXPECTED_CHANGES["r9a.json"] = EXPECTED_CHANGES["r9b.json"] = {"nav.output", "nav.flags", "verdict"}
 THETA = {"r9a.json": ".03", "r9b.json": ".04"}
+EXPECTED_CHANGES["x-theme-erc.json"] = FIT_DOWN | {"fit.flags"}                          # v8 X (lane XCOMB)
+EXPECTED_CHANGES["x-inv-vol.json"] = {"nav.output", "nav.flags"}                          # v8 X (lane XCOMB)
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
+FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
 MISSING = object()
 
 
@@ -558,13 +563,14 @@ def check_registered_change(specs: Path, name: str) -> None:
                  # R-8: the registered constants spelled out; --capacity-curve (E-29) is already the parent's
                  "r8.json": pn + ["--risk-target", ".05", "--risk-target-bias", "1.15", "--risk-target-cadence", "21",
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
-                                  "<fill:nav.flags --risk-model-sha256>"]}
+                                  "<fill:nav.flags --risk-model-sha256>"],
+                 "x-inv-vol.json": pn + ["--vol-scale", "inv-vol-v1"]}                  # v8 X (lane XCOMB)
     nav_delta["r6-spo-v3-gm.json"] = nav_delta["r6-spo-v3.json"]              # PM6-6: R-6's change, its L apart
     for r9, theta in THETA.items():                                          # PM7-21: the parent's argv, theta set
         nav_delta[r9] = [theta if k and pn[k - 1] == "--trade-fraction" else x for k, x in enumerate(pn)]
     spo = ("r6-spo-v3.json", "r6-spo-v3-gm.json")
     assert cn == nav_delta.get(name, pn)
-    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json",) + spo   # E-29: the 4x report
+    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "x-inv-vol.json") + spo   # E-29: the 4x report
     comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"),
             "r1-comp-v8-gm.json": ("ew-theme-v1", "ew-theme-std-v1"),                     # PM6-6: R-1's change
             "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v2"),                       # E-27b
@@ -1308,3 +1314,47 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     assert not any((root / "build-equity" / r).exists() for r in stale)
     assert any(x.startswith("keep  build-equity/fit-work/fedcba9876543210-research-window-v1") and
                "(store base build-equity/fit-work named by " in x and "v8-b0a-lo1" in x for x in log), log
+
+
+def test_x_theme_erc_appends_its_flag_to_the_parents_fit(tmp_path, authored_v8):
+    """v8 X (lane XCOMB): theme-erc-v1 keeps the parent's composition (its within-theme shares) and adds the fitter flag
+    --theme-erc; the description registers the rule's constants, the gross matching and R-1's criterion; on an R-1
+    parent the w pass inherits Ruling E-28's 3,072 MiB."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((authored_v8 / "x-theme-erc.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "r1-comp-v8.json" and doc["parent"] is None and "requires" not in doc
+    for text in ("10000 sweeps", "1e-10", "1/(2T)", "PM6-6", "tau_gmv_mean / mean_gross_leverage_all_rows",
+                 "paired S2 net dSR > 0 against the parent AND mechanics"):
+        assert text in doc["description"], text
+    path = tmp_path / "x-theme-erc-on-r1.json"
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "r1-comp-v8.json"))), encoding="utf-8")
+    spec = RC.load_spec(path)
+    assert RC.option_value(spec["fit"]["flags"], "--composition") == "ew-theme-std-v1"
+    assert RC.option_value(spec["fit"]["flags"], "--theme-erc") == "theme-erc-v1"
+    required = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+    assert fcw.parse_args(required + ["--theme-erc", "theme-erc-v1"]).theme_erc == "theme-erc-v1"  # the fitter's flag
+    assert fcw.parse_args(required).theme_erc is None                                                # flag absent
+    root, spec = fake_root(tmp_path / "root", spec)
+    c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
+    assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
+
+
+def test_x_inv_vol_appends_its_flag_to_the_parents_nav(tmp_path, authored_v8):
+    """v8 X (lane XCOMB): inv-vol-v1 is a NAV-only change, nav --vol-scale inv-vol-v1 after the parent's flags (the
+    4x NAV report --capacity-curve is the parent's); the description registers the rule's constants, the gross
+    matching and the capacity criterion."""
+    doc = json.loads((authored_v8 / "x-inv-vol.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "base-b0c.json" and doc["parent"] is None and "requires" not in doc
+    for text in (".25 x median", "session d + 1", "PM6-6", "net Sharpe at 4x NAV", "cost_bps_traded",
+                 "paired S2 net dSR > 0 against the parent AND mechanics", "recipe pin mismatch"):
+        assert text in doc["description"], text
+    path = tmp_path / "x-inv-vol-on-b0c.json"
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "base-b0c.json"))), encoding="utf-8")
+    spec = RC.load_spec(path)
+    parent = RC.load_spec(authored_v8 / "base-b0c.json")
+    assert spec["nav"]["flags"] == parent["nav"]["flags"] + ["--vol-scale", "inv-vol-v1"]
+    assert "--capacity-curve" in spec["nav"]["flags"]
+    assert spec["fit"]["flags"] == parent["fit"]["flags"] and spec["fit"]["output"] == parent["fit"]["output"]
