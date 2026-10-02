@@ -1258,3 +1258,49 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   columns of all 48 candidates is the guard.
 - Dispatched: integrator W0-2c (root): cause test (i), (ii); then R14 (pins, protocol line, lock base-lo1 only,
   PM5-17).
+
+## 2026-10-01 Wave 0 closed (log "Wave 0 part 2c (cause test, R14)"; head f7c430f2); the re-base continues; rulings before the first read
+- PM5-16 / PM5-18 cause test: (i) PASS: 48 ids, 99,648 common cells, raw columns identical for all 48; oriented
+  column equal for 45 ids and exactly negated on every finite cell for the three named ids (6,223 cells); no
+  other id. (ii) BIT-IDENTICAL: the combined row rebuilt with the 3-year signs on the 4-year run (weights
+  6dc43268; 23.2 s, 667 MiB, 48 / 48 cache hits), 6,228 cells, max_abs_diff null. Outcome (a): the cause is
+  fully shown: no old value changed; three whole-window orientation signs differ. The W0-a stop is lifted;
+  the 4-year values are the reference; the v7 ledger continues. Disclosure: the weights script printed that 7
+  of 48 candidates had no 3-year orientation (a count, no ids).
+- R14: pins in v8-prereg.md (research_window 62cf2cfa, role lo1 2ff9d771, role lo3 e1c67101, fields v9 lo1
+  888e6616, lo3 9f156363, each re-hashed from disk). Protocol line ea824f555f4241cb, prev 00c901da, chain head
+  f7043d81...1196bcf8, validated; N 37. Lock base-lo1: spec 88031699...751f40bc (role, identity bridge f598c04c,
+  fund events 304d2945, fields 888e6616; library 787c802e and recipe 7f8a2643 unchanged). The lock pins no
+  executable and no tool script: the v8-12 receipt and the commit hold them; the freeze list (IC ab7e2cbd, NAV
+  5497c89d, cycle and tool scripts) is in the log. Disk 41.0 GiB. base-lo3 locks after B0a (PM5-17).
+- Open after the lock: scripts/tests 20 failed / 162 passed / 4 skipped, all 20 in test_research_spec.py: its
+  fixtures plan the live v8 specs on stand-in inputs and expect base-lo1's pins to be null.
+- MINE-JOIN round 1 done 3f35349f (pool 8): 19f6765e tests PromotionSignalsDoNotDependOnTheEngine (fresh engine
+  per program / per batch / one engine / reverse order, byte-equal panels) and RhoBatchingNeverChangesThePromotion
+  (test hook MineConfig::rho_batch, default 0 = unchanged path); a11cca3b member files opened with writers
+  denied at the bind (Windows, FILE_SHARE_READ, the atx-tsdb mapping idiom), hashed once, handle held to the
+  end of run_mine; rho passes read the discover rows only (about 1.96 GB a pass at mine-c1, was 3.6 GB plus a
+  hash); POSIX still re-verifies every pass. New files strategy_mine_pinned_file.{hpp,cpp}. Pytest 181 / 3
+  skipped. Uncompiled. Engine fact found by reading: the VM reuses its slot pool across calls and a reused
+  pool holds the previous program's values (vm.hpp:2154, :1157-1163; only a fresh pool is zero-filled,
+  panel.hpp:215), so evaluation is independent of history only if every op fully writes its destination slot;
+  the new test shows it for the fixture's templates, not for every op.
+- Ruling PM5-19 (lane ENG-SLOT, pool 8, on the same branch): an engine test poisons the reused slot pool and
+  requires, for every op of the catalogue, a result byte-equal to a fresh pool's; an op that fails is reported
+  with file:line and not patched in v8 -- mined-v1 and the determinism golden rest on evaluation not depending
+  on what ran before; the property is cheap to pin and is the engine's, not the miner's -- cost if wrong: one
+  lane's tokens.
+- Ruling PM5-20 (the 20 fixture failures; lane FIX-6, pool 10, tests only): the fixtures plan a copy of each
+  live spec with the filled pins reset, so they pass before and after any lock (base-lo3 included); no spec,
+  script or tool changes; merged at a cell-batch boundary -- the failures are a test premise (pins null), not a
+  defect of the lock; no executable, script or locked spec moves, so no cell is affected -- cost if wrong:
+  none (tests only).
+- Ruling PM5-21 (freeze list, declared at the first read): from the first cell to the V8-F freeze gate no
+  executable and no cycle or tool script on the log's freeze list changes; only test files, docs, the sprint
+  directory and specs of cells not yet run may be committed. A defect in a frozen file found by a cell is a
+  prereg rule 7 matter (PM ruling, blind fix, re-run of that cell only) -- the lock does not pin them, so the
+  rule must -- cost if wrong: a harmless fix waits for the gate.
+- Cell batches (one integrator at a time, task-CELLS-brief.md): 1a B0a, B0b (+ lock base-lo3); 1b B0c (R15 role,
+  diagnostics, Release A/B); 2 R-1..R-5 (fields v10 before R-2); 3 R-6..R-8 (risk model, fields v11); 4 the
+  E-38 / E-45 branch; then V8-F. Wave AG lanes merge at integration 8 after the gate.
+- Dispatched: cells batch 1a (root); FIX-6 (pool 10); ENG-SLOT (pool 8).
