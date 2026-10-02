@@ -1870,3 +1870,53 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   legacy DSR .765, effective-N .724 (N_eff 4), PSR vs 0 .993, PBO .359. **Freeze gate UNMET** (p and DSR); OD-3 is the
   named lever; no history read. H-2 not measured (needs an executable change: the IC runner fixes ResearchFast;
   PM5-21). Final book: net 4.54%, 4x net Sharpe 1.178, tau .02393, max drawdown 3.25%.
+- Integrator batch 2g dispatched in root (PM7-22 tests, R-8, R-9a / b, W0-4 re-runs, V8-F, H-2). Parked while it
+  holds root:
+- XDATA task GOLD delivered (pool 14: `9ffbce6c`, `3c0aee08`, `e3654b93`; `atx-engine/tools` 267 passed). The
+  gold and characteristics stages of atx-db are not built yet (the silver panel is still being written, no
+  manifest): nothing can be bound today. The sealed reader `research_fields_gold.py` exists (opt-in; pinned
+  manifest SHA; refuses label / forward / IC / holdout columns and the `g_*` / `c_*` features by name; seal
+  pushed into the parquet read), tested on synthetic data only. Candidates on panel columns: 0 (the panels
+  recompute sources v8 already reads; two ideas withdrawn at 0 trials).
+- Ruling PM7-23 (gold panels in X): no gold panel field enters X; the 10 spare hand-written admission trials
+  lapse (X hand-written strings stay 13). The `g_*` / `c_*` features stay refused: which of them exist was chosen
+  in atx-db with 2019-2021 forward returns (90 signals x 3 horizons x 2 variants), so binding one imports a
+  search that this ledger does not count -- deflated Sharpe -- cost if wrong: a mined feature with real alpha
+  waits for a v9 registration that counts the atx-db screen. For the owner (handoff 2): when the gold stages
+  publish; and that the 2024-2026 frozen evaluation planned in atx-db, if run on features X later binds, spends
+  the hidden block for them.
+- XCOMB delivered (pool 13: `30b719e0` theme-erc-v1, `068b4a4d` inv-vol-v1, `914f9944` report; Python fitter
+  suites 209 passed; C++ not compiled). Two rules, the third slot left unused by the lane (every candidate was a
+  rejected or measured rule). Templates `x-theme-erc.json`, `x-inv-vol.json`.
+- Ruling PM7-24 (X cell list, final, before any X measurement): X-2 refinement wave (5 strings); X-3 new-signal
+  wave (8 strings: XSIG 5, XDATA 3); X-4 value theme within FF49 (9 re-screens); X-5 `theme-erc-v1` (criterion as
+  registered by the lane: dSR > 0, mechanics, turnover per unit gross not above the parent's; plan section 13's
+  bar is lifted by name for this risk-only rule, PM7-14); X-6 `inv-vol-v1` (dSR > 0, mechanics, net Sharpe at 4x
+  NAV above the parent's, S2 cost per traded dollar below the parent's); X-9 the mined wave (PM7-2, PM7-12);
+  X-10 the leverage cell (PM7-11, PM7-17), last. Seven construction cells at most; X-1, X-7, X-8 are unused and
+  are not refilled. Order as numbered; parent = the last accepted cell; PM6-6 gross matching on every cell but
+  X-10. `theme-erc-v1` is undefined on a `theme-resid-v1` parent; no such parent exists (R-11 undefined) -- cost
+  if wrong: none measured.
+- Read-only planner delivered `task-INT8-brief.md` (folded in with this entry): none of the 7 lane heads is an
+  ancestor of the v8 head; 1 predicted conflict (`scripts/tests/test_research_spec.py`, XCOMB, resolve as the
+  union); 0 first-compile findings in the mining and XCOMB C++; 2 run-time findings with fixes named.
+- Batch 2g read by the PM. R-8 not accepted (N 48; dSR -.0111, p one-sided .583; realised volatility 2023 .0365
+  below .04; net annual 5.13% at gross 1.124 against 4.54% at .986). R-9a / R-9b report only (N 49, 50): x4 net
+  Sharpe 1.197 / 1.186 against R-2's 1.178. W0-4 re-runs done, N unchanged. V8-F: final book R-2; cumulative
+  against B0c dSR +.1232, SE .2088, p one-sided .278 (two-sided .567); deflated Sharpe at N 50 .465 (V 1.297e-03
+  per session, 21 window lines); the freeze gate is UNMET (p not below .10; DSR below .95). OD-3 named as the
+  lever, nothing read. H-2 not measured (needs an executable change).
+- Ruling PM7-25 (close of the registered v8 program): the program is closed at N 50 with book R-2. The gain
+  over B0c (S2 net Sharpe 1.133 -> 1.256, x4 .978 -> 1.178) is reported as not significant (p .278) and the
+  deflated Sharpe as .465; no claim beyond the registered mechanical facts is made. The gate has run, so the
+  PM5-21 freeze ends: integration 8 may change executables, under a new build tag, and R-2's NAV, fit and
+  w-pass outputs must reproduce byte for byte under the new build before any X measurement (else X has no
+  baseline). The X baseline is R-2. OD-3 (history 2013-2019) and any hidden-block read stay closed: owner
+  decisions, listed in handoff 2. H-2 is measured in integration 8 if the AuditExact selection is a small
+  flag-gated change -- cost if wrong: none; the unmet gate is stated in every report.
+- Ruling PM7-26 (X against an unmet gate): X runs as registered (`v8x-prereg.md`, PM7-6..24). Its adoption gate
+  (DSR_tot >= .95 and p < .10 against R-2) is far from the present .465 and each X trial raises the bar; the PM
+  expects it to stay unmet unless the Sharpe gain is large, and says so here before any X number exists. X
+  cells are still accepted or rejected one by one on their registered rule, and the X report prints the
+  accepted X book beside R-2 with DSR_tot, DSR_hand and the v8-count value -- the owner asked for real progress
+  on alpha; a measured, counted result is that progress whether or not the gate is met -- cost if wrong: none.
