@@ -4475,5 +4475,25 @@ argv equals the calibration's except `--aim-leverage 1.0996` and `--output`; sum
 suite knows the hand-written spec (as R-1-gm / R-3-gm): `test_research_spec.py` `NULL_PINS`, `FILLS` (the store),
 `EXPECTED_CHANGES` (r6's | nav.leverage), the nav delta and the spo-rule name check take `r6-spo-v3-gm.json`;
 `scripts/tests` **194 passed, 3 skipped, 0 failed** (109.0 s). The calibration run is not a trial and is not ledgered;
-its outputs stay unread beyond the keys above.
+its outputs stay unread beyond the keys above. Commit `3f1f63dc`.
+
+**The cell: r6-spo-v3-gm.json's NAV at L 1.0996** (`run --stop-after nav`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.0996, the cell) | 180 / 1,536 | 124.8 | 593 | 0 | `4b07df9ae8f97f26e9ff6d4ce585a60c34f004a464f1336c3d305da62bcc3535` | `build-equity/mega-nav-v8-r6-spo-v3-L1.0996` |
+
+Receipt: completed, `clean in the code pathspec`, source `3f1f63dc`, NAV exe `5497c89d`. Exit 0: **not void**. Read
+before any return (same keys):
+- **Tripwire: status `clear`; `limits_unmet_primary.count` 0**; capped_specific 0; gross_bound_breaches 0 (bound
+  2.1992); max planned gross 1.0461.
+- **Convergence (S2 book): 1,004 decisions, unconverged 0, limits_unmet 0, mean iterations 81.8**; max primal 3.7e-11,
+  dual 1.0e-9. S1: 1,004 / 0 / 0 / 81.6. gamma 871.83 = 20 / sigma_aim .022940 (aim gross 1.0425, 1,888 names).
+- **E-14 / E-14a (S2): aim_correlation_traded_after mean .9601** (min .914, n 1,003) >= .9; planned .9669; TE mean
+  .0048; trade-limit share .034.
+- **Gross match: G 0.9862950362 vs G_parent .9859903463: |diff| .00030 <= .005** (one correction).
+- **Mechanics (S2): PASS.** All-rows gross .9863 in [.90, 1.05] (post-ramp .9914); net +.0006; tau mean .06304 <= .20,
+  p95 .09721 <= .30 (1,004 sessions; summary flags true); max gross 1.074, max |net| .021; score_begin .901; by year
+  .980 / .993 / .998 / .974; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows; accounting 4.7e-14 / 3.5e-16.
+  (Executed turnover is 2.6 x R-2's .0239: not a criterion of this cell; reported.)
 
