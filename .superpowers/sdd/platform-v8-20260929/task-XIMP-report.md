@@ -164,3 +164,166 @@ the deviations the registry discloses. "Disclosed" items are registry deviations
 - N-4. `iv_atm_21d` is the vendor's earnings-cleaned IV (`prepare_research_fields.py:209-215`; the uncleaned twin
   `atmCenH_*` is excluded, `:283-286`), while the RV leg of `iv_rv_spread` is not cleaned. The string computes its
   registered formula, so this is a refinement (B-1), not a defect.
+
+## B. Refinements (4; each replaces one member, one frozen string, 1 admission trial each)
+
+### B.0 Selection rule (stated without outcomes)
+
+A member is eligible when (i) its own registry note records that the canonical form was blocked by a constraint that has
+since been lifted, (ii) a ruling named the refinement as "a separate later trial", (iii) a field caveat makes the
+string's two legs measure different things, or (iv) a published news / no-news result says the member's bet reverses on
+names where another roster theme holds the opposite side. Eligible: bac (i, the W2 `bucket` op), smax (i, but its
+canonical form `smax5` is already a member: N-2), ins_opp (ii, Ruling W2-c), inst_best_ideas (ii, W2-c), iv_rv_spread
+(iii, N-4), ind_adj_rev_5 (iv). Blocks that still hold (no refinement possible from fields in house): res_mom_12_1 and
+res_mom_ind (36-month FF3 betas > 314 bars), nincr (8 quarters > 314), seasonality (multi-lag, also plan section 13),
+cbop and opex_at (no COGS / SG&A / working-capital fields), roa (no one-quarter-lagged assets), q5_eg's q with debt and
+value_composite with EBIT/EV (field budget; low marginal value, see B.5). Ranked by prior below; inst_best_ideas dropped
+(B.5). Tier, theme and roster position are the replaced member's; `--replaces` keeps the roster size.
+
+| # | new id (replaces) | bars | slots | nodes | extra fields | bytes | sha256 (16) | trial |
+|---|---|---|---|---|---|---|---|---|
+| B-1 | iv_rv_spread_xe (iv_rv_spread) | 21 | 7 | 31 | 2 (iv_atm_21d, earn_recent) | 243 | `29e7d9cf564cacf2` | 1 |
+| B-2 | ind_adj_rev_5_nx (ind_adj_rev_5) | 5 | 6 | 21 | 2 (ea_days_since, grp_ff49) | 155 | `9c1d051d4a6ff79a` | 1 |
+| B-3 | ins_opp_buy (ins_opp) | 0 | 3 | 4 | 1 (ins_opportunistic_net) | 35 | `981d01b22ba05cfa` | 1 |
+| B-4 | bac_vq (bac) | 272 | 6 | 20 | 1 (mkt_ret) | 174 | `116135c031f95c46` | 1 |
+
+All four pass the house budget without an exception (bars <= 314, runner <= 336; slots <= 7; extra fields <= 5;
+DSL <= 4,096 B); every field is in the registry fields table and in the fields-v10 list; every op exists with the arity
+used (`registry.cpp:29-32, 45-51, 70-102, 186-203`); `bucket` returns a Group that `group_rank` accepts
+(`typecheck.cpp:468-474, 568-571`); the peeled hparams are in range (`ts_std_mp` m 15 <= w 21; `bucket` n 5 in [2, 65535]).
+
+### B-1 `iv_rv_spread_xe`: ex-earnings realized volatility on the RV leg
+
+- **Replaces** `iv_rv_spread` (options_implied, B, the theme's only member).
+- **String:**
+```
+rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (ts_std_mp((((close / delay(close, 1)) - 1) + (0 * log(power((1 - earn_recent), (1 - ts_count_nans(earn_recent, 1)))))), 21, 15) * 15.874507866387544)))
+```
+- **How it reads.** The IV leg is byte-identical to the member's. The RV leg drops every session with `earn_recent == 1`
+  (the vendor reaction session, earnFlag 0, and the session after, earnFlag 1): `power(1 - e, 1 - n)` with
+  n = `ts_count_nans(e, 1)` is `1 - e` for a finite e (0 on an event session, so `0 * log(0)` = NaN removes the return)
+  and 1 on a NaN e (`pow(NaN, 0) = 1`, so a missing flag keeps the return). `ts_std_mp(., 21, 15)`: sample std (ddof 1,
+  as `stddev`) of the kept returns among the last 21 sessions, NaN with fewer than 15 (`lit_ops.hpp:35`).
+- **Why.** The IV field is the vendor's earnings-cleaned ATM IV: the event variance of an announcement inside the option's
+  life is removed (N-4). The RV leg is not cleaned: for the 21 sessions after every reaction session (about one third of
+  a quarterly reporter's sessions) it carries the announcement-day jump, so the spread is mechanically low in proportion
+  to the squared announcement return, unrelated to the Bali-Hovakimian mechanism, and the member's rank jumps twice per
+  event (when the event enters and when it leaves the 21-session window). The refinement makes both legs ex-event, using
+  the same vendor calendar that cleaned the IV (`earn_recent`, same-date vendor row, known at the session's 22:00 UTC mark).
+- **Basis.** Bali and Hovakimian (2009, Management Science 55(11)) "Volatility spreads and expected stock returns":
+  returns fall in the realized-minus-implied spread (sign of the member). Earnings events inflate implied volatility before
+  and realized volatility after the announcement: Patell and Wolfson (1979, JAE; 1981, JAR); the vendor's cleaned IV
+  removes the first; this string removes the second.
+- **Prior.** Sign +1 (long high IV - RV), unchanged. Expected abs(rho) with iv_rv_spread [est] .80-.92 (identical outside
+  the 21 post-event sessions). Cost traded: turnover **down** (the two event jumps go); breadth unchanged (NaN only below
+  15 kept returns; at most 2 sessions per event are dropped). Risk: the "clean IV" reading rests on the producer's own
+  evidence ("evidence suggests", calendar vintage unproven); if the IV were not cleaned, the refinement would leave the
+  pre-event IV bump in place (the canonical spread has both bumps).
+- **Registration.** formula "iv_atm_21d (5-session backfill, v3 guard) minus sqrt(252) x the sample std of the daily
+  returns of the last 21 sessions without the vendor earnings reaction session and the session after (earn_recent == 1),
+  at least 15 kept"; domain "IV outside (0.02, 5) -> NaN; earn_recent NaN keeps the session; fewer than 15 kept returns
+  -> NaN"; deviation "ex-event RV so both legs are ex-event (the vendor IV is earnings-cleaned); Bali-Hovakimian use raw
+  IV and raw RV; ts_std_mp(21, 15) instead of stddev(21); vendor calendar vintage unproven (field caveat)".
+
+### B-2 `ind_adj_rev_5_nx`: industry-adjusted weekly reversal without earnings-announcement windows
+
+- **Replaces** `ind_adj_rev_5` (reversal_seasonality, B-).
+- **String:**
+```
+rank(((-1 * group_neutralize(((close / delay(close, 5)) - 1), grp_ff49)) + (0 * log(power((ea_days_since - 4.5), (1 - ts_count_nans(ea_days_since, 1)))))))
+```
+- **How it reads.** The reversal is the member's own expression. The mask is NaN exactly when the latest visible primary
+  8-K 2.02 reaction session lies in the 5-session return window: `ea_days_since` in {0, ..., 4} gives a negative
+  `ea_days_since - 4.5`, whose log is NaN; >= 5 gives a positive argument (mask 0); a NaN `ea_days_since` (no visible
+  announcement within 200 days, foreign private issuers, REITs without 2.02: fields-v10 manifest staleness text) gives
+  `pow(NaN, 0) = 1`, log 0, and the name keeps its reversal value. The FF49 mean is taken over all names before the mask,
+  as the papers adjust by the whole industry.
+- **Why.** Price moves with public news drift; moves without news reverse (Chan 2003; Savor 2012). An earnings reaction is
+  the largest scheduled news event, and the roster's earnings_momentum theme (ear, ear_mom_12m, earn_surprise_comp) holds
+  the drift side of those same names while this member holds the reversal side: inside the book the two cancel, so the
+  member spends gross and turnover against another theme on exactly the names where the literature says reversal fails.
+- **Basis.** Chan (2003, JFE 70(2)) "Stock price reaction to news and no-news: drift and reversal after headlines"; Savor
+  (2012, JFE 106(3)) "Stock returns after major price shocks: the impact of information"; reversal definition as the
+  member: Da, Liu and Schaumburg (2014, MS); Hameed and Mian (2015, JFQA).
+- **Prior.** Sign +1 (reversal embedded), unchanged. Expected abs(rho) with ind_adj_rev_5 [est] about .95 on the common
+  names. Cost traded: breadth down by the announcement windows (5 of about 63 sessions of a quarterly reporter, about 8%
+  of its name-days in this member); turnover: one exit and one re-entry per event, against fewer netting trades with the
+  earnings theme.
+- **Clock note.** The 8-K clock is lag 1 (acceptance before 22:00 UTC of t-1), so for a pre-market release the reaction
+  session itself is not yet excluded on that one session; the vendor `earn_recent` would close that gap but carries the
+  unproven calendar vintage, so the point-in-time-proven SEC clock is used.
+- **Registration.** formula "-(5-session return minus its FF49 mean); NaN when the latest visible primary 8-K 2.02
+  reaction session is within the window (ea_days_since <= 4)"; domain "ea_days_since NaN keeps the name; masked names are
+  NaN (neutral)"; deviation "earnings announcements only (no other news); one-session late exclusion for pre-market
+  releases (8-K lag rule); weekly horizon kept as registered".
+
+### B-3 `ins_opp_buy`: opportunistic insider purchases only
+
+- **Replaces** `ins_opp` (ownership_flow, B-).
+- **String:**
+```
+rank(max(ins_opportunistic_net, 0))
+```
+- **How it reads.** `max(x, 0)` (`vm.hpp:132-137`, NaN stays NaN) keeps the net opportunistic purchases per share
+  outstanding over t-126..t-1 and sets net sellers to 0, tied with non-traders.
+- **Why.** The registered member is seller-dominated (registry note: per date a median of about 40 buyers against about 530
+  sellers), so it mostly shorts names whose opportunistic insiders sold; the literature finds the information in
+  purchases. Ruling W2-c kept the net measure and named the buy-only leg "a separate later trial": this is that trial.
+- **Basis.** Lakonishok and Lee (2001, RFS 14(1)) "Are insider trades informative?" (purchases predict returns, sales do
+  not); Jeng, Metrick and Zeckhauser (2003, REStat 85(2)) (about 6% a year abnormal on purchases, none on sales); the
+  opportunistic / routine classification of the field: Cohen, Malloy and Pomorski (2012, JF 67(3)).
+- **Prior.** Sign +1 (long opportunistic buyers). Expected abs(rho) with ins_opp [est] .30-.50 (the seller block collapses
+  into the tie). Cost traded: breadth down sharply (only net buyers differ from the tie); the short side on net sellers
+  goes (lower short financing, no shorting of names the momentum theme often holds long); turnover low (126-session field).
+- **Registration.** formula "max(ins_opportunistic_net, 0): net opportunistic purchases per share outstanding over
+  t-126..t-1 (W5a field), net sellers and non-traders 0"; domain "NaN as ins_opportunistic_net; non-buyers tie"; deviation
+  "buy leg only; net within the window, so a name with both counts only when purchases exceed sales; shares, not dollars".
+
+### B-4 `bac_vq`: betting against correlation within volatility quintiles
+
+- **Replaces** `bac` (low_risk, B+).
+- **String:**
+```
+group_rank(decay_linear((-1 * correlation(ts_sum(((close / delay(close, 1)) - 1), 3), ts_sum(mkt_ret, 3), 250)), 21), bucket(stddev(((close / delay(close, 1)) - 1), 252), 5))
+```
+- **How it reads.** The decayed signal is bac's own. `bucket(stddev(r, 252), 5)` is a Group label (average-rank quintile
+  of the 252-session daily-return volatility over the names with a finite volatility on the date, `lit_ops.hpp:44-46`);
+  `group_rank` ranks the signal inside each quintile, so every quintile spans [0, 1] (`cs_ops.hpp:41-43`).
+- **Why.** The registered deviation: "the paper ranks correlation within volatility quintiles, which is not expressible
+  (group operators need a Group classifier; quantile() yields F64)". The W2 op `bucket` is that classifier. Without the
+  conditioning the member's low-correlation side loads on high idiosyncratic-volatility names, which is the opposite
+  bet to the rest of the low_risk theme; the book's linear vol63 projection removes only the linear part, after blending.
+- **Basis.** Asness, Frazzini, Gormsen and Pedersen (2020, JFE 135(3)) "Betting against correlation: testing theories of
+  the low-risk effect" (BAC: sort on volatility, then on correlation within each volatility quintile); volatility from
+  one year of daily returns and correlation from overlapping 3-day returns: Frazzini and Pedersen (2014, JFE).
+- **Prior.** Sign +1 (long low correlation), unchanged. Expected abs(rho) with bac [est] .80-.90. Cost traded: turnover
+  slightly up (a name that crosses a quintile boundary jumps in rank; a 252-session volatility moves slowly); breadth
+  unchanged (the volatility and the correlation need the same return history).
+- **Registration.** formula "-corr(3-session return sums, 3-session mkt_ret sums, 250), decayed 21, ranked within the
+  quintiles of the 252-session daily-return volatility"; domain "NaN where the correlation or the volatility is NaN";
+  deviation "as bac (250 sessions, equal-weight member market) plus the AFGP volatility-quintile step".
+
+### B.4 add-alpha lines (strings frozen; parent / name / spec = the X baseline at V8-F, the only substitutions allowed)
+
+```bash
+"$PY" scripts/research_cycle.py add-alpha --id iv_rv_spread_xe --dsl "rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (ts_std_mp((((close / delay(close, 1)) - 1) + (0 * log(power((1 - earn_recent), (1 - ts_count_nans(earn_recent, 1)))))), 21, 15) * 15.874507866387544)))" --theme options_implied --tier B --prior-sign 1 --citation "Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower returns; event volatility in options: Patell and Wolfson (1979, JAE; 1981, JAR)" --origin prior --prior-sign-source "Bali-Hovakimian 2009" --form "R(x)" --formula "iv_atm_21d (5-session backfill, v3 guard) minus sqrt(252) x the sample std of the daily returns of the last 21 sessions without the vendor earnings reaction session and the session after (earn_recent == 1), at least 15 kept" --domain "IV outside (0.02, 5) -> NaN; earn_recent NaN keeps the session; fewer than 15 kept returns -> NaN" --deviation "ex-event RV so both legs are ex-event (the vendor IV is earnings-cleaned); Bali-Hovakimian use raw IV and raw RV; ts_std_mp(21, 15) instead of stddev(21); vendor calendar vintage unproven (field caveat)" --replaces iv_rv_spread --parent <X baseline library> --name <X library> --parent-spec <X baseline cell spec>
+"$PY" scripts/research_cycle.py add-alpha --id ind_adj_rev_5_nx --dsl "rank(((-1 * group_neutralize(((close / delay(close, 5)) - 1), grp_ff49)) + (0 * log(power((ea_days_since - 4.5), (1 - ts_count_nans(ea_days_since, 1)))))))" --theme reversal_seasonality --tier B- --prior-sign 1 --citation "Chan (2003, JFE) drift after news, reversal after no-news; Savor (2012, JFE); Da, Liu and Schaumburg (2014, MS); Hameed and Mian (2015, JFQA) within-industry reversal" --origin prior --prior-sign-source "Chan 2003; Savor 2012; Da-Liu-Schaumburg 2014" --form "R(x)" --formula "-(5-session return minus its FF49 mean); NaN when the latest visible primary 8-K 2.02 reaction session is within the window (ea_days_since <= 4)" --domain "ea_days_since NaN keeps the name; masked names are NaN (neutral)" --deviation "earnings announcements only (no other news); one-session late exclusion for pre-market releases (8-K lag rule); weekly horizon kept as registered" --replaces ind_adj_rev_5 --parent <X baseline library> --name <X library> --parent-spec <X baseline cell spec>
+"$PY" scripts/research_cycle.py add-alpha --id ins_opp_buy --dsl "rank(max(ins_opportunistic_net, 0))" --theme ownership_flow --tier B- --prior-sign 1 --citation "Lakonishok and Lee (2001, RFS) insider purchases, not sales, are informative; Jeng, Metrick and Zeckhauser (2003, REStat); Cohen, Malloy and Pomorski (2012, JF 67(3)) opportunistic insiders" --origin prior --prior-sign-source "Lakonishok-Lee 2001; Jeng-Metrick-Zeckhauser 2003" --form "R(x)" --formula "max(ins_opportunistic_net, 0): net opportunistic purchases per share outstanding over t-126..t-1 (W5a field), net sellers and non-traders 0" --domain "NaN as ins_opportunistic_net; non-buyers tie" --deviation "buy leg only (Ruling W2-c's separate later trial); net within the window; shares, not dollars" --replaces ins_opp --parent <X baseline library> --name <X library> --parent-spec <X baseline cell spec>
+"$PY" scripts/research_cycle.py add-alpha --id bac_vq --dsl "group_rank(decay_linear((-1 * correlation(ts_sum(((close / delay(close, 1)) - 1), 3), ts_sum(mkt_ret, 3), 250)), 21), bucket(stddev(((close / delay(close, 1)) - 1), 252), 5))" --theme low_risk --tier B+ --prior-sign 1 --citation "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) betting against correlation within volatility quintiles; correlation of overlapping 3-day returns and 1-year volatility: Frazzini and Pedersen (2014, JFE)" --origin prior --prior-sign-source "Asness-Frazzini-Gormsen-Pedersen 2020" --form "group_rank(decay_linear(x, 21), bucket(sd(ret, 252), 5))" --formula "-corr(3-session return sums, 3-session mkt_ret sums, 250), decayed 21, ranked within the quintiles of the 252-session daily-return volatility" --domain "NaN where the correlation or the volatility is NaN" --deviation "as bac (250 sessions, equal-weight member market) plus the AFGP volatility-quintile step, expressible with the W2 bucket op" --replaces bac --parent <X baseline library> --name <X library> --parent-spec <X baseline cell spec>
+```
+
+### B.5 Considered and not proposed
+
+- `inst_best_ideas` per holder (`inst_best_ideas / inst_n_holders`, W2-c's other later trial; 4 slots, needs an
+  `inst_n_holders` registry field row): dropped. The field pools all 13F filers, and a single-security filer adds an
+  overweight near 1, so the per-holder mean is dominated by names with few holders, one of them concentrated, and by
+  small caps whose holders are specialists; it trades the breadth confound for a size and filer-type confound. Weak prior.
+- `ind_mom_12_1` without the skip month (Moskowitz-Grinblatt: industries do not reverse at one month): Novy-Marx (2012,
+  JFE) puts industry momentum in months 12-7; the literature disagrees on the horizon, so no blind prior.
+- `ind_adj_rev_5` at one month (the papers' horizon): a near-variant of `rev_21` (atx-db characteristics screen) and of
+  `reversal_21_skip5` (pv libraries) was already measured on platform data; B-2 changes one other thing instead.
+- `ear` without the 21-session decay (S-11): undecayed announcement CARs (`earn_car_21/42/63_s1`, pv_fields_ic121_v3)
+  were already measured on platform data.
+- `q5_eg` with debt in q (HMXZ): 7 extra fields (exception needed) for the predictor with the smallest slope (-0.029).
+- `value_composite` with EBIT/EV as a fourth yield: 8 fields; overlaps ebit_ev_f49, already a member.
+- `smax`: see N-2.
