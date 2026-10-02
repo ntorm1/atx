@@ -6146,3 +6146,11 @@ Every other byte of the frozen line (theme, tier, sign, citation, formula, domai
 note "written b > a for the 7-slot budget" then describes the mirror's order, not necessarily the registered one (the
 registered DSL is the record). No IC, return or statistic exists for any X-7 string.
 
+**Variants planned** (`scratchpad/x7_wq099_variants.py`, output `x7-wq099-variants.json`): 64 of 64 canonical-equal to the
+frozen string; every one 104 bars, high_adj / low_adj, 28 nodes; exe slots: 8 without the `-1 * x` swap and without the
+comparison swap, 9 with the comparison swap alone, **6 with the `-1 * x` swap**, 7 with both. 32 fit. **Chosen by the
+rule: one swap, `(x * -1)` for `(-1 * x)`** (no correlation swap; it is also the paper's printed order `(... * -1)`):
+`rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19),
+ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))`, SHA-256 in the JSON; K1 104 / 6 /
+high_adj, low_adj. Multiplication by -1 is exact in either order, so the values equal the frozen string's bit for bit.
+
