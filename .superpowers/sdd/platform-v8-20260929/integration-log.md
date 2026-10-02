@@ -5287,3 +5287,201 @@ reads 0; 2025+ never read.`
 - R-8 left two v9 notes (leverage, not alpha); R-9's frontier favours theta .03 at 4x (report only).
 - **Current book: R-2**; N 50; admission trials 12 of 15; history reads 0. Disk 125,635,739,648 B free (117.0 GiB).
 
+## integration 8 (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `7fb2a0d2` (clean). Scope: `task-INT8-brief.md`
+(merge order, items 5a-5g, builds A / B / C, tests, identities), PM7-13, PM7-15 (a), PM7-25 (freeze ended; R-2 must
+reproduce under the new build before any X measurement), PM7-26. Tag prefix v8-14 (v8-12 pinned Wave 0, v8-13 the
+unadopted Release build). No X cell, no add-alpha screen of an X candidate, no campaign, no X result opened (none exist).
+
+### Merges (`--no-ff` by SHA; each `git merge-tree` re-run at dispatch: six clean, XCOMB one file as predicted)
+
+| # | lane | lane SHA (= branch head) | merge | conflicts |
+|---|---|---|---|---|
+| 1 | XPRE | `da3bb239` | `491f2ea8` | none |
+| 2 | XSIG | `7467448f` | `a30d0fb1` | none |
+| 2 | XIMP | `3db253d5` | `e99aa994` | none |
+| 3 | LIB3 / FIELDS-V9 | `834d5a05` | `f6786b9f` | none |
+| 3 | XDATA incl. task GOLD | `e3654b93` (ahead of the `d44fa7f6` progress.md records by `9ffbce6c`, `3c0aee08`, `e3654b93`: task GOLD, PM7-19 / PM7-23; wanted, merged) | `7c3d63be` | none |
+| 5 | XCOMB | `914f9944` | `ecef208e` | `scripts/tests/test_research_spec.py`, 3 hunks, the brief's union: NULL_PINS keeps v8's r3-gm / r6-gm / r9a-b / lib-v81-gm pins and adds `x-theme-erc.json`, `x-inv-vol.json`, one `STORE_FILLS` (v8 spelling); EXPECTED_CHANGES keeps v8's lines and `THETA`, adds the two `x-*`; `nav_delta` closes with `x-inv-vol.json`, keeps the r6-gm / THETA / `spo` lines, `assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "x-inv-vol.json") + spo` |
+| 6 | mining (MINE-MEM, -STAT, -RUN, -JOIN, ENG-SLOT) | `1bd448cd` | `31086f3a` | none; auto-merged files re-read: `atx-impl/CMakeLists.txt` (mine sources :28-34, theme-erc :114 / :121), `MINED_MAX_BUDGET = 10000`, ledger tests at 10000 (the 1000s left are campaign-line fixture budgets, not the ceiling), `research_cycle.py` `mine` dispatch in `main` |
+
+No lane touched `atx-db/` (`git diff --name-only <base> <sha> -- atx-db` empty for all seven).
+
+### To-write items (each its own commit)
+
+| item | commit | what |
+|---|---|---|
+| 5c PM6-9 | `d148bdf9` | `generate_library.exe_plan(..., max_memory_mib=None)` appends `--max-memory-mib N`; `research_add_alpha.plan_for` passes the parent spec's `ic.flags` value. The fake IC exe records its plan argv (opt-in `FAKE_IC_ARGV`, set in `953c9569`); `test_add_alpha_validates_through_the_exe_plan` asserts `--max-memory-mib 1536` (fails without the fix, checked) |
+| 5d PM7-15 (a) | `b8d4af86`, `ffbf3888` | `V7_APPENDED_THEMES = ("ownership_flow", "filing_events")`; `test_composition_resid.py` (:243, :278-294, :671-711) takes the frozen ten (`cres.FROZEN_PREFIX`) as the before-registration order; `test_fit_composition_weights.py` constants and refusal text; `ffbf3888` the same refusal literal in `test_fit_composition_weights_store.py` (found by the XCOMB suite run) |
+| 5e PM7-13 | `d12c8b0b` | `registry.json` `house_budget.max_roster` 64 -> 80; `atx-impl/strategies` 163 passed |
+| 5f | `953c9569` | `research_add_alpha.MARGINAL_CAPS = {"seconds": 360}` written into `runner.phases.marginal` of every add-alpha wave spec unless the parent's spec names one (spec data, OD-2 precedent). R-7's marginal receipt (`mega-v8-b0b-train-u-v81-marginal-pool-run`): wall 170.3 s of 180, peak 252 MiB; 80/57 x 252 = 354 MiB < 1,400, so `max_rss_mib` stays the runner's 1,536. No X wave spec or template exists in the tree yet, so `EXPECTED_CHANGES` has nothing to admit; the add-alpha tests in `test_research_cycle.py` and `test_research_spec.py` assert the cap. The PM restates it in `v8x-prereg.md` before X-2 |
+| 5a R6C-7 | `6cb4c857` | `composition_recorded_rule`: a file without a string `provenance.rule` passes only without a `theme_standardise` block, else `Err(InvalidArgument, "... carry a theme_standardise block without a string provenance.rule (finding R6C-7)")`; comment fixed. Tests: `themed_text` gives a `std_block` doc its rule, `shrink_doc` and XCOMB's `erc_doc` record `provenance.rule` (brief finding F1); `RecordedRuleMustWrite...` moves the no-provenance `ic-shrink-v1` doc to the refused cases and admits a plain v1 file without provenance |
+| 5b R6C-3 (tests only) | `57483cf3` | `ThemeResid.UnequalTieBlocksBesideSingletonsPinTheBlockMean`: UNEQUAL_PLANES / _EXPECTED / _WRONG through `st::add_theme_residualised` (W .5/.5, 1e-15, one value per block, add order 0,1,5,7,2,4,6,3). No source seam (cut 2 not needed; the seam was optional): the 1e16 summation-order pin stays Python-only |
+| (mine test) | `6a1363a9` | `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` asserted the two `HELD_BY_V8_LIBRARY` fields unread by the registry; R-2 was accepted, so its rows read them. Now asserts the excluded classes unread and the held fields present in v9; the rule (12 fields = the template's) unchanged |
+| 5g PM7-13 | `5c65cee8` | `kMaxMinePoolMembers = 80` (`strategy_mine_pool.hpp:31`, comment :13, `strategy_mine.hpp:137`), `research_mine.py MAX_POOL_MEMBERS = 80`, runbook :80 / :100. `StrategyMine.WorkingBytesAreThePeakOfThePhases` keeps the 53-member peaks at members {1, 80} |
+| H-2 | `66f83b35` | see section H-2 |
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`; build dir `build-equity`; 4 jobs each, first attempt)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-14a (build A) | `57483cf3` | equity-strategy-ic, -targets, impl-strategy-ic-tests, -target-tests, engine-combine-tests, -book-tests | exit 0, 74.4 s, 31 TUs, 7 links; reconfigured (GLOB mismatch: new sources); receipt `3e12fa39...c4a9` |
+| v8-14b (build B) | `5c65cee8` | equity-strategy-mine, impl-strategy-mine-tests, engine-factory-tests, engine-alpha-tests, atx-shm-worker | exit 0, 98.5 s, 44 TUs (incl. `search_driver.cpp`, the seven `strategy_mine*.cpp`, `alpha_vm_slot_reuse_test.cpp`), 7 links; receipt `e0760327...e4b2` |
+| **v8-14 (build C, the record)** | `66f83b35` | all fourteen research executables and test targets of the brief | exit 0, 59.7 s, 32 TUs, 12 links; receipt `e8d1831c...3e68`; `ConfiguredProvenance` `5c65cee8` (configure-time, set at build B; build C did not reconfigure; the only code between is H-2's flag; strategy_live reports this provenance as a health warning, never a refusal, review C4; the executable SHA binds the code) |
+
+**0 compile fixes**: the mining and XCOMB C++ (never compiled before), 5a, 5b and H-2 compiled first time under `/W4 /WX`;
+no warning or error line in any of the three logs. Research executables on **v8-14** (bin 2026-10-02 10:48):
+
+| executable | v8-14 SHA-256 |
+|---|---|
+| atx-equity-strategy-ic | `67f7292192bf431fccb1af185857e4b51d316860d42ea021037e37af288b4e6b` |
+| atx-equity-strategy-targets | `a95f6f0af06907f3707ca10b182de451d84727aeeb1ce5e7170906fd36d31417` |
+| atx-equity-strategy-risk | `d7e424b23f097737cf3086dff886b5cf45e9b77dcb0d1059fa99d8c604fcf623` |
+| atx-equity-strategy-mine | `2176fa4a3e7b49c5d375b0d41e30cb8504687073d35328b05df7132def2ed7ec` |
+
+Test executables (v8-14): mine-tests `d6e40412`, factory `58bb8bee`, alpha `c623aff2`, ic `b7be8c2c`, target `ca223f8a`,
+impl `c6824689`, strategy `1d05e484`, book `4ed6dc96`, combine `be5e8ff4`, shm-worker `9586f5d5`.
+
+### Mining golden `0x889874a3b9b29c55` (not edited), fixture, slot reuse
+
+| test | exe | 1 worker | 4 workers |
+|---|---|---|---|
+| `SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (loops {1, 4}) | factory-tests and mine-tests (v8-14b; mine-tests again on v8-14) | **holds** | **holds** |
+| `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest` | both | holds | - |
+| `NsgaSearch.ScalarRaw_ReproducesGoldenDigest` | factory-tests | holds | - |
+
+- `--gtest_filter=SignalFitnessDefaults.*:NsgaSearch.ScalarRaw_ReproducesGoldenDigest:SignalFitnessPath.*`: factory 10/10, mine 9/9.
+- `StrategyMineRule.*:StrategyMine.*:StrategyMineCampaign.*`: **29/29**. `PromotesThePlantedSignalsOnlyInFiveSeeds` passes
+  (asserts **`rung_failed == 0`** and `failed == 0`); `MembersStreamByDateAsStored` passes (write / remove / rename refused
+  while held: the Windows share mode observed, not only asserted); `WorkingBytesAreThePeakOfThePhases` passes at M 80.
+- `SameSeedSameChainHeadAtOneAndFourWorkers` (`build-equity/v8-i8-mine-heads.xml`, `88716737...b075`):
+  `fixture_registry_head` `0ca572d1d176d86de6d89746b37365f3046a8a84166f3219964251bfac36d56a`,
+  `fixture_trials_csv_sha256` `e3196f0932615112abdd0006c065920eb29c22959f8f5544d6617658694602ef` (differ from `20e7bd19`'s by
+  design: MINE-STAT's recipe keys).
+- **`atx-engine-alpha-tests --gtest_filter=AlphaVmSlotReuse.*`, run directly: 6/6 passed** (1.99 s; no abort, no byte
+  difference: AuditExact, ResearchFast, masked AuditExact, masked ResearchFast all byte-equal to a fresh engine); recorded
+  `forms` 107, `variants` 1,266, `max_target_slots` 9 (`build-equity/v8-i8-slot-reuse.xml`, `be42b334...7373`). Whole
+  alpha binary (never run in this sprint's integrations before): **755/755**.
+
+### Tests (counts grow only by the lanes' tests and this integration's)
+
+| suite | build | result |
+|---|---|---|
+| ic-tests `GroupErc.*:ThemeErcV1.*:CompositionV8.*:ThemeResid*` | v8-14a | **36/36** |
+| atx-impl-strategy-ic-tests (whole) | v8-14 | **159/159** (145 + 12 XCOMB + 1 R6C-3 + 1 H-2) |
+| target-tests `InvVol.*:BookInverseVol.*` | v8-14a | **9/9** |
+| atx-impl-strategy-target-tests (whole) | v8-14a, v8-14 | **268/268** (259 + 9); `[spo-pin]` v1 `0xda6b6871e7e267c5` / `0xaabdbb72f99a6e13`, `[spo-v3-pin]` v2 `0xb039820b40d5cf24` / `0xd24b61721a7c698c` |
+| atx-engine-combine-tests | v8-14a, v8-14 | **238/238** (233 + 5) |
+| atx-engine-book-tests | v8-14a, v8-14 | **160/160** (155 + 5) |
+| atx-impl-strategy-mine-tests (whole) | v8-14b, v8-14 | **44/44** (31 + 13) |
+| atx-engine-factory-tests (whole) | v8-14b (= v8-14 bytes) | **392/392** (390 + 2) |
+| atx-engine-alpha-tests | v8-14b (= v8-14 bytes) | `AlphaVmSlotReuse.*` **6/6**; whole **755/755** |
+| atx-impl-tests (from the repo root) | v8-14 | 1,052 run: **1,046 passed, 5 skipped, 1 failed: the known `ConfigJsonNotInDiscoverDigest`** (1,028 + 24 through the globs); same spo pin lines |
+| atx-impl-strategy-tests | v8-14 | **46/46** |
+| XPRE pytest (`test_dsr_total`, `test_nav_summ`, `_v8`, `_pool`, `test_backtest_integrity`, `test_trial_ledger_rules`, `test_holdout_gate`) | - | **96 passed, 1 skipped** (`ATX_EQUITY_ROOT`); `test_flag_absent_is_byte_identical_to_the_pre_x_nav_summ` passed; with `ATX_EQUITY_ROOT=build-equity` `test_legacy_n37_numbers_reproduced` **passed** |
+| mining pytest (`test_research_mine`, `test_research_ledger`, `test_trial_ledger_rules`, `test_mine_overlap_factor`) | - | **61 passed** |
+| `research_cycle.py mine plan scripts/specs/v9/mine-c1.json` | - | metadata only, as expected: pins UNLOCKED, pool MISSING, pool_source / max_memory_mib TO FILL, four requires lines; budget 132 |
+| XCOMB pytest (7 files) | - | **209 passed** after `ffbf3888` (1 failed before it: the 5d literal) |
+| LIB3 / FIELDS-V9 (3 files) | - | **26 passed**; XDATA (`test_research_fields_xdata`, `_gold`) **14 passed** |
+| XSIG `xsig_check.py` | - | **`xsig_check: PASS`** |
+| atx-engine/tools (whole) | - | **293 passed** |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute, v8-14) | v8-14 | **612 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset in the whole run) |
+| atx-impl/strategies | - | **163 passed**; `test_generate_library.py` with `ATX_V71_PLAN_JSON` **9 passed** |
+| scripts/tests (whole; v8-14) | v8-14 | **245 passed, 3 skipped** (the RESEARCH_CYCLE_LIVE_ROOT skips); tiny_world: no golden moved; `git status` clean after |
+
+LIB3 / XDATA identity: `git diff --stat 7fb2a0d2 HEAD -- atx-engine/tools` lists only their 10 new files (plain builder
+untouched; no fields rebuild).
+
+### Identity under v8-14 (PM7-25; bounded runner, clean tree `66f83b35`, one at a time; argv = the recorded receipt's with only the output path renamed)
+
+Every receipt: outcome completed, exit 0, `git: clean in the code pathspec`, source `66f83b35`, exe = v8-14's.
+
+**R-2 (the V8-F book; X baseline)**
+
+| pass | source receipt | new receipt.json SHA-256 | s / MiB | result |
+|---|---|---|---|---|
+| w (`--output build-equity/v8-i8-r2-w`; 300 s / 3,072 MiB) | `mega-v8-r1w-train-std-v80-run1` | `26536b276bb2731e023824ef9bb3680afa9f46d068b769488b15f34bcce279f0` | 36.2 / 1,308 | **10 of 12 byte-identical**: `recipe.json` `7380ec35`, `orientations.json` `ed90c8d0`, `train_combined.f64` `6331421f`, `train_combined.json` `bbbf6f2b`, `_member.u8` / `_finite.u8` `c61f5b62`, `_ids.u64` `761bd1df`, `_sessions.i64` `ab244802`, `train_planned_targets.csv` `2e743418`, `train_daily_ic.csv` `b631b6e3`; `summary.json` (216 paths) and `train_candidates.jsonl` (207) differ **only in timing paths** (`stage_seconds.*`, `wall_seconds`, `hash_seconds`), as INT7 |
+| fit (`--output build-equity/v8-i8-r2-fit`; 180 / 1,536) | `mega-weights-v8-r1-std-v80-run1` | `422d01050ad9ac35f4910ae0f374681a064c9eb9c439cfd60d7f9735a10563df` | 0.8 / 55 | `admission.csv` byte-identical; `admission.json` differs only in `inputs/script_sha256`; `composition_weights.json` differs only in `provenance/script_sha256`, `provenance/admission_sha256` (the SHA of the new admission.json, `e7fbdfe8`) and **`provenance/std/registry_sha256`** (`570f022a` -> `566d7076`). Both files are **byte-identical after substituting those values back**. The registry is an input the fitter reads (not on the argv): `570f022a` is the registry at R-2's fit (`9d4203f0`); it changed at `7402d7b2` / `8d2eac5e` (R-7 rows and the roster cap 64, before V8-F) and at `d12c8b0b` (item 5e). Weights, signs, admission rows: identical. **Listed for the PM: one allowed-list exception (an input-pin field), no computed value differs** |
+| NAV (`--output build-equity/v8-i8-r2-nav`; 180 / 1,536) | `mega-nav-v8-r1-std-...-L1.1474-v80-run` | `74d0474a9a7149de9f22e8970418758823cbd50d1514f611820d8a50c071e807` | 42.5 / 586 | **27 of 27 byte-identical** (every `daily_*.csv`, `events_*.csv`, `recipe.json` `2311993e`, `summary.json` `083a56da`, `capacity_curve.csv` `b99b1cd1`, `v7_*`, the 12 `capacity/` files; S2 daily `7cfe21c4`); `stdout.log` differs only on its output-path line. Not refused at `--max-bytes` (brief F2) |
+
+This is also XCOMB's flag-absent identity (theme-erc: w pass and fit without `--theme-erc`; inv-vol: the V8-F NAV argv)
+and items 5b / 5d.
+
+**INT7's identities (lanes' flag-absent; the v8-i7 receipts' argv, outputs `v8-i8-*`)**
+
+| id | receipt.json SHA-256 | s / MiB | result |
+|---|---|---|---|
+| 1a | `b387bb9dd27d0def6996233f109bf0320ed5eaa9e47bbdd0e104319634a50dd1` | 13.5 / 359 | **12 of 12** byte-identical to `v8-i7-i1-nav`; stdout identical |
+| 1b | `dbb1097e3a8aff21b4230a67487e40792d4da35e3e7a4956114b97da73db2ff3` | 13.5 / 361 | NAV **12 of 12**, holdings **4 of 4**; stdout identical |
+| 4 step 1 | `423bf780b530687784f6a2ed5bf2b1e9f360eb65976d29871080169a44c0f00d` | 0.3 / 5 | weights file **byte-identical** (`d49e208c`) |
+| 4 step 2 | `fda2e9ec826a52b0c73e628242863eb0244e8222b005096d6bc0ccc570f74bf3` | 18.3 / 506 | **10 of 12**; `summary.json` / `train_candidates.jsonl` timing paths only (as INT7) |
+| 7 | `83396a5c28016c213545d709fa24dd7c1c5484b2979ae9f032db5ed307282004` | 35.0 / 360 | **9 of 9** |
+| 8 | `775aeca659b00ca2aeba26017fc5865a5ecd98db0dda05cce83e2cbd93a99b87` | 14.3 / 464 | **12 of 12**; stdout identical |
+
+XPRE: flag-absent test (4 argv sets) passed; legacy n37 reproduced. Mining: no flag; the golden is its identity (holds).
+**R-2 reproduces under v8-14** (w, NAV byte for byte; fit with the three provenance hashes above), so X has its baseline.
+
+### H-2 (AuditExact cost; flag-gated, flag absent byte-identical)
+
+The AuditExact selection is small: `IcRunnerConfig::audit_exact` (`--eval-mode audit-exact`, the only accepted value) sets
+`al::EvalMode::AuditExact` where the runner builds its Engine (`strategy_ic_runner.cpp:223`) and the recipe's `vm`
+(`AuditExact;full-historical-asof-member-mask`); refused with `--candidate-cache` (entries keyed on ResearchFast).
+Commit `66f83b35`, test `StrategyIcRunner.AuditExactEvalModeIsRecordedAndRefusedWithTheCache`. Flag absent: every
+identity above passed on the build that carries it.
+
+Measured as the task-H brief says (cold VM seconds of library v7.1, E3 and the fixture); no IC statistic read:
+- **E3** (4-year role lo3 `e1c67101`, fields v9 lo3 `9f156363`: B0b's u-pass argv without `--save-combined` /
+  `--candidate-cache`, plus `--no-composition`, 4 workers, 2,560 MiB, bounded 600 s / 2,560 MiB; 48 candidates, every one
+  evaluated): ResearchFast VM **59.4 s** (wall 91.7, peak 1,496 MiB, receipt `5b98f8b5...ecb12`); AuditExact VM **70.1 s**
+  (wall 100.1, peak 1,496, receipt `1c4ab80f...c578c`). **Ratio 1.18x.**
+- **Fixture** (tiny_world, its 4-member library, synthetic, 5 repetitions each, 1 worker): median VM 13.7 ms ResearchFast,
+  14.5 ms AuditExact: ratio 1.06x (noise level).
+- Debug (`equity-dev`) executables, one run per mode on E3. **AuditExact costs less than 3x ResearchFast (1.18x)**: the
+  brief's condition for planning the date-blocked runner (platform review P-5b) is met; planning it is the PM's.
+- The two E3 output dirs (`build-equity/v8-i8-h2-fast`, `-audit`) hold IC rows of v7.1 on 2020-2023 that were not opened;
+  they are measurement runs (0 trials, prereg section 3) and select nothing.
+
+### Campaign memory probe: not run
+
+`v8x-prereg.md` counts a probe at 0 trials (section 3) and orders it in the runbook (section 9: after `mine pool` on H-F's
+pool source, with role lo3 and H-F's fields, A2-A4), but it does not state that the probe reads no return, and its
+inputs (pool from H-F, H-F's fields) do not exist before X-2..X-8. The dispatch's condition is not met.
+
+### What the X cells can run now (v8-14; PM preconditions P4 (X list pinned) and P6 (fields v13) still the PM's / root's)
+
+- **X-2** (refinements, 5 strings) and **X-3** (XSIG 5 + XDATA 3): add-alpha with the K1 plan under the spec's IC cap (5c),
+  the marginal cap 360 s (5f), roster cap 80 (5e), `filing_events` last in the fitter (5d), the field builders (LIB3,
+  XDATA) and the v8-14 IC / NAV executables. X-3 also needs the IC-pass memory cap re-probed (P7, PM7-13).
+- **X-4** (value within FF49, 9 re-screens): add-alpha re-screens on the same tools.
+- **X-5** theme-erc-v1 / **X-6** inv-vol-v1: built on v8-14, flag-absent identities pass on R-2; root sets the parent.
+- **X-9** (mined wave): mining merged and built, golden at 1 and 4 workers, fixture `rung_failed == 0`, slot reuse 6/6,
+  pool cap 80; needs H-F (after X-2..X-8), the pool step, the probe and the spec edits of the runbook (A2: role lo3).
+
+### Scoped review range
+
+- Code: `7fb2a0d2..66f83b35` in `research_tree.CODE_PATHSPEC`: the seven lane merges and the integration commits
+  `d148bdf9`, `b8d4af86`, `d12c8b0b`, `953c9569`, `6cb4c857`, `57483cf3`, `ffbf3888`, `6a1363a9`, `5c65cee8`, `66f83b35`.
+
+### Hidden-data record
+
+- Inputs opened by tools: roles lo1 (3-year) / lo3 (3- and 4-year) and the lo3-dlret label role, fields v7 / v9 / v10,
+  the v7.1 / v8.0 libraries and recipes, the lo3 / v71 candidate caches and fit-work store, R-2's u / w / fit / NAV
+  outputs (pinned inputs of the identities), the lo3 risk model `786cb601`, the INT7 identity inputs, the v7.1 n37 cells
+  (XPRE legacy test), the ledger (tests only, read, not appended), tiny_world (synthetic). Tests used synthetic fixtures.
+- Read by me: lane reports, briefs, rulings, sources, build receipts and logs, runner receipts (outcome, exit, timings,
+  SHA-256s, argv), output-file SHA-256s, JSON paths of differences (no values), gtest pass / fail / pin lines, the H-2
+  timing fields, R-7's marginal receipt (wall, peak). No return, Sharpe or IC statistic was read or printed.
+- Scan of every `v8-i8-*-run` stdout / stderr for dates in 2024 or later: none.
+- **Nothing dated 2024-01-01 or later was opened. No X cell, screen or campaign was run. No ledger line was written (N 50).**
+
+### Open items
+
+- **For the PM:** R-2's fit identity has one difference outside the allowed list: `provenance/std/registry_sha256` (input
+  pin of the registry, which changed by R-7 before V8-F and by 5e); every computed byte is identical (above).
+- Restate the X waves' marginal cap (5f, 360 s) in `v8x-prereg.md` before X-2; re-probe the IC-pass memory cap before X-3.
+- H-2: P-5b (date-blocked runner) is plannable on the 1.18x reading (Debug; a Release reading may differ).
+- v8-14's configured provenance is `5c65cee8` (one commit behind the source: H-2's flag only).
+- Known: `ConfigJsonNotInDiscoverDigest` (1). The bare `atx-equity-strategy` was not built (no research script uses it).
+- Disk 125,337,964,544 B free (116.7 GiB).
+
