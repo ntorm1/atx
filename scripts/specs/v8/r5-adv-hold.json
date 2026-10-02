@@ -2,14 +2,35 @@
   "schema": "atx.research-cycle-template/v1",
   "name": "v8-r5-adv-hold",
   "description": "Cell R-5 (plan section 9, N 45): ADV holding cap adv-hold-v1 (lane R45, task-R-5-report.md): after the projection |desired_i| <= Q ADV_i / (L NAV), Q = .10, the clipped mass redistributed pro rata inside its side in one pass, the residual breach reported; ADV = the execution ADV of the fill session (Ruling R5-a); NAV = the run's initial NAV for every capacity book (Ruling R5-b, E-15). The change: nav --adv-hold-q .1 with --capacity-curve (a no-op when the parent carries it, as B0c does). NAV-only: u, fit, card and w are the parent's. Identity cell first: --adv-hold-q 1e9 (daily and events CSVs byte-identical). Acceptance: net Sharpe at 4x NAV higher AND net Sharpe at 1x not lower by more than one paired SE AND S3 not lower.",
-  "parent": null,
+  "parent": "lib-v80.json",
   "nominal_parent": "base-b0c.json",
   "change": {
     "set": {
       "nav.output": "build-equity/mega-nav-v8-r5-advq.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
     },
     "flags": {
-      "nav": {"--adv-hold-q": ".1", "--capacity-curve": true}
+      "nav": {
+        "--adv-hold-q": ".1",
+        "--capacity-curve": true
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80/summary.json",
+      "sha256": "083a56da0e4381b9c7ae9db10b19783b5185a0f6043f240aa3c721150ad42c85"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/admission.json",
+      "sha256": "f613fe920de92eb9a5fbb8c1524f5891808672f1dda44ee69c8a63af2dc9e90c"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v80-1/train_combined.json",
+      "sha256": "bbbf6f2bfe6f857e914f4354bc943ea55976024c8b28df385992f09038f7cd98"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/composition_weights.json",
+      "sha256": "032133450dedc5f5747d65f60ca1e4abeeca00eff0e9280f749c061986f3b5ce"
     }
   }
 }
