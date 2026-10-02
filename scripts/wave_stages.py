@@ -8,7 +8,8 @@
   register   (library wave) one add-alpha per frozen string into library NAME (K1 plan of record saved under the wave
              dir), then one commit of exactly the files add-alpha wrote
   screen     research_cycle.py run lib-NAME.json --screen (u, fit, card, marginal, gate: the admission trials are
-             ledgered by the gate); the sign rule applied by code to the gate's admission rows
+             ledgered by the gate); the sign rule applied by code to every string's row of the fit's admission.json
+             (a string without a row stops the stage)
   spec       the cell: the screen library when every string stays, the b library (add-alpha --name NAME+b on the kept
              strings, same trial ids) when the sign rule dropped some, none when the gate stopped; a rule wave writes
              the template's cell file on the parent with its constants and locks it; one commit
@@ -302,20 +303,29 @@ def screen(w: Wave, done: dict, log) -> dict:
     m, spec = w.manifest, done["register"]["spec"]
     done_screen = w.run(WS.cycle_argv(w.python, "run", spec, "--screen"), "screen", ok=(RC.EXIT_OK, RC.EXIT_GATE))
     outs = w.outputs(spec)
+    # the rows: the fit's admission.json (every candidate). cycle_verdict.json lists only gate.admitted, from which
+    # add-alpha leaves a mixed wave's re-screens out (they are gate.report), so it cannot carry the sign rule
+    apath = f"{outs['fit']}/admission.json"
+    adm = w.read_json(apath)
+    if not isinstance(adm, dict) or not isinstance(adm.get("candidates"), list):
+        raise StageError(f"screen: no candidate rows in {apath}")
+    rows = [{k: x.get(k) for k in ROW_KEYS} for x in adm["candidates"] if isinstance(x, dict)]
     vpath = f"{outs['cycle_dir']}/cycle_verdict.json"
     doc = w.read_json(vpath)
-    if not isinstance(doc, dict) or not isinstance(doc.get("admission"), list):
-        raise StageError(f"screen: no admission rows in {vpath}")
-    rows = [{k: x.get(k) for k in ROW_KEYS} for x in doc["admission"] if isinstance(x, dict)]
-    marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in doc.get("marginal") or [] if isinstance(x, dict)]
-    dec = WR.screen_decision(m["sign_rule"], m["candidates"], rows)
+    marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in (doc or {}).get("marginal") or [] if isinstance(x, dict)]
+    ids = {c["id"] for c in m["candidates"]}
+    try:
+        dec = WR.screen_decision(m["sign_rule"], m["candidates"], [r for r in rows if r["id"] in ids])
+    except WR.RuleError as exc:
+        raise StageError(f"screen: {apath}: {exc}") from exc
     gate_ok = done_screen.returncode == RC.EXIT_OK
     for row in dec["rows"]:
         log(f"   {row['id']}: status {row['status']}, runner sign {row['runner_sign']} vs prior "
             f"{row['prior_sign']:+d} -> {row['decision']} ({row['reason']})")
     log(f"   gate {'PASS' if gate_ok else 'FAIL (no string admitted with its prior sign): no cell'}; kept "
         f"{dec['kept']}, dropped {dec['dropped']}")
-    return {"spec": spec, "gate_exit": done_screen.returncode, "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": rows,
+    return {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
+            "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
             "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
 
 
@@ -323,7 +333,7 @@ def screen_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
         return ["#   (rule wave: no screen)"]
     return [WS.fmt_argv(WS.cycle_argv(w.python, "run", lib_spec(w.manifest["library"]), "--screen")),
-            f"#   then: the sign rule {w.manifest['sign_rule']} on the gate's admission rows (cycle_verdict.json)"]
+            f"#   then: the sign rule {w.manifest['sign_rule']} on every string's row of the fit's admission.json"]
 
 
 # ------------------------------------------------------------------ spec

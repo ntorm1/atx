@@ -110,3 +110,28 @@ def test_a_fresh_state_dir_after_the_screen_counts_no_string_twice(tmp_path):
     w = wave_context.Wave(root / F.MANIFEST, root)
     b, problems = wave_stages.budget_check(w, F.BI.ledger_read(root / F.LEDGER), 2)
     assert problems == [] and (b["admission_used"], b["admission_new"]) == (3, 0)
+
+
+# ------------------------------------------------------------------ MAJOR 2: the sign rule reads every string's row
+MIXED = [F.candidate("alpha_a"), F.candidate("alpha_r", kind="replace", replaces=["m2"], rescreen=True)]
+
+
+def test_a_mixed_wave_keeps_its_rescreen_admitted_with_the_prior_sign(tmp_path):
+    """add-alpha lists only alpha_a in gate.admitted (the re-screen is gate.report), so cycle_verdict.json has no row
+    for alpha_r; the fit's admission.json has it, and PM7-35 keeps it."""
+    root = F.build(tmp_path / "r", candidates=MIXED)
+    fake = F.FakeCycle(root, {"alpha_a": ("admitted", 1), "alpha_r": ("admitted", 1)}, listed={"alpha_a"})
+    code, out = wave(root, fake, "run", "--until", "spec")
+    assert code == 0, out
+    sc = receipt(root, "03-screen.json")["outputs"]
+    assert sc["decision"]["kept"] == ["alpha_a", "alpha_r"] and sc["decision"]["dropped"] == []
+    assert [r["id"] for r in sc["rows"]] == ["alpha_a", "alpha_r"]                  # the parent's m1 row is not a string
+    assert receipt(root, "04-spec.json")["outputs"]["kind"] == "screen-library"     # no b library
+
+
+def test_a_string_without_an_admission_row_stops_the_screen(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", 1)})
+    code, _ = wave(root, fake, "run")
+    err = failed(root, "03-screen.failed-1.json")
+    assert code == 4 and "no admission row for ['alpha_c']" in err and "not a drop" in err

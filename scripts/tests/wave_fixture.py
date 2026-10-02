@@ -191,13 +191,15 @@ def build(root: Path, drop: tuple = (), **over) -> Path:
 
 # ------------------------------------------------------------------ the fake processes
 class FakeCycle:
-    """The process executor of a wave test. ``admission`` = {candidate id: (status, runner_sign)} for the screen;
+    """The process executor of a wave test. ``admission`` = {candidate id: (status, runner_sign)} for the screen: every
+    row goes to the fit's admission.json (after the parent member m1's), the ``listed`` ones (gate.admitted; default
+    all) to cycle_verdict.json and the ledger;
     ``gross_per_l`` = {cell spec name: c} so that a NAV at leverage L has all-rows gross c x L; ``dsr`` the paired
     dSR the cell's summ reports; ``fail`` = {argv token: exit} forces an exit."""
 
     def __init__(self, root: Path, admission: dict, *, gross_per_l: dict | None = None, dsr: float = 0.05,
-                 gate_exit: int = 0, accounting: float = 1e-14, fail: dict | None = None):
-        self.root, self.admission, self.gross_per_l = root, admission, gross_per_l or {}
+                 gate_exit: int = 0, accounting: float = 1e-14, fail: dict | None = None, listed: set | None = None):
+        self.root, self.admission, self.gross_per_l, self.listed = root, admission, gross_per_l or {}, listed
         self.dsr, self.gate_exit, self.accounting, self.fail = dsr, gate_exit, accounting, fail or {}
         self.calls: list[list[str]] = []
 
@@ -233,11 +235,16 @@ class FakeCycle:
         spec, c = self.spec_outputs(rel)
         if "--screen" in args:
             rows = [{"id": cid, "status": st, "runner_sign": sg, "s_k": 1} for cid, (st, sg) in self.admission.items()]
-            marginal = [{"id": cid, "ic21": 0.01, "marginal_ic21": 0.005, "max_abs_rho": 0.3, "max_rho_member": "m1"}
+            listed = [r for r in rows if self.listed is None or r["id"] in self.listed]     # gate.admitted
+            marginal = [{"id": cid, "ic21": 0.01, "ic21_hac_t": 2.0, "marginal_ic21": 0.005, "marginal_hac_t": 1.5,
+                         "max_abs_rho": 0.3, "max_rho_member": "m1"}
                         for cid in self.admission] if "marginal" in spec else []
-            write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": rows, "marginal": marginal})
-            BI.ledger_append(self.root / LEDGER, [admission_line(spec["name"], cid, role_sha=role_sha(self.root))
-                                                  for cid in self.admission], chain=True)
+            fit = c.out(spec["fit"]["output"], keyed=False)
+            member = {"id": "m1", "status": "admitted", "runner_sign": 1, "s_k": 1}
+            write_json(self.root, f"{fit}/admission.json", {"candidates": [member] + rows})
+            write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": listed, "marginal": marginal})
+            BI.ledger_append(self.root / LEDGER, [admission_line(spec["name"], r["id"], role_sha=role_sha(self.root))
+                                                  for r in listed], chain=True)
             return self.ok(args, self.gate_exit)
         nav = c.out(spec["nav"]["output"])
         if "--stop-after" in args:

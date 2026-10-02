@@ -67,7 +67,8 @@ def test_sign_rule_pm7_35_as_ruled():
     for kind, (status, sign), prior, want in cases:
         got, _ = WR.sign_pm7_35({"status": status, "runner_sign": sign}, kind, prior)
         assert got == want, (kind, status, sign, prior)
-    assert WR.sign_pm7_35(None, "add", 1)[0] == "drop"
+    with pytest.raises(WR.RuleError, match="no admission row"):                    # a stop, never a drop
+        WR.sign_pm7_35(None, "add", 1)
     dec = WR.screen_decision("pm7-35", [F.candidate(c) for c in ONE_DROPPED],
                              [{"id": k, "status": s, "runner_sign": g} for k, (s, g) in ONE_DROPPED.items()])
     assert dec["kept"] == ["alpha_a", "alpha_c"] and dec["dropped"] == ["alpha_b"]

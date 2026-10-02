@@ -31,9 +31,11 @@ class RuleError(ValueError):
 
 # ------------------------------------------------------------------ sign rules (screen)
 def sign_pm7_35(row: dict | None, kind: str, prior: int) -> tuple[str, str]:
-    """(keep | drop, reason) of one screened candidate under PM7-35 (see the module doc)."""
+    """(keep | drop, reason) of one screened candidate under PM7-35 (see the module doc). A candidate without an
+    admission row is no decision: RuleError (the fit's admission.json lists every candidate; a missing row is a
+    broken screen, never a drop)."""
     if row is None:
-        return DROP, "no admission row"
+        raise RuleError("no admission row: the screen did not score this string (a stop, not a drop)")
     status, sign = row.get("status"), row.get("runner_sign")
     admitted = status == "admitted"
     if kind == REPLACE:
@@ -58,6 +60,9 @@ def screen_decision(rule: str, candidates: list[dict], rows: list[dict]) -> dict
     fn = SIGN_RULES[rule]
     by_id = {r.get("id"): r for r in rows if isinstance(r, dict)}
     out = []
+    missing = [c["id"] for c in candidates if c["id"] not in by_id]
+    if missing:
+        raise RuleError(f"no admission row for {missing}: the screen did not score these strings (a stop, not a drop)")
     for c in candidates:
         row = by_id.get(c["id"])
         decision, reason = fn(row, c.get("kind", ADD), int(c["prior_sign"]))
