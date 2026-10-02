@@ -1556,3 +1556,25 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   admission trials, 8 re-screens, 11 removed; 37 kept members byte-identical in the u pass); the cycle refuses the
   marginal phase: "pool member accruals is not in --library" (the parent's themes hold members v8.0 removed or
   replaced). Ruling pending; R-3 waits on it.
+- Cleanup step B done (record `cleanup-step-b.md`): 24 of 25 ruled directories deleted in root, 53.75 GiB freed;
+  121.19 GiB free (57.37 at the start). `build-equity-rel` skipped by the date rule (1.4 GiB; stays). Zero
+  reference hits in 18 spec / prereg / config files; root clean before and after.
+- Ruling PM6-8 (R-2 marginal phase, declared before any R-2 read; memo `r2-marginal-options.md`): option (i):
+  in `lib-v80.json` delete `marginal.themes` and set a new `marginal.output`; relock; the cell resumes at
+  marginal. The marginal IC of R-2 is then residualised on the parent's combined signal alone (1 regressor, not
+  1 + 10 theme composites) and is reported as such -- the marginal phase gates nothing in R-2 (the gate reads the
+  admission only; plan Task R-2 step 2); the parent's theme file weights 11 members library v8.0 removed or
+  replaced, so the registered pool is ill-defined for a wave with removals, which no registered text
+  anticipated; (i) is spec-only (PM5-21 holds), keeps a K6 diagnostic, and the cell has no ledger line and no
+  read -- cost if wrong: R-2's K6 rows are a weaker diagnostic than F-2 describes (theme-level overlap of the 7
+  new members is not netted out); R-7 and R-12 only add members and keep the full pool.
+- Ruling PM6-9 (K1 plan route for add-alpha on the 4-year role): the `--plan-json` route the integrator used
+  (plans from the executable's metadata-only `--plan-only --max-memory-mib 2560` on the exact library bytes;
+  add-alpha verified the library SHA on all 15 calls) is accepted for R-2 and standing for R-7 and R-12; the 15
+  plan files are committed to the sprint directory with their digests; `exe_plan`'s missing `--max-memory-mib`
+  is fixed at integration 8 -- `--plan-json` is a registered option (task-A2-report) and 2,560 MiB is the W0-c
+  cap; a plan-only call reads no payload -- cost if wrong: none measurable (the plan carries no statistic).
+- Ruling PM6-10 (FIX-6 round 5, tests only, pool 10): `test_registry_seed_is_the_v71_library` checks the v7.1
+  seed as a prefix (alphas, fields, themes) with later entries as appends; the lane also checks that
+  `scripts/tests` accepts the hand-written `r1-comp-v8-gm.json` and `lib-v80.json` -- a registration is the
+  designed use of the registry -- cost if wrong: none (tests only).
