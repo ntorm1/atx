@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import inspect
 import json
 import re
@@ -82,18 +83,51 @@ def flat(node, pre: str = "") -> dict:
     return {pre: node}
 
 
+def committed(rel: str) -> bytes | None:
+    """The bytes of a pinned library or recipe of this worktree (an atx-impl/ file): a fake root holds it as committed,
+    so its pin is verified; None for every other input, which a fake root stands in for."""
+    path = research_tree.REPO / rel
+    return path.read_bytes() if rel.startswith("atx-impl/") and path.is_file() else None
+
+
+def unlocked(spec: dict) -> dict:
+    """A copy of a live v8 spec (a resolved spec, or a template file's doc) in its unlocked state: every pin that
+    `lock --write` fills is null again -- each input's but a committed library's or recipe's (authored with that file
+    and checked against its bytes), the as-built fields manifest's and a template's derived ones ("locked").
+
+    Ruling PM5-20: the fixtures plan the live specs on stand-in files, whose digests no real pin matches, so they plan
+    this copy: the same whether root has locked the live spec (or a parent up its chain) or not. What a test asserts
+    about the spec's content is unchanged; only the pin premise is (test_the_fixtures_plan_a_locked_spec_as_unlocked).
+    """
+    spec = copy.deepcopy(spec)
+    if RS.is_template(spec):
+        change = spec.get("change") or {}
+        items, sets = (change.get("inputs") or {}).values(), change.get("set") or {}
+        fields = sets.get("fields")
+        if "fields.manifest_sha256" in sets:
+            sets["fields.manifest_sha256"] = None
+        spec.pop("locked", None)
+    else:
+        items, fields = spec["inputs"].values(), spec.get("fields")
+    if RC.as_built(fields):
+        fields["manifest_sha256"] = None
+    for item in items:
+        if committed(item["path"]) is None:
+            item["sha256"] = None
+    return spec
+
+
 def fake_root(tmp_path: Path, spec: dict) -> tuple[Path, dict]:
-    """A root with a stand-in file for every input, the as-built fields manifest, the pool and an empty ledger; absolute
-    input paths are re-pointed under the root (the returned spec)."""
+    """A root with a stand-in file for every input, the as-built fields manifest, the pool and an empty ledger; the
+    returned spec is the planned copy: unlocked (above) and with absolute input paths re-pointed under the root."""
     root = tmp_path / "root"
-    spec = json.loads(json.dumps(spec))
+    spec = unlocked(spec)
     files = {"build-equity/trials.jsonl": ""}
     for key, item in spec["inputs"].items():
         if Path(item["path"]).is_absolute():
             item["dir"], item["path"] = f"ext/{key}", f"ext/{key}/manifest.json"
-        committed = research_tree.REPO / item["path"]           # a pinned library or recipe of this worktree
-        files[item["path"]] = committed.read_bytes() if item["path"].startswith("atx-impl/") and \
-            committed.is_file() else "{}"
+        held = committed(item["path"])                          # a pinned library or recipe of this worktree, as is
+        files[item["path"]] = "{}" if held is None else held
     role = spec["inputs"]["role"]
     files[role["path"]] = json.dumps({"universe": {"id": role["universe"]}, "dates": 1405, "score_begin": 399})
     f = spec["fields"]
@@ -108,20 +142,31 @@ def fake_root(tmp_path: Path, spec: dict) -> tuple[Path, dict]:
     return root, spec
 
 
-@pytest.mark.parametrize("name", V8_SPECS)
-def test_every_v8_spec_loads_and_plans(tmp_path, name):
-    """Every spec loads (templates resolve on their nominal parents) and plans with the fake root; the null pins are
-    reported (UNLOCKED, computed from the stand-in files), never crashed on; a template's run is refused until root
-    sets its parent (and meets its requires / fills its values); a base spec has no refusal."""
-    assert set(V8_SPECS) == set(NULL_PINS)
-    path = V8 / name
+def plan_on_stand_ins(tmp_path: Path, path: Path) -> tuple[Path, dict, RC.Cycle, list[str]]:
+    """The fixture path of a v8 spec file: loaded (a template resolved up its parent chain), planned on a fake root
+    (its pins unlocked); (root, planned spec, cycle, plan lines)."""
     root, spec = fake_root(tmp_path, RC.load_spec(path))
     c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
-    lines = RC.plan_lines(c)
+    return root, spec, c, RC.plan_lines(c)
+
+
+def unlocked_pins(c: RC.Cycle, spec: dict) -> set[str]:
+    """The pins a plan reports UNLOCKED (computed from the file at plan time)."""
+    pins = {f"inputs.{k}" for k, (_, _, how) in c.pins.items() if how.startswith("UNLOCKED")}
+    return pins | ({"fields.manifest_sha256"} if spec["fields"]["manifest_sha256"] is None else set())
+
+
+@pytest.mark.parametrize("name", V8_SPECS)
+def test_every_v8_spec_loads_and_plans(tmp_path, name):
+    """Every spec loads (templates resolve on their nominal parents) and plans with the fake root; the pins a lock
+    fills are reported (UNLOCKED, computed from the stand-in files) whether root has locked the live spec or not, never
+    crashed on; a template's run is refused until root sets its parent (and meets its requires / fills its values); a
+    base spec has no refusal."""
+    assert set(V8_SPECS) == set(NULL_PINS)
+    path = V8 / name
+    root, spec, c, lines = plan_on_stand_ins(tmp_path, path)
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#"))
-    unlocked = {f"inputs.{k}" for k, (_, _, how) in c.pins.items() if how.startswith("UNLOCKED")}
-    unlocked |= {"fields.manifest_sha256"} if spec["fields"]["manifest_sha256"] is None else set()
-    assert unlocked == NULL_PINS[name]
+    assert unlocked_pins(c, spec) == NULL_PINS[name]
     assert any(x.startswith("# phase fields [pinned; done; as built") and "UNLOCKED" in x for x in lines)
     assert [x[len("# fill (root fills before `run`): "):] for x in lines if x.startswith("# fill")] == FILLS.get(name, [])
     doc = json.loads(path.read_text(encoding="utf-8"))
@@ -137,6 +182,37 @@ def test_every_v8_spec_loads_and_plans(tmp_path, name):
     assert all(st.kind != "skipped" or st.phase == "marginal" for st in c.steps())
 
 
+def test_the_fixtures_plan_a_locked_spec_as_unlocked(tmp_path):
+    """Ruling PM5-20: a copy of every v8 spec, locked as `lock --write` locks it (relocked where root already has: each
+    pin it fills an arbitrary digest no stand-in has, a committed library or recipe its own), plans through the fixture
+    path of the live spec with the same pins reported UNLOCKED; the planned copy with a locked pin put back is refused.
+    So the suite does not depend on whether root has locked base-lo1, base-lo3 or a template on them."""
+    specs = tmp_path / "v8"
+    shutil.copytree(V8, specs)
+
+    def lock_reads(self, rel):                        # what `lock` reads, without a file under any root
+        held = committed(rel)
+        return hashlib.sha256(f"arbitrary {rel}".encode() if held is None else held).hexdigest()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(RC.Resolver, "sha", lock_reads)
+        for name in V8_SPECS:                         # base specs fill inputs and fields, templates change.inputs
+            locked, _ = RC.lock(specs / name, tmp_path / "no-root", relock=True)   # and "locked" (the derived pins)
+            (specs / name).write_text(json.dumps(locked, indent=2), encoding="utf-8")
+    for name in V8_SPECS:
+        path = specs / name
+        locked = RC.load_spec(path)
+        assert all(item["sha256"] for item in locked["inputs"].values()), name          # every pin filled
+        assert locked["fields"]["manifest_sha256"], name
+        root, spec, c, lines = plan_on_stand_ins(tmp_path / name, path)
+        assert unlocked_pins(c, spec) == NULL_PINS[name], name
+        assert any(x.startswith("# phase fields [pinned; done; as built") and "UNLOCKED" in x for x in lines), name
+        role = dict(spec["inputs"]["role"], sha256=locked["inputs"]["role"]["sha256"])
+        with pytest.raises(RC.CycleError, match="PIN MISMATCH role") as e:             # the lock's pin, on a stand-in
+            RC.Cycle(dict(spec, inputs=dict(spec["inputs"], role=role)), RC.Resolver(root), spec_path=path,
+                     capabilities=T.CAPS)
+        assert e.value.code == RC.EXIT_PIN, name
+
+
 @pytest.mark.parametrize("name", [n for n in V8_SPECS if n in EXPECTED_CHANGES])
 def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
     doc = json.loads((V8 / name).read_text(encoding="utf-8"))
@@ -146,7 +222,8 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
     changed = {k for k in set(a) | set(b) if a.get(k, MISSING) != b.get(k, MISSING)
                and k not in ("name", "description") and not k.startswith("inputs.reference_")}
     assert changed == EXPECTED_CHANGES[name]
-    refs = {k: v for k, v in child["inputs"].items() if k.startswith("reference_")}     # the paired reference: parent
+    refs = {k: v for k, v in unlocked(child)["inputs"].items()                            # the paired reference: parent
+            if k.startswith("reference_")}                                                # (pins: as before the lock)
     want = {"reference_cell": {"dir": parent["nav"]["output"], "path": f"{parent['nav']['output']}/summary.json",
                                "sha256": None},
             "reference_admission": {"path": f"{parent['fit']['output']}/admission.json", "sha256": None}}
@@ -198,7 +275,7 @@ def test_v8_base_specs_carry_the_ruled_settings():
                                                                                       "linked-operating-v3")
     b0c = json.loads((V8 / "base-b0c.json").read_text(encoding="utf-8"))
     assert b0c["change"]["flags"]["nav"] == {"--warm-start-sessions": "60", "--capacity-curve": True}   # D-0, E-29
-    assert b0c["change"]["inputs"] == {"label_role": {                                  # E-25: R15's role, locked later
+    assert unlocked(b0c)["change"]["inputs"] == {"label_role": {                        # E-25: R15's role, locked later
         "dir": "build-equity/train-2020-2023-lo1-dlret", "path": "build-equity/train-2020-2023-lo1-dlret/manifest.json",
         "sha256": None}}
     docs = {n: json.loads((V8 / n).read_text(encoding="utf-8")) for n in V8_SPECS}
@@ -561,7 +638,7 @@ def test_r11_checks_its_re_fit_against_the_parent_cells_weights(tmp_path):
     spec = RC.load_spec(path)
     r1 = RC.load_spec(V8 / "r1-comp-v8.json")
     want = f"{r1['fit']['output']}/composition_weights.json"
-    assert spec["inputs"]["reference_resid_parent"] == {"path": want, "sha256": None}
+    assert unlocked(spec)["inputs"]["reference_resid_parent"] == {"path": want, "sha256": None}   # derived
     root, planned = fake_root(tmp_path / "root", spec)
     c = RC.Cycle(planned, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
     fit = next(s for s in c.steps() if s.phase == "fit")
@@ -623,13 +700,14 @@ def files_of(root: Path) -> list[str]:
 
 def v8_root(tmp_path: Path) -> tuple[Path, Path]:
     """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
-    fake --plan-only one), locked on stand-ins of its inputs, the committed registry and library v7.1."""
+    fake --plan-only one), locked on stand-ins of its inputs (fake_root's unlocked copy, re-pinned to the stand-ins'
+    digests by `lock --write`), the committed registry and library v7.1."""
     doc = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
     doc.update(python=sys.executable, exes={"ic": "bin/ic.cmd", "nav": "bin/nav.exe"})
     doc["runner"]["script"] = "scripts/runner.py"
     for section in ("fit", "card", "monitor", "summ"):
         doc[section]["script"] = f"scripts/{section}.py"
-    root, _ = fake_root(tmp_path, doc)
+    root, doc = fake_root(tmp_path, doc)
     s = root / "atx-impl" / "strategies"
     for rel in ("alphas/registry.json", "libraries/v71.json", "fund_industry_ic_v71.json",
                 "fund_industry_ic_v71.recipe.json"):
