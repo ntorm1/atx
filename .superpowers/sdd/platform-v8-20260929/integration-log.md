@@ -3390,3 +3390,129 @@ the PM), lo3-dlret role 207 M, holdings 163 M, risk 481 M, lagged combined 3 x 7
 - The DSR variance stays degenerate (3 cells) until the PM5-22 re-runs.
 - Release: not adopted (identity fails); spdlog-build in the shared `C:/atx-cache/deps` rebuilt in Release (see above).
 - Next parent: `scripts/specs/v8/base-b0c.json`, digest `059d9ba6d7cb0f6346c5b065c64fd5ea55940db7196c2200e950ce137c7b483d`.
+
+## cells batch 2a: housekeeping (PM5-26); R-1 STOPPED at mechanics (gross); owner stop (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `8c5920c7` (clean; code head `1cc4c6c9`;
+research executables v8-12 Debug: IC `ab7e2cbd...1615452d`, NAV / targets `5497c89d...35b9bca6`, risk
+`8967952c...a7eed258`; Release v8-13 not used). Procedure `task-CELLS-brief.md`; read: integrator-rules, v8-prereg rules
+1-11 and rulings, A2 root sequence (incl. R-2 add-alpha), plan section 9 R-1 / R-2 and 12.1, rulings W0-c, A-3 (FIX-AB
+finding), E-18, E-24, E-28, E-29, E-34, E-36, E-37, R2-a..h, PM3-5a, PM5-11, PM5-18, PM5-21, PM5-23, PM5-25, PM5-26
+and the last progress section, batch 1a / 1b log sections, task-R-1-report, task-R-2-brief, library-v8-draft.md (the
+R-2 draft lane's output; there is no task-R-2-report.md in the sprint directory). End: `26c85eba` (R-1 lock) + this log.
+
+Preconditions: freeze list (PM5-21) re-hashed before the first run, all equal to batch 1a / 1b
+(`run_bounded_research.py` 81b5de1e, `research_cycle.py` f6b4043d, `research_spec.py` 9dbb7879, `research_ledger.py`
+c90edb6e, `research_tree.py` c313a510, `fit_composition_weights.py` 8860483c, `alpha_report_card.py` ade2d777,
+`book_monitor.py` 628b2e6e, `nav_summ.py` 719ac51f, `backtest_integrity.py` 2e195823, `compare_window_overlap.py`
+b4d7f2e8, `research_window.json` 62cf2cfa; the three exes as above). Ledger `build-equity/trials.jsonl` 41 lines (40
+construction + 1 protocol), file `ed3f4139...60a1`, `research_ledger.ledger_n` 40. RAM about 6.3 GiB free. No
+executable, cycle or tool script changed in this batch; the only commits are the R-1 lock (a spec of a cell not yet run)
+and this log.
+
+### Housekeeping (Ruling PM5-26): the two Release A/B scratch caches removed
+
+- Paths (batch 1b log, "Release A/B"): `build-equity/e2-dbg-cache`, `build-equity/e2-rel-cache` (2.4 G each; each holds
+  one `3e79978a...` candidate-cache child).
+- Nothing references them: `research_cycle.py cache gc --keep-referenced-by scripts/specs/*.json
+  scripts/specs/v8/*.json` (dry run, nothing applied) keeps 12 stores and lists 14 unreferenced ones; neither `e2-*`
+  dir appears in either list (the tool's candidates are only names containing `candidate-cache` / `fit-work`, so it
+  cannot reference them through any spec); `git grep` finds them only in this log; under `build-equity/` only the A/B
+  runs' own receipts (`e2-{dbg,rel}-{u,w}-run1/receipt.json`) name them.
+- Removed those two directories and nothing else (`rm -rf`); the A/B run, receipt and NAV dirs stay; nothing else of
+  the gc list was touched (3-year caches stay until the PM5-22 re-runs).
+- Disk (`df -k`): **before 32,591,044 KiB (31.08 GiB), after 37,473,348 KiB (35.74 GiB)**; after R-1 37,264,924 KiB
+  (35.54 GiB). The 30 GB precondition holds; no data build was started in this batch.
+
+### Cell R-1 (r1-comp-v8 on base-b0c; composition ew-theme-std-v1): STOPPED at mechanics, gross FAIL
+
+**Spec** `scripts/specs/v8/r1-comp-v8.json` (template). Edit: `"parent": null` -> `"base-b0c.json"`, nothing else.
+`lock` (dry, exit 0), `lock --write` (exit 0) wrote only the derived `locked` block: reference_cell = B0c's NAV
+`summary.json` `119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615`, reference_admission = B0b's
+`admission.json` `29357ece3fee19cc18a14d4c957bf8934ecdca3c6bd9f006dffc10eac142a18c` (B0c is NAV-only); a dry lock after
+it exits 0. File SHA `964f6070d656e4fd0c3adb255f4eaa3a3827cc852a49cff25aca4d21165eb8c2`; **spec digest (template chain)
+`1bf13f4004e6c843e7714ba243728076494bda37e2282352ccbee259f38c936d`**. Commit `26c85eba`.
+
+**Pins** (plan, every one `[locked, verified]`): library v7.1 `787c802e`, recipe `7f8a2643`, role lo3 `e1c67101`,
+identity_bridge `09aac28f`, fund_events `304d2945`, sic_events `9f9b2f85`, label_role lo3-dlret `95e16cfe`,
+reference_cell `119d4cd0`, reference_admission `29357ece`; fields v9 lo3 as built `9f156363` (63 rows = the spec
+list). Plan: fields, u done (B0b's `mega-v8-b0b-train-u-1`); fit, card, w, nav, monitor pending; caps fit 180 s /
+1,536 MiB, card 300 / 2,560, **w 300 s / 3,072 MiB with `--max-memory-mib 3072` (E-28)**, nav 180 / 1,536; summ
+`--dsr-n 41`. Command: `research_cycle.py run scripts/specs/v8/r1-comp-v8.json --stop-after nav` (source `26c85eba`).
+No free-memory refusal (no retry needed).
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fields, u | - | - | - | - | - | done (B0b's; resumed) |
+| fit | 180 / 1,536 | 0.8 | 57 | 0 | `536fa3585a369c662f13a7f29789a74aa280313b1c1b6b3b4d258251d3468f6c` | `composition_weights.json` `eb98a50a...68d7`, `admission.json` `29357ece` (= B0b's); fit store: computed 0, reused 48 |
+| card | 300 / 2,560 | 12.6 | 1,153 | 0 | `e5e8b01365bbc6fbfbeaa7225527d7508155ec05de00575b4ca860d4fe07ea5a` | `daily_sleeve.csv` `80ba33d5` (= B0b's: same admission) |
+| gate | internal | - | - | PASS | - | `b0b-readout`: 0 status changes against B0b's admission (38 admitted of 48; mom_12_1 reject_redundant) |
+| w | 300 / 3,072 (E-28) | 30.7 | 1,307 | 0 | `b21608c44529231ef82c88d0d1f9b7553aa9908473b21ca9984a84706b02f864` | `train_combined.json` `140bcf4a...` (`composition_standardise` ew-theme-std-v1, weights `eb98a50a`), `train_combined.f64` `0050fe91...`; IC admission `admitted_bytes` 2,655,038,364 (2,532 MiB) |
+| nav | 180 / 1,536 | 42.3 | 586 | 0 | `0c43b021ad1b9fef82172769dbbf6cc774d3861887dd74887108e185393f85ef` | `summary.json` `25def49c...`, `recipe.json` `ae79d320...`, S2 daily `ecdced6f...`, `capacity_curve.csv` `41f537b7...` (not read) |
+| monitor, summ, one-sided p | - | - | - | not run | - | stopped at mechanics (below) |
+
+Every bounded receipt: completed, `clean in the code pathspec`, source `26c85eba`, exe v8-12 (IC `ab7e2cbd`, NAV
+`5497c89d`; Python `624bbc05` for fit / card).
+
+**Weights file (E-45 later depends on it):** schema `atx.dsl-composition-weights/v2`, **`theme_standardise` block present
+with `rule` ew-theme-std-v1, `rerank` true**, 38 member themes, no `theme_redistribution` block; `provenance.rule`
+ew-theme-std-v1; `provenance.std`: tier source `registry` (`atx-impl/strategies/alphas/registry.json` SHA-256
+`e985aefcec3ae73b4b6673043bfd3379a2409cdd9a6dab596612ad73a1923d46`), the four declared re-grades (res_mom_12_1 B+ -> B-
+applied, ear B+ -> C+ applied, sue C+ declared-unchanged, ins_opp B- -> C+ applied), T 10, cap .05 = 1/(2T), two cap
+passes, capped members iv_rv_spread, ind_adj_rev_5, ins_opp, inst_best_ideas. `summary.weights.standardise`
+ew-theme-std-v1 (rerank on).
+
+**Mechanics (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`, primary; nav_summ's own `construction_stats` on the S2 daily CSV
+and the NAV summary's flags; read before any return; a scratch reader that prints no return statistic): FAIL.**
+- **All-rows gross 1.0672 (mean_gross_leverage_all_rows 1.067164): outside [.90, 1.05]** (the v8 pitch config
+  `v8.mechanics` and the R6' gate: `between` .90 / 1.05). Post-ramp gross 1.0735 (943 rows); max gross 1.2128; gross at
+  score_begin (row 0, 2020-01-02) 1.0153, rows 1 / 2 1.0154 / 1.0206 (warm start K 60, first decision role row 339,
+  score_begin row 399; no scored deployment).
+- All-rows net +.0047 (|.| <= .02): pass. Tau mean .02456 <= .20, p95 .02976 <= .30 (1,004 sessions; summary
+  meets_daily_turnover_mean / _p95 true): pass. 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows. Accounting:
+  max cash-book error 3.0e-14, return identity 3.9e-16 (tol 1e-9). Max |net| .033. Label role admitted (867 label-only
+  cells, 686 scored, as B0c). Beta: none to check (aim-partial-v5; as B0a-B0c).
+- Parent B0c on the same reader: all-rows gross .9820, net +.0036, tau mean .03407, p95 .03902.
+
+**Criterion ingredients (PM5-11; executed turnover per unit gross, S2; mechanics-side numbers, no return):** R-1
+`tau_gmv_mean / mean_gross_leverage_all_rows` = .024558 / 1.067164 = **.023012**; B0c .034069 / .981964 = **.034695**.
+R-1 <= B0c: the criterion alone would pass. Cost bps per traded dollar 12.74 (B0c 13.13), mean held names 1,918.9
+(1,918.3).
+
+**Stop.** The brief ("If mechanics fail, stop the cell there and report before reading returns where the tooling allows
+it") and the dispatch ("Stops: any mechanics failure") apply: the run was `--stop-after nav`, so the cell stops here.
+Not run: monitor, summ (statistics of record, DSR block, ledger line), the PM5-23 one-sided-p bundle. **No return
+statistic of R-1 was read** (no net Sharpe, no paired dSR, no year table, no capacity row; `capacity_curve.csv` and the
+summary's return fields unopened by me). By prereg rule 5 the conjunct "mechanics" is false, so the rule gives **NOT
+ACCEPTED** whatever dSR is; it is not recorded by the tooling (no `cycle_verdict.json`, no ledger line) because summ did
+not run. Prereg rule 7 keeps the PM's options open precisely because no return was seen (a re-run decided without
+seeing returns replaces the cell with no new trial). The cause of the higher gross is not established by me (the cell
+changes only the composition; L stays 1.247 as registered); no defect is claimed and no ruling is invented.
+
+**N after: 40, not 41** (ledger 41 lines = 40 construction + 1 protocol, file `ed3f4139...60a1` unchanged; `ledger_n` 40).
+The brief expects 41 after R-1: the mismatch is this stop (the ledger line is written by summ, which did not run).
+**Appendix A:** `TRAIN construction cells 40 (R-1 run to NAV, not ledgered; PM ruling pending); admission trials this
+sprint 0 (plus 0 re-screens); window research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation
+reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.`
+
+Hidden data: inputs opened by the tools were role lo3, the lo3-dlret label role, fields v9 lo3, B0b's u / admission /
+fit store, the lo3 cache, R-1's own outputs. Every stdout / stderr of the four bounded runs and the cycle console
+scanned for dates 2024-2029: 0 hits; last NAV session 2023-12-29. **Nothing dated 2024-01-01 or later was opened.**
+
+### Owner stop (coordinator message during R-1's NAV phase)
+
+Received after R-1's `run` had started. R-1 was carried to the point the brief allows after a mechanics failure (above).
+**Not started:** fields v10 (no build, no reuse count, no manifest), R-2 (no registry E1 edit, no `add-alpha`, no
+`lib-v80.json`, no `run --screen`: **admission trials consumed 0**, re-screens 0). Nothing else ran after the R-1 NAV.
+
+### Open items (batch 2a)
+
+- **R-1 needs a PM ruling:** mechanics FAIL on all-rows gross (1.0672 > 1.05) at the registered L 1.247; criterion
+  ingredients pass (.0230 vs .0347); returns unread; not ledgered. Ledgering it (N 41) needs summ, which prints returns.
+- Next parent under rule 5 as it stands: **B0c**, `scripts/specs/v8/base-b0c.json`, spec digest
+  `059d9ba6d7cb0f6346c5b065c64fd5ea55940db7196c2200e950ce137c7b483d` (R-1 cannot be accepted with a mechanics FAIL).
+- `r1-comp-v8.json` is committed with `"parent": "base-b0c.json"` and its lock (`26c85eba`); R-1's output dirs stay
+  on disk (`mega-weights-v8-r1-std`, `mega-cards-v8-r1-std`, `mega-v8-r1w-train-std-1`, the R-1 NAV dir and receipts).
+- Fields v10 and R-2 carried to the next batch. R-1's weights depend on `registry.json` (`e985aefc`) as the tier
+  source; R-2's E1 hand edit of the registry field rows will move that SHA (relevant to an R-3 refit, E-27).
+- `scripts/tests/test_research_spec.py` not run (known fixture lane).
