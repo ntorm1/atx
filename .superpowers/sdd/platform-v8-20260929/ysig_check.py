@@ -16,6 +16,8 @@ Run from the repository root (no arguments; synthetic data only, reads no data p
    planted errors (mutants) must fail; a causality probe (every input row after t0 moved: rows <= t0 unchanged) must
    pass for every string and fail for a deliberately leaking reference.
 4. The frozen add-alpha lines, each with the SHA-256 prefix of the line.
+Round 2b (Ruling PM8-6) appends `ins_cluster` to the same tables and checks (ROUND_2B); the round-2 strings and lines
+are unchanged.
 K1 (`--plan-only` through add-alpha) remains the checker of record; this file states what K1 should print.
 """
 from __future__ import annotations
@@ -111,7 +113,10 @@ CANDIDATES = {  # rank order (prior of marginal contribution to the book's Sharp
             "(0 * log(noa_lag4))), 21), grp_ff12)",
     "fscore_hbm": "rank(decay_linear(((rank(((be / me_company) + (0 * log(be)))) > 0.8) ? (fscore - 4.5) : 0), 21))",
     "exch_switch": "rank((-1 * exch_up_365d))",
+    # Round 2b (Ruling PM8-6; appended after the round-2 set, same rules)
+    "ins_cluster": "rank(ins_cluster_buy)",
 }
+ROUND_2B = ("ins_cluster",)
 CARRIED = ("iv_vol_of_vol", "day_rev_freq", "exch_switch")       # LIB2 (R-12) registrations, lapsed at 0 trials
 LIB2_SHA16 = {"iv_vol_of_vol": "c5ecec15fbdb4807", "day_rev_freq": "a5416c4ea13d4422", "exch_switch": "f433b32af008e74c"}
 EXPECTED = {  # (bars, slots, nodes, extra fields): what K1 should print
@@ -124,6 +129,7 @@ EXPECTED = {  # (bars, slots, nodes, extra fields): what K1 should print
     "dato": (272, 5, 19, ["grp_ff12", "noa", "noa_lag4", "sale_ttm"]),
     "fscore_hbm": (20, 5, 17, ["be", "fscore", "me_company"]),
     "exch_switch": (0, 3, 4, ["exch_up_365d"]),
+    "ins_cluster": (0, 2, 2, ["ins_cluster_buy"]),
 }
 
 # ------------------------------------------------------------------------------------------------ registration rows
@@ -210,6 +216,20 @@ REGISTRATION = {
                      "(0-1) portfolios; market-wide quintile on the role universe each session, not annual sorts; "
                      "filing-clock items; house decay; the unconditional fscore member stays (this adds weight inside "
                      "value names only)"},
+    "ins_cluster": {
+        "theme": "ownership_flow", "tier": "C+",
+        "citation": "Alldredge and Blank (2019, Journal of Financial Research 42(2)) Do insiders cluster trades with "
+                    "colleagues? Evidence from daily insider trading",
+        "source": "Alldredge-Blank 2019", "form": "R(x)",
+        "formula": "ins_cluster_buy: 1 when at least 3 distinct insiders (directors or officers) made open-market "
+                   "purchases with transaction dates in the last 21 sessions, visible at t, else 0; clustered insider "
+                   "purchases are followed by higher abnormal returns over the next month than solitary ones",
+        "domain": "NaN without a visible insider transaction row of the issuer within 365 days (Section 16 presence; "
+                  "foreign private issuers NaN); a binary flag: flagged names tie at the top rank, the rest tie below",
+        "deviation": "cluster = at least 3 distinct buyers within 21 sessions (field sec-ins-cluster-buy21-min3-v1), "
+                     "not the paper's purchase within two days of a peer insider's purchase; directors and officers "
+                     "on original Form 4s (10% owners and joint 10%-owner filings excluded); continuous rank of a flag, "
+                     "not an event-time portfolio; no decay (the flag lives 21 sessions from the trade date)"},
 }
 
 
@@ -381,9 +401,15 @@ def world(seed=20261002, T=330, N=48):
     be[:, 7:9] *= -1.0                                                       # negative book equity
     fs = np.repeat(rng.integers(0, 10, (T // 63 + 2, N)).astype(float), 63, axis=0)[:T]
     fs[rng.random((T, N)) < 0.02] = np.nan
+    buys = rng.random((T, N, 6)) < np.where(np.arange(N) % 5 == 0, 0.08, 0.01)[None, :, None]  # 6 insiders a name
+    present = np.ones((T, N))
+    present[:, 9:11] = np.nan                                                # no Section 16 presence (NaN)
+    ever = lambda w: np.array([buys[max(0, t - w):t].any(axis=0).sum(axis=1) for t in range(T)], dtype=float)
     return {"close": close, "volume": vol, "shares_out": so, "me_company": close * shares, "grp_ff49": g49,
             "grp_ff12": g12, "ea_days_since": eds, "ea_window_pre5": pre5, "sale_ttm": sale, "noa": noa,
-            "noa_lag4": noa_l4, "be": be, "fscore": fs}
+            "noa_lag4": noa_l4, "be": be, "fscore": fs, "buys": buys,
+            "present": present, "ins_cluster_buy": present * (ever(21) >= 3).astype(float),
+            "ins_n_buyers": present * ever(126)}
 
 
 # ------------------------------------------------------------------------------------------------ direct definitions
@@ -495,8 +521,23 @@ def def_fscore_hbm(e):
     return ref_rank(ref_decay(v, 21))
 
 
+def def_ins_cluster(e):
+    """Long issuers where at least 3 distinct insiders bought on sessions t-21..t-1 (the field's window), from the
+    synthetic trade table; NaN without Section 16 presence."""
+    b = e["buys"]
+    v = np.full(b.shape[:2], np.nan)
+    for t in range(b.shape[0]):
+        for i in range(b.shape[1]):
+            if np.isnan(e["present"][t, i]):
+                continue
+            buyers = {k for s in range(max(0, t - 21), t) for k in range(b.shape[2]) if b[s, i, k]}
+            v[t, i] = 1.0 if len(buyers) >= 3 else 0.0
+    return ref_rank(v)
+
+
 DEFINITIONS = {"peer_mom_1m": def_peer_mom_1m, "so_wang_rev": def_so_wang_rev, "mom_turn": def_mom_turn,
-               "ea_uvol": def_ea_uvol, "dato": def_dato, "fscore_hbm": def_fscore_hbm}
+               "ea_uvol": def_ea_uvol, "dato": def_dato, "fscore_hbm": def_fscore_hbm,
+               "ins_cluster": def_ins_cluster}
 MUTANTS = {  # plausible mistakes; each must fail the cell-for-cell check
     "peer_mom_1m": [
         f"rank(decay_linear(group_mean({R21}, grp_ff49), 21))",                                   # own return kept
@@ -529,6 +570,10 @@ MUTANTS = {  # plausible mistakes; each must fail the cell-for-cell check
         CANDIDATES["fscore_hbm"].replace("> 0.8)", "< 0.2)"),
         CANDIDATES["fscore_hbm"].replace("(fscore - 4.5)", "(fscore - 5)"),
         "rank(decay_linear(((rank((be / me_company)) > 0.8) ? (fscore - 4.5) : 0), 21))"],          # no book guard
+    "ins_cluster": [
+        "rank((-1 * ins_cluster_buy))",                                                             # sign
+        "rank(ins_n_buyers)",                                                                       # 126-session count
+        "rank(decay_linear(ins_cluster_buy, 21))"],                                                 # held past the window
 }
 
 
@@ -543,11 +588,13 @@ def moved_after(e, t0, seed):
     f = {k: v.copy() for k, v in e.items()}
     for k, v in f.items():
         tail = v[t0 + 1:]
+        if k in ("buys", "present"):     # the trade table behind the insider fields (the DSL reads the fields)
+            continue
         if k.startswith("grp_"):
             v[t0 + 1:] = rng.permutation(tail.ravel()).reshape(tail.shape)
-        elif k in ("ea_window_pre5",):
+        elif k in ("ea_window_pre5", "ins_cluster_buy"):
             v[t0 + 1:] = np.where(np.isnan(tail), np.nan, (rng.random(tail.shape) < 0.2).astype(float))
-        elif k in ("ea_days_since", "fscore"):
+        elif k in ("ea_days_since", "fscore", "ins_n_buyers"):
             v[t0 + 1:] = np.where(np.isnan(tail), np.nan, rng.integers(0, 9, tail.shape).astype(float))
         else:
             v[t0 + 1:] = tail * np.exp(rng.normal(0.0, 0.3, tail.shape))
