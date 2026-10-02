@@ -1845,3 +1845,7 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   roster-cap field, which R7-a raised from 56 to 64 (tests only) -- the library regenerates byte for byte; the
   cap is not content -- cost if wrong: none.
 - Note for X: R-7's marginal phase took 170.3 s of its 180 s cap; the X waves' cap is restated at integration 8.
+- Cells batch 2g (log section of that name):
+  Tests (PM7-22): `test_v71_library_byte_identical` compares the v7.1 library byte for byte and the recipe except the
+  roster cap (regenerated at the committed cap 56 in a copy of the tree, byte for byte; both `--check` calls there);
+  `scripts/tests` 195 passed, 3 skipped, 0 failed; `atx-impl/strategies` 163 passed, 0 failed.

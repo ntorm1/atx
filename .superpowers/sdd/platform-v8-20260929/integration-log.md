@@ -4848,3 +4848,31 @@ N 48). Open choices found in the brief while preparing (for the PM's next dispat
   net annual return 4.54%, net Sharpe at 4x 1.178, tau_gmv_mean .02393. **N 47**; admission trials 12 of 15 (plus 8
   re-screens; the 3 left lapse with R-12); history reads 0. Disk 123,940,056 KiB free (118.2 GiB).
 
+## cells batch 2g: tests (PM7-22), R-8, R-9a/b, W0-4 re-runs, V8-F (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `98d50d7c` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`; nothing built; PM5-21 holds). Read: integrator-rules,
+progress "PM session 7" to the end (PM7-1..22, batch 2e / 2f lines), this log's batch 2f from R-8 to its end,
+task-R-8-R-9-brief, task-W0-4-brief, task-V8-F-brief, rulings E-2, E-34, E-43, PM5-18, PM5-22, PM5-23. Same scratch
+readers as batches 2c-2f (`mech.py`: mechanics keys only; `cellstats.py` / `crit.py`: return side, after mechanics
+passed; `bundle.sh`: the PM5-23 bundle). Parent = R-2 (`scripts/specs/v8/lib-v80.json`, L 1.1474, all-rows gross
+.9859903463). N 47 at the start. Disk 126,778,818,560 B free (118.1 GiB); RAM 4,936 MiB free.
+
+### 1. Tests (Ruling PM7-22; tests only)
+
+`atx-impl/strategies/test_generate_library.py::test_v71_library_byte_identical` (+16 / -4): the v7.1 IC library is still
+compared byte for byte (sha `787c802e` and the committed file); the slim recipe is compared except its roster-cap field:
+the test asserts the regenerated cap is at least the committed one (64 >= 56), then regenerates in a copy of the tree
+(the file's own `tree()` / `edit_registry()` helpers) with `house_budget.max_roster` set to the cap the committed recipe
+records (56) and requires the library and the recipe byte for byte there, and both `--check` calls (`--strategies` the
+copy; plain and `--plan-json`) return 0. No pinned file, registry or generator changed. Python `-p no:cacheprovider`,
+`ATX_EQUITY_BIN` / `ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bins on PATH:
+
+| suite | before | after |
+|---|---|---|
+| `atx-impl/strategies/test_generate_library.py` | 1 failed (byte 1330, "6" for "5") | 9 passed |
+| `scripts/tests` (whole) | 195 passed, 3 skipped (batch 2f) | **195 passed, 3 skipped, 0 failed** (107.2 s) |
+| `atx-impl/strategies` (whole) | 162 passed, 1 failed (batch 2f) | **163 passed, 0 failed** (23.7 s) |
+
+The 3 skips are the RESEARCH_CYCLE_LIVE_ROOT tests (as every batch).
+
