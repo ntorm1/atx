@@ -144,3 +144,13 @@ hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2
 - Gate p1-v8x3 requires any of the 8 with its prior sign; wave composition per PM7-35 (an addition with status admitted
   and runner sign opposite to its prior, not 0, is dropped; sign 0 stays; a non-admitted addition stays at weight 0);
   marginal IC on the full pool (only additions), report only; acceptance PM7-34 (dSR > 0 AND mechanics; 4x printed).
+- After the screen (gate PASS 5 of 8 with the prior sign; 8 admission lines ledgered): stmom and earn_season (runner
+  sign -1 against +1) leave the wave (PM7-35); div_season (runner sign 0) stays.
+
+## Library v8x3b (the cell X-3 after the screen), registered 2026-10-02 before its screen
+- Members: v8x2b (52) + k8_intensity, inst_persist, nt_late, div_season, vol_beta, season_y2_5 = 58; the same strings as
+  in v8x3 (same trial ids: 0 new admission lines). `research_cycle.py add-alpha --parent v8x2b --name v8x3b --parent-spec
+  scripts/specs/v8/lib-v8x2b.json --fields build-equity/train-2020-2023-lo3-fields-v13` (6 calls; plans `x3b-plans/`).
+- Pins: library `fund_industry_ic_v8x3b.json` `32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54`; recipe
+  `698599bb` (admission_trials 6, unchanged 52); definition `fbede0dc`; stub `af0fb287`; registry `b55d8fdc` (unchanged);
+  fields v13 `e5f7f28c`.

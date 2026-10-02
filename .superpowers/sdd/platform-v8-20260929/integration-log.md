@@ -5713,3 +5713,23 @@ stays; status admitted and runner sign 0 stays (R-2 precedent); status admitted 
 dropped (the cell then runs on v8x3b = v8x2b + the kept additions, same trial ids); a non-admitted addition stays at
 weight 0 (R-2 / R-7 precedent); the gate stops the cell only if none of the 8 has its prior sign.
 
+**`run --screen` of v8x3** (source `d0b329a9`; marginal on the full pool, no refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 16.2 | 1,053 | 0 | `db8acdca448d73715e7bc3c273838ec17ec1d627b5033d62f7b5e8163df48700` | u-compare IDENTICAL (52 objects; 152,152 rows of 52 keys; b adds 23,408 rows of 8) |
+| fit | 180 / 1,536 | 4.4 | 428 | 0 | `fbbe727c26d1483b83ec7d3d6856adb803194c2ab2e00591da4cfff91a424eee` | - |
+| card | 300 / 2,560 | 22.0 | 1,333 | 0 | `c8a68dadf84d54f3fa1192cd24539a79994edf3c5e164d114fe5be28cdd780fe` | - |
+| marginal (full pool) | 360 / 1,536 | 175.5 | 252 | 0 | `7f189543885f1dbd8ac9796f59fed94182ec0054be80027f16d9cdec862e2f79` | report only |
+| gate p1-v8x3 | internal | - | - | PASS | - | **8 admission lines ledgered** (ledger 77 -> 85) |
+
+**Admission (gate p1-v8x3): PASS, 5 of 8 with the prior sign; all 8 status admitted.** Runner sign = prior (+1):
+k8_intensity, inst_persist, nt_late, vol_beta, season_y2_5. Runner sign 0: div_season (stays, R-2 precedent). **Runner
+sign -1 against +1: stmom, earn_season -> dropped from the wave** (PM7-35, as stated above). Reference members vs
+X-2's admission: 0 status changes. **Admission trials: X hand-written 13 of 13** (v8 12).
+
+**Library v8x3b** (the cell): v8x2b + k8_intensity, inst_persist, nt_late, div_season, vol_beta, season_y2_5 = 58
+(`scratchpad/x3b_add.py`, the same argv with `--name v8x3b`; plans `x3b-plans/`); library `32f8d69f`, recipe `698599bb`
+(admission_trials 6, unchanged 52), spec `lib-v8x3b.json` (`2bd1dbf4`), marginal on the full pool. Registered in
+`v8-prereg.md` ("Library v8x3b").
+
