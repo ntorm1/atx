@@ -6209,3 +6209,21 @@ weighted members, and the combined signal and NAV are the same either way, so no
 wq_030 and wq_014 (status reject_redundant, prior sign) **stay at weight 0** (R-2 / R-7 precedent). The cell runs on
 **library v8x7b = v8x3b + wq_099, wq_035, wq_055, wq_006, wq_095, wq_085, wq_030, wq_043, wq_014, wq_044** (68; the same
 strings and trial ids: 0 new admission lines).
+
+**Library v8x7b** (commit `eabf55fd`): 10 add-alpha calls with `--name v8x7b` (same argv; plans `x7b-plans/`), every call
+exit 0; library `81db1d30`, recipe `f205da12` (admission_trials 10, unchanged 58), registry unchanged (`f0ee2288`), spec
+`lib-v8x7b.json` with PM6-8 (i) applied before any run. Registered in `v8-prereg.md` ("Library v8x7b").
+
+| phase (v8x7b; source `eabf55fd`) | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 13.3 | 530 | 0 | `c7343357050e5ac02fe68667a9ce54e87852695c713443301716e8461eee6816` | u-compare IDENTICAL (58 objects; 169,708 rows of 58 keys; b adds 29,260 rows of 10) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 2.2 / 35.3 | 58 / 1,450 | 0 | `fd069a33...` / `24637480...` | - |
+| marginal (pool only, `-poolonly-b`) | 360 / 1,536 | 360.5 | 251 | 15 | `7222547ab0d1d2d1669f3ec63e094b65562741f2903eeb7e33afc3b61503e61f` | **time-limit** (the 360 s cap of PM7-31); no output dir, nothing read |
+
+**The time cap and what was done.** v8x7's marginal (70 members) took 331.5 s; v8x7b's (68) hit 360 s while the host was
+loaded by other sessions (CPU 46-61%: VS Code / pylance at 320% of one core, Defender at 100%, a `C:/atx/build-server-rel`
+clang-cl build). The phase is report only (it gates nothing). A run killed by the runner leaves no output: rule 7's
+blind re-run (as the campaign runbook treats a time-limit: remove the cause without reading anything, re-run the same
+spec). Cause removed by waiting for a quiet host (no compiler, CPU under 25% for 30 s); `marginal.output` ->
+`...-v8x7b-marginal-poolonly-c` (spec-only, pins unchanged). **If the blind re-run hits the cap again, root stops (PM8-4
+(c)).**

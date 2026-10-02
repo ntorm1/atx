@@ -294,7 +294,7 @@
   },
   "verdict": true,
   "marginal": {
-    "output": "build-equity/mega-v8-b0b-train-u-v8x7b-marginal-poolonly-b",
+    "output": "build-equity/mega-v8-b0b-train-u-v8x7b-marginal-poolonly-c",
     "pool": "reference_combined"
   },
   "receipts": "every-phase",
