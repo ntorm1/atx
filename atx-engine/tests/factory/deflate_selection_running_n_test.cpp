@@ -13,6 +13,11 @@
 // observed Sharpe.
 
 #include <cstdint>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <numeric>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -237,4 +242,187 @@ TEST(DeflateSelection, SeqEqualsParallel) {
   EXPECT_EQ(r_seq.trial_count, r_par.trial_count);
 }
 
+} // namespace atxtest_deflate_selection_running_n
+
+namespace atxtest_deflate_selection_running_n {
+namespace factory = atx::engine::factory;
+
+struct SelectionSink : factory::SearchProgressSink {
+  std::vector<factory::GenerationSnapshot> seen;
+  atx::core::Status on_generation(const factory::GenerationSnapshot &snapshot) override {
+    seen.push_back(snapshot);
+    return atx::core::Ok();
+  }
+};
+
+factory::SearchResumeState resume_from(const factory::GenerationSnapshot &cp) {
+  factory::SearchResumeState out;
+  out.start_generation = cp.generation; out.population = cp.population;
+  out.canon_blob = cp.canon_blob; out.cache_blob = cp.cache_blob;
+  out.archive_blob = cp.archive_blob; out.best_per_gen_blob = cp.best_per_gen_blob;
+  out.digest = cp.digest; out.candidates_generated = cp.candidates_generated;
+  return out;
+}
+
+std::vector<atx::u64> candidate_order(const SearchResult &result) {
+  std::vector<atx::u64> out;
+  for (const auto &g : result.admitted_candidates) out.push_back(g.canon_hash);
+  return out;
+}
+
+// Public, fresh full-fitness evaluations form the oracle. Search must reach the
+// same scores/order using cached statistics, without those repeated backtests.
+void verify_selection_oracle(Fixture &fx, const SearchConfig &cfg,
+                             const SelectionSink &sink, const SearchResult &result) {
+  ASSERT_FALSE(sink.seen.empty());
+  usize reused = 0;
+  std::vector<atx::u64> expected_order;
+  for (const auto &snapshot : sink.seen) {
+    factory::FitnessCfg fit = cfg.fitness;
+    fit.trial_count = cfg.prior_trial_count + snapshot.n_evaluated;
+    std::vector<atx::u64> cache_keys;
+    std::vector<factory::CachedScore> cache;
+    bool versioned = false;
+    ASSERT_TRUE(factory::deserialize_cache(snapshot.cache_blob, cache_keys, cache,
+                                           nullptr, nullptr, &versioned));
+    ASSERT_TRUE(versioned);
+    std::vector<atx::u64> hashes;
+    std::vector<f64> scores, flat;
+    constexpr usize width = factory::kObjDeflation + 1;
+    f64 best = -std::numeric_limits<f64>::infinity();
+    for (const auto &source : snapshot.population) {
+      auto ast = atx::engine::alpha::parse_expr(source, fx.lib);
+      ASSERT_TRUE(ast);
+      auto g = factory::analyze_into(std::move(*ast));
+      ASSERT_TRUE(g);
+      g->canon_hash = factory::canonical_hash(*g, cfg.canon);
+      auto report = factory::pool_aware_fitness(*g, AlphaStore{}, fx.panel, fx.policy, fx.sim, fit);
+      ASSERT_TRUE(report);
+      ASSERT_TRUE(std::isfinite(report->dsr));
+      const f64 score = std::min(report->raw, report->raw * report->dsr);
+      best = std::max(best, score);
+      hashes.push_back(g->canon_hash); scores.push_back(score);
+      auto objectives = report->objectives;
+      objectives[factory::kObjDeflation] = report->dsr;
+      flat.insert(flat.end(), objectives.begin(), objectives.begin() + width);
+      const auto hit = std::find(cache_keys.begin(), cache_keys.end(), g->canon_hash);
+      if (hit != cache_keys.end()) {
+        ++reused;
+        const auto &cached = cache[static_cast<usize>(hit - cache_keys.begin())];
+        EXPECT_DOUBLE_EQ(cached.raw, report->raw);
+        EXPECT_EQ(cached.objectives[factory::kObjDeflation], 0.0);
+        EXPECT_TRUE(cached.dsr_sample.available);
+        EXPECT_EQ(cached.dsr_sample.observations, report->dsr_sample.observations);
+        EXPECT_DOUBLE_EQ(cached.dsr_sample.per_period_sharpe, report->dsr_sample.per_period_sharpe);
+        EXPECT_DOUBLE_EQ(cached.dsr_sample.skewness, report->dsr_sample.skewness);
+        EXPECT_DOUBLE_EQ(cached.dsr_sample.excess_kurtosis, report->dsr_sample.excess_kurtosis);
+      }
+    }
+    EXPECT_DOUBLE_EQ(snapshot.best_fitness, best) << "generation " << snapshot.generation;
+    std::vector<usize> order(hashes.size());
+    std::iota(order.begin(), order.end(), 0U); // snapshot population is canonical order
+    if (cfg.objective_mode == ObjectiveMode::ScalarRaw) {
+      std::sort(order.begin(), order.end(), [&](usize a, usize b) {
+        return scores[a] != scores[b] ? scores[a] > scores[b] : hashes[a] < hashes[b];
+      });
+    } else {
+      const factory::ObjMatrix matrix{flat, hashes.size(), width};
+      const auto ranks = factory::fast_nondominated_sort(matrix, order);
+      std::vector<f64> crowding(hashes.size());
+      for (atx::u16 front = 0; front <= *std::max_element(ranks.begin(), ranks.end()); ++front) {
+        std::vector<usize> members;
+        for (const auto i : order) if (ranks[i] == front) members.push_back(i);
+        const auto distances = factory::crowding_distance(matrix, members, order);
+        for (const auto i : members) crowding[i] = distances[i];
+      }
+      std::sort(order.begin(), order.end(), [&](usize a, usize b) {
+        if (ranks[a] != ranks[b]) return ranks[a] < ranks[b];
+        return crowding[a] != crowding[b] ? crowding[a] > crowding[b] : hashes[a] < hashes[b];
+      });
+    }
+    expected_order.clear();
+    for (const auto i : order) expected_order.push_back(hashes[i]);
+  }
+  EXPECT_GT(reused, 0U); // must actually exercise elites/cache hits
+  EXPECT_EQ(candidate_order(result), expected_order);
+}
+
+TEST(DeflateSelection, CurrentTrialsRefreshEveryEliteAndRankedCandidate) {
+  for (const auto mode : {ObjectiveMode::ScalarRaw, ObjectiveMode::MultiObjective}) {
+    Fixture fx;
+    auto cfg = deflate_cfg(42, 12, 5, 2);
+    cfg.objective_mode = mode;
+    cfg.prior_trial_count = 29;
+    SelectionSink sink;
+    const auto result = fx.driver().run(cfg, AlphaStore{}, &sink);
+    ASSERT_EQ(sink.seen.size(), cfg.generations);
+    EXPECT_GT(sink.seen.back().n_evaluated, sink.seen.front().n_evaluated);
+    EXPECT_EQ(result.full_fitness_evaluations, result.trial_count);
+    verify_selection_oracle(fx, cfg, sink, result);
+  }
+}
+
+TEST(DeflateSelection, VersionedCheckpointRefreshesWithoutRepeatingBacktests) {
+  Fixture fx;
+  auto cfg = deflate_cfg(99, 12, 5, 1);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.prior_trial_count = 57;
+  SelectionSink full_sink;
+  const auto full = fx.driver().run(cfg, AlphaStore{}, &full_sink);
+  ASSERT_EQ(full_sink.seen.size(), cfg.generations);
+  auto resume = resume_from(full_sink.seen[2]);
+  SelectionSink resumed_sink;
+  cfg.n_workers = 4;
+  const auto resumed = fx.driver().run(cfg, AlphaStore{}, &resumed_sink, &resume);
+  ASSERT_FALSE(resumed.fitness_cache_resume_mismatch);
+  EXPECT_EQ(full.digest, resumed.digest);
+  EXPECT_EQ(full.best_fitness_per_gen, resumed.best_fitness_per_gen);
+  EXPECT_EQ(candidate_order(full), candidate_order(resumed));
+  const auto restored = factory::deserialize_canon(resume.canon_blob);
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(resumed.full_fitness_evaluations, resumed.trial_count - restored->size());
+  verify_selection_oracle(fx, cfg, resumed_sink, resumed);
+
+  // An increased cross-run history also refreshes restored elites immediately.
+  cfg.prior_trial_count = 10000;
+  SelectionSink later_sink;
+  const auto later = fx.driver().run(cfg, AlphaStore{}, &later_sink, &resume);
+  EXPECT_EQ(later.full_fitness_evaluations, later.trial_count - restored->size());
+  verify_selection_oracle(fx, cfg, later_sink, later);
+}
+
+TEST(DeflateSelection, LegacyAndMalformedScoreCheckpointsAreRefused) {
+  Fixture fx;
+  const auto cfg = deflate_cfg(7, 8, 3, 1);
+  SelectionSink sink;
+  static_cast<void>(fx.driver().run(cfg, AlphaStore{}, &sink));
+  ASSERT_EQ(sink.seen.size(), cfg.generations);
+  auto resume = resume_from(sink.seen[1]);
+  // Recreate the old layout: its cached raw may already contain a haircut and
+  // descriptor bins cannot recover the original sample moments.
+  std::vector<atx::u64> keys;
+  std::vector<factory::CachedScore> cache;
+  ASSERT_TRUE(factory::deserialize_cache(resume.cache_blob, keys, cache));
+  ASSERT_FALSE(keys.empty());
+  std::string legacy;
+  for (usize i = 0; i < keys.size(); ++i) {
+    if (i != 0) legacy += '\n';
+    legacy += factory::u64_to_hex(keys[i]) + ' ' + factory::f64_to_hex(cache[i].raw);
+    legacy += ' ' + factory::u64_to_hex(cache[i].n_objectives);
+    for (const auto value : cache[i].objectives) legacy += ' ' + factory::f64_to_hex(value);
+    legacy += ' ' + factory::u64_to_hex(cache[i].descriptor.size());
+    for (const auto value : cache[i].descriptor) legacy += ' ' + factory::f64_to_hex(value);
+  }
+  for (const auto &blob : {legacy, std::string{}, sink.seen[1].cache_blob + " garbage"}) {
+    resume.cache_blob = blob;
+    const auto rejected = fx.driver().run(cfg, AlphaStore{}, nullptr, &resume);
+    EXPECT_TRUE(rejected.fitness_cache_resume_mismatch);
+    EXPECT_TRUE(rejected.admitted_candidates.empty());
+    EXPECT_EQ(rejected.full_fitness_evaluations, 0U);
+  }
+  auto disabled = cfg;
+  disabled.deflate_selection = false;
+  resume.cache_blob = legacy;
+  EXPECT_TRUE(fx.driver().run(disabled, AlphaStore{}, nullptr, &resume).fitness_cache_resume_mismatch);
+}
 } // namespace atxtest_deflate_selection_running_n

@@ -247,7 +247,7 @@ TEST(BlockingPbo, InertAtMaxPboOffDefault) {
   Fixture fx{real_signal_panel()};
   lib::Library library = lib::Library::open(tmpdir("inert_max_pbo_off"), permissive_gate_cfg(), {0xC0FFEEu});
   Factory f = fx.factory();
-  const auto rep_r = f.mine_into(cfg, library, gate);
+  const auto rep_r = f.mine_research_into(cfg, library, gate);
   ASSERT_TRUE(rep_r.has_value())
       << "blocking_pbo=true with max_pbo=1.0 (off) must be a no-op (byte-identical Ok path)";
   EXPECT_TRUE(rep_r->pbo_gate_passed);

@@ -2,6 +2,7 @@
 
 #include <algorithm>     // std::clamp, std::sort, std::max, std::min
 #include <bit>           // std::bit_cast (screen checkpoint identity)
+#include "atx/engine/eval/deflated_sharpe.hpp"
 #include <cmath>         // std::isfinite (mean_raw telemetry, NaN/inf-safe)
 #include <cstddef>       // std::size_t (hash_combine seed type)
 #include <cstdint>       // std::uint8_t (compiled[] flag vector)
@@ -539,8 +540,15 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     std::vector<atx::u64> cache_keys;
     std::vector<CachedScore> cache_vals;
     std::optional<atx::u64> restored_ic_identity, restored_cpcv_identity;
+    bool has_raw_statistics = false;
     auto cache_st = deserialize_cache(resume->cache_blob, cache_keys, cache_vals,
-                                      &restored_ic_identity, &restored_cpcv_identity);
+                                      &restored_ic_identity, &restored_cpcv_identity,
+                                      &has_raw_statistics);
+    if ((!resume->cache_blob.empty() || cfg.deflate_selection) &&
+        (!cache_st || !has_raw_statistics)) {
+      res.fitness_cache_resume_mismatch = true;
+      return res;
+    }
     if (!canon_keys || !archive_entries || !best_pg || !cache_st) {
       SearchResult err_res; // corrupt accumulated-state blob -> fail loud
       err_res.seed = cfg.master_seed;
@@ -591,13 +599,19 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   }
 
   std::vector<Scored> scored; // current generation's scored population
-  // Run-local mean-fitness history — parallel to res.best_fitness_per_gen —
-  // used by the stagnation early-stop to guard against false positives on
-  // non-collapsed populations (best_raw is non-decreasing BY CONSTRUCTION due
-  // to elitism, so a best-raw plateau does NOT signal convergence; mean_raw
-  // collapsing is the genuine signal of population homogeneity).
+  // Local convergence histories restart on resume; they never index the
+  // restored reporting history, which may have a different length or trial N.
   std::vector<atx::f64> mean_fitness_per_gen;
   mean_fitness_per_gen.reserve(cfg.generations);
+  // Stopping and operator credit compare trial-independent raw fitness. The
+  // reported selection history stays at each generation's actual N; comparing
+  // those values across N would mistake a stricter benchmark for deterioration.
+  std::vector<atx::f64> progress_best_per_gen;
+  progress_best_per_gen.reserve(cfg.generations);
+  const auto progress_fitness = [&](const Scored &s) {
+    return cfg.deflate_selection && !is_rejected_score(s.origin)
+        ? fitness_cache.at(s.genome.canon_hash).raw : s.fitness;
+  };
 
   // ----- Task 5: adaptive operator selection (run-local credit state) ---------
   // `op_weights` (op_swap, field_swap, jitter) bias each generation's mutation-
@@ -690,13 +704,21 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // before reproduction. No-op when the objective is inactive.
     update_archive(scored, canon_order, cfg, behavior_archive);
 
-    // Track the best RAW fitness this generation (the maximized search signal,
-    // NOT the novelty-penalized selection score). A best-raw elite is carried
-    // verbatim into the next gen and re-scores to the same cached raw value, so
-    // this sequence is non-decreasing by construction (the ElitismKeepsBest
-    // guarantee).
+    // Selection telemetry uses the current common N. With deflation enabled
+    // these historical values can decrease as the trial count grows.
     res.best_fitness_per_gen.push_back(best_raw(scored));
-    mean_fitness_per_gen.push_back(mean_raw(scored));
+    atx::f64 progress_best = kRejectedRaw, progress_sum = 0.0;
+    atx::usize progress_count = 0;
+    for (const auto &s : scored) {
+      const auto raw = progress_fitness(s);
+      if (std::isfinite(raw)) {
+        progress_best = std::max(progress_best, raw);
+        progress_sum += raw;
+        ++progress_count;
+      }
+    }
+    progress_best_per_gen.push_back(progress_best);
+    mean_fitness_per_gen.push_back(progress_count ? progress_sum / static_cast<atx::f64>(progress_count) : 0.0);
 
     // Progress sink (resumable-discover). Off-path (sink == nullptr) this is a
     // single null-pointer check — no work, byte-identical legacy loop. When set,
@@ -731,24 +753,14 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       }
     }
 
-    // Stagnation early-stop (pure fn of best_fitness_per_gen + mean_fitness_per_gen;
-    // F1-safe). 0 disables. Placed AFTER the sink checkpoint and BEFORE reproduce.
-    //
-    // WHY BOTH: best_raw is NON-DECREASING BY CONSTRUCTION (elitism carries the
-    // best genome verbatim and the canon cache re-scores it identically), so a
-    // best-raw plateau is a NORMAL elitist-GA state, NOT genuine convergence. Mean
-    // fitness collapsing is the genuine signal of population homogeneity (all
-    // genomes converged to the same score). Requiring BOTH guards against early
-    // termination on healthy, diverse populations.
-    //
-    // Small epsilon (1e-9) instead of strict `>` to avoid float-equality flakiness
-    // from NaN propagation or benign rounding. The break falls through to the
-    // post-loop finalize, returning a well-formed result on the current scored set.
+    // Compare trial-independent raw fitness for convergence. Require both
+    // best and mean to plateau; the trial-count correction alone cannot stop
+    // a still-improving search. Rebuild this local window after resume.
     if (cfg.stagnation_patience > 0 &&
-        res.best_fitness_per_gen.size() > cfg.stagnation_patience) {
-      const atx::usize n = res.best_fitness_per_gen.size();
-      const atx::f64 best_recent   = res.best_fitness_per_gen[n - 1];
-      const atx::f64 best_baseline = res.best_fitness_per_gen[n - 1 - cfg.stagnation_patience];
+        progress_best_per_gen.size() > cfg.stagnation_patience) {
+      const atx::usize n = progress_best_per_gen.size();
+      const atx::f64 best_recent   = progress_best_per_gen[n - 1];
+      const atx::f64 best_baseline = progress_best_per_gen[n - 1 - cfg.stagnation_patience];
       const atx::f64 mean_recent   = mean_fitness_per_gen[n - 1];
       const atx::f64 mean_baseline = mean_fitness_per_gen[n - 1 - cfg.stagnation_patience];
       constexpr atx::f64 kEps = 1e-9;
@@ -781,7 +793,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         if (is_rejected_score(scored[idx].origin)) {
           continue; // L3: never fully scored (sentinel raw) -> no realized gain to credit
         }
-        gain_sum[o] += scored[idx].fitness - prev_parent_best;
+        gain_sum[o] += progress_fitness(scored[idx]) - prev_parent_best;
         ++gain_cnt[o];
       }
       for (atx::usize o = 0; o < 3; ++o) {
@@ -799,7 +811,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       pop = reproduce(scored, cfg, gen, det_pool, res, op_weights, prev_child_ops);
       // Stash the bookkeeping the NEXT generation needs to credit these children.
       prev_n_elites = n_elites_this;
-      prev_parent_best = best_raw(scored);
+      prev_parent_best = progress_best;
       have_prev_children = cfg.adaptive_operators;
     }
   }
@@ -1111,6 +1123,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
 
   const atx::usize n_to_score = to_score.size();
   std::vector<CachedScore> score_slot(n_to_score);
+  std::vector<atx::u8> fitness_evaluated(n_to_score, atx::u8{0});
   std::vector<ResidualCandidateScore> residual_slot(residual_on ? n_to_score : 0);
   if (residual_on)
     std::fill(score_slot.begin(), score_slot.end(), residual_unavailable_score());
@@ -1122,30 +1135,16 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   std::vector<atx::u8> ic_status(ic_cache != nullptr ? n_to_score : 0U, atx::u8{0});
   std::vector<atx::u64> ic_prepass_digest;
 
-  // R4 — per-generation deflation N (Piece 1, determinism-safe).
-  //
-  // canon.size() is captured HERE (serial, before the parallel_for barrier) so
-  // every worker in this generation sees the SAME N — it is the count of distinct
-  // candidates scored in ALL PRIOR generations (the canon.insert seam at
-  // search_driver.cpp Phase 4 runs serially, after the parallel barrier, so no
-  // per-candidate atomic inside the parallel region is needed or allowed).
-  //
-  // gen 0: canon.size()==0 -> N=1 (same as default trial_count=1), so gen-0 DSR
-  // values equal the off-path; divergence is driven by the objective/raw seam
-  // below, not by N at gen 0.
-  //
-  // When deflate_selection is OFF: gen_fit == cfg.fitness exactly (trial_count
-  // stays at its cfg.fitness default) -> zero new computation -> byte-identical.
-  //
-  // S5-2: cfg.prior_trial_count folds in the CROSS-RUN cumulative N from a
-  // persistent library (0 for a fresh library / the non-library mine() path, so
-  // this collapses to the exact pre-S5-2 expression). Both terms were already
-  // captured/known before this point (canon.size() here; prior_trial_count by the
-  // Factory caller before driver.run() even started) -> still a single serial
-  // scalar, so the seq==parallel invariant is unaffected.
+  // All distinct attempts in the generation count, including low-rung and IC
+  // rejections. The serial plan makes N worker-order independent. Saturate the
+  // external cumulative count rather than wrapping a large history to small N.
   FitnessCfg gen_fit = cfg.fitness;
   if (cfg.deflate_selection) {
-    gen_fit.trial_count = cfg.prior_trial_count + std::max<atx::usize>(1U, canon.size());
+    const auto max_count = std::numeric_limits<atx::usize>::max();
+    const auto local_count = canon.size() + n_to_score;
+    gen_fit.trial_count = std::max<atx::usize>(1U,
+        cfg.prior_trial_count > max_count - local_count ? max_count
+                                                       : cfg.prior_trial_count + local_count);
   }
   // S4-3: thread the SearchConfig-level objective gates into the per-generation
   // FitnessCfg -- fitness_core/finish_report (which alone have strm/panel in scope)
@@ -1352,6 +1351,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
       auto worker_fit = gen_fit;
       if (residual_on) worker_fit.residual_scratch = &residual_scratch[wid];
+      fitness_evaluated[j] = atx::u8{1};
       auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, worker_fit,
                                    /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
                                    /*signals=*/&*ss, /*cpcv_cache=*/&cpcv_cache);
@@ -1370,6 +1370,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
       if (rep.has_value()) {
         score_slot[j].raw = rep->raw;
+        score_slot[j].dsr_sample = rep->dsr_sample;
         score_slot[j].objectives = rep->objectives; // S4.1: cache the objectives
         score_slot[j].n_objectives = rep->n_objectives;
         score_slot[j].descriptor = std::move(rep->descriptor); // S4.2: canon-cache phenotype
@@ -1385,28 +1386,6 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       // ADMITTED (factory drops un-evaluable candidates), so no perverse incentive.
       if (cfg.enable_parsimony) {
         set_parsimony(score_slot[j], *to_score[j]);
-      }
-      // R4 — deflated-Sharpe selection pressure (Pieces 2 + 3), opt-in.
-      //
-      // Piece 2 (NSGA objective): add dsr as objectives[kObjDeflation] so
-      // MultiObjective ranking rewards candidates with higher deflated edge.
-      // n_objectives is bumped to cover slot 6 so the ObjMatrix includes it.
-      // Piece 3 (raw haircut): multiply raw by dsr so the elitism/ScalarRaw
-      // signal also reflects deflation risk. rep->dsr in [0,1] (PSR/probability)
-      // so this shrinks raw toward 0 as the deflation bar bites.
-      //
-      // OFF-PATH: when deflate_selection is false this block is skipped — raw is
-      // unchanged, n_objectives is unchanged, objectives[6] stays at its zero
-      // default, and the NSGA ObjMatrix never sees slot 6. Byte-identical.
-      //
-      // GUARD: only write when fitness succeeded (rep.has_value() checked above;
-      // this block is inside the `if (rep.has_value())` scope via the outer seam
-      // structure). The write is to score_slot[j], a disjoint single-writer slot.
-      if (cfg.deflate_selection && rep.has_value()) {
-        score_slot[j].objectives[kObjDeflation] = rep->dsr; // maximization: higher deflated edge ranks better
-        score_slot[j].n_objectives = static_cast<atx::u8>(
-            std::max<atx::usize>(score_slot[j].n_objectives, kObjDeflation + 1U));
-        score_slot[j].raw = rep->raw * rep->dsr; // deflation haircut for elitism / ScalarRaw
       }
     }
   });
@@ -1482,6 +1461,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     }
   }
   for (atx::usize j = 0; j < n_to_score; ++j) {
+    res.full_fitness_evaluations += fitness_evaluated[j];
     const atx::u64 hash = to_score[j]->canon_hash;
     if (residual_on) {
       residual_slot[j].canon_hash = hash;
@@ -1528,6 +1508,28 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     s.n_objectives = cs.n_objectives;
     s.descriptor = std::move(cs.descriptor); // S4.2: phenotype for the novelty pass
     s.origin = cs.origin;                    // L3: Full / FingerprintBorrowed / FidelityRejected
+    if (cfg.deflate_selection && !is_rejected_score(s.origin)) {
+      const auto &sample = cs.dsr_sample;
+      const auto dsr = sample.available
+          ? eval::deflated_sharpe(sample.per_period_sharpe, sample.observations,
+                                 sample.skewness, sample.excess_kurtosis,
+                                 gen_fit.trial_count, std::nullopt).dsr
+          : std::numeric_limits<atx::f64>::quiet_NaN();
+      if (std::isfinite(dsr) && std::isfinite(cs.raw)) {
+        // Deflation may reduce positive edge, but must never improve a loss by
+        // pulling a negative raw score toward zero as the trial count grows.
+        s.fitness = std::min(cs.raw, cs.raw * dsr);
+        s.selection = s.fitness;
+        s.objectives[kObjDeflation] = dsr;
+        s.n_objectives = static_cast<atx::u8>(
+            std::max<atx::usize>(s.n_objectives, kObjDeflation + 1U));
+      } else {
+        s.fitness = s.selection = kRejectedRaw;
+        s.origin = ScoreOrigin::FitnessUnavailable;
+        s.n_objectives = 0;
+        s.descriptor.clear();
+      }
+    }
     s.genome.canon_hash = g.canon_hash;
     out.push_back(std::move(s));
   }
@@ -1984,7 +1986,7 @@ SearchDriver::elite_ordered_indices(const std::vector<Scored> &scored) {
 // signal); ties broken by canonical order so the rank is deterministic (F1).
 // This is the elitism + admitted-candidate ordering: carrying the best-raw genome
 // verbatim each gen (and re-scoring it from the canon-keyed cache to the SAME raw
-// value) makes best_fitness_per_gen non-decreasing BY CONSTRUCTION.
+// value). With deflation enabled, selection is reprojected at the current N.
 [[nodiscard]] std::vector<atx::usize>
 SearchDriver::raw_ordered_indices(const std::vector<Scored> &scored) {
   std::vector<atx::usize> idx(scored.size());
@@ -2177,7 +2179,7 @@ SearchDriver::tournament_pick(const std::vector<Scored> &scored,
 
 // Best RAW fitness in the scored set (the maximized search signal, NOT the
 // novelty-penalized .selection). This is what best_fitness_per_gen tracks; the
-// structural elite carry guarantees it is non-decreasing across generations.
+// structural elite carry is monotone only in undeflated scalar mode.
 [[nodiscard]] atx::f64 SearchDriver::best_raw(const std::vector<Scored> &scored) {
   atx::f64 best = 0.0;
   bool any = false;

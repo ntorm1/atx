@@ -80,9 +80,9 @@
 //  are inherently approximate market statistics — an exact type would be false
 //  precision, matching Market's f64 book and Portfolio's f64 mark-to-market). The
 //  RESULT crosses into exact Decimal at exactly two points: the fill PRICE and the
-//  commission FEE, both via Decimal::from_double(...).value_or(...). A finite
-//  positive price/fee always converts; the value_or fallback is a defensive floor
-//  that is unreachable for in-range inputs (documented at each call site).
+//  commission FEE, both via checked Decimal::from_double conversions. Invalid
+//  modeled prices, fees or permanent marks retain the order without a fill,
+//  liquidity consumption or impact; they never become synthetic zero prices.
 //
 // ===========================================================================
 //  Zero steady-state allocation (per-slice hot path)
@@ -99,11 +99,13 @@
 // ===========================================================================
 //  No RNG: the sim is deterministic by construction (a probabilistic-fill model
 //  is a deferred residual, see phase-2 ledger). open_ is processed in FIFO order;
-//  the per-instrument volume accumulator uses a deterministic linear scan over a
-//  reset-per-bar small vector (no hash container in the hot path). Two identical
+//  sorted lookup scratch never changes FIFO fill order. Matching pending orders
+//  and tracking broad-basket volume take O(N log N), not quadratic scans. Two identical
 //  sims fed identical orders + market produce bit-for-bit identical fills.
 
+#include <algorithm> // sorted lookup scratch; FIFO order remains in open_
 #include <cmath>  // std::pow (√-impact term), std::isnan (unpriced-mark guard)
+#include <limits> // checked share-count conversion and latency arithmetic
 #include <span>   // std::span (order input + fill output view)
 #include <vector> // std::vector (reserved-once open set + scratch buffers)
 
@@ -177,6 +179,29 @@ struct VolumeCapCfg {
   atx::f64 volume_limit = 0.025; // 2.5% of bar volume per bar (Appendix A vol-share)
 };
 
+/// Per-settlement order counts. Every input order is either filled (possibly
+/// partially) or deferred for exactly one reason. Invalid intent remains pending;
+/// callers can distinguish model/input failures from normal market constraints.
+struct SettlementDiagnostics {
+  atx::usize filled_orders{};
+  atx::usize waiting_latency{};
+  atx::usize invalid_mark{};
+  atx::usize limit_not_marketable{};
+  atx::usize no_liquidity{};
+  atx::usize invalid_economics{};
+  atx::usize invalid_configuration{};
+
+  void accumulate(const SettlementDiagnostics &other) noexcept {
+    filled_orders += other.filled_orders;
+    waiting_latency += other.waiting_latency;
+    invalid_mark += other.invalid_mark;
+    limit_not_marketable += other.limit_not_marketable;
+    no_liquidity += other.no_liquidity;
+    invalid_economics += other.invalid_economics;
+    invalid_configuration += other.invalid_configuration;
+  }
+};
+
 // ===========================================================================
 //  ExecutionSimulator
 // ===========================================================================
@@ -192,6 +217,9 @@ public:
     replacement_.reserve(kReserve);
     fills_.reserve(kReserve);
     vol_for_bar_.reserve(kReserve);
+    match_index_.reserve(kReserve);
+    match_cursor_.reserve(kReserve);
+    configuration_valid_ = validate_configuration();
   }
 
   /// Default-configured simulator (every coefficient at its Appendix-A default).
@@ -212,6 +240,12 @@ public:
   /// bar-by-bar queue/settle loop — one cost surface, not a second cost number.
   /// Pure observability; mutates nothing.
   [[nodiscard]] const ImpactCfg &impact_cfg() const noexcept { return impact_cfg_; }
+
+  [[nodiscard]] bool configuration_valid() const noexcept { return configuration_valid_; }
+  [[nodiscard]] const SettlementDiagnostics &last_settlement() const noexcept {
+    return diagnostics_;
+  }
+  [[nodiscard]] atx::usize pending_orders() const noexcept { return open_.size(); }
 
   /// Toggle the same-bar fill relaxation (the delay-0 knob; P3c-3). When false
   /// (the DEFAULT, set at construction) an order fills only on a STRICTLY-LATER
@@ -248,19 +282,28 @@ public:
   void replace_pending(std::span<const OrderPayload> orders,
                        atx::core::time::Timestamp now) noexcept {
     replacement_.clear();
+    match_index_.resize(open_.size());
+    match_cursor_.resize(open_.size());
+    for (atx::usize i = 0; i < open_.size(); ++i) match_index_[i] = i;
+    std::sort(match_index_.begin(), match_index_.end(), [&](atx::usize a, atx::usize b) {
+      if (order_less(open_[a], open_[b])) return true;
+      if (order_less(open_[b], open_[a])) return false;
+      return a < b; // duplicate intents retain their original FIFO timestamps
+    });
+    for (atx::usize i = 0; i < open_.size(); ++i) match_cursor_[i] = i;
     for (const OrderPayload &desired : orders) {
       if (desired.qty == 0) {
         continue;
       }
       OrderPayload replacement = desired;
       replacement.queued_at = now;
-      for (OrderPayload &pending : open_) {
-        if (pending.id == desired.id && pending.qty == desired.qty &&
-            pending.type == desired.type &&
-            (desired.type == OrderType::Market || pending.limit == desired.limit)) {
-          replacement.queued_at = pending.queued_at;
-          pending.qty = 0; // consume the match once if the input contains duplicate orders
-          break;
+      const auto found = std::lower_bound(match_index_.begin(), match_index_.end(), desired,
+          [&](atx::usize index, const OrderPayload &key) { return order_less(open_[index], key); });
+      if (found != match_index_.end()) {
+        auto &cursor = match_cursor_[static_cast<atx::usize>(found - match_index_.begin())];
+        if (cursor < match_index_.size() &&
+            !order_less(desired, open_[match_index_[cursor]])) {
+          replacement.queued_at = open_[match_index_[cursor++]].queued_at;
         }
       }
       replacement_.push_back(replacement);
@@ -283,7 +326,13 @@ public:
   [[nodiscard]] std::span<const FillPayload> settle_pending(atx::core::time::Timestamp now,
                                                             Market &market) noexcept {
     fills_.clear();
+    diagnostics_ = {};
+    if (!configuration_valid_) {
+      diagnostics_.invalid_configuration = open_.size();
+      return {};
+    }
     reset_vol_accumulator_if_new_bar(now);
+    prepare_volume_index();
 
     // Process the open set in FIFO order; survivors compact to the front so the
     // open set stays insertion-ordered for the next slice (determinism).
@@ -300,13 +349,12 @@ public:
   }
 
 private:
-  /// Initial reservation for the open set + scratch buffers. A backtest's per-bar
-  /// open set is small; this is sized once and grows only if a pathological run
-  /// exceeds it (still amortised, never on the steady-state path).
+  /// Initial reservation for small books. Broad universes grow these reusable
+  /// buffers during warm-up; the steady-state path reuses their capacity.
   static constexpr atx::usize kReserve = 256;
 
   /// One in-flight per-(instrument, current bar) filled-volume tally. Reset when
-  /// the bar advances; a deterministic linear scan (no hash) keys it by id.
+  /// the bar advances; sorted by id for binary lookup without per-fill allocation.
   struct VolAccum {
     InstrumentId id{};
     atx::f64 filled = 0.0;
@@ -319,19 +367,31 @@ private:
   [[nodiscard]] bool settle_one(OrderPayload &order, atx::core::time::Timestamp now,
                                 Market &market) noexcept {
     if (!eligible(order, now)) {
+      ++diagnostics_.waiting_latency;
       return false; // firewall / latency not satisfied — stays open
     }
     const atx::f64 ref = market.mark(order.id);
-    if (std::isnan(ref) || !limit_marketable(order, ref)) {
-      return false; // unpriced or limit not penetrated — no fill, stays open
+    if (!std::isfinite(ref) || ref <= 0.0) {
+      ++diagnostics_.invalid_mark;
+      return false;
+    }
+    if (!limit_marketable(order, ref)) {
+      ++diagnostics_.limit_not_marketable;
+      return false;
     }
 
     const atx::i64 fillable = volume_capped_qty(order, market);
     if (fillable == 0) {
+      ++diagnostics_.no_liquidity;
       return false; // cap exhausted / zero bar volume — stays open for next slice
     }
 
-    emit_fill(order, fillable, ref, now, market);
+    if (!emit_fill(order, fillable, ref, now, market)) {
+      ++diagnostics_.invalid_economics;
+      return false; // invalid modeled economics: retain intent without consuming liquidity
+    }
+    add_vol_filled(order.id, static_cast<atx::f64>(fillable));
+    ++diagnostics_.filled_orders;
 
     // Reduce the SIGNED remainder's MAGNITUDE toward zero. `fillable` is a positive
     // magnitude (<= |order.qty|), so a buy (qty > 0) subtracts it and a sell
@@ -350,8 +410,12 @@ private:
     const atx::i64 queued_ns = order.queued_at.unix_nanos();
     const bool past_firewall =
         fill_cfg_.allow_same_bar_fill ? (now_ns >= queued_ns) : (now_ns > queued_ns);
-    const bool past_latency = now_ns >= queued_ns + latency_cfg_.latency_nanos;
-    return past_firewall && past_latency;
+    if (!past_firewall) return false;
+    // Ordered timestamps may straddle zero; adding latency to queued_at can
+    // overflow i64 and admit an order before its requested latency has elapsed.
+    const auto elapsed = static_cast<atx::u64>(now_ns) - static_cast<atx::u64>(queued_ns);
+    return latency_cfg_.latency_nanos <= 0 ||
+           elapsed >= static_cast<atx::u64>(latency_cfg_.latency_nanos);
   }
 
   /// Limit-order penetration gate (Market orders always pass). Buy fills only when
@@ -371,28 +435,27 @@ private:
 
   /// Shares fillable on this slice: min(|open_qty|, max(0, vlim*bar_vol - already
   /// filled this bar)), as an integer (truncated toward zero — never over-fill the
-  /// cap). Accumulates the granted amount into the per-bar tally.
+  /// cap). Liquidity is consumed only after a valid fill is emitted.
   [[nodiscard]] atx::i64 volume_capped_qty(const OrderPayload &order,
                                            const Market &market) noexcept {
     const atx::f64 bar_vol = market.bar_volume(order.id);
     const atx::f64 already = vol_filled_for(order.id);
     const atx::f64 budget = cap_cfg_.volume_limit * bar_vol - already;
-    if (budget <= 0.0) {
+    if (!std::isfinite(budget) || budget <= 0.0) {
       return 0; // zero bar volume, or this instrument's per-bar cap is exhausted
     }
     const atx::i64 open_mag = abs_i64(order.qty);
     // Truncate the f64 budget to whole shares; never round up past the cap.
-    const atx::i64 budget_shares = static_cast<atx::i64>(budget);
+    const auto maximum = std::numeric_limits<atx::i64>::max();
+    const atx::i64 budget_shares = budget >= static_cast<atx::f64>(maximum)
+        ? maximum : static_cast<atx::i64>(budget);
     const atx::i64 fillable = (open_mag < budget_shares) ? open_mag : budget_shares;
-    if (fillable > 0) {
-      add_vol_filled(order.id, static_cast<atx::f64>(fillable));
-    }
     return fillable;
   }
 
   /// Price the fill (slippage + temporary impact), apply permanent impact to the
   /// mark, compute the commission, and append the FillPayload to the scratch buffer.
-  void emit_fill(const OrderPayload &order, atx::i64 fillable, atx::f64 ref,
+  [[nodiscard]] bool emit_fill(const OrderPayload &order, atx::i64 fillable, atx::f64 ref,
                  atx::core::time::Timestamp now, Market &market) noexcept {
     const int dir = is_buy(order.qty) ? 1 : -1;
     const InstrumentStats &st = market.stats(order.id);
@@ -401,6 +464,10 @@ private:
 
     const atx::f64 slip = slippage_fraction(fillable, ref, bar_vol, st);
     const atx::f64 temp = temporary_impact(part, st);
+    if (!std::isfinite(slip) || slip < 0.0 || !std::isfinite(temp) || temp < 0.0 ||
+        (dir < 0 && (slip >= 1.0 || temp >= 1.0))) {
+      return false;
+    }
 
     // Both are fractional adverse moves on ref: a buy (dir +1) pays more, a sell
     // (dir -1) receives less. Compose multiplicatively in fraction-of-ref units.
@@ -425,18 +492,30 @@ private:
                           : (fill_px > limit ? fill_px : limit); // sell: never receive < limit
     }
 
-    apply_permanent_impact(order.id, part, ref, dir, st, market);
-
+    if (!std::isfinite(fill_px) || fill_px <= 0.0) return false;
     const atx::f64 fee = commission(fillable, fill_px);
+    const atx::f64 shift = part > 0.0
+        ? ref * (0.5 * impact_cfg_.gamma * st.sigma * part) * static_cast<atx::f64>(dir)
+        : 0.0;
+    if (!std::isfinite(fee) || fee < 0.0 || !std::isfinite(shift) ||
+        !std::isfinite(ref + shift) || ref + shift <= 0.0) return false;
+
+    const auto price_decimal = atx::core::Decimal::from_double(fill_px);
+    const auto fee_decimal = atx::core::Decimal::from_double(fee);
+    if (!price_decimal || *price_decimal <= atx::core::Decimal{} || !fee_decimal) {
+      return false;
+    }
 
     FillPayload f{};
     f.id = order.id;
     f.qty = static_cast<atx::i64>(dir) * fillable; // restore signed direction
-    f.price = to_decimal_price(fill_px);
-    f.fee = to_decimal_fee(fee);
+    f.price = *price_decimal;
+    f.fee = *fee_decimal;
     f.impact = temp; // temporary-impact fraction recorded for cost attribution
     f.t = now;
     fills_.push_back(f);
+    if (shift != 0.0) market.shift_mark(order.id, shift);
+    return true;
   }
 
   /// Slippage as a fraction of ref, floored at half the spread (always cross the
@@ -470,21 +549,6 @@ private:
     return impact_cfg_.Y * st.sigma * std::pow(part, impact_cfg_.delta);
   }
 
-  /// Permanent impact: shift the mark by ref * (0.5*gamma*sigma*part) * sign. Only
-  /// applied when the move is non-zero and the mark is priced (shift_mark asserts
-  /// a priced mark; we already gated on a non-NaN ref in settle_one).
-  void apply_permanent_impact(InstrumentId id, atx::f64 part, atx::f64 ref, int dir,
-                              const InstrumentStats &st, Market &market) const noexcept {
-    if (part <= 0.0) {
-      return; // no participation -> no permanent footprint
-    }
-    const atx::f64 perm = 0.5 * impact_cfg_.gamma * st.sigma * part;
-    const atx::f64 delta = ref * perm * static_cast<atx::f64>(dir);
-    if (delta != 0.0) {
-      market.shift_mark(id, delta);
-    }
-  }
-
   /// Commission (>= 0), exact at the Decimal boundary by the caller. PerShare:
   /// clamp(max(|qty|*per_share, min_fee), 0, max_pct*notional). PerDollar:
   /// |notional|*per_dollar_bps/1e4. notional = |fillable| * fill_px. Exhaustive
@@ -508,22 +572,6 @@ private:
     return 0.0; // unreachable for a valid CommissionMode (bit-corrupted sentinel)
   }
 
-  // ---- Decimal money boundary -----------------------------------------------
-
-  /// Convert an f64 fill price to exact Decimal. A finite positive price always
-  /// converts; value_or supplies a defensive floor for the (unreachable) failure.
-  [[nodiscard]] static atx::core::Decimal to_decimal_price(atx::f64 px) noexcept {
-    // SAFETY: px derives from a finite mark * finite fractional factors, so it is
-    // finite and positive in range; from_double can only fail on NaN/inf/range,
-    // none of which arise here. The value_or(0) is a defensive sentinel.
-    return atx::core::Decimal::from_double(px).value_or(atx::core::Decimal{});
-  }
-
-  /// Convert an f64 fee (>= 0) to exact Decimal. Same boundary discipline.
-  [[nodiscard]] static atx::core::Decimal to_decimal_fee(atx::f64 fee) noexcept {
-    return atx::core::Decimal::from_double(fee).value_or(atx::core::Decimal{});
-  }
-
   // ---- per-bar volume accumulator (deterministic, reset-per-bar) -------------
 
   /// Reset the per-instrument filled-volume tally when the bar advances. The
@@ -537,36 +585,68 @@ private:
     }
   }
 
-  /// Volume already filled for `id` on the current bar (0 if untouched). Linear
-  /// scan over the small reset-per-bar tally — deterministic, no hash container.
-  [[nodiscard]] atx::f64 vol_filled_for(InstrumentId id) const noexcept {
-    for (const VolAccum &a : vol_for_bar_) {
-      if (a.id == id) {
-        return a.filled;
+  /// Add current order IDs to the index, preserving fills already consumed by
+  /// earlier settle calls on this bar. Repeated IDs add zero, never reset volume.
+  void prepare_volume_index() noexcept {
+    for (const auto &order : open_) vol_for_bar_.push_back(VolAccum{order.id, 0.0});
+    std::sort(vol_for_bar_.begin(), vol_for_bar_.end(),
+        [](const VolAccum &a, const VolAccum &b) { return a.id < b.id; });
+    atx::usize write = 0;
+    for (atx::usize read = 0; read < vol_for_bar_.size(); ++read) {
+      const auto value = vol_for_bar_[read];
+      if (write != 0U && vol_for_bar_[write - 1U].id == value.id) {
+        vol_for_bar_[write - 1U].filled += value.filled;
+      } else {
+        vol_for_bar_[write++] = value;
       }
     }
-    return 0.0;
+    vol_for_bar_.resize(write);
+  }
+
+  /// Volume already filled for `id` on the current bar (0 if untouched).
+  [[nodiscard]] atx::f64 vol_filled_for(InstrumentId id) const noexcept {
+    const auto found = std::lower_bound(vol_for_bar_.begin(), vol_for_bar_.end(), id,
+        [](const VolAccum &a, InstrumentId key) { return a.id < key; });
+    return found != vol_for_bar_.end() && found->id == id ? found->filled : 0.0;
   }
 
   /// Accumulate `shares` into `id`'s current-bar filled-volume tally.
   void add_vol_filled(InstrumentId id, atx::f64 shares) noexcept {
-    for (VolAccum &a : vol_for_bar_) {
-      if (a.id == id) {
-        a.filled += shares;
-        return;
-      }
-    }
-    vol_for_bar_.push_back(VolAccum{id, shares});
+    const auto found = std::lower_bound(vol_for_bar_.begin(), vol_for_bar_.end(), id,
+        [](const VolAccum &a, InstrumentId key) { return a.id < key; });
+    ATX_ASSERT(found != vol_for_bar_.end() && found->id == id);
+    found->filled += shares;
   }
 
   // ---- small helpers --------------------------------------------------------
 
+  [[nodiscard]] static bool order_less(const OrderPayload &a, const OrderPayload &b) noexcept {
+    if (a.id != b.id) return a.id < b.id;
+    if (a.qty != b.qty) return a.qty < b.qty;
+    if (a.type != b.type) return a.type < b.type;
+    return a.type == OrderType::Limit && a.limit < b.limit;
+  }
+
+  [[nodiscard]] bool validate_configuration() const noexcept {
+    const auto valid = [](atx::f64 x) { return std::isfinite(x) && x >= 0.0; };
+    return (slip_cfg_.mode == SlippageMode::VolumeShare || slip_cfg_.mode == SlippageMode::FixedBps) &&
+        (comm_cfg_.mode == CommissionMode::PerShare || comm_cfg_.mode == CommissionMode::PerDollar) &&
+        valid(slip_cfg_.k) && valid(slip_cfg_.bps) && valid(slip_cfg_.cap_volshare) &&
+        valid(slip_cfg_.cap_bps) && valid(impact_cfg_.Y) && valid(impact_cfg_.delta) &&
+        valid(impact_cfg_.gamma) && valid(comm_cfg_.per_share) && valid(comm_cfg_.min_fee) &&
+        valid(comm_cfg_.max_pct) && valid(comm_cfg_.per_dollar_bps) &&
+        valid(cap_cfg_.volume_limit) && latency_cfg_.latency_nanos >= 0;
+  }
+
   /// True for a buy (qty > 0); a sell has qty < 0 (zero-qty never reaches here).
   [[nodiscard]] static bool is_buy(atx::i64 qty) noexcept { return qty > 0; }
 
-  /// |x| for an i64 share count. Counts are bounded well below INT64_MAX in any
-  /// realistic universe, so the negate is safe (matches Portfolio::abs_i64).
-  [[nodiscard]] static atx::i64 abs_i64(atx::i64 x) noexcept { return (x < 0) ? -x : x; }
+  /// Largest representable fill magnitude. INT64_MIN can fill in multiple
+  /// chunks, but its positive magnitude cannot be represented as one i64 fill.
+  [[nodiscard]] static atx::i64 abs_i64(atx::i64 x) noexcept {
+    if (x == std::numeric_limits<atx::i64>::min()) return std::numeric_limits<atx::i64>::max();
+    return (x < 0) ? -x : x;
+  }
 
   // ---- config (held by value) -----------------------------------------------
   FillCfg fill_cfg_{};
@@ -581,6 +661,10 @@ private:
   std::vector<OrderPayload> replacement_{}; // scratch for complete pending-book replacement
   std::vector<FillPayload> fills_{};    // per-call scratch (cleared, not freed)
   std::vector<VolAccum> vol_for_bar_{}; // per-(instrument, current bar) tally
+  std::vector<atx::usize> match_index_{};  // sorted order identity -> original FIFO index
+  std::vector<atx::usize> match_cursor_{}; // first unused duplicate per identity
+  SettlementDiagnostics diagnostics_{};
+  bool configuration_valid_{true};
   atx::i64 current_bar_ns_{0};          // the bar the tally currently covers
   bool bar_seen_{false};                // false until the first settle_pending
 };

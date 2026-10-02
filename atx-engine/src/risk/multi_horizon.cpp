@@ -53,6 +53,12 @@ MultiHorizonOptimizer::run(const RebalanceSchedule &sched,
                    "MultiHorizonOptimizer::run: capacity_gross must be nonnegative, not NaN");
   }
   if (cfg.true_mpc) {
+    // A materialized trade box is relative to the current book. Reusing that
+    // same box at every future stage would not constrain each stage's trade.
+    if (cfg.constraints.trade) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "MultiHorizonOptimizer::run: true_mpc does not support stage-relative trade participation");
+    }
     if (cfg.stacked_mpc) {
       return co::Err(co::ErrorCode::InvalidArgument,
                      "MultiHorizonOptimizer::run: true_mpc and stacked_mpc are exclusive");
@@ -86,6 +92,11 @@ MultiHorizonOptimizer::run(const RebalanceSchedule &sched,
     const atx::usize pit = sched.periods[s];
     const FactorModel &V = model_at(pit);
     const atx::usize m = V.n_instruments();
+    if (s == 0U && cfg.constraints.trade) {
+      // This driver starts flat; materialization intentionally requires an
+      // explicit aligned previous book for a trade-participation limit.
+      w_prev.assign(m, 0.0);
+    }
 
     // (1) trajectory → (2) GP aim alpha ᾱ = A_xf f_t (length M; NaN names preserved).
     // ᾱ is the decay-weighted return-space aim (the horizon-average of the decayed

@@ -4,9 +4,12 @@
 #include <cmath>     // std::sqrt (P2a holdout DSR de-annualization)
 #include <cstddef>   // std::size_t (hash_combine seed type)
 #include <limits>    // std::numeric_limits (W4b run-level PBO sentinel)
+#include <iomanip>
+#include <locale>
 #include <numeric>   // std::iota (S5-3 liquidity-bucket ordering)
 #include <optional>  // std::nullopt (P2a deflated_sharpe variance arg)
 #include <span>      // std::span
+#include <sstream>
 #include <utility>   // std::move (admitted provenance / streams)
 #include <vector>    // std::vector
 
@@ -34,6 +37,106 @@
 namespace atx::engine::factory {
 
 namespace {
+
+bool valid_policy_text(const std::string &s) {
+  return !s.empty() && s.size() <= 256U &&
+      std::all_of(s.begin(), s.end(), [](unsigned char c) {
+        return c > 32U && c < 127U && c != ';' && c != '=' && c != ',';
+      });
+}
+
+// Record the semantics actually used by extract_streams, including omissions.
+std::string production_metadata(const FactoryConfig &cfg, const WeightPolicy &weights,
+                                const exec::ExecutionSimulator &sim,
+                                const combine::AlphaGate &gate) {
+  const auto &p = *cfg.production_admission;
+  const auto &g = gate.cfg;
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << std::setprecision(std::numeric_limits<atx::f64>::max_digits10)
+      << "factory_holdout_v1;policy=" << p.policy_id << ";dataset=" << p.dataset_id
+      << ";stream=LegacyStreamsV1;decision_lag_sessions=1;decay=expression_only"
+         ";execution_replay=unavailable;slippage=unmodeled;impact=unmodeled;borrow=unmodeled"
+      << ";transform=" << static_cast<unsigned>(weights.transform)
+      << ";dollar_neutral=" << weights.dollar_neutral
+      << ";industry_neutral=" << weights.industry_neutral
+      << ";gross_leverage=" << weights.gross_leverage
+      << ";truncation=" << weights.truncation << ";winsorize=" << weights.winsorize_limit
+      << ";turnover_commission_rate=" << alpha::detail::turnover_cost_rate(sim)
+      << ";book_size=" << cfg.book_size << ";min_dsr=" << cfg.min_dsr
+      << ";min_split_sharpe=" << cfg.min_split_sharpe
+      << ";max_price_scale_corr=" << cfg.max_price_scale_corr
+      << ";dsr_subwindows=" << cfg.dsr_subwindows
+      << ";robustness=" << cfg.robustness_battery << ',' << cfg.robustness_sub_universe
+      << ',' << cfg.robustness_alt_neutralization << ',' << cfg.robustness_param_perturb
+      << ";gate=" << g.min_sharpe << ',' << g.min_fitness << ',' << g.max_turnover
+      << ',' << g.max_pool_corr << ',' << g.rt_cost_bps << ',' << g.min_holding_days
+      << ',' << g.min_dsr << ',' << g.require_split_stable
+      << ";oos_fraction=" << cfg.oos_fraction << ";oos_embargo=" << cfg.oos_embargo
+      << ";max_label_horizon=" << p.max_label_horizon
+      << ";minimum_holdout_dates=" << p.minimum_holdout_dates
+      << ";prior_trials=" << p.prior_trial_count;
+  return out.str();
+}
+
+atx::core::Status validate_production(const FactoryConfig &cfg,
+                                     const library::Library &library,
+                                     const WeightPolicy &weights,
+                                     const exec::ExecutionSimulator &sim,
+                                     const combine::AlphaGate &gate,
+                                     const SearchResumeState *resume) {
+  using atx::core::Err; using atx::core::ErrorCode;
+  const auto *p = cfg.production_admission;
+  if (!p || !p->audit || !valid_policy_text(p->policy_id) ||
+      !valid_policy_text(p->dataset_id) || !valid_policy_text(p->requester) ||
+      p->prior_trial_count == std::numeric_limits<atx::usize>::max() ||
+      p->max_label_horizon == 0U ||
+      p->max_label_horizon == std::numeric_limits<atx::usize>::max() ||
+      p->minimum_holdout_dates < 3U)
+    return Err(ErrorCode::InvalidArgument,
+        "mine_into requires a named production policy, dataset identity, durable lockbox audit "
+        "and declared prior trials; use mine_research_into for unqualified research");
+  if (!std::isfinite(cfg.oos_fraction) || cfg.oos_fraction <= 0.0 || cfg.oos_fraction >= 1.0 ||
+      !std::isfinite(cfg.oos_embargo) || cfg.oos_embargo < 0.0 || cfg.oos_embargo >= 1.0 ||
+      cfg.oos_n_windows != 0U || cfg.oos_window != 0U)
+    return Err(ErrorCode::InvalidArgument, "production admission requires one terminal holdout");
+  if (library.n_alphas() != 0U || library.cumulative_trials() != 0U)
+    return Err(ErrorCode::InvalidArgument,
+        "production admission requires a fresh library; existing pool/calendar identity is unqualified");
+  if (resume || cfg.weak_panel || cfg.search.fitness.execution_context ||
+      cfg.search.fitness.residual_binding || cfg.search.fitness.residual_scratch ||
+      cfg.search.fitness.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1 ||
+      cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1 ||
+      cfg.search.output_dedup || cfg.search.fidelity.enabled)
+    return Err(ErrorCode::InvalidArgument,
+        "production admission cannot certify resumed, externally bound or approximate search evidence");
+  const auto &g = gate.cfg;
+  if (!std::isfinite(cfg.min_dsr) || cfg.min_dsr <= 0.0 || cfg.min_dsr > 1.0 ||
+      !std::isfinite(cfg.book_size) || cfg.book_size <= 0.0 ||
+      (cfg.min_split_sharpe != -std::numeric_limits<atx::f64>::infinity() &&
+       !std::isfinite(cfg.min_split_sharpe)) ||
+      !std::isfinite(cfg.max_price_scale_corr) || cfg.max_price_scale_corr <= 0.0 ||
+      cfg.max_price_scale_corr > 1.0 || cfg.cascade_gate_factor != 0.0 ||
+      cfg.max_pbo != 1.0 || cfg.blocking_pbo || g.max_pbo != 1.0 || g.use_marginal_ic ||
+      !std::isfinite(g.min_sharpe) || !std::isfinite(g.min_fitness) ||
+      !std::isfinite(g.max_turnover) || g.max_turnover < 0.0 ||
+      !std::isfinite(g.max_pool_corr) || g.max_pool_corr < 0.0 || g.max_pool_corr > 1.0 ||
+      !std::isfinite(g.rt_cost_bps) || g.rt_cost_bps < 0.0 ||
+      !std::isfinite(g.min_holding_days) || g.min_holding_days < 0.0 ||
+      !std::isfinite(g.min_dsr) || g.min_dsr < 0.0 || g.min_dsr > 1.0 ||
+      (g.require_split_stable && !std::isfinite(cfg.min_split_sharpe)))
+    return Err(ErrorCode::InvalidArgument,
+        "production admission requires finite supported gates; post-insert PBO blocking is unsupported");
+  if (!sim.configuration_valid() || weights.industry_neutral ||
+      !std::isfinite(weights.gross_leverage) ||
+      weights.gross_leverage <= 0.0 || !std::isfinite(weights.truncation) ||
+      weights.truncation < 0.0 || !std::isfinite(weights.winsorize_limit) ||
+      weights.winsorize_limit < 0.0 || weights.winsorize_limit > 0.5 ||
+      !std::isfinite(alpha::detail::turnover_cost_rate(sim)) ||
+      alpha::detail::turnover_cost_rate(sim) < 0.0)
+    return Err(ErrorCode::InvalidArgument, "production stream policy is invalid or unsupported");
+  return atx::core::Ok();
+}
 
 // W4a — the OPTIONAL split-sample stability floor over a REALIZED PnL stream (the
 // library admit paths: mine_into + mine_into_oos, serial AND substrate-aware
@@ -577,6 +680,26 @@ void finalize_run_pbo(FactoryReport &rep,
 Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                    const combine::AlphaGate &gate, SearchProgressSink *sink,
                    const SearchResumeState *resume) {
+  ATX_TRY_VOID(validate_production(cfg, lib_lib, policy_, sim_, gate, resume));
+  if (cfg.max_price_scale_corr < 1.0 && !panel_.field_id("raw_close").has_value())
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "production price-scale gate requires raw_close evidence");
+  return mine_into_oos(cfg, lib_lib, gate, sink, nullptr, cfg.production_admission);
+}
+
+[[nodiscard]] atx::core::Result<FactoryReport>
+Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                   const combine::AlphaGate &gate, parallel::IExecutor &exec) {
+  if (exec.substrate() != parallel::Substrate::InProcess)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "audited production admission currently requires the in-process evaluator");
+  return mine_into(cfg, lib_lib, gate);
+}
+
+[[nodiscard]] atx::core::Result<FactoryReport>
+Factory::mine_research_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                            const combine::AlphaGate &gate, SearchProgressSink *sink,
+                            const SearchResumeState *resume) {
   if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
         "Factory admission does not support the residual IC-only objective");
@@ -885,7 +1008,7 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
 } // namespace
 
 [[nodiscard]] atx::core::Result<FactoryReport>
-Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+Factory::mine_research_into(const FactoryConfig &cfg, library::Library &lib_lib,
                    const combine::AlphaGate &gate, parallel::IExecutor &exec) {
   if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -900,7 +1023,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (cfg.oos_fraction > 0.0) {
     switch (exec.substrate()) {
     case parallel::Substrate::InProcess:
-      return mine_into(cfg, lib_lib, gate); // dispatches to the serial mine_into_oos
+      return mine_research_into(cfg, lib_lib, gate); // serial research holdout
     case parallel::Substrate::MultiProcess:
       return mine_into_oos_parallel(cfg, lib_lib, gate, exec);
     }
@@ -913,7 +1036,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // verbatim so the digest is, trivially, the sequential digest.
   switch (exec.substrate()) {
   case parallel::Substrate::InProcess:
-    return mine_into(cfg, lib_lib, gate);
+    return mine_research_into(cfg, lib_lib, gate);
   case parallel::Substrate::MultiProcess:
     break; // handled below
   }
@@ -1439,7 +1562,14 @@ namespace {
       cand, holdout_panel, holdout_pool_view, policy_, sim_, admit_fit, battery_cfg, hold_dsr);
 
   library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-  if (!price_scale_ok) {
+  const bool finite_confirmation = rep.admission_evidence != AdmissionEvidence::IndependentHoldout ||
+      (std::isfinite(hold_dsr) && std::isfinite(hold_metrics.sharpe) &&
+       std::isfinite(hold_metrics.fitness) && std::isfinite(hold_metrics.returns) &&
+       std::isfinite(hold_metrics.turnover) && std::isfinite(hold_metrics.drawdown) &&
+       std::isfinite(hold_metrics.margin) && std::isfinite(hold_metrics.holding_days));
+  if (!finite_confirmation) {
+    kind = library::AdmitKind::RejectFitness;
+  } else if (!price_scale_ok) {
     kind = library::AdmitKind::RejectPriceScale;
   } else if (!subwindows_ok) {
     kind = library::AdmitKind::RejectDsrSubwindow;
@@ -1454,7 +1584,8 @@ namespace {
     defl.split_stable = split_ok;
     const library::AlphaCandidate cand{canon_hash,           hold_pnl,        hold_pos_flat,
                                        hold_metrics,         std::move(prov),
-                                       /*as_of=*/kAdmitAsOf,
+                                       /*as_of=*/rep.admission_evidence == AdmissionEvidence::IndependentHoldout
+                                           ? rep.admission_as_of : kAdmitAsOf,
                                        /*source=*/nullptr,
                                        defl};
     // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
@@ -1482,7 +1613,8 @@ namespace {
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                        const combine::AlphaGate &gate, SearchProgressSink *sink,
-                       const SearchResumeState *resume) {
+                       const SearchResumeState *resume,
+                       const ProductionAdmissionPolicy *production) {
   if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
         "Factory admission does not support the residual IC-only objective");
@@ -1509,7 +1641,22 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   std::optional<eval::SealedPanel> sealed_opt;
   std::optional<alpha::Panel> holdout_opt;
 
-  if (cfg.oos_n_windows == 0U) {
+  if (production) {
+    if (embargo_len < production->max_label_horizon + 1U)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+          "production embargo must cover max label horizon plus one-session stream lag");
+    ATX_TRY(eval::SealedPanel sealed,
+            eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len));
+    const auto &reservation = sealed.reservation();
+    if (T - reservation.lockbox_begin < production->minimum_holdout_dates)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+          "production holdout is shorter than the committed policy minimum");
+    if (production->audit->is_opened(reservation.content_address))
+      return atx::core::Err(atx::core::ErrorCode::AlreadyExists,
+          "production holdout has already been opened");
+    sealed_opt.emplace(std::move(sealed));
+    // No held-out data are exposed until the complete train-selected family is frozen.
+  } else if (cfg.oos_n_windows == 0U) {
     // --- Legacy terminal path (byte-identical default) ---
     auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
     if (!sealed_r.has_value()) {
@@ -1556,7 +1703,6 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   }
 
   const alpha::Panel &train = sealed_opt->visible(); // [0, holdout_begin - embargo_len)
-  const alpha::Panel &holdout = *holdout_opt;
 
   // (1) run the S3-5 search over the TRAIN panel (NOT panel_). A fresh seeded driver
   // re-derives clean per-run state, preserving F1 replay. Selection scores against an
@@ -1572,10 +1718,16 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   // S5-2: cross-run prior_trial_count wire (read BEFORE the search runs; see the
   // non-OOS serial mine_into's comment for the full reasoning).
-  const atx::u64 prior_r1_oos_pre = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  const atx::u64 prior_r1_oos_pre = production ? production->prior_trial_count
+                                             : lib_lib.cumulative_trials();
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_oos_pre);
   const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
+  if (production && (res.execution_invalid || res.residual_invalid || res.cpcv_invalid ||
+      res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch || res.cpcv_resume_mismatch ||
+      res.trial_count > std::numeric_limits<atx::usize>::max() - prior_r1_oos_pre))
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "production search returned invalid evidence or trial-count overflow");
   if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
       res.cpcv_invalid || res.cpcv_resume_mismatch) {
     rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
@@ -1654,6 +1806,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     const Genome &cand = admission_scored[i];
     atx::f64 dsr = 0.0;
     atx::f64 raw = 0.0;
+    bool valid_train_rank = false;
 
     // Compile + evaluate ONCE on train; extract streams for both ranking and metrics.
     auto prog_r = alpha::compile(cand.ast, cand.analysis);
@@ -1669,6 +1822,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         if (fit.has_value()) {
           dsr = fit->dsr;
           raw = fit->raw;
+          valid_train_rank = std::isfinite(dsr) && std::isfinite(raw);
         }
 
         // (2b) train_metrics for the manifest's is_metrics — same SignalSet,
@@ -1687,6 +1841,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         }
       }
     }
+    if (production && (!valid_train_rank || !train_cache[i].ok)) continue;
     ranked.push_back(Ranked{i, dsr, raw});
   }
   std::sort(ranked.begin(), ranked.end(), [&admission_scored](const Ranked &a, const Ranked &b) {
@@ -1701,6 +1856,64 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     }
     return a.idx < b.idx;
   });
+
+  if (production) {
+    // The family and its ordering are final before open. Holdout outcomes may
+    // reject members, but cannot generate/re-rank candidates or start another run.
+    if (ranked.empty()) {
+      lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+      rep.library_n_alphas_after = lib_lib.n_alphas();
+      return atx::core::Ok(std::move(rep)); // no confirmation occurred
+    }
+    eval::detail::StableHasher axis;
+    for (atx::usize f = 0; f < panel_.num_fields(); ++f)
+      axis.str(std::string(panel_.field_name(f)));
+    for (atx::usize t = 0; t < panel_.dates(); ++t)
+      for (atx::usize j = 0; j < panel_.instruments(); ++j)
+        axis.u64v(panel_.in_universe(t, j) ? 1U : 0U);
+    rep.admission_policy_metadata = production_metadata(cfg, policy_, sim_, gate) +
+        ";panel_axis_hash=" + std::to_string(axis.finish()) +
+        ";train_dates=" + std::to_string(train.dates()) +
+        ";embargo_dates=" + std::to_string(embargo_len);
+    eval::detail::StableHasher policy_hash;
+    policy_hash.str(rep.admission_policy_metadata);
+    rep.admission_policy_hash = policy_hash.finish();
+    eval::detail::StableHasher family;
+    family.u64v(rep.admission_policy_hash);
+    family.u64v(res.seed);
+    family.u64v(res.digest);
+    family.u64v(static_cast<atx::u64>(admit_fit.trial_count));
+    std::string identities;
+    for (const Ranked &r : ranked) {
+      const auto &candidate = admission_scored[r.idx];
+      const auto canonical = canonical_hash(candidate.ast, candidate.ast.roots().front().root);
+      family.u64v(canonical);
+      family.str(alpha::unparse(candidate.ast));
+      if (!identities.empty()) identities += ',';
+      identities += std::to_string(canonical);
+    }
+    rep.admission_family_hash = family.finish();
+    if (rep.admission_family_hash == 0U) rep.admission_family_hash = 1U;
+    const std::string purpose = rep.admission_policy_metadata +
+        ";seed=" + std::to_string(res.seed) + ";search_digest=" + std::to_string(res.digest) +
+        ";total_trials=" + std::to_string(admit_fit.trial_count) +
+        ";frozen_candidates=" + identities;
+    // Keep the original visible panel alive for the train-bound objects. The
+    // audit rechecks freshness atomically and flushes before returning the slice.
+    eval::SealedPanel to_open = *sealed_opt;
+    ATX_TRY(eval::LockboxOpening opening,
+        eval::open_lockbox(std::move(to_open), panel_,
+            eval::OpenRequest{purpose, production->requester, rep.admission_family_hash, 0U},
+            *production->audit));
+    rep.admission_receipt_hash = opening.receipt.receipt_hash;
+    rep.admission_audit_receipts = opening.receipt.sequence + 1U;
+    rep.admission_evidence = AdmissionEvidence::IndependentHoldout;
+    rep.admission_as_of = opening.receipt.holdout_end - 1U;
+    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+        static_cast<std::size_t>(rep.digest), rep.admission_receipt_hash));
+    holdout_opt.emplace(std::move(opening.holdout));
+  }
+  const alpha::Panel &holdout = *holdout_opt;
 
   // W4b — accumulate each admitted alpha's realized HOLDOUT PnL (the SAME stream gated +
   // persisted, deterministic admit order) for the POST-HOC run-level CSCV-PBO verdict;
@@ -1808,7 +2021,8 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         const atx::usize T_hold = (ps_n_inst > 0U) ? (hold_pos_flat.size() / ps_n_inst) : 0U;
         const atx::f64 loading = price_scale_loading(
             hold_pos_flat.data(), T_hold, ps_n_inst, holdout, *rc_fid_r);
-        if (std::isfinite(loading) && loading >= cfg.max_price_scale_corr) {
+        if ((production && !std::isfinite(loading)) ||
+            (std::isfinite(loading) && loading >= cfg.max_price_scale_corr)) {
           price_scale_ok = false;
         }
       }
@@ -1853,7 +2067,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
             eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
                                   eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,
                                   std::nullopt);
-        if (dsr_result.dsr < cfg.min_dsr) {
+        if ((production && !std::isfinite(dsr_result.dsr)) || dsr_result.dsr < cfg.min_dsr) {
           subwindows_ok = false;
         }
       }

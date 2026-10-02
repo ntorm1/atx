@@ -248,7 +248,7 @@ TEST(FactoryMineInto, MinesAndAdmitsIntoPersistentLibrary) {
   AlphaGate gate{default_gate_cfg()};
   Factory f = fx.factory();
 
-  const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 1), library, gate).value();
+  const FactoryReport rep = f.mine_research_into(real_signal_cfg(/*seed*/ 1), library, gate).value();
 
   EXPECT_GT(rep.admitted, 0u);                            // admits survivors on a real-signal panel
   EXPECT_EQ(library.n_alphas(), rep.library_n_alphas_after);
@@ -268,7 +268,7 @@ TEST(FactoryMineInto, EveryAdmittedAlphaHasRoundTrippableFormula) {
   AlphaGate gate{default_gate_cfg()};
   Factory f = fx.factory();
 
-  const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 3), library, gate).value();
+  const FactoryReport rep = f.mine_research_into(real_signal_cfg(/*seed*/ 3), library, gate).value();
   ASSERT_GT(rep.admitted, 0u) << "need at least one admitted alpha to round-trip";
 
   const u64 n = library.n_alphas();
@@ -294,7 +294,7 @@ TEST(FactoryMineInto, DeflationBarStaysFactorySide) {
   AlphaGate gate{default_gate_cfg()};
   Factory f = fx.factory();
 
-  const FactoryReport rep = f.mine_into(large_budget_cfg(/*seed*/ 2), library, gate).value();
+  const FactoryReport rep = f.mine_research_into(large_budget_cfg(/*seed*/ 2), library, gate).value();
 
   EXPECT_EQ(rep.admitted, 0u);      // deflation + gates kill the entire noise population
   EXPECT_EQ(library.n_alphas(), 0u); // nothing inserted into the persistent library
@@ -315,8 +315,8 @@ TEST(FactoryMineInto, SeededRunFoldsAdmissionsIntoDigest) {
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
 
-  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 5), lib1, gate).value();
-  const FactoryReport b = f2.mine_into(real_signal_cfg(/*seed*/ 5), lib2, gate).value();
+  const FactoryReport a = f1.mine_research_into(real_signal_cfg(/*seed*/ 5), lib1, gate).value();
+  const FactoryReport b = f2.mine_research_into(real_signal_cfg(/*seed*/ 5), lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted); // identical mine+admit -> identical outcome
@@ -335,14 +335,14 @@ TEST(FactoryMineInto, CumulativeTrialsAccumulates) {
   Factory f = fx.factory();
 
   // Run 1 — fresh library (prior == 0).
-  const FactoryReport rep1 = f.mine_into(real_signal_cfg(/*seed*/ 11), library, gate).value();
+  const FactoryReport rep1 = f.mine_research_into(real_signal_cfg(/*seed*/ 11), library, gate).value();
   const u64 after_run1 = library.cumulative_trials();
   EXPECT_GT(after_run1, 0u) << "trial counter must be positive after a non-empty run";
   EXPECT_EQ(after_run1, static_cast<u64>(rep1.trials))
       << "single-run: cumulative_trials must equal this run's trial_count (prior==0)";
 
   // Run 2 — library now has prior == run1_N.
-  const FactoryReport rep2 = f.mine_into(real_signal_cfg(/*seed*/ 12), library, gate).value();
+  const FactoryReport rep2 = f.mine_research_into(real_signal_cfg(/*seed*/ 12), library, gate).value();
   const u64 after_run2 = library.cumulative_trials();
   const u64 expected =
       static_cast<u64>(rep1.trials) + static_cast<u64>(rep2.trials);
@@ -370,7 +370,7 @@ TEST(FactoryMineInto, CumulativeTrialsDurableRoundTrip) {
     lib::Library library = lib::Library::open(dir, default_gate_cfg(), {0xDEADBEEFu});
     Factory f = fx.factory();
 
-    const FactoryReport rep1 = f.mine_into(real_signal_cfg(/*seed*/ 21), library, gate).value();
+    const FactoryReport rep1 = f.mine_research_into(real_signal_cfg(/*seed*/ 21), library, gate).value();
     run1_trials = static_cast<u64>(rep1.trials);
     ASSERT_GT(run1_trials, 0u) << "run 1 must have non-zero trial count";
 
@@ -397,7 +397,7 @@ TEST(FactoryMineInto, CumulativeTrialsDurableRoundTrip) {
 
     // ---- run 2: the factory must see prior == loaded, so admission N == prior + run2_N ----
     Factory f2 = fx2.factory();
-    const FactoryReport rep2 = f2.mine_into(real_signal_cfg(/*seed*/ 22), library2, gate).value();
+    const FactoryReport rep2 = f2.mine_research_into(real_signal_cfg(/*seed*/ 22), library2, gate).value();
     run2_trials = static_cast<u64>(rep2.trials);
 
     const u64 after_run2 = library2.cumulative_trials();
@@ -424,8 +424,8 @@ TEST(FactoryMineInto, ByteIdenticalSingleRun) {
 
   // Both libraries are fresh (cumulative_trials == 0), so prior == 0 and the
   // trial_count passed to DSR is identical to the pre-R1 behavior in both.
-  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 7), lib1, gate).value();
-  const FactoryReport b = f2.mine_into(real_signal_cfg(/*seed*/ 7), lib2, gate).value();
+  const FactoryReport a = f1.mine_research_into(real_signal_cfg(/*seed*/ 7), lib1, gate).value();
+  const FactoryReport b = f2.mine_research_into(real_signal_cfg(/*seed*/ 7), lib2, gate).value();
 
   EXPECT_EQ(lib1.cumulative_trials(), static_cast<u64>(a.trials));
   EXPECT_EQ(lib2.cumulative_trials(), static_cast<u64>(b.trials));

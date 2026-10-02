@@ -50,6 +50,7 @@ public:
   //   5. A positive pit_delay requires an explicit date_encoding. Typed dates
   //      must be valid and their availability dates representable. Delay uses
   //      calendar days (24 hours for UnixNanoseconds), never trading sessions.
+  //   6. Instrument keys must be unique (arbitrary ordering is permitted).
   //
   // Empty dates or instruments (zero-cell Dataset) is permitted as long as
   // all column vectors are also empty.

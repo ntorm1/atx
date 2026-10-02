@@ -23,3 +23,9 @@ target_link_libraries(atx-engine-bench PRIVATE Threads::Threads)
 # orats_history_bench writes a synthetic zip via miniz directly; atx-core links
 # atx_miniz PRIVATE so the include dir and symbols don't propagate — add it here.
 target_link_libraries(atx-engine-bench PRIVATE atx_miniz)
+
+# Broad-basket execution profiling need not compile every unrelated benchmark.
+add_executable(atx-engine-execution-bench EXCLUDE_FROM_ALL
+    bench_main.cpp execution_sim_bench.cpp)
+target_link_libraries(atx-engine-execution-bench PRIVATE
+    atx::engine benchmark::benchmark atx_warnings Threads::Threads)

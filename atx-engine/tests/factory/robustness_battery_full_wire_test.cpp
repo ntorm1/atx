@@ -609,13 +609,13 @@ TEST(RobustnessBatteryFullWire, AllThreeOffPathByteIdentical) {
   const Panel panel_a = fw_search_panel();
   Factory factory_a{lib, panel_a, sim, policy};
   lib::Library liba = fw_open_lib("offpath_a", cfg_a.search.master_seed);
-  const auto rep_a = factory_a.mine_into(cfg_a, liba, gate);
+  const auto rep_a = factory_a.mine_research_into(cfg_a, liba, gate);
   ASSERT_TRUE(rep_a.has_value()) << (rep_a ? "" : rep_a.error().message());
 
   const Panel panel_b = fw_search_panel();
   Factory factory_b{lib, panel_b, sim, policy};
   lib::Library libb = fw_open_lib("offpath_b", cfg_b.search.master_seed);
-  const auto rep_b = factory_b.mine_into(cfg_b, libb, gate);
+  const auto rep_b = factory_b.mine_research_into(cfg_b, libb, gate);
   ASSERT_TRUE(rep_b.has_value()) << (rep_b ? "" : rep_b.error().message());
 
   EXPECT_EQ(rep_a->digest, rep_b->digest)
@@ -646,7 +646,7 @@ TEST(RobustnessBatteryFullWire, AllThreeTwiceRunByteIdentical) {
     const Panel panel = fw_search_panel();
     Factory factory{lib, panel, sim, policy};
     lib::Library l = fw_open_lib(tag, cfg.search.master_seed);
-    auto rep = factory.mine_into(cfg, l, gate);
+    auto rep = factory.mine_research_into(cfg, l, gate);
     EXPECT_TRUE(rep.has_value()) << (rep ? "" : rep.error().message());
     return rep ? std::move(*rep) : FactoryReport{};
   };
@@ -687,7 +687,7 @@ TEST(RobustnessBatteryFullWire, SerialParallelAgreeWithFullBattery) {
   const Panel panel_s = fw_search_panel();
   Factory factory_s{lib, panel_s, sim, policy};
   lib::Library lib_s = fw_open_lib("seqpar_seq", cfg.search.master_seed);
-  const auto rep_s = factory_s.mine_into(cfg, lib_s, gate);
+  const auto rep_s = factory_s.mine_research_into(cfg, lib_s, gate);
   ASSERT_TRUE(rep_s.has_value()) << (rep_s ? "" : rep_s.error().message());
 
   // Parallel path (ProcessExecutor, 2 workers).
@@ -695,7 +695,7 @@ TEST(RobustnessBatteryFullWire, SerialParallelAgreeWithFullBattery) {
   Factory factory_p{lib, panel_p, sim, policy};
   lib::Library lib_p = fw_open_lib("seqpar_par", cfg.search.master_seed);
   parallel::ProcessExecutor exec_par{parallel::ExecutorConfig{2, false}};
-  const auto rep_p = factory_p.mine_into(cfg, lib_p, gate, exec_par);
+  const auto rep_p = factory_p.mine_research_into(cfg, lib_p, gate, exec_par);
   ASSERT_TRUE(rep_p.has_value()) << (rep_p ? "" : rep_p.error().message());
 
   EXPECT_NE(rep_s->digest, 0u) << "sanity: the run must actually mine/admit something";

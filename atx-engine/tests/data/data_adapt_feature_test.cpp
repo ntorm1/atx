@@ -215,6 +215,47 @@ TEST(DataAdaptFeature, AlignedFeatureReferenceableInFeatureSpec) {
   EXPECT_TRUE(saw_inst10) << "no inst-10 rows emitted";
 }
 
+// Ingestion must not silently collapse two securities before learning sees them.
+// Exercise the full Dataset -> PIT alignment -> Panel -> FeatureMatrix boundary.
+TEST(DataAdaptFeature, InstrumentIdentitySurvivesIngestionAndLearning) {
+  DatasetSchema schema;
+  schema.columns = {"sentiment"};
+  schema.dtypes = {ColumnDType::F64};
+  schema.role = Role::Feature;
+  const auto duplicate = Dataset::create(schema, {1}, {20u, 20u},
+      {{2.0, 99.0}}, {}, {"test", "duplicate IDs"});
+  ASSERT_FALSE(duplicate.has_value());
+  EXPECT_EQ(duplicate.error().code(), atx::core::ErrorCode::InvalidArgument);
+  const auto malformed_mask = Dataset::create(schema, {1}, {20u, 10u},
+      {{2.0, 1.0}}, {1, 2}, {"test", "invalid membership"});
+  ASSERT_FALSE(malformed_mask.has_value());
+  EXPECT_EQ(malformed_mask.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  const auto feature = Dataset::create(schema, {1, 3, 4}, {20u, 10u, 99u},
+      {{2.0, 1.0, 99.0, 4.0, 3.0, 99.0, 6.0, 5.0, 99.0}}, {},
+      {"test", "reordered IDs and extra future rows"});
+  ASSERT_TRUE(feature.has_value());
+  const Dataset price = make_price_dataset();
+  const auto merged = merge_features_into_panel(make_price_panel(price), price, feature.value());
+  ASSERT_TRUE(merged.has_value());
+  FeatureSpec spec;
+  spec.raw_fields = {"close", "sentiment"};
+  spec.horizons = {1};
+  spec.max_lookback = 0;
+  const auto features = build_features(merged.value(), AlphaStore{}, spec);
+  ASSERT_TRUE(features.has_value());
+  ASSERT_GT(features.value().n_rows(), atx::usize{0});
+  for (atx::usize r = 0; r < features.value().n_rows(); ++r) {
+    const auto &matrix = features.value();
+    EXPECT_EQ(matrix.row_valid[r], atx::u8{1});
+    // FeatureMatrix retains the terminal feature row even when its forward
+    // label is unavailable. Date 3 sees the new value; future date 4 never leaks.
+    const atx::usize date_increment = matrix.row_date[r] == 2U ? 2U : 0U;
+    EXPECT_DOUBLE_EQ(matrix.X[r * matrix.n_features + 1],
+                     static_cast<atx::f64>(matrix.row_inst[r] + 1U + date_increment));
+  }
+}
+
 // An uncovered feature cell (NaN after alignment) makes its row invalid (M8):
 // build_features emits the row (the cell is in-universe) but row_valid == 0.
 TEST(DataAdaptFeature, MissingFeatureCellMakesRowInvalid) {

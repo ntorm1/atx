@@ -304,7 +304,7 @@ TEST(CascadeTrialCount, RealRunAdmittedSetUnchangedAtRealN) {
   Fixture fxA{real_signal_panel()};
   lib::Library libA = lib::Library::open(tmpdir("off"), default_gate_cfg(), {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  const FactoryReport repA = fA.mine_research_into(cfg_off, libA, gate).value();
   ASSERT_GT(repA.admitted, 0u) << "the stationary edge must admit >= 1 (else the proof is vacuous)";
   ASSERT_EQ(repA.n_cascade_skipped, 0u);
 
@@ -315,7 +315,7 @@ TEST(CascadeTrialCount, RealRunAdmittedSetUnchangedAtRealN) {
   Fixture fxB{real_signal_panel()};
   lib::Library libB = lib::Library::open(tmpdir("on"), default_gate_cfg(), {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+  const FactoryReport repB = fB.mine_research_into(cfg_on, libB, gate).value();
 
   EXPECT_GT(repB.trials, 1u) << "realized trial_count must be > 1 so SR*_N is exercised";
   EXPECT_GT(repB.n_cascade_skipped, 0u) << "the gate must fire (else the test is vacuous)";
@@ -338,13 +338,13 @@ TEST(CascadeTrialCount, SeqEqualsParallelAtRealN) {
   Fixture fxSerial{real_signal_panel()};
   lib::Library libSerial = lib::Library::open(tmpdir("seq"), default_gate_cfg(), {0xC0FFEEu});
   Factory fSerial = fxSerial.factory();
-  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+  const FactoryReport repSerial = fSerial.mine_research_into(cfg, libSerial, gate).value();
 
   Fixture fxPar{real_signal_panel()};
   lib::Library libPar = lib::Library::open(tmpdir("par"), default_gate_cfg(), {0xC0FFEEu});
   Factory fPar = fxPar.factory();
   ProcessExecutor execPar{ExecutorConfig{2, false}};
-  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+  const FactoryReport repPar = fPar.mine_research_into(cfg, libPar, gate, execPar).value();
 
   EXPECT_GT(repSerial.trials, 1u);
   EXPECT_EQ(repSerial.digest, repPar.digest);
@@ -364,12 +364,12 @@ TEST(CascadeTrialCount, RealRunTwiceIdentical) {
   Fixture fx1{real_signal_panel()};
   lib::Library lib1 = lib::Library::open(tmpdir("r1"), default_gate_cfg(), {0xC0FFEEu});
   Factory f1 = fx1.factory();
-  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport r1 = f1.mine_research_into(cfg, lib1, gate).value();
 
   Fixture fx2{real_signal_panel()};
   lib::Library lib2 = lib::Library::open(tmpdir("r2"), default_gate_cfg(), {0xC0FFEEu});
   Factory f2 = fx2.factory();
-  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+  const FactoryReport r2 = f2.mine_research_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(r1.digest, r2.digest);
   EXPECT_EQ(r1.admitted, r2.admitted);

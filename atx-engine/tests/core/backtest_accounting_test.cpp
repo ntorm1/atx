@@ -2,6 +2,7 @@
 
 #include <array>
 #include <memory>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -89,6 +90,8 @@ struct Outcome {
 
 void expect_current_marks(const Outcome &outcome, atx::i64 fill_time) {
   ASSERT_EQ(outcome.result.fills.size(), 1U);
+  EXPECT_EQ(outcome.result.execution_diagnostics.filled_orders, 1U);
+  EXPECT_EQ(outcome.result.execution_diagnostics.invalid_economics, 0U);
   EXPECT_EQ(outcome.result.fills.front().t.unix_nanos(), fill_time);
   EXPECT_EQ(outcome.qty, 100);
   EXPECT_DOUBLE_EQ(outcome.market_mark, 101.0);
@@ -129,6 +132,11 @@ TEST(BacktestAccounting, ZeroPermanentImpact_PreservesFrictionlessEquity) {
     EXPECT_DOUBLE_EQ(outcome.market_mark, 100.0);
     EXPECT_DOUBLE_EQ(outcome.result.final_equity, 100'000.0);
   }
+}
+
+TEST(BacktestAccounting, InvalidExecutionConfigurationRefusesTheRun) {
+  EXPECT_THROW((void)run_impact(Delay::Next, 2, false, 0.1,
+      std::numeric_limits<atx::f64>::quiet_NaN()), std::invalid_argument);
 }
 
 } // namespace atxtest_backtest_accounting_test

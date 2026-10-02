@@ -1,5 +1,6 @@
 #include <array>
 #include <bit>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <string>
@@ -10,6 +11,7 @@
 
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/book/claims_state.hpp"
+#include "atx/engine/book/borrow_schedule.hpp"
 #include "atx/engine/book/replay.hpp"
 #include "atx/engine/data/security_transition.hpp"
 
@@ -467,4 +469,180 @@ TEST(ClaimsReplay, RetiredPredecessorTargetsAreRejectedAtomically) {
     EXPECT_EQ(bits(close_after[i]), bits(close_before[i])) << "close cell " << i;
   }
   EXPECT_EQ(preferences, preferences_before);
+}
+
+TEST(ClaimsReplay, CostedResidualsAndScheduledFinancingReconcileShortTransitionAndPayment) {
+  // All three orders partially fill at t2. At t3 the short predecessor becomes
+  // successor stock plus a payable, netting against an existing successor long.
+  // The two changed goals must cancel, while OTHER continues filling with an
+  // outstanding claim at t3 and before that payable is settled at t4.
+  const auto panel = prices(6, 3, {32, 60, 100, 32, 60, 100, 32, 60, 100,
+                                   kNaN, 60, 100, kNaN, 60, 100, kNaN, 61, 100});
+  const std::vector<atx::usize> schedule{1};
+  const std::vector<atx::f64> preferences{-0.2, 0.1, 0.3};
+  auto cfg = scenario_a_config();
+  cfg.borrow_day_basis = book::ReplayDayBasis::D360;
+  const auto model = book::SqrtImpactCost::create({0.25, 0.5}, 0.1, 1.0).value();
+  std::vector<book::LiquidityRow> liquidity;
+  book::BorrowSchedule borrow;
+  borrow.dates = 6;
+  borrow.instruments = 3;
+  borrow.cash_bps = 72.0;
+  borrow.quote_kind = book::BorrowQuoteKind::FeeV2;
+  for (atx::usize d = 0; d < 6; ++d) {
+    liquidity.insert(liquidity.end(), {{640, 0.02, 2}, {150, 0.02, 2}, {500, 0.02, 2}});
+    borrow.fee_bps.insert(borrow.fee_bps.end(), {360, 7200, 0});
+    // No successor locate: mandatory stock delivery is carried, not forcibly
+    // covered. The predecessor locate cannot become a successor locate.
+    borrow.locate_dollars.insert(borrow.locate_dollars.end(), {1000, 0, 1000});
+  }
+  cfg.cost_model = &model;
+  cfg.liquidity = liquidity;
+  cfg.borrow_schedule = &borrow;
+  const book::ReplayIntentPolicy policy = [](const book::ReplayAllocationState &state) {
+    return atx::core::Ok(as_targets(state.preference_weights));
+  };
+  const book::ReplayMandatoryEventPolicy events = [](const book::ReplayEventContext &ctx) {
+    book::ReplayEventBatch batch{};
+    if (ctx.period == 3) {
+      batch.transition_count = 1;
+      batch.transitions[0] = scenario_a_transition(ctx);
+    } else if (ctx.period == 4 && !ctx.pending_claims.empty()) {
+      batch.payment_count = 1;
+      batch.payments[0] = scenario_a_payment(ctx);
+    }
+    return atx::core::Ok(batch);
+  };
+  const auto result = book::replay_scheduled_intents_with_events(
+      panel, days(6), schedule, preferences, policy, events, cfg, claims_config(5 * kDay));
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  const auto &replay = result->policy.replay;
+  ASSERT_EQ(replay.intervals.size(), 5U);
+  ASSERT_EQ(replay.trades.size(), 5U);
+  ASSERT_EQ(result->order_cancellations.size(), 2U);
+  EXPECT_EQ(result->order_cancellations[0].instrument, 0U);
+  EXPECT_EQ(result->order_cancellations[1].instrument, 1U);
+  for (const auto &cancellation : result->order_cancellations) {
+    EXPECT_EQ(cancellation.period, 3U);
+    EXPECT_EQ(cancellation.event_id, 1U);
+  }
+  for (const auto &trade : replay.trades) {
+    if (trade.period >= 3) EXPECT_EQ(trade.instrument, 2U);
+  }
+  EXPECT_EQ(replay.open_working_orders, 1U);
+  EXPECT_DOUBLE_EQ(replay.final_tri_units[0], 0.0);
+  EXPECT_DOUBLE_EQ(replay.final_tri_units[1], -0.75); // +0.25 long -1.0 delivery.
+  EXPECT_DOUBLE_EQ(replay.final_tri_units[2], 1.5);
+
+  constexpr auto claim = -8.0 * 4.0491;
+  // The pre-existing $15 successor long is already accounted for. Only the
+  // $60 short delivery is new: post-event equities - pre-event equities + claim.
+  constexpr auto bridge = (-45.0 - (15.0 - 64.0)) + claim;
+  EXPECT_NEAR(replay.intervals[3].claim_recognized, claim, kTolerance);
+  EXPECT_NEAR(replay.intervals[3].signed_pending_claims, claim, kTolerance);
+  EXPECT_NEAR(replay.intervals[3].gross_payable, -claim, kTolerance);
+  EXPECT_NEAR(replay.intervals[3].mandatory_value_bridge, bridge, kTolerance);
+  EXPECT_NEAR(replay.intervals[3].pretrade_nav,
+              replay.intervals[2].nav + bridge, kTolerance);
+  EXPECT_NEAR(replay.intervals[4].mandatory_settled_cash, claim, kTolerance);
+  EXPECT_DOUBLE_EQ(replay.intervals[4].signed_pending_claims, 0.0);
+
+  // Independent cash roll-forward: real capped model fees, financing at the
+  // predecessor rate before the event and the net successor rate afterwards.
+  // Claims enter cash only on payment, and never enter the equity borrow base.
+  const auto fill_cost = [](atx::f64 dollars) {
+    return dollars * (3.0e-4 + 0.25 * 0.02 * std::sqrt(0.1));
+  };
+  atx::f64 expected_cash = 1000.0;
+  atx::f64 accumulated = 0.0;
+  for (atx::usize d = 0; d < replay.intervals.size(); ++d) {
+    const auto &row = replay.intervals[d];
+    atx::f64 cost = 0.0;
+    atx::f64 fee_dollars_bps = 0.0;
+    if (d == 2) {
+      cost = fill_cost(129.0);
+      expected_cash += 64.0 - 15.0 - 50.0 - cost;
+      fee_dollars_bps = 64.0 * 360.0;
+    } else if (d >= 3) {
+      cost = fill_cost(50.0);
+      expected_cash -= 50.0 + cost;
+      if (d == 4) expected_cash += claim;
+      fee_dollars_bps = 45.0 * 7200.0;
+    }
+    const auto charge = (fee_dollars_bps - expected_cash * 72.0) * (1e-4 / 360.0);
+    expected_cash -= charge;
+    EXPECT_NEAR(row.trade_cost, cost, kTolerance) << d;
+    EXPECT_NEAR(row.borrow_cost, charge, kTolerance) << d;
+    EXPECT_NEAR(row.cash, expected_cash, kTolerance) << d;
+    EXPECT_NEAR(row.nav, row.cash + row.assets + row.signed_pending_claims, kTolerance);
+    EXPECT_NEAR(row.nav, row.pretrade_nav + row.gross_pnl - cost - charge, kTolerance);
+    accumulated += row.mandatory_value_bridge + row.gross_pnl - cost - charge;
+  }
+  EXPECT_NEAR(replay.intervals[4].gross_pnl, -0.75, kTolerance);
+  EXPECT_NEAR(replay.final_nav, expected_cash - 0.75 * 61.0 + 150.0, kTolerance);
+  EXPECT_NEAR(replay.final_nav - 1000.0, accumulated, kTolerance);
+  EXPECT_NEAR(result->final_state.settled_cash, expected_cash, kTolerance);
+  EXPECT_EQ(result->final_state.claims[0].status, book::ClaimSlotStatus::Settled);
+  EXPECT_EQ(result->movements.size(), 4U);
+
+  auto unsupported = claims_config(5 * kDay);
+  unsupported.admission.mode = book::TransitionMode::StrictAsOf;
+  EXPECT_FALSE(book::replay_scheduled_intents_with_events(
+      panel, days(6), schedule, preferences, policy, events, cfg, unsupported));
+}
+
+TEST(ClaimsReplay, SuccessorLocateLimitsDiscretionaryGrowthAfterMandatoryShortDelivery) {
+  const auto panel = scenario_a_panel();
+  const std::vector<atx::usize> schedule{1, 2, 3};
+  const std::vector<atx::f64> preferences{-0.0625, 0, 0, 0, -0.5, 0, 0, 0, 0};
+  auto cfg = scenario_a_config();
+  const auto model = book::FlatBpsCost::create(5).value();
+  book::BorrowSchedule borrow;
+  borrow.dates = 6;
+  borrow.instruments = 3;
+  borrow.quote_kind = book::BorrowQuoteKind::NetRebateV2; // Explicit zero rebate.
+  borrow.rebate_bps = 0.0;
+  for (atx::usize d = 0; d < 6; ++d) {
+    borrow.locate_dollars.insert(borrow.locate_dollars.end(), {1000, 0, 0});
+  }
+  cfg.cost_model = &model;
+  cfg.borrow_schedule = &borrow;
+  const book::ReplayIntentPolicy policy = [](const book::ReplayAllocationState &state) {
+    return atx::core::Ok(as_targets(state.preference_weights));
+  };
+  const book::ReplayMandatoryEventPolicy events = [](const book::ReplayEventContext &ctx) {
+    book::ReplayEventBatch batch{};
+    if (ctx.period == 3) {
+      batch.transition_count = 1;
+      batch.transitions[0] = scenario_a_transition(ctx);
+      batch.transitions[0].event.stock_ratio = {2, 1}; // Successor short grows on delivery.
+    } else if (ctx.period == 4 && !ctx.pending_claims.empty()) {
+      batch.payment_count = 1;
+      batch.payments[0] = scenario_a_payment(ctx);
+    }
+    return atx::core::Ok(batch);
+  };
+  const auto clipped = book::replay_scheduled_intents_with_events(
+      panel, days(6), schedule, preferences, policy, events, cfg, claims_config(5 * kDay));
+  ASSERT_TRUE(clipped.has_value()) << clipped.error().message();
+  const auto &replay = clipped->policy.replay;
+  ASSERT_EQ(replay.locate_clips.size(), 1U);
+  EXPECT_EQ(replay.locate_clips[0].period, 3U);
+  EXPECT_EQ(replay.locate_clips[0].instrument, 1U);
+  EXPECT_DOUBLE_EQ(replay.locate_clips[0].locate, 0.0);
+  EXPECT_DOUBLE_EQ(replay.intervals[3].traded_dollars, 0.0);
+  EXPECT_DOUBLE_EQ(replay.intervals[3].trade_cost, 0.0);
+  ASSERT_EQ(clipped->policy.allocations.size(), 3U);
+  EXPECT_DOUBLE_EQ(clipped->policy.allocations[1].posttrade_marked_dollars[1], -234.375);
+  EXPECT_NEAR(replay.intervals[4].traded_dollars, 234.375, kTolerance);
+  EXPECT_NEAR(replay.intervals[4].trade_cost, 234.375 * 5e-4, kTolerance);
+  EXPECT_DOUBLE_EQ(replay.final_assets, 0.0); // Cover succeeds despite zero locate.
+  EXPECT_DOUBLE_EQ(replay.final_tri_units[0], 0.0);
+  EXPECT_DOUBLE_EQ(replay.final_tri_units[1], 0.0);
+  cfg.locate_breach = book::LocateBreach::AbortV1;
+  const auto rejected = book::replay_scheduled_intents_with_events(
+      panel, days(6), schedule, preferences, policy, events, cfg, claims_config(5 * kDay));
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_NE(rejected.error().message().find("short exceeds locate at period=3 instrument=1"),
+            std::string::npos) << rejected.error().message();
 }

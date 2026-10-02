@@ -315,7 +315,7 @@ TEST(RobustnessBatteryWire, NoiseControlRunsOnOosAdmitPath_NotSilentlySkipped) {
     lib::Library lib_lib = lib::Library::open(dir, gate_cfg, {cfg.search.master_seed});
 
     Factory factory{lib, panel, sim, policy};
-    auto rep_r = factory.mine_into(cfg, lib_lib, gate);
+    auto rep_r = factory.mine_research_into(cfg, lib_lib, gate);
     EXPECT_TRUE(rep_r.has_value()) << (rep_r ? "" : rep_r.error().message());
     return rep_r ? std::move(*rep_r) : FactoryReport{};
   };
@@ -383,7 +383,7 @@ TEST(RobustnessBatteryWire, MineIntoSmokeTest_RobustnessBatteryOnRunsCleanAndHis
   lib::Library lib_lib = lib::Library::open(dir, gate_cfg, {cfg.search.master_seed});
 
   Factory factory{lib, panel, sim, policy};
-  const auto rep_r = factory.mine_into(cfg, lib_lib, gate);
+  const auto rep_r = factory.mine_research_into(cfg, lib_lib, gate);
   ASSERT_TRUE(rep_r.has_value()) << (rep_r ? "" : rep_r.error().message());
   const FactoryReport &rep = *rep_r;
 

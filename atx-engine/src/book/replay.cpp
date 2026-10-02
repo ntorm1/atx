@@ -173,14 +173,13 @@ Status validate_extensions(const ReplayConfig &cfg, atx::usize dates, atx::usize
   return validate_delistings(cfg, dates, instruments);
 }
 
-// The claims-aware entry point supports no extension. The default
+// The claims-aware entry point owns terminal events. The default
 // TerminalReturn policy is admitted with an empty table and exchange list and
 // is run with Abort semantics there (see replay_scheduled_intents_with_events).
-bool uses_extensions(const ReplayConfig &cfg) noexcept {
+bool uses_conflicting_delisting_policy(const ReplayConfig &cfg) noexcept {
   const bool policy_ok = cfg.delisting_policy == DelistingPolicy::Abort ||
                          cfg.delisting_policy == DelistingPolicy::TerminalReturn;
-  return cfg.cost_model != nullptr || cfg.borrow_schedule != nullptr || !policy_ok ||
-         !cfg.delistings.empty() || !cfg.listing_exchange.empty();
+  return !policy_ok || !cfg.delistings.empty() || !cfg.listing_exchange.empty();
 }
 
 Status validate_inputs(const alpha::Panel &panel, std::span<const atx::i64> times,
@@ -437,7 +436,8 @@ Status book_move(atx::f64 delta, atx::usize period, atx::usize decision, atx::us
 Result<AppliedTarget> work_residuals(const TradeContext &ctx, std::span<const atx::f64> close,
                                      atx::usize period, atx::usize decision, atx::f64 nav,
                                      std::span<atx::f64> units, std::span<atx::f64> values,
-                                     atx::f64 &cash, std::vector<ReplayTrade> &trades) {
+                                     atx::f64 &cash, std::vector<ReplayTrade> &trades,
+                                     atx::f64 signed_pending_claims) {
   AppliedTarget applied;
   atx::f64 model_cost = 0.0;
   for (atx::usize i = 0; i < units.size(); ++i) {
@@ -470,7 +470,7 @@ Result<AppliedTarget> work_residuals(const TradeContext &ctx, std::span<const at
   ATX_TRY_VOID(require_finite(applied.trade_cost, "trade cost"));
   cash -= applied.trade_cost;
   ATX_TRY_VOID(require_finite(cash, "cash after trade cost"));
-  const auto accounted = cash + applied.marked.assets;
+  const auto accounted = cash + applied.marked.assets + signed_pending_claims;
   ATX_TRY_VOID(require_nav(accounted, period));
   ATX_TRY_VOID(require_reconciled(accounted, nav - applied.trade_cost, period, units.size()));
   return Ok(applied);
@@ -586,7 +586,7 @@ Result<atx::f64> scheduled_financing(const BorrowSchedule &schedule,
     if (values[i] < 0.0) fee_dollars += -values[i] * schedule.fee(i, period);
   }
   const bool fee_quoted_once =
-      schedule.financing == ShortFinancing::FeeOnceV2 && schedule.rebate_bps == 0.0;
+      schedule.financing == ShortFinancing::FeeOnceV2 && schedule.is_fee_quote();
   const auto free_cash = cash - shorts;
   const auto bps_dollars = fee_quoted_once
       ? fee_dollars - cash * schedule.cash_bps
@@ -615,7 +615,7 @@ Result<atx::f64> borrow_charge(atx::f64 short_dollars, atx::f64 days,
 // Owned per replay, never per observation: the ledger alone is tens of
 // kilobytes, so the entry point holds it behind one heap allocation made before
 // the loop starts. Nothing here allocates again on the per-observation path
-// except `movements`, which is reserved once to kMaxMandatoryMovements.
+// for its ledgers, whose vectors are reserved once to the fixture bounds.
 struct ClaimsCapture {
   const ReplayMandatoryEventPolicy *events{};
   ReplayClaimsConfig config{};
@@ -626,6 +626,7 @@ struct ClaimsCapture {
   atx::usize batch_period{kNoInstrument}; // kNoInstrument == no cached batch.
   std::array<PendingTransitionCashClaim, kMaxPendingClaims> claim_scratch{};
   std::vector<MandatoryMovement> movements;
+  std::vector<ReplayTransitionOrderCancellation> order_cancellations;
   atx::f64 value_bridge{};       // Per-observation accumulators, reset at each `d`.
   atx::f64 settled_cash_delta{};
   atx::f64 recognized{};
@@ -643,10 +644,11 @@ void begin_observation(ClaimsCapture &claims, atx::f64 settled_cash) noexcept {
 // All four conventions are rejectable admissions, never defaults: an Unknown in
 // any of them refuses a non-empty batch outright (design §5).
 Status require_admitted_conventions(const ReplayClaimsConfig &config) {
-  if (config.predecessor_mark == TransitionPredecessorMark::Unknown ||
-      config.loan == TransitionLoanTreatment::Unknown ||
-      config.claim_financing == ClaimFinancing::Unknown ||
-      config.borrow_base == BorrowBase::Unknown) {
+  if ((config.predecessor_mark != TransitionPredecessorMark::RequireMarkAtEvent &&
+       config.predecessor_mark != TransitionPredecessorMark::CarryLastAccountedValueV1) ||
+      config.loan != TransitionLoanTreatment::NoDischargeSuccessorContinuesV1 ||
+      config.claim_financing != ClaimFinancing::NoneDisclosedV1 ||
+      config.borrow_base != BorrowBase::MarkedShortEquityDollarsV1) {
     return Err(ErrorCode::InvalidArgument,
                "replay: mandatory event conventions must all be explicitly admitted");
   }
@@ -1023,6 +1025,24 @@ struct ReplayExtensions {
   [[nodiscard]] atx::usize open_working_orders() const noexcept { return open_orders; }
   [[nodiscard]] bool has_working_orders() const noexcept { return open_orders != 0; }
 
+  // A transition invalidates goals sized in the old representation, including
+  // an existing successor goal whose inventory has just changed. Cancel both
+  // coordinates before any residual execution; a fresh decision may size again.
+  // Unrelated orders retain their original goals and execution provenance.
+  void cancel_transition_orders(const ReplayEventBatch &batch, atx::usize period,
+                                std::vector<ReplayTransitionOrderCancellation> &out) {
+    if (!has_working_orders()) return;
+    for (atx::usize k = 0; k < batch.transition_count; ++k) {
+      const auto &event = batch.transitions[k].event;
+      for (const auto i : {event.predecessor.instrument, event.successor.instrument}) {
+        if (std::isnan(working[i])) continue;
+        out.push_back({period, i, event.event_id, working[i]});
+        working[i] = kNoWorkingOrder;
+        --open_orders;
+      }
+    }
+  }
+
   // The terminal return of flagged name i whose event (if any) is due or not.
   [[nodiscard]] TerminalReturn resolve_terminal(atx::usize i, bool event_due,
                                                 bool is_short) const noexcept {
@@ -1195,6 +1215,9 @@ Result<ReplayResult> replay_targets(
     claims->retired.assign(instruments, atx::u8{0});
     claims->carried.assign(instruments, atx::u8{0});
     claims->movements.reserve(kMaxMandatoryMovements);
+    if (ext.per_name_model != nullptr) {
+      claims->order_cancellations.reserve(2 * kMaxTransitionEvents);
+    }
     claims->state.settled_cash = config.initial_nav;
   }
   atx::usize next_decision = 0;
@@ -1216,6 +1239,7 @@ Result<ReplayResult> replay_targets(
       if (claims->batch_period == d && claims->batch.transition_count != 0) { // Step 2.
         ATX_TRY_VOID(apply_transitions(*claims, close, session_keys, d, result.final_tri_units,
                                        start_values));
+        ext.cancel_transition_orders(claims->batch, d, claims->order_cancellations);
         ATX_TRY(start, total_marked(start_values)); // The commit rewrote two coordinates.
       }
       // Steps 3-4: the recognized claims are already in the ledger.
@@ -1289,7 +1313,8 @@ Result<ReplayResult> replay_targets(
       ++result.effective_rebalances;
     } else if (ext.has_working_orders()) {
       ATX_TRY(auto applied, work_residuals(ext.context(d), close, d, *origin, pretrade_nav,
-          result.final_tri_units, start_values, result.final_cash, result.trades));
+          result.final_tri_units, start_values, result.final_cash, result.trades,
+          claims_nav.signed_pending_claims));
       ext.recount_working_orders();
       start = applied.marked;
       trade_cost = applied.trade_cost;
@@ -1491,10 +1516,10 @@ Result<ReplayClaimsResult> replay_scheduled_intents_with_events(
     return Err(ErrorCode::InvalidArgument,
                "replay: intent and mandatory event policies must not be empty");
   }
-  if (uses_extensions(config)) {
+  if (uses_conflicting_delisting_policy(config)) {
     return Err(ErrorCode::InvalidArgument,
-               "replay: cost model, borrow schedule, delisting table/exchanges and "
-               "non-default delisting policies are not supported with mandatory events");
+               "replay: delisting table/exchanges and non-default delisting policies "
+               "are not supported with mandatory events");
   }
   // Mandatory events are this path's terminal mechanism (a retiring
   // predecessor is carried by its admitted transition), and the path is
@@ -1511,6 +1536,7 @@ Result<ReplayClaimsResult> replay_scheduled_intents_with_events(
   ReplayClaimsResult result;
   result.policy = ReplayPolicyResult{std::move(replay), std::move(capture.allocations)};
   result.movements = std::move(owned->movements);
+  result.order_cancellations = std::move(owned->order_cancellations);
   result.final_state = owned->state;
   return Ok(std::move(result));
 }

@@ -1,0 +1,34 @@
+# tier1-v3 progress
+
+One line per task event (UTC).
+
+- 2026-09-29 22:25Z session start: owner goal = implement v3 plan, alpha focus on last 6 years, reclaim disk.
+- 22:31Z S0.1 Reg SHO build PASS (NYSE combined landing complete, 2179 receipts to 2026-09-25): 40 s, 0.62 GiB peak.
+- 22:33Z S0.1 panel assemble 2018-2021 crashed 0xC0000005 (shared DuckDB temp dir with the parallel 2022-2026 run);
+  fix in `common.connect` (per-pid spill dir); 2018-2021 to rerun after 2022-2026.
+- 22:38Z S0.5 rulings D1-D8 recorded in CARRY.md. Warehouse catalog tables archived (49 tables, 4.2 MB).
+- 22:40Z disk batch 1: +49 GB free (29 → 78 GB).
+- 22:43Z S0.2 committed c1439641 on new branch feat/tier1-v3-warehouse (alpha_panel code, 8 test files 99 pass, docs).
+- 22:46Z panel 2018-2021 relaunched in parallel (spill fix). Wave 1 lanes dispatched: PLAT (S0.3,S1.1-1.4), MKT (S1.5,S3.2/3.4/3.6/3.7,S7.1), FUND (S4.1-4.3,4.6,4.7 → fundamentals_v10), NOTES (S2.1,S4.4), ID (S2.2-2.6 → *_v3).
+- 22:49Z wave 2 lanes dispatched: OWN (S5), EVT (S6), TXT (S7.2-7.4), LIC (S8). v2 research outputs deleted (+0.2 GB); C: 77 GB free.
+- 22:58Z Ruling C-1: small non-DuckDB I/O jobs (≤ 0.25 GiB, < 200 MB out) may run unguarded (guard FIFO starvation behind panel).
+- 23:00Z C-1 sent to MKT, NOTES, ID, OWN, EVT, FUND, PLAT; the TXT copy was blocked by the auto-mode permission classifier ("Security Weaken") — TXT stays fully guarded; surfaced to owner.
+- 23:23Z MKT S1.5 FX READY: reference/fx_daily.parquet 107,863 rows, 23 H.10 series 2008-01-02..2026-09-25 (commit 9096b54f).
+- 00:10Z S0.1 panel v2 assemble 2018-2026 PASS (both ranges rc 0; 2022-2026 6,114 s); manifest pass rc 0.
+- 00:21Z S0.1 borrow_proxy OOM (DuckDB 381 MiB in-memory); fixed: file-backed scratch, 1 thread, 560 MB; chain resumed.
+- 00:25Z LIC DONE: S8.1 PASS (6 adapters, 11 tables, 52 tests on mocks); S8.2 → license need (SpiderRock OptionEODFeaturesHist + SurfaceFixedGridHist 2019+); free options/ stage term slope 99.6-99.9% of optionable member cells. Commits 36d0f2d5 f79ef330 0aa823d3.
+- 00:25Z INCIDENT: disk batch deleted data/research/lake, which held the consumer's default --lake snapshot (prepare_research_fields.py: mktcap_lagged, size_grp, line types) price-wave-0ed96b2696f1-5b596288cf23. Restore via scripts/research_price_wave.py (TH3 only) blocked by INCIDENT 2.
+- 00:25Z INCIDENT 2: PLAT's new package atx_db/lake/ shadows the v2 module atx_db/lake.py (ImportError in quality/, publication, factor_panel, migrations). PLAT told to rename to atx_db/stagelake/.
+- 00:40Z PLAT fixed shadowing (8489f93b): atx_db/lake/ → atx_db/stagelake/, atx_db/parity/ → atx_db/parityscore/. Shared-index race swept PLAT renames into FUND's 1819c5b2; commit rule updated (git commit -- <paths>).
+- 00:50Z TXT: two duplicate fetch loops (old unreduced selection) running; TXT's kill was denied by the permission classifier; controller refused to kill on its behalf (no laundering). Owner action needed: stop PIDs 2812,22012,11044,22940 then 23540,17924,440,20576,21724,17004,18452,20564 (all filing_text fetch / fetch_loop.sh). Resumable.
+- 01:00Z TXT: leftover loops now run the reduced scope (15d031a2, 5fce3d0e) but remain two (loop B bash 11044 still needs owner stop). TNIC calibrated on 1,641 2018 Item 1 docs (threshold 0.200 ↔ 2.83% SIC-3 pair share). verify phase ready.
+- 01:24Z OWNER: stop at next logical stopping point, write status file, decide consumer notification. All 8 active lanes told to finish step in flight, commit, report, hand back. S0.1 chain allowed to finish (gates consumer notice).
+- 01:30Z FUND STOPPED: v10 code committed (85 fixture tests; 2efc494f..48f0c810), full build NOT done (6× stopped_low_commit, host commit ≤ 0.58 GiB; job peaks 0.19-0.52). Nothing published; v9 untouched. Sample: missing-TTM sale/oi/gp v9 2.39/1.38/1.88% → v10 1.16/0.79/1.33% (400 issuers); 59/89 columns ≥ 0.90 on 60 issuers (was 49).
+- 01:28Z NOTES STOPPED: landing PASS 40/40 data sets 2019q1-2026_08 (15.5 GB landed, zips deleted; notes/ 818 MB: sub 650k, txt_dei 16.35M, num_dei 306k, num_items 50.15M, dim 4.21M; manifest 783808a4). cover_page + fund_notes builds coded/tested (29 tests), NOT RUN. Commits a009dc13 ac7eb5c5.
+- 01:28Z TXT STOPPED: code/tests/docs committed (4b98da0d f220d52e 15d031a2 5fce3d0e 0abe65ea); landing ~7% (2,286 of 32,411 in-scope filings; 10-K Item 1/1A/7 parse 99.7/99.65/99.85%); S7.2/S7.3 NOT RUN (test builds only); LM sentiment skipped (license); S7.4 not run (agency terms). Leftover loops still running (owner stop: bash 2812,24936,11044,29004 then 20228,8584,19336,16360,7752,18888).
+- 01:29Z PLAT STOPPED: S1.1 PASS (35 entries; 2/3 hash-identical rebuilds: corporate_actions, short_volume; ftd OOM at 0.4 cap), S1.2 PASS (390 files 8.79 GiB; FAIL 14 = old-format manifests/unbound files, 0 SHA mismatches), S1.3 PASS (byte-identical catalog, 59 views, 51 as_of macros), S1.4 PASS, S0.3 v0 (370 rows; 324 not measured pending metrics). Commits 61cdcb7e..caf38899. parity/→parityscore/ rename acknowledged by controller.
+- 01:29Z EVT STOPPED: code for S6.1-6.6 committed (b82185a7, 30 tests); published events/governance.parquet (111,938 rows) + events/capital.parquet (36,398), hand checks NOT RUN; guidance first-pass precision ~73% on 33 releases (8 fixes committed, not re-measured); buyback/mna/calendar v2 not built. SEC 17,103 requests. C-1 breach 1.75 GB (sampler).
+- 01:34Z ID STOPPED: S2.2 PASS 96.51%; S2.3 ISIN 100% PASS, 13F map FAIL 18/54 quarters (2019-2026: 28/30 pass); S2.5 link_table_v3 built: PIT 93.81-94.86% 2019-2025 (FAIL, needs cover page), 2018 94.32% PASS, 0 ambiguous; S2.4/S2.6 NOT RUN. Commits 9ec47c44 0c809b5f fe3c2a65 9ab3b686 6d42a9f1. Leftover chained processes (kill denied by classifier) need owner stop: 7456 figi_next.sh, 19252 figi_chain.sh, 18780 22352 (cusip retry), 24328 24944 guard 27652 (identity_v3 codes); 16544 ends alone.
+- 01:36Z MKT STOPPED: S1.5 PASS; S3.4 shares PASS (99.64% member cells 2019-2026; PIT two-source agreement 96.34%); S7.1 PASS (8,467/8,467 linked issuers FF+NAICS); S3.7 liquidity (2/64 units), market returns + S3 exit, S3.6 indexes, S3.2 NOT RUN (code+tests done). Commits 9096b54f ac06f988 758a4781 7fa535c8 0a3207e8. Controller check: v9 fundamentals/ untouched (manifest 9f9b2f85, files 09-28).
+- 01:45Z OWN STOPPED: S5.5 PASS; S5.4 insider net buying 136,164 issuer-months (value sums need price-sanity rule); S5.3 13D 99.9% parsed 2025, 13G 1,456/24,740, hand check FAIL on names 65/100 + activism 17/29; S5.1 inputs landed, build NOT RUN; S5.2 N-PORT 16/27 quarters parsed, build NOT RUN. Commits b8724a50..4bf51f4d. Leftover 13D/G fetches (kill denied): 17224,19884,21832,3996.
+- 01:47Z all 9 lanes handed back. borrow_proxy PASS (attempt 8, resumable per year). Status file atx-db/docs/TIER1_V3_STATUS.md + consumer preview notice docs/plans/2026-09-30-atx-db-tier1-v3-preview-notice.md written. Metrics running.

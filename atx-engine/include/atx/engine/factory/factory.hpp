@@ -1,5 +1,10 @@
 #pragma once
 
+// Admission contract: mine_into is the fail-closed, audited statistical
+// confirmation entry. mine_research_into explicitly preserves historical
+// research storage; mine() is also research only. IndependentHoldout evidence
+// does not certify execution, borrow, capacity, or operational readiness.
+
 // atx::engine::factory — Factory: the mine -> gate -> admit capstone (S3-6, plan
 // §4.8). This is the FINAL integration unit of Sprint 3: it wires the S3-5
 // SearchDriver (the seeded, deflated, pool-aware evolutionary search) into the P4
@@ -109,7 +114,29 @@ namespace atx::engine::parallel {
 class IExecutor; // S7.5d substrate seam (fwd-declared; the .cpp pulls the full header)
 } // namespace atx::engine::parallel
 
+namespace atx::engine::eval {
+class FileLockboxAudit;
+} // namespace atx::engine::eval
+
 namespace atx::engine::factory {
+
+// Statistical confirmation, not execution/capacity or live-trading approval.
+enum class AdmissionEvidence : atx::u8 { ResearchOnly, IndependentHoldout };
+
+// Required by mine_into. A single durable audit must be shared across the
+// research programme; replacing/deleting it defeats cross-run single use.
+// Dataset identity names the ordered instruments/calendar/point-in-time inputs,
+// which alpha::Panel does not itself carry. Prior trials must be declared even
+// when zero. The caller owns this policy and audit for the duration of the call.
+struct ProductionAdmissionPolicy {
+  std::string policy_id;
+  std::string dataset_id;
+  std::string requester;
+  eval::FileLockboxAudit *audit{nullptr};
+  atx::usize prior_trial_count{std::numeric_limits<atx::usize>::max()};
+  atx::usize max_label_horizon{1};
+  atx::usize minimum_holdout_dates{20};
+};
 
 // =========================================================================
 //  FactoryConfig — the mine() knobs (§4.8).
@@ -123,6 +150,9 @@ namespace atx::engine::factory {
 //  cand.dsr >= min_dsr to be admitted.
 // =========================================================================
 struct FactoryConfig {
+  // mine_into fails closed when this is absent. Explicit mine_research_into
+  // retains the historical research path, including oos_fraction == 0.
+  const ProductionAdmissionPolicy *production_admission{nullptr};
   SearchConfig search{};                 // the S3-5 search budget + CPCV/deflation geometry
   std::vector<std::string> seed_exprs;   // in-grammar starting templates (SearchDriver ctor)
   std::vector<std::string> panel_fields; // field-swap candidate names (SearchDriver ctor)
@@ -284,6 +314,15 @@ struct OosReportEntry {
 };
 
 struct FactoryReport {
+  AdmissionEvidence admission_evidence{AdmissionEvidence::ResearchOnly};
+  // Durable audit receipt binds policy, full frozen candidate family, and trials.
+  // Zero/empty on research paths; library membership alone is not qualification.
+  atx::u64 admission_policy_hash{0};
+  atx::u64 admission_family_hash{0};
+  atx::u64 admission_receipt_hash{0};
+  atx::u64 admission_audit_receipts{0};
+  atx::usize admission_as_of{0}; // panel date index; production uses last held-out date
+  std::string admission_policy_metadata;
   atx::usize admitted{0};
   atx::usize evaluated{0};
   atx::f64 dedup_pct{0.0};
@@ -494,7 +533,13 @@ public:
                                    const combine::AlphaGate &gate);
 
   // =======================================================================
-  //  mine_into — the REAL admit path: mine + deflate, then admit each
+  //  mine_research_into — the historical persistent research admit path.
+  //  mine_into requires ProductionAdmissionPolicy and freezes the entire family
+  //  on train before one durable open_lockbox confirmation. It rejects missing
+  //  policy/holdout, resumed or externally bound search, nonempty libraries,
+  //  and unsupported post-insert blocking gates before library mutation.
+  //  Its receipt is the qualification artifact; a library record alone is not.
+  //  Research mining performs mine + deflate, then admits each
   //  survivor into the PERSISTENT library::Library (S4b-3).
   //
   //  Same seeded SearchDriver path as mine() (shared internals; no fork), but
@@ -524,8 +569,18 @@ public:
   mine_into(const FactoryConfig &cfg, library::Library &lib_lib, const combine::AlphaGate &gate,
             SearchProgressSink *sink = nullptr, const SearchResumeState *resume = nullptr);
 
+  // Explicit research storage. CPCV and repeatedly inspected terminal windows
+  // never confer independent post-selection qualification through this API.
+  [[nodiscard]] atx::core::Result<FactoryReport>
+  mine_research_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                    const combine::AlphaGate &gate, SearchProgressSink *sink = nullptr,
+                    const SearchResumeState *resume = nullptr);
+  [[nodiscard]] atx::core::Result<FactoryReport>
+  mine_research_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                    const combine::AlphaGate &gate, parallel::IExecutor &exec);
+
   // =======================================================================
-  //  mine_into (SUBSTRATE-AWARE, S7.5d) — the SAME mine_into admit path with the
+  //  mine_research_into (SUBSTRATE-AWARE, S7.5d) — the research admit path with the
   //  PURE expensive per-genome scoring map moved over the IExecutor seam.
   //
   //  run_search stays in the parent (seeded/deterministic, F1/F2). The per-genome
@@ -541,6 +596,9 @@ public:
   //  Because rank+admit runs in the PARENT identically, report.digest and the
   //  library version_id are byte-identical across every substrate and worker count
   //  BY CONSTRUCTION (the §0.9 sound design). An unknown substrate aborts (ATX_CHECK).
+  // The production overload below accepts only InProcess; audited multi-process
+  // admission has not been integrated. The explicit research overload above
+  // retains the historical substrate behavior described here.
   // =======================================================================
   [[nodiscard]] atx::core::Result<FactoryReport>
   mine_into(const FactoryConfig &cfg, library::Library &lib_lib, const combine::AlphaGate &gate,
@@ -642,7 +700,8 @@ private:
   // mine_into body is left untouched (this is a TOP-of-function additive branch).
   [[nodiscard]] atx::core::Result<FactoryReport>
   mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib, const combine::AlphaGate &gate,
-                SearchProgressSink *sink = nullptr, const SearchResumeState *resume = nullptr);
+                SearchProgressSink *sink = nullptr, const SearchResumeState *resume = nullptr,
+                const ProductionAdmissionPolicy *production = nullptr);
 
   // Task 5: the PARALLEL out-of-sample admit path. Dispatched from the
   // substrate-aware mine_into(cfg, lib, gate, exec) when oos_fraction > 0 AND the

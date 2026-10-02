@@ -103,7 +103,8 @@ template <class Fit>
     if (eligible && (d - first_attempt) % cfg.refit_every == 0U) {
       p.refit_dates.push_back(d);
       const auto r = fit(FitWindow{fit_begin, fit_end}, observed_end);
-      if (!r.has_value() || r->w.size() != p.n_alphas) {
+      if (!r.has_value() || r->w.size() != p.n_alphas ||
+          !std::all_of(r->w.begin(), r->w.end(), [](atx::f64 value) { return std::isfinite(value); })) {
         ++p.failed_fits;
       } else {
         atx::f64 dist = 0.0;

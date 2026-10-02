@@ -547,7 +547,7 @@ TEST(SearchProgress, IcRejectionCodecKeepsExplicitOriginAndLegacyRecords) {
   const std::vector<u64> keys{11U, 12U, 13U};
   const std::vector<CachedScore> values{CachedScore{}, rejected_score(), ic_rejected_score()};
   const std::string blob = serialize_cache(keys, values);
-  EXPECT_NE(blob.find(" ic3"), std::string::npos);
+  EXPECT_TRUE(blob.starts_with("fitness-cache-v2\n"));
   std::vector<u64> decoded_keys;
   std::vector<CachedScore> decoded;
   ASSERT_TRUE(deserialize_cache(blob, decoded_keys, decoded));

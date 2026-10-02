@@ -15,19 +15,24 @@
 //   rebate_bps   annual rebate earned on total short dollars (reduces the charge),
 //                in the usual rebate = policy rate - borrow fee definition: the
 //                fee is ALREADY netted inside a quoted rebate.
+//                May be negative when the borrow fee exceeds proceeds interest.
 //   cash_bps     annual rate earned on positive FREE cash and paid on negative
 //                free cash (a margin loan), after the trade.
 //
 // ShortFinancing picks how the fee and the rebate combine (B-05):
 //   FeeOnceV2 (THE DEFAULT) counts the borrow fee exactly once. A schedule is
-//     quoted EITHER as fees (fee grid / default_fee_bps, rebate_bps == 0): the
+//     quoted EITHER as fees (BorrowQuoteKind::FeeV2): the
 //     fee is charged and the short proceeds earn the cash rate like any cash,
 //       sum_i short_i * fee(i,t) - cash * cash_bps;
-//     OR as a rebate (rebate_bps != 0, every fee == 0): the proceeds earn the
+//     OR as a net rebate (BorrowQuoteKind::NetRebateV2, every fee == 0): the proceeds earn the
 //     rebate, which already has the fee netted, and only free cash
 //     (settled cash - short dollars) earns the cash rate,
 //       - shorts * rebate - (cash - shorts) * cash_bps.
-//     A schedule with both a nonzero fee and a nonzero rebate is rejected.
+//     A zero net rebate is a rebate quote too: proceeds earn zero, and only
+//     free cash earns cash_bps. Incompatible quote fields are rejected.
+//   LegacyInferV1 (the compatibility default) preserves existing artifacts:
+//     rebate_bps == 0 means a fee quote, any nonzero rebate means a net rebate.
+//     New adapters should always select FeeV2 or NetRebateV2 explicitly.
 //   FeeAndRebateV1 (pre-W0) charges the fee AND credits the rebate,
 //       sum_i short_i * fee(i,t) - shorts * rebate - (cash - shorts) * cash_bps,
 //     which counts the fee twice when the rebate is quoted net of it. Kept only
@@ -55,6 +60,8 @@ namespace atx::engine::book {
 
 enum class ShortFinancing : atx::u8 { FeeAndRebateV1 = 1, FeeOnceV2 = 2 };
 
+enum class BorrowQuoteKind : atx::u8 { LegacyInferV1 = 1, FeeV2 = 2, NetRebateV2 = 3 };
+
 struct BorrowSchedule {
   atx::usize dates{};
   atx::usize instruments{};
@@ -64,6 +71,12 @@ struct BorrowSchedule {
   atx::f64 rebate_bps{};
   atx::f64 cash_bps{};
   ShortFinancing financing{ShortFinancing::FeeOnceV2};
+  BorrowQuoteKind quote_kind{BorrowQuoteKind::LegacyInferV1};
+
+  [[nodiscard]] bool is_fee_quote() const noexcept {
+    return quote_kind == BorrowQuoteKind::FeeV2 ||
+           (quote_kind == BorrowQuoteKind::LegacyInferV1 && rebate_bps == 0.0);
+  }
 
   // True iff any fee (default or grid cell) is nonzero.
   [[nodiscard]] bool quotes_fee() const noexcept {
@@ -83,7 +96,7 @@ struct BorrowSchedule {
   }
 
   // Shape must match the replay panel; fees are finite and >= 0; locates are
-  // >= 0 (inf allowed); rebate and cash rates are finite (any sign for cash);
+  // >= 0 (inf allowed); rebate and cash rates are finite (either sign);
   // the financing rule is recognized, and under FeeOnceV2 a fee and a rebate
   // are not both quoted.
   [[nodiscard]] atx::core::Status validate(atx::usize panel_dates,
@@ -92,6 +105,9 @@ struct BorrowSchedule {
     using atx::core::ErrorCode;
     if (dates != panel_dates || instruments != panel_instruments) {
       return Err(ErrorCode::InvalidArgument, "borrow schedule: shape does not match panel");
+    }
+    if (instruments != 0 && dates > std::numeric_limits<atx::usize>::max() / instruments) {
+      return Err(ErrorCode::InvalidArgument, "borrow schedule: shape product overflows");
     }
     const auto cells = dates * instruments;
     if ((!fee_bps.empty() && fee_bps.size() != cells) ||
@@ -109,11 +125,27 @@ struct BorrowSchedule {
       }
     }
     if (!std::isfinite(default_fee_bps) || default_fee_bps < 0.0 ||
-        !std::isfinite(rebate_bps) || rebate_bps < 0.0 || !std::isfinite(cash_bps)) {
+        !std::isfinite(rebate_bps) || !std::isfinite(cash_bps)) {
       return Err(ErrorCode::InvalidArgument, "borrow schedule: invalid scalar rate");
     }
     if (financing != ShortFinancing::FeeAndRebateV1 && financing != ShortFinancing::FeeOnceV2) {
       return Err(ErrorCode::InvalidArgument, "borrow schedule: unrecognized financing rule");
+    }
+    if (quote_kind != BorrowQuoteKind::LegacyInferV1 && quote_kind != BorrowQuoteKind::FeeV2 &&
+        quote_kind != BorrowQuoteKind::NetRebateV2) {
+      return Err(ErrorCode::InvalidArgument, "borrow schedule: unrecognized quote kind");
+    }
+    // The historical additive formula is admitted only with its historical
+    // quote interpretation, so an explicit quote kind is never ignored.
+    if (financing == ShortFinancing::FeeAndRebateV1 &&
+        quote_kind != BorrowQuoteKind::LegacyInferV1) {
+      return Err(ErrorCode::InvalidArgument,
+                 "borrow schedule: explicit quote kind requires FeeOnceV2");
+    }
+    if ((quote_kind == BorrowQuoteKind::FeeV2 && rebate_bps != 0.0) ||
+        (quote_kind == BorrowQuoteKind::NetRebateV2 && quotes_fee())) {
+      return Err(ErrorCode::InvalidArgument,
+                 "borrow schedule: fee/rebate fields conflict with explicit quote kind");
     }
     if (financing == ShortFinancing::FeeOnceV2 && rebate_bps != 0.0 && quotes_fee()) {
       return Err(ErrorCode::InvalidArgument,

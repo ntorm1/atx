@@ -305,4 +305,87 @@ TEST(RiskConstraintDispatch, AugmentedObjectiveIncludesExactTurnoverPenalty) {
   EXPECT_NEAR(objective, 1.2 * 0.25 * 0.25 - 0.25 + 0.4 * 0.15, 1e-12);
 }
 
+TEST(RiskConstraintDispatch, StandaloneLiquidityCapsBindPortfolioAndHorizonBooks) {
+  const FactorModel v = model();
+  const std::vector<f64> adv{100.0, 100.0};
+  const std::vector<f64> previous{0.1, -0.1};
+  ConstraintSet trade;
+  trade.trade = atx::engine::risk::TradeParticipationCap{0.1, {adv, 100.0}};
+  ConstraintSet liquidation;
+  liquidation.liquidation = atx::engine::risk::DaysToLiquidate{1.0, 0.1, {adv, 100.0}};
+  for (const auto &cs : {trade, liquidation}) {
+    const auto result = portfolio_optimizer(cs).solve(kAlpha, v, previous);
+    ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    const f64 limit = cs.trade ? 0.2 : 0.1;
+    EXPECT_NEAR((*result)[0], limit, 2e-6);
+    EXPECT_NEAR((*result)[1], -limit, 2e-6);
+    for (const bool stacked : {false, true}) {
+      const auto horizon = run_horizon(cs, v, stacked);
+      ASSERT_TRUE(horizon.has_value()) << (horizon ? "" : horizon.error().to_string());
+      ASSERT_EQ(horizon->books.size(), 1U);
+      EXPECT_NEAR(horizon->books[0][0], 0.1, 2e-6);
+      EXPECT_NEAR(horizon->books[0][1], -0.1, 2e-6);
+    }
+  }
+}
+
+TEST(RiskConstraintDispatch, StandaloneLiquidityCapsRejectMissingInputs) {
+  const FactorModel v = model();
+  ConstraintSet trade;
+  trade.trade = atx::engine::risk::TradeParticipationCap{};
+  ConstraintSet liquidation;
+  liquidation.liquidation = atx::engine::risk::DaysToLiquidate{};
+  for (const auto &cs : {trade, liquidation}) {
+    EXPECT_FALSE(portfolio_optimizer(cs).solve(kAlpha, v, {}).has_value());
+    EXPECT_FALSE(run_horizon(cs, v).has_value());
+  }
+}
+
+TEST(RiskConstraintDispatch, TrueMpcRejectsStageRelativeTradeCap) {
+  const FactorModel v = model();
+  const std::vector<f64> adv{100.0, 100.0};
+  MultiHorizonConfig cfg;
+  cfg.true_mpc = true;
+  cfg.constraints.trade = atx::engine::risk::TradeParticipationCap{0.1, {adv, 100.0}};
+  const auto result = MultiHorizonOptimizer{cfg}.run(
+      RebalanceSchedule{{0U}},
+      [](usize) {
+        HorizonSources sources;
+        sources.pairs.emplace_back(std::span<const f64>{kAlpha}, SignalHorizon::identity());
+        return sources;
+      },
+      [&v](usize) -> const FactorModel & { return v; }, {0.0, 0.0, 1.0});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(RiskConstraintDispatch, FastPortfolioRejectsInvalidLimitsAndNonfiniteInputs) {
+  const FactorModel v = model();
+  for (const f64 invalid : {-0.1, std::numeric_limits<f64>::infinity(),
+                            std::numeric_limits<f64>::quiet_NaN()}) {
+    for (const auto member : {&OptimizerConfig::risk_aversion, &OptimizerConfig::turnover_penalty,
+                              &OptimizerConfig::gross_leverage, &OptimizerConfig::name_cap}) {
+      OptimizerConfig cfg;
+      cfg.*member = invalid;
+      EXPECT_FALSE(PortfolioOptimizer{cfg}.solve(kAlpha, v, {}).has_value());
+    }
+    ConstraintSet cs;
+    cs.pos = atx::engine::risk::PositionCap{invalid};
+    EXPECT_FALSE(portfolio_optimizer(cs).solve(kAlpha, v, {}).has_value());
+  }
+  const PortfolioOptimizer opt;
+  for (const f64 invalid : {std::numeric_limits<f64>::infinity(),
+                            -std::numeric_limits<f64>::infinity()}) {
+    const std::vector<f64> alpha{invalid, -0.5};
+    EXPECT_FALSE(opt.solve(alpha, v, {}).has_value());
+  }
+  const std::vector<f64> no_opinion{std::numeric_limits<f64>::quiet_NaN(), -0.5};
+  EXPECT_TRUE(opt.solve(no_opinion, v, {}).has_value());
+  for (const f64 invalid : {std::numeric_limits<f64>::infinity(),
+                            std::numeric_limits<f64>::quiet_NaN()}) {
+    const std::vector<f64> previous{0.1, invalid};
+    EXPECT_FALSE(opt.solve(kAlpha, v, previous).has_value());
+  }
+}
+
 } // namespace atxtest_risk_constraint_dispatch_test

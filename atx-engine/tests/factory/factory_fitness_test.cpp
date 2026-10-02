@@ -9,6 +9,7 @@
 // The fixtures build streams + a pool + panels DIRECTLY (public members), the S2
 // precedent — the test controls the data so the WQ thesis holds by construction.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -300,6 +301,78 @@ TEST(FactoryFitness, FitnessIsOosOnly) {
 // =============================================================================
 //  DeflationShrinksWithTrialCount — F4: more trials -> lower deflated dsr.
 // =============================================================================
+// End-to-end score regression: disconnected CPCV selections preserve the
+// original return observations and chronological trades, and DSR is invariant
+// to repartitioning the same realized sample.
+TEST(FactoryFitness, CpcvPreservesReturnsTradesAndDeflationSample) {
+  constexpr usize dates = 24U, instruments = 2U;
+  Library lib;
+  const WeightPolicy policy{};
+  const auto sim = frictionless_sim();
+  const AlphaStore empty;
+  std::vector<f64> close(dates * instruments);
+  std::vector<f64> signal(dates * instruments);
+  f64 price = 100.0;
+  for (usize t = 0; t < dates; ++t) {
+    price *= 1.0 + 0.001 * static_cast<f64>(1U + (t * 7U) % 11U);
+    close[2U * t] = price;
+    close[2U * t + 1U] = 100.0;
+    signal[2U * t] = (t / 3U) % 2U == 0U ? 1.0 : -1.0;
+    signal[2U * t + 1U] = -signal[2U * t];
+  }
+  const Panel panel = make_panel(dates, instruments, {"close", "signal"}, {close, signal});
+  Genome cand = make_genome("signal", lib);
+  atx::engine::alpha::SignalSet signals;
+  signals.dates = dates;
+  signals.instruments = instruments;
+  signals.alphas.push_back({"signal", signal});
+  const auto streams = atx::engine::alpha::extract_streams(signals, policy, panel, sim);
+  ASSERT_TRUE(streams.has_value());
+  FitnessCfg cfg;
+  cfg.cpcv.n_groups = 4U;
+  cfg.cpcv.n_test_groups = 2U;
+  cfg.trial_count = 19U;
+  const auto report = pool_aware_fitness(cand, empty, panel, policy, sim, cfg,
+                                         nullptr, nullptr, &signals);
+  ASSERT_TRUE(report.has_value());
+  const auto pnl = streams->pnl(0);
+  // Independent scalar reference: each pair of six-date blocks, with no
+  // inferred synthetic trades at fold boundaries and no skipped first return.
+  f64 expected_wq = 0.0, expected_turnover = 0.0;
+  for (usize a = 0; a < 4U; ++a) for (usize b = a + 1U; b < 4U; ++b) {
+    std::vector<f64> selected;
+    f64 traded = 0.0;
+    for (usize t = 0; t < dates; ++t) {
+      if (t / 6U != a && t / 6U != b) continue;
+      if (t != 0U) selected.push_back(pnl[t]);
+      const auto current = streams->positions(0, t);
+      for (usize i = 0; i < instruments; ++i) {
+        const f64 previous = t == 0U ? 0.0 : streams->positions(0, t - 1U)[i];
+        traded += std::abs(current[i] - previous) / cfg.book_size;
+      }
+    }
+    f64 mean = 0.0;
+    for (const auto r : selected) mean += r;
+    mean /= static_cast<f64>(selected.size());
+    f64 variance = 0.0;
+    for (const auto r : selected) variance += (r - mean) * (r - mean);
+    variance /= static_cast<f64>(selected.size());
+    const f64 turnover = traded / 12.0;
+    const f64 sharpe = std::sqrt(252.0) * mean / std::sqrt(variance);
+    expected_wq += sharpe * std::sqrt(std::abs(252.0 * mean) / std::max(0.125, turnover));
+    expected_turnover += turnover;
+  }
+  EXPECT_NEAR(report->wq, expected_wq / 6.0, 1e-11);
+  EXPECT_NEAR(report->turnover, expected_turnover / 6.0, 1e-12);
+  cfg.cpcv.n_groups = 3U;
+  cfg.cpcv.n_test_groups = 1U;
+  const auto repartitioned = pool_aware_fitness(cand, empty, panel, policy, sim, cfg,
+                                                nullptr, nullptr, &signals);
+  ASSERT_TRUE(repartitioned.has_value());
+  EXPECT_DOUBLE_EQ(report->dsr, repartitioned->dsr);
+  EXPECT_DOUBLE_EQ(report->haircut_sharpe, repartitioned->haircut_sharpe);
+}
+
 TEST(FactoryFitness, DeflationShrinksWithTrialCount) {
   constexpr usize kDates = 64;
   constexpr usize kInsts = 6;

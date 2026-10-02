@@ -40,14 +40,18 @@ enum class ScoreOrigin : atx::u8 {
   FidelityRejected = 2,
   IcRejected = 3, // screened on forward-return IC; still a distinct research trial
   ResidualUnavailable = 4, // evaluated/attempted but no defined three-horizon IC score
+  FitnessUnavailable = 5, // no finite statistical score for selection
   // platform v8 H-3, signal-fitness path only: attempted but never scored (compile or VM
-  // failure, or a non-finite functor score). A trial; never selected, emitted or checkpointed.
-  Unscored = 5,
+  // failure, or a non-finite functor score). A trial; never selected or emitted. Value 6
+  // because the versioned cache checkpoint already persists 5 as FitnessUnavailable.
+  // Keep last: deserialize_cache bounds a restored origin by this enumerator.
+  Unscored = 6,
 };
 
 [[nodiscard]] constexpr bool is_rejected_score(ScoreOrigin origin) noexcept {
   return origin == ScoreOrigin::FidelityRejected || origin == ScoreOrigin::IcRejected ||
-      origin == ScoreOrigin::ResidualUnavailable || origin == ScoreOrigin::Unscored;
+      origin == ScoreOrigin::ResidualUnavailable || origin == ScoreOrigin::FitnessUnavailable ||
+      origin == ScoreOrigin::Unscored;
 }
 
 // Worst-case raw sentinel for a fidelity-rejected candidate. -inf (not lowest())
@@ -71,12 +75,11 @@ struct CachedScore {
   // The behavioral NOVELTY computed from it is population-relative and is recomputed
   // fresh each generation (NOT cached). Empty if the candidate's fitness errored.
   std::vector<atx::f64> descriptor{};
-  // L3: provenance of this score (see ScoreOrigin). Not serialized by the resume
-  // checkpoint for legacy origins; deserialize_cache restores FidelityRejected from the -inf raw
-  // sentinel, while a FingerprintBorrowed score resumes as Full (documented: runs
-  // with output_dedup on are not resume byte-identical). IcRejected has an explicit
-  // optional codec tag so it retains its exclusion identity after resume.
+  // Versioned checkpoints preserve every origin, including approximate scores.
   ScoreOrigin origin{ScoreOrigin::Full};
+  // raw and objectives above are always trial-independent. DSR is projected
+  // from this sample at the current common trial count before population ranking.
+  DsrSampleStats dsr_sample{};
 };
 
 // Canonical fidelity-rejected score: sentinel raw, zero live objectives, empty

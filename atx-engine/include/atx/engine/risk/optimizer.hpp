@@ -197,6 +197,25 @@ public:
           atx::core::ErrorCode::InvalidArgument,
           "PortfolioOptimizer::solve: w_prev must be empty or length V.n_instruments()");
     }
+    if (!std::isfinite(cfg.risk_aversion) || cfg.risk_aversion < 0.0 ||
+        !std::isfinite(cfg.turnover_penalty) || cfg.turnover_penalty < 0.0 ||
+        !std::isfinite(cfg.gross_leverage) || cfg.gross_leverage < 0.0 ||
+        !std::isfinite(cfg.name_cap) || cfg.name_cap < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "PortfolioOptimizer::solve: penalties and limits must be finite and nonnegative");
+    }
+    for (const auto value : alpha) {
+      if (std::isinf(value)) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "PortfolioOptimizer::solve: alpha must be finite or NaN (no opinion)");
+      }
+    }
+    for (const auto value : w_prev) {
+      if (!std::isfinite(value)) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "PortfolioOptimizer::solve: previous weights must be finite");
+      }
+    }
 
     // --- single up-front scratch allocation (never inside the loop) ----------
     Scratch s(m);
@@ -249,7 +268,7 @@ public:
   // MultiHorizonOptimizer uses this same classifier to keep both drivers aligned.
   [[nodiscard]] static bool is_minimal_constraint_set(const ConstraintSet &cs) noexcept {
     return !cs.fexp && !cs.grp && !cs.beta && !cs.turn && !cs.part && !cs.own && !cs.sector &&
-           !cs.track && !cs.robust;
+           !cs.track && !cs.robust && !cs.trade && !cs.liquidation;
   }
 
 private:

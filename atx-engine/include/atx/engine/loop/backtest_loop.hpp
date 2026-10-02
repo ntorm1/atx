@@ -161,6 +161,10 @@ struct BacktestResult {
   atx::f64 turnover = 0.0;                // cumulative traded notional
   atx::usize slices = 0;                  // slices processed
   atx::usize rebalances = 0;              // schedule fires
+  // Order-attempt counts across settlements (the same pending order can defer
+  // on several bars). Distinguishes unfilled model failures from normal waiting.
+  exec::SettlementDiagnostics execution_diagnostics;
+  atx::usize pending_orders_at_end{};
 };
 
 // ===========================================================================
@@ -196,6 +200,9 @@ public:
     const auto valid_borrow = cost::validate_elapsed_borrow_model(borrow_);
     if (!valid_borrow) {
       throw std::invalid_argument{valid_borrow.error().to_string()};
+    }
+    if (!exec_->configuration_valid()) {
+      throw std::invalid_argument{"BacktestLoop: invalid execution configuration"};
     }
     // One consumer drives the single-threaded drain. Reserve the slice scratch to
     // the universe size so steady-state slice assembly never allocates.
@@ -249,6 +256,7 @@ public:
     result_.slices = slice_index_;
     result_.final_cash = portfolio_->cash();
     result_.final_equity = portfolio_->equity();
+    result_.pending_orders_at_end = exec_->pending_orders();
     return std::move(result_);
   }
 
@@ -355,6 +363,7 @@ private:
   /// fully consumed here.
   void settle_at(atx::core::time::Timestamp now) {
     const auto fills = exec_->settle_pending(now, *market_);
+    result_.execution_diagnostics.accumulate(exec_->last_settlement());
     for (const exec::FillPayload &f : fills) {
       portfolio_->apply_fill(f);
       record_fill(f);

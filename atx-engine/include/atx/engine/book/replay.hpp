@@ -200,8 +200,9 @@ struct ReplayGapCarry {
 // borrow schedule and delisting table are opt-in; with them unset and a
 // nonzero delay the replay is bit-identical to the historical accounting on any
 // panel whose held names all keep a valid close. The claims-aware entry point
-// rejects every extension except the default TerminalReturn policy, which it
-// runs with Abort semantics (see replay_scheduled_intents_with_events).
+// supports costs and borrow schedules, but rejects conflicting delisting
+// evidence; default TerminalReturn runs with Abort semantics on that entry point
+// (see replay_scheduled_intents_with_events).
 struct ReplayConfig {
   atx::f64 initial_nav{1.0};
   // B-02: 0 fills at the decision close (look-ahead for any signal computed
@@ -213,7 +214,7 @@ struct ReplayConfig {
   ReplayDayBasis borrow_day_basis{ReplayDayBasis::D365};
   // Per-name cost model (exclusive with a nonzero trade_bps). Borrowed; must
   // outlive the call. A capped model leaves a working order for the residual,
-  // re-attempted at every later observation until filled or replaced.
+  // re-attempted until filled, replaced, or canceled by a mandatory transition.
   const ReplayCostModel *cost_model{nullptr};
   // dates * instruments, period-major; required iff cost_model->needs_liquidity().
   std::span<const LiquidityRow> liquidity{};
@@ -567,12 +568,23 @@ struct ReplayEventContext {
 using ReplayMandatoryEventPolicy =
     std::function<atx::core::Result<ReplayEventBatch>(const ReplayEventContext &)>;
 
+// A mandatory transition cancels unfilled goals on both changed coordinates.
+// The retired predecessor must never reopen; the successor inventory change
+// invalidates its old target. Fresh decisions after the event may size anew.
+struct ReplayTransitionOrderCancellation {
+  atx::usize period{};
+  atx::usize instrument{};
+  atx::u64 event_id{};
+  atx::f64 goal_tri_units{};
+};
+
 // `movements` is reserved once to kMaxMandatoryMovements and holds the ledger
 // rows in commit order; `final_state` is the whole retained claims ledger.
 struct ReplayClaimsResult {
   ReplayPolicyResult policy;
   std::vector<MandatoryMovement> movements;
   ClaimsBookState final_state{};
+  std::vector<ReplayTransitionOrderCancellation> order_cancellations;
 };
 
 // Same validation, accounting and all-or-error publication as
@@ -589,8 +601,18 @@ struct ReplayClaimsResult {
 //   8. borrow on post-trade, post-settlement marked short equity dollars.
 // With an empty batch at every observation the result is bit-identical to
 // replay_scheduled_intents on the same inputs; that equivalence is a required
-// regression test. Both callbacks must be nonempty. No ReplayConfig extension is
-// supported; the default DelistingPolicy::TerminalReturn is admitted (with no
+// regression test. Both callbacks must be nonempty. Cost models, residual fills,
+// and borrow schedules share the ordinary replay's validation and accounting.
+// Transition coordinates cancel old working orders; unrelated orders continue
+// with claims in their NAV identity. Mandatory deliveries incur no trading fee
+// or discretionary locate check. Post-event net signed equity positions use
+// the SUCCESSOR's canonical schedule row for interval financing and subsequent
+// short-growth locate checks, without transferring the predecessor's locate.
+// Pending claims earn/pay no financing under NoneDisclosedV1; settled payments
+// affect this interval's cash interest only after allocation and execution.
+// These are admitted accounting conventions, not evidence of broker loan
+// continuity, recalls, or claim financing. Delisting tables/exchanges and other
+// delisting policies remain unsupported; default TerminalReturn is admitted (with no
 // table and no exchanges) and run with Abort semantics, because this path is
 // synthetic-fixture only and its terminal mechanism is the admitted mandatory
 // event, not a missing close. The claims ledger is owned
