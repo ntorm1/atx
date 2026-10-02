@@ -1,0 +1,920 @@
+{
+  "candidate_count": 66,
+  "candidates": [
+    {
+      "dsl_sha256": "5a611ce6ec50066442ba982967eb984d822710c243db1e8f4d4767f44e723fdb",
+      "extra_fields": [
+        "be",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ],
+      "id": "value_composite",
+      "node_count": 19,
+      "num_slots": 6,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "77d03bd2b6037431cb7ca61c39fba579980f1c0068d0b7e047f6eeb7b6322696",
+      "extra_fields": [
+        "be",
+        "grp_ff12",
+        "me_company"
+      ],
+      "id": "bm",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "1008a66639abd8b97dcf8941603ddc25a8761434d54d15ebbe6d23618b49a1d9",
+      "extra_fields": [
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ],
+      "id": "ep",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "df82d0c0b2f594f626e94ea26d1e7719674c0ff107daacef10c61f9f4e19beaf",
+      "extra_fields": [
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ],
+      "id": "cfp",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "78755e702842cda0124d0d3cc0f87b84656ffe9d4ed3459d3124bb85e7324d0a",
+      "extra_fields": [
+        "capx_ttm",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ],
+      "id": "fcfp",
+      "node_count": 9,
+      "num_slots": 3,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "cab4b49a219f9cc5167d814f380faa2238cd1789adb61a0273e0b380ae392752",
+      "extra_fields": [
+        "che",
+        "debt",
+        "grp_ff12f49",
+        "me_company",
+        "oi_ttm"
+      ],
+      "id": "ebit_ev_f49",
+      "node_count": 18,
+      "num_slots": 5,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "0de7136873939cf187fd2510e32edc75a40e7629615858990821e0b94c02bc02",
+      "extra_fields": [
+        "dvc_ttm",
+        "grp_ff12",
+        "me_company",
+        "prstkc_ttm",
+        "sstk_ttm"
+      ],
+      "id": "net_payout",
+      "node_count": 11,
+      "num_slots": 3,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "b580ed819ae324eef88609d551471a493f299819adf90520d757f98b6ab059e7",
+      "extra_fields": [
+        "grp_ff12",
+        "me_company",
+        "sale_ttm"
+      ],
+      "id": "sp",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "bcedc098d64f331cf2c0719bccea2fb91ba777f959b7ca53d3f2df8088d05075",
+      "extra_fields": [
+        "grp_ff12",
+        "me_company",
+        "xrd_ttm"
+      ],
+      "id": "rd_me",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "0b6e2e71126f907f669cfb10da54fc9f809a28b50dd12ba5f17292571dcf8f35",
+      "extra_fields": [
+        "at",
+        "gp_ttm",
+        "grp_ff12f49"
+      ],
+      "id": "gpa_f49",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "1ff820cb588190898e41ba6444fd9b4c0ce79d511eb93e34d939ca210503ba0f",
+      "extra_fields": [
+        "be",
+        "grp_ff12",
+        "oi_ttm"
+      ],
+      "id": "opbe",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "5e87793d886965c1f72d6d916a89960d126d22b99d1c142e3d90072ec61f95a0",
+      "extra_fields": [
+        "at",
+        "cfo_ttm",
+        "grp_ff12f49",
+        "xrd_ttm"
+      ],
+      "id": "cbop_f49",
+      "node_count": 18,
+      "num_slots": 5,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "fea12f1f59565b4ec97e64df93219bbc3228348daa4bb8a78cdc5974a4f99be7",
+      "extra_fields": [
+        "be_lag1q",
+        "grp_ff12",
+        "ni_q"
+      ],
+      "id": "roe_q",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "fcd1f798342235a802733141d8be82b23e109b3d9151af412e4bdd2527278645",
+      "extra_fields": [
+        "at",
+        "grp_ff12",
+        "ni_ttm"
+      ],
+      "id": "roa",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "76d1eae76e0ec47297008a5a5dfd98c4cb39b97ea8385a5f7eef24d0681dea4b",
+      "extra_fields": [
+        "at",
+        "at_lag4",
+        "cfo_ttm",
+        "grp_ff12f49",
+        "ni_ttm"
+      ],
+      "id": "accruals_f49",
+      "node_count": 20,
+      "num_slots": 5,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "67d1f50140676f30cac7621fc43007601d44cb99a5994eb2c77101350d80de6e",
+      "extra_fields": [
+        "fscore",
+        "grp_ff12"
+      ],
+      "id": "fscore",
+      "node_count": 5,
+      "num_slots": 3,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "75910b923589e52829ab660f56f4bd95572619d6c54e03ea7f4b038a79639aa3",
+      "extra_fields": [
+        "at",
+        "at_lag4",
+        "grp_ff12f49"
+      ],
+      "id": "asset_growth_f49",
+      "node_count": 15,
+      "num_slots": 5,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "ea8fd7176bfd15a74baec1eeac7bdd16b1c0b936529a7d8fa5974e1e2eb3681a",
+      "extra_fields": [
+        "at_lag4",
+        "grp_ff12f49",
+        "noa"
+      ],
+      "id": "noa_f49",
+      "node_count": 14,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "9ce73869fbbec055df54939ec2d4262454d24dd2c64c21f411195d4baf029642",
+      "extra_fields": [
+        "grp_ff12",
+        "shrs_q",
+        "shrs_q_lag4"
+      ],
+      "id": "issuance_xbrl",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "ff4ac4adac6298e4d1211ad467159ab8f8f2214182201c0319fba24bee9338e7",
+      "extra_fields": [
+        "grp_ff12",
+        "shares_out"
+      ],
+      "id": "issuance_vendor",
+      "node_count": 16,
+      "num_slots": 4,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "9d38cd38ddb1e76bd43a9287375663fbe0f28ef467738a60d2ae1d3c39fead57",
+      "extra_fields": [
+        "earn_recent",
+        "mkt_ret"
+      ],
+      "id": "ear",
+      "node_count": 21,
+      "num_slots": 5,
+      "required_lookback": 148
+    },
+    {
+      "dsl_sha256": "8aafaffe1e4a5446a5163d8262fd7ec92266590d0d217e13138b5ab544b9439d",
+      "extra_fields": [
+        "mkt_ret"
+      ],
+      "id": "res_mom_12_1",
+      "node_count": 26,
+      "num_slots": 7,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "d6906c60dbabeb3581025807a5f674981e538867081b26634bf02023f09832d9",
+      "extra_fields": [],
+      "id": "mom_12_1",
+      "node_count": 10,
+      "num_slots": 5,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "8260a5a0dc907297e96927429685617ad3385fec387f6faf05b4b8d0f85ee025",
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "id": "ind_mom_12_1",
+      "node_count": 12,
+      "num_slots": 5,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "2eac2b0c6a0348a2e49f77873d4c50623bc643262159569298a982c3a6676c15",
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "id": "within_ind_mom",
+      "node_count": 12,
+      "num_slots": 5,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "3fd5372bbc084061ba9bfa05f7c7875d3e43ed28a2f241a05e2b816635f5e77e",
+      "extra_fields": [],
+      "id": "high_52w",
+      "node_count": 7,
+      "num_slots": 3,
+      "required_lookback": 271
+    },
+    {
+      "dsl_sha256": "a760b8a09e10d13f5233216a5a1d5c84a465bb3861bd2cc403d3ffb36e14a3f9",
+      "extra_fields": [
+        "mkt_ret"
+      ],
+      "id": "bac",
+      "node_count": 16,
+      "num_slots": 5,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "f1a0e0f07c27a752cb6777e800866d01f57f133be72f48047be2a2957a3a3aa4",
+      "extra_fields": [],
+      "id": "smax",
+      "node_count": 18,
+      "num_slots": 6,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "22d70e1aeef635cc505774888a43e625d2ef28b7b1bb66589759c6030aae2fe9",
+      "extra_fields": [
+        "shares_out",
+        "si_shares"
+      ],
+      "id": "si_ratio",
+      "node_count": 9,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "1f11ac6a4cc8c632f35dc6f889ab76cc579cd9ca7f3a006042f44ac570624d8d",
+      "extra_fields": [
+        "si_dtc"
+      ],
+      "id": "dtc",
+      "node_count": 7,
+      "num_slots": 3,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "8e0a405634f50fd57a280357a5882026be54d7f1a6f095627ffa333d98ab44b4",
+      "extra_fields": [
+        "shares_out",
+        "si_shares"
+      ],
+      "id": "si_change",
+      "node_count": 10,
+      "num_slots": 4,
+      "required_lookback": 21
+    },
+    {
+      "dsl_sha256": "d8670a1639dc65f9c7b6b9ef9629cad62bed98a579ac723da8fa03260cc2ce22",
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "id": "ind_adj_rev_5",
+      "node_count": 11,
+      "num_slots": 5,
+      "required_lookback": 5
+    },
+    {
+      "dsl_sha256": "4aceab7f23fe8fb97a60c1bd66e9082a7c86f609a889199ae208647b1c737527",
+      "extra_fields": [],
+      "id": "seasonality_same_month",
+      "node_count": 9,
+      "num_slots": 4,
+      "required_lookback": 252
+    },
+    {
+      "dsl_sha256": "70d32c54cbdbe4fc3e709d1b4e9039b88237ef67bfa7545429e1eeae5d7d37f7",
+      "extra_fields": [
+        "iv_atm_21d"
+      ],
+      "id": "iv_rv_spread",
+      "node_count": 22,
+      "num_slots": 6,
+      "required_lookback": 21
+    },
+    {
+      "dsl_sha256": "b0ad578045fc7f0b3168e4050c6177d2173039d485a1332f1d3edadcc77855ad",
+      "extra_fields": [
+        "at",
+        "grp_ff12f49",
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "id": "opex_at_f49",
+      "node_count": 13,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "4f4651fb4c1972dba284f994bcf75399f2ca5cc041b48fa83d63306d246c56de",
+      "extra_fields": [
+        "grp_ff12",
+        "sv_ratio126"
+      ],
+      "id": "sv_flow",
+      "node_count": 7,
+      "num_slots": 4,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "8b9586cecc179e5bdac784cb63359434f32e81edb1f91ca0629df67e2fc79997",
+      "extra_fields": [
+        "at",
+        "be_lag1q",
+        "debt",
+        "mkt_ret",
+        "ni_q"
+      ],
+      "id": "qmj_safety",
+      "node_count": 37,
+      "num_slots": 8,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "3b0c33a5f87b887f67fee284b91bb6785309ff3fb40d10aad398164aaa363b38",
+      "extra_fields": [
+        "ni_q",
+        "ni_q_lag4"
+      ],
+      "id": "nincr",
+      "node_count": 26,
+      "num_slots": 7,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "07a61a9eeedf47ba8743086054475298ff892f5444cf66dd47316e6ab35cbf41",
+      "extra_fields": [
+        "at",
+        "be_lag1q",
+        "cfo_ttm",
+        "grp_ff12f49",
+        "me_company",
+        "ni_q"
+      ],
+      "id": "q5_eg_f49g",
+      "node_count": 33,
+      "num_slots": 7,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "7eec92bff4d0be02f980afb1d85d1df998ac457abaf99d05603faccae0876857",
+      "extra_fields": [],
+      "id": "smax5",
+      "node_count": 18,
+      "num_slots": 6,
+      "required_lookback": 41
+    },
+    {
+      "dsl_sha256": "d318cf2c71267d5804a3a1759575a521415496298086a01b319786c2642968af",
+      "extra_fields": [
+        "grp_ff49"
+      ],
+      "id": "res_mom_ind",
+      "node_count": 17,
+      "num_slots": 4,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "981d01b22ba05cfa768ae1b7a009001d18172dad81a9f2bbeb9a6f3c1f75a68a",
+      "extra_fields": [
+        "ins_opportunistic_net"
+      ],
+      "id": "ins_opp_buy",
+      "node_count": 4,
+      "num_slots": 3,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "b22cbc3d02d0914dcb4d2a31f5f1586ab4a252dd52b1856227a51e1175cd476f",
+      "extra_fields": [
+        "inst_best_ideas"
+      ],
+      "id": "inst_best_ideas",
+      "node_count": 4,
+      "num_slots": 3,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "c58ac3b5a885805a6f5ff92abb3cf1fcc4aad4262ce03db9aeb745cf423ff9b8",
+      "extra_fields": [
+        "ftd_shares_ratio21"
+      ],
+      "id": "ftd_fail",
+      "node_count": 5,
+      "num_slots": 3,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "eb2062118a5ca0ad3dbb011b1e60859bbb43b8b372a8dee466289c5b409f9c47",
+      "extra_fields": [
+        "ea_days_to_expected"
+      ],
+      "id": "ea_overdue",
+      "node_count": 9,
+      "num_slots": 4,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "eb4ced22fe5bcff5f56a6ca26ebba5ca47c25bb2ed86267a1374445d97043917",
+      "extra_fields": [
+        "ea_days_since",
+        "mkt_ret"
+      ],
+      "id": "ear_mom_12m",
+      "node_count": 18,
+      "num_slots": 5,
+      "required_lookback": 256
+    },
+    {
+      "dsl_sha256": "959788e7fdc9f6b046353e0d73f6c5ade241ce9f5edbca07ffe8589b1dab04c3",
+      "extra_fields": [
+        "at_lag4",
+        "be_lag1q",
+        "be_lag1q_lag4",
+        "ni_q",
+        "ni_q_lag4",
+        "sue",
+        "txt_q",
+        "txt_q_lag4"
+      ],
+      "id": "earn_surprise_comp",
+      "node_count": 33,
+      "num_slots": 6,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "211c045b41bd487959d2745607e57655f1aba18b391133d4724d1704f9e8ae79",
+      "extra_fields": [
+        "at",
+        "grp_ff12",
+        "oi_ttm",
+        "xrd_ttm"
+      ],
+      "id": "op_rd",
+      "node_count": 18,
+      "num_slots": 5,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "4554a05f99eef28147ab0adab13e31ec9c4817a1a093698ed7b65b4fe67f67e7",
+      "extra_fields": [
+        "si_shares"
+      ],
+      "id": "dtc_slow",
+      "node_count": 11,
+      "num_slots": 5,
+      "required_lookback": 145
+    },
+    {
+      "dsl_sha256": "4711ad7c27bad506ffb9deb28cdd4c034ea5a92454f115a2c946ea52de355b7f",
+      "extra_fields": [
+        "cfo_ttm",
+        "ni_ttm"
+      ],
+      "id": "pct_accruals",
+      "node_count": 15,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "f13685ff95864040051f618daa22ffc2fc6f55e2efa7c4961badc9259e6c10e0",
+      "extra_fields": [],
+      "id": "fip_id",
+      "node_count": 12,
+      "num_slots": 4,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "d76f14082ca7255a8cea83d90c569930385d7ab7e84ab6d01f4924f87b7ae089",
+      "extra_fields": [
+        "inst_own_share",
+        "shares_out",
+        "si_shares"
+      ],
+      "id": "si_low_io",
+      "node_count": 11,
+      "num_slots": 4,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "0b7d6cdeb6c2f86e328543eb7c996c5d4939fd960631cabce65b4a11e1c7cb05",
+      "extra_fields": [
+        "k8_count_63"
+      ],
+      "id": "k8_intensity",
+      "node_count": 16,
+      "num_slots": 5,
+      "required_lookback": 209
+    },
+    {
+      "dsl_sha256": "ea338c04bdff78ef224eb4244568fa672b051eb2c94020749add9f3ba184ab9c",
+      "extra_fields": [
+        "inst_own_chg_q"
+      ],
+      "id": "inst_persist",
+      "node_count": 34,
+      "num_slots": 6,
+      "required_lookback": 272
+    },
+    {
+      "dsl_sha256": "bafc4e3a93204e59b4a455e7c88335167ed612f01072192526551eea58a7aeed",
+      "extra_fields": [
+        "nt_first_126"
+      ],
+      "id": "nt_late",
+      "node_count": 5,
+      "num_slots": 3,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "5a1380a1d482c34aca88450b8de9a065150afeaa0c3c8cd359956d4cfd06d0dc",
+      "extra_fields": [
+        "div_month_pred"
+      ],
+      "id": "div_season",
+      "node_count": 2,
+      "num_slots": 2,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "91583af314a4f9dcec2c6a2c2fc1a507fbfdd39a60068bfe744e8158b6458e94",
+      "extra_fields": [
+        "beta_dvol_21"
+      ],
+      "id": "vol_beta",
+      "node_count": 7,
+      "num_slots": 3,
+      "required_lookback": 20
+    },
+    {
+      "dsl_sha256": "13fe28b662804e2d4daaad505475d65837cd8aaa95dc57650835e3c5a5d818eb",
+      "extra_fields": [
+        "season_y2_5"
+      ],
+      "id": "season_y2_5",
+      "node_count": 2,
+      "num_slots": 2,
+      "required_lookback": 0
+    },
+    {
+      "dsl_sha256": "8f56e93677a8c275ec83c1fceda1a057461da3beb63d5b6d6adb35eebda2edab",
+      "extra_fields": [
+        "high_adj",
+        "low_adj"
+      ],
+      "id": "wq_099",
+      "node_count": 28,
+      "num_slots": 6,
+      "required_lookback": 104
+    },
+    {
+      "dsl_sha256": "cf7571ddb7ae552f14348d3a10093910b2935618a37a4b331ea2d64a58b55a53",
+      "extra_fields": [
+        "high_adj",
+        "low_adj"
+      ],
+      "id": "wq_035",
+      "node_count": 22,
+      "num_slots": 7,
+      "required_lookback": 52
+    },
+    {
+      "dsl_sha256": "e9b110e3cb7d01f494386a93bfd9155b0912d35548ce4c83946b5d62a43070d0",
+      "extra_fields": [
+        "high_adj",
+        "low_adj"
+      ],
+      "id": "wq_055",
+      "node_count": 20,
+      "num_slots": 6,
+      "required_lookback": 36
+    },
+    {
+      "dsl_sha256": "9393d144e5ace0b0819abb6049e091f489706f85433b2aaff2d9e6073bd79062",
+      "extra_fields": [
+        "open_adj"
+      ],
+      "id": "wq_006",
+      "node_count": 10,
+      "num_slots": 5,
+      "required_lookback": 29
+    },
+    {
+      "dsl_sha256": "f1f9d043f288987609a6edb709563204fecc8631830575fc9add232b4d39d631",
+      "extra_fields": [
+        "high_adj",
+        "low_adj",
+        "open_adj"
+      ],
+      "id": "wq_095",
+      "node_count": 34,
+      "num_slots": 7,
+      "required_lookback": 98
+    },
+    {
+      "dsl_sha256": "d01d6894c982221e432f372b61017e36aa0f711ba57136b910e451f26c341025",
+      "extra_fields": [
+        "high_adj",
+        "low_adj"
+      ],
+      "id": "wq_085",
+      "node_count": 31,
+      "num_slots": 6,
+      "required_lookback": 57
+    },
+    {
+      "dsl_sha256": "c8c2edf5b89f0f3a4cea0eb1ad3dde6dd24f04c41014c5721e0ea64a96ca3774",
+      "extra_fields": [],
+      "id": "wq_030",
+      "node_count": 27,
+      "num_slots": 6,
+      "required_lookback": 39
+    },
+    {
+      "dsl_sha256": "21026ffb6ddd72c6e3d3547a4e7a145273989f1333ce66479906892430d3e7a4",
+      "extra_fields": [],
+      "id": "wq_043",
+      "node_count": 19,
+      "num_slots": 5,
+      "required_lookback": 58
+    }
+  ],
+  "library_sha256": "6c8c73773edc7c71541e1edd6bf9cea56e65d4b7fc28989d2433ddd6e6656967",
+  "max_compiled_slots": 8,
+  "max_working_bytes": 2684354560,
+  "mode": "metadata-only-no-payload",
+  "required_lookback": 272,
+  "research_fields": {
+    "declared": [
+      "at",
+      "at_lag4",
+      "be",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "beta_dvol_21",
+      "capx_ttm",
+      "cfo_ttm",
+      "che",
+      "debt",
+      "div_month_pred",
+      "dvc_ttm",
+      "ea_days_since",
+      "ea_days_to_expected",
+      "earn_recent",
+      "fscore",
+      "ftd_shares_ratio21",
+      "gp_ttm",
+      "grp_ff12",
+      "grp_ff12f49",
+      "grp_ff49",
+      "high_adj",
+      "ins_opportunistic_net",
+      "inst_best_ideas",
+      "inst_own_chg_q",
+      "inst_own_share",
+      "iv_atm_21d",
+      "k8_count_63",
+      "low_adj",
+      "me_company",
+      "mkt_ret",
+      "ni_q",
+      "ni_q_lag4",
+      "ni_ttm",
+      "noa",
+      "nt_first_126",
+      "oi_ttm",
+      "open_adj",
+      "prstkc_ttm",
+      "sale_ttm",
+      "season_y2_5",
+      "shares_out",
+      "shrs_q",
+      "shrs_q_lag4",
+      "si_dtc",
+      "si_shares",
+      "sstk_ttm",
+      "sue",
+      "sv_ratio126",
+      "txt_q",
+      "txt_q_lag4",
+      "xrd_ttm"
+    ],
+    "loaded": [
+      "at",
+      "at_lag4",
+      "be",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "beta_dvol_21",
+      "capx_ttm",
+      "cfo_ttm",
+      "che",
+      "debt",
+      "div_month_pred",
+      "dvc_ttm",
+      "ea_days_since",
+      "ea_days_to_expected",
+      "earn_recent",
+      "fscore",
+      "ftd_shares_ratio21",
+      "gp_ttm",
+      "grp_ff12",
+      "grp_ff12f49",
+      "grp_ff49",
+      "high_adj",
+      "ins_opportunistic_net",
+      "inst_best_ideas",
+      "inst_own_chg_q",
+      "inst_own_share",
+      "iv_atm_21d",
+      "k8_count_63",
+      "low_adj",
+      "me_company",
+      "mkt_ret",
+      "ni_q",
+      "ni_q_lag4",
+      "ni_ttm",
+      "noa",
+      "nt_first_126",
+      "oi_ttm",
+      "open_adj",
+      "prstkc_ttm",
+      "sale_ttm",
+      "season_y2_5",
+      "shares_out",
+      "shrs_q",
+      "shrs_q_lag4",
+      "si_dtc",
+      "si_shares",
+      "sstk_ttm",
+      "sue",
+      "sv_ratio126",
+      "txt_q",
+      "txt_q_lag4",
+      "xrd_ttm"
+    ],
+    "planned_loads": 71,
+    "resident_capacity": 8,
+    "roles": [
+      {
+        "directory": "build-equity/train-2020-2023-lo3-fields-v14",
+        "loaded": [
+          "at",
+          "at_lag4",
+          "be",
+          "be_lag1q",
+          "be_lag1q_lag4",
+          "beta_dvol_21",
+          "capx_ttm",
+          "cfo_ttm",
+          "che",
+          "debt",
+          "div_month_pred",
+          "dvc_ttm",
+          "ea_days_since",
+          "ea_days_to_expected",
+          "earn_recent",
+          "fscore",
+          "ftd_shares_ratio21",
+          "gp_ttm",
+          "grp_ff12",
+          "grp_ff12f49",
+          "grp_ff49",
+          "high_adj",
+          "ins_opportunistic_net",
+          "inst_best_ideas",
+          "inst_own_chg_q",
+          "inst_own_share",
+          "iv_atm_21d",
+          "k8_count_63",
+          "low_adj",
+          "me_company",
+          "mkt_ret",
+          "ni_q",
+          "ni_q_lag4",
+          "ni_ttm",
+          "noa",
+          "nt_first_126",
+          "oi_ttm",
+          "open_adj",
+          "prstkc_ttm",
+          "sale_ttm",
+          "season_y2_5",
+          "shares_out",
+          "shrs_q",
+          "shrs_q_lag4",
+          "si_dtc",
+          "si_shares",
+          "sstk_ttm",
+          "sue",
+          "sv_ratio126",
+          "txt_q",
+          "txt_q_lag4",
+          "xrd_ttm"
+        ],
+        "manifest_sha256": "4b12c0e1d90d8ab5cfa6e6281d104a4b8d229a42060505c39217f97d616cbb0c",
+        "role": "train"
+      }
+    ]
+  },
+  "roles": [
+    {
+      "manifest_sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+      "required_bytes": 2062213532,
+      "role": "train"
+    }
+  ],
+  "workers": 1
+}

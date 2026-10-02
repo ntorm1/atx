@@ -211,3 +211,16 @@ hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2
   1/(2T)); PM6-6 gross matching against X-5's all-rows gross .9862260459 starting at L 1.1720; acceptance PM7-34 /
   PM8-1 (dSR > 0 AND mechanics); the capacity criterion of PM7-10 (net Sharpe at 4x NAV not lower than the parent's)
   and turnover printed.
+- After the screen (gate PASS 8 of 12 with the prior sign; 12 admission lines ledgered): wq_002 (admitted, runner sign
+  -1) and wq_101 (reject_turnover, runner sign -1) leave the wave (PM7-35); wq_030 and wq_014 (reject_redundant, prior
+  sign) stay at weight 0.
+
+## Library v8x7b (the cell X-7 after the screen), registered 2026-10-02 before its screen
+- Members: v8x3b (58) + wq_099, wq_035, wq_055, wq_006, wq_095, wq_085, wq_030, wq_043, wq_014, wq_044 = 68; the same
+  strings as in v8x7 (same trial ids: 0 new admission lines). `research_cycle.py add-alpha --parent v8x3b --name v8x7b
+  --parent-spec scripts/specs/v8/x-theme-erc-gm.json --fields build-equity/train-2020-2023-lo3-fields-v14` (10 calls;
+  plans `x7b-plans/`); spec `lib-v8x7b.json` with PM6-8 (i) applied before any run (marginal without themes, output
+  `...-v8x7b-marginal-poolonly-b`).
+- Pins: library `fund_industry_ic_v8x7b.json` `81db1d304a8a0fbf4067080eb4c52a55544b6cd9e8...` (full SHA in the spec);
+  recipe `f205da12` (admission_trials 10, unchanged 58); definition `69b22138`; stub `701345d7`; registry `f0ee2288`
+  (unchanged); fields v14 `4b12c0e1`; spec `fdef9fba`.
