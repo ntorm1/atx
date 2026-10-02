@@ -134,7 +134,7 @@ struct MineFootprint {
 // per date (calendar and daily series); a label row count is at most dates. The metadata
 // allowance also holds the member check's 1 MiB read buffer, each member's held file handle
 // (from the bind to the end of the campaign) and, where writers are not denied, the stream's
-// per-member SHA-256 state (at most 64 members; lane MINE-JOIN).
+// per-member SHA-256 state (at most kMaxMinePoolMembers = 80 members; lane MINE-JOIN, PM7-13).
 struct MineMemory {
   // Resident: from the role load to the end of the campaign.
   atx::u64 metadata{};    // 64 MiB: library, catalogue, populations, genomes, I/O buffers, JSON

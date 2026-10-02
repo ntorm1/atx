@@ -10,8 +10,9 @@
 // Payloads are date-major little-endian f64 beside the manifest, NaN where undefined (inf is
 // refused). Regressors enter the marginal term as given (the book composite, theme composites;
 // at most 11); members are the book's signals, ranked over the decision members for the
-// mined-v1 rho check (at most 64). An empty path reads as the empty pool (neither); the mining
-// verb refuses it, and a manifest without a regressor or a member (Ruling E-32a, review MINE-7).
+// mined-v1 rho check (at most 80, Ruling PM7-13). An empty path reads as the empty pool
+// (neither); the mining verb refuses it, and a manifest without a regressor or a member (Ruling
+// E-32a, review MINE-7).
 // Each regressor is loaded once: the fitness and the confirm read borrow it. No member is ever
 // held whole: the rho check streams them date by date from their pinned payloads (lane MINE-JOIN),
 // which the pool holds open, writers denied, from the bind to the end of the campaign.
@@ -27,7 +28,7 @@
 
 namespace atx::impl::strategy {
 
-inline constexpr atx::usize kMaxMinePoolMembers = 64;
+inline constexpr atx::usize kMaxMinePoolMembers = 80;
 
 struct MinePoolFile {
   std::string name;

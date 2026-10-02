@@ -77,7 +77,7 @@ $RC mine lock $SPEC --write
 The pool step writes `build-equity/mine-pool-v9-c1/`:
 - `manifest.json` (`atx.mine-pool/v1`);
 - `book.f64`, the regressor;
-- one `<member>.f64` per positive-weight member, at most 64.
+- one `<member>.f64` per positive-weight member, at most 80 (Ruling PM7-13).
 
 Payloads are hard-linked; if a copy is needed, the copy costs about 69 MB per row on disk. The step refuses a combined
 signal on another role, weights that the combined signal was not blended with, a weighted member without a v2 cache
@@ -97,7 +97,7 @@ prints `required_bytes`. Then:
 
 Expected at the joined head (the model of `task-MINE-JOIN-report.md`; C1's shape 1,405 x 6,100, 12 fields, 1
 regressor, no racing, cap 16, 132 trials): 3,979 MiB at 4 workers, 2,784 at 2, 2,765 at 1, the same for any member
-count 1..64 (the rho step streams the members by date). So W = 4 and `max_memory_mib` 4,032. A probe that prints other
+count 1..80 (the rho step streams the members by date). So W = 4 and `max_memory_mib` 4,032. A probe that prints other
 numbers means the build is not the joined head: STOP and report.
 
 If no worker count fits, STOP and report the three numbers to the PM. Do not drop members (D7), do not raise the
