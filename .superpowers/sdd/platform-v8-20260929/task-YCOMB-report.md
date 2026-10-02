@@ -1,9 +1,9 @@
 # Task YCOMB report: platform v8 Y, construction and combination rules
 
 Lane YCOMB. Worktree `C:/atx-wt/pool-14`, branch `feat/platform-v8-ycomb-20261002`, base `798d3b23`.
-**Status: DONE_WITH_CONCERNS.** Four rules are registered and committed: Y-1, Y-2, Y-3, and the Y-5 kernel. Y-4 is
-deliberately left unused. None of the C++ is built (lane rule). Y-5 is registered and has its engine kernel, but it is
-not wired into the IC runner or NAV, so no cell can run it yet. Everything here was registered blind: no 2020-2023
+**Status: DONE_WITH_CONCERNS.** Four rules are registered and committed: Y-1, Y-2, Y-3 and Y-5. Y-5 is wired end to
+end after PM8-10 (section "Y-5 wiring"), with its core in C++ per PM8-12. Y-4 is deliberately left unused. None of the
+C++ is built (lane rule). Everything here was registered blind: no 2020-2023
 return, IC, Sharpe or NAV output was opened, and nothing dated 2024-01-01 or later was opened. The only results quoted
 are the PM's public verdict lines in progress.md.
 
@@ -12,7 +12,7 @@ are the PM's public verdict lines in progress.md.
 | `47d6afd9` | Y-1 vol-target-v1 | engine `book/vol_target.hpp` + test; impl `strategy_vol_target.{hpp,cpp}`, `strategy_risk_target.{hpp,cpp}`, `strategy_nav_v7.cpp`; test `strategy_vol_target_test.cpp`; template `y-vol-target.json` |
 | `02633038` | Y-3 norm-score-v1 | engine `book/normal_score.hpp` + test; impl `strategy_target_replay.{hpp,cpp}`, `strategy_nav_replay.cpp`, `strategy_nav_v7.cpp`; test `strategy_norm_score_test.cpp`; template `y-norm-score.json` |
 | `43745dd7` | Y-2 theme-tsmom-v1 | impl `strategy_ic_theme_tsmom.{hpp,cpp}`, `strategy_ic_composition.{hpp,cpp}`, `strategy_ic_admission.cpp`, `strategy_ic_runner.cpp`, `strategy_ic_detail.hpp`; tests `strategy_ic_theme_tsmom_test.cpp`, `strategy_ic_runner_test.cpp` (appended); fitter `composition_theme_tsmom.py` + test, `fit_composition_weights.py` hook; fixture `tests/fixtures/theme_tsmom_v1.json`; template `y-theme-tsmom.json` |
-| `0fbcb230` | Y-5 two-speed-v1 (kernel) | engine `book/two_speed.hpp` + `book_two_speed_test.cpp` |
+| `0fbcb230`, `e2ac7d63` | Y-5 two-speed-v1 (kernel, then wiring) | engine `book/two_speed.hpp` + `book_two_speed_test.cpp` |
 
 ## Ranking: prior of a gain in net Sharpe and gross return
 
@@ -180,12 +180,7 @@ signal-specific decay decides how fast each bucket is traded, not how much of it
 - **Delivered.** The pure kernel `atx/engine/book/two_speed.hpp` and `BookTwoSpeed.*`. The tests cover the
   constants, the closed form, equal rates being one book toward the summed aim, netting, the 5-step half-life, and
   refusals.
-- **Not delivered (follow-up, needs a PM ruling).**
-  - Fitter `--sleeve fast|slow`: two weights files with the parent's weights restricted to one bucket, masses unchanged.
-  - Two IC w passes, giving two combined artifacts.
-  - `nav --two-speed two-speed-v1 --fast-blend <manifest>` in the v7 hook, with per-book fast and slow state as in the
-    vol-target state.
-  - Template `y-two-speed.json`.
+- **Wiring.** Done after PM8-10. See "Y-5 wiring" below; it replaces the follow-up plan this section first carried.
 
 **Per-theme alpha-decay half-life table (registration, blind, in sessions).** A theme is fast if its half-life is at
 most 10.
@@ -205,6 +200,136 @@ most 10.
 | filing_events | 21 | slow | event drift of about one month |
 | price_volume | 5 | fast | Kakushadze 2016 (101 alphas, average holding 0.6-6.4 days) |
 
+## Y-5 wiring (PM8-10; core in C++ per PM8-12)
+
+Rulings: PM8-10 accepts Y-5 as distinct from R-3 and counts it once. PM8-12 puts the rule in C++; Python only writes the
+spec.
+
+### Half-life table: mine against YSIG's proposal
+
+YSIG's proposal is Appendix A of `task-YSIG-report.md` on `feat/platform-v8-ysig-20261002`. The two tables differ only
+inside the slow bucket:
+
+| theme | YCOMB (mine) | YSIG |
+|---|---|---|
+| earnings_momentum | 63 | 31 |
+| low_risk | 252 | 126 |
+| short_interest | 63 | 126 |
+| filing_events | 21 | 126 |
+| price_volume | 5 | 3 |
+
+All other themes agree. In both tables the fast bucket (half-life at most 10) is exactly reversal_seasonality and
+price_volume, and theta_f is fixed by the registered fast half-life of 5 sessions.
+
+The rule reads only the bucket and that constant, so the two tables give the same rule bit for bit. Picked blind:
+**mine**, because it is the registered one and switching changes nothing that runs. YSIG's suggested member-level
+override for reversal_seasonality is not adopted: the sleeves split theme composites, and splitting a theme would
+undo its standardisation. The PM pins the table.
+
+### End to end, behind one flag pair
+
+The cell sets the same flag on two steps: fit `--two-speed two-speed-v1` and nav `--two-speed two-speed-v1`.
+
+1. **Fitter (spec only).** `composition_two_speed.py` adds `theme_sleeves: {"rule": "two-speed-v1"}` to the parent's
+   document. Weights, signs, theme_standardise and provenance.rule do not change.
+2. **IC runner.** `strategy_ic_two_speed.cpp` (`composition_sleeves`):
+   - accepts exactly that block, and only beside a rerank-true theme_standardise block with no theme_residualise;
+   - derives each weighted theme's half-life from the C++ table (`strategy_two_speed.hpp`) and refuses an
+     unregistered theme;
+   - requires at least one fast and one slow theme.
+3. **IC composition.** `IcComposition::set_theme_sleeves`:
+   - In `finish`, a second pass adds each theme's unchanged per-date re-rank, times the mass in force, to its
+     sleeve's plane. The mass in force includes theme-tsmom-v1's schedule when the parent carries one.
+   - It records the fast themes' mass share per date.
+   - The blend itself is untouched bit for bit.
+4. **w pass output.** The w pass writes:
+   - `<role>_sleeve_fast.f64`, `<role>_sleeve_slow.f64` and `<role>_sleeve_fast_share.f64`;
+   - `<role>_sleeves.json`, pinned by SHA-256 in the combined manifest as `composition_sleeves`. The combined file set
+     stays the five files every consumer admits.
+   - The recipe gains `composition_sleeves` and the summary gains `composition_weights.sleeves`.
+   - Admission charges the two planes and the share row.
+5. **NAV load and construction.**
+   - `load_saved_blend` loads the pinned sleeves under the flag. It checks receipts, support equal to the blend's,
+     and shares in [0, 1], and refuses a run without sleeves.
+   - On each rebalance, each sleeve gets the parent's construction: ranks, demean, gross 1, locate zeroing,
+     neutralization, and norm-score-v1 when the parent carries it.
+6. **Netting (engine kernel).** `atx::engine::book::two_speed_aim`:
+   - advances the virtual fast sleeve, `F_next = F + theta_f (L m_f d_f - F)`, with theta_f = 1 - 2^(-1/5);
+   - returns the netted aim, `desired = (1 - m_f) d_s + (F + (F_next - F) / theta) / L`.
+   - aim-partial-v5's unchanged step on that aim is exactly `F_next - F` plus the remainder's `(current - F)` step
+     toward `L (1 - m_f) d_s` at the parent's theta. Only the net is traded.
+   - The parent's dust band, exits, locate block, costs and capacity curve are unchanged.
+   - F is book-independent (no drift, no fills), so it lives in the replay's shared construction state and one group
+     forms per (L, theta).
+7. **Refusals.**
+   - Refused with spo (any version), aim-partial-v6, `--risk-target`, `--vol-target`, a non-fixed rate,
+     `--hold-band`, `--vol-scale` and `--adv-hold-q`.
+   - Refused by `nav decide`, because the holdings file does not carry F.
+   - Refused without a construction state (`form_desired` called bare). The target replay holds a state, so the
+     construction also runs there when the sleeves are attached; it has no CLI flag.
+
+### Template, gross matching and acceptance
+
+- **Template.** `scripts/specs/v8/y-two-speed.json`: nominal parent `x-theme-erc.json`, parent = the last accepted book
+  at Y-5's place in the order (Y-S -> Y-3 -> Y-2 -> Y-5).
+- **Gross matching (PM6-6) applies.** The rule changes how two buckets trade, not the book's scale. Netting and the
+  virtual fast sleeve still change the realised gross. So the cell is judged at the parent's dollar gross:
+  1. a calibration run at L_parent, which reads G_cal only;
+  2. the trial at `L_parent x G_parent / G_cal`.
+- **Acceptance (PM7-34 default).** Paired S2 net dSR > 0 against the parent AND mechanics. Printed only: turnover per
+  unit gross, cost per traded dollar, net Sharpe at 4x, net annual return, and the fast mass share.
+
+### Look-ahead surfaces
+
+- The half-life table is registered from the literature and reads no data.
+- The sleeves are the parent blend's own per-date theme parts. They carry no new information and no return.
+- `m_f(d)` comes from the masses in force at d. Under theme-tsmom-v1 those are the walk-forward schedule's (Y-2's
+  surfaces).
+- F uses only desired targets formed at or before the decision. The kernel reads no return.
+
+### How root verifies flag absent
+
+- The parent's fit argv must give the same weights and admission, except script_sha256.
+- The parent's w argv on the new build must be byte-identical. With no theme_sleeves block nothing runs:
+  `TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend` checks blend, targets and `__combined__` rows byte for byte
+  even with the block present.
+- The parent's NAV argv must be byte-identical. Without `--two-speed`, form_desired never reaches the branch:
+  `TwoSpeed.ZeroFastShareIsTheParentRunBitForBit` shows even the on-path with m_f = 0 is the parent's run bit for bit.
+
+### Tests added
+
+- `BookTwoSpeed.NettedAimClosedForm`, `.AimPartialStepOnTheAimIsTheNettedSleeveMove`, `.NettedAimRefusalsWriteNothing`.
+- `TwoSpeed.*`:
+  - the table, every entry spelled out;
+  - composition sleeves equal to the single-theme blends bit for bit, and the share under a schedule;
+  - the per-decision closed form;
+  - zero-share identity;
+  - the NAV run differing from the parent's;
+  - refusals;
+  - rule id, recipe and summary keys.
+- `TwoSpeedRunner.*`: the end-to-end w pass, with sleeves equal to the fast-only and slow-only runs bit for bit, the
+  replay loader reading them back, and refusals before any payload is read.
+- `test_composition_two_speed.py`: the spec block only, flag-absent identity, refusals.
+
+No Python mirror of the rule exists (PM8-12): the closed forms are in the gtests.
+
+### Build targets and gtest filters added
+
+- `atx-impl-strategy-target-tests` (now includes `strategy_two_speed_test.cpp`): `--gtest_filter=TwoSpeed.*:BookTwoSpeed.*`.
+- `atx-impl-strategy-ic-tests`: `--gtest_filter=TwoSpeedRunner.*`, plus the regression filters
+  `ThemeTsmomRunner.*:CompositionV8.*`.
+- New source `atx-impl/src/strategy_ic_two_speed.cpp` in atx-impl-core and the Debug /O2 lists.
+- The engine book group picks up the extended `book_two_speed_test.cpp`.
+
+## Core vs wrapper (PM8-12; for lane YARCH)
+
+| Python path | What it computes | Duplicates C++? | Migration |
+|---|---|---|---|
+| `composition_theme_tsmom.py` (Y-2) | sleeve returns from the fitter's factor series, trailing sums, block starts, and the mass kernel (`masses`, also used to write the shared fixture) | the mass kernel duplicates `theme_tsmom_masses` (pinned by the fixture); the sleeve and trailing-sum computation has no C++ copy | move sleeves and trailing sums into an engine module that reads the factor series; the fitter would only write `theme_schedule {rule}`; retire `masses()` and the fixture writer |
+| `composition_two_speed.py` (Y-5) | writes `{"rule": "two-speed-v1"}` | no (thin, per PM8-12) | none |
+| `composition_theme_erc.py` (lane XCOMB; not mine) | ERC shares and member cap, mirrored by `strategy_ic_theme_erc.cpp` | yes | listed for YARCH only |
+| Y-1 and Y-3 | no Python rule: C++ (`book/vol_target.hpp`, `book/normal_score.hpp`) driven by NAV flags | no | none |
+
 ## Y-4: left unused, on purpose
 
 Each trial raises N and so raises the deflated-Sharpe hurdle for every later cell. No remaining candidate has a
@@ -220,7 +345,9 @@ positive prior that is not excluded or already covered:
 - `python -m pytest -q -p no:cacheprovider test_composition_theme_tsmom.py test_composition_theme_erc.py`: 26 passed.
 - `test_fit_composition_weights.py test_composition_resid.py test_composition_ic_shrink.py test_composition_rules.py`:
   149 passed, 17 subtests passed.
-- `scripts/tests/test_research_spec.py`: 74 passed. This registers y-vol-target, y-norm-score and y-theme-tsmom.
+- `scripts/tests/test_research_spec.py`: 74 passed. This registers y-vol-target, y-norm-score and y-theme-tsmom. After the Y-5 wiring it is 76 passed, with
+  y-two-speed registered. The composition and fitter suites, two-speed included, then give 181 passed (+17 subtests)
+  and 110 passed after the PM8-12 thinning.
 
 ## What root must build and verify
 
@@ -257,7 +384,8 @@ R-8's `strategy_risk_target.{hpp,cpp}` gains a second law; the default is unchan
 1. All four C++ commits are unbuilt and must compile first time under clang-cl `/W4 /WX`. The likeliest friction:
    aggregate init of `IcThemeBlock`, the new `score_role` and `method_recipe` parameters, and the `ConstructionDay`
    fields Y-3 adds (two per day).
-2. Y-5 cannot run until it is wired. That needs a PM ruling and a follow-up lane.
+2. Y-5 runs only with both flags (fit and nav). Two-speed is refused with `--risk-target` and `--vol-target`, so if
+   Y-5 is accepted, Y-1 (later in the order) cannot run on top of it until F is scaled by each book's L_t: a follow-up lane.
 3. Y-1 may be read under E-45 as a re-parameterisation of R-8. R-8 targets an absolute vol; Y-1 targets the book's own
    running mean, which is the Moreira-Muir form. The PM rules on that.
 4. Y-3 pushes gross to the tails. Single-name weights rise about 4x the mean |w|. Borrow on hard-to-borrow tails and
