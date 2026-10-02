@@ -256,3 +256,58 @@ Appendix A block for X results: `TRAIN construction cells <N_c>; admission trial
 hand-written <kx>, mined <km>); mined campaigns <0|1> (v9-mine-c1: budget <B>, registry count <C>, admitted <a>); N_tot
 <n>; N_hand <h>; window research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8:
 2 (2023-2024); history reads <r>; 2025+ never read.`
+
+## 14. The X list (precondition P4; pinned 2026-10-02 by root at the PM's dispatch, from PM7-18, PM7-24, PM7-32)
+
+Pinned before any X measurement (no X cell, screen or campaign has run; no X statistic exists). Basis: PM7-16 (a),
+PM7-18 (a)-(c), PM7-23, PM7-24 (the cell list and each criterion), PM7-32 (XDATA registration), PM7-15 (a) (theme
+`filing_events` last in the fitter, done at integration 8). Confirmed defects for X-1 (PM7-9): **none** (PM7-18 (a): A-1
+is a variant, not a repair); X-1, X-7, X-8 are unused and not refilled (PM7-24). Lane reports (path @ commit, file
+SHA-256): XIMP `task-XIMP-report.md` @ `3db253d5` (`c31428f9...9620`); XSIG `task-XSIG-report.md` @ `7467448f`
+(`377265d4...caff7`); XDATA `task-XDATA-report.md` @ `e3654b93` (`72f2a27a...00c6a2` incl. task GOLD); XCOMB
+`task-XCOMB-report.md` @ `914f9944` (`945a7b09...c6a2`). Fields of every X cell: v13 lo3, manifest
+`e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2` (P6; 75 rows = v10's 70 + the 5 X fields).
+Every add-alpha call carries the lane's frozen argv; only `--parent`, `--name`, `--parent-spec`, `--fields` and
+`--plan-json` (PM6-9) are filled in by root. Hand-written admission trials: 13 (X-2 5, X-3 8); the other 10 lapse.
+
+| cell | id | class | string or rule | constants (theme, tier, sign; flags) | source | SHA-256 of the DSL / rule text |
+|---|---|---|---|---|---|---|
+| X-2 | `q5_eg_f49g` | refinement (A-1, admission trial, PM7-18 a) | XIMP A-1 string | investment_issuance, B, +1; `--replaces q5_eg_f49` (no `--rescreen`) | XIMP A-1 | `07a61a9eeedf47ba8743086054475298ff892f5444cf66dd47316e6ab35cbf41` |
+| X-2 | `iv_rv_spread_xe` | refinement B-1 (TRAIN statistics in view, PM7-18 b) | XIMP B-1 | options_implied, B, +1; `--replaces iv_rv_spread` | XIMP B.4 | `29e7d9cf564cacf2424ce917718613c3e1787e0c8fdc77fec19c41369054e0ae` |
+| X-2 | `ind_adj_rev_5_nx` | refinement B-2 | XIMP B-2 | reversal_seasonality, B-, +1; `--replaces ind_adj_rev_5` | XIMP B.4 | `9c1d051d4a6ff79a34c4a7057cd48ec64c9d5f6957ea317f5a3f6254e052b46f` |
+| X-2 | `ins_opp_buy` | refinement B-3 (TRAIN statistics in view) | XIMP B-3 | ownership_flow, B-, +1; `--replaces ins_opp` | XIMP B.4 | `981d01b22ba05cfa768ae1b7a009001d18172dad81a9f2bbeb9a6f3c1f75a68a` |
+| X-2 | `bac_vq` | refinement B-4 (TRAIN statistics in view) | XIMP B-4 | low_risk, B+, +1; `--replaces bac` | XIMP B.4 | `116135c031f95c4655f9e7e6ae7efae71162c622eeb9887697a670e3a1123ecc` |
+| X-3 | `stmom` | new (XSIG 1) | XSIG section 5 | price_momentum, B-, +1 | XSIG 5 | `06dc6238d7e94089391ca1405731ea8ebfe000eb8c9ea45d131fbecf53ab907d` |
+| X-3 | `earn_season` | new (XSIG 2) | XSIG section 5 | reversal_seasonality, B-, +1 | XSIG 5 | `64a0be8f2c71efd1f7a2de920bb5163e99b9dfcef3ea3f4da15f673bc0b328e2` |
+| X-3 | `k8_intensity` | new (XSIG 3) | XSIG section 5 | filing_events, C+, +1 | XSIG 5 | `0b7d6cdeb6c2f86e328543eb7c996c5d4939fd960631cabce65b4a11e1c7cb05` |
+| X-3 | `inst_persist` | new (XSIG 4) | XSIG section 5 | reversal_seasonality, C+, +1 | XSIG 5 | `ea338c04bdff78ef224eb4244568fa672b051eb2c94020749add9f3ba184ab9c` |
+| X-3 | `nt_late` | new (XSIG 5) | XSIG section 5 | filing_events, B-, +1 | XSIG 5 | `bafc4e3a93204e59b4a455e7c88335167ed612f01072192526551eea58a7aeed` |
+| X-3 | `div_season` | new (XDATA) | `rank(div_month_pred)` | reversal_seasonality, C+, +1 (PM7-32) | XDATA 4b; argv below | `5a1380a1d482c34aca88450b8de9a065150afeaa0c3c8cd359956d4cfd06d0dc` |
+| X-3 | `vol_beta` | new (XDATA) | `rank(decay_linear((-1 * beta_dvol_21), 21))` | low_risk, C+, +1 (PM7-32) | XDATA 4b; argv below | `91583af314a4f9dcec2c6a2c2fc1a507fbfdd39a60068bfe744e8158b6458e94` |
+| X-3 | `season_y2_5` | new (XDATA) | `rank(season_y2_5)` | reversal_seasonality, C+, +1 (PM7-32) | XDATA 4b; argv below | `13fe28b662804e2d4daaad505475d65837cd8aaa95dc57650835e3c5a5d818eb` |
+| X-4 | `value_composite_v49` | re-screen (C-1) | XIMP C-1 table | the replaced member's; `--replaces value_composite --rescreen` | XIMP C-1 | `09fb156c56c6de79548fe94d905db524717b8fa561867a79965d0585f56b864f` |
+| X-4 | `bm_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces bm --rescreen` | XIMP C-1 | `a37c3ecabe83b6982017e247a7a802a1546712b078596d68b9d4b0d62473d09d` |
+| X-4 | `ep_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces ep --rescreen` | XIMP C-1 | `0d1975e5a8f11aa523aaf7d7db62f0c6424edb465f6cd78b7149653cd7e976e4` |
+| X-4 | `cfp_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces cfp --rescreen` | XIMP C-1 | `86aed3229acc7590722d6eb5172844ebf2e0ba79059dd2e5b2487417893aaf7d` |
+| X-4 | `fcfp_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces fcfp --rescreen` | XIMP C-1 | `408ba943fe971124d44c2eb4948a4d0dded6965f49c617cb8043fa71ef604a4d` |
+| X-4 | `ebit_ev_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces ebit_ev_f49 --rescreen` | XIMP C-1 | `4a2b9ba77881892f947213d3929fbf7aa21c57011940f637b5b592c926fb78cb` |
+| X-4 | `net_payout_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces net_payout --rescreen` | XIMP C-1 | `8b6e8423c1997896f0d2ed88e865b36de2245e53e9d093df85c31f7ef7021f8a` |
+| X-4 | `sp_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces sp --rescreen` | XIMP C-1 | `1153ac469a8e35fc89df89dd7f504203df006c81c8a3647befed0a1a36e9c962` |
+| X-4 | `rd_me_v49` | re-screen (C-1) | XIMP C-1 table | `--replaces rd_me --rescreen` | XIMP C-1 | `bf89d6a635c81096135fcfe25236067d091f0447189c63846f59ca40d70df07d` |
+| X-5 | `theme-erc-v1` | combination rule (XCOMB 1) | template `scripts/specs/v8/x-theme-erc.json` @ `30b719e0` | 10000 sweeps, dispersion 1e-10, cap 1/(2T) | XCOMB 1 | file `c71e8b576030b9df66ca758d6966387600abe0b32c25118e4cd40055b8b79ae2` |
+| X-6 | `inv-vol-v1` | capacity rule (XCOMB 2) | template `scripts/specs/v8/x-inv-vol.json` @ `068b4a4d` | floor fraction .25, median, fill-session sigma | XCOMB 2 | file `26c971023bc51da246c0f5d4a142335e5fadea9346c46ed3d376a65d6dc36592` |
+
+X-4 calls: the replaced member's theme, tier, sign, prior-sign source, form and notes from the registry, citation +
+"; within FF49: Ehsani, Harvey and Li 2023, FAJ" (XIMP C-1 "Code path"), roster order. Acceptance per cell (section 6,
+PM7-10, PM7-24, PM5-11): X-2 / X-3 dSR > 0 AND mechanics AND net Sharpe at 4x NAV not lower than the parent's (turnover
+printed); X-4 dSR > 0 AND mechanics AND turnover per unit gross (PM5-11: executed tau_gmv_mean / all-rows gross, S2) not
+higher, the value members' FF49 covered cells printed; X-5 dSR > 0 AND mechanics AND turnover per unit gross not higher;
+X-6 dSR > 0 AND mechanics AND net Sharpe at 4x NAV higher AND S2 cost per traded dollar lower. PM6-6 on every cell.
+
+XDATA add-alpha argv (PM7-32; form, formula, domain, deviation from report sections 4a / 4b):
+
+```bash
+"$PY" scripts/research_cycle.py add-alpha --id div_season --dsl "rank(div_month_pred)" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Hartzmark and Solomon (2013, JFE) The dividend month premium" --origin prior --prior-sign-source "Hartzmark-Solomon 2013" --form "R(x)" --formula "div_month_pred (hs-divseason-q3-6-9-12-v1): Ex-date ledger: an observed session s of a line whose step from its previous observation p has y = 1 - F_p/F_s in [1 bp, 4%], no kept-gap step in (p, s], and is not a factor-break-v1 jump cell (a factor step with no matching raw drop). Row t, M = the month of session t: n_paid = months of M-12..M-1 holding an ex-date; a quarterly payer has 3 <= n_paid <= 6 and a first observation at or before month M-12's first session; value 1 if an ex-date is in M-3, M-6, M-9 or M-12, else 0; NaN for non-payers, annual, semiannual and monthly payers, short history" --domain "NaN for non-payers, annual, semiannual and monthly payers, short history" --deviation "DIV_PRED_MONTHS 3, 6, 9, 12: Hartzmark-Solomon (2013) (the lag set of the CZ DivSeason replication); DIV_PAYER_MONTHS, DIV_MIN_PAID, DIV_MONTHLY_MAX 12, 3, 6: the lag set predicts a quarterly cycle; a quarterly payer shows 4 paid months a year, 3 when one is skipped or moved across a window edge, at most two extras; annual and semiannual payers (1-2) would be flagged in months they never pay, monthly payers (7+) have no off month; DIV_YIELD_MIN 1e-4, DIV_YIELD_MAX 0.04: ex-dates from the vendor factor, above its print precision and below any regular payment; specials, spin-offs and stock dividends of 5% or more fall outside" --parent <X parent> --name <X name> --parent-spec <X parent spec> --fields <X fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id vol_beta --dsl "rank(decay_linear((-1 * beta_dvol_21), 21))" --theme low_risk --tier C+ --prior-sign 1 --citation "Ang, Hodrick, Xing and Zhang (2006, JF) The cross-section of volatility and expected returns" --origin prior --prior-sign-source "Ang-Hodrick-Xing-Zhang 2006" --form "R(decay_linear(x, 21))" --formula "-beta_dvol_21 (ahxz-beta-dvol-spy21-v1), decayed 21: OLS of the line's daily adjusted return on [1, r_SPY, dIV_SPY] over sessions t-21..t-1 (at least 17 usable days, regressors not collinear); value = the dIV slope. SPY = the unique securityID with ticker_tk 'SPY' (else refused); r_SPY its adjusted return (house guard, jump cells excluded); dIV the daily change of its atmCenI_21d inside IV_DOMAIN; line returns with the house guard and no kept-gap step; long low beta" --domain "NaN with fewer than 17 usable days in t-21..t-1 or collinear regressors (DVOL_MIN_DAYS 17, DVOL_DET_TOL 1e-10)" --deviation "VOL_LINE_TICKER, VOL_COLUMN SPY, atmCenI_21d: AHXZ use VXO (S&P 100, 30-day ATM implied volatility); SPY's 30-day (21 trading days) ATM IV is the in-house analogue; SPY's adjusted return for the CRSP value-weighted market; DVOL_WINDOW 21: AHXZ: daily returns within one month; DVOL_MIN_DAYS 17: declared: about 80% of the window, the house ratio of F-1's 48 of 60; AHXZ's own minimum not verified" --parent <X parent> --name <X name> --parent-spec <X parent spec> --fields <X fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id season_y2_5 --dsl "rank(season_y2_5)" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Heston and Sadka (2008, JFE) Seasonality in the cross-section of stock returns; Keloharju, Linnainmaa and Nyberg (2016, JF) Return seasonalities" --origin prior --prior-sign-source "Heston-Sadka 2008; Keloharju-Linnainmaa-Nyberg 2016" --form "R(x)" --formula "season_y2_5 (hs-season-y2-5-v1): for k = 2..5: b = e - 252k, a = b + 21 (e = row t on the extended axis); r_k = P_a/P_b - 1 with both observations, no kept-gap step, the monthly divergence guard; value = mean of the finite r_k when at least 3" --domain "NaN with fewer than 3 finite r_k (SEASON_MIN_YEARS 3)" --deviation "SEASON_YEARS 2, 3, 4, 5: Heston-Sadka (2008); the CZ MomSeason years 2 to 5 form; SEASON_YEAR_SESSIONS, SEASON_WINDOW 252, 21: the alignment of the roster member seasonality_same_month (delay 252 / 231); SEASON_MIN_YEARS 3: declared: a majority of the four windows (one halt or listing gap does not drop the name)" --parent <X parent> --name <X name> --parent-spec <X parent spec> --fields <X fields dir>
+```
