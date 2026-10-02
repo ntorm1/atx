@@ -1389,3 +1389,38 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   filled value -- the suite must stay green through every cell without anyone editing a test between cells
   (PM5-21 keeps scripts frozen; tests are the only thing that may move) -- cost if wrong: none (tests only).
 - Dispatched: cells batch 2a (root): R-1; fields v10; R-2 (add-alpha wave, 7 READY + 8 _f49 re-screens).
+
+## 2026-10-01 OWNER STOP (PM session 5): cells batch 2a halted; interim report ordered
+- Owner: "lets stop work here and produce an interim report with what we have". The cells integrator was told to
+  halt at a clean boundary (finish a started cell, start nothing new).
+- FIX-6 round 2 done 702cf051 (pool 10; PM5-24; tests only: scripts/tests/test_research_spec.py and its
+  report): generated add-alpha specs recognised by content and held to load / plan / parent; as_authored resets
+  the <fill:...> options; a live spec carries the placeholder or a well-formed value. scripts/tests 186 passed
+  / 4 skipped (about 87 s). Merge by the next cells integrator before its first cell (tests only; PM5-21 holds).
+- Cells batch 2a (log "cells batch 2a"; head 33b5a7ec). PM5-26 done: build-equity/e2-dbg-cache and e2-rel-cache
+  removed (unreferenced); disk 35.5 GiB. R-1 (r1-comp-v8.json, parent B0c, spec 1bf13f40...9c936d, locked
+  26c85eba) ran through the NAV phase; MECHANICS FAIL: all-rows gross 1.0672, outside [.90, 1.05] (net +.0047,
+  tau mean .0246, p95 .0298 pass; gross at score_begin 1.015; B0c's all-rows gross .982). The integrator stopped
+  there as the brief says: monitor, summ, the ledger line and the one-sided-p run were NOT run; NO RETURN OF R-1
+  WAS READ. The criterion alone would pass (tau per unit gross .02301 against .03469). The weights file carries
+  theme_standardise, rule ew-theme-std-v1, rerank true; four re-grades applied, four members capped at .05;
+  peak RSS 1,307 MiB (IC admission 2,532 MiB). Ledger unchanged: 41 lines, N 40. Fields v10 not started. R-2
+  not started: admission trials 0, re-screens 0. Freeze list re-hashed equal. Nothing dated 2024+ opened.
+- OPEN, for the next PM session (not ruled at the stop; nothing was read, so every option is still blind):
+  R-1's status. Rule 5 as it stands: mechanics false, so R-1 is not accepted whatever its dSR, and B0c stays
+  the parent. Before ledgering: one read-only code look at WHY gross rose from .982 to 1.067 under the re-rank
+  (L 1.247 was set on the ew-theme-v1 composite's scale). (a) If the rise is what the registered composition
+  does: R-1 is ledgered rejected at N 41 (summ run for the ledger line; the verdict is already fixed), R-10 and
+  R-11 become undefined (E-45), R-3 runs ew-theme-aim-v2 (E-27a). (b) If a tool or spec defect is shown (rule
+  7): ledger-defect, blind fix, re-run, no new trial. Re-deriving L after a read is not an option (plan 13).
+- Ruling PM5-27 (interim report, at the owner's order): scorecard v8 and pitch are rendered from an INTERIM
+  copy of the config (the registered config is not edited) on B0a, B0b, B0c only; R-1's NAV output is not given
+  to any report tool (no return of R-1 may be read before its status is ruled) and R-1 appears as text:
+  'mechanics fail (gross 1.0672), no return read, not ledgered, ruling open'; every cell not run renders as
+  pending; the report states that no improvement is claimed (no cumulative test exists), that the deflated
+  Sharpe is not meaningful yet (PM5-22: the variance rests on three cells until the W0-4 re-runs), and that the
+  freeze gate is not evaluated -- the owner asked for what exists; B0c is the only thing that can be reported
+  honestly as a result -- cost if wrong: none; the interim files are separate from the final ones.
+- Unmerged at the stop (all trees clean): FIX-6 702cf051 (pool 10, tests only); wave AG mining branch 1bd448cd
+  (pool 8: MINE-MEM + MINE-STAT + MINE-RUN joined, round 1, ENG-SLOT; C++ uncompiled); FIELDS-V9 / LIB3
+  834d5a05 (pool 11). Dispatched: integrator REPORT-INTERIM (root).
