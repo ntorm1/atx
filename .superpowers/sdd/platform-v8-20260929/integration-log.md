@@ -4213,3 +4213,43 @@ cell) and R-2's S3 (terminal-adverse) net Sharpe (not yet read).
   Sharpe +1.2559, net annual return 4.54%, net Sharpe at 4x 1.178. **N 44**; admission trials 7 of 15 (plus 8
   re-screens); history reads 0. Disk 126,526,756 KiB free (120.7 GiB).
 
+## interim report, render 3 (owner stop 2) (2026-10-02)
+
+Ruling PM6-11, cut by the owner mid-task to speed over completeness (stats and equity curves first). Book R-2; ladder
+B0a, B0b, B0c, R-1-gm, R-2, R-3, R-4. No cell, no trial (N 44), no build, no spec / cycle / executable change; the R-1
+run at L 1.247 is not an input. Code commits: `6981558a` (v8_headline block; combined_label / universe_kept_label),
+`bc946b4d` (config writer, copy-only B0c diagnostics assembler), `88963c19` (alpha-t raw-direction column dropped when the
+recipe records none; trial-ledger block in the interim config; scorecard filler draft, not run).
+
+- Render: `run_bounded_research.py --output build-equity/v8-interim3-pitch-render-run2 --seconds 600 --max-rss-mib 6144
+  --min-free-mib 400 -- python atx-impl/tools/mega_report --config docs/plans/mega-alpha-v8-pitch.interim.config.json
+  --out <scratch>/pitch-run2.html --stamp "2026-10-02 interim render 3 at the owner stop (Ruling PM6-11)"`; exit 0,
+  13.5 s, HEAD `88963c19`; receipt sha256 `3210b985`, stdout `c5366a58`. Config sha256 `81a89298`. Copied byte for byte
+  to `docs/plans/2026-10-02-mega-alpha-v8-interim-pitch.html`: 2,057,347 B, sha256 `fd3a415e`. Old
+  `2026-10-01-mega-alpha-v8-interim-pitch.html` removed (git rm).
+- Inputs (all pre-existing): `mega-nav-v8-summ-interim3.json`, paired bundles `v8-cells-{b0b,r1,r2,r3,r4}-bundle.json`,
+  the seven NAV dirs, R-2 stress dir `mega-nav-v8-r2-v80-stress`, B0c diagnostics `mega-diagnostics-v8-b0c/diagnostics-v8.json`,
+  R-2 weights / `-c2` cards and admission. Every input path and sha256 is in the page's appendix (t-appendix-files).
+- Content: interim callout (no V8-F, no freeze gate; p one-sided per cell; L and all-rows gross per cell, PM6-6);
+  headline B0c vs R-2 (`t-v8-headline`: L, S2 net Sharpe +1.1328 / +1.2559, net annual 4.42% / 4.54%, gross-of-cost
+  annual 6.05% / 5.81%, net SR at 2x 1.085 / 1.223 and 4x .978 / 1.178, tau .0341 / .0239, gross .9820 / .9860, cost
+  13.13 / 12.47 bps) and both year tables; ladder (`t-v8-ladder`, dSR, p, verdict, N 38..44) and its figure; per-cell
+  year tables; trial ledger; diagnostics G-1..G-3 labelled B0c; R-2 member horizon; R-2 book section (equity +
+  drawdown with B0c S2 beside, returns, rolling, costs, turnover, capacity curve, exposures, fills, signal correlation,
+  universe, IC panel, decay, tau-IC, theme-year, alpha-t, theme weights). Numbers equal this log's batch 1b / 2c / 2d
+  figures at printed precision.
+- Checks: renderer unavailable 0; parse: 0 `class="unavailable"`, 22 figures / 88 inline SVG (fig-equity 12,072 path
+  points), 84 "n/a" data markers (R-2's u pass has null rank means for 10 candidates; ic_theta unscored for 10 members);
+  no R-1 L 1.247 dir name, no "r7"; dates 2024+ appear only in the window disclosure and literature citations. External
+  refs: Google Fonts stylesheet + preconnect and literature hyperlinks only; no local src / href / fetch / import, so the
+  page renders offline with fallback fonts. Headless Edge (`msedge --headless=new`) `--dump-dom`: 22 figures, 88 SVG, no
+  console error; screenshots (scratchpad `render3/`) `shot-1-top.png` (1400x3600), `shot-2-equity.png` and
+  `shot-3-ladder.png` (crops of a 1400x30000 shot) viewed: header, callout, headline, years, equity + drawdown drawn.
+  `pytest test_mega_report_v8.py test_mega_report_v8_render.py`: 138 passed.
+- Not in this interim render: the render-3 scorecard markdown (filler drafted, not run; the 2026-10-01 render-1
+  scorecard stays); v7 figures fig-flow / fig-ops-loop (prose diagrams outside the v8 design) and fig-capacity (L-pair
+  proxy: no readable v8 L pair). No v7 block-for-block comparison (owner cut).
+- Tool changes (all in `atx-impl/tools/mega_report/`, no pin in `scripts/specs/v8/` or `v8-prereg.md` records a tool
+  digest): `v8.py` new block `v8_headline`; `pitch.py` `combined_label` / `universe_kept_label` config keys (v7 defaults
+  keep the v7 bytes); `report.py` `blk_alpha_t` omits the Raw dir column when no candidate records a raw direction.
+

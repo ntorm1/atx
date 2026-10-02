@@ -1,0 +1,44 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "88963c198e37ce8ebd4015a8588ca5e2a1490f63",
+  "started_utc": "2026-10-02T11:43:33.413393+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "atx-impl/tools/mega_report",
+    "--config",
+    "docs/plans/mega-alpha-v8-pitch.interim.config.json",
+    "--out",
+    "C:/Users/natha/AppData/Local/Temp/claude/c--atx/519f2078-c0ed-4462-b555-5bf9a7bd256c/scratchpad/render3/pitch-run2.html",
+    "--stamp",
+    "2026-10-02 interim render 3 at the owner stop (Ruling PM6-11)"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 6144,
+    "min_free_mib": 400
+  },
+  "sampled_peak_tree_rss_bytes": 2472656896,
+  "minimum_system_free_bytes": 2757201920,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [],
+  "wall_seconds": 13.48399999999674,
+  "owned_processes": [
+    {
+      "pid": 14052,
+      "create_time": 1790941413.4176035
+    },
+    {
+      "pid": 18560,
+      "create_time": 1790941413.4227674
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "c5366a589a180c77ff5219604c281ce7f1a1f36e555f47ba83805d2d65c72604",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
