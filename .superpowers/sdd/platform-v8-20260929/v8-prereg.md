@@ -169,3 +169,14 @@ hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2
   `87effd86`; definition `6d7d5779`; stub `86299a56`; registry `7ff10f4e` (9 alpha rows added); fields v13 `e5f7f28c`.
 - Acceptance PM7-34 (dSR > 0 AND mechanics); the registered criterion (turnover per unit gross not higher, PM5-11)
   printed; the FF49 covered member cells printed.
+- After the screen (gate PASS; 9 re-screen lines ledgered): kept (status admitted, runner sign +1) value_composite_v49,
+  bm_v49, net_payout_v49; restored at 0 trials (PM7-35): ep, cfp, fcfp, ebit_ev_f49, sp (their `_v49` reject_redundant
+  with value_composite_v49) and rd_me (rd_me_v49 status admitted, runner sign 0).
+
+## Library v8x4b (the cell X-4 after the screen), registered 2026-10-02 before its screen
+- Members: v8x3b with value_composite, bm, net_payout re-screened in place (positions 0, 1, 6) = 58; the same strings as
+  in v8x4 (same trial ids: 0 new lines). `research_cycle.py add-alpha ... --replaces <member> --rescreen --parent v8x3b
+  --name v8x4b --parent-spec scripts/specs/v8/lib-v8x3b-gm.json --fields ...-fields-v13` (3 calls; plans `x4b-plans/`);
+  spec `lib-v8x4b.json` with PM6-8 (i) before any run.
+- Pins: library `fund_industry_ic_v8x4b.json` `78dc39ad9da708dab2812168edb9336d89bd9b3924bcf4a95ee24c31eb298bc2`; recipe
+  `c45e92e6` (rescreens 3, unchanged 55); definition `fbbe2b09`; stub `fc0a0395`; registry `7ff10f4e` (unchanged).

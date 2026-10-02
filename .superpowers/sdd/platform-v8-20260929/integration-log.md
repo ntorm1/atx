@@ -5805,3 +5805,20 @@ covered member cells (XIMP C-1's mechanical count, from the fields v13 payload m
 2020-2023): `grp_ff49` finite on **1,854,568 of 1,857,206** member cells (.99858) against `grp_ff12` 1,857,206 (1.0):
 2,638 member cells (.14%) lose their value members under FF49.
 
+**`run --screen` of v8x4** (source `58340960`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 18.2 | 1,430 | 0 | `5ff4f9f42482d58ea6436e221e994db82f71b5bb2f2826b778e95acb3ad029c6` | u-compare IDENTICAL (49 objects; 143,374 rows of 49 keys; b adds 26,334 rows of 9) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 5.0 / 22.6 | 445 / 1,387 | 0 | `dfcbcb35...` / `e1959466...` | - |
+| marginal (pool only, PM6-8 i) | 360 / 1,536 | 157.7 | 251 | 0 | `9d2e70d0...` | report only |
+| gate p1-v8x4 | internal | - | - | PASS | - | **9 re-screen lines ledgered** (kind admission; ledger 86 -> 95) |
+
+**Admission (gate p1-v8x4): PASS.** Status admitted with runner sign +1: **value_composite_v49, bm_v49,
+net_payout_v49** (kept). reject_redundant (with value_composite_v49): ep_v49 (sign 0), cfp_v49, fcfp_v49, ebit_ev_v49
+(sign 0), sp_v49. rd_me_v49: status admitted, runner sign 0. Reference members vs X-3's admission: 0 status changes. By
+reading (1): **ep, cfp, fcfp, ebit_ev_f49, sp and rd_me keep their FF12 strings** (restored at 0 trials); the cell runs
+on **library v8x4b** = v8x3b with value_composite, bm, net_payout re-screened in place (`scratchpad/x4b_add.py`, the
+same argv with `--name v8x4b`; plans `x4b-plans/`): library `78dc39ad`, recipe `c45e92e6` (rescreens 3, unchanged 55),
+spec `lib-v8x4b.json` with PM6-8 (i) before any run. Registered in `v8-prereg.md` ("Library v8x4b").
+
