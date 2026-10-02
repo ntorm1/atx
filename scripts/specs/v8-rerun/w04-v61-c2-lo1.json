@@ -9,7 +9,7 @@
     "set": {
       "nav.output": "build-equity/mega-nav-v8-w04-v61-lo1-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C2",
       "nav.rule": "aim-partial-v6",
-      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v61-c2-lo1/summ.json",
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/v8-w04-summ-w04-v61-c2-lo1.json",
                      "--rerun-of", "1873d32cd7019870", "--rerun-basis", "window"]
     },
     "flags": {

@@ -15,7 +15,7 @@
                "report": ["qmj_safety", "nincr", "q5_eg", "smax5", "res_mom_ind", "bac", "smax", "droe", "sue", "cbop",
                           "res_mom_12_1", "within_ind_mom"]},
       "summ.dsr_n": 50,
-      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v70-lo1/summ.json",
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/v8-w04-summ-w04-v70-lo1.json",
                      "--rerun-of", "2b4de3cc3aaaebf2", "--rerun-basis", "window"],
       "verdict": false
     },

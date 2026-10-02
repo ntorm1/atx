@@ -9,7 +9,7 @@
     "set": {
       "nav.output": "build-equity/mega-nav-v8-w04-v70-lo3-spo-v2-G1.0",
       "nav.rule": "spo-v2",
-      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v70-spo2-lo3/summ.json",
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/v8-w04-summ-w04-v70-spo2-lo3.json",
                      "--rerun-of", "9e1ad5f7ac4b9937", "--rerun-basis", "window"]
     },
     "flags": {

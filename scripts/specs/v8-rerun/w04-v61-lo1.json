@@ -13,7 +13,7 @@
       "nav.output": "build-equity/mega-nav-v8-w04-v61-lo1-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
       "gate": {"name": "w04-v61-readout", "admitted": [], "report": ["sv_flow", "si_ratio", "dtc", "si_change"]},
       "summ.dsr_n": 50,
-      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/cycle-v8-w04-v61-lo1/summ.json",
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/v8-w04-summ-w04-v61-lo1.json",
                      "--rerun-of", "a04a3d9cbf5d76a7", "--rerun-basis", "window"],
       "verdict": false
     },
