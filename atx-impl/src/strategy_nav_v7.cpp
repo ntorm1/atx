@@ -956,7 +956,8 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       // refuse it.
       if (spo_version != 3)
         for (usize k = 1; k < args.size(); ++k)
-          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q" || args[k] == "--vol-scale")
+          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q" || args[k] == "--vol-scale" ||
+              args[k] == "--rank-shape") // v8 Y norm-score-v1 shapes desired too
             throw std::invalid_argument(args[k] + " needs --rule spo-v3 (spo-v1/v2 refuse the "
                                                   "desired-target shaping)");
       // Ruling E-37: spo-v3 runs the capacity curve as a report-only pass (its capacity books

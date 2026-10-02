@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/inverse_vol.hpp"     // v8 X (lane XCOMB): inv-vol-v1's kernel
+#include "atx/engine/book/normal_score.hpp"    // v8 Y (lane YCOMB): norm-score-v1's kernel
 #include "atx/engine/data/research_window.hpp" // v8 E-25: the seal a label role may not reach
 #include "atx/engine/data/strategy_data.hpp"   // review B-3: --role is never a delisting-returns role
 
@@ -151,6 +152,12 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
   if (inv_vol_on(cfg) && (!aim_partial(cfg) || hold_band_on(cfg)))
     return co::Err(co::ErrorCode::InvalidArgument,
                    "target replay: vol_scale inv-vol-v1 needs aim-partial-v5 and no hold_band");
+  // norm-score-v1 (v8 Y): aim-partial-v5 only, and neither with the hold band nor with
+  // inv-vol-v1 (all three act between the tied ranks and the demean).
+  if (norm_score_on(cfg) && (!aim_partial(cfg) || hold_band_on(cfg) || inv_vol_on(cfg)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: rank_shape norm-score-v1 needs aim-partial-v5, no hold_band "
+                   "and no vol_scale");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
@@ -280,6 +287,19 @@ co::Status vol_scaled_desired(std::span<const f64> signal, std::span<const u8> m
   out.inv_vol_scaled = stats.scaled; out.inv_vol_filled = stats.filled;
   out.inv_vol_floored = stats.floored; out.inv_vol_median = stats.median;
   out.inv_vol_max_multiplier = stats.max_multiplier;
+  demean_gross_one(row, desired);
+  return co::Ok();
+}
+// norm-score-v1 (TargetReplayConfig::norm_score): the tied ranks (which leave `row` sorted), each
+// member's rank replaced by its van der Waerden normal score (engine::book::normal_scores), then
+// the unchanged demean and gross 1. The kernel's record goes to `out`.
+co::Status normal_scored_desired(std::span<const f64> signal, std::span<const u8> member,
+                                 std::vector<Ranked>& row, std::vector<f64>& desired,
+                                 ConstructionDay& out) {
+  member_ranks(signal, member, row, desired);
+  ATX_TRY(const auto stats, eb::normal_scores(row, desired));
+  out.norm_scored = stats.scored;
+  out.norm_max_abs = stats.max_abs;
   demean_gross_one(row, desired);
   return co::Ok();
 }
@@ -492,6 +512,8 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   } else if (inv_vol_on(cfg)) { // v8 X inv-vol-v1 (validate_config: never with the hold band)
     ATX_TRY_VOID(vol_scaled_desired(in.signal.subspan(offset, n), member, state, row, desired,
                                     out));
+  } else if (norm_score_on(cfg)) { // v8 Y norm-score-v1 (never with the two above)
+    ATX_TRY_VOID(normal_scored_desired(in.signal.subspan(offset, n), member, row, desired, out));
   } else {
     desired_target(in.signal.subspan(offset, n), member, row, desired);
   }
@@ -1011,6 +1033,7 @@ std::string rule_id(const TargetReplayConfig& c) {
   if (hold_band_declared(c)) id += "+hold-band-" + decimal(*c.hold_band);
   if (adv_hold_on(c)) id += "+adv-hold-" + decimal(c.adv_hold_q);
   if (inv_vol_on(c)) id += "+inv-vol-v1"; // v8 X (lane XCOMB)
+  if (norm_score_on(c)) id += "+norm-score-v1"; // v8 Y (lane YCOMB)
   return id;
 }
 const char* outcome_label(NeutralizeOutcome outcome) {
@@ -1071,6 +1094,15 @@ constexpr const char* inv_vol_rule_declaration =
     "the ranks stay as they are; then the unchanged demean, gross 1, locate zeroing, "
     "neutralization and ADV cap. Book-independent: every scenario and capacity book holds the "
     "same scaled target (summary construction.vol_scale)";
+constexpr const char* norm_score_rule_declaration =
+    "norm-score-v1 (v8 Y, lane YCOMB, concentration): on every rebalance decision each member's "
+    "centred tied rank is replaced by its van der Waerden normal score z = Phi^{-1}(u) before the "
+    "demean, u = (b + e + 1) / (2 (N + 1)) for the tie block [b, e) of the N members sorted by "
+    "the blend (the mean 1-based rank of the block over N + 1; tied members share one score), "
+    "Phi^{-1} the inverse standard-normal CDF (Acklam with one Halley step); then the unchanged "
+    "demean, gross 1, locate zeroing, neutralization and ADV cap. No free constant. "
+    "Book-independent: every scenario and capacity book holds the same target (summary "
+    "construction.rank_shape)";
 // The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
 // default text byte for byte) or, below 1, a pointer to exit_rate_rule.
 const char* nonmember_exit(const TargetReplayConfig& c) {
@@ -1145,6 +1177,10 @@ Json construction_recipe(const TargetReplayConfig& c) {
     j["vol_scale"] = "inv-vol-v1";
     j["vol_scale_floor_fraction"] = inv_vol_floor_fraction;
     j["vol_scale_rule"] = inv_vol_rule_declaration;
+  }
+  if (norm_score_on(c)) { // v8 Y (lane YCOMB); absent when off
+    j["rank_shape"] = "norm-score-v1";
+    j["rank_shape_rule"] = norm_score_rule_declaration;
   }
   return j;
 }
@@ -1266,6 +1302,21 @@ Json inv_vol_summary(std::span<const ConstructionDay> decisions) {
                              {"max", highest}}},
       {"max_multiplier", multiplier_max}};
 }
+// norm-score-v1 (v8 Y) over the decisions the kernel scored: decisions, names scored and the
+// largest |score| (the row's tail; about Phi^{-1}(N / (N + 1)) with N members).
+Json norm_score_summary(std::span<const ConstructionDay> decisions) {
+  usize days = 0, scored = 0;
+  f64 max_abs = 0;
+  for (const auto& d : decisions) {
+    if (!d.norm_scored) continue;
+    ++days; scored += d.norm_scored; max_abs = std::max(max_abs, d.norm_max_abs);
+  }
+  return Json{{"id", "norm-score-v1"}, {"rule", "recipe rank_shape_rule"},
+      {"scored_decisions", days}, {"scored_names_total", scored},
+      {"scored_names_mean", days ? Json(static_cast<f64>(scored) / static_cast<f64>(days))
+                                 : Json(nullptr)},
+      {"max_abs_score", max_abs}};
+}
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
   usize too_few = 0, excluded = 0, refused = 0, amplified = 0;
@@ -1317,6 +1368,7 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
   if (hold_band_declared(c)) body["hold_band"] = hold_band_summary(c, decisions);
   if (adv_hold_on(c)) body["adv_hold"] = adv_hold_summary(c, decisions);
   if (inv_vol_on(c)) body["vol_scale"] = inv_vol_summary(decisions);
+  if (norm_score_on(c)) body["rank_shape"] = norm_score_summary(decisions);
   return Json{{"construction", std::move(body)}};
 }
 // The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows

@@ -105,10 +105,22 @@ struct TargetReplayConfig {
   // ADV cap. Not with hold_band (both act between the ranks and the demean). Writes recipe,
   // rule-id and summary keys.
   bool inv_vol{};
+  // norm-score-v1 (v8 Y, lane YCOMB, concentration; aim-partial-v5; nav --rank-shape
+  // norm-score-v1). false (default): off, every output unchanged. On: on every rebalance decision
+  // the members' centred tied ranks are replaced by their van der Waerden normal scores
+  // (engine::book::normal_scores: z = Phi^{-1}(mean 1-based rank of the tie block / (N + 1)))
+  // BEFORE the demean; then the unchanged demean, gross 1, locate zeroing, neutralization and ADV
+  // cap. Not with hold_band or inv_vol (all three act between the ranks and the demean). Writes
+  // recipe, rule-id and summary keys.
+  bool norm_score{};
 };
 // inv-vol-v1's registered floor: s_i is raised to at least this fraction of the median (so the
 // multiplier is at most 4).
 inline constexpr atx::f64 inv_vol_floor_fraction = 0.25;
+// norm-score-v1 is on.
+[[nodiscard]] constexpr bool norm_score_on(const TargetReplayConfig& c) noexcept {
+  return c.norm_score;
+}
 // adv-hold-v1 is on (Q > 0).
 [[nodiscard]] constexpr bool adv_hold_on(const TargetReplayConfig& c) noexcept {
   return c.adv_hold_q > 0;
@@ -170,6 +182,10 @@ struct ConstructionDay {
   // multiplier. 0 unless the kernel ran (every cadence decision with the rule on); no CSV column.
   atx::usize inv_vol_scaled{}, inv_vol_filled{}, inv_vol_floored{};
   atx::f64 inv_vol_median{}, inv_vol_max_multiplier{};
+  // norm-score-v1 (v8 Y): members given a normal score and the largest |score|. 0 unless the
+  // kernel ran (every cadence decision with the rule on); no CSV column.
+  atx::usize norm_scored{};
+  atx::f64 norm_max_abs{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input

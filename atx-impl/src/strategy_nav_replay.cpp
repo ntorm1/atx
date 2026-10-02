@@ -2223,6 +2223,7 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
          s.neutralize_max_amplification == t.neutralize_max_amplification &&
          s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
          s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q && s.inv_vol == t.inv_vol &&
+         s.norm_score == t.norm_score && // v8 Y norm-score-v1 shapes the shared target too
          s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
          s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
          a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
@@ -3327,6 +3328,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--vol-scale inv-vol-v1 (aim-partial-v5, not with --hold-band; v8 X: each "
                "member's tied rank x median sigma / max(sigma, .25 median sigma) before the "
                "demean, sigma the execution cost model's for the decision's fills)] "
+               "[--rank-shape norm-score-v1 (aim-partial-v5, not with --hold-band or "
+               "--vol-scale; v8 Y: each member's tied rank replaced by its van der Waerden "
+               "normal score before the demean)] "
                "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
                "bit-identical; fixed rate only)] [--stage-timers (summary.json "
                "stage_seconds: load, exposures, construction, books, hash, write)] "
@@ -3392,6 +3396,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--vol-scale") { // v8 X (lane XCOMB) inv-vol-v1
         if (value != "inv-vol-v1") throw std::invalid_argument("unknown --vol-scale (inv-vol-v1)");
         cfg.target.inv_vol = true;
+      } else if (key == "--rank-shape") { // v8 Y (lane YCOMB) norm-score-v1
+        if (value != "norm-score-v1")
+          throw std::invalid_argument("unknown --rank-shape (norm-score-v1)");
+        cfg.target.norm_score = true;
       } else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
