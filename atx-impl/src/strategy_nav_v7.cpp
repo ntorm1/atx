@@ -22,6 +22,7 @@
 #include "strategy_risk_target.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
+#include "strategy_vol_target.hpp"
 
 namespace atx::impl::strategy::v7 {
 namespace {
@@ -251,11 +252,14 @@ Json declarations(const ScopedNavExtension::State& s) {
 }
 // v8 R-8: the "risk_target" block (with the per-book summary when `books`) and the rule id
 // suffix of recipe.json, summary.json and the holdings manifest; nothing without --risk-target.
+// v8 Y (vol-target-v1, the same scaler under Law::vol_target_v1): the "vol_target" block and the
+// rule id suffix +vol-target-v1 instead.
 void add_risk_target(const ScopedNavExtension::State& s, Json& doc, bool books) {
   if (!s.scaler || !doc.is_object()) return;
-  auto block = risk_target::parameters_json(s.options.risk_target);
-  if (books) block["books"] = risk_target::summary_json(s.scaler->records());
-  doc["risk_target"] = std::move(block);
+  const auto& o = s.options.risk_target;
+  auto block = risk_target::parameters_json(o);
+  if (books) block["books"] = risk_target::summary_json(s.scaler->records(), o.law);
+  doc[risk_target::block_key(o)] = std::move(block);
   if (doc.contains("rule") && doc.at("rule").is_string())
     doc["rule"] =
         doc.at("rule").get<std::string>() + risk_target::rule_suffix(s.options.risk_target);
@@ -358,15 +362,17 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
       }
     }
   }
-  // v8 R-8: the risk target's series (no NAV or return quantity: also on a void run).
+  // v8 R-8: the risk target's series (no NAV or return quantity: also on a void run); v8 Y
+  // vol-target-v1: vol_target.csv and the "vol_target" block.
   if (const auto* scaler = ext.risk_target_scaler()) {
-    const auto path = dir / "risk_target.csv";
-    ATX_TRY_VOID(write_text(path, risk_target::records_csv(scaler->records())));
+    const auto& rt = o.risk_target;
+    const auto path = dir / risk_target::series_file(rt);
+    ATX_TRY_VOID(write_text(path, risk_target::records_csv(scaler->records(), rt.law)));
     ATX_TRY(auto sha, co::sha256_file(path.string()));
-    files["risk_target.csv"] = sha;
-    auto block = risk_target::parameters_json(o.risk_target);
-    block["books"] = risk_target::summary_json(scaler->records());
-    extras["risk_target"] = std::move(block);
+    files[risk_target::series_file(rt)] = sha;
+    auto block = risk_target::parameters_json(rt);
+    block["books"] = risk_target::summary_json(scaler->records(), rt.law);
+    extras[risk_target::block_key(rt)] = std::move(block);
   }
   if (o.capacity && void_reason.empty()) { // a void run stops before the capacity pass
     Json rows = Json::array();
@@ -567,7 +573,7 @@ bool claims_nav_args(int argc, char** argv) {
     const std::string_view key = argv[i];
     if (key == "--cost-v2" || key == "--capacity-curve" || key == "--cost-shrink-kappa" ||
         key == "--band-b" || key == "--band-exponent" || key == "--rate-clip" || spo_flag(key) ||
-        risk_target_flag(key))
+        risk_target_flag(key) || key == "--vol-target")
       return true;
     if (key == "--rule" && i + 1 < argc &&
         (std::string_view(argv[i + 1]) == "aim-partial-v6" || spo_rule(argv[i + 1])))
@@ -765,6 +771,12 @@ void append_help(std::ostream& out) {
          "--risk-model DIR --risk-model-sha256 SHA; adds <output>/risk_target.csv, the "
          "risk_target blocks and the rule id +risk-target-S) [--risk-target-bias b (default "
          "1.15)] [--risk-target-cadence C (default 21)]]\n";
+  out << "v8 Y: [--vol-target vol-target-v1 (each book's aim leverage becomes L_t = clip(L x "
+         "sigma_ref / sigma_hat, 1, L), L = --aim-leverage (the cap), sigma_hat the risk "
+         "target's forecast, sigma_ref the mean of the book's estimates so far, re-estimated "
+         "every 21 sessions; aim-partial-v5 only; not with --risk-target; needs --risk-model DIR "
+         "--risk-model-sha256 SHA; adds <output>/vol_target.csv, the vol_target blocks and the "
+         "rule id +vol-target-v1)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -775,6 +787,7 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     std::set<std::string> seen;
     bool band_given = false, v6_params = false;
     bool risk_target_tuned = false; // --risk-target-bias or --risk-target-cadence given
+    bool vol_target_given = false;  // --vol-target vol-target-v1 (v8 Y)
     u32 spo_version = 1;
     std::vector<std::pair<std::string, std::string>> spo_values; // applied after the scan
     std::string risk_model, risk_model_sha256;
@@ -835,6 +848,15 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         }
         continue;
       }
+      if (key == "--vol-target") { // v8 Y (lane YCOMB): vol-target-v1, the scaler's other law
+        if (!seen.insert(key).second || i + 1 >= argc)
+          throw std::invalid_argument("duplicate/missing value: " + key);
+        const std::string value = argv[++i];
+        if (value != vol_target::rule_id)
+          throw std::invalid_argument("--vol-target vol-target-v1 (the only value)");
+        vol_target_given = true;
+        continue;
+      }
       if (spo_flag(key)) {
         if (!seen.insert(key).second || i + 1 >= argc)
           throw std::invalid_argument("duplicate/missing value: " + key);
@@ -871,6 +893,13 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
           "--cost-shrink-kappa/--band-b/--band-exponent/--rate-clip need --rule aim-partial-v6");
     if (risk_target_tuned && !o.risk_target.on)
       throw std::invalid_argument("--risk-target-bias/--risk-target-cadence need --risk-target");
+    if (vol_target_given) { // v8 Y: the scaler under Law::vol_target_v1 (registered constants only)
+      if (o.risk_target.on)
+        throw std::invalid_argument("--vol-target and --risk-target are exclusive (both set the aim "
+                                    "leverage)");
+      o.risk_target.on = true;
+      o.risk_target.law = risk_target::Law::vol_target_v1;
+    }
     // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
     // value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {
@@ -960,7 +989,17 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
                                     "holdings stream writes NAV before the tripwire is read "
                                     "(pass --specific-ceiling-void off to emit holdings)");
     }
-    if (o.risk_target.on) { // v8 R-8: risk-target-v1 scales aim-partial-v5's and spo-v3's aim
+    if (o.risk_target.on && o.risk_target.law == risk_target::Law::vol_target_v1) {
+      // v8 Y vol-target-v1: aim-partial-v5's aim only (the leverage cell's rule); the cap is the
+      // run's --aim-leverage (the replay holds it in [1, 2]), the floor 1.
+      const auto* rule = value_of("--rule");
+      if (o.aim_v6 || o.spo_v1 || !rule || *rule != "aim-partial-v5")
+        throw std::invalid_argument("--vol-target needs --rule aim-partial-v5 (its aim is "
+                                    "--aim-leverage x desired)");
+      if (risk_model.empty() || risk_model_sha256.empty())
+        throw std::invalid_argument("--vol-target needs --risk-model and --risk-model-sha256 "
+                                    "(the atx-risk-v1 store of the role)");
+    } else if (o.risk_target.on) { // v8 R-8: risk-target-v1 scales aim-partial-v5's and spo-v3's aim
       const auto* rule = value_of("--rule"); // the spo rules and v6 read aim-partial-v5 here
       if (o.aim_v6 || (o.spo_v1 && spo_version != 3) || !rule || *rule != "aim-partial-v5")
         throw std::invalid_argument("--risk-target needs --rule aim-partial-v5 or spo-v3 (the "

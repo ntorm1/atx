@@ -24,6 +24,14 @@
 // scale. The shared desired target and its ADV cap (--adv-hold-q, which reads L) are unchanged.
 // Every decision the replay plans runs the scaler (the warm-up included; each pass from a clean
 // state, every book on its own state); the main pass's scored decisions are recorded.
+//
+// vol-target-v1 (platform v8 Y, lane YCOMB; `--vol-target vol-target-v1`, Law::vol_target_v1)
+// runs on the same scaler, store and forecast with the law of engine::book::vol_target.hpp:
+// L_t = clip(L x sigma_ref_t / sigma_hat_t, 1, L), sigma_ref_t the running mean of the book's
+// estimates (sigma_hat_t included), cadence 21, L before the first estimate (L = the run's
+// --aim-leverage, the cap); aim-partial-v5 only. Its published text is strategy_vol_target.hpp;
+// its series is <output>/vol_target.csv and its blocks are keyed "vol_target". Without the flag
+// (Law::risk_target_v1, the default) every risk-target-v1 byte is unchanged.
 
 #include <functional>
 #include <map>
@@ -36,15 +44,21 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/book/risk_target.hpp"
+#include "atx/engine/book/vol_target.hpp"
 #include "strategy_spo.hpp"
 #include "strategy_target_replay.hpp"
 
 namespace atx::impl::strategy::risk_target {
 
-// The parsed flags: on with --risk-target S; params S, b, C (engine::book::validate_risk_target).
+// The scaler's law: risk-target-v1 (v8 R-8, the default) or vol-target-v1 (v8 Y).
+enum class Law : atx::u8 { risk_target_v1, vol_target_v1 };
+// The parsed flags: on with --risk-target S (params S, b, C: engine::book::validate_risk_target)
+// or with --vol-target vol-target-v1 (law vol_target_v1; params unused: its constants are
+// registered in engine::book::vol_target.hpp).
 struct Options {
   bool on{};
   atx::engine::book::RiskTargetParams params{};
+  Law law{Law::risk_target_v1};
 };
 
 // One scored decision of one book (main pass): the estimate in force and L_t.
@@ -58,6 +72,9 @@ struct Record {
   atx::f64 gross{}, priced_share{}, sigma_hat{}, raw{};
   atx::f64 leverage{}; // L_t in force (L before the first estimate)
   atx::engine::book::RiskTargetClip clip{atx::engine::book::RiskTargetClip::None};
+  // vol-target-v1 only (NaN under risk-target-v1 and before the first estimate): the running
+  // mean of the book's estimates at the estimate in force.
+  atx::f64 sigma_ref{spo::unset};
 };
 
 // The per-run scaler: the risk store, one engine state per book, the records.
@@ -81,7 +98,8 @@ public:
 
 private:
   struct Book {
-    atx::engine::book::RiskTargetState state;
+    atx::engine::book::RiskTargetState state;  // risk-target-v1
+    atx::engine::book::VolTargetState vol;     // vol-target-v1
     atx::f64 gross{spo::unset}, priced_share{spo::unset}; // of the latest estimate (NaN: none)
   };
   [[nodiscard]] atx::core::Result<bool> estimate(atx::usize d, atx::f64 base,
@@ -99,15 +117,24 @@ private:
 // risk_target.csv: one line per record, columns
 //   session,book,rebalance,updated,gross,priced_share,sigma_hat,raw,L_t,multiplier,clip
 // (multiplier = L_t / L; clip -1 at .8 L, 1 at 1.25 L, 0 inside; nan before the first estimate).
-[[nodiscard]] std::string records_csv(std::span<const Record> records);
+// Law vol_target_v1 (vol_target.csv): sigma_ref after sigma_hat; clip -1 at the floor 1, 1 at L.
+[[nodiscard]] std::string records_csv(std::span<const Record> records,
+                                      Law law = Law::risk_target_v1);
 // The rule's text and its parameter block (recipe.json, summary.json, holdings manifest,
 // v7_extras.json key "risk_target").
 [[nodiscard]] std::string declaration(const Options& o);
 [[nodiscard]] nlohmann::json parameters_json(const Options& o);
 // Per book over the records: decisions, estimates, L, L_t and the multiplier (n, mean, min,
 // max), decisions and estimates at each clip, decisions before the first estimate, sigma_hat
-// over the estimates.
-[[nodiscard]] nlohmann::json summary_json(std::span<const Record> records);
-// The rule id suffix: "+risk-target-S", then "-bias-b" / "-cadence-C" off the registered values.
+// over the estimates. Law vol_target_v1 adds sigma_ref over the estimates.
+[[nodiscard]] nlohmann::json summary_json(std::span<const Record> records,
+                                          Law law = Law::risk_target_v1);
+// The rule id suffix: "+risk-target-S", then "-bias-b" / "-cadence-C" off the registered values;
+// "+vol-target-v1" under the vol target.
 [[nodiscard]] std::string rule_suffix(const Options& o);
+// The published names of the law: the block key of recipe.json / summary.json / holdings
+// manifest / v7_extras.json ("risk_target" | "vol_target") and the series file
+// ("risk_target.csv" | "vol_target.csv").
+[[nodiscard]] const char* block_key(const Options& o) noexcept;
+[[nodiscard]] const char* series_file(const Options& o) noexcept;
 } // namespace atx::impl::strategy::risk_target

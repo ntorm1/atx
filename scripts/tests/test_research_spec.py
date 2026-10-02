@@ -82,10 +82,12 @@ NULL_PINS["x-inv-vol.json"] = CHILD_NULLS                   # v8 X (lane XCOMB):
 NULL_PINS["lib-v8x3b-gm.json"] = NULL_PINS["lib-v81-gm.json"]
 NULL_PINS["x-theme-erc-gm.json"] = CHILD_NULLS
 NULL_PINS["x-inv-vol-gm.json"] = CHILD_NULLS
+NULL_PINS["y-vol-target.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): vol-target-v1, planned on B0c
 ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json"}  # an add-alpha spec copied by hand: no base-only pins
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
+FILLS["y-vol-target.json"] = STORE_FILLS                                     # v8 Y (YCOMB): the risk target's store
 
 
 def fill_options(name: str | None = None) -> list[tuple[str, str]]:
@@ -125,6 +127,7 @@ EXPECTED_CHANGES["r9a.json"] = EXPECTED_CHANGES["r9b.json"] = {"nav.output", "na
 THETA = {"r9a.json": ".03", "r9b.json": ".04"}
 EXPECTED_CHANGES["x-theme-erc.json"] = FIT_DOWN | {"fit.flags"}                          # v8 X (lane XCOMB)
 EXPECTED_CHANGES["x-inv-vol.json"] = {"nav.output", "nav.flags"}                          # v8 X (lane XCOMB)
+EXPECTED_CHANGES["y-vol-target.json"] = {"nav.output", "nav.flags", "nav.leverage"}       # v8 Y: X-10's L, managed
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
 MISSING = object()
@@ -573,7 +576,11 @@ def check_registered_change(specs: Path, name: str) -> None:
                  "r8.json": pn + ["--risk-target", ".05", "--risk-target-bias", "1.15", "--risk-target-cadence", "21",
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                                   "<fill:nav.flags --risk-model-sha256>"],
-                 "x-inv-vol.json": pn + ["--vol-scale", "inv-vol-v1"]}                  # v8 X (lane XCOMB)
+                 "x-inv-vol.json": pn + ["--vol-scale", "inv-vol-v1"],                  # v8 X (lane XCOMB)
+                 # v8 Y (lane YCOMB): vol-target-v1 on the risk target's store (root fills it)
+                 "y-vol-target.json": pn + ["--vol-target", "vol-target-v1", "--risk-model",
+                                            "<fill:nav.flags --risk-model>", "--risk-model-sha256",
+                                            "<fill:nav.flags --risk-model-sha256>"]}
     nav_delta["r6-spo-v3-gm.json"] = nav_delta["r6-spo-v3.json"]              # PM6-6: R-6's change, its L apart
     for r9, theta in THETA.items():                                          # PM7-21: the parent's argv, theta set
         nav_delta[r9] = [theta if k and pn[k - 1] == "--trade-fraction" else x for k, x in enumerate(pn)]

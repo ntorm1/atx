@@ -52,6 +52,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_spo_v3.cpp
     # platform v8 R-8: risk-target-v1, the NAV hook's ex-ante risk target (the engine's kernel)
     src/strategy_risk_target.cpp
+    # platform v8 Y (YCOMB): vol-target-v1, the risk target scaler's second law (its text)
+    src/strategy_vol_target.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp

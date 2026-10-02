@@ -16,6 +16,7 @@
 #include <string>
 #include <utility>
 #include <nlohmann/json.hpp>
+#include "strategy_vol_target.hpp"
 
 namespace atx::impl::strategy::risk_target {
 namespace {
@@ -63,8 +64,9 @@ struct BookStats {
   usize decisions{}, estimates{}, before_first{};
   usize at_lo{}, at_hi{}, estimates_at_lo{}, estimates_at_hi{};
   f64 base{nan};
-  Stats leverage, multiplier, sigma_hat;
+  Stats leverage, multiplier, sigma_hat, sigma_ref;
 };
+bool vol_law(const Options& o) { return o.law == Law::vol_target_v1; }
 } // namespace
 
 Scaler::Scaler(const Options& o, std::shared_ptr<const spo::RiskStore> risk)
@@ -89,12 +91,17 @@ co::Result<f64> Scaler::leverage(const TargetReplayInput& x, usize d, bool rebal
   if (found == books_.end()) found = books_.emplace(std::string(book), Book{}).first;
   Book& b = found->second;
   bool updated = false;
+  const bool vol = vol_law(options_); // vol-target-v1 (v8 Y): its own state, the same forecast
   const bool forecast = d < risk_->dates() && risk_->forecast()[d] != 0;
-  if (forecast && eb::risk_target_due(b.state, d, options_.params.cadence)) {
+  const bool due = vol ? eb::vol_target_due(b.vol, d)
+                       : eb::risk_target_due(b.state, d, options_.params.cadence);
+  if (forecast && due) {
     ATX_TRY(updated, estimate(d, base, current, b));
   }
-  const f64 in_force = eb::risk_target_in_force(b.state, base);
+  const f64 in_force =
+      vol ? eb::vol_target_in_force(b.vol, base) : eb::risk_target_in_force(b.state, base);
   if (record) {
+    const eb::RiskTargetLeverage& at = vol ? b.vol.at : b.state.at;
     Record r;
     r.session = x.session_keys[d];
     r.book = std::string(book);
@@ -103,10 +110,11 @@ co::Result<f64> Scaler::leverage(const TargetReplayInput& x, usize d, bool rebal
     r.base = base;
     r.gross = b.gross;
     r.priced_share = b.priced_share;
-    r.sigma_hat = b.state.sigma_hat;
-    r.raw = b.state.at.raw;
+    r.sigma_hat = vol ? b.vol.sigma_hat : b.state.sigma_hat;
+    r.raw = at.raw;
     r.leverage = in_force;
-    r.clip = b.state.at.clip;
+    r.clip = at.clip;
+    if (vol) r.sigma_ref = b.vol.sigma_ref;
     records_.push_back(std::move(r));
   }
   return co::Ok(in_force);
@@ -133,8 +141,12 @@ co::Result<bool> Scaler::estimate(usize d, f64 base, std::span<const f64> curren
   }
   const eb::FactorRiskView model{spo::risk_industry_slots, spo::risk_styles, group_, exposures_,
                                  slice_.covariance, specific_};
-  ATX_TRY(const bool updated, eb::risk_target_update(options_.params, base, d, model, weights_,
-                                                     gross, book.state));
+  // vol-target-v1 (v8 Y): the same model and book, its own law and state (base = the cap L).
+  auto update = vol_law(options_)
+                    ? eb::vol_target_update(base, d, model, weights_, gross, book.vol)
+                    : eb::risk_target_update(options_.params, base, d, model, weights_, gross,
+                                             book.state);
+  ATX_TRY(const bool updated, std::move(update));
   if (updated) {
     book.gross = gross;
     book.priced_share = priced_gross / gross;
@@ -142,18 +154,24 @@ co::Result<bool> Scaler::estimate(usize d, f64 base, std::span<const f64> curren
   return co::Ok(updated);
 }
 
-std::string records_csv(std::span<const Record> records) {
-  std::string text =
-      "session,book,rebalance,updated,gross,priced_share,sigma_hat,raw,L_t,multiplier,clip\n";
+std::string records_csv(std::span<const Record> records, Law law) {
+  // vol-target-v1 (v8 Y) adds sigma_ref after sigma_hat; risk-target-v1's bytes are unchanged.
+  const bool vol = law == Law::vol_target_v1;
+  std::string text = vol ? "session,book,rebalance,updated,gross,priced_share,sigma_hat,sigma_ref,"
+                           "raw,L_t,multiplier,clip\n"
+                         : "session,book,rebalance,updated,gross,priced_share,sigma_hat,raw,L_t,"
+                           "multiplier,clip\n";
   for (const auto& r : records)
     text += std::to_string(r.session) + ',' + r.book + ',' + (r.rebalance ? "1" : "0") + ',' +
             (r.updated ? "1" : "0") + ',' + number(r.gross) + ',' + number(r.priced_share) + ',' +
-            number(r.sigma_hat) + ',' + number(r.raw) + ',' + number(r.leverage) + ',' +
-            number(r.leverage / r.base) + ',' + std::to_string(static_cast<int>(r.clip)) + '\n';
+            number(r.sigma_hat) + ',' + (vol ? number(r.sigma_ref) + ',' : std::string()) +
+            number(r.raw) + ',' + number(r.leverage) + ',' + number(r.leverage / r.base) + ',' +
+            std::to_string(static_cast<int>(r.clip)) + '\n';
   return text;
 }
 
 std::string declaration(const Options& o) {
+  if (vol_law(o)) return vol_target::declaration();
   const auto& p = o.params;
   return "risk-target-v1 (platform v8 R-8, Ruling E-40): at every decision d each book's aim "
          "leverage is L_t = clip(S / (b sigma_hat_t), .8 L, 1.25 L) with S = " +
@@ -173,6 +191,7 @@ std::string declaration(const Options& o) {
 }
 
 Json parameters_json(const Options& o) {
+  if (vol_law(o)) return vol_target::parameters_json();
   return Json{{"rule", "risk-target-v1"},
               {"declaration", declaration(o)},
               {"sigma_star", o.params.sigma_star},
@@ -184,7 +203,7 @@ Json parameters_json(const Options& o) {
                          "pass (sigma_hat and L_t in force)"}};
 }
 
-Json summary_json(std::span<const Record> records) {
+Json summary_json(std::span<const Record> records, Law law) {
   std::map<std::string, BookStats> books;
   for (const auto& r : records) {
     auto& b = books[r.book];
@@ -198,11 +217,12 @@ Json summary_json(std::span<const Record> records) {
     if (!r.updated) continue;
     ++b.estimates;
     b.sigma_hat.add(r.sigma_hat);
+    b.sigma_ref.add(r.sigma_ref);
     b.estimates_at_lo += one_if(r.clip == eb::RiskTargetClip::Low);
     b.estimates_at_hi += one_if(r.clip == eb::RiskTargetClip::High);
   }
   Json out = Json::object();
-  for (const auto& [book, b] : books)
+  for (const auto& [book, b] : books) {
     out[book] = Json{{"decisions", b.decisions},
                      {"estimates", b.estimates},
                      {"base_leverage", finite_or_null(b.base)},
@@ -214,10 +234,21 @@ Json summary_json(std::span<const Record> records) {
                      {"estimates_at_clip_lo", b.estimates_at_lo},
                      {"estimates_at_clip_hi", b.estimates_at_hi},
                      {"sigma_hat", b.sigma_hat.json()}};
+    // vol-target-v1 (v8 Y): clip lo is the floor 1, clip hi the cap L; the running mean too.
+    if (law == Law::vol_target_v1) out[book]["sigma_ref"] = b.sigma_ref.json();
+  }
   return out;
 }
 
+const char* block_key(const Options& o) noexcept {
+  return vol_law(o) ? "vol_target" : "risk_target";
+}
+const char* series_file(const Options& o) noexcept {
+  return vol_law(o) ? "vol_target.csv" : "risk_target.csv";
+}
+
 std::string rule_suffix(const Options& o) {
+  if (vol_law(o)) return std::string("+") + vol_target::rule_id;
   std::string id = "+risk-target-" + decimal(o.params.sigma_star);
   if (o.params.bias != eb::risk_target_default_bias) id += "-bias-" + decimal(o.params.bias);
   if (o.params.cadence != eb::risk_target_default_cadence)
