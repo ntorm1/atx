@@ -3308,4 +3308,85 @@ reference. The M2 status is the worst member flag. Numbers (members with a flag;
   stage manifests hashed, not parsed by me.
 - Logs scanned for dates 2024-2029 (every stdout / stderr of the bounded runs above and the two cycle consoles): 0 data
   dates (the only hits are the bootstrap seeds 20260927 / 20260929). Last NAV session 2023-12-29; diagnostics JSON
-  session stamps all before the seal. **Nothing dated 2024-01-01 or later was opened. No disclosure.**
+  session stamps all before the seal. The Release A/B below reads the 3-year lo1 role (2020-2022) only; its logs: 0
+  hits. **Nothing dated 2024-01-01 or later was opened. No disclosure.**
+
+### Release A/B (task E-2): NOT identical; not adopted, the cells stay on Debug v8-12
+
+Rule (plan E-2 step 2): adopt `build: "equity-rel"` as the spec default only if the daily CSVs, orientations and
+`train_combined` are byte-identical and the CPU stages at least 25% lower; step 3: the e2e fixture under both builds,
+SHAs agree. No ruling makes adoption automatic, and PM5-21 freezes the executables the cells use until V8-F, so
+adoption would need a PM decision in any case. Host: disk 36 G before the build, RAM about 6 G free; not quiet (other
+agent sessions active), so the timings are one sample each.
+
+**Build** `powershell -File scripts/research-build.ps1 -Tag v8-13 -Targets "atx-equity-strategy-ic,
+atx-equity-strategy-targets,atx-equity-strategy-risk" -Preset equity-rel` (dry run first: admitted, free 6,493 MiB,
+commit 8,390 MiB): receipt `build-equity/mega-v8-13-receipt.json` (`cb1112e5...971b`): ExitCode 0, source `2ad09c13`,
+DirtyEntries 0, Jobs 4, 265.95 s, 136 TUs, 7 links, BuildDir `build-equity-rel`. Executables: IC
+`b01bf13ea3abfb72950fa9fd6a29b9900126f3d54bd3ca129fbe823f4ac8784b`, targets
+`10dbee593681ef8623621e2d2eb8156460e982cfdac2630bd38e24f2f4ebd6c2`, risk
+`db4b634b3a32d2ab6975a6c455e33cb48882d37876b2a2a15fbbc343419c481c`. The Debug executables in `build-equity/bin` are
+untouched after the build (IC `ab7e2cbd`, targets `5497c89d`, risk `8967952c`). Note: `build-equity-rel` was configured
+(before DEPS ISOLATION) with the machine-wide `FETCHCONTENT_BASE_DIR=C:/atx-cache/deps`; the build recompiled
+`C:/atx-cache/deps/spdlog-build` in Release. pool-2's Debug tree uses its own `deps/equity-dev` and is unaffected; a
+Debug tree elsewhere that shares `C:/atx-cache/deps` would rebuild spdlog on its next build.
+
+**Comparison run** (the v7.1 cell, 3-year role lo1 2020-2022, argv of `mega-v71-train-u-run1`,
+`mega-v71w-train-ew-run1` and the v7.1 NAV receipt; both builds on the clean tree `2789ac4d`, one after the other,
+same argv except the exe dir and the outputs). u pass cold on a fresh cache per build (`e2-{dbg,rel}-cache`) with
+`--max-memory-mib 2560` (the integration-3 B-2 precedent for a cold v7.1 u pass), runner 300 s / 2,560 MiB; w pass
+warm on the same cache with v7.1's weights `7b0a59c9`; NAV with v7.1's flags plus `--stage-timers` (D-1; summary
+only), 180 s / 1,536 MiB. PATH: Debug the debug + release vcpkg bins; Release the release bin only (research_cycle
+BUILDS); `build-equity-rel/bin` carries its release DLLs.
+
+| run | build | receipt.json SHA-256 | s | peak MiB | CPU stages s | wall s (tool) |
+|---|---|---|---|---|---|---|
+| u cold | Debug v8-12 | `00b943995cbc055d4ccf382e703a6f787c9864c058cd918915052809d448231f` | 104.1 | 1,213 | vm 54.02 + ic 15.14 + composition 12.89 = **82.05** | 103.6 |
+| u cold | Release v8-13 | `e17cd2e895e4505119eaf1ccf7812ee69ad43a62b8abb79f128f4377506774fa` | 45.7 | 1,209 | 24.10 + 7.23 + 1.93 = **33.26 (-59%)** | 45.5 |
+| w warm | Debug | `0dcb0b79145fe48dffc1732f7efbf66ab4236a150e50d2c1b11b1016d77bfba7` | 21.0 | 507 | ic .58 + composition 10.80 = **11.38** | 20.7 |
+| w warm | Release | `c5de007ba732b1201d5419df5a2a71e74389c918347e6198edd3c0d041a2d373` | 9.5 | 501 | .19 + 1.91 = **2.10 (-82%)** | 9.3 |
+| NAV | Debug | `c36d3f8bebd7306cc9a06449abe28ff0418383d68dec220e94238d550a3a9030` | 16.0 | 359 | exposures 6.18 + construction 1.26 + books 6.03 = **13.47** | 15.6 |
+| NAV | Release | `4bb1dc5a5a9fe28f4e267616e972ede94c2a5ad276a89c45d40ec373bd663d60` | 10.2 | 350 | 3.61 + .64 + 4.99 = **9.24 (-31%)** | 10.0 |
+
+**Identity.**
+- u: `orientations.json`, `recipe.json`, `train_daily_ic.csv`, `train_planned_targets.csv`, `train_combined.json` and
+  every `train_combined*` payload **byte-identical** Debug vs Release; payloads and daily IC also equal to the accepted
+  `mega-v71-train-u-1`. `train_candidates.jsonl` differs only in `wall_seconds` / `stage_seconds.*`; `summary.json`
+  only in the cache paths, timings, `hash_seconds`, `ic_cache_bytes` (195,934,024 vs 195,933,920) and
+  `ic_scratch_bytes` (1,122,488 vs 1,122,216): provenance, not results.
+- w: all ten files byte-identical across builds and equal to the accepted `mega-v71w-train-ew-1` (`train_combined.json`
+  `bf1af127`, `train_combined.f64` `1cf245b1`).
+- **NAV: NOT identical.** Debug reproduces the accepted v7.1 NAV cell byte for byte (all five daily, five events
+  CSVs, `recipe.json`). Release: the linear-6bps daily CSV, all five events CSVs and `recipe.json` equal; **the four
+  modeled-1bn daily CSVs differ**. First differing file (sorted): `daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv`,
+  row 68, `impact_cost_dollars` 46664.658575514375 vs 46664.65857551439; 6 rows differ there (impact, unrationed and
+  trade cost dollars, `trade_cost_return`), max relative difference 3.1e-16 (one ULP). The primary S2 daily CSV
+  (Debug `fbec452e...` = the accepted v7.1 file, Release `063f38d8...`): 5 of 756 rows, columns `impact_cost_dollars` (4) and
+  `unrationed_cost_dollars` (1), max relative 3.6e-16, first at row 203; its `net_return` column is equal.
+- e2e canary (`scripts/tests/test_cycle_e2e.py`, `ATX_EQUITY_BIN`): Debug `build-equity/bin` **5 passed**; Release
+  `build-equity-rel/bin` **1 failed, 4 passed**: orientations and admission digests equal the goldens, the primary
+  daily CSV SHA `eb385a15...` differs from the golden `ca559404...` (the same cost-column ULPs).
+
+**Result: identity fails (NAV daily CSVs, last-ULP cost arithmetic of the modeled impact law), though the CPU stages
+fall 59% / 82% / 31%. By E-2 step 2 Release is not adopted; specs keep the Debug default and the cells keep the v8-12
+executables (`build-equity/bin`, unchanged).** `build-equity-rel/bin` now holds v8-13; nothing points at it. A v9
+note: the difference sits in the S2 impact-cost arithmetic (a sqrt / pow path compiled differently under /O2); a
+Release build that matches would need that path pinned (for example strict FP flags on the cost TU), a PM matter.
+
+Disk after: **32,757,556 KiB free (31.2 GiB)** (`df -k`). New this batch: `build-equity-rel` 1.5 G (was 1.3 G),
+`e2-dbg-cache` and `e2-rel-cache` 2.4 G each (A/B scratch caches, referenced by no spec: removable by `cache gc` or
+the PM), lo3-dlret role 207 M, holdings 163 M, risk 481 M, lagged combined 3 x 79 M, the NAV dirs.
+
+### Open items (batch 1b)
+
+- Warm-start gross at score_begin: .9257, 6.4% below the 4-year post-ramp mean (5.7% below all rows, 3.4% below rows
+  63-125); the 5% expectation is the D-0 synthetic test's. Not a mechanics limit; PM to say whether it needs a ruling.
+- nav_summ treats a warm start's CSV row 0 as the deployment row (tau over 1,004 sessions, `warning_tau`), the NAV
+  summary does not; frozen file (PM5-21), gates nothing.
+- G-1a without f_theta and K6 marginal IC (B0c's cards have no C-2 columns; no marginal phase / K6 for B0c). The
+  plan's single `diagnostics-v8.json` is eight split files under E-18 (committed copies in `diagnostics-v8/`); the
+  scorecard section (renderer) is not written.
+- B0c reuses B0b's monitor (template keeps it): no separate B0c monitor run exists.
+- The DSR variance stays degenerate (3 cells) until the PM5-22 re-runs.
+- Release: not adopted (identity fails); spdlog-build in the shared `C:/atx-cache/deps` rebuilt in Release (see above).
+- Next parent: `scripts/specs/v8/base-b0c.json`, digest `059d9ba6d7cb0f6346c5b065c64fd5ea55940db7196c2200e950ce137c7b483d`.
