@@ -1,0 +1,117 @@
+// book_two_speed_test.cpp — platform v8 Y (lane YCOMB, rule Y-5, Ruling PM8-5): two-speed netted
+// sleeves (atx::engine::book, two_speed.hpp).
+//
+//   The registered constants (theta_f = 1 - 2^(-1/5)); one step on two names in closed form; equal
+//   rates are one partial adjustment toward the summed aim (the single-sleeve book, within rounding);
+//   opposite sleeve trades cancel in the netted trade; the fast sleeve halves an aim gap in five
+//   steps; refusals before any write.
+//
+// Suite: BookTwoSpeed
+
+#include <cmath>
+#include <limits>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "atx/core/error.hpp"
+#include "atx/core/types.hpp"
+#include "atx/engine/book/two_speed.hpp"
+
+namespace atx_test_v8_book_two_speed {
+
+using atx::f64;
+using atx::usize;
+namespace eb = atx::engine::book;
+
+TEST(BookTwoSpeed, RegisteredConstants) {
+  EXPECT_EQ(eb::two_speed_slow_theta, 0.05);
+  EXPECT_EQ(eb::two_speed_fast_half_life, 5.0);
+  EXPECT_EQ(eb::two_speed_fast_bound, 10.0);
+  EXPECT_NEAR(eb::two_speed_fast_theta(), 0.12944943670387588, 1e-15);
+  EXPECT_NEAR(std::pow(1.0 - eb::two_speed_fast_theta(), 5.0), 0.5, 1e-15);
+}
+
+TEST(BookTwoSpeed, OneStepClosedForm) {
+  const std::vector<f64> aim_fast{0.4, -0.2}, aim_slow{-0.1, 0.3};
+  std::vector<f64> fast{0.0, 0.1}, slow{0.2, 0.0}, book{0.2, 0.1};
+  const auto r = eb::two_speed_step(aim_fast, aim_slow, 0.5, 0.1, fast, slow, book);
+  ASSERT_TRUE(r) << r.error().to_string();
+  EXPECT_NEAR(fast[0], 0.2, 1e-15);   // 0 + .5 (.4 - 0)
+  EXPECT_NEAR(fast[1], -0.05, 1e-15); // .1 + .5 (-.2 - .1)
+  EXPECT_NEAR(slow[0], 0.17, 1e-15);  // .2 + .1 (-.1 - .2)
+  EXPECT_NEAR(slow[1], 0.03, 1e-15);  // 0 + .1 (.3 - 0)
+  EXPECT_NEAR(book[0], 0.37, 1e-15);
+  EXPECT_NEAR(book[1], -0.02, 1e-15);
+  EXPECT_NEAR(r->sleeve_trade, 0.2 + 0.03 + 0.15 + 0.03, 1e-15);
+  EXPECT_NEAR(r->net_trade, 0.17 + 0.12, 1e-15);
+}
+
+// Equal rates: the sum of the sleeves is one partial adjustment toward the summed aim, and the
+// netted trade is that book's trade; the rule's content is the rate difference.
+TEST(BookTwoSpeed, EqualRatesAreOneBookTowardTheSummedAim) {
+  const std::vector<f64> aim_fast{0.3, -0.1, 0.05}, aim_slow{-0.2, 0.25, 0.1};
+  std::vector<f64> fast{0.01, 0.02, -0.03}, slow{0.1, -0.05, 0.0}, book(3U);
+  std::vector<f64> single(3U);
+  for (usize i = 0; i < 3U; ++i) { book[i] = fast[i] + slow[i]; single[i] = book[i]; }
+  for (int step = 0; step < 40; ++step) {
+    const auto r = eb::two_speed_step(aim_fast, aim_slow, 0.05, 0.05, fast, slow, book);
+    ASSERT_TRUE(r);
+    f64 single_trade = 0.0;
+    for (usize i = 0; i < 3U; ++i) {
+      const f64 d = 0.05 * (aim_fast[i] + aim_slow[i] - single[i]);
+      single[i] += d;
+      single_trade += std::abs(d);
+      EXPECT_NEAR(book[i], single[i], 1e-14) << step << ' ' << i;
+    }
+    EXPECT_NEAR(r->net_trade, single_trade, 1e-14) << step;
+  }
+}
+
+// A fast sleeve leaving a name while the slow sleeve enters it: the trades cancel in the book.
+TEST(BookTwoSpeed, OppositeSleeveTradesNet) {
+  const f64 theta_f = eb::two_speed_fast_theta();
+  const std::vector<f64> aim_fast{0.0}, aim_slow{0.2};
+  std::vector<f64> fast{0.1}, slow{0.0}, book{0.1};
+  const auto r = eb::two_speed_step(aim_fast, aim_slow, theta_f, eb::two_speed_slow_theta, fast, slow, book);
+  ASSERT_TRUE(r);
+  const f64 d_fast = theta_f * 0.1, d_slow = 0.05 * 0.2;
+  EXPECT_NEAR(r->sleeve_trade, d_fast + d_slow, 1e-15);
+  EXPECT_NEAR(r->net_trade, std::abs(d_slow - d_fast), 1e-15);
+  EXPECT_LT(r->net_trade, r->sleeve_trade);
+}
+
+// Half-life matched: five fast steps close half of a constant aim gap; the slow sleeve keeps about 77%.
+TEST(BookTwoSpeed, FastSleeveHalvesItsGapInFiveSteps) {
+  const std::vector<f64> aim{1.0};
+  std::vector<f64> fast{0.0}, slow{0.0}, book{0.0};
+  for (int step = 0; step < 5; ++step)
+    ASSERT_TRUE(eb::two_speed_step(aim, aim, eb::two_speed_fast_theta(), eb::two_speed_slow_theta, fast, slow, book));
+  EXPECT_NEAR(fast[0], 0.5, 1e-14);
+  EXPECT_NEAR(slow[0], 1.0 - std::pow(0.95, 5.0), 1e-14);
+}
+
+TEST(BookTwoSpeed, RefusalsWriteNothing) {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const std::vector<f64> aim{0.1, 0.2}, bad_aim{0.1, nan}, short_aim{0.1};
+  std::vector<f64> fast{0.5, 0.5}, slow{0.5, 0.5}, book{1.0, 1.0};
+  const auto untouched = [&] {
+    for (usize i = 0; i < 2U; ++i) {
+      EXPECT_EQ(fast[i], 0.5);
+      EXPECT_EQ(slow[i], 0.5);
+      EXPECT_EQ(book[i], 1.0);
+    }
+  };
+  for (const f64 theta : {0.0, -0.1, 1.5, nan}) {
+    const auto r = eb::two_speed_step(aim, aim, theta, 0.05, fast, slow, book);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+    untouched();
+  }
+  EXPECT_FALSE(eb::two_speed_step(bad_aim, aim, 0.1, 0.05, fast, slow, book));
+  untouched();
+  EXPECT_FALSE(eb::two_speed_step(short_aim, aim, 0.1, 0.05, fast, slow, book));
+  untouched();
+}
+
+} // namespace atx_test_v8_book_two_speed

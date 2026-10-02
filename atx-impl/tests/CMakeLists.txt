@@ -129,7 +129,9 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_risk_target_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_inverse_vol_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_vol_target_test.cpp"
-    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_normal_score_test.cpp")
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_normal_score_test.cpp"
+    # platform v8 Y (YCOMB) rule Y-5: two-speed netted sleeves (engine kernel; NAV wiring is a follow-up)
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_two_speed_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 
 # Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
