@@ -1,11 +1,11 @@
-"""Option-surface shape research fields (platform v8 lane YDATA, draft): two TickerHistory3 families no v8 field reads.
+"""Option-smile slope research field (platform v8 lane YDATA, draft): a TickerHistory3 column no v8 field reads.
 
 Draft and off by default. ``prepare_research_fields.py`` does not register this module (no v8 field list, formula or
 producer fingerprint moves); ``prepare_research_fields_ydata.py`` registers it. No new CLI option: the fields read the
 role's own vendor source through research_fields_price.py's ``--price-source`` (it must hash to the role manifest's
 ``source_sha256``).
 
-Fields (``LAG_SESSIONS`` = 1: row t reads vendor rows dated sessions t-21..t-1 only):
+Field (``LAG_SESSIONS`` = 1: row t reads vendor rows dated sessions t-21..t-1 only):
 * ``iv_skew_21``: the smile slope of Xing, Zhang and Zhao (2010, JFQA) and Yan (2011, JFE). The vendor column ``shD1``
   is "Interpolated 21 day atm vol slope" (SpiderRock TickerHistory3 dictionary): the slope of the fitted volatility curve
   at the money in standardized moneyness ln(K/F) / (sigma_ATM sqrt(T)) (SpiderRock live surfaces: the volatility
@@ -14,10 +14,8 @@ Fields (``LAG_SESSIONS`` = 1: row t reads vendor rows dated sessions t-21..t-1 o
   line: o_t = the sign of the median of SPY's slope over the same 21 sessions (an index smile is put-rich), and the value
   is o_t x the line's slope of session t-1. A positive value is a smile steeper toward the put side than the index's
   orientation; the literature's high-skew names (expensive out-of-the-money puts) score high.
-* ``iv_vov_21``: vol-of-vol of Baltussen, van Bekkum and van der Grient (2018, JFQA) "Unknown unknowns": the standard
-  deviation (ddof 1) of the line's daily 30-day ATM implied volatility over sessions t-21..t-1 divided by its mean (the
-  month's dispersion of expected volatility, scaled by its level). The vendor's ``atmCenI_21d`` is earnings-censored
-  (the implied earnings move removed), so a scheduled announcement inside the month does not by itself raise it.
+  (A vol-of-vol field was written here first and removed before any read: Baltussen et al. 2018 is the R-12 member
+  ``iv_vol_of_vol``, an allocated hypothesis.)
 
 Stamping: the vendor delivers implied-volatility columns at 22:00 America/Chicago (03:00-04:00 UTC of the next day;
 atx-db TIER1_V3_STATUS "IV clock"), so the slope and IV of session s are known before the 22:00 UTC mark of s+1. Row t
@@ -51,7 +49,7 @@ SKEW_COLUMN = "shD1"                 # "Interpolated 21 day atm vol slope" (Spid
 IV_COLUMN = "atmCenI_21d"            # 21 trading days = 30 calendar days: the papers' horizon
 TICKER_COLUMN = "ticker_tk"
 ORIENT_TICKER = "SPY"                # the market line whose put-rich smile orients the vendor slope
-WINDOW = 21                          # one month of sessions (XZZ / Yan monthly horizon; BvBvdG "the past month")
+WINDOW = 21                          # one month of sessions (the XZZ / Yan monthly horizon)
 MIN_DAYS = 17                        # declared: about 80% of the window, the house ratio (F-1's 48 of 60)
 SLOPE_ABS_MAX = 5.0                  # a slope across one moneyness unit cannot exceed the IV domain's upper bound
 FLOAT_TYPES = (pa.float32(), pa.float64())
@@ -69,9 +67,6 @@ SKEW_RULE = (
     "least 17 are kept and the median is not 0, the market line = the unique vendor securityID whose ticker_tk is "
     "'SPY' on every row read (another securityID -> refused); value at t = o_t x S of the line at session t-1; NaN "
     f"when o_t or S is undefined ({CELL_RULE})")
-VOV_RULE = (
-    "bvbvdg-vov-atm21-cv-v1: x_s = atmCenI_21d of the line's valid cells s in t-21..t-1 (K of them); value = "
-    "sd(x, ddof 1) / mean(x) when K >= 17, else NaN (" + CELL_RULE + ")")
 CAVEATS = ["the vendor's fitted surface (SpiderRock), not a strike-level option price; no vintage proof of the "
            "history (historical_vintage_verified false)",
            "one price line's values (the vendor securityID), not an issuer total"]
@@ -103,36 +98,22 @@ _spec("iv_skew_21", "y_skew",
        "minus the delta 0.5 call IV: the vendor slope is the same shape statistic on a fitted curve, not their exact "
        "strikes"],
       "xzz-yan-skew-shd1-spy-oriented-v1", domain=(-SLOPE_ABS_MAX, SLOPE_ABS_MAX))
-_spec("iv_vov_21", "y_vov",
-      "coefficient of variation of the daily 30-day ATM implied volatility over the past 21 sessions (decimal)",
-      VOV_RULE,
-      f"no fill: fewer than {MIN_DAYS} valid cells in t-21..t-1 -> NaN",
-      ["tradingDate", "securityID", IV_COLUMN],
-      ["Baltussen-van Bekkum-van der Grient's construction is recalled (scaled monthly dispersion of ATM IV), not "
-       "re-read from the paper: root verifies before registration",
-       "atmCenI_21d is earnings-censored: the paper's IV is not; the censoring removes the announcement run-up"],
-      "bvbvdg-vov-atm21-cv-v1")
 
 # The producing code of each field group (contract of task C-3: {group: (entry functions,)}); compute() orchestrates.
-PRODUCERS = {"y_skew": ("verify_iv_source", "iv_panel", "skew_rows"),
-             "y_vov": ("verify_iv_source", "iv_panel", "vov_rows")}
+PRODUCERS = {"y_skew": ("verify_iv_source", "iv_panel", "skew_rows")}
 
 
 # ---------------------------------------------------------------------------------------------------------------
 # Inputs
 # ---------------------------------------------------------------------------------------------------------------
 
-def required_columns(names) -> list:
-    cols = [IV_COLUMN]
-    if "iv_skew_21" in names:
-        cols += [SKEW_COLUMN, TICKER_COLUMN]
-    return cols
+REQUIRED_COLUMNS = (IV_COLUMN, SKEW_COLUMN, TICKER_COLUMN)
 
 
 def require_columns(path: Path, names) -> None:
-    """Refuse (a footer read, before any output) a price source without the requested fields' columns."""
+    """Refuse (a footer read, before any output) a price source without the field's columns."""
     schema = pq.ParquetFile(Path(path), memory_map=False).schema_arrow
-    for c in required_columns(names):
+    for c in REQUIRED_COLUMNS:
         i = schema.get_field_index(c)
         ok = i >= 0 and (schema.field(i).type == pa.string() if c == TICKER_COLUMN else
                          schema.field(i).type in FLOAT_TYPES)
@@ -168,18 +149,17 @@ def iv_panel(h, path: Path, captured, role, budget, names) -> dict:
     path = Path(path)
     pf = pq.ParquetFile(path, memory_map=False)
     require_columns(path, names)
-    want_skew = "iv_skew_21" in names
     seal_day = h.day_of(h.SEAL)
     days = role.days.astype(np.int64)
     first, last = int(days[0]), min(int(days[-1]), seal_day - 1)
     nd, n = role.n_dates, role.n
     budget.admit(nd * n * (2 * 4 + 2) + (32 << 20), "ivshape-matrices")
     iv = np.full((nd, n), np.nan, dtype=np.float32)
-    sk = np.full((nd, n), np.nan, dtype=np.float32) if want_skew else None
+    sk = np.full((nd, n), np.nan, dtype=np.float32)
     counts = np.zeros((nd, n), dtype=np.uint16)
-    spy = {"d": [], "sid": [], "s": [], "iv": []}
-    st = {"rows_scanned": 0, "rows_on_or_after_seal_skipped": 0, "rows_off_calendar": 0, "rows_selected": 0}
-    columns = ["tradingDate", "securityID"] + required_columns(names)
+    spy: dict = {"d": [], "sid": [], "s": [], "iv": []}
+    st: dict = {"rows_scanned": 0, "rows_on_or_after_seal_skipped": 0, "rows_off_calendar": 0, "rows_selected": 0}
+    columns = ["tradingDate", "securityID", *REQUIRED_COLUMNS]
     for batch in pf.iter_batches(batch_size=65536, columns=columns, use_threads=False):
         budget.check("ivshape-source-batch")
         st["rows_scanned"] += batch.num_rows
@@ -187,16 +167,15 @@ def iv_panel(h, path: Path, captured, role, budget, names) -> dict:
         st["rows_on_or_after_seal_skipped"] += int(np.count_nonzero(d >= seal_day))
         inside = (d >= first) & (d <= last)
         sid_all = pc.fill_null(batch.column("securityID"), 0).to_numpy()
-        if want_skew:
-            hit = pc.fill_null(pc.equal(batch.column(TICKER_COLUMN), ORIENT_TICKER), False).to_numpy(
-                zero_copy_only=False) & inside & (sid_all > 0)
-            if hit.any():
-                k = np.flatnonzero(hit)
-                sub = batch.take(pa.array(k, type=pa.int64()))
-                spy["d"].append(d[k])
-                spy["sid"].append(sid_all[k].astype(np.int64))
-                spy["s"].append(sub.column(SKEW_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32))
-                spy["iv"].append(sub.column(IV_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32))
+        hit = pc.fill_null(pc.equal(batch.column(TICKER_COLUMN), ORIENT_TICKER), False).to_numpy(
+            zero_copy_only=False) & inside & (sid_all > 0)
+        if hit.any():
+            k = np.flatnonzero(hit)
+            sub = batch.take(pa.array(k, type=pa.int64()))
+            spy["d"].append(d[k])
+            spy["sid"].append(sid_all[k].astype(np.int64))
+            spy["s"].append(sub.column(SKEW_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32))
+            spy["iv"].append(sub.column(IV_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32))
         idx = np.flatnonzero(inside)
         if not len(idx):
             continue
@@ -212,20 +191,15 @@ def iv_panel(h, path: Path, captured, role, budget, names) -> dict:
         np.add.at(counts, (t, j), 1)
         sub = batch.take(pa.array(idx, type=pa.int64()))
         iv[t, j] = sub.column(IV_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32)
-        if want_skew:
-            sk[t, j] = sub.column(SKEW_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32)
+        sk[t, j] = sub.column(SKEW_COLUMN).to_numpy(zero_copy_only=False).astype(np.float32)
     if h.identity(path) != captured:
         raise ValueError("--price-source changed while the surface columns were read")
     dup = counts > 1
     iv[dup] = np.nan
-    if want_skew:
-        sk[dup] = np.nan
+    sk[dup] = np.nan
     st["duplicate_keys_quarantined"] = int(np.count_nonzero(dup))
     st["cell_rule"] = CELL_RULE
-    out = {"iv": iv, "skew": sk, "stats": st}
-    if want_skew:
-        out["spy"] = spy_line(h, spy, days)
-    return out
+    return {"iv": iv, "skew": sk, "stats": st, "spy": spy_line(h, spy, days)}
 
 
 def spy_line(h, spy: dict, days: np.ndarray) -> dict:
@@ -304,39 +278,6 @@ def skew_rows(h, panel: dict, role, output: Path, budget) -> dict:
     return {"iv_skew_21": (w, st)}
 
 
-def vov_rows(h, panel: dict, role, output: Path, budget) -> dict:
-    """``iv_vov_21`` (its field definition)."""
-    n, iv = role.n, panel["iv"]
-    w = h.FieldWriter(output, "iv_vov_21", role)
-    st = {"short_window_member_cells": 0}
-    try:
-        for t in range(role.n_dates):
-            lo, hi = t - LAG_SESSIONS - WINDOW + 1, t - LAG_SESSIONS
-            row = np.full(n, np.nan)
-            if lo >= 0:
-                x = iv[lo:hi + 1]
-                ok = _valid_iv(h, x)
-                xv = np.where(ok, x.astype(np.float64), 0.0)
-                k = ok.sum(axis=0)
-                kk = np.maximum(k, 1).astype(np.float64)
-                mean = xv.sum(axis=0) / kk
-                dev = np.where(ok, xv - mean, 0.0)
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    sd = np.sqrt((dev * dev).sum(axis=0) / np.maximum(k - 1, 1))
-                    row = np.where(k >= MIN_DAYS, sd / mean, np.nan)
-                st["short_window_member_cells"] += int(np.count_nonzero((k < MIN_DAYS) & (role.member[t] != 0)))
-            else:
-                st["short_window_member_cells"] += int(np.count_nonzero(role.member[t] != 0))
-            w.write(row)
-            if t % 256 == 0:
-                budget.check("ivshape-vov-write")
-    except BaseException:
-        w.f.close()
-        raise
-    w.close()
-    return {"iv_vov_21": (w, st)}
-
-
 # ---------------------------------------------------------------------------------------------------------------
 # The module object the builder binds, and the --reuse interface (v8 C-3)
 # ---------------------------------------------------------------------------------------------------------------
@@ -378,11 +319,11 @@ class IvShapeFieldModule:
 
     @staticmethod
     def add_arguments(parser):
-        """No new options: the fields read research_fields_price.py's --price-source (OPTIONS)."""
+        """No new options: the field reads research_fields_price.py's --price-source (OPTIONS)."""
 
     @staticmethod
     def check(selected, options: dict):
-        """Before any output: the price source and the requested fields' columns (a footer read)."""
+        """Before any output: the price source and the field's columns (a footer read)."""
         names = [f for f in selected if f in FIELDS]
         if not names:
             return
@@ -402,16 +343,10 @@ class IvShapeFieldModule:
         captured = verify_iv_source(h, source, role, budget)
         panel = iv_panel(h, source, captured, role, budget, names)
         budget.report("ivshape-source-loaded", rows_selected=panel["stats"]["rows_selected"])
-        results = {}
-        if "iv_skew_21" in names:
-            results.update(skew_rows(h, panel, role, output, budget))
-        if "iv_vov_21" in names:
-            results.update(vov_rows(h, panel, role, output, budget))
-        check = {"lag_sessions": LAG_SESSIONS, "clock": IV_CLOCK, "seal": rw.SEAL_DATE, "window": rw.WINDOW_ID,
-                 "source": panel["stats"]}
-        if "spy" in panel:
-            check["orientation_line"] = panel["spy"]["stats"]
-        source_checks[GROUP] = check
+        results = skew_rows(h, panel, role, output, budget)
+        source_checks[GROUP] = {"lag_sessions": LAG_SESSIONS, "clock": IV_CLOCK, "seal": rw.SEAL_DATE,
+                                "window": rw.WINDOW_ID, "source": panel["stats"],
+                                "orientation_line": panel["spy"]["stats"]}
         del panel
         producer = {"module": Path(__file__).name, **h.module_code_identity(sys.modules[__name__])}
         source_pin = {"path": str(source.resolve()), "bytes": captured[2], "sha256": role.source_sha256}

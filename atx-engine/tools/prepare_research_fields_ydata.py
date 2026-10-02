@@ -5,12 +5,14 @@ and every existing field's formula and producer fingerprint stay exactly as they
 Run this file with the builder's own arguments (same argv, same manifest layout, the builder's own code identity in the
 manifest; each draft field's entry names its module as ``producer``):
 
-  python atx-engine/tools/prepare_research_fields_ydata.py --role ... --price-source <the role's TickerHistory3>
-      --fields <the base list>,iv_skew_21,iv_vov_21 --reuse <the base fields directory> ...
+  python atx-engine/tools/prepare_research_fields_ydata.py <the base build's argv> --price-source <the role's
+      TickerHistory3> --mgr13f-stage <thirteenf/> --mgr13f-stage-sha256 <pin>
+      --fields <the base list>,iv_skew_21,stio_chg_q,div_init_omit,deal_pending --reuse <the base fields directory> ...
 
-``FIELDS_IVSHAPE_DRAFT``: the option-surface fields of research_fields_ivshape.py (``--price-source``).
+``FIELDS_IVSHAPE_DRAFT``: the option-smile slope field of research_fields_ivshape.py (``--price-source``).
 ``FIELDS_MGR13F_DRAFT``: the 13F manager-horizon field of research_fields_mgr13f.py (``--mgr13f-stage`` and its pin;
 it requires ``shares_out``, which requires ``si_shares``, in the same run).
+``FIELDS_DIVEVENT_DRAFT``: the dividend initiation / omission field of research_fields_divevent.py (``--price-source``).
 ``FIELDS_DEALS_DRAFT``: the pending-merger target field of research_fields_deals.py (the SEC module's ``--sec-stages``,
 ``--sec-filings-sha256`` and ``--sec-identity-bridge(-sha256)``).
 ``register`` binds each module into a builder namespace exactly as the builder binds its own modules (``bind`` appends
@@ -20,13 +22,15 @@ its fields). At integration it folds into the draft entry of record as further t
 from __future__ import annotations
 
 import prepare_research_fields as builder  # same directory: the builder (it does not import this module)
+import research_fields_deals                # same directory
+import research_fields_divevent             # same directory
 import research_fields_ivshape              # same directory
 import research_fields_mgr13f               # same directory
-import research_fields_deals                # same directory
 
-DRAFT_MODULES = (research_fields_ivshape, research_fields_mgr13f, research_fields_deals)
-FIELDS_IVSHAPE_DRAFT = ("iv_skew_21", "iv_vov_21")
+DRAFT_MODULES = (research_fields_ivshape, research_fields_mgr13f, research_fields_divevent, research_fields_deals)
+FIELDS_IVSHAPE_DRAFT = ("iv_skew_21",)
 FIELDS_MGR13F_DRAFT = ("stio_chg_q",)
+FIELDS_DIVEVENT_DRAFT = ("div_init_omit",)
 FIELDS_DEALS_DRAFT = ("deal_pending",)
 
 

@@ -200,10 +200,6 @@ def reference(rows, days):
             o = math.copysign(1.0, m) if m != 0 else math.nan
         for j, sid in enumerate(ROLE_IDS):
             out["iv_skew_21"][t, j] = o * slope(sid, days[t - 1])
-            xs = [cell(sid, d)[1] for d in window]
-            xs = [x for x in xs if valid_iv(x)]
-            if len(xs) >= 17:
-                out["iv_vov_21"][t, j] = float(np.std(xs, ddof=1) / np.mean(xs))
     return out
 
 
@@ -287,7 +283,7 @@ class IvShapeFields(unittest.TestCase):
         self.assertEqual(st["orientation_line"]["security_id"], SPY)
 
     def test_orientation_does_not_depend_on_the_vendor_sign_convention(self):
-        """Every slope negated (the other convention): iv_skew_21 is bit-identical; iv_vov_21 never reads the slope."""
+        """Every slope negated (the other convention): iv_skew_21 is bit-identical."""
         a = Case(self.base, world(), "a")
         a.run("fa", FIELDS)
         b = Case(self.base, world(flip=-1.0), "b")
@@ -327,13 +323,12 @@ class IvShapeFields(unittest.TestCase):
         self.assertFalse((self.base / "x1").exists())
         with mock.patch.object(tool, "SEAL", dt.date(2026, 1, 1)):       # the builder's seal is not research_window's
             with self.assertRaisesRegex(rw.SealError, "not research_window's"):
-                case.run("x2", ["iv_vov_21"])
+                case.run("x2", FIELDS)
         self.assertFalse((self.base / "x2" / "manifest.json").exists())
         noslope = Case(self.base, rows, "noslope", drop=("shD1",))
         with self.assertRaisesRegex(ValueError, "column shD1 is missing"):
             noslope.run("x3", FIELDS)
         self.assertFalse((self.base / "x3").exists())
-        noslope.run("x3b", ["iv_vov_21"])                                 # vol-of-vol does not read the slope
         twin = {k: list(v) for k, v in rows.items()}                       # SPY on a second securityID
         for k, v in (("tradingDate", dt.date(2018, 7, 3)), ("securityID", 78), ("ticker_tk", "SPY"), ("close", 1.0),
                      ("cumulReturnFactor", 1.0), ("volume", 1.0), ("shD1", -0.1), ("atmCenI_21d", 0.2)):
