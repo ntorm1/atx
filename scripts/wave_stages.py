@@ -51,6 +51,7 @@ SPECS_V8 = "scripts/specs/v8"
 YEAR = re.compile(r"(?<![0-9])((?:19|20)[0-9]{2})(?![0-9])")
 DATE = re.compile(r"(?<![0-9])((?:19|20)[0-9]{2}-[01][0-9]-[0-3][0-9])(?![0-9])")
 ROW_KEYS = ("id", "status", "runner_sign", "s_k", "sign_agrees", "failed_checks", "redundant_with")
+MARGINAL_KEYS = ("id", "ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t", "max_abs_rho", "max_rho_member")
 
 
 def lib_spec(name: str) -> str:
@@ -207,6 +208,23 @@ def add_alpha(w: Wave, c: dict, name: str) -> list[str]:
                              fields_dir=m["fields"]["dir"], plan_out=w.wave_path("plans", name, f"{c['id']}.json"))
 
 
+def rewrite_spec(w: Wave, rel: str, fn, why: str) -> bool:
+    """Apply ``fn`` to a spec add-alpha has just written (uncommitted); write and lock (dry: every pin verified) only
+    when it changes. A resumed stage finds it applied already."""
+    doc = w.read_json(rel)
+    new = fn(doc)
+    if new == doc:
+        return False
+    w.path(rel).write_text(json.dumps(new, indent=2) + "\n", encoding="utf-8", newline="\n")
+    w.log(f"   {rel}: {why}")
+    w.run(WS.cycle_argv(w.python, "lock", rel), f"lock (dry) {rel}")
+    return True
+
+
+def replaces(cands: list[dict]) -> bool:
+    return any(c.get("kind") == WR.REPLACE for c in cands)
+
+
 def register(w: Wave, done: dict, log) -> dict:
     if not library_wave(w):
         return skipped("a rule wave registers no strings")
@@ -215,6 +233,8 @@ def register(w: Wave, done: dict, log) -> dict:
     for c in m["candidates"]:
         w.run(add_alpha(w, c, name), f"add-alpha {c['id']}")
         plans[c["id"]] = w.sha(w.wave_path("plans", name, f"{c['id']}.json"))
+    if replaces(m["candidates"]):
+        rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     commit = w.commit_dirty(f"wave {m['wave']}: register library {name} ({len(m['candidates'])} frozen strings; "
                             f"manifest {w.manifest_rel} {w.manifest_sha[:12]})")
     spec = lib_spec(name)
@@ -243,6 +263,7 @@ def screen(w: Wave, done: dict, log) -> dict:
     if not isinstance(doc, dict) or not isinstance(doc.get("admission"), list):
         raise StageError(f"screen: no admission rows in {vpath}")
     rows = [{k: r.get(k) for k in ROW_KEYS} for r in doc["admission"] if isinstance(r, dict)]
+    marginal = [{k: r.get(k) for k in MARGINAL_KEYS} for r in doc.get("marginal") or [] if isinstance(r, dict)]
     dec = WR.screen_decision(m["sign_rule"], m["candidates"], rows)
     gate_ok = r.returncode == RC.EXIT_OK
     for row in dec["rows"]:
@@ -251,7 +272,7 @@ def screen(w: Wave, done: dict, log) -> dict:
     log(f"   gate {'PASS' if gate_ok else 'FAIL (no string admitted with its prior sign): no cell'}; kept "
         f"{dec['kept']}, dropped {dec['dropped']}")
     return {"spec": spec, "gate_exit": r.returncode, "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": rows,
-            "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+            "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
 
 
 def screen_plan(w: Wave, done: dict) -> list[str]:
@@ -312,6 +333,11 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
     for c in m["candidates"]:
         if c["id"] in kept:
             w.run(add_alpha(w, c, name), f"add-alpha {c['id']} into {name}")
+    if WM.speed(m, "reuse_screen_marginal"):
+        rewrite_spec(w, lib_spec(name), WS.without_marginal, "no second marginal pass: the screen's rows are carried "
+                                                             "(speed.reuse_screen_marginal; report only)")
+    elif replaces([c for c in m["candidates"] if c["id"] in kept]):
+        rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     commit = w.commit_dirty(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "
                             f"({m['sign_rule']}: dropped {', '.join(sc['decision']['dropped'])})")
     return cell_out(w, done, lib_spec(name), "b-library", commit, name)
@@ -361,10 +387,19 @@ def _receipts(w: Wave, phase: str, prefix: str) -> list[dict]:
     return out
 
 
+def screen_first(w: Wave, done: dict) -> bool:
+    """speed.screen_first: a b library runs --screen before its cell, so its u pass is the screen's (no u-pass blend:
+    the IC exe's --no-composition, which nothing downstream reads) and the cell resumes it, as a screen library's
+    cell resumes its screen's."""
+    return done["spec"].get("kind") == "b-library" and WM.speed(w.manifest, "screen_first")
+
+
 def run_stage(w: Wave, done: dict, log) -> dict:
     if no_cell(done):
         return skipped("no cell")
     cell = done["spec"]["cell_spec"]
+    if screen_first(w, done):
+        w.run(WS.cycle_argv(w.python, "run", cell, "--screen"), "the b library's screen (its gate re-read)")
     w.run(WS.cycle_argv(w.python, "run", cell, "--stop-after", "nav"), "calibration run (--stop-after nav)")
     nav = w.outputs(cell)["nav"]
     if not w.exists(f"{nav}/summary.json"):
@@ -373,8 +408,14 @@ def run_stage(w: Wave, done: dict, log) -> dict:
 
 
 def run_plan(w: Wave, done: dict) -> list[str]:
-    cell = (done.get("spec") or {}).get("cell_spec") or "<the cell spec (known after the spec stage)>"
-    return [WS.fmt_argv(WS.cycle_argv(w.python, "run", cell, "--stop-after", "nav"))]
+    sp = done.get("spec") or {}
+    cell = sp.get("cell_spec") or "<the cell spec (known after the spec stage)>"
+    lines = []
+    if not sp:
+        lines.append("#   (a b library with speed.screen_first runs `run <cell> --screen` first)")
+    elif screen_first(w, done):
+        lines.append(WS.fmt_argv(WS.cycle_argv(w.python, "run", cell, "--screen")))
+    return lines + [WS.fmt_argv(WS.cycle_argv(w.python, "run", cell, "--stop-after", "nav"))]
 
 
 # ------------------------------------------------------------------ readers

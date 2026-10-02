@@ -5,7 +5,8 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
 
   {schema, wave, kind (library | rule), manifest{path, sha256, commit}, parent{spec, spec_digest, library, nav,
    leverage}, screen{spec, gate_exit, rows[], kept[], dropped[], sign_rule} | null, cell{spec, spec_digest, library,
-   kind, nav, leverage, gross, gross_parent, corrected} | null, mechanics{rule, pass, rows[]} | null,
+   kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, rows[]} | null (report only),
+   mechanics{rule, pass, rows[]} | null,
    stats{cell, parent} (the book reader's rows) | null, paired{...} | null, bundle{...} | null, dsr{...} | null,
    pbo, verdict{rule, text, accepted, checks, decided_by, criteria[]} | {accepted: false, reason},
    ledger{path, lines_before, lines_after, head, n_before, n_after, trial_id, admission_lines[]},
@@ -51,12 +52,23 @@ def build(w, done: dict, ledger: dict) -> dict:
             "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
                         "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
                         "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
-            "cell": cell, "mechanics": vf.get("mechanics"), "seal_scan": vf.get("seal_scan"),
+            "cell": cell, "marginal": marginal_rows(sc, sp), "mechanics": vf.get("mechanics"),
+            "seal_scan": vf.get("seal_scan"),
             "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
             "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
             "next_parent": ({"spec": cell["spec"], "library": cell["library"]} if accepted and cell else
                             {"spec": parent["spec"], "library": parent["library"]}),
             "timings": rows, "receipts": receipt_digests(w)}
+
+
+def marginal_rows(sc: dict, sp: dict) -> dict | None:
+    """The marginal IC rows (contract K6, report only) of the cell's strings: the screen's. A b library carries them
+    (speed.reuse_screen_marginal: computed on the screen library, a superset, so max_rho_member may name a dropped
+    string); a screen-library cell's marginal is its own screen's."""
+    if not sc.get("decision"):
+        return None
+    kept = set(sc["decision"]["kept"]) if sp.get("cell_spec") else set(r["id"] for r in sc["decision"]["rows"])
+    return {"source": f"the screen ({sc['spec']})", "rows": [r for r in sc.get("marginal") or [] if r.get("id") in kept]}
 
 
 def receipt_digests(w) -> dict:

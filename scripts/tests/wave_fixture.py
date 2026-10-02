@@ -41,7 +41,20 @@ def git(root: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
 
 
-def cell_spec(name: str, nav_out: str, *, reference_nav: str | None = None, leverage: str = "1.1474") -> dict:
+def cell_spec(name: str, nav_out: str, *, reference_nav: str | None = None, leverage: str = "1.1474",
+              marginal_of: str | None = None) -> dict:
+    """A synthetic plain cell spec; ``marginal_of`` (the parent's name) adds add-alpha's marginal section on the
+    parent's combined signal and theme weights, with its runner cap."""
+    s = _cell_spec(name, nav_out, reference_nav, leverage)
+    if marginal_of:
+        s["inputs"]["reference_combined"] = {"path": f"out/w-{marginal_of}-1/train_combined.json", "sha256": None}
+        s["inputs"]["reference_weights"] = {"path": f"out/fit-{marginal_of}/composition_weights.json", "sha256": None}
+        s["marginal"] = {"output": f"out/u-{name}-marginal", "pool": "reference_combined", "themes": "reference_weights"}
+        s["runner"]["phases"] = {"marginal": {"seconds": 360}}
+    return s
+
+
+def _cell_spec(name: str, nav_out: str, reference_nav: str | None, leverage: str) -> dict:
     s = {"schema": RC.SCHEMA, "name": name, "description": f"synthetic cell {name}", "python": sys.executable,
          "runner": {"script": "scripts/run_bounded_research.py", "seconds": 60, "max_rss_mib": 512, "min_free_mib": 256},
          "exes": {"ic": "bin/ic.exe", "nav": "bin/nav.exe"},
@@ -208,7 +221,9 @@ class FakeCycle:
         spec, c = self.spec_outputs(rel)
         if "--screen" in args:
             rows = [{"id": cid, "status": st, "runner_sign": sg, "s_k": 1} for cid, (st, sg) in self.admission.items()]
-            write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": rows})
+            marginal = [{"id": cid, "ic21": 0.01, "marginal_ic21": 0.005, "max_abs_rho": 0.3, "max_rho_member": "m1"}
+                        for cid in self.admission] if "marginal" in spec else []
+            write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": rows, "marginal": marginal})
             BI.ledger_append(self.root / LEDGER, [admission_line(spec["name"], cid) for cid in self.admission],
                              chain=True)
             return self.ok(args, self.gate_exit)
@@ -242,7 +257,7 @@ class FakeCycle:
         pspec, pc = self.spec_outputs(a["--parent-spec"])
         write_json(self.root, f"scripts/specs/v8/lib-{name}.json",
                    cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),
-                             leverage=str(pspec["nav"]["leverage"])))
+                             leverage=str(pspec["nav"]["leverage"]), marginal_of=pspec["name"]))
         write_json(self.root, a["--save-plan"], {"library": name, "candidates": [{"id": cid}]})
         return self.ok(args)
 

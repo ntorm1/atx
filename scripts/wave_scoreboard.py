@@ -1,6 +1,7 @@
 """research_cycle.py scoreboard: the lineage of accepted books, one command (platform v8 lane YINFRA).
 
-  research_cycle.py scoreboard [--results GLOB ...] [--ledger PATH] [--markdown OUT] [--json OUT] [--root R]
+  research_cycle.py scoreboard [--results GLOB ...] [--ledger PATH] [--markdown OUT] [--json OUT] [--timings]
+                               [--root R]
 
 Reads ONLY the wave results (wave-result.json, written by the wave's record stage from what the summariser and the
 readers printed into its receipts; default glob build-equity/waves/*/wave-result.json) and the trial ledger (its chain
@@ -127,14 +128,38 @@ def board(root: Path, patterns: list[str], ledger: str | None = None) -> dict:
     lines, led = ledger_view(root, rel)
     lin, branches = lineage(docs)
     return {"schema": SCHEMA, "ledger": led, "lineage": lin, "branches": branches,
-            "waves": sorted((row(d) for d in docs), key=lambda r: (r["n"], r["wave"])), "checks": checks(docs, lines)}
+            "waves": sorted((row(d) for d in docs), key=lambda r: (r["n"], r["wave"])), "checks": checks(docs, lines),
+            "timings": sorted((timing(d) for d in docs), key=lambda t: t["wave"])}
+
+
+def timing(doc: dict) -> dict:
+    """Wall seconds and peak MiB by phase of one wave (its bounded-runner receipts, every attempt): the speed record
+    a later wave is compared with."""
+    by: dict[str, dict] = {}
+    for r in doc.get("timings") or []:
+        t = by.setdefault(r["phase"], {"runs": 0, "seconds": 0.0, "peak_mib": 0})
+        t["runs"] += 1
+        t["seconds"] += r.get("seconds") or 0.0
+        t["peak_mib"] = max(t["peak_mib"], r.get("peak_mib") or 0)
+    return {"wave": doc["wave"], "phases": by, "seconds": round(sum(t["seconds"] for t in by.values()), 1)}
+
+
+def timings_markdown(b: dict) -> list[str]:
+    phases = sorted({p for t in b["timings"] for p in t["phases"]})
+    out = ["### Wall-clock by phase (s; runs)", "", "| wave | " + " | ".join(phases) + " | total |",
+           "|" + "---|" * (len(phases) + 2)]
+    for t in b["timings"]:
+        cells = [f"{t['phases'][p]['seconds']:.1f} ({t['phases'][p]['runs']})" if p in t["phases"] else "-"
+                 for p in phases]
+        out.append(f"| {t['wave']} | " + " | ".join(cells) + f" | {t['seconds']:.1f} |")
+    return out + [""]
 
 
 def _f(x, spec: str) -> str:
     return format(x, spec) if isinstance(x, (int, float)) and not isinstance(x, bool) else "-"
 
 
-def markdown(b: dict) -> str:
+def markdown(b: dict, with_timings: bool = False) -> str:
     led = b["ledger"]
     head = ["wave", "verdict", "cell"] + [title for _, title, _ in COLUMNS] + ["N", "dSR", "p (1-sided)", "DSR"]
 
@@ -153,6 +178,8 @@ def markdown(b: dict) -> str:
     out += [f"- {c['wave']}: trial `{c['trial_id']}` " + ("ledgered" if c["ledgered"] else "NOT IN THE LEDGER") +
             ("; s2_net_sr equal" if c["s2_net_sr_equal"] else f"; s2_net_sr {c['ledger_s2_net_sr']} vs result "
              f"{c['result_net_sharpe']}: MISMATCH") for c in b["checks"]]
+    if with_timings:
+        out += [""] + timings_markdown(b)
     return "\n".join(out) + "\n"
 
 
@@ -164,6 +191,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ledger", default=None)
     ap.add_argument("--markdown", type=Path, default=None, help="also write the markdown to this file")
     ap.add_argument("--json", type=Path, default=None, help="also write the scoreboard as JSON")
+    ap.add_argument("--timings", action="store_true", help="also print the wall seconds by phase of every wave")
     ap.add_argument("--root", type=Path, default=research_tree.REPO)
     a = ap.parse_args(argv)
     try:
@@ -171,7 +199,7 @@ def main(argv=None) -> int:
     except (ScoreboardError, OSError, ValueError, KeyError) as exc:
         print(f"research_cycle scoreboard: {exc}", file=sys.stderr)
         return 2
-    text = markdown(b)
+    text = markdown(b, a.timings)
     print(text, end="")
     if a.markdown:
         a.markdown.write_text(text, encoding="utf-8", newline="\n")

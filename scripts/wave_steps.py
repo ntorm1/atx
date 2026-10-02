@@ -115,6 +115,32 @@ def gm_doc(doc: dict, resolved: dict, new: str, note: str) -> dict:
     return out
 
 
+def without_marginal(doc: dict) -> dict:
+    """A plain cell spec without its marginal phase (and that phase's runner cap): the wave's b library carries the
+    screen's marginal rows instead of a second pass (speed.reuse_screen_marginal; the marginal decides nothing)."""
+    out = copy.deepcopy(doc)
+    out.pop("marginal", None)
+    phases = (out.get("runner") or {}).get("phases")
+    if isinstance(phases, dict) and "marginal" in phases:
+        phases.pop("marginal")
+        if not phases:
+            out["runner"].pop("phases")
+    return out
+
+
+def pool_only_marginal(doc: dict) -> dict:
+    """Ruling PM6-8 (i), confirmed for replacing waves by PM7-32: a library that replaces a parent member runs the
+    marginal on the pool only (the parent's theme weights hold the replaced member, which the verb refuses):
+    marginal.themes deleted and marginal.output suffixed -poolonly (the integrator's X-2 / X-4 spec fix)."""
+    out = copy.deepcopy(doc)
+    m = out.get("marginal")
+    if isinstance(m, dict) and "themes" in m:
+        m.pop("themes")
+        if not m["output"].endswith("-poolonly"):
+            m["output"] = f"{m['output']}-poolonly"
+    return out
+
+
 def gm_path(spec_path: str) -> str:
     p = Path(spec_path)
     return (p.parent / f"{p.stem}-gm{p.suffix}").as_posix()

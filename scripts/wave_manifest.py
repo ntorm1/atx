@@ -20,7 +20,12 @@ One wave is one cell on the current book, declared before anything is measured:
    "ledger": PATH,                                the sprint ledger of record (the cells' summ.ledger)
    "expect": {"n_before": N},                     the ledger N the wave was planned on (a stale plan is refused)
    "out_dir": DIR,                                the wave's state dir (receipts, plans, readers, wave-result.json)
-   "record": {"copy_to": DIR?}}                   where the record stage copies wave-result.json and the log section
+   "record": {"copy_to": DIR?},                   where the record stage copies wave-result.json and the log section
+   "speed": {"reuse_screen_marginal": true, "screen_first": true}}
+                                                 the wave's own speed rules (wave_stages.py; both default true; they
+                                                 change no input of a decision): the cell after a sign-rule drop
+                                                 carries the screen's marginal rows (report only) instead of a second
+                                                 marginal pass, and a b library runs --screen before its cell
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
@@ -51,7 +56,8 @@ CANDIDATE_OPTIONAL = ("kind", "replaces", "rescreen", "removes", "fields", "prio
                       "domain", "deviation", "exception", "ruling", "notes", "lane", "report")
 TOP_REQUIRED = ("schema", "wave", "parent", "fields", "acceptance", "gross_match", "budget", "ledger", "expect",
                 "out_dir")
-TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix")
+TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed")
+SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 
 
@@ -184,6 +190,9 @@ def validate(m) -> list[str]:
     r = m.get("record", {})
     if not (isinstance(r, dict) and set(r) <= {"copy_to"} and ("copy_to" not in r or _rel(r["copy_to"]))):
         out.append("record must be {copy_to: a root-relative dir}")
+    sp = m.get("speed", {})
+    if not (isinstance(sp, dict) and set(sp) <= set(SPEED_KEYS) and all(type(v) is bool for v in sp.values())):
+        out.append(f"speed must map {', '.join(SPEED_KEYS)} to true or false")
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
     return out
@@ -237,3 +246,7 @@ def load(path: Path) -> tuple[dict, str]:
 
 def b_library(m: dict) -> str:
     return m["library"] + m.get("b_suffix", "b")
+
+
+def speed(m: dict, key: str) -> bool:
+    return bool((m.get("speed") or {}).get(key, True))
