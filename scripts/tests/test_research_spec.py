@@ -65,6 +65,7 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "r8.json": CHILD_NULLS,
              "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
+NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 
@@ -97,6 +98,8 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
                     "r8.json": {"nav.output", "nav.flags"},
                     "r10.json": FIT_DOWN | {"fit.flags"}}             # its nominal parent R-1 carries W_3072
 EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                                   # v8 R-11 (lane ORTH)
+# Ruling PM6-6: R-1's registered change at the aim leverage that matches the parent's all-rows S2 gross
+EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 MISSING = object()
 
@@ -130,7 +133,9 @@ def as_authored(spec: dict, name: str | None = None) -> dict:
     author committed it, before root's runbook steps on it: every pin that `lock --write` fills is null again -- each
     input's but a committed library's or recipe's (authored with that file and checked against its bytes), the as-built
     fields manifest's and a template's derived ones ("locked") --, a template's parent is null (planned on its nominal
-    parent) and every value root fills (FILLS of ``name``) is null again (its "<fill:...>" placeholder).
+    parent) and every value root fills (FILLS of ``name``) is null again (its "<fill:...>" placeholder). A template's
+    own inputs (change.inputs) are null whatever the file: each is authored null and filled by its lock (E-25's label
+    role; R-2's and R-7's library and recipe, which add-alpha commits after the template, PM6-10).
 
     Rulings PM5-20, PM5-24 (FIX-6, rounds 1 and 2): the fixtures plan the live specs on stand-in files, whose digests no
     real pin matches, and hold a template's registered change against its nominal parent; they plan and compare this
@@ -148,12 +153,14 @@ def as_authored(spec: dict, name: str | None = None) -> dict:
         if "fields.manifest_sha256" in sets:
             sets["fields.manifest_sha256"] = None
         spec.pop("locked", None)
+        held = lambda item: False                                             # noqa: E731
     else:
         items, fields = spec["inputs"].values(), spec.get("fields")
+        held = lambda item: committed(item["path"]) is not None              # noqa: E731
     if RC.as_built(fields):
         fields["manifest_sha256"] = None
     for item in items:
-        if committed(item["path"]) is None:
+        if not held(item):
             item["sha256"] = None
     return spec
 
@@ -193,10 +200,11 @@ def fake_root(tmp_path: Path, spec: dict) -> tuple[Path, dict]:
     for rel, text in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_bytes(text if isinstance(text, bytes) else text.encode())
-    if "marginal" in spec:
-        m = spec["marginal"]
-        (root / spec["inputs"][m["pool"]]["path"]).write_text(T.pool_manifest(root, role["path"],
-                                                                              spec["inputs"][m["themes"]]["path"]))
+    if "marginal" in spec:          # the pool binds the role and, with marginal.themes, those weights (research_cycle
+        m = spec["marginal"]        # check_marginal_bindings); without themes (R-2 on the combined signal alone, PM6-8)
+        weights = spec["inputs"][m["themes"]]["path"] if m.get("themes") else role["path"]   # it binds the role only
+        pool = spec["inputs"][m.get("pool", "reference_combined")]["path"]
+        (root / pool).write_text(T.pool_manifest(root, role["path"], weights))
     return root, spec
 
 
@@ -251,9 +259,13 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#")), name
     stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}
     assert unlocked_pins(c, spec) >= stand_ins | {"fields.manifest_sha256"}, name
+    held = {f"inputs.{k}" for k, item in spec["inputs"].items()
+            if item["sha256"] and committed(item["path"]) is not None}
     links = RS.chain(path, research_tree.REPO)
     if {p.name for p, _, _, _ in links} | {links[-1][2].name if links else name} <= set(NULL_PINS):
-        assert unlocked_pins(c, spec) >= NULL_PINS[name], name   # (an add-alpha parent, lib-v80.json, has fewer)
+        # (an add-alpha parent, lib-v80.json, has fewer; a lock's pin on a committed file, e.g. R-2's library once
+        # add-alpha wrote it (PM6-10), is checked against its bytes, not a stand-in: it may stand LOCKED)
+        assert unlocked_pins(c, spec) >= NULL_PINS[name] - held, name
     for section, option in fill_options():                    # PM5-24: a value root fills is its placeholder or well
         value = RC.option_value((spec.get(section) or {}).get("flags") or [], option)          # formed (own, inherited)
         assert value in (None, f"<fill:{section}.flags {option}>") or well_filled(option, value), (name, option, value)
@@ -417,8 +429,16 @@ def check_generated(tmp_path: Path, specs: Path, name: str) -> None:
     stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}
     assert unlocked_pins(c, spec) >= stand_ins | {"fields.manifest_sha256"}, name
     assert RS.run_refusal(spec, path, research_tree.REPO) is None, name
-    composition = RC.option_value(spec["fit"]["flags"], "--composition")
-    for k, child in enumerate(CELLS[1:]):
+    check_parents(tmp_path, specs, name, CELLS[1:])
+
+
+def check_parents(tmp_path: Path, specs: Path, name: str, children) -> dict[str, dict]:
+    """The spec ``name`` of ``specs`` as the parent root sets in each template of ``children``: each plans on it
+    (check_live_plan), but one whose composition map lacks its composition, which refuses it at load. Returns
+    {child: planned spec}."""
+    composition = RC.option_value(RC.load_spec(specs / name)["fit"]["flags"], "--composition")
+    planned = {}
+    for k, child in enumerate(children):
         on = tmp_path / f"on-{k}" / "v8"
         shutil.copytree(specs, on)
         doc = dict(json.loads((on / child).read_text(encoding="utf-8")), parent=name)
@@ -428,7 +448,8 @@ def check_generated(tmp_path: Path, specs: Path, name: str) -> None:
             with pytest.raises(RC.CycleError, match="maps the parent's value"):
                 RC.load_spec(on / child)
             continue
-        check_live_plan(tmp_path / f"on-{k}", on, child)
+        planned[child] = check_live_plan(tmp_path / f"on-{k}", on, child)
+    return planned
 
 
 def test_every_generated_spec_plans_and_parents_the_templates(tmp_path):
@@ -440,30 +461,46 @@ def test_every_generated_spec_plans_and_parents_the_templates(tmp_path):
         print(f"generated spec checked: {name}")
 
 
+def test_r1_at_matched_gross_parents_the_later_templates(tmp_path):
+    """Ruling PM6-6 (PM6-10: the suite accepts root's hand-written spec): r1-comp-v8-gm.json, R-1's registered change at
+    the aim leverage that matches the parent's gross, is accepted as the parent of every template that may run after
+    R-1 (R-2 runs as add-alpha's lib-v80.json on it), each reading it as R-1: R-3 the standardised aim rule (E-27),
+    R-10 the shrink rule (E-44), R-11 its composition."""
+    planned = check_parents(tmp_path, V8, "r1-comp-v8-gm.json", CELLS[2:])
+    assert set(planned) == set(CELLS[2:])                                    # no composition map refuses it
+    composition = {n: RC.option_value(s["fit"]["flags"], "--composition") for n, s in planned.items()}
+    assert (composition["r3-aim-gain.json"], composition["r10.json"], composition["r11.json"]) == (
+        "ew-theme-std-aim-v1", "ic-shrink-v1", "ew-theme-std-v1")
+
+
 def test_the_whole_file_passes_with_a_generated_spec_present(tmp_path):
-    """Ruling PM5-24: the R-2 path on stand-ins (v8_root, parent_cell, add-alpha v71 -> v80 on base-lo1) generates
-    lib-v80.json; with its tools back on base-lo1's (v8_root points them at the fake ones), as add-alpha writes it from
-    the live base, it goes into a copy of scripts/specs/v8. The rule recognises it from its content: the same file
+    """Ruling PM5-24: the R-2 path on stand-ins (v8_root, parent_cell, add-alpha v71 -> PROBE on base-lo1) generates
+    lib-PROBE.json; with its tools back on base-lo1's (v8_root points them at the fake ones), as add-alpha writes it
+    from the live base, it goes into a copy of scripts/specs/v8. The rule recognises it from its content: the same file
     under another name, without add-alpha's marks, or as a template is authored. Then this whole file runs on the copy
-    (a subprocess with ATX_TEST_V8_SPECS; this test deselected) and passes, the generated spec checked in it."""
+    (a subprocess with ATX_TEST_V8_SPECS; this test deselected) and passes, the generated spec checked in it, next to
+    those root generated (lib-v80.json since R-2). PM6-10: the probe is not named v80, whose library root committed (a
+    fake root holds a committed library as is, so it would stand in for the probe's own and fail its pin)."""
     root, parent = v8_root(tmp_path / "made")
     parent_cell(root, parent)
-    assert add(root, parent, "v8_probe", "rank(decay_linear((be / at_lag4), 21))") == RC.EXIT_OK
-    doc = json.loads((root / SPECS / "lib-v80.json").read_text(encoding="utf-8"))
+    assert add(root, parent, "v8_probe", "rank(decay_linear((be / at_lag4), 21))", name=PROBE) == RC.EXIT_OK
+    doc = json.loads((root / SPECS / f"lib-{PROBE}.json").read_text(encoding="utf-8"))
+    assert committed(doc["inputs"]["library"]["path"]) is None, doc["inputs"]["library"]   # a stand-in, not a file
     base = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
     doc.update(python=base["python"], exes=base["exes"], runner=dict(doc["runner"], script=base["runner"]["script"]))
     for section in ("fit", "card", "monitor", "summ"):
         doc[section]["script"] = base[section]["script"]
     specs = tmp_path / "v8"
     shutil.copytree(V8, specs)
-    (specs / "lib-v80.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    assert generated_by_add_alpha(specs / "lib-v80.json")
+    (specs / f"lib-{PROBE}.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    assert generated_by_add_alpha(specs / f"lib-{PROBE}.json")
     other = tmp_path / "other"
     other.mkdir()
-    for file, bad in (("v80.json", doc), ("lib-v81.json", doc), ("lib-v80.json", dict(doc, description="by hand")),
-                      ("lib-v80.json", dict(doc, gate=dict(doc["gate"], name="b0a-readout"))),
-                      ("lib-v80.json", {k: v for k, v in doc.items() if k != "compare"}),
-                      ("lib-v80.json", dict(doc, schema=RS.TEMPLATE_SCHEMA))):
+    lib = f"lib-{PROBE}.json"
+    for file, bad in ((f"{PROBE}.json", doc), ("lib-v81.json", doc), (lib, dict(doc, description="by hand")),
+                      (lib, dict(doc, gate=dict(doc["gate"], name="b0a-readout"))),
+                      (lib, {k: v for k, v in doc.items() if k != "compare"}),
+                      (lib, dict(doc, schema=RS.TEMPLATE_SCHEMA))):
         (other / file).write_text(json.dumps(bad), encoding="utf-8")
         assert not generated_by_add_alpha(other / file), file
     run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--basetemp",
@@ -473,7 +510,8 @@ def test_the_whole_file_passes_with_a_generated_spec_present(tmp_path):
                          capture_output=True, text=True, timeout=600)
     tail = run.stdout[-4000:] + run.stderr[-2000:]
     assert run.returncode == 0 and re.search(r"\n\d+ passed, 1 deselected in ", run.stdout), tail   # nothing failed
-    assert "generated spec checked: lib-v80.json" in run.stdout, tail                       # (it was in the run)
+    for name in sorted({lib, *GENERATED}):                                                 # (each was in the run)
+        assert f"generated spec checked: {name}" in run.stdout, tail
 
 
 def check_registered_change(specs: Path, name: str) -> None:
@@ -509,6 +547,7 @@ def check_registered_change(specs: Path, name: str) -> None:
     assert cn == nav_delta.get(name, pn)
     assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
     comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"),
+            "r1-comp-v8-gm.json": ("ew-theme-v1", "ew-theme-std-v1"),                     # PM6-6: R-1's change
             "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v2"),                       # E-27b
             "r10.json": ("ew-theme-std-v1", "ic-shrink-v1")}               # (the parent's --composition, the cell's;
     # r10 derives its rule from any parent composition, Ruling E-44: test_r10_derives_its_rule_from_the_parent...)
@@ -965,14 +1004,31 @@ F49 = "build-equity/train-2020-2023-lo1-fields-v9-f49"   # fields v9 + grp_ff12f
 SPECS = "scripts/specs/v8"
 
 
+PROBE = "v8probe"     # the library name of a wave made on stand-ins: no committed atx-impl file is named after it
+
+
 def files_of(root: Path) -> list[str]:
     return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+
+def v71_seed_registry() -> bytes:
+    """The committed registry's v7.1 seed: its first alphas, fields and themes, those of library v7.1 (Ruling PM6-10:
+    the seed is a prefix, root's registrations are appends; test_generate_library.py checks both). Each add-alpha wave
+    here starts from v7.1, whatever root has registered since (library v8.0's 15 alphas for R-2)."""
+    reg = json.loads((T.STRATEGIES / "alphas" / "registry.json").read_text(encoding="utf-8"))
+    lib = json.loads((T.STRATEGIES / "fund_industry_ic_v71.json").read_text(encoding="utf-8"))
+    names, themes = [f["name"] for f in lib["fields"]], [f["id"] for f in lib["families"]]
+    seed = dict(reg, alphas=reg["alphas"][:len(V71_IDS)], fields={n: reg["fields"][n] for n in names},
+                themes={t: reg["themes"][t] for t in themes})
+    assert [a["id"] for a in seed["alphas"]] == V71_IDS and list(reg["fields"])[:len(names)] == names
+    assert list(reg["themes"])[:len(themes)] == themes
+    return RA.G.encode_data(seed)
 
 
 def v8_root(tmp_path: Path) -> tuple[Path, Path]:
     """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
     fake --plan-only one), locked on stand-ins of its inputs (fake_root's unlocked copy, re-pinned to the stand-ins'
-    digests by `lock --write`), the committed registry and library v7.1."""
+    digests by `lock --write`), the committed registry's v7.1 seed (v71_seed_registry) and library v7.1."""
     doc = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
     doc.update(python=sys.executable, exes={"ic": "bin/ic.cmd", "nav": "bin/nav.exe"})
     doc["runner"]["script"] = "scripts/runner.py"
@@ -980,10 +1036,11 @@ def v8_root(tmp_path: Path) -> tuple[Path, Path]:
         doc[section]["script"] = f"scripts/{section}.py"
     root, doc = fake_root(tmp_path, doc)
     s = root / "atx-impl" / "strategies"
-    for rel in ("alphas/registry.json", "libraries/v71.json", "fund_industry_ic_v71.json",
-                "fund_industry_ic_v71.recipe.json"):
+    for rel in ("libraries/v71.json", "fund_industry_ic_v71.json", "fund_industry_ic_v71.recipe.json"):
         (s / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(T.STRATEGIES / rel, s / rel)
+    (s / "alphas").mkdir(parents=True)
+    (s / "alphas" / "registry.json").write_bytes(v71_seed_registry())
     tools = {"scripts/runner.py": T.FAKE_RUNNER, "scripts/fit.py": "", "scripts/card.py": "",
              "scripts/monitor.py": T.FAKE_MONITOR, "scripts/summ.py": T.FAKE_SUMM_JSON, "bin/fake_ic.py": T.FAKE_IC_PLAN,
              "bin/ic.cmd": f'@"{sys.executable}" "%~dp0fake_ic.py" %*\n', "bin/nav.exe": "nav"}
@@ -1017,11 +1074,11 @@ def parent_cell(root: Path, spec_path: Path) -> dict:
     return RA.parent_outputs(spec, root)
 
 
-def add(root: Path, parent_spec: Path, cid: str, dsl: str, *extra: str) -> int:
+def add(root: Path, parent_spec: Path, cid: str, dsl: str, *extra: str, name: str = "v80") -> int:
     like = T.v71_entry("sue")
     return RC.main(["add-alpha", "--id", cid, "--dsl", dsl, "--theme", like["theme"], "--tier", like["tier"],
                     "--prior-sign", "1", "--citation", f"test citation for {cid}", "--origin", "prior", "--parent", "v71",
-                    "--name", "v80", "--parent-spec", str(parent_spec), "--root", str(root), *extra])
+                    "--name", name, "--parent-spec", str(parent_spec), "--root", str(root), *extra])
 
 
 def child_ic_files(root: Path, spec: dict, admitted: list[str]) -> None:
