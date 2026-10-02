@@ -1665,3 +1665,9 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   one variant per hypothesis with every constant fixed blind in the report (precedent E-30) -- cost if wrong:
   uncompiled C++ and unscreened candidates accumulate until integration 8; bounded by the per-lane caps in the
   briefs.
+- Cells batch 2e (log section of that name), at matched gross (PM6-6):
+  Tests (PM7-4, `81c80c39`): `r3-aim-gain-gm.json` registered in `test_research_spec.py`; `scripts/tests` 192 passed,
+  3 skipped, 0 failed; `atx-impl/strategies` 163 passed.
+  R-5 (`r5-adv-hold.json`, `--adv-hold-q .1`, L 1.1474, gross .98393 against .98599): NOT accepted, N 45. S2 net
+  Sharpe 1.2019 (parent 1.2559); dSR -.0540, SE .0226, p one-sided .977 (two-sided .040); criterion failed (4x net
+  Sharpe 1.1268 against 1.1785; dSR below minus one SE; S3 .1692 against .2163). Parent stays R-2.

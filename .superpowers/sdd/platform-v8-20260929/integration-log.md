@@ -4328,4 +4328,54 @@ paired Memmel SE of the statistics of record (the pitch config labels it "within
 label is the report tool's, not the registration; the registered words are one-sided); (c) S3 =
 `modeled-1bn-terminal-adverse-v1+swap-fin-v1` net Sharpe (summary, 1x) not lower than R-2's (>=). Acceptance (rule 5):
 dSR > 0 AND mechanics AND (a) AND (b) AND (c). R-5 at 4x reads its cap at the initial NAV (E-15 / PM4-5, disclosed).
+(Commit `6ca6ebfe`, before the summ phase.)
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| monitor | - | - | - | - | - | done (R-2's; not re-run) |
+| summ | 180 / 1,536 | 19.6 | 588 | 0 | `766660bfafdd36b9806070cdd878f3a29ef260a55f250e2c44df97c5565b07f7` | `cycle-v8-r5-adv-hold/summ.json` `2c1f042a`, `pbo.json` `9bc752ad`, `cycle_verdict.json` `ebb0ff6c` |
+| one-sided p (PM5-23) | 180 / 1,536 | 1.6 | 552 | 0 | `f09865af84b6cf12fdf82981e4deea729e0fa766998bcc8b71278bc106db3df8` | `v8-cells-r5-bundle.json` `5dcca351` (no `--ledger`) |
+
+Files: `summary.json` `39594c15`, S2 daily `94d59265`, `capacity_curve.csv` `ec25a1af`, `recipe.json` `364dab25`.
+
+**Statistics of record** (S2): net Sharpe **R-5 +1.2019** vs R-2 +1.2559. Paired (1,005 sessions, 4,999 valid
+resamples): **dSR -.0540**; rho .9990; **Memmel SE .0226** (t -2.39); CBB 95% [-.1036, -.0053]; LW SE .0246, 95%
+[-.1047, -.0034]; **bootstrap p one-sided .9768, two-sided .0396** (the bundle reproduces the cycle's dSR, SE, CI and
+two-sided p exactly). DSR (N 45): ledger DSR .9822 (V[SR] from 8 cells on research-window-v2); legacy (37) .7416;
+effective-N .7107; PSR vs 0 .9902; PBO .2769.
+
+**Criterion (registered; reading fixed above):**
+- (a) S2 net Sharpe at 4x NAV (capacity curve): **1.1268 vs R-2 1.1785: not higher -> FAIL.**
+- (b) dSR -.0540 vs -SE -.0226: **lower by more than one paired SE -> FAIL** (t -2.39).
+- (c) S3 (`modeled-1bn-terminal-adverse-v1+swap-fin-v1`) net Sharpe **.1692 vs R-2 .2163: lower -> FAIL.**
+
+**Verdict (rule 5): dSR -.054 <= 0 AND criterion FAIL (a, b, c) -> NOT ACCEPTED.** Ledger line trial `b4e31e283cd5d53b`
+(cell = the R-5 NAV dir, s2_net_sr 1.20193, origin prior, window research-window-v2, prev `a8d43fc9` = R-4's head);
+**N after 45** (ledger 53 lines: 45 construction + 7 admission + 1 protocol; file `3807cc00`; head `e57a2802`). Matches
+the brief. Not retried. **Parent stays R-2.**
+
+Returns (S2, annual): net 4.34% (CAGR 4.37%) vs R-2 4.54%; gross of cost 5.59% (R-2 5.81%); trade cost .72% (.74%),
+borrow .33%, long financing .20%; vol 3.61%; max drawdown 3.27%; gross Sharpe 1.549 (R-2 1.610). Every scenario's net
+Sharpe is lower than R-2's (linear-6bps 1.311 / 1.371; flat-300 .983 / 1.031; engine-tiers 1.130 / 1.185).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0133 | -.380 | .0338 | .0262 | 14.32 |
+| 2021 | 252 | +.0956 | +2.533 | .0363 | .0226 | 11.31 |
+| 2022 | 251 | +.0781 | +1.809 | .0422 | .0234 | 11.88 |
+| 2023 | 250 | +.0175 | +.580 | .0309 | .0230 | 11.18 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.232 (1.289), 1x 1.202 (1.256), 2x 1.173 (1.223), **4x 1.127
+(1.178)**, 8x 1.079 (1.100); cost bps per traded dollar 10.43 / 12.17 / 14.44 / 16.79 / 18.67 (R-2 10.67 / 12.47 / 14.66
+/ 16.87 / 18.67); capped fill share .0009 / .0024 / .0118 / .0704 / .2008 (R-2 .0010 / .0034 / .0190 / .0802 / .2083).
+
+**Appendix A:** `TRAIN construction cells 45; admission trials this sprint 7 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none. Consequence: R-6 runs on R-2 (E-26: R-5 not accepted, so spo-v3's aim takes
+no `--adv-hold-q`; R-4 not accepted, no `--hold-band`).
+
+v9 note (from a result, not a spec): the cap lowers cost per traded dollar only 2.4% at 1x and .5% at 4x and capped
+fills 30% at 1x / 12% at 4x, while gross-of-cost Sharpe falls .06: the pro-rata redistribution moves 1.6% of desired
+gross from names held large against their ADV to the rest of their side, and that costs more signal than it saves in
+cost; at $1-4bn the cost model is not bound by holdings / ADV at Q .10.
 
