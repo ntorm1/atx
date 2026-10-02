@@ -1,0 +1,920 @@
+{
+  "schema": "atx.mega-report-config/v2",
+  "title": "Mega-alpha v8: strategy pitch (INTERIM, owner stop 2026-10-01)",
+  "kicker": "atx mega-alpha \u00b7 platform v8 \u00b7 INTERIM at the owner stop: B0a, B0b, B0c only \u00b7 in-sample TRAIN 2020-2023 \u00b7 for a quantitative PM",
+  "root": "C:/atx-wt/pool-2",
+  "train_window": {
+    "label": "TRAIN 2020-2023 (research-window-v2)"
+  },
+  "sessions_per_year": 252,
+  "cell_prefix": "mega-nav-",
+  "scenarios": [
+    {
+      "key": "S2",
+      "id": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "label": "S2 modeled $1bn",
+      "short": "S2",
+      "token": "s2"
+    },
+    {
+      "key": "S1",
+      "id": "linear-6bps-stale5-v1+swap-fin-v1",
+      "label": "S1 linear 6 bps",
+      "short": "S1",
+      "token": "s1"
+    },
+    {
+      "key": "tiers",
+      "id": "modeled-1bn-stale5-v1+engine-tiers-v1",
+      "label": "S2 x engine-tiers",
+      "short": "engine-tiers",
+      "token": "tiers"
+    },
+    {
+      "key": "flat300",
+      "id": "modeled-1bn-stale5-v1+flat-300-v0",
+      "label": "S2 x flat-300",
+      "short": "flat-300",
+      "token": "flat"
+    },
+    {
+      "key": "S3",
+      "id": "modeled-1bn-terminal-adverse-v1+swap-fin-v1",
+      "label": "S3 terminal-adverse",
+      "short": "S3",
+      "token": "s3"
+    }
+  ],
+  "primary_scenario": "S2",
+  "verdict_badges": {
+    "rules": []
+  },
+  "final": "v8-r7",
+  "groups": [
+    {
+      "key": "v8-final",
+      "label": "V8-F (pitched)",
+      "token": "g-final"
+    },
+    {
+      "key": "v8-baseline",
+      "label": "B0c baseline",
+      "token": "g-v5-reference"
+    }
+  ],
+  "cells": [
+    {
+      "dir": "build-equity/mega-nav-v8-r7",
+      "label": "V8-F (R-7 library v8.1)",
+      "group": "v8-final"
+    },
+    {
+      "dir": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "label": "B0c baseline",
+      "group": "v8-baseline"
+    }
+  ],
+  "writeoff_kind": "write-off",
+  "equity": {
+    "scenarios": [
+      "S2",
+      "S1",
+      "tiers",
+      "flat300",
+      "S3"
+    ],
+    "extra": [
+      {
+        "cell": "v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "B0c baseline",
+        "short": "B0c",
+        "scenario": "S2",
+        "color": "s1",
+        "dash": "6 4",
+        "width": 1.8
+      }
+    ]
+  },
+  "rolling": {
+    "window": 63,
+    "scenario": "S2",
+    "cells": [
+      {
+        "cell": "v8-r7",
+        "label": "V8-F",
+        "short": "V8-F",
+        "color": "s2",
+        "width": 2.2,
+        "emph": true
+      },
+      {
+        "cell": "v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "B0c baseline",
+        "short": "B0c",
+        "color": "s1",
+        "width": 1.4
+      }
+    ]
+  },
+  "turnover": {
+    "groups": [
+      "v8-final",
+      "v8-baseline"
+    ]
+  },
+  "analysis": {
+    "u_pass": "build-equity/mega-v8-r7-train-u",
+    "role": "build-equity/train-2020-2023-lo1",
+    "candidate_cache": "build-equity/mega-candidate-cache-v8-lo1",
+    "fields_manifest": "build-equity/train-2020-2023-lo1-fields-v9/manifest.json",
+    "ic_corr_horizon": 5,
+    "sig_corr_stride": 1,
+    "drawdowns": 5,
+    "compare_cell": "v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+  },
+  "alphas": {
+    "library": "atx-impl/strategies/fund_industry_ic_v81.json",
+    "recipe": "atx-impl/strategies/fund_industry_ic_v81.recipe.v2.json",
+    "roles": [
+      {
+        "key": "lo1",
+        "label": "lo1 (V8-F)",
+        "primary": true,
+        "admission": "build-equity/mega-weights-v8-r7-ew/admission.json",
+        "weights": "build-equity/mega-weights-v8-r7-ew/composition_weights.json"
+      }
+    ]
+  },
+  "capacity_curve": {
+    "label": "the B0c book (the v8 baseline)",
+    "dir": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "extras": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/v7_extras.json",
+    "summary": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+    "sr_threshold": 1.0,
+    "primary": {
+      "label": "S2",
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "token": "s2"
+    },
+    "beside": []
+  },
+  "v8": {
+    "summ": "build-equity/mega-nav-v8-summ-interim.json",
+    "bundle": "build-equity/mega-nav-v8-bundle-b0c-v8f.json",
+    "base": "B0c",
+    "final": "R-7",
+    "cells": [
+      {
+        "key": "B0a",
+        "label": "B0a v7.1 on lo1, 2020-2023",
+        "n": 38,
+        "dir": "build-equity/mega-nav-v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "criterion": {
+          "text": "none (re-base)"
+        },
+        "verdict": "re-base ledgered"
+      },
+      {
+        "key": "B0b",
+        "label": "B0b v7.1 on lo3, 2020-2023",
+        "n": 39,
+        "parent": "B0a",
+        "dir": "build-equity/mega-nav-v8-b0b-lo3-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "paired": "build-equity/v8-cells-b0b-bundle.json",
+        "criterion": {
+          "text": "none besides dSR > 0 and mechanics (ruling W0-b)",
+          "met": true
+        },
+        "verdict": "accepted"
+      },
+      {
+        "key": "B0c",
+        "label": "B0c baseline: winner + delisting returns + warm start 60",
+        "n": 40,
+        "dir": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "criterion": {
+          "text": "none (protocol correction; baseline by declaration, rulings W0-b and E-10)"
+        },
+        "verdict": "baseline by declaration"
+      },
+      {
+        "key": "R-1",
+        "label": "R-1 composition v8",
+        "n": 41,
+        "parent": "B0c",
+        "dir": "build-equity/mega-nav-v8-r1",
+        "paired": "build-equity/mega-nav-v8-paired-r1.json",
+        "criterion": {
+          "text": "turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent (Ruling PM5-11)",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "per": "mean_gross_leverage_all_rows",
+              "op": "le"
+            }
+          ]
+        },
+        "verdict": "R-1: constructed; mechanics fail (all-rows gross 1.0672, limit [.90, 1.05]); no return read; not ledgered; ruling open"
+      },
+      {
+        "key": "R-2",
+        "label": "R-2 library v8.0",
+        "n": 42,
+        "parent": "R-1",
+        "dir": "build-equity/mega-nav-v8-r2",
+        "paired": "build-equity/mega-nav-v8-paired-r2.json",
+        "criterion": {
+          "text": "turnover not higher",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "op": "le"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-3",
+        "label": "R-3 persistence gain",
+        "n": 43,
+        "parent": "R-2",
+        "dir": "build-equity/mega-nav-v8-r3",
+        "paired": "build-equity/mega-nav-v8-paired-r3.json",
+        "criterion": {
+          "text": "net at 2x not lower; turnover lower",
+          "checks": [
+            {
+              "text": "S2 net Sharpe at 2x NAV not lower than the parent's (capacity curve)",
+              "met": null
+            },
+            {
+              "metric": "tau_gmv_mean",
+              "op": "lt"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-4",
+        "label": "R-4 rank hysteresis",
+        "n": 44,
+        "parent": "R-3",
+        "dir": "build-equity/mega-nav-v8-r4",
+        "paired": "build-equity/mega-nav-v8-paired-r4.json",
+        "criterion": {
+          "text": "turnover at least 15% lower",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "op": "le",
+              "factor": 0.85
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-5",
+        "label": "R-5 ADV holding cap",
+        "n": 45,
+        "parent": "R-4",
+        "dir": "build-equity/mega-nav-v8-r5",
+        "paired": "build-equity/mega-nav-v8-paired-r5.json",
+        "criterion": {
+          "text": "net at 4x higher; net at 1x within one SE; S3 not lower",
+          "checks": [
+            {
+              "text": "S2 net Sharpe at 4x NAV higher than the parent's (capacity curve)",
+              "met": null
+            },
+            {
+              "text": "S2 net Sharpe at 1x within one Memmel SE of the parent's",
+              "met": null
+            },
+            {
+              "label": "S3 net Sharpe (terminal-adverse)",
+              "source": "summary",
+              "scenario": "S3",
+              "metric": "net_sharpe",
+              "op": "ge"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-6",
+        "label": "R-6 target tracking spo-v3",
+        "n": 46,
+        "parent": "R-5",
+        "dir": "build-equity/mega-nav-v8-r6",
+        "paired": "build-equity/mega-nav-v8-paired-r6.json",
+        "criterion": {
+          "text": "cost per traded dollar not higher; tripwire clear; limits met on every scored decision of the primary book (Ruling E-31: else the run is invalid; E-31a: the run voids itself); traded-book correlation with the aim >= .9 (Ruling E-14; E-14a: the traded book after decision d's trades against the aim at d)",
+          "checks": [
+            {
+              "metric": "cost_bps_traded",
+              "op": "le"
+            },
+            {
+              "label": "spo-v3 tripwire status",
+              "source": "summary",
+              "metric": "v7.spo_v3_tripwire.status",
+              "op": "eq",
+              "value": "clear"
+            },
+            {
+              "label": "E-31 limits_unmet, primary book, scored decisions",
+              "source": "summary",
+              "metric": "v7.spo_v3_books.{primary}.limits_unmet",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "label": "E-14 / E-14a traded-book aim correlation (after decision d's trades, aim at d), mean over scored decisions",
+              "source": "summary",
+              "metric": "v7.spo_v3_books.{primary}.aim_correlation_traded_after.mean",
+              "op": "ge",
+              "value": 0.9
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-7",
+        "label": "R-7 library v8.1",
+        "n": 47,
+        "parent": "R-6",
+        "dir": "build-equity/mega-nav-v8-r7",
+        "paired": "build-equity/mega-nav-v8-paired-r7.json",
+        "criterion": {
+          "text": "turnover not higher (Ruling E-36: the new members' marginal IC is report only, rule 8)",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "op": "le"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-8",
+        "label": "R-8 ex-ante risk target",
+        "n": 48,
+        "parent": "R-7",
+        "dir": "build-equity/mega-nav-v8-r8",
+        "paired": "build-equity/mega-nav-v8-paired-r8.json",
+        "criterion": {
+          "text": "realised volatility of the S2 net series inside [.8, 1.2] x sigma_star 5% in each TRAIN year (Ruling E-43: rule 5 governs; the plan's dSR not lower by one SE is its expectation, not the rule)",
+          "checks": [
+            {
+              "label": "realised volatility of the S2 net series, annualised (nav_summ year table)",
+              "source": "years",
+              "metric": "ann_vol",
+              "op": "between",
+              "lo": 0.04,
+              "hi": 0.06
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-9a",
+        "label": "R-9a capacity frontier, theta .03 at 4x NAV",
+        "n": 49,
+        "parent": "R-8",
+        "dir": "build-equity/mega-nav-v8-r9a",
+        "report_only": true,
+        "defined_if": {
+          "rejected": [
+            "R-6"
+          ],
+          "ruling": "E-38, E-37"
+        },
+        "criterion": {
+          "text": "none: a report-only frontier cell, no acceptance (plan R-9; Ruling PM4-8)"
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-9b",
+        "label": "R-9b capacity frontier, theta .04 at 4x NAV",
+        "n": 50,
+        "parent": "R-8",
+        "dir": "build-equity/mega-nav-v8-r9b",
+        "report_only": true,
+        "defined_if": {
+          "rejected": [
+            "R-6"
+          ],
+          "ruling": "E-38, E-37"
+        },
+        "criterion": {
+          "text": "none: a report-only frontier cell, no acceptance (plan R-9; Ruling PM4-8)"
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-9c",
+        "label": "R-9c capacity frontier, theta .05 at 4x NAV",
+        "n": 51,
+        "parent": "R-8",
+        "dir": "build-equity/mega-nav-v8-r9c",
+        "report_only": true,
+        "defined_if": {
+          "rejected": [
+            "R-6"
+          ],
+          "ruling": "E-38, E-37"
+        },
+        "criterion": {
+          "text": "none: a report-only frontier cell, no acceptance (plan R-9; Ruling PM4-8)"
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-10",
+        "label": "R-10 composition ic-shrink-v1",
+        "n": 49,
+        "parent": "R-8",
+        "dir": "build-equity/mega-nav-v8-r10",
+        "paired": "build-equity/mega-nav-v8-paired-r10.json",
+        "defined_if": {
+          "accepted": [
+            "R-6",
+            "R-1"
+          ],
+          "ruling": "E-38, E-45"
+        },
+        "criterion": {
+          "text": "turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent (R-1's criterion, Rulings E-44, PM5-11)",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "per": "mean_gross_leverage_all_rows",
+              "op": "le"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-11",
+        "label": "R-11 composition theme-resid-v1",
+        "n": 50,
+        "parent": "R-10",
+        "dir": "build-equity/mega-nav-v8-r11",
+        "paired": "build-equity/mega-nav-v8-paired-r11.json",
+        "defined_if": {
+          "accepted": [
+            "R-6",
+            "R-1"
+          ],
+          "ruling": "E-38, E-45"
+        },
+        "criterion": {
+          "text": "turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent (R-1's criterion, Rulings E-44, PM4-4, PM5-11)",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "per": "mean_gross_leverage_all_rows",
+              "op": "le"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      },
+      {
+        "key": "R-12",
+        "label": "R-12 library v8.2 (add-alpha)",
+        "n": 51,
+        "parent": "R-11",
+        "dir": "build-equity/mega-nav-v8-r12",
+        "paired": "build-equity/mega-nav-v8-paired-r12.json",
+        "defined_if": {
+          "accepted": [
+            "R-6"
+          ],
+          "ruling": "E-38"
+        },
+        "criterion": {
+          "text": "book turnover not higher (Ruling PM4-9: a library wave, as R-2 and R-7; marginal IC is the entry screen and gates nothing)",
+          "checks": [
+            {
+              "metric": "tau_gmv_mean",
+              "op": "le"
+            }
+          ]
+        },
+        "verdict": "pending run"
+      }
+    ],
+    "mechanics": [
+      {
+        "label": "Gross leverage, mean over all rows",
+        "metric": "mean_gross_leverage_all_rows",
+        "op": "between",
+        "lo": 0.9,
+        "hi": 1.05,
+        "fmt": ".4f",
+        "threshold_fmt": ".2f"
+      },
+      {
+        "label": "Net leverage, mean over all rows",
+        "metric": "mean_net_leverage_all_rows",
+        "op": "abs_le",
+        "value": 0.02,
+        "fmt": "+.4f",
+        "threshold_fmt": ".2f"
+      },
+      {
+        "label": "Daily turnover tau, mean",
+        "metric": "tau_gmv_mean",
+        "op": "le",
+        "value": 0.2,
+        "fmt": ".4f",
+        "threshold_fmt": ".2f"
+      },
+      {
+        "label": "Daily turnover tau, p95",
+        "metric": "tau_gmv_p95",
+        "op": "le",
+        "value": 0.3,
+        "fmt": ".4f",
+        "threshold_fmt": ".2f"
+      }
+    ],
+    "freeze_gate": {
+      "name": "Freeze gate (v8-prereg item 9: S2 net >= 1.0 AND mechanics AND cumulative paired dSR > 0 with bootstrap p < .10 AND cell-count DSR >= .95)",
+      "alpha": 0.1,
+      "unmet_note": "Freeze gate unmet: no frozen book. The lever is OD-3 (the history extension to 2013-2019, read once on the frozen book), not more cells on 2020-2023 (plan task V8-F step 3).",
+      "checks": [
+        {
+          "label": "S2 net Sharpe, TRAIN 2020-2023",
+          "metric": "net_sharpe",
+          "op": "ge",
+          "value": 1.0,
+          "fmt": "+.3f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Mechanics: gross leverage, mean over all rows",
+          "metric": "mean_gross_leverage_all_rows",
+          "op": "between",
+          "lo": 0.9,
+          "hi": 1.05,
+          "fmt": ".4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Mechanics: net leverage, mean over all rows",
+          "metric": "mean_net_leverage_all_rows",
+          "op": "abs_le",
+          "value": 0.02,
+          "fmt": "+.4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Mechanics: daily turnover tau, mean",
+          "metric": "tau_gmv_mean",
+          "op": "le",
+          "value": 0.2,
+          "fmt": ".4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Mechanics: daily turnover tau, p95",
+          "metric": "tau_gmv_p95",
+          "op": "le",
+          "value": 0.3,
+          "fmt": ".4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "builtin": "paired_dsr"
+        },
+        {
+          "builtin": "paired_p"
+        },
+        {
+          "label": "Deflated Sharpe, cell count (N = the ledger count, OD-4; never the effective-N figure)",
+          "metric": "deflated_ledger.dsr",
+          "op": "ge",
+          "value": 0.95,
+          "fmt": ".3f",
+          "threshold_fmt": ".2f"
+        }
+      ]
+    },
+    "diagnostics": "build-equity/mega-diagnostics-v8-b0c/diagnostics-v8.json",
+    "member_horizon": {
+      "card_index": "build-equity/mega-cards-v8-r7/index.json",
+      "admission": "build-equity/mega-weights-v8-r7-ew/admission.json"
+    },
+    "trial_ledger": "build-equity/trials.jsonl",
+    "re_screens": 0,
+    "budget": {
+      "n": 51,
+      "admission": 15
+    },
+    "prereg": ".superpowers/sdd/platform-v8-20260929/v8-prereg.md",
+    "literature": {
+      "path": ".superpowers/sdd/platform-v8-20260929/reports/Equity long short alpha v8.md",
+      "heading": "Where the new notes contradict or update v6 and v7"
+    },
+    "od1_notes": [
+      "2023 enters TRAIN partly selected: TRAIN statistics on 2023 flatter the incumbent by up to about .08 in a paired difference [est].",
+      "2024 stays hidden but is not pristine. Only 2025 and later has never been read.",
+      "Four years cut every Sharpe standard error by 13% against three years; a true +.08 step has t .80, so v8 tests bundles and one cumulative comparison.",
+      "The standing rule never to read a per-candidate validation statistic no longer covers 2023. It covers 2024 and later."
+    ]
+  },
+  "narrative": {
+    "summary": {
+      "paragraphs": [
+        "**Thesis.** A dollar- and price-risk-neutral US equity long/short book, costed at $1bn with square-root impact and tiered borrow (scenario S2). v8 re-based the protocol on the four-year TRAIN window 2020-2023, corrected the baseline for delisting returns and the flat start (B0c), and tested a pre-registered, ordered list of construction cells, each against the last accepted cell.",
+        "**Interim result on TRAIN (owner stop, 2026-10-01).** Three cells ran: B0a (the v7.1 book re-based on 2020-2023), B0b (role lo3, accepted against B0a) and B0c (B0b with delisting returns and a 60-session warm start), the v8 baseline by declaration. B0c earns S2 net Sharpe {a:v8_summ.rows.2.net_sharpe|+.3f} at all-rows gross leverage {a:v8_summ.rows.2.mean_gross_leverage_all_rows|.3f} and daily turnover {a:v8_summ.rows.2.tau_gmv_mean|.4f} of GMV (row {a:v8_summ.rows.2.dir|str}). No construction cell is accepted and no cumulative test exists, so no improvement over B0c is claimed; V8-F and the freeze gate are not evaluated."
+      ],
+      "check": [
+        "The freeze gate reads the cell-count DSR (N = the ledger count, OD-4), never the effective-N figure.",
+        "Single cells are sign-level evidence; only the cumulative test V8-F vs B0c has power (plan 12.2).",
+        "Every figure is TRAIN 2020-2023; no statistic dated 2024-01-01 or later exists in this report."
+      ]
+    },
+    "window": {
+      "paragraphs": [
+        "Every number in this pitch is TRAIN 2020-2023. The report refuses any input whose path or content is dated on or after the seal, and every file it read is listed with its SHA-256 in the appendix."
+      ]
+    },
+    "cells": {
+      "paragraphs": [
+        "The cells run in the pre-registered order (v8-prereg item 11). A cell is accepted when its paired S2 net dSR against its parent is above 0 AND mechanics pass AND the mechanical criterion named in its task holds (item 5); a rejected cell is not retried with other parameters. The year table shows whether a result rests on one year; 2023 is partly selected (OD-1)."
+      ]
+    },
+    "diagnostics": {
+      "paragraphs": [
+        "The diagnostics ran on B0c and cost no trial. They, and the member columns ic_theta, f_theta and marginal IC, gate nothing and select nothing (v8-prereg item 8): they explain the book, they do not choose it."
+      ]
+    },
+    "literature": {
+      "paragraphs": [
+        "The v8 literature review reversed or updated several v6 and v7 recommendations. The table lists each case with its source; the figures are from the literature, not measurements on the book."
+      ]
+    },
+    "book": {
+      "paragraphs": [
+        "The v7 pitch's book-level sections, run on the final cell (V8-F) over TRAIN 2020-2023: equity curve, drawdowns, returns, costs and turnover, capacity, exposures and signal correlation. Each section checks every file it reads first and names the one it lacks."
+      ]
+    }
+  },
+  "callouts": {
+    "interim": {
+      "title": "Interim status (owner stop, 2026-10-01; Ruling PM5-27)",
+      "kind": "caveat",
+      "items": [
+        "Run: B0a, B0b and B0c, each ledgered. B0c is the re-based v8 baseline (prereg rule 6).",
+        "No improvement over B0c is claimed: no construction cell is accepted and no cumulative test (V8-F against B0c) exists.",
+        "R-1: constructed; mechanics fail (all-rows gross 1.0672, limit [.90, 1.05]); no return read; not ledgered; ruling open.",
+        "The freeze gate (v8-prereg item 9) is not evaluated: V8-F does not exist.",
+        "The deflated Sharpe is not meaningful yet: its pre-registered cross-trial variance rests on three cells (B0a, B0b, B0c) until the registered re-runs of the v7 cells on the four-year window are done (Ruling PM5-22). It is printed only where the tool prints it.",
+        "Trial accounting: TRAIN construction cells N {a:v8_ledger.n|d}; admission trials this sprint {a:v8_ledger.k|d}; history reads 0; hidden 2024+ unread in this sprint; validation reads before v8: 2 (the Appendix A block, section 1).",
+        "Still to run: the ruling on R-1, R-2..R-8, then R-9 or R-10..R-12 (the branch of R-6), the re-runs of the ledgered v7 cells on the four-year role (PM5-22), V8-F.",
+        "Cells not run render as pending. A block whose input does not exist renders unavailable and names the file; the ladder states its refusals. The ladder counts N after R-1 and every later cell by the plan; the ledger holds the N of the Appendix A block."
+      ]
+    },
+    "capacity_b0c": {
+      "title": "Capacity curve of B0c (E-29: report only, gates nothing)",
+      "kind": "note",
+      "items": [
+        "Ruling PM4-5: the capacity books scale only the impact law (m^0.5) and the participation cap (1/m); the aim is the $1bn book's at every multiple, so the 2x and 4x rows are slightly optimistic on the aim cap.",
+        "B0c's NAV priced no S2-KO or S2-FIM book, so no other impact law stands beside the curve."
+      ]
+    },
+    "interim_book": {
+      "title": "V8-F does not exist at the owner stop",
+      "kind": "note",
+      "items": [
+        "Every block of this section reads the final cell's files and renders unavailable, naming the first file it lacks. B0c's capacity curve is in section 2."
+      ]
+    },
+    "planning": {
+      "title": "Planning value (for sizing and expectations; an estimate, not a forecast)",
+      "kind": "note",
+      "items": [
+        "Plan on a live net Sharpe .7 to 1.0 [est] against the TRAIN figure {a:v8_bundle.final_row.net_sharpe|+.3f} (S2, 2020-2023).",
+        "Why lower than TRAIN: selection over N = {a:v8_ledger.n|d} ledgered construction trials, a 2023 that was read twice before it entered TRAIN (OD-1), and costs and borrow the model does not see (diagnostic G-3a).",
+        "No out-of-sample statistic exists for v8; 2024 and later stays sealed."
+      ]
+    },
+    "caveats": {
+      "title": "Honest caveats",
+      "kind": "caveat",
+      "items": [
+        "**2023 is partly selected.** It was read twice at book level as validation before it entered TRAIN; TRAIN statistics on 2023 flatter the incumbent by up to about .08 in a paired difference [est].",
+        "**Power.** At four years a true +.08 step has t about .80; each single cell is sign-level evidence.",
+        "**Trials.** TRAIN construction cells N = {a:v8_ledger.n|d}; admission trials this sprint {a:v8_ledger.k|d} plus {a:v8_ledger.re_screens|d} re-screens (ruling R2-e).",
+        "**If the freeze gate is unmet** the lever is OD-3 (history 2013-2019 read once on the frozen book), not more cells on 2020-2023."
+      ]
+    }
+  },
+  "layout": [
+    {
+      "id": "summary",
+      "num": "0",
+      "title": "Executive summary",
+      "blocks": [
+        {
+          "type": "callout",
+          "key": "interim"
+        },
+        {
+          "type": "callout",
+          "key": "planning"
+        },
+        "v8_bundle",
+        {
+          "type": "callout",
+          "key": "caveats"
+        }
+      ]
+    },
+    {
+      "id": "window",
+      "num": "1",
+      "title": "Window, protocol and trial accounting",
+      "blocks": [
+        "v8_od1",
+        "v8_trial_accounting"
+      ]
+    },
+    {
+      "id": "cells",
+      "num": "2",
+      "title": "The v8 cells",
+      "blocks": [
+        "v8_ladder",
+        {
+          "type": "h3",
+          "text": "Year tables, TRAIN 2020-2023"
+        },
+        {
+          "type": "v8_year_table",
+          "cells": [
+            "B0a",
+            "B0b",
+            "B0c"
+          ]
+        },
+        {
+          "type": "h3",
+          "text": "Capacity curve of B0c, the v8 baseline (E-29, report only)"
+        },
+        {
+          "type": "callout",
+          "key": "capacity_b0c"
+        },
+        {
+          "type": "v8_book",
+          "block": "capacity_curve"
+        }
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "num": "3",
+      "title": "Diagnostics and traded-horizon columns (zero trials)",
+      "blocks": [
+        "v8_diagnostics",
+        {
+          "type": "h3",
+          "text": "Member columns of the final library (report only, gates nothing)"
+        },
+        "v8_member_horizon"
+      ]
+    },
+    {
+      "id": "literature",
+      "num": "4",
+      "title": "Contradictions with the v6 and v7 literature",
+      "blocks": [
+        "v8_contradictions"
+      ]
+    },
+    {
+      "id": "book",
+      "num": "5",
+      "title": "The final book (V8-F): pending at the owner stop",
+      "blocks": [
+        {
+          "type": "callout",
+          "key": "interim_book"
+        },
+        {
+          "type": "h3",
+          "text": "Equity curve and returns"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_equity"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_drawdowns"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_returns"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_rolling"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_retstats"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_stress"
+        },
+        {
+          "type": "h3",
+          "text": "Costs, turnover and capacity"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_cost_model"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_financing"
+        },
+        {
+          "type": "v8_book",
+          "block": "costdec"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_attrib"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_cost_drag"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_turnover"
+        },
+        {
+          "type": "h3",
+          "text": "Exposures and execution"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_exposure"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_fills"
+        },
+        {
+          "type": "h3",
+          "text": "Signal correlation of the final library"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_corr",
+          "kind": "signal"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_corr",
+          "kind": "ic"
+        },
+        {
+          "type": "v8_book",
+          "block": "fig_corr",
+          "kind": "theme",
+          "source": "sig_corr"
+        },
+        {
+          "type": "v8_book",
+          "block": "t_theme_corr"
+        }
+      ]
+    },
+    {
+      "id": "appendix",
+      "num": "6",
+      "title": "Appendix: input files",
+      "blocks": [
+        "t_files"
+      ]
+    }
+  ]
+}
