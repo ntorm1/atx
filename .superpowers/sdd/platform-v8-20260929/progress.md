@@ -1578,3 +1578,34 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   seed as a prefix (alphas, fields, themes) with later entries as appends; the lane also checks that
   `scripts/tests` accepts the hand-written `r1-comp-v8-gm.json` and `lib-v80.json` -- a registration is the
   designed use of the registry -- cost if wrong: none (tests only).
+- FIX-6 round 5 done in pool 10: `2680a244` (tests only; registry seed as a prefix; fixtures for templates whose
+  inputs are filled later and for `lib-v80` without `marginal.themes`); unmerged at the owner stop.
+- Cells batch 2d (log section of that name; head `1f0183f2`), all at matched gross (PM6-6):
+  R-2 (`lib-v80.json`, library v8.0, L 1.1474, gross .98599 against .98171): ACCEPTED, N 42. S2 net Sharpe
+  1.2559 (parent 1.2031); dSR +.0529, SE .0945, p one-sided .2398; criterion (turnover .02393 <= .02451) met.
+  Admission: 7 trials (3 admitted with the prior sign: ear_mom_12m, pct_accruals, fip_id; earn_surprise_comp and
+  op_rd admitted with runner sign 0; dtc_slow and si_low_io rejected as redundant); all 8 re-screens kept.
+  R-3 (`ew-theme-std-aim-v1`, L 1.1264 after one correction): NOT accepted, N 43. dSR -.0118, p one-sided .581;
+  criterion failed (2x net Sharpe 1.2172 against 1.2230).
+  R-4 (L 1.1474): NOT accepted, N 44. dSR -.0187, p one-sided .857; criterion failed (turnover .02363 against
+  the limit .02034).
+  R-5: not started; nothing on disk, nothing ledgered.
+- OWNER STOP (2026-10-02): stop the cells, render an updated interim report in which every artifact loads and
+  every graph renders, write a status file with a goal prompt for the next parent agent.
+  State at the stop: accepted book R-2 (spec `lib-v80.json`, NAV
+  `build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`): S2 net Sharpe 1.2559 (B0c
+  1.1328), net annual return 4.54% (B0c 4.42%), net Sharpe at 4x NAV 1.178 (B0c .978). N 44 of 51; admission
+  trials 7 of 15, re-screens 8 of 8; history reads 0. No cumulative test and no freeze gate yet (V8-F).
+- Ruling PM6-11 (interim render 3; replaces the dropped PM5-28 and PM6-2): the interim report's book is R-2 (the
+  last accepted cell). The ladder holds B0a, B0b, B0c, R-1 at matched gross, R-2, R-3, R-4 with their paired
+  files; cells not run (R-5..R-8, R-10..R-12 / R-9) and V8-F are named once as pending text and feed no block.
+  Diagnostics G-1..G-3 exist for B0c only: they are assembled from the eight split files by a copy-only script
+  and shown labelled "B0c". Report-only derivations on accepted cells whose returns are already read (capacity,
+  stress, cost tables the blocks need) may be run through the bounded runner and add nothing to N. The R-1 run
+  at L 1.247 stays unread. Acceptance of the render: 0 unavailable blocks, every figure embedded and non-empty,
+  the file self-contained (no local file is fetched when it is opened), checked in a headless browser. If a
+  figure cannot render without a change to the report tool (`atx-impl/tools/mega_report/`), the change is
+  allowed there only, with its tests, after checking that no lock pins that tool; the registered config and
+  template are not edited (the interim config is a copy). The 2026-10-01 interim files are removed (they were
+  incomplete) -- the owner asked for a report that loads and renders; R-2 is what the program has accepted --
+  cost if wrong: an interim headline on a book that the cumulative test has not yet judged; the report says so.
