@@ -5,8 +5,6 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <set>
 #include <span>
 #include <string>
@@ -75,74 +73,100 @@ co::Result<std::vector<MinePoolColumn>> load_rows(const MinePoolManifest &manife
   return co::Ok(std::move(out));
 }
 
-// One pinned payload read front to back and kept nowhere (lane MINE-MEM; shared with the member
-// stream by lane MINE-JOIN): open checks the extent; each read is hashed and scanned for an
-// infinite value; close checks the extent again and the SHA-256, in the order and words of
-// ic_detail::load_pinned_f64, then load_rows' infinity check.
-struct PinnedPayload {
-  std::string label; // "IC runner: mine pool payload NAME", the words of load_rows' refusals
-  std::string file;  // the payload's file name
-  std::string name;  // the pool row's name
-  std::string sha256;
-  std::ifstream in;
+// The words of every member payload refusal (load_pinned_f64's and load_rows').
+std::string member_label(const MinePoolFile &pin) {
+  return "IC runner: mine pool payload " + pin.name;
+}
+
+// A member opened for reading with writers denied (PinnedReadFile); a file that cannot be opened
+// so is refused in the words load_pinned_f64 uses for a file it cannot open.
+co::Result<MinePoolMember> open_member(const std::filesystem::path &dir, const MinePoolFile &pin) {
+  MinePoolMember member{pin, {}};
+  auto payload = PinnedReadFile::open(dir / pin.file);
+  if (!payload)
+    return co::Err(co::ErrorCode::InvalidArgument, member_label(pin) + " extent: " + pin.file +
+                                                       " (" + payload.error().message() + ")");
+  member.payload = std::move(*payload);
+  return co::Ok(std::move(member));
+}
+
+// The held payload's extent is dates x instruments f64.
+co::Status check_extent(const MinePoolMember &member, usize cells) {
+  const auto size = member.payload.size();
+  if (!size.has_value() || *size != static_cast<u64>(cells) * sizeof(f64))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   member_label(member.pin) + " extent: " + member.pin.file);
+  return co::Ok();
+}
+
+// One verification pass over a held payload, front to back, kept nowhere (lanes MINE-MEM,
+// MINE-JOIN): the extent; each read hashed and scanned for an infinite value; then the extent
+// again, the SHA-256 and the infinity check, in the order and words of ic_detail::load_pinned_f64
+// and load_rows.
+struct PayloadPass {
+  const MinePoolMember *member{};
+  u64 bytes{};
+  u64 offset{};
   co::Sha256 digest;
   bool infinite{};
 };
 
-co::Status open_payload(PinnedPayload &payload, const std::filesystem::path &dir,
-                        const MinePoolFile &row, usize cells) {
-  const auto path = dir / row.file;
-  payload.label = "IC runner: mine pool payload " + row.name;
-  payload.file = path.filename().string();
-  payload.name = row.name;
-  payload.sha256 = row.sha256;
-  const u64 bytes = static_cast<u64>(cells) * sizeof(f64);
-  payload.in.open(path, std::ios::binary | std::ios::ate);
-  if (!payload.in || payload.in.tellg() < 0 || static_cast<u64>(payload.in.tellg()) != bytes)
-    return co::Err(co::ErrorCode::InvalidArgument, payload.label + " extent: " + payload.file);
-  payload.in.seekg(0);
-  return co::Ok();
+co::Status begin_pass(PayloadPass &pass, const MinePoolMember &member, usize cells) {
+  pass.member = &member;
+  pass.bytes = static_cast<u64>(cells) * sizeof(f64);
+  return check_extent(member, cells);
 }
 
 // Reads the payload's next values.size() values into `values`, as stored.
-co::Status read_payload(PinnedPayload &payload, std::span<f64> values) {
+co::Status read_pass(PayloadPass &pass, std::span<f64> values) {
   const std::span<std::byte> bytes = std::as_writable_bytes(values);
-  // SAFETY: char accesses the object representation of trivially copyable f64 storage.
-  payload.in.read(reinterpret_cast<char *>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-  if (!payload.in)
-    return co::Err(co::ErrorCode::IoError, payload.label + " truncated: " + payload.file);
-  ATX_TRY_VOID(payload.digest.update(bytes));
-  payload.infinite = payload.infinite || std::any_of(values.begin(), values.end(),
-                                                     [](f64 v) { return std::isinf(v); });
+  if (!pass.member->payload.read_at(pass.offset, bytes))
+    return co::Err(co::ErrorCode::IoError,
+                   member_label(pass.member->pin) + " truncated: " + pass.member->pin.file);
+  pass.offset += static_cast<u64>(bytes.size());
+  ATX_TRY_VOID(pass.digest.update(bytes));
+  pass.infinite = pass.infinite || std::any_of(values.begin(), values.end(),
+                                               [](f64 v) { return std::isinf(v); });
   return co::Ok();
 }
 
 // After the last read: the payload ended where its extent said, hashes to its pin, and holds no
 // infinite value.
-co::Status close_payload(PinnedPayload &payload) {
-  if (payload.in.peek() != std::char_traits<char>::eof())
-    return co::Err(co::ErrorCode::IoError, payload.label + " changed extent: " + payload.file);
-  ATX_TRY(const auto actual, payload.digest.finalize());
-  if (icd::hex(actual) != payload.sha256)
+co::Status end_pass(PayloadPass &pass) {
+  const MinePoolMember &member = *pass.member;
+  const auto size = member.payload.size();
+  if (pass.offset != pass.bytes || !size.has_value() || *size != pass.bytes)
+    return co::Err(co::ErrorCode::IoError,
+                   member_label(member.pin) + " changed extent: " + member.pin.file);
+  ATX_TRY(const auto actual, pass.digest.finalize());
+  if (icd::hex(actual) != member.pin.sha256)
     return co::Err(co::ErrorCode::InvalidArgument,
-                   payload.label + " SHA256 mismatch: " + payload.file);
-  if (payload.infinite)
-    return co::Err(fail(co::ErrorCode::InvalidArgument, "infinite value in " + payload.name));
+                   member_label(member.pin) + " SHA256 mismatch: " + member.pin.file);
+  if (pass.infinite)
+    return co::Err(fail(co::ErrorCode::InvalidArgument, "infinite value in " + member.pin.name));
   return co::Ok();
 }
 
-// One payload through one io_chunk buffer, kept nowhere.
-co::Status check_row(const std::filesystem::path &dir, const MinePoolFile &row, usize cells) {
-  PinnedPayload payload;
-  ATX_TRY_VOID(open_payload(payload, dir, row, cells));
+// One held payload verified through one io_chunk buffer, kept nowhere.
+co::Status verify_member(const MinePoolMember &member, usize cells) {
+  PayloadPass pass;
+  ATX_TRY_VOID(begin_pass(pass, member, cells));
   std::vector<f64> buffer(icd::io_chunk / sizeof(f64));
   for (usize offset = 0; offset < cells;) {
     const usize count = std::min(buffer.size(), cells - offset);
-    ATX_TRY_VOID(read_payload(payload, std::span<f64>(buffer).first(count)));
+    ATX_TRY_VOID(read_pass(pass, std::span<f64>(buffer).first(count)));
     offset += count;
   }
-  return close_payload(payload);
+  return end_pass(pass);
+}
+
+// Row `date` of a held payload (row.size() values), read in place.
+co::Status read_row(const MinePoolMember &member, usize date, std::span<f64> row) {
+  const u64 offset = static_cast<u64>(date) * row.size() * sizeof(f64);
+  if (!member.payload.read_at(offset, std::as_writable_bytes(row)))
+    return co::Err(co::ErrorCode::IoError,
+                   member_label(member.pin) + " truncated: " + member.pin.file);
+  return co::Ok();
 }
 
 co::Status check_binding(const MinePoolManifest &manifest, const ResearchRole &role) {
@@ -194,16 +218,25 @@ co::Result<MinePool> bind_mine_pool(const MinePoolManifest &manifest, const Rese
   out.sha256 = manifest.sha256;
   out.dates = manifest.dates; // == the role's axes (check_binding)
   out.instruments = manifest.instruments;
-  ATX_TRY(out.regressors, load_rows(manifest, manifest.regressors, role.data().panel.cells()));
-  out.members = manifest.members;
-  ATX_TRY_VOID(check_mine_pool_members(out));
+  const usize cells = role.data().panel.cells();
+  ATX_TRY(out.regressors, load_rows(manifest, manifest.regressors, cells));
+  // Lane MINE-JOIN: each member is opened with writers denied and verified once, through the
+  // handle the pool then holds to the end of the campaign.
+  const auto dir = std::filesystem::path(manifest.path).parent_path();
+  out.members.reserve(manifest.members.size());
+  for (const MinePoolFile &pin : manifest.members) {
+    ATX_TRY(auto member, open_member(dir, pin));
+    ATX_TRY_VOID(verify_member(member, cells));
+    out.members.push_back(std::move(member));
+  }
+  out.writers_denied = kPinnedReadDeniesWriters;
   return co::Ok(std::move(out));
 }
 
 co::Status check_mine_pool_members(const MinePool &pool) {
-  const auto dir = std::filesystem::path(pool.path).parent_path();
   const usize cells = pool.dates * pool.instruments;
-  for (const MinePoolFile &row : pool.members) ATX_TRY_VOID(check_row(dir, row, cells));
+  for (const MinePoolMember &member : pool.members)
+    ATX_TRY_VOID(pool.writers_denied ? check_extent(member, cells) : verify_member(member, cells));
   return co::Ok();
 }
 
@@ -213,23 +246,32 @@ co::Status stream_mine_pool_members(const MinePool &pool, usize begin, usize end
     return co::Err(fail(co::ErrorCode::InvalidArgument,
                         "member rows [" + std::to_string(begin) + ", " + std::to_string(end) +
                             ") outside the pool's " + std::to_string(pool.dates) + " dates"));
-  const auto dir = std::filesystem::path(pool.path).parent_path();
   const usize names = pool.instruments;
+  const usize cells = pool.dates * names;
   const usize members = pool.members.size();
-  // Every payload is read whole, in lockstep, so each is hashed and checked as check_row checks
-  // it; only one date of each is held.
-  std::vector<PinnedPayload> payloads(members);
-  for (usize k = 0; k < members; ++k)
-    ATX_TRY_VOID(open_payload(payloads[k], dir, pool.members[k], pool.dates * names));
   std::vector<std::vector<f64>> rows(members, std::vector<f64>(names));
   std::vector<std::span<const f64>> views;
   views.reserve(members);
   for (const std::vector<f64> &row : rows) views.emplace_back(row);
+  if (pool.writers_denied) {
+    // Verified at the bind through handles that still deny writers: the rows of [begin, end)
+    // only, read in place, no hash.
+    for (const MinePoolMember &member : pool.members) ATX_TRY_VOID(check_extent(member, cells));
+    for (usize date = begin; date < end; ++date) {
+      for (usize k = 0; k < members; ++k)
+        ATX_TRY_VOID(read_row(pool.members[k], date, rows[k]));
+      ATX_TRY_VOID(on_rows(date, views));
+    }
+    return co::Ok();
+  }
+  // No share mode keeps writers out: every payload read whole, in lockstep, and verified again.
+  std::vector<PayloadPass> passes(members);
+  for (usize k = 0; k < members; ++k) ATX_TRY_VOID(begin_pass(passes[k], pool.members[k], cells));
   for (usize date = 0; date < pool.dates; ++date) {
-    for (usize k = 0; k < members; ++k) ATX_TRY_VOID(read_payload(payloads[k], rows[k]));
+    for (usize k = 0; k < members; ++k) ATX_TRY_VOID(read_pass(passes[k], rows[k]));
     if (date >= begin && date < end) ATX_TRY_VOID(on_rows(date, views));
   }
-  for (PinnedPayload &payload : payloads) ATX_TRY_VOID(close_payload(payload));
+  for (PayloadPass &pass : passes) ATX_TRY_VOID(end_pass(pass));
   return co::Ok();
 }
 

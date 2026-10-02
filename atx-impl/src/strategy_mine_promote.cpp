@@ -204,7 +204,7 @@ Json promotions_json(const std::vector<MinedTrial> &trials,
                      f64 overlap_factor) {
   // The rho rows by name: the pool members, then the shortlist.
   std::vector<std::string> rows;
-  for (const auto &member : pool.members) rows.push_back("pool:" + member.name);
+  for (const MinePoolMember &member : pool.members) rows.push_back("pool:" + member.pin.name);
   for (const Promotion &p : promotions) rows.push_back(trials[p.trial].dsl);
   Json out = Json::array();
   for (const Promotion &p : promotions) {

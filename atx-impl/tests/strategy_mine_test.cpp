@@ -962,16 +962,20 @@ TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
 }
 
 // Lane MINE-JOIN: the rho check's members, streamed. Every date of [begin, end) comes once and in
-// order, each member's row bit for bit as stored (the fixture's m2, then p1), so the rho step ranks
-// the bytes the whole-panel load gave it. The caller's Err ends the stream and is returned as is; a
-// range past the pool's dates is refused; and a payload changed after the bind (same extent, one
-// value) is refused when the stream ends, in load_pinned_f64's words, as the pre-write check
-// refuses it.
+// order, each member's row bit for bit as stored (the fixture's m2, then p1), whether the pool
+// reads its held payloads in place (writers denied: the bind verified them) or verifies them whole
+// again on every pass; so the rho step ranks the bytes the whole-panel load gave it. The caller's
+// Err ends the stream and is returned as is; a range past the pool's dates is refused. While the
+// pool holds the payloads (Windows) no write, delete or rename gets through, and the stream and the
+// pre-write check still read the verified bytes; once the pool is gone the payload can change, and
+// the next bind refuses it in load_pinned_f64's words. Without a share mode (POSIX) the change is
+// refused when the stream ends and by the pre-write check.
 TEST(StrategyMineCampaign, MembersStreamByDateAsStored) {
   Fixture f;
   ASSERT_TRUE(f.ok);
   const World world;
   const fs::path pool_dir = f.dir.path / "pool";
+  const fs::path p1_file = pool_dir / "p1.f64";
   ASSERT_TRUE(payload(pool_dir, f.pool_files, "p1.f64", world.p1));
   std::string sha;
   ASSERT_TRUE(f.write_pool_manifest("stream.json", {"book"}, {"m2", "p1"}, sha));
@@ -980,11 +984,12 @@ TEST(StrategyMineCampaign, MembersStreamByDateAsStored) {
   ASSERT_TRUE(role.has_value()) << role.error().to_string();
   const auto manifest = st::read_mine_pool_manifest((pool_dir / "stream.json").string(), sha);
   ASSERT_TRUE(manifest.has_value()) << manifest.error().to_string();
-  const auto pool = st::bind_mine_pool(*manifest, **role);
+  auto pool = st::bind_mine_pool(*manifest, **role);
   ASSERT_TRUE(pool.has_value()) << pool.error().to_string();
   ASSERT_EQ(pool->members.size(), 2U);
   EXPECT_EQ(pool->dates, D);
   EXPECT_EQ(pool->instruments, N);
+  EXPECT_EQ(pool->writers_denied, st::kPinnedReadDeniesWriters);
   const std::array<const std::vector<f64> *, 2> stored{&world.m2, &world.p1};
   std::vector<usize> seen;
   usize differ = 0;
@@ -1000,11 +1005,18 @@ TEST(StrategyMineCampaign, MembersStreamByDateAsStored) {
     }
     return core::Ok();
   };
-  const auto status = st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, compare);
-  ASSERT_TRUE(status) << status.error().to_string();
-  EXPECT_EQ(differ, 0U);
-  ASSERT_EQ(seen.size(), kConfirmRow - score_begin);
-  for (usize k = 0; k < seen.size(); ++k) EXPECT_EQ(seen[k], score_begin + k) << k;
+  for (const bool denied : {true, false}) { // in place (held), then verified whole again
+    pool->writers_denied = denied && st::kPinnedReadDeniesWriters;
+    seen.clear();
+    differ = 0;
+    const auto status = st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, compare);
+    ASSERT_TRUE(status) << denied << ": " << status.error().to_string();
+    EXPECT_EQ(differ, 0U) << denied;
+    ASSERT_EQ(seen.size(), kConfirmRow - score_begin) << denied;
+    for (usize k = 0; k < seen.size(); ++k) EXPECT_EQ(seen[k], score_begin + k) << k;
+    EXPECT_TRUE(st::check_mine_pool_members(*pool)) << denied;
+  }
+  pool->writers_denied = st::kPinnedReadDeniesWriters;
   const auto ignore = [](usize, std::span<const std::span<const f64>>) -> core::Status {
     return core::Ok();
   };
@@ -1024,18 +1036,45 @@ TEST(StrategyMineCampaign, MembersStreamByDateAsStored) {
   EXPECT_TRUE(st::check_mine_pool_members(*pool));
   std::vector<f64> changed = world.p1;
   changed[score_begin * N] += 1.0;
-  {
-    std::ofstream out(pool_dir / "p1.f64", std::ios::binary | std::ios::trunc);
+  const auto write_changed = [&p1_file, &changed]() {
+    std::ofstream out(p1_file, std::ios::binary | std::ios::trunc);
     const auto bytes = std::as_bytes(std::span<const f64>(changed));
     out.write(reinterpret_cast<const char *>(bytes.data()),
               static_cast<std::streamsize>(bytes.size()));
-  }
-  for (const auto &refused : {st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, ignore),
-                              st::check_mine_pool_members(*pool)}) {
-    ASSERT_FALSE(refused);
-    EXPECT_NE(refused.error().message().find("mine pool payload p1 SHA256 mismatch: p1.f64"),
-              std::string::npos)
-        << refused.error().to_string();
+    out.close();
+    return static_cast<bool>(out);
+  };
+  const std::string mismatch = "mine pool payload p1 SHA256 mismatch: p1.f64";
+  if constexpr (st::kPinnedReadDeniesWriters) {
+    // Held: no writer, delete or rename gets the payload; the reads still see the verified bytes.
+    EXPECT_FALSE(write_changed());
+    std::error_code ec;
+    EXPECT_FALSE(fs::remove(p1_file, ec));
+    EXPECT_TRUE(ec);
+    fs::rename(p1_file, pool_dir / "p1-moved.f64", ec);
+    EXPECT_TRUE(ec);
+    EXPECT_TRUE(fs::exists(p1_file));
+    seen.clear();
+    differ = 0;
+    EXPECT_TRUE(st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, compare));
+    EXPECT_EQ(differ, 0U);
+    EXPECT_TRUE(st::check_mine_pool_members(*pool));
+    // Released: the payload can change, and the next bind refuses it.
+    { const st::MinePool released = std::move(*pool); }
+    ASSERT_TRUE(write_changed());
+    const auto rebound = st::bind_mine_pool(*manifest, **role);
+    ASSERT_FALSE(rebound);
+    EXPECT_NE(rebound.error().message().find(mismatch), std::string::npos)
+        << rebound.error().to_string();
+  } else {
+    ASSERT_TRUE(write_changed());
+    for (const auto &refused :
+         {st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, ignore),
+          st::check_mine_pool_members(*pool)}) {
+      ASSERT_FALSE(refused);
+      EXPECT_NE(refused.error().message().find(mismatch), std::string::npos)
+          << refused.error().to_string();
+    }
   }
 }
 

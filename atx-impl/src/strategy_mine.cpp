@@ -528,8 +528,9 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     // kMinedMinConfirmRows label rows.
     ATX_TRY_VOID(bind_rows(windows.discover, role->data(), "discover", kMinedMinDiscoverRows));
     ATX_TRY_VOID(bind_rows(windows.confirm, role->data(), "confirm", kMinedMinConfirmRows));
-    // Lane MINE-MEM: the regressors now; the members checked now, never loaded whole (the rho
-    // check streams them date by date; lane MINE-JOIN).
+    // Lane MINE-MEM: the regressors now; the members verified now, never loaded whole (the rho
+    // check streams them date by date; lane MINE-JOIN). `pool` holds each member payload open,
+    // writers denied, until this function returns.
     ATX_TRY(auto pool, bind_mine_pool(pool_manifest, *role));
     const usize label_rows = windows.discover.end - windows.discover.begin - kLabelLag;
     const usize confirm_rows = windows.confirm.end - windows.confirm.begin - kLabelLag;
@@ -572,9 +573,10 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
                           "library, pool, discover and confirm windows): a second confirm read on "
                           "the same identity is refused"));
     // Lanes MINE-MEM and MINE-JOIN: the members, which only the promotion's rho check reads
-    // (streamed date by date and verified again there), are checked again now -- the search and
-    // its fitness are gone -- and before anything is written, so a member that changed during the
-    // search is refused with the registry and OUTPUT untouched.
+    // (streamed date by date), are checked again now -- the search and its fitness are gone --
+    // and before anything is written. With writers denied since the bind no member can have
+    // changed (the check confirms each extent); otherwise each is verified again in full, so a
+    // member that changed during the search is refused with the registry and OUTPUT untouched.
     ATX_TRY_VOID(check_mine_pool_members(pool));
 
     // Registry: every distinct expression once; the chain head leaves the log at once.

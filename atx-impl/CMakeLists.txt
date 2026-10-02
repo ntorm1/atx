@@ -23,6 +23,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_research_role.cpp
     src/strategy_mine.cpp
     src/strategy_mine_ledger.cpp
+    src/strategy_mine_pinned_file.cpp
     src/strategy_mine_pool.cpp
     src/strategy_mine_promote.cpp
     src/strategy_mine_rule.cpp
