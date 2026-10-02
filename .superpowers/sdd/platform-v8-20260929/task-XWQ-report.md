@@ -12,7 +12,7 @@ This file is the registration of cell X-7.
 | Table of the 101 formulas, readings, the selection rule coded (`xwq_check.py`) | DONE | `5b8e7b55` |
 | Picks verified against the printed formulas; frozen add-alpha lines | DONE | `46225af7` |
 | Registration (this report: table, rule, picks, rows, v9 list, rulings) | DONE | `63e39f9c` |
-| Tier 2 (PM7-36): rule clause, 8 more picks verified, frozen lines; rulings PM7-36 recorded | DONE | this commit |
+| Tier 2 (PM7-36): rule clause, 8 more picks verified, frozen lines; rulings PM7-36 recorded | DONE | `0fcb9f2c` |
 
 Test lines:
 - `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tools/test_research_fields_ohlc.py`
