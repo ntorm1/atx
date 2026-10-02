@@ -86,3 +86,131 @@ Open question for the owner (no data opened): TH3's `wkD1`, `shD1`, `qtrD1`, `ln
 LICENSED_ADAPTERS.md and "forward-horizon moves" in the v8 builder's exclusion list. If the SpiderRock dictionary
 says they are skew or term slopes observed at the session, an in-house skew proxy exists; until then they stay
 excluded.
+
+## 3. Eight field families, ranked by prior of alpha orthogonal to the 10 v8.0 themes
+
+The 10 themes (52 members, `fund_industry_ic_v80.json`): value, profitability_quality, investment_issuance,
+earnings_momentum, price_momentum, low_risk, short_interest, reversal_seasonality, options_implied, ownership_flow.
+Excluded from consideration: everything allocated to R-7 (v8.1) and R-12 (v8.2), the v9 draft's built fields, and
+signals on fields already in the store (XSIG's ground). The rank weighs the published effect after the house haircut
+class, orthogonality (a data source or a horizon no member reads) and how clean the stamping is. Effect sizes are as
+recalled from the papers, not re-derived here; root verifies the citations before any registration.
+
+| rank | family | source | in house? | candidate signal it serves | builder |
+|---|---|---|---|---|---|
+| 1 | filing-text change | atx-db `text/` (EDGAR 10-K / 10-Q sections) | NO: landing 7% | `lazy_prices` (Cohen-Malloy-Nguyen 2020), long similar filings | design (data ask) |
+| 2 | fund flows and fund holdings | atx-db `nport/` | NO: 16 / 27 quarters, no build | `fit_q` flow-induced trading (Lou 2012); `conn_rev` (Anton-Polk 2014) | design (data ask) |
+| 3 | dividend calendar | TH3 vendor factor (ex-date ledger) | YES | `div_season` (Hartzmark-Solomon 2013) | BUILT `div_month_pred` |
+| 4 | aggregate-volatility risk | TH3 SPY ATM IV and SPY return | YES | `vol_beta` (Ang-Hodrick-Xing-Zhang 2006), long low beta | BUILT `beta_dvol_21` |
+| 5 | long-history return seasonality | TH3 closes from 2012 | YES | `season_y2_5` (Heston-Sadka 2008; KLN 2016) | BUILT `season_y2_5` |
+| 6 | tax and pension notes items | fundamentals v10 catalogue / `fundamentals_notes/` | NO: not published | `tax_book` (Lev-Nissim 2004); `pension_fund` (Franzoni-Marin 2006) | design (data ask) |
+| 7 | 13F manager network | atx-db `thirteenf/` holdings | PARTLY: holdings yes; manager types no | 13F `conn_rev`; short-term institutional ownership (Yan-Zhang 2009) | design (data ask for the canonical form) |
+| 8 | text-based industry peers | `classification_tnic/` or the Hoberg-Phillips library | NO (or external) | `tnic_mom` (Hoberg-Phillips 2018) | design |
+
+Common builder contract (every row below): a new opt-in field module (`research_fields_*.py`) registered through a
+draft entry, never through the plain builder; `point_in_time` true; the seal read from `research_window` on the reader
+side (rows with `available_at` / `accepted_utc` / trading date on or after `SEAL_NS` dropped and counted; a year or
+quarter partition that begins on or after the seal never opened, `rw.partition_is_sealed`); reuse fingerprint =
+`PRODUCERS` group AST closure with the builder closure read through `h`, plus each input stage's manifest SHA-256 in
+`reuse_inputs` / `entry_inputs`, plus `imported_code` for any code imported from another field module (review B-1).
+
+### Rank 1. Filing-text change (Lazy Prices)
+
+- **Signal and prior.** Cohen, Malloy and Nguyen (2020, JF) "Lazy Prices": firms whose 10-K / 10-Q language changes
+  from the prior year's ("changers") subsequently underperform non-changers, with no announcement reaction; the
+  abstract reports up to 188 bp a month of alpha for the long-short (as recalled). Sign: long high similarity.
+- **Orthogonality.** No theme reads filing text. Nearest roster members: the earnings_momentum surprise composite
+  (`earn_surprise_comp`), which reacts to reported numbers; the text change anticipates later news instead. Slow
+  (annual / quarterly), so low turnover and good capacity.
+- **Builder design.** `text_sim_10k` = the latest original 10-K's section cosine similarity to its prior-year 10-K
+  (`text/features.parquet`, `*_sim_cosine`, mean of Items 1A and 7 present). Stamping: the newer filing's EDGAR
+  acceptance (`available_at < 22:00 UTC of t-1`), stale 400 days (the stage's consumer rule). Seal: rows with
+  `available_at >= SEAL_NS` dropped. Reuse: stage manifest SHA-256 and the SEC identity bridge SHA (as the SEC
+  module). Data ask: the TXT landing, `text_features`, and a consumer export.
+
+### Rank 2. Fund flows and fund holdings (N-PORT)
+
+- **Signal and prior.** Lou (2012, RFS) "A flow-based explanation for return predictability": flow-induced trading
+  (FIT) predicts returns positively over the following quarter and reverses over the next years. Coval and Stafford
+  (2007, JFE): stocks sold by funds in large outflows underperform, then revert. Anton and Polk (2014, JF) "Connected
+  stocks": common active-fund ownership forecasts excess comovement; a cross-stock-reversal strategy earns about 9% a
+  year of four-factor alpha (as recalled). Signs per horizon to be registered: FIT +1 at one quarter (Lou).
+- **Orthogonality.** Price pressure from flows is not firm information. Nearest theme: ownership_flow (`ins_opp`
+  insider trades; `inst_best_ideas` 13F conviction weights); neither reads fund flows or fund-level holdings.
+- **Builder design.** `fit_q` = `fund_ownership.flow_induced_shares` / shares of the latest visible (security,
+  quarter) row. Stamping: the row's `available_at` = the latest included N-PORT acceptance (filed by report date + 60
+  days), usable from the session after the first 22:00 UTC mark that follows it; stale 180 days after the quarter end
+  (stage rule). Seal: rows on or after `SEAL_NS` dropped; `quarter=YYYYqN` parts that begin on or after the seal never
+  opened. Reuse: the `nport` manifest SHA and the 13F CUSIP map SHA. Coverage: filings from 2019q4, so FIT (it needs
+  the prior net assets) from 2020q1: all of TRAIN. Data ask: the remaining 11 quarters, the build, a manifest.
+
+### Rank 3. Dividend calendar (BUILT, section 4)
+
+- **Signal and prior.** Hartzmark and Solomon (2013, JFE) "The dividend month premium": dividend payers earn about
+  41 bp a month of abnormal return in months in which a dividend is predicted (as recalled), predicted from the
+  payment three, six, nine or twelve months earlier. Sign +1.
+- **Orthogonality.** A calendar effect around ex-dates: no member reads dividend timing. Nearest: `net_payout`
+  (value) reads the TTM dividend level, not its month. The field's cross-section is quarterly payers only, so the
+  payer-versus-non-payer tilt (a quality / low-risk exposure) is not in it.
+- **Cost.** The flag flips monthly: the trading cost per unit of signal is the question its cell must answer.
+
+### Rank 4. Aggregate-volatility risk (BUILT, section 4)
+
+- **Signal and prior.** Ang, Hodrick, Xing and Zhang (2006, JF) "The cross-section of volatility and expected
+  returns": stocks with high past sensitivity to innovations in aggregate volatility (daily changes of VXO, the S&P
+  100 30-day ATM implied volatility) earn low returns, about -1% a month for the extreme-quintile spread (as
+  recalled), robust to size, value, momentum, liquidity and market beta. Sign: long low beta.
+- **Orthogonality.** A macro-volatility exposure. Nearest low_risk members: `bac` (correlation with the market),
+  `smax` / `smax5` (lottery), `qmj_safety` (market beta inside a composite); none reads an implied-volatility factor,
+  and AHXZ separate the effect from market beta and from idiosyncratic volatility. A new theme (`macro_vol_risk`) or
+  low_risk is the PM's registration choice.
+
+### Rank 5. Long-history return seasonality (BUILT, section 4)
+
+- **Signal and prior.** Heston and Sadka (2008, JFE) "Seasonality in the cross-section of stock returns": returns
+  at annual lags (12, 24, ..., 240 months) predict the same calendar month; Keloharju, Linnainmaa and Nyberg (2016, JF)
+  "Return seasonalities". Sign +1.
+- **Orthogonality.** Same theme as `seasonality_same_month` (reversal_seasonality, year 1 only), different horizon:
+  no member reads returns older than 252 sessions (the runner's 336-session bound forbids it in the DSL). Not a
+  restatement: Heston-Sadka report each annual lag predicting on its own; years 2-5 exclude the year-1 window.
+
+### Rank 6. Tax and pension notes items
+
+- **Signal and prior.** Lev and Nissim (2004, TAR): taxable income relative to book income predicts earnings growth
+  and returns (`tax_book`, withdrawn as R7-3 for data). Franzoni and Marin (2006, JF) "Pension plan funding and stock
+  market efficiency": severely underfunded firms earn low future returns, not explained by size, value or momentum.
+- **Orthogonality.** Pension funding: no member reads pension items. `tax_book` sits beside profitability_quality.
+- **Builder design.** Issuer route (`fund-events-lagged-v1`: the latest events row with `accepted_utc` < mark(t-1),
+  staleness 200 / 400 days, primary links), as `gscore7_lowbm`. Seal: the builder's `load_events` drops rows on or
+  after `SEAL_NS`. Reuse: the events manifest SHA, the bridge SHA, the declared lag. Data ask: publish the v10 export
+  (`txc_ttm`) or build `fundamentals_notes/` (`tax_current`, `pension_funded_status`; landing from 2019q1, so TTM from
+  2020).
+
+### Rank 7. 13F manager network
+
+- **Signal and prior.** Anton-Polk connectedness built from 13F managers instead of mutual funds; or short-term
+  institutional ownership (Yan and Zhang 2009, RFS: ownership by high-turnover institutions predicts returns
+  positively; manager turnover after Gaspar, Massa and Matos 2005).
+- **Orthogonality.** Nearest: `inst_best_ideas`, `si_low_io` (institutional ownership levels and weights), not the
+  network or the manager horizon.
+- **Builder design.** Stamping `13f-quarter-asof45-v1` (a quarter visible after its 45-day deadline + 46 h), stale
+  150 days. Seal: `source=YYYYqN` parts that begin on or after the seal never opened; rows on or after `SEAL_NS`
+  dropped (as `research_fields_holdings.py`). Reuse: thirteenf manifest and CUSIP map SHAs.
+- **Why not built.** The canonical forms use active mutual funds (Anton-Polk) or a manager-type split; 13F alone has
+  no type (S5.1 `thirteenf_filer_type` not built), and a 13F-only filter (say, dropping quasi-indexers by breadth)
+  would be my construction, not the paper's definition. Data ask: the S5.1 build (inputs landed), or N-PORT (rank 2).
+
+### Rank 8. Text-based industry peers
+
+- **Signal and prior.** Hoberg and Phillips (2018, JFQA) "Text-based industry momentum" (v9 `tnic_mom`).
+- **Orthogonality.** Lowest of the eight: a peer-momentum signal beside `ind_mom_12_1` and `res_mom_ind`.
+- **Builder design.** Peers of year Y usable from the pair's `available_at` (the later of the two 10-K acceptances),
+  at most 550 days (stage consumer rule). Data: the TXT landing then `classification_tnic/`, or the external library
+  (section 5, item 5).
+
+Considered and not ranked: TH3 high / low liquidity measures (Corwin-Schultz 2012, Amihud 2002: the premium has
+shrunk in large caps and a long-illiquid tilt costs capacity); 8-K items 5.02, 4.01, 3.01 (no peer-reviewed
+post-filing drift I could cite); S-3 / 424B offering events (inside investment_issuance); buyback announcements (8-K
+text not parsed; the long-run drift weakened after 2003, Fu and Huang 2016, as recalled); 13D activism (Brav, Jiang,
+Partnoy and Thomas 2008: the return is at the filing, with no later drift); TH3 `iEMove` (the vendor's forward
+earnings calendar is not shown to be point in time).
