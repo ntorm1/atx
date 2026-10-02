@@ -4876,3 +4876,40 @@ copy; plain and `--plan-json`) return 0. No pinned file, registry or generator c
 
 The 3 skips are the RESEARCH_CYCLE_LIVE_ROOT tests (as every batch).
 
+Commit `caefcd6a`.
+
+### Cell R-8 (r8.json on lib-v80; risk target S .05, b 1.15, cadence 21; base L 1.1474; not gross matched, PM7-20)
+
+**N before: 47; this cell makes 48 (<= 51).** Brief row (task-CELLS-brief.md:61): "realised volatility inside [.8, 1.2] x
+5% in each TRAIN year; `r8.json`; check the risk store's capped_specific count first" (E-40, E-43). Parent = the last
+accepted cell = R-2 (`lib-v80.json`); R-3..R-7 were not accepted. Store check met from records (batch 2f: `v8-risk-lo3-v10`,
+manifest `862515d9`, 0 invariant refusals, no specific variance clamped; R-6's runs on it capped_specific_decisions 0).
+
+**Identity (template "before any return"):** `atx-impl-strategy-target-tests.exe` (v8-12, 2026-10-01 18:55, the build of the
+NAV exe `5497c89d`) `--gtest_filter=RiskTarget.*:BookRiskTarget.*:SpoPin.*:SpoV3.*:SpoHook.*:NavV7Hook.*`: **56 / 56
+passed** (includes `RiskTarget.FlagAbsentKeepsThePinnedBenchDigests` and `SpoV3.V1AndV2DigestsUnchanged`). The parent's NAV
+argv re-run on v8-12 reproduced R-2's S2 daily bit for bit in R-7's `ref` phase (batch 2f). No executable changed since.
+
+**Spec.** `scripts/specs/v8/r8.json` (template): `"parent": null -> "lib-v80.json"`; the two designed fills `--risk-model
+build-equity/v8-risk-lo3-v10`, `--risk-model-sha256 862515d9...4ecd5a` (manifest re-hashed now: equal); nothing else. `lock`
+(dry) 0, `lock --write` 0 (reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`,
+reference_weights `03213345`), dry after 0. File `04c67351d5b9b87807598214b25e0455595c552706ac9275bd4fdeb14c47a167`, **spec
+digest (template chain) `fe60420efa51a579511545f0cf83a71ab02d00fc513f2d9fd4f1142b0287ea93`**. `test_research_spec.py` with
+the filled, locked file: 55 passed. Plan exit 0: 8 pins `[locked, verified]`; fields, u, fit, card, marginal, w, monitor =
+R-2's (done); nav pending. **Nav argv diffed by script against R-2's NAV receipt: equal except `--output` and the five
+inserted flags `--risk-target .05 --risk-target-bias 1.15 --risk-target-cadence 21 --risk-model build-equity/v8-risk-lo3-v10
+--risk-model-sha256 862515d9...`** (`--aim-leverage 1.1474`, `--trade-fraction .05`, `--capacity-curve`,
+`--warm-start-sessions 60`, `--label-role` the parent's). Summ `--dsr-n 48 --ledger build-equity/trials.jsonl`. The nav
+output name keeps the template's "L1.247" text (cosmetic; the base L is 1.1474).
+
+**Reading, fixed before the run (PM7-20, E-43; no number of R-8 exists):**
+1. One run, base L 1.1474 (the parent's), not gross matched; no correction step; not retried in any form.
+2. Before any return, in this order: (a) the `risk_target` blocks (`summary.json` `risk_target.books.<S2>`:
+   decisions, estimates against scored sessions / 21, decisions / estimates at each clip, decisions_before_first_estimate,
+   L_t and multiplier n / mean / min / max; `risk_target.csv` `priced_share`); (b) mechanics (S2; mech.py, keys only):
+   **all-rows gross inside [.784, 1.237]** (PM7-20: [.8, 1.25] x G_parent .98599, widened by .005), |net| <= .02, tau mean
+   <= .20, p95 <= .30, accounting. A mechanics value outside its limit stops the batch before any return (dispatch).
+3. Acceptance (E-43, rule 5): paired S2 net dSR against R-2 > 0 AND mechanics AND realised volatility of the S2 net daily
+   returns (`nav_summ --protocol v8` year table, column `vol`) inside [.04, .06] (closed) in each of 2020, 2021, 2022, 2023.
+   The plan's "dSR >= -1 SE" is expectation, printed, gates nothing. The verdict line prints both books' all-rows gross.
+
