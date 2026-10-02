@@ -1740,3 +1740,16 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   cost if wrong: (b) a theme share diluted by one slow member; the rest none measured. The X-3 wave therefore
   holds 5 XSIG strings plus XDATA's; unused admission trials of the 23 are not reallocated to new strings
   written after any X result is seen.
+- Cells batch 2f (log section of that name), at matched gross (PM6-6):
+  Fields v11 lo3 (`build-equity/train-2020-2023-lo3-fields-v11`, manifest `5826c02a`): reused 70 / computed 3 as
+  expected (k8_item402_63, gscore7_lowbm, eps_consist_4y); the 70 v10 payloads bit-identical (hardlinks); 24.5 s, 382 MiB.
+  Registry (`7402d7b2`): E6 / E8 field rows, E7 theme filing_events, R7-a roster cap 56 -> 64; the v7.1 slim recipe
+  records house_budget, so `test_v71_library_byte_identical` now fails on it (the v7.1 IC library still regenerates
+  byte for byte): finding, tests only.
+  R-7 (`lib-v81-gm.json`, library v8.1 = v8.0 + 5, L 1.1414 after one correction from 1.1474, gross .98600 against
+  .98599): NOT accepted, N 47. Admission 5 trials (12 of 15): comp_eq_iss_5y, coskew_60m, nonreliance_402,
+  earn_consistency admitted with the prior sign, gscore_lowbm admitted with runner sign 0 (not counted); gate PASS.
+  S2 net Sharpe 1.1898 (parent 1.2559); dSR -.0662, SE .1037, p one-sided .732 (two-sided .524); criterion (turnover
+  .02317 <= .02393) met; mechanics pass. Net Sharpe at 4x 1.103 (parent 1.178). One spec-only fix before any phase ran
+  (`ref.leverage` 1.1474: the cycle refused the ref binding). Parent stays R-2. Tests: `scripts/tests` 195 passed, 3
+  skipped; `atx-impl/strategies` 162 passed, 1 failed (the R7-a finding).

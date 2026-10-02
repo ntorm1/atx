@@ -4569,3 +4569,195 @@ cost / H term; v7's aim-partial theta .05 is the cheaper tracker of the same aim
   net annual return 4.54%, net Sharpe at 4x 1.178, tau_gmv_mean .02393. **N 46**; admission trials 7 of 15 (plus 8
   re-screens); history reads 0. Disk 124,736,080 KiB free (119.0 GiB).
 
+## cells batch 2f: fields v11, R-7, R-8 (stopped before the run), R-9 (not started) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `9364ffca` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`, risk `8967952c`; nothing built; PM5-21 holds: the
+only commits are registry rows, the v8.1 library files and spec, and this log). Read: integrator-rules, progress "PM
+session 6" to the end (PM6-1..12, PM7-1..15, batch 2e lines), task-CELLS-brief, task-R-7-brief, task-R-8-R-9-brief,
+task-R-8-report, rulings E-36, E-37, E-38, E-40, E-43, E-45, PM4-8, R7-a..c, this log's batches 2b-2e, plan R-7..R-9,
+section 12.1, library-v8-draft sections 3-8, task-A2-report root sequence. Same scratch readers as batches 2c-2e
+(`mech.py`: mechanics keys only; `cellstats.py` / `crit.py`: return side, after mechanics passed; `bundle.sh`: the PM5-23
+bundle; `k1plan.py`: the PM6-9 K1 route). Parent = R-2 (`scripts/specs/v8/lib-v80.json`, L 1.1474, all-rows gross
+.9859903463). N 46 at the start; admission trials 7 of 15. Disk 127,724,511,232 B free (118.9 GiB); RAM 5,497 MiB free.
+
+### 1. Fields v11 on lo3 (R-7 "fields v11 first"; Ruling R7-c)
+
+**Preconditions:** tree clean at `9364ffca`; `atx-engine/tools` unchanged since v10's source `0d553a34` (`git diff`
+empty); builder `b44cff42`, `research_fields_sec.py` `27034019`, `research_fields_holdings.py` `edfd1967`,
+`research_fields_price.py` `fc5e4b5a`, `research_fields_v8.py` `d90bb44d` (= v10's bindings); the builder knows the three
+F-3 fields (F-B `k8_item402_63`, F-C `gscore7_lowbm`, F-D `eps_consist_4y`).
+
+**Command** = v10's recorded argv (receipt `train-2020-2023-lo3-fields-v10-run`, verbatim; checked option by option by
+script) with F-3's v11 delta (task-F-3-report "Argv deltas"), nothing else: `--output
+build-equity/train-2020-2023-lo3-fields-v11`; `--fields <the 70 v10 names in v10's argv order>,k8_item402_63,gscore7_lowbm,eps_consist_4y`;
+`--reuse build-equity/train-2020-2023-lo3-fields-v10 --reuse-sha256 a4a060ae...70809 --reuse-hardlink`; builder
+`--max-rss-mib 2048 --max-seconds 580`. Runner `--seconds 600 --max-rss-mib 2560 --min-free-mib 512`, binds the five tool
+modules, the role manifest and the prior's manifest.
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | argv digest | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| fields v11 lo3 | `train-2020-2023-lo3-fields-v11-run` | `9364ffca` | completed / 0 | **24.5** | **382** | `8d15b5e9afea4e2449ce9ec10a0855918809c44b2f9aefd55dec1c2052504096` | `656a28796350e5fece4b880d64523ba25ce5f9a12024ee809ecf2b9c8e2eecaf` | **`5826c02a27f6ad292597f017e075116d1ac18a1713aa8dda1be323217e895f69`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, min system free 5,454 MiB. Manifest (metadata only): status
+complete, `seal.exclusive_end` 2024-01-01, role `e1c67101`, **73 rows**, 84 source paths, none 2024-named;
+`code_sha256_lf` `74df97f9` (= v10's); 618,633 B. `reuse`: from v10 lo3 `a4a060ae`, mode hardlink.
+
+**Counts: reused 70, computed 3 = the expected 70 / 3 (PM3-5a, F-3).** Computed: `k8_item402_63` (`27444f8b`,
+sec-k8-item402-63-v1), `gscore7_lowbm` (`47cd57b9`, mohanram-g7-lowbm3-sic2-v1), `eps_consist_4y` (`1c86e185`,
+alwathainani-eps-consistency-16q-v1), each "absent from the prior manifest". The 70 v10 payloads: entry sha256 = v10
+entry sha256 (70 / 70), hardlinks of the v10 files (same inode, 70 / 70); all 73 payloads re-hash to their pins. Order:
+registry order (the three new names at rows 56, 64, 65); the 70 v10 names keep their relative order (the spec list is
+the manifest's, as add-alpha writes it). Disk: the v11 dir is 4.6 GiB on disk (hardlinks; new payloads only are new
+bytes).
+
+### Cell R-7 (library v8.1 on R-2; fields v11; L 1.1414 after one correction): NOT ACCEPTED (dSR < 0), N 47
+
+**N before: 46; this cell makes 47 (<= 51).** Brief row (task-CELLS-brief.md:60): "turnover not higher (marginal IC gates
+nothing); fields v11 first" (E-36, R7-a..c). Parent = the last accepted cell = R-2 (`lib-v80.json`); R-3..R-6 were not
+accepted. The template `r7-lib-v81.json` stays unrun (parent null): its own `requires` says R-7 runs as add-alpha's
+`lib-v81.json` (one cell, one trial line), as R-2 ran as `lib-v80.json`.
+
+**Wave preparation (A2 root sequence "R-7: as R-2"; draft section 6 E6-E10):**
+1. Registry hand edits (commit **`7402d7b2`**): E6 field rows `ceq_iss_5y`, `coskew_60m` (origin fields_v10), E8
+   `k8_item402_63`, `gscore7_lowbm`, `eps_consist_4y` (fields_v11); clock = the v11 manifest row's clock verbatim, basis
+   = its definition + "(formula id X; producer atx-engine/tools/<module>, fields-vN)", the existing rows' form (only
+   name / clock / definition / formula_id / producer read). E7 theme `filing_events` (draft text). **Ruling R7-a:
+   `house_budget.max_roster` 56 -> 64** (57 members > 56; generate_library refuses a roster over the cap). Registry
+   `570f022a` -> `29780f04`. **FINDING (tests, not fixed):** `atx-impl/strategies/test_generate_library.py::
+   test_v71_library_byte_identical` now fails at its recipe assert: the committed v7.1 slim recipe records
+   `generation.house_budget` (max_roster 56), so a regeneration differs in that one value (byte 1330, "6" for "5"); the
+   v7.1 IC library still regenerates byte for byte (`787c802e`, the asserts before pass). Draft section 5 named this
+   consequence of the raise; no pinned file changed (the v7.1 / v8.0 recipes on disk are untouched). A test premise for
+   the PM (tests only).
+2. **K1 by the PM6-9 route** (`scratchpad/k1plan.py`: the exe's `--plan-only --max-memory-mib 2560` on the exact library
+   bytes add-alpha builds; add-alpha checks `plan.library_sha256`): 5 plans, each sha = the library sha; committed under
+   `r7-plans/` (SHA-256): comp_eq_iss_5y `47aecfb2...`, coskew_60m `660736be...`, gscore_lowbm `97b160c0...`,
+   nonreliance_402 `f601cf4b...`, earn_consistency `80c50ff3...` (full: `sha256sum r7-plans/*.json`).
+3. The 5 calls (draft section 7 v8.1 strings verbatim, checked by script; draft order; `--parent v80 --name v81
+   --parent-spec scripts/specs/v8/lib-v80.json --fields build-equity/train-2020-2023-lo3-fields-v11`): every call exit 0.
+4. **Counts (equal the draft):** roster 57 (52 + 5; the 52 v8.0 candidate rows byte-identical in the v8.1 library);
+   recipe trials: admission_trials 5, new_candidates 5, unchanged 52; families 11 (`filing_events` new); no new budget
+   exception. **K1 rows of the 5 = draft section 4** (DSL sha16 / bars / slots / extra fields): comp_eq_iss_5y `269ddd24`
+   20/3/2, coskew_60m `de6da255` 20/3/1, gscore_lowbm `c41ec275` 20/3/2, nonreliance_402 `63a5d143` 0/3/1,
+   earn_consistency `943f4187` 20/3/1 (exe node counts 8 / 7 / 5 / 5 / 4 against the mirror's 7 / 6 / 5 / 4 / -: no
+   node budget exists; reported). The 52 parent rows equal R-2's last K1 plan (52 / 52). Plan: 57 candidates, max slots
+   8, lookback 272.
+5. Registration appended to `v8-prereg.md` ("Library v8.1 (cell R-7)": draft sha `326ad240` unchanged since R-2,
+   R7-a..c, E-36; pins: library **`c6bf150e...1c56`**, slim recipe `d72589a1...bea3`, `libraries/v81.json` `8bb0aa07`,
+   stub `f2d53652`, registry `3697342a`, fields v11 `5826c02a`); commit **`8d2eac5e`** (registry, library, recipe,
+   definition, stub, `scripts/specs/v8/lib-v81.json`, prereg, plans).
+
+**Spec** `scripts/specs/v8/lib-v81.json` (generated and locked by add-alpha; 12 pins; file / spec digest
+`281c7b70516d3c395f1bfd0a82b482b8fe7af330c6913f6199dcf9c6afa65c46`): parent R-2 (reference_cell `083a56da`,
+reference_admission `f613fe92`, reference_combined `bbbf6f2b`, reference_weights `03213345`, reference_daily `7cfe21c4`,
+reference_orientations `312bbf4e`, reference_daily_ic `10f22711`); baseline library v80 `68ce8539`, baseline fields v10
+`a4a060ae`; fields as built v11 `5826c02a` (73 rows); fit `ew-theme-std-v1` (inherited); gate p1-v81 (the 5, require
+any, sign_agrees); **marginal on the full pool (pool reference_combined, themes reference_weights: PM6-8 held for R-2
+only; R-7 only adds members)**; ref on v11 fields; nav.leverage 1.1474 (the parent's L = step (1)). `plan` exit 0, every
+pin `[locked, verified]`.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| fields | - | - | - | - | - | done (as built v11, 73 rows == the spec list) |
+| u | 300 / 2,560 | 9.9 | 927 | 0 | `f92d04eb3697de4cd861bc19849569934ca9dc84bd4638bee99d954b8fa34513` | `mega-v8-b0b-train-u-v81-1` |
+| u-compare | internal | - | - | PASS | - | parent-orientations IDENTICAL (52 objects; b adds 5); parent-train-daily-ic IDENTICAL (152,152 rows of 52 keys byte for byte; b adds 14,630 rows of 5 keys) |
+| fit | 180 / 1,536 | 2.9 | 422 | 0 | `06928ca4eb802b5efce69b5233b8ca8110c08df82f574f826a77346316f029cc` | weights `3249f989` (ew-theme-std-v1; 46 of 57 weighted; nonreliance_402 at the cap 1/(2T) = .04545, T 11) |
+| card | 300 / 2,560 | 20.5 | 1,311 | 0 | `3d838f9935a7013cbeb17a7f93e7b782459e07baee23eb8281435aab39a0fd00` | `mega-cards-v8-r1-std-v81` |
+| marginal (full pool, K6, report only) | 180 / 1,536 | 170.3 | 252 | 0 | `ac47ec275828c0dc530dec540ec66d31e03694a396a94ea9e2aed2ee61811670` | `...-u-v81-marginal-pool/marginal_ic.json` (170 s of the 180 s cap: see open items) |
+| gate p1-v81 | internal | - | - | PASS | - | 5 admission lines ledgered (chained, before the read-out) |
+| ref (identity, L 1.1474) | 180 / 1,536 | 50.8 | 586 | 0 | `57b9b72626972e4fd78b877f35b689a295d1b7750a731ec8cc0fa5d9fa053b64` | **ref-s2-daily IDENTICAL bit for bit** to R-2's S2 daily (`7cfe21c4`, 940,625 B): fields v11 reproduces the parent |
+| w | 300 / 3,072 | 38.8 | 1,372 | 0 | `39ca1ff5df2efcd20e9138baacbcc72c70ce9efe95af0ee2ac8936c160f25171` | `mega-v8-r1w-train-std-v81-1` |
+| nav step (1) (L 1.1474, calibration) | 180 / 1,536 | 45.4 | 586 | 0 | `fd87afecb4715978acea590132755788c86ec7c6d65d029da058fb72bb26574a` | mechanics only |
+
+Sources: screen `8d2eac5e` (`run --screen`), then `run --stop-after nav` at `8d2eac5e`; exes IC `ab7e2cbd`, NAV
+`5497c89d`; every receipt `clean in the code pathspec`.
+
+**Admission (gate p1-v81, v4-prior-v1; require any): PASS, 4 of 5 admitted with the prior sign** -- comp_eq_iss_5y (HAC t
+-.26; max |rho| .848 with net_payout), coskew_60m (-.03; .612 with comp_eq_iss_5y), nonreliance_402 (-.49; .194),
+earn_consistency (-.01; .241); gscore_lowbm status admitted with runner sign 0 against prior +1 (sign_agrees false, not
+counted by the gate; 374 train days). Reference members vs R-2's admission: 0 status changes. **Admission trials this
+sprint: 12 of 15 (plus 8 re-screens).** K6 (full pool, report only, gates nothing; E-36): marginal IC21 / HAC t
+comp_eq_iss_5y +.0022 / .42, coskew_60m +.0170 / 1.63, gscore_lowbm none (the verb wrote no value; not investigated: it gates nothing), nonreliance_402 +.0011 / .29,
+earn_consistency -.0003 / -.11.
+
+**Gross match, step (1) at the parent's L 1.1474 (mechanics only, mech.py):** G **0.9912148513** vs G_parent (R-2)
+**0.9859903463**: |diff| **.00522 > .005** -> one correction. (The other step-(1) mechanics keys were inside the limits:
+net +.0043, tau .02318 / .02772, max gross 1.125.) **L' = 1.1474 x 0.9859903463 / 0.9912148513 = 1.141352 -> 1.1414**
+(>= 1).
+
+**Matched spec** `scripts/specs/v8/lib-v81-gm.json` (new plain spec, hand-written: lib-v81.json with `name` v81-gm, a
+description sentence, `nav.leverage` "1.1414", `nav.output` `build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v81`;
+every pin unchanged; `lock` / `lock --write` / dry 0 / 0 / 0). A template could not serve: a template's derived
+reference pins come from its parent, and the paired reference must stay R-2, not the add-alpha spec's calibration run.
+Tests only: `test_research_spec.py` `NULL_PINS["lib-v81-gm.json"]` (a plain spec's lock-filled pins, as a base spec's),
+so the suite knows the hand-written spec (as R-1-gm / R-3-gm / R-6-gm); 54 passed (meta-test deselected). Commit
+**`714770f9`**. **Refusal and spec-only fix (PM5-21):** the first `run --stop-after nav` HARD-STOPPED at `ref` before any
+phase ran (exit 3): the done ref NAV (lib-v81's, at 1.1474) was made by an argv differing from this spec's ref argv only by
+`--aim-leverage` (the ref step inherits `nav.leverage`). Fix: `ref.leverage` "1.1474" (a designed ref key: the reference
+construction is R-2 at its own L), relocked; commit **`395071fb`**; file / spec digest
+**`9b5eeec43cecab029977074ea600006ac56361f06d50ecb7e5199c4985a4df93`**. Planned NAV argv = step (1)'s except `--output` and
+`--aim-leverage 1.1474 -> 1.1414` (diffed by script). The step-(1) run of lib-v81.json is not a trial and is never
+resumed past nav (no monitor, no summ, no ledger line).
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| ref / u / fit / card / marginal / gate / w | - | - | - | - | - | lib-v81.json's (done; ref binding argv `905d7d17` = its own; ref-s2-daily IDENTICAL again; gate: "0 appended, 5 already ledgered") |
+| nav (L 1.1414, the cell) | 180 / 1,536 | 45.2 | 586 | 0 | `485cb3481fec1125d4fc959cf160dc3f87a60fb1f3a2568722c617664fe5a77d` | `summary.json` `3205d868`, S2 daily `11743abe`, `capacity_curve.csv` `e118a926`, `recipe.json` `fc07b10a` |
+| monitor | 180 / 1,536 | 1.3 | 117 | 0 | - | `mega-monitor-v8-r1-std-v81/monitor.json` `add5f6bb`: M2 alarm (alarm 5, warn 16, ok 25), M1 / M3 / M4 n/a |
+| summ | 180 / 1,536 | 22.6 | 560 | 0 | - | `cycle-v81-gm/summ.json` `2eec1982`, `pbo.json` `39773d3a`, `cycle_verdict.json` `cf2e1f57` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 409 | 0 | `409b3479ac11dda3969d3e34c9f065a6bfe24186d90767d0ede4ec686cf1f968` | `v8-cells-r7-bundle.json` `6175d767` (no `--ledger`) |
+
+NAV receipt: completed, `clean in the code pathspec`, source `395071fb`, exe `5497c89d`; `construction.v5.aim_leverage`
+1.1414.
+
+**Gross match: G 0.9859967596 vs G_parent 0.9859903463: |diff| .0000064 <= .005** (one correction).
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9860 in [.90, 1.05] (post-ramp .9917); net +.0043
+(<= .02); tau mean .02317 <= .20, p95 .02772 <= .30 (1,004 sessions; summary flags true); max gross 1.119, max |net| .030;
+gross at score_begin .9431; by year .962 / 1.002 / .985 / .995; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows;
+accounting 1.1e-13 / 4.1e-16 (tol 1e-9).
+
+**Criterion (book turnover not higher; executed tau_gmv_mean, as R-2):** .023173 vs R-2 .023929 -> **PASS**.
+
+**Statistics of record** (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`): net Sharpe **R-7 +1.1898** vs R-2 +1.2559. Paired
+(studentized CBB, block 21, seed 20260929, 4,999 resamples, 4,999 valid; 1,005 sessions): **dSR -.0662**; rho .979;
+**Memmel SE .1037** (t -.64); CBB 95% [-.269, +.125]; LW SE .1005, 95% [-.273, +.141]; **bootstrap p one-sided .7318,
+two-sided .524** (the bundle reproduces the cycle's dSR, SE, CI and two-sided p exactly). DSR (N 47, verdict
+`--dsr-ledger`): ledger DSR .9556 (V[SR] from 10 cells on research-window-v2); legacy (37) .7327; effective-N .7166 (N_eff
+4); PSR vs 0 .9904; PBO .3172.
+
+**Verdict (prereg rule 5): dSR -.066 <= 0 -> NOT ACCEPTED** (mechanics PASS, criterion PASS; the wave is judged whole).
+Recorded by the tooling: `cycle-v81-gm/cycle_verdict.json` (spec `9b5eeec4`) and the ledger line (trial
+`9a3608a7e6a0df3f`, cell = the L1.1414 NAV dir, s2_net_sr 1.18979, origin prior, window research-window-v2, prev
+`2635608f`). **N after: 47** (ledger 60 lines = 47 construction + 12 admission + 1 protocol; file `e6613e7b`; head
+`a11bcbb1`). Matches the brief. Not retried. **Parent stays R-2.**
+
+Returns (S2, annual): net 4.18% (ann mean; CAGR 4.20%) vs R-2 4.54%; gross of cost 5.44% (R-2 5.81%); trade cost .72%,
+borrow .34%, long financing .20%; vol 3.51%; max drawdown 3.09%; gross Sharpe 1.549 (R-2 1.610). Every scenario lower than
+R-2's (linear-6bps 1.301 / 1.371; S3 terminal-adverse .138 / .216; flat-300 .960 / 1.031; engine-tiers 1.114 / 1.185).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0140 | -.446 | .0307 | .0258 | 14.79 |
+| 2021 | 252 | +.0924 | +2.385 | .0374 | .0218 | 11.56 |
+| 2022 | 251 | +.0723 | +1.721 | .0412 | .0227 | 12.19 |
+| 2023 | 250 | +.0202 | +.695 | .0297 | .0224 | 11.62 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.221 (1.289), 1x 1.190 (1.256), 2x 1.149 (1.223), **4x 1.103
+(1.178)**, 8x 1.038 (1.100); cost bps per traded dollar 10.74 / 12.55 / 14.75 / 16.93 / 18.75 (R-2 10.67 / 12.47 / 14.66 /
+16.87 / 18.67).
+
+**Appendix A:** `TRAIN construction cells 47; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none (one cycle refusal fixed in the spec before any phase ran).
+
+v9 note (from a result, not a spec): the five new members' admission HAC t are all between -.49 and -.01 and the wave
+lowers gross-of-cost Sharpe by .06 at an unchanged cost per dollar; a new eleventh theme takes 1/11 of every theme's
+share (the one-member `filing_events` theme sits at its cap .045 on a flag that marks few names).
+
+### Tests (end of step 1)
+
+`ATX_EQUITY_BIN` / `ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bins on PATH:
+- `scripts/tests` (whole): **195 passed, 3 skipped, 0 failed** (130.5 s; skips: the three RESEARCH_CYCLE_LIVE_ROOT tests).
+- `atx-impl/strategies` (whole): **162 passed, 1 failed** -- `test_v71_library_byte_identical` (the R7-a finding above).
+
