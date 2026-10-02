@@ -26,6 +26,7 @@ A stage that does not apply (no strings in a rule wave, no cell after the gate) 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -86,12 +87,56 @@ def sealed_years(text: str) -> list[str]:
     return sorted({y for y in YEAR.findall(text) if int(y) >= RW.FIRST_SEALED_YEAR})
 
 
-def admission_trials(m: dict) -> int:
-    """The admission lines the wave's gate will ledger: its non-re-screen strings, or its re-screens when it has
-    nothing else (add-alpha's gate lists them then)."""
-    cands = m.get("candidates") or []
-    trials = [c for c in cands if not c.get("rescreen")]
-    return len(trials) if trials else len(cands)
+LIBRARIES = "atx-impl/strategies/libraries"     # add-alpha's library definitions (a cycle's name is its library's)
+
+
+def admission_trial_id(cid: str, dsl_sha: str, role_sha: str) -> str:
+    """The trial_id the gate ledgers for one screened string (cycle_admission.admission_lines: [candidate, its DSL
+    SHA-256, the role pin, the research window id]), so a string ledgered already is no new trial."""
+    bi = research_ledger.backtest_integrity()
+    ident = json.dumps([cid, dsl_sha, role_sha, bi.window_id()], separators=(",", ":"))
+    return bi.trial_id("admission", hashlib.sha256(ident.encode()).hexdigest())
+
+
+def role_pin(w: Wave) -> str | None:
+    """The role pin of the wave's cells: the parent's inputs.role (add-alpha keeps it), else the file's SHA-256."""
+    role = w.load_spec(w.manifest["parent"]["spec"])["inputs"].get("role") or {}
+    return role.get("sha256") or (w.sha(role["path"]) if role.get("path") else None)
+
+
+def rescreens_of(w: Wave, cycle, cache: dict) -> set:
+    """The re-screen strings of a cycle's library: libraries/<cycle>.json "rescreens" (a cycle is named after its
+    library; a -gm copy, e.g. v8x3b-gm, after its library plus -gm); none without the file."""
+    if cycle not in cache:
+        names = [str(cycle)] + ([str(cycle)[:-3]] if str(cycle).endswith("-gm") else []) if cycle else []
+        doc = next((d for d in (w.read_json(f"{LIBRARIES}/{n}.json") for n in names) if isinstance(d, dict)), None)
+        cache[cycle] = set((doc or {}).get("rescreens") or [])
+    return cache[cycle]
+
+
+def budget_selects(b: dict, origin) -> bool:
+    return "admission_origin" not in b or origin == b["admission_origin"]
+
+
+def admission_used(w: Wave, records: list[dict], b: dict) -> int:
+    """The admission trials the budget has spent (the hand count): the ledger's admission lines of cycles with the
+    budget's prefix and, when set, its origin class; a re-screen line (its candidate in the cycle library's
+    ``rescreens``: Ruling R2-e, 0 admission trials, e.g. X-4's nine) is left out, as the hand count leaves it out."""
+    bi = research_ledger.backtest_integrity()
+    cache: dict = {}
+    return sum(c for r, c in zip(records, bi.trial_counts(records))
+               if r.get("kind") == "admission" and str(r.get("cycle", "")).startswith(b["admission_cycle_prefix"])
+               and budget_selects(b, r.get("origin")) and r.get("candidate") not in rescreens_of(w, r.get("cycle"), cache))
+
+
+def admission_new(w: Wave, records: list[dict], b: dict) -> list[str]:
+    """The wave's strings that are new admission trials: not a re-screen, of the budget's origin class, and whose
+    trial_id is not in the ledger yet (a fresh state dir of a screened wave adds nothing)."""
+    have = {r.get("trial_id") for r in records}
+    role = role_pin(w)
+    return [c["id"] for c in w.manifest.get("candidates") or []
+            if not c.get("rescreen") and budget_selects(b, c["origin"]) and
+            admission_trial_id(c["id"], c["dsl_sha256"], role or "") not in have]
 
 
 def ledger_state(w: Wave) -> tuple[list[dict], dict]:
@@ -107,15 +152,14 @@ def ledger_state(w: Wave) -> tuple[list[dict], dict]:
 
 
 def budget_check(w: Wave, records: list[dict], n_before: int) -> tuple[dict, list[str]]:
-    b, m = w.manifest["budget"], w.manifest
-    bi = research_ledger.backtest_integrity()
-    out, problems = {"id": b["id"], "admission_new": admission_trials(m) if library_wave(w) else 0}, []
+    b = w.manifest["budget"]
+    out, problems = {"id": b["id"]}, []
     if "admission_cap" in b:
-        used = sum(c for r, c in zip(records, bi.trial_counts(records))
-                   if r.get("kind") == "admission" and str(r.get("cycle", "")).startswith(b["admission_cycle_prefix"]))
-        out.update(admission_used=used, admission_cap=b["admission_cap"])
-        if used + out["admission_new"] > b["admission_cap"]:
-            problems.append(f"budget {b['id']}: {used} admission trials used + {out['admission_new']} new > cap "
+        used, new = admission_used(w, records, b), admission_new(w, records, b) if library_wave(w) else []
+        out.update(admission_used=used, admission_new=len(new), admission_new_ids=new, admission_cap=b["admission_cap"],
+                   admission_cycle_prefix=b["admission_cycle_prefix"], admission_origin=b.get("admission_origin"))
+        if used + len(new) > b["admission_cap"]:
+            problems.append(f"budget {b['id']}: {used} admission trials used + {len(new)} new > cap "
                             f"{b['admission_cap']} (a ruling raises the cap; the wave does not)")
     if "construction_cap" in b:
         out["construction_cap"] = b["construction_cap"]

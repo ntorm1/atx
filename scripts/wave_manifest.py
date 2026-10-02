@@ -16,7 +16,10 @@ One wave is one cell on the current book, declared before anything is measured:
    "acceptance": {"rule": "pm7-34", "printed": [criterion, ...]},
    "sign_rule": "pm7-35",                         (library waves)
    "gross_match": "pm6-6" | "none",
-   "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT?, "construction_cap": N?},
+   "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT?, "admission_origin": CLASS?,
+              "construction_cap": N?}     the hand count: admission lines of cycles with the prefix (and of the
+                                          origin class), re-screens left out; new = the wave's non-re-screen strings
+                                          whose trial_id is not ledgered yet
    "ledger": PATH,                                the sprint ledger of record (the cells' summ.ledger)
    "expect": {"n_before": N},                     the ledger N the wave was planned on (a stale plan is refused)
    "out_dir": DIR,                                the wave's state dir (receipts, plans, readers, wave-result.json)
@@ -179,11 +182,13 @@ def validate(m) -> list[str]:
                                      m.get("gross_match"))
     b = m.get("budget")
     if not (isinstance(b, dict) and _text(b.get("id")) and set(b) <= {"id", "admission_cap", "admission_cycle_prefix",
-                                                                        "construction_cap"} and
+                                                                        "admission_origin", "construction_cap"} and
             all(type(b[k]) is int and b[k] >= 0 for k in ("admission_cap", "construction_cap") if k in b) and
             (("admission_cap" in b) == ("admission_cycle_prefix" in b)) and
-            ("admission_cycle_prefix" not in b or _text(b["admission_cycle_prefix"]))):
-        out.append("budget must be {id, admission_cap + admission_cycle_prefix (together), construction_cap}")
+            ("admission_cycle_prefix" not in b or _text(b["admission_cycle_prefix"])) and
+            b.get("admission_origin", ORIGINS[0]) in ORIGINS and ("admission_origin" not in b or "admission_cap" in b)):
+        out.append("budget must be {id, admission_cap + admission_cycle_prefix (together), admission_origin? (prior | "
+                   "grid | mined), construction_cap}")
     e = m.get("expect")
     if not (isinstance(e, dict) and set(e) == {"n_before"} and type(e["n_before"]) is int and e["n_before"] >= 0):
         out.append("expect must be {n_before: the ledger N the wave was planned on}")

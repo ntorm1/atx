@@ -126,9 +126,20 @@ def construction_line(cell: str, daily_sha: str, sr: float) -> dict:
             "trial_id": BI.trial_id("construction", daily_sha), "window_id": BI.window_id(), "origin": "prior"}
 
 
-def admission_line(cycle: str, cid: str) -> dict:
+def admission_line(cycle: str, cid: str, *, role_sha: str = "", status: str = "admitted", origin: str = "prior",
+                   dsl_sha: str | None = None) -> dict:
+    """One admission line in the ledger's real layout (cycle_admission.admission_lines), its trial_id by the same rule."""
+    import wave_stages  # noqa: PLC0415
+    dsl_sha = dsl_sha or candidate(cid)["dsl_sha256"]
     return {"schema": BI.LEDGER_SCHEMA, "kind": "admission", "count": 1, "candidate": cid, "cycle": cycle,
-            "trial_id": BI.trial_id("admission", sha(cid.encode())), "window_id": BI.window_id(), "origin": "prior"}
+            "status": status, "origin": origin, "window_id": BI.window_id(),
+            "window": {"label": "TRAIN", "first_session": "2020-01-02", "last_session": "2023-12-29"},
+            "pins": {"library_sha256": sha(cycle.encode()), "role_sha256": role_sha, "admission_sha256": sha(b"a")},
+            "dsl_sha256": dsl_sha, "trial_id": wave_stages.admission_trial_id(cid, dsl_sha, role_sha)}
+
+
+def role_sha(root: Path) -> str:
+    return sha((root / "role" / "manifest.json").read_bytes())
 
 
 def candidate(cid: str, *, kind: str = "add", prior: int = 1, **extra) -> dict:
@@ -164,6 +175,7 @@ def build(root: Path, drop: tuple = (), **over) -> Path:
     write_json(root, "atx-impl/strategies/libraries/p0.json", {"members": ["m1", "m2"]})
     write_json(root, f"{FIELDS}/manifest.json", {"status": "complete", "seal": {"exclusive_end": "2024-01-01"},
                                                  "fields": [{"name": "a"}, {"name": "b"}]})
+    write_json(root, "role/manifest.json", {"dates": 300})
     write_nav(root, PARENT_NAV, 0.9862)
     BI.ledger_append(root / LEDGER, [construction_line("out/nav-base", sha(b"base"), 1.0),
                                      construction_line(PARENT_NAV, sha((root / PARENT_NAV / "daily_s2.csv").read_bytes()),
@@ -224,8 +236,8 @@ class FakeCycle:
             marginal = [{"id": cid, "ic21": 0.01, "marginal_ic21": 0.005, "max_abs_rho": 0.3, "max_rho_member": "m1"}
                         for cid in self.admission] if "marginal" in spec else []
             write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": rows, "marginal": marginal})
-            BI.ledger_append(self.root / LEDGER, [admission_line(spec["name"], cid) for cid in self.admission],
-                             chain=True)
+            BI.ledger_append(self.root / LEDGER, [admission_line(spec["name"], cid, role_sha=role_sha(self.root))
+                                                  for cid in self.admission], chain=True)
             return self.ok(args, self.gate_exit)
         nav = c.out(spec["nav"]["output"])
         if "--stop-after" in args:
