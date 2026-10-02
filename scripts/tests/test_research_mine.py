@@ -85,7 +85,8 @@ def test_fields_are_the_rule_applied_to_the_registry():
         read |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a["dsl"]))
     rule = [f for f in v9 if f not in read and f not in EXCLUDED_BY_CLASS and f not in HELD_BY_V8_LIBRARY]
     assert template()["fields"] == rule and len(rule) == 12
-    assert set(EXCLUDED_BY_CLASS) | set(HELD_BY_V8_LIBRARY) <= set(v9) - read
+    assert set(EXCLUDED_BY_CLASS) <= set(v9) - read
+    assert set(HELD_BY_V8_LIBRARY) <= set(v9)            # R-2 was accepted: the book reads them (no longer unread)
 
 
 def test_constants_mirror_the_verb():
