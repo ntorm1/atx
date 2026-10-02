@@ -1,0 +1,90 @@
+{
+ "declaration": "descriptive only (v8-prereg rule 8): no diagnostic gates, selects or re-weights anything; nothing here is an input to an admission, a composition, a fit or a construction",
+ "diagnostics": {
+  "G-3b": {
+   "inputs": {
+    "role": {
+     "path": "build-equity/train-2020-2023-lo3/manifest.json",
+     "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    "u_pass": {
+     "path": "build-equity/mega-v8-b0b-train-u-1/summary.json",
+     "sha256": "bb34cf3da2d6e62c20d154e481c81a707361a67c6c59d8f070616f9d2a65737e"
+    },
+    "weights": {
+     "path": "build-equity/mega-weights-v8-b0b-ew/composition_weights.json",
+     "sha256": "ddf1417e1e137bcd7d4f9ceb9d0ca6a7d673d817b48fd3e490c8951832a0de26"
+    }
+   },
+   "method": "G-3b: rank IC before and after the projection. ``raw`` = the member's book before (its centred ranks over the\n    support), ``projected`` = the same book after the price-risk-v1 projection (OLS residual on [1, z beta, z vol,\n    z log ADV], the admission's neutralised sleeve), ``support`` = the names both are defined on, ``label`` = the\n    h = 21 forward return. Per row: Pearson of each book with the label's centred ranks over the support names with a\n    finite label (linear in the residual, as the marginal IC of task F-2); rows with fewer than ``min_names`` names\n    are left out. retained = mean after / mean before.",
+   "question": "low-risk members' IC before and after the beta / volatility (price-risk-v1) projection",
+   "result": {
+    "members": {
+     "bac": {
+      "after": {
+       "hac_t": -1.093240106,
+       "ir": -0.1327461885,
+       "mean": -0.01819287971,
+       "n": 984,
+       "sd": 0.1370501098
+      },
+      "before": {
+       "hac_t": -1.145925034,
+       "ir": -0.1373836477,
+       "mean": -0.02657358599,
+       "n": 984,
+       "sd": 0.1934261205
+      },
+      "retained": 0.6846226818,
+      "weight": 0.03333333333
+     },
+     "smax": {
+      "after": {
+       "hac_t": 1.252375016,
+       "ir": 0.1448831388,
+       "mean": 0.00994189126,
+       "n": 984,
+       "sd": 0.06862007094
+      },
+      "before": {
+       "hac_t": 1.318334489,
+       "ir": 0.1496219071,
+       "mean": 0.01391969404,
+       "n": 984,
+       "sd": 0.0930324597
+      },
+      "retained": 0.7142320249,
+      "weight": 0.03333333333
+     },
+     "smax5": {
+      "after": {
+       "hac_t": 1.498139933,
+       "ir": 0.1670478326,
+       "mean": 0.0151147002,
+       "n": 984,
+       "sd": 0.09048127096
+      },
+      "before": {
+       "hac_t": 1.079161727,
+       "ir": 0.1191214476,
+       "mean": 0.01255551431,
+       "n": 984,
+       "sd": 0.1054009548
+      },
+      "retained": 1.203829634,
+      "weight": 0.03333333333
+     }
+    },
+    "projection": "price-risk-v1: the fitter's Context (OLS residual on [1, z beta252, z vol63, z ladv63], two passes), the admission's neutralised sleeve",
+    "theme": "low_risk"
+   },
+   "status": "ok"
+  }
+ },
+ "schema": "atx.book-diagnostics/v1",
+ "tool": {
+  "script": "atx-impl/tools/book_diagnostics.py",
+  "script_sha256": "2be3b164e449dfd5ac975de629797cee7d3a18e58af51313cc01bd2646d485a2"
+ },
+ "window_id": "research-window-v2"
+}

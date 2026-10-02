@@ -1,0 +1,84 @@
+{
+ "declaration": "descriptive only (v8-prereg rule 8): no diagnostic gates, selects or re-weights anything; nothing here is an input to an admission, a composition, a fit or a construction",
+ "diagnostics": {
+  "G-2c": {
+   "inputs": {
+    "holdings": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-h/manifest.json",
+     "sha256": "67b1eb917a5480f4e6aa9c08128ccbf71209350762ca816c6a0e0561c3a03209"
+    },
+    "nav": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+     "sha256": "119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615"
+    },
+    "role": {
+     "path": "build-equity/train-2020-2023-lo3/manifest.json",
+     "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    }
+   },
+   "method": "|dollars| / ADV over the cells with nonzero dollars: p50, p95, p99, max, the share of cells and of gross\n    dollars above ``q`` (R-5's cap), and the cells without a positive ADV (not measured).",
+   "question": "held dollars and aim dollars over ADV (p50, p95, max): does R-5 (Q = .10) bind",
+   "result": {
+    "adv": "sum over [t-w, t) of present raw_close x volume / w (the NAV's execution ADV)",
+    "aim": {
+     "cells": 1844715,
+     "gross_share_above_q": 0.1108329063,
+     "max": 0.5701529757,
+     "measured": 1844715,
+     "no_adv": 0,
+     "p50": 0.01354144177,
+     "p95": 0.1097810569,
+     "p99": 0.1797364288,
+     "q": 0.1,
+     "share_above_q": 0.06234242146
+    },
+    "aim_dollars": "L x nav_post x |desired_weight| on decision sessions (R-5 caps it at Q x ADV)",
+    "aim_leverage": 1.247,
+    "held": {
+     "cells": 1927893,
+     "gross_share_above_q": 0.07126588906,
+     "max": 101.2735885,
+     "measured": 1927893,
+     "no_adv": 0,
+     "p50": 0.01091862941,
+     "p95": 0.08754180598,
+     "p99": 0.1501248963,
+     "q": 0.1,
+     "share_above_q": 0.03633707887
+    },
+    "liquidity_window": 63,
+    "long": {
+     "cells": 998061,
+     "gross_share_above_q": 0.08926347722,
+     "max": 101.2735885,
+     "measured": 998061,
+     "no_adv": 0,
+     "p50": 0.01002451133,
+     "p95": 0.0939238539,
+     "p99": 0.1682137012,
+     "q": 0.1,
+     "share_above_q": 0.04367769104
+    },
+    "short": {
+     "cells": 929832,
+     "gross_share_above_q": 0.05313316172,
+     "max": 4.540083707,
+     "measured": 929832,
+     "no_adv": 0,
+     "p50": 0.01181433097,
+     "p95": 0.08138635115,
+     "p99": 0.1315247427,
+     "q": 0.1,
+     "share_above_q": 0.02845782894
+    }
+   },
+   "status": "ok"
+  }
+ },
+ "schema": "atx.book-diagnostics/v1",
+ "tool": {
+  "script": "atx-impl/tools/book_diagnostics.py",
+  "script_sha256": "2be3b164e449dfd5ac975de629797cee7d3a18e58af51313cc01bd2646d485a2"
+ },
+ "window_id": "research-window-v2"
+}

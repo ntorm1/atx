@@ -1,0 +1,86 @@
+{
+ "declaration": "descriptive only (v8-prereg rule 8): no diagnostic gates, selects or re-weights anything; nothing here is an input to an admission, a composition, a fit or a construction",
+ "diagnostics": {
+  "G-2a": {
+   "inputs": {
+    "risk": {
+     "path": "build-equity/b0c-risk/manifest.json",
+     "sha256": "5dd560d7e274f8321bac59725cc4982c2162babc7cf2ec554d430d679a91939b"
+    }
+   },
+   "method": "One session's ex-ante daily variance of the book w under atx-risk-v1.1: x = X'w (market = sum w, industry\n    slot sums, style z sums), factor variance x'Fx split by Euler contribution c_k = x_k (Fx)_k into market, industry\n    and style (per style too); specific = sum w^2 D. Names without an exposure row or a specific forecast are left out\n    and their gross reported. None when a factor the book is exposed to has no forecast (the harness's complete-\n    forecast rule).\nG-2a over sessions (``variance_split_session`` rows, None = incomplete): the mean share of each block in the\n    daily ex-ante variance, the share of the summed variance, the mean ex-ante volatility (annualised) and the\n    per-year mean shares. 'specific' small means name-level risk sizing moves little (review S-7).",
+   "question": "ex-ante variance split of the book (market, industry, style, specific): can name-level risk sizing matter",
+   "result": {
+    "by_year": {
+     "2020": {
+      "industry": 0.2190512801,
+      "market": 0.0115683069,
+      "specific": 0.1802664813,
+      "style": 0.5891139316
+     },
+     "2021": {
+      "industry": 0.1100996844,
+      "market": 0.002551877213,
+      "specific": 0.2174237557,
+      "style": 0.6699246827
+     },
+     "2022": {
+      "industry": 0.1941745228,
+      "market": 0.005421716602,
+      "specific": 0.09698835902,
+      "style": 0.7034154016
+     },
+     "2023": {
+      "industry": 0.2040258598,
+      "market": 0.001664443415,
+      "specific": 0.1269342883,
+      "style": 0.6673754085
+     }
+    },
+    "complete_sessions": 1005,
+    "incomplete_sessions": 0,
+    "mean_ex_ante_vol_annual": 0.03270392557,
+    "mean_gross": 0.9818840372,
+    "mean_share": {
+     "industry": 0.1817963569,
+     "market": 0.005318559185,
+     "specific": 0.1555710668,
+     "style": 0.6573140172
+    },
+    "mean_share_factor_industry_specific": {
+     "factor (market + style)": 0.6626325764,
+     "industry": 0.1817963569,
+     "specific": 0.1555710668
+    },
+    "mean_uncovered_gross": 0.001329521117,
+    "sessions": 1005,
+    "share_of_summed_variance": {
+     "industry": 0.1973620043,
+     "market": 0.007951585564,
+     "specific": 0.1334158095,
+     "style": 0.6612706006
+    },
+    "style_share_of_summed_variance": {
+     "asset_growth": -0.003934043153,
+     "beta": 0.02244029474,
+     "earnings_yield": 0.04450534769,
+     "leverage": 0.01167942898,
+     "liquidity": -0.005931845432,
+     "momentum": 0.4285105695,
+     "profitability": 0.01834491485,
+     "residual_vol": 0.04365756544,
+     "short_interest": 0.04457386383,
+     "size": 0.01813373863,
+     "value": 0.03929076557
+    }
+   },
+   "status": "ok"
+  }
+ },
+ "schema": "atx.book-diagnostics/v1",
+ "tool": {
+  "script": "atx-impl/tools/book_diagnostics.py",
+  "script_sha256": "2be3b164e449dfd5ac975de629797cee7d3a18e58af51313cc01bd2646d485a2"
+ },
+ "window_id": "research-window-v2"
+}

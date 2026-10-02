@@ -1,0 +1,709 @@
+{
+ "declaration": "descriptive only (v8-prereg rule 8): no diagnostic gates, selects or re-weights anything; nothing here is an input to an admission, a composition, a fit or a construction",
+ "diagnostics": {
+  "G-1b": {
+   "inputs": {
+    "holdings": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-h/manifest.json",
+     "sha256": "67b1eb917a5480f4e6aa9c08128ccbf71209350762ca816c6a0e0561c3a03209"
+    },
+    "nav": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+     "sha256": "119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615"
+    },
+    "role": {
+     "path": "build-equity/train-2020-2023-lo3/manifest.json",
+     "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    "u_pass": {
+     "path": "build-equity/mega-v8-b0b-train-u-1/summary.json",
+     "sha256": "bb34cf3da2d6e62c20d154e481c81a707361a67c6c59d8f070616f9d2a65737e"
+    },
+    "weights": {
+     "path": "build-equity/mega-weights-v8-b0b-ew/composition_weights.json",
+     "sha256": "ddf1417e1e137bcd7d4f9ceb9d0ca6a7d673d817b48fd3e490c8951832a0de26"
+    }
+   },
+   "method": "G-1b: the planned turnover of each member's and each theme's own aim, and their share of the book's turnover.\n\n    ``signals`` maps a member id to its raw signal on the decision rows (T x N; read twice, so a lazy mapping streams\n    the members); ``members`` = [{id, weight, sign, theme}] with weight > 0; ``member_mask`` the decision members.\n      blend       B = sum_k s_k w_k r_k, r_k = the member's centred rank (``member_ranks``): the composition.\n      slices      a_k = L s_k w_k r_k / g, g(d) = sum_i |B_i(d)|: the member's exact linear share of the blend's aim\n                  at the book's gross L (sum_k a_k = L B / g); a theme's slice is the sum of its members'.\n      own aim     each slice moves at theta from a flat book (``theta_trades``); its planned turnover tau_k(d) =\n                  sum_i |trade_k,i(d)|, averaged over rows >= ``score_from`` (earlier rows warm the books up).\n      share       own share = tau_k / sum_j tau_j over the members (themes); attributed share = sum_d sum_i\n                  sign(T_i(d)) trade_k,i(d) / sum_d sum_i |T_i(d)|, T the combined book's planned trade: additive,\n                  summing to 1 - remainder; the remainder is what the linear slices do not explain (the final re-rank\n                  of B; for the book also neutralisation, dust band, locate and fills).\n      combined    the model book: L x desired_target(B) moved at theta; the book: ``book_trades`` (the NAV's planned\n                  trades from --emit-holdings: target_weight - held_weight on decision rows), when given.\n    ``fast``: the ids reported as the fast members (default: the FAST_MEMBERS members with the highest own-aim\n    turnover per unit weight). Returns (result, series): series feeds ``netting_ratio``.",
+   "question": "turnover attribution, the planned turnover of each member's and theme's own aim: do the fast members carry most of the turnover",
+   "result": {
+    "combined_turnover": {
+     "book": 0.03398408341,
+     "model": 0.03174970057
+    },
+    "construction_source": "nav recipe",
+    "fast": {
+     "attributed_share": {
+      "book": 0.5960689652,
+      "model": 0.7195272333
+     },
+     "ids": [
+      "ind_adj_rev_5",
+      "iv_rv_spread",
+      "seasonality_same_month",
+      "ea_overdue"
+     ],
+     "own_share": 0.4544426218,
+     "rule": "the four highest admission tau (weights provenance) among the members",
+     "weight": 0.22
+    },
+    "leverage": 1.247,
+    "members": {
+     "accruals": {
+      "attributed_share": {
+       "book": 0.0003837479714,
+       "model": -0.0001509321403
+      },
+      "own_share": 0.006398425884,
+      "own_turnover": 0.0006426500097,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "asset_growth": {
+      "attributed_share": {
+       "book": 0.003225236433,
+       "model": 0.002544050884
+      },
+      "own_share": 0.01403803415,
+      "own_turnover": 0.001409962848,
+      "sign": 1,
+      "theme": "investment_issuance",
+      "weight": 0.025
+     },
+     "bac": {
+      "attributed_share": {
+       "book": 0.003426264552,
+       "model": 0.001339275531
+      },
+      "own_share": 0.01650978974,
+      "own_turnover": 0.001658222933,
+      "sign": 1,
+      "theme": "low_risk",
+      "weight": 0.03333333333
+     },
+     "bm": {
+      "attributed_share": {
+       "book": 0.001359211843,
+       "model": 5.90958544e-05
+      },
+      "own_share": 0.007916539283,
+      "own_turnover": 0.0007951274483,
+      "sign": 1,
+      "theme": "value",
+      "weight": 0.02
+     },
+     "cbop": {
+      "attributed_share": {
+       "book": 0.001573430054,
+       "model": 0.003531058571
+      },
+      "own_share": 0.00520070081,
+      "own_turnover": 0.0005223519794,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "chtax": {
+      "attributed_share": {
+       "book": 0.007868193605,
+       "model": 0.009182339294
+      },
+      "own_share": 0.01577418679,
+      "own_turnover": 0.001584339879,
+      "sign": 1,
+      "theme": "earnings_momentum",
+      "weight": 0.02
+     },
+     "droe": {
+      "attributed_share": {
+       "book": 0.01124860377,
+       "model": 0.0131849975
+      },
+      "own_share": 0.01522226733,
+      "own_turnover": 0.001528905769,
+      "sign": 1,
+      "theme": "earnings_momentum",
+      "weight": 0.02
+     },
+     "dtc": {
+      "attributed_share": {
+       "book": 0.003951810003,
+       "model": 0.005081829575
+      },
+      "own_share": 0.0210942205,
+      "own_turnover": 0.002118677509,
+      "sign": 1,
+      "theme": "short_interest",
+      "weight": 0.025
+     },
+     "ea_overdue": {
+      "attributed_share": {
+       "book": 0.0005912744569,
+       "model": 0.0009201105483
+      },
+      "own_share": 0.007285547069,
+      "own_turnover": 0.0007317513681,
+      "sign": 1,
+      "theme": "earnings_momentum",
+      "weight": 0.02
+     },
+     "ear": {
+      "attributed_share": {
+       "book": 0.004478468068,
+       "model": 0.005221623379
+      },
+      "own_share": 0.02340699679,
+      "own_turnover": 0.002350969908,
+      "sign": 1,
+      "theme": "earnings_momentum",
+      "weight": 0.02
+     },
+     "ebit_ev": {
+      "attributed_share": {
+       "book": 0.00265225924,
+       "model": 0.002621476432
+      },
+      "own_share": 0.005487956819,
+      "own_turnover": 0.0005512036189,
+      "sign": 1,
+      "theme": "value",
+      "weight": 0.02
+     },
+     "fscore": {
+      "attributed_share": {
+       "book": 0.001505321895,
+       "model": 0.002304381495
+      },
+      "own_share": 0.004632714988,
+      "own_turnover": 0.0004653041835,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "ftd_fail": {
+      "attributed_share": {
+       "book": 0.0106089402,
+       "model": 0.01541383501
+      },
+      "own_share": 0.03946119579,
+      "own_turnover": 0.003963433868,
+      "sign": 1,
+      "theme": "short_interest",
+      "weight": 0.025
+     },
+     "gpa": {
+      "attributed_share": {
+       "book": 0.0007697401726,
+       "model": 0.001242033297
+      },
+      "own_share": 0.002679187379,
+      "own_turnover": 0.0002690942782,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "high_52w": {
+      "attributed_share": {
+       "book": -0.001405184044,
+       "model": 0.003177113089
+      },
+      "own_share": 0.02229830135,
+      "own_turnover": 0.002239613905,
+      "sign": 1,
+      "theme": "price_momentum",
+      "weight": 0.025
+     },
+     "ind_adj_rev_5": {
+      "attributed_share": {
+       "book": 0.1272325372,
+       "model": 0.1532000913
+      },
+      "own_share": 0.131667132,
+      "own_turnover": 0.01322448445,
+      "sign": 1,
+      "theme": "reversal_seasonality",
+      "weight": 0.05
+     },
+     "ind_mom_12_1": {
+      "attributed_share": {
+       "book": 0.006364059036,
+       "model": 0.008185613664
+      },
+      "own_share": 0.01849461527,
+      "own_turnover": 0.001857576363,
+      "sign": 1,
+      "theme": "price_momentum",
+      "weight": 0.025
+     },
+     "ins_opp": {
+      "attributed_share": {
+       "book": 0.009578981322,
+       "model": 0.006990574117
+      },
+      "own_share": 0.0201905321,
+      "own_turnover": 0.002027912159,
+      "sign": 1,
+      "theme": "ownership_flow",
+      "weight": 0.05
+     },
+     "inst_best_ideas": {
+      "attributed_share": {
+       "book": 0.0009078537028,
+       "model": 0.01218986366
+      },
+      "own_share": 0.0203712409,
+      "own_turnover": 0.002046062328,
+      "sign": 1,
+      "theme": "ownership_flow",
+      "weight": 0.05
+     },
+     "issuance_xbrl": {
+      "attributed_share": {
+       "book": 0.000779989949,
+       "model": 0.002463118642
+      },
+      "own_share": 0.01150708003,
+      "own_turnover": 0.001155756936,
+      "sign": 1,
+      "theme": "investment_issuance",
+      "weight": 0.025
+     },
+     "iv_rv_spread": {
+      "attributed_share": {
+       "book": 0.3713825493,
+       "model": 0.4467589484
+      },
+      "own_share": 0.2088785042,
+      "own_turnover": 0.02097949951,
+      "sign": 1,
+      "theme": "options_implied",
+      "weight": 0.1
+     },
+     "net_payout": {
+      "attributed_share": {
+       "book": 0.001273241439,
+       "model": 0.002917347608
+      },
+      "own_share": 0.009012764002,
+      "own_turnover": 0.000905230908,
+      "sign": 1,
+      "theme": "value",
+      "weight": 0.02
+     },
+     "noa": {
+      "attributed_share": {
+       "book": 0.002614746405,
+       "model": 0.001432347709
+      },
+      "own_share": 0.009711420891,
+      "own_turnover": 0.0009754031448,
+      "sign": 1,
+      "theme": "investment_issuance",
+      "weight": 0.025
+     },
+     "opbe": {
+      "attributed_share": {
+       "book": 0.0009811887457,
+       "model": 0.002722026458
+      },
+      "own_share": 0.003594841003,
+      "own_turnover": 0.0003610613997,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "opex_at": {
+      "attributed_share": {
+       "book": 0.0005821775589,
+       "model": 9.840429942e-05
+      },
+      "own_share": 0.003267140468,
+      "own_turnover": 0.0003281475619,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "q5_eg": {
+      "attributed_share": {
+       "book": 0.01211358053,
+       "model": 0.01507553907
+      },
+      "own_share": 0.01578706357,
+      "own_turnover": 0.001585633207,
+      "sign": 1,
+      "theme": "investment_issuance",
+      "weight": 0.025
+     },
+     "rd_me": {
+      "attributed_share": {
+       "book": 0.0009817263292,
+       "model": -0.0003852290502
+      },
+      "own_share": 0.003932575539,
+      "own_turnover": 0.0003949830402,
+      "sign": 1,
+      "theme": "value",
+      "weight": 0.02
+     },
+     "res_mom_12_1": {
+      "attributed_share": {
+       "book": 0.01646935949,
+       "model": 0.02061767179
+      },
+      "own_share": 0.01939685591,
+      "own_turnover": 0.0019481963,
+      "sign": 1,
+      "theme": "price_momentum",
+      "weight": 0.025
+     },
+     "roa": {
+      "attributed_share": {
+       "book": 0.001505588092,
+       "model": 0.00376694311
+      },
+      "own_share": 0.00493858715,
+      "own_turnover": 0.0004960256065,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "roe_q": {
+      "attributed_share": {
+       "book": 0.003762051046,
+       "model": 0.00580034785
+      },
+      "own_share": 0.007436153936,
+      "own_turnover": 0.0007468781362,
+      "sign": 1,
+      "theme": "profitability_quality",
+      "weight": 0.0125
+     },
+     "seasonality_same_month": {
+      "attributed_share": {
+       "book": 0.09686260423,
+       "model": 0.118648083
+      },
+      "own_share": 0.1066114386,
+      "own_turnover": 0.01070792149,
+      "sign": 1,
+      "theme": "reversal_seasonality",
+      "weight": 0.05
+     },
+     "si_ratio": {
+      "attributed_share": {
+       "book": 0.0007903888234,
+       "model": 0.005225544658
+      },
+      "own_share": 0.01228107748,
+      "own_turnover": 0.001233496286,
+      "sign": 1,
+      "theme": "short_interest",
+      "weight": 0.025
+     },
+     "smax": {
+      "attributed_share": {
+       "book": 0.07596289214,
+       "model": 0.09095192592
+      },
+      "own_share": 0.05841473252,
+      "own_turnover": 0.005867103737,
+      "sign": 1,
+      "theme": "low_risk",
+      "weight": 0.03333333333
+     },
+     "smax5": {
+      "attributed_share": {
+       "book": 0.04044697854,
+       "model": 0.04798943164
+      },
+      "own_share": 0.06717627519,
+      "own_turnover": 0.006747102284,
+      "sign": 1,
+      "theme": "low_risk",
+      "weight": 0.03333333333
+     },
+     "sue": {
+      "attributed_share": {
+       "book": 0.01114084569,
+       "model": 0.01326720101
+      },
+      "own_share": 0.01650188852,
+      "own_turnover": 0.001657429344,
+      "sign": 1,
+      "theme": "earnings_momentum",
+      "weight": 0.02
+     },
+     "sv_flow": {
+      "attributed_share": {
+       "book": 0.003120134598,
+       "model": 0.005676208518
+      },
+      "own_share": 0.01617457897,
+      "own_turnover": 0.001624554777,
+      "sign": 1,
+      "theme": "short_interest",
+      "weight": 0.025
+     },
+     "value_composite": {
+      "attributed_share": {
+       "book": 0.002886224211,
+       "model": 0.00516978639
+      },
+      "own_share": 0.008474834851,
+      "own_turnover": 0.0008512019671,
+      "sign": 1,
+      "theme": "value",
+      "weight": 0.02
+     },
+     "within_ind_mom": {
+      "attributed_share": {
+       "book": 0.01252821771,
+       "model": 0.01665491279
+      },
+      "own_share": 0.01877260228,
+      "own_turnover": 0.001885497036,
+      "sign": 1,
+      "theme": "price_momentum",
+      "weight": 0.025
+     }
+    },
+    "remainder": {
+     "book": 0.1474947657,
+     "model": -0.05108899094
+    },
+    "rows": 1006,
+    "themes": {
+     "earnings_momentum": {
+      "attributed_share": {
+       "book": 0.03532738559,
+       "model": 0.04177627173
+      },
+      "members": [
+       "chtax",
+       "droe",
+       "ea_overdue",
+       "ear",
+       "sue"
+      ],
+      "own_share": 0.07036380645,
+      "own_turnover": 0.005256564022,
+      "weight": 0.1
+     },
+     "investment_issuance": {
+      "attributed_share": {
+       "book": 0.01873355331,
+       "model": 0.02151505631
+      },
+      "members": [
+       "asset_growth",
+       "issuance_xbrl",
+       "noa",
+       "q5_eg"
+      ],
+      "own_share": 0.0400654589,
+      "own_turnover": 0.002993110526,
+      "weight": 0.1
+     },
+     "low_risk": {
+      "attributed_share": {
+       "book": 0.1198361352,
+       "model": 0.1402806331
+      },
+      "members": [
+       "bac",
+       "smax",
+       "smax5"
+      ],
+      "own_share": 0.1421753449,
+      "own_turnover": 0.0106212816,
+      "weight": 0.1
+     },
+     "options_implied": {
+      "attributed_share": {
+       "book": 0.3713825493,
+       "model": 0.4467589484
+      },
+      "members": [
+       "iv_rv_spread"
+      ],
+      "own_share": 0.2808293473,
+      "own_turnover": 0.02097949951,
+      "weight": 0.1
+     },
+     "ownership_flow": {
+      "attributed_share": {
+       "book": 0.01048683503,
+       "model": 0.01918043778
+      },
+      "members": [
+       "ins_opp",
+       "inst_best_ideas"
+      ],
+      "own_share": 0.04016191104,
+      "own_turnover": 0.003000316033,
+      "weight": 0.1
+     },
+     "price_momentum": {
+      "attributed_share": {
+       "book": 0.03395645219,
+       "model": 0.04863531134
+      },
+      "members": [
+       "high_52w",
+       "ind_mom_12_1",
+       "res_mom_12_1",
+       "within_ind_mom"
+      ],
+      "own_share": 0.06946923945,
+      "own_turnover": 0.005189734938,
+      "weight": 0.1
+     },
+     "profitability_quality": {
+      "attributed_share": {
+       "book": 0.01106324554,
+       "model": 0.01931426294
+      },
+      "members": [
+       "accruals",
+       "cbop",
+       "fscore",
+       "gpa",
+       "opbe",
+       "opex_at",
+       "roa",
+       "roe_q"
+      ],
+      "own_share": 0.02887862542,
+      "own_turnover": 0.00215739243,
+      "weight": 0.1
+     },
+     "reversal_seasonality": {
+      "attributed_share": {
+       "book": 0.2240951414,
+       "model": 0.2718481743
+      },
+      "members": [
+       "ind_adj_rev_5",
+       "seasonality_same_month"
+      ],
+      "own_share": 0.2207305893,
+      "own_turnover": 0.01648979117,
+      "weight": 0.1
+     },
+     "short_interest": {
+      "attributed_share": {
+       "book": 0.01847127362,
+       "model": 0.03139741776
+      },
+      "members": [
+       "dtc",
+       "ftd_fail",
+       "si_ratio",
+       "sv_flow"
+      ],
+      "own_share": 0.07512482815,
+      "own_turnover": 0.005612238574,
+      "weight": 0.1
+     },
+     "value": {
+      "attributed_share": {
+       "book": 0.009152663062,
+       "model": 0.01038247724
+      },
+      "members": [
+       "bm",
+       "ebit_ev",
+       "net_payout",
+       "rd_me",
+       "value_composite"
+      ],
+      "own_share": 0.03220084904,
+      "own_turnover": 0.002405580838,
+      "weight": 0.1
+     }
+    },
+    "theta": 0.05,
+    "top_by_own_share": [
+     "iv_rv_spread",
+     "ind_adj_rev_5",
+     "seasonality_same_month",
+     "smax5"
+    ],
+    "warmup_rows": 63
+   },
+   "status": "ok"
+  },
+  "G-1c": {
+   "inputs": {
+    "holdings": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-h/manifest.json",
+     "sha256": "67b1eb917a5480f4e6aa9c08128ccbf71209350762ca816c6a0e0561c3a03209"
+    },
+    "nav": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+     "sha256": "119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615"
+    },
+    "role": {
+     "path": "build-equity/train-2020-2023-lo3/manifest.json",
+     "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    "u_pass": {
+     "path": "build-equity/mega-v8-b0b-train-u-1/summary.json",
+     "sha256": "bb34cf3da2d6e62c20d154e481c81a707361a67c6c59d8f070616f9d2a65737e"
+    },
+    "weights": {
+     "path": "build-equity/mega-weights-v8-b0b-ew/composition_weights.json",
+     "sha256": "ddf1417e1e137bcd7d4f9ceb9d0ca6a7d673d817b48fd3e490c8951832a0de26"
+    }
+   },
+   "method": "G-1c: combined-score turnover over the weight-averaged sleeve turnover, mean(tau_combined) / sum_k mean(tau_k)\n    over ``rows``, each sleeve at its weight in the book (``turnover_attribution`` series). 1: no trade cancels; below\n    1: the sleeves' trades net inside the combined score. Also the daily ratio's median, p5 and p95.",
+   "question": "netting ratio, combined-score turnover over the sleeves' turnover: how much trades cancel",
+   "result": {
+    "members_model": {
+     "combined_turnover": 0.03174970057,
+     "daily_ratio": {
+      "median": 0.3172085205,
+      "p5": 0.2846409878,
+      "p95": 0.3514210436
+     },
+     "ratio": 0.3161100177,
+     "rows": 1006,
+     "sleeve_turnover_sum": 0.1004387675,
+     "sleeves": 38
+    },
+    "themes_book": {
+     "combined_turnover": 0.03398408341,
+     "daily_ratio": {
+      "median": 0.4561820087,
+      "p5": 0.3987525108,
+      "p95": 0.5189342499
+     },
+     "ratio": 0.4549073231,
+     "rows": 1006,
+     "sleeve_turnover_sum": 0.07470550964,
+     "sleeves": 10
+    },
+    "themes_model": {
+     "combined_turnover": 0.03174970057,
+     "daily_ratio": {
+      "median": 0.4260268567,
+      "p5": 0.3910849708,
+      "p95": 0.4638729709
+     },
+     "ratio": 0.4249981122,
+     "rows": 1006,
+     "sleeve_turnover_sum": 0.07470550964,
+     "sleeves": 10
+    }
+   },
+   "status": "ok"
+  }
+ },
+ "schema": "atx.book-diagnostics/v1",
+ "tool": {
+  "script": "atx-impl/tools/book_diagnostics.py",
+  "script_sha256": "2be3b164e449dfd5ac975de629797cee7d3a18e58af51313cc01bd2646d485a2"
+ },
+ "window_id": "research-window-v2"
+}

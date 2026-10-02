@@ -3068,3 +3068,244 @@ dirs 93 MiB each, cards 8 MiB each, NAV dirs ~5 MiB each, `fit-work` 260 MiB tot
 - `scripts/tests/test_research_spec.py` (PM5-20, FIX-6): the base-lo3 lock now also fills pins its fixtures expect null;
   not run here.
 - Carried: R15 (lo3 dlret role), B0c, diagnostics, Release A/B (batch 1b).
+
+## cells batch 1b: R15, B0c, B0c diagnostics, Release A/B (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `7ac86a54` (clean; code head `1cc4c6c9`;
+research executables on v8-12: IC `ab7e2cbd...1615452d`, NAV / targets `5497c89d...35b9bca6`, risk
+`8967952c...a7eed258`). Procedure `task-CELLS-brief.md`; read: integrator-rules, v8-prereg rules 1-11 and rulings,
+A2 root sequence, plan W0-4 / G-1..G-3 / E-1-E-2 / 12.1, rulings W0-b, W0-c, A-3 (FIX-AB finding), E-2 (OD-3 / OD-7;
+no Release ruling under that id), E-10, E-18, E-24, E-25, E-28, E-29, E-34, E-37, E-39, PM4-5, PM5-18, PM5-21,
+PM5-22, PM5-23, batch 1a's log, runbook R8 / R15, task-DLRET and task-E25 reports, task-G report.
+
+Preconditions: freeze list (PM5-21) re-hashed before the first run, all equal to batch 1a's record
+(`run_bounded_research.py` 81b5de1e, `research_cycle.py` f6b4043d, `research_spec.py` 9dbb7879, `research_ledger.py`
+c90edb6e, `research_tree.py` c313a510, `fit_composition_weights.py` 8860483c, `alpha_report_card.py` ade2d777,
+`book_monitor.py` 628b2e6e, `nav_summ.py` 719ac51f, `backtest_integrity.py` 2e195823, `compare_window_overlap.py`
+b4d7f2e8, `research_window.json` 62cf2cfa; exes as above). Ledger 40 lines (39 construction + 1 protocol), file
+`a49acf02`. Disk 38 G free, RAM 6.6 G free. No executable, cycle or tool script changed in this batch; commits: the
+B0c lock (a spec of a cell not yet run), this log, the diagnostics copies.
+
+### R15: delisting-returns label role on lo3
+
+Command: runbook R8's argv plus `--delisting-returns $V1/delisting`, output `build-equity/train-2020-2023-lo3-dlret`
+(task-E25-report "Building the label roles", lo3), through `run_bounded_research.py` under the preparation caps
+600 s / 2,560 MiB / 512 (as R8 ran), the tool's own limits as the runbook (`--memory-mib 1024 --max-seconds 170`).
+The four stage pins were re-hashed immediately before: base `de8d91db`, identity-bridge-v2-pit `09aac28f`,
+fundamentals (SIC) `9f9b2f85`, delisting `1b1166b6` -- equal to R8's receipt bindings; `prepare_recent_research.py`
+unchanged since R8's source `2d3e14ef` (`git diff` empty); interpreter SHA `624bbc05`.
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | receipt.json SHA-256 | manifest SHA-256 |
+|---|---|---|---|---|---|---|---|
+| R15 | `train-2020-2023-lo3-dlret-run` | `7ac86a54` | completed / 0 | 4.7 | 483 | `06d849f2b5498703c16145208648a0903b7aa87275b755ea630f727808737121` | **`95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069`** |
+
+- Manifest 587.8 KB (under the C++ 1 MiB cap); role 207 MiB on disk. `universe.id` linked-operating-v3, dates 1,405,
+  score_begin 399, score_end 1,405. `universe.delisting.returns_applied` true; `applied`: terminations 867,
+  members_cleared_on_termination_session 0, skipped no_delist_return 123 (every other skip 0);
+  `universe.inputs.delisting` pins the stage manifest `1b1166b6` and `events.parquet`.
+- Against the decision role lo3 (`e1c67101`): `sessions.i64`, `ids.u64`, `member.u8` byte-identical;
+  `present.u8`, `close.f64`, `raw_close.f64`, `volume.f64` differ (the patched termination cells);
+  `kept_member_counts` equal (1,405 entries). The NAV's E-25 pair check admitted it (B0c below).
+- No fields build on the dlret role: the runbook's "then an R11-style fields build" predates E-10 / E-25 (the label
+  role marks the NAV only; signals, fields and decisions stay on lo3, fields v9 lo3 `9f156363`).
+
+### Cell B0c (base-b0c on base-lo3; lo3 + label role lo3-dlret, warm start 60, capacity curve; baseline by declaration)
+
+**Spec** `scripts/specs/v8/base-b0c.json` (template). Edits: `"parent": null` -> `"base-lo3.json"`;
+`change.inputs.label_role` dir / path `train-2020-2023-lo1-dlret` -> `train-2020-2023-lo3-dlret` (A2 root sequence);
+then `lock --write` filled `label_role.sha256` `95e16cfe` and wrote the derived pins into `locked`: reference_cell
+= B0b's NAV `summary.json` `82a596c1`, reference_admission = B0b's `admission.json` `29357ece`. A dry lock after it
+exits 0. Nothing else changed (nominal_parent, description, nav.output, the nav flags `--warm-start-sessions 60`,
+`--capacity-curve` as the template had them). File SHA `62739baf58e555bc05d4fc426d70b58aebb730ceb93236a4177a7635ca15d44d`;
+**spec digest (template chain) `059d9ba6d7cb0f6346c5b065c64fd5ea55940db7196c2200e950ce137c7b483d`** (the verdict's
+spec_sha256 and the NAV binding). Commit `2ad09c13`.
+
+**Pins** (plan, every one `[locked, verified]`): library `787c802e`, recipe `7f8a2643`, role lo3 `e1c67101`,
+identity_bridge `09aac28f`, fund_events `304d2945`, sic_events `9f9b2f85`, reference_cell `82a596c1`,
+reference_admission `29357ece`, label_role `95e16cfe`; fields v9 lo3 as built `9f156363` (63 rows = the spec list).
+Commands: `plan`; `run --stop-after nav` (source `2ad09c13`); mechanics read; `run` (resume: fields, u, fit, card,
+gate, w, nav done; NAV binding spec `059d9ba6`, argv `cbb52310ff1a20c60adf86f38addbd88103dc15005c78709716b580830ce938e`).
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fields, u, fit, card, w | - | - | - | - | - | done: B0b's outputs (a NAV-only change; the template keeps them, resumed as done) |
+| gate | internal | - | - | PASS | - | `b0b-readout`: 0 status changes against B0b's admission |
+| nav | 180 / 1,536 | 50.0 | 586 | 0 | `f85e9c1d7408d3f7f842ed4f096ae43c2b57665ebee6620180d9e800711ac6fc` | `summary.json` `119d4cd0...1615`, `recipe.json` `f0d28ded...44f7`, S2 daily `78360530...89d4`, `capacity_curve.csv` `e56431da...26ac` |
+| monitor | - | - | - | - | - | done: B0b's `mega-monitor-v8-b0b` (`c034ae6e`); the template keeps the parent's monitor output and its inputs (u daily IC, admission, fit work, card sleeves) are B0b's; the NAV is not an input |
+| summ | direct | 15.5 | - | 0 | - | `cycle-v8-b0c/summ.json` `53bd338f...7375`, `pbo.json` `9fa8fd15...9941`, `cycle_verdict.json` `eadad51a...e6e6` |
+| paired one-sided p (PM5-23) | bounded 180 / 1,536 | 0.8 | 508 | 0 | `228350f215da93f4d782af21a19fac5c987c249a5db7dc1a1d2b5ea01bfc98c4` | `nav_summ.py --protocol v8 --bundle B0b B0c --bundle-json build-equity/v8-cells-b0c-bundle.json` `fe849547...470f` (no `--ledger`) |
+
+Every bounded receipt: completed, `clean in the code pathspec`, source `2ad09c13`, NAV exe v8-12 `5497c89d`.
+
+**Mechanics (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`, primary; read before any return): PASS.** All-rows gross
+.9820 in [.90, 1.05]; all-rows net +.0036 (|.| <= .02); tau mean .0341 <= .20, p95 .0390 <= .30 (nav_summ, 1,004
+sessions; the summary's meets_daily_turnover_mean / _p95 true, its own .03407 / .03901). 1,006 CSV rows
+2020-01-02..2023-12-29, 1,005 return rows. Accounting: max cash-book error 1.24e-13, return identity 3.5e-16 (tol
+1e-9). Max gross 1.128, max |net| .028; post-ramp gross .9885. Beta: none to check (aim-partial-v5; as B0a / B0b).
+
+**Row score_begin (A-3).** `warm_start`: K 60, first decision role row 339 (2019-10-07), score_begin role row 399 =
+2020-01-02 = CSV row 0; no scored deployment (`deployment.occurred` false). **S2 gross at score_begin .9257** (the
+five books .9246-.9283); rows 1, 2: .9259, .9303. Against steady state: post-ramp mean (rows 63+) .9885 -> ratio
+.9365, **6.4% below**; all-rows mean .9820 -> 5.7% below; rows 63-125 mean .958 -> 3.4% below. The D-0 test's
+synthetic expectation (constant aim, theta .05, K 60) is 1 - .95^60 = .954 of steady state (4.6% below). So "within
+5% of steady state" holds against the local early-2020 level, not against the 4-year post-ramp mean. It is not one of
+the mechanics limits (gross, net, tau as v7); reported, no stop. Gross-only context: B0b's flat start stands at
+.777-.799 on rows 59-62 (late March 2020) and B0c at .797-.819 on the same rows: the March 2020 dip in gross is in
+both books.
+
+**Label role (E-25):** the NAV admitted lo3-dlret against lo3 (exit 0); `summary.label_role`: 867 label-only present
+cells (686 in scored rows) = the role's 867 terminations; membership equal (0 cleared).
+
+**Statistics of record.** S2 net Sharpe **B0c +1.1328** (ledger `s2_net_sr` 1.13275; T 1,005, 2020-01-03..2023-12-29:
+the warm start makes CSV row 1 a return row, one more than B0b). **Paired against B0b, for information only** (gates
+nothing: B0c is the baseline by declaration, W0-b, prereg rule 6): studentized CBB, block 21, seed 20260929, 4,999
+resamples (4,999 valid), 1,004 common sessions: SR B0c 1.1447 vs B0b 1.1389; **dSR +.0058**; rho .9994; **Memmel SE
+.0174** (t +.33); CBB 95% [-.0172, +.0320]; LW studentized SE .0131, 95% [-.0266, +.0383]; **bootstrap p one-sided
+.3014, two-sided .6792**. The one-sided p comes from the bounded bundle (PM5-23); its dSR, Memmel SE, CBB CI, LW SE /
+CI and two-sided p equal the cycle's to the last digit; its "verdict FAIL" line is the freeze-gate test (item 9),
+not used. On its own 1,005 rows B0c's SR is 1.1328; on the 1,004 common sessions 1.1447 (the extra row, 2020-01-03,
+is a loss day): the unpaired difference to B0b is -.0062, the paired dSR +.0058. Per-year net Sharpe vs B0b (below
+and batch 1a): 2020 +.319 vs +.322, 2021 +2.352 vs +2.360, 2022 +1.936 vs +1.941, 2023 +.118 vs +.115.
+DSR block (verdict, `--dsr-ledger`): N 40; pre-registered variance from 3 cells on research-window-v2 (B0a, B0b, B0c:
+V[SR] 1.82e-07, SR0 .0148 ann) gives cell-count DSR .9844 (degenerate until the PM5-22 re-runs, as at B0b); legacy
+variance (37 cells) DSR .7072; listing DSR .7177; effective-N DSR .8763 (N_eff 2); PSR vs 0 .9855; CSCV PBO .1787
+over 40 cells (12,870 splits, common sessions 2020-2022).
+
+**Criterion:** none (baseline by declaration: prereg rule 6, W0-b, E-10). **Verdict: B0c is the v8 baseline**,
+ledgered; mechanics pass; parent of R-1. Recorded by the tooling: `cycle-v8-b0c/cycle_verdict.json` (spec `059d9ba6`,
+paired block, ledger head) and the ledger line. **N after: 40** (41 lines = 40 construction + 1 protocol;
+`research_ledger.ledger_n` 40; invalid ids none; appended 1, skipped 39; trial `d24ef3e1a8211878`, origin prior,
+window_id research-window-v2, prev = B0b's head `ba3f4f70`; chain head
+`449847efa09efe2703fcde7c038df962a4202cd3d4299f6fe6bcd7c999971aa8`; file
+`ed3f4139273a085ccdb6c834ac5307bf311231a19136b7807b91d8a0a6b260a1`). Matches the brief.
+
+Year table (S2; return rows, net return, net Sharpe, vol, tau mean, cost bps per traded dollar):
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | +.0135 | +.319 | .0453 | .0362 | 15.67 |
+| 2021 | 252 | +.0767 | +2.352 | .0316 | .0335 | 12.03 |
+| 2022 | 251 | +.0859 | +1.936 | .0432 | .0332 | 12.80 |
+| 2023 | 250 | +.0034 | +.118 | .0340 | .0333 | 12.16 |
+
+**Capacity curve (E-29, report only).** `capacity_curve.csv` `e56431da`; x1 = the primary S2 book bit for bit
+(`capacity_x1_equals_primary_bit_for_bit` true; the x1 daily CSV byte-identical to the primary).
+
+| multiple | equivalent NAV | net Sharpe | gross Sharpe | cost bps / $ | capped fill share | tau |
+|---|---|---|---|---|---|---|
+| .5 | $0.5bn | 1.174 | 1.550 | 11.15 | .0011 | .0342 |
+| 1 | $1bn | **1.133** | 1.552 | 13.13 | .0046 | .0341 |
+| 2 | $2bn | **1.085** | 1.551 | 15.47 | .0325 | .0336 |
+| 4 | $4bn | **.978** | 1.467 | 17.60 | .1206 | .0320 |
+| 8 | $8bn | .851 | 1.326 | 19.24 | .2666 | .0291 |
+
+PM4-5 disclosure: the capacity books scale only the impact law (m^.5) and the participation cap (1 / m); the aim is
+the $1bn book's at every multiple (no per-multiple desired target in v8). E-15 / PM4-5's "the aim's ADV cap reads
+the initial NAV" concerns `--adv-hold-q`, which B0c does not use; the 2x / 4x rows are the $1bn aim traded at NAV m,
+report only.
+
+**Appendix A:** `TRAIN construction cells 40; admission trials this sprint 0; window research-window-v2 (2020-2023);
+hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.`
+Defects: none; fixes: none.
+
+Findings (none a stop):
+1. Warm-start gross at score_begin 6.4% below the 4-year post-ramp mean (the 5% expectation holds only against the
+   local early-2020 level); above.
+2. nav_summ under a warm start takes CSV row 0 (the first executed fill, the last warm-up decision's orders) as the
+   deployment row and drops it from tau (1,004 sessions, mean .034069), while the NAV summary reports no scored
+   deployment and counts it (.034070): `warning_tau` in summ.json. Gates nothing; nav_summ is frozen (PM5-21).
+3. B0c's monitor is B0b's (see "M2 alarm" below).
+
+**Next parent: `scripts/specs/v8/base-b0c.json`, spec digest `059d9ba6d7cb0f6346c5b065c64fd5ea55940db7196c2200e950ce137c7b483d`**
+(file `62739baf`). R-1 sets `"parent": "base-b0c.json"`.
+
+### B0c diagnostics (G-1..G-3; zero-trial, gate nothing, select nothing: prereg rule 8)
+
+Commands: task-G-report "The commands root runs on a finished cell", every run through `run_bounded_research.py` on
+the clean tree at `2ad09c13`. Caps: the NAV re-runs keep B0c's NAV caps 180 s / 1,536 MiB; every other step E-18's
+600 s / 2,560 MiB. Nothing here is ledgered (no `--ledger`).
+
+| step | receipt dir | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| holdings NAV: B0c's exact NAV argv + `--emit-holdings $N-h`, output `$N-hrun` | `$N-hrun-run` | 50.7 | 587 | 0 | `8ef2c54cd877b46ea6c1050b59ee3f89da1a1093e56c4349975cdd6bf3700526` | `$N-h` (f64, 163 MiB); all 21 CSVs (main + capacity), `summary.json`, `recipe.json`, `v7_extras.json` byte-identical to B0c's |
+| lag-combined K = 1, 2, 3 | `b0c-lag{K}-combined-run` | 0.8 each | 342 | 0 | `87efe115...` / `959d6bb3...` / `29c4f83a...` | combined `43746fa3` / `04d42dbf` / `86f20458` (2,490,409 member cells each) |
+| lagged NAV K = 1, 2, 3 (B0c's argv, only --combined / sha / --output changed) | `b0c-lag{K}-run` | 47.0 / 43.3 / 46.0 | 587 | 0 | `a171b806...` / `6b4b9a46...` / `62035400...` | `b0c-lag{K}/summary.json` `5c9bfe45` / `5be77297` / `e2788f68` |
+| book-csv | `b0c-book-run` | 3.1 | 393 | 0 | `ee33966e19b64fa7c53e5fb2f00f554bb37d4976f635aa0501167df2dc3478de` | `b0c-book.csv` `f55121b9` (1,927,893 rows, 1,005 sessions, last 2023-12-28) |
+| risk `--book-weights` `--emit-exposures all` (exe v8-12 `8967952c`; role lo3, fields v9 lo3) | `b0c-risk-run` | 35.5 | 640 | 0 | `3d5b68283cb33b26e931bbe083f17b2c260c8438e63d968b846a651ff7b2274c` | `b0c-risk/manifest.json` `5dd560d7` (481 MiB) |
+| diagnostics G-1a, G-3d | `b0c-diagnostics-g1a-g3d-run` | 0.5 | 53 | 0 | `0ec0f5e1...` | `diagnostics-v8-g1a-g3d.json` `de1990b8` |
+| G-1b, G-1c | `...-g1b-g1c-run` | 42.4 | 926 | 0 | `d3a0eccb...` | `...-g1b-g1c.json` `a985adf8` |
+| G-2a | `...-g2a-run` | 3.9 | 364 | 0 | `29bc620a...` | `...-g2a.json` `e2a9874b` |
+| G-2b | `...-g2b-run` | 96.7 | 1,163 | 0 | `2ac05ba9...` | `...-g2b.json` `86bf47af` |
+| G-2c | `...-g2c-run` | 1.6 | 469 | 0 | `dd3ecc59...` | `...-g2c.json` `cbed04d7` |
+| G-3a | `...-g3a-run` | 1.6 | 644 | 0 | `33263e8a...` | `...-g3a.json` `b44ea5d0` |
+| G-3b | `...-g3b-run` | 5.0 | 938 | 0 | `ecc7690e...` | `...-g3b.json` `19e5e5da` |
+| G-3c | `...-g3c-run` | 0.5 | 55 | 0 | `fc3e9818...` | `...-g3c.json` `9f00b5f3` |
+
+(`$N` = `build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`.) Inputs: cards
+`mega-cards-v8-b0b` (index `7ed72729`), weights `mega-weights-v8-b0b-ew` (`ddf1417e`), u pass `mega-v8-b0b-train-u-1`,
+role lo3 `e1c67101`, fields v9 lo3, fit work `build-equity/fit-work`. All ten diagnostics `ok`. E-18's splits give
+eight files (schema `atx.book-diagnostics/v1`, window research-window-v2), not one `diagnostics-v8.json`; copies
+committed in `.superpowers/sdd/platform-v8-20260929/diagnostics-v8/` (bytes equal to `build-equity/b0c-diagnostics/`).
+The risk verb's own bias harness printed `book: refused` (110 observations, 857 uncovered name returns, dropped share
+.886 > .05) while factor (51 series) and random (64) were ok; G-2a reads the variance split, not the bias test, and
+found every session complete.
+
+What each shows (descriptive; S2 primary throughout):
+- **G-1a** (cards; theta .05): weighted ic_theta .00366 (weight sum .961). Negative at theta: 8 members, weight .324
+  (accruals, bac, bm, ind_adj_rev_5, ins_opp, iv_rv_spread, noa, smax5); unscored 6, weight .09 (ebit_ev, fscore,
+  gpa, opbe, opex_at, rd_me). Largest contributions inst_best_ideas, high_52w, si_ratio, res_mom_12_1, ftd_fail.
+  ic_theta from the decay curve (cards ran without `--ic-theta`); **f_theta and the K6 marginal IC are absent**
+  (B0c's cards carry no C-2 admission columns; B0c has no marginal phase, so no K6 exists).
+- **G-1b** (turnover attribution, NAV holdings): combined turnover book .0340 / model .0317. The four fast members
+  (highest admission tau: ind_adj_rev_5, iv_rv_spread, seasonality_same_month, ea_overdue; weight .22): own share
+  .454, **attributed share of the book's trades .596** (model .720), i.e. below the 75% the question posits on the
+  book. By theme (own / attributed book): options_implied (iv_rv_spread alone) .281 / .371; reversal_seasonality .221
+  / .224; low_risk .142 / .120; every other theme .075 or less. Non-linear remainder book .147.
+- **G-1c** (netting): combined turnover / summed theme-sleeve turnover **.455** on the book (daily median .456, p5
+  .399, p95 .519); .425 on the model; .316 against the 38 member sleeves: more than half of sleeve trading cancels.
+- **G-2a** (ex-ante variance split, atx-risk on the book): 1,005 sessions, all complete; mean shares market .005,
+  style .657, industry .182, **specific .156** (factor (market + style) .663 / industry .182 / specific .156);
+  ex-ante vol 3.27% annual; specific share by year .180 / .217 / .097 / .127 (2020-2023).
+- **G-2b** (IC h 21, weight-averaged): all .0112; volatility terciles low .0089 / mid .0103 / high .0144; ADV
+  terciles low .0110 / mid .0101 / high .0105; top 1,000 by me_company .0085 vs the rest .0127.
+- **G-2c** (held / ADV63, Q .10): held p50 .011, p95 .088, p99 .150, max 101.3 (one outlier cell); 3.6% of cells and
+  **7.1% of held gross above Q**; aim / ADV p95 .110, 6.2% of cells and 11.1% of aim gross above Q: R-5's cap binds
+  on a minority of the book.
+- **G-3a** (S2-FEE, descriptive): fee drag 0.48% a year vs S2's tier fee 0.23%; restated net Sharpe **1.069 vs
+  1.133 (-.064)**; short book by fee decile .079-.111 each; missing ratio .4% of the short book; short-dollar
+  reconciliation gap 2.4e-15 (rows aligned).
+- **G-3b** (low_risk, before / after price-risk-v1, IC h 21): bac -.0266 / -.0182 (retained .68; t -1.15 / -1.09),
+  smax .0139 / .0099 (.71; t 1.32 / 1.25), smax5 .0126 / .0151 (1.20; t 1.08 / 1.50): the theme keeps most of its
+  IC after its own neutraliser; bac's oriented IC is negative on this window (a diagnostic, PM5-18).
+- **G-3c** (combined signal delayed k, net Sharpe vs B0c 1.133, Memmel SE): k 1 1.120 (-.012, SE .021); k 2 1.101
+  (-.032, SE .039); k 3 1.093 (-.039, SE .057).
+- **G-3d** (sleeve PnL clusters vs 10 theme labels): adjusted Rand .184; effective bets: themes 4.87 of 10, members
+  5.85 of 38; mean rho within theme .379, between .085.
+- v9 note (an idea from a result, not a spec): iv_rv_spread alone carries 37% of the book's trades and is negative at
+  theta on 2020-2023.
+
+**M2 alarm (book monitor; flags only, gates nothing).** What it measures (`book_monitor.py` M2 "alpha"): per admitted
+member, (a) IC63 / IC252 = rolling means of the u pass's daily h=5 rank IC times the admission sign, warn outside the
+reference's p5-p95; (b) a lower-side IC CUSUM on weekly (every 5th decision) observations standardized by the
+reference mean / SD, k .5, warn at 2.5, alarm at h 5 (in-control ARL 938 weeks, 18.6 y); (c) turnover T63 of the card
+sleeve vs the reference p5-p95 (warn) and (d) a two-sided turnover CUSUM on 5-decision block means (same k, h). In
+baseline mode (`--baseline`, `in_sample` true) the reference is the cell's own series, so the CUSUMs run in sample over
+the whole window: an alarm marks a drift of a member's sleeve turnover inside 2020-2023, not a break after a
+reference. The M2 status is the worst member flag. Numbers (members with a flag; CUSUM value vs h 5):
+- B0a (`mega-monitor-v8-b0a/monitor.json` `541de8be`): status alarm; member counts alarm 4, warn 8, ok 26. Alarms,
+  all on the **turnover CUSUM**: iv_rv_spread 6.57, ind_mom_12_1 6.42, high_52w 6.20, sv_flow 5.31. No IC CUSUM alarm
+  (9 IC-CUSUM warns, max dtc 4.63).
+- B0b (`mega-monitor-v8-b0b/monitor.json` `c034ae6e`): status alarm; alarm 4, warn 10, ok 24. Turnover-CUSUM alarms:
+  sv_flow 7.17, ind_mom_12_1 6.76, iv_rv_spread 6.54, high_52w 6.49. No IC CUSUM alarm (10 warns, max dtc 4.67).
+- B0c: the same file as B0b (the template keeps the parent's monitor; every monitor input is B0b's): identical flags.
+  M1 and M3 n/a (no holdings-days / bias inputs in the cycle's monitor argv), M4 ok on all three.
+
+### Hidden-data record (batch 1b)
+
+- Inputs opened by the tools: role lo3 and the new lo3-dlret role (to 2023-12-29; the delisting stage read by the
+  role builder through its sealed reader, as R8), fields v9 lo3, B0b's u / fit / card / w outputs, the lo3 cache, the
+  37 ledgered v7 NAV dirs (2020-2022, summ grid), the ledger, B0c's NAV, holdings, lagged NAVs, risk output. Atx-db
+  stage manifests hashed, not parsed by me.
+- Logs scanned for dates 2024-2029 (every stdout / stderr of the bounded runs above and the two cycle consoles): 0 data
+  dates (the only hits are the bootstrap seeds 20260927 / 20260929). Last NAV session 2023-12-29; diagnostics JSON
+  session stamps all before the seal. **Nothing dated 2024-01-01 or later was opened. No disclosure.**

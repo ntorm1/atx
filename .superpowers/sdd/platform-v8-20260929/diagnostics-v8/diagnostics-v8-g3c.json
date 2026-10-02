@@ -1,0 +1,69 @@
+{
+ "declaration": "descriptive only (v8-prereg rule 8): no diagnostic gates, selects or re-weights anything; nothing here is an input to an admission, a composition, a fit or a construction",
+ "diagnostics": {
+  "G-3c": {
+   "inputs": {
+    "lagged_1": {
+     "path": "build-equity/b0c-lag1/summary.json",
+     "sha256": "5c9bfe4504e073bb1e9dc60818157783b36daa22fe02bec3050db95311155dbc"
+    },
+    "lagged_2": {
+     "path": "build-equity/b0c-lag2/summary.json",
+     "sha256": "5be77297d236dd8f558c1bc78654ce3f0c8b15457fcd870e072ed5a0627e2751"
+    },
+    "lagged_3": {
+     "path": "build-equity/b0c-lag3/summary.json",
+     "sha256": "e2788f689d728b5cfee8ab111db60ea5bd663e79f0703c4bc1fc2fefa8e636df"
+    },
+    "nav": {
+     "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+     "sha256": "119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615"
+    }
+   },
+   "method": "G-3c: per delay k, the book's net Sharpe with the combined signal delayed k sessions against the base cell on\n    their common return sessions: both Sharpe ratios, the difference (the cost of slower execution) and its Memmel\n    SE (nav_summ.memmel_se).",
+   "question": "book net Sharpe with the combined signal delayed 1, 2, 3 sessions: the cost of slower execution",
+   "result": {
+    "base_scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+    "combined_sha256": {
+     "1": "43746fa3faabb8410c4f2b3c19e590f03878f69aa7efdd005eca0843296dac39",
+     "2": "04d42dbf34c0ce8cdb57754a460fe5ea68d43a3f3a24a07531f72445405e3ecf",
+     "3": "86f20458473df70d58bea49ab2bcb81caf2d8db49adabf8e9bd200457bd30eca",
+     "base": "b1903f7c9a9b48bddbab3d5bbbd273409e8b77c810a794dec083e4741f02945b"
+    },
+    "delays": {
+     "1": {
+      "base_net_sharpe": 1.132752127,
+      "delta": -0.01232009852,
+      "memmel_se": 0.02081474906,
+      "net_sharpe": 1.120432029,
+      "rho": 0.9991405486,
+      "sessions": 1005
+     },
+     "2": {
+      "base_net_sharpe": 1.132752127,
+      "delta": -0.03217510525,
+      "memmel_se": 0.03904632801,
+      "net_sharpe": 1.100577022,
+      "rho": 0.9969758091,
+      "sessions": 1005
+     },
+     "3": {
+      "base_net_sharpe": 1.132752127,
+      "delta": -0.03949082566,
+      "memmel_se": 0.05742098315,
+      "net_sharpe": 1.093261301,
+      "rho": 0.9934588742,
+      "sessions": 1005
+     }
+    }
+   },
+   "status": "ok"
+  }
+ },
+ "schema": "atx.book-diagnostics/v1",
+ "tool": {
+  "script": "atx-impl/tools/book_diagnostics.py",
+  "script_sha256": "2be3b164e449dfd5ac975de629797cee7d3a18e58af51313cc01bd2646d485a2"
+ },
+ "window_id": "research-window-v2"
+}
