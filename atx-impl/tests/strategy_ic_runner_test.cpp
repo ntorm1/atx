@@ -809,11 +809,18 @@ TEST(StrategyIcRunner, InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput) 
 }
 // ---- ew-theme-v6 within-theme redistribution (V6-W; fix round 1 I1 / I3) ----
 // A TRAIN-bound weights file under `schema` with raw `weights` and raw `extra`
-// members (signs, a theme_redistribution block).
+// members (signs, a theme_redistribution block). A theme_standardise block in `extra`
+// (std_block's spelling) gets the fitter's provenance.rule naming its own rule (finding R6C-7).
 std::string themed_text(const std::string& schema,const atx::impl::strategy::IcRunnerConfig& cfg,
                         const std::string& weights,const std::string& extra) {
+  const std::string key="\"theme_standardise\":{\"rule\":\"";
+  std::string provenance;
+  if (const auto at=extra.find(key);at!=std::string::npos) {
+    const auto begin=at+key.size();
+    provenance=",\"provenance\":{\"rule\":\""+extra.substr(begin,extra.find('"',begin)-begin)+"\"}";
+  }
   return "{\"schema\":\""+schema+"\",\"library_sha256\":\""+cfg.library_sha256+"\",\"train_manifest_sha256\":\""+
-      cfg.train_sha256+"\",\"weights\":"+weights+extra+"}";
+      cfg.train_sha256+"\",\"weights\":"+weights+extra+provenance+"}";
 }
 std::string theme_block(const std::string& themes,const std::string& rule="within-theme-v1",
                         const std::string& composition="ew-theme-v6") {
@@ -3314,7 +3321,7 @@ const std::vector<ShrinkMember> shrink_members{
 // The members' weights file: weights, +1 signs of the weighted members, and a theme_standardise
 // block of `rule` (rerank true) naming their themes; ic-shrink-v1 adds its ic_shrink inputs,
 // ic-shrink-aim-v1 those with the gains. The weights are ic-shrink-v1's, or ic-shrink-aim-v1's
-// for that rule or with `aim_weights`.
+// for that rule or with `aim_weights`. provenance.rule records `rule` (finding R6C-7).
 Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule,bool aim_weights=false) {
   const bool aim=aim_weights || rule=="ic-shrink-aim-v1";
   Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
@@ -3329,7 +3336,8 @@ Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string
   if (rule=="ic-shrink-v1" || rule=="ic-shrink-aim-v1")
     block["ic_shrink"]=Json{{"intensity",.5},{"floor",0.0},{"members",members}};
   return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
-      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block}};
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block},
+      {"provenance",{{"rule",rule}}}};
 }
 // ic-shrink-v1 runs ew-theme-std-v1's per-date standardisation unchanged: the same weights pinned
 // under either rule give the same blend, planned targets and IC rows byte for byte (the flag-
@@ -3542,7 +3550,8 @@ TEST(CompositionV8, IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput) {
 // (provenance.rule) must write its theme_standardise block, refused before any payload or output.
 // Admitted: each row under the rule that writes it (ew-theme-std-v1 also under R-3's
 // ew-theme-std-aim-v1), the rerank-off identity device on ew-theme-v1 weights, a file without a
-// block under a rule that writes none, and a file without provenance (hand-written weights).
+// block under a rule that writes none, and a file without provenance and without a block
+// (hand-written weights). A block without a string provenance.rule is refused (finding R6C-7).
 TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   ASSERT_TRUE(shrink_library(cfg));
@@ -3559,7 +3568,7 @@ TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOu
   // weights) recording `recorded` (empty: no provenance); `plain`: schema v1, no block.
   const auto doc=[&](const std::string& block,const std::string& recorded,bool aim=false,bool plain=false) {
     auto d=shrink_doc(cfg,block,aim);
-    if (!recorded.empty()) d["provenance"]["rule"]=recorded;
+    if (recorded.empty()) d.erase("provenance"); else d["provenance"]["rule"]=recorded;
     if (plain) { d.erase("theme_standardise"); d["schema"]=weights_v1; }
     return d;
   };
@@ -3568,7 +3577,7 @@ TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOu
   const std::vector<Json> admitted{
       doc("ew-theme-std-v1","ew-theme-std-v1"),doc("ew-theme-std-v1","ew-theme-std-aim-v1",true),
       doc("ic-shrink-v1","ic-shrink-v1"),doc("ic-shrink-aim-v1","ic-shrink-aim-v1"),identity,
-      doc("ew-theme-std-v1","ew-theme-v1",false,true),doc("ic-shrink-v1","")};
+      doc("ew-theme-std-v1","ew-theme-v1",false,true),doc("ew-theme-std-v1","",false,true)};
   for (const auto& d:admitted) {
     std::ostringstream log; EXPECT_EQ(attempt(d,true,log),"") << d.dump();
   }
@@ -3596,7 +3605,9 @@ TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOu
       {doc("ew-theme-std-v1","ew-theme-std-aim-v1",false,true),writes("ew-theme-std-aim-v1","ew-theme-std-v1",none)},
       {doc("ew-theme-std-v1","ew-theme-v1"),unwritten("ew-theme-std-v1","ew-theme-v1")}, // rerank true: no identity
       {doc("ic-shrink-v1","ew-theme-v1"),unwritten("ic-shrink-v1","ew-theme-v1")},
-      {doc("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1"),unwritten("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1")}};
+      {doc("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1"),unwritten("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1")},
+      {doc("ic-shrink-v1",""),"IC runner: composition weights carry a theme_standardise block without a string "
+                              "provenance.rule (finding R6C-7)"}};
   for (const bool plan_only:{true,false}) {
     for (const auto& [d,reason]:cases) {
       std::ostringstream log;
@@ -3656,6 +3667,7 @@ const std::vector<ErcRunnerMember> erc_members{
     {"volume_lag_1","liquidity",.25,1.0/6},{"volume_lag_2","size",.5,5.0/24},{"volume_lag_3","size",0.0,0.0}};
 // The members' weights file: the rule's weights, +1 signs of the weighted members, and a
 // theme_standardise block of `rule` (rerank true); theme-erc-v1 adds its theme_erc inputs.
+// provenance.rule records `rule` (finding R6C-7).
 Json erc_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule) {
   Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
   for (const auto& m:erc_members) {
@@ -3670,7 +3682,8 @@ Json erc_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& r
     block["theme_erc"]=Json{{"sweeps",10000},{"dispersion",1e-10},{"members",members},{"covariance",covariance}};
   }
   return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
-      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block}};
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block},
+      {"provenance",{{"rule",rule}}}};
 }
 // theme-erc-v1 runs ew-theme-std-v1's per-date standardisation unchanged: the same weights pinned
 // under either rule give the same blend, planned targets and IC rows byte for byte (the flag-absent

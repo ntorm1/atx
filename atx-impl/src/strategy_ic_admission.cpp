@@ -741,12 +741,16 @@ co::Status composition_standardise(const Json& j,const Library& lib,PinnedWeight
 // rule that writes it, or is that row's rerank-off identity device on its identity_source. So
 // a file recording ic-shrink-v1 under an ew-theme-std-v1 block (the ic-shrink verify skipped,
 // ew-theme-std-v1 recorded) is refused. A file without a string provenance.rule (hand-written
-// weights) is not checked. Runs after composition_standardise (the block is validated), before
-// any role payload.
+// weights) passes only without a theme_standardise block (finding R6C-7: deleting or nulling
+// provenance.rule would otherwise let any row's block through). Runs after
+// composition_standardise (the block is validated), before any role payload.
 co::Status composition_recorded_rule(const Json& j) {
   if (!j.contains("provenance") || !j.at("provenance").is_object() || !j.at("provenance").contains("rule") ||
-      !j.at("provenance").at("rule").is_string())
-    return co::Ok();
+      !j.at("provenance").at("rule").is_string()) {
+    if (!j.contains("theme_standardise")) return co::Ok();
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights carry a theme_standardise block "
+        "without a string provenance.rule (finding R6C-7)");
+  }
   const std::string& recorded=j.at("provenance").at("rule").get_ref<const std::string&>();
   const StandardiseRule* block=j.contains("theme_standardise")?standardise_row(j.at("theme_standardise")):nullptr;
   const StandardiseRule* writer=nullptr;
