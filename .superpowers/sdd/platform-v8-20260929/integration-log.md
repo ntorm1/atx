@@ -5051,4 +5051,40 @@ Commit `37b4dede`. **R-9b** `run --stop-after nav`:
 Receipt: completed, `clean in the code pathspec`, source `37b4dede`. **Mechanics (S2): PASS.** All-rows gross **.9650** in
 [.90, 1.05] (post-ramp .9716); net +.0037; tau mean .02110, p95 .02496 (flags true); max gross 1.099, max |net| .030;
 score_begin .892; by year .940 / .984 / .961 / .975; 1,006 CSV rows, 1,005 return rows; accounting 8.0e-14 / 4.2e-16.
+Commit `83cc948d`; cycle resumed: summ 23.4 s, 613 MiB, exit 0 (receipt
+`2ef388ddc3e80277004714bf82cf634cf95664fbf970bf9b10b62f0f414cc564`); bundle 0.8 s, 506 MiB, exit 0 (receipt
+`c89dd5775c664481019df784c5c4691581673a5bbe2b6d2f69de7f17b17c7531`, `v8-cells-r9b-bundle.json` `bb9e35bf`). Ledger line
+trial `2dd5442da54cca97` (cell = the R-9b NAV dir, s2_net_sr 1.25275, prev `30c6f7b7` = R-9a's head); **N 50** (63 lines =
+50 + 12 + 1; file `9cb99c5f`).
+
+**R-9b (theta .04), report only:** S2 ($1bn) net Sharpe **1.2528**; **x4 row net Sharpe 1.1864**, cost per traded dollar
+16.45 bps, capped share .062; all-rows gross .9650; tau .02110; net annual return 4.44%, gross of cost 5.58%, trade cost
+.62%; vol 3.54%; max drawdown 3.30%. Against R-2 (information only): dSR -.0032, Memmel SE .0256, p one-sided .534,
+two-sided .912. Capacity .5x 1.281, 1x 1.253, 2x 1.228, 4x 1.186, 8x 1.113; cost bps 10.42 / 12.12 / 14.24 / 16.45 / 18.32.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0120 | -.362 | .0320 | .0235 | 14.37 |
+| 2021 | 252 | +.0961 | +2.583 | .0358 | .0200 | 11.13 |
+| 2022 | 251 | +.0783 | +1.823 | .0420 | .0207 | 11.77 |
+| 2023 | 250 | +.0195 | +.653 | .0305 | .0203 | 11.20 |
+
+**R-9c (theta .05) = R-2, read from its files (adds 0):** $1bn 1.2559; x4 1.1785, cost 16.87 bps, capped share .080; gross
+.9860; tau .02393; net annual return 4.54%.
+
+**Frontier (report only; the deployed book stays R-2):**
+
+| theta | cell | N | all-rows gross | tau | $1bn net Sharpe | x4 net Sharpe | x4 cost bps | net annual return ($1bn) |
+|---|---|---|---|---|---|---|---|---|
+| .03 | R-9a | 49 | .9350 | .01796 | 1.2433 | **1.1966** | 15.89 | 4.27% |
+| .04 | R-9b | 50 | .9650 | .02110 | 1.2528 | **1.1864** | 16.45 | 4.44% |
+| .05 | R-9c = R-2 | (47) | .9860 | .02393 | 1.2559 | **1.1785** | 16.87 | 4.54% |
+
+Appendix A (after R-9b): `TRAIN construction cells 50; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` The registered cell program ends here at N 50 (PM7-21 (3)). Defects: none.
+
+v9 note (from a result, not a spec): at 4x a slower tracker gains .018 of net Sharpe per .01 of theta while the $1bn book
+loses .003-.010 and gross falls with theta (the book is not gross matched); at matched gross the x4 ranking is not
+measured.
 

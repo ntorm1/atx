@@ -1855,3 +1855,7 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   Sharpe 1.2449 (parent 1.2559); dSR -.0111, SE .0460, p one-sided .583 (two-sided .843); all-rows gross R-8 1.1244, R-2
   .9860; realised vol 2020 .0401 / 2021 .0433 / 2022 .0441 / 2023 .0365 -> band [.04, .06] fails in 2023. Net annual
   return 5.13% (R-2 4.54%); net Sharpe at 4x 1.166 (1.178). Parent stays R-2.
+  R-9 (report only, PM7-21; parent R-2, aim-partial-v5, L 1.1474, not gross matched; `r9a.json` / `r9b.json`, "verdict":
+  false; mechanics PASS): R-9a theta .03, N 49: x4 row net Sharpe 1.1966, $1bn 1.2433, gross .9350, tau .01796, cost at
+  4x 15.89 bps. R-9b theta .04, N 50: x4 1.1864, $1bn 1.2528, gross .9650, tau .02110, 16.45 bps. R-9c theta .05 = R-2
+  (adds 0): x4 1.1785, $1bn 1.2559, gross .9860, 16.87 bps. The deployed book stays R-2; program ends at N 50.
