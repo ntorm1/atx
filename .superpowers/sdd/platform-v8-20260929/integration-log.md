@@ -6154,3 +6154,31 @@ rule: one swap, `(x * -1)` for `(-1 * x)`** (no correlation swap; it is also the
 ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))`, SHA-256 in the JSON; K1 104 / 6 /
 high_adj, low_adj. Multiplication by -1 is exact in either order, so the values equal the frozen string's bit for bit.
 
+**Registration** (commit `a12854ff`; `v8-prereg.md` "Library v8x7", `ce994900`): 12 add-alpha calls
+(`scratchpad/x7_add.py --go`: each printed line verified against its SHA-256 prefix; placeholders parent `v8x3b`, name
+`v8x7`, parent spec `scripts/specs/v8/x-theme-erc-gm.json`, fields v14; wq_099 with the rewrite above; `--plan-json
+x7-plans/<id>.json`, the plans of record made by the v8-15 exe on the exact cumulative library bytes, PM6-9); every call
+exit 0. Counts = the registration: roster 70 (58 parent rows unchanged), recipe admission_trials 12 / new 12 / unchanged
+58, no exception; K1 rows = XWQ section 6 (wq_099 104 / 6). Library `fd966384`, recipe `6131f1ad`, registry `f0ee2288`,
+spec `lib-v8x7.json` (12 pins locked; fit flags inherited from X-5 incl. `--theme-erc theme-erc-v1`; nav L 1.1720).
+IC-pass memory (mechanics only): 70 members, fields v14, `--workers 4`: passes at 2,560; refuses at 1,024 with
+required_bytes 2,122,543,388 (2,024.2 MiB): **cap unchanged**.
+
+**`run --screen` of v8x7** (source `ce994900`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 58.5 | 1,244 | 0 | `e2c98d1dfab3927f253cf4cf5305ef08615ed68b2cbd6fb635eb78df760111a1` | u-compare IDENTICAL (58 objects; 169,708 rows of 58 keys byte for byte; b adds 35,112 rows of 12) |
+| fit | 180 / 1,536 | 14.9 | 443 | 0 | `d81f454d607423b3955f1659e2062e66528507f42b4a9b248d31f1f9821a6163` | - |
+| card | 300 / 2,560 | 60.0 | 1,554 | 0 | `1a0a68ccc35ad4f58d02f48d8a8adda5016c54a3435085ac07fcac1db9953e2d` | - |
+| marginal (themes) | 360 / 1,536 | 0.5 | 12 | **1** | `b5d1252777cebdab15e9f8d698c3d60d789a79ad7b87f1040008046e712f7d1e` | refusal: "marginal IC: themes: 1..10 weighted themes (the composite plus the themes may not exceed 11 regressors)" -> HARD-STOP exit 4 |
+
+**Marginal refusal: cause and the rule applied.** The pool's weights file is X-5's (theme-erc-v1), which weights 11
+themes (`filing_events` included); the marginal verb takes at most 10 theme regressors beside the composite. Any wave
+on X-5 hits it; it is not caused by the X-7 strings. The marginal phase gates nothing (the gate reads the admission
+only); the registered remedy for a marginal refusal is PM6-8 (i) (spec-only: delete `marginal.themes`, new
+`marginal.output`, relock, resume at marginal; standing for replacing waves by PM7-32), and it changes no number that
+decides anything (the K6 diagnostic is residualised on the parent's combined signal alone). Applied under PM8-4 (a
+registered rule covers the case; no reading changes a number); logged here: `marginal.output`
+`...-v8x7-marginal-poolonly-b`, `themes` deleted; `lock` / `lock --write` leave every pin unchanged (diff: the marginal
+block only).
