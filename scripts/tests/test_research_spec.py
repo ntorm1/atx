@@ -82,7 +82,10 @@ NULL_PINS["x-inv-vol.json"] = CHILD_NULLS                   # v8 X (lane XCOMB):
 NULL_PINS["lib-v8x3b-gm.json"] = NULL_PINS["lib-v81-gm.json"]
 NULL_PINS["x-theme-erc-gm.json"] = CHILD_NULLS
 NULL_PINS["x-inv-vol-gm.json"] = CHILD_NULLS
-ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json"}  # an add-alpha spec copied by hand: no base-only pins
+# X batch 2 at matched gross (PM6-6), by hand: X-7 (add-alpha's lib-v8x7b.json copied, as lib-v8x3b-gm.json)
+NULL_PINS["lib-v8x7b-gm.json"] = NULL_PINS["lib-v81-gm.json"]
+ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json", "lib-v8x7b-gm.json"}  # an add-alpha spec copied by hand: no
+#                                                                                    base-only pins
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
