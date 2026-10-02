@@ -3972,7 +3972,7 @@ only; `cellstats.py`: return side, after mechanics passed; `bundle.sh`: the PM5-
 
 ### 0. FIX-6 round 4 merged (tests only)
 
-`git merge --no-ff 8f48ee39` -> merge commit right after `9c3f23ec` (ort, no conflict). Diff: `scripts/tests/test_research_spec.py` (+7 / -3)
+`git merge --no-ff 8f48ee39` -> **`205ba34d`** (ort, no conflict). Diff: `scripts/tests/test_research_spec.py` (+7 / -3)
 and `task-FIX-6-report.md` (+18); nothing else. `scripts/tests` (whole; `ATX_EQUITY_BIN` / `ATX_EQUITY_TARGETS_EXE`
 absolute v8-12; vcpkg bins on PATH): **17 failed, 171 passed, 3 skipped** (104.6 s; skips: the three
 RESEARCH_CYCLE_LIVE_ROOT tests). The B0c label-role failure of batch 2b is gone. **All 17 failures are in
@@ -4059,4 +4059,59 @@ research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation r
 reads 0; 2025+ never read.`
 
 **Next parent: `scripts/specs/v8/lib-v80.json` (spec `306a070b`), G 0.9859903463, L 1.1474, library v8.0.**
+
+### Cell R-3 (r3-aim-gain-gm on lib-v80; ew-theme-std-aim-v1; L 1.1264): NOT ACCEPTED (dSR < 0), N 43
+
+**Rule variant (quoted):** task-CELLS-brief.md:56, R-3: "net Sharpe at 2x NAV not lower AND turnover lower; rule
+`ew-theme-std-aim-v1` if R-1 accepted, else `ew-theme-aim-v2`" (E-27, E-27a, E-27b). R-1 was accepted, so
+**ew-theme-std-aim-v1**; the template maps the parent's `--composition ew-theme-std-v1` to it (resolved fit flags
+`--orientation prior --screen v4-prior-v1 --composition ew-theme-std-aim-v1`; weights provenance.rule
+ew-theme-std-aim-v1, theme_standardise ew-theme-std-v1 rerank true, 41 weighted).
+
+**Specs.** `r3-aim-gain.json` (template): `"parent": null -> "lib-v80.json"` only; lock --write derived reference_cell R-2
+`083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`, reference_weights `03213345`; commit
+`3137edf7`. Spec digest `544a6abd...`. Resolved: u = R-2's (done), nav.leverage 1.1474 inherited; the template also
+inherits R-2's `marginal` (output `...-marginal-pool`, done: R-2's report-only K6 file; not re-run) and gate p1-v80
+(re-read on R-3's admission: 0 status changes vs R-2, 3 of 7, PASS; "0 admission trial line(s) appended, 7 already
+ledgered"). **Calibration step (1)** = its NAV at L 1.1474 (`...-r3-aim-...-L1.247`: the name keeps the template's
+"L1.247" text; the run is at 1.1474): 52.2 s, 586 MiB, receipt `e344b0fa...d5fd`; mechanics only: **G 1.0043324403**
+vs G_parent .9859903463 (|diff| .0183 > .005). L' = 1.1474 x .9859903463 / 1.0043324403 = 1.126445 -> **1.1264**.
+Matched spec `scripts/specs/v8/r3-aim-gain-gm.json` (new template: r3's change + `nav.leverage` "1.1264" + `nav.output`
+`build-equity/mega-nav-v8-r3-aim-t.05-d.1-fixed-obdelta-x.05-loc-L1.1264`; parent lib-v80.json; same locked pins); file
+`18a791eb...`, **spec digest (template chain) `f04545ea...`**; commit `75db27aa`.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fit (ew-theme-std-aim-v1) | 180 / 1,536 | 32.3 | 455 | 0 | `ef82211c32230052f172a02bea061bbd46ffcc9f7cdfd591bf24eefbf5eacda5` | `mega-weights-v8-r3-aim` (weights `68a7f3f8`) |
+| card | 300 / 2,560 | 13.6 | 1,240 | 0 | `42e240e3ff948a66bf0b361861718200de434b46dab929f94e41e75e742a88c5` | `mega-cards-v8-r3-aim` |
+| w | 300 / 3,072 | 36.5 | 1,307 | 0 | `3e71f83bd959918dc781f631c24a4d58606a92f7a7c1282a5a8ed9efa16c4ad8` | `mega-v8-r3w-train-aim-1` |
+| nav step 1 (L 1.1474, calibration) | 180 / 1,536 | 52.2 | 586 | 0 | `e344b0fa508d3a902f0438c0d58b16347d9ac6a4d65aa3274d1e66e3f4edd5fd` | mechanics only |
+| nav (L 1.1264, the cell) | 180 / 1,536 | 50.8 | 585 | 0 | `4ed96658769d083ed8c3dc1e5153831ff11dd7871704cbbe5348188eb76d867b` | `summary.json` `06c8aa21`, S2 daily `a544109a`, capacity `c8170ac6` |
+| monitor / summ | bounded | 1.0 / 16.9 | 112 / 556 | 0 | - | `cycle-v8-r3-aim-gain-gm/summ.json` `b9adfcc8`, verdict `6aad8733`; M2 alarm 4 (same members), warn 13 |
+| one-sided p | 180 / 1,536 | 0.8 | 493 | 0 | `91d4655da12a41778740c76a9b9571f1d60a141b0ddc6c06b270564e4532e4df` | `v8-cells-r3-bundle.json` `21ee58a6` |
+
+**Gross match:** G **0.9859230552** vs .9859903463: |diff| **.00007** (one correction). **Mechanics PASS:** gross .9859,
+net +.0041, tau .02163 / .02640, max gross 1.120, max |net| .029, score_begin .939, by year .966 / 1.000 / .983 / .995,
+accounting 4.5e-14 / 4.1e-16.
+
+**Statistics:** S2 net Sharpe **R-3 +1.2441** vs R-2 +1.2559: **dSR -.0118**, rho .990, **Memmel SE .0710** (t -.17),
+CBB [-.142, +.116], LW SE .0680 [-.147, +.124], **p one-sided .5814, two-sided .8678** (bundle = cycle). DSR N 43:
+ledger .9840; effective-N .7346 (N_eff 4); PBO .2737.
+
+**Criterion (config v8.cells R-3):** net Sharpe at 2x NAV 1.2172 vs R-2 1.2230: **lower -> FAIL**; tau_gmv_mean .021632
+< .023929: lower -> pass. **Verdict (rule 5): dSR -.012 <= 0 (and the 2x criterion fails) -> NOT ACCEPTED.** Ledger
+trial `d7b1465e1d3e894f` (s2_net_sr 1.24414, prev `8c0f8161`); **N after 43** (ledger 51 lines: 43 construction + 7
+admission + 1 protocol; file `59ebfb9d`; head `8cf0157e`). Not retried. Parent stays R-2.
+
+Returns (S2): net 4.58% (CAGR 4.62%); gross of cost 5.79%; trade cost .67%, borrow .33%, long financing .20%; vol
+3.68%; max drawdown 3.26%. Capacity: .5x 1.271, 1x 1.244, 2x 1.217, **4x 1.171**, 8x 1.086.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0065 | -.166 | .0353 | .0241 | 14.84 |
+| 2021 | 252 | +.0937 | +2.545 | .0355 | .0206 | 11.40 |
+| 2022 | 251 | +.0830 | +1.871 | .0433 | .0211 | 12.17 |
+| 2023 | 250 | +.0174 | +.554 | .0323 | .0207 | 11.49 |
+
+Appendix A: `TRAIN construction cells 43; admission trials this sprint 7 (plus 8 re-screens); ...; history reads 0.`
 
