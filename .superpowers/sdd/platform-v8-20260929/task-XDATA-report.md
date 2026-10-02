@@ -5,6 +5,16 @@ or NAV output of 2020-2023 was opened; nothing dated 2024-01-01 or later was ope
 schemas and source were read through git objects of local `main` (`179af41c`) only; no atx-db data file and no atx-db
 working tree was opened or written. Python only, synthetic tests only, nothing built, nothing run on data.
 
+| item | status | commit |
+|---|---|---|
+| 1. dataset map | DONE | `1df3da62` |
+| 2. data asks against the warehouse | DONE | `1df3da62` |
+| 3. eight field families, ranked | DONE | `e035a773` |
+| 4. builders and synthetic tests, top three in house | DONE (`div_month_pred`, `beta_dvol_21`, `season_y2_5`) | `71238bb4` |
+| 5. external datasets | DONE (5) | this commit |
+
+Tests: `test_research_fields_xdata.py` 7 passed; `atx-engine/tools` 260 passed, 6 subtests passed.
+
 Hygiene and disclosures (full list in section 6): two atx-db documents printed per-year data-presence counts that run
 into 2024-2026 (LICENSED_ADAPTERS.md options coverage table; ALPHA_PANEL_SEC.md delisting-cause counts). They are
 availability and filing counts, not return or signal statistics; nothing below uses them. The fields v10 lo3 manifest
@@ -354,3 +364,68 @@ Results: `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovid
 5. SPY's ATM IV stands in for VXO; SPY's adjusted return for the CRSP value-weighted market.
 
 Cross-lane edits: none. Open risks: section 7.
+
+## 5. External datasets not in house (owner decisions)
+
+Prices are as published by the vendor at search time (2026-10-02) or marked unknown; none was negotiated. Commercial
+terms for a proprietary strategy can differ from list prices.
+
+| # | dataset | cost | history | point-in-time quality | signal class it opens |
+|---|---|---|---|---|---|
+| 1 | ORATS historical options (SMV strike and delta-bucket "monies" files, near end of day) | list: $399 one time for 2007-present plus $399 a year for daily updates (ORATS pages); confirm commercial-use terms | 2007 on, 5,000+ symbols | a dated near-close snapshot of each session, no revision; usable at t+1 under the house clock | put-wing skew (Xing, Zhang and Zhao 2010, JFQA), call-put IV spread (Cremers and Weinbaum 2010, JFQA), option-to-stock volume (Johnson and So 2012, JFE), open interest. Closes the put-wing IV ask (`iv_skew`). Alternative: SpiderRock OptionEODFeaturesHist + SurfaceFixedGridHist (the house vendor, atx-db D3; price unknown) |
+| 2 | S&P Global Market Intelligence Securities Finance (ex IHS Markit) | enterprise licence, price not public (unknown) | 2002 on (daily) | daily vendor snapshots; ask for as-delivered files (backfilled history is a vintage risk) | borrow cost and utilization (Drechsler and Drechsler 2014, "The shorting premium"; Engelberg, Reed and Ringgenberg 2018, JF "Short-selling risk"); also a real borrow-fee input for the cost model and capacity (atx-db holds only a proxy) |
+| 3 | Zacks earnings estimates (broker-level detail with estimate dates; daily consensus) | commercial feed or API, price not public (unknown); WRDS for academic use | quarterly EPS from 1982, annual from 1978 | estimate and observation dates allow an as-of view; use the detail file (the consensus is NRI-adjusted and drops estimates older than new guidance) | analyst revisions (Chan, Jegadeesh and Lakonishok 1996), surprise against consensus, dispersion (Diether, Malloy and Scherbina 2002), recommendation changes: the largest family the book lacks. Alternatives: LSEG I/B/E/S, FactSet |
+| 4 | USPTO PatentsView bulk tables (granted patents, disambiguated assignees) plus the Kogan-Papanikolaou-Seru-Stoffman patent-CRSP match | free (CC BY 4.0; KPSS public) | grants from 1976 | a grant is public on its weekly issue date; assignee disambiguation is a later vintage; assignee -> CIK matching is ours to build (KPSS maps to CRSP permco) | innovative efficiency (Hirshleifer, Hsu and Li 2013, JFE), technological-link momentum (Lee, Sun, Wang and Zhang 2019, JFE), patent value. No theme reads innovation |
+| 5 | Hoberg-Phillips Data Library, TNIC-3 | free | 1989-2023 (library page) | yearly peer sets from 10-K text; usable from the later 10-K's filing date; the library is rebuilt by its authors (vintage risk); keyed by gvkey (a CIK link is needed) | text-network peers for `tnic_mom` / peer momentum without finishing the TXT landing (Lazy Prices still needs it) |
+
+Sources: [ORATS near-EOD data](https://orats.com/near-eod-data),
+[ORATS historical quotes](https://orats.com/blog/historical-options-quotes-and-greeks),
+[ORATS skew FAQ](https://orats.com/blog/answers-to-common-questions-calculating-skew),
+[S&P Global Securities Finance dataset](https://www.marketplace.spglobal.com/en/datasets/securities-finance-short-interest-data-(1704372663)),
+[Zacks historical data](https://www.zackspro.com/historical.asp),
+[Zacks one sheet (WRDS)](https://wrds-www.wharton.upenn.edu/documents/1174/Zacks-One-Sheet.pdf),
+[PatentsView download tables](https://patentsview.org/download/data-download-tables),
+[KPSS patent-CRSP match](https://paper.dropbox.com/doc/Patent-CRSP-match-1926-2017%2D%2DAsy3186MyI9pMxoGjwjgzGkDAg-W3aHAj0Ce4CzKZayqCASj),
+[Hoberg-Phillips Data Library](https://hobergphillips.tuck.dartmouth.edu/),
+[Dimensional on lending fees](https://www.dimensional.com/us-en/insights/securities-lending-fees-as-a-short-term-driver-of-stock-returns).
+
+## 6. Hygiene
+
+- **Read in the worktree:** lane rules; task-X briefs (rules, XDATA); status 5 and 6; v8-prereg; progress.md (head,
+  PM session 7, entries on OD-6, PM5-13, LIB2 / E-42); library-v8-draft sections 0, 1, 3-10; task-F-0..F-3 reports;
+  the v8.0 library (DSL strings, themes); `research_fields_price.py`, `code_fingerprint.py`, `research_window.py`,
+  `conftest.py`, the builder's run / Role / FieldWriter / factor_breaks / reuse code; the TH3 input audit.
+- **Read through git objects:** `834d5a05` (FIELDS-V9 report, `research_fields_v9.py`, the draft entry); `main`
+  `179af41c`: atx-db docs TIER1_V3_STATUS, ALPHA_PANEL_STATUS, ALPHA_PANEL (keys, panel, characteristics),
+  ALPHA_PANEL_SEC (sources, clocks, stage schemas), ALPHA_PANEL_OWNERSHIP, ALPHA_PANEL_TEXT, ALPHA_PANEL_NOTES,
+  ALPHA_PANEL_MARKET, ALPHA_PANEL_FUNDAMENTALS (progress, v10 rules), ALPHA_PANEL_SHORTFLOW, LICENSED_ADAPTERS (the
+  options part); atx-db source heads (`ticker_history.py` column list, `fund_catalog.py` item names, the six
+  warehouse-v2 modules the brief names); `git log main -- atx-db`.
+- **Read in pool 2 (field lists and manifests only):** `train-2020-2023-lo3-fields-v10/manifest.json` (field names,
+  sources, clocks, staleness, excluded columns, member-cell coverage fractions: data presence over the 2018-2023 role).
+- **Not read:** any return, IC, Sharpe, turnover or NAV output; any data file; the atx-db working tree; atx-db docs
+  that may hold signal statistics (ALPHA_PANEL_METRICS.md, `docs/research/*`, FUNDAMENTAL_SIGNAL_*); the untracked
+  gold-panel files; `ORATS_SMV_Strikes_20240103.zip` (dated after the seal).
+- **Disclosure:** LICENSED_ADAPTERS.md (options coverage per year 2018-2026) and ALPHA_PANEL_SEC.md (delisting causes
+  per year 2018-2026) printed per-year counts that include 2024-2026: data-presence and filing counts, no return or
+  signal statistic; nothing in this report uses them.
+- **Web search:** item 5 only (ORATS, securities lending, Zacks, PatentsView / KPSS, Hoberg-Phillips).
+
+## 7. Open risks
+
+1. Two definitions rest on recall, not on a re-read of the paper: Hartzmark-Solomon's lag set (3, 6, 9, 12) and
+   AHXZ's minimum days (17 is declared, not quoted). The quarterly-payer restriction is this lane's registration.
+   Root (or XPRE) verifies before any registration; a mismatch is a blind fix before the build.
+2. `div_month_pred` flips monthly: high turnover by construction; its cell must clear the cost model. The ledger is
+   the vendor factor: specials, small spin-offs and returns of capital inside 1 bp-4% count, and a factor added to
+   the history later would look known at its ex-date (no vintage proof).
+3. `beta_dvol_21` is a 21-observation, 3-parameter estimate: noisy; the suggested form decays it over 21 sessions.
+   SPY's ATM IV is not VXO.
+4. `season_y2_5` shares the reversal_seasonality theme with `seasonality_same_month`; its orthogonality is by horizon
+   only.
+5. Coverage on real data is unknown (nothing run): the share of members that are quarterly payers, the SPY scan time
+   (32 M ticker strings) and the memory are estimates.
+6. The registration entry duplicates FIELDS-V9's (fold at integration 8). None of the three candidates is registered;
+   their admission trials come out of the X budget XPRE proposes.
+7. Gold alpha panels (another session, uncommitted): their file names point at holdout evaluation; a PM ruling should
+   require proof of no label / IC column and no 2024+ row before any X consumer binds one.
