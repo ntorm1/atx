@@ -9,6 +9,8 @@ manifest; each draft field's entry names its module as ``producer``):
       --fields <the base list>,iv_skew_21,iv_vov_21 --reuse <the base fields directory> ...
 
 ``FIELDS_IVSHAPE_DRAFT``: the option-surface fields of research_fields_ivshape.py (``--price-source``).
+``FIELDS_MGR13F_DRAFT``: the 13F manager-horizon field of research_fields_mgr13f.py (``--mgr13f-stage`` and its pin;
+it requires ``shares_out``, which requires ``si_shares``, in the same run).
 ``register`` binds each module into a builder namespace exactly as the builder binds its own modules (``bind`` appends
 its ``FIELDS`` to ``ALL_FIELDS``; the module object joins ``FIELD_MODULES``, whose hooks then check, reuse and compute
 its fields). At integration it folds into the draft entry of record as further tuple elements.
@@ -17,9 +19,11 @@ from __future__ import annotations
 
 import prepare_research_fields as builder  # same directory: the builder (it does not import this module)
 import research_fields_ivshape              # same directory
+import research_fields_mgr13f               # same directory
 
-DRAFT_MODULES = (research_fields_ivshape,)
+DRAFT_MODULES = (research_fields_ivshape, research_fields_mgr13f)
 FIELDS_IVSHAPE_DRAFT = ("iv_skew_21", "iv_vov_21")
+FIELDS_MGR13F_DRAFT = ("stio_chg_q",)
 
 
 def register(host_namespace: dict) -> list:
