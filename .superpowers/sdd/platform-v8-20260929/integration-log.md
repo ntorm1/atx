@@ -5962,3 +5962,97 @@ view) -- now in the accepted book. (2) The hand-written gm specs (`lib-v8x3b-gm.
 exercised in this batch. (4) `x-inv-vol.json` does not rename monitor.output (template defect, monitor-only). (5) X-5's
 registered turnover criterion is unmet (+16% turnover per unit gross vs X-3); accepted under PM7-34 only.
 
+## X batch 2 (cell X-7, the formulaic-alpha wave): XWQ merged; STOPPED at step 2 (the theme needs C++) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `3a6cdbc5` (clean; build v8-14, nothing
+built). Read: integrator-rules; progress from the owner directive of 2026-10-02 to the end (PM7-33..37, X batch 1
+lines); `v8x-prereg.md` sections 3, 11, 14; this log's "X batch 1"; `task-XWQ-report.md` (whole). Parent = X-5
+(`x-theme-erc-gm.json`), N 55, X hand-written admission trials 13.
+
+**No X-7 string was registered or screened. No data process ran. No admission or construction line (ledger 98 lines,
+file `e8d9dcac`, N 55, admission trials unchanged). No IC, return, Sharpe, turnover or NAV number of any X-7 string exists
+or was read.**
+
+### 1. Lane XWQ merged (tests only fixed)
+
+`git merge --no-ff 7bf8e68e` (lane `feat/platform-v8-xwq-20261002`, pool 12, base `bc153439`) -> **`03fcf92f`**, no
+conflict: 5 new files (+2,370), `atx-engine/tools/{research_fields_ohlc,prepare_research_fields_ohlc,
+test_research_fields_ohlc}.py`, `xwq_check.py`, `task-XWQ-report.md`; no C++, no existing file changed.
+
+| suite | result |
+|---|---|
+| atx-engine/tools (whole) | **300 passed**, 6 subtests (293 + the lane's 7) |
+| atx-impl/strategies (whole) | **163 passed** |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute, v8-14) | **612 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset), 17 subtests |
+| scripts/tests (whole; `ATX_EQUITY_BIN` v8-14), before the fix | 27 failed, 221 passed, 3 skipped |
+| scripts/tests (whole), after `4d0c8d8f` | **248 passed, 3 skipped, 0 failed** (the RESEARCH_CYCLE_LIVE_ROOT skips) |
+| `xwq_check.py` | **`xwq_check: PASS`** (101 rows, 14 picks, 59 mutants fail, 14 add-alpha lines) |
+| `xsig_check.py` | **`xsig_check: PASS`** |
+
+The 27 failures predate the merge (X batch 1's commits; scripts/tests was not run after X-3) and are fixed in tests only,
+commit **`4d0c8d8f`**:
+- `test_research_spec.py`: the three batch-1 gm specs join NULL_PINS (`lib-v8x3b-gm.json` = `lib-v81-gm.json`'s set,
+  `x-theme-erc-gm.json` and `x-inv-vol-gm.json` CHILD_NULLS); without them `set(V8_SPECS) == set(NULL_PINS)` failed in
+  every parametrized case (24) and the two whole-file tests. Two consequences of registering them: (a) the nominal plan
+  allows `ref` skipped when the spec's fields are its baseline fields (`lib-v8x3b-gm.json` runs on X-2's fields v13: the
+  cycle's documented ref-skip rule); (b) the live chain check treats a hand copy of an add-alpha spec
+  (`ADD_ALPHA_COPIES`: `lib-v81-gm.json`, `lib-v8x3b-gm.json`) like an add-alpha parent (it has no base-only pins
+  `identity_bridge`, `fund_events`), as the check's own comment already did for `lib-v80.json`.
+- `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry`: X-3's `k8_intensity` and `inst_persist`
+  read `k8_count_63` and `inst_own_chg_q`, two of the template's 12 mined fields. Prereg A3 re-applies the field rule at
+  the campaign lock (H-F); the test now reads the rule on the registry without the `v8x` members (the registration) and
+  asserts the X members only remove fields. **For the lock (A3):** mine-c1 then has 10 fields, B = 110 (not 132).
+
+### 2. PM7-36 (a), theme `price_volume`: STOPPED -- the change needs C++
+
+Made as integration 8 item 5d made `filing_events` (registry `themes` table + `V7_APPENDED_THEMES` + the test literals),
+uncommitted, then restored by hand (the session refused `git checkout`; tree clean, `git status` empty at `4d0c8d8f`).
+With the registry row and `V7_APPENDED_THEMES = ("ownership_flow", "filing_events", "price_volume")`, 6 Python tests fail:
+five are literal pins of the kind 5d edited (`test_composition_resid.py:244`, `:283`, `:676`;
+`test_fit_composition_weights.py` OwnershipFlowTheme constants and refusal text; `test_fit_composition_weights_store.py`
+refusal text). The sixth is not: **`test_composition_resid.py:266`** (finding R6B-O-4) pins the IC runner's copy of the
+registered theme order, `theme_resid_order` in **`atx-impl/src/strategy_ic_theme_resid.hpp`** (`std::array<..., 11>`,
+ending `filing_events`), to extend the fitter's `PRIOR_THEMES`. With the five literals updated, it still fails:
+`cpp[:12] != PRIOR_THEMES` (the C++ list lacks `price_volume`). For `filing_events` the C++ list already held the theme
+(lane R-11), so 5d was Python only; for `price_volume` it is not.
+
+What the C++ list does: it is read only under a weights file's `theme_residualise` block (theme-resid-v1, R-11, not
+accepted, not on X-5's path); there it refuses a weighted theme outside the list. X-7 itself does not read it:
+admission reads the registry's `themes` table (`fit_composition_weights.prior_themes`), and theme-erc-v1 orders the
+themes by name in the weights file, which the runner's theme-erc table takes as recorded (at most 32 themes). The pin
+exists so that a theme-resid fit is never admitted and fitted by the fitter and then refused by the runner.
+
+Options for the PM (not taken): (i) one C++ constant (`theme_resid_order` 11 -> 12 entries, `"price_volume"` last; the
+pin literal `test_composition_resid.py:267` follows), build `atx-equity-strategy-ic,atx-impl-strategy-ic-tests` on a
+new tag, flag-absent identity (X-5's w pass) before X-7; (ii) a ruling that relaxes R6B-O-4 for themes registered after
+the runner's copy (Python only; theme-resid-v1 with a `price_volume` member would then be refused by the runner); (iii)
+another theme for the 8 `price_volume` picks (a change of the XWQ registration).
+
+**How theme-erc-v1 treats a twelfth theme (stated now, before any X-7 screen; holds under any option above):** the
+parent X-5 already has 11 themes with a member (`filing_events` included). `price_volume` would be the twelfth.
+theme-erc-v1 (`composition_theme_erc.py`, registered by XCOMB) takes T = the themes with a weighted member, in sorted
+name order (`price_volume` between `price_momentum` and `profitability_quality`, whatever its registry position): the
+theme sleeves are re-built from the kept members with the parent rule's (ew-theme-std-v1) within-theme tier-score
+shares, all T theme shares are re-solved by ERC on the new T x T TRAIN covariance (10,000 sweeps, dispersion <= 1e-10),
+and the member cap is 1/(2T) (1/24 at T = 12; 1/22 if no `price_volume` member stays). No share is set by hand; the
+existing themes' shares move only through the re-solve. The 3 picks in existing themes (`wq_035`, `wq_030`, `wq_043`
+in `reversal_seasonality`; `wq_101` in `price_momentum`) enter those sleeves the same way.
+
+### 3. and 4. Not started
+
+Fields v14 (v13 + `open_adj`, `high_adj`, `low_adj`; XWQ section 7 driver; 0 trials) and X-7 (12 strings; #33 and #38
+withdrawn by PM7-36 (c)) wait for the PM's ruling on step 2: the dispatch orders them after the theme.
+
+### Hidden-data record (X batch 2)
+
+- Opened by tools: the test suites' synthetic fixtures and committed files only; no role, field payload, IC, NAV or
+  ledger content (the ledger's line count and file hash only).
+- Read by me: rulings, reports, sources, test output. **Nothing dated 2024-01-01 or later; no 2013-2019 history; no X-7
+  statistic exists.** `atx-db/` and `C:/atx-wt/pool-10` untouched; no build; no push.
+
+### Open items (X batch 2)
+
+- **For the PM:** the ruling on step 2 (options above). Then: theme step, fields v14, X-7 as dispatched.
+- Head `4d0c8d8f` before this log commit; ledger 98 lines (`e8d9dcac`), N 55, X hand-written admission trials 13.
+- Disk 121,810,661,376 B free (113.4 GiB).
+
