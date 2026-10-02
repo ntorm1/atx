@@ -601,7 +601,12 @@
       "title": "Window, protocol and trial accounting",
       "blocks": [
         "v8_od1",
-        "v8_trial_accounting"
+        "v8_trial_accounting",
+        {
+          "type": "h3",
+          "text": "Trial ledger (every ledgered construction trial, in order)"
+        },
+        "t_trial_ledger"
       ]
     },
     {
@@ -821,5 +826,98 @@
       "v8-r3-aim-t.05-d.1-fixed-obdelta-x.05-loc-L1.1264",
       "v8-r4-hb.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
     ]
+  },
+  "trial_ledger": {
+    "path": "build-equity/trials.jsonl",
+    "kind": "construction",
+    "eras": [
+      {
+        "label": "v8 cells R-1..R-4",
+        "match": "^mega-nav-v8-r"
+      },
+      {
+        "label": "v8 re-base B0a..B0c",
+        "match": "^mega-nav-v8-b0"
+      },
+      {
+        "label": "v7 spo",
+        "match": "-spo-v\\d"
+      },
+      {
+        "label": "v7 aim-partial-v6",
+        "match": "-v6C\\d+$"
+      },
+      {
+        "label": "v7 universe trial",
+        "match": "-lo\\d+(-|$)"
+      },
+      {
+        "label": "v7.1 library",
+        "match": "^mega-nav-v71"
+      },
+      {
+        "label": "v7.0 library",
+        "match": "^mega-nav-v70"
+      },
+      {
+        "label": "v6.1",
+        "match": "^mega-nav-v61u"
+      },
+      {
+        "label": "v6 universe + L",
+        "match": "^mega-nav-v6u"
+      },
+      {
+        "label": "v6 library + construction",
+        "match": "^mega-nav-v6l"
+      },
+      {
+        "label": "v5.1",
+        "match": "^mega-nav-v51"
+      },
+      {
+        "label": "v5 grid",
+        "match": "^mega-nav-v5-"
+      }
+    ],
+    "verdicts": {
+      "v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247": {
+        "verdict": "re-base ledgered",
+        "label": "B0a v7.1 on lo1"
+      },
+      "v8-b0b-lo3-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247": {
+        "verdict": "accepted",
+        "label": "B0b v7.1 on lo3"
+      },
+      "v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247": {
+        "verdict": "baseline by declaration",
+        "label": "B0c baseline"
+      },
+      "v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474": {
+        "verdict": "accepted",
+        "label": "R-1 composition (gm)"
+      },
+      "v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80": {
+        "verdict": "accepted",
+        "label": "R-2 library v8.0 (book)"
+      },
+      "v8-r3-aim-t.05-d.1-fixed-obdelta-x.05-loc-L1.1264": {
+        "verdict": "rejected (not accepted)",
+        "label": "R-3 persistence gain"
+      },
+      "v8-r4-hb.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247": {
+        "verdict": "rejected (not accepted)",
+        "label": "R-4 hold band"
+      }
+    },
+    "validation": {
+      "spent": 2,
+      "window": "2023-2024, before v8 (#1 v3, #2 v4.1);",
+      "note": "v8 moved 2023 into TRAIN (OD-1); 2024 stays sealed, not pristine"
+    },
+    "holdout": {
+      "window": "2025+",
+      "status": "never read"
+    }
   }
 }

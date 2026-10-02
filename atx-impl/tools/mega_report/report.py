@@ -674,28 +674,33 @@ class Alphas:
 def blk_alpha_t(ctx: Ctx) -> str:
     A = Alphas(ctx)
     role = A.primary
+    # a recipe that records no raw literature direction (the v2 recipe of an add-alpha library) drops that column
+    has_dir = any(isinstance(A.raw_dir(c['id']), int) for c in A.order)
     rows = []
     for c in A.order:
         a = role['adm'].get(c['id']) if role else None
         adm = bool(a) and a.get('status') == 'admitted'
         rd = A.raw_dir(c['id'])
+        cells = [C.fmt(rd, '+d') if isinstance(rd, int) else C.NA_TEXT] if has_dir else []
         rows.append({'group': c.get('theme'), 'label': c['id'], 'value': (a or {}).get('hac_t'), 'filled': adm,
                      'color': 'accent' if adm else 'ref-2',
-                     'cells': [C.fmt(rd, '+d') if isinstance(rd, int) else C.NA_TEXT, A.status(a) or C.NA_TEXT],
+                     'cells': cells + [A.status(a) or C.NA_TEXT],
                      'title': f"{c['id']} ({c.get('theme')}): HAC t {C.fmt((a or {}).get('hac_t'), '+.2f')}, "
-                              f"{A.status(a) or C.NA_TEXT}, raw prior direction {rd}"})
+                              f"{A.status(a) or C.NA_TEXT}" + (f", raw prior direction {rd}" if has_dir else '')})
     veto = (role or {}).get('rules', {}).get('veto_t')
     refs = [{'value': veto, 'label': f'veto t {C.fmt(veto, "+.1f")}'}] if C.is_num(veto) else []
     svg = C.dot_plot(rows, value_label=f"TRAIN HAC t, role {role['label'] if role else C.NA_TEXT}", value_fmt='+.2f',
-                     columns=[('Raw dir', 70), ('Status', 250)], ref_lines=refs, label_w=170, aria='candidate HAC t')
+                     columns=([('Raw dir', 70)] if has_dir else []) + [('Status', 250)], ref_lines=refs, label_w=170,
+                     aria='candidate HAC t')
     lg = C.legend([{'name': 'Admitted', 'color': 'accent', 'kind': 'dot'},
                    {'name': 'Rejected (redundant, veto, turnover or data)', 'color': 'ref-2', 'kind': 'hollow'},
                    {'name': 'Veto threshold', 'color': 'fg-3', 'dash': '3 3', 'width': 1}])
     src = role['src'].get('admission') if role else C.NA_TEXT
     cap = (f"TRAIN HAC t of each of the {len(rows)} library candidates' standalone neutralized factor on role "
-           f"{role['label'] if role else C.NA_TEXT}, grouped by theme; raw literature direction (the prior sign is "
-           f"embedded in the DSL) and admission status at left. Sources: {src} (hac_t, status, rules.veto_t); "
-           f"{A.cfg.get('recipe', '')} lineage.")
+           f"{role['label'] if role else C.NA_TEXT}, grouped by theme; "
+           + ("raw literature direction (the prior sign is embedded in the DSL) and admission status at left. "
+              if has_dir else "admission status at left (the recipe records no raw literature direction). ")
+           + f"Sources: {src} (hac_t, status, rules.veto_t); {A.cfg.get('recipe', '')} lineage.")
     return C.figure(ctx.next_fig(), svg, cap, 'fig-alpha-t', lg)
 
 

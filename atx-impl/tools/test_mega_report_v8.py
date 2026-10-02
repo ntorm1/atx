@@ -1238,3 +1238,21 @@ def test_ic_figures_name_the_configured_composition_and_keep_the_v7_default(root
         out = fn(ctx, {})
         assert 'ew-theme-v1' in out and 'ew-theme-std-v1' not in out, fn.__name__
     assert 'kept members (linked-operating-v1)' in P.blk_universe(ctx, {})
+
+
+def test_alpha_t_drops_the_raw_direction_column_when_the_recipe_records_none(root):
+    """A v2 recipe (an add-alpha library, e.g. v8.0) records the prior sign, not the raw literature direction: the HAC t
+    figure then shows the status column only instead of a column of n/a (the v7 recipe keeps both, bytes unchanged)."""
+    cfg = cfg_for()
+    cfg['alphas'] = {'library': 'lib.json', 'recipe': 'rec.json',
+                     'roles': [{'key': 'r', 'label': 'r', 'primary': True, 'admission': 'adm.json'}]}
+    put(root, 'lib.json', {'candidates': [{'id': 'a', 'theme': 'value'}, {'id': 'b', 'theme': 'value'}]})
+    put(root, 'adm.json', {'candidates': [{'id': 'a', 'status': 'admitted', 'hac_t': 1.2},
+                                          {'id': 'b', 'status': 'reject_veto', 'hac_t': -2.5}], 'rules': {'veto_t': -2.0}})
+    v2 = [{'id': 'a', 'roster_order': 1, 'prior_sign': 1}, {'id': 'b', 'roster_order': 2, 'prior_sign': -1}]
+    v1 = [{'id': 'a', 'roster_order': 1, 'raw_prior_direction': 1}, {'id': 'b', 'roster_order': 2, 'raw_prior_direction': -1}]
+    for lineage, has_dir in ((v2, False), (v1, True)):
+        put(root, 'rec.json', {'lineage': lineage})
+        out = R.blk_alpha_t(make_ctx(root, cfg))
+        assert ('Raw dir' in out) is has_dir and '>n/a<' not in out
+        assert ('records no raw literature direction' in out) is (not has_dir)

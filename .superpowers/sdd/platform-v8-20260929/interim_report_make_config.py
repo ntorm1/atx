@@ -74,6 +74,19 @@ cfg['ladder'] = {'cells': [{'cell': name('B0c'), 'label': 'B0c baseline'},
 cfg['scatter'] = {'labels': [name(k) for k in DIRS]}
 
 v7 = json.loads((ROOT / 'docs/plans/mega-alpha-v7-pitch.config.json').read_text(encoding='utf-8'))
+# the v7 pitch's trial-ledger chart and table on the same ledger (the v8 eras first: the first match wins, and v7's
+# "-lo<k>" universe era would otherwise take the v8 re-base cells)
+VERDICT_TEXT = {'B0a': 're-base ledgered', 'B0b': 'accepted', 'B0c': 'baseline by declaration', 'R-1': 'accepted',
+                'R-2': 'accepted', 'R-3': 'rejected (not accepted)', 'R-4': 'rejected (not accepted)'}
+assert 'trial_ledger' not in cfg
+cfg['trial_ledger'] = {
+    'path': f'{BE}/trials.jsonl', 'kind': 'construction',
+    'eras': [{'label': 'v8 cells R-1..R-4', 'match': '^mega-nav-v8-r'},
+             {'label': 'v8 re-base B0a..B0c', 'match': '^mega-nav-v8-b0'}] + v7['trial_ledger']['eras'],
+    'verdicts': {name(k): {'verdict': v, 'label': LABEL[k]} for k, v in VERDICT_TEXT.items()},
+    'validation': {'spent': 2, 'window': '2023-2024, before v8 (#1 v3, #2 v4.1);',
+                   'note': 'v8 moved 2023 into TRAIN (OD-1); 2024 stays sealed, not pristine'},
+    'holdout': {'window': '2025+', 'status': 'never read'}}
 assert cfg['analysis']['compare_cell'] == 'v8-b0c'
 cfg['analysis'] = {'u_pass': U_PASS, 'w_pass': W_PASS, 'role': f'{BE}/train-2020-2023-lo3',
                    'candidate_cache': f'{BE}/mega-candidate-cache-v8-lo3',
@@ -209,6 +222,9 @@ lay['summary']['blocks'] = [{'type': 'callout', 'key': 'interim'},
                             {'type': 'h3', 'text': 'Headline: R-2 (the interim book) against B0c (the v8 baseline)'},
                             {'type': 'v8_headline', 'cells': ['B0c', 'R-2'], 'multiples': [2, 4]},
                             {'type': 'callout', 'key': 'planning'}, {'type': 'callout', 'key': 'caveats'}]
+assert lay['window']['blocks'] == ['v8_od1', 'v8_trial_accounting']
+lay['window']['blocks'] += [{'type': 'h3', 'text': 'Trial ledger (every ledgered construction trial, in order)'},
+                            't_trial_ledger']
 assert lay['cells']['blocks'] == ['v8_ladder', {'type': 'h3', 'text': 'Year tables, TRAIN 2020-2023'}, 'v8_year_table']
 lay['cells']['blocks'] = ['v8_ladder', {'type': 'callout', 'key': 'pending'},
                           {'type': 'h3', 'text': 'Lever ladder of the accepted path B0c, R-1, R-2'}, 'fig_ladder',
