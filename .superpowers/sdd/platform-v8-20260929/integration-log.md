@@ -4253,3 +4253,30 @@ recipe records none; trial-ledger block in the interim config; scorecard filler 
   digest): `v8.py` new block `v8_headline`; `pitch.py` `combined_label` / `universe_kept_label` config keys (v7 defaults
   keep the v7 bytes); `report.py` `blk_alpha_t` omits the Raw dir column when no candidate records a raw direction.
 
+## cells batch 2e: tests (PM7-4), R-5, risk model on the 4-year role, R-6 (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `3c6ae225` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`, risk `8967952c`; nothing built; PM5-21 holds).
+Read: integrator-rules, status 6 sections 1, 2, 4, progress "PM session 6" to the end (PM6-1..12, PM7-1..5),
+task-CELLS-brief, this log's batches 2c and 2d. Same scratch readers as batches 2c / 2d (`mech.py`: mechanics keys
+only; `cellstats.py`: return side, after mechanics passed; `bundle.sh`: the PM5-23 bundle). Parent = R-2
+(`scripts/specs/v8/lib-v80.json`, L 1.1474, all-rows gross .9859903463). N 44 at the start. Disk 125,601,484 KiB free.
+
+### 1. Tests (Ruling PM7-4; tests only)
+
+`scripts/tests/test_research_spec.py` (+3 lines): `NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS` (the authored-set
+equality at `:290`), `EXPECTED_CHANGES["r3-aim-gain-gm.json"] = EXPECTED_CHANGES["r3-aim-gain.json"] | {"nav.leverage"}`
+and the composition map entry `"r3-aim-gain-gm.json": ("ew-theme-v1", "ew-theme-aim-v2")` (as `r1-comp-v8-gm.json`'s
+pins: the registered change of `r3-aim-gain.json` on its nominal parent base-b0c, plus `nav.leverage`). The third line
+was needed: with the first two alone `test_templates_differ_from_the_parent_only_by_the_registered_change[r3-aim-gain-gm.json]`
+failed on the fit flags (the change's composition map was unknown for the new name). Python
+`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs`, `ATX_EQUITY_BIN` /
+`ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bins on PATH:
+
+| suite | before | after |
+|---|---|---|
+| `scripts/tests` (whole) | 17 failed, 174 passed, 3 skipped (161.7 s) | **192 passed, 3 skipped, 0 failed** (111.9 s) |
+| `atx-impl/strategies` (whole) | - | **163 passed** (21.6 s) |
+
+The 3 skips are the RESEARCH_CYCLE_LIVE_ROOT tests (as every batch).
+

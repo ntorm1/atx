@@ -66,6 +66,7 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
+NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS              # R-3 at matched gross (PM6-6), by hand on lib-v80 (PM7-4)
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 
@@ -100,6 +101,7 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
 EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                                   # v8 R-11 (lane ORTH)
 # Ruling PM6-6: R-1's registered change at the aim leverage that matches the parent's all-rows S2 gross
 EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
+EXPECTED_CHANGES["r3-aim-gain-gm.json"] = EXPECTED_CHANGES["r3-aim-gain.json"] | {"nav.leverage"}     # PM7-4
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 MISSING = object()
 
@@ -549,6 +551,7 @@ def check_registered_change(specs: Path, name: str) -> None:
     comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"),
             "r1-comp-v8-gm.json": ("ew-theme-v1", "ew-theme-std-v1"),                     # PM6-6: R-1's change
             "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v2"),                       # E-27b
+            "r3-aim-gain-gm.json": ("ew-theme-v1", "ew-theme-aim-v2"),                    # PM6-6 / PM7-4: R-3's change
             "r10.json": ("ew-theme-std-v1", "ic-shrink-v1")}               # (the parent's --composition, the cell's;
     # r10 derives its rule from any parent composition, Ruling E-44: test_r10_derives_its_rule_from_the_parent...)
     old, new = comp.get(name, (None, None))
