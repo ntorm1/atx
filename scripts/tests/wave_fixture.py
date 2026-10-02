@@ -272,7 +272,15 @@ class FakeCycle:
         name, cid = a["--name"], a["--id"]
         lib = self.root / "atx-impl" / "strategies" / "libraries" / f"{name}.json"
         members = json.loads(lib.read_text())["members"] if lib.is_file() else ["m1", "m2"]
-        write_json(self.root, f"atx-impl/strategies/libraries/{name}.json", {"members": members + [cid]})
+        st = "atx-impl/strategies"                                  # add-alpha's file set (research_add_alpha.add_alpha)
+        write_json(self.root, f"{st}/libraries/{name}.json", {"id": f"ic_{name}", "members": members + [cid]})
+        reg = self.root / st / "alphas" / "registry.json"
+        alphas = json.loads(reg.read_text())["alphas"] if reg.is_file() else []
+        alphas = [x for x in alphas if x["id"] != cid] + [{"id": cid, "dsl": a["--dsl"], "origin": a["--origin"]}]
+        write_json(self.root, f"{st}/alphas/registry.json", {"alphas": alphas})
+        write_json(self.root, f"{st}/ic_{name}.json", {"candidates": members + [cid]})
+        write_json(self.root, f"{st}/ic_{name}.recipe.v2.json", {"members": members + [cid]})
+        write(self.root, f"{st}/libraries/{name}.prereg.md", f"# {name}\n")
         pspec, pc = self.spec_outputs(a["--parent-spec"])
         write_json(self.root, f"scripts/specs/v8/lib-{name}.json",
                    cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),

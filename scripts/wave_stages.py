@@ -33,6 +33,7 @@ from pathlib import Path
 import re
 import shutil
 
+import research_add_alpha as AA
 import research_cycle as RC
 import research_ledger
 import research_spec
@@ -270,18 +271,31 @@ def replaces(cands: list[dict]) -> bool:
     return any(c.get("kind") == WR.REPLACE for c in cands)
 
 
+def add_alpha_files(w: Wave, name: str) -> set[str]:
+    """The files add-alpha writes for library NAME (research_add_alpha.add_alpha): the alpha registry, the library
+    definition and its prereg stub, the IC library and slim recipe named by the definition's id, the cell spec."""
+    st = AA.STRATEGIES
+    out = {f"{st}/{AA.G.REGISTRY_PATH}", f"{st}/libraries/{name}.json", f"{st}/libraries/{name}.prereg.md",
+           lib_spec(name)}
+    doc = w.read_json(f"{st}/libraries/{name}.json")
+    if isinstance(doc, dict) and isinstance(doc.get("id"), str):
+        out |= {f"{st}/{n}" for n in AA.G.output_names(doc)}
+    return out
+
+
 def register(w: Wave, done: dict, log) -> dict:
     if not library_wave(w):
         return skipped("a rule wave registers no strings")
     m = w.manifest
     name, plans = m["library"], {}
+    w.require_clean("register", add_alpha_files(w, name))
     for c in m["candidates"]:
         w.run(add_alpha(w, c, name), f"add-alpha {c['id']}")
         plans[c["id"]] = w.sha(w.wave_path("plans", name, f"{c['id']}.json"))
     if replaces(m["candidates"]):
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
-    commit = w.commit_dirty(f"wave {m['wave']}: register library {name} ({len(m['candidates'])} frozen strings; "
-                            f"manifest {w.manifest_rel} {w.manifest_sha[:12]})")
+    commit = w.commit_paths(f"wave {m['wave']}: register library {name} ({len(m['candidates'])} frozen strings; "
+                            f"manifest {w.manifest_rel} {w.manifest_sha[:12]})", add_alpha_files(w, name))
     spec = lib_spec(name)
     if not w.exists(spec):
         raise StageError(f"add-alpha wrote no {spec}")
@@ -367,6 +381,7 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
         rc = m["rule_cell"]
         cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
         doc = WS.rule_cell_doc(w.read_json(rc["template"]), rc["template"], m["parent"]["spec"], rc, m["wave"])
+        w.require_clean("spec", {cell})
         if not w.exists(cell):            # a first write: the cell's NAV must be new (a template is used once)
             nav = w.outputs_of(doc, cell)["nav"]
             if w.exists(nav):
@@ -374,8 +389,8 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
                                  "copy it under a new name with new outputs)", EXIT_PIN)
         write_spec_file(w, cell, doc)
         w.run(WS.cycle_argv(w.python, "lock", cell, "--write"), "lock the rule cell")
-        commit = w.commit_dirty(f"wave {m['wave']}: rule cell {Path(cell).name} on {m['parent']['spec']}")
-        return cell_out(w, done, cell, "rule", commit, m["parent"]["library"])
+        commit = w.commit_paths(f"wave {m['wave']}: rule cell {Path(cell).name} on {m['parent']['spec']}", {cell})
+        return cell_out(w, done, cell, "rule", commit or w.committed(cell), m["parent"]["library"])
     sc = done["screen"]
     if not sc["cell"]:
         return {"cell_spec": None, "kind": "none", "reason": "the gate admitted no string with its prior sign"
@@ -384,6 +399,7 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
     if kept == [c["id"] for c in m["candidates"]]:
         return cell_out(w, done, sc["spec"], "screen-library", None, m["library"])
     name = WM.b_library(m)
+    w.require_clean("spec", add_alpha_files(w, name))
     for c in m["candidates"]:
         if c["id"] in kept:
             w.run(add_alpha(w, c, name), f"add-alpha {c['id']} into {name}")
@@ -392,9 +408,10 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
                                                              "(speed.reuse_screen_marginal; report only)")
     elif replaces([c for c in m["candidates"] if c["id"] in kept]):
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
-    commit = w.commit_dirty(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "
-                            f"({m['sign_rule']}: dropped {', '.join(sc['decision']['dropped'])})")
-    return cell_out(w, done, lib_spec(name), "b-library", commit, name)
+    commit = w.commit_paths(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "
+                            f"({m['sign_rule']}: dropped {', '.join(sc['decision']['dropped'])})",
+                            add_alpha_files(w, name))
+    return cell_out(w, done, lib_spec(name), "b-library", commit or w.committed(lib_spec(name)), name)
 
 
 def spec_plan(w: Wave, done: dict) -> list[str]:
@@ -514,6 +531,7 @@ def match(w: Wave, done: dict, log) -> dict:
                     g_cell=gc, mechanics=cal["navs"]["cell"], phases=done["run"]["phases"])
     new = WR.matched_leverage(s["leverage"], gp, gc)
     gm = WS.gm_path(s["cell_spec"])
+    w.require_clean("match", {gm})
     note = (f"Wave {m['wave']} at matched gross (Ruling PM6-6, research_cycle.py wave): calibration at L "
             f"{s['leverage']} gave all-rows S2 gross {gc:.10f} vs G_parent {gp:.10f}; L = {s['leverage']} x "
             f"{gp:.10f} / {gc:.10f} -> {new}.")
@@ -522,7 +540,8 @@ def match(w: Wave, done: dict, log) -> dict:
     if nav == done["run"]["nav"]:
         raise StageError(f"{gm}: the matched NAV output equals the calibration's ({nav})")
     w.run(WS.cycle_argv(w.python, "lock", gm), "lock (dry: every pin of the -gm copy verified)")
-    commit = w.commit_dirty(f"wave {m['wave']}: {Path(gm).name} at L {new} (gross matching, PM6-6)")
+    commit = w.commit_paths(f"wave {m['wave']}: {Path(gm).name} at L {new} (gross matching, PM6-6)", {gm}) \
+        or w.committed(gm)
     w.run(WS.cycle_argv(w.python, "run", gm, "--stop-after", "nav"), "matched run (--stop-after nav)")
     got = read_once(w, "mechanics", "mech-matched", {"cell": nav})
     g2 = got["navs"]["cell"]["mean_gross_leverage_all_rows"]
@@ -644,8 +663,13 @@ def judge_plan(w: Wave, done: dict) -> list[str]:
 
 
 # ------------------------------------------------------------------ record
+def queue_files(w: Wave) -> set[str]:
+    return {f"{wave_queue.QUEUE_DIR}/{c['id']}.json" for c in w.manifest.get("candidates") or []}
+
+
 def record(w: Wave, done: dict, log) -> dict:
     m = w.manifest
+    w.require_clean("record", queue_files(w))
     records, led = ledger_state(w)
     pre = done["preflight"]["ledger"]
     new_lines = records[pre["lines"]:]
@@ -673,8 +697,8 @@ def record(w: Wave, done: dict, log) -> dict:
         queued = wave_queue.record_wave(w.root, m, doc, dt.date.today().isoformat())
     except wave_queue.QueueError as exc:
         raise StageError(f"record: {exc}") from exc
-    commit = w.commit_dirty(f"wave {m['wave']}: queue status of {', '.join(queued)} ({wave_result.verdict_word(doc)})") \
-        if queued else None
+    commit = w.commit_paths(f"wave {m['wave']}: queue status of {', '.join(queued)} ({wave_result.verdict_word(doc)})",
+                            {f"{wave_queue.QUEUE_DIR}/{cid}.json" for cid in queued}) if queued else None
     copies = []
     if (m.get("record") or {}).get("copy_to"):
         dst = w.path(f"{m['record']['copy_to'].rstrip('/')}/{m['wave']}")

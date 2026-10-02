@@ -135,3 +135,46 @@ def test_a_string_without_an_admission_row_stops_the_screen(tmp_path):
     code, _ = wave(root, fake, "run")
     err = failed(root, "03-screen.failed-1.json")
     assert code == 4 and "no admission row for ['alpha_c']" in err and "not a drop" in err
+
+
+# ------------------------------------------------------------------ MAJOR 3: a stage commits only what it writes
+ADD_ALPHA_W1 = {"atx-impl/strategies/alphas/registry.json", "atx-impl/strategies/libraries/w1.json",
+                "atx-impl/strategies/libraries/w1.prereg.md", "atx-impl/strategies/ic_w1.json",
+                "atx-impl/strategies/ic_w1.recipe.v2.json", "scripts/specs/v8/lib-w1.json"}
+
+
+def test_a_local_edit_between_stages_is_refused_not_committed(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL)
+    assert wave(root, fake, "run", "--until", "preflight")[0] == 0
+    F.write(root, "scripts/research_add_alpha_fix.py", "# a local fix\n")          # untracked, inside the pathspec
+    code, _ = wave(root, fake, "run")
+    assert code == 3 and "dirty before the stage writes anything (scripts/research_add_alpha_fix.py)" in \
+        failed(root, "02-register.failed-1.json")
+    assert not any("add-alpha" in c for c in fake.calls)
+
+
+class Sneaky(F.FakeCycle):
+    def add_alpha(self, args):
+        F.write(self.root, "scripts/sneaky/new_dir/tool.py", "x = 1\n")              # an untracked dir: one file
+        return super().add_alpha(args)
+
+
+def test_a_file_the_stage_does_not_write_blocks_its_commit(tmp_path):
+    root = F.build(tmp_path / "r")
+    code, _ = wave(root, Sneaky(root, KEPT_ALL), "run")
+    err = failed(root, "02-register.failed-1.json")
+    assert code == 3 and "dirty paths this stage does not write (scripts/sneaky/new_dir/tool.py)" in err
+    assert F.git(root, "log", "--format=%s").splitlines()[0] == "synthetic root"     # nothing committed
+
+
+def test_a_retry_after_the_stage_failed_commits_exactly_its_files(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL, fail={"alpha_b": 4})                          # add-alpha alpha_b fails
+    assert wave(root, fake, "run")[0] == 4
+    assert set(F.git(root, "status", "--porcelain", "-uall").split()) >= {"scripts/specs/v8/lib-w1.json"}
+    fake.fail = {}
+    code, out = wave(root, fake, "run", "--until", "register")
+    assert code == 0, out
+    head = F.git(root, "show", "--name-only", "--format=%s", "HEAD").split("\n")
+    assert head[0].startswith("wave w1: register library w1") and set(filter(None, head[1:])) == ADD_ALPHA_W1

@@ -152,13 +152,45 @@ class Wave:
     def head(self) -> str:
         return self.git("rev-parse", "HEAD").strip()
 
-    def commit_dirty(self, message: str) -> str | None:
-        """Commit exactly the dirty code-pathspec paths a stage wrote (none: nothing to commit, None)."""
-        paths = self.dirty_code()
-        if not paths:
+    def dirty_files(self) -> list[str]:
+        """Every dirty file of the code pathspec one by one (git status --porcelain -z -uall: an untracked dir is its
+        files, never one entry that ``git add`` would take whole; a rename lists both paths)."""
+        items = self.git("status", "--porcelain", "-z", "-uall", "--", *research_tree.CODE_PATHSPEC).split("\0")
+        paths, k = [], 0
+        while k < len(items):
+            e = items[k]
+            if len(e) > 3:
+                paths.append(e[3:])
+                if e[0] in "RC" and k + 1 < len(items):
+                    paths.append(items[k + 1])
+                    k += 1
+            k += 1
+        return sorted(set(paths))
+
+    def require_clean(self, stage: str, own: set[str]) -> None:
+        """A committing stage's start: the code pathspec is clean. Only a retry after this stage's own failed attempt
+        may find files dirty, and only files the stage itself writes (``own``); any other dirty path (a local edit)
+        would ride in the stage's commit and run in the cell: refused."""
+        retry = any(self.path(self.wave_path("receipts")).glob(f"*-{stage}.failed-*.json"))
+        bad = [p for p in self.dirty_files() if not (retry and p in own)]
+        if bad:
+            raise stage_chain.StageError(
+                f"{stage}: the code pathspec is dirty before the stage writes anything ({', '.join(bad[:8])}): commit "
+                "or restore it first (a wave stage commits only the files it writes)", stage_chain.EXIT_STALE)
+
+    def commit_paths(self, message: str, expected: set[str]) -> str | None:
+        """Commit exactly the files a stage wrote: every dirty file of the code pathspec must be one of ``expected``
+        (else nothing is committed); None when nothing is dirty."""
+        dirty = self.dirty_files()
+        extra = [p for p in dirty if p not in expected]
+        if extra:
+            raise stage_chain.StageError(f"commit refused: dirty paths this stage does not write ({', '.join(extra[:8])})"
+                                         f"; the stage writes only {sorted(expected)}", stage_chain.EXIT_STALE)
+        if not dirty:
             return None
-        for argv in WS.commit_argvs(paths, message):
+        for argv in WS.commit_argvs(dirty, message):
             self.run(argv, "commit")
-        if self.dirty_code():
-            raise stage_chain.StageError(f"commit left dirty code paths: {', '.join(self.dirty_code()[:8])}")
+        left = self.dirty_files()
+        if left:
+            raise stage_chain.StageError(f"commit left dirty code paths: {', '.join(left[:8])}")
         return self.head()
