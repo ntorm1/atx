@@ -113,3 +113,17 @@ hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2
 - Gate p1-v8x2 requires any of the 5 with its prior sign; marginal IC report only; the wave is judged whole on rule 5
   (dSR > 0 AND mechanics AND net Sharpe at 4x NAV not lower than R-2's, PM7-10), at matched gross (PM6-6); turnover
   printed.
+- After the screen (gate PASS, 2 of 5 with the prior sign; 5 admission lines ledgered), Ruling PM7-35 (reading R-a: a
+  replacement is admitted by the gate only with status admitted AND runner sign = prior): bac_vq, ind_adj_rev_5_nx and
+  iv_rv_spread_xe leave the wave; bac, ind_adj_rev_5, iv_rv_spread keep their pre-X strings (PM7-18 b, 0 trials).
+  Acceptance from X-2 on: Ruling PM7-34 (dSR > 0 AND mechanics; the capacity criterion printed, deciding nothing).
+
+## Library v8x2b (the cell X-2 after PM7-35), registered 2026-10-02 before its screen
+- Members: v8.0 with q5_eg_f49 -> q5_eg_f49g (38) and ins_opp -> ins_opp_buy (41) = 52; the same two strings as in
+  v8x2 (same trial ids: 0 new admission lines). `research_cycle.py add-alpha --parent v80 --name v8x2b --parent-spec
+  scripts/specs/v8/lib-v80.json --fields build-equity/train-2020-2023-lo3-fields-v13` (2 calls, XIMP argv verbatim;
+  plans under `x2b-plans/`). Spec `lib-v8x2b.json` with PM6-8 (i) applied before any run (marginal without themes,
+  output `...-v8x2b-marginal-poolonly`; the parent's theme weights hold q5_eg_f49).
+- Pins: library `fund_industry_ic_v8x2b.json` `f60162a2c6d7ca796f585a633eb077acd7bb9316fa8bceab41d7520f3248645c`; recipe
+  `24444852` (admission_trials 2, new 2, unchanged 50, removed ins_opp, q5_eg_f49); definition `libraries/v8x2b.json`
+  `0b6a8500`; stub `7a1faaca`; registry `b6d67aa6` (unchanged); fields v13 `e5f7f28c`.

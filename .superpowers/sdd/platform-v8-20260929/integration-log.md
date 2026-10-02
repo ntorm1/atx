@@ -5579,3 +5579,63 @@ So no X string is void at K1 on the evidence so far.
 - Current accepted parent: **R-2** (`lib-v80.json`), N 50, admission trials 12 of 15 (v8) + 0 of 13 (X hand-written).
   Disk 124,832,608,256 B free (116.3 GiB).
 
+### X batch 1, resumed (PM message after PM7-32 was recorded by the PM at `bc153439`)
+
+**Preconditions (0 trials).**
+- Registry field rows (commit `297c5d55`, registry `566d7076` -> `fe109c9b`): `k8_count_63`, `inst_own_chg_q` = XSIG's L2
+  rows verbatim (formula id, origin, producer and clock checked equal to the v13 manifest rows; XSIG's basis text is the
+  longer one); `nt_first_126`, `earn_season_rank` (fields_v13, `research_fields_v9.py`), `div_month_pred`,
+  `beta_dvol_21`, `season_y2_5` (fields_v13, `research_fields_xdata.py`): clock = the v13 manifest row's verbatim, basis =
+  its definition + "(formula id X; producer ..., fields-v13)" (R-2 / R-7 form). No theme or budget change.
+- K1 of the three XDATA strings (PM7-32 argv) on v13: div_season `5a1380a1` 0 bars / 2 slots / div_month_pred, vol_beta
+  `91583af3` 20 / 3 / beta_dvol_21, season_y2_5 `13fe28b6` 0 / 2 / season_y2_5; the XSIG five re-checked against the
+  committed registry (same rows as above). All 22 X strings plan; none void.
+- **X list pinned (P4):** `v8x-prereg.md` section 14, commit `3603845b`, file SHA-256
+  `25ba909f95bfc42722fece5dda0501ec8d12700d038fcfb8794ae344df68ecd4` (27 items with DSL / template SHA-256, lane report
+  commits, the XDATA argv of PM7-32, the fields v13 pin, the criteria); recorded in `progress.md` (`5af8e6cd`).
+- P6 fields v13: above (`e5f7f28c`, 70 / 5). P7 the IC-pass memory re-probe: at X-3's cumulative K1 plan (below).
+
+**Rulings received during the batch (recorded by the PM):** PM7-34 (owner directive): from X-2 on, every X cell is
+accepted iff paired S2 net dSR > 0 AND mechanics (PM6-6 unchanged); each cell's capacity / turnover / cost criterion is
+computed and printed as "capacity criterion: met / unmet" and decides nothing. **The new rule took effect at X-2 (the
+first X cell; no X verdict had been written).** PM7-35: see X-2 below.
+
+### Cell X-2 (refinement wave; library v8x2 screen, then v8x2b): N 51
+
+**Registration** (commit `8a0a48ac`): 5 add-alpha calls (`scratchpad/x2_add5.sh`; XIMP argv verbatim, A-1 without
+`--rescreen`), `--parent v80 --name v8x2 --parent-spec scripts/specs/v8/lib-v80.json --fields
+build-equity/train-2020-2023-lo3-fields-v13`, K1 plans of record under `x2-plans/` (PM6-9): every call exit 0. Counts =
+the X list: roster 52 (5 in place at 26, 31, 33, 38, 41), recipe admission_trials 5 / new 5 / unchanged 47 / removed
+bac, ind_adj_rev_5, ins_opp, iv_rv_spread, q5_eg_f49; q5_eg_f49g inherits max_extra_fields 6; K1 rows = XIMP's; the 47
+unchanged rows = R-2's last plan (47 / 47). Library `46068582`, recipe `3e685f20`, spec `lib-v8x2.json` (12 pins
+locked). Registration appended to `v8-prereg.md` ("Library v8x2").
+
+**`run --screen`** (source `8a0a48ac`, then `4566ec94`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 15.6 | 1,496 | 0 | `c6611af213db5f8ae3ebbb0421243c88080e629a3c52d1b60e81908fd98f242a` | `mega-v8-b0b-train-u-v8x2-1` |
+| u-compare | internal | - | - | PASS | - | orientations IDENTICAL (47 objects; b adds 5); daily IC IDENTICAL (137,522 rows of 47 keys byte for byte; b adds 14,630 rows of 5) |
+| fit | 180 / 1,536 | 3.1 | 443 | 0 | `0d34d64361fbd2f279df038b5cacd0426b84a94affa1f1430d30b11cadd34f8c` | `mega-weights-v8-r1-std-v8x2` |
+| card | 300 / 2,560 | 19.2 | 1,398 | 0 | `dd856231668d4b9e9a08e125e833c976866abb596895ba175b120f408e9e8e5a` | `mega-cards-v8-r1-std-v8x2` |
+| marginal (themes) | 360 / 1,536 | 0.3 | 2 | **1** | `374d531bafc2c9cb759a72b46a1b6931792d4090b7ab9a0be647b60f00c8b592` | refusal: "themes: pool member bac is not in --library" -> HARD-STOP exit 4 |
+| marginal (pool only, PM6-8 (i)) | 360 / 1,536 | 141.1 | 296 | 0 | `e3f29f82523c1ab1bb529933850e06c9224411b9d1efbb82fc2aa9333f27ca0d` | `...-v8x2-marginal-poolonly` (report only) |
+| gate p1-v8x2 | internal | - | - | PASS | - | **5 admission lines ledgered** (ledger 71 -> 76 lines) |
+
+Spec-only fix (commit `4566ec94`; confirmed for replacing waves by PM7-32): `marginal.themes` deleted, `marginal.output`
+-> `...-v8x2-marginal-poolonly`; lock / lock --write / dry 0 / 0 / 0, every pin unchanged; the screen resumed at marginal.
+
+**Readings stated before any gate line was read** (scratch note, 15:45Z): "a refinement the gate does not admit
+leaves the wave" (prereg section 6, PM7-18 b): R-a = status admitted AND runner sign = prior (the gate's own pass);
+R-b = status admitted (what the prior-oriented fit weights). **Admission (gate p1-v8x2, v4-prior-v1): PASS, 2 of 5 with
+the prior sign;** all 5 status admitted; q5_eg_f49g and ins_opp_buy runner sign +1 (agree); **bac_vq,
+ind_adj_rev_5_nx, iv_rv_spread_xe runner sign -1 against prior +1** (the case where R-a and R-b differ). Reference
+members vs R-2's admission: 0 status changes. STOPPED for the PM; **Ruling PM7-35: reading R-a** -- the three leave the
+wave, bac / ind_adj_rev_5 / iv_rv_spread keep their pre-X strings at 0 trials; the 5 admission lines stay counted; for
+additions (X-3) a status-admitted member with runner sign 0 stays (R-2 precedent) and one with runner sign opposite to
+its prior is dropped from the wave; the same reading applies to X-4's re-screened replacements.
+
+**Library v8x2b** (the cell): v80 with only q5_eg_f49g (38) and ins_opp_buy (41) (`scratchpad/x2b_add2.sh`, the same
+argv, `--name v8x2b`; plans `x2b-plans/`); library `f60162a2`, recipe `24444852` (admission_trials 2, unchanged 50),
+spec `lib-v8x2b.json` with PM6-8 (i) applied before any run. Registered in `v8-prereg.md` ("Library v8x2b").
+
