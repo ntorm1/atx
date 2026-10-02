@@ -1500,3 +1500,23 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   lo1-dlret; the live `base-b0c.json` is on lo3-dlret since batch 1b. The lane merges root into its branch,
   corrects the expectation to the live spec, and root merges by SHA with the next batch -- the spec is locked
   and correct; the test predates it -- cost if wrong: none (tests only).
+- Ruling PM6-6 (gross matching: L is a cell parameter; declared before any R-1 return is read; supersedes "L is
+  not re-derived" of goal prompt 5): from R-1 on, every construction cell runs at the L that puts its all-rows
+  gross (the gated mechanics key) within +/- .005 of its parent's all-rows gross. Procedure, mechanics only:
+  (1) NAV at the parent's L, read only the mechanics keys (never `stdout.log`, never a return, NAV, Sharpe or
+  P&L figure); (2) if |G - G_parent| <= .005 the cell stands at that L; else L' = L x G_parent / G rounded to 4
+  decimals, set by `change.set {"nav.leverage", "nav.output"}` in a new spec (a locked spec is never edited),
+  NAV re-run, gross re-checked; one further linear correction is allowed; (3) only then are the cell's returns
+  read. Calibration runs are not trials (no return is read from them) and their outputs are never opened beyond
+  mechanics; the cell counts once in N. An accepted cell's L is inherited by its children. A cell that needs
+  L < 1 (the executable refuses it) or misses +/- .005 after two corrections fails mechanics and is ledgered
+  rejected. The mechanics limits ([.90, 1.05] etc.), the acceptance rule and every mechanical criterion are
+  unchanged and are evaluated on the matched run. R-1: the run at L 1.247 (gross 1.0672) is step (1); R-1 runs
+  at L' (about 1.147) and is ledgered once, N 41. The scorecard states each cell's L -- the plan allows it
+  ("Construction cells run at L 1.247 unless the task changes it"); L 1.247 was calibrated once in v6 on the old
+  composition's tracking ratio (.80), so under fixed L every cell that slows the target (R-1, R-3, R-4, R-10,
+  R-11) is rejected on gross for a calibration artefact, not on merit; gross is linear in L to .1% (v6u pair);
+  matched dollar gross makes the paired test fairer, and no gain can come from gearing -- cost if wrong: the
+  construction was amended after a mechanics read (not a return read); a reader who holds L fixed counts R-1 as
+  rejected at N 41 and discounts cells whose L moved; R-1's PM5-11 criterion scales as 1/L and is now judged at
+  matched gross (stricter than at 1.067).
