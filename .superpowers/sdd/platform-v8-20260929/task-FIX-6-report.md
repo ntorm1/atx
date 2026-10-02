@@ -342,3 +342,72 @@ synthetic label role on a stand-in root. No spec, lock, pin or non-test file tou
 4 skipped, 0 failed** (190 tests; the 4th skip is `test_cycle_e2e.py:182`, `ATX_EQUITY_BIN` unset, so root's run with
 it set should read 187 / 3); `test_research_spec.py` alone 47 passed; `git status` clean apart from the two files after
 the suite.
+
+## Round 5: the registry grows by appending; root's v8.0 specs accepted (Ruling PM6-10)
+
+Tests only, same branch. First I merged root's head `9c3f23ec` (`git merge 9c3f23ec` -> `22b8aa97`, ort, no conflict).
+That brings the v8.0 registration (15 alphas, 3 fields appended to `alphas/registry.json`), the committed
+`fund_industry_ic_v80.json` and its recipe, the hand-written `r1-comp-v8-gm.json` (PM6-6) and the add-alpha
+`lib-v80.json`. On that snapshot, before this round: `atx-impl/strategies` 1 failed / 162 passed;
+`scripts/tests` 17 failed / 170 passed / 4 skipped.
+
+### Causes and fixes
+
+| # | cause (a premise the merged state falsifies) | tests | fix |
+|---|---|---|---|
+| A | `test_registry_seed_is_the_v71_library` asserted that the registry *is* the v7.1 seed | that test (1) | The seed is now a **prefix**. Alphas, fields and themes each begin with the v7.1 library's entries, in its order. Each seed entry is unchanged: its id, dsl, theme, tier, prior sign and citation equal the library candidate's; its prior-sign source, form, notes and tier rank equal the recipe's; added_in equals the slim recipe's lineage; the field basis equals the library's and clock / origin the recipe's; the theme description equals the family's. Later entries are appends: new ids, no DSL held twice, new field and theme names. A repeated JSON key is refused (`unique_keys`), because `json.loads` would let an appended duplicate silently re-define a seed field. `test_v71_library_byte_identical` is unchanged. |
+| B | `r1-comp-v8-gm.json` is an authored spec that the authored registry did not list | `test_every_v8_spec_loads_and_plans` x14 (the `set(V8_SPECS) == set(NULL_PINS)` guard); `test_the_fixtures_plan_a_locked_spec_as_unlocked` (KeyError) | Registered: `NULL_PINS` = `CHILD_NULLS`; `EXPECTED_CHANGES` = R-1's change plus `nav.leverage`; the composition map gives it R-1's `ew-theme-v1 -> ew-theme-std-v1`. The new parametrisation `test_templates_differ...[r1-comp-v8-gm.json]` passes. New test `test_r1_at_matched_gross_parents_the_later_templates`: every template after R-1 plans with gm as its parent (`check_live_plan`), with R-3 -> `ew-theme-std-aim-v1`, R-10 -> `ic-shrink-v1` and R-11 -> `ew-theme-std-v1`. Its loop is `check_parents`, factored out of `check_generated`, which now calls it. |
+| C | `as_authored` kept a committed library's pin ("authored with that file"). R-2's and R-7's templates author `change.inputs.library` / `recipe` null, and add-alpha commits the file afterwards. Since `fund_industry_ic_v80.json` exists, a relocked `r2-lib-v80.json` kept the lock's pin | `test_the_fixtures_plan_a_locked_spec_as_unlocked` (r2: library and recipe not UNLOCKED) | A template's own inputs (`change.inputs`) are null in the as-authored copy whatever the file. All three templates that have such inputs author them null (b0c label_role, r2, r7). The rule for resolved specs is unchanged. `check_live_plan`: on a chain of registered specs, a pin on a committed file is checked against its bytes and may stand LOCKED (`NULL_PINS[name] - held`). Stand-in pins are still required UNLOCKED. |
+| D | `v8_root` copied the committed registry, which now holds root's `q5_eg_f49` / `gpa_f49`. The test's own registrations (sue's theme and tier, a test citation) then hit `register_alpha`'s immutability refusal | `test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions` | `v8_root` writes `v71_seed_registry()`, the committed registry cut to its v7.1 prefix (asserted). Each wave in these tests starts from v7.1, as before root's registration. Its bytes equal the pre-v8.0 registry (`8f48ee39`) byte for byte. |
+| E | `test_the_whole_file_passes_with_a_generated_spec_present` generated its probe as `v80`. The fake root holds a committed atx-impl file as is, so root's real `fund_industry_ic_v80.json` stood in for the probe's library and failed its pin (inner `test_every_generated_spec_plans...`) | that test | `add()` takes `name=` (default `v80`). The probe is `PROBE = "v8probe"`, and the test asserts that its library is a stand-in. The recogniser negatives use the probe's names. The inner run must report every generated spec checked (the probe and root's `lib-v80.json`). |
+
+Forward check (root moved during the run): root's later head `3137edf7` changes only specs within the paths tested here
+(`lib-v80.json`: `marginal.themes` deleted, PM6-8; `r3-aim-gain.json` on parent `lib-v80.json`, locked). The file
+failed 4 tests on a copy of that spec dir (`ATX_TEST_V8_SPECS`): `fake_root` read `marginal["themes"]`
+unconditionally. Fix F (tests only): without `themes`, the stand-in pool binds the role only, exactly what
+`check_marginal_bindings` checks. With that fix the file passes 50 / 50 on the `3137edf7` specs, as well as on the merged
+snapshot. No spec defect found: both new specs plan, lock and parent the later templates.
+
+### Not weakened
+
+Every assertion on spec content, flags, refusals, composition maps and pins of stand-in files is unchanged. The seed
+test now checks more of each seed entry than before: identity keys and added_in against the v7.1 artifacts, and
+duplicate keys. Negative controls (scratch, not committed) against a temp copy of the strategies dir: the test fails
+on each of the following:
+- a seed alpha's dsl, citation or added_in changed;
+- seed alphas reordered;
+- a v8.0 alpha moved into the seed;
+- a later alpha repeating a seed DSL;
+- a seed field's basis or clock changed;
+- a later field moved into the seed;
+- a seed theme description changed;
+- a duplicate `volume` key appended.
+
+It passes on the live registry, on the pre-v8.0 registry and with a theme appended.
+
+### Files touched
+
+`atx-impl/strategies/test_generate_library.py`, `scripts/tests/test_research_spec.py` and this section. No registry,
+spec, lock, pin, library, script or C++ file.
+
+### Verification (merged snapshot `22b8aa97` + this commit)
+
+```
+"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs scripts/tests
+-> 189 passed, 4 skipped, 0 failed (193 tests; the 4 skips are the env-gated ones: ATX_EQUITY_BIN x1,
+   RESEARCH_CYCLE_LIVE_ROOT x3; root's run with ATX_EQUITY_BIN set should read 190 / 3)
+"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs atx-impl/strategies
+-> 163 passed (test_generate_library.py 9 passed on the K1 fixture plan; root's ATX_V71_PLAN_JSON variant not run here)
+```
+
+`test_research_spec.py` alone: 50 passed on the snapshot; 50 passed with `ATX_TEST_V8_SPECS` on root's `3137edf7`
+specs. `git status` clean after the suites apart from the edited files.
+
+### Open risks (round 5)
+
+- **The seed's field `formula_id` and `producer`.** No v7.1 artifact records them, so an edit in place is not
+  detected. Only a re-definition through a repeated key is.
+- **A hand edit to `lib-v80.json`** that drops add-alpha's marks makes it an authored spec. It then fails the authored
+  registry loudly (round 2 risk, unchanged). Root's marginal edit keeps the marks.
+- **A later registration that re-uses a test id** (`v8_probe`, `earn_probe`) does not affect these tests, because they
+  now start from the v7.1 seed. A later library named `v8probe` would.

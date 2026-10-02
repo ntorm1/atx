@@ -117,29 +117,56 @@ def test_origin_required(tmp_path):
 
 
 # ------------------------------------------------------------------ pinning the behaviour
+def unique_keys(pairs: list) -> dict:
+    """json object_pairs_hook: an object whose key repeats is refused (json.loads keeps the last value silently)."""
+    keys = [k for k, _ in pairs]
+    assert len(set(keys)) == len(keys), f"duplicate keys {sorted({k for k in keys if keys.count(k) > 1})}"
+    return dict(pairs)
+
+
 def test_registry_seed_is_the_v71_library():
-    """The registry was seeded from fund_industry_ic_v71.json and its recipe: 48 entries of origin prior, each carrying
-    the recipe's prior-sign source, smoothing form and template notes; added_in = the first library holding that exact
-    DSL; the field table is the library's declarations with the recipe's clock and origin."""
+    """The registry was seeded from fund_industry_ic_v71.json and its recipe and grows by appending (Ruling PM6-10: a
+    registration, e.g. library v8.0's for cell R-2, is the registry's designed use). Its alphas, fields and themes each
+    begin with the seed, in the library's order, every seed entry unchanged: the 48 candidates (dsl, theme, tier, prior
+    sign, citation), of origin prior, each carrying the recipe's prior-sign source, smoothing form, template notes and
+    tier rank, added_in = the first library holding that exact DSL (the slim recipe's lineage); the library's field
+    declarations (basis) with the recipe's clock and origin; the library's families (description). Every later entry
+    is an append that alters no seed entry: a new alpha id with a DSL no other entry holds, a new field or theme name
+    (no repeated JSON key re-defines a seed name). test_v71_library_byte_identical still guards the regeneration."""
+    text = (HERE / G.REGISTRY_PATH).read_text(encoding="utf-8")
+    assert json.loads(text, object_pairs_hook=unique_keys) == json.loads(text)
     reg = G.load_registry(HERE)
     rec = v71_recipe_v1()
+    slim = json.loads((HERE / "fund_industry_ic_v71.recipe.v2.json").read_text(encoding="utf-8"))
     lib = json.loads((HERE / "fund_industry_ic_v71.json").read_text(encoding="utf-8"))
-    assert [a["id"] for a in reg["alphas"]] == [c["id"] for c in lib["candidates"]]
-    assert {a["origin"] for a in reg["alphas"]} == {"prior"}
+    seed, later = reg["alphas"][:len(lib["candidates"])], reg["alphas"][len(lib["candidates"]):]
+    assert [a["id"] for a in seed] == [c["id"] for c in lib["candidates"]] and len(seed) == 48
+    assert {a["origin"] for a in seed} == {"prior"}
     assert reg["tier_scores"] == {"A": 1.0, "A-": 0.9, "B+": 0.8, "B": 0.7, "B-": 0.55, "C+": 0.4}
     lineage, templates = ({r["id"]: r for r in rec[k]} for k in ("lineage", "templates"))
-    for a in reg["alphas"]:
+    added_in = {r["id"]: r["added_in"] for r in slim["lineage"]}
+    for a, c in zip(seed, lib["candidates"]):
+        assert {k: a[k] for k in G.IDENTITY_KEYS} == {k: c[k] for k in G.IDENTITY_KEYS}, a["id"]
         assert a["prior_sign_source"] == lineage[a["id"]]["prior_sign_source"] and \
             a["form"] == lineage[a["id"]]["smoothing_form"], a["id"]
         assert a["notes"] == {k: templates[a["id"]][k] for k in G.NOTE_KEYS}, a["id"]
         assert G.tier_rank(reg, a["tier"]) == lineage[a["id"]]["tier_rank"], a["id"]
-    added = {a["id"]: a["added_in"] for a in reg["alphas"]}
+        assert a["added_in"] == added_in[a["id"]], a["id"]
+    added = {a["id"]: a["added_in"] for a in seed}
     assert [added[i] for i in WAVE2] == ["v71"] * 4 and added["sv_flow"] == "v61" and added["qmj_safety"] == "v70"
     assert added["within_ind_mom"] == "v4" and added["bm"] == "v6"          # bm's DSL was revised in v6
-    assert list(reg["fields"]) == [f["name"] for f in lib["fields"]]
-    assert {n: f["clock"] for n, f in reg["fields"].items()} == rec["data"]["field_clocks"]
-    assert {n: f["origin"] for n, f in reg["fields"].items()} == rec["data"]["field_origin"]
-    assert list(reg["themes"]) == [f["id"] for f in lib["families"]]
+    names = [f["name"] for f in lib["fields"]]
+    assert list(reg["fields"])[:len(names)] == names
+    assert {n: reg["fields"][n]["basis"] for n in names} == {f["name"]: f["basis"] for f in lib["fields"]}
+    assert {n: reg["fields"][n]["clock"] for n in names} == rec["data"]["field_clocks"]
+    assert {n: reg["fields"][n]["origin"] for n in names} == rec["data"]["field_origin"]
+    themes = [f["id"] for f in lib["families"]]
+    assert list(reg["themes"])[:len(themes)] == themes
+    assert {t: reg["themes"][t] for t in themes} == {f["id"]: f["description"] for f in lib["families"]}
+    # the appends: new ids, every DSL held once (register_alpha), new names (unique_keys); none re-defines the seed
+    assert not {a["id"] for a in later} & set(added) and len({a["dsl"] for a in reg["alphas"]}) == len(reg["alphas"])
+    assert not set(list(reg["fields"])[len(names):]) & set(names)
+    assert not set(list(reg["themes"])[len(themes):]) & set(themes)
 
 
 def test_slim_recipe_carries_what_the_fitter_and_ledger_read():
