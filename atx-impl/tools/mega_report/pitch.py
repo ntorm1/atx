@@ -62,6 +62,11 @@ def theme_class(ctx, theme: str) -> str:
     return (_acfg(ctx).get('theme_classes') or {}).get(theme, 'fundamental')
 
 
+def combined_label(ctx) -> str:
+    """The composition rule of the combined signal the IC figures name (``analysis.combined_label``; the v7 default)."""
+    return str(_acfg(ctx).get('combined_label') or 'ew-theme-v1')
+
+
 def _dates_ns(ns) -> list[dt.date]:
     return [D.ns_to_date(v) for v in ns]
 
@@ -724,7 +729,8 @@ def blk_universe(ctx, spec) -> str:
                            f"window. Source: {Path(_acfg(ctx)['role']).name}/manifest.json universe block."))
     series = [{'name': 'base members (top-3000 by 63-day $ADV)', 'x': u['dates'], 'y': u['base'], 'color': 'ref',
                'width': 1.6, 'end_label': f"base {C.fmt(u['base'][-1], 'int')}"},
-              {'name': 'kept members (linked-operating-v1)', 'x': u['dates'], 'y': u['kept'], 'color': 's2', 'width': 2.2,
+              {'name': str(_acfg(ctx).get('universe_kept_label') or 'kept members (linked-operating-v1)'),
+               'x': u['dates'], 'y': u['kept'], 'color': 's2', 'width': 2.2,
                'emph': True, 'end_label': f"kept {C.fmt(u['kept'][-1], 'int')}"}]
     svg = C.line_chart(series, height=260, y_fmt='int', y_label='Members per session', aria='universe size')
     lg = C.legend([{'name': s['name'], 'color': s['color'], 'width': 2} for s in series])
@@ -795,7 +801,7 @@ def blk_ic_panel(ctx, spec) -> str:
                      'values': {h: ((x.get(h) or {}).get('rank_mean'), (x.get(h) or {}).get('rank_se')) for h in hs}})
     comb = analysis(ctx, 'combined')
     if '_error' not in comb:
-        rows.append({'group': 'combined signal', 'label': 'ew-theme-v1', 'filled': True, 'color': 's3',
+        rows.append({'group': 'combined signal', 'label': combined_label(ctx), 'filled': True, 'color': 's3',
                      'values': {h: ((comb.get(f'w{h}') or {}).get('mean'), (comb.get(f'w{h}') or {}).get('se')) for h in hs}})
     svg = C.ic_panel(rows, hs, panel_titles=[f'Rank IC, h = {h} sessions' for h in hs], aria='IC by horizon')
     lg = C.legend([{'name': 'Admitted', 'color': 'accent', 'kind': 'dot'},
@@ -804,7 +810,8 @@ def blk_ic_panel(ctx, spec) -> str:
                    {'name': 'Whisker: mean +- 1 SE', 'color': 'fg-2', 'width': 1}])
     cap = (f"Mean daily cross-sectional rank IC of each candidate's prior-signed signal with the forward return "
            f"close[d+1+h]/close[d+1]-1 over the TRAIN decisions, per horizon, with +-1 HAC SE (runner lag 2h); rows by "
-           f"theme, own x scale per panel. The combined row is the ew-theme-v1 blend of the weighted pass (Newey-West SE, "
+           f"theme, own x scale per panel. The combined row is the {combined_label(ctx)} blend of the weighted pass "
+           f"(Newey-West SE, "
            f"lag 2h, computed here). Sources: {_acfg(ctx)['u_pass']}/train_candidates.jsonl; "
            f"{_acfg(ctx).get('w_pass')}/train_daily_ic.csv (__combined__).")
     return C.figure(ctx.next_fig(), svg, cap, 'fig-ic-panel', lg)
@@ -833,14 +840,14 @@ def blk_decay(ctx, spec) -> str:
     comb = analysis(ctx, 'combined')
     if '_error' not in comb:
         y = [(comb.get(f'w{h}') or {}).get('mean') for h in hs]
-        panels.append({'title': 'combined ew-theme-v1', 'series': [{'y': y, 'color': 's3', 'width': 2.4,
+        panels.append({'title': f'combined {combined_label(ctx)}', 'series': [{'y': y, 'color': 's3', 'width': 2.4,
                                                                      'label': C.fmt(y[-1], '+.3f'), 'title': 'combined'}]})
     svg = C.multiples(panels, hs, cols=4, panel_h=150, y_fmt='+.2f', x_label='Horizon h, sessions (log scale)',
                       aria='IC term structure by theme')
     lg = C.legend([{'name': 'Theme mean over admitted members', 'color': 'accent', 'width': 2.4},
                    {'name': 'Admitted member', 'color': 'ref-2', 'width': 1},
                    {'name': 'Rejected member', 'color': 'ref', 'width': 1, 'dash': '3 3'},
-                   {'name': 'Combined ew-theme-v1 signal', 'color': 's3', 'width': 2.4}])
+                   {'name': f'Combined {combined_label(ctx)} signal', 'color': 's3', 'width': 2.4}])
     cap = (f"Alpha-decay proxy: mean rank IC at h = {', '.join(map(str, hs))} sessions per candidate, one panel per "
            f"theme (admitted / all members in the title), shared y scale. A persistent signal's cumulative-return IC "
            f"keeps rising with h; a flat or falling line means the information is used up within the first horizon. "
@@ -881,14 +888,14 @@ def blk_tau_ic(ctx, spec) -> str:
 
 def blk_theme_year(ctx, spec) -> str:
     ty = need(ctx, 'theme_year')
-    rows = ty['themes'] + ['combined (ew-theme-v1)']
+    rows = ty['themes'] + [f'combined ({combined_label(ctx)})']
     vals = [[ty['mat'][t].get(y) for y in ty['years']] for t in ty['themes']]
     vals.append([ty['combined'].get(y) for y in ty['years']])
     tot = [ty['tot'][t] for t in ty['themes']] + [ty['combined_tot']]
     hm = C.heatmap(rows, [str(y) for y in ty['years']], vals, value_fmt='+.3f', total=tot, total_label='TRAIN',
                    step=0.01, label_w=190, aria='IC by theme and year')
     cap = (f"Mean daily rank IC at h = {ty['horizon']} sessions per theme (equal-weight mean over its admitted members) "
-           f"and calendar year of the decision, and for the combined ew-theme-v1 signal; 7-step diverging scale with "
+           f"and calendar year of the decision, and for the combined {combined_label(ctx)} signal; 7-step diverging scale with "
            f"step .01. Sources: u-pass and weighted-pass train_daily_ic.csv.")
     return C.figure(ctx.next_fig(), hm, cap, 'fig-theme-year')
 

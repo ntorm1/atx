@@ -1116,3 +1116,125 @@ def test_each_missing_input_is_one_named_unavailable_block(root):
         na = unavailable(build(root, cfg))
         assert [n for n, _ in na] == [block], key
         assert rel in na[0][1], key
+
+
+# ============================================================================================ headline (v8_headline)
+HEADLINE_NET = {'B0c': [0.0005, -0.0002, 0.0004, 0.0003, 0.0001], 'R-1': [0.0006, -0.0001, 0.0005, 0.0002, 0.0003]}
+HEADLINE_COST = 0.00005  # gross_return = net_return + this on every row
+
+
+def headline_cfg() -> dict:
+    cfg = cfg_for()
+    cfg['layout'] =[{'id': 'h', 'title': 'Headline', 'blocks': [{'type': 'v8_headline', 'cells': ['B0c', 'R-1']}]},
+                     {'id': 'a', 'title': 'Files', 'blocks': ['t_files']}]
+    return cfg
+
+
+def headline_world(root: Path, cfg: dict, skip: tuple = ()) -> None:
+    """The v8 inputs plus each headline cell's primary daily CSV (one deployment row, then return rows), NAV
+    summary.json (the aim leverage) and v7_extras.json (capacity rows at T3.MULTS)."""
+    world(root, cfg)
+    pid = cfg['scenarios'][0]['id']
+    for k, c in enumerate(cfg['v8']['cells']):
+        nets = HEADLINE_NET[c['key']]
+        lines = ['session_ns,return_observation,net_return,gross_return']
+        for i, r in enumerate([0.0] + nets):
+            lines.append(f'{session_ns(2021, 3, 1 + i)},{0 if i == 0 else 1},{r!r},{r + HEADLINE_COST!r}')
+        files = {f"{c['dir']}/daily_{pid}.csv": '\n'.join(lines) + '\n',
+                 f"{c['dir']}/summary.json": {'scenarios': [{'scenario': pid, 'construction': {'v5': {
+                     'aim_leverage': 1.247 if k == 0 else 1.1474}}}]},
+                 f"{c['dir']}/v7_extras.json": {'schema': 'atx.nav-v7-extras/v1', 'capacity': [
+                     {'multiple': m, 'net_sharpe': n + 0.1 * k} for m, n in zip(T3.MULTS, T3.NETS)]}}
+        for rel, obj in files.items():
+            if rel not in skip:
+                put(root, rel, obj)
+
+
+def test_headline_reads_each_cell_from_its_own_files(root):
+    cfg = headline_cfg()
+    headline_world(root, cfg)
+    html = build(root, cfg)
+    assert unavailable(html) == [] and 'id="t-v8-headline"' in html and 'id="t-v8-headline-years"' in html
+    rows = {c['key']: r for c, r in zip(cfg['v8']['cells'], summ_rows(cfg))}
+    tab = html.split('id="t-v8-headline"', 1)[1].split('</table>', 1)[0]
+    cells = [htmllib.unescape(re.sub(r'<[^>]+>', '', td)) for td in re.findall(r'<td[^>]*>(.*?)</td>', tab)]
+    width = 5  # metric, B0c, R-1, difference, source
+    table = {cells[i]: cells[i + 1:i + width] for i in range(0, len(cells), width)}
+    net = {k: 252 * sum(v) / len(v) for k, v in HEADLINE_NET.items()}
+    assert table['Aim leverage L'][:2] == ['1.247', '1.1474']
+    assert table['S2 net Sharpe'][:2] == [R.C.fmt(rows['B0c']['net_sharpe'], '+.4f'),
+                                          R.C.fmt(rows['R-1']['net_sharpe'], '+.4f')]
+    key = 'Net return, annual (mean daily net x sessions per year)'
+    assert table[key][:3] == [R.C.fmt(net['B0c'], '+pct2'), R.C.fmt(net['R-1'], '+pct2'),
+                              R.C.fmt(net['R-1'] - net['B0c'], '+pct2')]
+    key = 'Gross-of-cost return, annual (mean daily gross x sessions per year)'
+    assert table[key][:2] == [R.C.fmt(net['B0c'] + 252 * HEADLINE_COST, '+pct2'),
+                              R.C.fmt(net['R-1'] + 252 * HEADLINE_COST, '+pct2')]
+    assert table['S2 net Sharpe at 2x NAV'][:2] == [R.C.fmt(T3.NETS[2], '+.3f'), R.C.fmt(T3.NETS[2] + 0.1, '+.3f')]
+    assert table['S2 net Sharpe at 4x NAV'][:2] == [R.C.fmt(T3.NETS[3], '+.3f'), R.C.fmt(T3.NETS[3] + 0.1, '+.3f')]
+    assert table['Daily turnover tau, mean'][:2] == [R.C.fmt(rows['B0c']['tau_gmv_mean'], '.4f'),
+                                                     R.C.fmt(rows['R-1']['tau_gmv_mean'], '.4f')]
+    years = html.split('id="t-v8-headline-years"', 1)[1].split('</table>', 1)[0]
+    assert all(f'>{y}<' in years for y in V.train_years())
+    for c in cfg['v8']['cells']:   # every file the block read is in the manifest
+        for f in (f"daily_{cfg['scenarios'][0]['id']}.csv", 'summary.json', 'v7_extras.json'):
+            assert f'data-sort="{c["dir"]}/{f}">{c["dir"]}/{f}</td><td class="t" data-sort="read">read' in html
+
+
+@pytest.mark.parametrize('name', ['daily_modeled-1bn-stale5-v1+swap-fin-v1.csv', 'summary.json', 'v7_extras.json'])
+def test_headline_names_a_missing_file(root, name):
+    cfg = headline_cfg()
+    rel = f"{cfg['v8']['cells'][1]['dir']}/{name}"
+    headline_world(root, cfg, skip=(rel,))
+    na = unavailable(build(root, cfg))
+    assert [n for n, _ in na] == ['v8_headline'] and rel in na[0][1]
+
+
+def test_headline_refuses_a_sealed_daily_csv(root):
+    cfg = headline_cfg()
+    headline_world(root, cfg)
+    rel = f"{cfg['v8']['cells'][0]['dir']}/daily_{cfg['scenarios'][0]['id']}.csv"
+    text = (root / rel).read_text(encoding='utf-8').rstrip('\n').split('\n')
+    text.append(f'{session_ns(RW.FIRST_SEALED_YEAR, 1, 3)},1,0.001,0.001')
+    put(root, rel, '\n'.join(text) + '\n')
+    na = unavailable(build(root, cfg))
+    assert [n for n, _ in na] == ['v8_headline'] and rel in na[0][1] and 'sealed' in na[0][1]
+
+
+# ============================================================================================ labels of the v7 IC figures
+def _label_ctx(root: Path, analysis: dict):
+    from types import SimpleNamespace
+    cfg = cfg_for()
+    cfg['analysis'] = dict(analysis, horizons=[5, 21], u_pass='u', w_pass='w', role='r')
+    ctx = make_ctx(root, cfg)
+    ctx.analyses['_alphas'] = SimpleNamespace(order=[{'id': 'a', 'theme': 'value'}, {'id': 'b', 'theme': 'value'}],
+                                              primary={'adm': {'a': {'status': 'admitted', 'tau': 0.02}}, 'src': {}})
+    ctx.analyses['cands'] = {i: {h: {'rank_mean': 0.01 * h, 'rank_se': 0.004} for h in (5, 21)} for i in ('a', 'b')}
+    ctx.analyses['combined'] = {f'w{h}': {'mean': 0.02, 'se': 0.01} for h in (5, 21)}
+    ctx.analyses['theme_year'] = {'themes': ['value'], 'years': [2021], 'mat': {'value': {2021: 0.01}},
+                                  'tot': {'value': 0.01}, 'combined': {2021: 0.02}, 'combined_tot': 0.02, 'horizon': 21}
+    ctx.analyses['univ'] = {'reasons': {'no_link': 10}, 'reasons_all': {'no_link': 12}, 'reason_share': {'no_link': 0.1},
+                            'dropped_share': 0.1, 'id': 'linked-operating-v3', 'first': dt.date(2021, 1, 4),
+                            'last': dt.date(2021, 1, 6), 'dates': [dt.date(2021, 1, d) for d in (4, 5, 6)],
+                            'base': [3000.0, 3000.0, 3000.0], 'kept': [1800.0, 1810.0, 1805.0], 'kept_min': 1800.0,
+                            'kept_median': 1805.0}
+    return ctx
+
+
+def test_ic_figures_name_the_configured_composition_and_keep_the_v7_default(root):
+    """analysis.combined_label names the combined signal's composition in the IC panel, decay and theme-year figures
+    (the v7 text, ew-theme-v1, when unset); analysis.universe_kept_label the kept-members line (Ruling PM6-11: the
+    interim book R-2 runs ew-theme-std-v1 on linked-operating-v3)."""
+    blocks = (P.blk_ic_panel, P.blk_decay, P.blk_theme_year)
+    ctx = _label_ctx(root, {'combined_label': 'ew-theme-std-v1',
+                            'universe_kept_label': 'kept members (linked-operating-v3)'})
+    for fn in blocks:
+        out = fn(ctx, {})
+        assert 'ew-theme-std-v1' in out and 'ew-theme-v1' not in out, fn.__name__
+    out = P.blk_universe(ctx, {})
+    assert 'kept members (linked-operating-v3)' in out and 'linked-operating-v1' not in out
+    ctx = _label_ctx(root, {})
+    for fn in blocks:
+        out = fn(ctx, {})
+        assert 'ew-theme-v1' in out and 'ew-theme-std-v1' not in out, fn.__name__
+    assert 'kept members (linked-operating-v1)' in P.blk_universe(ctx, {})

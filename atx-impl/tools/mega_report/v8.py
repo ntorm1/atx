@@ -22,7 +22,13 @@ every path before it is opened and every file is hashed into the manifest, then 
 - ``v8_trial_accounting`` <- ``v8.trial_ledger``: the Appendix A block (``backtest_integrity.appendix_a_v8``) with
   "plus 8 re-screens" (ruling R2-e) and the budget;
 - ``v8_od1`` <- ``v8.prereg``: the OD-1 window disclosure (v8-prereg item 1) with the research window's dates;
-- ``v8_contradictions`` <- ``v8.literature``: the table of contradictions and updates to the v6 / v7 literature.
+- ``v8_contradictions`` <- ``v8.literature``: the table of contradictions and updates to the v6 / v7 literature;
+- ``v8_headline`` (layout ``{"type": "v8_headline", "cells": [KEY, ...], "multiples": [2, 4]}``, default the base and
+  the final cell) <- each named cell's own files: its nav_summ row (borrowed ``v8.summ``), its primary daily CSV (annual
+  net and gross-of-cost return = sessions per year x the mean daily ``net_return`` / ``gross_return`` over the return
+  rows), its NAV ``summary.json`` (the aim leverage L) and its ``v7_extras.json`` (net Sharpe at the NAV multiples of the
+  capacity curve): one row per metric, one column per cell, the last minus the first, and the cells' TRAIN year tables
+  side by side. A missing or sealed file renders one unavailable block naming it; the difference is not a test.
 
 Each input has exactly one owning block (``inputs``): a missing, refused or malformed input renders one unavailable
 block, its owner's, naming the path. A block that borrows an input (the ladder and the freeze gate read ``v8.summ``)
@@ -65,6 +71,7 @@ from types import SimpleNamespace
 
 import backtest_integrity as BI  # atx-impl/tools is on sys.path for every mega_report entry
 import nav_summ as NS
+import numpy as np
 from engine_tools import research_window as RW
 
 from . import components as C
@@ -75,6 +82,8 @@ BLOCK_YEAR, BLOCK_LADDER, BLOCK_BUNDLE, BLOCK_DIAG = 'v8_year_table', 'v8_ladder
 BLOCK_MEMBER, BLOCK_TRIALS, BLOCK_OD1, BLOCK_CONTRA = ('v8_member_horizon', 'v8_trial_accounting', 'v8_od1',
                                                      'v8_contradictions')
 BLOCK_BOOK = 'v8_book'
+BLOCK_HEADLINE = 'v8_headline'
+HEADLINE_MULTIPLES = (2, 4)  # NAV multiples of the capacity curve the headline quotes (R-3 reads 2x, R-5 4x)
 # the v7 pitch's book-level blocks that v8_book runs on the final cell (report.BLOCKS / pitch.BLOCKS names)
 BOOK_BLOCKS = ('fig_equity', 't_drawdowns', 'fig_returns', 'fig_rolling', 't_retstats', 't_stress', 't_cost_model',
                't_financing', 'costdec', 't_attrib', 'fig_cost_drag', 'fig_turnover', 'capacity_curve', 'fig_exposure',
@@ -1160,6 +1169,156 @@ def blk_bundle(ctx, spec) -> str:
                                  else None)
 
 
+# ============================================================================================ headline (two cells)
+def headline_rows(multiples) -> list[tuple[str, str, str, str]]:
+    """(entry key, metric, format, source) of the headline table, in order; ``sr_<m>`` = net Sharpe at NAV multiple m."""
+    return [('L', 'Aim leverage L', 'g', 'summary.json, primary scenario: construction.v5.aim_leverage'),
+            ('net_sharpe', 'S2 net Sharpe', '+.4f', 'nav_summ row: net_sharpe'),
+            ('net_ann', 'Net return, annual (mean daily net x sessions per year)', '+pct2',
+             'daily CSV: net_return over the return rows'),
+            ('gross_ann', 'Gross-of-cost return, annual (mean daily gross x sessions per year)', '+pct2',
+             'daily CSV: gross_return over the return rows'),
+            ('drag_ann', 'Cost and financing drag, annual (gross-of-cost minus net)', 'pct2',
+             'daily CSV: gross_return minus net_return'),
+            *[(f'sr_{_short(m)}', f'S2 net Sharpe at {_short(m)}x NAV', '+.3f',
+               f'v7_extras.json: capacity[multiple {_short(m)}].net_sharpe') for m in multiples],
+            ('tau', 'Daily turnover tau, mean', '.4f', 'nav_summ row: tau_gmv_mean'),
+            ('gross_lev', 'Gross leverage, mean over all rows', '.4f', 'nav_summ row: mean_gross_leverage_all_rows'),
+            ('cost_bps', 'Cost per traded dollar, bps', '.2f', 'nav_summ row: cost_bps_traded')]
+
+
+def headline_entry(ctx, c: dict, sm: dict | None, multiples) -> tuple[dict, list[tuple[str, str]], list[str]]:
+    """(figures, [(path, reason) not available], sources read) of one cell for the headline: its nav_summ row, its
+    primary daily CSV, NAV summary.json and v7_extras.json, each read through the Registry after the path and content
+    seal (``input_status``)."""
+    if ctx.primary is None:
+        raise KeyError(f'primary scenario {ctx.pkey!r} not configured')
+    pid, annual = ctx.primary['id'], ctx.annual
+    d = str(c.get('dir') or '').rstrip('/')
+    row = sm['by'].get(_base(d)) if sm else None
+    e = {'key': c.get('key'), 'label': c.get('label'), 'name': _base(d), 'row': row,
+         'net_sharpe': (row or {}).get('net_sharpe'), 'tau': (row or {}).get('tau_gmv_mean'),
+         'gross_lev': (row or {}).get('mean_gross_leverage_all_rows'), 'cost_bps': (row or {}).get('cost_bps_traded'),
+         'years': _years_by(row)}
+    bad, used = [], []
+    rel = f'{d}/daily_{pid}.csv'
+    why = input_status(ctx, rel)
+    daily = None if why else D.parse_daily(ctx.reg.read_text(rel), rel, columns=(
+        'session_ns', 'return_observation', 'net_return', 'gross_return'))
+    if why:
+        bad.append((rel, why))
+    elif daily is None or 'gross_return' not in daily.cols or not C.is_num(annual):
+        bad.append((rel, 'no net_return / gross_return return rows (or sessions_per_year not set)'))
+    else:
+        m = daily.ret_mask()
+        net, gross = daily.cols['net_return'][m], daily.cols['gross_return'][m]
+        if net.size:
+            e.update(rows=int(net.size), net_ann=annual * float(np.mean(net)), gross_ann=annual * float(np.mean(gross)))
+            e['drag_ann'] = e['gross_ann'] - e['net_ann']
+        used.append(P3._src(ctx, rel))
+    rel = f'{d}/summary.json'
+    why = input_status(ctx, rel)
+    if why:
+        bad.append((rel, why))
+    else:
+        doc = ctx.reg.read_json(rel)
+        sc = next((s for s in (doc or {}).get('scenarios') or [] if isinstance(s, dict) and s.get('scenario') == pid),
+                  None)
+        e['L'] = D.dig(sc, 'construction.v5.aim_leverage') if sc else None
+        used.append(P3._src(ctx, rel))
+    rel = f'{d}/v7_extras.json'
+    why = input_status(ctx, rel)
+    doc, err = (None, why) if why else P3._try(ctx, rel, 'capacity extras', schemas=P3.SCHEMAS['extras'])
+    if doc is None:
+        bad.append((rel, err))
+    else:
+        caps = {float(r['multiple']): r for r in doc.get('capacity') or []
+                if isinstance(r, dict) and C.is_num(r.get('multiple'))}
+        for mlt in multiples:
+            e[f'sr_{_short(mlt)}'] = (caps.get(float(mlt)) or {}).get('net_sharpe')
+        used.append(P3._src(ctx, rel))
+    return e, bad, used
+
+
+def _signed(spec: str) -> str:
+    return spec if spec.startswith('+') else '+' + spec
+
+
+def render_headline(data, src: str, *, num: int | None = None, num_years: int | None = None) -> str:
+    """The headline table (one row per metric, one column per cell, the last cell minus the first) and the cells' TRAIN
+    year tables side by side; ``data`` = {'entries': [headline_entry figures], 'multiples': [...], 'notes': [...]}."""
+    if data is None:
+        return unavailable(BLOCK_HEADLINE, src)
+    es = data['entries']
+    first, last = es[0], es[-1]
+
+    def cell_fmt(v, row):
+        s = C.fmt(v, row['_f'])
+        return None if s is None else C.esc(s)
+
+    def diff_fmt(v, row):
+        s = C.fmt(v, _signed(row['_f']))
+        return None if s is None else C.esc(s)
+    rows = []
+    for key, label, spec, source in headline_rows(data['multiples']):
+        r = {'m': label, 'src': source, '_f': spec}
+        for i, e in enumerate(es):
+            r[f'c{i}'] = e.get(key)
+        a, b = first.get(key), last.get(key)
+        r['d'] = b - a if len(es) > 1 and C.is_num(a) and C.is_num(b) else ('' if len(es) == 1 else None)
+        rows.append(r)
+    names = ', '.join(f"{e['key']} = {e['name']}" for e in es)
+    cols = ([{'key': 'm', 'label': 'Metric', 'kind': 'text', 'cls': 'wrap'}]
+            + [{'key': f'c{i}', 'label': e['label'] or e['key'], 'fmt': cell_fmt} for i, e in enumerate(es)]
+            + ([{'key': 'd', 'label': f"{last['key']} minus {first['key']}", 'fmt': diff_fmt}] if len(es) > 1 else [])
+            + [{'key': 'src', 'label': 'Source (each cell its own file)', 'kind': 'text', 'cls': 'wrap'}])
+    parts = [C.table(cols, rows, num=num, tid='t-v8-headline', sortable=False,
+                     caption=(f"Headline, scenario S2 primary ({_window_text()}): {names}. Each figure is read or "
+                              f"computed from the cell's own files; the difference column is arithmetic, not a test "
+                              f"(the paired tests are in the cell ladder). Sources: {src}."))]
+    years = sorted({y for e in es for y in (e.get('years') or {})} | set(train_years()))
+    refuse_sealed_years(years, 'headline year tables')
+    yc = [{'key': 'y', 'label': 'Year', 'kind': 'text'}]
+    for metric, lab, spec in (('net_sharpe', 'net Sharpe', '+.3f'), ('net_return', 'net return', '+pct2'),
+                              ('ann_vol', 'volatility', 'pct2'), ('tau_gmv_mean', 'tau mean', '.4f'),
+                              ('cost_bps_traded', 'cost bps/$', '.2f')):
+        yc += [{'key': f'{metric}{i}', 'label': f"{e['key']} {lab}", 'fmt': spec} for i, e in enumerate(es)]
+    yrows = []
+    for y in years:
+        r = {'y': str(y)}
+        for i, e in enumerate(es):
+            yr = (e.get('years') or {}).get(y) or {}
+            for metric in ('net_sharpe', 'net_return', 'ann_vol', 'tau_gmv_mean', 'cost_bps_traded'):
+                r[f'{metric}{i}'] = yr.get(metric)
+        yrows.append(r)
+    parts.append(C.table(yc, yrows, num=num_years, tid='t-v8-headline-years', sortable=False,
+                         caption=(f"Year tables of {' and '.join(e['key'] for e in es)} side by side ({_window_text()}): "
+                                  f"per calendar year of the return rows, net Sharpe, compounded net return, annualised "
+                                  f"volatility, mean daily GMV turnover and cost per traded dollar (each cell's nav_summ "
+                                  f"year_table). 2023 is partly selected (OD-1).")))
+    parts.append(''.join(_note(n) for n in data.get('notes') or []))
+    return ''.join(parts)
+
+
+def blk_headline(ctx, spec) -> str:
+    v8 = _v8(ctx)
+    keys = spec.get('cells') or [v8.get('base'), v8.get('final')]
+    cells = [_cell(v8, k) for k in keys]
+    multiples = spec.get('multiples') or list(HEADLINE_MULTIPLES)
+    sm, why = _summ(ctx)
+    notes = [f'{why}; the nav_summ figures are n/a'] if why else []
+    entries, unav, srcs = [], [], [sm['src']] if sm else []
+    for c in cells:
+        e, bad, used = headline_entry(ctx, c, sm, multiples)
+        if sm and e['row'] is None:
+            notes.append(f"{c.get('key')}: {e['name']} is not a row of the nav_summ JSON")
+        entries.append(e)
+        unav += [unavailable(BLOCK_HEADLINE, rel, reason) for rel, reason in bad]
+        srcs += used
+    return ''.join(unav) + render_headline({'entries': entries, 'multiples': multiples, 'notes': notes},
+                                           '; '.join(srcs) or C.NA_TEXT, num=ctx.next_tab(), num_years=ctx.next_tab())
+
+
 # ============================================================================================ member columns
 MEMBER_COLS = [{'key': 'id', 'label': 'Member', 'kind': 'mono'}, {'key': 'theme', 'label': 'Theme', 'kind': 'text'},
                {'key': 'status', 'label': 'Status', 'kind': 'text'}, {'key': 'weight', 'label': 'Weight', 'fmt': '.4f'},
@@ -1760,4 +1919,4 @@ def inputs(cfg: dict) -> list[tuple[str, str, str]]:
 ANALYSES = {'v8_summ': an_summ, 'v8_bundle': an_bundle, 'v8_diag': an_diag, 'v8_ledger': an_ledger}
 BLOCKS = {BLOCK_YEAR: blk_year_table, BLOCK_LADDER: blk_ladder, BLOCK_BUNDLE: blk_bundle, BLOCK_DIAG: blk_diagnostics,
           BLOCK_MEMBER: blk_member_horizon, BLOCK_TRIALS: blk_trial_accounting, BLOCK_OD1: blk_od1,
-          BLOCK_CONTRA: blk_contradictions, BLOCK_BOOK: blk_book}
+          BLOCK_CONTRA: blk_contradictions, BLOCK_BOOK: blk_book, BLOCK_HEADLINE: blk_headline}

@@ -262,7 +262,9 @@ def test_v8_config_uses_registered_blocks_and_names_every_input():
     cfg = v8_config()
     types = [b if isinstance(b, str) else b['type'] for sec in cfg['layout'] for b in sec['blocks']]
     assert all(t in P.BLOCKS for t in types)
-    assert set(V.BLOCKS) <= set(types)  # every v8 section is in the pitch
+    # every v8 section is in the pitch; v8_headline (two cells side by side) was added for the interim renders (Ruling
+    # PM6-11) after the config was registered, and the registered config is not edited
+    assert set(V.BLOCKS) - {V.BLOCK_HEADLINE} <= set(types)
     assert [k for _, k, _ in INPUTS] == [   # R-9's frontier (undefined: R-6 accepted) and R-12 (not formed): none
         'v8.summ', *[f'v8.cells[{k}].paired' for k in ('B0b', 'R-1', 'R-2', 'R-3', 'R-4')], 'v8.cells[R-4].summary',
         'v8.cells[R-5].paired', 'v8.cells[R-5].summary', 'v8.cells[R-6].paired', 'v8.cells[R-6].summary',
