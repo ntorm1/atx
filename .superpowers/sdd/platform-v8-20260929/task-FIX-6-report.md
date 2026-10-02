@@ -324,3 +324,21 @@ are not committed. The round 2 file is compared with the round 1 file (`f943d6dc
   `test_the_whole_file_passes_with_a_generated_spec_present` fails with it.
 - **The run time.** The new subprocess test re-runs this file (about 20 s). The full `scripts/tests` run is now about
   87 s, up from about 65 s.
+
+## Round 4: B0c's label role follows the live spec (Ruling PM6-5)
+
+Tests only, same branch. Root's head `8cb6ef05` was merged first (`git merge 8cb6ef05`: a fast-forward from
+`702cf051`, no conflict). The only spec changes it brings are root's locks (`base-b0c.json` on parent `base-lo3.json`
+with label role `train-2020-2023-lo3-dlret`, `base-lo3.json` locked, `r1-comp-v8.json` on parent `base-b0c.json`).
+Cause of the 2 failures in batch 2b: `test_v8_base_specs_carry_the_ruled_settings` asserted B0c's `label_role` on
+`train-2020-2023-lo1-dlret`, which the B0c lock `2ad09c13` re-pointed to lo3-dlret when B0b won (E-25, as the spec's
+own description says); the second failure was `test_the_whole_file_passes_with_a_generated_spec_present`, which re-runs
+the file. Round 2's "B0b won" history kept lo1-dlret, which is why it missed this. Fix: the expectation is now derived
+from the spec: the label role is the dlret rebuild of the winner's role (`parent`, else `nominal_parent` while planned,
+E-10), and the live value is also pinned (`train-2020-2023-lo3-dlret`); the pin stays null on the authored copy. No
+other expectation in the file depends on the merged state: the one other `lo1-dlret` (the F-8 add-alpha test) is a
+synthetic label role on a stand-in root. No spec, lock, pin or non-test file touched. Verification:
+`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs scripts/tests` -> **186 passed,
+4 skipped, 0 failed** (190 tests; the 4th skip is `test_cycle_e2e.py:182`, `ATX_EQUITY_BIN` unset, so root's run with
+it set should read 187 / 3); `test_research_spec.py` alone 47 passed; `git status` clean apart from the two files after
+the suite.
