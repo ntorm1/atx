@@ -1865,3 +1865,8 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   members agree with the prior; none stopped; no admission line). spo-v1's store `v8-risk-lo1-v9` built (manifest
   `bdacc15b`, not a trial). Ledger 71 lines, N 50. Spec slip: v6.1's summ wrote its ledger line, then failed on its
   --json path (spec fixed for the others; v6.1's numbers from its console).
+  V8-F (final book R-2): cumulative vs B0c dSR +.1232, SE .2088, p one-sided .278 (two-sided .567); S2 net 1.2559 >= 1.0;
+  mechanics PASS; cell-count DSR at N 50 .4648 (V[SR] 1.297e-03 per session from 21 window lines; SR0 1.301); beside:
+  legacy DSR .765, effective-N .724 (N_eff 4), PSR vs 0 .993, PBO .359. **Freeze gate UNMET** (p and DSR); OD-3 is the
+  named lever; no history read. H-2 not measured (needs an executable change: the IC runner fixes ResearchFast;
+  PM5-21). Final book: net 4.54%, 4x net Sharpe 1.178, tau .02393, max drawdown 3.25%.

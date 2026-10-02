@@ -5229,3 +5229,61 @@ code before any run: the IC runner fixes `EvalMode::ResearchFast` (`atx-impl/src
 `alpha_kernels_bench` times single kernels on synthetic panels, not a library on E3). A measurement needs an executable
 change: PM5-21 forbids it, so H-2 is not run (stop condition for this item; reported).
 
+Commit `7243bffe` (this reading). Runs (bounded, clean tree, no `--ledger`; the ledger is unchanged at 71 lines, file
+`2b0cdd18`):
+
+| step | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| bundle B0c -> R-2 (`bundle.sh`, tag v8f) | 180 / 1,536 | 0.8 | 479 | 0 | `7f5c537a22e0ee40a46f22de5f7f5752815804fb2beb96365e5b1fa0035f4f5e` | `build-equity/v8-cells-v8f-bundle.json` `ab3b5f60` |
+| grid summ (57 ledgered cells + R-2 last; scratch `v8f_grid.py`) | 180 / 1,536 | 27.3 | 593 | 0 | `ca97f4e7aa460b9f261955b0bca807ed3df17fa86a7999aaeb490f3bb91cb8f2` | `build-equity/v8-f-grid-summ.json` `42ffb9d2`, `v8-f-grid-pbo.json` `d31fd389` |
+
+(A first grid attempt, `build-equity/v8-f-grid-run`, did not start: the scratch argv file carried CR line ends, nav_summ.py
+was not found, exit 2 in 0.3 s, nothing read or written; re-run as `-run2` with the same argv.)
+
+**(a) S2 net Sharpe R-2 2020-2023: 1.2559 >= 1.0 -> PASS.**
+**(b) Mechanics (R-2, re-read): PASS** -- all-rows gross .9860 in [.90, 1.05], net +.0042, tau mean .02393 / p95 .02841, 1,006
+CSV rows, 1,005 return rows, last session 2023-12-29.
+**(c) Cumulative paired S2 net (R-2 - B0c): dSR +.1232** (R-2 1.2559, B0c 1.1328); rho .914; **Memmel SE .2088** (t .59); CBB
+95% [-.292, +.529]; LW SE .2141, 95% [-.303, +.549]; **bootstrap p one-sided .278 (E-34, the gate's), two-sided .567**;
+bundle verdict `dsr_positive` true, `pass` false (alpha .10) -> **FAIL** (p >= .10). By year (R-2 / B0c): 2020 -.316 / +.319,
+2021 2.596 / 2.352, 2022 1.841 / 1.936, 2023 .638 / .118.
+**(d) Cell-count DSR at the v8 count: .4648 < .95 -> FAIL.** N **50** (ledger construction trials by the defect rule);
+**V[SR] (`dsr_variance`) 1.2971e-03 per session** (ddof 1; 21 construction lines on research-window-v2: B0a, B0b, B0c, R-1..R-8,
+R-9a, R-9b and the 8 window re-runs; = .3269 in annual units, SD .572); SR0 1.3014 annual > SR 1.2559. Beside it, gating
+nothing: legacy-variance DSR .7651 (37 cells, V 5.98e-04); effective-N DSR .7240 (ONC N_eff 4 of 58 series, 754 common
+sessions); listed-dirs DSR .6545 (58 dirs); PSR vs 0 .9926 (MinTRL 458 sessions, 1.82 y), vs .5 .9289 (MinTRL 1,263
+sessions, 5.01 y); CSCV PBO .3590 (58 candidates, 16 blocks of 47 sessions, 12,870 splits, exhaustive; winner IS 1.652 ->
+OOS 1.108 mean; P(winner OOS loss) .052).
+
+**Freeze gate (v8-prereg item 9): UNMET** -- (a) and (b) hold; (c) fails on p (.278 one-sided); (d) fails (.465). As the brief
+step 3 says: the gate is unmet, and **OD-3 (history 2013-2019) is the named lever**; the registered procedure asks for no read,
+so none was made (E-2: an explicit owner ruling first). No remedy is applied. The book stays R-2.
+
+**H-2: not measured** (see the reading: no executable selects AuditExact on a role; PM5-21).
+
+**Final book R-2** (S2): net annual return 4.54% (CAGR 4.57%), gross of cost 5.81%, vol 3.61%, max drawdown 3.25%; net
+Sharpe 1.2559 ($1bn), at 4x NAV 1.1785 (capacity curve); tau_gmv_mean .02393; all-rows gross .9860; L 1.1474.
+
+**Appendix A (V8-F):** `TRAIN construction cells 50; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.`
+
+### Hidden-data record (batch 2g)
+
+- Inputs opened by the tools: roles lo1 / lo3 (4-year), the lo3-dlret label role, fields v9 lo1 / lo3 and v10 lo3, the lo1 /
+  lo3 candidate caches and fit-work store, R-2's u / fit / w / NAV outputs, the risk stores `v8-risk-lo3-v10`, `b0c-risk` and
+  the new `v8-risk-lo1-v9`, the v6.1 / v7.0 libraries and recipes, the ledger and the ledgered NAV dirs (the 3-year legacy
+  dirs included, for their mechanics keys and the grid), each run's own outputs. The lo3 re-run plans hash-verified the
+  atx-db identity-bridge and sic-events manifests (read only, as B0b / B0c; nothing under `atx-db/` written).
+- Every NAV's last session 2023-12-29 (`1703808000000000000`); every store and fields manifest sealed at 2024-01-01.
+  **Nothing dated 2024-01-01 or later was opened.** No NAV `stdout.log` was opened. No history (2013-2019) file was opened.
+
+### Open items (batch 2g)
+
+- **Freeze gate unmet** (p .278; DSR .465): OD-3 is the named lever; an owner ruling is needed for any history read.
+- **H-2** needs an executable change (an AuditExact switch on the IC runner); not done under PM5-21.
+- v6.1 re-run: no `summ.json` / `cycle_verdict.json` (its summ died on the `--json` path after writing its ledger line;
+  numbers from its console, kept in the log above).
+- R-8 left two v9 notes (leverage, not alpha); R-9's frontier favours theta .03 at 4x (report only).
+- **Current book: R-2**; N 50; admission trials 12 of 15; history reads 0. Disk 125,635,739,648 B free (117.0 GiB).
+
