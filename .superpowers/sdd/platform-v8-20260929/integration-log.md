@@ -5733,3 +5733,54 @@ X-2's admission: 0 status changes. **Admission trials: X hand-written 13 of 13**
 (admission_trials 6, unchanged 52), spec `lib-v8x3b.json` (`2bd1dbf4`), marginal on the full pool. Registered in
 `v8-prereg.md` ("Library v8x3b").
 
+| phase (v8x3b; source `3b9bb3da`, then `028b2440`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| ref | - | - | - | skipped | - | fields equal the parent's (v13): identical by construction (the cycle's rule) |
+| u | 300 / 2,560 | 26.6 | 673 | 0 | `3f4acb47b676e800982b3d03dffe534f88ff3dcefb5cdebd06f1ca30901e1d4e` | u-compare IDENTICAL (52 objects; 152,152 rows of 52 keys; b adds the 6 members and the `__combined__` row key, 2,926 rows each) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 0.8 / 15.0 | 55 / 1,390 | 0 | `35480d80...` / `a7a88870...` | - |
+| marginal (full pool) | 360 / 1,536 | 167.0 | 296 | 0 | `4bad1955...` | report only |
+| gate p1-v8x3b | internal | - | - | PASS | - | 5 of 6 with the prior sign (div_season sign 0); **0 lines appended, 6 already ledgered**; 0 reference status changes |
+| w | 300 / 3,072 | 34.7 | 1,372 | 0 | `6e7dea427e5499ee9372d6c94a5406acd6770f3fd947680d516a7f50c3a1bb01` | `mega-v8-r1w-train-std-v8x3b-1` |
+| nav step (1) (L 1.1474, calibration) | 180 / 1,536 | 41.6 | 586 | 0 | `cf580717c2611168d30c1328941163d40988f793e668120bb80e8d3fb967df13` | mechanics only |
+| nav (L 1.1414, the cell; `lib-v8x3b-gm.json`) | 180 / 1,536 | 45.5 | 586 | 0 | `9752d6bd87a350151b4d6e657e361937c88ec7d8335cf66561dc697201aad3a8` | `summary.json` `e342db4f`, S2 daily `7b407f56`, capacity `318364f1`, recipe `3f448613` |
+| monitor / summ | 180 / 1,536 | 1.3 / 30.5 | 121 / 581 | 0 | - | `cycle-v8x3b-gm/summ.json` `c062348f`, `cycle_verdict.json` `1486a397` |
+| one-sided p | 180 / 1,536 | 0.8 | 578 | 0 | `3b7369bd6d7e66e3339a06c3050ddeda2b1f52ec3e2a94b50d53470c05e65a63` | `v8-cells-x3-bundle.json` `09d8f0d0` (FINAL v8x3b-gm vs BASE X-2) |
+
+**Gross match:** step (1) at the parent's L 1.1474: G **0.9913686083** vs G_parent (X-2) **0.9862108210**, |diff|
+**.00516 > .005** -> one correction: L' = 1.1474 x .9862108210 / .9913686083 = 1.141430 -> **1.1414**. Matched spec
+`scripts/specs/v8/lib-v8x3b-gm.json` (`scratchpad/gmspec.py`: lib-v8x3b.json with name v8x3b-gm, one description
+sentence, `nav.leverage` 1.1414, `nav.output` `...-loc-L1.1414-v8x3b`, `ref.leverage` 1.1474; lock / write / dry 0 / 0 /
+0, every pin unchanged; file `8b1c1352`); commit `028b2440`. **Matched run: G 0.9861733264 vs .9862108210, |diff| .00004
+(one correction).** The step-(1) run of lib-v8x3b.json is not a trial and is never resumed past nav.
+
+**Mechanics (S2, matched run, read before any return): PASS.** All-rows gross .9862 (post-ramp .9922); net +.0051; tau
+mean .02303 / p95 .02695 (1,004 sessions; flags true); max gross 1.122, max |net| .027; score_begin .936; by year .966 /
+.998 / .984 / .998; 1,006 CSV rows, 1,005 return rows; accounting 4.9e-14 / 3.9e-16.
+
+**Statistics of record** (S2): net Sharpe **X-3 +1.4205** vs X-2 +1.2669. Paired (1,005 sessions, 4,999 resamples):
+**dSR +.1536**, rho .971, **Memmel SE .1200** (t +1.28); CBB 95% [-.091, +.398]; LW SE .1271, 95% [-.101, +.409];
+**bootstrap p one-sided .0978, two-sided .2324**. DSR (verdict, N 52): ledger DSR **.6097** (V[SR] 1.229e-03 per session,
+23 window lines); effective-N .8118; legacy .8455; PBO .2588.
+
+**Capacity criterion (PM7-10, printed; decides nothing under PM7-34): net Sharpe at 4x NAV 1.3159 vs 1.1883 -> met.**
+Turnover .02303 vs .02383 (per unit gross .02336 vs .02417); cost per traded dollar 12.53 vs 12.58 bps.
+
+**Verdict (PM7-34): dSR +.154 > 0 AND mechanics PASS -> ACCEPTED, N 52.** Ledger line trial `1700a97fef85b059` (cell =
+the L1.1414 v8x3b NAV dir, s2_net_sr 1.42049, prev `522dfa34`); ledger 86 lines (60 construction incl. the 8 W0-4
+re-runs, 25 admission, 1 protocol), file `4e6988cd`, head `7f13f733`.
+
+Returns (S2, annual): net 4.97% (CAGR 5.03%) vs X-2 4.64%; gross of cost 6.22% (5.92%); trade cost .72%, borrow .34%,
+long financing .20%; vol 3.50%; max drawdown 2.87% (3.11%); gross Sharpe 1.779 (1.618).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | +.0176 | +.493 | .0367 | .0252 | 14.98 |
+| 2021 | 252 | +.0968 | +2.662 | .0349 | .0220 | 11.56 |
+| 2022 | 251 | +.0632 | +1.690 | .0368 | .0228 | 12.11 |
+| 2023 | 250 | +.0249 | +.812 | .0312 | .0220 | 11.50 |
+
+Capacity (report only; X-2 beside): net Sharpe .5x 1.452 (1.305), 1x 1.420 (1.267), 2x 1.380 (1.237), **4x 1.316
+(1.188)**, 8x 1.222 (1.106); cost bps per traded dollar 10.73 / 12.53 / 14.74 / 16.94 / 18.75.
+
+**Next parent: `scripts/specs/v8/lib-v8x3b-gm.json`, library v8x3b, L 1.1414, G 0.9861733264.**
+

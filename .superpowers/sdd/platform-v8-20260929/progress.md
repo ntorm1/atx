@@ -2002,3 +2002,11 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   SE .0603, p one-sided .450 (two-sided .888); mechanics pass; capacity criterion met (4x net Sharpe 1.188 against
   1.178); turnover .02383 (.02393). Net annual 4.64% (4.54%), gross of cost 5.92% (5.81%), max drawdown 3.11%.
   DSR at N 51 .488. Admission trials: X hand-written 5 of 13. Parent is X-2 (`lib-v8x2b.json`).
+- X-3 (new-signal wave; log "X batch 1"): IC-pass memory re-probed (PM7-31) on the 60-member library, 4 workers:
+  required 2,024 MiB < cap 2,560 (cap unchanged). Screen of `lib-v8x3.json`: 8 admission lines; gate PASS 5 of 8 with
+  the prior sign; stmom and earn_season runner sign -1 against +1 -> dropped (PM7-35); div_season sign 0 stays. The
+  cell is `lib-v8x3b-gm.json` (k8_intensity, inst_persist, nt_late, div_season, vol_beta, season_y2_5; 0 new lines),
+  L 1.1414 after one correction from 1.1474, gross .98617 against .98621. ACCEPTED, N 52. S2 net Sharpe 1.4205
+  (parent 1.2669); dSR +.1536, SE .1200, p one-sided .098 (two-sided .232); mechanics pass; capacity criterion met
+  (4x 1.316 against 1.188); turnover .02303 (.02383). Net annual 4.97% (4.64%), gross of cost 6.22% (5.92%), max
+  drawdown 2.87%. DSR at N 52 .610. Admission trials: X hand-written 13 of 13. Parent is X-3 (`lib-v8x3b-gm.json`).
