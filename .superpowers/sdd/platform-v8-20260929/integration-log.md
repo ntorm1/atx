@@ -4115,3 +4115,64 @@ Returns (S2): net 4.58% (CAGR 4.62%); gross of cost 5.79%; trade cost .67%, borr
 
 Appendix A: `TRAIN construction cells 43; admission trials this sprint 7 (plus 8 re-screens); ...; history reads 0.`
 
+### Cell R-4 (r4-hold-band on lib-v80; nav --hold-band .1; L 1.1474): NOT ACCEPTED (criterion and dSR), N 44
+
+**N before: 43; this cell would make 44 (<= 51).** Brief row (task-CELLS-brief.md:57): "turnover at least 15% lower
+(`--hold-band .10`)"; config v8.cells R-4: `tau_gmv_mean le 0.85 x parent`. Parent = the last accepted cell = R-2
+(`lib-v80.json`); R-3 was not accepted.
+
+**Identity cell:** not run here. The plan's R-4 step 3 ("identity cell with band 0") was integration 5 part C identity
+2 (`--hold-band 0` = flags absent, 12 of 12 files byte-identical, PASS); Ruling PM4-3 re-ran identities 1, 4, 7, 8 only
+(2 and 3 retired). The brief prescribes no identity per cell; R-1 ran the same way (identity 4 at integration).
+
+**Spec.** `scripts/specs/v8/r4-hold-band.json` (template): `"parent": null -> "lib-v80.json"` only; lock --write derived
+reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`, reference_weights
+`03213345`; dry lock after exits 0. File `a43894f6df7e759f3c4116569f126a37984d8d03079587f5040715bb95035592`, **spec digest
+(template chain) `952c5a9443c4dcd0bdd791b6c83e680863aaa6763315ea62cc97275ba8a9bbc7`**; commit `58b24585`. Plan: every pin
+`[locked, verified]` (library v80 `68ce8539`, recipe `fb09b740`, role lo3 `e1c67101`, label_role `95e16cfe`, fields
+v10 `a4a060ae` 70 rows); u, fit, card, marginal, w, monitor = R-2's (done); nav pending with the parent's argv plus
+`--hold-band .1` at `--aim-leverage 1.1474`; summ `--dsr-n 44`. The nav output name keeps the template's "L1.247" text
+(cosmetic; the run is at 1.1474). Gate p1-v80 re-read: 0 status changes, 3 of 7, PASS; "0 admission trial line(s)
+appended, 7 already ledgered".
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.1474; step (1) = the cell) | 180 / 1,536 | 40.6 | 586 | 0 | `cb5a3de8b44629e44c88b34d122fe35464d5c50ddfdb13a9effbf43dbe58536d` | `summary.json` `e597831a`, `recipe.json` `bd5ff67e` (rule `aim-partial-v5+neutral-price-risk-v1+hold-band-0.1`), S2 daily `556ae0d2`, capacity `aeac451d` |
+| summ | 180 / 1,536 | 16.4 | 546 | 0 | `9b3aba1b108b3a33ce01139cadb61807be7fa0d1057fa4035b0c8e26cba59a79` | `cycle-v8-r4-hold-band/summ.json` `e020e4df`, verdict `da7c0186` |
+| one-sided p | 180 / 1,536 | 0.8 | 479 | 0 | `2fcebf4cd907caefca0e543f5b948a48edee43453b892f1c24864c5919e3e65b` | `v8-cells-r4-bundle.json` `8495f785` |
+
+Receipts: completed, `clean in the code pathspec`, source `58b24585`, NAV exe `5497c89d` (v8-12).
+
+**Gross match:** G **0.9874700365** vs G_parent .9859903463: |diff| **.00148** <= .005: stands, no correction, one run
+(the step-(1) run is the cell). **Mechanics PASS:** gross .9875 (post-ramp .9932), net +.0040, tau .02363 / p95 .02818
+(limits met), max gross 1.119, max |net| .029, score_begin .941, by year .966 / 1.003 / .985 / .996, accounting
+1.3e-13 / 3.8e-16. Hold band active in every scenario: band .1, 1,004 decisions, **mean_kept_share .884** (kept
+1,639,241 / moved 214,395 name-decisions).
+
+**Criterion (config v8.cells R-4):** tau_gmv_mean **.023628** vs 0.85 x R-2's .023929 = **.020340**: **FAIL** (turnover
+-1.3%, not -15%).
+
+**Statistics:** S2 net Sharpe **R-4 +1.2372** vs R-2 +1.2559: **dSR -.0187**, rho .9994, **Memmel SE .0176** (t -1.07),
+CBB [-.0517, +.0152], LW SE .0167 [-.0525, +.0151], **p one-sided .857, two-sided .2752** (bundle = cycle). DSR N 44:
+ledger .9844 (7 cells), legacy .7653, effective-N .9073 (N_eff 2), cell-count .7781; PSR .9918; PBO .2673.
+
+**Verdict (rule 5): criterion FAIL and dSR -.019 <= 0 -> NOT ACCEPTED.** Ledger trial `7e7a553d759771f1` (s2_net_sr
+1.23721, prev `8cf0157e`); **N after 44** (ledger 52 lines: 44 construction + 7 admission + 1 protocol; file
+`ed73406d`; head `a8d43fc9`). Not retried. Parent stays R-2.
+
+Returns (S2): net 4.43% (CAGR 4.46%); gross of cost 5.70%; trade cost .73%, borrow .33%, long financing .20%; vol
+3.58%; max drawdown 3.24%; gross Sharpe 1.593. Capacity: .5x 1.272, 1x 1.237, 2x 1.208, **4x 1.154**, 8x 1.085.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0117 | -.342 | .0328 | .0261 | 14.85 |
+| 2021 | 252 | +.0949 | +2.522 | .0362 | .0225 | 11.47 |
+| 2022 | 251 | +.0788 | +1.831 | .0421 | .0232 | 12.12 |
+| 2023 | 250 | +.0194 | +.644 | .0307 | .0227 | 11.52 |
+
+Appendix A: `TRAIN construction cells 44; admission trials this sprint 7 (plus 8 re-screens); ...; history reads 0.`
+
+v9 note (from a result, not a spec): the band holds 88% of names' desired values per decision yet book turnover falls
+1.3%; under aim-partial-v5 (theta .05) the traded book already lags the aim, so desired-side hysteresis barely reaches
+fills.
+
