@@ -445,3 +445,124 @@ None. Files: `.superpowers/sdd/platform-v8-20260929/ysig_check.py`, this report.
   effects strongest in small stocks; `ea_uvol` rests on one study.
 - Two signs are as recalled from the paper tables (Lee-Swaminathan Table II, Soliman); root verifies before the freeze.
 - Static figures are the mirror's; K1 at add-alpha decides.
+
+## Round 2b (Ruling PM8-6: fill toward 16, at most 7 more; same rules; registered blind 2026-10-02)
+
+PM8-6 granted YSIG-a, YSIG-b and YSIG-c and raised `max_roster` to 96 for Y. Round 2b searched, in the order given,
+short_interest, the 25 unread v14 fields, then ownership_flow and value. **Result: 1 more candidate, `ins_cluster`
+(ownership_flow).** The search found no other signal with a published sign that is not already a roster or X member,
+prior-exposed, or missing its data. I stopped there rather than pad (PM8-6). The Y set is **10**.
+
+| item | status | commit |
+|---|---|---|
+| `ysig_check.py` round 2b (`ins_cluster`: oracle, 3 mutants, causality) | DONE | `b501d370` |
+| This section | DONE | this commit |
+
+Test line: `ysig_check.py` -> `ysig_check: PASS` (10 candidates; 7 new strings equal to their numpy definitions; 25
+mutants fail; the 9 round-2 add-alpha lines byte-unchanged, same SHA-256 prefixes as section 6).
+
+### 2b.1 short_interest (priority 1): no candidate
+
+Every short-interest signal with a published sign that the house data carry is already a member. The rest need
+lending data that no v14 field carries.
+
+| suggestion / family | published basis | disposition |
+|---|---|---|
+| Low short interest is good news | Boehmer, Huszar and Jordan (2010, JFE) | the low end of `si_ratio`'s rank (a cross-sectional rank holds both tails): restatement |
+| Short-interest change ("momentum" of SI) | Desai et al. (2002, JF); BHJ (2010) | `si_change` (21-session change of SI / shares); the pv library measured si_change_10 / 21 / 42: restatement and prior exposure |
+| Days to cover | Hong, Li, Ni, Scheinkman and Yan (2016) | `dtc`, `dtc_slow` (126-session volume): restatement |
+| SI conditioned on institutional ownership (lendable supply proxy) | Asquith, Pathak and Ritter (2005, JFE); Nagel (2005) | `si_low_io` = SI / IO, the utilisation proxy of the public-data literature: restatement |
+| Utilisation, borrow fee, lendable supply | Cohen, Diether and Malloy (2007, JF); Engelberg, Reed and Ringgenberg (2018, JF); Drechsler and Drechsler (2016) | no v14 field (no fee, utilisation or loan-quantity column; atx-db `borrow_proxy/` is "public short-side inputs" and is not bound, XDATA 1b): **data ask** (securities-lending data, as XDATA section 5) |
+| Threshold-list days as a hard-to-borrow conditioner (`regsho_threshold_days63`) | Evans, Geczy, Musto and Reed (2009, RFS): fails mark expensive borrowing | the FTD family that `ftd_fail` holds; using the list to condition SI would be my construction, not a published signal |
+| Shorting flow (FINRA daily) | Wang, Yan and Zheng (2020, JFE) | the long-window level is `sv_flow`; the abnormal short-window flow does not predict (round 2, section 8) |
+
+### 2b.2 The 25 unread v14 fields: does a published signal read each one?
+
+| field | published signal that reads it | taken? |
+|---|---|---|
+| `ea_window_pre5` | So-Wang (2014): pre-announcement reversal | yes, Y-2 `so_wang_rev` |
+| `ret_overnight`, `ret_intraday` | Akbas et al. (2022): tug-of-war frequency | yes, `day_rev_freq` |
+| `noa_lag4` | Soliman (2008): change in asset turnover | yes, Y-7 `dato` |
+| `ins_cluster_buy` | Alldredge-Blank (2019): clustered insider purchases | **yes, round 2b `ins_cluster`** |
+| `ins_n_buyers`, `ins_n_sellers`, `ins_net_buy_ratio` | Lakonishok-Lee (2001): net purchase ratio | no: the all-insider net ratio adds back the routine trades that Cohen-Malloy-Pomorski show are noise, beside `ins_opp_buy`; one insider candidate (`ins_cluster`) is taken |
+| `iv_atm_63d`, `iv_atm_126d` | IV term-structure slope (Vasquez 2017 for option returns) | no: measured in `pv_fields_ic121_v3` (iv_term_63_21, iv_term_126_21): prior exposure |
+| `ea_delay_days` | Johnson-So (2018, JFQA 53(6)): advancers beat delayers by 2.6% in the month after the calendar revision, priced at the announcement | no: the field is the realised delay, known only at the announcement, after the return; the pre-announcement state is `ea_overdue` |
+| `ea_window_post3` | none (a window flag) | no |
+| `ea_time_of_day` | after-hours / Friday inattention drift (DellaVigna-Pollet 2009) | no: an interaction on `ear` with no robust time-of-day sign |
+| `k8_item_material_21` | Chan (2003) news drift, read through 8-K items | no: opposes `ind_adj_rev_5_nx` on news names (PM7-36 c) |
+| `k8_days_since_any` | none | no |
+| `ceq_iss_5y`, `coskew_60m` | Daniel-Titman (2006); Harvey-Siddique (2000) | no: R-7 members, screened and not accepted (their trials are spent) |
+| `vol_126` | turnover level (Datar, Naik and Radcliffe 1998) | no: measured (pv libraries); `ladv63` projected |
+| `xrd0_ttm` | R&D / ME (Chan, Lakonishok and Sougiannis 2001) | no: `rd_me`, `op_rd` read R&D already |
+| `lt` | market leverage A/ME (Fama-French 1992); net debt financing (Bradshaw, Richardson and Sloan 2006) | no: A/ME is subsumed by B/M; the debt-financing leg is investment_issuance (asset growth, NOA) |
+| `grp_sic2` | none (a classification) | no |
+| `inst_breadth_chg` | Chen-Hong-Stein (2002) + against Lehavy-Sloan (2008) - | no: conflicting signs |
+| `inst_n_holders` | investor recognition (Merton 1987; Lehavy-Sloan 2008) | no: a size proxy, `ladv63` projected; no signed 13F-count level form |
+| `regsho_threshold_days63` | Evans et al. (2009); Fotak, Raman and Yadav (2014): fails do not lower prices | no: no return sign beyond `ftd_fail` |
+| `sv_offexchange_share126` | none with a return sign | no |
+
+### 2b.3 ownership_flow and value (priority 3)
+
+- **ownership_flow:** `ins_cluster` (below). Also examined: Lakonishok-Lee net purchase ratio (above); opportunistic
+  *sales* (would reverse X-2's buy-leg ruling for `ins_opp_buy`); 13F IO level (Gompers-Metrick 2001: a one-time demand
+  shift, size-correlated); one-quarter IO change (conflicting signs, v7); fund flows and manager types (no data, XDATA
+  ranks 2 and 7).
+- **value: no candidate.** Every value signal with a published sign that is in house is held: B/M, E/P, CF/P, FCF/P,
+  EBIT/EV (the enterprise multiple of Loughran-Wellman 2011 without D&A), net payout (dividends included), S/P, R&D/ME,
+  the composite. Penman, Richardson and Tuna's (2007) enterprise B/P equals B/M for a firm without net debt
+  (|rho| .7-.85 [est]). A/ME is subsumed by B/M. Long-term reversal needs more than the runner's 336 bars and is spanned
+  by HML (Fama-French 1996). Intangible-adjusted value (Eisfeldt, Kim and Papanikolaou 2022; Lev-Srivastava 2022) needs
+  multi-year SG&A and R&D histories that no field carries: a builder ask, not written here (the issuer export has no
+  SG&A or R&D lags).
+
+### 2b.4 Y-10 `ins_cluster`: clustered insider purchases
+
+- **Registration.** ownership_flow; tier C+; prior sign +1 (long flagged names); origin `prior`; 1 admission trial.
+  Citation: Alldredge and Blank (2019, Journal of Financial Research 42(2), 331-360) "Do insiders cluster trades with
+  colleagues? Evidence from daily insider trading" (abstract via search summary): insider purchases made within two days
+  of a peer insider's purchase earn abnormal returns of 2.1% over the next month, 0.9 points more than solitary
+  purchases; clustering is greater when information asymmetry is high. Sign: +.
+- **Frozen DSL** (SHA-256 `a3dfad407c4cd493562022b50172e18ab764033812844a6b23b9209a788f23d2`):
+```
+rank(ins_cluster_buy)
+```
+- **How it reads.** `ins_cluster_buy` (fields v8, `sec-ins-cluster-buy21-min3-v1`) = 1 when at least 3 distinct primary
+  reporting owners (directors and officers on original Form 4s) have an open-market purchase with a transaction date in
+  the last 21 sessions, visible at t (acceptance before 22:00 UTC of t-1), else 0; NaN without Section 16 presence.
+  Event-flag form R(x), as `ins_opp_buy`: flagged names tie at the top. Bars 0, slots 2, nodes 2; 1 extra field (registry
+  row below). Reads an unread field.
+- **Constants.** The field's own 21-session window and 3-buyer threshold (fixed in research_fields_sec.py; one month =
+  the paper's return horizon). No decay: the flag expires with its window.
+- **Nearest member and why this is not a restatement.** `ins_opp_buy` = max(net opportunistic shares bought over 126
+  sessions, 0) / shares out (Cohen-Malloy-Pomorski: routine versus opportunistic). `ins_cluster` conditions on how many
+  insiders independently buy within one month, whatever their routine class. First-time buyers are unclassified under
+  CMP's three-year rule and are excluded there but counted here. Expected rho .20-.40 [est]. `inst_best_ideas` < .10.
+- **Deviations.** At least 3 buyers within 21 sessions, not a purchase within two days of a peer's purchase; directors
+  and officers only (the field's rule); a continuous rank of a flag; the flag stays on for 21 sessions after the trade
+  date, less the filing lag (up to 2 business days for Form 4).
+- **Horizon (PM8-5).** Medium; half-life 10 sessions (the paper's one-month abnormal return, held over the field's
+  21-session window: half of it); expected daily turnover: event (a small share of names, changing within a month).
+- **Prior.** Haircut class: generic 65-75% (single study, published 2019). Breadth: sparse (cluster buys are rare in
+  large caps), long-only by construction.
+
+**L2 fields table row** (from the producer's spec; root checks it against the fields manifest of the build of record):
+```json
+"ins_cluster_buy": {"formula_id": "sec-ins-cluster-buy21-min3-v1", "origin": "fields_v8", "producer": "atx-engine/tools/research_fields_sec.py", "clock": "sec-acceptance-lag1-v1: a Form 4 row is usable at session t iff its EDGAR acceptance is before 22:00 UTC of session t-1 (lag 1 session)", "basis": "1 if at least 3 distinct primary reporting owners have an open-market purchase (code P) on an original Form 4 visible at t with transaction_date on or after session t-21 (21 sessions), else 0; directors and officers, joint filings with a 10% owner dropped (W5a rule 1); NaN without a visible insider row within 365 days (Section 16 presence) or while the window starts before the stage's first filing quarter (2015q1) (formula id sec-ins-cluster-buy21-min3-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"}
+```
+
+**add-alpha line** (run after the nine lines of section 6; same substitutions; line SHA-256 prefix `2c7272b4d4e4c852`):
+```bash
+"$PY" scripts/research_cycle.py add-alpha --id ins_cluster --dsl "rank(ins_cluster_buy)" --theme ownership_flow --tier C+ --prior-sign 1 --citation "Alldredge and Blank (2019, Journal of Financial Research 42(2)) Do insiders cluster trades with colleagues? Evidence from daily insider trading" --origin prior --prior-sign-source "Alldredge-Blank 2019" --form "R(x)" --formula "ins_cluster_buy: 1 when at least 3 distinct insiders (directors or officers) made open-market purchases with transaction dates in the last 21 sessions, visible at t, else 0; clustered insider purchases are followed by higher abnormal returns over the next month than solitary ones" --domain "NaN without a visible insider transaction row of the issuer within 365 days (Section 16 presence; foreign private issuers NaN); a binary flag: flagged names tie at the top rank, the rest tie below" --deviation "cluster = at least 3 distinct buyers within 21 sessions (field sec-ins-cluster-buy21-min3-v1), not the paper's purchase within two days of a peer insider's purchase; directors and officers on original Form 4s (10% owners and joint 10%-owner filings excluded); continuous rank of a flag, not an event-time portfolio; no decay (the flag lives 21 sessions from the trade date)" --parent <Y parent> --name <Y name> --parent-spec <Y parent spec> --fields <Y fields dir>
+```
+Expected K1 row: 0 bars / 2 slots / ins_cluster_buy. Roster: 58 + 12 + 10 = 80, under the PM8-6 cap of 96. Admission
+trials: up to 10. Horizon mix of the Y set: 1 fast, 4 medium, 5 slow.
+
+### 2b.5 Hygiene, cross-lane edits, risks (round 2b)
+
+- Read in addition: `research_fields_sec.py` insider constants and specs (INS_CLUSTER_WINDOW 21, INS_CLUSTER_MIN 3); the
+  registry rows of `ins_opportunistic_net` and `ins_opp_buy`. Web (abstract and search summaries only): Alldredge-Blank
+  2019; Johnson-So 2018. Nothing opened under `build-equity/`; no payload; nothing dated 2024 or later; `atx-db/` not
+  touched. No cross-lane edits (files: `ysig_check.py`, this report).
+- Risks: `ins_cluster` rests on one study and its effect is mostly in small firms. Its cluster rule (3 buyers, 21
+  sessions) is looser than the paper's (2 days). Flagged names are few, so its weight in the theme may outrun its
+  breadth. The trade-date window plus the filing lag shortens the flag's live time by up to two sessions.
