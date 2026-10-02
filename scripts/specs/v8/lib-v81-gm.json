@@ -1,7 +1,7 @@
 {
   "schema": "atx.research-cycle-spec/v1",
   "name": "v81-gm",
-  "description": "Library v81 = v80 + comp_eq_iss_5y, coskew_60m, gscore_lowbm, nonreliance_402, earn_consistency (research_cycle.py add-alpha; derived from the v80 spec by the name rule). Identity before the cell: the u pass reproduces the parent's orientation and daily-IC member rows; ref is skipped when the fields equal the parent's. `run --screen` reads the admission; `run` the cell. GROSS-MATCHED COPY (Ruling PM6-6), written by hand by root: lib-v81.json at the parent L 1.1474 was step (1) (all-rows gross 0.9912148513 vs R-2 0.9859903463, |diff| .00522 > .005; mechanics keys only); L = 1.1474 x 0.9859903463 / 0.9912148513 = 1.14135 -> 1.1414. This spec equals lib-v81.json except name, this sentence, nav.leverage and nav.output; u, fit, card, marginal, gate, ref and w are lib-v81.json outputs (done). lib-v81.json is never resumed past nav; this spec is the cell R-7 (one trial line).",
+  "description": "Library v81 = v80 + comp_eq_iss_5y, coskew_60m, gscore_lowbm, nonreliance_402, earn_consistency (research_cycle.py add-alpha; derived from the v80 spec by the name rule). Identity before the cell: the u pass reproduces the parent's orientation and daily-IC member rows; ref is skipped when the fields equal the parent's. `run --screen` reads the admission; `run` the cell. GROSS-MATCHED COPY (Ruling PM6-6), written by hand by root: lib-v81.json at the parent L 1.1474 was step (1) (all-rows gross 0.9912148513 vs R-2 0.9859903463, |diff| .00522 > .005; mechanics keys only); L = 1.1474 x 0.9859903463 / 0.9912148513 = 1.14135 -> 1.1414. This spec equals lib-v81.json except name, this sentence, nav.leverage, nav.output and ref.leverage 1.1474 (the reference construction is the parent R-2 at its own L; spec-only fix after the cycle refused the ref binding, argv sha differing only by --aim-leverage); u, fit, card, marginal, gate, ref and w are lib-v81.json outputs (done). lib-v81.json is never resumed past nav; this spec is the cell R-7 (one trial line).",
   "python": "C:/Program Files/Python312/python.exe",
   "env_path_prepend": [
     "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
@@ -286,7 +286,8 @@
   "receipts": "every-phase",
   "ref": {
     "output": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v81-ref",
-    "combined": "reference_combined"
+    "combined": "reference_combined",
+    "leverage": "1.1474"
   },
   "compare": [
     {
