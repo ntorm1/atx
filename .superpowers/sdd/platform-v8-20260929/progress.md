@@ -1445,3 +1445,22 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - N 40; admission trials 0; history reads 0; validation reads 2 (before v8); 2024+ never opened. Root code head
   1cc4c6c9 (build v8-12); every tree clean.
 - Status: docs/plans/2026-10-01-platform-v8-status-5.md. Goal prompt: docs/plans/2026-10-01-platform-v8-next-goal-prompt-5.md.
+
+## 2026-10-01 interim report, second render (owner: "all the json files are missing in the html")
+- Finding (PM read of the rendered file): of the 37 unavailable blocks, 18 are the book blocks (equity, drawdowns,
+  returns, rolling, stress, cost model, financing, cost decomposition, attribution, cost drag, turnover,
+  exposure, fills, correlations, theme correlation): the interim config left the book on the registered default
+  R-7 (build-equity/mega-nav-v8-r7, never run), so the report shows no chart of the book that exists. 16 are
+  ladder rows of cells not run, 2 member-horizon, 1 the diagnostics file. The first render was honest and
+  nearly empty; that is not what the owner asked for.
+- Ruling PM5-28 (interim render 2; no statistic of an unread cell is involved): in the INTERIM config only,
+  (1) the book is B0c: every book block reads B0c's own NAV, u / w and library v7.1 artifacts; (2) cells that
+  were not run are removed from the interim ladder inputs and listed once, as text, under 'pending'; R-1 stays
+  text only and its output unread; the cumulative-test block is removed and named under 'pending'; (3) the
+  diagnostics block reads one diagnostics-v8.json assembled from the eight split files by a small committed
+  script that copies each section unchanged and records the eight source digests (no value is typed or
+  altered; the report says it was assembled); (4) member-horizon reads B0c's own card index and admission if
+  they exist, else it is listed under 'pending'. Target: 0 unavailable blocks, every figure from an artifact.
+  The registered config, template, report tools, ledger and specs are not edited (PM5-21) -- the owner asked
+  for the report on what exists, and what exists is a full book (B0c) with its charts -- cost if wrong: the
+  interim files are separate from the final ones and are superseded at V8-F.
