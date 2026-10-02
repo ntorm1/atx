@@ -6089,3 +6089,16 @@ A previous root session built and ran the identity but did not log it. Verified 
 runs on v8-15. No statistic was read (comparisons by SHA-256, JSON paths and masked log tokens only). Disk 122,762,747,904
 B free (114.3 GiB).
 
+### 2. Fields v14 lo3 (XWQ section 7 driver; 0 trials; caps W0-i) -- plan, written before the run
+
+Command = fields v13's recorded argv (receipt `train-2020-2023-lo3-fields-v13-run`), built token by token by
+`scratchpad/fv14.py`, 5 tokens changed and no other: (2) the driver of XWQ section 7 verbatim (`... import
+prepare_research_fields_ohlc as o; d.register(vars(b)); x.register(vars(b)); o.register(vars(b)); b.main(sys.argv[1:])`);
+(8) `--output build-equity/train-2020-2023-lo3-fields-v14`; (10) `--fields` = v13's 75 names in v13's order +
+`open_adj,high_adj,low_adj`; (64) `--reuse build-equity/train-2020-2023-lo3-fields-v13`; (66) `--reuse-sha256 e5f7f28c...`
+(v13's manifest). `--reuse-hardlink` and `--price-source` (the role's TickerHistory3) as v13. Builder `--max-rss-mib 2048
+--max-seconds 580`; runner `--seconds 600 --max-rss-mib 2560 --min-free-mib 512`, binding v13's ten tool modules +
+`research_fields_ohlc.py` + `prepare_research_fields_ohlc.py`, the role manifest and v13's manifest. **Expected: 75 reused
+/ 3 computed; the 75 payloads bit-identical to v13's (hardlinks); seal 2024-01-01.** A different count or a refusal stops
+the step (PM8-4 b).
+
