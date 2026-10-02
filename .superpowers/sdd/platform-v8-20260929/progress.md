@@ -2134,3 +2134,24 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   fit and NAV must reproduce under the new build (PM7-30's identity rule) before fields v14 and X-7 -- the
   registered pin keeps Python and C++ theme orders equal; relaxing the pin or moving the picks to another
   theme would change a registration to save one build -- cost if wrong: one build and one identity run.
+
+## PM session 8
+
+Owner goal of 2026-10-02, evening: "finish v8 implementation ... expand v8 scope to include real progress towards alpha
+generation ... new orthogonal alpha dsl signals, improving existing ones, improving combinations, finding new datasets
+... push sharpe, deflated sharpe, capacity, gross returns all up ... Prioritize sharpe and gross returns over
+significance and capacity. We need to clear the hurdle rate first to enter production."
+- Ruling PM8-1 (blind; no X-7, campaign, X-9 or X-10 statistic exists): PM7-34 stays the acceptance and adoption rule.
+  Every trial is still counted and every statistic still printed -- cost if wrong: as PM7-34.
+- Ruling PM8-2 (blind): a second expansion "Y" is opened: lanes YSIG (new signals, round 2), YDATA (vwap and new field
+  families), YCOMB (combination and return rules, round 2), YINFRA (reusable research-loop tooling; no trials). Y cells
+  run after X-9 on parent = the accepted book then. The Y budget and cell list are pinned in a `v8y-prereg.md` by the
+  PM before any Y measurement.
+- Ruling PM8-3 (blind to X-10; re-order made before any X-10 read): the leverage cell X-10 moves to after the last Y
+  cell (PM7-3: leverage scales whatever was built). The X gate / adoption print of section 7 runs once after it. Order
+  now: X-7, campaign v9-mine-c1, X-9, Y cells, X-10, adoption print, OD-3 read last -- cost if wrong: none; one order
+  change with no read.
+- Ruling PM8-4: root runs X batch 2 and 3 without returning to the PM between cells, under the registered rules. Root
+  stops and reports only when (a) a step has two readings that change a number, (b) a mechanic or identity check
+  fails, (c) a cap is hit. A stop costs hours; a registered rule that covers the case is applied and logged, not asked
+  about.
