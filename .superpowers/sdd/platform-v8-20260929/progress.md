@@ -1337,3 +1337,55 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   cycle's dSR, SE, CI and two-sided p exactly, else that is a finding. Acceptance stays dSR > 0 (rule 5); both
   p values are reported -- the cycle prints the two-sided p only and E-34 asks for both -- cost if wrong: none.
 - Dispatched: cells batch 1b (root): R15 delisting-returns role on lo3, B0c, diagnostics (E-18), Release A/B.
+
+## 2026-10-01 cells batch 1b closed (log "cells batch 1b"; head 906d9d59): B0c is the v8 baseline, N 40
+- R15: lo3 delisting-returns role, manifest 95e16cfe...aace5069, 4.7 s, 483 MiB, 867 delistings; no fields built
+  on it (E-10 / E-25: label role only).
+- B0c (base-b0c.json, spec 059d9ba6...7c7b483d; parent base-lo3; label role on the delisting-returns role; warm
+  start 60; capacity curve): N 40. S2 net Sharpe +1.1328. Mechanics PASS (gross .982, net +.0036, tau mean
+  .0341, p95 .0390). Gross at score_begin .9257 (6.4% below the post-ramp mean .9885; 3.4% below the early-2020
+  level). Paired against B0b, information only: dSR +.0058, Memmel SE .0174, bootstrap p one-sided .3014,
+  two-sided .6792 (PM5-23 run reproduces the cycle exactly). Years (net Sharpe / return / vol / turnover / cost
+  bps): 2020 +.319 / +.0135 / .0453 / .0362 / 15.7; 2021 +2.352 / +.0767 / .0316 / .0335 / 12.0; 2022 +1.936 /
+  +.0859 / .0432 / .0332 / 12.8; 2023 +.118 / +.0034 / .0340 / .0333 / 12.2. Capacity: net Sharpe 1.133 at 1x,
+  1.085 at 2x, .978 at 4x (PM4-5: the aim is the 1bn book's at every multiple; no ADV cap in B0c). Baseline by
+  declaration (prereg rule 6). history reads 0; admission trials 0; nothing dated 2024+ opened.
+- Diagnostics on B0c (gate nothing, select nothing; rule 8; 8 split files in the sprint directory): G-1 the four
+  fast members carry 59.6% of trades (iv_rv_spread 37%); netting ratio .455; 8 members negative at the traded
+  horizon, weight .32. G-2 variance factor .663 / industry .182 / specific .156; IC by volatility tercile .009 /
+  .010 / .014; 7.1% of held gross above R-5's 10%-of-ADV cap. G-3 S2-FEE net Sharpe 1.069; signal delay 1 / 2 /
+  3 days costs .012 / .032 / .039; the 10 themes act as about 4.9 independent bets. Monitor M2 (per-member IC
+  and sleeve-turnover drift, in sample): turnover alarms on four members on all three cells, no IC alarm.
+- Release A/B (v8-13): u and w passes byte-identical; NAV not (first differing file
+  daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv, row 68, last digit of a cost column); NOT adopted (E-2);
+  the v8-12 Debug executables are unchanged. CPU -59% / -82% / -31% (a v9 lead: find the reordered sum).
+  The Release build recompiled spdlog in the shared C:/atx-cache/deps. Disk 31.2 GiB; two A/B scratch caches
+  (4.8 G) unreferenced.
+- Ruling PM5-25 (the warm start at score_begin; declared now, before R-1): B0c stands as run. The 5% figure is
+  the fixture test's expectation (plan W0-4 step 2), not a mechanics limit; the registered limits (all-rows
+  gross, net, turnover) pass; the warm-start length is not changed after a read and every later cell inherits
+  60 sessions -- a parameter tuned on B0c's own output would be a new trial -- cost if wrong: the first weeks
+  of 2020 are traded about 6% under-invested in every cell alike, so paired comparisons are unaffected.
+- Ruling PM5-26 (disk): the next integrator removes the two unreferenced Release A/B scratch caches created in
+  batch 1b (paths in the log) and nothing else; 3-year caches stay until the W0-4 re-runs are done (PM5-22) --
+  30 GB is the precondition of every data build and fields v10..v12 are still to come -- cost if wrong: an A/B
+  re-run would rebuild 4.8 G.
+- ENG-SLOT done 1bd448cd (pool 8; PM5-19): test cc3e3c6e atx-engine/tests/alpha/alpha_vm_slot_reuse_test.cpp
+  (target atx-engine-alpha-tests, filter AlphaVmSlotReuse.*, 6 tests): 107 op forms iterated from the catalogue
+  and the opcode space (91 catalogue rows, 13 infix, 2 prefix, the ternary), about 1,300 variants, each compared
+  bitwise against a fresh engine on five poisoned / grown / long-lived pool arms, under AuditExact and
+  ResearchFast, with and without a mask. By reading: no op leaves stale cells (cross-sectional kernels skip
+  cells but the VM prefills NaN, vm.hpp:1598, :1379). Uncompiled, unrun. Two more carry paths noted: the
+  per-thread ordstat sweep scratch (rebuilt per column by reading) and compile_cache (not used by the miner).
+  Integration 8 adds atx-engine-alpha-tests to its build list; an assert in a Debug kernel on an accepted
+  variant would be an engine finding.
+- FIX-6 round 1 done f943d6dc (pool 10; tests only): helper as_authored resets lock pins and a template's
+  parent; new test plans every template on every plausible accepted predecessor (88 histories). scripts/tests
+  184 passed / 4 skipped. Two cells would still turn the suite red: add-alpha's generated lib-v80 / lib-v81
+  specs (set equality of authored specs) and the filled --risk-model flags of r6 / r8.
+- Ruling PM5-24 (FIX-6 round 2, tests only): a spec written by add-alpha is a generated spec: the authored-set
+  equality is taken over authored specs, a generated spec must itself load, plan and be accepted as a parent;
+  as_authored also resets the <fill:...> flags, and the live spec may carry the placeholder or a well-formed
+  filled value -- the suite must stay green through every cell without anyone editing a test between cells
+  (PM5-21 keeps scripts frozen; tests are the only thing that may move) -- cost if wrong: none (tests only).
+- Dispatched: cells batch 2a (root): R-1; fields v10; R-2 (add-alpha wave, 7 READY + 8 _f49 re-screens).
