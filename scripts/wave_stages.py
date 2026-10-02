@@ -256,22 +256,22 @@ def screen(w: Wave, done: dict, log) -> dict:
     if not library_wave(w):
         return skipped("a rule wave has no admission strings")
     m, spec = w.manifest, done["register"]["spec"]
-    r = w.run(WS.cycle_argv(w.python, "run", spec, "--screen"), "screen", ok=(RC.EXIT_OK, RC.EXIT_GATE))
+    done_screen = w.run(WS.cycle_argv(w.python, "run", spec, "--screen"), "screen", ok=(RC.EXIT_OK, RC.EXIT_GATE))
     outs = w.outputs(spec)
     vpath = f"{outs['cycle_dir']}/cycle_verdict.json"
     doc = w.read_json(vpath)
     if not isinstance(doc, dict) or not isinstance(doc.get("admission"), list):
         raise StageError(f"screen: no admission rows in {vpath}")
-    rows = [{k: r.get(k) for k in ROW_KEYS} for r in doc["admission"] if isinstance(r, dict)]
-    marginal = [{k: r.get(k) for k in MARGINAL_KEYS} for r in doc.get("marginal") or [] if isinstance(r, dict)]
+    rows = [{k: x.get(k) for k in ROW_KEYS} for x in doc["admission"] if isinstance(x, dict)]
+    marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in doc.get("marginal") or [] if isinstance(x, dict)]
     dec = WR.screen_decision(m["sign_rule"], m["candidates"], rows)
-    gate_ok = r.returncode == RC.EXIT_OK
+    gate_ok = done_screen.returncode == RC.EXIT_OK
     for row in dec["rows"]:
         log(f"   {row['id']}: status {row['status']}, runner sign {row['runner_sign']} vs prior "
             f"{row['prior_sign']:+d} -> {row['decision']} ({row['reason']})")
     log(f"   gate {'PASS' if gate_ok else 'FAIL (no string admitted with its prior sign): no cell'}; kept "
         f"{dec['kept']}, dropped {dec['dropped']}")
-    return {"spec": spec, "gate_exit": r.returncode, "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": rows,
+    return {"spec": spec, "gate_exit": done_screen.returncode, "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": rows,
             "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
 
 
