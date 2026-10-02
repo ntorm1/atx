@@ -27,10 +27,16 @@ TRAIN construction cells <N>; admission trials this sprint <k>; window research-
 hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2025+ never read.
 
 ## Pins (filled by root as artifacts are built)
-- research_window.json sha256: <after W0-1 merge>
-- role train-2020-2023-lo1 manifest sha256: <after W0-2>
-- role train-2020-2023-lo3 manifest sha256: <after W0-2>
-- fields v9 lo1 / lo3 manifest sha256: <after W0-2>
+- research_window.json sha256: `62cf2cfab1d0f61b02731a807ccfdd326bb2df91caff1173a3cf1b37e6e63584`
+  (`atx-impl/strategies/research_window.json`; window research-window-v2, seal 2024-01-01)
+- role train-2020-2023-lo1 manifest sha256: `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53`
+  (`build-equity/train-2020-2023-lo1/manifest.json`, linked-operating-v1)
+- role train-2020-2023-lo3 manifest sha256: `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4`
+  (`build-equity/train-2020-2023-lo3/manifest.json`)
+- fields v9 lo1 / lo3 manifest sha256: `888e6616e441e863a9f91234124e1aebc907db11e18d9789d3c583cf447b8695` /
+  `9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef`
+  (`build-equity/train-2020-2023-lo1-fields-v9/manifest.json`, `build-equity/train-2020-2023-lo3-fields-v9/manifest.json`)
+- Pinned 2026-10-01 at R14 (Wave 0 part 2c), each digest re-hashed from the file on disk immediately before writing.
 
 ## Rulings declared before any read
 - Ruling W0-a (overlap): bit-identical overlap continues the v7 ledger without comment; a difference below 1e-9 is disclosed and the 4-year values become the reference; a larger difference stops the re-base until the cause is found -- a silent change in old values would make every paired comparison uninterpretable -- cost if wrong: one day.
