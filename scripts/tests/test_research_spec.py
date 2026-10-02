@@ -543,9 +543,13 @@ def test_v8_base_specs_carry_the_ruled_settings():
                                                                                       "linked-operating-v3")
     b0c = json.loads((V8 / "base-b0c.json").read_text(encoding="utf-8"))
     assert b0c["change"]["flags"]["nav"] == {"--warm-start-sessions": "60", "--capacity-curve": True}   # D-0, E-29
-    assert as_authored(b0c)["change"]["inputs"] == {"label_role": {                     # E-25: R15's role, locked later
-        "dir": "build-equity/train-2020-2023-lo1-dlret", "path": "build-equity/train-2020-2023-lo1-dlret/manifest.json",
-        "sha256": None}}
+    # E-25 / PM6-5: the label role is the winner's role rebuilt by R15 (lo3-dlret since B0b won, batch 1b's lock
+    # 2ad09c13; lo1-dlret while planned on B0a); its pin is the lock's (as_authored: null)
+    winner = {"base-lo1.json": lo1, "base-lo3.json": lo3}[b0c["parent"] or b0c["nominal_parent"]]   # E-10
+    label = f"{winner['inputs']['role']['dir']}-dlret"
+    assert label == "build-equity/train-2020-2023-lo3-dlret"                              # the live spec: B0b's role
+    assert as_authored(b0c)["change"]["inputs"] == {"label_role": {"dir": label, "path": f"{label}/manifest.json",
+                                                                   "sha256": None}}
     docs = {n: json.loads((V8 / n).read_text(encoding="utf-8")) for n in V8_SPECS}
     assert {n for n, d in docs.items() if d.get("requires")} == {"r2-lib-v80.json", "r7-lib-v81.json"}   # add-alpha
     assert all("lib-v8" in d["requires"][0] for n, d in docs.items() if d.get("requires"))
