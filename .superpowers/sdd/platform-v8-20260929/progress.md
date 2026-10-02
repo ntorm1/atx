@@ -1620,3 +1620,48 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   mining branch `1bd448cd` (C++ never compiled) and FIELDS-V9 / LIB3 `834d5a05` stay on their branches for
   integration 8 -- an uncompiled C++ merge could leave main unbuildable -- cost if wrong: the owner wanted them
   on main now; they are one merge away. Status 6 and goal prompt 6: `docs/plans/2026-10-02-platform-v8-status-6.md`.
+
+## PM session 7 (2026-10-02, after owner stop 2)
+
+- Owner goal (2026-10-02, replaces "stop here"): "finish v8 implementation, use opus 5.5 sub agent implementation
+  agents and preserve your own context window. Expand v8 scope to include real progress towards alpha generation by
+  deploying agents to work on finding new orthogonal alpha dsl signals, improving exsisting ones, improving
+  combinations, finding new datasets etc. The goal is to finish v8 implementation for atx-engine and atx-impl and
+  push sharpe, defalted sharpe, capactiy, gross returns all up."
+- State at the start: root `4e0aa98f`, clean; book R-2; N 44 of 51; admission trials 7 of 15 (the 8 left are
+  allocated: v8.1 5 in R-7, v8.2 3 in R-12); history reads 0. Pool 10 is leased by another session of the owner
+  (`merge/main-tier1-v3-20261002`, alive): this sprint does not touch pool 10 from here on. Pools 7 and 8 remain;
+  new lanes lease new pools.
+- Ruling PM7-1 (two tracks). Track 1: the registered cell program runs unchanged to V8-F (N <= 51, PM5-21, PM5-23,
+  PM6-6), then integration 8. Track 2 ("expansion X"): lanes prepare, blind, new signals, repairs of existing
+  signals, combination and capacity rules, dataset field builders and the registration of a mined campaign. No X
+  lane reads a return, an IC or a NAV number of the 2020-2023 window. X measurements start only after V8-F and
+  integration 8, under a pre-registration (`v8x-prereg.md`) that the PM rules on before the first X measurement:
+  baseline = the book at V8-F, the trial count continues from N at V8-F (no reset), the X budget is fixed there in
+  advance, and the deflated Sharpe is computed on the total count -- the owner asks for Sharpe and deflated Sharpe
+  both up; a trial that is not counted raises the first and voids the second, and X trials before V8-F would
+  break the registered budget -- cost if wrong: X results arrive some hours later than they could.
+- Ruling PM7-2 (OD-7). The owner goal text ("deploying agents to work on finding new orthogonal alpha dsl
+  signals") is taken as the owner ruling OD-7 asked for: one mined campaign may run in X, after integration 8 has
+  compiled the mining branch and the golden holds, under the MINE-RUN registration (`6ea76460`) as amended by
+  `v8x-prereg.md` (budget declared in advance, memory cap, every campaign evaluation counted for deflation) --
+  the mine verb is the registered tool for exactly this request -- cost if wrong: the owner meant hand-written
+  signals only; the campaign's count lowers the deflated Sharpe of X; the X report prints the deflated Sharpe
+  of the hand-written set alone beside the total so the owner can drop the campaign.
+- Ruling PM7-3 (return level). Gross matching (PM6-6) holds the return level of every cell at its parent's by
+  construction, so "gross returns up" cannot come from a construction cell. It comes from (a) return per unit
+  gross (signal quality: X signals, repairs, combination) and (b) the leverage the capacity allows. X registers one
+  leverage cell at the end: L raised inside the executable's [1, 2] with the registered guard "net Sharpe at 4x
+  NAV not lower than the parent's by more than one SE"; the mechanics limit on gross for that cell is restated in
+  `v8x-prereg.md` before it runs -- return from leverage is the owner's risk decision and must be shown as such,
+  not as alpha -- cost if wrong: none measured; the cell is one trial.
+- Ruling PM7-4 (tests). The integrator adds `r3-aim-gain-gm.json` to the spec list of
+  `scripts/tests/test_research_spec.py` itself (tests only, one entry and its pin) -- pool 10, the FIX lane's
+  worktree, is held by another session -- cost if wrong: none; the suite's result line is the check.
+- Ruling PM7-5 (X lanes). Five lanes, Opus 5.5, one pool each, briefs in `task-X-briefs.md`: XSIG (new signals,
+  orthogonal by construction to the 10 themes), XIMP (blind repairs and refinements of roster members), XCOMB
+  (combination and capacity rules beyond R-10 / R-11), XDATA (dataset map, field builders from data in house,
+  external data list), XPRE (`v8x-prereg.md` and the campaign registration). Lane rules bind. Every candidate is
+  one variant per hypothesis with every constant fixed blind in the report (precedent E-30) -- cost if wrong:
+  uncompiled C++ and unscreened candidates accumulate until integration 8; bounded by the per-lane caps in the
+  briefs.
