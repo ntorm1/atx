@@ -1466,6 +1466,91 @@
         "deviation": null
       },
       "added_in": "v80"
+    },
+    {
+      "id": "comp_eq_iss_5y",
+      "dsl": "group_rank(decay_linear((-1 * ceq_iss_5y), 21), grp_ff12)",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Daniel and Titman (2006, JF)",
+      "prior_sign_source": "Daniel and Titman (2006, JF)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v81"
+    },
+    {
+      "id": "coskew_60m",
+      "dsl": "rank(decay_linear((-1 * coskew_60m), 21))",
+      "theme": "low_risk",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Harvey and Siddique (2000, JF)",
+      "prior_sign_source": "Harvey and Siddique (2000, JF)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v81"
+    },
+    {
+      "id": "gscore_lowbm",
+      "dsl": "group_rank(decay_linear(gscore7_lowbm, 21), grp_ff12)",
+      "theme": "profitability_quality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Mohanram (2005, RAS)",
+      "prior_sign_source": "Mohanram (2005, RAS)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v81"
+    },
+    {
+      "id": "nonreliance_402",
+      "dsl": "rank((-1 * k8_item402_63))",
+      "theme": "filing_events",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "sec-api.io Item 4.02 study (vendor, 2004-2023)",
+      "prior_sign_source": "sec-api.io Item 4.02 study (vendor, 2004-2023)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v81"
+    },
+    {
+      "id": "earn_consistency",
+      "dsl": "rank(decay_linear(eps_consist_4y, 21))",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Alwathainani (2009)",
+      "prior_sign_source": "Alwathainani (2009)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v81"
     }
   ]
 }
