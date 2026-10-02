@@ -443,6 +443,27 @@
       "producer": "atx-engine/tools/research_fields_xdata.py",
       "clock": "xdata-season-y2-5-v1: row t reads vendor rows of sessions t-1260..t-483 only (each known at its 22:00 UTC close mark)",
       "basis": "hs-season-y2-5-v1. Row t, e = its extended row: for k in 2..5, b = e - 252 k, a = b + 21; r_k = P_a / P_b - 1 with observations at a and b, no kept_gap step in (b, a], |ln P_a/P_b| <= |ln C_a/C_b| + 0.10 (the coskew monthly guard) and a <= e - 1; value = the mean of the finite r_k when at least 3 of the 4 are finite, else NaN. vendor observations of the role's lines on the extended axis (NYSE rule sessions before the role, the role's sessions inside it): research_fields_price SOURCE_RULE (unique positive key, finite positive close and cumulReturnFactor, finite volume >= 0; F = the chained factor with every factor-break-v1 repaired step divided out; a span across a kept_gap step is unusable) (formula id hs-season-y2-5-v1; producer atx-engine/tools/research_fields_xdata.py, fields-v13)"
+    },
+    "open_adj": {
+      "formula_id": "ohlc-open-adj-v1",
+      "origin": "fields_x7",
+      "producer": "atx-engine/tools/research_fields_ohlc.py",
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "basis": "the session's vendor open x close.f64 / raw_close.f64 of the row (the role close's split-and-dividend basis); NaN unless the role has the line present with a finite positive close, the vendor key is unique, open, high and low are finite and positive, and low <= min(open, raw close) <= max(open, raw close) <= high (formula id ohlc-open-adj-v1; producer atx-engine/tools/research_fields_ohlc.py, lane XWQ)"
+    },
+    "high_adj": {
+      "formula_id": "ohlc-high-adj-v1",
+      "origin": "fields_x7",
+      "producer": "atx-engine/tools/research_fields_ohlc.py",
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "basis": "the session's vendor high x close.f64 / raw_close.f64 of the row; same cell rule as open_adj (formula id ohlc-high-adj-v1)"
+    },
+    "low_adj": {
+      "formula_id": "ohlc-low-adj-v1",
+      "origin": "fields_x7",
+      "producer": "atx-engine/tools/research_fields_ohlc.py",
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "basis": "the session's vendor low x close.f64 / raw_close.f64 of the row; same cell rule as open_adj (formula id ohlc-low-adj-v1)"
     }
   },
   "alphas": [
