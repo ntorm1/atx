@@ -1678,3 +1678,65 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   iterations), no void. S2 net Sharpe .7606 (parent 1.2559); dSR -.4954, SE .1798, p one-sided .996 (two-sided .021);
   criterion failed on cost per traded dollar (18.79 bps against 12.47); aim correlation .960 >= .9 met. Parent stays
   R-2. E-38 / E-45: R-10, R-11, R-12 undefined; R-9 defined.
+- Lanes dispatched (Opus 5.5): integrator batch 2e in root (PM7-4 tests, R-5, risk model, R-6); XSIG pool 12,
+  XPRE pool 7, XCOMB pool 13, XDATA pool 14, XIMP pool 15 (branch `feat/platform-v8-ximp2-20261002`). Pool 10 was
+  released by the owner's other session and leased to XIMP by the lease script; its working tree shows 76
+  tracked `build-equity/` files as deleted (not by this sprint); the restore was refused by the permission
+  system, so the pool is left untouched and held (run id `v8x-ximp-20261002`) for the owner. Local `main` moved to
+  `179af41c` (the owner's warehouse merge): the final v8 merge into main is a real merge, after the freeze gate.
+- XPRE delivered `v8x-prereg.md` (`71a68d60`, pool 7, 249 lines). Rulings on its 11 open choices, made before
+  any X measurement and before any X lane result is read by the PM (parked while the integrator held root):
+- Ruling PM7-6 (X budget): at most 10 construction cells (X-1..X-10), at most 39 admission trials (23 hand-written,
+  16 mined), one campaign of at most 132 evaluations; waves share one cell (repairs X-1, refinements X-2,
+  XSIG + XDATA X-3, mined X-9), every new string is one admission trial; one cell each for the 2 processing
+  variants, the 3 XCOMB rules and the leverage cell, which is last -- sized to the lanes' caps; a fixed budget
+  is what makes the deflated Sharpe meaningful -- cost if wrong: good candidates beyond the caps wait for v9.
+- Ruling PM7-7 (count and deflation): N_tot = every trial the defect rule counts in `build-equity/trials.jsonl`
+  (any kind) + the campaign registry count; no netting of mined members that are not admitted; V = variance
+  (ddof 1) of S2 net Sharpe over construction lines on research-window-v2 (`dsr_variance`); DSR_tot gates;
+  DSR_hand (ledger up to before the campaign) and the v8-count value are printed beside it -- the conservative
+  count; PM7-2 -- cost if wrong: the gate is harder than a netted count would make it.
+- Ruling PM7-8 (X gate): the X book replaces the V8-F book only if DSR_tot >= .95 AND the paired one-sided
+  p < .10 against the V8-F book; otherwise the V8-F book stays the deployable book and the X report says so --
+  cost if wrong: a better book is not adopted in v8; nothing is lost, it is carried to v9 with its count.
+- Ruling PM7-9 (repairs, X-1): a repair is accepted on mechanics alone and its member is not re-screened, ONLY
+  where the PM has confirmed the defect from XIMP's proof (the roster string does not compute its own stated
+  canonical definition, shown from DSL semantics); anything else moves to the refinement list and takes an
+  admission trial. The X-1 cell is run, counted and printed -- prereg rule 7: a defect fix is a correction,
+  not a hypothesis -- cost if wrong: a repair that lowers Sharpe stays in the book; that is the honest book.
+- Ruling PM7-10 (alpha waves' criterion): waves X-2, X-3, X-9 are judged on dSR > 0 AND mechanics AND "net
+  Sharpe at 4x NAV not lower than the parent's" (replaces "turnover not higher"; amends campaign D14) -- the
+  owner's target is capacity, and a turnover bar rejects fast signals that pay for their trading -- cost if
+  wrong: turnover may rise while the 4x measure holds; the turnover is printed.
+- Ruling PM7-11 (leverage cell, last): L 2.0 (the executable's maximum, one value, no grid); "one SE" = .100
+  (plan 12.2); accepted on net annual return higher AND net Sharpe at 4x NAV not lower than the parent's by
+  more than .100 AND mechanics, with the gross limit restated as [.90, 1.05] x (2.0 / L_parent) x the parent's
+  matched gross ratio, written in the cell's plan before the run. The X report prints the unlevered and the
+  levered book side by side with maximum drawdown; which is deployed is the owner's risk decision (PM7-3) --
+  cost if wrong: one trial.
+- Ruling PM7-12 (campaign): memory cap = the registered probe's value (expected 4,032 MiB); the campaign runs
+  alone (no other data process, no build); if free physical memory at the start is below the cap + 1 GiB the
+  integrator lowers workers, never the budget, and stops if that is not enough; source cell = the last
+  hand-written X book (amends D15); every evaluation enters N_tot -- cost if wrong: a slow campaign.
+- Ruling PM7-13 (caps): roster and pool caps 64 -> 80, done at integration 8 (after the freeze gate, PM5-21),
+  identity by the golden and the pinned bench -- X-3 would otherwise fit about 4 new members -- cost if wrong:
+  a larger IC pass; the memory cap of the IC pass is re-probed before X-3.
+- Ruling PM7-14 (smaller points): plan section 13 bars bind X, lifted by name only for risk-only rules; if
+  XIMP-C and XCOMB deliver the same mechanism, XCOMB's is kept and one change per member applies; XSIG and
+  XDATA candidates enter in one wave (X-3); no hidden-block read without an owner ruling, at most one, on a
+  book chosen before the read -- cost if wrong: none measured.
+- Follow-up to XPRE: mark the 11 choices as ruled in `v8x-prereg.md`; write `nav_summ.py --dsr-total`
+  (precondition P5) in the lane with synthetic tests, for merge at integration 8.
+- XSIG delivered (`b30311a3`, `7467448f`, pool 12): 5 candidates, not 12 (the lane's honest count), ranked:
+  stmom, earn_season, k8_intensity, inst_persist, nt_late; strings frozen in `task-XSIG-report.md`; check
+  script `xsig_check.py` passes (parses the 52 roster strings, mutation probe 6 of 6). No result was read.
+- Ruling PM7-15 (XSIG's six points, ruled before any screen): (a) theme `filing_events` is added to the
+  registry and appended LAST in the fitter's theme order, at integration 8 -- last place leaves every existing
+  theme's residual under `theme-resid-v1` unchanged; (b) inst_persist sits in `reversal_seasonality` -- its
+  mechanism is reversal of persistent institutional trades; in `ownership_flow` it would be averaged with
+  members of the opposite sign; (c) roster 65 against 64 is covered by PM7-13 (cap 80); (d) quarters as
+  63-session lags stand as the registered definition; (e) stmom, earn_season and nt_late are registered once,
+  here, and are removed from the v9 draft's screen set; (f) turnover is covered by PM7-10 (the 4x criterion) --
+  cost if wrong: (b) a theme share diluted by one slow member; the rest none measured. The X-3 wave therefore
+  holds 5 XSIG strings plus XDATA's; unused admission trials of the 23 are not reallocated to new strings
+  written after any X result is seen.
