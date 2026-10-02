@@ -3863,3 +3863,101 @@ E-38); R-3 runs `ew-theme-std-aim-v1` (E-27); every child inherits L 1.1474 as i
 
 **Next parent: `scripts/specs/v8/r1-comp-v8-gm.json`, spec digest `60ac1feb56d08b207813c32674773b11ad8969ddae84b0737c66937d43fb9eeb`,
 G 0.9817064213, L 1.1474.**
+
+### Cell R-2 (lib-v80 on r1-comp-v8-gm; library v8.0 on fields v10): STOPPED at the marginal phase (cycle refusal)
+
+**Wave preparation (A2 root sequence, R-2 steps 1-5; P = `scripts/specs/v8/r1-comp-v8-gm.json`):**
+1. E1 + E4 registry field rows (hand edit, commit `0c8b3e2c`): `ea_days_since` (sec-ea-days-since-reaction-v1,
+   fields_v8), `inst_own_share` (13f-asof45-io-share-qe-v1, fields_v9), `grp_ff12f49` (ff12-money-ff49-v1,
+   fields_v10); clock copied from the fields v10 lo3 manifest rows, basis = the manifest definition + formula id and
+   producer (the existing rows' form). `generate_library` tests (`ATX_V71_PLAN_JSON` = the saved v7.1 plan): 8 passed,
+   1 failed: **`test_v71_library_byte_identical` PASSES** (v7.1 regenerates byte for byte);
+   `test_registry_seed_is_the_v71_library` FAILS by premise (it asserts the registry is exactly the v7.1 seed: field
+   names, then alpha ids; any wave registration breaks it). Tests only; not fixed (FINDING).
+2. **K1 FINDING:** the first `add-alpha` refused (exit 2, nothing written): `plan: atx-equity-strategy-ic.exe --plan-only
+   exit 1: Unavailable: IC runner: required_bytes=1929078268 max_compiled_slots=8 exceeds configured memory budget`.
+   add-alpha's built-in K1 (`generate_library.exe_plan`) passes no `--max-memory-mib`; on the 4-year role the exe's
+   default budget is below the plan's need (runbook R12 runs plan-only with `--max-memory-mib 2560`). Used the A2
+   sequence's named alternative `--plan-json`: a scratch helper (`scratchpad/k1plan.py`) runs add-alpha's own argument
+   parsing and in-memory library build (no write), writes those exact bytes to a temp file and runs the parent spec's IC
+   exe `--plan-only --max-memory-mib 2560` on them (metadata only, run directly as add-alpha runs it); the real
+   add-alpha (unpatched) then validates `plan.library_sha256` against its own bytes. All 15 calls: plan sha = library
+   sha, K1 rows valid.
+3. The 7 READY calls (draft section 7 strings verbatim, `--parent-spec P`; earn_surprise_comp with `--removes sue
+   --removes droe --removes chtax --exception max_extra_fields=8 --exception-basis "Ruling R2-b"`), then the 8 `_f49`
+   re-screens in R2-8 order (`--replaces <x> --rescreen --fields build-equity/train-2020-2023-lo3-fields-v10`; DSL =
+   the original's registry DSL with `grp_ff12` -> `grp_ff12f49`, checked; theme / tier / sign / citation of the original
+   + "; S-12 FF49 financials"). Every call exit 0.
+4. **Counts (all equal the brief / draft):** roster 52 (48 - 3 + 7; the 8 `_f49` in their originals' positions); recipe
+   `trials`: admission_trials 7, rescreens 8 (the 8 ids), removed_parent_members 11 (accruals, asset_growth, cbop, chtax,
+   droe, ebit_ev, gpa, noa, opex_at, q5_eg, sue), new_candidates 15, unchanged 37; gate p1-v80 admitted = the 7
+   (require any, sign_agrees), report = the 8; exceptions earn_surprise_comp max_extra_fields 8, q5_eg_f49 6 (moved from
+   q5_eg), qmj_safety max_slots 8. K1 rows of the 7 equal draft section 4 (DSL sha16 / bars / slots / extra fields:
+   ear_mom_12m eb4ced22 256/5/2, earn_surprise_comp 959788e7 20/6/8, op_rd 211c045b 20/5/4, dtc_slow 4554a05f 145/5/1,
+   pct_accruals 4711ad7c 20/4/2, fip_id f13685ff 272/4/0, si_low_io d76f1408 20/4/3); the 8 `_f49` rows equal the R2-8
+   table and their originals' rows (grp_ff12 -> grp_ff12f49). Plan: 52 candidates, max slots 8, required lookback 272.
+5. Registration appended to `v8-prereg.md` ("Library v8.0 (cell R-2)": the draft by sha `326ad240`, R2-a..h, the E5
+   pins: library `68ce8539...52f4`, slim recipe `fb09b740...62d0`, `libraries/v80.json` `f15c6181`, stub `a6b74143`,
+   registry `570f022a`, fields v10 `a4a060ae`); commit **`9d4203f0`** (registry, library, recipe, definition, stub,
+   `scripts/specs/v8/lib-v80.json`, prereg).
+
+**Spec** `scripts/specs/v8/lib-v80.json` (generated and locked by add-alpha; file `da386bcd...dc70f`): parent cell
+R-1-gm (reference_cell `090e31ba`, reference_admission `29357ece`, reference_combined `140bcf4a`, reference_weights
+`eb98a50a`, reference_daily `7ef3b3bd`, reference_orientations `f28327db`, reference_daily_ic `621deb65`); fields as
+built v10 `a4a060ae` (70 rows), baseline_fields v9 `9f156363`; label_role lo3-dlret `95e16cfe`; fit `--composition
+ew-theme-std-v1` (inherited); **nav.leverage 1.1474 (the parent's L = step (1))**, nav.output
+`build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`; w 300 s / 3,072 MiB (E-28); summ
+dsr_n ledger+1, origin prior, verdict true. `plan` exit 0, every pin `[locked, verified]`.
+
+**`run --screen`** (source `9d4203f0`; no free-memory refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fields | - | - | - | - | - | done (as built v10) |
+| ref, ref-compare | - | - | - | - | - | skipped (screen; run with the full `run`) |
+| u | 300 / 2,560 | 33.3 | 1,497 | 0 | `561c0e0d266d9411bd64d73925240aca04d52aa46f8ccfbbe40fa051bb185d04` | `mega-v8-b0b-train-u-v80-1` |
+| u-compare | internal | - | - | PASS | - | parent-orientations IDENTICAL (37 objects; b adds 15); parent-train-daily-ic IDENTICAL (108,262 rows of 37 keys byte for byte; b adds 43,890 rows of 15 keys) |
+| fit | 180 / 1,536 | 7.3 | 450 | 0 | `10773e33470b286e11b791fdaaaaffceffeac61c5730de0715f77b3d5e10120b` | `mega-weights-v8-r1-std-v80` (not read) |
+| card | 300 / 2,560 | 20.2 | 1,350 | 0 | `141d2199704a0f42a705625c095e40997e39b06241437464235054c55056e26d` | `mega-cards-v8-r1-std-v80` (not read) |
+| marginal | bounded | 0.3 | 1 | **1** | `bf1d64d2488623e3717be4d2f110a07b3506748e50dcc16fe17b05bcddf38204` | **process-error -> research_cycle HARD-STOP [marginal], exit 4** |
+| gate, w, nav, monitor, summ | - | - | - | not run | - | - |
+
+**Refusal (stderr, whole):** `InvalidArgument: marginal IC: themes: pool member accruals is not in --library (its cached
+signal builds its theme composite)`. Argv: `atx-equity-strategy-ic marginal --candidate-cache
+build-equity/mega-candidate-cache-v8-lo3 --library fund_industry_ic_v80.json --pool
+mega-v8-r1w-train-std-1/train_combined.json --role ...lo3 --themes mega-weights-v8-r1-std/composition_weights.json
+--fields ...-fields-v10 --min-names 1000 --output ...-marginal`. Cause (from the text and the argv, no data): the
+marginal verb builds the parent pool's theme composites from the pool members' cached signals, located through
+`--library`; library v8.0 no longer holds 11 of the parent's members (3 removed, 8 replaced by `_f49`), so the first
+of them (accruals) is refused. add-alpha writes this marginal section for every wave, including one with
+`--removes` / `--replaces` (the A2 tests ran it on fake tools). **Stop rule applied ("any refusal by the cycle"):
+STOPPED, not worked around** (dropping the section is a spec edit, and passing the parent library is a tool change:
+PM5-21). Marginal IC is report-only (prereg rule 8, E-36); the cycle orders marginal before gate and hard-stops on it.
+
+**Not read:** the admission (`admission.json`), the cards, the gate print-out, the u pass daily IC (the compare reads
+it byte for byte; no value printed), any IC, return or Sharpe. The gate did not run, so **no admission line was
+ledgered: admission trials 0, re-screens 0**. Ledger unchanged: 42 lines, `dac5a01b...f028`, **N 41**. Outputs stay on
+disk (u, fit, card, the failed marginal run dir); a resume after a ruling starts at marginal.
+
+### R-3: not started
+
+Its parent is the last accepted cell after R-2, which is not decided; the batch stops at R-2's refusal.
+
+### Hidden-data record (batch 2c)
+
+- Inputs opened by the tools: role lo3, the lo3-dlret label role, fields v9 lo3 and v10 lo3 (metadata for the K1 plans;
+  payloads by the u pass), the lo3 candidate cache, B0b's u pass and B0c's / R-1's outputs, the ledger and the
+  ledgered NAV dirs of the summ grid (2020-2022), R-1-gm's own outputs. No atx-db stage was opened in this batch.
+- Logs scanned for dates 2024-2029 (every bounded run's stdout / stderr, both cycle consoles, the add-alpha consoles):
+  only the bootstrap seeds 20260929 / 20260927; last NAV session 2023-12-29. **Nothing dated 2024-01-01 or later was
+  opened. No R-1 (L 1.247) return was opened** (its calibration use read the S2 gross column through the extractor).
+
+### Open items (batch 2c)
+
+- **PM ruling needed (R-2):** the K6 marginal verb refuses a library wave that removes or replaces parent members
+  (refusal above). R-2's u / fit / card are done; nothing statistical read; nothing ledgered.
+- K1 in add-alpha omits `--max-memory-mib` (4-year role refuses); the `--plan-json` route was used (above). A one-line
+  tool fix (pass the parent's `ic.flags` memory option to `exe_plan`) is PM5-21 territory.
+- `test_registry_seed_is_the_v71_library` fails once any field row or alpha is registered (test premise).
+- Current accepted parent: **R-1-gm** (`r1-comp-v8-gm.json`, digest `60ac1feb`, L 1.1474), S2 net Sharpe +1.2031,
+  net annual return 4.47%. N 41; admission trials 0; history reads 0. Disk 70,779,164 KiB free (67.5 GiB).
