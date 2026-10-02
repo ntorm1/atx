@@ -55,6 +55,10 @@ MinedTrial classify_one(const StageRun &stage, usize stage_number, const ex::Gen
   };
   if (listed(stage.result.slot_refused_hashes)) {
     t.reason = "slot-bound"; // failed: refused before any evaluation (review MINE-10)
+  } else if (listed(stage.result.rung_failed_hashes)) {
+    // Review MINE-16: rejected at a rung because its read failed there, not scored and lost.
+    t.status = TrialStatus::RungFailed;
+    t.reason = "rung-failed";
   } else if (listed(stage.result.fidelity_rejected_hashes)) {
     t.status = TrialStatus::RacingRejected;
     t.reason = "racing-rejected";
@@ -105,6 +109,8 @@ std::string_view status_name(TrialStatus status) noexcept {
     return "screen-rejected";
   case TrialStatus::RacingRejected:
     return "racing-rejected";
+  case TrialStatus::RungFailed:
+    return "rung-failed";
   case TrialStatus::Failed:
     return "failed";
   }
@@ -137,6 +143,7 @@ Counts count_statuses(const std::vector<MinedTrial> &trials) {
     c.evaluated += t.status == TrialStatus::Evaluated ? 1U : 0U;
     c.screen_rejected += t.status == TrialStatus::ScreenRejected ? 1U : 0U;
     c.racing_rejected += t.status == TrialStatus::RacingRejected ? 1U : 0U;
+    c.rung_failed += t.status == TrialStatus::RungFailed ? 1U : 0U;
     c.failed += t.status == TrialStatus::Failed ? 1U : 0U;
   }
   return c;
@@ -217,7 +224,10 @@ co::Result<usize> record_trials(ev::TrialRegistry &registry, std::vector<MinedTr
       t.reason = "degenerate-series";
     }
     ev::TrialMeta screened = meta;
-    screened.fidelity = t.status == TrialStatus::RacingRejected ? u8{1} : u8{0};
+    // A racing rung's observation, scored there or failed there (review MINE-16).
+    const bool at_rung =
+        t.status == TrialStatus::RacingRejected || t.status == TrialStatus::RungFailed;
+    screened.fidelity = at_rung ? u8{1} : u8{0};
     ATX_TRY(const auto recorded, registry.record_screened(ev::TrialKind::MinerExpr, config,
                                                           screened, rule_tag,
                                                           ev::trial_tag(t.reason)));

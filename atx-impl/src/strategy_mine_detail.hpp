@@ -50,8 +50,10 @@ struct StageRun {
 };
 
 // ---- strategy_mine_trials.cpp ------------------------------------------------------------------
-// Ordered best first: an expression seen in both stages keeps its best status.
-enum class TrialStatus : u8 { Evaluated, ScreenRejected, RacingRejected, Failed };
+// Ordered best first: an expression seen in both stages keeps its best status. Review MINE-16:
+// RungFailed is a racing rejection whose rung read failed (compile, VM or functor error;
+// SearchResult::rung_failed_hashes) rather than one scored and lost.
+enum class TrialStatus : u8 { Evaluated, ScreenRejected, RacingRejected, RungFailed, Failed };
 [[nodiscard]] std::string_view status_name(TrialStatus status) noexcept;
 
 // One distinct expression of the campaign. The pointers borrow the stage results.
@@ -59,15 +61,18 @@ struct MinedTrial {
   u64 canon_hash{};
   usize stage{}; // the stage that first saw it (1 or 2)
   TrialStatus status{TrialStatus::Failed};
-  // screen name, racing-rejected, unscored, slot-bound, degenerate-series (empty: none)
+  // screen name, racing-rejected, rung-failed, unscored, slot-bound, degenerate-series (empty:
+  // none)
   std::string reason;
   std::string dsl;
   const ex::Genome *genome{};
   const ex::ResearchIcTrial *read{}; // the full-pass read (evaluated or screened), else null
 };
 
+// The registry identity (review MINE-16): n_raw = evaluated + screen_rejected + racing_rejected
+// + rung_failed + failed.
 struct Counts {
-  usize evaluated{}, screen_rejected{}, racing_rejected{}, failed{};
+  usize evaluated{}, screen_rejected{}, racing_rejected{}, rung_failed{}, failed{};
 };
 
 // Adds the stage's distinct expressions in all_scored order (worker-invariant), first seen first.
@@ -135,14 +140,20 @@ struct PromotionContext {
   usize min_dates{};
   usize max_promotions{};
   u64 max_cache_bytes{};
+  f64 overlap_factor{}; // mined_overlap_factor(--budget): the shortlist reads f2 / it (MINE-STAT)
+  usize rho_batch{};    // MineConfig::rho_batch (0: the free slots)
 };
 
-// Shortlist at `hurdle`, the greedy rho check, one confirm read each, Benjamini-Yekutieli.
+// Shortlist at `hurdle`, the greedy rho check over the whole shortlist, then the cap of
+// max_promotions (Ruling PM5-9; at most max_promotions signals held at once), one confirm read
+// each, Benjamini-Yekutieli.
 [[nodiscard]] co::Result<std::vector<Promotion>>
 promote(const std::vector<MinedTrial> &trials, f64 hurdle, const PromotionContext &context);
-// campaign.json promotions (every shortlisted trial) and mined_members.json members (admitted).
+// campaign.json promotions (every shortlisted trial; f2 read on `overlap_factor`) and
+// mined_members.json members (admitted).
 [[nodiscard]] Json promotions_json(const std::vector<MinedTrial> &trials,
-                                   const std::vector<Promotion> &promotions, const MinePool &pool);
+                                   const std::vector<Promotion> &promotions, const MinePool &pool,
+                                   f64 overlap_factor);
 [[nodiscard]] Json members_json(const std::vector<MinedTrial> &trials,
                                 const std::vector<Promotion> &promotions);
 

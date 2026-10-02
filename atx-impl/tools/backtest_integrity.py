@@ -828,7 +828,7 @@ def positive_int(value) -> bool:
 
 
 MINED_RULE = "mined-v1"                   # the rule of every mining campaign (atx-equity-strategy-mine)
-MINED_MAX_BUDGET = 1000                   # Ruling PM4-13: strategy_mine_rule.hpp kMinedMaxBudget
+MINED_MAX_BUDGET = 10000                  # Ruling PM4-13 (MINE-STAT table): strategy_mine_rule.hpp kMinedMaxBudget
 
 
 def sha256_hex_digest(value) -> bool:
