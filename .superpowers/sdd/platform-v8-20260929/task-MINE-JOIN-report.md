@@ -345,3 +345,129 @@ Every edit in this lane is cross-lane by design (PM5-15):
 
 No other file is touched. `research_cycle.py`, `research_spec.py`, `backtest_integrity.py` and `atx-engine/` are
 unchanged by this lane.
+
+## Round 1
+
+Base `40409e30`. Commits:
+
+| task | commit |
+|---|---|
+| R1-1, concern 5: one engine vs a fresh engine per batch | `19f6765e` |
+| R1-2, concern 4: verify each member once | `a11cca3b` |
+| this section | the report commit |
+
+pytest, six suites: 181 passed, 3 skipped (unchanged; no Python was touched).
+
+### R1-1: the promotion's signals do not depend on the engine (concern 5)
+
+Two new tests in `atx-impl/tests/strategy_mine_test.cpp`:
+
+- **`StrategyMineCampaign.PromotionSignalsDoNotDependOnTheEngine`.** The fixture's 88 templates over 8 fields are
+  evaluated the way `evaluate_signals` does it, in five ways:
+  - a fresh `al::Engine` per program (the reference);
+  - a fresh engine per batch of 5;
+  - a fresh engine per batch of 16 (the free-slot size);
+  - all 88 on one engine;
+  - all 88 on one engine in reverse order.
+
+  Every signal panel must be byte-equal to the reference.
+- **`StrategyMineCampaign.RhoBatchingNeverChangesThePromotion`.**
+  - Setup: pool members `{m2, p2}`, templates only, budget 22, `max_promotions` 2.
+  - The full campaign is run with `MineConfig::rho_batch` set to 0 (the verb's value, the free slots), 1 and 64 (all
+    at once).
+  - It requires equal `promotions`, members, `trials.csv` and registry heads.
+  - `ASSERT_GT(read, 2U)` proves that the default really runs more than one batch.
+
+`MineConfig::rho_batch` is a test hook. It is not a CLI option and it is not in the recipe. It sets only how many
+shortlist candidates one batch evaluates. `rho_check` still receives the free-slot count, so the memory bound it
+counts is unchanged. At 0 the code path is the same as before.
+
+**`al::Engine` state that outlives one `evaluate()`** (`atx-engine/include/atx/engine/alpha/vm.hpp`):
+
+| state | where | carries? |
+|---|---|---|
+| `pool_` (SlotPool) | `vm.hpp:2154`, grown by `ensure_pool` `vm.hpp:1157-1163` | **Yes, the one real candidate.** A fresh pool is zero-filled (`panel.hpp:215`). A reused pool still holds the previous program's slot values. This matters only if an op leaves part of its destination slot unwritten. The ops were not audited one by one; the one-engine and reversed-order arms of the test would expose such an op among the fixture's 88 templates. |
+| `field_remap_` | rebuilt by `resolve_fields` every call, `vm.hpp:545` | no |
+| `state_` (recurrence buffer) | seeded at t = 0, `vm.hpp:1999-2004` | no; every read at date t comes before that date's write |
+| `ts_exp_coeff_` | `vm.hpp:2158`; `ts_sliding.hpp:344-361` | a cache, but a pure function of (d, f) |
+| scratch (`ts_scratch_*`, `ts_col_*`, `ts_dq_*`, `cs_valid_`, `cs_scratch_`, `lit_*`) | the `reset()` doc, `vm.hpp:474-528` | grow-only capacity, rebuilt by each op |
+| "seeded" flags | `vm.hpp:2073-2141` | stack-local, not members |
+| RNG | none | none |
+| `cs_mask_` | set once per engine | constant across calls |
+| `panel_digest_`, `root_buf_` | the cache and subset paths | not used by plain `evaluate` |
+
+So the claim does not rest on reading alone. It rests on this table plus the two tests, plus the existing determinism
+golden, which is equal at 1 and 4 workers.
+
+### R1-2: each member verified once, held with writers denied (concern 4)
+
+**Idiom copied.**
+- The share mode: `CreateFileW(GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING)`, as in `Mapping::map_file_ro`
+  (`atx-tsdb/src/mapping.cpp:109`).
+- The class shape: a move-only RAII handle with a positional `read_at` and a POSIX `pread` twin, as `LogFile` in
+  `atx-engine/src/eval/trial_registry.cpp:155-330`.
+
+New TU `atx-impl/src/strategy_mine_pinned_file.{hpp,cpp}` (`PinnedReadFile`, `kPinnedReadDeniesWriters`), added to
+`atx-impl/CMakeLists.txt`. I chose not to map the file: the rho stream touches about 2 GB a pass, and the touched mapped
+pages would count in the working set that the runner's RSS cap measures.
+
+**Design.**
+- `bind_mine_pool` opens each member, writers denied, and verifies it once through that handle. The checks are
+  extent, reads, extent again, SHA-256 and infinity, in `load_pinned_f64`'s order and words.
+- `MinePool::members` becomes `std::vector<MinePoolMember{pin, payload}>`, held until `run_mine` returns.
+  `MinePool` is now move-only; nothing copies it.
+- `writers_denied` is true on Windows. With it:
+  - `check_mine_pool_members` (the pre-write check) confirms extents only;
+  - `stream_mine_pool_members` checks extents, then reads only the rows of [begin, end), positionally, with no
+    hash.
+- Without it (POSIX): the old lockstep whole-file verified pass, unchanged.
+
+**I/O at mine-c1** (53 members x 68.6 MB):
+
+| pass | before | now (Windows) |
+|---|---|---|
+| bind | about 3.6 GB, hashed | about 3.6 GB, hashed |
+| each rho batch | about 3.6 GB, hashed | about 1.96 GB of discover rows, no hash |
+| pre-write check | about 3.6 GB, hashed | extents only |
+
+**No computed bit changes.** Each row buffer receives the same bytes from the same offset (date x instruments x 8)
+as before. `on_rows` is called for the same dates, in ascending order, with the same views. So `rho_check` sees
+exactly the input it saw before, and its arithmetic is untouched.
+
+**The fail-safe holds.**
+- While the pool holds a member, the OS refuses any open that would write, truncate, delete or rename it.
+- The bind's own open fails if another handle can already write the file.
+- So the verified bytes are the bytes every later pass reads. A member that changed before the bind is refused
+  there, before the search: no `campaign.json`, no members.
+- The test `MembersStreamByDateAsStored`, Windows branch:
+  - while held, a write, a remove and a rename all fail, and the stream and the check still read the verified bytes;
+  - once the pool is released, the write succeeds and the rebind is refused with "SHA256 mismatch: p1.f64".
+- POSIX branch: the write succeeds, and both the stream and the check refuse it.
+- This also closes concern 3 on Windows, since a member can no longer change between the pre-write check and a rho
+  stream. On POSIX concern 3 stands as written.
+
+**What the share check cannot see:** raw volume writes and kernel filters. On POSIX, `flock` is advisory, so
+`kPinnedReadDeniesWriters` is false there and every pass re-verifies.
+
+**Memory.** `mine_working_bytes` is unchanged; what is held does not change materially.
+- The row buffers stay at members x instruments x 8.
+- The denied path allocates no per-member SHA state.
+- The held handles fall inside the metadata allowance. Only that comment was updated, in `strategy_mine.hpp`.
+
+### Where a first compile is most likely to fail (uncompiled, per lane rules)
+
+- `windows.h` in `strategy_mine_pinned_file.cpp`, with `WIN32_LEAN_AND_MEAN` and `NOMINMAX`;
+- `ReadFile` with an `OVERLAPPED` offset on a synchronous handle;
+- the move-only `MinePool` inside `tl::expected` (`ATX_TRY(auto pool, ...)`);
+- `if constexpr (st::kPinnedReadDeniesWriters)` in a non-template test (both branches must compile everywhere);
+- `MinePoolMember member{pin, {}}`;
+- the ternary inside `ATX_TRY_VOID` in `check_mine_pool_members`.
+
+### Round 1 concerns
+
+1. The C++ is still uncompiled, and the Windows sharing behaviour in `MembersStreamByDateAsStored` is asserted, not
+   observed. That covers the `std::ofstream` open failing, and MSVC STL's `fs::remove` and `fs::rename` failing
+   with a sharing violation.
+2. Engine slot reuse (`pool_`) is the one carry path. It is safe only while every op fully writes its destination
+   slot. The new test pins this for the fixture's templates, not for every op.
+3. A single rho pass still reads about 1.96 GB at mine-c1. Batches remain one per rho failure in the worst case.
