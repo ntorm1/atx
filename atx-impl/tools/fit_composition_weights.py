@@ -267,8 +267,9 @@ V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_
 # list. A prior-metadata theme may be any of PRIOR_THEMES; the weights provenance lists an appended theme under
 # themes_preregistered only when some candidate declares it, so a library without one (v6.1, v7.0: ownership_flow is
 # empty until wave 2) keeps its bytes. ew-theme-v1 counts only themes with an admitted member, so an empty theme never
-# changes a weight.
-V7_APPENDED_THEMES = ("ownership_flow",)
+# changes a weight. filing_events (v8.1 E7) is appended last (Ruling PM7-15 (a)), after the registry's themes table and
+# the runner's theme_resid_order, so every earlier theme keeps its theme-resid-v1 residual.
+V7_APPENDED_THEMES = ("ownership_flow", "filing_events")
 PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES
 TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
 V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
