@@ -257,3 +257,107 @@ document needed):
   Yan-Zhang (2009), Gao-Moulton-Ng and Baltussen et al. (2018).
 
 Cross-lane edits: none (new files only).
+
+## Round 2: the 13F common-ownership network (`conn_ret63`)
+
+**Rulings received (PM8-8, blind).**
+1. VWAP is an owner decision; V formulas stay out.
+2. `merger_arbitrage` is approved as the 13th theme (root builds); `div_event` stays in filing_events.
+3. `shD1` at lag 1 is allowed; root verifies the column semantics before the screen.
+4. The 4 trials are approved.
+5. ORATS is deferred.
+6. The `iv_vol_of_vol` clock is a defect; root re-pins it.
+
+**Basis.**
+- Anton and Polk, "Connected Stocks". The coordinator's note said RFS; the paper is in **JF** 69(3), 1099-1127, June 2014. Its construction was read from the authors' copy.
+- Cohen-Frazzini (2008) customer momentum is **not buildable**. No point-in-time customer-supplier link exists in house: atx-db PARITY_GAP.md lists `sc_node` / `sc_edge` as absent, and the segment "major-customer" capture is a shared-DB surface with no alpha-panel export.
+
+**Pre-registration found.** The v9 library draft (`docs/plans/2026-10-01-v9-library-draft.md`) already registers this hypothesis as C-7 `conn_rev`:
+- DSL `rank((-1 * conn_ret63))`, theme reversal_seasonality, tier C+, status NEEDS-DATA.
+- Field D-L3 `conn_ret63` was planned on N-PORT. LIB3-h says to copy the paper's rules before the build.
+
+This round builds that same field name on the 13F route and keeps the frozen string. Writing a second string would register a second variant of one hypothesis.
+
+**Schema.** The `thirteenf/` export schema is fixed in a committed document: atx-db/docs/ALPHA_PANEL_SHORTFLOW.md D1 on `origin/main`, i.e. `parts/source=<set>/holdings.parquet`, `filings.parquet`, `cusip_map_pit.parquet`, clock `13f-filed-plus-46h-v1` and 150-day staleness. The engine already pins it as `atx.alpha-panel.thirteenf/v1`. So the builder is written and no contract document is needed.
+
+**Field `conn_ret63`** (`atx-engine/tools/research_fields_connected.py`, formula `ap-connected-ret63-13f-v1`, draft, registered by `prepare_research_fields_ydata.py`):
+- **Positions:** the house 13F screens (`F13_ROWS_RULE`, read through mgr13f's `quarter_rows` / `quarter_positions`).
+- **Nodes:** role members at the last role session on or before the quarter end that have a positive `shares_out` and a 13F price. Market value m = shares_out x p.
+- **Active owners:** filers with at least 2 node positions and a within-book active share AS = 1/2 sum |V_i / sum V - m_i / sum m| >= 0.2.
+- **Common ownership:** FCAP_ij = sum over common active owners of (V_i + V_j) / (m_i + m_j). This is the paper's formula.
+- **Weights:** w = average-tie rank of FCAP among all connected pairs of the quarter, divided by their count (paper eq. 4-6, without the orthogonalization). Each node keeps its 50 largest-FCAP links; ties go to the lower column.
+- **Value:** sum w r_j / sum w over 63-session returns ending at t-1.
+- **Clock:** the network is read on `F13_CLOCK`: a quarter is visible from its last deadline filing + 46 h, read at the t-1 22:00 UTC mark, stale after 150 days, with a per-line anchor. Returns read role closes up to t-1, D-L3's `price-close-lag1`.
+- **Seal:** reader side. Refusal on a seal mismatch; sealed holdings parts are never opened; a quarter visible after the seal is never used.
+- **Reuse pins:** the stage manifest, the seal, and `imported_code` (the AST closures of the names imported from holdings and mgr13f).
+
+| constant (fixed blind) | value | basis |
+|---|---|---|
+| active-owner rule | >= 2 node positions and within-book AS >= `ACTIVE_SHARE_MIN` 0.2 | The paper uses active US mutual funds, removing index funds by the Cremers-Petajisto (2009) screen. In CP, Active Share near 0 means index, and 20% is the floor of their closet band. Here the benchmark is the cap weights of the filer's own holdings, because `thirteenf_filer_type` is not built. |
+| ownership threshold | FCAP > 0 (one common active owner); positions after the house F13 screens | paper: FCAP** = 0 iff FCAP = 0 |
+| `TOP_K` | 50 links per stock | Paper Table I: the typical active fund holds 58.5 big stocks, rounded down. 13F filers aggregate funds, so the graph is near-complete without truncation. |
+| `WINDOW` / `LAG_SESSIONS` | 63 / 1 | paper: past three months; D-L3: return ends at t-1 |
+| `CONN_MIN` | 10 valid connected returns | mechanical: a fifth of K |
+| nodes | all role members at the quarter end | v9 deviation "all role names" (paper: above NYSE median) |
+
+**Memory and time.** Neither was measured: there was no real-data run. Estimates:
+- **Per quarter:** one holdings scan, about 2.1-2.3 M rows in 2020-2022 per D1.
+- **Common value:** dense A = V H' accumulated in blocks of 512 filers. That is 2 N^2 F flops with N <= about 3,000 members (the role's top_n) and F about 3-5 k active filers [est], roughly 1e11 flops, seconds in BLAS.
+- **Ranks and links:** FCAP, ranks and top-K in row blocks of 256.
+- **Peak:** 3 x 8 N^2 + 16 N x 512 bytes, i.e. about 216 + 12 MiB at N = 3,000. It is admitted against `--max-rss-mib` before allocation.
+- **Kept networks:** Q x n x K x 12 bytes, about 85 MB for 24 quarters on the 5,922-line role. The daily pass is O(T n K).
+- **Total:** about 0.6-0.9 GiB [est], under 2,560 MiB.
+- **Sparsification:** top-50 per stock. The N x N matrix exists only inside one quarter's computation.
+- **Time class:** minutes. About 24 quarter scans dominate, [est] 3-6 min. If it shares a process with `stio_chg_q` (29 scans), build `conn_ret63` in its own process with `--reuse` of the rest to stay inside 600 s.
+
+**Tests** (`test_research_fields_connected.py`, 11 passed; the whole `atx-engine/tools` directory gives 340 passed, 6 subtests passed):
+- **Pure, by hand:** FCAP, plus filer-chunk invariance and exact symmetry; within-book AS; top-K tie and rank weights; the connected value and the t-1 window.
+- **Field:** an 8-line role and 3-quarter 13F world. It has two index-like books at exact cap weights, five concentrated books, a single-node book, a book of non-nodes, a line with no `shares_out`, a node with no active owner, and a line that drops out of membership at the Q3 quarter end (it falls back to Q2 until Q2 is stale). The test checks:
+  - Every cell equals a plain-loop oracle (> 300 finite cells).
+  - 13F probe: rows <= CUT are identical; a same-session-mark variant moves row CUT.
+  - Price probe: rows <= cut + 1 are identical; a lag-0 variant moves the edge row.
+  - Refusals and seal; `--reuse` bytes; CLI = API, with both 13F modules registered and the stage options declared once; the plain builder does not register the module.
+
+**Candidate** (the pre-registered C-7, unchanged; tier C+, sign +1 = long low connected return):
+
+| id | DSL | DSL SHA-256 | theme |
+|---|---|---|---|
+| `conn_rev` | `rank((-1 * conn_ret63))` | `4a1cffe83a007531b9820da67da1a0938391832c79116c5319cd11e4858bcc45` | reversal_seasonality |
+
+**Why reversal_seasonality.** The paper's payoff is a reversal of price pressure: it calls it a "cross-stock-reversal" strategy and benchmarks it against STR. The field's day-to-day variation is 63-session returns; 13F ownership only chooses the peer set. Its covariance therefore sits with the reversal members, and theme-erc budgets risk by theme. The `ownership_flow` members trade 13F levels and changes on a quarterly clock. This is also the v9 registration; moving it would make it a second registration.
+
+Citation: Anton, M. and C. Polk (2014), "Connected Stocks", JF 69(3), 1099-1127.
+
+```bash
+"$PY" scripts/research_cycle.py add-alpha --id conn_rev --dsl "rank((-1 * conn_ret63))" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Anton and Polk (2014, JF 69(3)) Connected stocks" --origin prior --prior-sign-source "Anton-Polk 2014" --form "R(x)" --formula "-conn_ret63 (ap-connected-ret63-13f-v1): the rank(FCAP)-weighted 63-session return, ending t-1, of each stock's 50 strongest connections through common active 13F owners (FCAP = common owners' value of both / the pair's market value; active = within-book active share >= 0.2); long low connected return" --domain "NaN without a fresh visible 13F network in which the line is a connected member node (F13 clock, 150 days) or with fewer than 10 valid connected returns" --deviation "13F managers instead of CRSP active mutual funds (index books screened by within-book active share, filer_type not built); FCAP rank not orthogonalized to the Table II pair controls; top-50 links; all role members, not only above the NYSE median; no own-return double sort; no month skip or five-month hold (frozen v9 string)" --parent <Y parent> --name <Y name> --parent-spec <Y parent spec> --fields <Y fields dir>
+```
+
+Fields table row:
+
+```json
+"conn_ret63": {"formula_id": "ap-connected-ret63-13f-v1", "origin": "fields_ydata", "producer": "atx-engine/tools/research_fields_connected.py", "clock": "13f-quarter-asof45-v1 (F13_CLOCK) for the network; role close rows <= t-1 (price-close-lag1)", "basis": "rank(FCAP)-weighted 63-session return of the 50 strongest common-active-13F-owner connections"}
+```
+
+**Owner / PM decisions (round 2).**
+1. **Trial count.** `conn_rev` is v9 C-7. Admitting it now is one trial beyond the 4 approved; the PM pins the Y budget.
+2. **Cost precedent LIB3-c.** library-v7-draft section 4 excluded connected-stock reversal on cost grounds, and v9 registered against that. Confirm.
+3. **Orthogonalization.** The paper's "abnormal" step needs I/B/E/S common coverage, five-year return and ROE correlations, headquarters state, and S&P 500 and exchange dummies. None of these is in house in usable form. Choose between:
+   - accepting raw-FCAP ranks (the deviation above), or
+   - keeping C-7 at NEEDS-DATA.
+4. **One hypothesis, two data routes.** If `thirteenf_filer_type` or N-PORT lands, a fund-level `conn_ret63` is the same hypothesis; keep one.
+
+**Risks.**
+- **Graph density:** 13F books aggregate funds, so the graph is denser than the paper's; top-K mitigates this.
+- **Active-owner errors:** within-book AS counts equal-weight and factor index books as active.
+- **Weaker signal:** the paper's L-H connected leg alone is 36 bp a month (v9 text), roughly half the double-sort CS.
+- **Overlap:** with industry reversal (est .10-.30 with `ind_adj_rev_5`).
+- **Turnover:** high.
+- **Thin evidence:** no post-2008 test; C+.
+- **Time:** the estimate sits near the 600 s cap if builds are combined.
+
+**Hygiene (round 2).**
+- **Read:** the Anton-Polk paper text (authors' LSE copy, as literature) and a web abstract search.
+- **Git show of documents on `origin/main`:** ALPHA_PANEL_OWNERSHIP.md (S5.1 filer type: not built), ALPHA_PANEL_SHORTFLOW.md (D1), and a PARITY_GAP / docs grep for customer links.
+- **Manifest only:** the pool-2 role manifest (shape and membership recipe).
+- **Plans:** the v9 library draft and the LIB3 report, for the C-7 pre-registration.
+- No data row and no return, IC, Sharpe or NAV output was opened.
