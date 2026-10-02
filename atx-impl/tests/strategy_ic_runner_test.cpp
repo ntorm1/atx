@@ -3642,4 +3642,151 @@ TEST(ThemeResidRunner, RidesOnEveryRerankTrueRuleOfTheTable) {
     EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
   }
 }
+// ---- Platform v8 X (lane XCOMB): composition theme-erc-v1 (the theme_standardise rule table) ----
+// The shrink library's six candidates in two themes, within-theme shares liquidity {volume_level
+// 1/2, volume_vee 1/4, volume_lag_1 1/4} and size {volume_rank 1/2, volume_lag_2 1/2, volume_lag_3
+// 0}; the sleeve covariance recorded in the order [size, liquidity] (not the first appearance):
+// variances 4e-4 and 1e-4, covariance 5e-5, so the ERC shares are size 1/3, liquidity 2/3 (two
+// groups: sigma_other / (sigma_1 + sigma_2)). Before the cap {1/3, 1/6, 1/6 | 1/6, 1/6, 0};
+// volume_level's 1/3 is capped at 1/4 and its 1/12 goes to the size members (x 5/4):
+// {1/4, 1/6, 1/6 | 5/24, 5/24, 0}, the hand derivation the runner verifies.
+struct ErcRunnerMember { const char* id; const char* theme; f64 share; f64 weight; };
+const std::vector<ErcRunnerMember> erc_members{
+    {"volume_level","liquidity",.5,1.0/4},{"volume_rank","size",.5,5.0/24},{"volume_vee","liquidity",.25,1.0/6},
+    {"volume_lag_1","liquidity",.25,1.0/6},{"volume_lag_2","size",.5,5.0/24},{"volume_lag_3","size",0.0,0.0}};
+// The members' weights file: the rule's weights, +1 signs of the weighted members, and a
+// theme_standardise block of `rule` (rerank true); theme-erc-v1 adds its theme_erc inputs.
+Json erc_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule) {
+  Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
+  for (const auto& m:erc_members) {
+    weights[m.id]=m.weight;
+    members[m.id]={{"theme",m.theme},{"share",m.share}};
+    if (m.weight>0) { signs[m.id]=1; themes[m.id]=m.theme; }
+  }
+  Json block{{"rule",rule},{"rerank",true},{"themes",themes}};
+  if (rule=="theme-erc-v1") {
+    const Json matrix=Json::array({Json::array({4e-4,5e-5}),Json::array({5e-5,1e-4})});
+    const Json covariance{{"themes",Json::array({"size","liquidity"})},{"matrix",matrix}};
+    block["theme_erc"]=Json{{"sweeps",10000},{"dispersion",1e-10},{"members",members},{"covariance",covariance}};
+  }
+  return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block}};
+}
+// theme-erc-v1 runs ew-theme-std-v1's per-date standardisation unchanged: the same weights pinned
+// under either rule give the same blend, planned targets and IC rows byte for byte (the flag-absent
+// identity of the rule table). The recipe, the combined manifests and the summary name the rule;
+// the marginal verb's reader takes the block as a standardised one.
+TEST(CompositionV8, ThemeErcRunsTheStandardisationUnchangedAndRecordsItsRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const Json& doc) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,doc.dump(),cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",erc_doc(cfg,"ew-theme-std-v1")));
+  const auto standard=run_named(dir,cfg,"std"); ASSERT_TRUE(standard.ok) << standard.error;
+  ASSERT_TRUE(pin("erc.json",erc_doc(cfg,"theme-erc-v1")));
+  const auto erc=run_named(dir,cfg,"erc"); ASSERT_TRUE(erc.ok) << erc.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8","_planned_targets.csv"}) {
+      const auto expected=file_sha(dir.path/"std"/(role_name+suffix)); ASSERT_FALSE(expected.empty()) << suffix;
+      EXPECT_EQ(file_sha(dir.path/"erc"/(role_name+suffix)),expected) << suffix;
+    }
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_FALSE(combined_rows(dir.path/"std"/daily).empty());
+    EXPECT_EQ(combined_rows(dir.path/"erc"/daily),combined_rows(dir.path/"std"/daily));
+    EXPECT_EQ(member_rows(dir.path/"erc"/daily),member_rows(dir.path/"std"/daily));
+    EXPECT_EQ(read_json(dir.path/"erc"/(role_name+"_combined.json")).at("composition_standardise"),"theme-erc-v1");
+  }
+  auto std_recipe=read_json(dir.path/"std"/"recipe.json"),erc_recipe=read_json(dir.path/"erc"/"recipe.json");
+  EXPECT_EQ(erc_recipe.at("composition_standardise"),"theme-erc-v1");
+  for (auto* recipe:{&std_recipe,&erc_recipe}) {
+    recipe->erase("composition_standardise"); recipe->erase("composition_weights_sha256");
+  }
+  EXPECT_EQ(erc_recipe,std_recipe); // the same per-date method statement
+  EXPECT_EQ(read_json(dir.path/"erc"/"summary.json").at("composition_weights").at("standardise"),"theme-erc-v1");
+  const auto grouping=atx::impl::strategy::ic_weights_themes(text_of(dir.path/"erc.json"));
+  ASSERT_TRUE(grouping) << grouping.error().to_string();
+  EXPECT_EQ(grouping->block,"theme_standardise"); EXPECT_TRUE(grouping->rerank);
+  EXPECT_EQ(grouping->themes.size(),5U);
+}
+// The runner verifies a theme-erc-v1 file against its recorded inputs before any payload or
+// output: weights off the rule (beyond 1e-12), other constants, rerank off, missing or malformed
+// inputs, a covariance the kernel refuses, shares that do not sum to 1, a weighted non-member, a
+// themes entry that is not the member's theme; and (finding R6B-C-5) a recorded fitter rule that
+// does not write the block. A file recording theme-erc-v1 under its own block is admitted.
+TEST(CompositionV8, ThemeErcRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const auto attempt=[&](const Json& doc,bool plan_only,std::ostringstream& log) {
+    cfg.plan_only=plan_only;
+    if (!text_file(path,doc.dump(),cfg.composition_weights_sha256)) return std::string("unwritable");
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    return status?std::string{}:status.error().to_string();
+  };
+  const auto good=erc_doc(cfg,"theme-erc-v1");
+  const auto change=[&](auto&& edit) { auto doc=good; edit(doc); return doc; };
+  // Admitted: the rule's weights, weights within the 1e-12 tolerance, and the recorded rule.
+  const auto within=change([](Json& d) { d["weights"]["volume_vee"]=1.0/6+5e-13; });
+  const auto recorded=change([](Json& d) { d["provenance"]["rule"]="theme-erc-v1"; });
+  for (const auto* doc:{&good,&within,&recorded}) {
+    std::ostringstream log; EXPECT_EQ(attempt(*doc,true,log),"") << doc->dump();
+  }
+  const std::string rule="IC runner: theme_standardise rule theme-erc-v1: ";
+  const std::string malformed=rule+"member volume_rank needs {theme: a theme of theme_erc.covariance.themes";
+  const std::string covariance=rule+"theme_erc.covariance must be {themes";
+  auto std_block_erc_rule=erc_doc(cfg,"ew-theme-std-v1");
+  std_block_erc_rule["provenance"]["rule"]="theme-erc-v1";
+  const std::vector<std::pair<Json,std::string>> cases{
+      {change([](Json& d) { d["weights"]["volume_vee"]=1.0/6+1e-9; d["weights"]["volume_lag_1"]=1.0/6-1e-9; }),
+       rule+"composition weight of volume_vee is"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["sweeps"]=100; }),
+       rule+"theme_erc sweeps and dispersion must be the registered 10000 and 1e-10"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["dispersion"]=1e-6; }),
+       rule+"theme_erc sweeps and dispersion must be the registered 10000 and 1e-10"},
+      {change([](Json& d) { d["theme_standardise"].erase("theme_erc"); }),rule+"needs theme_erc {sweeps"},
+      {change([](Json& d) { d["theme_standardise"]["rerank"]=false; }),
+       "theme_standardise rule theme-erc-v1 needs rerank true"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"].erase("covariance"); }),covariance},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["covariance"]["matrix"][1]=Json::array({5e-5}); }),
+       rule+"theme_erc.covariance.matrix must be square"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["covariance"]["matrix"][1][0]=6e-5; }),
+       "IC runner: theme-erc-v1: group erc: the covariance is not symmetric"},
+      {change([](Json& d) {
+         d["theme_standardise"]["theme_erc"]["covariance"]["themes"]=Json::array({"size","size"});
+       }),rule+"theme_erc.covariance.themes must name distinct themes"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"]["volume_rank"]["theme"]="other"; }),
+       malformed},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"]["volume_rank"]["share"]="0.5"; }),
+       malformed},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"]["volume_rank"]["share"]=.6; }),
+       "IC runner: theme-erc-v1: a theme's within-theme shares do not sum to 1"},
+      {change([](Json& d) {
+         d["theme_standardise"]["theme_erc"]["members"]["other"]=Json{{"theme","size"},{"share",0.0}};
+       }),rule+"member of unknown candidate: other"},
+      // Without volume_lag_2 the size shares sum to 1/2: refused by the rule before the weights.
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"].erase("volume_lag_2"); }),
+       "IC runner: theme-erc-v1: a theme's within-theme shares do not sum to 1"},
+      {change([](Json& d) { d["theme_standardise"]["themes"]["volume_vee"]="size"; }),
+       rule+"themes.volume_vee is not its theme_erc member theme"},
+      {change([](Json& d) { d["provenance"]["rule"]="ew-theme-std-v1"; }),
+       "IC runner: composition weights record provenance.rule ew-theme-std-v1, which writes theme_standardise rule "
+       "ew-theme-std-v1, but carry theme_standardise rule theme-erc-v1"},
+      {std_block_erc_rule,
+       "IC runner: composition weights record provenance.rule theme-erc-v1, which writes theme_standardise rule "
+       "theme-erc-v1, but carry theme_standardise rule ew-theme-std-v1"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [doc,reason]:cases) {
+      std::ostringstream log;
+      const auto error=attempt(doc,plan_only,log);
+      ASSERT_FALSE(error.empty()) << doc.dump();
+      EXPECT_NE(error.find(reason),std::string::npos) << doc.dump() << " -> " << error;
+      EXPECT_TRUE(log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
 } // namespace

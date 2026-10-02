@@ -15,6 +15,7 @@
 #include <vector>
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_shrink.hpp"
+#include "strategy_ic_theme_erc.hpp"
 
 namespace atx::impl::strategy::ic_detail {
 namespace {
@@ -496,16 +497,18 @@ struct StandardiseRule {
 };
 co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights);
+co::Status verify_theme_erc(const Json& block,const Library& lib,const std::vector<f64>& weights);
 // R-3's fitter rule ew-theme-std-aim-v1 writes the ew-theme-std-v1 block (its gains stay in the
 // weights); the R-1 identity device (composition_rules.identity_document) grafts a rerank-off
 // ew-theme-std-v1 block onto accepted ew-theme-v1 weights.
 constexpr std::string_view std_aim_fitter_rule="ew-theme-std-aim-v1";
 constexpr std::string_view ew_theme_fitter_rule="ew-theme-v1";
-constexpr std::array<StandardiseRule,3> standardise_rules{{
+constexpr std::array<StandardiseRule,4> standardise_rules{{
     // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 files too)
     {theme_standardise_rule,true,nullptr,std_aim_fitter_rule,ew_theme_fitter_rule},
     {ic_shrink_rule,false,&verify_ic_shrink,{},{}},           // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
-    {ic_shrink_aim_rule,false,&verify_ic_shrink_aim,{},{}}}}; // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
+    {ic_shrink_aim_rule,false,&verify_ic_shrink_aim,{},{}},   // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
+    {theme_erc_rule,false,&verify_theme_erc,{},{}}}};         // theme-erc-v1 (X XCOMB, strategy_ic_theme_erc.hpp)
 // The row the block names (null: none, or a block that is not an object or has no string rule).
 const StandardiseRule* standardise_row(const Json& block) {
   if (!block.is_object() || !block.contains("rule") || !block.at("rule").is_string()) return nullptr;
@@ -586,6 +589,94 @@ co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vect
 co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights) {
   return verify_shrink(block,lib,weights,true);
 }
+// theme-erc-v1 (strategy_ic_theme_erc.hpp): the block's theme_erc {sweeps, dispersion, members: {id:
+// {theme, share}}, covariance: {themes: [theme, ...], matrix: [[...], ...]}} records the registered
+// constants, every member with its theme and the parent's pre-cap within-theme share (a zero share
+// too), and the themes' sleeve covariance in the order the fitter solved it. The rule runs on the
+// members in library order with theme indices in the covariance's order; each pinned weight must
+// equal its rule weight within theme_erc_weight_tolerance (0 for a candidate that is not a
+// member), a weighted candidate must be a member, and its `themes` entry must name its member theme.
+co::Status verify_theme_erc(const Json& block,const Library& lib,const std::vector<f64>& weights) {
+  const auto refuse=[](const std::string& what) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC runner: theme_standardise rule "+std::string(theme_erc_rule)+": "+what);
+  };
+  const auto number=[](const Json& j,const char* key) {
+    return j.is_object() && j.contains(key) && j.at(key).is_number()?j.at(key).get<f64>():quiet_nan;
+  };
+  if (!block.contains("theme_erc") || !block.at("theme_erc").is_object())
+    return refuse("needs theme_erc {sweeps, dispersion, members: {id: {theme, share}}, covariance: {themes, "
+                  "matrix}}");
+  const auto& erc=block.at("theme_erc");
+  if (!erc.contains("sweeps") || !erc.at("sweeps").is_number_integer() ||
+      erc.at("sweeps").get<i64>()!=static_cast<i64>(theme_erc_sweeps) ||
+      !(number(erc,"dispersion")==theme_erc_dispersion))
+    return refuse("theme_erc sweeps and dispersion must be the registered 10000 and 1e-10");
+  if (!erc.contains("covariance") || !erc.at("covariance").is_object() ||
+      !erc.at("covariance").contains("themes") || !erc.at("covariance").at("themes").is_array() ||
+      !erc.at("covariance").contains("matrix") || !erc.at("covariance").at("matrix").is_array())
+    return refuse("theme_erc.covariance must be {themes: [theme, ...], matrix: [[number, ...], ...]}");
+  const auto& order=erc.at("covariance").at("themes");
+  const auto& rows=erc.at("covariance").at("matrix");
+  std::vector<std::string> names;
+  for (const auto& name:order) {
+    if (!name.is_string() || !theme_name(name.get<std::string>()) ||
+        std::find(names.begin(),names.end(),name.get<std::string>())!=names.end())
+      return refuse("theme_erc.covariance.themes must name distinct themes [a-z0-9_]{1,64}");
+    names.push_back(name.get<std::string>());
+  }
+  if (names.empty() || names.size()>32 || rows.size()!=names.size())
+    return refuse("theme_erc.covariance needs 1..32 themes and one matrix row per theme");
+  std::vector<f64> covariance;
+  covariance.reserve(names.size()*names.size());
+  for (const auto& row:rows) {
+    if (!row.is_array() || row.size()!=names.size())
+      return refuse("theme_erc.covariance.matrix must be square, one entry per theme in each row");
+    for (const auto& value:row) {
+      if (!value.is_number()) return refuse("theme_erc.covariance.matrix entries must be numbers");
+      covariance.push_back(value.get<f64>());
+    }
+  }
+  if (!erc.contains("members") || !erc.at("members").is_object() || erc.at("members").empty())
+    return refuse("theme_erc.members must be a non-empty object {id: {theme, share}}");
+  const auto& members=erc.at("members");
+  std::set<std::string> ids;
+  for (const auto& c:lib.candidates) ids.insert(c.id);
+  for (auto it=members.begin();it!=members.end();++it) {
+    if (!ids.contains(it.key())) return refuse("member of unknown candidate: "+it.key());
+    const auto& m=*it;
+    if (!m.is_object() || !m.contains("theme") || !m.at("theme").is_string() ||
+        std::find(names.begin(),names.end(),m.at("theme").get<std::string>())==names.end() ||
+        !std::isfinite(number(m,"share")))
+      return refuse("member "+it.key()+" needs {theme: a theme of theme_erc.covariance.themes, share: finite "
+                    "number}");
+  }
+  // The members in library order, theme indices in the covariance's order.
+  std::vector<f64> share; std::vector<usize> theme,position;
+  for (usize k=0;k<lib.candidates.size();++k) {
+    const auto it=members.find(lib.candidates[k].id);
+    if (it==members.end()) continue;
+    const auto name=it->at("theme").get<std::string>();
+    theme.push_back(static_cast<usize>(std::find(names.begin(),names.end(),name)-names.begin()));
+    share.push_back(it->at("share").get<f64>()); position.push_back(k);
+  }
+  const auto fit=theme_erc_weights(share,theme,names.size(),covariance);
+  if (!fit) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+fit.error().message());
+  std::vector<f64> rule(lib.candidates.size(),0.0);
+  for (usize m=0;m<position.size();++m) rule[position[m]]=fit->weights[m];
+  const auto& themes=block.at("themes");
+  for (usize k=0;k<lib.candidates.size();++k) {
+    const auto& id=lib.candidates[k].id;
+    const auto member=members.find(id);
+    if (weights[k]>0 && member==members.end()) return refuse("weighted candidate "+id+" is not a theme_erc member");
+    if (!(std::abs(weights[k]-rule[k])<=theme_erc_weight_tolerance))
+      return refuse("composition weight of "+id+" is "+Json(weights[k]).dump()+", the rule on theme_erc gives "+
+                    Json(rule[k]).dump());
+    if (weights[k]>0 && (!themes.contains(id) || themes.at(id)!=member->at("theme")))
+      return refuse("themes."+id+" is not its theme_erc member theme");
+  }
+  return co::Ok();
+}
 // Shapes of the two theme blocks; composition_themes, composition_standardise and
 // ic_weights_themes (the marginal verb's reader) all check a block through these.
 co::Status redistribution_block(const Json& block) {
@@ -604,7 +695,8 @@ co::Status standardise_block(const Json& block) {
       !block.contains("themes") || !block.at("themes").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise must be {rule: ew-theme-std-v1, "
         "rerank: true|false, themes: {id: theme}} or {rule: ic-shrink-v1|ic-shrink-aim-v1, rerank: true, themes: "
-        "{id: theme}, ic_shrink: {intensity, floor, members}}");
+        "{id: theme}, ic_shrink: {intensity, floor, members}} or {rule: theme-erc-v1, rerank: true, themes: {id: "
+        "theme}, theme_erc: {sweeps, dispersion, members, covariance}}");
   if (!rule->rerank_off && !block.at("rerank").get<bool>())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_standardise rule "+std::string(rule->id)+
         " needs rerank true (its per-date standardisation is ew-theme-std-v1's, unchanged)");

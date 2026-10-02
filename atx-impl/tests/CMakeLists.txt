@@ -101,6 +101,9 @@ add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
     # platform v8 R-10: composition ic-shrink-v1 (the rule and its engine kernel)
     strategy_ic_shrink_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_group_shrink_test.cpp"
+    # platform v8 X (XCOMB): composition theme-erc-v1 (the rule and its engine kernel)
+    strategy_ic_theme_erc_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_group_erc_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_screen_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_research_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_marginal_rank_ic_test.cpp")

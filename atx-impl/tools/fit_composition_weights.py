@@ -161,6 +161,10 @@ theme_gain_weights: within-theme renormalisation, then the member cap 1/(2T)), s
 Ruling PM4-7: ic-shrink-v1 takes its ICs from the pooled admission rows' train_mean and ic-shrink-aim-v1 also the pooled
 aim gains (composition_ic_shrink.ic_shrink, as in the single window), and --theme-resid attaches its block to the pooled
 document (composition_resid.apply); one era equals the single window for each.
+v8 X (lane XCOMB) ``--theme-erc theme-erc-v1`` (composition_theme_erc; single window, --composition ew-theme-std-v1 or
+ic-shrink-v1, not with --theme-resid): the parent's pre-cap within-theme shares times equal-risk-contribution theme
+shares of the theme sleeves' TRAIN covariance, then the member cap 1/(2T); the block and provenance.theme_erc replace
+the parent's block and provenance.rule. Absent: every byte as before (but script_sha256).
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -200,6 +204,7 @@ import horizon_stats  # noqa: E402  (same directory: the report-only traded-hori
 import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pure functions in this directory)
 import composition_ic_shrink  # noqa: E402  (v8 R-10: composition ic-shrink-v1, pure functions in this directory)
 import composition_resid  # noqa: E402  (v8 R-11: --theme-resid theme-resid-v1, the theme_residualise block)
+import composition_theme_erc  # noqa: E402  (v8 X, lane XCOMB: --theme-erc theme-erc-v1, ERC theme shares)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -1984,6 +1989,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
     require_resid_order(args)  # v8 R-11, finding R6C-4: the registry's themes are PRIOR_THEMES, before any compute
+    composition_theme_erc.check_args(args, prior, pooled(args), FitError)  # v8 X (XCOMB): --theme-erc's parents
     resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
@@ -2361,6 +2367,12 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
                             "no mean or covariance estimation")
         fit_series = "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0"
+    erc = None
+    if getattr(args, "theme_erc", None) is not None:  # v8 X (XCOMB) theme-erc-v1 on the parent fit (check_args ran)
+        erc = composition_theme_erc.theme_erc(std, [ids[k] for k in active], [themes[k] for k in active],
+                                              np.vstack([prior_signs[k] * zero_filled[k] for k in active]),
+                                              train_mask, args.composition, error=FitError)
+        weights, theme_table, composition_text, fit_series = erc.weights, erc.theme_table, erc.text, erc.fit_series
     for k, w in zip(active, weights):
         weight_rows[k]["weight"] = float(w)
     if v6:  # theme' tables carry their own member lists (merged themes); dropped members are marked
@@ -2426,6 +2438,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_rules.attach_std(document, std)
     if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
         composition_ic_shrink.attach(document, std)
+    if erc is not None:  # v8 X (XCOMB): the theme-erc-v1 block replaces the parent's; provenance.theme_erc
+        composition_theme_erc.attach(document, erc)
+        summary["theme_erc"] = {"parent_rule": args.composition,
+                                "theme_shares": erc.provenance["theme_shares"]}
     # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5); absent:
     # no change
     composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
@@ -2580,6 +2596,7 @@ def parse_args(argv):
                         "TRAIN orientations.json and runner summary.json with their SHA-256 pins")
     p.add_argument("--era-id", default=None, help="v8 H-1: the era id of the --train role (the anchor, last era)")
     composition_resid.add_argument(p)  # v8 R-11: --theme-resid theme-resid-v1
+    composition_theme_erc.add_argument(p)  # v8 X (XCOMB): --theme-erc theme-erc-v1
     return p.parse_args(argv)
 
 

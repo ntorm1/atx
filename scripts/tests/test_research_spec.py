@@ -66,6 +66,7 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
              "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
+NULL_PINS["x-theme-erc.json"] = CHILD_NULLS                 # v8 X (lane XCOMB): theme-erc-v1, planned on R-1
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 
@@ -100,7 +101,9 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
 EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                                   # v8 R-11 (lane ORTH)
 # Ruling PM6-6: R-1's registered change at the aim leverage that matches the parent's all-rows S2 gross
 EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
+EXPECTED_CHANGES["x-theme-erc.json"] = FIT_DOWN | {"fit.flags"}                          # v8 X (lane XCOMB)
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
+FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
 MISSING = object()
 
 
@@ -1287,3 +1290,29 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     assert not any((root / "build-equity" / r).exists() for r in stale)
     assert any(x.startswith("keep  build-equity/fit-work/fedcba9876543210-research-window-v1") and
                "(store base build-equity/fit-work named by " in x and "v8-b0a-lo1" in x for x in log), log
+
+
+def test_x_theme_erc_appends_its_flag_to_the_parents_fit(tmp_path, authored_v8):
+    """v8 X (lane XCOMB): theme-erc-v1 keeps the parent's composition (its within-theme shares) and adds the fitter flag
+    --theme-erc; the description registers the rule's constants, the gross matching and R-1's criterion; on an R-1
+    parent the w pass inherits Ruling E-28's 3,072 MiB."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((authored_v8 / "x-theme-erc.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "r1-comp-v8.json" and doc["parent"] is None and "requires" not in doc
+    for text in ("10000 sweeps", "1e-10", "1/(2T)", "PM6-6", "tau_gmv_mean / mean_gross_leverage_all_rows",
+                 "paired S2 net dSR > 0 against the parent AND mechanics"):
+        assert text in doc["description"], text
+    path = tmp_path / "x-theme-erc-on-r1.json"
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "r1-comp-v8.json"))), encoding="utf-8")
+    spec = RC.load_spec(path)
+    assert RC.option_value(spec["fit"]["flags"], "--composition") == "ew-theme-std-v1"
+    assert RC.option_value(spec["fit"]["flags"], "--theme-erc") == "theme-erc-v1"
+    required = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+    assert fcw.parse_args(required + ["--theme-erc", "theme-erc-v1"]).theme_erc == "theme-erc-v1"  # the fitter's flag
+    assert fcw.parse_args(required).theme_erc is None                                                # flag absent
+    root, spec = fake_root(tmp_path / "root", spec)
+    c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
+    assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]

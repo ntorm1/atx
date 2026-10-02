@@ -773,6 +773,8 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    rule ic-shrink-v1 (rerank true) runs the same and adds ic_shrink {intensity, floor, members: {id:\n"
                "    {theme, ic}}}: the weights must be that rule on those inputs (verified before any payload);\n"
                "    rule ic-shrink-aim-v1 likewise, each member also carrying the parent's aim gain {theme, ic, gain};\n"
+               "    rule theme-erc-v1 likewise with theme_erc {sweeps, dispersion, members: {id: {theme, share}},\n"
+               "    covariance: {themes, matrix}}: equal-risk-contribution theme shares times the members' shares;\n"
                "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none. Optional beside a\n"
                "    rerank-true theme_standardise: theme_residualise {rule: theme-resid-v1, order: [theme, ...]}\n"
                "    (order: the registered theme order restricted to the weighted themes) residualises each\n"
