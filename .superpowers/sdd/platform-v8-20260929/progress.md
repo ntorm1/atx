@@ -1920,3 +1920,56 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   cells are still accepted or rejected one by one on their registered rule, and the X report prints the
   accepted X book beside R-2 with DSR_tot, DSR_hand and the v8-count value -- the owner asked for real progress
   on alpha; a measured, counted result is that progress whether or not the gate is met -- cost if wrong: none.
+- Integration 8 dispatched in root (brief `task-INT8-brief.md`). Parked while it holds root:
+- Owner ruling (2026-10-02, after the V8-F read): "Approve all your recommendations. Prioritize sharpe, gross
+  return, high capacity, statistical significance."
+- Ruling PM7-27 (what the approval covers): it covers what the PM put to the owner: (1) the OD-3 history read
+  (2013-2019), which the PM named as the registered lever for the unmet gate and the one thing that can move
+  the p value and the deflated Sharpe; OD-3 is now open, under a protocol written and ruled before the read
+  (PM7-28); (2) the X program as registered (PM7-6..26), the mined campaign (PM7-2), the leverage cell
+  (PM7-11, PM7-17); (3) the handling of gold panels (PM7-19, PM7-23). It does not cover what the PM did not
+  recommend: any read of the hidden block (2024-01-01 or later) stays closed, and nothing under `atx-db/` is
+  written -- an approval of recommendations is not an approval of things not recommended -- cost if wrong:
+  one line from the owner opens them.
+- Ruling PM7-28 (OD-3 protocol, outline; the full text is `v8-od3-protocol.md`, to be ruled before any history
+  byte is read): the history is read once, after the last X cell, on books fixed before the read: B0c, R-2 and
+  the accepted X book (if any). No cell, signal, weight or constant is chosen, changed or re-fitted after the
+  read; the history is a test window, not a tuning window. It answers the gate's two statistics on the longer
+  sample and nothing else. The owner's priority order (Sharpe, gross return, capacity, significance) changes no
+  registered criterion; it is used only where a ruling is still open.
+- XPRE delivered `v8-od3-protocol.md` (`186ce9c5`, pool 7, 199 lines; no history data read). Feasibility from
+  manifests and source: 2013 cannot be scored (399-session warm-up from 2012-03-26; no SIC or fundamentals for
+  lo3 before 2014); of the 52 v8.0 members 14 work from the warm-up, 4 from 2014, 26 from about 2014-08, 8 only
+  from 2018 (delisting returns and short-interest data start 2018). Power stated before the read: paired
+  p < .10 needs a 2015-2019 dSR of about .22; DSR >= .95 needs a history Sharpe of about 2.3, out of reach.
+- Ruling PM7-29 (OD-3 protocol, ruled before any history byte is read; the 12 choices as the lane recommends):
+  (1) TRAIN admission, signs and weights are carried back unchanged; no re-admission, no re-fit on history
+  (overrides E-17's pooled re-admission for this read) -- it makes 2015-2019 a true out-of-sample test of the
+  books as built; a re-fit would test the method, not the book. (2) Scored window 2015-01-01 to 2019-12-31;
+  stop, before any return, if the first era has under 1,000 lo3 names. (3) Missing members drop out by the
+  coded present-member rule; B0c carries the same gaps. (4) Universe lo3. (5) Per-era delisting-return label
+  roles. (6) Each book's L is carried; no gross calibration on history; gross is printed. (7) Borrow tiers
+  before 2018 as coded. (8) The gate is read on pooled 2015-2023; the history alone is printed beside it.
+  (9) Deflated Sharpe with the total trial count and the TRAIN-window variance. (10) The ledger takes one
+  history line per book read (B0c, R-2, the X book): history reads 0 -> 2 or 3. (11) Data builds, coverage
+  and mechanics checks on the history may run while X runs; no return, IC or NAV number of the history is
+  opened until the last X cell is ledgered. (12) The X book's gate is against R-2; R-2's against B0c.
+  The deflated-Sharpe part of the gate is expected to stay unmet (power note above); the read can settle the
+  p-value part only. Whatever it shows is printed; a history result that is worse than TRAIN is the result --
+  cost if wrong: (1) is the costly one: if the owner wanted the best book on 11 years, a pooled re-fit is a
+  separate, counted program after this read.
+- Follow-up to XPRE: the five Python tooling gaps (T1-T5) written in the lane with synthetic tests, merged
+  after integration 8.
+- Integration 8 read by the PM (head `5cf83074`, build tag v8-14): all seven lanes merged (XPRE, XSIG, XIMP, LIB3,
+  XDATA with GOLD, XCOMB, mining); 0 compile fixes; C++ suites pass (impl-tests 1 known failure,
+  ConfigJsonNotInDiscoverDigest); golden `0x889874a3b9b29c55` holds at 1 and 4 workers; `AlphaVmSlotReuse.*`
+  6 / 6; R-2 under v8-14: NAV 27 / 27 byte-identical, w pass identical but timing fields, fit identical after
+  substituting `script_sha256`, `admission_sha256` and `provenance/std/registry_sha256`. H-2: flag
+  `--eval-mode audit-exact`; AuditExact 1.18x ResearchFast on E3 (Debug), under 3x, so P-5b may be planned (v9).
+- Ruling PM7-30 (identity under v8-14): R-2 reproduces; the X baseline is R-2 on build v8-14. The
+  `registry_sha256` difference is an input-pin difference: the registry gained rows (R-7, item 5e) and no
+  weight, sign or admission row moved -- byte equality after substitution is the proof -- cost if wrong: none.
+- Ruling PM7-31 (X run settings, before any X measurement): the marginal phase's time cap is 360 s for every X
+  wave (R-7 took 170 s of 180 s; restated here as `v8x-prereg.md` requires); the IC pass memory cap is
+  re-probed before X-3 on mechanics only; the campaign memory probe runs only after the last hand-written
+  cell, on H-F's pool, and reads no return. X trial numbering continues: X-2 is N 51.
