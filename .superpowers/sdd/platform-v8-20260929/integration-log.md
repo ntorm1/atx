@@ -3516,3 +3516,135 @@ Received after R-1's `run` had started. R-1 was carried to the point the brief a
 - Fields v10 and R-2 carried to the next batch. R-1's weights depend on `registry.json` (`e985aefc`) as the tier
   source; R-2's E1 hand edit of the registry field rows will move that SHA (relevant to an R-3 refit, E-27).
 - `scripts/tests/test_research_spec.py` not run (known fixture lane).
+
+## interim report (owner stop) (2026-10-01)
+
+Integrator REPORT-INTERIM in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `c4a939e0` (clean). Ruling
+PM5-27. Read: integrator-rules; progress PM5-27, PM5-22, PM5-23, PM5-25, PM4-5, PM5-11 and the sections batch 1a, 1b,
+owner stop; this log's cells batch 1a, 1b, 2a; task-REPORT-report.md; status-2 section 9; the registered config
+(`docs/plans/mega-alpha-v8-pitch.config.json` `b828717a`) and template (`docs/plans/mega-alpha-scorecard-v8.template.md`
+`a915b849`). No cell, no build, no data run other than the report tools' own reads. Not edited: `mega_report/*.py`,
+`nav_summ.py`, any cycle or tool script, the registered config and template, the ledger, any spec.
+
+**R-1 blindness.** No tool and no read of mine touched R-1's NAV dir (`mega-nav-v8-r1-std-...`), weights, cards, w pass,
+returns, summary, daily or capacity files. The interim config keeps R-1's registered placeholders
+(`build-equity/mega-nav-v8-r1`, `build-equity/mega-nav-v8-paired-r1.json`; neither exists, `test -e` only) and records
+R-1 as text only: "R-1: constructed; mechanics fail (all-rows gross 1.0672, limit [.90, 1.05]); no return read; not
+ledgered; ruling open". The render's file manifest and the filler's read list name no R-1 path.
+
+### Interim config
+
+`docs/plans/mega-alpha-v8-pitch.interim.config.json`, sha256
+`79e40f9a1e83e85e0ff9216dc8d423f8189510f6b622c3c70c6f3a981372a157`, written from the registered config by
+`interim_report_make_config.py` (sprint dir, `55794def`; it asserts every value it replaces), commit `1f8a0fb4`. Edits:
+- title / kicker say INTERIM; B0c's dir = `build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`
+  in `v8.cells` and top-level `cells`, and its cell name in `equity.extra`, `rolling.cells`, `analysis.compare_cell`;
+- `v8.summ` = `build-equity/mega-nav-v8-summ-interim.json`; `v8.cells[B0b].paired` = `build-equity/v8-cells-b0b-bundle.json`
+  (the PM5-23 bundle of batch 1a: the documented `--bundle B0a B0b` command; its base / final names match the config dirs);
+- verdicts: B0a "re-base ledgered", B0b "accepted", B0c "baseline by declaration", R-1 the sentence above, every other
+  cell "pending run" (unchanged); parents, `v8.final` (R-7), top-level `final` (v8-r7), `v8.bundle`, `v8.diagnostics`,
+  `v8.member_horizon` unchanged (their inputs do not exist: unavailable by design);
+- `v8.re_screens` 0 (R-2 not started: no `_f49` re-screen ran, batch 2a);
+- `capacity_curve` = B0c's book (its NAV dir, `v7_extras.json`, `summary.json`; E-29 priced it inline; no S2-KO / S2-FIM
+  book exists for B0c, so `beside` is empty); its layout entry moved from section 5 (V8-F book) to section 2 under an h3
+  and a callout with the PM4-5 disclosure; section 5 is titled "pending at the owner stop" with a callout, its other 18
+  book blocks unchanged;
+- `v8_year_table` restricted to B0a, B0b, B0c (the block's own `cells` option); the ladder still lists every cell;
+- narrative: the V8-F result paragraph is replaced by an interim paragraph whose B0c figures are placeholders on the v8
+  nav_summ JSON (`{a:v8_summ.rows.2...}`, row 2 = B0c, checked: the rendered text names B0c's dir); a callout
+  "Interim status" (PM5-27 statements) opens section 0.
+
+### Commands (bounded, on the clean tree at `1f8a0fb4`; `$PY` = `C:/Program Files/Python312/python.exe`)
+
+| step | command | receipt dir | caps s / MiB | s | peak MiB | exit | receipt.json SHA-256 | output SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| v8 summ | `nav_summ.py --protocol v8 --dsr-ledger build-equity/trials.jsonl --effective-n dirs --psr --json build-equity/mega-nav-v8-summ-interim.json <B0a dir> <B0b dir> <B0c dir>` (no `--ledger`) | `build-equity/mega-nav-v8-summ-interim-run` | 180 / 1,536 | 0.8 | 48 | 0 | `1fbcb1f7254700c6c9ade35f9095c1f57ebf2c2a4b60ff1693442a10cec9bc7b` | `mega-nav-v8-summ-interim.json` `d23cb666eb1b2278ff5d1d3c07fbcac79917a06d38f3056525e183dc8708258c` |
+| Appendix A | `nav_summ.py --protocol v8 --ledger-n build-equity/trials.jsonl` | `build-equity/mega-nav-v8-appx-interim-run` | 180 / 1,536 | 0.3 | 5 | 0 | `5dc18816070eec7f8ca7fdecfea8a8f01d97bea7bc008ef801e7c5ff6507ffa1` | `stdout.log` `72de67766c502232bef22575b3462f45ce374c34a3847c346ed279a8992f6df7` |
+| pitch render | `atx-impl/tools/mega_report --config docs/plans/mega-alpha-v8-pitch.interim.config.json --out <scratch>/2026-10-01-mega-alpha-v8-interim-pitch.html --stamp "2026-10-01 interim render at the owner stop (Ruling PM5-27)"` | `build-equity/v8-interim-pitch-render-run` | 300 / 2,560 | 0.5 | 55 | 0 | `4f4aac4399906b0668e46bf6b4f756e3141185fa7b3cea9fc2367670660c795b` | html below |
+| scorecard fill | `<scratch>/fill_scorecard_interim.py <scratch>/2026-10-01-mega-alpha-scorecard-v8-interim.md build-equity/mega-nav-v8-appx-interim-run/stdout.log 1f8a0fb4... 37` (committed copy `interim_report_fill_scorecard.py`, `2f4e54b5`, byte-identical) | `build-equity/v8-interim-scorecard-fill-run` | 120 / 1,024 | 0.3 | 5 | 0 | `2448b2c625d4ada6d1a52f468a1f96a7c530d401cec95173e786232651a88870` | md below |
+
+Every receipt: completed, `clean in the code pathspec`, source `1f8a0fb4`, interpreter `624bbc05`; `git status
+--porcelain` empty before each run (the outputs were written to the session scratchpad and copied into `docs/plans`
+after the last run). The scorecard is the registered template filled by the script: every number is read from a file
+(the summ JSON, the paired bundles, the NAV summary.json files, B0c's `v7_extras.json`, the diagnostics split files, the
+Appendix A stdout); the `{{PM}}` statements are this interim's verdicts and "pending" texts; the template's comment block
+is deleted; the script refuses an unresolved placeholder. Ledger after all runs: 41 lines, `ed3f4139...60a1`, unchanged.
+
+Appendix A (stdout): `TRAIN construction cells 40; admission trials this sprint 0; window research-window-v2 (2020-2023);
+hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.`
+(ledger: 40 trials in 41 lines; 1 protocol line, 0 defect, 0 window re-run lines.)
+
+### Inputs read (SHA-256)
+
+| input | SHA-256 |
+|---|---|
+| `build-equity/mega-nav-v8-summ-interim.json` | `d23cb666eb1b2278ff5d1d3c07fbcac79917a06d38f3056525e183dc8708258c` |
+| `build-equity/v8-cells-b0b-bundle.json` (PAIRED[B0b]) | `75c30860398c4d6d10b94dee899b84709f630470a65470f70f146e2db5383191` |
+| `build-equity/v8-cells-b0c-bundle.json` (B0c vs B0b, information only; scorecard only) | `fe849547a537baf6c1a0729e7564409279ee9a51943a17fef891360447b6e70f` |
+| `build-equity/trials.jsonl` | `ed3f4139273a085ccdb6c834ac5307bf311231a19136b7807b91d8a0a6b260a1` |
+| B0a / B0b / B0c NAV `summary.json` | `eeac8366...05a8f` / `82a596c1...4ad8` / `119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615` |
+| B0c S2 daily CSV (pitch: capacity block, content seal) | `78360530c943c3b8f75215147cdb8c5e3a88d11448516db74eaafc15230689d4` |
+| B0c `v7_extras.json` (capacity) | `eb388cf0e1785737f4d1828a148223739733e9462da3e9eebe75f47c8dfa4153` |
+| diagnostics split files (scorecard section 7 only) | g1a-g3d `de1990b8`, g1b-g1c `a985adf8`, g2a `e2a9874b`, g2b `86bf47af`, g2c `cbed04d7`, g3a `b44ea5d0`, g3b `19e5e5da`, g3c `9f00b5f3` (= batch 1b) |
+| `v8-prereg.md` / literature review | `3f9b7bc2...db32c` / `14bac552...040f` |
+| pitch book pre-checks (V8-F signal blocks; files that exist, TRAIN) | lo1 role `manifest.json` `2ff9d771`, `member.u8` `ffa09210`, fields v9 lo1 `888e6616` |
+
+### Outputs
+
+- `docs/plans/2026-10-01-mega-alpha-v8-interim-pitch.html`: 139,806 bytes, sha256
+  `932061790d190c5ef02f82f0cc80f3866e5b2519e8895f8689c308e965dae7e4`; renderer: `n/a markers 210; unavailable blocks 37`;
+  config sha in the header `79e40f9a`, inputs root and generator `@ 1f8a0fb4`; file manifest 11 read, 35 not read (all
+  missing V8-F / pending-cell paths).
+- `docs/plans/2026-10-01-mega-alpha-scorecard-v8-interim.md`: 33,363 bytes, sha256
+  `3a13fe3f2492c0906a90c0eb019442579627d5018a1dfc579e078e407573eabf`.
+
+### Unavailable blocks (renderer count 37; the tool rendered, no fallback)
+
+| # | block | input named | reason |
+|---|---|---|---|
+| 1 | v8_bundle | `mega-nav-v8-bundle-b0c-v8f.json` | no V8-F: cumulative test and freeze gate not evaluated |
+| 2 | v8_ladder (refused) | `v8.final` | 'R-7' is not the last accepted cell ('B0b'): no construction cell accepted, V8-F pending |
+| 3 | v8_ladder | `mega-nav-v8-paired-r1.json` | R-1 stopped at mechanics; its paired test was not run (no return read) |
+| 4-13 | v8_ladder | `mega-nav-v8-paired-r{2..8,10,11,12}.json` | cells not run |
+| 14-16 | v8_ladder | `mega-nav-v8-r{4,5,6}/summary.json` | R-5 / R-6 criteria read NAV summaries of cells not run |
+| 17 | v8_diagnostics | `mega-diagnostics-v8-b0c/diagnostics-v8.json` | not produced: E-18 split G-1..G-3 into eight files; no tool verb combines them; not hand-merged (the scorecard reads each id from its split file) |
+| 18-19 | v8_member_horizon | `mega-cards-v8-r7/index.json`, `mega-weights-v8-r7-ew/admission.json` | final library (V8-F) pending |
+| 20-37 | fig_equity, t_drawdowns, fig_returns, fig_rolling, t_retstats, t_stress, t_cost_model, t_financing, costdec, t_attrib, fig_cost_drag, fig_turnover, fig_exposure, fig_fills, fig_corr x3, t_theme_corr | `mega-nav-v8-r7/...`, `mega-v8-r7-train-u/...`, `fund_industry_ic_v81*` | V8-F book pending (section 5) |
+
+R-9a..c (report-only, no paired file) render as pending rows with notes, no block. Rendered: interim callout, B0a / B0b /
+B0c ladder rows (B0b dSR +0.014, SE 0.040, p one-sided 0.3820, rule PASS, ACCEPTED), year matrix and the three year
+tables, B0c capacity curve and table, OD-1, trial accounting, contradictions (23 rows).
+
+### Self-check (rendered scorecard and the pitch's text; no R-1 artifact opened)
+
+- B0a / B0b / B0c figures equal the log (batch 1a / 1b) at the printed precision: S2 net Sharpe +1.125 / +1.139 / +1.133
+  (log +1.1254 / +1.1389 / +1.1328); all-rows gross .9709 / .9663 / .9820, net +.0038 / +.0035 / +.0036, tau mean / p95
+  .0367 / .0439, .0370 / .0439, .0341 / .0390; B0b vs B0a dSR +0.014 (log +.0135, printed +.3f as the template
+  registers), SE 0.040, p one-sided .3820; B0c vs B0b dSR +0.006, SE 0.017, p .3014 / .6792; B0c cell-count DSR .984
+  (log .9844), legacy .707, SR0 .0148 ann; the three year tables equal the log's row for row; B0c capacity +1.174 /
+  +1.133 / +1.085 / +0.978 / +0.851 at .5 / 1 / 2 / 4 / 8x, cost 11.15 / 13.13 / 15.47 / 17.60 / 19.24 bps; G-1..G-3
+  headlines equal the batch 1b list (G-3a 1.069, G-1c .455, G-2a style .657 + market .005 / industry .182 / specific
+  .156, G-2c 7.1% of held gross above Q, G-3c delays -0.0123 / -0.0322 / -0.0395 against the log's -.012 / -.032 / -.039,
+  G-3d .184 / 4.87).
+- The full year table and the headline are B0c's (the V8-F rows say pending).
+- No R-1 return statistic anywhere: "1.0672" occurs only inside the R-1 sentence; no R-1 path in either output or in
+  the render manifest; R-1's ladder criterion detail shows only the parent's (B0c) tau / gross .03469.
+- No 2024+ data date: the only 2024+ strings are the seal and OD-1 texts (`2024-01-01`, `[2024-01-01, 2025-01-01)`),
+  the Appendix A words, literature citations (publication years, "CZ-own 2005-2024"), the render / ruling dates
+  2026-10-01 / 2026-09-29 and two CSS colour codes (`#1B2028`). The four run logs: no 2024+ date (the Appendix A stdout
+  has its own words only).
+- Unavailable list = what is pending (V8-F, cells not run, R-1's unrun paired test) plus one format case (diagnostics,
+  above). The `v8.final` refusal is the expected interim state.
+- Tests: `pytest -q -p no:cacheprovider atx-impl/tools/test_mega_report_v8.py atx-impl/tools/test_mega_report_v8_render.py`
+  131 passed (19.9 s). The registered config / template, `atx-impl`, `scripts` and the ledger have no diff since `c4a939e0`.
+
+### Notes
+
+- Effective-N and Lo-null DSR in the scorecard come from `--effective-n dirs` over the three listed dirs (.985 / .746 for
+  B0c), not the cycle's 40-cell summ grid (.8763 in batch 1b); nav_summ warned that the listing DSR uses `--dsr-n` 10
+  over 3 dirs (that column is not used). Neither is meaningful before the PM5-22 re-runs, as both outputs say.
+- The ladder's "N after" for R-1 (41) and later cells is the tool's plan count from the configured states; the ledger
+  holds N 40 (stated in the interim callout and in the scorecard rows).
+- nav_summ's known warning on B0c (CSV tau .034069 vs summary .034070; batch 1b finding 2) appears again; gates nothing.
+- Provenance scripts committed in the sprint directory: `interim_report_make_config.py` (`55794def`) and
+  `interim_report_fill_scorecard.py` (`2f4e54b5`); neither is a tool script and nothing imports them.
