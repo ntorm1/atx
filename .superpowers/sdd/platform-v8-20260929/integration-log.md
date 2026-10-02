@@ -6182,3 +6182,10 @@ decides anything (the K6 diagnostic is residualised on the parent's combined sig
 registered rule covers the case; no reading changes a number); logged here: `marginal.output`
 `...-v8x7-marginal-poolonly-b`, `themes` deleted; `lock` / `lock --write` leave every pin unchanged (diff: the marginal
 block only).
+
+| phase (source `1ab1fd89`) | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| marginal (pool only, `-poolonly-b`) | 360 / 1,536 / 512 free | 259.9 | 296 | 15 | `9276d5036d49809edcd0db35a405875dabc750a07a114ac4551c9e0e7d68518e` | **system-memory-limit**: host free memory fell to 506 MiB (other sessions' builds: a vcpkg grpc build, 17 `cl.exe`, and `C:/atx/build-server`); no output dir written, nothing read |
+
+A failed run with no output (rule 7 blind re-run, adds nothing). Waited until no compiler ran and 7.7 GiB were free; the
+receipt dir is never overwritten, so `marginal.output` -> `...-v8x7-marginal-poolonly-c` (spec-only, pins unchanged).
