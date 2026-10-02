@@ -5137,3 +5137,64 @@ itself was ledgered at all-rows gross .6465 on 2020-2022 (and spo-v2 .9735, v6.1
 fixed in code; (3) the admission rows of the original gate members are logged (status, runner sign against prior, sign
 agreement); a disagreement is reported, not a stop (PM5-18); (4) N stays 50 after every re-run (checked by the ledger count).
 
+Commit `80b767af` (specs, this text). Each re-run: `run --stop-after nav` (scratch `rerun.sh`), mechanics (mech.py), then
+`run` (summ, ledger line). Exes v8-12 (IC `ab7e2cbd`, NAV `5497c89d`, risk `8967952c`); every receipt completed, `clean in
+the code pathspec`.
+
+**Spec slip and fix (spec only, PM5-21):** the v6.1 re-run's summ (a direct phase: base-lo1 has no every-phase receipts, so
+the cycle dir did not exist) appended its ledger line and printed its tables, then failed writing `--json
+build-equity/cycle-v8-w04-v61-lo1/summ.json` (FileNotFoundError; HARD-STOP [summ] exit 4; no summ.json, no cycle_verdict).
+The other specs' `--json` moved to `build-equity/v8-w04-summ-<spec>.json` (commit `c89b9b66`); v6.1's own change was
+undone (`09969efc`, file `73446559` again) because its NAV is bound to digest `c694a303` (the cycle refused to score it under
+the edited digest, exit 3, nothing run); its ledger line is final (one re-run per target) and its numbers below are its summ
+console's. The NAV-only children were planned again after the fix (chain digests C1 `feb9dcdb`, C2 `cf0abf18`, C3
+`194802ab`, v7.0 `0f267c73`, v7.0-lo3 `99df0403`, spo-v2 `459de0f5`).
+
+**Risk store for spo-v1 (not a trial):** the recorded `v7-w1-risk-all` argv on the 4-year role: `run_bounded_research.py
+--seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/v8-risk-lo1-v9-run --bind <risk exe, role lo1,
+fields v9 lo1> -- atx-equity-strategy-risk.exe risk --role build-equity/train-2020-2023-lo1/manifest.json --role-sha256
+2ff9d771... --fields build-equity/train-2020-2023-lo1-fields-v9/manifest.json --fields-sha256 888e6616... --emit-exposures
+all --output build-equity/v8-risk-lo1-v9`: 27.4 s, 610 MiB, exit 0, receipt `2f1257e40958c4d9`, source `09969efc`;
+**manifest `bdacc15b0ccff20dbf0e8de3bd10b49bd7552f18bfea33a742c8fffa0911e411`**; atx-risk-v1.1, complete, role `2ff9d771`, seal
+2024-01-01, last session 2023-12-29; 1,405 dates x 5,922 instruments, 62 factors, 11 styles; invariant refusals 0 (nothing
+clamped; max daily specific variance .367); bias harness factor b mean .999, 0 refused. Spec `w04-v61-spo1-lo1.json`
+(file `8b7a064d62f770f7`; option map = the recorded argv except the store and its pin), commit `a4063b7c`.
+
+| re-run | target trial | phases (s / peak MiB) | all-rows gross | net | tau mean / p95 | S2 net Sharpe 2020-2023 | ledger line | 
+|---|---|---|---|---|---|---|---|
+| v6.1 (lo1) | `a04a3d9cbf5d76a7` | u 19.8 / 666, fit 0.8 / 57, w 17.8 / 667, nav 20.6 / 448 | .9751 | +.0034 | .0367 / .0436 | **+.9802** | `1e6f4262f0e2a3ec` |
+| C1 | `ebd8da9260b0a80a` | nav 21.6 / 449 | .9768 | +.0024 | .0361 / .0415 | **+.9364** | `1a9f1c9599524c9e` |
+| C2 | `1873d32cd7019870` | nav 22.0 / 450 | .9778 | +.0021 | .0358 / .0411 | **+.9080** | `4867927f07ac60be` |
+| C3 | `479049dd2f2b58c4` | nav 23.1 / 449 | .9779 | +.0020 | .0355 / .0424 | **+.9022** | `261feb83c2c6f2dd` |
+| spo-v1 | `554b0d8ad9304ea5` | nav 47.1 / 448 | **.6793** (outside [.90, 1.05]; v7's own .6465) | +.0002 | .1197 / .1609 | **-1.3869** | `70dd1ffb2017c0ad` |
+| v7.0 (lo1) | `2b4de3cc3aaaebf2` | u 20.6 / 667, fit 0.5 / 57, w 17.5 / 667, nav 16.8 / 448 | .9757 | +.0040 | .0364 / .0429 | **+1.0727** | `9c2ce0104221c6e0` |
+| v7.0-lo3 | `741d9c05a871a5d5` | u 21.9 / 671, fit 0.8 / 58, w 17.7 / 672, nav 17.3 / 448 | .9711 | +.0038 | .0367 / .0432 | **+1.0839** | `5bd30f88e63bb7fd` |
+| spo-v2 | `9e1ad5f7ac4b9937` | nav 43.5 / 449 | .9801 | +.0003 | .0413 / .0613 | **+.5093** | `e532228e6b9d5e3c` |
+
+Every NAV: 1,006 CSV rows, 1,004 return rows (the v7 protocol: no warm start), last session 2023-12-29, accounting <=
+1.5e-13 / 4.3e-16. The u passes hit the 4-year candidate caches (19.8-21.9 s); the fits reused the fit-work store (<= 0.8 s).
+spo-v2: not void (exit 0; `--specific-ceiling-void on`). Ledger after the 8: **71 lines = 58 construction (50 counted + 8
+window re-runs at count 0) + 12 admission + 1 protocol; N 50** (backtest_integrity.trial_counts); file `2b0cdd18`, head
+`098251f9`. Summ JSONs `build-equity/v8-w04-summ-*.json` (C1 `d019dd7e`, C2 `0a6ee0da`, C3 `893e4616`, spo-v1 `902d55b2`,
+v7.0 `601b2a33`, v7.0-lo3 `330394c4`, spo-v2 `2c0939cf`).
+
+**Gates (PM5-18, logged, never a stop):** v6.1's p1 member sv_flow admitted, runner sign +1 = prior, agrees (HAC t 1.43);
+report rows si_ratio, dtc admitted, si_change reject_veto. v7.0's p1-v70 members on lo1: q5_eg, smax5 admitted; qmj_safety
+reject_veto, nincr and res_mom_ind reject_redundant (the fitter's v4-prior-v1 screen on the 4-year window, as in B0a); every
+runner sign agrees with the prior. v7.0-lo3: read-out with nothing listed (as v7u-lo3). No admission line was written.
+
+Year tables (S2; rows, net return, net Sharpe, vol):
+
+| re-run | 2020 | 2021 | 2022 | 2023 |
+|---|---|---|---|---|
+| v6.1 | 251, +.0160, +.315, .0556 | 252, +.0778, +2.275, .0332 | 251, +.0840, +1.645, .0500 | 250, +.0000, +.020, .0375 |
+| C1 | +.0071, +.155, .0557 | +.0746, +2.220, .0326 | +.0859, +1.646, .0511 | +.0038, +.119, .0383 |
+| C2 | +.0036, +.093, .0562 | +.0728, +2.174, .0326 | +.0867, +1.648, .0514 | +.0042, +.128, .0386 |
+| C3 | +.0038, +.095, .0574 | +.0724, +2.165, .0325 | +.0870, +1.653, .0515 | +.0041, +.127, .0386 |
+| spo-v1 | -.0331, -1.805, .0186 | +.0001, +.011, .0125 | -.0168, -1.670, .0102 | -.0231, -2.323, .0101 |
+| v7.0 | +.0072, +.170, .0491 | +.0890, +2.489, .0345 | +.0811, +1.673, .0475 | +.0053, +.172, .0343 |
+| v7.0-lo3 | +.0127, +.286, .0482 | +.0835, +2.408, .0335 | +.0796, +1.676, .0465 | +.0053, +.172, .0345 |
+| spo-v2 | -.0232, -.614, .0372 | +.0490, +1.597, .0302 | +.0251, +.952, .0265 | +.0083, +.432, .0197 |
+
+Not reproducible: none (8 of 8 ran). Hidden data: every input sealed at 2024-01-01; last session 2023-12-29 in every run.
+

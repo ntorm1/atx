@@ -1859,3 +1859,9 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   false; mechanics PASS): R-9a theta .03, N 49: x4 row net Sharpe 1.1966, $1bn 1.2433, gross .9350, tau .01796, cost at
   4x 15.89 bps. R-9b theta .04, N 50: x4 1.1864, $1bn 1.2528, gross .9650, tau .02110, 16.45 bps. R-9c theta .05 = R-2
   (adds 0): x4 1.1785, $1bn 1.2559, gross .9860, 16.87 bps. The deployed book stays R-2; program ends at N 50.
+  W0-4 re-runs (PM5-22; specs `scripts/specs/v8-rerun/`, templates on base-lo1 / base-lo3, summ `--rerun-of <id>
+  --rerun-basis window`, add 0): 8 of 8 ran; S2 net Sharpe 2020-2023 v6.1 .980, C1 .936, C2 .908, C3 .902, spo-v1
+  -1.387 (gross .679, as v7's .647), v7.0 1.073, v7.0-lo3 1.084, spo-v2 .509. Gates logged (sv_flow and v7.0's five
+  members agree with the prior; none stopped; no admission line). spo-v1's store `v8-risk-lo1-v9` built (manifest
+  `bdacc15b`, not a trial). Ledger 71 lines, N 50. Spec slip: v6.1's summ wrote its ledger line, then failed on its
+  --json path (spec fixed for the others; v6.1's numbers from its console).
