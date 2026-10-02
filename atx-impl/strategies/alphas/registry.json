@@ -13,7 +13,7 @@
     "max_slots": 7,
     "max_prior_bars": 314,
     "max_dsl_bytes": 4096,
-    "max_roster": 64
+    "max_roster": 80
   },
   "candidate_defaults": {
     "horizons": [
