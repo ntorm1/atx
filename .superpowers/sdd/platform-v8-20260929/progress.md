@@ -2160,3 +2160,6 @@ significance and capacity. We need to clear the hurdle rate first to enter produ
   27 / 27, fit byte-identical after the PM7-30 substitution (script, admission and registry hashes; registry
   `7ff10f4e` -> `19b01d11` by the `price_volume` row); ic-tests 159 / 159, `atx-impl/tools` 612 passed, `scripts/tests`
   248 passed, 0 failed (`c87b9051`).
+- Fields v14 lo3 (`build-equity/train-2020-2023-lo3-fields-v14`, 0 trials): v13 + `open_adj`, `high_adj`, `low_adj` by the
+  XWQ section 7 driver; manifest `4b12c0e1d90d8ab5cfa6e6281d104a4b8d229a42060505c39217f97d616cbb0c`; reused 75 / computed 3
+  as expected, the 75 bit-identical (hardlinks of v13); 72.8 s, 277 MiB.

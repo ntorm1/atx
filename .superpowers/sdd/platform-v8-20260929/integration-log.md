@@ -6102,3 +6102,17 @@ prepare_research_fields_ohlc as o; d.register(vars(b)); x.register(vars(b)); o.r
 / 3 computed; the 75 payloads bit-identical to v13's (hardlinks); seal 2024-01-01.** A different count or a refusal stops
 the step (PM8-4 b).
 
+| step | receipt dir | source | outcome / exit | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|
+| fields v14 lo3 | `train-2020-2023-lo3-fields-v14-run` | `26bddfbb` | completed / 0 | **72.8** | **277** | `e389a4932f65d53228323435a1a9dbd81a6a06beb1ff4597eaf10de5ee389900` | **`4b12c0e1d90d8ab5cfa6e6281d104a4b8d229a42060505c39217f97d616cbb0c`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, min system free 871 MiB; stdout `0023e693`, stderr empty.
+Manifest (metadata only): status complete, `seal.exclusive_end` 2024-01-01, role lo3 (1,405 dates, 2018-06-01 -
+2023-12-29, `e1c67101`), **78 rows** (v13's 75 + `open_adj`, `high_adj`, `low_adj`), builder `code_sha256_lf` `74df97f9`
+(= v13's), 661,711 B. **Counts: reused 75, computed 3 = the expected 75 / 3**: `open_adj` `13e4ba54` ohlc-open-adj-v1,
+`high_adj` `e7d4100c` ohlc-high-adj-v1, `low_adj` `e9a3a7b2` ohlc-low-adj-v1, producer `research_fields_ohlc.py`
+(`code_sha256_lf` `26356cf6`), clock ohlc-same-session-v1 (PM7-36 b). The 75 v13 payloads: entry sha256 = v13's (75 /
+75), hardlinks of the v13 files (75 / 75); all 78 payloads re-hash to their pins. Dir 4.9 GiB apparent (hardlinks). Logs
+scanned for 2024-2029 date tokens: none; the manifest's `source_checks` carry the seal date and two calendar `last`
+metadata entries (`sec`, `v9/nt_first_126`) unchanged from v13 (not read).
+
