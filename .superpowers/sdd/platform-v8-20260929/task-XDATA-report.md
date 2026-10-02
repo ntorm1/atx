@@ -561,3 +561,39 @@ xdata registration test's expected tail. Build, once `gold/` and `characteristic
 C:/atx/atx-db/data/alpha_panel/v1 --gold-sha256 <sha of gold/manifest.json> --gold-characteristics-sha256 <sha of
 characteristics/manifest.json>`; expected `source_checks.gold.stages.*.sealed_partitions_never_opened` >= 3
 (2024-2026) and `partitions_read` only years before 2024.
+
+### G3. Candidate signals on panel columns: 0 delivered
+
+**Result: the panels add nothing strong that the roster and the X set lack. No candidate is registered.** Decided
+blind, from definitions, published evidence and the in-house measurement record (hypothesis names and formulas only;
+no result of any screen was opened).
+
+Every panel column not already read by a v8.0 member, an X candidate (XSIG, XDATA, XIMP) or R-7 / R-12 was examined:
+
+| panel columns | hypothesis | why not a candidate |
+|---|---|---|
+| `earn_next_expected_date`, `earn_day_offset` (registry `ea_window_ahead_5`) | earnings-announcement premium (Frazzini-Lamont 2007; Barber, De George, Lehavy and Trueman 2013, JFE) | already rejected by XSIG (section 6): reported gone in the US (Heitz, Narayanamoorthy and Zekhnini, WP); a calendar effect inside a 21-session window that the slow book reaches about two thirds of [XSIG arithmetic]; its window is earn_season's support (`ea_days_to_expected` 0..21); ea_overdue reads the same field |
+| `volume`, `raw_close`, `close` (registry `abn_volume_5`) | high-volume return premium (Gervais, Kaniel and Mingelgrin 2001, JF; Kaniel, Ozoguz and Starks 2012, JFE) | measured in house: family `abnormal_volume` of `price_volume_ic96_v2` (`volume_shock_5_63`, `volume_spike_21_126`, same split-adjusted share volume; read from `atx-impl/strategies/generate_price_volume_ic96_v2.py` source, results not opened) and not on the roster. Re-registering a measured, unpromoted hypothesis selects on its outcome |
+| `iv_atm_5d`, `iv_atm_10d`, `iv_atm_42d`, `iv_atm_252d`, `iv_term_slope` | IV term structure | prior exposure: `pv_fields_ic121_v3` (iv_term_63_21, iv_term_126_21, iv_level_21) and the atx-db screen (XSIG section 6); the stock-level return prior is weak (Vasquez 2017 is an option-return result). Kept as reader field `gp_iv_term_slope` (conditioning / risk input only) |
+| `inst_top10_share` | ownership concentration | no clean signed US large-cap prior (blockholder results are governance-conditional); 13F breadth / persistence are read (inst_persist) |
+| `xsga_ttm`, `cogs_ttm` | operating leverage; profitability with R&D added back; organisation capital | `opex_at` and `gpa` cover operating leverage and gross profitability; `op_rd` is the Novy-Marx-Medhat numerator; organisation capital is borderline (t 1.95, VW 2012-24 t .68, `new_alpha_families.md` F16) and spanned by profitability (Novy-Marx and Medhat 2025) |
+| `invt`, `rect`, `drev`, `ap` | inventory / receivables changes (Thomas-Zhang 2002), deferred revenue (Prakash-Sinha 2013) | components of `accruals` / `pct_accruals`; deferred revenue is a small-sample, sector-specific result |
+| `buyback_authorized`, `buyback_remaining` | post-authorization drift (Ikenberry, Lakonishok and Vermaelen 1995) | reported gone after 2003 (Fu and Huang 2016, Management Science); realised repurchases sit in the investment_issuance members |
+| `gdwl`, `intan` | intangibles / acquisition intensity | investment members (asset growth, issuance); intangible value spanned by profitability |
+| `hl_spread_21` (Corwin-Schultz) | illiquidity premium | liquidity level dead or wrong-signed after 2004 (v8 report, Hou-Xue-Zhang); kept as reader field `gp_hl_spread_21` (cost / capacity input) |
+| `coskew` (SPY) | coskewness (Harvey-Siddique 2000) | `coskew_60m` is R-7 / R-12 |
+| short volume, FTD, Reg SHO, insider last trade | short-sale flow, fails, insider | the sv family, `ftd_fail`, `ins_opp` |
+
+Two drafts were written blind and withdrawn at 0 trials before this table was complete (recorded so no later lane
+re-registers them as new): `ea_prem` `rank((((ea_days_to_expected >= 2) && (ea_days_to_expected <= 22)) ? 1 : 0))`
+and `abn_vol` `rank(decay_linear(((ts_mean(((volume * raw_close) / close), 5) / delay(ts_mean(((volume * raw_close) /
+close), 50), 5)) - 1), 21))`, for the reasons in rows 1 and 2.
+
+What the panels could add later, all owner decisions: (a) a vintage-proved re-computation of inputs v8 already reads
+(a cross-check, not alpha); (b) the 10 registry controls as risk / cost inputs (`ctl_*`, via the reader); (c) the
+admitted `g_*` scores only under a PM ruling that counts the atx-db screen (90 signals x 3 horizons x 2 variants) in
+the deflation trial count.
+
+Hygiene for task GOLD: no row of an atx-db file read; no file under `atx-db/` or `C:/atx` written; no label, forward,
+IC, holdout or OOS file or column opened; the in-house screen generators were read as source for hypothesis names
+only; no return, IC, Sharpe, turnover or NAV of 2020-2023 opened; the reader's tests are synthetic.
