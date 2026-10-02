@@ -240,8 +240,8 @@ class DeclaredRule(unittest.TestCase):
         self.assertEqual((cres.RULE_ID, cres.BLOCK, cres.SPAN_TOLERANCE),
                          ("theme-resid-v1", "theme_residualise", 1e-10))
         # rule 1 (Ruling PM4-11): the order is PRIOR_THEMES; its first ten are the frozen v4 list + v7 appended theme,
-        # then filing_events, registered last (Ruling PM7-15 (a))
-        self.assertEqual(cres.FROZEN_PREFIX + ("filing_events",), fcw.V4_THEMES + fcw.V7_APPENDED_THEMES)
+        # then filing_events (Ruling PM7-15 (a)), then price_volume, registered last (Rulings PM7-36 (a), PM7-39)
+        self.assertEqual(cres.FROZEN_PREFIX + ("filing_events", "price_volume"), fcw.V4_THEMES + fcw.V7_APPENDED_THEMES)
         self.assertEqual(cres.registered_order(fcw.PRIOR_THEMES), fcw.PRIOR_THEMES)
         self.assertEqual(cres.STD_RULE_ID, cr.STD_RULE_ID)
         # rule 6 (E-44, E-45): every rerank-true theme_standardise rule the fitter writes (R-1 / R-3, then R-10)
@@ -264,7 +264,7 @@ class DeclaredRule(unittest.TestCase):
         self.assertIsNotNone(listed)
         cpp = tuple(re.findall(r'"([a-z0-9_]+)"', listed.group(1)))
         self.assertEqual(cpp[:len(fcw.PRIOR_THEMES)], fcw.PRIOR_THEMES)
-        self.assertEqual(cpp, cres.FROZEN_PREFIX + ("filing_events",))
+        self.assertEqual(cpp, cres.FROZEN_PREFIX + ("filing_events", "price_volume"))
         self.assertEqual(cres.registered_order(cpp), cpp)
 
     def test_theme_order_is_the_registered_order_restricted(self):
@@ -280,7 +280,7 @@ class DeclaredRule(unittest.TestCase):
         appended in registration order, so filing_events is last, after ownership_flow; before it is registered it is
         refused as outside the order. The frozen ten may not be reordered, dropped or interleaved."""
         before, later = cres.FROZEN_PREFIX, fcw.PRIOR_THEMES          # filing_events registered (Ruling PM7-15 (a))
-        self.assertEqual(later, before + ("filing_events",))
+        self.assertEqual(later, before + ("filing_events", "price_volume"))   # then price_volume (PM7-39)
         self.assertEqual(cres.registered_order(later), later)
         self.assertEqual(cres.theme_order(["filing_events", "ownership_flow", "value"], later),
                          ["value", "ownership_flow", "filing_events"])
@@ -673,7 +673,7 @@ class FitterEndToEnd(unittest.TestCase):
         filing_events, in the registry and in V7_APPENDED_THEMES: finding R6C-4) is placed last once it is registered,
         and a weighted member of it is refused before."""
         before, later = cres.FROZEN_PREFIX, fcw.PRIOR_THEMES          # filing_events registered (Ruling PM7-15 (a))
-        self.assertEqual(later[-1], "filing_events")
+        self.assertEqual(later[-2:], ("filing_events", "price_volume"))   # price_volume after it (PM7-39)
         doc = json.loads(json.dumps(self.std))
         weighted = [i for i, w in doc["weights"].items() if w > 0]
         doc["theme_standardise"]["themes"][weighted[0]] = "filing_events"

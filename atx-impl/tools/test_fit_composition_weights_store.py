@@ -209,7 +209,7 @@ class RegistryThemes(unittest.TestCase):
     def test_themes_come_from_the_registry_when_present(self):
         with self.assertRaises(fcw.FitError) as caught:  # the in-file list does not know the theme
             fcw.fit(self.fx.args(self.root / "no-registry", **base.V4_ARGS))
-        self.assertIn("appended theme ('ownership_flow', 'filing_events') (in-file list)",   # PM7-15 (a)
+        self.assertIn("appended theme ('ownership_flow', 'filing_events', 'price_volume') (in-file list)",  # PM7-39
                       str(caught.exception))
         path = self.registry(list(fcw.V4_THEMES) + ["event_driven", "ownership_flow"])
         with unittest.mock.patch.object(fcw, "REGISTRY_PATH", path):

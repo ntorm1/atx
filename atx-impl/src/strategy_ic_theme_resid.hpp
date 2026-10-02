@@ -16,14 +16,14 @@ namespace atx::impl::strategy {
 // The registered theme order of theme-resid-v1 (Ruling PM4-11): the ten themes registered first,
 // in their registered order (fit_composition_weights.PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES,
 // composition_resid.FROZEN_PREFIX), then every theme registered later, in registration order
-// (v8.1's filing_events, library-v8-draft E7). A weights file's theme_residualise order must be
-// this list restricted to its weighted themes; a weighted theme outside it is refused
-// (ic_detail::composition_residualise). test_composition_resid.py pins this copy against the
-// fitter's list.
-inline constexpr std::array<std::string_view, 11> theme_resid_order{
+// (v8.1's filing_events, library-v8-draft E7; v8 X-7's price_volume, Ruling PM7-39). A weights
+// file's theme_residualise order must be this list restricted to its weighted themes; a weighted
+// theme outside it is refused (ic_detail::composition_residualise). test_composition_resid.py pins
+// this copy against the fitter's list.
+inline constexpr std::array<std::string_view, 12> theme_resid_order{
     "value",          "profitability_quality", "investment_issuance", "earnings_momentum",
     "price_momentum", "low_risk",              "short_interest",      "reversal_seasonality",
-    "options_implied", "ownership_flow",       "filing_events"};
+    "options_implied", "ownership_flow",       "filing_events",       "price_volume"};
 // `planes`: one date-major dates x `names` plane per theme, index = position in the registered
 // theme order, holding the sum of the theme's present members' w_k s_k rank_k (NaN = no member
 // present); `mass`: W_theme per plane. Per date, each row is first replaced by the theme's
