@@ -3773,3 +3773,92 @@ R-2 not locked or run (it waits for the R-1 ruling, which fixes its parent); no 
   tests-only fix for the FIX-6 lane or a ruling.
 - Field order of v10 is the registry order (rows 55-61 new): relevant to any `fields.list` or `add-alpha --fields`.
 - R-2 waits for the R-1 ruling (parent).
+
+## cells batch 2c: R-1 at matched gross, R-2, R-3 (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `0dec40aa` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`, risk `8967952c`; nothing built; PM5-21 holds: the
+only commits are specs of cells not yet run, registry rows of the R-2 wave, and this log). Read: progress PM session 6
+(PM6-4, PM6-5, PM6-6 whole), `r1-gross-investigation.md` (incl. "Follow-up: L per cell"), task-CELLS-brief (R-1, R-2,
+R-3 rows), rulings E-27, E-27a, E-27b, E-28, E-36, E-44, E-45, PM5-11, PM5-23, A2 root sequence (R-2). Freeze list
+re-hashed in batch 2b (2026-10-02T09:56Z, all equal); no tool, cycle script or executable changed since (`git diff
+1cc4c6c9 HEAD` outside specs, registry and the sprint directory: empty).
+
+**Gross matching (PM6-6), as applied.** G = nav_summ `construction_stats(...)["mean_gross_leverage_all_rows"]` on the
+S2 daily CSV (the gated mechanics key), read by a scratch extractor
+(`scratchpad/mech.py`) that loads the CSV through `nav_summ.load_daily` (seal-checked) and prints only gross, net,
+turnover and count keys plus named summary flags (aim_leverage, meets_daily_turnover_*, accounting errors); it prints no
+return, NAV, Sharpe or P&L figure. A calibration run's `stdout.log` and `summary.json` are never opened beyond that.
+
+### Cell R-1 (r1-comp-v8-gm on base-b0c; composition ew-theme-std-v1; L 1.1474): ACCEPTED, N 41
+
+**Calibration (step 1):** r1-comp-v8.json's NAV at L 1.247 (batch 2a; 42.3 s, 586 MiB): G_R1(1.247) =
+**1.0671643034034786**; B0c G_parent = **0.9819643798245946**. L' = 1.247 x .9819643798 / 1.0671643034 = 1.1474424 ->
+**1.1474**. One NAV at L' was the cell (no further correction needed).
+
+**Spec** `scripts/specs/v8/r1-comp-v8-gm.json` (template, new file; r1-comp-v8.json untouched): parent base-b0c.json;
+change = r1-comp-v8.json's (fit `--composition ew-theme-std-v1`, E-28 w caps, the same fit / card / w / monitor names,
+so u, fit, card, w resume as done) plus `nav.leverage` "1.1474" and `nav.output`
+`build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474`. `lock` (dry) 0, `lock --write` 0 (reference_cell
+B0c `119d4cd0`, reference_admission `29357ece`, = R-1's lock), dry lock after 0. File `531f8905...f373`; **spec digest
+(template chain) `60ac1feb56d08b207813c32674773b11ad8969ddae84b0737c66937d43fb9eeb`**. Commit `9559a847`. Plan: every pin
+`[locked, verified]` (library v7.1 `787c802e`, recipe `7f8a2643`, role lo3 `e1c67101`, v2-pit `09aac28f`, fund events
+`304d2945`, SIC `9f9b2f85`, label role lo3-dlret `95e16cfe`, reference cell / admission as above; fields v9 lo3
+`9f156363`, 63 rows). The planned NAV argv equals R-1's (receipt) except `--output` and `--aim-leverage 1.247 -> 1.1474`.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fields, u, fit, card, w | - | - | - | - | - | done (R-1's: fit `eb98a50a` weights, w `mega-v8-r1w-train-std-1`); gate `b0b-readout` PASS (0 status changes) |
+| nav (L 1.1474) | 180 / 1,536 | 52.2 | 586 | 0 | `a429a0537b9da7110364bb99685fdcda6fbf0a7ad8b8b15b210f56d78ce8fd42` | `summary.json` `090e31ba`, S2 daily `7ef3b3bd`, `capacity_curve.csv` `ad0413cc`, `recipe.json` `b73a6109` |
+| monitor | direct | 0.9 | - | 0 | - | `mega-monitor-v8-r1-std/monitor.json` `dc192887`: M2 alarm (alarm 4: high_52w, ind_mom_12_1, iv_rv_spread, sv_flow, as B0b; warn 10, ok 24), M4 ok, M1 / M3 n/a |
+| summ | direct | 16.7 | - | 0 | - | `cycle-v8-r1-comp-v8-gm/summ.json` `a168bf9c`, `pbo.json` `dea68446`, `cycle_verdict.json` `ae0dbd91` |
+| one-sided p (PM5-23) | bounded 180 / 1,536 | 0.8 | 319 | 0 | `db300a9bf24385f79c11fdd727e02b6edb17994f5cb050cfa5528537cdf7d947` | `nav_summ --protocol v8 --bundle B0c R-1gm --bundle-json build-equity/v8-cells-r1-bundle.json` `771fbf4c` (no `--ledger`) |
+
+NAV receipt: completed, `clean in the code pathspec`, source `9559a847`, exe `5497c89d`; `construction.v5.aim_leverage`
+1.1474 in the summary.
+
+**Gross match:** G = **0.9817064213** vs G_B0c .9819643798: |diff| **.00026** <= .005 (first NAV). Post-ramp .9876
+(B0c .9885); by year .958 / 1.002 / .977 / .990 (B0c .961 / .996 / .982 / .989); gross at score_begin .9341 (B0c .9257).
+
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9817 in [.90, 1.05]; all-rows net +.0041 (|.| <=
+.02); tau mean .02451 <= .20, p95 .02973 <= .30 (1,004 sessions; summary meets_daily_turnover_mean / _p95 true); max
+gross 1.114, max |net| .031; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows; accounting: max cash-book error
+6.4e-14, return identity 4.2e-16 (tol 1e-9).
+
+**Criterion (PM5-11):** tau_gmv_mean / mean_gross_leverage_all_rows = .0245095 / .9817064 = **.024966** vs B0c
+.0340689 / .9819644 = **.034695**: not higher -> PASS (at matched gross; at L 1.247 it was .02301).
+
+**Statistics of record** (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`): net Sharpe **R-1 +1.2031** vs B0c +1.1328. Paired
+(studentized CBB, block 21, seed 20260929, 4,999 resamples, 4,999 valid; 1,005 common sessions): **dSR +.0703**;
+rho .917; **Memmel SE .2050** (t +.34); CBB 95% [-.355, +.479]; LW studentized SE .2167, 95% [-.355, +.496];
+**bootstrap p one-sided .3622, two-sided .7448** (the bundle reproduces the cycle's dSR, SE, CI and two-sided p
+exactly). DSR block (verdict, `--dsr-ledger`): N 41; cell-count DSR .9857 (V[SR] from 4 cells on research-window-v2,
+degenerate until PM5-22); legacy (37) .7519; effective-N .9023 (N_eff 2); PSR vs 0 .9904; CSCV PBO .3088 (41 cells).
+
+**Verdict (prereg rule 5): dSR +.070 > 0 AND mechanics PASS AND criterion PASS -> ACCEPTED.** Recorded by the tooling:
+`cycle-v8-r1-comp-v8-gm/cycle_verdict.json` (spec `60ac1feb`) and the ledger line (trial `50b42b5db1572631`, cell =
+the L1.1474 NAV dir, s2_net_sr 1.20308, origin prior, window research-window-v2, prev = B0c's head `449847ef`).
+**N after: 41** (ledger 42 lines = 41 construction + 1 protocol, file `dac5a01b...f028`, head `76e86ef3`). Matches the
+brief. The L 1.247 run of r1-comp-v8.json stays unledgered (calibration, PM6-6).
+
+Returns (S2, annual): **net 4.47%** (ann mean; CAGR 4.50%) vs B0c 4.42%; **gross of cost 5.76%** (B0c 6.05%); drags:
+trade cost .76% (B0c 1.11%), borrow .33% (.33%), long financing .20% (.20%); vol 3.71% (3.90%); max drawdown 3.29%
+(3.89%). Gross Sharpe 1.550 (B0c 1.552).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0145 | -.412 | .0340 | .0272 | 14.90 |
+| 2021 | 252 | +.0958 | +2.304 | .0401 | .0230 | 11.47 |
+| 2022 | 251 | +.0839 | +1.899 | .0431 | .0241 | 12.07 |
+| 2023 | 250 | +.0181 | +.624 | .0297 | .0238 | 11.51 |
+
+Capacity curve (report only; x1 = the primary): net Sharpe .5x 1.228, 1x 1.203, 2x 1.174, **4x 1.103** (B0c .978),
+8x 1.014; cost bps per traded dollar 10.68 / 12.49 / 14.70 / 16.91 / 18.72.
+
+**Appendix A:** `TRAIN construction cells 41; admission trials this sprint 0 (plus 0 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none. Consequences: R-1 accepted -> E-45: R-10 / R-11 defined (if R-6 is accepted,
+E-38); R-3 runs `ew-theme-std-aim-v1` (E-27); every child inherits L 1.1474 as its step-(1) L.
+
+**Next parent: `scripts/specs/v8/r1-comp-v8-gm.json`, spec digest `60ac1feb56d08b207813c32674773b11ad8969ddae84b0737c66937d43fb9eeb`,
+G 0.9817064213, L 1.1474.**
