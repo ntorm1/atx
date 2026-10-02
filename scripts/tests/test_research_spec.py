@@ -68,6 +68,12 @@ NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}         
 NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
 NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS              # R-3 at matched gross (PM6-6), by hand on lib-v80 (PM7-4)
 NULL_PINS["r6-spo-v3-gm.json"] = CHILD_NULLS                # R-6 at matched gross (PM6-6), by hand on lib-v80
+# R-7 at matched gross (PM6-6): add-alpha's lib-v81.json copied by hand with nav.leverage / nav.output (a plain spec:
+# every input pin but the committed libraries and recipe is lock-filled, as a base spec's)
+NULL_PINS["lib-v81-gm.json"] = {"inputs.role", "inputs.label_role", "inputs.baseline_fields", "fields.manifest_sha256",
+                                "inputs.reference_admission", "inputs.reference_cell", "inputs.reference_combined",
+                                "inputs.reference_weights", "inputs.reference_daily", "inputs.reference_orientations",
+                                "inputs.reference_daily_ic"}
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
