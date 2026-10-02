@@ -25,6 +25,7 @@ A stage that does not apply (no strings in a rule wave, no cell after the gate) 
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 import re
@@ -35,6 +36,7 @@ import research_ledger
 import research_spec
 import research_tree
 import wave_manifest as WM
+import wave_queue
 import wave_result
 import wave_rules as WR
 import wave_steps as WS
@@ -175,6 +177,7 @@ def preflight(w: Wave, done: dict, log) -> dict:
                         "was ledgered first: re-pin expect.n_before)")
     budget, more = budget_check(w, records, led["n"])
     problems += more
+    problems += wave_queue.queue_check(w.root, m)
     if not library_wave(w):
         rc = m["rule_cell"]
         doc = w.read_json(rc["template"]) if w.exists(rc["template"]) else None
@@ -568,6 +571,12 @@ def record(w: Wave, done: dict, log) -> dict:
     path, md = w.wave_path(wave_result.RESULT), w.wave_path(wave_result.LOG)
     sha = w.write_json(path, doc)
     w.path(md).write_text(wave_result.log_section(doc), encoding="utf-8", newline="\n")
+    try:
+        queued = wave_queue.record_wave(w.root, m, doc, dt.date.today().isoformat())
+    except wave_queue.QueueError as exc:
+        raise StageError(f"record: {exc}") from exc
+    commit = w.commit_dirty(f"wave {m['wave']}: queue status of {', '.join(queued)} ({wave_result.verdict_word(doc)})") \
+        if queued else None
     copies = []
     if (m.get("record") or {}).get("copy_to"):
         dst = w.path(f"{m['record']['copy_to'].rstrip('/')}/{m['wave']}")
@@ -577,7 +586,7 @@ def record(w: Wave, done: dict, log) -> dict:
             copies.append(w.rel(dst / Path(rel).name))
     log(f"   {path} ({sha[:12]}); log section {md}; N {ledger['n_before']} -> {ledger['n_after']}")
     return {"wave_result": path, "wave_result_sha256": sha, "log_section": md, "copies": copies, "ledger": ledger,
-            "verdict": doc["verdict"], "next_parent": doc["next_parent"]}
+            "verdict": doc["verdict"], "next_parent": doc["next_parent"], "queue": {"set": queued, "commit": commit}}
 
 
 def record_plan(w: Wave, done: dict) -> list[str]:
