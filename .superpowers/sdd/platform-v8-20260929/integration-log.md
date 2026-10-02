@@ -3782,7 +3782,8 @@ only commits are specs of cells not yet run, registry rows of the R-2 wave, and 
 (PM6-4, PM6-5, PM6-6 whole), `r1-gross-investigation.md` (incl. "Follow-up: L per cell"), task-CELLS-brief (R-1, R-2,
 R-3 rows), rulings E-27, E-27a, E-27b, E-28, E-36, E-44, E-45, PM5-11, PM5-23, A2 root sequence (R-2). Freeze list
 re-hashed in batch 2b (2026-10-02T09:56Z, all equal); no tool, cycle script or executable changed since (`git diff
-1cc4c6c9 HEAD` outside specs, registry and the sprint directory: empty).
+1cc4c6c9 HEAD` outside specs, registry and the sprint directory: only `docs/plans` interim / status files and the
+FIX-6 test file).
 
 **Gross matching (PM6-6), as applied.** G = nav_summ `construction_stats(...)["mean_gross_leverage_all_rows"]` on the
 S2 daily CSV (the gated mechanics key), read by a scratch extractor
