@@ -13,8 +13,10 @@ import copy
 import hashlib
 import inspect
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,8 +31,27 @@ import research_tree  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake tools and fixtures)
 import research_add_alpha as RA  # noqa: E402
 
-V8 = HERE.parent / "specs" / "v8"
-V8_SPECS = sorted(p.name for p in V8.glob("*.json"))
+# the v8 spec dir this file reads; ATX_TEST_V8_SPECS points it at a copy (only
+# test_the_whole_file_passes_with_a_generated_spec_present sets it, for the run of this file in its subprocess)
+V8 = Path(os.environ.get("ATX_TEST_V8_SPECS") or HERE.parent / "specs" / "v8")
+
+
+def generated_by_add_alpha(path: Path) -> bool:
+    """Ruling PM5-24: a library spec `research_cycle.py add-alpha` generated (R-2, R-7, R-12), not an authored one,
+    recognised from its content as research_add_alpha.derive_spec writes it: a plain spec in lib-NAME.json (add-alpha's
+    name) whose description names add-alpha and the library NAME, gated p1-NAME, pinning the parent's library as its
+    baseline and comparing its u pass with the parent's rows."""
+    m = re.fullmatch(r"lib-(.+)\.json", path.name)
+    doc = json.loads(path.read_text(encoding="utf-8")) if m else None
+    return m is not None and isinstance(doc, dict) and not RS.is_template(doc) and \
+        str(doc.get("description", "")).startswith(f"Library {m[1]} = ") and \
+        "(research_cycle.py add-alpha; derived from the " in doc["description"] and \
+        (doc.get("gate") or {}).get("name") == f"p1-{m[1]}" and "baseline_library" in (doc.get("inputs") or {}) and \
+        [c.get("name") for c in doc.get("compare") or []][-2:] == ["parent-orientations", "parent-train-daily-ic"]
+
+
+GENERATED = sorted(p.name for p in V8.glob("*.json") if generated_by_add_alpha(p))
+V8_SPECS = sorted(p.name for p in V8.glob("*.json") if p.name not in GENERATED)        # the authored specs
 BASE_NULLS = {"inputs.role", "inputs.identity_bridge", "inputs.fund_events", "fields.manifest_sha256"}
 CHILD_NULLS = BASE_NULLS | {"inputs.reference_cell", "inputs.reference_admission",       # derived from the parent
                             "inputs.label_role"}                                          # B0c's (E-25), inherited
@@ -46,6 +67,20 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
+
+
+def fill_options(name: str | None = None) -> list[tuple[str, str]]:
+    """(section, option) of every value root fills in the spec ``name`` (FILLS), or in any spec when None."""
+    found = [re.fullmatch(r"<fill:(\w+)\.flags (\S+)>", x) for n, xs in FILLS.items() if name in (None, n) for x in xs]
+    assert all(found), FILLS
+    return sorted({(m[1], m[2]) for m in found if m})
+
+
+def well_filled(option: str, value) -> bool:
+    """A value root filled is well formed (Ruling PM5-24): a 64-hex digest for a *sha256 option, else a path as the
+    specs write them (relative POSIX segments, or under a drive)."""
+    form = r"[0-9a-f]{64}" if option.endswith("sha256") else r"(?:[A-Za-z]:/)?[\w.\-]+(?:/[\w.\-]+)+"
+    return isinstance(value, str) and re.fullmatch(form, value) is not None
 FIT_DOWN = {"fit.output", "card.output", "ic.w_output", "nav.output", "monitor.output"}   # downstream of the fit
 LIB_DOWN = FIT_DOWN | {"ic.u_output"}                                                       # downstream of the library
 LIB_CHANGE = LIB_DOWN | {"inputs.library.path", "inputs.library.sha256", "inputs.recipe.path", "inputs.recipe.sha256",
@@ -90,21 +125,24 @@ def committed(rel: str) -> bytes | None:
     return path.read_bytes() if rel.startswith("atx-impl/") and path.is_file() else None
 
 
-def as_authored(spec: dict) -> dict:
-    """A copy of a live v8 spec (a resolved spec, or a spec or template file's doc) as its author committed it, before
-    root's runbook steps on it: every pin that `lock --write` fills is null again -- each input's but a committed
-    library's or recipe's (authored with that file and checked against its bytes), the as-built fields manifest's and
-    a template's derived ones ("locked") -- and a template's parent is null (planned on its nominal parent).
+def as_authored(spec: dict, name: str | None = None) -> dict:
+    """A copy of a live v8 spec (a resolved spec, or a spec or template file's doc; ``name`` its file name) as its
+    author committed it, before root's runbook steps on it: every pin that `lock --write` fills is null again -- each
+    input's but a committed library's or recipe's (authored with that file and checked against its bytes), the as-built
+    fields manifest's and a template's derived ones ("locked") --, a template's parent is null (planned on its nominal
+    parent) and every value root fills (FILLS of ``name``) is null again (its "<fill:...>" placeholder).
 
-    Ruling PM5-20 (FIX-6 and its round 1): the fixtures plan the live specs on stand-in files, whose digests no real
-    pin matches, and hold a template's registered change against its nominal parent; they plan and compare this copy,
-    the same whether root has locked a spec or set a template's parent or not. What a test asserts about the spec's
-    content is unchanged; only those premises are (test_the_fixtures_plan_a_locked_spec_as_unlocked,
-    test_the_fixtures_plan_every_template_on_every_plausible_parent)."""
+    Rulings PM5-20, PM5-24 (FIX-6, rounds 1 and 2): the fixtures plan the live specs on stand-in files, whose digests no
+    real pin matches, and hold a template's registered change against its nominal parent; they plan and compare this
+    copy, the same whether root has locked a spec, set a template's parent or filled its values or not. What a test
+    asserts about the spec's content is unchanged; only those premises are (test_the_fixtures_plan_a_locked_spec_as_
+    unlocked, test_the_fixtures_plan_every_template_on_every_plausible_parent)."""
     spec = copy.deepcopy(spec)
     if RS.is_template(spec):
         spec["parent"] = None
         change = spec.get("change") or {}
+        for section, option in fill_options(name) if name else []:
+            ((change.get("flags") or {}).get(section) or {})[option] = None
         items, sets = (change.get("inputs") or {}).values(), change.get("set") or {}
         fields = sets.get("fields")
         if "fields.manifest_sha256" in sets:
@@ -125,7 +163,7 @@ def authored_dir(src: Path, dest: Path) -> Path:
     parent, next to it)."""
     dest.mkdir(parents=True, exist_ok=True)
     for p in sorted(src.glob("*.json")):
-        doc = as_authored(json.loads(p.read_text(encoding="utf-8")))
+        doc = as_authored(json.loads(p.read_text(encoding="utf-8")), p.name)
         (dest / p.name).write_text(json.dumps(doc, indent=2), encoding="utf-8")
     return dest
 
@@ -204,8 +242,9 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
     """The spec ``name`` as it stands in ``specs`` (locked or not; a template on the parent root set, else on its
     nominal one) plans with the fake root: a parent root set names another spec of that directory and pairs the cell
     with it (reference_cell is the parent's NAV cell); every pin a lock fills is UNLOCKED (on a chain of registered
-    specs at least the registry's: a chain on base-lo3 adds its own); `run` is refused for a null parent only, and
-    while the template's own requires are open. Returns the planned spec."""
+    specs at least the registry's: a chain on base-lo3 adds its own); every value root fills is its placeholder or well
+    formed; `run` is refused for a null parent only, while the template's own requires are open and while a value is
+    unfilled. Returns the planned spec."""
     path = specs / name
     doc = json.loads(path.read_text(encoding="utf-8"))
     _, spec, c, lines = plan_on_stand_ins(tmp_path / "live", path)
@@ -215,6 +254,9 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
     links = RS.chain(path, research_tree.REPO)
     if {p.name for p, _, _, _ in links} | {links[-1][2].name if links else name} <= set(NULL_PINS):
         assert unlocked_pins(c, spec) >= NULL_PINS[name], name   # (an add-alpha parent, lib-v80.json, has fewer)
+    for section, option in fill_options():                    # PM5-24: a value root fills is its placeholder or well
+        value = RC.option_value((spec.get(section) or {}).get("flags") or [], option)          # formed (own, inherited)
+        assert value in (None, f"<fill:{section}.flags {option}>") or well_filled(option, value), (name, option, value)
     if not RS.is_template(doc):
         return spec
     parent, nominal = RS.parent_of(doc, path, research_tree.REPO)
@@ -224,13 +266,15 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
     refusal = RS.run_refusal(spec, path, research_tree.REPO) or ""
     assert ("template parent is null" in refusal) == nominal, name
     assert all(f"{name} requires: {r}" in refusal for r in doc.get("requires", [])), name
+    assert all(f"unfilled value {x}" in refusal for x in RS.fills(spec)), name           # refused while one is left
     return spec
 
 
 @pytest.mark.parametrize("name", V8_SPECS)
 def test_every_v8_spec_loads_and_plans(tmp_path, name):
-    """Every live spec plans as authored (check_nominal_plan) and as it stands (check_live_plan): the same whether root
-    has locked it or set a template's parent or not."""
+    """Every live authored spec plans as authored (check_nominal_plan) and as it stands (check_live_plan): the same
+    whether root has locked it, set a template's parent or filled its values or not. The authored set is the registry
+    (a spec add-alpha generated is checked by test_every_generated_spec_plans_and_parents_the_templates)."""
     assert set(V8_SPECS) == set(NULL_PINS)
     check_nominal_plan(tmp_path, V8, name)
     check_live_plan(tmp_path, V8, name)
@@ -250,16 +294,19 @@ def test_the_fixtures_plan_a_locked_spec_as_unlocked(tmp_path):
         return hashlib.sha256(f"arbitrary {rel}".encode() if held is None else held).hexdigest()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(RC.Resolver, "sha", lock_reads)
-        for name in V8_SPECS:                         # base specs fill inputs and fields, templates change.inputs
+        for name in V8_SPECS + GENERATED:             # base specs fill inputs and fields, templates change.inputs
             locked, _ = RC.lock(specs / name, tmp_path / "no-root", relock=True)   # and "locked" (the derived pins)
             (specs / name).write_text(json.dumps(locked, indent=2), encoding="utf-8")
-    for name in V8_SPECS:
+    for name in V8_SPECS + GENERATED:                 # (a generated spec: add-alpha's, PM5-24)
         path = specs / name
         locked = RC.load_spec(path)
         assert all(item["sha256"] for item in locked["inputs"].values()), name          # every pin filled
         assert locked["fields"]["manifest_sha256"], name
-        check_nominal_plan(tmp_path / name, specs, name)
-        check_live_plan(tmp_path / name, specs, name)
+        if name in GENERATED:
+            check_generated(tmp_path / name, specs, name)
+        else:
+            check_nominal_plan(tmp_path / name, specs, name)
+            check_live_plan(tmp_path / name, specs, name)
         root, spec, _, _ = plan_on_stand_ins(tmp_path / name / "control", path)
         role = dict(spec["inputs"]["role"], sha256=locked["inputs"]["role"]["sha256"])
         with pytest.raises(RC.CycleError, match="PIN MISMATCH role") as e:             # the lock's pin, on a stand-in
@@ -316,7 +363,9 @@ def test_the_fixtures_plan_every_template_on_every_plausible_parent(tmp_path):
     reads the same files); the template plans with the parent set (check_live_plan) and still differs from its nominal
     parent only by its registered change (check_registered_change); the rules the chain decides follow it (E-27: R-3's
     aim rule by whether R-1 was accepted; E-44, E-45: R-10's shrink rule by whether R-3 was, on an R-1 chain only;
-    R-11 keeps its parent's composition)."""
+    R-11 keeps its parent's composition). Round 2 (PM5-24): every cell that ran carries the values root filled (R-6,
+    R-8: the risk store and its digest); the template itself is filled in the dense history, still to fill in the
+    sparse one, and its run is refused exactly while a value is unfilled."""
     cases = plausible_histories()
     preds: dict[str, set[str]] = {}
     for name, parents in cases:
@@ -328,12 +377,18 @@ def test_the_fixtures_plan_every_template_on_every_plausible_parent(tmp_path):
     for i, (name, parents) in enumerate(cases):
         specs = tmp_path / f"h{i}" / "v8"
         shutil.copytree(V8, specs)
+        dense = parents[CELLS[0]] == WINNERS[0]
+        store = f"build-equity/atx-risk-v1.1-{parents[CELLS[0]][5:8]}/manifest.json"   # what root fills (R-6, R-8)
         for cell, parent in parents.items():
-            doc = json.loads((specs / cell).read_text(encoding="utf-8"))
-            (specs / cell).write_text(json.dumps(dict(doc, parent=parent), indent=2), encoding="utf-8")
+            doc = dict(json.loads((specs / cell).read_text(encoding="utf-8")), parent=parent)
+            for section, option in fill_options(cell):          # filled, or (the template, sparse) still to fill
+                doc["change"]["flags"][section][option] = None if cell == name and not dense else \
+                    hashlib.sha256(store.encode()).hexdigest() if option.endswith("sha256") else store
+            (specs / cell).write_text(json.dumps(doc, indent=2), encoding="utf-8")
         authored = authored_dir(specs, tmp_path / f"h{i}" / "authored")
         assert {p.name: p.read_bytes() for p in authored.glob("*.json")} == want, (name, parents)
         spec = check_live_plan(tmp_path / f"h{i}", specs, name)
+        assert bool(RS.fills(spec)) == (name in FILLS and not dense), (name, parents)
         check_registered_change(authored, name)
         chain, cell = set(), name
         while cell in parents:
@@ -348,6 +403,77 @@ def test_the_fixtures_plan_every_template_on_every_plausible_parent(tmp_path):
             parent_fit = RC.load_spec(specs / parents[name])["fit"]["flags"]
             assert composition == RC.option_value(parent_fit, "--composition"), parents
             assert RC.option_value(spec["fit"]["flags"], "--theme-resid") == "theme-resid-v1", parents
+
+
+def check_generated(tmp_path: Path, specs: Path, name: str) -> None:
+    """Ruling PM5-24: the generated library spec ``name`` of ``specs`` loads and plans through the fixture path (every
+    pin a lock fills UNLOCKED; `run` not refused) and is accepted as a parent: every template that runs after B0c plans
+    on it (check_live_plan), but one whose composition map lacks its composition, which refuses it at load (R-10 on a
+    parent that is not standardised, E-45)."""
+    path = specs / name
+    assert generated_by_add_alpha(path) and name not in NULL_PINS, name
+    _, spec, c, lines = plan_on_stand_ins(tmp_path / "plan", path)
+    assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#")), name
+    stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}
+    assert unlocked_pins(c, spec) >= stand_ins | {"fields.manifest_sha256"}, name
+    assert RS.run_refusal(spec, path, research_tree.REPO) is None, name
+    composition = RC.option_value(spec["fit"]["flags"], "--composition")
+    for k, child in enumerate(CELLS[1:]):
+        on = tmp_path / f"on-{k}" / "v8"
+        shutil.copytree(specs, on)
+        doc = dict(json.loads((on / child).read_text(encoding="utf-8")), parent=name)
+        (on / child).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        mapped = ((doc["change"].get("flags") or {}).get("fit") or {}).get("--composition")
+        if isinstance(mapped, dict) and composition not in mapped:
+            with pytest.raises(RC.CycleError, match="maps the parent's value"):
+                RC.load_spec(on / child)
+            continue
+        check_live_plan(tmp_path / f"on-{k}", on, child)
+
+
+def test_every_generated_spec_plans_and_parents_the_templates(tmp_path):
+    """Ruling PM5-24: every spec add-alpha generated into scripts/specs/v8 (none before R-2; lib-v80.json, lib-v81.json,
+    R-12's after them) passes check_generated; none is in the authored registry."""
+    assert not set(GENERATED) & set(V8_SPECS) and not any(generated_by_add_alpha(V8 / n) for n in V8_SPECS)
+    for k, name in enumerate(GENERATED):
+        check_generated(tmp_path / f"g{k}", V8, name)
+        print(f"generated spec checked: {name}")
+
+
+def test_the_whole_file_passes_with_a_generated_spec_present(tmp_path):
+    """Ruling PM5-24: the R-2 path on stand-ins (v8_root, parent_cell, add-alpha v71 -> v80 on base-lo1) generates
+    lib-v80.json; with its tools back on base-lo1's (v8_root points them at the fake ones), as add-alpha writes it from
+    the live base, it goes into a copy of scripts/specs/v8. The rule recognises it from its content: the same file
+    under another name, without add-alpha's marks, or as a template is authored. Then this whole file runs on the copy
+    (a subprocess with ATX_TEST_V8_SPECS; this test deselected) and passes, the generated spec checked in it."""
+    root, parent = v8_root(tmp_path / "made")
+    parent_cell(root, parent)
+    assert add(root, parent, "v8_probe", "rank(decay_linear((be / at_lag4), 21))") == RC.EXIT_OK
+    doc = json.loads((root / SPECS / "lib-v80.json").read_text(encoding="utf-8"))
+    base = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
+    doc.update(python=base["python"], exes=base["exes"], runner=dict(doc["runner"], script=base["runner"]["script"]))
+    for section in ("fit", "card", "monitor", "summ"):
+        doc[section]["script"] = base[section]["script"]
+    specs = tmp_path / "v8"
+    shutil.copytree(V8, specs)
+    (specs / "lib-v80.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    assert generated_by_add_alpha(specs / "lib-v80.json")
+    other = tmp_path / "other"
+    other.mkdir()
+    for file, bad in (("v80.json", doc), ("lib-v81.json", doc), ("lib-v80.json", dict(doc, description="by hand")),
+                      ("lib-v80.json", dict(doc, gate=dict(doc["gate"], name="b0a-readout"))),
+                      ("lib-v80.json", {k: v for k, v in doc.items() if k != "compare"}),
+                      ("lib-v80.json", dict(doc, schema=RS.TEMPLATE_SCHEMA))):
+        (other / file).write_text(json.dumps(bad), encoding="utf-8")
+        assert not generated_by_add_alpha(other / file), file
+    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--basetemp",
+                          str(tmp_path / "inner"), str(Path(__file__).resolve()), "-k",
+                          "not test_the_whole_file_passes_with_a_generated_spec_present"],
+                         env=dict(os.environ, ATX_TEST_V8_SPECS=str(specs)), cwd=research_tree.REPO,
+                         capture_output=True, text=True, timeout=600)
+    tail = run.stdout[-4000:] + run.stderr[-2000:]
+    assert run.returncode == 0 and re.search(r"\n\d+ passed, 1 deselected in ", run.stdout), tail   # nothing failed
+    assert "generated spec checked: lib-v80.json" in run.stdout, tail                       # (it was in the run)
 
 
 def check_registered_change(specs: Path, name: str) -> None:
@@ -1082,8 +1208,8 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     import research_gc
     monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
     root = tmp_path / "root"
-    specs = [V8 / n for n in V8_SPECS]
-    named = {RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}
+    specs = [V8 / n for n in V8_SPECS + GENERATED]                                   # authored and add-alpha's
+    named ={RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}
     assert "build-equity/fit-work" in named and len(named) == 3                       # + the lo1 and lo3 caches
     shared = [f"fit-work/{'0123456789abcdef'}-research-window-v2", f"fit-work/{'fedcba9876543210'}-research-window-v1",
               "mega-candidate-cache-v8-lo1", "mega-candidate-cache-v8-lo3"]
