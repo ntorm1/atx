@@ -3648,3 +3648,128 @@ tables, B0c capacity curve and table, OD-1, trial accounting, contradictions (23
 - nav_summ's known warning on B0c (CSV tau .034069 vs summary .034070; batch 1b finding 2) appears again; gates nothing.
 - Provenance scripts committed in the sprint directory: `interim_report_make_config.py` (`55794def`) and
   `interim_report_fill_scorecard.py` (`2f4e54b5`); neither is a tool script and nothing imports them.
+
+## cells batch 2b (FIX-6 merge, fields v10) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `97a98978` (clean; code head `1cc4c6c9`;
+build v8-12; PM5-21 freeze: nothing built, no executable / cycle / tool script changed). Read: integrator-rules,
+task-CELLS-brief (general rules; R-2 row "fields v10 first"), this log's batch 1b / 2a, progress PM5-20, PM5-24, PM5-26,
+PM session 6 (PM6-1..3), PM3-5a, plan Task R-2, task-A2-report root sequence (R-2 step 3), task-F-1 / task-F-3 reports
+(v10 argv delta and expected counts), runbook R11. Two read-only agents (directory sizes) were active on the tree; they
+changed nothing (`git status --porcelain` empty before and after every step). No R-1 output opened.
+
+### 1. FIX-6 merged (tests only)
+
+`git merge --no-ff 702cf051` -> **`0d553a34`** (ort, no conflict). Brings 048a8205, 0f00013d (round 0), ffc93e6e,
+f943d6dc (round 1), e2b9758a, 702cf051 (round 2). Diff of the merge against `97a98978`: **`scripts/tests/test_research_spec.py`**
+(475 lines changed) and the lane report `.superpowers/sdd/platform-v8-20260929/task-FIX-6-report.md` (new, sprint
+directory); nothing else: no spec, script, tool or executable.
+
+`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs scripts/tests`, `ATX_EQUITY_BIN` and
+`ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bin dirs on PATH:
+
+| suite | result | against |
+|---|---|---|
+| scripts/tests (whole) | **2 failed, 185 passed, 3 skipped** (104.8 s); skips: the three RESEARCH_CYCLE_LIVE_ROOT tests | before the locks 182 / 3; after the base-lo1 lock 20 failed / 162 / 4; FIX-6 lane 186 / 4 (190 tests, as here) |
+| `scripts/tests/test_research_spec.py` alone | 2 failed, 45 passed | the 20 failures of the lock are gone |
+
+**FINDING (not fixed; dispatch: report, no non-test edit): one cause, two failures.**
+- `test_v8_base_specs_carry_the_ruled_settings` (`scripts/tests/test_research_spec.py:546`) asserts
+  `as_authored(base-b0c)["change"]["inputs"]["label_role"]["dir"] == "build-equity/train-2020-2023-lo1-dlret"`. The live
+  `scripts/specs/v8/base-b0c.json` carries `train-2020-2023-lo3-dlret` since batch 1b's B0c lock `2ad09c13` (the A2
+  root sequence's re-point when B0b wins; the spec's own description names it). FIX-6's base `f7c430f2` predates
+  `2ad09c13` (not an ancestor), so the lane's suite saw lo1-dlret and passed.
+- `test_the_whole_file_passes_with_a_generated_spec_present` runs the file in a subprocess; its inner result is
+  "1 failed, 45 passed, 1 deselected", the failing test being the one above.
+- The fix is a test premise (as PM5-20 / PM5-24): `as_authored` would reset the label_role dir like the parent, or the
+  assertion would accept either winner's dlret role. A tests-only change for the FIX-6 lane or a PM ruling; no cell
+  is affected (no spec, script or executable moves). `git status --porcelain` empty after the suite (no golden moved).
+
+### 2. Fields v10 on lo3: built; reuse counts 63 / 7, NOT the expected 49 / 21: STOPPED
+
+**Preconditions** (re-checked immediately before the run, 2026-10-02T09:56:29Z):
+- Tree clean at `0d553a34`. `atx-engine/tools` has no change from R11's source `2b80cf9e` to `0d553a34` (`git diff`
+  empty): builder `b44cff42`, `research_fields_sec.py` `27034019`, `research_fields_holdings.py` `edfd1967` = R11's
+  bindings; `research_fields_price.py` `fc5e4b5a`, `research_fields_v8.py` `d90bb44d`.
+- Freeze list re-hashed, all equal to batches 1a-2a (`run_bounded_research.py` 81b5de1e, `research_cycle.py` f6b4043d,
+  `research_spec.py` 9dbb7879, `research_ledger.py` c90edb6e, `research_tree.py` c313a510, `fit_composition_weights.py`
+  8860483c, `alpha_report_card.py` ade2d777, `book_monitor.py` 628b2e6e, `nav_summ.py` 719ac51f,
+  `backtest_integrity.py` 2e195823, `compare_window_overlap.py` b4d7f2e8, `research_window.json` 62cf2cfa; exes IC
+  ab7e2cbd, targets 5497c89d, risk 8967952c). Ledger 41 lines, `ed3f4139...`, N 40.
+- Live stage manifests (W0-n), all equal to the R11 table ("Wave 0 part 2a"): v2-pit `09aac28f`, earnings_calendar
+  `9a4a976b`, insider `dcd3f1aa`, sec_filings `5190fe99`, thirteenf `8974170f`, ftd `a76d69be`, regsho_threshold
+  `fb073c62`, security_master `3afe0660`, short_volume_ext `7007a13c`, fundamentals (SIC) `9f9b2f85`, delisting
+  `1b1166b6`, FINRA SI asof `a2561d75`, raw short volume `manifest.csv` `8b076a16`; fundamental-events-v3 `304d2945`.
+- Vendor file unchanged (3,617,973,507 B, mtime_ns 1789920127331396300); role lo3 `e1c67101` `source_sha256`
+  `0ed96b26...` (the price module checks `--price-source` against it). Disk 60,460,056 KiB free (57.7 GiB); RAM
+  4,792 MiB available.
+
+**Command** = R11's recorded argv (receipt `train-2020-2023-lo3-fields-v9-run`, verbatim) with F-3's v10 delta
+(task-F-3-report "Argv deltas"; task-F-1-report step 3), nothing else changed:
+- `--output build-equity/train-2020-2023-lo3-fields-v10`;
+- `--fields <the 63 v9 names in v9 order>,ret_overnight,ret_intraday,ceq_iss_5y,coskew_60m,vol_126,xrd0_ttm,grp_ff12f49`;
+- `--reuse build-equity/train-2020-2023-lo3-fields-v9 --reuse-sha256 9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef --reuse-hardlink`;
+- `--price-source C:/Users/natha/Downloads/TickerHistory3.parquet`;
+- builder `--max-rss-mib 2048 --max-seconds 580` (v9's; F-1 needs >= 1,200).
+Runner `scripts/run_bounded_research.py --seconds 600 --max-rss-mib 2560 --min-free-mib 512` (R11's preparation caps),
+`--output build-equity/train-2020-2023-lo3-fields-v10-run`, binds R11's four plus `research_fields_price.py`,
+`research_fields_v8.py` and the prior's `manifest.json`.
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | argv digest | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| fields v10 lo3 | `train-2020-2023-lo3-fields-v10-run` | `0d553a34` | completed / 0 | **102.5** | **1,136** | `a7c5745f3f8d72997226d48c821a09aa033dd5e29ac260bbba315bb5279a66e3` | `4fce9e313f109a22d0249c554de9e376ed9b2611777548f779c4402cc9a0bec3` | **`a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, interpreter `624bbc05`, min system free 4,350 MiB. No
+`FieldNeedsOpen`: the open exists in the vendor file (OD-6 settled; ret_overnight / ret_intraday built).
+
+**Manifest** (metadata only; no payload value or coverage figure read): status complete, `seal.exclusive_end`
+2024-01-01, role `e1c67101`, **70 rows**, 82 source paths, none 2024-named; `code_sha256_lf` `74df97f9...` (= v9's);
+581,764 B (under the 1 MiB C++ cap). `reuse`: from v9 lo3 `9f156363`, mode hardlink.
+
+**Counts: reused 63, computed 7** (the seven new names; reason "absent from the prior manifest" for each). **Expected
+(dispatch, PM3-5a, F-3): 49 / 21. Mismatch: STOP; nothing adjusted, nothing re-run.**
+
+**Identity of the v9 payloads:** for all 63 v9 fields the v10 entry `sha256` = the v9 entry `sha256` = the v10
+`files` pin (63 / 63; so the 49 builder + holdings fields the dispatch names, and the 14 SEC fields too); all 63
+re-hash on disk to the pin and are hardlinks of the v9 files (same inode); every one carries `reused_from` (v9 lo3,
+host code blob `e8b57af5`). New payload pins (re-hashed equal): ret_overnight `1a41d385`, ret_intraday `f6cf5eb3`,
+ceq_iss_5y `88301a7b`, coskew_60m `c3503df3`, vol_126 `ee15d4bf`, xrd0_ttm `e9b5adef`, grp_ff12f49 `14eaa17a`.
+
+**Why 63 / 7 (from code identity and git, no data):** 49 / 21 is F-3's count for a prior P = `v8-i3p4-c-fields2`
+built on integration-3 code, before F-B (`0687e82f`) moved the `sec` group fingerprint; PM3-5a carried it to "v10 from
+v9". Fields v9 lo3 was built at `2b80cf9e`, and `0687e82f`, E-21 `eca04c18` and F-A `230b39e1` are all ancestors of
+`2b80cf9e`; with `atx-engine/tools` unchanged since, the 14 SEC fields' producer fingerprint equals today's and they
+are copied. That is F-3's other stated case ("reused 63, computed 7"). F-3 also says the 14 would recompute "with the
+same bytes", so the v10 payloads are what a 49 / 21 build would have written; only the count differs. Whether v10
+(`a4a060ae`) stands as built is the PM's call.
+
+**Order note:** the manifest lists fields in the builder's registry order, not the `--fields` order: the seven new
+names sit at rows 55-61 (after `k8_days_since_any`, before `inst_own_share`); the 63 v9 names keep their relative order.
+A spec `fields.list` pinned to this dir must follow the manifest order (the as-built pin check compares the order).
+
+Disk after: 60,103,140 KiB free (57.3 GiB); the v10 dir holds 4,444 MiB of which 445 MiB are new (7 payloads +
+manifest; 63 hardlinks).
+
+### Not done (by the dispatch)
+
+R-2 not locked or run (it waits for the R-1 ruling, which fixes its parent); no registry edit, no `add-alpha`, no
+`lib-v80.json`, no cell. N 40; ledger 41 lines `ed3f4139` unchanged; admission trials 0, re-screens 0; history reads 0.
+
+### Hidden-data record (batch 2b)
+
+- Inputs opened by the builder: role lo3, the v9 lo3 prior (manifest; payloads hardlinked, re-hashed), the vendor
+  TickerHistory3 file (reader-side seal; hashed whole by the price module), FINRA SI, CNMS short volume, the atx-db
+  stages and fundamental events v3 through their sealed readers. Atx-db stage manifests hashed by me, not parsed.
+- Logs: runner stdout / stderr: 0 lines with a 2024-2029 date; the runner console: one hit, the run's own wall-clock
+  start stamp 2026-10-02T09:57:22Z. I read receipt fields and manifest metadata (reuse block, names, digests, seal,
+  source paths, code identity) only; no stdout progress line, no field value, coverage, IC, return or Sharpe.
+- **Nothing dated 2024-01-01 or later was opened. No R-1 artifact opened.**
+
+### Open items (batch 2b)
+
+- **PM ruling: fields v10 reuse count 63 / 7 against the expected 49 / 21** (cause above; payloads of all 63 v9
+  fields bit-identical; manifest `a4a060ae...0809`). The dir and its receipt stay on disk untouched.
+- `scripts/tests`: 2 failures from `test_research_spec.py:546` (label_role lo1-dlret premise vs the live lo3-dlret);
+  tests-only fix for the FIX-6 lane or a ruling.
+- Field order of v10 is the registry order (rows 55-61 new): relevant to any `fields.list` or `add-alpha --fields`.
+- R-2 waits for the R-1 ruling (parent).
