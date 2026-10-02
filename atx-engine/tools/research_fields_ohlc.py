@@ -57,7 +57,7 @@ OHLC_CLOCK = (
     "the seal are never read")
 BAR_RULE = (
     "ohlc-bar-v1: x_adj[t] = x[t] * close.f64[t] / raw_close.f64[t], x = the vendor {col} of (session t, line) "
-    "widened from the source float; NaN unless present.u8[t] = 1 with finite positive close and raw close, exactly one "
+    "held as float32 (the vendor column precision, as the role's close) and widened to f64; NaN unless present.u8[t] = 1 with finite positive close and raw close, exactly one "
     "vendor row has that (tradingDate, securityID) key (duplicates quarantined), open, high and low are finite and "
     "positive, and low <= min(open, raw close) and high >= max(open, raw close) (a violating bar is withheld whole)")
 CAVEATS = ["the vendor's open, high and low (TickerHistory3), not exchange auction or consolidated prints",
