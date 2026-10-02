@@ -1995,3 +1995,10 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   (`3603845b`), file SHA-256 `25ba909f95bfc42722fece5dda0501ec8d12700d038fcfb8794ae344df68ecd4`; 27 items (X-2 5,
   X-3 8, X-4 9, X-5, X-6). Fields v13 lo3 (P6): manifest `e5f7f28c`, 70 reused / 5 computed, the 70 byte-identical.
   K1: all 22 strings plan on v13 (X-2 5, X-3 8, X-4 9); none void.
+- X-2 (refinement wave; log "X batch 1"), acceptance under PM7-34 (in effect from X-2): screen of `lib-v8x2.json`
+  (5 admission lines; gate PASS 2 of 5 with the prior sign; bac_vq, ind_adj_rev_5_nx, iv_rv_spread_xe runner sign
+  -1 against +1) -> PM7-35 (R-a): the cell is `lib-v8x2b.json` (q5_eg_f49g, ins_opp_buy; 0 new lines). L 1.1474,
+  gross .98621 against .98599 (no correction). ACCEPTED, N 51. S2 net Sharpe 1.2669 (parent 1.2559); dSR +.0109,
+  SE .0603, p one-sided .450 (two-sided .888); mechanics pass; capacity criterion met (4x net Sharpe 1.188 against
+  1.178); turnover .02383 (.02393). Net annual 4.64% (4.54%), gross of cost 5.92% (5.81%), max drawdown 3.11%.
+  DSR at N 51 .488. Admission trials: X hand-written 5 of 13. Parent is X-2 (`lib-v8x2b.json`).

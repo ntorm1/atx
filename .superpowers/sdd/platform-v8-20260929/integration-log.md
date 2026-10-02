@@ -5639,3 +5639,54 @@ its prior is dropped from the wave; the same reading applies to X-4's re-screene
 argv, `--name v8x2b`; plans `x2b-plans/`); library `f60162a2`, recipe `24444852` (admission_trials 2, unchanged 50),
 spec `lib-v8x2b.json` with PM6-8 (i) applied before any run. Registered in `v8-prereg.md` ("Library v8x2b").
 
+| phase (v8x2b; source `86b0f202`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 6.0 | 528 | 0 | `04869456798817f7de768fb17a1eb21e76db792ee86d3b8ad7429fd116bd50c7` | u-compare IDENTICAL (50 objects; 146,300 rows of 50 keys) |
+| fit | 180 / 1,536 | 0.8 | 56 | 0 | `e379cf9688740c56b8355fc587bd9640cce05f71900bc5eb583533ce93aa1202` | `mega-weights-v8-r1-std-v8x2b` |
+| card | 300 / 2,560 | 14.5 | 1,271 | 0 | `56e5d0747687e0fe9d732b353f7384c0b7b8923726b2be758242fe75212c5f6b` | - |
+| marginal (pool only) | 360 / 1,536 | 134.6 | 251 | 0 | `b506021e45f7512904b3ab5d8b9bcdce1a8f8179320a681a27f563c485c7c6a0` | report only |
+| gate p1-v8x2b | internal | - | - | PASS | - | 2 of 2 with the prior sign (q5_eg_f49g, ins_opp_buy); **0 lines appended, 2 already ledgered**; 0 reference status changes |
+| ref (L 1.1474) | 180 / 1,536 | 43.3 | 586 | 0 | `bfc873982be8246e3eda349f60a7bc74e982b2815e099cd98b3158ccc0754b28` | **ref-s2-daily IDENTICAL** to R-2's S2 daily (`7cfe21c4`, 940,625 B): fields v13 reproduces the parent |
+| w | 300 / 3,072 | 31.2 | 1,307 | 0 | `ae34838585c84c2b2f6cad5896f3e8c635726fdfceb20199c56d0b4ee0ee09a6` | `mega-v8-r1w-train-std-v8x2b-1` |
+| nav (L 1.1474; step (1) = the cell) | 180 / 1,536 | 41.5 | 586 | 0 | `e9f43eb009e1d69ad1bbba9f2aaac6168d893da9a3439bedb7bbd7a26ca3ee3e` | `summary.json` `a9ed9f31`, S2 daily `ad9de313`, capacity `54c68d58`, recipe `f16fc8b1` |
+| monitor / summ | 180 / 1,536 | 1.0 / 28.4 | 106 / 592 | 0 | - | `monitor.json` `47c1008c` (alarm); `cycle-v8x2b/summ.json` `3377c4a4`, `cycle_verdict.json` `d8c231e5` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 479 | 0 | `010be337f42aa6d7d91cecf4f0c0ab057e8df6fc008691f2816a8110ec28acf3` | `v8-cells-x2-bundle.json` `39d7157f` |
+
+**Gross match (step 1 at the parent's L 1.1474; mech.py, mechanics keys only): G 0.9862108210 vs G_parent 0.9859903463,
+|diff| .00022 <= .005 -> the cell stands at L 1.1474** (no correction; no calibration run beyond the cell).
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9862 in [.90, 1.05] (post-ramp .9921); net +.0044
+(<= .02); tau mean .02383 <= .20, p95 .02826 <= .30 (1,004 sessions; summary flags true); max gross 1.121, max |net|
+.030; gross at score_begin .939; by year .963 / 1.000 / .986 / .996; 1,006 CSV rows, 1,005 return rows; accounting
+7.8e-14 / 3.8e-16 (tol 1e-9).
+
+**Statistics of record** (S2): net Sharpe **X-2 +1.2669** vs R-2 +1.2559. Paired (studentized CBB, block 21, seed
+20260929, 4,999 resamples; 1,005 sessions): **dSR +.0109**, rho .993, **Memmel SE .0603** (t +.18); CBB 95% [-.123,
++.159]; LW SE .0724, 95% [-.138, +.160]; **bootstrap p one-sided .4502, two-sided .8882** (bundle = cycle). DSR (verdict,
+`--dsr-ledger`, N 51): ledger DSR **.4878** (V[SR] 1.252e-03 per session from 22 window lines); effective-N .7280; legacy
+.7681; PBO .3618.
+
+**Capacity criterion (PM7-10, printed, decides nothing under PM7-34): net Sharpe at 4x NAV 1.1883 vs 1.1785 -> met.**
+Turnover tau_gmv_mean .02383 vs .02393 (per unit gross .02417 vs .02427).
+
+**Verdict (PM7-34: dSR > 0 AND mechanics): dSR +.011 > 0 AND mechanics PASS -> ACCEPTED, N 51.** Ledger line trial
+`348d59bf4a3c3778` (cell = the v8x2b NAV dir, s2_net_sr 1.26688, origin prior, window research-window-v2, prev
+`9bd909df`); ledger 77 lines (59 construction incl. the 8 W0-4 re-runs, 17 admission, 1 protocol), file `ce1e430d`, head
+`3c84c5b2`. **Admission trials: v8 12 + X 5 (of 13 hand-written).**
+
+Returns (S2, annual): net 4.64% (CAGR 4.67%) vs R-2 4.54%; gross of cost 5.92% (5.81%); trade cost .74%, borrow .34%,
+long financing .20%; vol 3.66%; max drawdown 3.11% (3.25%); gross Sharpe 1.618 (1.610).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0038 | -.089 | .0359 | .0263 | 14.99 |
+| 2021 | 252 | +.1010 | +2.649 | .0366 | .0227 | 11.56 |
+| 2022 | 251 | +.0739 | +1.743 | .0416 | .0234 | 12.21 |
+| 2023 | 250 | +.0187 | +.609 | .0315 | .0229 | 11.58 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.305 (1.289), 1x 1.267 (1.256), 2x 1.237 (1.223), **4x 1.188
+(1.178)**, 8x 1.106 (1.100); cost bps per traded dollar 10.76 / 12.58 / 14.79 / 16.99 / 18.78 (R-2 10.67 / 12.47 / 14.66 /
+16.87 / 18.67). Disclosure (PM7-18 b): ins_opp_buy (B-3) is one of the refinements "chosen with TRAIN statistics in
+view"; the X report prints the book with and without it.
+
+**Next parent: `scripts/specs/v8/lib-v8x2b.json`, library v8x2b, L 1.1474, G 0.9862108210.**
+
