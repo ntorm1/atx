@@ -1424,3 +1424,24 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
 - Unmerged at the stop (all trees clean): FIX-6 702cf051 (pool 10, tests only); wave AG mining branch 1bd448cd
   (pool 8: MINE-MEM + MINE-STAT + MINE-RUN joined, round 1, ENG-SLOT; C++ uncompiled); FIELDS-V9 / LIB3
   834d5a05 (pool 11). Dispatched: integrator REPORT-INTERIM (root).
+
+## 2026-10-01 STOP at owner instruction (PM session 5); interim report built; status 5 written
+- Interim report (PM5-27; log "interim report (owner stop)"; head 5ef4eb99): the report tool rendered
+  docs/plans/2026-10-01-mega-alpha-v8-interim-pitch.html (139,806 B, sha 93206179) and
+  docs/plans/2026-10-01-mega-alpha-scorecard-v8-interim.md (33,363 B, sha 3a13fe3f) from
+  docs/plans/mega-alpha-v8-pitch.interim.config.json (sha 79e40f9a) on B0a, B0b, B0c. 37 unavailable blocks
+  (bundle, v8.final, 11 paired files, 3 NAV summaries, 2 member-horizon, 18 V8-F book blocks, the diagnostics
+  block: no tool verb combines the eight split files). Self-check: every B0a / B0b / B0c figure equals the
+  log; the year table and headline are B0c's; 1.0672 appears only in R-1's sentence; no R-1 path read (PM
+  check: the config's R-1 dir is a placeholder that does not exist); no data date at or after the seal; report
+  tests 131 pass; registered config, template, tools and ledger (41 lines, ed3f4139) unchanged. Not reconciled:
+  the interim's effective-N DSR (.985) and Lo-null DSR (.746) are over three dirs, not the cycle's grid (log
+  .8763); not meaningful until PM5-22's re-runs. No improvement is claimed.
+- Open for the next session, in order: merge FIX-6 702cf051; rule on R-1 (mechanics fail on gross, no return
+  read, unledgered); cells from fields v10 / R-2; the W0-4 re-runs; V8-F; integration 8 (mining branch 1bd448cd,
+  FIELDS-V9 834d5a05, the deferred C++ halves). A v9 note: a diagnostics combine verb (or a config that takes
+  split files) is needed for a render with 0 unavailable blocks; it is a report-tool change, so it lands after
+  the freeze gate or as a tests-and-report-only change ruled by the next PM.
+- N 40; admission trials 0; history reads 0; validation reads 2 (before v8); 2024+ never opened. Root code head
+  1cc4c6c9 (build v8-12); every tree clean.
+- Status: docs/plans/2026-10-01-platform-v8-status-5.md. Goal prompt: docs/plans/2026-10-01-platform-v8-next-goal-prompt-5.md.
