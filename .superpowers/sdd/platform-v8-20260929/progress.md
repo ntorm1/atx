@@ -1487,3 +1487,16 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   paths. Never deleted: anything a locked spec, a pin, an identity or a W0-4 re-run reads; `atx-db/`; anything
   another process holds -- a cache a later cell reuses costs hours to rebuild and some pins cannot be rebuilt
   bit-identically -- cost if wrong: less space freed than possible.
+- R-1 gross, read-only look (report `r1-gross-investigation.md`, folded in below when root is free): verdict
+  DESIGN, no defect. The re-ranked target moves 35% slower (daily change of the gross-1 target .221 -> .144), the
+  book tracks it closer (book gross / L .787 -> .856), so at the fixed L 1.247 planned gross is 1.064 against
+  B0c's .979. No R-1 return statistic was read.
+- Ruling PM6-4 (fields v10 stands at 63 reused / 7 computed; manifest `a4a060ae...43070809`): the 49 / 21 of the
+  brief was F-3's count against a prior built before F-B; fields v9 lo3 already holds F-B, so the 14 SEC fields
+  are copied; all 63 reused payloads are bit-identical to v9 and the 7 computed are the 7 new fields -- the bytes
+  equal what a 49 / 21 build would write; the count was the PM's stale expectation, not a finding -- cost if
+  wrong: none (digests are equal).
+- Ruling PM6-5 (FIX-6 round 4, tests only, pool 10): `test_research_spec.py:546` expects B0c's label role on
+  lo1-dlret; the live `base-b0c.json` is on lo3-dlret since batch 1b. The lane merges root into its branch,
+  corrects the expectation to the live spec, and root merges by SHA with the next batch -- the spec is locked
+  and correct; the test predates it -- cost if wrong: none (tests only).
