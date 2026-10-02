@@ -5,6 +5,7 @@
                               [--removes ID ... | --replaces ID ... [--rescreen]]
                               [--exception LIMIT=N ... --exception-basis TEXT] [--fields DIR]
                               [--prior-sign-source S] [--form F] [--formula F] [--domain D] [--deviation D]
+                              [--save-plan PATH]   (YINFRA, opt-in: also write the validated K1 plan of record)
 
 1. registers the alpha in atx-impl/strategies/alphas/registry.json (an identical registration of an existing id is
    reused, another definition of it refused; theme, tier and origin are checked against the registry);
@@ -371,6 +372,11 @@ def add_alpha(a) -> int:
                                         [alphas[i] for i in new_ids], spec_rel), encoding="utf-8", newline="\n")
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if getattr(a, "save_plan", None) is not None:   # YINFRA: the K1 plan of record (a resumed call rewrites it)
+        out = a.save_plan if a.save_plan.is_absolute() else root / a.save_plan
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8", newline="\n")
+        print(f"K1 plan of record {out.as_posix()} (sha256 {G.sha256(out.read_bytes())})")
     print(f"add-alpha {a.id}: {'registered' if created else 'already registered (identical)'} in "
           f"{STRATEGIES}/{G.REGISTRY_PATH}")
     print(f"library {name} ({lib['id']}): {len(lib['members'])} members = {a.parent} + {new_ids}; "
@@ -415,6 +421,9 @@ def main(argv=None) -> int:
     ap.add_argument("--formula", default=None)
     ap.add_argument("--domain", default=None)
     ap.add_argument("--deviation", default=None)
+    ap.add_argument("--save-plan", type=Path, default=None, metavar="PATH",
+                    help="also write the K1 plan this call validated (the plan of record) to PATH (root-relative or "
+                         "absolute; written only when every check passed; a resumed call rewrites it)")
     ap.add_argument("--root", type=Path, default=research_tree.REPO)
     a = ap.parse_args(argv)
     try:
