@@ -287,9 +287,8 @@
   },
   "verdict": true,
   "marginal": {
-    "output": "build-equity/mega-v8-b0b-train-u-v80-marginal",
-    "pool": "reference_combined",
-    "themes": "reference_weights"
+    "output": "build-equity/mega-v8-b0b-train-u-v80-marginal-pool",
+    "pool": "reference_combined"
   },
   "ref": {
     "output": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80-ref",
