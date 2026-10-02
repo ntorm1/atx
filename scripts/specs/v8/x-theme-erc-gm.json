@@ -1,0 +1,40 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8x-theme-erc-gm",
+  "description": "Cell X-5 at matched gross (Ruling PM6-6; v8x-prereg.md section 14, N 54): the registered change of x-theme-erc.json unchanged (fit --theme-erc theme-erc-v1 on the parent's fit argv; fit / card / w outputs are x-theme-erc.json's, resumed as done), plus the aim leverage set so that its all-rows S2 gross matches the parent X-3 (lib-v8x3b-gm.json, G .9861733264) within .005. Calibration step (1) = x-theme-erc.json's NAV at the parent L 1.1414 (mechanics only: all-rows gross .9604183310, no return read); L = 1.1414 x .9861733264 / .9604183310 = 1.17201 -> 1.1720. The cell is ledgered once, from this run. Acceptance (Ruling PM7-34): paired S2 net dSR > 0 against the parent AND mechanics; the registered turnover-per-unit-gross criterion is computed and printed as the capacity criterion and decides nothing.",
+  "parent": "lib-v8x3b-gm.json",
+  "nominal_parent": "r1-comp-v8.json",
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8x-theme-erc",
+      "card.output": "build-equity/mega-cards-v8x-theme-erc",
+      "ic.w_output": "build-equity/mega-v8xw-train-theme-erc",
+      "nav.output": "build-equity/mega-nav-v8x-theme-erc-L1.1720",
+      "monitor.output": "build-equity/mega-monitor-v8x-theme-erc",
+      "nav.leverage": "1.1720"
+    },
+    "flags": {
+      "fit": {
+        "--theme-erc": "theme-erc-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b/summary.json",
+      "sha256": "e342db4faee76302c6953bf949ad55f3586442ea96600bd9379600519beb5bec"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v8x3b/admission.json",
+      "sha256": "5f5b3edb280cb44ff64fa3208cecc319f166d8eae1c1326c526f455a74f2b196"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v8x3b-1/train_combined.json",
+      "sha256": "7f9a6bc529aa9e6b833bd2e159a8a3caa87b98e21f4ea4e8aa863b807b1a2dec"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v8x3b/composition_weights.json",
+      "sha256": "82685a2246d419db979d9dffa0fd4329f0eaf07668e6944dd8e2f6380d29c2ba"
+    }
+  }
+}
