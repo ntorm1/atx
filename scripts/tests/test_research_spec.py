@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import inspect
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,8 +31,27 @@ import research_tree  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake tools and fixtures)
 import research_add_alpha as RA  # noqa: E402
 
-V8 = HERE.parent / "specs" / "v8"
-V8_SPECS = sorted(p.name for p in V8.glob("*.json"))
+# the v8 spec dir this file reads; ATX_TEST_V8_SPECS points it at a copy (only
+# test_the_whole_file_passes_with_a_generated_spec_present sets it, for the run of this file in its subprocess)
+V8 = Path(os.environ.get("ATX_TEST_V8_SPECS") or HERE.parent / "specs" / "v8")
+
+
+def generated_by_add_alpha(path: Path) -> bool:
+    """Ruling PM5-24: a library spec `research_cycle.py add-alpha` generated (R-2, R-7, R-12), not an authored one,
+    recognised from its content as research_add_alpha.derive_spec writes it: a plain spec in lib-NAME.json (add-alpha's
+    name) whose description names add-alpha and the library NAME, gated p1-NAME, pinning the parent's library as its
+    baseline and comparing its u pass with the parent's rows."""
+    m = re.fullmatch(r"lib-(.+)\.json", path.name)
+    doc = json.loads(path.read_text(encoding="utf-8")) if m else None
+    return m is not None and isinstance(doc, dict) and not RS.is_template(doc) and \
+        str(doc.get("description", "")).startswith(f"Library {m[1]} = ") and \
+        "(research_cycle.py add-alpha; derived from the " in doc["description"] and \
+        (doc.get("gate") or {}).get("name") == f"p1-{m[1]}" and "baseline_library" in (doc.get("inputs") or {}) and \
+        [c.get("name") for c in doc.get("compare") or []][-2:] == ["parent-orientations", "parent-train-daily-ic"]
+
+
+GENERATED = sorted(p.name for p in V8.glob("*.json") if generated_by_add_alpha(p))
+V8_SPECS = sorted(p.name for p in V8.glob("*.json") if p.name not in GENERATED)        # the authored specs
 BASE_NULLS = {"inputs.role", "inputs.identity_bridge", "inputs.fund_events", "fields.manifest_sha256"}
 CHILD_NULLS = BASE_NULLS | {"inputs.reference_cell", "inputs.reference_admission",       # derived from the parent
                             "inputs.label_role"}                                          # B0c's (E-25), inherited
@@ -45,6 +67,20 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
+
+
+def fill_options(name: str | None = None) -> list[tuple[str, str]]:
+    """(section, option) of every value root fills in the spec ``name`` (FILLS), or in any spec when None."""
+    found = [re.fullmatch(r"<fill:(\w+)\.flags (\S+)>", x) for n, xs in FILLS.items() if name in (None, n) for x in xs]
+    assert all(found), FILLS
+    return sorted({(m[1], m[2]) for m in found if m})
+
+
+def well_filled(option: str, value) -> bool:
+    """A value root filled is well formed (Ruling PM5-24): a 64-hex digest for a *sha256 option, else a path as the
+    specs write them (relative POSIX segments, or under a drive)."""
+    form = r"[0-9a-f]{64}" if option.endswith("sha256") else r"(?:[A-Za-z]:/)?[\w.\-]+(?:/[\w.\-]+)+"
+    return isinstance(value, str) and re.fullmatch(form, value) is not None
 FIT_DOWN = {"fit.output", "card.output", "ic.w_output", "nav.output", "monitor.output"}   # downstream of the fit
 LIB_DOWN = FIT_DOWN | {"ic.u_output"}                                                       # downstream of the library
 LIB_CHANGE = LIB_DOWN | {"inputs.library.path", "inputs.library.sha256", "inputs.recipe.path", "inputs.recipe.sha256",
@@ -82,18 +118,74 @@ def flat(node, pre: str = "") -> dict:
     return {pre: node}
 
 
+def committed(rel: str) -> bytes | None:
+    """The bytes of a pinned library or recipe of this worktree (an atx-impl/ file): a fake root holds it as committed,
+    so its pin is verified; None for every other input, which a fake root stands in for."""
+    path = research_tree.REPO / rel
+    return path.read_bytes() if rel.startswith("atx-impl/") and path.is_file() else None
+
+
+def as_authored(spec: dict, name: str | None = None) -> dict:
+    """A copy of a live v8 spec (a resolved spec, or a spec or template file's doc; ``name`` its file name) as its
+    author committed it, before root's runbook steps on it: every pin that `lock --write` fills is null again -- each
+    input's but a committed library's or recipe's (authored with that file and checked against its bytes), the as-built
+    fields manifest's and a template's derived ones ("locked") --, a template's parent is null (planned on its nominal
+    parent) and every value root fills (FILLS of ``name``) is null again (its "<fill:...>" placeholder).
+
+    Rulings PM5-20, PM5-24 (FIX-6, rounds 1 and 2): the fixtures plan the live specs on stand-in files, whose digests no
+    real pin matches, and hold a template's registered change against its nominal parent; they plan and compare this
+    copy, the same whether root has locked a spec, set a template's parent or filled its values or not. What a test
+    asserts about the spec's content is unchanged; only those premises are (test_the_fixtures_plan_a_locked_spec_as_
+    unlocked, test_the_fixtures_plan_every_template_on_every_plausible_parent)."""
+    spec = copy.deepcopy(spec)
+    if RS.is_template(spec):
+        spec["parent"] = None
+        change = spec.get("change") or {}
+        for section, option in fill_options(name) if name else []:
+            ((change.get("flags") or {}).get(section) or {})[option] = None
+        items, sets = (change.get("inputs") or {}).values(), change.get("set") or {}
+        fields = sets.get("fields")
+        if "fields.manifest_sha256" in sets:
+            sets["fields.manifest_sha256"] = None
+        spec.pop("locked", None)
+    else:
+        items, fields = spec["inputs"].values(), spec.get("fields")
+    if RC.as_built(fields):
+        fields["manifest_sha256"] = None
+    for item in items:
+        if committed(item["path"]) is None:
+            item["sha256"] = None
+    return spec
+
+
+def authored_dir(src: Path, dest: Path) -> Path:
+    """``dest`` holding every spec file of the directory ``src`` as authored (a template resolves on its nominal
+    parent, next to it)."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in sorted(src.glob("*.json")):
+        doc = as_authored(json.loads(p.read_text(encoding="utf-8")), p.name)
+        (dest / p.name).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    return dest
+
+
+@pytest.fixture
+def authored_v8(tmp_path) -> Path:
+    """The v8 specs as authored, in a temporary copy: what a test reads that holds a template to its nominal parent."""
+    return authored_dir(V8, tmp_path / "v8-authored")
+
+
 def fake_root(tmp_path: Path, spec: dict) -> tuple[Path, dict]:
-    """A root with a stand-in file for every input, the as-built fields manifest, the pool and an empty ledger; absolute
-    input paths are re-pointed under the root (the returned spec)."""
+    """A root with a stand-in file for every input, the as-built fields manifest, the pool and an empty ledger; the
+    returned spec is the planned copy: its pins as authored (as_authored) and absolute input paths re-pointed under the
+    root."""
     root = tmp_path / "root"
-    spec = json.loads(json.dumps(spec))
-    files = {"build-equity/trials.jsonl": ""}
+    spec = as_authored(spec)
+    files: dict[str, str | bytes] = {"build-equity/trials.jsonl": ""}
     for key, item in spec["inputs"].items():
         if Path(item["path"]).is_absolute():
             item["dir"], item["path"] = f"ext/{key}", f"ext/{key}/manifest.json"
-        committed = research_tree.REPO / item["path"]           # a pinned library or recipe of this worktree
-        files[item["path"]] = committed.read_bytes() if item["path"].startswith("atx-impl/") and \
-            committed.is_file() else "{}"
+        held = committed(item["path"])                          # a pinned library or recipe of this worktree, as is
+        files[item["path"]] = "{}" if held is None else held
     role = spec["inputs"]["role"]
     files[role["path"]] = json.dumps({"universe": {"id": role["universe"]}, "dates": 1405, "score_begin": 399})
     f = spec["fields"]
@@ -108,20 +200,29 @@ def fake_root(tmp_path: Path, spec: dict) -> tuple[Path, dict]:
     return root, spec
 
 
-@pytest.mark.parametrize("name", V8_SPECS)
-def test_every_v8_spec_loads_and_plans(tmp_path, name):
-    """Every spec loads (templates resolve on their nominal parents) and plans with the fake root; the null pins are
-    reported (UNLOCKED, computed from the stand-in files), never crashed on; a template's run is refused until root
-    sets its parent (and meets its requires / fills its values); a base spec has no refusal."""
-    assert set(V8_SPECS) == set(NULL_PINS)
-    path = V8 / name
+def plan_on_stand_ins(tmp_path: Path, path: Path) -> tuple[Path, dict, RC.Cycle, list[str]]:
+    """The fixture path of a v8 spec file: loaded (a template resolved up its parent chain), planned on a fake root
+    (its pins as authored); (root, planned spec, cycle, plan lines)."""
     root, spec = fake_root(tmp_path, RC.load_spec(path))
     c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
-    lines = RC.plan_lines(c)
+    return root, spec, c, RC.plan_lines(c)
+
+
+def unlocked_pins(c: RC.Cycle, spec: dict) -> set[str]:
+    """The pins a plan reports UNLOCKED (computed from the file at plan time)."""
+    pins = {f"inputs.{k}" for k, (_, _, how) in c.pins.items() if how.startswith("UNLOCKED")}
+    return pins | ({"fields.manifest_sha256"} if spec["fields"]["manifest_sha256"] is None else set())
+
+
+def check_nominal_plan(tmp_path: Path, specs: Path, name: str) -> None:
+    """The spec ``name`` of the directory ``specs`` as authored (a template on its nominal parent) loads and plans with
+    the fake root; the pins a lock fills are reported (UNLOCKED, computed from the stand-in files), never crashed on; a
+    template's run is refused while its parent is null (and while its requires are open / values unfilled); a base
+    spec has no refusal."""
+    path = authored_dir(specs, tmp_path / "authored") / name
+    root, spec, c, lines = plan_on_stand_ins(tmp_path / "nominal", path)
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#"))
-    unlocked = {f"inputs.{k}" for k, (_, _, how) in c.pins.items() if how.startswith("UNLOCKED")}
-    unlocked |= {"fields.manifest_sha256"} if spec["fields"]["manifest_sha256"] is None else set()
-    assert unlocked == NULL_PINS[name]
+    assert unlocked_pins(c, spec) == NULL_PINS[name]
     assert any(x.startswith("# phase fields [pinned; done; as built") and "UNLOCKED" in x for x in lines)
     assert [x[len("# fill (root fills before `run`): "):] for x in lines if x.startswith("# fill")] == FILLS.get(name, [])
     doc = json.loads(path.read_text(encoding="utf-8"))
@@ -137,11 +238,250 @@ def test_every_v8_spec_loads_and_plans(tmp_path, name):
     assert all(st.kind != "skipped" or st.phase == "marginal" for st in c.steps())
 
 
-@pytest.mark.parametrize("name", [n for n in V8_SPECS if n in EXPECTED_CHANGES])
-def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
-    doc = json.loads((V8 / name).read_text(encoding="utf-8"))
-    child = RC.load_spec(V8 / name)
-    parent = RC.load_spec(V8 / doc["nominal_parent"])
+def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
+    """The spec ``name`` as it stands in ``specs`` (locked or not; a template on the parent root set, else on its
+    nominal one) plans with the fake root: a parent root set names another spec of that directory and pairs the cell
+    with it (reference_cell is the parent's NAV cell); every pin a lock fills is UNLOCKED (on a chain of registered
+    specs at least the registry's: a chain on base-lo3 adds its own); every value root fills is its placeholder or well
+    formed; `run` is refused for a null parent only, while the template's own requires are open and while a value is
+    unfilled. Returns the planned spec."""
+    path = specs / name
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    _, spec, c, lines = plan_on_stand_ins(tmp_path / "live", path)
+    assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#")), name
+    stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}
+    assert unlocked_pins(c, spec) >= stand_ins | {"fields.manifest_sha256"}, name
+    links = RS.chain(path, research_tree.REPO)
+    if {p.name for p, _, _, _ in links} | {links[-1][2].name if links else name} <= set(NULL_PINS):
+        assert unlocked_pins(c, spec) >= NULL_PINS[name], name   # (an add-alpha parent, lib-v80.json, has fewer)
+    for section, option in fill_options():                    # PM5-24: a value root fills is its placeholder or well
+        value = RC.option_value((spec.get(section) or {}).get("flags") or [], option)          # formed (own, inherited)
+        assert value in (None, f"<fill:{section}.flags {option}>") or well_filled(option, value), (name, option, value)
+    if not RS.is_template(doc):
+        return spec
+    parent, nominal = RS.parent_of(doc, path, research_tree.REPO)
+    assert nominal == (doc["parent"] is None) and parent.parent == specs.resolve() and parent.name != name, name
+    assert any(x.startswith(f"# template {name}: parent {'null' if nominal else parent.name}") for x in lines), name
+    assert spec["inputs"]["reference_cell"]["path"] == f"{RC.load_spec(parent)['nav']['output']}/summary.json", name
+    refusal = RS.run_refusal(spec, path, research_tree.REPO) or ""
+    assert ("template parent is null" in refusal) == nominal, name
+    assert all(f"{name} requires: {r}" in refusal for r in doc.get("requires", [])), name
+    assert all(f"unfilled value {x}" in refusal for x in RS.fills(spec)), name           # refused while one is left
+    return spec
+
+
+@pytest.mark.parametrize("name", V8_SPECS)
+def test_every_v8_spec_loads_and_plans(tmp_path, name):
+    """Every live authored spec plans as authored (check_nominal_plan) and as it stands (check_live_plan): the same
+    whether root has locked it, set a template's parent or filled its values or not. The authored set is the registry
+    (a spec add-alpha generated is checked by test_every_generated_spec_plans_and_parents_the_templates)."""
+    assert set(V8_SPECS) == set(NULL_PINS)
+    check_nominal_plan(tmp_path, V8, name)
+    check_live_plan(tmp_path, V8, name)
+
+
+def test_the_fixtures_plan_a_locked_spec_as_unlocked(tmp_path):
+    """Ruling PM5-20: a copy of every v8 spec, locked as `lock --write` locks it (relocked where root already has: each
+    pin it fills an arbitrary digest no stand-in has, a committed library or recipe its own), plans through the fixture
+    paths of the live spec (as authored: the same pins reported UNLOCKED; as it stands); the planned copy with a locked
+    pin put back is refused. So the suite does not depend on whether root has locked base-lo1, base-lo3 or a template
+    on them."""
+    specs = tmp_path / "v8"
+    shutil.copytree(V8, specs)
+
+    def lock_reads(self, rel):                        # what `lock` reads, without a file under any root
+        held = committed(rel)
+        return hashlib.sha256(f"arbitrary {rel}".encode() if held is None else held).hexdigest()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(RC.Resolver, "sha", lock_reads)
+        for name in V8_SPECS + GENERATED:             # base specs fill inputs and fields, templates change.inputs
+            locked, _ = RC.lock(specs / name, tmp_path / "no-root", relock=True)   # and "locked" (the derived pins)
+            (specs / name).write_text(json.dumps(locked, indent=2), encoding="utf-8")
+    for name in V8_SPECS + GENERATED:                 # (a generated spec: add-alpha's, PM5-24)
+        path = specs / name
+        locked = RC.load_spec(path)
+        assert all(item["sha256"] for item in locked["inputs"].values()), name          # every pin filled
+        assert locked["fields"]["manifest_sha256"], name
+        if name in GENERATED:
+            check_generated(tmp_path / name, specs, name)
+        else:
+            check_nominal_plan(tmp_path / name, specs, name)
+            check_live_plan(tmp_path / name, specs, name)
+        root, spec, _, _ = plan_on_stand_ins(tmp_path / name / "control", path)
+        role = dict(spec["inputs"]["role"], sha256=locked["inputs"]["role"]["sha256"])
+        with pytest.raises(RC.CycleError, match="PIN MISMATCH role") as e:             # the lock's pin, on a stand-in
+            RC.Cycle(dict(spec, inputs=dict(spec["inputs"], role=role)), RC.Resolver(root), spec_path=path,
+                     capabilities=T.CAPS)
+        assert e.value.code == RC.EXIT_PIN, name
+
+
+# the templates in the order root runs their cells (task-CELLS-brief.md): each on the last accepted cell's spec, B0c
+# (accepted by declaration) on the winner of B0a / B0b; R-10 and R-11 run only if R-1 and R-6 were accepted (E-38).
+# R-2 and R-7 run as add-alpha's lib-v80.json / lib-v81.json: their templates stand in for those cells as parents.
+CELLS = ("base-b0c.json", "r1-comp-v8.json", "r2-lib-v80.json", "r3-aim-gain.json", "r4-hold-band.json",
+         "r5-adv-hold.json", "r6-spo-v3.json", "r7-lib-v81.json", "r8.json", "r10.json", "r11.json")
+ONLY_IF = {"r10.json": {"r1-comp-v8.json", "r6-spo-v3.json"}, "r11.json": {"r1-comp-v8.json", "r6-spo-v3.json"}}
+WINNERS = ("base-lo1.json", "base-lo3.json")
+
+
+def ran_parents(name: str, winner: str, accepted: set[str]) -> dict[str, str] | None:
+    """The parent root set in every template that ran up to and including ``name`` (each on the last cell accepted
+    before it), or None when ``name`` or an accepted cell could not run (its condition unmet)."""
+    parents, last, done = {}, winner, set()
+    for cell in CELLS[:CELLS.index(name) + 1]:
+        if not ONLY_IF.get(cell, set()) <= done:
+            if cell == name or cell in accepted:
+                return None
+            continue
+        parents[cell] = last
+        if cell in accepted or cell == CELLS[0]:
+            last = cell
+            done.add(cell)
+    return parents
+
+
+def plausible_histories() -> list[tuple[str, dict[str, str]]]:
+    """(template, the parents root set) for each template on each plausible accepted predecessor P, after two
+    histories: every cell up to P accepted (B0a won), and only P and the cells P and the template need accepted (B0b
+    won); the cells in between ran and were rejected."""
+    out: list[tuple[str, dict[str, str]]] = []
+    for name in CELLS:
+        for pred in WINNERS + CELLS[:CELLS.index(name)]:
+            dense = set(CELLS[:CELLS.index(pred) + 1]) if pred in CELLS else set()
+            sparse = {pred, *ONLY_IF.get(name, ()), *ONLY_IF.get(pred, ())}
+            for winner, accepted in zip(WINNERS, (dense, sparse)):
+                parents = ran_parents(name, winner, accepted)
+                if parents and parents[name] == pred and (name, parents) not in out:
+                    out.append((name, parents))
+    return out
+
+
+def test_the_fixtures_plan_every_template_on_every_plausible_parent(tmp_path):
+    """FIX-6 round 1: root sets each template's parent to the last accepted cell's spec, cell by cell. For each template
+    on each plausible accepted predecessor, in a copy of the v8 specs with the parent of every cell that ran set: the
+    copy as authored is byte for byte the live specs' as authored (so every assertion held against a nominal parent
+    reads the same files); the template plans with the parent set (check_live_plan) and still differs from its nominal
+    parent only by its registered change (check_registered_change); the rules the chain decides follow it (E-27: R-3's
+    aim rule by whether R-1 was accepted; E-44, E-45: R-10's shrink rule by whether R-3 was, on an R-1 chain only;
+    R-11 keeps its parent's composition). Round 2 (PM5-24): every cell that ran carries the values root filled (R-6,
+    R-8: the risk store and its digest); the template itself is filled in the dense history, still to fill in the
+    sparse one, and its run is refused exactly while a value is unfilled."""
+    cases = plausible_histories()
+    preds: dict[str, set[str]] = {}
+    for name, parents in cases:
+        preds.setdefault(name, set()).add(parents[name])
+    later = {n: set(CELLS[:k]) for k, n in enumerate(CELLS) if k and n not in ONLY_IF}
+    assert preds == {CELLS[0]: set(WINNERS), **later, "r10.json": {"r6-spo-v3.json", "r7-lib-v81.json", "r8.json"},
+                     "r11.json": {"r6-spo-v3.json", "r7-lib-v81.json", "r8.json", "r10.json"}}
+    want = {p.name: p.read_bytes() for p in authored_dir(V8, tmp_path / "authored").glob("*.json")}
+    for i, (name, parents) in enumerate(cases):
+        specs = tmp_path / f"h{i}" / "v8"
+        shutil.copytree(V8, specs)
+        dense = parents[CELLS[0]] == WINNERS[0]
+        store = f"build-equity/atx-risk-v1.1-{parents[CELLS[0]][5:8]}/manifest.json"   # what root fills (R-6, R-8)
+        for cell, parent in parents.items():
+            doc = dict(json.loads((specs / cell).read_text(encoding="utf-8")), parent=parent)
+            for section, option in fill_options(cell):          # filled, or (the template, sparse) still to fill
+                doc["change"]["flags"][section][option] = None if cell == name and not dense else \
+                    hashlib.sha256(store.encode()).hexdigest() if option.endswith("sha256") else store
+            (specs / cell).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        authored = authored_dir(specs, tmp_path / f"h{i}" / "authored")
+        assert {p.name: p.read_bytes() for p in authored.glob("*.json")} == want, (name, parents)
+        spec = check_live_plan(tmp_path / f"h{i}", specs, name)
+        assert bool(RS.fills(spec)) == (name in FILLS and not dense), (name, parents)
+        check_registered_change(authored, name)
+        chain, cell = set(), name
+        while cell in parents:
+            cell = parents[cell]
+            chain.add(cell)
+        composition = RC.option_value(spec["fit"]["flags"], "--composition")
+        if name == "r3-aim-gain.json":
+            assert composition == ("ew-theme-std-aim-v1" if "r1-comp-v8.json" in chain else "ew-theme-aim-v2"), parents
+        if name == "r10.json":
+            assert composition == ("ic-shrink-aim-v1" if "r3-aim-gain.json" in chain else "ic-shrink-v1"), parents
+        if name == "r11.json":
+            parent_fit = RC.load_spec(specs / parents[name])["fit"]["flags"]
+            assert composition == RC.option_value(parent_fit, "--composition"), parents
+            assert RC.option_value(spec["fit"]["flags"], "--theme-resid") == "theme-resid-v1", parents
+
+
+def check_generated(tmp_path: Path, specs: Path, name: str) -> None:
+    """Ruling PM5-24: the generated library spec ``name`` of ``specs`` loads and plans through the fixture path (every
+    pin a lock fills UNLOCKED; `run` not refused) and is accepted as a parent: every template that runs after B0c plans
+    on it (check_live_plan), but one whose composition map lacks its composition, which refuses it at load (R-10 on a
+    parent that is not standardised, E-45)."""
+    path = specs / name
+    assert generated_by_add_alpha(path) and name not in NULL_PINS, name
+    _, spec, c, lines = plan_on_stand_ins(tmp_path / "plan", path)
+    assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#")), name
+    stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}
+    assert unlocked_pins(c, spec) >= stand_ins | {"fields.manifest_sha256"}, name
+    assert RS.run_refusal(spec, path, research_tree.REPO) is None, name
+    composition = RC.option_value(spec["fit"]["flags"], "--composition")
+    for k, child in enumerate(CELLS[1:]):
+        on = tmp_path / f"on-{k}" / "v8"
+        shutil.copytree(specs, on)
+        doc = dict(json.loads((on / child).read_text(encoding="utf-8")), parent=name)
+        (on / child).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        mapped = ((doc["change"].get("flags") or {}).get("fit") or {}).get("--composition")
+        if isinstance(mapped, dict) and composition not in mapped:
+            with pytest.raises(RC.CycleError, match="maps the parent's value"):
+                RC.load_spec(on / child)
+            continue
+        check_live_plan(tmp_path / f"on-{k}", on, child)
+
+
+def test_every_generated_spec_plans_and_parents_the_templates(tmp_path):
+    """Ruling PM5-24: every spec add-alpha generated into scripts/specs/v8 (none before R-2; lib-v80.json, lib-v81.json,
+    R-12's after them) passes check_generated; none is in the authored registry."""
+    assert not set(GENERATED) & set(V8_SPECS) and not any(generated_by_add_alpha(V8 / n) for n in V8_SPECS)
+    for k, name in enumerate(GENERATED):
+        check_generated(tmp_path / f"g{k}", V8, name)
+        print(f"generated spec checked: {name}")
+
+
+def test_the_whole_file_passes_with_a_generated_spec_present(tmp_path):
+    """Ruling PM5-24: the R-2 path on stand-ins (v8_root, parent_cell, add-alpha v71 -> v80 on base-lo1) generates
+    lib-v80.json; with its tools back on base-lo1's (v8_root points them at the fake ones), as add-alpha writes it from
+    the live base, it goes into a copy of scripts/specs/v8. The rule recognises it from its content: the same file
+    under another name, without add-alpha's marks, or as a template is authored. Then this whole file runs on the copy
+    (a subprocess with ATX_TEST_V8_SPECS; this test deselected) and passes, the generated spec checked in it."""
+    root, parent = v8_root(tmp_path / "made")
+    parent_cell(root, parent)
+    assert add(root, parent, "v8_probe", "rank(decay_linear((be / at_lag4), 21))") == RC.EXIT_OK
+    doc = json.loads((root / SPECS / "lib-v80.json").read_text(encoding="utf-8"))
+    base = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
+    doc.update(python=base["python"], exes=base["exes"], runner=dict(doc["runner"], script=base["runner"]["script"]))
+    for section in ("fit", "card", "monitor", "summ"):
+        doc[section]["script"] = base[section]["script"]
+    specs = tmp_path / "v8"
+    shutil.copytree(V8, specs)
+    (specs / "lib-v80.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    assert generated_by_add_alpha(specs / "lib-v80.json")
+    other = tmp_path / "other"
+    other.mkdir()
+    for file, bad in (("v80.json", doc), ("lib-v81.json", doc), ("lib-v80.json", dict(doc, description="by hand")),
+                      ("lib-v80.json", dict(doc, gate=dict(doc["gate"], name="b0a-readout"))),
+                      ("lib-v80.json", {k: v for k, v in doc.items() if k != "compare"}),
+                      ("lib-v80.json", dict(doc, schema=RS.TEMPLATE_SCHEMA))):
+        (other / file).write_text(json.dumps(bad), encoding="utf-8")
+        assert not generated_by_add_alpha(other / file), file
+    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--basetemp",
+                          str(tmp_path / "inner"), str(Path(__file__).resolve()), "-k",
+                          "not test_the_whole_file_passes_with_a_generated_spec_present"],
+                         env=dict(os.environ, ATX_TEST_V8_SPECS=str(specs)), cwd=research_tree.REPO,
+                         capture_output=True, text=True, timeout=600)
+    tail = run.stdout[-4000:] + run.stderr[-2000:]
+    assert run.returncode == 0 and re.search(r"\n\d+ passed, 1 deselected in ", run.stdout), tail   # nothing failed
+    assert "generated spec checked: lib-v80.json" in run.stdout, tail                       # (it was in the run)
+
+
+def check_registered_change(specs: Path, name: str) -> None:
+    """The template ``name`` of ``specs``, a directory of specs as authored (authored_dir), differs from its nominal
+    parent only by its registered change."""
+    doc = json.loads((specs / name).read_text(encoding="utf-8"))
+    child = RC.load_spec(specs / name)
+    parent = RC.load_spec(specs / doc["nominal_parent"])
     a, b = flat(parent), flat(child)
     changed = {k for k in set(a) | set(b) if a.get(k, MISSING) != b.get(k, MISSING)
                and k not in ("name", "description") and not k.startswith("inputs.reference_")}
@@ -178,6 +518,11 @@ def test_templates_differ_from_the_parent_only_by_the_registered_change(name):
     assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
 
 
+@pytest.mark.parametrize("name", [n for n in V8_SPECS if n in EXPECTED_CHANGES])
+def test_templates_differ_from_the_parent_only_by_the_registered_change(authored_v8, name):
+    check_registered_change(authored_v8, name)
+
+
 def test_v8_base_specs_carry_the_ruled_settings():
     lo1, lo3 = RC.load_spec(V8 / "base-lo1.json"), RC.load_spec(V8 / "base-lo3.json")
     for s in (lo1, lo3):
@@ -198,7 +543,7 @@ def test_v8_base_specs_carry_the_ruled_settings():
                                                                                       "linked-operating-v3")
     b0c = json.loads((V8 / "base-b0c.json").read_text(encoding="utf-8"))
     assert b0c["change"]["flags"]["nav"] == {"--warm-start-sessions": "60", "--capacity-curve": True}   # D-0, E-29
-    assert b0c["change"]["inputs"] == {"label_role": {                                  # E-25: R15's role, locked later
+    assert as_authored(b0c)["change"]["inputs"] == {"label_role": {                     # E-25: R15's role, locked later
         "dir": "build-equity/train-2020-2023-lo1-dlret", "path": "build-equity/train-2020-2023-lo1-dlret/manifest.json",
         "sha256": None}}
     docs = {n: json.loads((V8 / n).read_text(encoding="utf-8")) for n in V8_SPECS}
@@ -206,15 +551,15 @@ def test_v8_base_specs_carry_the_ruled_settings():
     assert all("lib-v8" in d["requires"][0] for n, d in docs.items() if d.get("requires"))
 
 
-def test_r1_runs_the_weighted_pass_under_3072_mib_and_its_children_inherit_it(tmp_path):
+def test_r1_runs_the_weighted_pass_under_3072_mib_and_its_children_inherit_it(tmp_path, authored_v8):
     """Ruling E-28: ew-theme-std-v1 (and its aim variant) runs the w pass under 3,072 MiB (runner cap and the IC's own
     --max-memory-mib); the u pass stays 2,560; a template on R-1 inherits both."""
-    for name, parent in (("r1-comp-v8.json", None), ("r3-aim-gain.json", "scripts/specs/v8/r1-comp-v8.json")):
-        path = V8 / name
+    for name, parent in (("r1-comp-v8.json", None), ("r3-aim-gain.json", str(authored_v8 / "r1-comp-v8.json"))):
+        path = authored_v8 / name
         if parent:
             path = tmp_path / name
-            path.write_text(json.dumps(dict(json.loads((V8 / name).read_text(encoding="utf-8")), parent=parent)),
-                            encoding="utf-8")
+            path.write_text(json.dumps(dict(json.loads((authored_v8 / name).read_text(encoding="utf-8")),
+                                            parent=parent)), encoding="utf-8")
         root, spec = fake_root(tmp_path / f"root-{name[:2]}", RC.load_spec(path))
         c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
         assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
@@ -225,7 +570,7 @@ def test_r1_runs_the_weighted_pass_under_3072_mib_and_its_children_inherit_it(tm
             "2560", "3072")
         assert RC.option_value(spec["fit"]["flags"], "--composition") == (
             "ew-theme-std-v1" if name.startswith("r1") else "ew-theme-std-aim-v1")
-    spec = RC.load_spec(V8 / "r1-comp-v8.json")
+    spec = RC.load_spec(authored_v8 / "r1-comp-v8.json")
     RC.validate_spec(dict(spec, ic=dict(spec["ic"], w_flags={"--save-combined": True, "--workers": "2"})))
     for bad in ({"--output": "x"}, {"--workers": None}, "--max-memory-mib 3072", {"--max-memory-mib": True}):
         with pytest.raises(RC.CycleError, match="w_flags") as e:
@@ -323,17 +668,17 @@ def test_apply_flags_operations():
     assert RS.fills({"x": ["<fill:s --z>", "y"], "z": {"w": "<fill:t>"}}) == ["<fill:s --z>", "<fill:t>"]
 
 
-def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path):
+def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path, authored_v8):
     """Ruling E-27: R-3's gains go on top of the parent's composition: ew-theme-std-aim-v1 on an R-1 parent,
     ew-theme-aim-v2 on an ew-theme-v1 parent (Rulings E-27a, E-27b: the same within-theme gains and member cap, review
     F-10); both are fitter compositions. The v5 rule ew-theme-aim-v1 is refused in a v8 spec, naming v2 (E-27b)."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
-    doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
+    doc = json.loads((authored_v8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
     assert "requires" not in doc
     for parent, want in (("base-b0c.json", "ew-theme-aim-v2"), ("r1-comp-v8.json", "ew-theme-std-aim-v1")):
         path = tmp_path / f"r3-on-{parent}"
-        path.write_text(json.dumps(dict(doc, parent=f"scripts/specs/v8/{parent}")), encoding="utf-8")
+        path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / parent))), encoding="utf-8")
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want and want in fcw.PRIOR_COMPOSITIONS
         assert want in fcw.AIM_RULES                                       # the fitter computes the aim records
@@ -458,7 +803,7 @@ def test_e27b_refuses_every_spelling_at_add_alpha(tmp_path, capsys):
     assert add(root, parent, *probe) == RC.EXIT_OK                                      # the parent as committed
 
 
-def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_path):
+def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_path, authored_v8):
     """R-10 (Ruling E-38, lane COMB2), Ruling E-44 (fix round 1) and Ruling E-45 (integration 6 part B): R-10 runs on the
     last accepted parent and is defined only on a standardised one (rerank-true theme_standardise, R-1 accepted); the
     fit flag derives the rule from it: ew-theme-std-v1 -> ic-shrink-v1, R-3 on R-1 (ew-theme-std-aim-v1) ->
@@ -467,34 +812,32 @@ def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_pa
     under Ruling E-28's 3,072 MiB (the template sets it, as R-1's chain has it); the u pass stays 2,560."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
-    doc = json.loads((V8 / "r10.json").read_text(encoding="utf-8"))
+    doc = json.loads((authored_v8 / "r10.json").read_text(encoding="utf-8"))
     assert "requires" not in doc and doc["nominal_parent"] == "r1-comp-v8.json"
     assert doc["change"]["flags"]["fit"]["--composition"] == {"ew-theme-std-v1": "ic-shrink-v1",
                                                               "ew-theme-std-aim-v1": "ic-shrink-aim-v1"}
     assert {"ic-shrink-v1", "ic-shrink-aim-v1"} <= set(fcw.PRIOR_COMPOSITIONS)
     assert "ic-shrink-aim-v1" in fcw.AIM_RULES and "ic-shrink-v1" not in fcw.AIM_RULES
-    r3_doc = json.loads((V8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
+    r3_doc = json.loads((authored_v8 / "r3-aim-gain.json").read_text(encoding="utf-8"))
     parents = {}
     for name, grand in (("r3-on-r1", "r1-comp-v8.json"), ("r3-on-b0c", "base-b0c.json")):
         parents[name] = tmp_path / f"{name}.json"
-        parents[name].write_text(json.dumps(dict(r3_doc, parent=f"scripts/specs/v8/{grand}")), encoding="utf-8")
+        parents[name].write_text(json.dumps(dict(r3_doc, parent=str(authored_v8 / grand))), encoding="utf-8")
     cases = ((None, "ew-theme-std-v1", "ic-shrink-v1"),                         # nominal: R-1
              (str(parents["r3-on-r1"]), "ew-theme-std-aim-v1", "ic-shrink-aim-v1"))
-    for parent, before in (("scripts/specs/v8/base-b0c.json", "ew-theme-v1"),   # E-45: not standardised, refused
+    for parent, before in ((str(authored_v8 / "base-b0c.json"), "ew-theme-v1"),   # E-45: not standardised, refused
                            (str(parents["r3-on-b0c"]), "ew-theme-aim-v2")):
-        assert RC.option_value(RC.load_spec(Path(parent) if Path(parent).is_absolute() else
-                                            research_tree.REPO / parent)["fit"]["flags"], "--composition") == before
+        assert RC.option_value(RC.load_spec(Path(parent))["fit"]["flags"], "--composition") == before
         path = tmp_path / f"r10-on-{Path(parent).stem}.json"
         path.write_text(json.dumps(dict(doc, parent=parent)), encoding="utf-8")
         with pytest.raises(RC.CycleError, match="maps the parent's value"):
             RC.load_spec(path)
     for k, (parent, before, want) in enumerate(cases):
-        path = V8 / "r10.json"
+        path = authored_v8 / "r10.json"
         if parent:
             path = tmp_path / f"r10-on-{Path(parent).stem}.json"
             path.write_text(json.dumps(dict(doc, parent=parent)), encoding="utf-8")
-            assert RC.option_value(RC.load_spec(Path(parent) if Path(parent).is_absolute() else
-                                                research_tree.REPO / parent)["fit"]["flags"], "--composition") == before
+            assert RC.option_value(RC.load_spec(Path(parent))["fit"]["flags"], "--composition") == before
         spec = RC.load_spec(path)
         assert RC.option_value(spec["fit"]["flags"], "--composition") == want, parent
         root, planned = fake_root(tmp_path / f"root-{k}", spec)
@@ -505,7 +848,7 @@ def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_pa
         assert (RC.option_value(ic["u"], "--max-memory-mib"), RC.option_value(ic["w"], "--max-memory-mib")) == (
             "2560", "3072"), parent
     v6 = tmp_path / "v6-parent.json"                                            # an unmapped composition is refused
-    v6_doc = dict(r3_doc, parent="scripts/specs/v8/base-b0c.json")
+    v6_doc = dict(r3_doc, parent=str(authored_v8 / "base-b0c.json"))
     v6_doc["change"] = dict(r3_doc["change"], flags={"fit": {"--composition": "ew-theme-v6"}})
     v6.write_text(json.dumps(v6_doc), encoding="utf-8")
     path = tmp_path / "r10-on-v6.json"
@@ -514,26 +857,26 @@ def test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072(tmp_pa
         RC.load_spec(path)
 
 
-def test_r11_appends_theme_resid_to_the_parents_fit(tmp_path):
+def test_r11_appends_theme_resid_to_the_parents_fit(tmp_path, authored_v8):
     """v8 R-11 (lane ORTH): theme-resid-v1 keeps the parent's composition (its member weights and theme shares) and adds
     the fitter flag --theme-resid; on an R-1 parent the w pass inherits Ruling E-28's 3,072 MiB."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
-    doc = json.loads((V8 / "r11.json").read_text(encoding="utf-8"))
+    doc = json.loads((authored_v8 / "r11.json").read_text(encoding="utf-8"))
     assert doc["nominal_parent"] == "r1-comp-v8.json" and "requires" not in doc
     # Rulings E-44, PM4-4: R-10 and R-11 record rule 5 AND R-1's mechanical criterion, in R-1's words; Ruling PM5-11:
     # the criterion names its statistic (executed turnover per unit gross on S2), never "planned" turnover
     r1_criterion = ("paired S2 net dSR > 0 against the parent AND mechanics AND turnover per unit gross (executed: "
                     "tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent")
-    r10_doc = json.loads((V8 / "r10.json").read_text(encoding="utf-8"))
-    r1_doc = json.loads((V8 / "r1-comp-v8.json").read_text(encoding="utf-8"))
+    r10_doc = json.loads((authored_v8 / "r10.json").read_text(encoding="utf-8"))
+    r1_doc = json.loads((authored_v8 / "r1-comp-v8.json").read_text(encoding="utf-8"))
     for d in (doc, r10_doc, r1_doc):
         assert r1_criterion in d["description"] and "planned turnover" not in d["description"], d["name"]
         assert "PM5-11" in d["description"], d["name"]
     assert all("composition-cell criterion of R-1, plan 12.1" in d["description"] for d in (doc, r10_doc))
     assert "gates nothing" not in doc["description"] and "E-45" in doc["description"]
     path = tmp_path / "r11-on-r1.json"
-    path.write_text(json.dumps(dict(doc, parent="scripts/specs/v8/r1-comp-v8.json")), encoding="utf-8")
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "r1-comp-v8.json"))), encoding="utf-8")
     spec = RC.load_spec(path)
     assert RC.option_value(spec["fit"]["flags"], "--composition") == "ew-theme-std-v1"
     assert RC.option_value(spec["fit"]["flags"], "--theme-resid") == "theme-resid-v1"
@@ -547,7 +890,7 @@ def test_r11_appends_theme_resid_to_the_parents_fit(tmp_path):
     assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
 
 
-def test_r11_checks_its_re_fit_against_the_parent_cells_weights(tmp_path):
+def test_r11_checks_its_re_fit_against_the_parent_cells_weights(tmp_path, authored_v8):
     """Finding R6B-O-5: the cell whose template adds --theme-resid derives reference_resid_parent = the parent's fit
     composition_weights.json, and its single-window fit step passes it with its pin (--theme-resid-parent,
     --theme-resid-parent-sha256; the fitter refuses a re-fit that is not that file plus the block). A pooled (era) fit,
@@ -555,13 +898,13 @@ def test_r11_checks_its_re_fit_against_the_parent_cells_weights(tmp_path):
     reference_ input); no other template derives it."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
-    doc = json.loads((V8 / "r11.json").read_text(encoding="utf-8"))
+    doc = json.loads((authored_v8 / "r11.json").read_text(encoding="utf-8"))
     path = tmp_path / "r11-on-r1.json"
-    path.write_text(json.dumps(dict(doc, parent="scripts/specs/v8/r1-comp-v8.json")), encoding="utf-8")
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "r1-comp-v8.json"))), encoding="utf-8")
     spec = RC.load_spec(path)
-    r1 = RC.load_spec(V8 / "r1-comp-v8.json")
+    r1 = RC.load_spec(authored_v8 / "r1-comp-v8.json")
     want = f"{r1['fit']['output']}/composition_weights.json"
-    assert spec["inputs"]["reference_resid_parent"] == {"path": want, "sha256": None}
+    assert spec["inputs"]["reference_resid_parent"] == {"path": want, "sha256": None}     # derived, as authored
     root, planned = fake_root(tmp_path / "root", spec)
     c = RC.Cycle(planned, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
     fit = next(s for s in c.steps() if s.phase == "fit")
@@ -576,12 +919,13 @@ def test_r11_checks_its_re_fit_against_the_parent_cells_weights(tmp_path):
     pooled = next(s for s in c.steps() if s.phase == "fit")
     assert "--theme-resid-parent" not in pooled.argv and "--theme-resid" in pooled.argv
     child = tmp_path / "r11-child.json"                              # a NAV-only child of the cell
-    r4 = json.loads((V8 / "r4-hold-band.json").read_text(encoding="utf-8"))
+    r4 = json.loads((authored_v8 / "r4-hold-band.json").read_text(encoding="utf-8"))
     child.write_text(json.dumps(dict(r4, parent=str(path))), encoding="utf-8")
     inherited = RC.load_spec(child)
     assert "reference_resid_parent" not in inherited["inputs"]
     assert RC.option_value(inherited["fit"]["flags"], "--theme-resid") == "theme-resid-v1"
-    assert all("reference_resid_parent" not in RC.load_spec(V8 / n)["inputs"] for n in V8_SPECS if n != "r11.json")
+    assert all("reference_resid_parent" not in RC.load_spec(d / n)["inputs"]     # as authored and as root set them
+               for d in (authored_v8, V8) for n in V8_SPECS if n != "r11.json")
     # add-alpha (R-12 on an accepted R-11) carries no reference_ input of its parent over (derive_spec re-derives them)
     assert 'not k.startswith("reference_")' in inspect.getsource(RA.derive_spec)
 
@@ -623,13 +967,14 @@ def files_of(root: Path) -> list[str]:
 
 def v8_root(tmp_path: Path) -> tuple[Path, Path]:
     """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
-    fake --plan-only one), locked on stand-ins of its inputs, the committed registry and library v7.1."""
+    fake --plan-only one), locked on stand-ins of its inputs (fake_root's unlocked copy, re-pinned to the stand-ins'
+    digests by `lock --write`), the committed registry and library v7.1."""
     doc = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
     doc.update(python=sys.executable, exes={"ic": "bin/ic.cmd", "nav": "bin/nav.exe"})
     doc["runner"]["script"] = "scripts/runner.py"
     for section in ("fit", "card", "monitor", "summ"):
         doc[section]["script"] = f"scripts/{section}.py"
-    root, _ = fake_root(tmp_path, doc)
+    root, doc = fake_root(tmp_path, doc)
     s = root / "atx-impl" / "strategies"
     for rel in ("alphas/registry.json", "libraries/v71.json", "fund_industry_ic_v71.json",
                 "fund_industry_ic_v71.recipe.json"):
@@ -736,9 +1081,9 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                                                                    "cycle_verdict.json").is_file()
 
 
-def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions(tmp_path, capsys):
+def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions(tmp_path, capsys, authored_v8):
     root, base = v8_root(tmp_path)
-    tpl = json.loads((V8 / "r4-hold-band.json").read_text(encoding="utf-8"))
+    tpl = json.loads((authored_v8 / "r4-hold-band.json").read_text(encoding="utf-8"))
     tp = root / SPECS / "r4-hold-band.json"
     tp.write_text(json.dumps(tpl), encoding="utf-8")                   # parent null: planned on a nominal parent
     s = root / "atx-impl" / "strategies"
@@ -750,7 +1095,7 @@ def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_excep
     (root / F49 / "manifest.json").write_text(json.dumps({"fields": [{"name": n} for n in lo1_fields + ["grp_ff12f49"]]}))
     earn = "rank(decay_linear((sue + be + at + lt + che + debt + sale_ttm), 21))"    # 7 extra fields
     remove3 = ("--removes", "sue", "--removes", "droe", "--removes", "chtax")          # draft E3
-    shutil.copyfile(V8 / "base-b0c.json", tp.parent / "base-b0c.json")               # r4's nominal parent
+    shutil.copyfile(authored_v8 / "base-b0c.json", tp.parent / "base-b0c.json")      # r4's nominal parent
     before = files_of(root)
     ruling = ("--exception", "max_extra_fields=8", "--exception-basis", "Ruling R2-b")
     assert add(root, tp, "earn_probe", earn, *remove3, *ruling) == RC.EXIT_USAGE      # template parent null
@@ -863,8 +1208,8 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     import research_gc
     monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
     root = tmp_path / "root"
-    specs = [V8 / n for n in V8_SPECS]
-    named = {RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}
+    specs = [V8 / n for n in V8_SPECS + GENERATED]                                   # authored and add-alpha's
+    named ={RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}
     assert "build-equity/fit-work" in named and len(named) == 3                       # + the lo1 and lo3 caches
     shared = [f"fit-work/{'0123456789abcdef'}-research-window-v2", f"fit-work/{'fedcba9876543210'}-research-window-v1",
               "mega-candidate-cache-v8-lo1", "mega-candidate-cache-v8-lo3"]
