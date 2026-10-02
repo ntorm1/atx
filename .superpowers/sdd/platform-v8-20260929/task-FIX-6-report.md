@@ -223,3 +223,104 @@ New test, `test_the_fixtures_plan_every_template_on_every_plausible_parent`:
   - This was not asked for in round 1, so it is not done.
 - The history test writes parents as bare file names. `check_live_plan` also accepts the repo-relative spelling
   (`scripts/specs/v8/X.json`, which resolves into the same directory), but only in the live tree.
+
+## Round 2: generated specs and filled values (Ruling PM5-24)
+
+Coordinator follow-up: close both round 1 risks so the suite stays green through every v8 cell. Ruling PM5-24 was
+given by the coordinator and is ledgered by the PM. Tests only, same branch, from `f943d6dc`.
+
+Commit: `e2b9758a` `test(specs): v8 fixtures through generated specs and filled values (PM5-24)`.
+
+### (1) Specs that add-alpha generates (R-2, R-7, R-12)
+
+- **The rule.** `generated_by_add_alpha(path)` recognises a generated spec from its content, as
+  `research_add_alpha.derive_spec` writes it. All of these must hold:
+  - the file is `lib-NAME.json` (add-alpha's name);
+  - it is a plain spec, not a template;
+  - its description starts `Library NAME = ` and contains `(research_cycle.py add-alpha; derived from the `;
+  - its `gate.name` is `p1-NAME`;
+  - its inputs include `baseline_library`;
+  - its last two compare entries are `parent-orientations` and `parent-train-daily-ic`.
+
+  A file that matches the name but not the content is authored, so it must be in the registry.
+- **The split.** `V8_SPECS` is the authored set, and the registry equality `set(V8_SPECS) == set(NULL_PINS)` is taken
+  over it. `GENERATED` holds the rest.
+- **`check_generated`.** A generated spec must plan through the fixture path, with every pin a lock fills UNLOCKED and
+  `run` not refused. It must also be accepted as a parent: every template after B0c (R-1 to R-11), copied with
+  `parent` set to it, passes `check_live_plan`. The only exception is a template whose composition map lacks the
+  generated spec's composition; it must refuse at load with "maps the parent's value". That is R-10 on a parent that
+  is not standardised, so the E-45 condition holds here too.
+- **`test_every_generated_spec_plans_and_parents_the_templates`** runs `check_generated` on every generated spec in
+  the live dir. There are none until R-2, so today it only checks that no authored spec matches the rule.
+- **`check_live_plan`** requires the `NULL_PINS` superset only on a chain of registered specs. An add-alpha child drops
+  the field-builder inputs.
+- **The lock test** now relocks and checks the generated specs too. Before this, a chain through a generated spec kept
+  that spec's add-alpha pins.
+- **`test_cache_gc`** names the stores of the authored and the generated specs.
+- **New test, `test_the_whole_file_passes_with_a_generated_spec_present`:**
+  1. Runs the real R-2 path on stand-ins (`v8_root`, `parent_cell`, add-alpha v71 -> v80 on base-lo1), which writes
+     `lib-v80.json`.
+  2. Puts its tool fields back to base-lo1's, as add-alpha writes them from the live base, and places it in a copy of
+     `scripts/specs/v8`.
+  3. Checks the rule rejects six look-alikes: the same content under `v80.json`, the same content under
+     `lib-v81.json`, a hand-written description, another gate name, no compare section, and a template schema.
+  4. Runs this whole file on the copy in a subprocess (env `ATX_TEST_V8_SPECS`, this test deselected with `-k`,
+     `--basetemp` under its own tmp). It asserts the result line `46 passed, 1 deselected` and that the generated
+     spec was checked inside the run.
+
+  The test takes about 20 s. `ATX_TEST_V8_SPECS` is the one new hook: only that test sets it, and it defaults to
+  `scripts/specs/v8`.
+
+### (2) Values root fills (R-6, R-8)
+
+- `as_authored(spec, name)` also sets the values root fills back to null, which is their `<fill:...>` placeholder.
+  These are the options the `FILLS` registry names for that file, parsed from any `<fill:SECTION.flags OPTION>`
+  (today `--risk-model` and `--risk-model-sha256` of r6 and r8). `authored_dir` passes each file's name. So `FILLS` and
+  `nav_delta` hold on the authored copy unchanged.
+- `check_live_plan` checks each such option in the resolved live spec, whether the template's own or inherited. The
+  value must be absent, the placeholder, or well formed (`well_filled`):
+  - an option ending in `sha256` takes a 64-hex digest;
+  - any other option takes a path as the specs write them (`seg/seg...`, optionally under a drive).
+
+  `run` must be refused (`unfilled value ...`) for every placeholder left.
+- The plausible-parent histories now fill every cell that ran (R-6, R-8: a store path and its digest). The template
+  itself is filled in the dense history and explicitly still to fill in the sparse one. The test asserts that `run`
+  lists unfilled values exactly in the sparse case for r6 and r8.
+
+### Not weakened
+
+Every assertion on flags (`nav_delta`, `FILLS`, the composition maps, `W_3072`, `FIT_APPENDED`), the criteria texts,
+the refusals and the E-38 / E-45 conditions is unchanged. They are evaluated on the authored copy, which the
+histories show is byte-identical whatever root has done.
+
+### Files touched
+
+`scripts/tests/test_research_spec.py` only (+152 / -26) and this section.
+
+### Verification
+
+```
+"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider scripts/tests
+-> 186 passed, 4 skipped (0 failed)
+```
+
+`test_research_spec.py` was run on copies of the spec dir through `ATX_TEST_V8_SPECS`, using scratch builders that
+are not committed. The round 2 file is compared with the round 1 file (`f943d6dc`) as a control:
+
+| state | round 2 | round 1 (control) |
+|---|---|---|
+| live | 47 passed | - |
+| live + `lib-v80.json` (generated) | 47 passed | 15 failed |
+| R-6, R-8 filled, parents up to R-8 (B0a won) | 47 passed | 6 failed |
+| B0b won, up to R-8 run, R-3 on `lib-v80.json`, R-6/R-8 filled, every spec locked | 47 passed | 18 failed |
+| pre-lock / all locked / R-11 histories on lo1 and lo3 / up to R-4 / B0c set, locked | 46 passed + 1 deselected each | - |
+
+### Open risks (round 2)
+
+- **A lib spec root writes by hand.** It has `lib-` in its name but not add-alpha's content, so it counts as authored
+  and must be registered in `NULL_PINS`. That is by design (Ruling PM5-24).
+- **A change to add-alpha's wording.** If `derive_spec` changes its description text or its compare names, the rule
+  stops recognising its output. The spec then fails the authored registry loudly rather than passing silently, and
+  `test_the_whole_file_passes_with_a_generated_spec_present` fails with it.
+- **The run time.** The new subprocess test re-runs this file (about 20 s). The full `scripts/tests` run is now about
+  87 s, up from about 65 s.
