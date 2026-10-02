@@ -5901,3 +5901,64 @@ max drawdown 2.06%; gross Sharpe 2.247. Years: 2020 +.0130 / .478; 2021 +.1038 /
 
 **Next parent: `scripts/specs/v8/x-theme-erc-gm.json`, library v8x3b, theme-erc-v1, L 1.1720, G .9862260459.**
 
+### Cell X-6 (capacity rule inv-vol-v1, XCOMB; template `x-inv-vol.json` on X-5): N 55
+
+**Spec:** `scripts/specs/v8/x-inv-vol.json` with `"parent": "x-theme-erc-gm.json"` (X-5), `lock --write` (commit
+`13488f89`; reference_cell X-5's summary `a03937cf`, reference_weights `8310da2c`). The registered change verbatim (nav
+`--vol-scale inv-vol-v1`, NAV-only). **Deploy-key gap:** the cycle did not refuse (`plan` and `run` have no decide phase;
+the template's "decide is out of scope" stands); the cell ran. Template note: it renames only nav.output, so the cycle
+resolved the monitor phase to X-5's monitor output as done and no X-6 monitor ran (the verdict reads none of it; template
+frozen, not edited).
+
+**Calibration (not a trial):** `run --stop-after nav` at the parent's L 1.1720: nav 47.1 s / 586 MiB (`mega-nav-v8x-inv-vol`;
+recipe vol_scale inv-vol-v1, floor fraction .25). Mechanics only: all-rows gross **1.0099371711** vs G_parent .9862260459,
+|diff| .0237 > .005 -> L' = 1.1720 x .9862260459 / 1.0099371711 = 1.14448 -> **1.1445**, in the template copy
+`x-inv-vol-gm.json` (nav.output `mega-nav-v8x-inv-vol-L1.1445`; commit `03be90ce`; lock verified).
+
+**Matched run** (source `03be90ce`): nav 46.7 s / 586 MiB; G **.9861788467** vs .9862260459, |diff| **.00005** <= .005.
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9862 (post-ramp .9910); net +.0021; tau .02593 / p95
+.02950; max gross 1.094; max |net| .025; score_begin .951 (all 5 scenarios .950 - .953); gross by year .970 / 1.001 / .981
+/ .993; accounting 5.1e-14 / 4.3e-16. summ 28.3 s / 629 MiB (`--dsr-n 55`, reference X-5's NAV). Spec sha256 `10b57394`.
+
+**Statistics of record** (S2; bundle X-5 vs X-6 `e11bb2bd`): net Sharpe **X-6 +1.6743** vs X-5 +1.7695: **dSR -.0952**,
+rho .910, **Memmel SE .2141** (t -.44); CBB 95% [-.546, +.360]; LW SE .2324, 95% [-.585, +.395]; **p one-sided .6346,
+two-sided .6914**. DSR (N 55): ledger .7720 (V[SR] 1.250e-03, 26 window lines); effective-N .9079; legacy .9381; PBO .0412.
+
+**Capacity criterion (registered: net Sharpe at 4x NAV higher AND S2 cost_bps_traded lower; printed, decides nothing under
+PM7-34): 4x 1.5725 vs 1.6549 (not higher); cost per traded dollar 10.97 vs 12.56 bps (lower) -> unmet.** Turnover per unit
+gross .026295 vs .027219.
+
+**Verdict (PM7-34): dSR -.095 <= 0 -> NOT ACCEPTED, N 55** (rejected on dSR). Ledger trial `60e3c75e3111f2db` (s2_net_sr
+1.67426, prev `877cf36f`); ledger 98 lines (63 construction incl. 8 W0-4 re-runs, 34 admission, 1 protocol), file
+`e8d9dcac`, head `a190f7ef`. Not retried. **Parent stays X-5.**
+
+Returns (S2): net 3.91% (CAGR 3.96%); gross of cost 5.12%; trade cost .71%, borrow .31%, long financing .20%; vol 2.33%;
+max drawdown 2.37%; gross Sharpe 2.195. Years: 2020 +.0139 / .571; 2021 +.0740 / 2.856; 2022 +.0592 / 2.760; 2023 +.0121
+/ .556 (tau .0277 / .0247 / .0259 / .0253; cost bps 13.31 / 9.88 / 10.64 / 10.09). Capacity: .5x 1.721, 1x 1.674, 2x
+1.616, 4x 1.573, 8x 1.493. Read: cost per traded dollar fell 13% as designed, but the book lost return (3.91% vs 5.08%)
+faster than it lost risk.
+
+### X batch 1 close
+
+**Accepted X book = X-5** (`scripts/specs/v8/x-theme-erc-gm.json`: library v8x3b = R-2's v80 + X-2's q5_eg_f49g,
+ins_opp_buy + X-3's six; composition theme-erc-v1; L 1.1720). S2: net Sharpe **1.7695**, net annual **5.08%** (CAGR
+5.17%), gross of cost **6.45%**, x4 net Sharpe **1.6549**, turnover tau **.02684** (per unit gross .02722), max drawdown
+**2.06%**, all-rows gross .98623. **Cumulative paired vs R-2** (`lib-v80.json`, bundle `907fda68`, block 21, seed
+20260929, 4,999 resamples): S2 net Sharpe 1.7695 vs 1.2559, **dSR +.5135, Memmel SE .1841** (t +2.79), rho .933; CBB
+95% [+.137, +.854]; LW SE .1848; **p one-sided .0032, two-sided .0098** (bundle's freeze-gate part: pass at alpha .10).
+R-2 for reference: net 4.54%, gross of cost 5.81%, x4 1.1785, tau .02393, max drawdown 3.25%.
+
+Cells: X-2 accepted (N 51), X-3 accepted (N 52), X-4 not accepted (N 53), X-5 accepted (N 54), X-6 not accepted (N 55).
+Admission lines: v8 12 + X hand-written 13 of 13 + X-4 re-screens 9 = 34; X-5 and X-6 add none. Ledger 98 lines, head
+`a190f7ef`, file `e8d9dcac`.
+
+**Hidden-data record:** every run read TRAIN only (fields v13 `train-2020-2023-lo3`, sessions 2020-01-03 - 2023-12-29);
+nothing dated 2024-01-01 or later opened; no 2013-2019 history read; `atx-db/` and `C:/atx-wt/pool-10` untouched; no
+executable or tool-script change; no push.
+
+**Open items:** (1) B-3: ins_opp_buy carries the PM7-18 b disclosure (refinement chosen with TRAIN statistics in
+view) -- now in the accepted book. (2) The hand-written gm specs (`lib-v8x3b-gm.json`, `x-theme-erc-gm.json`,
+`x-inv-vol-gm.json`) are not in the tests' NULL_PINS list. (3) Deploy path for theme-erc-v1 (decide / manifest pins) not
+exercised in this batch. (4) `x-inv-vol.json` does not rename monitor.output (template defect, monitor-only). (5) X-5's
+registered turnover criterion is unmet (+16% turnover per unit gross vs X-3); accepted under PM7-34 only.
+

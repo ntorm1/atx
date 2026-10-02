@@ -2021,3 +2021,11 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   1.4205); dSR +.3490, SE .2011, p one-sided .029 (two-sided .078); mechanics pass; capacity criterion (turnover per
   unit gross .02722 against .02336) unmet, printed only (PM7-34); 4x 1.655 (1.316). Net annual 5.08% (4.97%), gross
   of cost 6.45% (6.22%), max drawdown 2.06%. DSR at N 54 .829. Parent is X-5 (`x-theme-erc-gm.json`).
+- X-6 (inv-vol-v1; log "X batch 1"): `x-inv-vol.json` on X-5 ran (no refusal; no decide phase), calibration gross
+  1.00994 at L 1.1720 -> the cell is `x-inv-vol-gm.json`, L 1.1445, gross .98618 against .98623. NOT ACCEPTED, N 55.
+  S2 net Sharpe 1.6743 (parent 1.7695); dSR -.0952, SE .2141, p one-sided .635 (two-sided .691); mechanics pass;
+  capacity criterion unmet (4x 1.573 against 1.655; cost 10.97 against 12.56 bps), printed only. Parent stays X-5.
+- X batch 1 closed: accepted X book = X-5 (`x-theme-erc-gm.json`). S2 net Sharpe 1.7695, net annual 5.08%, gross of
+  cost 6.45%, x4 1.655, turnover .02684, max drawdown 2.06%. Cumulative against R-2: dSR +.5135, SE .1841, p
+  one-sided .0032 (two-sided .0098). Admission lines 34 (v8 12, X hand-written 13 of 13, X-4 re-screens 9); ledger 98
+  lines, head `a190f7ef`.
