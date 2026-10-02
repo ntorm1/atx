@@ -2163,3 +2163,13 @@ significance and capacity. We need to clear the hurdle rate first to enter produ
 - Fields v14 lo3 (`build-equity/train-2020-2023-lo3-fields-v14`, 0 trials): v13 + `open_adj`, `high_adj`, `low_adj` by the
   XWQ section 7 driver; manifest `4b12c0e1d90d8ab5cfa6e6281d104a4b8d229a42060505c39217f97d616cbb0c`; reused 75 / computed 3
   as expected, the 75 bit-identical (hardlinks of v13); 72.8 s, 277 MiB.
+- X-7 (formulaic-alpha wave; log "X batch 2, resumed"): wq_099 plans 8 slots in the exe as frozen; rewritten by the
+  registered mechanical rule (XWQ section 6 / E5) to `(x * -1)`, 6 slots, same values. Screen of `lib-v8x7.json` (12
+  admission lines; gate PASS 8 of 12 with the prior sign); wq_002 and wq_101 runner sign -1 -> dropped (PM7-35);
+  wq_030, wq_014 reject_redundant stay at weight 0. Marginal phase: X-5's weights hold 11 themes, the verb takes 10 ->
+  PM6-8 (i) applied (report only); two runs failed on the host (memory floor, then the 360 s cap under other sessions'
+  load), blind re-runs, nothing read. The cell is `lib-v8x7b-gm.json` (v8x3b + 10), theme-erc-v1 re-solved on 12 themes
+  (price_volume .154), L 1.2685 after one correction from 1.1720, gross .98637 against .98623. NOT ACCEPTED, N 56. S2 net
+  Sharpe 1.6087 (parent 1.7695); dSR -.1607, SE .1927, p one-sided .810 (two-sided .399); mechanics pass; capacity
+  criterion unmet (4x 1.506 against 1.655); turnover .03562 (.02684). Net annual 4.61% (5.08%), gross of cost 6.26%
+  (6.45%), max drawdown 2.18%. DSR at N 56 .731. Admission trials: X hand-written 25 (13 + 12). Parent stays X-5.

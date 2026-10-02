@@ -6242,3 +6242,50 @@ spec). Cause removed by waiting for a quiet host (no compiler, CPU under 25% for
 `scripts/specs/v8/lib-v8x7b-gm.json` (`scratchpad/gmspec.py`: lib-v8x7b.json with name v8x7b-gm, one description
 sentence, `nav.leverage` 1.2685, `nav.output` `...-L1.2685-v8x7b`, `ref.leverage` 1.1720; `lock --write` leaves every pin
 unchanged; file `599655e2`). The step-(1) run of lib-v8x7b.json is not a trial and is never resumed past nav.
+
+**Theme shares (fit provenance, theme-erc-v1 re-solved on T = 12, decisions 1,004):** ERC dispersion 6.7e-16, 10,000
+sweeps, member cap 1/24 = .0417 (two cap iterations: issuance_xbrl, iv_rv_spread, ins_opp_buy, then inst_best_ideas):
+price_volume **.154**, investment_issuance .124, profitability_quality .098, ownership_flow .097, low_risk .097, value
+.073, reversal_seasonality .069, short_interest .068, earnings_momentum .062, options_implied .059, price_momentum .054,
+filing_events .044.
+
+| phase (v8x7b-gm; source `eb3b329e`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| nav (L 1.2685, the cell) | 180 / 1,536 | 57.4 | 586 | 0 | `bf9709e69096389b...` | `summary.json` `e25a0b4f`, S2 daily `9e6fbe91`, capacity `87f424ca`, recipe `5b1770a3` |
+| monitor / summ | 180 / 1,536 | 1.6 / 44.7 | 134 / 619 | 0 | `101cc6a6...` / `e979c6ba...` | `cycle-v8x7b-gm/summ.json` `dd38d7a8`, `cycle_verdict.json` `38a7bc66` |
+| one-sided p (PM5-23) | 180 / 1,536 | 2.4 | 610 | 0 | `52b2b19a1b3441e9f2e8aabfb714dec7c5929179b35ee6d4ae9c303cb3b8ffb0` | `v8-cells-x7-bundle.json` `332a97db` (FINAL v8x7b-gm vs BASE X-5) |
+
+**Matched run: G 0.9863734223 vs .9862260459, |diff| .00015 (one correction).** **Mechanics (S2, matched run, read before
+any return): PASS.** All-rows gross .9864 in [.90, 1.05] (post-ramp .9918); net +.0047 (<= .02); tau mean .03562 <= .20,
+p95 .03944 <= .30 (1,005 sessions; flags true); max gross 1.123, max |net| .029; gross by year .970 / .996 / .985 / .994;
+1,006 CSV rows, 1,005 return rows, last session 2023-12-29; accounting 1.5e-13 / 4.0e-16 (tol 1e-9).
+
+**Statistics of record** (S2; bundle X-5 vs X-7, block 21, seed 20260929, 4,999 resamples; 1,005 sessions): net Sharpe
+**X-7 +1.6087** vs X-5 +1.7695: **dSR -.1607**, rho .927, **Memmel SE .1927** (t -.83); CBB 95% [-.518, +.207]; LW SE
+.1873, 95% [-.536, +.215]; **bootstrap p one-sided .8096, two-sided .399**. DSR (verdict, `--dsr-ledger`, N 56): ledger
+DSR **.7309** (V[SR] 1.245e-03 per session, 27 research-window-v2 lines; SR0 1.299 annual); effective-N .8807; legacy
+.9206; PBO .0916.
+
+**Capacity criterion (PM7-10, printed; decides nothing under PM7-34 / PM8-1): net Sharpe at 4x NAV 1.5060 vs 1.6549 ->
+unmet.** Turnover tau .03562 vs .02684 (+33%); cost per traded dollar 12.60 vs 12.56 bps.
+
+**Verdict (PM7-34 / PM8-1: dSR > 0 AND mechanics): dSR -.161 <= 0 -> NOT ACCEPTED, N 56.** Ledger line trial
+`ab36ff093e393264` (cell = the L1.2685 v8x7b NAV dir, s2_net_sr 1.60873, origin prior, window research-window-v2, prev
+`af281c31`); ledger 111 lines (64 construction incl. the 8 W0-4 re-runs, 46 admission, 1 protocol), file `58bfef12`,
+head `7aaf0ae1`. Not retried. **Parent stays X-5** (`x-theme-erc-gm.json`).
+
+Returns (S2, annual): net 4.61% (CAGR 4.67%) vs X-5 5.08%; gross of cost 6.26% (6.45%); trade cost 1.12% (.84%), borrow
+.33%, long financing .20%; vol 2.87% (2.87%); max drawdown 2.18% (2.06%); gross Sharpe 2.184 (2.247).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | +.0058 | +.219 | .0284 | .0375 | 14.96 |
+| 2021 | 252 | +.1017 | +3.217 | .0302 | .0346 | 11.58 |
+| 2022 | 251 | +.0640 | +2.067 | .0303 | .0355 | 12.29 |
+| 2023 | 250 | +.0177 | +.716 | .0251 | .0349 | 11.68 |
+
+Capacity (report only; X-5 beside): net Sharpe .5x 1.669 (1.809), 1x 1.609 (1.769), 2x 1.563 (1.727), **4x 1.506
+(1.655)**, 8x 1.433 (1.553); cost bps per traded dollar 10.75 / 12.60 / 14.85 / 17.00 / 18.66. Read: the ERC re-solve gave
+the new `price_volume` sleeve the largest share (.154, a low-volatility sleeve), the book's volatility did not fall
+(2.87% both), the gross return fell (6.26% vs 6.45%) and trading cost rose by .28% a year with 33% more turnover: the
+formulaic picks paid less than they cost at the book's horizon.
