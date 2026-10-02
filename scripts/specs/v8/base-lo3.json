@@ -13,9 +13,18 @@
     "max_rss_mib": 1536,
     "min_free_mib": 512,
     "phases": {
-      "u": {"seconds": 300, "max_rss_mib": 2560},
-      "w": {"seconds": 300, "max_rss_mib": 2560},
-      "card": {"seconds": 300, "max_rss_mib": 2560}
+      "u": {
+        "seconds": 300,
+        "max_rss_mib": 2560
+      },
+      "w": {
+        "seconds": 300,
+        "max_rss_mib": 2560
+      },
+      "card": {
+        "seconds": 300,
+        "max_rss_mib": 2560
+      }
     }
   },
   "exes": {
@@ -35,77 +44,183 @@
       "dir": "build-equity/train-2020-2023-lo3",
       "path": "build-equity/train-2020-2023-lo3/manifest.json",
       "universe": "linked-operating-v3",
-      "sha256": null
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
     },
     "identity_bridge": {
       "dir": "C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit",
       "path": "C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit/manifest.json",
-      "sha256": null
+      "sha256": "09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01"
     },
     "fund_events": {
       "dir": "build-equity/fundamental-events-v3",
       "path": "build-equity/fundamental-events-v3/manifest.json",
-      "sha256": null
+      "sha256": "304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b"
     },
     "sic_events": {
       "dir": "C:/atx/atx-db/data/alpha_panel/v1/fundamentals",
       "path": "C:/atx/atx-db/data/alpha_panel/v1/fundamentals/manifest.json",
-      "sha256": null
+      "sha256": "9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b"
     },
     "reference_cell": {
       "dir": "build-equity/mega-nav-v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
       "path": "build-equity/mega-nav-v8-b0a-lo1-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
-      "sha256": null
+      "sha256": "eeac83664e9a17936dd61dfe8932f3b54eeb0051cd31a779d6208880edf05a8f"
     }
   },
   "fields": {
     "output": "build-equity/train-2020-2023-lo3-fields-v9",
-    "manifest_sha256": null,
+    "manifest_sha256": "9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef",
     "list": [
-      "si_shares", "si_dtc", "iv_atm_21d", "iv_atm_63d", "iv_atm_126d", "earn_recent", "shares_out", "mkt_ret",
-      "be", "at", "at_lag4", "lt", "che", "debt", "sale_ttm", "gp_ttm", "oi_ttm", "ni_ttm", "ni_q", "ni_q_lag4",
-      "be_lag1q", "be_lag1q_lag4", "cfo_ttm", "capx_ttm", "xrd_ttm", "dvc_ttm", "prstkc_ttm", "sstk_ttm", "txt_q",
-      "txt_q_lag4", "shrs_q", "shrs_q_lag4", "noa", "noa_lag4", "sue", "fscore", "me_company", "grp_sic2", "grp_ff12",
-      "grp_ff49", "sv_ratio126", "ea_days_to_expected", "ea_days_since", "ea_window_pre5", "ea_window_post3",
-      "ea_delay_days", "ea_time_of_day", "ins_net_buy_ratio", "ins_n_buyers", "ins_n_sellers", "ins_opportunistic_net",
-      "ins_cluster_buy", "k8_count_63", "k8_item_material_21", "k8_days_since_any", "inst_own_share",
-      "inst_breadth_chg", "inst_own_chg_q", "inst_best_ideas", "inst_n_holders", "ftd_shares_ratio21",
-      "regsho_threshold_days63", "sv_offexchange_share126"
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126",
+      "ea_days_to_expected",
+      "ea_days_since",
+      "ea_window_pre5",
+      "ea_window_post3",
+      "ea_delay_days",
+      "ea_time_of_day",
+      "ins_net_buy_ratio",
+      "ins_n_buyers",
+      "ins_n_sellers",
+      "ins_opportunistic_net",
+      "ins_cluster_buy",
+      "k8_count_63",
+      "k8_item_material_21",
+      "k8_days_since_any",
+      "inst_own_share",
+      "inst_breadth_chg",
+      "inst_own_chg_q",
+      "inst_best_ideas",
+      "inst_n_holders",
+      "ftd_shares_ratio21",
+      "regsho_threshold_days63",
+      "sv_offexchange_share126"
     ]
   },
   "ic": {
     "u_output": "build-equity/mega-v8-b0b-train-u",
     "w_output": "build-equity/mega-v8-b0bw-train-ew",
     "cache": "build-equity/mega-candidate-cache-v8-lo3",
-    "flags": ["--max-memory-mib", "2560", "--min-names", "1000", "--workers", "4", "--save-combined"]
+    "flags": [
+      "--max-memory-mib",
+      "2560",
+      "--min-names",
+      "1000",
+      "--workers",
+      "4",
+      "--save-combined"
+    ]
   },
   "fit": {
     "script": "atx-impl/tools/fit_composition_weights.py",
     "output": "build-equity/mega-weights-v8-b0b-ew",
     "work_dir": "build-equity/fit-work",
-    "flags": ["--orientation", "prior", "--screen", "v4-prior-v1", "--composition", "ew-theme-v1"],
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-v1"
+    ],
     "max_seconds": 150,
     "max_passes": 3
   },
   "card": {
     "script": "atx-impl/tools/alpha_report_card.py",
     "output": "build-equity/mega-cards-v8-b0b",
-    "flags": ["--workers", "4", "--work-dir", "build-equity/fit-work"]
+    "flags": [
+      "--workers",
+      "4",
+      "--work-dir",
+      "build-equity/fit-work"
+    ]
   },
   "gate": {
     "name": "b0b-readout",
     "admitted": [],
-    "report": ["ins_opp", "inst_best_ideas", "ftd_fail", "ea_overdue", "mom_12_1", "si_ratio", "dtc", "sv_flow",
-               "iv_rv_spread", "ear", "sue", "droe"]
+    "report": [
+      "ins_opp",
+      "inst_best_ideas",
+      "ftd_fail",
+      "ea_overdue",
+      "mom_12_1",
+      "si_ratio",
+      "dtc",
+      "sv_flow",
+      "iv_rv_spread",
+      "ear",
+      "sue",
+      "droe"
+    ]
   },
   "nav": {
     "output": "build-equity/mega-nav-v8-b0b-lo3-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
     "rule": "aim-partial-v5",
     "leverage": "1.247",
-    "flags": ["--cadence", "1", "--trade-fraction", ".05", "--dust-multiple", ".1", "--aim-leverage", "{leverage}",
-              "--daily-turnover-mean-max", ".20", "--daily-turnover-p95-max", ".30", "--neutralize", "price-risk-v1",
-              "--max-bytes", "1073741824", "--order-basis", "delta", "--exit-rate", ".05", "--locate-in-aim",
-              "--liquidity-cache"]
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache"
+    ]
   },
   "monitor": {
     "script": "atx-impl/tools/book_monitor.py",
@@ -116,7 +231,14 @@
     "script": "atx-impl/tools/nav_summ.py",
     "dsr_n": "ledger+1",
     "cells_from_ledger": true,
-    "extra": ["--protocol", "v8", "--effective-n", "dirs", "--psr", "--pbo"],
+    "extra": [
+      "--protocol",
+      "v8",
+      "--effective-n",
+      "dirs",
+      "--psr",
+      "--pbo"
+    ],
     "ledger": "build-equity/trials.jsonl",
     "ledger_kind": "construction",
     "origin": "prior"
