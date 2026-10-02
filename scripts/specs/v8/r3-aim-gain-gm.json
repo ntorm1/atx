@@ -1,0 +1,43 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r3-aim-gain-gm",
+  "description": "Cell R-3 at matched gross (Ruling PM6-6; plan section 9, N 43): the registered change of r3-aim-gain.json unchanged (persistence gain on the aim, theta .05; on this parent, whose composition is ew-theme-std-v1 through R-1, the rule is ew-theme-std-aim-v1, Ruling E-27; fit / card / w outputs are r3-aim-gain.json's, resumed as done), plus the aim leverage set so that its all-rows S2 gross matches the parent R-2 (lib-v80.json, G .9859903463) within .005. Calibration step (1) = r3-aim-gain.json's NAV at the parent L 1.1474 (mechanics only: all-rows gross 1.0043324403, no return read); L = 1.1474 x .9859903463 / 1.0043324403 = 1.12645 -> 1.1264. The cell is ledgered once, from this run. Acceptance: dSR > 0 AND mechanics AND net Sharpe at 2x NAV not lower AND turnover (tau_gmv_mean) lower.",
+  "parent": "lib-v80.json",
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8-r3-aim",
+      "card.output": "build-equity/mega-cards-v8-r3-aim",
+      "ic.w_output": "build-equity/mega-v8-r3w-train-aim",
+      "nav.output": "build-equity/mega-nav-v8-r3-aim-t.05-d.1-fixed-obdelta-x.05-loc-L1.1264",
+      "monitor.output": "build-equity/mega-monitor-v8-r3-aim",
+      "nav.leverage": "1.1264"
+    },
+    "flags": {
+      "fit": {
+        "--composition": {
+          "ew-theme-v1": "ew-theme-aim-v2",
+          "ew-theme-std-v1": "ew-theme-std-aim-v1"
+        }
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80/summary.json",
+      "sha256": "083a56da0e4381b9c7ae9db10b19783b5185a0f6043f240aa3c721150ad42c85"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/admission.json",
+      "sha256": "f613fe920de92eb9a5fbb8c1524f5891808672f1dda44ee69c8a63af2dc9e90c"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v80-1/train_combined.json",
+      "sha256": "bbbf6f2bfe6f857e914f4354bc943ea55976024c8b28df385992f09038f7cd98"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/composition_weights.json",
+      "sha256": "032133450dedc5f5747d65f60ca1e4abeeca00eff0e9280f749c061986f3b5ce"
+    }
+  }
+}
