@@ -4379,3 +4379,67 @@ fills 30% at 1x / 12% at 4x, while gross-of-cost Sharpe falls .06: the pro-rata 
 gross from names held large against their ADV to the rest of their side, and that costs more signal than it saves in
 cost; at $1-4bn the cost model is not bound by holdings / ADV at Q .10.
 
+Commit `da70dacb` (R-5 verdict, log and ledger line).
+
+### 3a. Risk model atx-risk-v1.1 on the 4-year role (R-6 step 3; not a trial)
+
+Inputs: the parent R-2's role and fields (role lo3 `e1c67101`, fields v10 lo3 `a4a060ae`; the fields R-6's NAV reads).
+Caps: 180 s / 1,536 MiB (W0-c: not an IC phase; the v7 risk stores ran under the same caps). No `--book-weights` (a
+risk model, not a diagnostic); `--emit-exposures all` (the spo rules refuse a store without the exposure files). Run on
+the clean tree at `da70dacb` through the bounded runner (data runs only through it; the cycle has no risk phase):
+
+```
+run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/v8-risk-lo3-v10-run
+  --bind build-equity/bin/atx-equity-strategy-risk.exe --bind build-equity/train-2020-2023-lo3/manifest.json
+  --bind build-equity/train-2020-2023-lo3-fields-v10/manifest.json -- build-equity/bin/atx-equity-strategy-risk.exe risk
+  --role build-equity/train-2020-2023-lo3/manifest.json --role-sha256 e1c67101...395f4
+  --fields build-equity/train-2020-2023-lo3-fields-v10/manifest.json --fields-sha256 a4a060ae...70809
+  --output build-equity/v8-risk-lo3-v10 --emit-exposures all
+```
+
+| step | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| risk (exe v8-12 `8967952c`) | 180 / 1,536 | 31.2 | 612 | 0 | `5e88ccaee5eea6ff17cde45999217a5ffa73fff4dd60b6f4f4785b766d20a219` | `build-equity/v8-risk-lo3-v10/manifest.json` **`862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a`** (the new pin) |
+
+Receipt: completed, `clean in the code pathspec`, source `da70dacb`. Manifest: schema `atx.risk-model/v1`, model
+**atx-risk-v1.1**, status complete, role pin `e1c67101` (the NAV's `--role-sha256`; the store refuses another role),
+fields `a4a060ae`, seal begin 2024-01-01, role last session 2023-12-29 (`1703808000000000000`); geometry 1,405 dates x
+5,922 instruments, 62 factors, 11 styles; first forecast 2019-09-03, 1,341 fitted / 1,090 forecast sessions, mean
+R^2 .247; `unavailable` []; invariant refusals 0 (no specific variance clamped; max daily D .361 < bound 1.0); 0
+style-dates dropped; forecast sessions with an unforecast exposed factor 0. Bias harness: factor ok (51 series, b mean
+1.002, dropped 0), random ok (64), book not asked. Files: factor_covariance `9d9c62a2`, specific_variance `a7792a53`,
+style_exposures `8ae6c185`, factor_structural `f63df1a4`, industry_slot `9b7cca17`, diagnostics `ca94f5c9` (1,405
+rows). Check: every model file is byte-identical to B0c's diagnostic store `b0c-risk` (fields v9 lo3; same role) --
+fields v10 adds 7 fields the risk descriptors do not read; only `bias.csv` / `bias_summary.json` differ (that store had
+`--book-weights`). Not a trial, no return exists in a risk model.
+
+### Cell R-6 (r6-spo-v3 on lib-v80; spo-v3, S_prior 20; L 1.1474)
+
+**N before: 45; this cell makes 46 (<= 51).** Brief row (task-CELLS-brief.md:59): "cost per traded dollar not higher
+AND tripwire clear AND mean `aim_correlation_traded_after` >= .9; the run voids itself on primary-book limits_unmet > 0"
+(E-14, E-14a, E-26, E-31, E-31a, E-37). Parent = R-2 (`lib-v80.json`); R-4 and R-5 were not accepted, so (E-26) the
+aim carries neither `--hold-band` nor `--adv-hold-q`.
+
+**Identities:** not run here (as R-4 / R-5): flag off = integration 5 part C identity 1, spo-v2 side files and pin =
+identity 7 (PM3-7), both PASS and re-run on the v8-12 executables by PM4-3 (1, 4, 7, 8); no executable changed since.
+
+**Spec.** `scripts/specs/v8/r6-spo-v3.json` (template): `"parent": null -> "lib-v80.json"`; the two fills
+`--risk-model build-equity/v8-risk-lo3-v10`, `--risk-model-sha256 862515d9...4ecd5a` (step 3a); `lock` (dry) 0, `lock
+--write` 0 (reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`,
+reference_weights `03213345`), dry after 0. File `87518e08a9124fd5efa48fa750cbd689e8ea383d62037e634f3cb06315f87f19`,
+**spec digest (template chain) `689c826d521e04384df0c9a7acfab955b4a733c8fcbb24ffdec8ca7248580e7d`**.
+`test_research_spec.py` with the filled, locked file: 51 passed (meta-test deselected). Plan exit 0: 8 pins `[locked,
+verified]`; nav pending: R-2's argv with `--rule spo-v3` and `--spo-alpha implied-aim --risk-model
+build-equity/v8-risk-lo3-v10 --risk-model-sha256 862515d9... --spo-books primary` at `--aim-leverage 1.1474`
+(`--capacity-curve`, `--warm-start-sessions 60`, `--label-role` the parent's); no `--spo-iters` / `--spo-tol` (refused,
+E-31a); summ `--dsr-n 46`. The nav output name keeps the template's "L1.247" text (cosmetic; the run is at 1.1474).
+
+**Pre-return reads, fixed before the run (E-31, E-31a, E-14a; template description):** (1) exit code: 3 = void (no NAV,
+no return file) -> E-31a: a blind fix and a re-run, no new trial; a fix needing an executable change is a PM5-21 stop;
+(2) `v7_extras.json` `spo_v3.tripwire.status` == "clear", `limits_unmet_primary.count` == 0; (3) `summary.json`
+`v7.spo_v3_books.<primary>`: `unconverged`, `limits_unmet`, `mean_iterations`, decisions; the E-14 / E-14a value
+`aim_correlation_traded_after.mean` (criterion, >= .9); (4) mechanics keys (mech.py) and gross matching (PM6-6). Never
+`stdout.log` (it prints net Sharpe per book). Criterion of record (task-CELLS-brief:59; pitch config): (a)
+`cost_bps_traded` (summ, S2 cost per traded dollar) <= R-2's 12.466; (b) tripwire status "clear"; (c) primary
+`limits_unmet` 0 (E-31a: else void); (d) `aim_correlation_traded_after.mean` >= .9.
+
