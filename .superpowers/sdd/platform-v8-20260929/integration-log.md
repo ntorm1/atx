@@ -2674,3 +2674,208 @@ file (< 1 MiB each).
   locked on them before this merge.
 - Carried: the W0-a stop at report 3 (Wave 0 part 2b) still needs its ruling before step E (R14); the base-lo3 lock
   question; deferred to integration 8 with wave AG: the C++ halves of R6C-3 and R6C-7.
+
+## Wave 0 part 2c (cause test, R14) (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `9a40e34f` (clean; code head `1cc4c6c9`;
+every research executable on v8-12). Dispatch 2c: the PM5-16 cause test, part (i) (required) and part (ii) (run once),
+under Ruling PM5-18 (3); then R14 under Ruling PM5-17 (lock base-lo1 only). Not run: R15, fields v10, any cell (no B0a).
+End head `f93868bf` + this log (tree clean).
+
+### A. Preconditions
+
+1. **Disk:** C: 42 G free (`df -h`) at start (part 2b ended at 43,173,644 KiB).
+2. **Executables** on disk = the v8-12 receipt (`build-equity/mega-v8-12-receipt.json` `e44344bf...6b5a`): IC
+   `ab7e2cbda3c87f74be7cd1d66725b7eb99b95a5182898c44aa465bbd1615452d`, NAV / targets
+   `5497c89d5141ae5f40d72ad2bef427cf9d6bf5462236b0a6d648765435b9bca6`, risk
+   `8967952c5c2054170d02466f121fc66122a2b3daa34d7bb99fe63a94a7eed258`, mine
+   `cd661fe99ad06d592af2886eb6491d853c5acfd35a40f27f34f5f9088588c91d`. `git diff 1cc4c6c9 HEAD` on the code pathspec:
+   empty before the lock commit. No build.
+3. **Input pins** re-hashed, equal to parts 1, 2a, 2b: research_window.json `62cf2cfa...3584`, library v7.1
+   `787c802e...2259`, recipe v7.1 `7f8a2643...b271`, role lo1 `2ff9d771...1e53`, role lo3 `e1c67101...95f4`, fields v9
+   lo1 `888e6616...b8695`, fields v9 lo3 `9f156363...021ef`, identity-bridge-r4-v2 `f598c04c...43de`,
+   fundamental-events-v3 `304d2945...b87b` (the last two = part 1's R4 / FEV pins).
+4. **Scripts** (committed `da805a2a` before any run, sprint dir, `git add -f`):
+   - `pm516_cause_i.py` `6d86696e1333c73ba2cda5781a261bdd6e9693bfea33142cc4a1bfc2063e1879`: orientation-consumers.md Q5 (i)
+     as written; checked against `strategy_ic_runner.cpp:172-183` (row writer: `oriented = sign*r`, an exact
+     negation) and `:340-341` (header, `setprecision(17)`, so a CSV value parses back to its exact bits). Added, without
+     changing the test: `id_sets_equal`, `negated_cells` (a count), an overall `pass`, and the first failing
+     (id, column) that the dispatch asks for on failure. Prints counts and booleans only.
+   - `pm516_pin3y_weights.py` `31800e7b6665ea082493cf51ec19c1038a35ab4950771f807b29cf8444597750`: Q5 (ii) step 1
+     verbatim (docstring added). Checked against the weights loader (`strategy_ic_admission.cpp:680-733`: schema v1,
+     `library_sha256`, every candidate weighted, `train_manifest_sha256 == --train-sha256`; `:421-446`: signs +1/-1,
+     every weighted candidate signed) and the default weight expression `1.0 / (families * n)`
+     (`strategy_ic_composition.cpp:178-184`). Prints the file SHA and counts only.
+   - Corrections to the investigator's commands (paths and flags only): scripts saved in the sprint dir and committed
+     (the investigator suggested outside the repo); both daily-IC CSVs bound (9.0 and 12.2 MiB, under the 16 MiB bind
+     cap); the weights script run through the bounded runner too, binding the script, the library and the 3-year
+     `orientations.json` (it opens a 3-year IC artifact).
+
+### Runs
+
+`scripts/run_bounded_research.py` on a clean tree, one at a time. Argv digest = SHA-256 of the receipt's `command` as
+compact JSON. Peak = sampled peak tree RSS. All four: outcome completed, exit 0, stderr empty.
+
+| step | receipt dir (`build-equity/`) | source | caps | s | peak MiB | argv digest | receipt.json SHA-256 | output SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| (i) cause test | `pm5-16-cause-i-run` | `da805a2a` | 180 s / 1,536 / 512 | 0.78 | 75.6 | `860ad221a33ba17ca1f960203c225530a26bbfbb1dc7936c1536acfe570ee91d` | `1e363ac894fa01a2ff7fb2127824c035ee143726c43a6ed505ef0228ac75ca66` | stdout.log `f1ca9ce53fe3fbaf54a70e01dab61dfebdb8ded4cb09b72aab6164eb6032f088` |
+| (ii) weights file | `pm5-16-pin3y-weights-run` | `da805a2a` | 180 s / 1,536 / 512 | 0.25 | 5.7 | `961bd5a462b4d56999413a1959800e2f31052baec0db992c9fc76d5783c65a03` | `8833761c15a3128ae991869921168d93866097442cad6f77673763bd760af99d` | `pm5-16-pin3y/composition_weights.json` `6dc43268c8c82885a2b2c79060c450fc57172b4b22360ce2873ae92eede81752` |
+| (ii) IC run, 4-year lo1, 3-year signs | `pm5-16-pin3y-u-lo1-run1` | `da805a2a` | 300 s / 2,560 / 512 (W0-c) | 23.2 | 667.1 | `27c645d1497bc115d34c657e2a746db061e2a071ee9bb82ce0b838ce4e470672` | `cfb87ce933f740027f0c27ae04bcf441157ce1ecbf28f3332460d5ff6e9650fd` | `pm5-16-pin3y-u-lo1-1/train_daily_ic.csv` `0d76164cc1210223ed9736c13a612a262308005ae069a761f4817b58be101b93` |
+| (ii) daily IC overlap | `pm5-16-overlap-daily-ic-pin3y-run` | `da805a2a` | 180 s / 1,536 / 512 | 2.08 | 98.7 | `6330a83965f17907a1d3ef214caed7b7b7bb4b74bbf663da31e4db0be19929ec` | `63e625131eec3bddbaebd0e0db76c33a13ae5c01c1e472aaddb30da8c29c4e44` | `pm5-16-overlap-daily-ic-pin3y.json` `0f3afa33d98282316adfeb080a7e838632a2c59a323bfe05b2df813ac88c22eb` |
+
+- (i) argv: `python pm516_cause_i.py build-equity/mega-v71-train-u-1/train_daily_ic.csv
+  build-equity/w0-2-v71-u-lo1-1/train_daily_ic.csv chtax,ind_adj_rev_5,ind_mom_12_1`; bindings script `6d86696e`, old
+  CSV `929b4a5a...a5c8`, new CSV `70ab07ef...635f` (= part 2b's report 3 inputs).
+- (ii) weights argv: `python pm516_pin3y_weights.py $LIB $LIBS build-equity/mega-v71-train-u-1/orientations.json $LO1
+  build-equity/pm5-16-pin3y/composition_weights.json`.
+- (ii) IC argv = runbook R13's u pass without `--save-combined`, plus `--composition-weights
+  build-equity/pm5-16-pin3y/composition_weights.json --composition-weights-sha256 6dc43268...`: `--library $LIB
+  --library-sha256 $LIBS --train build-equity/train-2020-2023-lo1/manifest.json --train-sha256 $LO1 --train-fields
+  build-equity/train-2020-2023-lo1-fields-v9 --train-fields-sha256 $F1 --output build-equity/pm5-16-pin3y-u-lo1-1
+  --max-memory-mib 2560 --min-names 1000 --workers 4 --candidate-cache build-equity/mega-candidate-cache-v8-lo1`; exe
+  `ab7e2cbd` (v8-12); bindings IC exe, library, role lo1 manifest, fields v9 lo1 manifest, weights file. Other outputs:
+  `orientations.json` `73e39fda...dcb7` (differs from the u pass's `bbb6f5ba` by construction: the recipe carries
+  `composition_weights_sha256`, `strategy_ic_admission.cpp:88`; not opened), `recipe.json` `5c2cd0eb...8762`,
+  `summary.json` `1ac746f9...7a6b`, `train_candidates.jsonl` `fc2d2d17...3cee`, `train_planned_targets.csv`
+  `2a3639d0...12e0dd`.
+- (ii) overlap argv: `compare_window_overlap.py --kind daily_ic --per-key --before 2022-09-30 --old
+  build-equity/mega-v71-train-u-1 --new build-equity/pm5-16-pin3y-u-lo1-1 --out
+  build-equity/pm5-16-overlap-daily-ic-pin3y.json`; tool `b4d7f2e8` (= parts 2a, 2b).
+
+### (i) PASS: raw columns identical for all 48; oriented column equal for 45, exact negation for the 3
+
+Script output (counts and booleans): `ids` 48, `ids_new` 48, `id_sets_equal` true, `expected_ids` 3, `cells` 99,648
+(48 x 692 common sessions x 3 horizons), **`raw_columns_identical` true** (pearson and rank_ic bit-identical on every
+cell of all 48 candidates), **`ids_equal` 45**, **`ids_negated_every_finite_cell` 3**, `negated_cells` 6,223,
+**`ids_other` 0**, **`negated_are_expected` true** (the negated set is exactly {chtax, ind_adj_rev_5, ind_mom_12_1}),
+**`equal_are_the_rest` true**, `pass` true, `first_failure` null. The 6,223 negated cells equal report 3's unequal
+counts for the three keys (2,071 + 2,076 + 2,076), so every differing member cell of report 3 is an exact sign flip.
+
+### (ii) BIT-IDENTICAL: the combined row is reproduced with the 3-year signs (cause fully shown)
+
+- Weights file: 48 candidates, 10 families, 7 candidates with no 3-year orientation (sign 0, weight 0: skipped exactly
+  as the default path skips a sign-0 candidate, `strategy_ic_composition.cpp:229`); SHA `6dc43268...1752`.
+- IC run: `summary.json` `status` complete, 1 role (train, `2ff9d771`), `combined_evaluations` 1, candidate cache 48 / 48
+  signal hits and 48 / 48 IC-result hits (no VM evaluation), weights record `sha256` `6dc43268`, `signs`
+  `pinned-candidate-signs`, `binding` `train-manifest-sha256;TRAIN-scored-in-this-run`. No IC field of the summary read;
+  the run's `stdout.log` (per-candidate `sign=` progress lines) not opened.
+- Overlap, 3-year u pass vs this run, sessions before 2022-09-30 (692 common, old-only 0, new-only 0):
+  **`__combined__` `bit_identical` true, `max_abs_diff` null**, cells compared 6,228, unequal 0, NaN mismatches 0,
+  old cells missing in new 0. `differing_keys` = [chtax, ind_adj_rev_5, ind_mom_12_1] (their `oriented_rank_ic` column,
+  2,071 / 2,076 / 2,076 unequal, 0 NaN mismatches: pinned signs orient the blend only, every member diagnostic keeps the
+  run's own sign, `strategy_ic_runner.cpp:432-433`); the other 45 members bit-identical. Totals unequal 6,223 (= (i)'s
+  negated cells), class `stop` by design (member diagnostics), as orientation-consumers.md Q5 (ii) predicted.
+- Outcome (a) of PM5-16 / PM5-18 (3): no old value changed. Signals bit-identical (report 2), raw member IC
+  bit-identical (i), and the blend with the 3-year signs on the 4-year role reproduces the 3-year combined row bit for
+  bit; the whole of report 3's difference is three whole-window orientation signs (horizon-21 mean rank IC over the
+  run's TRAIN window, `strategy_ic_runner.cpp:419-421`). No reproduction-path analysis needed.
+
+### C. R14 (Ruling PM5-17)
+
+1. **Pins into `v8-prereg.md`** (section "Pins"), each re-hashed from the file on disk immediately before writing:
+   research_window.json `62cf2cfab1d0f61b02731a807ccfdd326bb2df91caff1173a3cf1b37e6e63584`; role lo1
+   `2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53`; role lo3
+   `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4`; fields v9 lo1
+   `888e6616e441e863a9f91234124e1aebc907db11e18d9789d3c583cf447b8695` / lo3
+   `9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef`. `v8-prereg.md` now
+   `3f9b7bc20f40fe0e2eabf86fe6cf6262b9d41084a4935f9bfbb23c2c38cdb32c`.
+2. **Protocol line** (`research_cycle.py ledger-protocol --ledger build-equity/trials.jsonl --owner-ruling 'OWNER RULING
+   2026-09-29: "expand the TRAIN window to include 2023 to give us more sample size, keep 2024+ hidden and out of
+   sample." TRAIN [2020-01-01, 2024-01-01); hidden 2024-01-01 and later (v8-prereg item 1; task W0-3)' --date
+   2026-09-29`; text and date from progress.md 2026-09-29 and the W0-3 brief): appended one line, kind `protocol`,
+   count 0, window_id `research-window-v2`, research_window_sha256 `62cf2cfa...3584`, trial_id `ea824f555f4241cb`,
+   **prev_sha256 `00c901da636e9ae0cf758020f3fa3bd55ef3912899b4bf912de8ae631b9e0d93`** (= the fold head of the 37 v7
+   lines recorded in part 2b). Validated through `backtest_integrity`: `ledger_read` verifies the chain (38 lines: 37
+   construction unchained + 1 protocol chained), **chain head `f7043d8130636a23365e8703e4c190dfdb5cd4ec0098a9d990d0c4a31196bcf8`**
+   (= SHA-256 of the protocol line), `prev_sha256` = `chain_head` of the 37 lines before it, `is_event` true,
+   `trial_counts` 0 for the line, **`ledger_n(records, True)` = 37** (38 for a new cell), `ledger_counts` lists
+   `construction` only. Ledger file SHA-256 `a2c24f56...0810` -> `8906fea393ba4e68995f7c85849c5bbc538d907f7157681a2637ada7cab19ccc`.
+   Every line after it must now carry `prev_sha256` (the chain is live).
+3. **Lock** `research_cycle.py lock scripts/specs/v8/base-lo1.json --write` (base-lo3 not locked: PM5-17): exit 0,
+   four null pins filled, nothing else changed (semantic JSON diff against HEAD; the file is re-serialised with
+   `indent=2`, hence 148 + / 26 - lines): `fields.manifest_sha256` `888e6616...b8695`, `inputs.role.sha256`
+   `2ff9d771...1e53`, `inputs.identity_bridge.sha256` `f598c04c51e0bea33bd730a3a2beb3a9f76abe0b9630c75f21c70ad0ec3643de`,
+   `inputs.fund_events.sha256` `304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b`. A dry `lock` after
+   it exits 0 (every pin equals its file). **Spec file SHA-256 `654067870a7c...c246` -> `88031699fdf4b0d5616b071b8dccc4c8414d7e894c9a46280a94a43b751f40bc`**
+   (the cell's spec digest: a plain spec's digest is its file SHA, `research_spec.py:233-242`). Commit `f93868bf`.
+
+### What the base-lo1 lock pins, and what it does not
+
+- **Pinned in the spec and verified by every `plan` / `run`** (`research_cycle.verify_inputs`, `research_cycle.py:783-797`:
+  PIN MISMATCH exit 3): library `fund_industry_ic_v71.json` `787c802e...2259` and recipe
+  `fund_industry_ic_v71.recipe.json` `7f8a2643...b271` (pinned before; unchanged), role lo1 manifest `2ff9d771`, identity
+  bridge r4-v2 manifest `f598c04c`, fundamental events v3 manifest `304d2945`, as-built fields v9 lo1 manifest `888e6616`
+  (the fields phase is pinned, never built by the cycle). The role's `universe.id` must read `linked-operating-v1`.
+- **Pinned by the spec digest** `88031699...40bc`: every other spec value (exe paths, flags, caps, output names, gate,
+  fit / card / monitor / summ settings). It is the verdict's `spec_sha256` and the NAV resume binding
+  (`cycle_binding.json`, review C-13); any edit of base-lo1.json changes it. It also moves the template-chain digests of
+  every v8 template resting on base-lo1 (B0c, r1 ..., nothing run or locked on them).
+- **Not pinned by the lock (named by path only):** the executables (`build-equity/bin/atx-equity-strategy-ic.exe`,
+  `atx-equity-strategy-targets.exe`), the python interpreter, and the tool scripts. They are held by the build receipt
+  and the commit: every bounded-run receipt records `executable_sha256` and `source_sha`, and the cycle refuses a dirty
+  code pathspec before each phase. State at lock (what must not change before the freeze gate unless re-ruled): exes
+  IC `ab7e2cbd...452d`, NAV / targets `5497c89d...9bca6` (risk `8967952c...d258`, mine `cd661fe9...c91d`; v8-12);
+  code pathspec = `1cc4c6c9` + the locked spec (`f93868bf`); scripts `run_bounded_research.py` `81b5de1e...1bc5`,
+  `research_cycle.py` `f6b4043d...c829`, `research_spec.py` `9dbb7879...5101`, `research_ledger.py` `c90edb6e...162d`,
+  `research_tree.py` `c313a510...151c7f`; tools `fit_composition_weights.py` `8860483c...839d`, `alpha_report_card.py`
+  `ade2d777...dbe0`, `book_monitor.py` `628b2e6e...a7d`, `nav_summ.py` `719ac51f...db7d`, `backtest_integrity.py`
+  `2e195823...d36e`, `compare_window_overlap.py` `b4d7f2e8...8896`. The candidate cache
+  `build-equity/mega-candidate-cache-v8-lo1` is content-keyed and verified per entry (unchanged by (ii): 144 files,
+  3,052 MiB, no file newer than the weights file).
+
+### Tests after the lock: FINDING (design, not fixed)
+
+`scripts/tests` after `f93868bf`: **20 failed, 162 passed, 4 skipped** (part D: 183 / 3; the fourth skip is the
+env-gated `test_cycle_e2e.py:182`, `ATX_EQUITY_BIN` unset). All 20 failures are in `scripts/tests/test_research_spec.py`
+(alone: 20 failed / 23 passed): the 12 `test_every_v8_spec_loads_and_plans[*]` cases, the r1 / r10 / r11 tests, the
+e27b add-alpha test and the three add-alpha tests. `test_research_cycle.py` + `test_cycle_scoring.py`: 96 passed / 3
+skipped (env-gated). Cause (from the code and the error text, e.g. "lock: role pin 2ff9d771... differs from the file
+(f31a9064...); --relock to replace"): the tests read the live `scripts/specs/v8/*.json` (`V8`, `:30-31`; templates
+resolve their parent chain from that directory) and plan or lock them in a temporary root of stand-in input files
+(`fake_root`, `:86-110`; `v8_root`, `:624-647`), expecting base-lo1's pins null (`NULL_PINS`, `:37-45`, "as planned
+today"). With real pins the stand-ins mismatch (`verify_inputs` PIN MISMATCH, `lock_pin` refusal without `--relock`,
+`research_cycle.py:1818-1833`). The A2 root sequence (`task-A2-report.md`, root command sequence) locks base-lo1 before
+B0a, so this break was built into the fixture design; fixing it means changing how the fixtures copy specs and resolve
+template chains (null the root-filled pins in the copies, or relock on stand-ins), not a one-line slip, so per the
+integrator rules it is described, not fixed. No product code is wrong: the cycle on the real root plans against the
+real files. Reverting the lock would undo PM5-17.
+
+### Disk
+
+C: 42 G free at start; **43,017,228 KiB (41.0 GiB) free after** (`df -h` 42G). New: `pm5-16-pin3y-u-lo1-1` 14 MiB, the
+weights dir < 1 MiB, four run dirs and one report < 1 MiB each.
+
+### Hidden-data record
+
+- **Inputs opened by the tools:** (i) the two `train_daily_ic.csv` (every row asserted before 2024-01-01; rows on or
+  after 2022-09-30 dropped in memory); (ii) the library, the 3-year `orientations.json` (2020-2022), role lo1 (to
+  2023-12-29), the fields v9 lo1 manifest and the candidate cache (all hits), then the two daily-IC CSVs (overlap tool,
+  `--before 2022-09-30`, seal from `research_window.py`). The ledger verb read `research_window.json` and the ledger.
+- **Logs:** the eight stdout / stderr logs of the four runs scanned by count for dates in 2024 or later: 0 each (count
+  only; the IC run's stdout was not displayed).
+- **What I read:** receipt fields; the (i) script's dict (counts, booleans); the weights script's SHA and counts; the IC
+  `summary.json` status, role pin, cache counters and weights record; the overlap report's alignment, `differing_keys`,
+  the `__combined__` row (`bit_identical`, `max_abs_diff`, cells, unequal, NaN, missing, status, reason) and the three
+  member rows' unequal and NaN counts; ledger kinds, N, chain head and the appended protocol line; spec pins; source
+  files. **Disclosure:** the weights script's `unoriented` count says 7 of the 48 candidates had sign 0 in the 3-year run
+  (horizon-21 mean rank IC undefined or exactly 0); no id was attached. **No IC level, sign of a named candidate,
+  orientation value, weight, return or Sharpe was read, printed or summarised. Nothing dated 2024-01-01 or later was
+  opened.**
+
+### Ledger
+
+`build-equity/trials.jsonl`: 38 lines (37 construction + 1 protocol), chain head `f7043d81...bcf8`, **N = 37**.
+
+### Fixes
+
+None to source. Commits: `da805a2a` (cause-test scripts), `f93868bf` (prereg pins, base-lo1 lock), and this log.
+
+### Open items
+
+- **Tests:** `scripts/tests/test_research_spec.py` 20 failures after the base-lo1 lock (above); needs a test-fixture fix
+  (lane A2's design) before the next "suites green" gate. base-lo3's lock after B0a will hit the same fixtures.
+- **progress.md** not written by me: R14 of the runbook asks for the R1-R13 pins, seconds, peaks and the W0-a outcome
+  there; every number is in this log and parts 1, 2a, 2b.
+- W0-a on report 3 is closed by outcome (a) (PM5-18 (3)); the four-key `stop` class of the daily-IC report remains by
+  design (member diagnostics carry the run's own window sign).
+- base-lo3: lock after B0a (PM5-17). Carried: R11 has no overlap report (open question 30); R15 and fields v10 not run.
