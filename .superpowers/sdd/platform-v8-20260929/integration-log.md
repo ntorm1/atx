@@ -5042,3 +5042,13 @@ net annual return 4.27% (4.54%), gross of cost 5.27%, trade cost .49%; vol 3.44%
 | 2022 | 251 | +.0755 | +1.782 | .0415 | .0176 | 11.39 |
 | 2023 | 250 | +.0196 | +.669 | .0298 | .0171 | 10.84 |
 
+Commit `37b4dede`. **R-9b** `run --stop-after nav`:
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (theta .04, L 1.1474) | 180 / 1,536 | 45.9 | 586 | 0 | `f0ba01fe6da9779ded7c2aa8a92326205a08f5410a61a18981804f976c3fa25a` | `build-equity/mega-nav-v8-r9b-t.04-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`; theta .04 |
+
+Receipt: completed, `clean in the code pathspec`, source `37b4dede`. **Mechanics (S2): PASS.** All-rows gross **.9650** in
+[.90, 1.05] (post-ramp .9716); net +.0037; tau mean .02110, p95 .02496 (flags true); max gross 1.099, max |net| .030;
+score_begin .892; by year .940 / .984 / .961 / .975; 1,006 CSV rows, 1,005 return rows; accounting 8.0e-14 / 4.2e-16.
+
