@@ -1973,3 +1973,20 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   wave (R-7 took 170 s of 180 s; restated here as `v8x-prereg.md` requires); the IC pass memory cap is
   re-probed before X-3 on mechanics only; the campaign memory probe runs only after the last hand-written
   cell, on H-F's pool, and reads no return. X trial numbering continues: X-2 is N 51.
+- X batch 1, first dispatch: stopped before the X list pin (P4); no X cell ran, nothing ledgered (N 50). Done at 0
+  trials: fields v13 lo3 (70 reused / 5 computed, manifest `e5f7f28c`, the 70 byte-identical to v10); K1
+  pre-checks: X-2 5 / 5, XSIG 5 / 5, X-4 9 / 9 plan; no X string void. Cause of the stop: the integrator asked
+  the PM for a ruling on XDATA's registration; the PM ruled by message and told the integrator to write the
+  ruling here; the session's permission system refused that edit by the integrator. The PM records its own
+  ruling below (the PM writes every ruling of this ledger); the owner is told.
+- Ruling PM7-32 (XDATA registration for X-3; made by the PM by message at the integrator's question, blind,
+  before the X list pin and before any X read; recorded here by the PM): themes div_season
+  `reversal_seasonality`, vol_beta `low_risk`, season_y2_5 `reversal_seasonality`; no new theme. Tier C+ for all
+  three. Prior sign +1, origin prior. Citations Hartzmark-Solomon 2013 (JFE), Ang-Hodrick-Xing-Zhang 2006 (JF),
+  Heston-Sadka 2008 (JFE) with Keloharju-Linnainmaa-Nyberg 2016 (JF); form, formula, domain and deviation
+  verbatim from `task-XDATA-report.md` sections 4a / 4b -- XDATA's report gave strings, themes and signs but
+  no tier; tier is a weighting constant, so it is fixed here; C+ is the grade XSIG gave its two new
+  single-study candidates, and an unregistered prior takes the least weight -- cost if wrong: three members
+  under-weighted inside their themes; no result was seen. Fields v13 by one bounded run registering both
+  entry modules is accepted (no file change). Confirmed readings: A-1 runs without `--rescreen` (PM7-18 a);
+  a replacing wave's marginal refusal takes the PM6-8 (i) spec-only fix; X-4's statistic is PM5-11's.
