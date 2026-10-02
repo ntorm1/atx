@@ -7,7 +7,8 @@ manifest; each draft field's entry names its module as ``producer``):
 
   python atx-engine/tools/prepare_research_fields_ydata.py <the base build's argv> --price-source <the role's
       TickerHistory3> --mgr13f-stage <thirteenf/> --mgr13f-stage-sha256 <pin>
-      --fields <the base list>,iv_skew_21,stio_chg_q,div_init_omit,deal_pending --reuse <the base fields directory> ...
+      --fields <the base list>,iv_skew_21,stio_chg_q,div_init_omit,deal_pending,conn_ret63
+      --reuse <the base fields directory> ...
 
 ``FIELDS_IVSHAPE_DRAFT``: the option-smile slope field of research_fields_ivshape.py (``--price-source``).
 ``FIELDS_MGR13F_DRAFT``: the 13F manager-horizon field of research_fields_mgr13f.py (``--mgr13f-stage`` and its pin;
@@ -15,6 +16,8 @@ it requires ``shares_out``, which requires ``si_shares``, in the same run).
 ``FIELDS_DIVEVENT_DRAFT``: the dividend initiation / omission field of research_fields_divevent.py (``--price-source``).
 ``FIELDS_DEALS_DRAFT``: the pending-merger target field of research_fields_deals.py (the SEC module's ``--sec-stages``,
 ``--sec-filings-sha256`` and ``--sec-identity-bridge(-sha256)``).
+``FIELDS_CONNECTED_DRAFT``: the 13F common-ownership (connected-stocks) field of research_fields_connected.py, the
+v9 draft's D-L3 ``conn_ret63`` (the same ``--mgr13f-stage`` and pin; it requires ``shares_out`` in the same run).
 ``register`` binds each module into a builder namespace exactly as the builder binds its own modules (``bind`` appends
 its ``FIELDS`` to ``ALL_FIELDS``; the module object joins ``FIELD_MODULES``, whose hooks then check, reuse and compute
 its fields). At integration it folds into the draft entry of record as further tuple elements.
@@ -22,16 +25,21 @@ its fields). At integration it folds into the draft entry of record as further t
 from __future__ import annotations
 
 import prepare_research_fields as builder  # same directory: the builder (it does not import this module)
+import research_fields_connected            # same directory
 import research_fields_deals                # same directory
 import research_fields_divevent             # same directory
 import research_fields_ivshape              # same directory
 import research_fields_mgr13f               # same directory
 
-DRAFT_MODULES = (research_fields_ivshape, research_fields_mgr13f, research_fields_divevent, research_fields_deals)
+# research_fields_connected follows research_fields_mgr13f: it reads the same stage options, which the 13F
+# manager-horizon module declares on the command line.
+DRAFT_MODULES = (research_fields_ivshape, research_fields_mgr13f, research_fields_divevent, research_fields_deals,
+                 research_fields_connected)
 FIELDS_IVSHAPE_DRAFT = ("iv_skew_21",)
 FIELDS_MGR13F_DRAFT = ("stio_chg_q",)
 FIELDS_DIVEVENT_DRAFT = ("div_init_omit",)
 FIELDS_DEALS_DRAFT = ("deal_pending",)
+FIELDS_CONNECTED_DRAFT = ("conn_ret63",)
 
 
 def register(host_namespace: dict) -> list:
