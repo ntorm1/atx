@@ -4913,3 +4913,25 @@ output name keeps the template's "L1.247" text (cosmetic; the base L is 1.1474).
    returns (`nav_summ --protocol v8` year table, column `vol`) inside [.04, .06] (closed) in each of 2020, 2021, 2022, 2023.
    The plan's "dSR >= -1 SE" is expectation, printed, gates nothing. The verdict line prints both books' all-rows gross.
 
+Commit `59a27af8` (spec, this text). Then `run --stop-after nav` (no free-memory refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fields / u / fit / card / marginal / gate / w | - | - | - | - | - | R-2's (done; gate p1-v80 re-read PASS, 0 status changes, "0 appended, 7 already ledgered") |
+| nav (base L 1.1474, the cell) | 180 / 1,536 | 47.4 | 589 | 0 | `bde30cac5840c91637b8e31d8e608dd1de12d01c7e03cd2dcf747ef9acbbf19e` | `build-equity/mega-nav-v8-r8-rt.05-b1.15-c21-L1.247`; recipe rule `aim-partial-v5+neutral-price-risk-v1+risk-target-0.05` |
+
+Receipt: completed, `clean in the code pathspec`, source `59a27af8`, NAV exe `5497c89d`.
+
+**Pre-return reads (in the fixed order; scratch `rtblock.py` and `mech.py`, keys only):**
+- **`risk_target` block** (summary.json; rule risk-target-v1, S .05, b 1.15, cadence 21, clip [.8, 1.25], 252): S2 book
+  decisions 1,004, **decisions_before_first_estimate 0**, **estimates 48** (1,004 / 21 = 47.8), base L 1.1474; decisions at
+  clip hi **374**, at clip lo **21**, unclipped 609; estimates at clip hi 18, at clip lo 1 (of 48); L_t mean **1.3082**
+  (min .9179 = .8 L, max 1.4343 = 1.25 L), multiplier mean 1.1402; sigma_hat over the 48 estimates mean .0320 (min .0172,
+  max .0587). `risk_target.csv` (5,020 rows = 1,004 x 5 books): S2 **priced_share mean .9986** (min .9956, max 1.0000);
+  48 updated rows; first decision 2020-01-02, last 2023-12-27 (ns stamps). Estimates at the clip by year: hi 2020 6
+  (Jan-Mar, Sep-Nov), 2021 4 (Apr, May, Sep, Oct), 2022 0, 2023 8 (May-Dec); lo once (Apr 2020, sigma_hat .0587).
+- **Mechanics (S2): PASS.** All-rows gross **1.1244** in [.784, 1.237] (PM7-20; post-ramp 1.1244); net +.0050 (<= .02);
+  tau mean .02428 <= .20, p95 .03061 <= .30 (1,004 sessions; summary flags true); max gross 1.368, max |net| .030; gross at
+  score_begin 1.171; by year 1.083 / 1.182 / 1.040 / 1.192; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows;
+  accounting 7.8e-14 / 4.3e-16 (tol 1e-9); `construction.v5.aim_leverage` 1.1474 (base), theta .05.
+
