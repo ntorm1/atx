@@ -1520,3 +1520,39 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   construction was amended after a mechanics read (not a return read); a reader who holds L fixed counts R-1 as
   rejected at N 41 and discounts cells whose L moved; R-1's PM5-11 criterion scales as 1/L and is now judged at
   matched gross (stricter than at 1.067).
+- Disk inventory (read-only, report `disk-inventory.md`, folded in with this entry): 57.3 GiB free. Classes
+  (freed if deleted): NEEDED 85.4, CANDIDATE 65.2, SAFE-CACHE 11.3, OWNER-DECIDES 45.0 GiB. Found: the worktrees of
+  pools 3, 4, 9, 11 are no longer on disk (four worktrees went to the Recycle Bin at 05:42-05:43 on 2026-10-02,
+  18.8 GiB, not by this session); every lane commit is intact (`834d5a05`, `6ea76460`, `c4bd8d09`, `1bd448cd`,
+  `8f48ee39`, `98ef8d89` all resolve and their branches exist).
+- Ruling PM6-7 (what is deleted; parked while the integrator held root): step A, now, outside root: the CMake
+  build trees and per-tree deps of the lane worktrees pools 7, 8, 10 (`build-equity`, `build-equity-rel`,
+  `build-equity-bench`, `deps`, `build`), their python caches, and `C:/atx-cache/deps-rel-pool5`. Step B, when
+  root is free, in `C:/atx-wt/pool-2`: `build-equity-rel` (Release v8-13, not adopted), `build-hygiene`,
+  `deps/hygiene`, and in `build-equity/` exactly: `mega-candidate-cache`, `mega-candidate-cache-v6`,
+  `mega-candidate-cache-v6u` with `-v7l1` (one link group), `mega-candidate-cache-v61-r7`,
+  `mega-candidate-cache-v7rel`, `recent-fast-train-2020-2022-v2-fields-v2` to `-v6`,
+  `recent-fast-train-2020-2022-v1-fields-v1`, `recent-fast-train-2020-2022-v2-lo1-fields-v6`, `-lo1-fields-v8`,
+  `-lo1-fields-v7-r7b`, `-lo1-fields-v7-r7c`, `v8-i3p4-d-w12-cache`, `statarb-cluster-v1`, and the four retired-
+  identity stores `v8-i5c-i6-fields`, `v8-i3p4-c-fields2`, `v8-cache-b3`, `v8-i3p4-d-w4-cache` (identities 2, 3,
+  5, 6, B-3 were retired by PM4-3; 1, 4, 7, 8 read none of them). Kept: every `*-run*` receipt dir; ccache and
+  the vcpkg binary archive (they are what makes integration 8's wide rebuild fast); `b0c-risk`, the
+  `train-2020-2023-base*` chain, `recent-projection-v2`; every small NAV / weights / cards output (provenance,
+  about 4 GiB in 181 dirs, not worth the risk); everything classed NEEDED. Not touched, owner decides: the
+  Recycle Bin (18.8 GiB), `C:/atx` (the owner's tree), the hidden-window dirs
+  `recent-fast-validation-2023-2024-v1*` (4.0 GiB, never opened), `atx-db/`, vcpkg user directories, the old
+  session scratchpad in `%TEMP%` -- zero references in any spec, pin, config, identity argv or re-run input; all
+  are rebuildable from recorded argv -- cost if wrong: hours of rebuild for a cache someone wanted; no pinned or
+  locked input is in the list.
+- Cleanup step A done (record `cleanup-step-a.md`): 11.09 GiB freed (57.37 -> 68.46 GiB free). In the lane
+  `build-equity` dirs only untracked and ignored content went (path-limited `git clean`; 77 tracked files per pool
+  kept); pools 7, 8, 10 clean before and after.
+- Cells batch 2c, R-1 (`r1-comp-v8-gm.json`, spec `60ac1feb`, L 1.1474): ACCEPTED, N 41. Gross .98171 against
+  B0c .98196 at the first matched run. Mechanics pass; criterion PM5-11 .02497 against .03469 pass. S2 net Sharpe
+  1.203 (B0c 1.133); dSR +.070, Memmel SE .205, p one-sided .362, two-sided .745. Net annual return 4.47% (4.42%);
+  gross of cost 5.76% (6.05%); net Sharpe at 4x NAV 1.103 (.978). E-45: R-10 and R-11 stay defined. The accepted
+  parent is R-1-gm.
+- R-2 stopped before any read (admission trials 0, nothing ledgered): library v8.0 registered (roster 52: 7
+  admission trials, 8 re-screens, 11 removed; 37 kept members byte-identical in the u pass); the cycle refuses the
+  marginal phase: "pool member accruals is not in --library" (the parent's themes hold members v8.0 removed or
+  replaced). Ruling pending; R-3 waits on it.
