@@ -4280,3 +4280,52 @@ failed on the fit flags (the change's composition map was unknown for the new na
 
 The 3 skips are the RESEARCH_CYCLE_LIVE_ROOT tests (as every batch).
 
+Commit `81c80c39`.
+
+### Cell R-5 (r5-adv-hold on lib-v80; nav --adv-hold-q .1; L 1.1474)
+
+**N before: 44; this cell makes 45 (<= 51).** Brief row (task-CELLS-brief.md:58): "net Sharpe at 4x higher AND net at
+1x not lower by more than one paired SE AND S3 not lower (`--adv-hold-q .10`, capacity curve)" (E-15, PM4-5). Parent =
+the last accepted cell = R-2 (`lib-v80.json`); R-3 and R-4 were not accepted.
+
+**Identity cell:** not run here (as R-4): the template's "identity cell first: --adv-hold-q 1e9" was integration 5
+part C identity 3 (PASS, R-5's declared differences only); PM4-3 retired identities 2 and 3. No executable changed since
+(v8-12, NAV `5497c89d`).
+
+**Spec.** `scripts/specs/v8/r5-adv-hold.json` (template): `"parent": null -> "lib-v80.json"` only; `lock` (dry) 0,
+`lock --write` 0 (reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`,
+reference_weights `03213345`), dry lock after 0. File `304e7f1aaf835e14038f0eb20609c65ea0f509cfbb25f6cb001b4fd0e4811dc2`,
+**spec digest (template chain) `4336ab810fa19a61951b5e8cf60097ab6dd185da1fb0596614bd1527dc4ae5d3`**; commit `8ed541a6`.
+`test_research_spec.py` with the locked file: 51 passed (whole-file meta-test deselected). Plan exit 0: every pin
+`[locked, verified]` (library v80 `68ce8539`, recipe `fb09b740`, role lo3 `e1c67101`, label_role `95e16cfe`, fields v10
+`a4a060ae` 70 rows); fields, u, fit, card, marginal, w, monitor = R-2's (done); nav pending: R-2's argv plus
+`--adv-hold-q .1` (`--capacity-curve` already the parent's) at `--aim-leverage 1.1474`; summ `--dsr-n 45`. The nav
+output name keeps the template's "L1.247" text (cosmetic; the run is at 1.1474). Gate p1-v80 re-read: 0 status changes,
+3 of 7, PASS; "0 admission trial line(s) appended, 7 already ledgered".
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.1474; step (1)) | 180 / 1,536 | 59.4 | 586 | 0 | `babe4001a3485f237bbfe29a2d1eed73f0c7a75e508302f7610ab3eb22b926d4` | `build-equity/mega-nav-v8-r5-advq.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`; recipe rule `aim-partial-v5+neutral-price-risk-v1+adv-hold-0.1`, `adv_hold_q` .1 |
+
+Receipt: completed, `clean in the code pathspec`, source `8ed541a6`, NAV exe `5497c89d` (v8-12).
+
+**Gross match (step 1 at the parent's L 1.1474; mechanics only):** G **0.9839319270** vs G_parent .9859903463:
+|diff| **.00206** <= .005 -> **the cell stands at L 1.1474** (no `-gm` spec, no correction; the step-(1) run is the
+cell; calibration runs 0).
+
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9839 in [.90, 1.05] (post-ramp .9897); net +.0038
+(<= .02); tau mean .02380 <= .20, p95 .02819 <= .30 (1,004 sessions; summary flags true); max gross 1.116, max |net|
+.029; gross at score_begin .9370; by year .961 / 1.000 / .982 / .992; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005
+return rows; accounting 6.7e-14 / 3.7e-16. **ADV cap active** (`construction.adv_hold`, identical in all 5 scenarios,
+desired-weight units): 1,004 decisions; clipped names mean 69.3, max 131, total 69,543; clipped mass mean .0164, max
+.0375; unplaced 0; residual breach (one pass, reported) in 864 decisions, 4,350 name-decisions, names max 18, mass mean
+5.9e-5, max .00052, excess max 9.3e-5.
+
+**Criterion reading, fixed before any return of the cell is read.** Registered text (plan R-5, task-R-5-brief,
+task-CELLS-brief:58): (a) S2 net Sharpe at 4x NAV (capacity curve, `capacity_curve.csv` row multiple 4, `net_sharpe`)
+strictly higher than R-2's; (b) S2 net Sharpe at 1x "not lower by more than one paired SE": dSR >= -SE, SE = the
+paired Memmel SE of the statistics of record (the pitch config labels it "within one Memmel SE of the parent's"; that
+label is the report tool's, not the registration; the registered words are one-sided); (c) S3 =
+`modeled-1bn-terminal-adverse-v1+swap-fin-v1` net Sharpe (summary, 1x) not lower than R-2's (>=). Acceptance (rule 5):
+dSR > 0 AND mechanics AND (a) AND (b) AND (c). R-5 at 4x reads its cap at the initial NAV (E-15 / PM4-5, disclosed).
+
