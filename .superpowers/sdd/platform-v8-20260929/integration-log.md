@@ -5198,3 +5198,34 @@ Year tables (S2; rows, net return, net Sharpe, vol):
 
 Not reproducible: none (8 of 8 ran). Hidden data: every input sealed at 2024-01-01; last session 2023-12-29 in every run.
 
+Commit `5f073613` (re-run log, ledger line).
+
+### 5. V8-F: cumulative test, freeze gate, DSR at the v8 count; H-2
+
+**The final book (V8-F = the last accepted cell, brief step 1): R-2** (`scripts/specs/v8/lib-v80.json`, NAV
+`build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`, L 1.1474). Base: B0c
+(`build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`). N 50.
+
+**Freeze gate as registered (v8-prereg item 9; task V8-F step 2), read before any V8-F number is computed:**
+(a) S2 net Sharpe of R-2 on 2020-2023 >= 1.0; (b) mechanics (R-2's, PASS in batch 2d; re-read by mech.py); (c) cumulative
+paired S2 net dSR (R-2 - B0c) > 0 AND studentized circular-block bootstrap p < .10, **one-sided** (Ruling E-34: "the freeze
+gate's 'bootstrap p < .10' is one-sided, as coded in nav_summ since the v7 bundles -- the registered hypothesis dSR > 0 is
+directional -- cost if wrong: the gate is twice as loose as a two-sided reading; the scorecard prints both p values"):
+`nav_summ --protocol v8 --bundle B0c R-2` (bounded, no `--ledger`), its verdict block; (d) cell-count DSR >= .95 under
+OD-4 (prereg item 3, PM7-7): nav_summ `--dsr-ledger build-equity/trials.jsonl` on R-2's dir, `deflated_ledger` (N = the
+ledger's construction trials = 50; V[SR] = `backtest_integrity.dsr_variance`: sample variance, ddof 1, of the per-session
+S2 net SRs of the construction lines on research-window-v2 -- the 13 v8 cells B0a..R-9b and the 8 window re-runs; the
+legacy variance printed beside, gating nothing). Beside it (gate nothing): effective-N DSR, PBO, PSR, MinTRL, from one
+bounded nav_summ over every ledgered cell with R-2 last, `--reference` B0c, `--effective-n dirs --psr --pbo --dsr-ledger`,
+no `--ledger` (the cycle summ's form at today's ledger). The gate passes only if (a)-(d) all hold.
+**OD-3:** if (d) is unmet, the record says so and names OD-3 (history 2013-2019) as the lever (brief step 3); the
+registered procedure names the lever and asks for no read. No history file is opened: Ruling E-2 keeps OD-3 at "tooling
+only, no read ... the plan's recommendation is to build the tools and leave the read to an explicit owner ruling; a read
+cannot be undone" (plan OD-3: "not run in v8 without a ruling"); E-41 counts any such read separately. If any step asked
+for that read, the batch would stop here and report.
+**H-2** (task-H brief): "Root measures cold VM seconds of library v7.1 in AuditExact on E3 and the fixture." Checked from
+code before any run: the IC runner fixes `EvalMode::ResearchFast` (`atx-impl/src/strategy_ic_runner.cpp:223`,
+`strategy_runner.cpp:804`); no flag, verb or tool of the v8-12 executables selects AuditExact on a role (the engine's
+`alpha_kernels_bench` times single kernels on synthetic panels, not a library on E3). A measurement needs an executable
+change: PM5-21 forbids it, so H-2 is not run (stop condition for this item; reported).
+
