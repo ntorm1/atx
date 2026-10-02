@@ -1,4 +1,4 @@
-# Task XWQ report: the 101 formulaic alphas in the DSL (expansion X, cell X-7; Rulings PM7-33, PM7-34)
+# Task XWQ report: the 101 formulaic alphas in the DSL (expansion X, cell X-7; Rulings PM7-33, PM7-34, PM7-36)
 
 Lane XWQ, pool 12, branch `feat/platform-v8-xwq-20261002` from `bc153439`. Python and documentation only; synthetic data
 only. Written 2026-10-02 before any IC, TRAIN, return, turnover or NAV read of any formula (this lane has no trials).
@@ -11,14 +11,16 @@ This file is the registration of cell X-7.
 | New fields `open_adj`, `high_adj`, `low_adj` (builder, entry, synthetic tests) | DONE | `387ed0e9`, `1f8bf582` (text) |
 | Table of the 101 formulas, readings, the selection rule coded (`xwq_check.py`) | DONE | `5b8e7b55` |
 | Picks verified against the printed formulas; frozen add-alpha lines | DONE | `46225af7` |
-| Registration (this report: table, rule, picks, rows, v9 list, rulings) | DONE | this commit |
+| Registration (this report: table, rule, picks, rows, v9 list, rulings) | DONE | `63e39f9c` |
+| Tier 2 (PM7-36): rule clause, 8 more picks verified, frozen lines; rulings PM7-36 recorded | DONE | this commit |
 
 Test lines:
 - `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tools/test_research_fields_ohlc.py`
   -> 7 passed (with the xdata and price field tests: 23 passed).
 - `"C:/Program Files/Python312/python.exe" .superpowers/sdd/platform-v8-20260929/xwq_check.py` -> `xwq_check: PASS`
   (101 rows; 46 exact transcriptions through the XSIG compiler mirror and verified for their exactness class on a
-  synthetic world; 6 picks equal to the printed formulas cell for cell; 25 mutants fail). `xsig_check.py` still PASS.
+  synthetic world; 14 picks, tier 1 and tier 2, equal to the printed formulas cell for cell; 59 mutants fail; the six
+  tier-1 add-alpha lines are byte-identical to `63e39f9c`). `xsig_check.py` still PASS.
 
 ## 1. Result in one paragraph
 
@@ -30,9 +32,11 @@ cannot express. No operator is missing: ts_argmax, signedpower, product, scale, 
 all exist. The rule of section 3, fixed before selection and blind, picks **6 strings**, one per mechanism cluster:
 `wq_099`, `wq_035`, `wq_055`, `wq_006`, `wq_002`, `wq_101`. The cluster the roster already holds (1-10 session
 close-to-close reversal, 18 of the 46 exact formulas) and the overnight-gap cluster (contested sign; house precedent)
-are not taken; 40 exact formulas are listed for v9 (section 8). Six, not twenty: the paper's exact set is dominated by
-reversal variants and by several versions of the same price-volume correlation idea, and the brief prefers fewer
-strong picks.
+are not taken. **Tier 2** (Ruling PM7-36, added blind before any X-7 screen) takes the next two of each cluster in
+the same rule order: **8 strings**, `wq_095`, `wq_085` (pv_liq), `wq_030`, `wq_043` (vol_rev), `wq_014`, `wq_044`
+(pv_vol), `wq_038`, `wq_033` (bar); the other three clusters (range_vol, vol_ret, ar1) have no eligible second member.
+Total 14 of the 20 allowed; the rule qualifies no more, so none is padded in. 32 exact formulas are listed for v9
+(section 8). X-7 screens both tiers together.
 
 ## 2. Readings (how the paper's inputs and functions map to the house; fixed blind)
 
@@ -111,23 +115,34 @@ cost), **T3** fewer DAG nodes, **T4** lower paper number. Rank order of the pick
 printed window first. The paper's own statistics are aggregate only (Sharpe 1.24-4.16, holding 0.6-6.4 days, mean
 pairwise correlation 15.9%, before costs; 80 of 101 in production, not named), so they rank nothing; they set the tier.
 
-The rule is coded (`select()`); its output on the table is the registration (asserted). One clause was added after the
-first mirror run: E5's budget order, prompted by #99's static slot count (8), not by any return; without it the
-`pv_liq` pick would be #85 (window 30) instead of #99 (window 60).
+The rule is coded (`select_tiers()`); its output on the table is the registration (asserted). One clause was added
+after the first mirror run: E5's budget order, prompted by #99's static slot count (8), not by any return; without it
+the `pv_liq` pick would be #85 (window 30) instead of #99 (window 60) (accepted, PM7-36).
+
+**Tier 2 (Ruling PM7-36; written 2026-10-02 before any X-7 screen exists; reads no return).** From the eligible
+formulas (E1-E6 unchanged: the reversal and gap clusters stay closed), each cluster's members in the T0-T4 order above:
+the first is tier 1, the **next two are tier 2**; at most 20 strings across both tiers (`MAX_TOTAL`, asserted). Nothing
+else changes: same house forms, budget, tier C+, printed sign, checks. Applied: pv_liq #95, #85 (#99 first); vol_rev
+#43, #30 (#35 first; #17 fourth); pv_vol #14, #44 (#6 first; #26, #22, #40 after); bar #38, #33 (#101 first; #37, #28,
+#18 after); range_vol, vol_ret and ar1 have no second eligible member, so 8, not 14. Tier 2 is ranked like tier 1
+(longest printed window first) and follows it in the admission order. Two consequences of the rule as written are
+flagged, not corrected (section 9, XWQ-g): #38 and #33 take the opposite sign to #101 on the intraday body, and #14
+and #44 re-use #6's price-volume correlation.
 
 ## 4. The 101 formulas
 
 Class: S / L exact (section 2), V needs vwap, N nested price level. Window = longest printed window; form = house
-decay; bars / slots of the house string (mirror). The DSL of every exact row is `dsl(n)` in `xwq_check.py`.
+decay; bars / slots of the house string (mirror). The DSL of every exact row is `dsl(n)` in `xwq_check.py`. Outcome:
+TIER 1 / TIER 2 pick, or the clause that leaves the row out.
 
 | # | exact | class | missing | cluster | window / form / bars / slots | outcome |
 |---|---|---|---|---|---|---|
 | 1 | no | N | nested price level: close and stddev(returns) compared inside ts_argmax | - | - | not exact |
-| 2 | yes | S | - | vol_ret | 6 / 5 / 11 / 5 | **PICK** (wq_002) |
+| 2 | yes | S | - | vol_ret | 6 / 5 / 11 / 5 | **TIER 1** (wq_002) |
 | 3 | no | N | nested price level: rank(open) inside correlation | - | - | not exact |
 | 4 | no | N | nested price level: rank(low) inside ts_rank | - | - | not exact |
 | 5 | no | V | vwap | - | - | not exact |
-| 6 | yes | S | - | pv_vol | 10 / 21 / 29 / 5 | **PICK** (wq_006) |
+| 6 | yes | S | - | pv_vol | 10 / 21 / 29 / 5 | **TIER 1** (wq_006) |
 | 7 | yes | S | - | ctc_rev | 60 / 21 / 86 / 6 | E3 degenerate |
 | 8 | yes | L | - | ctc_rev | 10 / 21 / 35 / 7 | E6 cluster ctc_rev |
 | 9 | yes | L | - | ctc_rev | 5 / 5 / 9 / 7 | E6 cluster ctc_rev |
@@ -135,37 +150,37 @@ decay; bars / slots of the house string (mirror). The DSL of every exact row is 
 | 11 | no | V | vwap | - | - | not exact |
 | 12 | yes | L | - | ctc_rev | 1 / 5 / 5 / 6 | E6 cluster ctc_rev |
 | 13 | no | N | nested price level: rank(close) inside covariance | - | - | not exact |
-| 14 | yes | S | - | pv_vol | 10 / 21 / 29 / 5 | one pick per cluster (pv_vol: #6 ranks first) |
+| 14 | yes | S | - | pv_vol | 10 / 21 / 29 / 5 | **TIER 2** (wq_014) |
 | 15 | no | N | nested price level: rank(high) inside correlation | - | - | not exact |
 | 16 | no | N | nested price level: rank(high) inside covariance | - | - | not exact |
-| 17 | yes | L | - | vol_rev | 20 / 21 / 43 / 5 | one pick per cluster (vol_rev: #35 ranks first) |
-| 18 | yes | L | - | bar | 10 / 21 / 29 / 7 | one pick per cluster (bar: #101 ranks first) |
+| 17 | yes | L | - | vol_rev | 20 / 21 / 43 / 5 | beyond tier 2 (vol_rev: #35, #43, #30 rank first) |
+| 18 | yes | L | - | bar | 10 / 21 / 29 / 7 | beyond tier 2 (bar: #101, #38, #33 rank first) |
 | 19 | yes | S | - | ctc_rev | 250 / 21 / 270 / 5 | E6 cluster ctc_rev |
 | 20 | yes | L | - | gap | 1 / 5 / 5 / 7 | E6 cluster gap |
 | 21 | yes | S | - | ctc_rev | 20 / 21 / 39 / 8 | E3 degenerate |
-| 22 | yes | L | - | pv_vol | 20 / 21 / 39 / 6 | one pick per cluster (pv_vol: #6 ranks first) |
+| 22 | yes | L | - | pv_vol | 20 / 21 / 39 / 6 | beyond tier 2 (pv_vol: #6, #14, #44 rank first) |
 | 23 | yes | L | - | ctc_rev | 20 / 21 / 39 / 6 | E6 cluster ctc_rev |
 | 24 | yes | L | - | ctc_rev | 100 / 21 / 219 / 7 | E6 cluster ctc_rev |
 | 25 | no | V | vwap | - | - | not exact |
-| 26 | yes | S | - | pv_vol | 5 / 5 / 14 / 5 | one pick per cluster (pv_vol: #6 ranks first) |
+| 26 | yes | S | - | pv_vol | 5 / 5 / 14 / 5 | beyond tier 2 (pv_vol: #6, #14, #44 rank first) |
 | 27 | no | V | vwap | - | - | not exact |
-| 28 | yes | L | - | bar | 20 / 21 / 43 / 5 | one pick per cluster (bar: #101 ranks first) |
+| 28 | yes | L | - | bar | 20 / 21 / 43 / 5 | beyond tier 2 (bar: #101, #38, #33 rank first) |
 | 29 | no | N | nested price level: rank(delta(close, 5)) in dollars inside ts_min; also log of a minimum rank of 0 | - | - | not exact |
-| 30 | yes | S | - | vol_rev | 20 / 21 / 39 / 6 | one pick per cluster (vol_rev: #35 ranks first) |
+| 30 | yes | S | - | vol_rev | 20 / 21 / 39 / 6 | **TIER 2** (wq_030) |
 | 31 | no | N | nested price level: rank(delta(close, 10)) in dollars inside decay_linear | - | - | not exact |
 | 32 | no | V | vwap | - | - | not exact |
-| 33 | yes | S | - | bar | 0 / 5 / 4 / 5 | one pick per cluster (bar: #101 ranks first) |
+| 33 | yes | S | - | bar | 0 / 5 / 4 / 5 | **TIER 2** (wq_033) |
 | 34 | yes | L | - | ctc_rev | 5 / 5 / 9 / 7 | E6 cluster ctc_rev |
-| 35 | yes | S | - | vol_rev | 32 / 21 / 52 / 7 | **PICK** (wq_035) |
+| 35 | yes | S | - | vol_rev | 32 / 21 / 52 / 7 | **TIER 1** (wq_035) |
 | 36 | no | V | vwap | - | - | not exact |
-| 37 | yes | L | - | bar | 200 / 21 / 220 / 5 | one pick per cluster (bar: #101 ranks first) |
-| 38 | yes | S | - | bar | 10 / 21 / 29 / 4 | one pick per cluster (bar: #101 ranks first) |
+| 37 | yes | L | - | bar | 200 / 21 / 220 / 5 | beyond tier 2 (bar: #101, #38, #33 rank first) |
+| 38 | yes | S | - | bar | 10 / 21 / 29 / 4 | **TIER 2** (wq_038) |
 | 39 | yes | L | - | ctc_rev | 250 / 21 / 270 / 8 | E5 over the house budget |
-| 40 | yes | L | - | pv_vol | 10 / 21 / 29 / 7 | one pick per cluster (pv_vol: #6 ranks first) |
+| 40 | yes | L | - | pv_vol | 10 / 21 / 29 / 7 | beyond tier 2 (pv_vol: #6, #14, #44 rank first) |
 | 41 | no | V | vwap | - | - | not exact |
 | 42 | no | V | vwap | - | - | not exact |
-| 43 | yes | S | - | vol_rev | 20 / 21 / 58 / 5 | one pick per cluster (vol_rev: #35 ranks first) |
-| 44 | yes | S | - | pv_vol | 5 / 5 / 8 / 5 | one pick per cluster (pv_vol: #6 ranks first) |
+| 43 | yes | S | - | vol_rev | 20 / 21 / 58 / 5 | **TIER 2** (wq_043) |
+| 44 | yes | S | - | pv_vol | 5 / 5 / 8 / 5 | **TIER 2** (wq_044) |
 | 45 | yes | L | - | ctc_rev | 20 / 21 / 44 / 8 | E3 degenerate |
 | 46 | yes | L | - | ctc_rev | 20 / 21 / 40 / 8 | E5 over the house budget |
 | 47 | no | V | vwap | - | - | not exact |
@@ -176,7 +191,7 @@ decay; bars / slots of the house string (mirror). The DSL of every exact row is 
 | 52 | yes | L | - | ctc_rev | 240 / 21 / 260 / 6 | E6 cluster ctc_rev |
 | 53 | yes | S | - | bar | 9 / 5 / 13 / 5 | E4 delay-0 alpha |
 | 54 | yes | S | - | bar | 0 / 5 / 4 / 7 | E4 delay-0 alpha |
-| 55 | yes | S | - | range_vol | 12 / 21 / 36 / 6 | **PICK** (wq_055) |
+| 55 | yes | S | - | range_vol | 12 / 21 / 36 / 6 | **TIER 1** (wq_055) |
 | 56 | yes | S | - | ctc_rev | 10 / 21 / 30 / 7 | E6 cluster ctc_rev |
 | 57 | no | V | vwap | - | - | not exact |
 | 58 | no | V | vwap | - | - | not exact |
@@ -206,7 +221,7 @@ decay; bars / slots of the house string (mirror). The DSL of every exact row is 
 | 82 | yes | L | - | pv_vol | 17 / 21 / 53 / 8 | E5 over the house budget |
 | 83 | no | V | vwap | - | - | not exact |
 | 84 | no | V | vwap | - | - | not exact |
-| 85 | yes | S | - | pv_liq | 30 / 21 / 57 / 6 | one pick per cluster (pv_liq: #99 ranks first) |
+| 85 | yes | S | - | pv_liq | 30 / 21 / 57 / 6 | **TIER 2** (wq_085) |
 | 86 | no | V | vwap | - | - | not exact |
 | 87 | no | V | vwap | - | - | not exact |
 | 88 | no | N | nested price level: rank(open), rank(low), rank(high), rank(close) inside decay_linear | - | - | not exact |
@@ -216,23 +231,25 @@ decay; bars / slots of the house string (mirror). The DSL of every exact row is 
 | 92 | no | N | nested price level: rank(low) inside correlation | - | - | not exact |
 | 93 | no | V | vwap | - | - | not exact |
 | 94 | no | V | vwap | - | - | not exact |
-| 95 | yes | L | - | pv_liq | 40 / 21 / 98 / 7 | one pick per cluster (pv_liq: #99 ranks first) |
+| 95 | yes | L | - | pv_liq | 40 / 21 / 98 / 7 | **TIER 2** (wq_095) |
 | 96 | no | V | vwap | - | - | not exact |
 | 97 | no | V | vwap | - | - | not exact |
 | 98 | no | V | vwap | - | - | not exact |
-| 99 | yes | S | - | pv_liq | 60 / 21 / 104 / 7 | **PICK** (wq_099) |
+| 99 | yes | S | - | pv_liq | 60 / 21 / 104 / 7 | **TIER 1** (wq_099) |
 | 100 | yes | S | - | range_vol | 30 / 21 / 49 / 10 | E2 sign depends on the ts_argmax / ts_argmin direction reading |
-| 101 | yes | L | - | bar | 0 / 5 / 4 / 5 | **PICK** (wq_101) |
+| 101 | yes | L | - | bar | 0 / 5 / 4 / 5 | **TIER 1** (wq_101) |
 
 Counts: exact 46 (S 22, L 24); not exact 55 (vwap 43; nested price level 12). Missing operators: none. Missing fields:
 `vwap` only (open, high, low built here; `adv{d}`, `returns`, `cap` expressible from fields in house).
 
-## 5. The picks
+## 5. The picks: tier 1 (5.1-5.7) and tier 2 (5.8)
 
-All: tier **C+** (practitioner source with no per-alpha published statistic; sample 2010-2013; published holding period
+All 14: tier **C+** (practitioner source with no per-alpha published statistic; sample 2010-2013; published holding period
 0.6-6.4 days against a book that trades slowly; the grade XSIG gave its single-study candidates); prior sign **+1** (the
 printed sign is the position; origin prior); one admission trial each. Citation: Kakushadze (2016), "101 Formulaic
 Alphas", arXiv:1601.00991 (read from arXiv; also published in Wilmott magazine, not checked here).
+
+Tier 1:
 
 | rank | id | paper | theme | form | bars | slots | nodes | extra fields | DSL sha256 (16) | nearest member | turnover [est] |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -304,10 +321,63 @@ Base fields (`close`, `raw_close`, `volume`) are not counted. Every row is withi
   [est]); against `ind_adj_rev_5_nx` -.1 to -.3 [est] (a strong body is part of the close-to-close return the roster
   reverses). Fast (form 5).
 
-### 5.7 Pairwise overlap among the picks (by construction)
+### 5.7 Pairwise overlap among the tier-1 picks (by construction)
 One pick per cluster; four picks share the new theme, so the theme weighting (1/T per theme, ew-theme-std-v1) caps
 their joint share. Expected |rho| [est]: wq_006 / wq_099 .2-.4, wq_006 / wq_055 .15-.3, wq_035 / wq_002 .1-.2, every
 other pair < .15.
+
+### 5.8 Tier 2 (Ruling PM7-36)
+
+| rank | id | paper | cluster | theme | form | bars | slots | nodes | extra fields | DSL sha256 (16) | nearest member / tier-1 pick | turnover [est] |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 7 | `wq_095` | #95 | pv_liq | price_volume | 21 | 98 | 7 | 34 | open_adj, high_adj, low_adj | `f1f9d043f2889876` | stmom / wq_099 | mid-high (binary) |
+| 8 | `wq_085` | #85 | pv_liq | price_volume | 21 | 57 | 6 | 31 | high_adj, low_adj | `d01d6894c982221e` | stmom / wq_099 | mid |
+| 9 | `wq_030` | #30 | vol_rev | reversal_seasonality | 21 | 39 | 6 | 27 | - | `c8c2edf5b89f0f3a` | ind_adj_rev_5_nx / wq_035 | mid |
+| 10 | `wq_043` | #43 | vol_rev | reversal_seasonality | 21 | 58 | 5 | 18 | - | `21026ffb6ddd72c6` | ind_adj_rev_5_nx / wq_035 | mid |
+| 11 | `wq_014` | #14 | pv_vol | price_volume | 21 | 29 | 5 | 18 | open_adj | `5fa625c88df2977e` | stmom / wq_006 | mid |
+| 12 | `wq_038` | #38 | bar | reversal_seasonality | 21 | 29 | 4 | 13 | open_adj | `1c770e7d9b78403a` | ind_adj_rev_5_nx / wq_101 (opposite sign) | mid |
+| 13 | `wq_044` | #44 | pv_vol | price_volume | 5 | 8 | 5 | 9 | high_adj | `bc2db9e791d98b42` | stmom / wq_006 | high |
+| 14 | `wq_033` | #33 | bar | reversal_seasonality | 5 | 4 | 5 | 12 | open_adj | `6f970c5a28ef1478` | ind_adj_rev_5_nx / wq_101 (opposite sign) | high |
+
+Themes by mechanism, existing ones only: the price-volume and price-liquidity correlations join `price_volume`; the
+volume-confirmed reversals and the two bar formulas whose printed sign shorts intraday strength join
+`reversal_seasonality`. Evidence: practitioner (WorldQuant) only, plus the volume-reversal argument of 5.2 for #30 and
+#43. Each frozen string is the full SHA in `xwq_check.py`'s output and the add-alpha line in section 6.
+- **wq_095 (#95)** printed `(rank((open - ts_min(open, 12.4105))) < Ts_Rank((rank(correlation(sum(((high + low) / 2),
+  19.1351), sum(adv40, 19.1351), 12.8742))^5), 11.7584))`. Frozen `rank(decay_linear(((rank(((open_adj -
+  ts_min(open_adj, 12)) * (raw_close / close))) < ts_rank(power(rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19),
+  ts_sum(ts_mean((raw_close * volume), 40), 19), 12)), 5), 11)) ? 1 : 0), 21))`. Class L (open minus its 12-session
+  minimum in the session's dollars). Value 1 (long) when that distance ranks below the own-history rank of the
+  price-liquidity correlation. Binary.
+- **wq_085 (#85)** printed `(rank(correlation(((high * 0.876703) + (close * (1 - 0.876703))), adv30, 9.61331))^rank(
+  correlation(Ts_Rank(((high + low) / 2), 3.70596), Ts_Rank(volume, 10.1595), 7.11408)))`. Frozen
+  `rank(decay_linear(power(rank(correlation(((high_adj * 0.876703) + (close * (1 - 0.876703))), ts_mean((raw_close *
+  volume), 30), 9)), rank(correlation(ts_rank(((high_adj + low_adj) / 2), 3), ts_rank(volume, 10), 7))), 21))`. Long
+  names whose price moves with dollar liquidity (the base), tempered by price-volume rank co-movement (the exponent): a
+  positive sign on the price-liquidity term, where wq_099 is short on the opposite comparison; expected rho with wq_099
+  -.1 to -.3 [est]. Its 3-session ts_rank takes three values, so its 7-session correlation is often flat (NaN).
+- **wq_030 (#30)** printed `(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2))))
+  + sign((delay(close, 2) - delay(close, 3)))))) * sum(volume, 5)) / sum(volume, 20))`. Frozen
+  `rank(decay_linear((((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) +
+  sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20)), 21))`. Long three-day down
+  streaks, scaled by the week's volume against the month's. Expected rho with wq_035 .2-.4, with ind_adj_rev_5_nx .2-.4
+  [est].
+- **wq_043 (#43)** printed `(ts_rank((volume / adv20), 20) * ts_rank((-1 * delta(close, 7)), 8))`. Frozen
+  `rank(decay_linear((ts_rank((volume / ts_mean((raw_close * volume), 20)), 20) * ts_rank((-1 * delta(close, 7)), 8)),
+  21))`. Long a 7-session decline high in its own 8-session history on volume high in its own 20-session history.
+  Expected rho with wq_035 .3-.5, with wq_030 .2-.4 [est].
+- **wq_014 (#14)** printed `((-1 * rank(delta(returns, 3))) * correlation(open, volume, 10))`. Frozen
+  `rank(decay_linear(((-1 * rank(delta(((close / delay(close, 1)) - 1), 3))) * correlation(open_adj, volume, 10)), 21))`.
+  wq_006's correlation scaled by minus the rank of the 3-session change of the daily return. Expected rho with wq_006
+  .4-.7 [est], the highest overlap of the wave.
+- **wq_038 (#38)** printed `((-1 * rank(Ts_Rank(close, 10))) * rank((close / open)))`. Frozen `rank(decay_linear(((-1 *
+  rank(ts_rank(close, 10))) * rank((close / open_adj))), 21))`. Short names at the top of their last ten closes with a
+  strong intraday return. Expected rho with wq_101 -.2 to -.4, with ind_adj_rev_5_nx .2-.4 [est].
+- **wq_044 (#44)** printed `(-1 * correlation(high, rank(volume), 5))`. Frozen `rank(decay_linear((-1 * correlation(
+  high_adj, rank(volume), 5)), 5))`. A 5-session version of wq_006 on the high. Expected rho with wq_006 .3-.5 [est].
+- **wq_033 (#33)** printed `rank((-1 * ((1 - (open / close))^1)))`. Frozen `rank(decay_linear(rank((-1 * power((1 -
+  (open_adj / close)), 1))), 5))`. Long the day's intraday losers (the rank of open / close - 1): the opposite input of
+  wq_101's body; expected rho with wq_101 -.5 to -.8, with wq_038 .3-.5 [est].
 
 ## 6. Registry rows and add-alpha lines (strings frozen)
 
@@ -338,14 +408,32 @@ fields dir>` (the build of fields v13 plus the three bar fields, section 7); eve
 Line SHA-256 prefixes (as printed): wq_099 `c67ccc21bfa0c64a`, wq_035 `cb5ff7a2634157f4`, wq_055 `b065878b74eb3995`,
 wq_006 `0d3139043a9c738e`, wq_002 `c8a638920d17fc0f`, wq_101 `c08aed20f131674d`.
 
+**Tier 2 add-alpha lines** (PM7-36; run after the six tier-1 lines, in this order; same substitutions):
+```bash
+"$PY" scripts/research_cycle.py add-alpha --id wq_095 --dsl "rank(decay_linear(((rank(((open_adj - ts_min(open_adj, 12)) * (raw_close / close))) < ts_rank(power(rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 40), 19), 12)), 5), 11)) ? 1 : 0), 21))" --theme price_volume --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#95" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 21))" --formula "1 when the rank of open minus its 12-session minimum (in the session's own dollars) is below the 11-session ts_rank of rank(correlation(19-session sum of the mid price (high + low) / 2, 19-session sum of 40-session dollar ADV, 12))^5, else 0 (Alpha#95)" --domain "NaN while a window is short, holds a NaN or is flat (98 bars); values 0 and 1" --deviation "adv40 = mean of raw close x share volume over 40 sessions; fractional windows floored as the paper states (12.4105 -> 12, 19.1351 -> 19, 12.8742 -> 12, 11.7584 -> 11); the dollar term open - ts_min(open, 12) is rebased by raw_close / close to the session's prices (class L); house form decay_linear 21 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_085 --dsl "rank(decay_linear(power(rank(correlation(((high_adj * 0.876703) + (close * (1 - 0.876703))), ts_mean((raw_close * volume), 30), 9)), rank(correlation(ts_rank(((high_adj + low_adj) / 2), 3), ts_rank(volume, 10), 7))), 21))" --theme price_volume --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#85" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 21))" --formula "rank(correlation(high x 0.876703 + close x (1 - 0.876703), 30-session dollar ADV, 9)) raised to rank(correlation(ts_rank(mid price, 3), ts_rank(volume, 10), 7)) (Alpha#85)" --domain "NaN while a window is short, holds a NaN or is flat (57 bars); values in [0, 1]" --deviation "adv30 = mean of raw close x share volume over 30 sessions; fractional windows floored as the paper states (9.61331 -> 9, 3.70596 -> 3, 10.1595 -> 10, 7.11408 -> 7); prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_030 --dsl "rank(decay_linear((((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20)), 21))" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#30" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 21))" --formula "(1 - rank(sum of the signs of the last three daily close changes)) x 5-session volume / 20-session volume (Alpha#30): down streaks on rising volume" --domain "NaN while a window is short or holds a NaN; ties at the seven streak values" --deviation "signs of adjusted close changes (basis-free); volume = raw shares; house form decay_linear 21 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_043 --dsl "rank(decay_linear((ts_rank((volume / ts_mean((raw_close * volume), 20)), 20) * ts_rank((-1 * delta(close, 7)), 8)), 21))" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#43" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 21))" --formula "ts_rank(volume / adv20, 20) x ts_rank(-(7-session close change), 8) (Alpha#43): a 7-session decline high in its own history on volume high against its own dollar ADV" --domain "NaN while a window is short or holds a NaN (58 bars); values in [0, 1]" --deviation "adv20 = mean of raw close x share volume over 20 sessions; volume / adv20 is shares over dollars as printed (ranked within each line's own history); prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_014 --dsl "rank(decay_linear(((-1 * rank(delta(((close / delay(close, 1)) - 1), 3))) * correlation(open_adj, volume, 10)), 21))" --theme price_volume --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#14" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 21))" --formula "(-1 x rank(3-session change of the daily return)) x correlation(open, volume, 10) (Alpha#14)" --domain "NaN while a window is short, holds a NaN or is flat" --deviation "returns = adjusted close-to-close; volume = raw shares; prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 21 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_038 --dsl "rank(decay_linear(((-1 * rank(ts_rank(close, 10))) * rank((close / open_adj))), 21))" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#38" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 21))" --formula "-rank(ts_rank(close, 10)) x rank(close / open) (Alpha#38): short names at the top of their last 10 closes with a strong intraday return" --domain "NaN while the window is short or holds a NaN; values in [-1, 0]" --deviation "prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; its printed sign on the intraday body is opposite to wq_101's (both kept as printed); house form decay_linear 21 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_044 --dsl "rank(decay_linear((-1 * correlation(high_adj, rank(volume), 5)), 5))" --theme price_volume --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#44" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 5))" --formula "-correlation over 5 sessions of the high with the cross-sectional rank of share volume (Alpha#44)" --domain "NaN while the window is short, holds a NaN or is flat" --deviation "prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); the formula is scale-free, so it equals the paper's prices adjusted as of each day; house form decay_linear 5 (longest printed window 5) then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+"$PY" scripts/research_cycle.py add-alpha --id wq_033 --dsl "rank(decay_linear(rank((-1 * power((1 - (open_adj / close)), 1))), 5))" --theme reversal_seasonality --tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#33" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" --form "R(decay_linear(x, 5))" --formula "rank(-((1 - open / close)^1)) = rank of open / close - 1 (Alpha#33): long the day's intraday losers" --domain "NaN without the session open" --deviation "same-session price ratio only (no adjustment enters); its printed sign on the intraday body is opposite to wq_101's (both kept as printed); house form decay_linear 5 then rank" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> --fields <X-7 fields dir>
+```
+Line SHA-256 prefixes (as printed): wq_095 `a2f7a606ff92303c`, wq_085 `0a513ea94830510f`, wq_030 `bd2b684b31c2d3a5`,
+wq_043 `c682b631ea803f9e`, wq_014 `2343e9b58a3cab36`, wq_038 `57e31121afefd467`, wq_044 `3b965750a83ea1e0`, wq_033
+`d06e7dd06d7f3dba`.
+
 Expected K1 rows (`--plan-only` at add-alpha; bars / slots / extra fields; the exe's node count may exceed the mirror's
 by one, as in X batch 1): wq_099 104 / 7 / high_adj, low_adj; wq_035 52 / 7 / high_adj, low_adj; wq_055 36 / 6 /
-high_adj, low_adj; wq_006 29 / 5 / open_adj; wq_002 11 / 5 / open_adj; wq_101 4 / 5 / high_adj, low_adj, open_adj. A K1
-row that differs is reported; a string K1 refuses is rewritten only mechanically (same semantics) or withdrawn at 0
+high_adj, low_adj; wq_006 29 / 5 / open_adj; wq_002 11 / 5 / open_adj; wq_101 4 / 5 / high_adj, low_adj, open_adj;
+tier 2: wq_095 98 / 7 / high_adj, low_adj, open_adj; wq_085 57 / 6 / high_adj, low_adj; wq_030 39 / 6 / none; wq_043
+58 / 5 / none; wq_014 29 / 5 / open_adj; wq_038 29 / 4 / open_adj; wq_044 8 / 5 / high_adj; wq_033 4 / 5 / open_adj. A
+K1 row that differs is reported; a string K1 refuses is rewritten only mechanically (same semantics) or withdrawn at 0
 trials.
 
 **Withdrawal rule.** A pick whose fields are absent from the X-7 fields build is withdrawn at 0 trials. **Trial
-accounting** (PM7-33): 6 admission trials (X hand-written 13 -> 19 of at most 33); roster 60 -> 66 (cap 80).
+accounting** (PM7-33, PM7-36): 14 admission trials, 6 tier 1 + 8 tier 2 (X hand-written 13 -> 27 of at most 33);
+roster 60 -> 74 (cap 80). The wave X-7 screens both tiers together as one construction cell.
 
 ## 7. The new fields (`research_fields_ohlc.py`)
 
@@ -356,7 +444,25 @@ accounting** (PM7-33): 6 admission trials (X hand-written 13 -> 19 of at most 33
   vendor key, finite positive open / high / low, `low <= min(open, raw close)` and `high >= max(open, raw close)` (a
   violating bar is withheld whole and counted). `LAG_SESSIONS = 0`: the bar comes in the same vendor end-of-day row as
   the close, known at the session's 22:00 UTC mark before the 23:00 UTC decision (the builder's visibility mark;
-  `TH_CLOCK`); this is the paper's delay-1 (Ruling XWQ-b).
+  `TH_CLOCK`); this is the paper's delay-1 (Ruling XWQ-b, accepted by PM7-36 on the condition below).
+- **PM7-36 condition: stamped exactly as `close`, read by the same decision clock.** The lines that show it (paths
+  from the repository root, line numbers at this commit):
+  - Stamp of `close`: `atx-engine/tools/prepare_recent_research.py:305` (`SELECT d, id, raw, volume, raw*factor AS
+    close FROM keyed`: one vendor row per (tradingDate d, securityID), duplicates dropped) and `:530`-`:532` (row t of
+    raw_close.f64 / close.f64 is written from the vendor rows of date `dates[t]`, the role's session t).
+  - Stamp of the bars: `atx-engine/tools/research_fields_ohlc.py:148`-`:149` (`t = np.minimum(np.searchsorted(days,
+    dd), nd - 1)`; `cal = days[t] == dd`: a vendor row lands on row t only when its tradingDate equals the role's session
+    t; duplicates set NaN at `:161`-`:163`, as the role drops them); `:48` (`LAG_SESSIONS = 0`) with `:183` (`s = t -
+    LAG_SESSIONS`): row t reads the bar of session t; `:181` and `:192` (`k = c / rc` from close.f64 and raw_close.f64 of
+    the same row t): the bar is multiplied by that row's own close / raw close.
+  - Clock: `atx-engine/tools/prepare_research_fields.py:192` (`TH_CLOCK = "vendor-eod-row-date==session-date;
+    known-at-session+22h-mark;same-date-only-v1"`, the clock of every same-date vendor field) and `:2597` (the fields
+    manifest's `visibility_mark`: "every finite cell of every field is known by the session-date 22:00 UTC mark (the
+    role close clock), before the 23:00 UTC decision"). The runner reads a field's row t beside close's row t for the
+    decision of row t (fills at t + 1, `atx-impl/src/strategy_nav_replay_detail.hpp:80`-`:81`).
+  - Test: `test_research_fields_ohlc.py::test_basis_is_the_role_close` (x_adj / close equals the same vendor row's
+    x / raw close on every finite cell) and `::test_point_in_time_probe` (rows <= t do not move when every vendor row
+    after session t moves).
 - Seal: refuses unless the builder's `SEAL` is `research_window.SEAL`; vendor rows on or after it skipped and counted.
   Price source pinned by the role's `source_sha256`; `--reuse` interface (no input pin beyond the role).
 - Draft entry `prepare_research_fields_ohlc.py` (`FIELDS_OHLC_DRAFT`); the plain builder does not register the module.
@@ -376,10 +482,8 @@ accounting** (PM7-33): 6 admission trials (X hand-written 13 -> 19 of at most 33
 
 ## 8. Unselected exact formulas (for v9)
 
-40 exact rows are not screened in v8 (PM7-33); their strings are `dsl(n)` in `xwq_check.py`, already checked.
-- Same cluster as a pick (16): pv_vol #14, #22, #26, #40, #44 (#82 over budget); pv_liq #85, #95; vol_rev #17, #30,
-  #43; bar #18, #28, #33, #37, #38 (#33 and #38 take the opposite, reversal sign on the intraday body: a v9 sign test
-  of the bar cluster would read them against #101).
+32 exact rows are not screened in v8 (PM7-33, PM7-36); their strings are `dsl(n)` in `xwq_check.py`, already checked.
+- Same cluster as a pick, beyond tier 2 (8): pv_vol #22, #26, #40 (#82 over budget); vol_rev #17; bar #18, #28, #37.
 - ctc_rev (15): #8, #9, #10, #12, #19, #23, #24, #34, #49, #51, #52, #56, #90, and #39, #46 (over budget; #7, #21,
   #45 of the cluster are counted below as degenerate). A v9 wave would register at most one, as a refinement of `ind_adj_rev_5_nx` (lane XIMP's
   domain).
@@ -390,16 +494,22 @@ accounting** (PM7-33): 6 admission trials (X hand-written 13 -> 19 of at most 33
   of past cross-sections (no fix in the DSL; under a causal reading, each day's cross-section on that day's raw prices,
   they become expressible with raw-price fields; a reading, not the paper's rule).
 
-## 9. Rulings root needs (decision -- why -- cost if wrong)
+## 9. Rulings (decision -- why -- cost if wrong)
 
-- **XWQ-a (new theme `price_volume`):** wq_099, wq_055, wq_006 and wq_002 join a new theme (text in section 6); root adds
-  it to the registry and the fitter's theme order (`V7_APPENDED_THEMES`, finding R6B-O-2) before the first add-alpha --
-  no theme reads a price-volume correlation; one theme caps the four picks' joint share -- cost if wrong: one more theme
-  in T (each theme's share 1 / T shrinks); the alternative `reversal_seasonality` would hold four more members.
+Ruled by PM7-36: **XWQ-a accepted** (`price_volume` appended after `filing_events` in the registry and the fitter's
+theme order; the integrator makes that change); **XWQ-b accepted** on the condition that the bars are stamped exactly as
+`close` and read by the same decision clock (the lines that show it: section 7); **XWQ-e accepted** (the `b > a`
+rewrite of #99). Tier 2 added by PM7-36. Open: XWQ-c, -d, -f, -g.
+
+- **XWQ-a (new theme `price_volume`):** wq_099, wq_055, wq_006, wq_002 and, in tier 2, wq_095, wq_085, wq_014, wq_044
+  join a new theme (text in section 6); root adds it to the registry and the fitter's theme order (`V7_APPENDED_THEMES`,
+  finding R6B-O-2) before the first add-alpha -- no theme reads a price-volume correlation; one theme caps the eight
+  picks' joint share -- cost if wrong: one more theme in T (each theme's share 1 / T shrinks). ACCEPTED (PM7-36).
 - **XWQ-b (bar fields at lag 0):** the bars are read on the role close's own session -- the formulas mix close and the
   bar of one day; the vendor row carries both and the builder's visibility mark covers it; a lag-1 bar would mix two
   days -- cost if wrong: the vendor's real delivery (05:00 Chicago T+1) is later than the modeled mark for every
-  same-date value, close included; if the house ever lags close, the bars follow.
+  same-date value, close included; if the house ever lags close, the bars follow. ACCEPTED with the condition
+  (PM7-36; section 7).
 - **XWQ-c (adjustment reading R1 and the classes):** S and rebased L strings are exact; the 12 nested formulas are not --
   the paper's own words (section 2) fix the adjustment as of the day -- cost if wrong: a causal reading would make the 12
   expressible (v9 list), none of which the rule would take for this wave (all are price-level ranks).
@@ -408,15 +518,25 @@ accounting** (PM7-33): 6 admission trials (X hand-written 13 -> 19 of at most 33
   ctc_rev formulas, excluded by E6 anyway.
 - **XWQ-e (E5 budget order):** #99 registered with `a < b` written `b > a` (8 -> 7 slots) -- same semantics, proved by
   canonical parse trees; clause added after a static slot count, no return -- cost if wrong: the pv_liq pick would be #85.
-- **XWQ-f (turnover):** wq_002 and wq_101 take the 5-session form (PM7-34 rule) and raise book turnover [est]; X-7 is
-  judged on dSR > 0 and mechanics with turnover printed (PM7-34) -- cost if wrong: none to inference.
+  ACCEPTED (PM7-36).
+- **XWQ-f (turnover):** wq_002, wq_101 and, in tier 2, wq_044 and wq_033 take the 5-session form (PM7-34 rule) and raise
+  book turnover [est]; X-7 is judged on dSR > 0 and mechanics with turnover printed (PM7-34) -- cost if wrong: none to
+  inference.
+- **XWQ-g (tier 2 kept as the rule ranks it):** two tier-2 consequences are registered as they fall, not corrected by
+  hand: (1) wq_038 and wq_033 (bar cluster, printed sign: short intraday strength) oppose tier 1's wq_101 (long intraday
+  strength) on correlated inputs (wq_033 / wq_101 rho -.5 to -.8 [est]); (2) wq_014 and wq_044 carry wq_006's
+  price-volume correlation (rho .3-.7 [est]). Each keeps the paper's printed sign as its prior -- PM7-36 orders the rule's
+  order, and dropping or flipping a pick after seeing its overlap would be a choice the rule did not make -- cost if
+  wrong: inside the X-7 fit, opposed members partly cancel and near-duplicates take a larger share of their theme than
+  their information warrants; the wave is judged as one cell (dSR > 0), so the cost is dilution, not a false admission.
+  The alternative (PM rules it before the X-7 screen): withdraw wq_038 and wq_033 at 0 trials (12 strings).
 
 ## 10. How root verifies
 
 1. `"C:/Program Files/Python312/python.exe" .superpowers/sdd/platform-v8-20260929/xwq_check.py` from the repository root
-   prints the 46 exact rows, the rule's 6 picks with full SHA-256, the class check, the six semantic lines, the mutation
-   probe, the six add-alpha lines and `xwq_check: PASS` (about 15 s; synthetic data only; reads registry.cpp,
-   registry.json, libraries/v80.json and lib-v80.json through `xsig_check.py`).
+   prints the 46 exact rows, the rule's 6 tier-1 and 8 tier-2 picks with full SHA-256, the class check, the fourteen
+   semantic lines, the mutation probe (59 mutants), the fourteen add-alpha lines and `xwq_check: PASS` (about 30 s;
+   synthetic data only; reads registry.cpp, registry.json, libraries/v80.json and lib-v80.json through `xsig_check.py`).
 2. `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tools/test_research_fields_ohlc.py`
    -> 7 passed.
 3. Identity: no existing code path changed. `git diff --stat bc153439..HEAD` lists three new files under
@@ -445,18 +565,23 @@ None. Files changed: the three new tool files, `xwq_check.py`, this report.
 
 ## Deviations from the brief
 
-- 6 picks, not up to 20: the coded rule's output (one per mechanism cluster; the roster's reversal cluster and the gap
-  cluster closed). The cap is not a target.
+- 6 tier-1 picks, then 8 tier-2 picks (PM7-36): 14, not up to 20, is the coded rule's output (one, then two more per
+  mechanism cluster; the roster's reversal cluster and the gap cluster closed; three clusters have a single eligible
+  member). The cap is not a target.
 - PM7-34 arrived during the lane, before selection: the rule uses its two house forms and its revised criterion (b).
 - E5's budget-order clause was added after the first mirror run (static slot figure only); disclosed in section 3.
 - The bar fields are lag 0, unlike the lag-1 convention of the other field modules (XWQ-b).
 
 ## Open risks
 
-- The published horizon (0.6-6.4 days) is far shorter than the book's; four picks take the 21-session form, which may
-  smooth away most of the signal; the two 5-session picks pay turnover.
+- The published horizon (0.6-6.4 days) is far shorter than the book's; ten picks take the 21-session form, which may
+  smooth away most of the signal; the four 5-session picks pay turnover.
+- Tier 2 brings opposed signs (wq_038, wq_033 against wq_101) and near-duplicates of wq_006 (wq_014, wq_044) into one
+  wave (XWQ-g); eight picks now sit in `price_volume`.
+- `wq_095` is binary like `wq_099`; `wq_085`'s 3-session ts_rank makes its correlation flat (NaN) on many cells, so its
+  21-session form is defined on fewer names.
 - The vendor open / high / low have no vintage proof and no auction-print guarantee; order-violating bars are withheld.
-- Four picks share one mechanism family (volume-conditioned price pressure); the overlap is bounded by construction
+- Most picks share one mechanism family (volume-conditioned price pressure); the overlap is bounded by construction
   and by the single theme, not measured.
 - `wq_099` is a binary signal; its smoothed form flips more than its window suggests.
 - The citations of section 5 for the volume-reversal mechanism (Campbell-Grossman-Wang, Llorente et al.,

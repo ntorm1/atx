@@ -436,8 +436,20 @@ EXCLUDED_CLUSTERS = {
 }
 
 
+TIER2_PER_CLUSTER = 2      # PM7-36: up to two more per cluster, in the rule's order
+MAX_TOTAL = 20             # PM7-33: at most 20 strings across both tiers
+
+
 def select(st: dict) -> tuple[list, dict]:
-    """The rule of task-XWQ-report.md section 3. Returns (picks in rank order, {n: why not picked})."""
+    """Tier 1 of the rule of task-XWQ-report.md section 3. Returns (picks in rank order, {n: why not picked})."""
+    tier1, _, why = select_tiers(st)
+    return tier1, why
+
+
+def select_tiers(st: dict) -> tuple[list, list, dict]:
+    """The rule of task-XWQ-report.md section 3 with its tier 2 (PM7-36): eligibility E1-E6, each cluster's members
+    ordered by the tie-break T0-T4; tier 1 = the first of each cluster, tier 2 = the next TIER2_PER_CLUSTER. Returns
+    (tier 1, tier 2, {n: why not picked}), each tier in rank order (longest printed window first)."""
     why, eligible = {}, []
     for n, (cls, cluster, _, flags, _) in TABLE.items():
         if cls == "V":
@@ -463,14 +475,18 @@ def select(st: dict) -> tuple[list, dict]:
     def key(n):   # T0 stated mechanism, T1 S before L, T2 longest window, T3 fewer nodes, T4 paper number
         return ("stated" not in TABLE[n][3], TABLE[n][0] != "S", -st[n]["window"], st[n]["alpha_nodes"], n)
 
-    picks = []
+    tier1, tier2 = [], []
     for cluster, members in by_cluster.items():
         members.sort(key=key)
-        picks.append(members[0])
-        for n in members[1:]:
-            why[n] = f"one pick per cluster ({cluster}: #{members[0]} ranks first)"
-    picks.sort(key=lambda n: (-st[n]["window"], n))
-    return picks, why
+        tier1.append(members[0])
+        tier2 += members[1:1 + TIER2_PER_CLUSTER]
+        for n in members[1 + TIER2_PER_CLUSTER:]:
+            why[n] = (f"beyond tier 2 ({cluster}: " + ", ".join(f"#{m}" for m in members[:1 + TIER2_PER_CLUSTER])
+                      + " rank first)")
+    for tier in (tier1, tier2):
+        tier.sort(key=lambda n: (-st[n]["window"], n))
+    assert len(tier1) + len(tier2) <= MAX_TOTAL, "more than 20 strings"
+    return tier1, tier2, why
 
 
 # ------------------------------------------------------------------------------------------------ the registration
@@ -518,10 +534,66 @@ PICKS = {   # paper number -> registration; rank order = the rule's output order
           "deviation": "level-dependent through the 0.001 dollar term: computed on the session's raw prices (close - "
                        "open and high - low rebased by raw_close / close); house form decay_linear 5 then rank"},
 }
+FLOORED = "fractional windows floored as the paper states"
+PICKS2 = {  # tier 2 (PM7-36): the next two of each cluster in the rule's order; rank order = longest window first
+    95: {"id": "wq_095", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_099",
+         "formula": "1 when the rank of open minus its 12-session minimum (in the session's own dollars) is below the "
+                    "11-session ts_rank of rank(correlation(19-session sum of the mid price (high + low) / 2, 19-session "
+                    "sum of 40-session dollar ADV, 12))^5, else 0 (Alpha#95)",
+         "domain": "NaN while a window is short, holds a NaN or is flat (98 bars); values 0 and 1",
+         "deviation": "adv40 = mean of raw close x share volume over 40 sessions; " + FLOORED + " (12.4105 -> 12, "
+                      "19.1351 -> 19, 12.8742 -> 12, 11.7584 -> 11); the dollar term open - ts_min(open, 12) is rebased "
+                      "by raw_close / close to the session's prices (class L); house form decay_linear 21 then rank"},
+    85: {"id": "wq_085", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_099",
+         "formula": "rank(correlation(high x 0.876703 + close x (1 - 0.876703), 30-session dollar ADV, 9)) raised to "
+                    "rank(correlation(ts_rank(mid price, 3), ts_rank(volume, 10), 7)) (Alpha#85)",
+         "domain": "NaN while a window is short, holds a NaN or is flat (57 bars); values in [0, 1]",
+         "deviation": "adv30 = mean of raw close x share volume over 30 sessions; " + FLOORED + " (9.61331 -> 9, "
+                      "3.70596 -> 3, 10.1595 -> 10, 7.11408 -> 7); " + BASIS + "; house form decay_linear 21 then rank"},
+    30: {"id": "wq_030", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_035",
+         "formula": "(1 - rank(sum of the signs of the last three daily close changes)) x 5-session volume / 20-session "
+                    "volume (Alpha#30): down streaks on rising volume",
+         "domain": "NaN while a window is short or holds a NaN; ties at the seven streak values",
+         "deviation": "signs of adjusted close changes (basis-free); volume = raw shares; house form decay_linear 21 "
+                      "then rank"},
+    43: {"id": "wq_043", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_035",
+         "formula": "ts_rank(volume / adv20, 20) x ts_rank(-(7-session close change), 8) (Alpha#43): a 7-session decline "
+                    "high in its own history on volume high against its own dollar ADV",
+         "domain": "NaN while a window is short or holds a NaN (58 bars); values in [0, 1]",
+         "deviation": "adv20 = mean of raw close x share volume over 20 sessions; volume / adv20 is shares over dollars "
+                      "as printed (ranked within each line's own history); " + BASIS + "; house form decay_linear 21 "
+                      "then rank"},
+    14: {"id": "wq_014", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_006",
+         "formula": "(-1 x rank(3-session change of the daily return)) x correlation(open, volume, 10) (Alpha#14)",
+         "domain": "NaN while a window is short, holds a NaN or is flat",
+         "deviation": "returns = adjusted close-to-close; volume = raw shares; " + BASIS + "; house form decay_linear "
+                      "21 then rank"},
+    38: {"id": "wq_038", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_101",
+         "formula": "-rank(ts_rank(close, 10)) x rank(close / open) (Alpha#38): short names at the top of their last 10 "
+                    "closes with a strong intraday return",
+         "domain": "NaN while the window is short or holds a NaN; values in [-1, 0]",
+         "deviation": BASIS + "; its printed sign on the intraday body is opposite to wq_101's (both kept as printed); "
+                              "house form decay_linear 21 then rank"},
+    44: {"id": "wq_044", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_006",
+         "formula": "-correlation over 5 sessions of the high with the cross-sectional rank of share volume (Alpha#44)",
+         "domain": "NaN while the window is short, holds a NaN or is flat",
+         "deviation": BASIS + "; house form decay_linear 5 (longest printed window 5) then rank"},
+    33: {"id": "wq_033", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_101",
+         "formula": "rank(-((1 - open / close)^1)) = rank of open / close - 1 (Alpha#33): long the day's intraday "
+                    "losers",
+         "domain": "NaN without the session open",
+         "deviation": "same-session price ratio only (no adjustment enters); its printed sign on the intraday body is "
+                      "opposite to wq_101's (both kept as printed); house form decay_linear 5 then rank"},
+}
+ALL_PICKS = {**PICKS, **PICKS2}
+SAME_SESSION = {2, 33, 101}   # read same-session prices only: a split cannot enter a window (raw-basis probe skipped)
 EXPECTED = {  # (bars, slots, nodes, extra fields) of the wrapped house strings: what K1 should print
     99: (104, 7, 28, ["high_adj", "low_adj"]), 35: (52, 7, 22, ["high_adj", "low_adj"]),
     55: (36, 6, 19, ["high_adj", "low_adj"]), 6: (29, 5, 9, ["open_adj"]), 2: (11, 5, 17, ["open_adj"]),
     101: (4, 5, 16, ["high_adj", "low_adj", "open_adj"]),
+    95: (98, 7, 34, ["high_adj", "low_adj", "open_adj"]), 85: (57, 6, 31, ["high_adj", "low_adj"]),
+    30: (39, 6, 27, []), 43: (58, 5, 18, []), 14: (29, 5, 18, ["open_adj"]), 38: (29, 4, 13, ["open_adj"]),
+    44: (8, 5, 9, ["high_adj"]), 33: (4, 5, 12, ["open_adj"]),
 }
 MUTANTS = {   # plausible transcription mistakes; each must fail the semantic check
     99: ["(-1 * ((rank(correlation({L}, volume, 6)) > rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
@@ -544,6 +616,41 @@ MUTANTS = {   # plausible transcription mistakes; each must fail the semantic ch
     101: ["((close - {O}) / (({H} - {L}) + 0.001))",
           "(((close - {O}) * {K}) / ((({H} - {L}) * {K}) + 0.01))",
           "((({O} - close) * {K}) / ((({H} - {L}) * {K}) + 0.001))"],
+    95: ["((rank(({O} - ts_min({O}, 12))) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV40}, "
+         "19), 12)), 5), 11)) ? 1 : 0)",
+         "((rank((({O} - ts_min({O}, 12)) * {K})) > ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum({ADV40}, 19), 12)), 5), 11)) ? 1 : 0)",
+         "((rank((({O} - ts_min({O}, 11)) * {K})) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum({ADV40}, 19), 12)), 5), 11)) ? 1 : 0)",
+         "((rank((({O} - ts_min({O}, 12)) * {K})) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum({ADV60}, 19), 12)), 5), 11)) ? 1 : 0)"],
+    85: ["power(rank(correlation((({H} * (1 - 0.876703)) + (close * 0.876703)), {ADV30}, 9)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))",
+         "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV20}, 9)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))",
+         "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV30}, 9)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 9), 7)))",
+         "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV30}, 10)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))"],
+    30: ["(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+         "sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 4)) / ts_sum(volume, 20))",
+         "(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+         "sign((delay(close, 2) - delay(close, 4)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20))",
+         "((rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+         "sign((delay(close, 2) - delay(close, 3))))) * ts_sum(volume, 5)) / ts_sum(volume, 20))"],
+    43: ["(ts_rank((volume / {ADV20}), 19) * ts_rank((-1 * delta(close, 7)), 8))",
+         "(ts_rank((volume / {ADV20}), 20) * ts_rank((-1 * delta(close, 6)), 8))",
+         "(ts_rank((volume / {ADV20}), 20) * ts_rank(delta(close, 7), 8))"],
+    14: ["((-1 * rank(delta({R}, 3))) * correlation({O}, volume, 9))",
+         "((-1 * rank(delta({R}, 2))) * correlation({O}, volume, 10))",
+         "((-1 * rank(delta({R}, 3))) * correlation(close, volume, 10))"],
+    38: ["((-1 * rank(ts_rank(close, 9))) * rank((close / {O})))",
+         "((-1 * rank(ts_rank(close, 10))) * rank(({O} / close)))",
+         "(rank(ts_rank(close, 10)) * rank((close / {O})))"],
+    44: ["(-1 * correlation({H}, volume, 5))", "(-1 * correlation({L}, rank(volume), 5))",
+         "(-1 * correlation({H}, rank(volume), 6))"],
+    33: ["rank((1 - ({O} / close)))", "rank((-1 * power((1 - (close / {O})), 1)))",
+         "rank((-1 * power((1 - ({H} / close)), 1)))"],
 }
 
 
@@ -813,7 +920,25 @@ PRINTED_NUMPY = {   # each: (P = prices adjusted as of the row, V = share volume
     6: lambda P, V, RC: -1.0 * d_corr(P["o"], V, 10),
     2: lambda P, V, RC: -1.0 * d_corr(d_rank(np.log(V) - d_shift(np.log(V), 2)), d_rank((P["c"] - P["o"]) / P["o"]), 6),
     101: lambda P, V, RC: (P["c"] - P["o"]) / ((P["h"] - P["l"]) + 0.001),
+    95: lambda P, V, RC: _cmp_lt(d_rank(P["o"] - d_min(P["o"], 12)),
+                                 d_tsrank(d_rank(d_corr(d_sum((P["h"] + P["l"]) / 2.0, 19), d_sum(d_mean(RC * V, 40), 19),
+                                                        12)) ** 5, 11)),
+    85: lambda P, V, RC: np.power(d_rank(d_corr(P["h"] * 0.876703 + P["c"] * (1 - 0.876703), d_mean(RC * V, 30), 9)),
+                                  d_rank(d_corr(d_tsrank((P["h"] + P["l"]) / 2.0, 3), d_tsrank(V, 10), 7))),
+    30: lambda P, V, RC: ((1.0 - d_rank(np.sign(P["c"] - d_shift(P["c"], 1)) + np.sign(d_shift(P["c"], 1)
+                                                                                      - d_shift(P["c"], 2))
+                                        + np.sign(d_shift(P["c"], 2) - d_shift(P["c"], 3)))) * d_sum(V, 5)
+                          / d_sum(V, 20)),
+    43: lambda P, V, RC: d_tsrank(V / d_mean(RC * V, 20), 20) * d_tsrank(-1.0 * (P["c"] - d_shift(P["c"], 7)), 8),
+    14: lambda P, V, RC: (-1.0 * d_rank(_ret(P) - d_shift(_ret(P), 3))) * d_corr(P["o"], V, 10),
+    38: lambda P, V, RC: (-1.0 * d_rank(d_tsrank(P["c"], 10))) * d_rank(P["c"] / P["o"]),
+    44: lambda P, V, RC: -1.0 * d_corr(P["h"], d_rank(V), 5),
+    33: lambda P, V, RC: d_rank(-1.0 * (1.0 - P["o"] / P["c"]) ** 1),
 }
+
+
+def _ret(P):
+    return P["c"] / d_shift(P["c"], 1) - 1.0
 
 
 def _cmp_lt(a, b):
@@ -846,7 +971,7 @@ def semantic_checks(w: dict) -> list:
     raw_env = house_env(w, raw_basis=True)
     split_lines = int(np.count_nonzero((np.diff(np.log(w["F"]), axis=0) > np.log(1.4)).any(axis=0)))
     lines, mutants = [], 0
-    for n in PICKS:
+    for n in ALL_PICKS:
         text = dsl(n)
         wrapped, d = house_form(text)
         alpha, house = run(text, env), run(wrapped, env)
@@ -855,7 +980,7 @@ def semantic_checks(w: dict) -> list:
         assert same(alpha, ref), f"#{n}: the DSL alpha differs from the printed formula"
         assert same(house, ref_house), f"#{n}: the house form differs from rank(decay_linear(printed, {d}))"
         assert same(run(wrapped, other_anchor), house), f"#{n}: depends on the vendor factor anchor"
-        if n != 2 and n != 101:   # #2 and #101 read same-session prices only: a split cannot enter their windows
+        if n not in SAME_SESSION:   # same-session prices only: a split cannot enter their windows
             assert not same(run(text, raw_env), ref), f"#{n}: the raw-basis probe does not move it"
         for m in MUTANTS[n]:
             mt = _t(m)
@@ -869,8 +994,9 @@ def semantic_checks(w: dict) -> list:
                      f"cells; anchor-free; {len(MUTANTS[n]) + 1} mutants fail")
     bad_alt = _t(ALT_ORDER[99]).replace(") > rank(", ") < rank(")
     assert canonical(xs.parse(bad_alt)) != canonical(xs.parse(_t(TABLE[99][2]))), "the canonical check has no teeth"
-    no_rebase = _t(MUTANTS[101][0])
-    assert not same(run(no_rebase, other_anchor), run(no_rebase, env)), "#101 without the rebase is anchor-free"
+    for n in (101, 95):   # the class-L picks: without the rebase each depends on the factor anchor
+        no_rebase = _t(MUTANTS[n][0])
+        assert not same(run(no_rebase, other_anchor), run(no_rebase, env)), f"#{n} without the rebase is anchor-free"
     lines.append(f"mutation probe: {mutants} mutants, every one fails; synthetic world {w['T']} x {w['N']}, "
                  f"{split_lines} lines with a split")
     return lines
@@ -896,7 +1022,7 @@ def classes_hold(w: dict) -> int:
 
 
 def add_alpha_line(n: int) -> str:
-    p = PICKS[n]
+    p = ALL_PICKS[n]
     wrapped, d = house_form(dsl(n))
     return (f'"$PY" scripts/research_cycle.py add-alpha --id {p["id"]} --dsl "{wrapped}" --theme {p["theme"]} '
             f'--tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, '
@@ -920,22 +1046,26 @@ def main():
         print(f"#{n:3d} {TABLE[n][0]} {TABLE[n][1]:9s} win {s['window']:3d} form {s['form']:2d} bars {s['bars']:3d} "
               f"slots {s['slots']} nodes {s['nodes']:2d} bytes {s['bytes']:4d} extra {s['extra_fields']} "
               f"{'ok' if s['budget'] else 'OVER BUDGET'} sha256 {s['sha256'][:16]}")
-    picks, why = select(st)
-    print(f"selection rule: {len(picks)} picks {picks}")
-    assert picks == list(PICKS), f"the rule's picks {picks} are not the registration {list(PICKS)}"
-    for n in picks:
-        s = st[n]
-        assert (s["bars"], s["slots"], s["nodes"], s["extra_fields"]) == EXPECTED[n], (n, s)
-        print(f"pick #{n:3d} {PICKS[n]['id']:7s} form {s['form']:2d} bars {s['bars']:3d} slots {s['slots']} nodes "
-              f"{s['nodes']:2d} bytes {s['bytes']:3d} extra {s['extra_fields']} sha256 {s['sha256']}")
+    picks, tier2, why = select_tiers(st)
+    print(f"selection rule: tier 1 {len(picks)} picks {picks}; tier 2 {len(tier2)} picks {tier2}")
+    assert picks == list(PICKS), f"the rule's tier 1 {picks} is not the registration {list(PICKS)}"
+    assert tier2 == list(PICKS2), f"the rule's tier 2 {tier2} is not the registration {list(PICKS2)}"
+    for tier, ns in ((1, picks), (2, tier2)):
+        for n in ns:
+            s = st[n]
+            assert (s["bars"], s["slots"], s["nodes"], s["extra_fields"]) == EXPECTED[n], (n, s)
+            assert s["budget"], n
+            print(f"tier {tier} #{n:3d} {ALL_PICKS[n]['id']:7s} form {s['form']:2d} bars {s['bars']:3d} slots "
+                  f"{s['slots']} nodes {s['nodes']:2d} bytes {s['bytes']:3d} extra {s['extra_fields']} sha256 "
+                  f"{s['sha256']}")
     print("not picked (exact): " + "; ".join(f"#{n} {why[n]}" for n in sorted(why) if TABLE[n][0] in "SL"))
     print(f"classes: {classes_hold(synthetic(T=320))} exact transcriptions evaluate in their house form on a 320-session "
           "synthetic world, all free of the factor anchor; every L one depends on it without its rebase")
     for line in semantic_checks(synthetic()):
         print(line)
-    for n in picks:
+    for n in picks + tier2:
         line = add_alpha_line(n)
-        assert '"' not in "".join(PICKS[n][k] for k in ("formula", "domain", "deviation")), n
+        assert '"' not in "".join(ALL_PICKS[n][k] for k in ("formula", "domain", "deviation")), n
         print("add-alpha " + hashlib.sha256(line.encode()).hexdigest()[:16] + " " + line)
     print("xwq_check: PASS")
     return 0
