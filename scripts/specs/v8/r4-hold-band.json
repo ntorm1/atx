@@ -2,14 +2,34 @@
   "schema": "atx.research-cycle-template/v1",
   "name": "v8-r4-hold-band",
   "description": "Cell R-4 (plan section 9, N 44): rank hysteresis hold-band-v1 (lane R45, task-R-4-report.md): a name's desired weight moves only when its centred rank of the blend leaves a band of half-width .10 around the rank at which its current aim was set; then the existing demean, gross 1, locate zeroing and neutralization (Rulings R4-a, R4-b). The only change: nav --hold-band .1 (aim-partial-v5 only). NAV-only: u, fit, card and w are the parent's. Identity cell first: the parent's NAV argv with --hold-band 0 (every file byte-identical). Acceptance: dSR > 0 AND mechanics AND turnover at least 15% lower.",
-  "parent": null,
+  "parent": "lib-v80.json",
   "nominal_parent": "base-b0c.json",
   "change": {
     "set": {
       "nav.output": "build-equity/mega-nav-v8-r4-hb.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
     },
     "flags": {
-      "nav": {"--hold-band": ".1"}
+      "nav": {
+        "--hold-band": ".1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80/summary.json",
+      "sha256": "083a56da0e4381b9c7ae9db10b19783b5185a0f6043f240aa3c721150ad42c85"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/admission.json",
+      "sha256": "f613fe920de92eb9a5fbb8c1524f5891808672f1dda44ee69c8a63af2dc9e90c"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v80-1/train_combined.json",
+      "sha256": "bbbf6f2bfe6f857e914f4354bc943ea55976024c8b28df385992f09038f7cd98"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/composition_weights.json",
+      "sha256": "032133450dedc5f5747d65f60ca1e4abeeca00eff0e9280f749c061986f3b5ce"
     }
   }
 }
