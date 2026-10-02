@@ -2155,3 +2155,8 @@ significance and capacity. We need to clear the hurdle rate first to enter produ
   stops and reports only when (a) a step has two readings that change a number, (b) a mechanic or identity check
   fails, (c) a cap is hit. A stop costs hours; a registered rule that covers the case is applied and logged, not asked
   about.
+- X batch 2 resumed in root (log "X batch 2, resumed"). Step 1 (PM7-39): build v8-15 (`798d3b23`, ic + ic-tests; ic
+  `6aac48f2`) verified on disk; X-5 reproduces under it: w 10 / 12 byte-identical (the 2 others timing paths only), NAV
+  27 / 27, fit byte-identical after the PM7-30 substitution (script, admission and registry hashes; registry
+  `7ff10f4e` -> `19b01d11` by the `price_volume` row); ic-tests 159 / 159, `atx-impl/tools` 612 passed, `scripts/tests`
+  248 passed, 0 failed (`c87b9051`).
