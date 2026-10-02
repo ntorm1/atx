@@ -2879,3 +2879,192 @@ None to source. Commits: `da805a2a` (cause-test scripts), `f93868bf` (prereg pin
 - W0-a on report 3 is closed by outcome (a) (PM5-18 (3)); the four-key `stop` class of the daily-IC report remains by
   design (member diagnostics carry the run's own window sign).
 - base-lo3: lock after B0a (PM5-17). Carried: R11 has no overlap report (open question 30); R15 and fields v10 not run.
+
+## cells batch 1a: B0a, base-lo3 lock, B0b (2026-10-01)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `7a185d9c` (clean; code head `1cc4c6c9`;
+every research executable on v8-12). Procedure `task-CELLS-brief.md`; rulings W0-a/b/c, A-3, E-18, E-24, E-28, E-29,
+E-34, E-37, PM5-17, PM5-18, PM5-20, PM5-21 read. Not run: B0c, R15, anything after B0b. End: `3d25e2a4` (base-lo3 lock)
++ this log, tree clean.
+
+### A. Preconditions (before B0a)
+
+- Tree clean at `7a185d9c`. Executables on disk = v8-12: IC `ab7e2cbd...1615452d`, NAV / targets `5497c89d...35b9bca6`,
+  risk `8967952c...a7eed258`. Freeze list (PM5-21) re-hashed, all equal to the part 2c record: `run_bounded_research.py`
+  `81b5de1e`, `research_cycle.py` `f6b4043d`, `research_spec.py` `9dbb7879`, `research_ledger.py` `c90edb6e`,
+  `research_tree.py` `c313a510`, `fit_composition_weights.py` `8860483c`, `alpha_report_card.py` `ade2d777`,
+  `book_monitor.py` `628b2e6e`, `nav_summ.py` `719ac51f`, `backtest_integrity.py` `2e195823`,
+  `compare_window_overlap.py` `b4d7f2e8`; `research_window.json` `62cf2cfa`. No executable, cycle or tool script changed
+  in this batch (PM5-21); the only commit is the base-lo3 lock (a spec of a cell not yet run) and this log.
+- Ledger `build-equity/trials.jsonl`: 38 lines (37 construction + 1 protocol), file `8906fea3...9ccc`, chain head
+  `f7043d81...bcf8`, N 37. Disk 41 G free (`df -h`), RAM 5,614 MiB free.
+- Read-order discipline: each cell was run `--stop-after nav`; mechanics were read from the NAV dir with nav_summ's own
+  `construction_stats` (a scratch reader printing only gross, net, tau, row and accounting fields, no return); then
+  `run` resumed monitor and summ, the only phases that print returns.
+
+### Cell B0a (base-lo1; role lo1; no parent; criterion none: the re-base)
+
+**Spec** `scripts/specs/v8/base-lo1.json`, digest `88031699fdf4b0d5616b071b8dccc4c8414d7e894c9a46280a94a43b751f40bc`
+(locked at R14). **Pins** (plan, every one `[locked, verified]`): library v7.1 `787c802e`, recipe `7f8a2643`, role lo1
+`2ff9d771`, identity-bridge-r4-v2 `f598c04c`, fundamental-events-v3 `304d2945`, fields v9 lo1 as built `888e6616`
+(63 rows = the spec list). Commands: `research_cycle.py plan`, then `run --stop-after nav` (source `7a185d9c`), then
+`run` (resume: fields, u, fit, card, gate, w, nav done; NAV binding checked, spec `88031699`, argv `50062ffa...613b`).
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| u | 300 s / 2,560 (W0-c) | 29.2 | 667 | 0 | `151a76cb2513d51145bdbc5685c8c91774edd47703935f6a8d7f7bc4242ea112` | `summary.json` `01d4fddb...b0ad`; cache **48 / 48 signal hits, 48 / 48 IC-result hits, 0 misses, 0 VM evaluations** |
+| fit | 180 / 1,536 | 33.9 | 431 | 0 | `aae495ffcc3063393d3d4480b19bcd4dba920ae787a87fc7e983c61e13ee808c` | `composition_weights.json` `8c5b6e06...9cd9`, `admission.json` `f51814c7...24b1` |
+| card | 300 / 2,560 | 30.1 | 1,292 | 0 | `fdbf58ff4ab8b6a7ceff4c90674c3011fcfaba29e81e816bc2967ee5b5c9c3d7` | `daily_sleeve.csv` `e0aa312d...4d3b` |
+| gate | internal | - | - | PASS | - | `b0a-readout`: admitted list empty (0 admission lines); 12 report rows |
+| w | 300 / 2,560 | 24.2 | 667 | 0 | `ca87620a0fdb46d9bd382e786fa60b05c85499c6311b3076e0321a2f28c1593f` | `train_combined.json` `1705850b...d78c` |
+| nav | 180 / 1,536 | 23.2 | 447 | 0 | `663baba5033bc136bff55e4d67184fd441e58bee4e278e4c1aaff152c3fe0a95` | `summary.json` `eeac8366...05a8f`, `recipe.json` `66aee6fb...d8c1`, S2 daily `6f7c6405...8cf9` |
+| monitor | direct | 0.9 | - | 0 | - | `monitor.json` `541de8be...ead1` (status alarm: M2; flags only) |
+| summ | direct | 2.5 | - | 0 | - | `cycle-v8-b0a-lo1/summ.json` `d5cbc369...c3f`, `pbo.json` `2b9a00d1...6fd`, `cycle_verdict.json` `40e519c1...344e` |
+
+Every bounded receipt: outcome completed, `git: clean in the code pathspec`, source `7a185d9c`, exe = v8-12 (IC
+`ab7e2cbd`, NAV `5497c89d`; Python `624bbc05` for fit / card). The warm u pass reproduces R13's cold u pass
+(`w0-2-v71-u-lo1-1`) byte for byte in `recipe.json`, `orientations.json`, `train_daily_ic.csv`, `train_combined.*`,
+`train_planned_targets.csv`; `train_candidates.jsonl` differs only in timing and cache-status paths (`stage_seconds.*`,
+`wall_seconds`, `signal_cache`, `ic_result_cache`). **Weights `provenance.script_sha256` = `8860483ce017...839d`** (the
+FIX-5 fitter), v7.1's file `4cff96b606f9...399d`: the expected move (FIX-5), now seen in a fitter-written file.
+Gate report rows (no gate): 11 admitted, `mom_12_1` reject_redundant (max |rho| .9857 with res_mom_12_1); report
+only, gates nothing (b0a-readout admits nothing, as registered).
+
+**Mechanics (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`, the primary; read before any return): PASS.** All-rows gross
+.9709 in [.90, 1.05]; all-rows net +.0038 (|.| <= .02); tau mean .0367 <= .20, p95 .0439 <= .30 (1,003 tau sessions;
+the summary's own meets_daily_turnover_mean / _p95 true). 1,006 CSV rows 2020-01-02..2023-12-29. Accounting checks:
+max cash-book error 7.1e-14, return identity 3.6e-16 (tol 1e-9). Max gross 1.128, max |net| .029. Post-ramp gross
+.9926. **Row score_begin (A-3):** role row 399 = 2020-01-02 = CSV row 0: gross 0.0 (no warm start, K = 0: the flat
+start; first fills on row 1, 2020-01-03, gross .059; deployment row 1). No `warm_start` block (none asked). **Beta:**
+aim-partial-v5 carries no beta limit and the NAV summary records none; the v8 mechanics list (pitch config
+`v8.mechanics`: gross, net, tau mean, tau p95) has no beta item; nothing to check.
+
+**Statistics of record:** B0a has no parent: no paired test. S2 net Sharpe **+1.125** (ledger `s2_net_sr` 1.12540;
+T 1,004). DSR block of the verdict (`--dsr-ledger`): N 38; **pre-registered cross-trial variance undefined** (1 cell
+ledgered on research-window-v2, `cell_count` null); legacy variance (37 cells) DSR .7070 (gates nothing). Beside:
+listing DSR (V[SR_n] of the 38 listed dirs) .7107; effective-N DSR .8770 (ONC N_eff 2); PSR vs 0 .9847; CSCV PBO .2020
+over 38 cells (exhaustive 12,870 splits, common sessions 2020-2022).
+
+**Criterion:** none (re-base; W0-b). **Verdict:** B0a is the re-base, ledgered; mechanics pass; it is B0b's parent.
+**N after: 38** (ledger 39 lines = 38 construction + 1 protocol; `ledger_n` 38; appended 1, skipped 37; trial
+`9ee007561225d964`, origin prior, window_id research-window-v2, prev = the protocol head `f7043d81`; chain head
+`bc95ae4f...ac1e`; file `40bb8fac...fb2f`). Matches the brief.
+
+Year table (S2; return rows, net return, net Sharpe, vol, tau mean, cost bps per traded dollar):
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 251 | +.0064 | +.162 | .0458 | .0477 | 15.66 |
+| 2021 | 252 | +.0831 | +2.470 | .0325 | .0331 | 12.06 |
+| 2022 | 251 | +.0888 | +1.947 | .0444 | .0330 | 12.76 |
+| 2023 | 250 | +.0032 | +.112 | .0339 | .0332 | 12.11 |
+
+**Net Sharpe at 4x NAV:** base-lo1 carries no capacity curve (no `--capacity-curve` in its NAV flags; E-29 puts it on
+B0c); not reported, not added. **Appendix A:** `TRAIN construction cells 38; admission trials this sprint 0; window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none; fixes: none.
+
+### base-lo3 lock (PM5-17)
+
+`research_cycle.py lock scripts/specs/v8/base-lo3.json` (dry, exit 0), then `--write` (exit 0): exactly six null pins
+filled, nothing else changed (semantic JSON diff against HEAD; the file re-serialised with `indent=2`, 150 + / 28 -):
+`fields.manifest_sha256` `9f1563638b5e4f7ead7be686803b96a0707ada2c608fcbc6dc084179bd9021ef` (= prereg pin),
+`inputs.role` `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4` (= prereg pin),
+`inputs.identity_bridge` (atx-db export identity-bridge-v2-pit manifest, hashed, not opened)
+`09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01` (= runbook V2PIT, R8), `inputs.fund_events`
+`304d2945d6226c0ca9b56d1fb6e8309ae1f42da5dfcd9652aee1a83dc29be87b`, `inputs.sic_events` (atx-db fundamentals manifest)
+`9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b` (= runbook SIC, R8), `inputs.reference_cell` = B0a's
+NAV `summary.json` `eeac83664e9a17936dd61dfe8932f3b54eeb0051cd31a779d6208880edf05a8f`. A dry lock after it exits 0.
+**Spec digest `537760bc3802fb731bc06cfbec5d5a059106e1576a79d6579a2327f8d88221d7`** (file SHA; plain spec). Commit
+`3d25e2a4`. Library and recipe pins unchanged (`787c802e`, `7f8a2643`).
+
+### Cell B0b (base-lo3; role lo3; parent B0a; accepted on paired S2 net dSR > 0 against B0a and mechanics, W0-b)
+
+**Spec** `scripts/specs/v8/base-lo3.json`, digest `537760bc...d221d7`. **Pins** (plan, all `[locked, verified]`): the
+six above plus library / recipe; fields v9 lo3 63 rows = the spec list. summ: `--reference` B0a's NAV dir, `--dsr-n 39`.
+Commands as B0a (source `3d25e2a4`; resume binding spec `537760bc`, argv `3eb2b854...319b`).
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| u (cold) | 300 s / 2,560 (W0-c), 4 workers | 143.1 | 1,577 | 0 | `32a571f331335fe40a0b000cc9153f68693ff966cf406e026676702f28eef7e9` | `summary.json` `bb34cf3d...737e`; cache cold: **0 hits, 48 misses, 48 VM evaluations**; new cache `mega-candidate-cache-v8-lo3` 3,052 MiB |
+| fit | 180 / 1,536 | 42.9 | 491 | 0 | `0d4a38cbb7927a66380d022b6e442d7b5511b282af23b7b8084eb191ce3f3b53` | weights `ddf1417e...de26` (script_sha256 `8860483c`), admission `29357ece...a18c` |
+| card | 300 / 2,560 | 31.8 | 1,439 | 0 | `8df755c0bad4588a0f9f6ec72f30314c8a02650ab47b3add35f316f8359eb351` | `daily_sleeve.csv` `80ba33d5...007a` |
+| gate | internal | - | - | PASS | - | `b0b-readout`: admitted empty (0 admission lines); report rows as B0a (11 admitted, mom_12_1 reject_redundant) |
+| w | 300 / 2,560 | 23.6 | 672 | 0 | `6dab38cf3413fe04fd4cfef14a603c853110568dd7d3b017435f080ef20fcf41` | `train_combined.json` `b1903f7c...945b` |
+| nav | 180 / 1,536 | 23.2 | 447 | 0 | `3346d242c5da13d83a797cadbfd9738abb6e5bfde8a17b16153e48d952faf1ab` | `summary.json` `82a596c1...4ad8`, `recipe.json` `c212e9f3...70b0`, S2 daily `b9913f6e...db1c` |
+| monitor | direct | 0.9 | - | 0 | - | `monitor.json` `c034ae6e...afd` (status alarm: M2; flags only) |
+| summ | direct | 15.7 | - | 0 | - | `cycle-v8-b0b-lo3/summ.json` `7cda2e9c...80c`, `pbo.json` `90949d50...527c`, `cycle_verdict.json` `5e94286d...f8a8` |
+| paired one-sided p | bounded 180 / 1,536 | 0.8 | 475 | 0 | `47d61c46e328d0f27c0bda419ceb30b82b8e221ecfbf3efac9149faf4ed0e432` | `nav_summ.py --protocol v8 --bundle B0a B0b --bundle-json build-equity/v8-cells-b0b-bundle.json` `75c30860...3191` (no `--ledger`: no line written) |
+
+Every bounded receipt: completed, clean, source `3d25e2a4`, exe = v8-12. The cycle's per-dir paired block prints only
+the two-sided studentized p (`paired_stats` without `one_sided`); the one-sided p (E-34) comes from nav_summ's
+`--bundle` path, the same `paired_stats` on the same aligned series with `one_sided=True` (the source the v8 ladder of
+`mega_report/v8.py` reads). Its dSR, SE, CBB CI and two-sided p equal the cycle's to the last digit. Its own "verdict
+FAIL" line is the freeze-gate test (p < .10, item 9), not the cell rule, and is not used.
+
+**Mechanics (S2; read before any return): PASS.** All-rows gross .9663 in [.90, 1.05]; all-rows net +.0035; tau mean
+.0370 <= .20, p95 .0439 <= .30 (1,003 sessions; summary flags true); 1,006 rows 2020-01-02..2023-12-29; accounting
+5.0e-14 / 3.5e-16; max gross 1.128, max |net| .028; post-ramp gross .9879. **Row score_begin (A-3):** role row 399 =
+2020-01-02: gross 0.0 (K = 0, flat start; row 1 gross .059; deployment row 1). Beta: none to check (as B0a).
+
+**Statistics of record (paired S2 net dSR vs B0a; studentized CBB, block 21, seed 20260929, 4,999 resamples, 4,999
+valid):** S2 net Sharpe B0b **+1.1389** vs B0a **+1.1254**; **dSR +.0135**; rho .9968; T 1,004; **Memmel SE .0403**
+(t +.33); CBB 95% [-.0759, +.0987]; LW studentized SE .0449, 95% [-.0800, +.1071]; **bootstrap p one-sided .3820,
+two-sided .7754**. Per-year dSR: 2020 +.159, 2021 -.110, 2022 -.005, 2023 +.002. DSR block: N 39; pre-registered
+variance from 2 cells on the window (B0a, B0b: V[SR] 3.62e-07) gives SR0 .021 ann and cell-count DSR .9843 (see open
+items); legacy variance (37 cells) DSR .7136; listing DSR .7206; effective-N DSR .8806; PSR vs 0 .9858; PBO .1828 over
+39 cells.
+
+**Criterion:** none besides dSR > 0 and mechanics (W0-b). **Verdict (prereg rule 5, Ruling W0-b): B0b ACCEPTED** --
+paired S2 net dSR +.0135 > 0 AND mechanics PASS. Recorded by the tooling: `cycle-v8-b0b-lo3/cycle_verdict.json`
+(paired block, spec `537760bc`, ledger head) and the ledger line. **N after: 39** (40 lines = 39 construction + 1
+protocol; `ledger_n` 39; appended 1, skipped 38; trial `145e34275831ce48`, prev = B0a's head `bc95ae4f`; chain head
+`ba3f4f70...4270`; file `a49acf02...6dd5`). Matches the brief.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 251 | +.0135 | +.322 | .0450 | .0479 | 15.48 |
+| 2021 | 252 | +.0769 | +2.360 | .0316 | .0335 | 12.03 |
+| 2022 | 251 | +.0862 | +1.941 | .0432 | .0332 | 12.80 |
+| 2023 | 250 | +.0033 | +.115 | .0340 | .0333 | 12.16 |
+
+**Net Sharpe at 4x NAV:** base-lo3 carries no capacity curve; not reported, not added. **Appendix A:** `TRAIN
+construction cells 39; admission trials this sprint 0; window research-window-v2 (2020-2023); hidden 2024+ unread in
+this sprint; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.` Defects: none; fixes: none.
+
+### Winner and next parent
+
+The rule gives **B0b** (accepted): role **lo3** (`train-2020-2023-lo3`, linked-operating-v3) carries on. Next parent:
+`scripts/specs/v8/base-lo3.json` (spec `537760bc`). Per the A2 root sequence B0c then sets `"parent": "base-lo3.json"`
+and re-points `change.inputs.label_role` to `build-equity/train-2020-2023-lo3-dlret` (R15 builds the lo3 dlret role;
+W0-j's lo1 path is not needed). Not done here (next dispatch).
+
+### Hidden-data record
+
+- Inputs opened by the tools: roles lo1 / lo3 (to 2023-12-29), fields v9 lo1 / lo3, library v7.1, the lo1 cache, the
+  new lo3 cache, the 37 ledgered v7 NAV dirs (2020-2022, the summ grid), the ledger. The two atx-db manifests were
+  hashed by `lock` (bytes only, W0-k), not parsed. No tool asked for a file dated 2024-01-01 or later.
+- Logs: every stdout / stderr of the 11 bounded runs and the four cycle consoles scanned for dates 2024-2029: 0 hits.
+- What I read: plans, receipts, cache counters, the mechanics fields above, then (after mechanics) the cycle's summ
+  output for B0a / B0b rows, the verdicts, the ledger. The summ console also prints the 37 v7 cells' rows (2020-2022,
+  already read in v6 / v7); not used. **Nothing dated 2024-01-01 or later was opened. No disclosure.**
+
+### Disk
+
+C: 41 G free at start; **39,088,996 KiB (37.3 GiB)** after B0b. New: `mega-candidate-cache-v8-lo3` 3,052 MiB, four IC
+dirs 93 MiB each, cards 8 MiB each, NAV dirs ~5 MiB each, `fit-work` 260 MiB total.
+
+### Open items
+
+- **Pre-registered DSR variance (rule 3) is degenerate until the W0-4 step 4 re-runs are ledgered.** At B0a it is
+  undefined (1 cell on research-window-v2); at B0b it rests on B0a and B0b alone (rho .997, V[SR] 3.6e-07), so SR0 is
+  .021 ann and the cell-count DSR .984 is not meaningful. It gates no B0 cell (acceptance is dSR, mechanics,
+  criterion); it does gate the freeze gate (item 9). The re-runs of ledgered v7 cells on the 4-year role (W0-4 step 4,
+  add 0 to N) are not in this batch; the PM schedules them before any DSR is read as evidence.
+- One-sided p: the cycle's summ prints the two-sided p only; each later cell needs the same bounded `nav_summ --protocol
+  v8 --bundle PARENT CELL --bundle-json` read (no ledger), as here. A tool change would be PM5-21 territory; none made.
+- Monitor: `status alarm` (M2) on both cells in baseline mode (in-sample CUSUM over the reference itself); flags only,
+  gates nothing; the member was not identified (an IC statistic).
+- `scripts/tests/test_research_spec.py` (PM5-20, FIX-6): the base-lo3 lock now also fills pins its fixtures expect null;
+  not run here.
+- Carried: R15 (lo3 dlret role), B0c, diagnostics, Release A/B (batch 1b).
