@@ -3961,3 +3961,102 @@ Its parent is the last accepted cell after R-2, which is not decided; the batch 
 - `test_registry_seed_is_the_v71_library` fails once any field row or alpha is registered (test premise).
 - Current accepted parent: **R-1-gm** (`r1-comp-v8-gm.json`, digest `60ac1feb`, L 1.1474), S2 net Sharpe +1.2031,
   net annual return 4.47%. N 41; admission trials 0; history reads 0. Disk 70,779,164 KiB free (67.5 GiB).
+
+## cells batch 2d: FIX-6 round 4, R-2 (resumed), R-3, R-4, R-5 (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, start `9c3f23ec` (clean; code head `1cc4c6c9`; executables v8-12 Debug: IC `ab7e2cbd`,
+NAV / targets `5497c89d`, risk `8967952c`; nothing built; PM5-21 holds). Read: progress PM6-7 (cleanup; nothing of v8),
+PM6-8 (R-2 marginal: memo option (i)), PM6-9 (K1 `--plan-json` route accepted and standing), PM6-10 (registry seed
+test: FIX-6 round 5), PM6-6 (gross matching, every cell). Same scratch readers as batch 2c (`mech.py`: mechanics keys
+only; `cellstats.py`: return side, after mechanics passed; `bundle.sh`: the PM5-23 bundle).
+
+### 0. FIX-6 round 4 merged (tests only)
+
+`git merge --no-ff 8f48ee39` -> merge commit right after `9c3f23ec` (ort, no conflict). Diff: `scripts/tests/test_research_spec.py` (+7 / -3)
+and `task-FIX-6-report.md` (+18); nothing else. `scripts/tests` (whole; `ATX_EQUITY_BIN` / `ATX_EQUITY_TARGETS_EXE`
+absolute v8-12; vcpkg bins on PATH): **17 failed, 171 passed, 3 skipped** (104.6 s; skips: the three
+RESEARCH_CYCLE_LIVE_ROOT tests). The B0c label-role failure of batch 2b is gone. **All 17 failures are in
+`test_research_spec.py` and trace to batch 2c's additions** (not edited; PM6-10's round 5 covers them):
+- 14 x `test_every_v8_spec_loads_and_plans[*]` and `test_the_fixtures_plan_a_locked_spec_as_unlocked`: the authored-set
+  equality (`:278`) and the fixture map (`:225`, KeyError) do not know the hand-written `r1-comp-v8-gm.json`;
+- `test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions` (`:1124`): add-alpha in the
+  fixture root refuses (exit 2) re-registering `q5_eg_f49`, which the live registry now holds with another definition
+  (the R-2 wave), and its `earn_probe` exceeds the house budget there;
+- `test_the_whole_file_passes_with_a_generated_spec_present`: the meta-test (the same inner failures).
+The registry seed test (`atx-impl/strategies/test_generate_library.py`) is not in this suite (known, round 5).
+
+### Cell R-2 (lib-v80 on R-1-gm; library v8.0 on fields v10; L 1.1474): ACCEPTED, N 42
+
+**Ruling PM6-8 applied:** `scripts/specs/v8/lib-v80.json`: `marginal.themes` deleted, `marginal.output` ->
+`build-equity/mega-v8-b0b-train-u-v80-marginal-pool` (the failed `...-marginal-run` dir stays, never overwritten);
+`lock` / `lock --write` / dry lock: 0 / 0 / 0, every pin unchanged (diff = the two lines). File / spec digest (plain
+spec) **`306a070b865d3625dc03b477e528a63ae52558cc8c8b231d3df787ec3bab3a21`**. **PM6-9:** the 15 K1 plans committed under
+`.superpowers/sdd/platform-v8-20260929/r2-plans/` (SHA-256): ear_mom_12m `8623c52d...`, earn_surprise_comp
+`4f98db69...`, op_rd `a5a34e5d...`, dtc_slow `cdb604b1...`, pct_accruals `8c145931...`, fip_id `6116f3cb...`,
+si_low_io `0d8f9275...`, ebit_ev_f49 `e14180dc...`, gpa_f49 `4c8b0fe0...`, cbop_f49 `a678b054...`, noa_f49
+`c0ee6b37...`, accruals_f49 `51b10805...`, opex_at_f49 `84f5d539...`, asset_growth_f49 `776c50b9...`, q5_eg_f49
+`8c7c3b75...` (full digests: `sha256sum r2-plans/*.json`). Commit `39f87cd6`. Plan: every pin `[locked, verified]`.
+
+**Counts before any statistic** (batch 2c, unchanged): roster 52; 7 admission trials; 8 re-screens; 11 removed; K1 rows =
+draft section 4 / R2-8; u-compare IDENTICAL (37 kept members: orientations 37 objects, daily IC 108,262 rows byte for
+byte).
+
+**Runs** (source `39f87cd6`; then resumed; no free-memory refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| u, fit, card | - | 33.3 / 7.3 / 20.2 | 1,497 / 450 / 1,350 | 0 | batch 2c | done |
+| marginal (pool only, PM6-8) | 300 / 2,560 | 135.1 | 296 | 0 | `42a9556b6bab9f062108a095327dd15d69c3724986c46e44a15b95ab4dcefc38` | `...-marginal-pool/marginal_ic.json` (report only) |
+| gate p1-v80 | internal | - | - | PASS | - | 7 admission lines ledgered (chained, before the read-out) |
+| ref (identity) | 180 / 1,536 | 42.6 | 585 | 0 | `f1260d27cacd84a58483fc63e4c1d8f4e62252b27704025d9766466eedc51615` | **ref-s2-daily IDENTICAL bit for bit** to R-1-gm's S2 daily (`7ef3b3bd`, 940,403 B): fields v10 reproduces the parent |
+| w | 300 / 3,072 (E-28) | 35.7 | 1,306 | 0 | `1becd1aed2aa1d287ed2e4a79134554cd04620c0c47567fe6ae7424a07d158d8` | `mega-v8-r1w-train-std-v80-1`; weights `03213345` (ew-theme-std-v1, 41 of 52 weighted) |
+| nav (L 1.1474 = step 1) | 180 / 1,536 | 43.2 | 586 | 0 | `15ea731572511a0d70e8b28f843231990908b17dedb8ffda447777e6de4857c1` | `summary.json` `083a56da`, S2 daily `7cfe21c4`, capacity `b99b1cd1` |
+| monitor | bounded | 1.3 | 110 | 0 | - | M2 alarm 4 (high_52w, ind_mom_12_1, iv_rv_spread, sv_flow; as every cell), warn 13, ok 24; M4 ok |
+| summ | bounded | 16.4 | 543 | 0 | - | `cycle-v80/summ.json` `960a19a5`, `cycle_verdict.json` `d53ee1ff` |
+| one-sided p | 180 / 1,536 | 0.8 | 559 | 0 | `171668e6e0d6e1e6e5e9cc04371170e8b256cd1c7ecc21d125a46992d1e572cb` | `v8-cells-r2-bundle.json` `575d4da7` |
+
+**Admission (gate p1-v80, v4-prior-v1; require any): PASS, 3 of 7 admitted with the prior sign** -- ear_mom_12m (HAC t
+.88), pct_accruals (1.07), fip_id (.53). earn_surprise_comp and op_rd: status admitted but runner sign 0 against prior
++1 (sign_agrees false; not counted by the gate); dtc_slow reject_redundant (|rho| .959 with dtc); si_low_io
+reject_redundant (.955 with si_ratio). **Re-screens: all 8 `_f49` admitted.** Reference members vs R-1's admission: 1
+status change, nincr reject_redundant -> admitted (sue / droe / chtax left). Book: 41 of 52 weighted. K6 (pool only,
+report only, gates nothing): marginal IC21 / HAC t ear_mom_12m +.0058 / .87, earn_surprise_comp -.0186 / -2.06, op_rd
++.0123 / 1.12, dtc_slow +.0037 / .50, pct_accruals +.0233 / 2.46, fip_id +.0108 / .76, si_low_io +.0319 / 1.98.
+
+**Gross match (step 1 at the parent's L 1.1474): G = 0.9859903463 vs G_parent (R-1-gm) 0.9817064213: |diff| .00428 <=
+.005 -> the cell stands at L 1.1474** (no `-gm` spec, no correction; calibration runs 0 beyond the cell's own NAV).
+
+**Mechanics (S2): PASS.** All-rows gross .9860; net +.0042; tau mean .02393 / p95 .02841 (1,004 sessions; summary flags
+true); max gross 1.118, max |net| .029; gross at score_begin .940; by year .964 / 1.002 / .984 / .995; 1,006 CSV rows,
+1,005 return rows; accounting 4.5e-14 / 3.7e-16.
+
+**Criterion (book turnover not higher; executed tau_gmv_mean, PM5-11 for R-2):** .023929 vs R-1-gm .024509 -> PASS.
+
+**Statistics of record:** S2 net Sharpe **R-2 +1.2559** vs R-1-gm +1.2031. Paired (1,005 sessions, 4,999 valid
+resamples): **dSR +.0529**; rho .982; **Memmel SE .0945** (t +.56); CBB 95% [-.087, +.190]; LW SE .0706, 95% [-.090,
++.196]; **bootstrap p one-sided .2398, two-sided .4694** (the bundle reproduces the cycle exactly). DSR (N 42): ledger
+DSR .9859 (V[SR] from 5 cells on research-window-v2); legacy .7805; effective-N .9164; PSR vs 0 .9926; PBO .2675.
+
+**Verdict (rule 5): dSR +.053 > 0 AND mechanics PASS AND book turnover not higher -> ACCEPTED (wave judged whole).**
+Ledger line trial `2082800117b50112` (cell = the R-2 NAV dir, s2_net_sr 1.25594, prev `e2c10ef2`). **N after: 42**
+(ledger 50 lines = 42 construction + 7 admission + 1 protocol; file `89ff5e26`; head `8c0f8161`). **Admission trials
+this sprint: 7 (plus 8 re-screens).**
+
+Returns (S2, annual): **net 4.54%** (CAGR 4.57%) vs R-1-gm 4.47%; **gross of cost 5.81%** (5.76%); trade cost .74%,
+borrow .33%, long financing .20%; vol 3.61%; max drawdown 3.25%; gross Sharpe 1.610.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0111 | -.316 | .0336 | .0264 | 14.79 |
+| 2021 | 252 | +.0983 | +2.596 | .0364 | .0227 | 11.45 |
+| 2022 | 251 | +.0796 | +1.841 | .0423 | .0235 | 12.10 |
+| 2023 | 250 | +.0193 | +.638 | .0310 | .0231 | 11.52 |
+
+Capacity (report only): net Sharpe .5x 1.289, 1x 1.256, 2x 1.223, **4x 1.178** (R-1-gm 1.103), 8x 1.100.
+
+**Appendix A:** `TRAIN construction cells 42; admission trials this sprint 7 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.`
+
+**Next parent: `scripts/specs/v8/lib-v80.json` (spec `306a070b`), G 0.9859903463, L 1.1474, library v8.0.**
+
