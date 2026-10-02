@@ -13,7 +13,7 @@
     "max_slots": 7,
     "max_prior_bars": 314,
     "max_dsl_bytes": 4096,
-    "max_roster": 56
+    "max_roster": 64
   },
   "candidate_defaults": {
     "horizons": [
@@ -33,7 +33,8 @@
     "short_interest": "FINRA short interest ratio, days to cover, one-month change in short interest, the 126-session FINRA shorting flow (short sale volume / volume, within FF12) and SEC fails-to-deliver per share outstanding (21 settlement dates); heavy or rising shorting and delivery failures predict lower returns.",
     "reversal_seasonality": "Industry-adjusted short-term reversal and same-calendar-month seasonality.",
     "options_implied": "Implied-minus-realized volatility spread; high implied volatility relative to realized volatility predicts higher returns.",
-    "ownership_flow": "Informed-owner flows from SEC ownership filings: opportunistic insider net buying (Form 4) and 13F manager conviction; informed buying predicts higher returns."
+    "ownership_flow": "Informed-owner flows from SEC ownership filings: opportunistic insider net buying (Form 4) and 13F manager conviction; informed buying predicts higher returns.",
+    "filing_events": "Adverse SEC filing events: an 8-K Item 4.02 non-reliance disclosure within the last 63 sessions; a recent event predicts lower returns."
   },
   "fields": {
     "close": {
@@ -357,6 +358,41 @@
       "producer": "atx-engine/tools/research_fields_v8.py",
       "clock": "the clock of this run's grp_ff12 and grp_ff49 (fund-events-lagged-v1 on the SIC table: the linked CIK's latest visible valid SIC row, --fund-lag-sessions; both from the same row): row t reads their row t only",
       "basis": "ff12-money-ff49-v1, cellwise on row t: ff12 = grp_ff12[t], ff49 = grp_ff49[t]; 100 + ff49 when ff12 == 11 (Money) and ff49 in {45, 46, 47, 48} (145 Banks, 146 Insur, 147 RlEst, 148 Fin); otherwise ff12 (a Money SIC that Siccodes49 does not list -> 11; every non-Money cell -> ff12 bit for bit, 1-10 and 12; ff12 NaN -> NaN) (formula id ff12-money-ff49-v1; producer atx-engine/tools/research_fields_v8.py, fields-v10)"
+    },
+    "ceq_iss_5y": {
+      "formula_id": "price-ceq-iss-5y-lag1-v1",
+      "origin": "fields_v10",
+      "producer": "atx-engine/tools/research_fields_price.py",
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "basis": "row t: a = session t-1, b = a - 1260 sessions (extended axis). ME_s = 1000 x shares(o_s) x F_s / F(o_s) x C_s: the A8 house market equity, o_s = the line's last share observation dated <= date(s) - 90 days and >= date(s) - 490 days (vendor shares in thousands, 0 < shares <= the A9 ceiling). The price terms cancel exactly, so the value is ln(q(o_a) / q(o_b)), q = shares / F: share growth net of splits (they move shares and F together) and of dividends (a dividend raises F: paid-out cash counts as negative issuance, as in Daniel-Titman). Needs price observations at a and b, both share observations, no kept_gap step in (o_b, a], the line not withheld under C-81 at a (its first above-ceiling row dated <= date(a)), and a value inside the declared domain (formula id price-ceq-iss-5y-lag1-v1; producer atx-engine/tools/research_fields_price.py, fields-v10)"
+    },
+    "coskew_60m": {
+      "formula_id": "price-coskew-60m-lag1-v1",
+      "origin": "fields_v10",
+      "producer": "atx-engine/tools/research_fields_price.py",
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "basis": "row t: month ends e_k = (t-1) - 21k, k = 0..60 (extended axis); r_k = P(e_k) / P(e_(k+1)) - 1 per line (needs observations at both ends, no kept_gap step inside, |log adj ratio| <= |log raw ratio| + 0.10); m_k = the monthly vendor EW market (MARKET_RULE); K = months with both finite; |K| >= 48, else NaN. On K: OLS r = alpha + beta m, e_i = the residual, e_m = m - mean(m); value = mean(e_i e_m^2) / (sqrt(mean(e_i^2)) mean(e_m^2)); NaN when either variance is 0. Raw returns (no risk-free rate: a constant shift leaves e_i and e_m unchanged) (formula id price-coskew-60m-lag1-v1; producer atx-engine/tools/research_fields_price.py, fields-v10)"
+    },
+    "k8_item402_63": {
+      "formula_id": "sec-k8-item402-63-v1",
+      "origin": "fields_v11",
+      "producer": "atx-engine/tools/research_fields_sec.py",
+      "clock": "sec-acceptance-lag1-v1: a source row is usable at role session t iff available_at (UTC, the EDGAR acceptance resolved by atx-db acceptance-per-file-clock-v1) < 22:00 UTC of session t-1 on the session calendar (role sessions inside the role range, the NYSE rule calendar nyse-rule-v1 outside it); rows available on or after 2024-01-01 are dropped; sessions are counted on the same calendar",
+      "basis": "1 if an original 8-K of the CIK with item 4.02 (non-reliance on previously issued financial statements) became usable within the last 63 sessions (usable from session e: counted at t for e <= t < e + 63), else 0 (formula id sec-k8-item402-63-v1; producer atx-engine/tools/research_fields_sec.py, fields-v11)"
+    },
+    "gscore7_lowbm": {
+      "formula_id": "mohanram-g7-lowbm3-sic2-v1",
+      "origin": "fields_v11",
+      "producer": "atx-engine/tools/research_fields_v8.py",
+      "clock": "fund-events-lagged-v1, the issuer fields' clock and link (--identity-bridge, --fund-events, --fund-lag-sessions L of the builder): the linked CIK's latest events row with accepted_utc < date(session t-L) 22:00 UTC (max accepted_utc, tie by accession) on primary (P) lines only; sessions t < L -> NaN; the row's fiscal-quarter view (QUARTER_RULE) holds only rows up to it, all visible at t; me_company of session t-1 and grp_sic2 of session t: this run's payloads",
+      "basis": "mohanram-g7-lowbm3-sic2-v1 at session t: bm = be / me_company[t-1] (be of the selected events row > 0, this run's me_company of session t-1 > 0); U = member names at t (member.u8) with a finite bm; bottom tercile T = the names in U with bm <= the 1/3 quantile of bm over U (numpy linear interpolation); outside T -> NaN. Inputs of the selected row (at > 0): ROA = ni_ttm / at, CFROA = cfo_ttm / at, RDA = xrd_ttm / at (a missing xrd_ttm -> 0), CAPXA = capx_ttm / at; VARROA = sample variance (ddof 1) of ni_q / at over fiscal quarters k = 0..15, VARSGR = sample variance of sale_ttm(P_k) / sale_ttm(P_(k+1)) - 1 (sale_ttm(P_(k+1)) > 0) over k = 0..15 (QUARTER_RULE), each with at least 12 finite quarters. A name in T is scored when grp_sic2[t] and every input but R&D is finite, else NaN. Peer median of a measure: np.median of that measure over the names in T of the same grp_sic2 at t for which it is finite. Value = [ROA > median] + [CFROA > median] + [cfo_ttm > ni_ttm] + [VARROA < median] + [VARSGR < median] + [RDA > median] + [CAPXA > median]. fiscal-quarter-view-v1: events row r (anchor A = its period_end) sees the CIK's events rows up to r in (accepted_utc, accession) order; its fiscal quarter k (k = 0 is A's) is the period_end P_k among them nearest A - floor(91.3125 k + 0.5) days within 20 days (ties: the later period_end), with the items of the latest row up to r anchored at P_k; none within 20 days -> the quarter is missing (NaN items); a null period_end is never a quarter (formula id mohanram-g7-lowbm3-sic2-v1; producer atx-engine/tools/research_fields_v8.py, fields-v11)"
+    },
+    "eps_consist_4y": {
+      "formula_id": "alwathainani-eps-consistency-16q-v1",
+      "origin": "fields_v11",
+      "producer": "atx-engine/tools/research_fields_v8.py",
+      "clock": "fund-events-lagged-v1, the issuer fields' clock and link (--identity-bridge, --fund-events, --fund-lag-sessions L of the builder): the linked CIK's latest events row with accepted_utc < date(session t-L) 22:00 UTC (max accepted_utc, tie by accession) on primary (P) lines only; sessions t < L -> NaN; the row's fiscal-quarter view (QUARTER_RULE) holds only rows up to it, all visible at t",
+      "basis": "alwathainani-eps-consistency-16q-v1 on the selected events row's quarter view (QUARTER_RULE): EPS_k = ni_q / shrs_q of fiscal quarter k (shrs_q > 0; the share basis as reported, no split restatement); g_k = (EPS_k - EPS_(k+4)) / ((|EPS_(k+4)| + |EPS_(k+8)|) / 2), NaN when that denominator is 0 or a term is missing; value = the mean of the finite g_k over k = 0..15 when at least 12 are finite; NaN when g_0 or g_4 is not finite, |g_0| > 6, or g_0 and g_4 have opposite signs (g_0 g_4 < 0). fiscal-quarter-view-v1: events row r (anchor A = its period_end) sees the CIK's events rows up to r in (accepted_utc, accession) order; its fiscal quarter k (k = 0 is A's) is the period_end P_k among them nearest A - floor(91.3125 k + 0.5) days within 20 days (ties: the later period_end), with the items of the latest row up to r anchored at P_k; none within 20 days -> the quarter is missing (NaN items); a null period_end is never a quarter (formula id alwathainani-eps-consistency-16q-v1; producer atx-engine/tools/research_fields_v8.py, fields-v11)"
     }
   },
   "alphas": [
