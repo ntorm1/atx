@@ -5822,3 +5822,36 @@ on **library v8x4b** = v8x3b with value_composite, bm, net_payout re-screened in
 same argv with `--name v8x4b`; plans `x4b-plans/`): library `78dc39ad`, recipe `c45e92e6` (rescreens 3, unchanged 55),
 spec `lib-v8x4b.json` with PM6-8 (i) before any run. Registered in `v8-prereg.md` ("Library v8x4b").
 
+| phase (v8x4b; source `a595cd75`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| ref | - | - | - | skipped | - | fields equal the parent's |
+| u | 300 / 2,560 | 26.3 | 673 | 0 | `76be1cb98e3ef680f040618f5110cdbb49393f194376c5531acd96cc6d005963` | u-compare IDENTICAL (55 objects; 160,930 rows of 55 keys) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 0.8 / 14.6 | 57 / 1,307 | 0 | `5a56dc9b...` / `bf760d80...` | - |
+| marginal (pool only) | 360 / 1,536 | 143.8 | 251 | 0 | `f0ed8aaf...` | report only |
+| gate p1-v8x4b | internal | - | - | PASS | - | 3 of 3 with the prior sign; 0 lines appended, 3 already ledgered; reference members vs X-3: 1 status change (fcfp reject_redundant -> admitted) |
+| w | 300 / 3,072 | 41.5 | 1,371 | 0 | `5036d615051e0ab308d80b42886bc1010a419d36bcd96bcfb1d5e52dc74bf963` | - |
+| nav (L 1.1414; step (1) = the cell) | 180 / 1,536 | 45.9 | 586 | 0 | `95523fba7e68ecf89f2eeada3ca88db0581acf8e75e1cc3d38684255bb0e3e7b` | `summary.json` `94c90ac1`, S2 daily `61950615`, capacity `965bd97e`, recipe `d93a6ed8` |
+| monitor / summ | 180 / 1,536 | 1.3 / 30.2 | 121 / 608 | 0 | `04ef798e...` / `8559dc01...` | `cycle-v8x4b/summ.json` `008bc708`, `cycle_verdict.json` `9cfbf6cf` |
+| one-sided p | 180 / 1,536 | 0.8 | 624 | 0 | `4f1f804bc04d84d032e4118968f35680f0a2f2f4bf3e1c1179f76fbb36eb6f83` | `v8-cells-x4-bundle.json` `ea89a295` (vs X-3) |
+
+**Gross match:** G **0.9874558833** vs G_parent (X-3) .9861733264, |diff| **.00128** <= .005 -> stands at L 1.1414 (no
+correction). **Mechanics PASS:** gross .9875 (post-ramp .9936), net +.0048, tau .02282 / p95 .02664, max gross 1.124,
+max |net| .026, score_begin .937, by year .967 / .999 / .985 / .999, accounting 3.2e-14 / 4.5e-16.
+
+**Statistics of record:** S2 net Sharpe **X-4 +1.3627** vs X-3 +1.4205: **dSR -.0578**, rho .997, **Memmel SE .0374**
+(t -1.55); CBB 95% [-.126, +.014]; LW SE .0365, 95% [-.131, +.015]; **p one-sided .9434, two-sided .1210**. DSR (N 53):
+ledger .5757 (24 window lines); effective-N .7774; legacy .8157; PBO .2692.
+
+**Criterion (XIMP C-1 / PM5-11, printed; decides nothing under PM7-34): turnover per unit gross .023108 vs .023355 ->
+met.** 4x net Sharpe 1.2594 vs 1.3159; cost per traded dollar 12.51 vs 12.53 bps.
+
+**Verdict (PM7-34): dSR -.058 <= 0 -> NOT ACCEPTED, N 53** (rejected on dSR, not on the capacity criterion: PM7-34's
+stop does not apply). Ledger trial `2280702d7080a6ec` (s2_net_sr 1.36266, prev `d4d2c955`); ledger 96 lines (61
+construction incl. 8 W0-4 re-runs, 34 admission incl. 9 re-screens, 1 protocol), file `bf005971`, head `be896680`. Not
+retried. **Parent stays X-3** (`lib-v8x3b-gm.json`).
+
+Returns (S2): net 4.76% (CAGR 4.82%); gross of cost 6.01%; trade cost .71%, borrow .34%, long financing .20%; vol 3.50%;
+max drawdown 2.86%; gross Sharpe 1.720. Years: 2020 +.0149 / .409; 2021 +.0960 / 2.710; 2022 +.0591 / 1.614; 2023 +.0240
+/ .779 (net return / net Sharpe; tau .0250 / .0218 / .0227 / .0218; cost bps 14.94 / 11.53 / 12.09 / 11.49). Capacity: .5x
+1.395, 1x 1.363, 2x 1.321, 4x 1.259, 8x 1.171.
+

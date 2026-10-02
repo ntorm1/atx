@@ -2010,3 +2010,9 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   (parent 1.2669); dSR +.1536, SE .1200, p one-sided .098 (two-sided .232); mechanics pass; capacity criterion met
   (4x 1.316 against 1.188); turnover .02303 (.02383). Net annual 4.97% (4.64%), gross of cost 6.22% (5.92%), max
   drawdown 2.87%. DSR at N 52 .610. Admission trials: X hand-written 13 of 13. Parent is X-3 (`lib-v8x3b-gm.json`).
+- X-4 (value within FF49; log "X batch 1"): screen of `lib-v8x4.json` (9 re-screen lines, PM7-18 c); kept
+  value_composite_v49, bm_v49, net_payout_v49; ep, cfp, fcfp, ebit_ev_f49, sp (their `_v49` redundant) and rd_me
+  (`_v49` sign 0) restored (PM7-35). The cell is `lib-v8x4b.json`, L 1.1414, gross .98746 against .98617 (no
+  correction). NOT ACCEPTED, N 53 (dSR, not the capacity criterion). S2 net Sharpe 1.3627 (parent 1.4205); dSR
+  -.0578, SE .0374, p one-sided .943 (two-sided .121); mechanics pass; criterion (turnover per unit gross .02311
+  against .02336) met, printed only. Parent stays X-3.
