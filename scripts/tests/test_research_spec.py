@@ -68,6 +68,7 @@ NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}         
 NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
 NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS              # R-3 at matched gross (PM6-6), by hand on lib-v80 (PM7-4)
 NULL_PINS["r6-spo-v3-gm.json"] = CHILD_NULLS                # R-6 at matched gross (PM6-6), by hand on lib-v80
+NULL_PINS["r9a.json"] = NULL_PINS["r9b.json"] = CHILD_NULLS  # R-9a / R-9b, theta .03 / .04, report only (PM7-21)
 # R-7 at matched gross (PM6-6): add-alpha's lib-v81.json copied by hand with nav.leverage / nav.output (a plain spec:
 # every input pin but the committed libraries and recipe is lock-filled, as a base spec's)
 NULL_PINS["lib-v81-gm.json"] = {"inputs.role", "inputs.label_role", "inputs.baseline_fields", "fields.manifest_sha256",
@@ -111,6 +112,9 @@ EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                         
 EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
 EXPECTED_CHANGES["r3-aim-gain-gm.json"] = EXPECTED_CHANGES["r3-aim-gain.json"] | {"nav.leverage"}     # PM7-4
 EXPECTED_CHANGES["r6-spo-v3-gm.json"] = EXPECTED_CHANGES["r6-spo-v3.json"] | {"nav.leverage"}         # PM6-6
+# Ruling PM7-21: R-9a / R-9b change theta (--trade-fraction) and are report-only ("verdict": false)
+EXPECTED_CHANGES["r9a.json"] = EXPECTED_CHANGES["r9b.json"] = {"nav.output", "nav.flags", "verdict"}
+THETA = {"r9a.json": ".03", "r9b.json": ".04"}
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 MISSING = object()
 
@@ -556,6 +560,8 @@ def check_registered_change(specs: Path, name: str) -> None:
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                                   "<fill:nav.flags --risk-model-sha256>"]}
     nav_delta["r6-spo-v3-gm.json"] = nav_delta["r6-spo-v3.json"]              # PM6-6: R-6's change, its L apart
+    for r9, theta in THETA.items():                                          # PM7-21: the parent's argv, theta set
+        nav_delta[r9] = [theta if k and pn[k - 1] == "--trade-fraction" else x for k, x in enumerate(pn)]
     spo = ("r6-spo-v3.json", "r6-spo-v3-gm.json")
     assert cn == nav_delta.get(name, pn)
     assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json",) + spo   # E-29: the 4x report

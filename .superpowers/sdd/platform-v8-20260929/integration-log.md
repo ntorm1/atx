@@ -4985,3 +4985,32 @@ clip on 37% of decisions; the ex-ante vol of the gross-1 book is low in calm spe
 sigma_hat) exceeds 1.25 L there and the clip, not the target, sets the leverage; 2023's realised vol .0365 stays under .04
 with the clip binding from May. Net return rises .59 pt for .011 of Sharpe -- the PM7-3 leverage question, not alpha.
 
+Commit `dbc70008` (R-8 verdict, log and ledger line).
+
+### Cells R-9a / R-9b (theta .03 / .04 on R-2; report only; PM7-21); R-9c read from the parent
+
+**Parent = the last accepted cell after R-8 = R-2** (`lib-v80.json`, rule aim-partial-v5, theta .05, L 1.1474). E-37 / PM7-21
+(1): theta = `--trade-fraction`; spo-v3 not involved. N before 48; R-9a makes 49, R-9b 50; R-9c (theta .05 = the parent)
+adds 0 and is read from R-2's own files (PM7-21 (3)).
+
+**Specs (spec-only templates, PM7-21 (5)):** `scripts/specs/v8/r9a.json` / `r9b.json`, new: parent `lib-v80.json`, nominal
+parent `base-b0c.json`; change = `nav.output` (`build-equity/mega-nav-v8-r9{a,b}-t.0{3,4}-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`),
+`"verdict": false`, nav flag `--trade-fraction .03` / `.04`; nothing else. `lock` / `lock --write` / dry 0 / 0 / 0 each (the
+four derived pins of R-2: `083a56da`, `f613fe92`, `bbbf6f2b`, `03213345`). Files r9a `81e2f0b4...7a97`, r9b
+`c320310f...1614`; **spec digests (template chain) r9a `4674033ff37aea4f507110a71fe12285884f09a6d7a8f6fc79ec03bea225c6c8`,
+r9b `5ef8593b83cd2a57d9e488100dca3fb8139eb398f072264dff92d10bd9d3bc3d`**. Tests only (so the suite knows the two specs):
+`test_research_spec.py` `NULL_PINS` (CHILD_NULLS), `EXPECTED_CHANGES` {nav.output, nav.flags, verdict}, the nav delta (the
+parent's flags with the `--trade-fraction` value replaced); 59 passed. Plans exit 0: 8 pins `[locked, verified]` each;
+fields, u, fit, card, marginal, w, monitor = R-2's (done); **nav argv diffed by script against R-2's NAV receipt: equal
+except `--output` and the `--trade-fraction` value (index 21: .05 -> .03 / .04)**; summ `--protocol v8 --origin prior
+--ledger build-equity/trials.jsonl --ledger-kind construction` (`--dsr-n 49` at plan time), no `--json`, no `--dsr-ledger`
+(no verdict).
+
+**Reading, fixed before either run:** (1) one run each at L 1.1474, not gross matched, never retried; (2) before any
+return: mechanics (S2, mech.py) with the registered limits unchanged (all-rows gross [.90, 1.05], |net| <= .02, tau mean
+<= .20, p95 <= .30, accounting); a value outside a limit stops the batch before any return (dispatch stop condition;
+PM7-21 restates no limit for these cells); (3) report: S2 ($1bn) net Sharpe, the capacity curve's x4 row (net Sharpe,
+cost per traded dollar), all-rows gross, turnover, the bundle against R-2 (PM5-23; information only), the year table; no
+verdict, nothing accepted or rejected, the deployed book stays R-2; (4) each cell's ledger line is written by its summ
+(construction, N 49 / N 50).
+
