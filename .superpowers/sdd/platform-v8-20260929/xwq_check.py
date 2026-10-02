@@ -1,0 +1,1075 @@
+"""Lane XWQ (expansion X, cell X-7; Rulings PM7-33, PM7-34): Kakushadze (2016) "101 Formulaic Alphas" in the DSL.
+
+Run from the repository root (no arguments; synthetic data only, reads no data payload):
+    "C:/Program Files/Python312/python.exe" .superpowers/sdd/platform-v8-20260929/xwq_check.py
+
+1. TABLE: every one of the 101 printed formulas (arXiv:1601.00991 appendix A.1, verbatim), its exactness class in the
+   DSL with the fields in house (plus the three bar fields of research_fields_ohlc.py), the missing input for the ones
+   that are not exact, its mechanism cluster, and for every exact one the DSL transcription.
+2. The compiler mirror of lane XSIG (xsig_check.py: parser, typing, bars, slots, nodes; reused, not rewritten) checks
+   every exact transcription, wrapped in its house form (PM7-34: rank(decay_linear(x, 5)) when the longest printed
+   window is under 10 sessions, rank(decay_linear(x, 21)) otherwise), against the house budget.
+3. SELECTION: the rule of task-XWQ-report.md section 3, coded (eligibility filters, one pick per cluster, fixed
+   tie-break); it reads only this table and the mirror's static figures (no return, IC or Sharpe of any window).
+4. CLASSES (synthetic world with splits, dividends and a different vendor factor anchor per line): every exact
+   transcription evaluates in its house form and is free of the anchor; every class-L one depends on it without its
+   raw_close / close rebase.
+5. PICKS: each picked string, unwrapped and in its house form, equals cell for cell (and in its NaN pattern) a direct
+   numpy implementation of the printed formula evaluated on prices re-adjusted as of every evaluation day; a raw-basis
+   probe and a mutation probe (plausible transcription mistakes and the other house form) must fail. The frozen
+   add-alpha lines are printed with a SHA-256 prefix each.
+K1 (``--plan-only`` through add-alpha) remains the checker of record; this file states what K1 should print.
+"""
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+import sys
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import xsig_check as xs  # noqa: E402  (lane XSIG's compiler mirror, same directory)
+
+NEW_FIELDS = ("open_adj", "high_adj", "low_adj")     # research_fields_ohlc.py (this lane)
+xs.FIELDS |= set(NEW_FIELDS)
+
+# ------------------------------------------------------------------------------------------------ the printed formulas
+# Appendix A.1 of arXiv:1601.00991v3, verbatim (line breaks of the PDF joined with one space).
+PRINTED = {
+    1: "(rank(Ts_ArgMax(SignedPower(((returns < 0) ? stddev(returns, 20) : close), 2.), 5)) - 0.5)",
+    2: "(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open) / open)), 6))",
+    3: "(-1 * correlation(rank(open), rank(volume), 10))",
+    4: "(-1 * Ts_Rank(rank(low), 9))",
+    5: "(rank((open - (sum(vwap, 10) / 10))) * (-1 * abs(rank((close - vwap)))))",
+    6: "(-1 * correlation(open, volume, 10))",
+    7: "((adv20 < volume) ? ((-1 * ts_rank(abs(delta(close, 7)), 60)) * sign(delta(close, 7))) : (-1 * 1))",
+    8: "(-1 * rank(((sum(open, 5) * sum(returns, 5)) - delay((sum(open, 5) * sum(returns, 5)), 10))))",
+    9: "((0 < ts_min(delta(close, 1), 5)) ? delta(close, 1) : ((ts_max(delta(close, 1), 5) < 0) ? delta(close, 1) : "
+       "(-1 * delta(close, 1))))",
+    10: "rank(((0 < ts_min(delta(close, 1), 4)) ? delta(close, 1) : ((ts_max(delta(close, 1), 4) < 0) ? delta(close, 1) "
+        ": (-1 * delta(close, 1)))))",
+    11: "((rank(ts_max((vwap - close), 3)) + rank(ts_min((vwap - close), 3))) * rank(delta(volume, 3)))",
+    12: "(sign(delta(volume, 1)) * (-1 * delta(close, 1)))",
+    13: "(-1 * rank(covariance(rank(close), rank(volume), 5)))",
+    14: "((-1 * rank(delta(returns, 3))) * correlation(open, volume, 10))",
+    15: "(-1 * sum(rank(correlation(rank(high), rank(volume), 3)), 3))",
+    16: "(-1 * rank(covariance(rank(high), rank(volume), 5)))",
+    17: "(((-1 * rank(ts_rank(close, 10))) * rank(delta(delta(close, 1), 1))) * rank(ts_rank((volume / adv20), 5)))",
+    18: "(-1 * rank(((stddev(abs((close - open)), 5) + (close - open)) + correlation(close, open, 10))))",
+    19: "((-1 * sign(((close - delay(close, 7)) + delta(close, 7)))) * (1 + rank((1 + sum(returns, 250)))))",
+    20: "(((-1 * rank((open - delay(high, 1)))) * rank((open - delay(close, 1)))) * rank((open - delay(low, 1))))",
+    21: "((((sum(close, 8) / 8) + stddev(close, 8)) < (sum(close, 2) / 2)) ? (-1 * 1) : (((sum(close, 2) / 2) < "
+        "((sum(close, 8) / 8) - stddev(close, 8))) ? 1 : (((1 < (volume / adv20)) || ((volume / adv20) == 1)) ? 1 : "
+        "(-1 * 1))))",
+    22: "(-1 * (delta(correlation(high, volume, 5), 5) * rank(stddev(close, 20))))",
+    23: "(((sum(high, 20) / 20) < high) ? (-1 * delta(high, 2)) : 0)",
+    24: "((((delta((sum(close, 100) / 100), 100) / delay(close, 100)) < 0.05) || ((delta((sum(close, 100) / 100), 100) "
+        "/ delay(close, 100)) == 0.05)) ? (-1 * (close - ts_min(close, 100))) : (-1 * delta(close, 3)))",
+    25: "rank(((((-1 * returns) * adv20) * vwap) * (high - close)))",
+    26: "(-1 * ts_max(correlation(ts_rank(volume, 5), ts_rank(high, 5), 5), 3))",
+    27: "((0.5 < rank((sum(correlation(rank(volume), rank(vwap), 6), 2) / 2.0))) ? (-1 * 1) : 1)",
+    28: "scale(((correlation(adv20, low, 5) + ((high + low) / 2)) - close))",
+    29: "(min(product(rank(rank(scale(log(sum(ts_min(rank(rank((-1 * rank(delta((close - 1), 5))))), 2), 1))))), 1), 5) "
+        "+ ts_rank(delay((-1 * returns), 6), 5))",
+    30: "(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+        "sign((delay(close, 2) - delay(close, 3)))))) * sum(volume, 5)) / sum(volume, 20))",
+    31: "((rank(rank(rank(decay_linear((-1 * rank(rank(delta(close, 10)))), 10)))) + rank((-1 * delta(close, 3)))) + "
+        "sign(scale(correlation(adv20, low, 12))))",
+    32: "(scale(((sum(close, 7) / 7) - close)) + (20 * scale(correlation(vwap, delay(close, 5), 230))))",
+    33: "rank((-1 * ((1 - (open / close))^1)))",
+    34: "rank(((1 - rank((stddev(returns, 2) / stddev(returns, 5)))) + (1 - rank(delta(close, 1)))))",
+    35: "((Ts_Rank(volume, 32) * (1 - Ts_Rank(((close + high) - low), 16))) * (1 - Ts_Rank(returns, 32)))",
+    36: "(((((2.21 * rank(correlation((close - open), delay(volume, 1), 15))) + (0.7 * rank((open - close)))) + (0.73 * "
+        "rank(Ts_Rank(delay((-1 * returns), 6), 5)))) + rank(abs(correlation(vwap, adv20, 6)))) + (0.6 * "
+        "rank((((sum(close, 200) / 200) - open) * (close - open)))))",
+    37: "(rank(correlation(delay((open - close), 1), close, 200)) + rank((open - close)))",
+    38: "((-1 * rank(Ts_Rank(close, 10))) * rank((close / open)))",
+    39: "((-1 * rank((delta(close, 7) * (1 - rank(decay_linear((volume / adv20), 9)))))) * (1 + rank(sum(returns, "
+        "250))))",
+    40: "((-1 * rank(stddev(high, 10))) * correlation(high, volume, 10))",
+    41: "(((high * low)^0.5) - vwap)",
+    42: "(rank((vwap - close)) / rank((vwap + close)))",
+    43: "(ts_rank((volume / adv20), 20) * ts_rank((-1 * delta(close, 7)), 8))",
+    44: "(-1 * correlation(high, rank(volume), 5))",
+    45: "(-1 * ((rank((sum(delay(close, 5), 20) / 20)) * correlation(close, volume, 2)) * rank(correlation(sum(close, 5), "
+        "sum(close, 20), 2))))",
+    46: "((0.25 < (((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10))) ? (-1 * 1) : "
+        "(((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) < 0) ? 1 : ((-1 * 1) * "
+        "(close - delay(close, 1)))))",
+    47: "((((rank((1 / close)) * volume) / adv20) * ((high * rank((high - close))) / (sum(high, 5) / 5))) - "
+        "rank((vwap - delay(vwap, 5))))",
+    48: "(indneutralize(((correlation(delta(close, 1), delta(delay(close, 1), 1), 250) * delta(close, 1)) / close), "
+        "IndClass.subindustry) / sum(((delta(close, 1) / delay(close, 1))^2), 250))",
+    49: "(((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) < (-1 * 0.1)) ? 1 : ((-1 * "
+        "1) * (close - delay(close, 1))))",
+    50: "(-1 * ts_max(rank(correlation(rank(volume), rank(vwap), 5)), 5))",
+    51: "(((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) < (-1 * 0.05)) ? 1 : ((-1 * "
+        "1) * (close - delay(close, 1))))",
+    52: "((((-1 * ts_min(low, 5)) + delay(ts_min(low, 5), 5)) * rank(((sum(returns, 240) - sum(returns, 20)) / 220))) * "
+        "ts_rank(volume, 5))",
+    53: "(-1 * delta((((close - low) - (high - close)) / (close - low)), 9))",
+    54: "((-1 * ((low - close) * (open^5))) / ((low - high) * (close^5)))",
+    55: "(-1 * correlation(rank(((close - ts_min(low, 12)) / (ts_max(high, 12) - ts_min(low, 12)))), rank(volume), 6))",
+    56: "(0 - (1 * (rank((sum(returns, 10) / sum(sum(returns, 2), 3))) * rank((returns * cap)))))",
+    57: "(0 - (1 * ((close - vwap) / decay_linear(rank(ts_argmax(close, 30)), 2))))",
+    58: "(-1 * Ts_Rank(decay_linear(correlation(IndNeutralize(vwap, IndClass.sector), volume, 3.92795), 7.89291), "
+        "5.50322))",
+    59: "(-1 * Ts_Rank(decay_linear(correlation(IndNeutralize(((vwap * 0.728317) + (vwap * (1 - 0.728317))), "
+        "IndClass.industry), volume, 4.25197), 16.2289), 8.19648))",
+    60: "(0 - (1 * ((2 * scale(rank(((((close - low) - (high - close)) / (high - low)) * volume)))) - "
+        "scale(rank(ts_argmax(close, 10))))))",
+    61: "(rank((vwap - ts_min(vwap, 16.1219))) < rank(correlation(vwap, adv180, 17.9282)))",
+    62: "((rank(correlation(vwap, sum(adv20, 22.4101), 9.91009)) < rank(((rank(open) + rank(open)) < (rank(((high + low) "
+        "/ 2)) + rank(high))))) * -1)",
+    63: "((rank(decay_linear(delta(IndNeutralize(close, IndClass.industry), 2.25164), 8.22237)) - "
+        "rank(decay_linear(correlation(((vwap * 0.318108) + (open * (1 - 0.318108))), sum(adv180, 37.2467), 13.557), "
+        "12.2883))) * -1)",
+    64: "((rank(correlation(sum(((open * 0.178404) + (low * (1 - 0.178404))), 12.7054), sum(adv120, 12.7054), "
+        "16.6208)) < rank(delta(((((high + low) / 2) * 0.178404) + (vwap * (1 - 0.178404))), 3.69741))) * -1)",
+    65: "((rank(correlation(((open * 0.00817205) + (vwap * (1 - 0.00817205))), sum(adv60, 8.6911), 6.40374)) < "
+        "rank((open - ts_min(open, 13.635)))) * -1)",
+    66: "((rank(decay_linear(delta(vwap, 3.51013), 7.23052)) + Ts_Rank(decay_linear(((((low * 0.96633) + (low * (1 - "
+        "0.96633))) - vwap) / (open - ((high + low) / 2))), 11.4157), 6.72611)) * -1)",
+    67: "((rank((high - ts_min(high, 2.14593)))^rank(correlation(IndNeutralize(vwap, IndClass.sector), "
+        "IndNeutralize(adv20, IndClass.subindustry), 6.02936))) * -1)",
+    68: "((Ts_Rank(correlation(rank(high), rank(adv15), 8.91644), 13.9333) < rank(delta(((close * 0.518371) + (low * (1 "
+        "- 0.518371))), 1.06157))) * -1)",
+    69: "((rank(ts_max(delta(IndNeutralize(vwap, IndClass.industry), 2.72412), 4.79344))^Ts_Rank(correlation(((close * "
+        "0.490655) + (vwap * (1 - 0.490655))), adv20, 4.92416), 9.0615)) * -1)",
+    70: "((rank(delta(vwap, 1.29456))^Ts_Rank(correlation(IndNeutralize(close, IndClass.industry), adv50, 17.8256), "
+        "17.9171)) * -1)",
+    71: "max(Ts_Rank(decay_linear(correlation(Ts_Rank(close, 3.43976), Ts_Rank(adv180, 12.0647), 18.0175), 4.20501), "
+        "15.6948), Ts_Rank(decay_linear((rank(((low + open) - (vwap + vwap)))^2), 16.4662), 4.4388))",
+    72: "(rank(decay_linear(correlation(((high + low) / 2), adv40, 8.93345), 10.1519)) / "
+        "rank(decay_linear(correlation(Ts_Rank(vwap, 3.72469), Ts_Rank(volume, 18.5188), 6.86671), 2.95011)))",
+    73: "(max(rank(decay_linear(delta(vwap, 4.72775), 2.91864)), Ts_Rank(decay_linear(((delta(((open * 0.147155) + (low "
+        "* (1 - 0.147155))), 2.03608) / ((open * 0.147155) + (low * (1 - 0.147155)))) * -1), 3.33829), 16.7411)) * -1)",
+    74: "((rank(correlation(close, sum(adv30, 37.4843), 15.1365)) < rank(correlation(rank(((high * 0.0261661) + (vwap * "
+        "(1 - 0.0261661)))), rank(volume), 11.4791))) * -1)",
+    75: "(rank(correlation(vwap, volume, 4.24304)) < rank(correlation(rank(low), rank(adv50), 12.4413)))",
+    76: "(max(rank(decay_linear(delta(vwap, 1.24383), 11.8259)), Ts_Rank(decay_linear(Ts_Rank(correlation(IndNeutralize("
+        "low, IndClass.sector), adv81, 8.14941), 19.569), 17.1543), 19.383)) * -1)",
+    77: "min(rank(decay_linear(((((high + low) / 2) + high) - (vwap + high)), 20.0451)), "
+        "rank(decay_linear(correlation(((high + low) / 2), adv40, 3.1614), 5.64125)))",
+    78: "(rank(correlation(sum(((low * 0.352233) + (vwap * (1 - 0.352233))), 19.7428), sum(adv40, 19.7428), "
+        "6.83313))^rank(correlation(rank(vwap), rank(volume), 5.77492)))",
+    79: "(rank(delta(IndNeutralize(((close * 0.60733) + (open * (1 - 0.60733))), IndClass.sector), 1.23438)) < "
+        "rank(correlation(Ts_Rank(vwap, 3.60973), Ts_Rank(adv150, 9.18637), 14.6644)))",
+    80: "((rank(Sign(delta(IndNeutralize(((open * 0.868128) + (high * (1 - 0.868128))), IndClass.industry), "
+        "4.04545)))^Ts_Rank(correlation(high, adv10, 5.11456), 5.53756)) * -1)",
+    81: "((rank(Log(product(rank((rank(correlation(vwap, sum(adv10, 49.6054), 8.47743))^4)), 14.9655))) < "
+        "rank(correlation(rank(vwap), rank(volume), 5.07914))) * -1)",
+    82: "(min(rank(decay_linear(delta(open, 1.46063), 14.8717)), Ts_Rank(decay_linear(correlation(IndNeutralize(volume, "
+        "IndClass.sector), ((open * 0.634196) + (open * (1 - 0.634196))), 17.4842), 6.92131), 13.4283)) * -1)",
+    83: "((rank(delay(((high - low) / (sum(close, 5) / 5)), 2)) * rank(rank(volume))) / (((high - low) / (sum(close, 5) "
+        "/ 5)) / (vwap - close)))",
+    84: "SignedPower(Ts_Rank((vwap - ts_max(vwap, 15.3217)), 20.7127), delta(close, 4.96796))",
+    85: "(rank(correlation(((high * 0.876703) + (close * (1 - 0.876703))), adv30, 9.61331))^rank(correlation(Ts_Rank(((high "
+        "+ low) / 2), 3.70596), Ts_Rank(volume, 10.1595), 7.11408)))",
+    86: "((Ts_Rank(correlation(close, sum(adv20, 14.7444), 6.00049), 20.4195) < rank(((open + close) - (vwap + open)))) "
+        "* -1)",
+    87: "(max(rank(decay_linear(delta(((close * 0.369701) + (vwap * (1 - 0.369701))), 1.91233), 2.65461)), "
+        "Ts_Rank(decay_linear(abs(correlation(IndNeutralize(adv81, IndClass.industry), close, 13.4132)), 4.89768), "
+        "14.4535)) * -1)",
+    88: "min(rank(decay_linear(((rank(open) + rank(low)) - (rank(high) + rank(close))), 8.06882)), "
+        "Ts_Rank(decay_linear(correlation(Ts_Rank(close, 8.44728), Ts_Rank(adv60, 20.6966), 8.01266), 6.65053), "
+        "2.61957))",
+    89: "(Ts_Rank(decay_linear(correlation(((low * 0.967285) + (low * (1 - 0.967285))), adv10, 6.94279), 5.51607), "
+        "3.79744) - Ts_Rank(decay_linear(delta(IndNeutralize(vwap, IndClass.industry), 3.48158), 10.1466), 15.3012))",
+    90: "((rank((close - ts_max(close, 4.66719)))^Ts_Rank(correlation(IndNeutralize(adv40, IndClass.subindustry), low, "
+        "5.38375), 3.21856)) * -1)",
+    91: "((Ts_Rank(decay_linear(decay_linear(correlation(IndNeutralize(close, IndClass.industry), volume, 9.74928), "
+        "16.398), 3.83219), 4.8667) - rank(decay_linear(correlation(vwap, adv30, 4.01303), 2.6809))) * -1)",
+    92: "min(Ts_Rank(decay_linear(((((high + low) / 2) + close) < (low + open)), 14.7221), 18.8683), "
+        "Ts_Rank(decay_linear(correlation(rank(low), rank(adv30), 7.58555), 6.94024), 6.80584))",
+    93: "(Ts_Rank(decay_linear(correlation(IndNeutralize(vwap, IndClass.industry), adv81, 17.4193), 19.848), 7.54455) / "
+        "rank(decay_linear(delta(((close * 0.524434) + (vwap * (1 - 0.524434))), 2.77377), 16.2664)))",
+    94: "((rank((vwap - ts_min(vwap, 11.5783)))^Ts_Rank(correlation(Ts_Rank(vwap, 19.6462), Ts_Rank(adv60, 4.02992), "
+        "18.0926), 2.70756)) * -1)",
+    95: "(rank((open - ts_min(open, 12.4105))) < Ts_Rank((rank(correlation(sum(((high + low) / 2), 19.1351), sum(adv40, "
+        "19.1351), 12.8742))^5), 11.7584))",
+    96: "(max(Ts_Rank(decay_linear(correlation(rank(vwap), rank(volume), 3.83878), 4.16783), 8.38151), "
+        "Ts_Rank(decay_linear(Ts_ArgMax(correlation(Ts_Rank(close, 7.45404), Ts_Rank(adv60, 4.13242), 3.65459), "
+        "12.6556), 14.0365), 13.4143)) * -1)",
+    97: "((rank(decay_linear(delta(IndNeutralize(((low * 0.721001) + (vwap * (1 - 0.721001))), IndClass.industry), "
+        "3.3705), 20.4523)) - Ts_Rank(decay_linear(Ts_Rank(correlation(Ts_Rank(low, 7.87871), Ts_Rank(adv60, 17.255), "
+        "4.97547), 18.5925), 15.7152), 6.71659)) * -1)",
+    98: "(rank(decay_linear(correlation(vwap, sum(adv5, 26.4719), 4.58418), 7.18088)) - "
+        "rank(decay_linear(Ts_Rank(Ts_ArgMin(correlation(rank(open), rank(adv15), 20.8187), 8.62571), 6.95668), "
+        "8.07206)))",
+    99: "((rank(correlation(sum(((high + low) / 2), 19.8975), sum(adv60, 19.8975), 8.8136)) < rank(correlation(low, "
+        "volume, 6.28259))) * -1)",
+    100: "(0 - (1 * (((1.5 * scale(indneutralize(indneutralize(rank(((((close - low) - (high - close)) / (high - low)) * "
+         "volume)), IndClass.subindustry), IndClass.subindustry))) - scale(indneutralize((correlation(close, "
+         "rank(adv20), 5) - rank(ts_argmin(close, 30))), IndClass.subindustry))) * (volume / adv20))))",
+    101: "((close - open) / ((high - low) + .001))",
+}
+
+# ------------------------------------------------------------------------------------------------ transcription macros
+# Readings (task-XWQ-report.md section 1): returns = adjusted close-to-close; adv{d} = mean of raw close x share volume
+# over the last d sessions (the house dollar ADV, atx-impl equity_baseline_views kEquityDollarAdvDsl); K = raw_close /
+# close = 1 / F(t) rebases a level on the house basis to prices adjusted as of the evaluation row (class L);
+# IndClass.sector / industry / subindustry = grp_ff12 / grp_ff49 / grp_sic2; fractional windows floored (paper A.2).
+MACROS = {"R": "((close / delay(close, 1)) - 1)", "K": "(raw_close / close)", "O": "open_adj", "H": "high_adj",
+          "L": "low_adj", **{f"ADV{d}": f"ts_mean((raw_close * volume), {d})" for d in (20, 30, 40, 60)}}
+A46 = "((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * {K})"
+
+
+def _t(template: str) -> str:
+    return template.replace("{A}", A46).format(**MACROS)
+
+
+VWAP = "vwap: the daily volume-weighted average price needs intraday trade prices; no source in house carries it and " \
+       "no daily-bar proxy meets the definition exactly"
+
+
+def nested(why: str) -> str:
+    return ("price level inside a time-series op (" + why + "): under the paper's adjustment (prices adjusted as of the "
+            "evaluation day) every past cross-section is re-evaluated on that day's adjusted prices; the DSL evaluates "
+            "a past cross-section once, so the formula is not exactly expressible (a 2-D re-evaluation, not an "
+            "operator or a field)")
+
+
+# n: (class, cluster, DSL template or None, flags, note). Classes: S = scale-free (invariant to any positive per-line
+# rescaling of the price history: exact on the house adjusted basis); L = level-dependent, every level term at the
+# evaluation row, rebased by K (exact); N = not exact (nested level; note); V = needs vwap.
+# Clusters (mechanism, by the input that sets the sign): ctc_rev = 1-10 session close-to-close reversal, alone or
+# scaled by momentum, size, volume or volatility; pv_vol = time-series correlation of a price or range series with share
+# volume; pv_liq = correlation of a price series with dollar ADV; vol_ret = correlation of volume change with return;
+# range_vol = position in the multi-day or daily range combined with volume; bar = same-day open / high / low / close
+# structure; gap = overnight gap against the previous day; vol_rev = reversal confirmed by abnormal volume in own-history
+# ranks; ar1 = own return autocorrelation.
+TABLE = {
+    1: ("N", None, None, set(), nested("close and stddev(returns) compared inside ts_argmax")),
+    2: ("S", "vol_ret", "(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - {O}) / {O})), 6))", set(), ""),
+    3: ("N", None, None, set(), nested("rank(open) inside correlation")),
+    4: ("N", None, None, set(), nested("rank(low) inside ts_rank")),
+    5: ("V", None, None, set(), VWAP),
+    6: ("S", "pv_vol", "(-1 * correlation({O}, volume, 10))", set(), ""),
+    7: ("S", "ctc_rev", "(({ADV20} < volume) ? ((-1 * ts_rank(abs(delta(close, 7)), 60)) * sign(delta(close, 7))) : "
+                        "(-1 * 1))", {"degenerate"},
+        "compares adv20 (dollars) with volume (shares) as printed: false unless price < volume / mean volume, so the "
+        "value is -1 almost everywhere above a $1 price"),
+    8: ("L", "ctc_rev", "(-1 * rank((((ts_sum({O}, 5) * ts_sum({R}, 5)) - delay((ts_sum({O}, 5) * ts_sum({R}, 5)), "
+                        "10)) * {K})))", set(), ""),
+    9: ("L", "ctc_rev", "((0 < ts_min(delta(close, 1), 5)) ? (delta(close, 1) * {K}) : ((ts_max(delta(close, 1), 5) < "
+                        "0) ? (delta(close, 1) * {K}) : (-1 * (delta(close, 1) * {K}))))", set(), ""),
+    10: ("L", "ctc_rev", "rank(((0 < ts_min(delta(close, 1), 4)) ? (delta(close, 1) * {K}) : ((ts_max(delta(close, 1), "
+                         "4) < 0) ? (delta(close, 1) * {K}) : (-1 * (delta(close, 1) * {K})))))", set(), ""),
+    11: ("V", None, None, set(), VWAP),
+    12: ("L", "ctc_rev", "(sign(delta(volume, 1)) * (-1 * (delta(close, 1) * {K})))", set(), ""),
+    13: ("N", None, None, set(), nested("rank(close) inside covariance")),
+    14: ("S", "pv_vol", "((-1 * rank(delta({R}, 3))) * correlation({O}, volume, 10))", set(), ""),
+    15: ("N", None, None, set(), nested("rank(high) inside correlation")),
+    16: ("N", None, None, set(), nested("rank(high) inside covariance")),
+    17: ("L", "vol_rev", "(((-1 * rank(ts_rank(close, 10))) * rank((delta(delta(close, 1), 1) * {K}))) * "
+                         "rank(ts_rank((volume / {ADV20}), 5)))", set(), ""),
+    18: ("L", "bar", "(-1 * rank((((stddev(abs((close - {O})), 5) + (close - {O})) * {K}) + correlation(close, {O}, "
+                     "10))))", set(), ""),
+    19: ("S", "ctc_rev", "((-1 * sign(((close - delay(close, 7)) + delta(close, 7)))) * (1 + rank((1 + ts_sum({R}, "
+                         "250)))))", set(), ""),
+    20: ("L", "gap", "(((-1 * rank((({O} - delay({H}, 1)) * {K}))) * rank((({O} - delay(close, 1)) * {K}))) * "
+                     "rank((({O} - delay({L}, 1)) * {K})))", set(), ""),
+    21: ("S", "ctc_rev", "((((ts_sum(close, 8) / 8) + stddev(close, 8)) < (ts_sum(close, 2) / 2)) ? (-1 * 1) : "
+                         "(((ts_sum(close, 2) / 2) < ((ts_sum(close, 8) / 8) - stddev(close, 8))) ? 1 : (((1 < (volume "
+                         "/ {ADV20})) || ((volume / {ADV20}) == 1)) ? 1 : (-1 * 1))))", {"degenerate"},
+         "volume / adv20 (shares over dollars) >= 1 only below a $1 price: the inner branch is -1 almost everywhere"),
+    22: ("L", "pv_vol", "(-1 * (delta(correlation({H}, volume, 5), 5) * rank((stddev(close, 20) * {K}))))", set(), ""),
+    23: ("L", "ctc_rev", "(((ts_sum({H}, 20) / 20) < {H}) ? (-1 * (delta({H}, 2) * {K})) : 0)", set(), ""),
+    24: ("L", "ctc_rev", "((((delta((ts_sum(close, 100) / 100), 100) / delay(close, 100)) < 0.05) || "
+                         "((delta((ts_sum(close, 100) / 100), 100) / delay(close, 100)) == 0.05)) ? (-1 * ((close - "
+                         "ts_min(close, 100)) * {K})) : (-1 * (delta(close, 3) * {K})))", set(), ""),
+    25: ("V", None, None, set(), VWAP),
+    26: ("S", "pv_vol", "(-1 * ts_max(correlation(ts_rank(volume, 5), ts_rank({H}, 5), 5), 3))", set(), ""),
+    27: ("V", None, None, set(), VWAP),
+    28: ("L", "bar", "scale(((correlation({ADV20}, {L}, 5) + ((({H} + {L}) / 2) * {K})) - (close * {K})))", set(), ""),
+    29: ("N", None, None, set(), nested("rank(delta(close, 5)) in dollars inside ts_min; also log of a minimum rank of "
+                                         "0")),
+    30: ("S", "vol_rev", "(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+                         "sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20))",
+         set(), ""),
+    31: ("N", None, None, set(), nested("rank(delta(close, 10)) in dollars inside decay_linear")),
+    32: ("V", None, None, set(), VWAP),
+    33: ("S", "bar", "rank((-1 * power((1 - ({O} / close)), 1)))", set(), ""),
+    34: ("L", "ctc_rev", "rank(((1 - rank((stddev({R}, 2) / stddev({R}, 5)))) + (1 - rank((delta(close, 1) * {K})))))",
+         set(), ""),
+    35: ("S", "vol_rev", "((ts_rank(volume, 32) * (1 - ts_rank(((close + {H}) - {L}), 16))) * (1 - ts_rank({R}, 32)))",
+         set(), ""),
+    36: ("V", None, None, set(), VWAP),
+    37: ("L", "bar", "(rank(correlation(delay(({O} - close), 1), close, 200)) + rank((({O} - close) * {K})))", set(), ""),
+    38: ("S", "bar", "((-1 * rank(ts_rank(close, 10))) * rank((close / {O})))", set(), ""),
+    39: ("L", "ctc_rev", "((-1 * rank(((delta(close, 7) * {K}) * (1 - rank(decay_linear((volume / {ADV20}), 9)))))) * "
+                         "(1 + rank(ts_sum({R}, 250))))", set(), ""),
+    40: ("L", "pv_vol", "((-1 * rank((stddev({H}, 10) * {K}))) * correlation({H}, volume, 10))", set(), ""),
+    41: ("V", None, None, set(), VWAP),
+    42: ("V", None, None, {"delay0"}, VWAP),
+    43: ("S", "vol_rev", "(ts_rank((volume / {ADV20}), 20) * ts_rank((-1 * delta(close, 7)), 8))", set(), ""),
+    44: ("S", "pv_vol", "(-1 * correlation({H}, rank(volume), 5))", set(), ""),
+    45: ("L", "ctc_rev", "(-1 * ((rank(((ts_sum(delay(close, 5), 20) / 20) * {K})) * correlation(close, volume, 2)) * "
+                         "rank(correlation(ts_sum(close, 5), ts_sum(close, 20), 2))))", {"degenerate"},
+         "both correlations span 2 sessions: always +-1 (or undefined)"),
+    46: ("L", "ctc_rev", "((0.25 < {A}) ? (-1 * 1) : (({A} < 0) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * {K}))))",
+         set(), ""),
+    47: ("V", None, None, set(), VWAP),
+    48: ("S", "ar1", "(indneutralize(((correlation(delta(close, 1), delta(delay(close, 1), 1), 250) * delta(close, 1)) "
+                     "/ close), grp_sic2) / ts_sum(power((delta(close, 1) / delay(close, 1)), 2), 250))", {"delay0"},
+         ""),
+    49: ("L", "ctc_rev", "(({A} < (-1 * 0.1)) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * {K})))", set(), ""),
+    50: ("V", None, None, set(), VWAP),
+    51: ("L", "ctc_rev", "(({A} < (-1 * 0.05)) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * {K})))", set(), ""),
+    52: ("L", "ctc_rev", "(((((-1 * ts_min({L}, 5)) + delay(ts_min({L}, 5), 5)) * {K}) * rank(((ts_sum({R}, 240) - "
+                         "ts_sum({R}, 20)) / 220))) * ts_rank(volume, 5))", set(), ""),
+    53: ("S", "bar", "(-1 * delta((((close - {L}) - ({H} - close)) / (close - {L})), 9))", {"delay0"}, ""),
+    54: ("S", "bar", "((-1 * (({L} - close) * power({O}, 5))) / (({L} - {H}) * power(close, 5)))", {"delay0"}, ""),
+    55: ("S", "range_vol", "(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 12) - ts_min({L}, 12)))), "
+                           "rank(volume), 6))", set(), ""),
+    56: ("S", "ctc_rev", "(0 - (1 * (rank((ts_sum({R}, 10) / ts_sum(ts_sum({R}, 2), 3))) * rank(({R} * me_company)))))",
+         set(), ""),
+    57: ("V", None, None, set(), VWAP),
+    58: ("V", None, None, set(), VWAP),
+    59: ("V", None, None, set(), VWAP),
+    60: ("S", "range_vol", "(0 - (1 * ((2 * scale(rank(((((close - {L}) - ({H} - close)) / ({H} - {L})) * volume)))) - "
+                           "scale(rank(ts_argmax(close, 10))))))", {"argmax"}, ""),
+    **{n: ("V", None, None, set(), VWAP) for n in (61, 62, 63, 64, 65, 66, 67, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+                                                    79, 81, 83, 84, 86, 87, 89, 91, 93, 94, 96, 97, 98)},
+    68: ("N", None, None, set(), nested("rank(high) inside correlation")),
+    80: ("N", None, None, set(), nested("indneutralize of an open / high price level inside delta")),
+    82: ("L", "pv_vol", "(-1 * min(rank((decay_linear(delta({O}, 1), 14) * {K})), "
+                        "ts_rank(decay_linear(correlation(indneutralize(volume, grp_ff12), (({O} * 0.634196) + ({O} * "
+                        "(1 - 0.634196))), 17), 6), 13)))", set(), ""),
+    85: ("S", "pv_liq", "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV30}, 9)), "
+                        "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))", set(), ""),
+    88: ("N", None, None, set(), nested("rank(open), rank(low), rank(high), rank(close) inside decay_linear")),
+    90: ("L", "ctc_rev", "(-1 * power(rank(((close - ts_max(close, 4)) * {K})), ts_rank(correlation(indneutralize("
+                         "{ADV40}, grp_sic2), {L}, 5), 3)))", set(), ""),
+    92: ("N", None, None, set(), nested("rank(low) inside correlation")),
+    95: ("L", "pv_liq", "((rank((({O} - ts_min({O}, 12)) * {K})) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / "
+                        "2), 19), ts_sum({ADV40}, 19), 12)), 5), 11)) ? 1 : 0)", set(), ""),
+    99: ("S", "pv_liq", "(-1 * ((rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV60}, 19), 8)) < "
+                        "rank(correlation({L}, volume, 6))) ? 1 : 0))", set(), ""),
+    100: ("S", "range_vol", "(0 - (1 * (((1.5 * scale(indneutralize(indneutralize(rank(((((close - {L}) - ({H} - close)) "
+                            "/ ({H} - {L})) * volume)), grp_sic2), grp_sic2))) - scale(indneutralize((correlation(close, "
+                            "rank({ADV20}), 5) - rank(ts_argmin(close, 30))), grp_sic2))) * (volume / {ADV20}))))",
+          {"argmax"}, ""),
+    101: ("L", "bar", "(((close - {O}) * {K}) / ((({H} - {L}) * {K}) + 0.001))", {"stated"}, ""),
+}
+DELAY0 = {42, 48, 53, 54}           # paper footnote 11: traded at the close of the computing day
+assert set(TABLE) == set(PRINTED) == set(range(1, 102)), "the table covers the 101 printed formulas"
+assert {n for n, r in TABLE.items() if r[0] == "V"} == {n for n, p in PRINTED.items() if "vwap" in p}, "vwap rows"
+assert {n for n, r in TABLE.items() if "delay0" in r[3]} == DELAY0
+
+
+# Budget order (E5): an over-budget transcription may be replaced by the same formula with the operands of a
+# commutative operation or of a comparison swapped (a < b written b > a): same semantics (canonical() below proves the
+# two parse trees equal modulo those swaps), fewer peak slots. As written, #99 needs 8 slots; this order needs 7.
+ALT_ORDER = {
+    99: "(-1 * ((rank(correlation({L}, volume, 6)) > rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV60}, "
+        "19), 8))) ? 1 : 0))",
+}
+COMMUTATIVE_CALLS = {"correlation", "covariance", "min", "max"}
+FLIP = {">": "<", ">=": "<="}
+
+
+def canonical(node) -> str:
+    """A parse tree's text modulo the swaps ALT_ORDER may use (commutative operands sorted, > / >= flipped)."""
+    k, kids = node["key"], [canonical(c) for c in node["kids"]]
+    if k[0] == "cmp" and k[1] in FLIP:
+        k, kids = ("cmp", FLIP[k[1]]), kids[::-1]
+    elif k[0] == "bin" and k[1] in ("+", "*"):
+        kids = sorted(kids)
+    elif k[0] == "call" and k[1] in COMMUTATIVE_CALLS:
+        kids = sorted(kids[:2]) + kids[2:]
+    return f"{k}[{','.join(kids)}]"
+
+
+def dsl(n: int) -> str:
+    """The registered transcription: the budget order when there is one, else the transcription as written."""
+    return _t(ALT_ORDER.get(n, TABLE[n][2]))
+
+
+# ------------------------------------------------------------------------------------------------ house forms (PM7-34)
+def windows(node, out):
+    """Every printed window of a parsed DSL tree: the window literal of each windowed time-series op."""
+    k = node["key"]
+    if k[0] == "call":
+        row = xs.OPS[k[1]]
+        if row["shape"] == "shape_panel" and row["opcode"] not in xs.NO_WINDOW_PANEL:
+            out.append(int(node["kids"][-1]["num"]))
+    for c in node["kids"]:
+        windows(c, out)
+    return out
+
+
+def longest_window(text: str) -> int:
+    return max(windows(xs.parse(text), []), default=0)
+
+
+def house_form(text: str) -> tuple[str, int]:
+    """PM7-34: decay_linear 5 when the longest printed window is under 10 sessions, 21 otherwise; plain rank."""
+    d = 5 if longest_window(text) < 10 else 21
+    return f"rank(decay_linear({text}, {d}))", d
+
+
+def statics() -> dict:
+    out = {}
+    for n, row in TABLE.items():
+        if row[0] not in ("S", "L"):
+            continue
+        text = dsl(n)
+        wrapped, d = house_form(text)
+        s = xs.static(wrapped)
+        s.update(form=d, window=longest_window(text), alpha_nodes=xs.static(text)["nodes"],
+                 budget=(s["bars"] <= xs.HOUSE["bars"] and s["slots"] <= xs.HOUSE["slots"]
+                         and len(s["extra_fields"]) <= xs.HOUSE["extra_fields"] and s["bytes"] <= xs.HOUSE["bytes"]))
+        out[n] = s
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ the selection rule
+EXCLUDED_CLUSTERS = {
+    "ctc_rev": "the roster holds close-to-close short-term reversal (ind_adj_rev_5 / ind_adj_rev_5_nx); a 1-10 session "
+               "reversal variant is a restatement of it (PM7-34)",
+    "gap": "the overnight-return sign is contested in the literature and the house withdrew night_day on that ground "
+           "(library-v8-draft R7-5)",
+}
+
+
+TIER2_PER_CLUSTER = 2      # PM7-36: up to two more per cluster, in the rule's order
+MAX_TOTAL = 20             # PM7-33: at most 20 strings across both tiers
+
+
+def select(st: dict) -> tuple[list, dict]:
+    """Tier 1 of the rule of task-XWQ-report.md section 3. Returns (picks in rank order, {n: why not picked})."""
+    tier1, _, why = select_tiers(st)
+    return tier1, why
+
+
+def select_tiers(st: dict) -> tuple[list, list, dict]:
+    """The rule of task-XWQ-report.md section 3 with its tier 2 (PM7-36): eligibility E1-E6, each cluster's members
+    ordered by the tie-break T0-T4; tier 1 = the first of each cluster, tier 2 = the next TIER2_PER_CLUSTER. Returns
+    (tier 1, tier 2, {n: why not picked}), each tier in rank order (longest printed window first)."""
+    why, eligible = {}, []
+    for n, (cls, cluster, _, flags, _) in TABLE.items():
+        if cls == "V":
+            why[n] = "E1 not exact: vwap"
+        elif cls == "N":
+            why[n] = "E1 not exact: nested price level"
+        elif "argmax" in flags:
+            why[n] = "E2 sign depends on the ts_argmax / ts_argmin direction reading"
+        elif "degenerate" in flags:
+            why[n] = "E3 degenerate as printed"
+        elif "delay0" in flags:
+            why[n] = "E4 delay-0 alpha (traded at the computing close; the house fills one session later)"
+        elif not st[n]["budget"]:
+            why[n] = "E5 over the house budget"
+        elif cluster in EXCLUDED_CLUSTERS:
+            why[n] = f"E6 cluster {cluster}"
+        else:
+            eligible.append(n)
+    by_cluster: dict = {}
+    for n in eligible:
+        by_cluster.setdefault(TABLE[n][1], []).append(n)
+
+    def key(n):   # T0 stated mechanism, T1 S before L, T2 longest window, T3 fewer nodes, T4 paper number
+        return ("stated" not in TABLE[n][3], TABLE[n][0] != "S", -st[n]["window"], st[n]["alpha_nodes"], n)
+
+    tier1, tier2 = [], []
+    for cluster, members in by_cluster.items():
+        members.sort(key=key)
+        tier1.append(members[0])
+        tier2 += members[1:1 + TIER2_PER_CLUSTER]
+        for n in members[1 + TIER2_PER_CLUSTER:]:
+            why[n] = (f"beyond tier 2 ({cluster}: " + ", ".join(f"#{m}" for m in members[:1 + TIER2_PER_CLUSTER])
+                      + " rank first)")
+    for tier in (tier1, tier2):
+        tier.sort(key=lambda n: (-st[n]["window"], n))
+    assert len(tier1) + len(tier2) <= MAX_TOTAL, "more than 20 strings"
+    return tier1, tier2, why
+
+
+# ------------------------------------------------------------------------------------------------ the registration
+BASIS = ("prices on the role close's split-and-dividend basis (open_adj / high_adj / low_adj, research_fields_ohlc.py); "
+         "the formula is scale-free, so it equals the paper's prices adjusted as of each day")
+PICKS = {   # paper number -> registration; rank order = the rule's output order (longest printed window first)
+    99: {"id": "wq_099", "theme": "price_volume", "nearest": "stmom",
+         "formula": "-1 when the cross-sectional rank of the 8-session correlation between the 19-session sums of the "
+                    "mid price (high + low) / 2 and of 60-session dollar ADV is below the rank of the 6-session "
+                    "correlation of the low with share volume, else 0 (Alpha#99; written b > a for the 7-slot budget, "
+                    "same semantics)",
+         "domain": "NaN while a window is short or holds a NaN (104 bars) or a correlation window is flat; values -1 "
+                   "and 0",
+         "deviation": "adv60 = mean of raw close x share volume over 60 sessions (paper: average daily dollar "
+                      "volume); fractional windows floored as the paper states (19.8975 -> 19, 8.8136 -> 8, 6.28259 "
+                      "-> 6); " + BASIS + "; house form decay_linear 21 then rank (paper: raw alpha, delay 1)"},
+    35: {"id": "wq_035", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx",
+         "formula": "ts_rank(volume, 32) x (1 - ts_rank(close + high - low, 16)) x (1 - ts_rank(daily return, 32)) "
+                    "(Alpha#35): unusually high volume with a price and a return low against their own recent history",
+         "domain": "NaN until 32 sessions of every input; values in [0, 1]",
+         "deviation": "ts_rank = average-tie percentile of today in its window, in [0, 1] (the paper's 1 - Ts_Rank "
+                      "implies [0, 1]); returns = adjusted close-to-close; volume = raw shares; " + BASIS +
+                      "; house form decay_linear 21 then rank"},
+    55: {"id": "wq_055", "theme": "price_volume", "nearest": "high_52w",
+         "formula": "-correlation over 6 sessions of the cross-sectional rank of the 12-session stochastic %K, (close - "
+                    "min low) / (max high - min low), with the rank of share volume (Alpha#55)",
+         "domain": "NaN while a window is short, holds a NaN or is flat; a 12-session range of zero gives NaN",
+         "deviation": BASIS + "; house form decay_linear 21 then rank"},
+    6: {"id": "wq_006", "theme": "price_volume", "nearest": "stmom",
+        "formula": "-correlation(open, volume, 10) (Alpha#6): open prices that move with share volume predict lower "
+                   "returns",
+        "domain": "NaN while the window is short, holds a NaN or is flat",
+        "deviation": BASIS + "; volume = raw shares (a split inside the window shifts its level); house form "
+                             "decay_linear 21 then rank"},
+    2: {"id": "wq_002", "theme": "price_volume", "nearest": "stmom",
+        "formula": "-correlation over 6 sessions of rank(2-session change of log volume) with rank((close - open) / "
+                   "open) (Alpha#2): volume surges that coincide with intraday gains predict lower returns",
+        "domain": "NaN while a window is short, holds a NaN or is flat; a zero volume gives a log of -inf",
+        "deviation": "same-session price ratio only (no adjustment enters); house form decay_linear 5 (longest printed "
+                     "window 6) then rank"},
+    101: {"id": "wq_101", "theme": "price_momentum", "nearest": "stmom",
+          "formula": "(close - open) / ((high - low) + 0.001) on the session's own prices (Alpha#101, the paper's "
+                     "delay-1 momentum example): the day's body relative to its range",
+          "domain": "NaN without the session bar; values in about [-1, 1]",
+          "deviation": "level-dependent through the 0.001 dollar term: computed on the session's raw prices (close - "
+                       "open and high - low rebased by raw_close / close); house form decay_linear 5 then rank"},
+}
+FLOORED = "fractional windows floored as the paper states"
+PICKS2 = {  # tier 2 (PM7-36): the next two of each cluster in the rule's order; rank order = longest window first
+    95: {"id": "wq_095", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_099",
+         "formula": "1 when the rank of open minus its 12-session minimum (in the session's own dollars) is below the "
+                    "11-session ts_rank of rank(correlation(19-session sum of the mid price (high + low) / 2, 19-session "
+                    "sum of 40-session dollar ADV, 12))^5, else 0 (Alpha#95)",
+         "domain": "NaN while a window is short, holds a NaN or is flat (98 bars); values 0 and 1",
+         "deviation": "adv40 = mean of raw close x share volume over 40 sessions; " + FLOORED + " (12.4105 -> 12, "
+                      "19.1351 -> 19, 12.8742 -> 12, 11.7584 -> 11); the dollar term open - ts_min(open, 12) is rebased "
+                      "by raw_close / close to the session's prices (class L); house form decay_linear 21 then rank"},
+    85: {"id": "wq_085", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_099",
+         "formula": "rank(correlation(high x 0.876703 + close x (1 - 0.876703), 30-session dollar ADV, 9)) raised to "
+                    "rank(correlation(ts_rank(mid price, 3), ts_rank(volume, 10), 7)) (Alpha#85)",
+         "domain": "NaN while a window is short, holds a NaN or is flat (57 bars); values in [0, 1]",
+         "deviation": "adv30 = mean of raw close x share volume over 30 sessions; " + FLOORED + " (9.61331 -> 9, "
+                      "3.70596 -> 3, 10.1595 -> 10, 7.11408 -> 7); " + BASIS + "; house form decay_linear 21 then rank"},
+    30: {"id": "wq_030", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_035",
+         "formula": "(1 - rank(sum of the signs of the last three daily close changes)) x 5-session volume / 20-session "
+                    "volume (Alpha#30): down streaks on rising volume",
+         "domain": "NaN while a window is short or holds a NaN; ties at the seven streak values",
+         "deviation": "signs of adjusted close changes (basis-free); volume = raw shares; house form decay_linear 21 "
+                      "then rank"},
+    43: {"id": "wq_043", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_035",
+         "formula": "ts_rank(volume / adv20, 20) x ts_rank(-(7-session close change), 8) (Alpha#43): a 7-session decline "
+                    "high in its own history on volume high against its own dollar ADV",
+         "domain": "NaN while a window is short or holds a NaN (58 bars); values in [0, 1]",
+         "deviation": "adv20 = mean of raw close x share volume over 20 sessions; volume / adv20 is shares over dollars "
+                      "as printed (ranked within each line's own history); " + BASIS + "; house form decay_linear 21 "
+                      "then rank"},
+    14: {"id": "wq_014", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_006",
+         "formula": "(-1 x rank(3-session change of the daily return)) x correlation(open, volume, 10) (Alpha#14)",
+         "domain": "NaN while a window is short, holds a NaN or is flat",
+         "deviation": "returns = adjusted close-to-close; volume = raw shares; " + BASIS + "; house form decay_linear "
+                      "21 then rank"},
+    38: {"id": "wq_038", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_101",
+         "formula": "-rank(ts_rank(close, 10)) x rank(close / open) (Alpha#38): short names at the top of their last 10 "
+                    "closes with a strong intraday return",
+         "domain": "NaN while the window is short or holds a NaN; values in [-1, 0]",
+         "deviation": BASIS + "; its printed sign on the intraday body is opposite to wq_101's (both kept as printed); "
+                              "house form decay_linear 21 then rank"},
+    44: {"id": "wq_044", "theme": "price_volume", "nearest": "stmom", "tier1": "wq_006",
+         "formula": "-correlation over 5 sessions of the high with the cross-sectional rank of share volume (Alpha#44)",
+         "domain": "NaN while the window is short, holds a NaN or is flat",
+         "deviation": BASIS + "; house form decay_linear 5 (longest printed window 5) then rank"},
+    33: {"id": "wq_033", "theme": "reversal_seasonality", "nearest": "ind_adj_rev_5_nx", "tier1": "wq_101",
+         "formula": "rank(-((1 - open / close)^1)) = rank of open / close - 1 (Alpha#33): long the day's intraday "
+                    "losers",
+         "domain": "NaN without the session open",
+         "deviation": "same-session price ratio only (no adjustment enters); its printed sign on the intraday body is "
+                      "opposite to wq_101's (both kept as printed); house form decay_linear 5 then rank"},
+}
+ALL_PICKS = {**PICKS, **PICKS2}
+SAME_SESSION = {2, 33, 101}   # read same-session prices only: a split cannot enter a window (raw-basis probe skipped)
+EXPECTED = {  # (bars, slots, nodes, extra fields) of the wrapped house strings: what K1 should print
+    99: (104, 7, 28, ["high_adj", "low_adj"]), 35: (52, 7, 22, ["high_adj", "low_adj"]),
+    55: (36, 6, 19, ["high_adj", "low_adj"]), 6: (29, 5, 9, ["open_adj"]), 2: (11, 5, 17, ["open_adj"]),
+    101: (4, 5, 16, ["high_adj", "low_adj", "open_adj"]),
+    95: (98, 7, 34, ["high_adj", "low_adj", "open_adj"]), 85: (57, 6, 31, ["high_adj", "low_adj"]),
+    30: (39, 6, 27, []), 43: (58, 5, 18, []), 14: (29, 5, 18, ["open_adj"]), 38: (29, 4, 13, ["open_adj"]),
+    44: (8, 5, 9, ["high_adj"]), 33: (4, 5, 12, ["open_adj"]),
+}
+MUTANTS = {   # plausible transcription mistakes; each must fail the semantic check
+    99: ["(-1 * ((rank(correlation({L}, volume, 6)) > rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum(ts_mean((raw_close * volume), 59), 19), 8))) ? 1 : 0))",
+         "(-1 * ((rank(correlation({L}, volume, 6)) < rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV60}, "
+         "19), 8))) ? 1 : 0))",
+         "(-1 * ((rank(correlation({H}, volume, 6)) > rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV60}, "
+         "19), 8))) ? 1 : 0))"],
+    35: ["((ts_rank(volume, 31) * (1 - ts_rank(((close + {H}) - {L}), 16))) * (1 - ts_rank({R}, 32)))",
+         "((ts_rank(volume, 32) * ts_rank(((close + {H}) - {L}), 16)) * (1 - ts_rank({R}, 32)))",
+         "((ts_rank(volume, 32) * (1 - ts_rank(((close + {L}) - {H}), 16))) * (1 - ts_rank({R}, 32)))"],
+    55: ["(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 11) - ts_min({L}, 12)))), rank(volume), 6))",
+         "(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 12) - ts_min({L}, 12)))), volume, 6))",
+         "(-1 * correlation(rank(((close - ts_min({L}, 12)) / (ts_max({H}, 12) - ts_min({L}, 12)))), rank(volume), 5))"],
+    6: ["(-1 * correlation({H}, volume, 10))", "(-1 * correlation({O}, volume, 9))", "correlation({O}, volume, 10)"],
+    2: ["(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - {O}) / {O})), 7))",
+        "(1 * correlation(rank(delta(log(volume), 2)), rank(((close - {O}) / {O})), 6))",
+        "(-1 * correlation(rank(delta(log(volume), 1)), rank(((close - {O}) / {O})), 6))",
+        "(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - {H}) / {H})), 6))"],
+    101: ["((close - {O}) / (({H} - {L}) + 0.001))",
+          "(((close - {O}) * {K}) / ((({H} - {L}) * {K}) + 0.01))",
+          "((({O} - close) * {K}) / ((({H} - {L}) * {K}) + 0.001))"],
+    95: ["((rank(({O} - ts_min({O}, 12))) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), ts_sum({ADV40}, "
+         "19), 12)), 5), 11)) ? 1 : 0)",
+         "((rank((({O} - ts_min({O}, 12)) * {K})) > ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum({ADV40}, 19), 12)), 5), 11)) ? 1 : 0)",
+         "((rank((({O} - ts_min({O}, 11)) * {K})) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum({ADV40}, 19), 12)), 5), 11)) ? 1 : 0)",
+         "((rank((({O} - ts_min({O}, 12)) * {K})) < ts_rank(power(rank(correlation(ts_sum((({H} + {L}) / 2), 19), "
+         "ts_sum({ADV60}, 19), 12)), 5), 11)) ? 1 : 0)"],
+    85: ["power(rank(correlation((({H} * (1 - 0.876703)) + (close * 0.876703)), {ADV30}, 9)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))",
+         "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV20}, 9)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))",
+         "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV30}, 9)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 9), 7)))",
+         "power(rank(correlation((({H} * 0.876703) + (close * (1 - 0.876703))), {ADV30}, 10)), "
+         "rank(correlation(ts_rank((({H} + {L}) / 2), 3), ts_rank(volume, 10), 7)))"],
+    30: ["(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+         "sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 4)) / ts_sum(volume, 20))",
+         "(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+         "sign((delay(close, 2) - delay(close, 4)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20))",
+         "((rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + "
+         "sign((delay(close, 2) - delay(close, 3))))) * ts_sum(volume, 5)) / ts_sum(volume, 20))"],
+    43: ["(ts_rank((volume / {ADV20}), 19) * ts_rank((-1 * delta(close, 7)), 8))",
+         "(ts_rank((volume / {ADV20}), 20) * ts_rank((-1 * delta(close, 6)), 8))",
+         "(ts_rank((volume / {ADV20}), 20) * ts_rank(delta(close, 7), 8))"],
+    14: ["((-1 * rank(delta({R}, 3))) * correlation({O}, volume, 9))",
+         "((-1 * rank(delta({R}, 2))) * correlation({O}, volume, 10))",
+         "((-1 * rank(delta({R}, 3))) * correlation(close, volume, 10))"],
+    38: ["((-1 * rank(ts_rank(close, 9))) * rank((close / {O})))",
+         "((-1 * rank(ts_rank(close, 10))) * rank(({O} / close)))",
+         "(rank(ts_rank(close, 10)) * rank((close / {O})))"],
+    44: ["(-1 * correlation({H}, volume, 5))", "(-1 * correlation({L}, rank(volume), 5))",
+         "(-1 * correlation({H}, rank(volume), 6))"],
+    33: ["rank((1 - ({O} / close)))", "rank((-1 * power((1 - (close / {O})), 1)))",
+         "rank((-1 * power((1 - ({H} / close)), 1)))"],
+}
+
+
+# ------------------------------------------------------------------------------------------------ synthetic world
+def synthetic(seed: int = 20261002, T: int = 180, N: int = 33) -> dict:
+    """Raw daily bars with splits (2:1, 3:1, 1:2 reverse) and cash dividends, vendor-style cumulative factors F with a
+    different arbitrary anchor per line, raw share volume (a split multiplies it), and the house fields built exactly
+    as the role and research_fields_ohlc.py build them (close = raw close x F; x_adj = x x close / raw_close)."""
+    rng = np.random.default_rng(seed)
+    f = np.exp(rng.uniform(np.log(0.02), np.log(50.0), N))           # anchors differ by line (vendor-like)
+    c = np.exp(rng.uniform(np.log(5.0), np.log(400.0), N))
+    shares = np.exp(rng.uniform(np.log(1e7), np.log(1e9), N))
+    split_at = np.where(rng.random(N) < 0.4, rng.integers(30, T - 5, N), -1)
+    split_k = rng.choice([2.0, 3.0, 0.5], N)
+    div_lines = rng.random(N) < 0.4
+    raw = {k: np.empty((T, N)) for k in "ohlc"}
+    F, V = np.empty((T, N)), np.empty((T, N))
+    vol_scale = np.ones(N)
+    for t in range(T):
+        o = c * np.exp(rng.normal(0.0, 0.012, N))
+        hit = split_at == t
+        o, f, vol_scale = np.where(hit, o / split_k, o), np.where(hit, f * split_k, f), np.where(hit, vol_scale * split_k,
+                                                                                                vol_scale)
+        if t % 63 == 17:
+            y = np.where(div_lines, rng.uniform(0.002, 0.02, N), 0.0)
+            o, f = o * (1.0 - y), f / (1.0 - y)
+        c = o * np.exp(rng.normal(0.0, 0.02, N))
+        raw["o"][t], raw["c"][t] = o, c
+        raw["h"][t] = np.maximum(o, c) * np.exp(np.abs(rng.normal(0.0, 0.008, N)))
+        raw["l"][t] = np.minimum(o, c) * np.exp(-np.abs(rng.normal(0.0, 0.008, N)))
+        F[t] = f
+        V[t] = vol_scale * np.exp(rng.normal(11.0, 0.5, N)) * np.where(rng.random(N) < 0.05, 4.0, 1.0)
+    return {"raw": raw, "F": F, "V": V, "shares": shares, "T": T, "N": N,
+            "grp": {g: rng.integers(1, k + 1, N).astype(float) for g, k in (("grp_ff12", 12), ("grp_ff49", 49),
+                                                                             ("grp_sic2", 70))}}
+
+
+def house_env(w: dict, anchor=None, raw_basis: bool = False) -> dict:
+    """The DSL fields of world ``w``: the house basis (optionally with every line's factor anchor multiplied by
+    ``anchor``), or the raw prices put in their place (``raw_basis``: what a missing split adjustment would read)."""
+    F = w["F"] * (1.0 if anchor is None else anchor)
+    raw_close = w["raw"]["c"]
+    close = raw_close if raw_basis else raw_close * F
+    k = close / raw_close
+    env = {"close": close, "raw_close": raw_close, "volume": w["V"], "open_adj": w["raw"]["o"] * k,
+           "high_adj": w["raw"]["h"] * k, "low_adj": w["raw"]["l"] * k, "me_company": raw_close * w["shares"]}
+    env.update({g: np.broadcast_to(v, (w["T"], w["N"])).copy() for g, v in w["grp"].items()})
+    return env
+
+
+# ------------------------------------------------------------------------------------------------ DSL interpreter
+# House semantics (atx-engine oracle.hpp contract): NaN propagates; masks are 1 / 0 / NaN; select on a NaN mask is NaN;
+# cross-sectional ops over the non-NaN cells of a row; time-series ops need a full NaN-free trailing window (sum, mean,
+# std also refuse a non-finite cell); rank = average-tie percentile (n-1 denominator, a single cell 0.5); ts_rank the
+# same within the window; ts_argmax / ts_argmin = 1-based position of the first extreme from the oldest day;
+# correlation = Pearson, NaN on a flat window (sqrt(ss / n) <= 1e-10 |mean|); stddev ddof 1; decay_linear weights
+# 1..d, newest heaviest, accumulated oldest first; scale to unit L1 (zero L1 -> 0); indneutralize = group demean.
+def _rank_row(v):
+    out = np.full(v.shape, np.nan)
+    ok = ~np.isnan(v)
+    x = v[ok]
+    if len(x):
+        less = (x[None, :] < x[:, None]).sum(axis=1)
+        eq = (x[None, :] == x[:, None]).sum(axis=1)
+        out[ok] = 0.5 if len(x) == 1 else (less + (eq - 1) / 2.0) / (len(x) - 1)
+    return out
+
+
+def _flat(ss, mean, n):
+    return np.sqrt(ss / n) <= 1e-10 * np.abs(mean)
+
+
+def _ts(x, d, fn, finite=False):
+    out = np.full(x.shape, np.nan)
+    for t in range(d - 1, x.shape[0]):
+        w = x[t - d + 1:t + 1]
+        bad = np.isnan(w).any(axis=0) | (~np.isfinite(w).all(axis=0) if finite else False)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[t] = np.where(bad, np.nan, fn(w))
+    return out
+
+
+def _corr(a, b, d, cov=False):
+    out = np.full(a.shape, np.nan)
+    for t in range(d - 1, a.shape[0]):
+        wa, wb = a[t - d + 1:t + 1], b[t - d + 1:t + 1]
+        bad = np.isnan(wa).any(axis=0) | np.isnan(wb).any(axis=0)
+        ma, mb = wa.mean(axis=0), wb.mean(axis=0)
+        sab = ((wa - ma) * (wb - mb)).sum(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            if cov:
+                out[t] = np.where(bad, np.nan, sab / (d - 1))
+                continue
+            saa, sbb = ((wa - ma) ** 2).sum(axis=0), ((wb - mb) ** 2).sum(axis=0)
+            flat = _flat(saa, ma, d) | _flat(sbb, mb, d)
+            den = np.sqrt(saa * sbb)
+            out[t] = np.where(bad | flat | (den == 0), np.nan, sab / den)
+    return out
+
+
+def _decay(w):
+    acc = np.zeros(w.shape[1:])
+    for i in range(w.shape[0]):
+        acc = acc + (i + 1) * w[i]
+    return acc / (w.shape[0] * (w.shape[0] + 1) / 2.0)
+
+
+def _tsrank(w):
+    last = w[-1]
+    less, eq = (w < last).sum(axis=0), (w == last).sum(axis=0)
+    return (less + (eq - 1) / 2.0) / (w.shape[0] - 1)
+
+
+def _std(w):
+    m = w.mean(axis=0)
+    ss = ((w - m) ** 2).sum(axis=0)
+    return np.where(_flat(ss, m, w.shape[0]), 0.0, np.sqrt(ss / (w.shape[0] - 1)))
+
+
+TS_UNARY = {"ts_sum": (lambda w: w.sum(axis=0), True), "ts_mean": (lambda w: w.mean(axis=0), True),
+            "stddev": (_std, True), "ts_std": (_std, True), "ts_min": (lambda w: w.min(axis=0), False),
+            "ts_max": (lambda w: w.max(axis=0), False), "ts_rank": (_tsrank, False),
+            "ts_argmax": (lambda w: np.argmax(w, axis=0) + 1.0, False),
+            "ts_argmin": (lambda w: np.argmin(w, axis=0) + 1.0, False),
+            "product": (lambda w: np.prod(w, axis=0), False), "decay_linear": (_decay, False)}
+
+
+def _nan2(a, b, v):
+    return np.where(np.isnan(a) | np.isnan(b), np.nan, v)
+
+
+def ev(node, env):
+    k = node["key"]
+    if k[0] == "num":
+        return k[1]
+    if k[0] == "field":
+        return env[k[1]]
+    a = [ev(c, env) for c in node["kids"]]
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        if k[0] == "bin":
+            return {"+": np.add, "-": np.subtract, "*": np.multiply, "/": np.divide}[k[1]](a[0], a[1])
+        if k[0] == "cmp":
+            op = {"<": np.less, ">": np.greater, "<=": np.less_equal, ">=": np.greater_equal, "==": np.equal,
+                  "!=": np.not_equal}[k[1]]
+            return _nan2(a[0], a[1], op(a[0], a[1]).astype(float))
+        if k[0] == "logic":
+            x, y = ((np.asarray(v) != 0) & ~np.isnan(v) for v in (a[0], a[1]))
+            return _nan2(a[0], a[1], (x & y if k[1] == "&&" else x | y).astype(float))
+        if k[0] == "sel":
+            return np.where(np.isnan(a[0]), np.nan, np.where(a[0] != 0, a[1], a[2]))
+        name = k[1]
+        if name in TS_UNARY:
+            fn, finite = TS_UNARY[name]
+            return _ts(a[0], int(a[1]), fn, finite)
+        if name in ("delay", "delta"):
+            d, x = int(a[1]), a[0]
+            sh = np.full(x.shape, np.nan)
+            sh[d:] = x[:-d]
+            return sh if name == "delay" else x - sh
+        if name in ("correlation", "ts_corr", "covariance"):
+            return _corr(a[0], a[1], int(a[2]), cov=name == "covariance")
+        if name == "rank":
+            return np.array([_rank_row(r) for r in a[0]])
+        if name == "scale":
+            x, s = a[0], (a[1] if len(a) > 1 else 1.0)
+            l1 = np.nansum(np.abs(x), axis=1, keepdims=True)
+            return np.where(np.isnan(x), np.nan, x * np.where(l1 == 0, 0.0, s / np.where(l1 == 0, 1.0, l1)))
+        if name == "indneutralize":
+            x, g = a
+            out = np.full(x.shape, np.nan)
+            for t in range(x.shape[0]):
+                ok = ~np.isnan(x[t]) & ~np.isnan(g[t])
+                for lab in np.unique(g[t][ok]):
+                    m = ok & (g[t] == lab)
+                    out[t, m] = x[t, m] - x[t, m].mean()
+            return out
+        unary = {"abs": np.abs, "sign": np.sign, "log": np.log}
+        if name in unary:
+            return unary[name](a[0])
+        if name == "power":
+            return np.power(a[0], a[1])
+        if name == "signedpower":
+            return _nan2(a[0], a[1], np.sign(a[0]) * np.power(np.abs(a[0]), a[1]))
+        if name in ("min", "max"):
+            return _nan2(a[0], a[1], (np.minimum if name == "min" else np.maximum)(a[0], a[1]))
+    raise NotImplementedError(k)
+
+
+def run(text: str, env: dict) -> np.ndarray:
+    return np.broadcast_to(ev(xs.parse(text), env), env["close"].shape).astype(float)
+
+
+# ------------------------------------------------------------------------------------------------ the printed formulas,
+# implemented directly (numpy, sliding windows) on prices adjusted AS OF each evaluation day (reading A: the paper's
+# section 2), evaluated row by row; written independently of the interpreter above.
+def _w(x, d):
+    pad = np.full((d - 1,) + x.shape[1:], np.nan)
+    return np.lib.stride_tricks.sliding_window_view(np.concatenate([pad, x]), d, axis=0)   # (T, N, d), oldest first
+
+
+def d_sum(x, d):
+    w = _w(x, d)
+    return np.where(np.isfinite(w).all(axis=-1), w.sum(axis=-1), np.nan)
+
+
+def d_mean(x, d):
+    return d_sum(x, d) / d
+
+
+def d_min(x, d):
+    w = _w(x, d)
+    return np.where(np.isfinite(w).all(axis=-1), w.min(axis=-1), np.nan)
+
+
+def d_max(x, d):
+    w = _w(x, d)
+    return np.where(np.isfinite(w).all(axis=-1), w.max(axis=-1), np.nan)
+
+
+def d_tsrank(x, d):
+    w = _w(x, d)
+    last = w[..., -1:]
+    r = ((w < last).sum(axis=-1) + ((w == last).sum(axis=-1) - 1) / 2.0) / (d - 1)
+    return np.where(np.isfinite(w).all(axis=-1), r, np.nan)
+
+
+def d_corr(x, y, d):
+    wx, wy = _w(x, d), _w(y, d)
+    ok = np.isfinite(wx).all(axis=-1) & np.isfinite(wy).all(axis=-1)
+    dx, dy = wx - wx.mean(axis=-1, keepdims=True), wy - wy.mean(axis=-1, keepdims=True)
+    sxx, syy, sxy = (dx * dx).sum(axis=-1), (dy * dy).sum(axis=-1), (dx * dy).sum(axis=-1)
+    flat = (np.sqrt(sxx / d) <= 1e-10 * np.abs(wx.mean(axis=-1))) | (np.sqrt(syy / d) <= 1e-10 * np.abs(wy.mean(axis=-1)))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(ok & ~flat, sxy / np.sqrt(sxx * syy), np.nan)
+
+
+def d_decay(x, d):
+    w = _w(x, d)
+    wts = np.arange(1, d + 1, dtype=float)
+    return np.where(np.isfinite(w).all(axis=-1), (w * wts).sum(axis=-1) / wts.sum(), np.nan)
+
+
+def d_rank(x):
+    out = np.full(x.shape, np.nan)
+    for t, row in enumerate(x):
+        idx = np.flatnonzero(np.isfinite(row))
+        for i in idx:
+            less = np.count_nonzero(row[idx] < row[i])
+            eq = np.count_nonzero(row[idx] == row[i])
+            out[t, i] = 0.5 if len(idx) == 1 else (less + (eq - 1) / 2.0) / (len(idx) - 1)
+    return out
+
+
+def d_shift(x, k):
+    out = np.full(x.shape, np.nan)
+    out[k:] = x[:-k]
+    return out
+
+
+PRINTED_NUMPY = {   # each: (P = prices adjusted as of the row, V = share volume, RC = raw close) -> alpha panel
+    99: lambda P, V, RC: -1.0 * _cmp_lt(d_rank(d_corr(d_sum((P["h"] + P["l"]) / 2.0, 19), d_sum(d_mean(RC * V, 60), 19),
+                                                       8)), d_rank(d_corr(P["l"], V, 6))),
+    35: lambda P, V, RC: (d_tsrank(V, 32) * (1.0 - d_tsrank((P["c"] + P["h"]) - P["l"], 16))
+                          * (1.0 - d_tsrank(P["c"] / d_shift(P["c"], 1) - 1.0, 32))),
+    55: lambda P, V, RC: -1.0 * d_corr(d_rank((P["c"] - d_min(P["l"], 12)) / (d_max(P["h"], 12) - d_min(P["l"], 12))),
+                                       d_rank(V), 6),
+    6: lambda P, V, RC: -1.0 * d_corr(P["o"], V, 10),
+    2: lambda P, V, RC: -1.0 * d_corr(d_rank(np.log(V) - d_shift(np.log(V), 2)), d_rank((P["c"] - P["o"]) / P["o"]), 6),
+    101: lambda P, V, RC: (P["c"] - P["o"]) / ((P["h"] - P["l"]) + 0.001),
+    95: lambda P, V, RC: _cmp_lt(d_rank(P["o"] - d_min(P["o"], 12)),
+                                 d_tsrank(d_rank(d_corr(d_sum((P["h"] + P["l"]) / 2.0, 19), d_sum(d_mean(RC * V, 40), 19),
+                                                        12)) ** 5, 11)),
+    85: lambda P, V, RC: np.power(d_rank(d_corr(P["h"] * 0.876703 + P["c"] * (1 - 0.876703), d_mean(RC * V, 30), 9)),
+                                  d_rank(d_corr(d_tsrank((P["h"] + P["l"]) / 2.0, 3), d_tsrank(V, 10), 7))),
+    30: lambda P, V, RC: ((1.0 - d_rank(np.sign(P["c"] - d_shift(P["c"], 1)) + np.sign(d_shift(P["c"], 1)
+                                                                                      - d_shift(P["c"], 2))
+                                        + np.sign(d_shift(P["c"], 2) - d_shift(P["c"], 3)))) * d_sum(V, 5)
+                          / d_sum(V, 20)),
+    43: lambda P, V, RC: d_tsrank(V / d_mean(RC * V, 20), 20) * d_tsrank(-1.0 * (P["c"] - d_shift(P["c"], 7)), 8),
+    14: lambda P, V, RC: (-1.0 * d_rank(_ret(P) - d_shift(_ret(P), 3))) * d_corr(P["o"], V, 10),
+    38: lambda P, V, RC: (-1.0 * d_rank(d_tsrank(P["c"], 10))) * d_rank(P["c"] / P["o"]),
+    44: lambda P, V, RC: -1.0 * d_corr(P["h"], d_rank(V), 5),
+    33: lambda P, V, RC: d_rank(-1.0 * (1.0 - P["o"] / P["c"]) ** 1),
+}
+
+
+def _ret(P):
+    return P["c"] / d_shift(P["c"], 1) - 1.0
+
+
+def _cmp_lt(a, b):
+    return np.where(np.isnan(a) | np.isnan(b), np.nan, (a < b).astype(float))
+
+
+def printed_alpha(n: int, w: dict) -> np.ndarray:
+    """Alpha #n of the paper on world ``w``: at each row t every price is adjusted as of t (raw x F(s) / F(t)), the
+    formula is evaluated on that history and its row t kept."""
+    T = w["T"]
+    out = np.full((T, w["N"]), np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for t in range(T):
+            g = w["F"][:t + 1] / w["F"][t]
+            P = {k: w["raw"][k][:t + 1] * g for k in "ohlc"}
+            out[t] = PRINTED_NUMPY[n](P, w["V"][:t + 1], w["raw"]["c"][:t + 1])[-1]
+    return out
+
+
+def same(a, b, tol=1e-9) -> bool:
+    return bool(np.array_equal(np.isnan(a), np.isnan(b)) and np.allclose(a[~np.isnan(a)], b[~np.isnan(b)], rtol=0,
+                                                                         atol=tol))
+
+
+def semantic_checks(w: dict) -> list:
+    """Each pick against the printed formula, unwrapped and in its house form; the anchor and raw-basis probes; the
+    mutation probe. Returns report lines."""
+    env = house_env(w)
+    other_anchor = house_env(w, anchor=np.exp(np.random.default_rng(3).uniform(-3.0, 3.0, w["N"])))
+    raw_env = house_env(w, raw_basis=True)
+    split_lines = int(np.count_nonzero((np.diff(np.log(w["F"]), axis=0) > np.log(1.4)).any(axis=0)))
+    lines, mutants = [], 0
+    for n in ALL_PICKS:
+        text = dsl(n)
+        wrapped, d = house_form(text)
+        alpha, house = run(text, env), run(wrapped, env)
+        ref = printed_alpha(n, w)
+        ref_house = d_rank(d_decay(ref, d))
+        assert same(alpha, ref), f"#{n}: the DSL alpha differs from the printed formula"
+        assert same(house, ref_house), f"#{n}: the house form differs from rank(decay_linear(printed, {d}))"
+        assert same(run(wrapped, other_anchor), house), f"#{n}: depends on the vendor factor anchor"
+        if n not in SAME_SESSION:   # same-session prices only: a split cannot enter their windows
+            assert not same(run(text, raw_env), ref), f"#{n}: the raw-basis probe does not move it"
+        for m in MUTANTS[n]:
+            mt = _t(m)
+            assert not (same(run(mt, env), ref) and same(run(house_form(mt)[0], env), ref_house)), f"#{n}: {m}"
+            mutants += 1
+        other = f"rank(decay_linear({text}, {26 - d}))"
+        assert not same(run(other, env), ref_house), f"#{n}: the other house form passes"
+        mutants += 1
+        finite = int(np.isfinite(ref_house).sum())
+        lines.append(f"#{n}: DSL == printed formula on {int(np.isfinite(ref).sum())} alpha cells and {finite} house "
+                     f"cells; anchor-free; {len(MUTANTS[n]) + 1} mutants fail")
+    bad_alt = _t(ALT_ORDER[99]).replace(") > rank(", ") < rank(")
+    assert canonical(xs.parse(bad_alt)) != canonical(xs.parse(_t(TABLE[99][2]))), "the canonical check has no teeth"
+    for n in (101, 95):   # the class-L picks: without the rebase each depends on the factor anchor
+        no_rebase = _t(MUTANTS[n][0])
+        assert not same(run(no_rebase, other_anchor), run(no_rebase, env)), f"#{n} without the rebase is anchor-free"
+    lines.append(f"mutation probe: {mutants} mutants, every one fails; synthetic world {w['T']} x {w['N']}, "
+                 f"{split_lines} lines with a split")
+    return lines
+
+
+def classes_hold(w: dict) -> int:
+    """The exactness classes, checked on every exact transcription in its house form: each evaluates (finite cells)
+    and is free of the vendor factor's per-line anchor (S as written, L with its rebase), and every L transcription
+    with the rebase removed ({K} -> 1) depends on the anchor (it really is level-dependent)."""
+    env = house_env(w)
+    moved = house_env(w, anchor=np.exp(np.random.default_rng(11).uniform(-3.0, 3.0, w["N"])))
+    for n in sorted(statics()):
+        text = house_form(dsl(n))[0]
+        out = run(text, env)
+        assert np.isfinite(out).any(), f"#{n}: no finite cell"
+        # #45 (degenerate): its 2-session correlations are +-1 up to rounding, so their cross-sectional rank is a tie
+        # that rounding breaks; the class holds in exact arithmetic but cannot be shown cell for cell.
+        assert n == 45 or same(run(text, moved), out), f"#{n}: depends on the factor anchor"
+        if TABLE[n][0] == "L":
+            bare = house_form(_t(ALT_ORDER.get(n, TABLE[n][2]).replace("{K}", "1")))[0]
+            assert not same(run(bare, moved), run(bare, env)), f"#{n}: anchor-free without the rebase (not class L)"
+    return len(statics())
+
+
+def add_alpha_line(n: int) -> str:
+    p = ALL_PICKS[n]
+    wrapped, d = house_form(dsl(n))
+    return (f'"$PY" scripts/research_cycle.py add-alpha --id {p["id"]} --dsl "{wrapped}" --theme {p["theme"]} '
+            f'--tier C+ --prior-sign 1 --citation "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, '
+            f'Alpha#{n}" --origin prior --prior-sign-source "Kakushadze 2016 (printed sign)" '
+            f'--form "R(decay_linear(x, {d}))" --formula "{p["formula"]}" --domain "{p["domain"]}" '
+            f'--deviation "{p["deviation"]}" --parent <X-7 parent> --name <X-7 name> --parent-spec <X-7 parent spec> '
+            f'--fields <X-7 fields dir>')
+
+
+def main():
+    for n, alt in ALT_ORDER.items():
+        assert canonical(xs.parse(_t(alt))) == canonical(xs.parse(_t(TABLE[n][2]))), f"#{n}: budget order changes it"
+        assert xs.static(house_form(_t(alt))[0])["slots"] < xs.static(house_form(_t(TABLE[n][2]))[0])["slots"]
+    st = statics()
+    exact = sorted(st)
+    counts = {c: sum(1 for r in TABLE.values() if r[0] == c) for c in "SLNV"}
+    print(f"table: 101 formulas; exact {len(exact)} (S {counts['S']}, L {counts['L']}); not exact "
+          f"{counts['N'] + counts['V']} (vwap {counts['V']}, nested level {counts['N']})")
+    for n in exact:
+        s = st[n]
+        print(f"#{n:3d} {TABLE[n][0]} {TABLE[n][1]:9s} win {s['window']:3d} form {s['form']:2d} bars {s['bars']:3d} "
+              f"slots {s['slots']} nodes {s['nodes']:2d} bytes {s['bytes']:4d} extra {s['extra_fields']} "
+              f"{'ok' if s['budget'] else 'OVER BUDGET'} sha256 {s['sha256'][:16]}")
+    picks, tier2, why = select_tiers(st)
+    print(f"selection rule: tier 1 {len(picks)} picks {picks}; tier 2 {len(tier2)} picks {tier2}")
+    assert picks == list(PICKS), f"the rule's tier 1 {picks} is not the registration {list(PICKS)}"
+    assert tier2 == list(PICKS2), f"the rule's tier 2 {tier2} is not the registration {list(PICKS2)}"
+    for tier, ns in ((1, picks), (2, tier2)):
+        for n in ns:
+            s = st[n]
+            assert (s["bars"], s["slots"], s["nodes"], s["extra_fields"]) == EXPECTED[n], (n, s)
+            assert s["budget"], n
+            print(f"tier {tier} #{n:3d} {ALL_PICKS[n]['id']:7s} form {s['form']:2d} bars {s['bars']:3d} slots "
+                  f"{s['slots']} nodes {s['nodes']:2d} bytes {s['bytes']:3d} extra {s['extra_fields']} sha256 "
+                  f"{s['sha256']}")
+    print("not picked (exact): " + "; ".join(f"#{n} {why[n]}" for n in sorted(why) if TABLE[n][0] in "SL"))
+    print(f"classes: {classes_hold(synthetic(T=320))} exact transcriptions evaluate in their house form on a 320-session "
+          "synthetic world, all free of the factor anchor; every L one depends on it without its rebase")
+    for line in semantic_checks(synthetic()):
+        print(line)
+    for n in picks + tier2:
+        line = add_alpha_line(n)
+        assert '"' not in "".join(ALL_PICKS[n][k] for k in ("formula", "domain", "deviation")), n
+        print("add-alpha " + hashlib.sha256(line.encode()).hexdigest()[:16] + " " + line)
+    print("xwq_check: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
