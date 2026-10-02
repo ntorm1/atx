@@ -6227,3 +6227,18 @@ blind re-run (as the campaign runbook treats a time-limit: remove the cause with
 spec). Cause removed by waiting for a quiet host (no compiler, CPU under 25% for 30 s); `marginal.output` ->
 `...-v8x7b-marginal-poolonly-c` (spec-only, pins unchanged). **If the blind re-run hits the cap again, root stops (PM8-4
 (c)).**
+
+| phase (v8x7b; source `4c4fad7e`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| marginal (pool only, `-poolonly-c`; blind re-run, quiet host) | 360 / 1,536 | 253.1 | 296 | 0 | `203ba856d5105156cde2cdb1743c186724f931be05af7653a05096e53d35e362` | report only |
+| gate p1-v8x7b | internal | - | - | PASS | - | 8 of 10 with the prior sign (wq_030, wq_014 reject_redundant, as in v8x7); **0 lines appended, 10 already ledgered**; 0 reference status changes |
+| ref (L 1.1720, fields v14) | 180 / 1,536 | 59.0 | 586 | 0 | `5d8151ca9cc07dd483d9d09f99f9d4bacc1452233daf54779a4515c5cbda0ad3` | **ref-s2-daily IDENTICAL** to X-5's S2 daily bit for bit (`529062d6`, 941,374 B): fields v14 reproduces the parent |
+| w | 300 / 3,072 | 53.5 | 1,436 | 0 | `e4a1f7d1909b6b1bf0ba27ba8c821ff571bd00d1216c27628c6435b342455986` | `mega-v8xw-train-theme-erc-v8x7b-1` |
+| nav step (1) (L 1.1720, calibration) | 180 / 1,536 | 55.3 | 586 | 0 | `faa808f397f0b80ffb40490b768599a3f739a6ad0e607a44ee8511d251b3c365` | mechanics only |
+
+**Gross match (PM6-6; `scratchpad/mech.py`, mechanics keys only):** step (1) at the parent's L 1.1720: all-rows S2 gross
+**0.9111922356** vs G_parent (X-5) **0.9862260459**, |diff| **.07503 > .005** -> one correction: L' = 1.1720 x
+.9862260459 / .9111922356 = 1.26851 -> **1.2685** (inside the executable's [1, 2]). Matched spec
+`scripts/specs/v8/lib-v8x7b-gm.json` (`scratchpad/gmspec.py`: lib-v8x7b.json with name v8x7b-gm, one description
+sentence, `nav.leverage` 1.2685, `nav.output` `...-L1.2685-v8x7b`, `ref.leverage` 1.1720; `lock --write` leaves every pin
+unchanged; file `599655e2`). The step-(1) run of lib-v8x7b.json is not a trial and is never resumed past nav.
