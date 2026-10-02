@@ -1872,6 +1872,9 @@ def main(argv=None) -> int:
     if argv[:1] == ["candidates"]:           # v8 YINFRA: the candidate queue (wave_queue.py)
         import wave_queue  # noqa: PLC0415
         return wave_queue.main(argv[1:])
+    if argv[:1] == ["scoreboard"]:           # v8 YINFRA: the lineage of accepted books (wave_scoreboard.py)
+        import wave_scoreboard  # noqa: PLC0415
+        return wave_scoreboard.main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("verb", choices=("plan", "run", "status", "lock"))

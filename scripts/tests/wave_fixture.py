@@ -216,7 +216,8 @@ class FakeCycle:
         if "--stop-after" in args:
             base = spec["name"][:-3] if spec["name"].endswith("-gm") else spec["name"]
             gross = self.gross_per_l.get(base, 0.9862 / 1.1474) * float(spec["nav"]["leverage"])
-            write_nav(self.root, nav, gross, accounting=self.accounting, drift=3e-4)   # another series than the parent
+            drift = 3e-4 + int(sha(base.encode()), 16) % 100003 * 1e-9          # each cell its own series
+            write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift)
             write_json(self.root, f"{nav}-run/receipt.json", {"outcome": "completed", "exit_code": 0,
                                                               "wall_seconds": 41.5, "sampled_peak_tree_rss_bytes": 586 << 20})
             write_json(self.root, f"{nav}-run/cycle_binding.json", {"argv_sha256": sha(nav.encode()),
@@ -228,7 +229,8 @@ class FakeCycle:
         write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json",
                    {"admission": [], "paired": {"dsr": self.dsr, "se": 0.1, "cbb_ci": [-0.1, 0.2], "lw_p": 0.3},
                     "dsr": {"n": 3, "cell_count": 0.6}, "pbo": 0.2})
-        BI.ledger_append(self.root / LEDGER, [construction_line(nav, sha(daily), 1.25)], chain=True)
+        sr = json.loads((self.root / nav / "summary.json").read_text())["scenarios"][0]["net_sharpe"]
+        BI.ledger_append(self.root / LEDGER, [construction_line(nav, sha(daily), sr)], chain=True)
         return self.ok(args)
 
     def add_alpha(self, args: list[str]):
@@ -237,8 +239,10 @@ class FakeCycle:
         lib = self.root / "atx-impl" / "strategies" / "libraries" / f"{name}.json"
         members = json.loads(lib.read_text())["members"] if lib.is_file() else ["m1", "m2"]
         write_json(self.root, f"atx-impl/strategies/libraries/{name}.json", {"members": members + [cid]})
+        pspec, pc = self.spec_outputs(a["--parent-spec"])
         write_json(self.root, f"scripts/specs/v8/lib-{name}.json",
-                   cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=PARENT_NAV))
+                   cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),
+                             leverage=str(pspec["nav"]["leverage"])))
         write_json(self.root, a["--save-plan"], {"library": name, "candidates": [{"id": cid}]})
         return self.ok(args)
 

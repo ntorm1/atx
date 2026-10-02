@@ -558,8 +558,11 @@ def record(w: Wave, done: dict, log) -> dict:
     if not no_cell(done):
         trial = research_ledger.scored_trial_id(w.path(done["match"]["nav"]))
         if trial is None or not any(r.get("trial_id") == trial for r in new_lines):
+            earlier = any(r.get("trial_id") == trial for r in records[:pre["lines"]])
             raise StageError(f"record: the cell's ledger line (trial {trial}) is not among the {len(new_lines)} lines "
-                             f"appended since preflight")
+                             "appended since preflight" + (": its daily series equals a trial ledgered before the wave "
+                                                           "(an identity re-run adds no trial); root rules"
+                                                           if earlier else ""))
     want = pre["n_before"] + (0 if no_cell(done) else 1)
     if led["n"] != want:
         raise StageError(f"record: ledger N is {led['n']}, expected {want} (N {pre['n_before']} + this wave's cell): "
