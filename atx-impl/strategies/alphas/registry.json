@@ -1821,6 +1821,159 @@
         "deviation": "SEASON_YEARS 2, 3, 4, 5: Heston-Sadka (2008); the CZ MomSeason years 2 to 5 form; SEASON_YEAR_SESSIONS, SEASON_WINDOW 252, 21: the alignment of the roster member seasonality_same_month (delay 252 / 231); SEASON_MIN_YEARS 3: declared: a majority of the four windows (one halt or listing gap does not drop the name)"
       },
       "added_in": "v8x3"
+    },
+    {
+      "id": "value_composite_v49",
+      "dsl": "(((group_rank(decay_linear((be / me_company), 21), grp_ff49) + group_rank(decay_linear((ni_ttm / me_company), 21), grp_ff49)) + group_rank(decay_linear((cfo_ttm / me_company), 21), grp_ff49)) / 3)",
+      "theme": "value",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Fama and French (1992, JF); Lakonishok, Shleifer and Vishny (1994, JF); Israel, Laursen and Richardson (2021, JPM) composite value; Asness and Frazzini (2013, JPM) current price; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Fama-French 1992; Lakonishok-Shleifer-Vishny 1994; Israel-Laursen-Richardson 2021",
+      "form": "mean_k R(decay_linear(x_k, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "mean over k in {be, ni_ttm, cfo_ttm} of group_rank(decay_linear(k / me_company, 21), grp_ff12)",
+        "domain": "numerators keep their sign (negative book equity, losses and cash burn rank as expensive, the literature's negative-E flag); NaN when any of the three ratios is NaN",
+        "deviation": "three yields, not four: adding ebit_ev (oi_ttm / (me_company + debt - che)) needs 8 extra fields, above the IC-runner plan budget of 5 (NEEDS_NEW_FIELD); equal-weight mean of within-FF12 ranks (the literature proposal averages within-FF12 z-scores and adds S/EV and intangible book); each ratio is decayed before its rank (v6 smoothing form, no 21-session blackout)"
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "bm_v49",
+      "dsl": "group_rank(decay_linear(((be / me_company) + (0 * log(be))), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Rosenberg, Reid and Lanstein (1985, JPM); Fama and French (1992, JF); robust pre-1963 (Linnainmaa and Roberts 2018), weak 2017-2020; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Rosenberg-Reid-Lanstein 1985; Fama-French 1992",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "be / me_company",
+        "domain": "non-positive book equity -> NaN (Fama-French)",
+        "deviation": null
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "ep_v49",
+      "dsl": "group_rank(decay_linear(((ni_ttm / me_company) + (0 * log(ni_ttm))), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Basu (1977, JF); Fama and French (1992, JF) E/P for positive earnings; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Basu 1977",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "ni_ttm / me_company",
+        "domain": "non-positive earnings -> NaN (excluded), as in Hou, Xue and Zhang (2020)",
+        "deviation": null
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "cfp_v49",
+      "dsl": "group_rank(decay_linear(((cfo_ttm / me_company) + (0 * log(cfo_ttm))), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Lakonishok, Shleifer and Vishny (1994, JF) cash flow to price; operating cash flow as in Desai, Rajgopal and Venkatachalam (2004, TAR); within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Lakonishok-Shleifer-Vishny 1994",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "cfo_ttm / me_company",
+        "domain": "non-positive cash flow -> NaN (excluded), as in Hou, Xue and Zhang (2020)",
+        "deviation": "LSV cash flow is earnings plus depreciation; reported operating cash flow is used"
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "fcfp_v49",
+      "dsl": "group_rank(decay_linear(((cfo_ttm - capx_ttm) / me_company), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Lakonishok, Shleifer and Vishny (1994, JF); free cash flow yield (Hackel, Livnat and Rai 1994, FAJ); within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Lakonishok-Shleifer-Vishny 1994; Hackel-Livnat-Rai 1994",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "(cfo_ttm - capx_ttm) / me_company",
+        "domain": null,
+        "deviation": "negative free cash flow kept (ranks lowest)"
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "ebit_ev_v49",
+      "dsl": "group_rank(decay_linear((((oi_ttm / ((me_company + debt) - che)) + (0 * log(oi_ttm))) + (0 * log(((me_company + debt) - che)))), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "net_payout_v49",
+      "dsl": "group_rank(decay_linear((((dvc_ttm + prstkc_ttm) - sstk_ttm) / me_company), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "A",
+      "prior_sign": 1,
+      "citation": "Boudoukh, Michaely, Richardson and Roberts (2007, JF) net payout yield; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Boudoukh-Michaely-Richardson-Roberts 2007",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "(dvc_ttm + prstkc_ttm - sstk_ttm) / me_company",
+        "domain": null,
+        "deviation": "net issuers (negative yield) kept"
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "sp_v49",
+      "dsl": "group_rank(decay_linear(((sale_ttm / me_company) + (0 * log(sale_ttm))), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Barbee, Mukherji and Raines (1996, FAJ) sales to price; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Barbee-Mukherji-Raines 1996",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "sale_ttm / me_company",
+        "domain": "non-positive sales -> NaN (excluded), as in Hou, Xue and Zhang (2020)",
+        "deviation": null
+      },
+      "added_in": "v8x4"
+    },
+    {
+      "id": "rd_me_v49",
+      "dsl": "group_rank(decay_linear(((xrd_ttm / me_company) + (0 * log(xrd_ttm))), 21), grp_ff49)",
+      "theme": "value",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Chan, Lakonishok and Sougiannis (2001, JF) R&D to market equity; within FF49: Ehsani, Harvey and Li 2023, FAJ",
+      "prior_sign_source": "Chan-Lakonishok-Sougiannis 2001",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "xrd_ttm / me_company",
+        "domain": "zero or unreported R&D -> NaN (R&D-reporting firms only, as in Chan-Lakonishok-Sougiannis)",
+        "deviation": null
+      },
+      "added_in": "v8x4"
     }
   ]
 }

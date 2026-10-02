@@ -154,3 +154,18 @@ hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); 2
 - Pins: library `fund_industry_ic_v8x3b.json` `32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54`; recipe
   `698599bb` (admission_trials 6, unchanged 52); definition `fbede0dc`; stub `af0fb287`; registry `b55d8fdc` (unchanged);
   fields v13 `e5f7f28c`.
+
+## Library v8x4 (cell X-4, value within FF49, XIMP C-1), registered 2026-10-02 before any IC read of a new member
+- Registration text: `v8x-prereg.md` section 14 rows X-4 (XIMP C-1 DSL verbatim; the replaced member's theme, tier,
+  sign, prior-sign source, form and notes; citation + "; within FF49: Ehsani, Harvey and Li 2023, FAJ"), PM7-18 (c)
+  (9 re-screens, ledger lines, counted in N_tot), PM7-35 (a re-screen is kept only with status admitted AND runner sign
+  = prior, else its original is restored). Parent X-3 (`lib-v8x3b-gm.json`, L 1.1414, accepted, N 52).
+- Members: v8x3b with the nine value members re-screened in place (positions 0-8: value_composite, bm, ep, cfp, fcfp,
+  ebit_ev_f49, net_payout, sp, rd_me -> `_v49`) = 58; recipe admission_trials 0, rescreens 9. `research_cycle.py
+  add-alpha ... --replaces <member> --rescreen --parent v8x3b --name v8x4 --parent-spec scripts/specs/v8/lib-v8x3b-gm.json
+  --fields build-equity/train-2020-2023-lo3-fields-v13` (9 calls; plans `x4-plans/`). K1 rows = XIMP C-1 table; the
+  49 unchanged rows = v8x3b's 49 / 49. Spec `lib-v8x4.json` with PM6-8 (i) applied before any run.
+- Pins: library `fund_industry_ic_v8x4.json` `c7d52c686d5d61ffb6964f0c1531a9869ca37e82f20d31e00e0ae43e4e0135b3`; recipe
+  `87effd86`; definition `6d7d5779`; stub `86299a56`; registry `7ff10f4e` (9 alpha rows added); fields v13 `e5f7f28c`.
+- Acceptance PM7-34 (dSR > 0 AND mechanics); the registered criterion (turnover per unit gross not higher, PM5-11)
+  printed; the FF49 covered member cells printed.

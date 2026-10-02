@@ -5784,3 +5784,24 @@ Capacity (report only; X-2 beside): net Sharpe .5x 1.452 (1.305), 1x 1.420 (1.26
 
 **Next parent: `scripts/specs/v8/lib-v8x3b-gm.json`, library v8x3b, L 1.1414, G 0.9861733264.**
 
+### Cell X-4 (value theme within FF49, XIMP C-1; library v8x4 on X-3): N 53
+
+**Registration:** 9 add-alpha calls in roster order (`scratchpad/x4_add9.py`: C-1 DSL verbatim, each `--replaces
+<member> --rescreen` with the replaced member's theme / tier / sign / prior-sign source / form / notes, citation + ";
+within FF49: Ehsani, Harvey and Li 2023, FAJ"; `--parent v8x3b --name v8x4 --parent-spec
+scripts/specs/v8/lib-v8x3b-gm.json --fields build-equity/train-2020-2023-lo3-fields-v13`), K1 plans `x4-plans/`; every
+call exit 0. Counts: roster 58 (positions 0-8 re-screened in place), recipe admission_trials 0 / rescreens 9 / unchanged
+49 (rows = v8x3b's 49 / 49); K1 rows = the C-1 table. Library `c7d52c68`, recipe `87effd86`, registry `7ff10f4e`. Spec
+`lib-v8x4.json` (nav.leverage 1.1414 inherited; gate p1-v8x4 lists the 9 re-screens: add-alpha's rule for a wave of
+re-screens only, so they are ledgered as admission lines, PM7-18 (c)); PM6-8 (i) applied before any run (the parent's
+theme weights hold the replaced value members; marginal without themes); relocked (`2502950c`). Registered in
+`v8-prereg.md` ("Library v8x4").
+
+**Readings stated before X-4's screen:** (1) wave composition (PM7-35, "the same reading applies to X-4's re-screened
+replacements"): a `_v49` re-screen stays only with status admitted AND runner sign = prior; otherwise its original
+(FF12) member is restored at 0 trials (the cell then runs on v8x4b, same trial ids). (2) Criterion: PM7-34 (dSR > 0 AND
+mechanics) decides; XIMP C-1's criterion (turnover per unit gross not higher, PM5-11's statistic) printed. (3) FF49
+covered member cells (XIMP C-1's mechanical count, from the fields v13 payload metadata before the cell, score window
+2020-2023): `grp_ff49` finite on **1,854,568 of 1,857,206** member cells (.99858) against `grp_ff12` 1,857,206 (1.0):
+2,638 member cells (.14%) lose their value members under FF49.
+
