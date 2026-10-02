@@ -1304,3 +1304,36 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   diagnostics, Release A/B); 2 R-1..R-5 (fields v10 before R-2); 3 R-6..R-8 (risk model, fields v11); 4 the
   E-38 / E-45 branch; then V8-F. Wave AG lanes merge at integration 8 after the gate.
 - Dispatched: cells batch 1a (root); FIX-6 (pool 10); ENG-SLOT (pool 8).
+
+## 2026-10-01 cells batch 1a closed (log "cells batch 1a: B0a, base-lo3 lock, B0b"; head f84d09cc); FIRST READS of 2020-2023
+- B0a (base-lo1 88031699; lo1; no parent): N 38. S2 net Sharpe +1.125. Mechanics PASS (gross .9709, net +.0038,
+  tau mean .0367, p95 .0439); gross at score_begin 0.0 (flat start; no warm start asked). Re-base ledgered.
+- base-lo3 locked 3d25e2a4: spec 537760bc...d88221d7; six pins filled (role e1c67101, identity bridge v2-pit
+  09aac28f, fund events 304d2945, SIC 9f9b2f85, fields v9 lo3 9f156363, reference_cell = B0a's NAV summary
+  eeac8366), each equal to its prereg / runbook value.
+- B0b (base-lo3; lo3; parent B0a): N 39. S2 net Sharpe +1.1389 against +1.1254. Paired dSR +.0135, Memmel SE
+  .0403 (rho .997); bootstrap p one-sided .382, two-sided .775. Mechanics PASS (gross .9663, net +.0035, tau
+  mean .0370, p95 .0439). Verdict by W0-b (dSR > 0 and mechanics): ACCEPTED. Winner B0b; role lo3 carries on;
+  next parent base-lo3.json. Cold lo3 u pass 143 s, 1,577 MiB. Disk 37.3 GiB. Neither base spec carries a
+  capacity curve (no 4x row; none added). Freeze list re-hashed equal. Nothing dated 2024+ opened. Trial
+  accounting: N 39; admission trials 0; history reads 0.
+- Notes from the batch: the book monitor raised an M2 alarm on both cells (flags only; gates nothing; batch 1b
+  records what it measures). The cycle prints only the two-sided p.
+- FIX-6 done 0f00013d (pool 10; PM5-20; tests only, scripts/tests/test_research_spec.py +98 / -20): one helper
+  unlocked(spec) resets every pin a lock fills; fake_root plans that copy; v8_root locks it to the stand-ins'
+  own digests; new test locks a copy of every v8 spec and plans it through the same fixture path. scripts/tests
+  183 passed / 4 skipped. Causes of the 20: 16 PIN MISMATCH on stand-ins, 4 lock without --relock on a locked
+  copy. Follow-up sent (round 1): the fixtures become parent-independent too, since root sets a template's
+  parent for every cell from R-1 on. Merge at the batch 1a / 1b boundary.
+- Ruling PM5-22 (W0-4 step 4, the re-runs for prereg rule 3's variance): the ledgered v7 cells that are
+  reproducible from a spec or recorded argv (v6.1, v7.0, v7.0-lo3, C1, C2, C3, spo-v1, spo-v2) are re-run on
+  the 4-year role in one dispatch of their own after the last construction cell and before V8-F; they add 0
+  to N; their gates log and do not stop (PM5-18); a cell that cannot be reproduced is listed with the reason
+  and left out -- the DSR at B0b rests on two cells (V[SR] 3.6e-07) and means nothing until the re-runs exist;
+  nothing before V8-F reads the DSR, so the cells need not wait for them, and no choice depends on their
+  values -- cost if wrong: the freeze gate's DSR is computed later than it could have been.
+- Ruling PM5-23 (one-sided p, E-34): for every paired cell the one-sided p is taken from a bounded
+  nav_summ --protocol v8 --bundle <parent> <cell> run without --ledger (no ledger line); it must reproduce the
+  cycle's dSR, SE, CI and two-sided p exactly, else that is a finding. Acceptance stays dSR > 0 (rule 5); both
+  p values are reported -- the cycle prints the two-sided p only and E-34 asks for both -- cost if wrong: none.
+- Dispatched: cells batch 1b (root): R15 delisting-returns role on lo3, B0c, diagnostics (E-18), Release A/B.
