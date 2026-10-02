@@ -22,6 +22,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_ic_theme_resid.cpp  # platform v8 R-11: composition rule theme-resid-v1
     src/strategy_ic_theme_erc.cpp  # platform v8 X (XCOMB): composition rule theme-erc-v1
     src/strategy_ic_theme_tsmom.cpp  # platform v8 Y (YCOMB): composition schedule theme-tsmom-v1
+    src/strategy_ic_two_speed.cpp  # platform v8 Y-5 (YCOMB): composition sleeves two-speed-v1
     # platform v8 F-2: `atx-equity-strategy-ic marginal` (contract K6, marginal_ic.json)
     src/strategy_marginal_ic.cpp
     # platform v8 H-3: the shared research-role loader and the mining verb (mined-v1)
@@ -115,6 +116,7 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
         src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
         src/strategy_ic_result_cache.cpp src/strategy_ic_shrink.cpp
         src/strategy_ic_theme_resid.cpp src/strategy_ic_theme_erc.cpp src/strategy_ic_theme_tsmom.cpp
+        src/strategy_ic_two_speed.cpp
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
         src/strategy_spo.cpp src/strategy_spo_v3.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
@@ -122,6 +124,7 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
         src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
         src/strategy_ic_result_cache.cpp src/strategy_ic_shrink.cpp
         src/strategy_ic_theme_resid.cpp src/strategy_ic_theme_erc.cpp src/strategy_ic_theme_tsmom.cpp
+        src/strategy_ic_two_speed.cpp
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
         src/strategy_spo.cpp src/strategy_spo_v3.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)

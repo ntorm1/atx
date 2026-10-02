@@ -152,6 +152,9 @@ struct PinnedWeights {
   // composition theme index, `schedule_off` the theme-blocks it switches off (summary only).
   std::string schedule; std::vector<i64> schedule_from; std::vector<std::vector<f64>> schedule_mass;
   usize schedule_off{};
+  // two-speed-v1 (platform v8 Y-5, strategy_ic_two_speed.cpp): a theme_sleeves block on that rerank-true
+  // block; `sleeves` its rule ("" none), the fast flag per composition theme index, the fast themes.
+  std::string sleeves; std::vector<u8> sleeve_fast; std::vector<std::string> sleeve_fast_themes;
   // What the composition and admission receive: the standardised themes under their rule,
   // else the (possibly empty) within-theme-v1 themes under redistribute.
   [[nodiscard]] IcThemeRule theme_rule() const noexcept {
@@ -282,10 +285,11 @@ co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& met
 // `standardised`: the theme_standardise rule of a standardised composition ("" none);
 // `residualised`: the theme order of theme-resid-v1 (v8 R-11) when the composition also runs it
 // (empty: it does not); `scheduled`: the theme_schedule rule (theme-tsmom-v1, v8 Y-2) when the
-// composition runs one ("" none).
+// composition runs one ("" none); `sleeved`: the theme_sleeves rule (two-speed-v1, v8 Y-5) when the
+// runner also saves the fast and slow sleeves ("" none).
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false,
                    std::string_view standardised={},std::span<const std::string> residualised={},
-                   std::string_view scheduled={});
+                   std::string_view scheduled={},std::string_view sleeved={});
 // The JSON array of a theme order (the recipe's and the combined manifest's record of theme-resid-v1).
 Json theme_order_json(std::span<const std::string> order);
 Json fields_recipe(Json pins,const Library& lib);
@@ -294,7 +298,7 @@ bool fields_pinned(const IcRunnerConfig& cfg);
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train);
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
                       std::string pin,std::string name,bool enforce_budget=true,usize themes=0,
-                      IcThemeRule rule=IcThemeRule::redistribute);
+                      IcThemeRule rule=IcThemeRule::redistribute,bool sleeves=false);
 co::Status same_field_definitions(const Library& lib,const Role& train,const Role& validation);
 co::Status bind_fields(const Library& lib,Role& role,const std::string& directory,const std::string& pin,
                        bool scored);
@@ -308,6 +312,8 @@ co::Result<std::string> frozen_field_definitions(const Library& lib,const Frozen
 co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeights& pinned);
 // ---- strategy_ic_theme_tsmom.cpp (v8 Y-2) ------------------------------------
 co::Status composition_schedule(const Json& j,const Library& lib,PinnedWeights& pinned);
+// ---- strategy_ic_two_speed.cpp (v8 Y-5) --------------------------------------
+co::Status composition_sleeves(const Json& j,const Library& lib,PinnedWeights& pinned);
 // ---- strategy_ic_signal_cache.cpp --------------------------------------------
 std::string vm_identity();
 co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,HashMeter* meter);

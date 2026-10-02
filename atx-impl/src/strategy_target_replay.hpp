@@ -113,6 +113,19 @@ struct TargetReplayConfig {
   // cap. Not with hold_band or inv_vol (all three act between the ranks and the demean). Writes
   // recipe, rule-id and summary keys.
   bool norm_score{};
+  // two-speed-v1 (v8 Y-5, lane YCOMB; aim-partial-v5; nav --two-speed two-speed-v1; it needs the
+  // replay's construction state (the target and NAV replays hold one; nav decide refuses) and the
+  // saved sleeves). false (default):
+  // off, every output unchanged. On: on every rebalance decision the fast and the slow sleeve blends
+  // (TargetReplayInput::sleeve_*) each get the construction above (ranks, demean, gross 1, locate
+  // zeroing, neutralization); a virtual fast sleeve F moves toward L m_f d_f at theta_f = 1 -
+  // 2^(-1/5) (engine/book/two_speed.hpp; 0 off membership), the book's remainder (current - F) is
+  // the slow sleeve, moving toward L m_s d_s at trade_fraction, and the desired target is the aim
+  // whose aim-partial-v5 step is exactly that netted move:
+  //   desired = m_s d_s + (F_prev + (F_next - F_prev) / trade_fraction) / L,
+  // m_f the fast themes' mass share of the decision (m_s = 1 - m_f). Not with hold_band, inv_vol or
+  // adv_hold. Writes recipe, rule-id and summary keys.
+  bool two_speed{};
 };
 // inv-vol-v1's registered floor: s_i is raised to at least this fraction of the median (so the
 // multiplier is at most 4).
@@ -120,6 +133,10 @@ inline constexpr atx::f64 inv_vol_floor_fraction = 0.25;
 // norm-score-v1 is on.
 [[nodiscard]] constexpr bool norm_score_on(const TargetReplayConfig& c) noexcept {
   return c.norm_score;
+}
+// two-speed-v1 is on.
+[[nodiscard]] constexpr bool two_speed_on(const TargetReplayConfig& c) noexcept {
+  return c.two_speed;
 }
 // adv-hold-v1 is on (Q > 0).
 [[nodiscard]] constexpr bool adv_hold_on(const TargetReplayConfig& c) noexcept {
@@ -150,6 +167,9 @@ struct TargetReplayInput {
   // Industry group id per cell (the industry ids only; empty otherwise): an integer
   // in [0, kMaxGroupId] as f64, NaN = unknown (one residual group). Same geometry.
   std::span<const atx::f64> industry{};
+  // two-speed-v1 (v8 Y-5; empty otherwise): the fast and slow sleeve blends (the geometry of
+  // `signal`) and the fast themes' mass share per date (`dates` entries).
+  std::span<const atx::f64> sleeve_fast{}, sleeve_slow{}, sleeve_fast_share{};
 };
 // Per-decision construction record (neutralization outcome and band activity).
 enum class NeutralizeOutcome : atx::u8 {

@@ -900,6 +900,13 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       o.risk_target.on = true;
       o.risk_target.law = risk_target::Law::vol_target_v1;
     }
+    // v8 Y-5 two-speed-v1: the replay's shared construction composes the sleeves into the aim that
+    // aim-partial-v5 trades at its own theta, at one L for every book; so no rule that replaces that
+    // plan or varies L per book, and the fixed rate.
+    if (std::find(args.begin(), args.end(), "--two-speed") != args.end() &&
+        (o.spo_v1 || o.aim_v6 || o.risk_target.on || (rate && *rate != "fixed")))
+      throw std::invalid_argument("--two-speed two-speed-v1 needs aim-partial-v5 at the fixed rate, without "
+                                  "spo, aim-partial-v6, --risk-target or --vol-target");
     // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
     // value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {

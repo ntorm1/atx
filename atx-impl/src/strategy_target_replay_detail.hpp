@@ -33,6 +33,9 @@ struct DesiredState {
   atx::f64 nav{};
   std::vector<atx::f64> caps;
   std::vector<atx::f64> sigma, sigma_sorted;
+  // two-speed-v1 (v8 Y-5): the virtual fast sleeve F per name (empty until the first rebalance)
+  // and the fast sleeve's desired target of the decision (scratch).
+  std::vector<atx::f64> fast, fast_desired;
 };
 // One externally pinned saved blend plus its bound price role, owned. Date-major.
 // volume is empty unless requested; present => finite >= 0 raw shares, absent => NaN.
@@ -42,6 +45,8 @@ struct LoadedSavedBlend {
   std::vector<atx::u8> member, present;
   std::vector<atx::i64> sessions;
   std::vector<atx::u64> ids;
+  // two-speed-v1 (v8 Y-5): the saved sleeves the combined manifest pins (loaded only under it).
+  std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
   std::string manifest_json; // the pinned combined manifest, re-serialized
   // Borrowed view; valid while *this is alive and unmodified.
   [[nodiscard]] TargetReplayInput view() const;

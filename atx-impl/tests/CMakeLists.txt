@@ -125,6 +125,7 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     strategy_risk_target_test.cpp
     strategy_vol_target_test.cpp  # platform v8 Y (YCOMB): vol-target-v1
     strategy_norm_score_test.cpp  # platform v8 Y (YCOMB): norm-score-v1
+    strategy_two_speed_test.cpp  # platform v8 Y-5 (YCOMB): two-speed-v1 (composition sleeves, NAV construction)
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_target_shaping_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_risk_target_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_inverse_vol_test.cpp"

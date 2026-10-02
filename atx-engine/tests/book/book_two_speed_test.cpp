@@ -114,4 +114,65 @@ TEST(BookTwoSpeed, RefusalsWriteNothing) {
   untouched();
 }
 
+// two_speed_aim on three names (the third not a member), m_f .4, L 2, theta_f .5, theta_s .25, in
+// closed form: name 0 F .1 -> .25, aim .6 x .2 + (.1 + .15 / .25) / 2 = .47; name 1 F -.2 -> -.3,
+// aim .06 + (-.2 - .4) / 2 = -.24; name 2: F and aim 0.
+TEST(BookTwoSpeed, NettedAimClosedForm) {
+  const std::vector<atx::u8> member{1, 1, 0};
+  const std::vector<f64> fast_desired{0.5, -0.5, 0.0};
+  std::vector<f64> fast{0.1, -0.2, 0.3}, desired{0.2, 0.1, 0.4};
+  ASSERT_TRUE(eb::two_speed_aim(member, fast_desired, 0.4, 2.0, 0.5, 0.25, fast, desired));
+  EXPECT_NEAR(fast[0], 0.25, 1e-15);
+  EXPECT_NEAR(fast[1], -0.3, 1e-15);
+  EXPECT_EQ(fast[2], 0.0);
+  EXPECT_NEAR(desired[0], 0.47, 1e-15);
+  EXPECT_NEAR(desired[1], -0.24, 1e-15);
+  EXPECT_EQ(desired[2], 0.0);
+}
+
+// The aim's aim-partial step from any current weight c is the two sleeves' moves netted: F_next - F
+// plus the remainder (c - F) moving toward L m_s d_s at theta_s.
+TEST(BookTwoSpeed, AimPartialStepOnTheAimIsTheNettedSleeveMove) {
+  const std::vector<atx::u8> member{1, 1, 1, 1};
+  const std::vector<f64> fast_desired{0.3, -0.1, 0.0, -0.4}, slow_desired{-0.2, 0.25, 0.1, 0.05};
+  const f64 share = 0.35, L = 1.4, theta_f = eb::two_speed_fast_theta(), theta_s = eb::two_speed_slow_theta;
+  std::vector<f64> fast{0.02, -0.05, 0.0, 0.1};
+  const std::vector<f64> before = fast;
+  std::vector<f64> desired = slow_desired;
+  ASSERT_TRUE(eb::two_speed_aim(member, fast_desired, share, L, theta_f, theta_s, fast, desired));
+  for (const f64 c : {-0.3, 0.0, 0.07, 0.5})
+    for (usize i = 0; i < member.size(); ++i) {
+      const f64 book_step = c + theta_s * (L * desired[i] - c);
+      const f64 remainder = c - before[i];
+      const f64 sleeves = fast[i] + remainder + theta_s * (L * (1.0 - share) * slow_desired[i] - remainder);
+      EXPECT_NEAR(book_step, sleeves, 1e-15) << c << ' ' << i;
+      EXPECT_NEAR(fast[i], before[i] + theta_f * (L * share * fast_desired[i] - before[i]), 1e-15) << i;
+    }
+}
+
+TEST(BookTwoSpeed, NettedAimRefusalsWriteNothing) {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const std::vector<atx::u8> member{1, 0}, bad_member{2, 0};
+  const std::vector<f64> fast_desired{0.1, 0.2};
+  std::vector<f64> fast{0.5, 0.5}, desired{0.3, 0.3};
+  const auto untouched = [&] {
+    for (usize i = 0; i < 2U; ++i) {
+      EXPECT_EQ(fast[i], 0.5);
+      EXPECT_EQ(desired[i], 0.3);
+    }
+  };
+  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 1.5, 1.0, 0.1, 0.05, fast, desired));  // share
+  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 0.5, 0.0, 0.1, 0.05, fast, desired));  // leverage
+  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 0.5, 1.0, 0.0, 0.05, fast, desired));  // theta
+  EXPECT_FALSE(eb::two_speed_aim(bad_member, fast_desired, 0.5, 1.0, 0.1, 0.05, fast, desired));
+  EXPECT_FALSE(eb::two_speed_aim(member, std::vector<f64>{nan, 0.2}, 0.5, 1.0, 0.1, 0.05, fast, desired));
+  EXPECT_FALSE(eb::two_speed_aim(member, std::vector<f64>{0.1}, 0.5, 1.0, 0.1, 0.05, fast, desired));
+  untouched();
+  // A nonmember's NaN is no refusal (its F and aim become 0).
+  std::vector<f64> loose{nan, 0.2};
+  EXPECT_TRUE(eb::two_speed_aim(std::vector<atx::u8>{0, 1}, loose, 0.5, 1.0, 0.1, 0.05, fast, desired));
+  EXPECT_EQ(fast[0], 0.0);
+  EXPECT_EQ(desired[0], 0.0);
+}
+
 } // namespace atx_test_v8_book_two_speed

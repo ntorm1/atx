@@ -85,6 +85,7 @@ NULL_PINS["x-inv-vol-gm.json"] = CHILD_NULLS
 NULL_PINS["y-vol-target.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): vol-target-v1, planned on B0c
 NULL_PINS["y-norm-score.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): norm-score-v1, planned on B0c
 NULL_PINS["y-theme-tsmom.json"] = CHILD_NULLS              # v8 Y (lane YCOMB): theme-tsmom-v1, planned on X-5
+NULL_PINS["y-two-speed.json"] = CHILD_NULLS                # v8 Y-5 (lane YCOMB): two-speed-v1, planned on X-5
 ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json"}  # an add-alpha spec copied by hand: no base-only pins
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
@@ -132,9 +133,11 @@ EXPECTED_CHANGES["x-inv-vol.json"] = {"nav.output", "nav.flags"}                
 EXPECTED_CHANGES["y-vol-target.json"] = {"nav.output", "nav.flags", "nav.leverage"}       # v8 Y: X-10's L, managed
 EXPECTED_CHANGES["y-norm-score.json"] = {"nav.output", "nav.flags"}                       # v8 Y (lane YCOMB)
 EXPECTED_CHANGES["y-theme-tsmom.json"] = FIT_DOWN | {"fit.flags"}                        # v8 Y (lane YCOMB)
+EXPECTED_CHANGES["y-two-speed.json"] = FIT_DOWN | {"fit.flags", "nav.flags"}            # v8 Y-5: fit and NAV
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
 FIT_APPENDED["y-theme-tsmom.json"] = ["--theme-tsmom", "theme-tsmom-v1"]                 # v8 Y (lane YCOMB)
+FIT_APPENDED["y-two-speed.json"] = ["--two-speed", "two-speed-v1"]                       # v8 Y-5 (lane YCOMB)
 MISSING = object()
 
 
@@ -586,7 +589,8 @@ def check_registered_change(specs: Path, name: str) -> None:
                  "y-vol-target.json": pn + ["--vol-target", "vol-target-v1", "--risk-model",
                                             "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                                             "<fill:nav.flags --risk-model-sha256>"],
-                 "y-norm-score.json": pn + ["--rank-shape", "norm-score-v1"]}             # v8 Y (lane YCOMB)
+                 "y-norm-score.json": pn + ["--rank-shape", "norm-score-v1"],             # v8 Y (lane YCOMB)
+                 "y-two-speed.json": pn + ["--two-speed", "two-speed-v1"]}                # v8 Y-5 (lane YCOMB)
     nav_delta["r6-spo-v3-gm.json"] = nav_delta["r6-spo-v3.json"]              # PM6-6: R-6's change, its L apart
     for r9, theta in THETA.items():                                          # PM7-21: the parent's argv, theta set
         nav_delta[r9] = [theta if k and pn[k - 1] == "--trade-fraction" else x for k, x in enumerate(pn)]

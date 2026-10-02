@@ -1,0 +1,24 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8y-two-speed",
+  "description": "Y cell (lane YCOMB, task-YCOMB-report.md rule Y-5 and section Y-5 wiring; Rulings PM8-5 and PM8-10: a hypothesis distinct from R-3, counted once; Y order Y-S -> Y-3 -> Y-2 -> Y-5 -> X-10 -> Y-1; parent = the last accepted book at that point, whose fit carries a standardised composition): composition sleeves and NAV construction two-speed-v1, every constant registered blind before any read. Hypothesis (Garleanu-Pedersen 2013, Grinold 2010, Qian-Sorensen-Hua 2007): alpha that decays in days is wasted when the whole book trades at the slow alphas' rate; trading each horizon bucket at the rate its alpha decays and netting before trading keeps more of the fast alpha for the cost of the net trade only. Rule: the registered per-theme alpha half-life table (value, profitability_quality, investment_issuance, low_risk 252; price_momentum 126; earnings_momentum, short_interest, ownership_flow 63; options_implied, filing_events 21; reversal_seasonality, price_volume 5) splits the weighted themes into fast (half-life <= 10 sessions) and slow; the IC runner saves the fast and slow parts of the unchanged blend (the parent's standardisation and theme masses, the schedule's when it runs) and the fast themes' mass share m_f per date; on every rebalance each sleeve gets the parent's construction (ranks, demean, gross 1, locate zeroing, neutralization, the rank shape when the parent carries it); a virtual fast sleeve F moves toward L m_f d_f at theta_f = 1 - 2^(-1/5) = .1294 (0 off membership); the book's remainder (current - F) moves toward L (1 - m_f) d_s at the parent's theta .05; the book trades only the netted change, with the parent's dust band, exits, locate rule and costs. The change: fit --two-speed two-speed-v1 (theme_sleeves block) and nav --two-speed two-speed-v1 on the parent's argv (aim-partial-v5 at the fixed rate; refused with spo, aim-partial-v6, --risk-target, --vol-target, --hold-band, --vol-scale, --adv-hold-q, and by nav decide). Downstream outputs renamed (fit, card, w, nav, monitor); the u pass is the parent's; the w pass also writes <role>_sleeves.json, pinned in the combined manifest. Gross matching (Ruling PM6-6) applies: the rule changes the trading of two buckets, not the book's scale, yet netting and the virtual fast sleeve change the realised gross, so it is judged at the parent's dollar gross; a calibration run at the parent's L (mechanics only: all-rows S2 gross G_cal, no return read), then the trial at L = L_parent x G_parent / G_cal (4 decimals) set by root as nav.leverage in a -gm copy. Identity before the cell: the parent's fit argv re-run gives the same composition_weights.json and admission.json except script_sha256; the parent's w and NAV argv re-run on the new build are byte-identical (flag absent); the cell's own w pass reproduces the parent's combined signal, targets and __combined__ rows byte for byte (TwoSpeedRunner.*). Acceptance (PM7-34 default): paired S2 net dSR > 0 against the parent AND mechanics. Printed, deciding nothing: turnover per unit gross (tau_gmv_mean / mean_gross_leverage_all_rows, S2), cost per traded dollar, net Sharpe at 4x NAV, net annual return, the fast mass share (provenance.two_speed).",
+  "parent": null,
+  "nominal_parent": "x-theme-erc.json",
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8y-two-speed",
+      "card.output": "build-equity/mega-cards-v8y-two-speed",
+      "ic.w_output": "build-equity/mega-v8yw-train-two-speed",
+      "nav.output": "build-equity/mega-nav-v8y-two-speed",
+      "monitor.output": "build-equity/mega-monitor-v8y-two-speed"
+    },
+    "flags": {
+      "fit": {
+        "--two-speed": "two-speed-v1"
+      },
+      "nav": {
+        "--two-speed": "two-speed-v1"
+      }
+    }
+  }
+}

@@ -2224,6 +2224,7 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
          s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
          s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q && s.inv_vol == t.inv_vol &&
          s.norm_score == t.norm_score && // v8 Y norm-score-v1 shapes the shared target too
+         s.two_speed == t.two_speed &&   // v8 Y-5 two-speed-v1 forms the shared target (and F)
          s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
          s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
          a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
@@ -2240,11 +2241,15 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
 std::vector<std::vector<usize>> leverage_groups(std::span<const NavReplayConfig> variants) {
   std::vector<std::vector<usize>> groups;
   const bool capped = variants.front().target.adv_hold_q > 0;
+  // v8 Y-5 two-speed-v1: the shared target encodes F (built at L) over L and theta, so one group
+  // per distinct (aim leverage, trade fraction).
+  const bool two_speed = two_speed_on(variants.front().target);
   for (usize v = 0; v < variants.size(); ++v) {
     auto found = groups.begin();
-    if (capped)
+    if (capped || two_speed)
       found = std::find_if(groups.begin(), groups.end(), [&](const std::vector<usize>& g) {
-        return variants[g.front()].target.aim_leverage == variants[v].target.aim_leverage;
+        const auto& a = variants[g.front()].target; const auto& b = variants[v].target;
+        return a.aim_leverage == b.aim_leverage && (!two_speed || a.trade_fraction == b.trade_fraction);
       });
     if (found == groups.end()) groups.push_back({v});
     else found->push_back(v);
@@ -3331,6 +3336,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--rank-shape norm-score-v1 (aim-partial-v5, not with --hold-band or "
                "--vol-scale; v8 Y: each member's tied rank replaced by its van der Waerden "
                "normal score before the demean)] "
+               "[--two-speed two-speed-v1 (aim-partial-v5 at the fixed rate, not with --hold-band, "
+               "--vol-scale or --adv-hold-q; v8 Y-5: the saved fast and slow sleeves, a virtual "
+               "fast sleeve at theta_f = 1 - 2^(-1/5), the slow remainder at theta, netted)] "
                "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
                "bit-identical; fixed rate only)] [--stage-timers (summary.json "
                "stage_seconds: load, exposures, construction, books, hash, write)] "
@@ -3400,6 +3408,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
         if (value != "norm-score-v1")
           throw std::invalid_argument("unknown --rank-shape (norm-score-v1)");
         cfg.target.norm_score = true;
+      } else if (key == "--two-speed") { // v8 Y-5 (lane YCOMB) two-speed-v1
+        if (value != "two-speed-v1")
+          throw std::invalid_argument("unknown --two-speed (two-speed-v1)");
+        cfg.target.two_speed = true;
       } else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
@@ -3550,6 +3562,11 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav decide: rate per-name-v1 and monthly-budget-v2 carry book state "
                      "(pre-trade NAV, month-to-date plan) that positions do not");
+    // v8 Y-5: two-speed-v1's virtual fast sleeve is replay state the holdings file does not carry.
+    if (two_speed_on(cfg.target))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav decide: two-speed-v1 carries the fast sleeve's state, which positions do not "
+                     "(replay only)");
     ATX_TRY_VOID(validate_nav_input(input, cfg, 1));
     const usize n = x.instruments;
     if (d < x.decision_begin || d >= x.decision_end)

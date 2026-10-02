@@ -64,7 +64,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
     const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
     bool themed=false,std::string_view standardised={},std::span<const std::string> residualised={},
-    std::string_view scheduled={}) {
+    std::string_view scheduled={},const IcCompositionResult* sleeves=nullptr,std::string_view sleeve_rule={},
+    std::span<const std::string> fast_themes={}) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -137,6 +138,36 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   }
   // And theme-tsmom-v1's mass schedule on it (v8 Y-2; absent otherwise).
   if (!scheduled.empty()) manifest["composition_schedule"]=std::string(scheduled);
+  // two-speed-v1 (v8 Y-5; absent otherwise): the fast and slow sleeves and the fast share per date in
+  // their own manifest (the combined file set above stays the five files every consumer admits),
+  // pinned here by name and SHA-256.
+  if (sleeves!=nullptr) {
+    if (sleeves->sleeve_fast.size()!=cells || sleeves->sleeve_slow.size()!=cells ||
+        sleeves->sleeve_fast_share.size()!=role.panel.dates())
+      return co::Err(co::ErrorCode::Internal,"IC runner: sleeve geometry");
+    Json sleeve_files;
+    const auto keep=[&](const std::string& name,std::span<const std::byte> bytes)->co::Status {
+      ATX_TRY(auto receipt,save_bytes(dir/name,bytes));
+      sleeve_files[name]=std::move(receipt); return co::Ok();
+    };
+    const auto sleeve_prefix=spec.name+"_sleeve";
+    ATX_TRY_VOID(keep(sleeve_prefix+"_fast.f64",std::as_bytes(std::span<const f64>(sleeves->sleeve_fast))));
+    ATX_TRY_VOID(keep(sleeve_prefix+"_slow.f64",std::as_bytes(std::span<const f64>(sleeves->sleeve_slow))));
+    ATX_TRY_VOID(keep(sleeve_prefix+"_fast_share.f64",
+                      std::as_bytes(std::span<const f64>(sleeves->sleeve_fast_share))));
+    const Json sleeve_manifest{{"schema","atx.dsl-combined-sleeves/v1"},{"status","complete"},
+        {"rule",std::string(sleeve_rule)},{"role",spec.name},{"dates",role.panel.dates()},
+        {"instruments",role.panel.instruments()},{"fast_themes",theme_order_json(fast_themes)},
+        {"semantics","fast|slow: members 0 plus the sleeve's themes' W_theme x per-date re-rank (the mass in "
+                     "force), nonmembers NaN, date-major little-endian; fast_share: per date the fast themes' "
+                     "share of the theme mass in force"},
+        {"files",std::move(sleeve_files)}};
+    const auto sleeve_name=spec.name+"_sleeves.json";
+    ATX_TRY_VOID(write_json(dir/sleeve_name,sleeve_manifest));
+    ATX_TRY(auto sleeve_pin,co::sha256_file((dir/sleeve_name).string()));
+    manifest["composition_sleeves"]=Json{{"rule",std::string(sleeve_rule)},{"manifest",sleeve_name},
+                                         {"manifest_sha256",sleeve_pin}};
+  }
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -254,7 +285,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute,
     std::string_view std_rule=theme_standardise_rule,std::span<const std::string> resid_order={},
     std::string_view schedule_rule={},std::span<const i64> schedule_from={},
-    std::span<const std::vector<f64>> schedule_mass={}) {
+    std::span<const std::vector<f64>> schedule_mass={},std::string_view sleeve_rule={},
+    std::span<const u8> sleeve_fast={},std::span<const std::string> fast_themes={}) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -338,6 +370,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
                           schedule_mass[b]});
       ATX_TRY_VOID(composition->schedule_theme_masses(blocks));
     }
+    // two-speed-v1 (v8 Y-5): the composition also builds the fast and slow sleeves.
+    if (!sleeve_fast.empty()) ATX_TRY_VOID(composition->set_theme_sleeves(sleeve_fast));
   }
   // One key per candidate (empty = cache off); directories are created on write.
   const bool signal_cache=!cache.keys.empty();
@@ -520,7 +554,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
         !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,
         (themed && rule!=IcThemeRule::redistribute)?std_rule:std::string_view{},
         (themed && rule==IcThemeRule::residualise)?resid_order:std::span<const std::string>{},
-        (themed && rule==IcThemeRule::standardise)?schedule_rule:std::string_view{}));
+        (themed && rule==IcThemeRule::standardise)?schedule_rule:std::string_view{},
+        combined->sleeve_fast.empty()?nullptr:&*combined,sleeve_rule,fast_themes));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -612,12 +647,12 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     std::vector<Role> roles;
     // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none.
     ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only,
-        pinned.composition_theme_count(),pinned.theme_rule()));
+        pinned.composition_theme_count(),pinned.theme_rule(),!pinned.sleeves.empty()));
     ATX_TRY_VOID(bind_fields(lib,train,cfg.train_fields_directory,cfg.train_fields_sha256,!validation_only));
     roles.push_back(std::move(train));
     if (!cfg.validation_manifest.empty()) {
       ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation",true,
-          pinned.composition_theme_count(),pinned.theme_rule()));
+          pinned.composition_theme_count(),pinned.theme_rule(),!pinned.sleeves.empty()));
       ATX_TRY_VOID(bind_fields(lib,val,cfg.validation_fields_directory,cfg.validation_fields_sha256,true));
       ATX_TRY_VOID(same_field_definitions(lib,roles.front(),val));
       if (roles.front().metadata.at("score_end_ns").get<i64>()>val.metadata.at("score_start_ns").get<i64>())
@@ -680,7 +715,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
     auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),pinned.standardise_rule(),
-                              pinned.residualise_order,pinned.schedule);
+                              pinned.residualise_order,pinned.schedule,pinned.sleeves);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -722,7 +757,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress,pinned.composition_themes(),
           pinned.theme_rule(),pinned.standardise_rule(),pinned.residualise_order,pinned.schedule,
-          pinned.schedule_from,pinned.schedule_mass);
+          pinned.schedule_from,pinned.schedule_mass,pinned.sleeves,pinned.sleeve_fast,pinned.sleeve_fast_themes);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());

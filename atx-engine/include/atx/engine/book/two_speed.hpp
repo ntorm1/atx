@@ -81,4 +81,52 @@ struct TwoSpeedTrade {
   return atx::core::Ok(out);
 }
 
+// The netted aim of one rebalance decision (two-speed-v1's NAV construction; the replay holds one
+// book per scenario and plans it with aim-partial-v5, current + theta_slow (L desired - current)).
+// On entry `desired` holds the slow sleeve's desired target d_s and `fast` the virtual fast sleeve F
+// (book-independent: no drift, no fills); per name with member[i]:
+//   F_next = F + theta_fast (L m_f d_f - F)
+//   desired = (1 - m_f) d_s + (F + (F_next - F) / theta_slow) / L,
+// so that aim-partial-v5's step from any current weight c is F_next - F plus the remainder's
+// (c - F) step toward L (1 - m_f) d_s: the fast and slow sleeves' moves, netted before trading. A
+// nonmember's F and desired become 0. m_f = fast_share in [0, 1], L > 0, thetas in (0, 1], member
+// flags 0/1, every span one entry per name and the members' entries finite; Err(InvalidArgument)
+// before any write otherwise.
+[[nodiscard]] inline atx::core::Status two_speed_aim(std::span<const atx::u8> member,
+                                                    std::span<const atx::f64> fast_desired,
+                                                    atx::f64 fast_share, atx::f64 leverage,
+                                                    atx::f64 theta_fast, atx::f64 theta_slow,
+                                                    std::span<atx::f64> fast, std::span<atx::f64> desired) {
+  const auto n = member.size();
+  if (fast_desired.size() != n || fast.size() != n || desired.size() != n)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "two-speed: one entry per name in every span");
+  if (!(fast_share >= 0.0 && fast_share <= 1.0) || !std::isfinite(leverage) || !(leverage > 0.0))
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "two-speed: the fast share must lie in [0, 1] and the leverage be finite and > 0");
+  for (const atx::f64 theta : {theta_fast, theta_slow})
+    if (!std::isfinite(theta) || !(theta > 0.0) || theta > 1.0)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "two-speed: theta must lie in (0, 1]");
+  for (atx::usize i = 0; i < n; ++i) {
+    if (member[i] > atx::u8{1})
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "two-speed: member flags must be 0 or 1");
+    if (member[i] != atx::u8{0} &&
+        (!std::isfinite(fast_desired[i]) || !std::isfinite(desired[i]) || !std::isfinite(fast[i])))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "two-speed: a member's desired targets and fast sleeve must be finite");
+  }
+  const atx::f64 slow_share = 1.0 - fast_share;
+  for (atx::usize i = 0; i < n; ++i) {
+    if (member[i] == atx::u8{0}) {
+      fast[i] = 0.0;
+      desired[i] = 0.0;
+      continue;
+    }
+    const atx::f64 before = fast[i];
+    const atx::f64 after = before + theta_fast * (leverage * fast_share * fast_desired[i] - before);
+    fast[i] = after;
+    desired[i] = slow_share * desired[i] + (before + (after - before) / theta_slow) / leverage;
+  }
+  return atx::core::Ok();
+}
+
 } // namespace atx::engine::book

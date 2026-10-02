@@ -38,15 +38,20 @@ struct IcCompositionResult {
   std::vector<atx::usize> eligible_names;
   atx::f64 total_planned_turnover{}, deployment_turnover{};
   atx::usize deployment_date{}; // dates if there was no nonzero deployment
+  // two-speed-v1 (platform v8 Y-5; empty unless set_theme_sleeves ran): the fast and the slow
+  // themes' parts of `signal` (each: members 0 plus its themes' W_theme x re-rank, nonmembers
+  // NaN, as `signal` is built) and per date the fast themes' share of the theme mass in force.
+  std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
 };
 // Conservative owned allocation envelope, including result + scratch and bounded
 // candidate strings. Excludes caller Panel, VM, labels and incoming signal.
 // `themes` > 0 (pinned themes, at most 32) adds two f64 planes per theme under
 // `redistribute` and one under `standardise`; `residualise` adds to that one plane per theme
 // the regression scratch, instruments x (8 x themes + 8) B; 0 is the unchanged envelope.
+// `sleeves` (two-speed-v1, platform v8 Y-5) adds the two sleeve planes and the share row.
 [[nodiscard]] atx::core::Result<atx::u64> ic_composition_working_bytes(
     atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes = 0,
-    IcThemeRule rule = IcThemeRule::redistribute);
+    IcThemeRule rule = IcThemeRule::redistribute, bool sleeves = false);
 
 // Streaming equal-family/equal-within-family centered tied-rank composition.
 // create copies membership and candidate metadata. add borrows one signal only
@@ -119,6 +124,13 @@ class IcComposition {
   // bit for bit unchanged. Not called (or empty): finish is unchanged. Refuses (InvalidArgument)
   // under another rule, after finish, or on a malformed block; nothing is kept on refusal.
   [[nodiscard]] atx::core::Status schedule_theme_masses(std::span<const IcThemeBlock> blocks);
+  // two-speed-v1 (platform v8 Y-5): optional, before finish, IcThemeRule::standardise only. `fast`:
+  // one flag per theme index (1 fast, 0 slow), at least one of each. finish then also adds each
+  // theme's W x re-rank (the mass in force, as `signal` gets it) to its sleeve's plane and records
+  // the fast themes' mass share per date; `signal` is unchanged bit for bit. Refuses
+  // (InvalidArgument) under another rule, after finish or on a malformed flag row; OutOfRange when
+  // the planes exceed the working budget. Nothing is kept on refusal.
+  [[nodiscard]] atx::core::Status set_theme_sleeves(std::span<const atx::u8> fast);
  private:
   struct Impl;
   explicit IcComposition(std::unique_ptr<Impl>);
