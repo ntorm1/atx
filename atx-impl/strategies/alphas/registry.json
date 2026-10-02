@@ -336,6 +336,27 @@
       "producer": "atx-engine/tools/research_fields_sec.py",
       "clock": "sec-acceptance-lag1-v1: an 8-K row is usable at session t iff its EDGAR acceptance is before 22:00 UTC of session t-1 (lag 1 session)",
       "basis": "signed sessions from t to the expected next earnings announcement E* (0 = expected today, negative = overdue): E* = the earliest pending yoy_364 date of the CIK's visible primary 8-K item 2.02 rows more than 45 days after the latest announcement A, else A + 91 days; NaN without a visible primary 2.02 within 200 days or when overdue by more than 63 sessions (formula id sec-ea-days-to-expected-yoy364-consume45-fb91-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"
+    },
+    "ea_days_since": {
+      "formula_id": "sec-ea-days-since-reaction-v1",
+      "origin": "fields_v8",
+      "producer": "atx-engine/tools/research_fields_sec.py",
+      "clock": "sec-acceptance-lag1-v1: a source row is usable at role session t iff available_at (UTC, the EDGAR acceptance resolved by atx-db acceptance-per-file-clock-v1) < 22:00 UTC of session t-1 on the session calendar (role sessions inside the role range, the NYSE rule calendar nyse-rule-v1 outside it); rows available on or after 2024-01-01 are dropped; sessions are counted on the same calendar",
+      "basis": "t minus the reaction_session (atx-db: session_date for pre-market, intraday and closed-day releases, the next session for post-market) of the latest visible primary announcement A (formula id sec-ea-days-since-reaction-v1; producer atx-engine/tools/research_fields_sec.py, fields-v8)"
+    },
+    "inst_own_share": {
+      "formula_id": "13f-asof45-io-share-qe-v1",
+      "origin": "fields_v9",
+      "producer": "atx-engine/tools/research_fields_holdings.py",
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "basis": "13F institutional ownership at the anchor quarter P: agg_asof45 inst_shares of the security / this run's shares_out at the last role session on or before P (both in P's share basis); NaN when that session is before the role, shares_out there is not finite and positive, or the ratio exceeds 2 (declared plausibility, counted) (formula id 13f-asof45-io-share-qe-v1; producer atx-engine/tools/research_fields_holdings.py, fields-v9)"
+    },
+    "grp_ff12f49": {
+      "formula_id": "ff12-money-ff49-v1",
+      "origin": "fields_v10",
+      "producer": "atx-engine/tools/research_fields_v8.py",
+      "clock": "the clock of this run's grp_ff12 and grp_ff49 (fund-events-lagged-v1 on the SIC table: the linked CIK's latest visible valid SIC row, --fund-lag-sessions; both from the same row): row t reads their row t only",
+      "basis": "ff12-money-ff49-v1, cellwise on row t: ff12 = grp_ff12[t], ff49 = grp_ff49[t]; 100 + ff49 when ff12 == 11 (Money) and ff49 in {45, 46, 47, 48} (145 Banks, 146 Insur, 147 RlEst, 148 Fin); otherwise ff12 (a Money SIC that Siccodes49 does not list -> 11; every non-Money cell -> ff12 bit for bit, 1-10 and 12; ff12 NaN -> NaN) (formula id ff12-money-ff49-v1; producer atx-engine/tools/research_fields_v8.py, fields-v10)"
     }
   },
   "alphas": [
@@ -1154,6 +1175,261 @@
         "deviation": "respelled by the draft's alignment rule (prereg section 1): 1{ea_days_to_expected < 0}, ea_days_since dropped; the cut < 0 stays (Ruling W2-b): .67% of cells read -1 for one session from the 8-K acceptance lag (disclosed); the 8-K is the only clock (no advance scheduling notice), so only the overdue state is observable; is_primary uses a later-10-Q label (small presence look-ahead, W5a concern 2); COVID delays kept (overdue share peaks at 21.7% on 2020-05-01, no carve-out)"
       },
       "added_in": "v71"
+    },
+    {
+      "id": "ear_mom_12m",
+      "dsl": "rank(ts_mean_mp((((ea_days_since == 2) ? (((close / delay(close, 5)) - 1) - ts_sum(mkt_ret, 5)) : 0)), 252, 126))",
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Gerard and Jehl (2025, FAJ) The Many Facets of Stock Momentum; Chan, Jegadeesh and Lakonishok (1996, JF)",
+      "prior_sign_source": "Gerard and Jehl (2025, FAJ) The Many Facets of Stock Momentum; Chan, Jegadeesh and Lakonishok (1996, JF)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "earn_surprise_comp",
+      "dsl": "rank(decay_linear((((rank(sue) + rank(((((ni_q / be_lag1q) - (ni_q_lag4 / be_lag1q_lag4)) + (0 * log(be_lag1q))) + (0 * log(be_lag1q_lag4))))) + rank((((txt_q - txt_q_lag4) / at_lag4) + (0 * log(at_lag4))))) / 3), 21))",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Bernard and Thomas (1989, JAR); Hou, Mo, Xue and Zhang (2021, RF); Thomas and Zhang (2011, JAR); composite: Novy-Marx (2015, WP); Martineau (2022, CFR)",
+      "prior_sign_source": "Bernard and Thomas (1989, JAR); Hou, Mo, Xue and Zhang (2021, RF); Thomas and Zhang (2011, JAR); composite: Novy-Marx (2015, WP); Martineau (2022, CFR)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "op_rd",
+      "dsl": "group_rank(decay_linear((((oi_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12)",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "prior_sign": 1,
+      "citation": "Novy-Marx and Medhat (2025, NBER WP 33601); Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)",
+      "prior_sign_source": "Novy-Marx and Medhat (2025, NBER WP 33601); Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "dtc_slow",
+      "dsl": "rank(decay_linear((-1 * (si_shares / ts_mean(volume, 126))), 21))",
+      "theme": "short_interest",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Hong, Li, Ni, Scheinkman and Yan (2015, NBER WP 21166) Days to cover and stock returns",
+      "prior_sign_source": "Hong, Li, Ni, Scheinkman and Yan (2015, NBER WP 21166) Days to cover and stock returns",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "pct_accruals",
+      "dsl": "rank(decay_linear(((-1 * ((ni_ttm - cfo_ttm) / abs(ni_ttm))) + (0 * log(abs(ni_ttm)))), 21))",
+      "theme": "profitability_quality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Hafzalla, Lundholm and Van Winkle (2011, TAR) Percent accruals",
+      "prior_sign_source": "Hafzalla, Lundholm and Van Winkle (2011, TAR) Percent accruals",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "fip_id",
+      "dsl": "rank(decay_linear(delay(ts_mean(sign(((close / delay(close, 1)) - 1)), 231), 21), 21))",
+      "theme": "price_momentum",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Da, Gurun and Warachka (2014, RFS) Frog in the pan",
+      "prior_sign_source": "Da, Gurun and Warachka (2014, RFS) Frog in the pan",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "si_low_io",
+      "dsl": "rank(decay_linear((-1 * ((si_shares / shares_out) / inst_own_share)), 21))",
+      "theme": "short_interest",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Asquith, Pathak and Ritter (2005, JFE); Nagel (2005, JFE)",
+      "prior_sign_source": "Asquith, Pathak and Ritter (2005, JFE); Nagel (2005, JFE)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "ebit_ev_f49",
+      "dsl": "group_rank(decay_linear((((oi_ttm / ((me_company + debt) - che)) + (0 * log(oi_ttm))) + (0 * log(((me_company + debt) - che)))), 21), grp_ff12f49)",
+      "theme": "value",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials",
+      "prior_sign_source": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "gpa_f49",
+      "dsl": "group_rank(decay_linear(((gp_ttm / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "A",
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020); S-12 FF49 financials",
+      "prior_sign_source": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "cbop_f49",
+      "dsl": "group_rank(decay_linear((((cfo_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "prior_sign": 1,
+      "citation": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE); S-12 FF49 financials",
+      "prior_sign_source": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "noa_f49",
+      "dsl": "group_rank(decay_linear(((-1 * (noa / at_lag4)) + (0 * log(at_lag4))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets; S-12 FF49 financials",
+      "prior_sign_source": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets; S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "accruals_f49",
+      "dsl": "group_rank(decay_linear(((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))) + (0 * log(((at + at_lag4) / 2)))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS); S-12 FF49 financials",
+      "prior_sign_source": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "opex_at_f49",
+      "dsl": "group_rank(decay_linear((((sale_ttm - oi_ttm) / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm; S-12 FF49 financials",
+      "prior_sign_source": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm; S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "asset_growth_f49",
+      "dsl": "group_rank(decay_linear(((-1 * ((at / at_lag4) - 1)) + (0 * log(at_lag4))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008); S-12 FF49 financials",
+      "prior_sign_source": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "q5_eg_f49",
+      "dsl": "group_rank(decay_linear(((((-0.029 * log((me_company / at))) + (0.516 * (cfo_ttm / at))) + (0.771 * ((ni_q / be_lag1q) - delay((ni_q / be_lag1q), 252)))) + (0 * log(be_lag1q))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "prior_sign_source": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
     }
   ]
 }

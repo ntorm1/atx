@@ -1500,3 +1500,81 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   lo1-dlret; the live `base-b0c.json` is on lo3-dlret since batch 1b. The lane merges root into its branch,
   corrects the expectation to the live spec, and root merges by SHA with the next batch -- the spec is locked
   and correct; the test predates it -- cost if wrong: none (tests only).
+- Ruling PM6-6 (gross matching: L is a cell parameter; declared before any R-1 return is read; supersedes "L is
+  not re-derived" of goal prompt 5): from R-1 on, every construction cell runs at the L that puts its all-rows
+  gross (the gated mechanics key) within +/- .005 of its parent's all-rows gross. Procedure, mechanics only:
+  (1) NAV at the parent's L, read only the mechanics keys (never `stdout.log`, never a return, NAV, Sharpe or
+  P&L figure); (2) if |G - G_parent| <= .005 the cell stands at that L; else L' = L x G_parent / G rounded to 4
+  decimals, set by `change.set {"nav.leverage", "nav.output"}` in a new spec (a locked spec is never edited),
+  NAV re-run, gross re-checked; one further linear correction is allowed; (3) only then are the cell's returns
+  read. Calibration runs are not trials (no return is read from them) and their outputs are never opened beyond
+  mechanics; the cell counts once in N. An accepted cell's L is inherited by its children. A cell that needs
+  L < 1 (the executable refuses it) or misses +/- .005 after two corrections fails mechanics and is ledgered
+  rejected. The mechanics limits ([.90, 1.05] etc.), the acceptance rule and every mechanical criterion are
+  unchanged and are evaluated on the matched run. R-1: the run at L 1.247 (gross 1.0672) is step (1); R-1 runs
+  at L' (about 1.147) and is ledgered once, N 41. The scorecard states each cell's L -- the plan allows it
+  ("Construction cells run at L 1.247 unless the task changes it"); L 1.247 was calibrated once in v6 on the old
+  composition's tracking ratio (.80), so under fixed L every cell that slows the target (R-1, R-3, R-4, R-10,
+  R-11) is rejected on gross for a calibration artefact, not on merit; gross is linear in L to .1% (v6u pair);
+  matched dollar gross makes the paired test fairer, and no gain can come from gearing -- cost if wrong: the
+  construction was amended after a mechanics read (not a return read); a reader who holds L fixed counts R-1 as
+  rejected at N 41 and discounts cells whose L moved; R-1's PM5-11 criterion scales as 1/L and is now judged at
+  matched gross (stricter than at 1.067).
+- Disk inventory (read-only, report `disk-inventory.md`, folded in with this entry): 57.3 GiB free. Classes
+  (freed if deleted): NEEDED 85.4, CANDIDATE 65.2, SAFE-CACHE 11.3, OWNER-DECIDES 45.0 GiB. Found: the worktrees of
+  pools 3, 4, 9, 11 are no longer on disk (four worktrees went to the Recycle Bin at 05:42-05:43 on 2026-10-02,
+  18.8 GiB, not by this session); every lane commit is intact (`834d5a05`, `6ea76460`, `c4bd8d09`, `1bd448cd`,
+  `8f48ee39`, `98ef8d89` all resolve and their branches exist).
+- Ruling PM6-7 (what is deleted; parked while the integrator held root): step A, now, outside root: the CMake
+  build trees and per-tree deps of the lane worktrees pools 7, 8, 10 (`build-equity`, `build-equity-rel`,
+  `build-equity-bench`, `deps`, `build`), their python caches, and `C:/atx-cache/deps-rel-pool5`. Step B, when
+  root is free, in `C:/atx-wt/pool-2`: `build-equity-rel` (Release v8-13, not adopted), `build-hygiene`,
+  `deps/hygiene`, and in `build-equity/` exactly: `mega-candidate-cache`, `mega-candidate-cache-v6`,
+  `mega-candidate-cache-v6u` with `-v7l1` (one link group), `mega-candidate-cache-v61-r7`,
+  `mega-candidate-cache-v7rel`, `recent-fast-train-2020-2022-v2-fields-v2` to `-v6`,
+  `recent-fast-train-2020-2022-v1-fields-v1`, `recent-fast-train-2020-2022-v2-lo1-fields-v6`, `-lo1-fields-v8`,
+  `-lo1-fields-v7-r7b`, `-lo1-fields-v7-r7c`, `v8-i3p4-d-w12-cache`, `statarb-cluster-v1`, and the four retired-
+  identity stores `v8-i5c-i6-fields`, `v8-i3p4-c-fields2`, `v8-cache-b3`, `v8-i3p4-d-w4-cache` (identities 2, 3,
+  5, 6, B-3 were retired by PM4-3; 1, 4, 7, 8 read none of them). Kept: every `*-run*` receipt dir; ccache and
+  the vcpkg binary archive (they are what makes integration 8's wide rebuild fast); `b0c-risk`, the
+  `train-2020-2023-base*` chain, `recent-projection-v2`; every small NAV / weights / cards output (provenance,
+  about 4 GiB in 181 dirs, not worth the risk); everything classed NEEDED. Not touched, owner decides: the
+  Recycle Bin (18.8 GiB), `C:/atx` (the owner's tree), the hidden-window dirs
+  `recent-fast-validation-2023-2024-v1*` (4.0 GiB, never opened), `atx-db/`, vcpkg user directories, the old
+  session scratchpad in `%TEMP%` -- zero references in any spec, pin, config, identity argv or re-run input; all
+  are rebuildable from recorded argv -- cost if wrong: hours of rebuild for a cache someone wanted; no pinned or
+  locked input is in the list.
+- Cleanup step A done (record `cleanup-step-a.md`): 11.09 GiB freed (57.37 -> 68.46 GiB free). In the lane
+  `build-equity` dirs only untracked and ignored content went (path-limited `git clean`; 77 tracked files per pool
+  kept); pools 7, 8, 10 clean before and after.
+- Cells batch 2c, R-1 (`r1-comp-v8-gm.json`, spec `60ac1feb`, L 1.1474): ACCEPTED, N 41. Gross .98171 against
+  B0c .98196 at the first matched run. Mechanics pass; criterion PM5-11 .02497 against .03469 pass. S2 net Sharpe
+  1.203 (B0c 1.133); dSR +.070, Memmel SE .205, p one-sided .362, two-sided .745. Net annual return 4.47% (4.42%);
+  gross of cost 5.76% (6.05%); net Sharpe at 4x NAV 1.103 (.978). E-45: R-10 and R-11 stay defined. The accepted
+  parent is R-1-gm.
+- R-2 stopped before any read (admission trials 0, nothing ledgered): library v8.0 registered (roster 52: 7
+  admission trials, 8 re-screens, 11 removed; 37 kept members byte-identical in the u pass); the cycle refuses the
+  marginal phase: "pool member accruals is not in --library" (the parent's themes hold members v8.0 removed or
+  replaced). Ruling pending; R-3 waits on it.
+- Cleanup step B done (record `cleanup-step-b.md`): 24 of 25 ruled directories deleted in root, 53.75 GiB freed;
+  121.19 GiB free (57.37 at the start). `build-equity-rel` skipped by the date rule (1.4 GiB; stays). Zero
+  reference hits in 18 spec / prereg / config files; root clean before and after.
+- Ruling PM6-8 (R-2 marginal phase, declared before any R-2 read; memo `r2-marginal-options.md`): option (i):
+  in `lib-v80.json` delete `marginal.themes` and set a new `marginal.output`; relock; the cell resumes at
+  marginal. The marginal IC of R-2 is then residualised on the parent's combined signal alone (1 regressor, not
+  1 + 10 theme composites) and is reported as such -- the marginal phase gates nothing in R-2 (the gate reads the
+  admission only; plan Task R-2 step 2); the parent's theme file weights 11 members library v8.0 removed or
+  replaced, so the registered pool is ill-defined for a wave with removals, which no registered text
+  anticipated; (i) is spec-only (PM5-21 holds), keeps a K6 diagnostic, and the cell has no ledger line and no
+  read -- cost if wrong: R-2's K6 rows are a weaker diagnostic than F-2 describes (theme-level overlap of the 7
+  new members is not netted out); R-7 and R-12 only add members and keep the full pool.
+- Ruling PM6-9 (K1 plan route for add-alpha on the 4-year role): the `--plan-json` route the integrator used
+  (plans from the executable's metadata-only `--plan-only --max-memory-mib 2560` on the exact library bytes;
+  add-alpha verified the library SHA on all 15 calls) is accepted for R-2 and standing for R-7 and R-12; the 15
+  plan files are committed to the sprint directory with their digests; `exe_plan`'s missing `--max-memory-mib`
+  is fixed at integration 8 -- `--plan-json` is a registered option (task-A2-report) and 2,560 MiB is the W0-c
+  cap; a plan-only call reads no payload -- cost if wrong: none measurable (the plan carries no statistic).
+- Ruling PM6-10 (FIX-6 round 5, tests only, pool 10): `test_registry_seed_is_the_v71_library` checks the v7.1
+  seed as a prefix (alphas, fields, themes) with later entries as appends; the lane also checks that
+  `scripts/tests` accepts the hand-written `r1-comp-v8-gm.json` and `lib-v80.json` -- a registration is the
+  designed use of the registry -- cost if wrong: none (tests only).

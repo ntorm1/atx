@@ -1,0 +1,36 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r1-comp-v8-gm",
+  "description": "Cell R-1 at matched gross (Ruling PM6-6; plan section 9, N 41): the registered change of r1-comp-v8.json unchanged (composition ew-theme-std-v1: per date and theme the tier-weighted mean of the signed member ranks, re-ranked over names with a present member, blended at 1/T with the member cap 1/(2T); re-grades res_mom_12_1 B+ to B-, ear B+ to C+, ins_opp B- to C+; fit --composition ew-theme-std-v1; Ruling E-28: the weighted IC pass under 3,072 MiB), plus the cell's aim leverage L set so that its all-rows S2 gross matches the parent's within .005. Calibration step (1) is r1-comp-v8.json's NAV at L 1.247 (mechanics only: all-rows gross 1.0671643034, never a return read); B0c's all-rows gross .9819643798; L = 1.247 x .9819643798 / 1.0671643034 = 1.14744 -> 1.1474 (4 decimals). Fit, card and w are r1-comp-v8.json's outputs (resumed as done); only the NAV runs anew (new nav.output) and the cell is ledgered once, from this run. Acceptance: paired S2 net dSR > 0 against the parent AND mechanics AND turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent (Ruling PM5-11).",
+  "parent": "base-b0c.json",
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8-r1-std",
+      "card.output": "build-equity/mega-cards-v8-r1-std",
+      "ic.w_output": "build-equity/mega-v8-r1w-train-std",
+      "nav.output": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474",
+      "nav.leverage": "1.1474",
+      "monitor.output": "build-equity/mega-monitor-v8-r1-std",
+      "runner.phases.w.max_rss_mib": 3072,
+      "ic.w_flags": {
+        "--max-memory-mib": "3072"
+      }
+    },
+    "flags": {
+      "fit": {
+        "--composition": "ew-theme-std-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+      "sha256": "119d4cd0cb4745204cd6a762ce230ae9603901814d5f97d42484fc20afa71615"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-b0b-ew/admission.json",
+      "sha256": "29357ece3fee19cc18a14d4c957bf8934ecdca3c6bd9f006dffc10eac142a18c"
+    }
+  }
+}
