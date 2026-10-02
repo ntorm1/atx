@@ -42,8 +42,8 @@ with K1 (`--plan-only`) before any `add-alpha`.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | C-1 | `stmom` | price_momentum | yes: turnover-conditioned short-horizon continuation | B- | **READY** | close, volume, shares_out | 41 | 5 | 21 | 1 | 178 | `06dc6238d7e94089` | mid-high |
 | C-2 | `ind_leadlag` | price_momentum | yes: cross-firm (big-to-small) diffusion | C+ | **READY** | close, me_company, grp_ff49 | 21 | 7 | 24 | 2 | 393 | `d2d9b4d24b474944` | high |
-| C-3 | `nt_late` | filing_events | yes: late-filing notice | B- | **NEEDS-FIELD** | `nt_first_126` (sec_filings `events.parquet`) | 0 | 3 | 4 | 1 | 25 | `bafc4e3a93204e59` | event |
-| C-4 | `earn_season` | reversal_seasonality | yes: seasonality of earnings levels | B- | **NEEDS-FIELD** | `earn_season_rank` (fundamentals stage), `ea_days_to_expected` | 0 | 5 | 11 | 2 | 99 | `64a0be8f2c71efd1` | mid |
+| C-3 | `nt_late` | filing_events | yes: late-filing notice | B- | **FIELD-BUILT** (uncompiled DSL, unrun on data) | `nt_first_126` (sec_filings `events.parquet` + `filings.parquet`; draft fields v13) | 0 | 3 | 4 | 1 | 25 | `bafc4e3a93204e59` | event |
+| C-4 | `earn_season` | reversal_seasonality | yes: seasonality of earnings levels | B- | **FIELD-BUILT** (uncompiled DSL, unrun on data) | `earn_season_rank` (fundamental events; draft fields v13), `ea_days_to_expected` (v9) | 0 | 5 | 11 | 2 | 99 | `64a0be8f2c71efd1` | mid |
 | C-5 | `lazy_prices` | filing_events | yes: periodic-filing text | B- | **NEEDS-DATA** | `lp_sim_cos` (atx-db `text/`, landing 7%) | 0 | 2 | 2 | 1 | 16 | `8a175c874813e0c8` | very low |
 | C-6 | `tnic_mom` | price_momentum | yes: product-market (text) peers | B- | **NEEDS-DATA** | `tnic_peer_ret21` (atx-db `classification_tnic/`, landing 7%) | 0 | 2 | 2 | 1 | 21 | `0be5696997a181a7` | high |
 | C-7 | `conn_rev` | reversal_seasonality | yes: common-fund-ownership pressure | C+ | **NEEDS-DATA** | `conn_ret63` (atx-db `nport/`, not built) | 0 | 3 | 4 | 1 | 23 | `4a1cffe83a007531` | mid-high |
@@ -52,7 +52,11 @@ with K1 (`--plan-only`) before any `add-alpha`.
 | C-10 | `iv_skew` | options_implied | yes: shape of the IV surface | C+ | **NEEDS-DATA** | `iv_put_otm_21d` (no source column registered; v7 D8) | 20 | 4 | 8 | 2 | 60 | `1dc4382ae845968f` | low-mid |
 
 All rows pass the house budget (bars <= 314, runner <= 336; slots <= 7; extra fields <= 5; DSL <= 4,096 B).
-`ind_leadlag` sits at the slot limit (7): ruling LIB3-g. Counts: READY 2, NEEDS-FIELD 2, NEEDS-DATA 6.
+`ind_leadlag` sits at the slot limit (7): ruling LIB3-g. Counts: READY 2, NEEDS-FIELD 2, NEEDS-DATA 6 at declaration;
+since 2026-10-01 (lane FIELDS-V9, ruling PM5-13) the two NEEDS-FIELD candidates are FIELD-BUILT: their fields exist as
+the off-by-default draft module `atx-engine/tools/research_fields_v9.py`, draft list fields v13
+(`prepare_research_fields_draft.py` `FIELDS_V13_DRAFT`), synthetic tests only; no fields directory is built, the DSL is
+not compiled (K1) and nothing is run on data (task-FIELDS-V9-report.md).
 
 Finding behind the low READY count: the price-and-volume space is mostly already measured on platform data (74
 hypotheses in three pv libraries plus the atx-db characteristics screen, which includes Gervais-Kaniel-Mingelgrin
@@ -134,7 +138,7 @@ rank(((group_mean((((close / delay(close, 21)) - 1) * (((group_rank(me_company, 
 - **Static.** 7 slots by the mirror: at the house limit (LIB3-g). A leaner spelling without the NaN alignment term
   changes the denominator when a big firm's r is NaN (not the same semantics), so it is not offered.
 
-### C-3 `nt_late`: short after a first late-filing notice (NEEDS-FIELD)
+### C-3 `nt_late`: short after a first late-filing notice (FIELD-BUILT: uncompiled DSL, unrun on data)
 
 - **Registration.** filing_events; tier B- (the v8 R7-6 registration, withdrawn at 0 trials for data); prior sign +1;
   origin `prior`. Citation: Bartov, E. and Y. Konchitchki (2017), "SEC Filings, Regulatory Deadlines, and Capital
@@ -148,7 +152,8 @@ rank(((group_mean((((close / delay(close, 21)) - 1) * (((group_rank(me_company, 
 - **Data now exists.** v8 withdrew this because no producer read NT forms. The `sec_filings` stage the K8 fields already
   pin carries `events.parquet` with NT 10-K, NT 10-Q and NT 20-F rows and their EDGAR acceptance clock
   (`ALPHA_PANEL_SEC.md`, stage `sec_filings`): a new reader in the SEC module, no atx-db change.
-- **Field `nt_first_126`** (spec section 3, F-L1). **DSL** (v8 F-E semantics):
+- **Field `nt_first_126`** (spec section 3, F-L1; built by lane FIELDS-V9 in `research_fields_v9.py`, formula id
+  `sec-nt-first365-126-v1`, draft fields v13). **DSL** (v8 F-E semantics):
 ```
 rank((-1 * nt_first_126))
 ```
@@ -158,7 +163,7 @@ rank((-1 * nt_first_126))
   earnings release); `nonreliance_402` .05-.15 (restatements cause NT filings). Flagged share well under 1% of names.
 - **Breadth.** A filing event no member uses.
 
-### C-4 `earn_season`: earnings seasonality in the expected announcement window (NEEDS-FIELD)
+### C-4 `earn_season`: earnings seasonality in the expected announcement window (FIELD-BUILT: uncompiled DSL, unrun on data)
 
 - **Registration.** reversal_seasonality (a recurring calendar pattern; LIB2's `day_rev_freq` precedent for joining
   this theme without a text edit); tier B-; prior sign +1; origin `prior`. Citation: Chang, T., S. Hartzmark, D. Solomon
@@ -175,7 +180,8 @@ rank((-1 * nt_first_126))
   test found. Risk [inference]: the level of the US earnings-announcement premium has disappeared after 2004
   (Heitz-Narayanamoorthy-Zekhnini 2020, working paper); that is the base return of announcers, not the seasonality
   spread this candidate trades.
-- **Field `earn_season_rank`** (F-L2). **DSL:**
+- **Field `earn_season_rank`** (F-L2; built by lane FIELDS-V9 in `research_fields_v9.py`, formula id
+  `chss-earnrank-ni20q-v1`, draft fields v13; the window field `ea_days_to_expected` is the existing v9 field). **DSL:**
 ```
 rank((((ea_days_to_expected >= 0) && (ea_days_to_expected <= 21)) ? (earn_season_rank - 10.5) : 0))
 ```
@@ -319,6 +325,23 @@ Every field: point in time; no row with `available_at` at or after `research_win
 READY candidates need no new field and no registry field row (`shares_out`, `me_company`, `grp_ff49`, `ni_ttm`,
 `grp_ff12`, `iv_atm_21d`, `ea_days_to_expected` are registry fields).
 
+**Built (lane FIELDS-V9, 2026-10-01, ruling PM5-13): F-L1 and F-L2** as `nt_first_126` and `earn_season_rank` in the
+off-by-default draft module `atx-engine/tools/research_fields_v9.py`, registered only by
+`atx-engine/tools/prepare_research_fields_draft.py` (draft list fields v13 = fields v12 + `nt_first_126`,
+`earn_season_rank`); the plain builder and the fields v9-v12 lists are unchanged. Readings fixed in the build (details,
+point-in-time argument and the build command in task-FIELDS-V9-report.md):
+- F-L1: "usable" is the K8 lag rule exactly (usable from the session after the first session whose 22:00 UTC mark
+  follows `available_at`: a notice accepted after 22:00 UTC on d is usable from d+2); "first" = no other original NT
+  10-K, NT 10-Q or NT 20-F of the CIK with `available_at` in [`available_at` - 365 days, `available_at`); one row per
+  (CIK, accession), the later clock; the presence rule reads the same stage's `filings.parquet` (original forms of atx-db's
+  'domestic' regime: 10-K, 10-Q, 10-KT, 10-QT and the pre-2009 10-K405 / 10-KSB family).
+- F-L2: A = the anchor of the events row the issuer fields select at t (the latest visible fiscal quarter, whether or
+  not its own `ni_q` is finite; A's `ni_q` is not ranked); NaN when that row amends an older quarter than the latest
+  visible one (A + 1 would not be the quarter announced next). The window field `ea_days_to_expected` (v9) is built from
+  past announcements only (atx-db yoy_364 `next_expected_date` of each visible primary announcement, fallback +91
+  days), never the realised date; its registered caveat stands (atx-db's `is_primary` label uses periodic reports that
+  can be filed after the announcement).
+
 ## 4. Registry rows and `add-alpha` lines (strings frozen; root applies in v9)
 
 The registry has no off-by-default draft entries (`add-alpha` registers directly), so, as LIB2 did, the registration
@@ -351,7 +374,9 @@ Field rows (registry `fields`, added with the field build that carries them): `n
    only) and validates the house budget. Expected K1 rows: `stmom` bars 41, slots 5, extra field `shares_out`;
    `ind_leadlag` bars 21, slots 7, extra fields `me_company`, `grp_ff49`.
 2. The other eight: K1 refuses an unknown field, so each runs only after its field is in a fields manifest and the
-   registry; strings are frozen here; expected rows in section 1.
+   registry; strings are frozen here; expected rows in section 1. `nt_late` and `earn_season` (FIELD-BUILT) compile
+   once a draft fields v13 directory carrying `nt_first_126` / `earn_season_rank` is built after the v8 freeze gate
+   (task-FIELDS-V9-report.md section 3) and their field rows are in the registry.
 3. A row that differs from section 1 is reported; a refused string is rewritten mechanically or withdrawn (section 0).
 
 ## 6. Rulings root needs (decision -- why -- cost if wrong)
