@@ -1753,6 +1753,7 @@ a = sys.argv[1:]
 if "--help" in a:
     print("equity-strategy-ic --library JSON ... [--no-composition]\n  equity-strategy-ic marginal --candidate-cache DIR")
     sys.exit(0)
+Path(__file__).with_name("fake_ic_argv.json").write_text(json.dumps(a))   # the last plan argv, for the tests
 lib = json.loads(Path(a[a.index("--library") + 1]).read_text())
 declared = {f["name"] for f in lib["fields"]} - {"close", "raw_close", "volume"}
 rows = [{"id": c["id"], "dsl_sha256": hashlib.sha256(c["dsl"].encode()).hexdigest(),
@@ -1921,6 +1922,10 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path):
     (root / "build-equity" / "recent-fast-train-2020-2022-v2-lo1" / "manifest.json").write_text(json.dumps(
         {"universe": {"id": "linked-operating-v1"}, "dates": 1405, "score_begin": 399}))   # the 4-year role
     assert RC.main(add_argv(root, "ins_opp")) == RC.EXIT_OK                          # the exe's --plan-only rows
+    plan_argv = json.loads((root / "bin" / "fake_ic_argv.json").read_text())
+    assert "--plan-only" in plan_argv                                                 # PM6-9: the spec's IC cap
+    assert plan_argv[plan_argv.index("--max-memory-mib") + 1] == RC.option_value(spec["ic"]["flags"],
+                                                                                   "--max-memory-mib") == "1536"
     child = RC.load_spec(root / "scripts" / "specs" / "v8" / "lib-v71a.json")
     assert child["runner"]["phases"] == {"u": {"seconds": 300, "max_rss_mib": 2560},
                                          "w": {"seconds": 300, "max_rss_mib": 2560}}   # OD-2, written as spec data

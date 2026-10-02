@@ -275,10 +275,12 @@ def plan_for(parent_spec: dict, root: Path, library_bytes: bytes, lib_id: str, f
     fdm = f"{fields_dir}/manifest.json"
     if res.sha(role) is None or res.sha(fdm) is None:
         raise AddAlphaError(f"K1 plan: the role {role} and the fields {fdm} must exist (or pass --plan-json)")
+    cap = RC.option_value(c.spec["ic"].get("flags", []), "--max-memory-mib")   # PM6-9: the plan under the run's cap
     with tempfile.TemporaryDirectory() as tmp:
         lib = Path(tmp) / f"{lib_id}.json"
         lib.write_bytes(library_bytes)
-        return G.exe_plan(str(exe), lib, role, res.sha(role), fields_dir, res.sha(fdm), cwd=root, env=c.env())
+        return G.exe_plan(str(exe), lib, role, res.sha(role), fields_dir, res.sha(fdm), cwd=root, env=c.env(),
+                          max_memory_mib=None if cap is None else int(cap))
 
 
 def parse_limits(items: list[str]) -> dict:
