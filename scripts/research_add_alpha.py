@@ -36,7 +36,7 @@
    composition weights as the theme regressors (inputs.reference_weights); "receipts": "every-phase", "verdict": true,
    summ.dsr_n "ledger+1", summ.origin = the new members' origin class (the most searched of them; review C-2: the cell
    is scored under nav_summ --protocol v8, the parent's summ.extra kept without its --origin); the OD-2 caps written
-   into runner.phases when they apply;
+   into runner.phases when they apply, and runner.phases.marginal (MARGINAL_CAPS) when the parent's spec has none;
 6. locks it (every pin computed from its file). A missing input leaves the spec unlocked (exit 3: `lock --write` later).
 
 Nothing is written when the registration, the library, the plan or the spec template fails (exit 2). A library that
@@ -67,6 +67,11 @@ FIELD_BUILDER_INPUTS = ("identity_bridge", "fund_events", "sic_events", "reuse_f
 REBUILT_INPUTS = ("library", "recipe", "baseline_library", "baseline_fields")   # + every reference_* input
 SHARED_FIT_STORE = "fit-work"           # C-1: the fitter / card / monitor store base <out base>/fit-work
 PARENT_PINNED = ("label_role",)         # review F-8: kept with the parent's pin (a changed file stops `lock`, exit 3)
+# Integration 8 item 5f: the marginal verb reads every library candidate against the pool and the theme composites,
+# so its time grows with the roster (R-7, 57 members: 170.3 s of the runner's 180 s; about 240 s at the roster cap 80,
+# PM7-13). Written into runner.phases.marginal as spec data (precedent OD-2); R-7's peak 252 MiB x 80 / 57 stays
+# under the runner's 1,536 MiB, so the memory cap is the runner's.
+MARGINAL_CAPS = {"seconds": 360}
 
 
 class AddAlphaError(Exception):
@@ -219,6 +224,9 @@ def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_
     od2 = {p: {k: v for k, v in c.items() if runner_caps[k] != v} for p, c in caps.items()}
     if any(od2.values()) and not s["runner"].get("phases"):
         s["runner"] = dict(s["runner"], phases={p: c for p, c in od2.items() if c})   # the caps are spec data
+    phases = s["runner"].get("phases") or {}
+    if "marginal" not in phases:                                                      # item 5f: MARGINAL_CAPS
+        s["runner"] = dict(s["runner"], phases=dict(phases, marginal=dict(MARGINAL_CAPS)))
     return s
 
 

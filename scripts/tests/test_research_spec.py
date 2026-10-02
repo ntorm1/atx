@@ -1144,7 +1144,8 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                      "nav": base["nav"]["output"].replace("-v71-", "-v80-"),
                      "monitor": "build-equity/mega-monitor-v8-b0a-v80"}              # the name rule
     assert (spec["ic"]["cache"], spec["fit"]["work_dir"]) == (base["ic"]["cache"], "build-equity/fit-work")   # C-1
-    assert spec["card"]["flags"] == base["card"]["flags"] and spec["runner"] == base["runner"]
+    assert spec["card"]["flags"] == base["card"]["flags"] and spec["runner"] == dict(   # + the marginal cap (5f)
+        base["runner"], phases=dict(base["runner"]["phases"], marginal=RA.MARGINAL_CAPS))
     assert spec["fields"] == dict(base["fields"], manifest_sha256=spec["fields"]["manifest_sha256"])
     assert spec["gate"] == {"name": "p1-v80", "admitted": ["v8_probe"], "require": "any", "sign_agrees": True,
                             "report": []}
