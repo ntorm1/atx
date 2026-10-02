@@ -9,9 +9,9 @@ through `add-alpha`) is the checker of record (R2-f).
 
 | item | content | count | commit |
 |---|---|---|---|
-| A | defect audit of the 52 v8.0 strings; repairs | 52 checked; 0 in the five named classes; 1 domain-guard defect (A-1) | see final reply |
-| B | refinements (one frozen string per member) | 4 | see final reply |
-| C | library-wide processing variants | 1 | see final reply |
+| A | defect audit of the 52 v8.0 strings; repairs | 52 checked; 0 in the five named classes; 1 domain-guard defect (A-1) | `6f7bae47` |
+| B | refinements (one frozen string per member) | 4 | `c622b4ab` |
+| C | library-wide processing variants; rulings, verification, risks | 1 | the commit after `c622b4ab` |
 
 ## Hygiene (what was read, what was not)
 
@@ -327,3 +327,101 @@ group_rank(decay_linear((-1 * correlation(ts_sum(((close / delay(close, 1)) - 1)
 - `q5_eg` with debt in q (HMXZ): 7 extra fields (exception needed) for the predictor with the smallest slope (-0.029).
 - `value_composite` with EBIT/EV as a fourth yield: 8 fields; overlaps ebit_ev_f49, already a member.
 - `smax`: see N-2.
+
+## C. Library-wide processing variants (1)
+
+### C-1 Value theme ranked within FF49 instead of FF12 (`value-ff49-v1`)
+
+- **Frozen rule.** Every member of the value theme replaces its group label (`grp_ff12`, or `grp_ff12f49` for ebit_ev_f49)
+  by `grp_ff49`; nothing else in any string changes. The other themes keep house rule R1 (FF12) as registered.
+- **Basis.** Ehsani, Harvey and Li (2023, FAJ 79(3)) "Is sector neutrality in factor investing a mistake?": for value, hedging
+  the 49 Fama-French industries is the best case (+0.42 SR, value-weighted, 1963-2020; quoted as the prior of
+  library-v8-draft R2-8, registered before any v8 read); intra-industry book-to-market predicts better than the raw ratio
+  (Cohen and Polk 1998, WP "The impact of industry factors in asset-pricing tests"; Asness, Porter and Stevens 2000, WP
+  "Predicting stock returns using industry-relative firm characteristics"). Mechanical: S-12's argument (ratios of banks,
+  insurers, REITs and trading firms are not comparable inside FF12 Money) holds for book, earnings, cash-flow and sales
+  yields as much as for EV/EBIT, and FF49 separates Money into its four FF49 industries; R2-8 fixed it for ebit_ev only.
+- **Strings** (all lookback 20; every field registered; mirror figures):
+
+| new id (replaces) | slots | nodes | extra fields | bytes | sha256 (16) | DSL |
+|---|---|---|---|---|---|---|
+| value_composite_v49 (value_composite) | 6 | 19 | 5 | 196 | `09fb156c56c6de79` | `(((group_rank(decay_linear((be / me_company), 21), grp_ff49) + group_rank(decay_linear((ni_ttm / me_company), 21), grp_ff49)) + group_rank(decay_linear((cfo_ttm / me_company), 21), grp_ff49)) / 3)` |
+| bm_v49 (bm) | 4 | 11 | 3 | 75 | `a37c3ecabe83b698` | `group_rank(decay_linear(((be / me_company) + (0 * log(be))), 21), grp_ff49)` |
+| ep_v49 (ep) | 4 | 11 | 3 | 83 | `0d1975e5a8f11aa5` | `group_rank(decay_linear(((ni_ttm / me_company) + (0 * log(ni_ttm))), 21), grp_ff49)` |
+| cfp_v49 (cfp) | 4 | 11 | 3 | 85 | `86aed3229acc7590` | `group_rank(decay_linear(((cfo_ttm / me_company) + (0 * log(cfo_ttm))), 21), grp_ff49)` |
+| fcfp_v49 (fcfp) | 3 | 9 | 4 | 75 | `408ba943fe971124` | `group_rank(decay_linear(((cfo_ttm - capx_ttm) / me_company), 21), grp_ff49)` |
+| ebit_ev_v49 (ebit_ev_f49) | 5 | 18 | 5 | 143 | `4a2b9ba77881892f` | `group_rank(decay_linear((((oi_ttm / ((me_company + debt) - che)) + (0 * log(oi_ttm))) + (0 * log(((me_company + debt) - che)))), 21), grp_ff49)` |
+| net_payout_v49 (net_payout) | 3 | 11 | 5 | 90 | `8b6e8423c1997896` | `group_rank(decay_linear((((dvc_ttm + prstkc_ttm) - sstk_ttm) / me_company), 21), grp_ff49)` |
+| sp_v49 (sp) | 4 | 11 | 3 | 87 | `1153ac469a8e35fc` | `group_rank(decay_linear(((sale_ttm / me_company) + (0 * log(sale_ttm))), 21), grp_ff49)` |
+| rd_me_v49 (rd_me) | 4 | 11 | 3 | 85 | `bf89d6a635c81096` | `group_rank(decay_linear(((xrd_ttm / me_company) + (0 * log(xrd_ttm))), 21), grp_ff49)` |
+
+- **Code path.** None to write: `research_cycle.py add-alpha --id <new> --dsl <string> --replaces <member> --rescreen`
+  with the replaced member's theme, tier, citation (plus "; within FF49: Ehsani, Harvey and Li 2023, FAJ"), form and
+  notes, nine calls in roster order (`generate_library.replace_members` keeps the roster position; `--rescreen` records
+  the same hypothesis in another peer group, Ruling R2-e). Flag absent = the parent library, byte-identical.
+- **Trials.** 9 re-screens (R2-e precedent), 0 admission trials, 1 construction cell; recommended as its own cell, after
+  the B wave, so the rule is attributable.
+- **Prior.** Positive for value; expected abs(rho) of each `_v49` with its original [est] .85-.95 (Money names move most).
+  Cost: coverage. `grp_ff49` is NaN for a SIC that Siccodes49 lists under no industry (manifest: "never 49 Other"), where
+  FF12 puts it in Other, so those names lose their value members (the four FF49 members already in the roster share this);
+  finer groups are smaller (a few FF49 industries hold under ten names, where ranks are coarse). Mechanical criterion
+  beside the prereg rule: the value members' covered member cells under `grp_ff49` counted from the payloads before the
+  cell (mechanics, no return read), and planned turnover per unit gross not higher.
+
+### C.1 Considered and not proposed
+
+- Per-theme decay half-life by signal speed (the brief's example). For the filing-clock members the input is a step that
+  changes once a quarter; a longer DSL decay only delays it (a monotone step is traded in full either way and the book's
+  theta .05 already smooths), and a shorter one is S-11, whose undecayed event form was measured before (B.5). The
+  aim-side versions are R-3 and R-4, not accepted. No blind prior either way.
+- Fundamental lag 0 (v6 review m4). The fund lag is one flag shared with the universe's SIC clock and the universe build
+  refuses a mismatch (N-1); it needs a split flag in `prepare_research_fields.py` and a fields rebuild for one session out
+  of about 28 sessions of news age (S-11). Small, and a data-protocol cell rather than a processing rule.
+- NaN-tolerant smoothing (`decay_linear_mp` so one missing input does not blank a member for 21 sessions): a numerical
+  rule with no published basis.
+
+## Rulings root needs (decision -- why -- cost if wrong)
+
+- **XIMP-a:** A-1 enters the X library as a rule-7 repair at 0 admission trials (`--replaces q5_eg_f49 --rescreen`), and R-2
+  stands -- the repair applies the string's own registered domain rule and touches sparse cells; the registration
+  disclosed the gap -- cost if wrong: the defect is counted as a variant and the X budget pays 1 trial.
+- **XIMP-b:** B-1..B-4 are 4 admission trials from the X budget (XPRE), one variant each, judged as one wave whole as R-2
+  was (a vetoed replacement does not bring its original back) -- each is one hypothesis with constants fixed here --
+  cost if wrong: a vetoed refinement removes a member that would have stayed; mitigation: XPRE may rule that a vetoed
+  replacement restores the original at 0 trials.
+- **XIMP-c:** C-1 is 9 re-screens and 1 construction cell, run after the B wave -- R2-e precedent (same hypotheses, another
+  peer group) -- cost if wrong: counted as admission trials it costs 9 against the X budget.
+- **XIMP-d:** B-1 rests on the producer's reading that `iv_atm_21d` is earnings-cleaned ("evidence suggests") -- the field
+  caveat is the only source in house -- cost if wrong: the refined spread keeps the pre-event IV bump of the raw series
+  and drops the post-event RV bump (still no worse than the canonical raw spread on the post-event half).
+- **XIMP-e:** N-2 (`smax` beside its canonical `smax5`) -- a library-composition call, not a refinement -- cost of no
+  decision: the low_risk theme keeps two lottery members.
+
+## How root verifies
+
+1. `git diff 3c6ae225 HEAD --stat` lists only this report: no code, registry, library or spec changed, so there is no
+   flag-absent identity to check.
+2. Each frozen string's SHA-256 equals the tables (A-1, B.0, C-1; first 16 hex shown).
+3. K1: run the add-alpha lines in a scratch copy (they run `--plan-only`, or take `--plan-json`); every K1 row must equal
+   the tables (required_lookback, num_slots, extra_fields; node_count including dead interned literals). A differing row
+   is reported; a string K1 refuses is withdrawn. Calibration of the mirror these tables come from: 48 of 48 rows of
+   `build-equity/v8-i3-plan-v71.json` (slots, lookback, extra fields, node count) and the 15 K1-equal rows of
+   library-v8-draft section 4 / R2-8.
+4. Fields: every field read is in `registry.json` `fields` and in the fields-v10 list of `scripts/specs/v8/lib-v80.json`
+   (`add-alpha` and `generate_library` refuse otherwise).
+
+## Cross-lane edits
+
+None.
+
+## Open risks
+
+- `bucket` inside `group_rank` (B-4) and `power(.., 1 - ts_count_nans(.., 1))` as a NaN-safe mask (B-1, B-2) have not been
+  through K1 or the IC runner on data in a roster member; the mirror and the typechecker rails say they compile (v9's
+  `stmom` uses `bucket` with `group_rank` the same way, also not yet K1-checked).
+- B-2 keeps a one-session gap for pre-market releases (8-K lag rule); B-3 concentrates the member on few names; C-1 loses
+  names with no FF49 industry.
+- Mandated reading exposed v7.1 TRAIN statistics of several members touched here (bac, iv_rv_spread, ins_opp, value
+  members): disclosed under Hygiene; the selection rule (B.0) and the C-1 basis do not use them.
+- Static figures are from a scratch mirror, not K1; a K1 difference on the 7-slot strings (A-1, B-1) could push them over
+  the house slot budget, in which case they are withdrawn or respelled mechanically before any read.
