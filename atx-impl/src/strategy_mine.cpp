@@ -617,6 +617,7 @@ co::Status run_mine(const MineConfig &cfg, std::ostream &progress) {
     context.max_promotions = cfg.max_promotions;
     context.max_cache_bytes = cfg.max_working_bytes;
     context.overlap_factor = mined_overlap_factor(cfg.budget);
+    context.rho_batch = cfg.rho_batch;
     ATX_TRY(const auto promotions, promote(trials, hurdle, context));
     const Json members = members_json(trials, promotions);
 

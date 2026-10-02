@@ -95,6 +95,12 @@ struct MineConfig {
   atx::usize min_dates{128};
   atx::usize max_promotions{16}; // confirm-read cap after the rho step (PM5-9); signals held
   atx::u64 max_working_bytes{2048ULL << 20};
+  // Test hook (lane MINE-JOIN), not a CLI option and not in the recipe: the most candidates one
+  // rho batch evaluates on one fresh promotion engine. 0 (the verb's value) is the free slots,
+  // max_promotions less the candidates kept, the bound the memory admission counts. Any other
+  // value changes only how the rho step is batched, never its result
+  // (StrategyMineCampaign.RhoBatchingNeverChangesThePromotion).
+  atx::usize rho_batch{0};
 };
 
 // The stage-1 templates of `fields`, in field order.

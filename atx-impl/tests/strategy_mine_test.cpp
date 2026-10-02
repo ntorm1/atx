@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <sstream>
 #include <string>
@@ -1427,6 +1428,116 @@ TEST(StrategyMineCampaign, UndefinedRhoAgainstAMemberFails) {
       EXPECT_FALSE(row.at("confirm_read").get<bool>()) << member << " " << dsl;
     }
     EXPECT_EQ(campaign.at("admitted").get<usize>(), 0U) << member;
+  }
+}
+
+// Lane MINE-JOIN (MINE-STAT's open risk): the promotion evaluates each rho batch on a fresh engine
+// (strategy_mine_promote.cpp evaluate_signals), so a promoted signal must not depend on which
+// engine evaluated it or on what that engine evaluated before. al::Engine keeps its slot pool
+// (zeroed when fresh, the previous program's values when reused) and grow-only scratch across
+// evaluate() calls. The 88 templates of the eight fixture fields, evaluated as evaluate_signals
+// does (the role's panel, the decision membership as the cross-section mask), give byte-equal
+// signals on a fresh engine per program, per batch of 5 (an uneven split) and of 16 (the default
+// cap: the first batch's free slots), on one engine for all 88 in order and in reverse order.
+TEST(StrategyMineCampaign, PromotionSignalsDoNotDependOnTheEngine) {
+  namespace al = atx::engine::alpha;
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  auto cfg = f.config("engines", 1, 1);
+  cfg.role.fields = {"p1", "p2", "p3", "copy", "n1", "swap", "neg", "flip"};
+  const auto role = st::ResearchRole::load(cfg.role);
+  ASSERT_TRUE(role.has_value()) << role.error().to_string();
+  const al::Panel &panel = (*role)->panel();
+  const std::span<const u8> mask = (*role)->member();
+  const al::Library lib{};
+  std::vector<al::Program> programs;
+  for (const std::string &dsl : st::mine_templates(cfg.role.fields)) {
+    auto ast = al::parse_expr(dsl, lib);
+    ASSERT_TRUE(ast.has_value()) << dsl;
+    auto genome = ex::analyze_into(std::move(*ast));
+    ASSERT_TRUE(genome.has_value()) << dsl;
+    auto program = al::compile(genome->ast, genome->analysis);
+    ASSERT_TRUE(program.has_value()) << dsl;
+    programs.push_back(std::move(*program));
+  }
+  ASSERT_EQ(programs.size(), 88U);
+  // programs[order[k]] for every k, a fresh engine every `batch` programs.
+  const auto evaluate = [&programs, &panel, mask](const std::vector<usize> &order, usize batch) {
+    std::vector<std::vector<f64>> out(programs.size());
+    std::unique_ptr<al::Engine> engine;
+    for (usize k = 0; k < order.size(); ++k) {
+      if (k % batch == 0U) {
+        engine = std::make_unique<al::Engine>(panel);
+        EXPECT_TRUE(engine->set_cross_section_mask(std::vector<u8>(mask.begin(), mask.end())));
+      }
+      auto signals = engine->evaluate(programs[order[k]]);
+      EXPECT_TRUE(signals.has_value()) << order[k];
+      if (!signals.has_value() || signals->alphas.empty()) continue;
+      out[order[k]] = std::move(signals->alphas.front().values);
+    }
+    return out;
+  };
+  std::vector<usize> forward(programs.size());
+  for (usize p = 0; p < forward.size(); ++p) forward[p] = p;
+  const std::vector<usize> backward(forward.rbegin(), forward.rend());
+  const std::vector<std::vector<f64>> reference = evaluate(forward, 1U);
+  const auto differ = [&reference](const std::vector<std::vector<f64>> &got) {
+    usize count = 0;
+    for (usize p = 0; p < reference.size(); ++p) {
+      const auto want = std::as_bytes(std::span<const f64>(reference[p]));
+      const auto have = std::as_bytes(std::span<const f64>(got[p]));
+      if (want.size() != D * N * sizeof(f64) ||
+          !std::equal(want.begin(), want.end(), have.begin(), have.end()))
+        ++count;
+    }
+    return count;
+  };
+  for (const usize batch : {usize{5}, usize{16}, programs.size()})
+    EXPECT_EQ(differ(evaluate(forward, batch)), 0U) << batch;
+  EXPECT_EQ(differ(evaluate(backward, programs.size())), 0U);
+}
+
+// Lane MINE-JOIN: the rho step batched three ways is one campaign. Pool members m2 and p2 (so the
+// shortlist's lead rank(p2) is blocked), --max-promotions 2, --budget 22 (the 22 templates of p1
+// and p2, F 1.47: a long shortlist). rho_batch 0 (the verb: the free slots, a fresh engine each),
+// 1 (a fresh engine per candidate) and 64 (the whole shortlist on one engine) write equal
+// promotions (every rho and confirm value), members, trial logs and registry heads. The verb's
+// batching reads more rows than the cap, so it ran more than one batch.
+TEST(StrategyMineCampaign, RhoBatchingNeverChangesThePromotion) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  const fs::path pool = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool, f.pool_files, "p2.f64", world.p2));
+  std::string sha;
+  ASSERT_TRUE(f.write_pool_manifest("batching.json", {"book"}, {"m2", "p2"}, sha));
+  std::vector<Json> promotions, members;
+  std::vector<std::string> logs, heads;
+  for (const usize batch : {usize{0}, usize{1}, usize{64}}) {
+    auto cfg = templates_only(f, "batch-" + std::to_string(batch));
+    cfg.pool_path = (pool / "batching.json").string();
+    cfg.pool_sha256 = sha;
+    cfg.budget = 22U;
+    cfg.max_promotions = 2;
+    cfg.rho_batch = batch;
+    std::ostringstream progress;
+    const auto status = st::run_mine(cfg, progress);
+    ASSERT_TRUE(status) << batch << ": " << status.error().to_string();
+    const fs::path out(cfg.output_directory);
+    const Json campaign = read_json(out / "campaign.json");
+    promotions.push_back(campaign.at("promotions"));
+    members.push_back(read_json(out / "mined_members.json").at("members"));
+    logs.push_back(text_of(out / "trials.csv"));
+    heads.push_back(campaign.at("registry").at("head").get<std::string>());
+  }
+  usize read = 0;
+  for (const Json &row : promotions.front()) read += row.at("rho_read").get<bool>() ? 1U : 0U;
+  ASSERT_GT(read, 2U) << promotions.front().dump();
+  for (usize k = 1; k < promotions.size(); ++k) {
+    EXPECT_EQ(promotions[k], promotions[0]) << k;
+    EXPECT_EQ(members[k], members[0]) << k;
+    EXPECT_EQ(logs[k], logs[0]) << k;
+    EXPECT_EQ(heads[k], heads[0]) << k;
   }
 }
 

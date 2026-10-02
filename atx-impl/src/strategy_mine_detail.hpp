@@ -141,6 +141,7 @@ struct PromotionContext {
   usize max_promotions{};
   u64 max_cache_bytes{};
   f64 overlap_factor{}; // mined_overlap_factor(--budget): the shortlist reads f2 / it (MINE-STAT)
+  usize rho_batch{};    // MineConfig::rho_batch (0: the free slots)
 };
 
 // Shortlist at `hurdle`, the greedy rho check over the whole shortlist, then the cap of

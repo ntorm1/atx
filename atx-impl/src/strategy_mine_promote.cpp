@@ -91,7 +91,10 @@ struct Kept {
 // A pair's rho reads only its own two rows, so the batches give the values one pass over the
 // whole list would; a list that fits the cap is one batch, the pre-PM5-9 pass. A candidate the
 // step never reaches keeps rho.read false. Rows are renumbered to the campaign's: the pool
-// members, then the shortlist (promotions_json names them).
+// members, then the shortlist (promotions_json names them). Lane MINE-JOIN: context.rho_batch (a
+// test hook; 0 in the verb) bounds a batch instead of the free slots -- smaller batches check the
+// same rows against the same earlier rows, and a batch wider than the free slots stops reading
+// once the cap fills (mined_rho_select), as one pass over the whole list does.
 co::Result<Kept> rho_step(const std::vector<MinedTrial> &trials, const PromotionContext &context,
                           std::vector<Promotion> &shortlist) {
   const usize cap = context.max_promotions;
@@ -100,12 +103,14 @@ co::Result<Kept> rho_step(const std::vector<MinedTrial> &trials, const Promotion
   usize next = 0;
   while (next < shortlist.size() && kept.positions.size() < cap) {
     const usize held = kept.positions.size();
-    const usize batch = std::min(cap - held, shortlist.size() - next);
+    const usize slots = cap - held;
+    const usize width = context.rho_batch == 0U ? slots : context.rho_batch;
+    const usize batch = std::min(width, shortlist.size() - next);
     std::vector<const ex::Genome *> genomes;
     for (usize j = 0; j < batch; ++j) genomes.push_back(trials[shortlist[next + j].trial].genome);
     ATX_TRY(auto signals,
             evaluate_signals(context.role->panel(), context.role->member(), genomes));
-    ATX_TRY(const auto rho, rho_check(context, kept.signals, signals, cap - held));
+    ATX_TRY(const auto rho, rho_check(context, kept.signals, signals, slots));
     const auto campaign_row = [&kept, members, held, next](usize row) -> usize {
       if (row == kMinedNoRow || row < members) return row;
       if (row < members + held) return members + kept.positions[row - members];
