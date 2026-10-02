@@ -5690,3 +5690,26 @@ view"; the X report prints the book with and without it.
 
 **Next parent: `scripts/specs/v8/lib-v8x2b.json`, library v8x2b, L 1.1474, G 0.9862108210.**
 
+### Cell X-3 (new-signal wave; library v8x3 on X-2): N 52
+
+**Registration:** 8 add-alpha calls in the X list order (`scratchpad/x3_add8.py`: XSIG section 5 lines and the PM7-32
+XDATA argv parsed verbatim, placeholders filled with v8x2b / v8x3 / `lib-v8x2b.json` / fields v13), each with its K1
+plan of record (`x3-plans/`); every call exit 0. Counts = the X list: roster 60 (52 parent rows unchanged, their plan
+rows = v8x2b's 52 / 52), recipe admission_trials 8 / new 8 / unchanged 52, no exception; K1 rows = XSIG section 5 and
+the XDATA pre-check (bars / slots / extra): stmom 41/5/shares_out, earn_season 0/5/ea_days_to_expected+earn_season_rank,
+k8_intensity 209/5/k8_count_63, inst_persist 272/6/inst_own_chg_q, nt_late 0/3/nt_first_126, div_season
+0/2/div_month_pred, vol_beta 20/3/beta_dvol_21, season_y2_5 0/2/season_y2_5. Library `e5259541`, recipe `5c943ef7`,
+registry `b55d8fdc`; `filing_events` is last in `V7_APPENDED_THEMES` (PM7-15 a). Marginal on the full pool with the
+parent's theme weights (only additions). Registered in `v8-prereg.md` ("Library v8x3").
+
+**IC-pass memory re-probe (PM7-31, P7; mechanics only):** the IC exe's metadata-only `--plan-only` on the final 60-member
+library, role lo3, fields v13, `--workers 4`: at `--max-memory-mib 2560` the plan passes; at 1,024 it refuses with
+**required_bytes 2,122,538,268 (2,024.2 MiB), max_compiled_slots 8** (R-2's library on v13: 2,122,534,172). Cap 2,560 MiB
+(2,684,354,560 B) holds with 536 MiB of headroom: **the IC-phase cap stays 2,560 MiB** (W0-c). X-2's u pass peaked at
+1,496 MiB.
+
+**Wave composition, stated before X-3's screen (PM7-35):** an addition with status admitted and runner sign = prior
+stays; status admitted and runner sign 0 stays (R-2 precedent); status admitted and runner sign opposite to its prior is
+dropped (the cell then runs on v8x3b = v8x2b + the kept additions, same trial ids); a non-admitted addition stays at
+weight 0 (R-2 / R-7 precedent); the gate stops the cell only if none of the 8 has its prior sign.
+

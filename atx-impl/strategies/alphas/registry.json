@@ -1685,6 +1685,142 @@
         "deviation": "as bac (250 sessions, equal-weight member market) plus the AFGP volatility-quintile step, expressible with the W2 bucket op"
       },
       "added_in": "v8x2"
+    },
+    {
+      "id": "stmom",
+      "dsl": "rank(decay_linear(((group_rank((ts_sum(volume, 21) / shares_out), bucket(((close / delay(close, 21)) - 1), 10)) > 0.9) ? (rank(((close / delay(close, 21)) - 1)) - 0.5) : 0), 21))",
+      "theme": "price_momentum",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Medhat and Schmeling (2022, RFS 35(3)) Short-term Momentum",
+      "prior_sign_source": "Medhat-Schmeling 2022",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "centred rank of the 21-session return for names in the top tenth of 21-session turnover within their 21-session-return decile (bucket), 0 elsewhere; long heavily traded winners, short heavily traded losers",
+        "domain": "NaN where the 21-session return or turnover is NaN; non-selected names are 0 (neutral)",
+        "deviation": "role breakpoints, not NYSE; continuous rank inside the high-turnover set, not the decile corner; rolling 21 sessions with house decay, not calendar months; turnover = raw volume / 90-day-lagged shares_out (split inside the window distorts); equal-weighted rank"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "earn_season",
+      "dsl": "rank((((ea_days_to_expected >= 0) && (ea_days_to_expected <= 21)) ? (earn_season_rank - 10.5) : 0))",
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Chang, Hartzmark, Solomon and Soltes (2017, RFS 30(1)) Being surprised by the unsurprising: earnings seasonality and stock returns",
+      "prior_sign_source": "Chang-Hartzmark-Solomon-Soltes 2017",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "centred EarnRank (mean ascending rank of the same fiscal quarter among quarters U-23..U-4 of ni_q) while the expected announcement is 0..21 sessions ahead, else 0; long historically high quarters",
+        "domain": "NaN where the calendar or the 20-quarter history is NaN; 0 outside the window",
+        "deviation": "net income, not split-adjusted EPS; house expected date and a 0..21-session window, not the predicted calendar month; no decay"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "k8_intensity",
+      "dsl": "rank(decay_linear((-1 * (((k8_count_63 + delay(k8_count_63, 63)) + delay(k8_count_63, 126)) + delay(k8_count_63, 189))), 21))",
+      "theme": "filing_events",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Zhao (2017, Management Science 63(5)) Does information intensity matter for stock returns? Evidence from Form 8-K filings",
+      "prior_sign_source": "Zhao 2017",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-(number of original 8-K filings usable in the last 252 sessions) = -(k8_count_63 + its delays by 63, 126 and 189 sessions: four disjoint 63-session blocks); long low information intensity",
+        "domain": "NaN unless the CIK is an 8-K filer (a visible original 8-K within 365 days) at t, t-63, t-126 and t-189; foreign private issuers (6-K) are NaN",
+        "deviation": "rolling 252 sessions daily with the house decay (paper: fixed-window sorts, monthly; its exact counting window unverified); original 8-K family forms, co-registrant filings counted for each registrant, earnings 8-Ks included; no size control inside the signal (the book's price-risk-v1 projection carries it)"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "inst_persist",
+      "dsl": "rank(decay_linear((((((((max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 252)), 0) + 1) * max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 189)), 0)) + 1) * max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 126)), 0)) + 2) * max((sign((0.5 - rank(inst_own_chg_q))) * delay(sign((0.5 - rank(inst_own_chg_q))), 63)), 0)) * sign((0.5 - rank(inst_own_chg_q)))), 21))",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Dasgupta, Prat and Verardo (2011, JF 66(2)) Institutional trade persistence and long-term equity returns",
+      "prior_sign_source": "Dasgupta-Prat-Verardo 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-DPV trade persistence: net sell / buy = below / above the cross-sectional median of the quarter's change in 13F ownership (inst_own_chg_q); persistence = consecutive same-side quarters including the current one at 63-session lags, capped at 5, a one-quarter run = 0; long persistently sold, short persistently bought",
+        "domain": "NaN when any of the five quarterly splits is NaN (no consecutive-quarter 13F rows, 150-day staleness); 0 at the median and for one-quarter runs",
+        "deviation": "net trade = change in the IO fraction (the paper's robustness definition), not the percentage change in institutional shares; quarter lags of 63 sessions, not exact anchor quarters (1-3 sessions per quarter boundary can read the same or the second-previous quarter); all 13F filers including passive managers; continuous rank, daily, house decay (paper: persistence portfolios held 1-10 quarters)"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "nt_late",
+      "dsl": "rank((-1 * nt_first_126))",
+      "theme": "filing_events",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Bartov and Konchitchki (2017, Accounting Horizons 31(4)) SEC filings, regulatory deadlines, and capital market consequences",
+      "prior_sign_source": "Bartov-Konchitchki 2017",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "-1{a first NT 10-K or NT 10-Q (none in the prior 365 days) became usable within the last 126 sessions} (nt_first_126)",
+        "domain": "NaN for non-domestic or absent periodic filers; a binary flag: flagged names tie at the bottom",
+        "deviation": "126 sessions, not the paper's months; NT 10-K and NT 10-Q pooled; continuous rank of a flag"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "div_season",
+      "dsl": "rank(div_month_pred)",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Hartzmark and Solomon (2013, JFE) The dividend month premium",
+      "prior_sign_source": "Hartzmark-Solomon 2013",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "div_month_pred (hs-divseason-q3-6-9-12-v1): Ex-date ledger: an observed session s of a line whose step from its previous observation p has y = 1 - F_p/F_s in [1 bp, 4%], no kept-gap step in (p, s], and is not a factor-break-v1 jump cell (a factor step with no matching raw drop). Row t, M = the month of session t: n_paid = months of M-12..M-1 holding an ex-date; a quarterly payer has 3 <= n_paid <= 6 and a first observation at or before month M-12's first session; value 1 if an ex-date is in M-3, M-6, M-9 or M-12, else 0; NaN for non-payers, annual, semiannual and monthly payers, short history",
+        "domain": "NaN for non-payers, annual, semiannual and monthly payers, short history",
+        "deviation": "DIV_PRED_MONTHS 3, 6, 9, 12: Hartzmark-Solomon (2013) (the lag set of the CZ DivSeason replication); DIV_PAYER_MONTHS, DIV_MIN_PAID, DIV_MONTHLY_MAX 12, 3, 6: the lag set predicts a quarterly cycle; a quarterly payer shows 4 paid months a year, 3 when one is skipped or moved across a window edge, at most two extras; annual and semiannual payers (1-2) would be flagged in months they never pay, monthly payers (7+) have no off month; DIV_YIELD_MIN 1e-4, DIV_YIELD_MAX 0.04: ex-dates from the vendor factor, above its print precision and below any regular payment; specials, spin-offs and stock dividends of 5% or more fall outside"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "vol_beta",
+      "dsl": "rank(decay_linear((-1 * beta_dvol_21), 21))",
+      "theme": "low_risk",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Ang, Hodrick, Xing and Zhang (2006, JF) The cross-section of volatility and expected returns",
+      "prior_sign_source": "Ang-Hodrick-Xing-Zhang 2006",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-beta_dvol_21 (ahxz-beta-dvol-spy21-v1), decayed 21: OLS of the line's daily adjusted return on [1, r_SPY, dIV_SPY] over sessions t-21..t-1 (at least 17 usable days, regressors not collinear); value = the dIV slope. SPY = the unique securityID with ticker_tk 'SPY' (else refused); r_SPY its adjusted return (house guard, jump cells excluded); dIV the daily change of its atmCenI_21d inside IV_DOMAIN; line returns with the house guard and no kept-gap step; long low beta",
+        "domain": "NaN with fewer than 17 usable days in t-21..t-1 or collinear regressors (DVOL_MIN_DAYS 17, DVOL_DET_TOL 1e-10)",
+        "deviation": "VOL_LINE_TICKER, VOL_COLUMN SPY, atmCenI_21d: AHXZ use VXO (S&P 100, 30-day ATM implied volatility); SPY's 30-day (21 trading days) ATM IV is the in-house analogue; SPY's adjusted return for the CRSP value-weighted market; DVOL_WINDOW 21: AHXZ: daily returns within one month; DVOL_MIN_DAYS 17: declared: about 80% of the window, the house ratio of F-1's 48 of 60; AHXZ's own minimum not verified"
+      },
+      "added_in": "v8x3"
+    },
+    {
+      "id": "season_y2_5",
+      "dsl": "rank(season_y2_5)",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Heston and Sadka (2008, JFE) Seasonality in the cross-section of stock returns; Keloharju, Linnainmaa and Nyberg (2016, JF) Return seasonalities",
+      "prior_sign_source": "Heston-Sadka 2008; Keloharju-Linnainmaa-Nyberg 2016",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "season_y2_5 (hs-season-y2-5-v1): for k = 2..5: b = e - 252k, a = b + 21 (e = row t on the extended axis); r_k = P_a/P_b - 1 with both observations, no kept-gap step, the monthly divergence guard; value = mean of the finite r_k when at least 3",
+        "domain": "NaN with fewer than 3 finite r_k (SEASON_MIN_YEARS 3)",
+        "deviation": "SEASON_YEARS 2, 3, 4, 5: Heston-Sadka (2008); the CZ MomSeason years 2 to 5 form; SEASON_YEAR_SESSIONS, SEASON_WINDOW 252, 21: the alignment of the roster member seasonality_same_month (delay 252 / 231); SEASON_MIN_YEARS 3: declared: a majority of the four windows (one halt or listing gap does not drop the name)"
+      },
+      "added_in": "v8x3"
     }
   ]
 }
