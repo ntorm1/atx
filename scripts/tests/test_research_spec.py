@@ -67,8 +67,10 @@ NULL_PINS = {"base-lo1.json": BASE_NULLS,
 NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
 NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
 NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS              # R-3 at matched gross (PM6-6), by hand on lib-v80 (PM7-4)
+NULL_PINS["r6-spo-v3-gm.json"] = CHILD_NULLS                # R-6 at matched gross (PM6-6), by hand on lib-v80
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
+FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
 
 
 def fill_options(name: str | None = None) -> list[tuple[str, str]]:
@@ -102,6 +104,7 @@ EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                         
 # Ruling PM6-6: R-1's registered change at the aim leverage that matches the parent's all-rows S2 gross
 EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
 EXPECTED_CHANGES["r3-aim-gain-gm.json"] = EXPECTED_CHANGES["r3-aim-gain.json"] | {"nav.leverage"}     # PM7-4
+EXPECTED_CHANGES["r6-spo-v3-gm.json"] = EXPECTED_CHANGES["r6-spo-v3.json"] | {"nav.leverage"}         # PM6-6
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
 MISSING = object()
 
@@ -546,8 +549,10 @@ def check_registered_change(specs: Path, name: str) -> None:
                  "r8.json": pn + ["--risk-target", ".05", "--risk-target-bias", "1.15", "--risk-target-cadence", "21",
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
                                   "<fill:nav.flags --risk-model-sha256>"]}
+    nav_delta["r6-spo-v3-gm.json"] = nav_delta["r6-spo-v3.json"]              # PM6-6: R-6's change, its L apart
+    spo = ("r6-spo-v3.json", "r6-spo-v3-gm.json")
     assert cn == nav_delta.get(name, pn)
-    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
+    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json",) + spo   # E-29: the 4x report
     comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"),
             "r1-comp-v8-gm.json": ("ew-theme-v1", "ew-theme-std-v1"),                     # PM6-6: R-1's change
             "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v2"),                       # E-27b
@@ -557,7 +562,7 @@ def check_registered_change(specs: Path, name: str) -> None:
     old, new = comp.get(name, (None, None))
     assert child["fit"]["flags"] == [new if x == old else x for x in parent["fit"]["flags"]] + \
         FIT_APPENDED.get(name, [])
-    assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
+    assert (child["nav"]["rule"] == "spo-v3") == (name in spo)
 
 
 @pytest.mark.parametrize("name", [n for n in V8_SPECS if n in EXPECTED_CHANGES])

@@ -1,0 +1,41 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r6-spo-v3-gm",
+  "description": "Cell R-6 at matched gross (Ruling PM6-6; plan section 9, N 46; spo trial 3): the registered change of r6-spo-v3.json unchanged (spo-v3, --spo-alpha implied-aim, S_prior 20 (E-14), H 20, gross bound 2 L, Sigma atx-risk-v1.1 on the 4-year role: build-equity/v8-risk-lo3-v10, manifest 862515d9; --spo-books primary; --capacity-curve report only (E-37); no --hold-band / --adv-hold-q: R-4 and R-5 were not accepted (E-26)), plus the aim leverage set so that its all-rows S2 gross matches the parent R-2 (lib-v80.json, G .9859903463) within .005. Calibration step (1) = r6-spo-v3.json's NAV at the parent L 1.1474 (mechanics only: all-rows gross 1.0288508598, tripwire clear, primary limits_unmet 0, unconverged 0; no return read); L = 1.1474 x .9859903463 / 1.0288508598 = 1.09960 -> 1.0996. NAV-only: u, fit, card, w are the parent's. The cell is ledgered once, from this run. Before any return: exit not 3 (E-31a void), v7_extras.json spo_v3.tripwire.status == clear and limits_unmet_primary.count == 0, the convergence counts. Acceptance: dSR > 0 AND mechanics AND cost per traded dollar not higher AND tripwire clear AND mean corr(traded book after decision d's trades, aim at d) over scored decisions >= .9 (E-14, E-14a).",
+  "parent": "lib-v80.json",
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.rule": "spo-v3",
+      "nav.output": "build-equity/mega-nav-v8-r6-spo-v3-L1.0996",
+      "nav.leverage": "1.0996"
+    },
+    "flags": {
+      "nav": {
+        "--spo-alpha": "implied-aim",
+        "--risk-model": "build-equity/v8-risk-lo3-v10",
+        "--risk-model-sha256": "862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a",
+        "--spo-books": "primary",
+        "--capacity-curve": true
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80/summary.json",
+      "sha256": "083a56da0e4381b9c7ae9db10b19783b5185a0f6043f240aa3c721150ad42c85"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/admission.json",
+      "sha256": "f613fe920de92eb9a5fbb8c1524f5891808672f1dda44ee69c8a63af2dc9e90c"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v80-1/train_combined.json",
+      "sha256": "bbbf6f2bfe6f857e914f4354bc943ea55976024c8b28df385992f09038f7cd98"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/composition_weights.json",
+      "sha256": "032133450dedc5f5747d65f60ca1e4abeeca00eff0e9280f749c061986f3b5ce"
+    }
+  }
+}

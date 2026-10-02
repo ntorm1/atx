@@ -4442,4 +4442,38 @@ no return file) -> E-31a: a blind fix and a re-run, no new trial; a fix needing 
 `stdout.log` (it prints net Sharpe per book). Criterion of record (task-CELLS-brief:59; pitch config): (a)
 `cost_bps_traded` (summ, S2 cost per traded dollar) <= R-2's 12.466; (b) tripwire status "clear"; (c) primary
 `limits_unmet` 0 (E-31a: else void); (d) `aim_correlation_traded_after.mean` >= .9.
+Commit `e770fc36` (spec, this text).
+
+**Calibration step (1): r6-spo-v3.json's NAV at the parent L 1.1474** (`run --stop-after nav`; no free-memory refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.1474, calibration) | 180 / 1,536 | 110.9 | 593 | 0 | `796a1133be00b00f339583f6868f3e29e3a6753700424aaa89a6170662535bea` | `build-equity/mega-nav-v8-r6-spo-v3-L1.247` (mechanics only) |
+
+Receipt: completed, `clean in the code pathspec`, source `e770fc36`, NAV exe `5497c89d`. Exit 0: **not void** (E-31a).
+Files: the two primary-scenario books only (S1 linear-6bps, S2; `--spo-books primary`), `spo_diagnostics.csv`,
+`v7_extras.json`, capacity. Read (by key name, scratch `spo_mech.py`; no return, cost or Sharpe printed):
+- **Tripwire: status `clear`**; `limits_unmet_primary.count` **0** (first_session none); capped_specific_decisions 0;
+  gross_bound_breaches 0 (bound 2 L = 2.2948); max planned gross 1.0926.
+- **Convergence (primary S2 book): 1,004 decisions, unconverged 0, limits_unmet 0, mean iterations 81.8**; max primal
+  residual 3.7e-11, max dual 1.0e-9 (tol 1e-9; iters 2,000; both registered, not on the argv). S1 book: 1,004 / 0 / 0 /
+  81.6.
+- Calibration: gamma 835.51 = 20 / sigma_aim .023937 (aim gross 1.0879, 1,888 names, first session 2020-01-02).
+- E-14 / E-14a value (S2 book): aim_correlation_traded_after mean **.9592** (min .912, n 1,003) >= .9; planned
+  aim_correlation .9660; tracking error mean .0051; trade-limit share mean .036.
+- Mechanics (mech.py): **G 1.0288508598** vs G_parent .9859903463: |diff| **.0429 > .005** -> correction. (Net +.0006,
+  tau mean .0627 / p95 .0963, max gross 1.120, max |net| .022, score_begin .940, accounting 6.2e-14 / 3.7e-16: inside
+  the limits.)
+- **L' = 1.1474 x .9859903463 / 1.0288508598 = 1.09960 -> 1.0996** (>= 1, inside the exe's [1, 2]).
+
+**Matched spec** `scripts/specs/v8/r6-spo-v3-gm.json` (new template: r6-spo-v3.json's change with the same filled
+store + `nav.leverage` "1.0996" + `nav.output` `build-equity/mega-nav-v8-r6-spo-v3-L1.0996`; parent lib-v80.json;
+`lock` / `lock --write` / dry lock 0 / 0 / 0, the same four derived pins). File
+`2a669f35bd6a2ece959dd96ac38001818fcd927ee16dbf5db3f26c23e9451e97`, **spec digest (template chain)
+`cd49cb4768472eeefd3c24c0dea8e8801c4509b19c039b4b7ad00ab9ecd87979`**. Plan exit 0: 8 pins `[locked, verified]`; the nav
+argv equals the calibration's except `--aim-leverage 1.0996` and `--output`; summ `--dsr-n 46`. Tests only, so the
+suite knows the hand-written spec (as R-1-gm / R-3-gm): `test_research_spec.py` `NULL_PINS`, `FILLS` (the store),
+`EXPECTED_CHANGES` (r6's | nav.leverage), the nav delta and the spo-rule name check take `r6-spo-v3-gm.json`;
+`scripts/tests` **194 passed, 3 skipped, 0 failed** (109.0 s). The calibration run is not a trial and is not ledgered;
+its outputs stay unread beyond the keys above.
 
