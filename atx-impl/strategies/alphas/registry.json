@@ -1600,6 +1600,91 @@
         "deviation": null
       },
       "added_in": "v81"
+    },
+    {
+      "id": "q5_eg_f49g",
+      "dsl": "group_rank(decay_linear((((((-0.029 * log((me_company / at))) + (0.516 * (cfo_ttm / at))) + (0.771 * ((ni_q / be_lag1q) - delay((ni_q / be_lag1q), 252)))) + (0 * log(be_lag1q))) + (0 * log(delay(be_lag1q, 252)))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "prior_sign_source": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": "q5_eg_f49 with the house ROE domain rule applied to the year-ago ROE as well: 0 * log(delay(be_lag1q, 252))",
+        "domain": "non-positive opening book equity now or 252 sessions ago -> NaN; non-positive me_company / at -> NaN (log)",
+        "deviation": "as q5_eg (q = ME / AT, Cop = CFO / AT, dRoe vs the as-of ROE 252 sessions ago); repair of the unguarded year-ago ROE (XIMP A-1, rule 7)"
+      },
+      "added_in": "v8x2"
+    },
+    {
+      "id": "iv_rv_spread_xe",
+      "dsl": "rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (ts_std_mp((((close / delay(close, 1)) - 1) + (0 * log(power((1 - earn_recent), (1 - ts_count_nans(earn_recent, 1)))))), 21, 15) * 15.874507866387544)))",
+      "theme": "options_implied",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower returns; event volatility in options: Patell and Wolfson (1979, JAE; 1981, JAR)",
+      "prior_sign_source": "Bali-Hovakimian 2009",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "iv_atm_21d (5-session backfill, v3 guard) minus sqrt(252) x the sample std of the daily returns of the last 21 sessions without the vendor earnings reaction session and the session after (earn_recent == 1), at least 15 kept",
+        "domain": "IV outside (0.02, 5) -> NaN; earn_recent NaN keeps the session; fewer than 15 kept returns -> NaN",
+        "deviation": "ex-event RV so both legs are ex-event (the vendor IV is earnings-cleaned); Bali-Hovakimian use raw IV and raw RV; ts_std_mp(21, 15) instead of stddev(21); vendor calendar vintage unproven (field caveat)"
+      },
+      "added_in": "v8x2"
+    },
+    {
+      "id": "ind_adj_rev_5_nx",
+      "dsl": "rank(((-1 * group_neutralize(((close / delay(close, 5)) - 1), grp_ff49)) + (0 * log(power((ea_days_since - 4.5), (1 - ts_count_nans(ea_days_since, 1)))))))",
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Chan (2003, JFE) drift after news, reversal after no-news; Savor (2012, JFE); Da, Liu and Schaumburg (2014, MS); Hameed and Mian (2015, JFQA) within-industry reversal",
+      "prior_sign_source": "Chan 2003; Savor 2012; Da-Liu-Schaumburg 2014",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "-(5-session return minus its FF49 mean); NaN when the latest visible primary 8-K 2.02 reaction session is within the window (ea_days_since <= 4)",
+        "domain": "ea_days_since NaN keeps the name; masked names are NaN (neutral)",
+        "deviation": "earnings announcements only (no other news); one-session late exclusion for pre-market releases (8-K lag rule); weekly horizon kept as registered"
+      },
+      "added_in": "v8x2"
+    },
+    {
+      "id": "ins_opp_buy",
+      "dsl": "rank(max(ins_opportunistic_net, 0))",
+      "theme": "ownership_flow",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Lakonishok and Lee (2001, RFS) insider purchases, not sales, are informative; Jeng, Metrick and Zeckhauser (2003, REStat); Cohen, Malloy and Pomorski (2012, JF 67(3)) opportunistic insiders",
+      "prior_sign_source": "Lakonishok-Lee 2001; Jeng-Metrick-Zeckhauser 2003",
+      "form": "R(x)",
+      "origin": "prior",
+      "notes": {
+        "formula": "max(ins_opportunistic_net, 0): net opportunistic purchases per share outstanding over t-126..t-1 (W5a field), net sellers and non-traders 0",
+        "domain": "NaN as ins_opportunistic_net; non-buyers tie",
+        "deviation": "buy leg only (Ruling W2-c's separate later trial); net within the window; shares, not dollars"
+      },
+      "added_in": "v8x2"
+    },
+    {
+      "id": "bac_vq",
+      "dsl": "group_rank(decay_linear((-1 * correlation(ts_sum(((close / delay(close, 1)) - 1), 3), ts_sum(mkt_ret, 3), 250)), 21), bucket(stddev(((close / delay(close, 1)) - 1), 252), 5))",
+      "theme": "low_risk",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) betting against correlation within volatility quintiles; correlation of overlapping 3-day returns and 1-year volatility: Frazzini and Pedersen (2014, JFE)",
+      "prior_sign_source": "Asness-Frazzini-Gormsen-Pedersen 2020",
+      "form": "group_rank(decay_linear(x, 21), bucket(sd(ret, 252), 5))",
+      "origin": "prior",
+      "notes": {
+        "formula": "-corr(3-session return sums, 3-session mkt_ret sums, 250), decayed 21, ranked within the quintiles of the 252-session daily-return volatility",
+        "domain": "NaN where the correlation or the volatility is NaN",
+        "deviation": "as bac (250 sessions, equal-weight member market) plus the AFGP volatility-quintile step, expressible with the W2 bucket op"
+      },
+      "added_in": "v8x2"
     }
   ]
 }
