@@ -1464,3 +1464,26 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   The registered config, template, report tools, ledger and specs are not edited (PM5-21) -- the owner asked
   for the report on what exists, and what exists is a full book (B0c) with its charts -- cost if wrong: the
   interim files are separate from the final ones and are superseded at V8-F.
+
+## PM session 6 (2026-10-02): owner goal, work resumes
+
+- Owner goal (2026-10-02, supersedes the stop of PM session 5): increase the Sharpe of atx-impl over the four
+  TRAIN years and the return net of frictions; subagent-driven, Opus 5.5 lanes, PM context kept small; clean up
+  unneeded cache files to save disk space.
+- State found: root clean at `759fa226`; interim render 2 (PM5-28) did not land (the render agent ended with the
+  previous session; no partial work in the tree). No agent running.
+- Ruling PM6-1 (the route to the goal is the registered program): the cells of goal prompt 5 steps 1-5 resume
+  unchanged (N <= 51, 11 trials left; B0c the baseline at S2 net +1.133); the claim at the end is the registered
+  one (cumulative test or a registered mechanical criterion) -- a higher TRAIN Sharpe reached outside the
+  registered trials is selection on the sample the owner will judge by and would not hold; the registered cells
+  (library waves R-2 / R-7, aim R-3, costs and construction R-4..R-6, R-8) are the built levers -- cost if wrong:
+  the gain is bounded by what 11 trials can show.
+- Ruling PM6-2 (interim render 2 is dropped; PM5-28 lapses unrun): the report is rendered once, at the end, on
+  the final book, with 0 unavailable blocks as V8-F requires -- an interim render on B0c costs one root slot and
+  is superseded by the first accepted cell -- cost if wrong: the owner has no full HTML until the cells end
+  (the 137 KB interim file stays as it is and is named as incomplete).
+- Ruling PM6-3 (disk cleanup in two steps): a read-only inventory (sizes and what references each directory;
+  no file opened) is written first; the PM rules on the list; then one integrator deletes exactly the ruled
+  paths. Never deleted: anything a locked spec, a pin, an identity or a W0-4 re-run reads; `atx-db/`; anything
+  another process holds -- a cache a later cell reuses costs hours to rebuild and some pins cannot be rebuilt
+  bit-identically -- cost if wrong: less space freed than possible.
