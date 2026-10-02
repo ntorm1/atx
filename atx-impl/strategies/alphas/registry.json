@@ -1175,6 +1175,261 @@
         "deviation": "respelled by the draft's alignment rule (prereg section 1): 1{ea_days_to_expected < 0}, ea_days_since dropped; the cut < 0 stays (Ruling W2-b): .67% of cells read -1 for one session from the 8-K acceptance lag (disclosed); the 8-K is the only clock (no advance scheduling notice), so only the overdue state is observable; is_primary uses a later-10-Q label (small presence look-ahead, W5a concern 2); COVID delays kept (overdue share peaks at 21.7% on 2020-05-01, no carve-out)"
       },
       "added_in": "v71"
+    },
+    {
+      "id": "ear_mom_12m",
+      "dsl": "rank(ts_mean_mp((((ea_days_since == 2) ? (((close / delay(close, 5)) - 1) - ts_sum(mkt_ret, 5)) : 0)), 252, 126))",
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Gerard and Jehl (2025, FAJ) The Many Facets of Stock Momentum; Chan, Jegadeesh and Lakonishok (1996, JF)",
+      "prior_sign_source": "Gerard and Jehl (2025, FAJ) The Many Facets of Stock Momentum; Chan, Jegadeesh and Lakonishok (1996, JF)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "earn_surprise_comp",
+      "dsl": "rank(decay_linear((((rank(sue) + rank(((((ni_q / be_lag1q) - (ni_q_lag4 / be_lag1q_lag4)) + (0 * log(be_lag1q))) + (0 * log(be_lag1q_lag4))))) + rank((((txt_q - txt_q_lag4) / at_lag4) + (0 * log(at_lag4))))) / 3), 21))",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Bernard and Thomas (1989, JAR); Hou, Mo, Xue and Zhang (2021, RF); Thomas and Zhang (2011, JAR); composite: Novy-Marx (2015, WP); Martineau (2022, CFR)",
+      "prior_sign_source": "Bernard and Thomas (1989, JAR); Hou, Mo, Xue and Zhang (2021, RF); Thomas and Zhang (2011, JAR); composite: Novy-Marx (2015, WP); Martineau (2022, CFR)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "op_rd",
+      "dsl": "group_rank(decay_linear((((oi_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12)",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "prior_sign": 1,
+      "citation": "Novy-Marx and Medhat (2025, NBER WP 33601); Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)",
+      "prior_sign_source": "Novy-Marx and Medhat (2025, NBER WP 33601); Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "dtc_slow",
+      "dsl": "rank(decay_linear((-1 * (si_shares / ts_mean(volume, 126))), 21))",
+      "theme": "short_interest",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Hong, Li, Ni, Scheinkman and Yan (2015, NBER WP 21166) Days to cover and stock returns",
+      "prior_sign_source": "Hong, Li, Ni, Scheinkman and Yan (2015, NBER WP 21166) Days to cover and stock returns",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "pct_accruals",
+      "dsl": "rank(decay_linear(((-1 * ((ni_ttm - cfo_ttm) / abs(ni_ttm))) + (0 * log(abs(ni_ttm)))), 21))",
+      "theme": "profitability_quality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Hafzalla, Lundholm and Van Winkle (2011, TAR) Percent accruals",
+      "prior_sign_source": "Hafzalla, Lundholm and Van Winkle (2011, TAR) Percent accruals",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "fip_id",
+      "dsl": "rank(decay_linear(delay(ts_mean(sign(((close / delay(close, 1)) - 1)), 231), 21), 21))",
+      "theme": "price_momentum",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Da, Gurun and Warachka (2014, RFS) Frog in the pan",
+      "prior_sign_source": "Da, Gurun and Warachka (2014, RFS) Frog in the pan",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "si_low_io",
+      "dsl": "rank(decay_linear((-1 * ((si_shares / shares_out) / inst_own_share)), 21))",
+      "theme": "short_interest",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Asquith, Pathak and Ritter (2005, JFE); Nagel (2005, JFE)",
+      "prior_sign_source": "Asquith, Pathak and Ritter (2005, JFE); Nagel (2005, JFE)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "ebit_ev_f49",
+      "dsl": "group_rank(decay_linear((((oi_ttm / ((me_company + debt) - che)) + (0 * log(oi_ttm))) + (0 * log(((me_company + debt) - che)))), 21), grp_ff12f49)",
+      "theme": "value",
+      "tier": "B+",
+      "prior_sign": 1,
+      "citation": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials",
+      "prior_sign_source": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "gpa_f49",
+      "dsl": "group_rank(decay_linear(((gp_ttm / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "A",
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020); S-12 FF49 financials",
+      "prior_sign_source": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "cbop_f49",
+      "dsl": "group_rank(decay_linear((((cfo_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "prior_sign": 1,
+      "citation": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE); S-12 FF49 financials",
+      "prior_sign_source": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "noa_f49",
+      "dsl": "group_rank(decay_linear(((-1 * (noa / at_lag4)) + (0 * log(at_lag4))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets; S-12 FF49 financials",
+      "prior_sign_source": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets; S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "accruals_f49",
+      "dsl": "group_rank(decay_linear(((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))) + (0 * log(((at + at_lag4) / 2)))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS); S-12 FF49 financials",
+      "prior_sign_source": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "opex_at_f49",
+      "dsl": "group_rank(decay_linear((((sale_ttm - oi_ttm) / at) + (0 * log(at))), 21), grp_ff12f49)",
+      "theme": "profitability_quality",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm; S-12 FF49 financials",
+      "prior_sign_source": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm; S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "asset_growth_f49",
+      "dsl": "group_rank(decay_linear(((-1 * ((at / at_lag4) - 1)) + (0 * log(at_lag4))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008); S-12 FF49 financials",
+      "prior_sign_source": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
+    },
+    {
+      "id": "q5_eg_f49",
+      "dsl": "group_rank(decay_linear(((((-0.029 * log((me_company / at))) + (0.516 * (cfo_ttm / at))) + (0.771 * ((ni_q / be_lag1q) - delay((ni_q / be_lag1q), 252)))) + (0 * log(be_lag1q))), 21), grp_ff12f49)",
+      "theme": "investment_issuance",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "prior_sign_source": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "notes": {
+        "formula": null,
+        "domain": null,
+        "deviation": null
+      },
+      "added_in": "v80"
     }
   ]
 }
