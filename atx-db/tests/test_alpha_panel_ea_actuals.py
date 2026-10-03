@@ -75,6 +75,51 @@ def test_quarter_column_conflict_overlap_and_rowspan_fail_closed():
     assert r['saleq'] is None and any('unsupported_header_geometry' in s for s in r['extraction_reasons'])
 
 
+def test_overlapping_quarter_ytd_duration_spans_reject_monetary_cells():
+    # Review I1: quarter [1,3) overlaps YTD [2,4), year [2,3).
+    blob=b'''<html><p>USD in millions</p><table>
+    <tr><td></td><td colspan="2">Three Months Ended March 31,</td></tr>
+    <tr><td></td><td></td><td colspan="2">Nine Months Ended March 31,</td></tr>
+    <tr><td></td><td></td><td>2020</td><td>2020</td></tr>
+    <tr><td>Sales</td><td></td><td>900</td><td>800</td></tr></table></html>'''
+    r=EA.parse_release(blob,dt.date(2020,4,20))
+    assert all(r[f] is None for f in EA.FIELDS)
+    assert any('quarter_column_geometry_unqualified' in s for s in r['extraction_reasons'])
+    # Conflict of the parent span rejects even an otherwise nonintersecting
+    # child date at [1,2); duration evidence must be internally consistent.
+    assert EA.quarter_columns([[(1,3,'Three Months Ended March 31,')],
+        [(2,4,'Nine Months Ended March 31,')],[(1,2,'2020')]],'')=={}
+
+
+@pytest.mark.parametrize('label',['% Change','Percentage change','Growth','Percent'])
+def test_date_bearing_percent_change_headers_never_supply_monetary_actuals(label):
+    blob=f'''<html><p>Three months ended USD in millions</p><table>
+    <tr><td></td><td>March 31, 2020 {label}</td><td>March 31, 2019</td></tr>
+    <tr><td>Sales</td><td>2.2</td><td>100</td></tr></table></html>'''.encode()
+    r=EA.parse_release(blob,dt.date(2020,4,20))
+    assert all(r[f] is None for f in EA.FIELDS)
+    assert r.get('saleq_seasonal_comparative') is None
+
+
+def test_multilevel_percent_spans_exclude_dates_and_abbreviated_quarter_tokens():
+    dates_blob=b'''<html><p>Three months ended USD in millions</p><table>
+    <tr><td></td><td>% Change</td><td></td></tr>
+    <tr><td></td><td>March 31, 2020</td><td>March 31, 2019</td></tr>
+    <tr><td>Sales</td><td>2.2</td><td>100</td></tr></table></html>'''
+    assert EA.parse_release(dates_blob,dt.date(2020,4,20))['saleq'] is None
+    abbrev=b'''<html><p>Second Quarter Ended June 30, 2015 and 2014</p>
+    <p>USD in millions</p><table>
+    <tr><td></td><td colspan="2">Percentage Change</td></tr>
+    <tr><td></td><td>2Q15</td><td>2Q14</td></tr>
+    <tr><td>Sales</td><td>2.2</td><td>100</td></tr></table></html>'''
+    assert EA.parse_release(abbrev,dt.date(2015,7,22))['saleq'] is None
+    # The percentage span excludes only its interval; independent monetary
+    # columns retain current/comparative positive controls.
+    assert EA.quarter_columns([[(3,5,'Percentage Change')],
+        [(1,2,'March 31, 2020'),(2,3,'March 31, 2019'),(3,4,'March 31, 2020'),(4,5,'March 31, 2019')]],
+        'Three months ended')=={(1,2):dt.date(2020,3,31),(2,3):dt.date(2019,3,31)}
+
+
 @pytest.mark.parametrize("unit", ["in millions", "USD CAD in millions", "USD", "USD in millions and in thousands"])
 def test_unknown_or_conflicting_currency_and_scale_is_missing(unit):
     assert parse(release(unit=unit))["saleq"] is None

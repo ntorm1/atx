@@ -27,7 +27,7 @@ from . import ea_publication as P
 
 STAGE = "ea_actuals"
 SCHEMA = "atx.alpha-panel.ea-actuals/v1"
-VERSION = "ex99-qualified-quarter-v3"
+VERSION = "ex99-qualified-quarter-v4"
 HOLDOUT = dt.date(2023, 1, 1)
 FIELDS = ("saleq", "epsfiq", "niq")
 MONTHS = "January February March April May June July August September October November December".split()
@@ -124,11 +124,30 @@ def quarter_columns(rows: list[list[tuple[int,int,str]]], prefix: str) -> dict[t
     ytd=re.compile(r'six[- ]months?|nine[- ]months?|twelve[- ]months?|year ended|annual',re.I)
     mixed=bool(ytd.search(text))
     duration=[]
+    ytd_bands=[]
+    percent_bands=[]
     for lo,hi,txt in cells:
         if quarter.search(txt) and not ytd.search(txt):
             duration.append((lo,hi,txt))
+        if ytd.search(txt):
+            ytd_bands.append((lo,hi))
+        if re.search(r'%|\b(?:percent(?:age)?|change|growth|decline)\b',txt,re.I):
+            percent_bands.append((lo,hi))
+    def intersects(lo: int,hi: int,a: int,b: int) -> bool:
+        return max(lo,a)<min(hi,b)
+    # Conflicting duration ancestry makes the grid unqualified, even if a
+    # subordinate date cell itself falls outside the crossing part of a span.
+    if any(intersects(lo,hi,a,b) for lo,hi,_ in duration for a,b in ytd_bands):
+        return {}
+    def admissible(lo: int,hi: int) -> bool:
+        if any(intersects(lo,hi,a,b) for a,b in (*ytd_bands,*percent_bands)):
+            return False
+        crossing=[(a,b) for a,b,_ in duration if intersects(lo,hi,a,b) and not (a<=lo and hi<=b)]
+        return not crossing
     candidates: dict[tuple[int,int],set[dt.date]]=defaultdict(set)
     for lo,hi,txt in cells:
+        if not admissible(lo,hi):
+            continue
         parents=[s for a,b,s in duration if a<=lo and hi<=b]
         if mixed and not parents:
             continue
@@ -149,6 +168,8 @@ def quarter_columns(rows: list[list[tuple[int,int,str]]], prefix: str) -> dict[t
         ordinal={'first':1,'second':2,'third':3,'fourth':4}[caption[1].lower()]
         years={int(caption[4]),int(caption[5])}
         for lo,hi,txt in cells:
+            if not admissible(lo,hi):
+                continue
             token=re.fullmatch(r'([1-4])Q(\d{2}|20\d{2})',txt,re.I)
             if token and int(token[1])==ordinal:
                 year=int(token[2]); year=year+2000 if year<100 else year
