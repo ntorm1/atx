@@ -20,17 +20,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
 
+import psutil
 import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import wave_fixture as F  # noqa: E402
+import cycle_resume as CR  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_tree as RT  # noqa: E402
 import research_wave  # noqa: E402
@@ -228,20 +231,22 @@ def test_exe_sha_in_phase_rows(tmp_path):
     rows = WU.phase_rows(w, cell)
     navs = [r for r in rows if r["phase"] == "nav"]
     assert [(r["run_dir"], r["executable_sha256"]) for r in navs] == [("out/nav-c1-run", b), ("out/nav-c1-run2", b)]
-    assert WU.completed_exe(navs) == b and WU.completed_exe(navs[:1]) is None
+    assert CR.completed_exes(w, "out/nav-c1", RC.MAX_ATTEMPTS) == [b]                  # the killed attempt is no run
     done = {"preflight": {"parent": {"nav": F.PARENT_NAV}}, "match": {"cell_spec": cell}}
-    assert WR.nav_exe(w, done, rows) == {"parent": a, "cell": b, "equal": False, "ref": "missing"}
+    assert WR.nav_exe(w, done) == {"parent": a, "cell": b, "equal": False, "ref": "missing"}
     receipt(root, "out/ref-c1-run", a)                                    # the ref ran on the parent's exe: missing
-    assert WR.nav_exe(w, done, WU.phase_rows(w, cell))["ref"] == "missing"
+    assert WR.nav_exe(w, done)["ref"] == "missing"
     receipt(root, "out/ref-c1-run2", b)                                   # on the cell's: ran
-    assert WR.nav_exe(w, done, WU.phase_rows(w, cell)) == {"parent": a, "cell": b, "equal": False, "ref": "ran"}
+    assert WR.nav_exe(w, done) == {"parent": a, "cell": b, "equal": False, "ref": "ran"}
     receipt(root, f"{F.PARENT_NAV}-run2", b)                              # the parent's last completed run: equal
-    assert WR.nav_exe(w, done, WU.phase_rows(w, cell))["equal"] is True
+    assert WR.nav_exe(w, done)["equal"] is True
+    receipt(root, f"{F.PARENT_NAV}-run10", a)                             # research_cycle writes no -run10 (attempts
+    receipt(root, f"{F.PARENT_NAV}-run1", a)                              # <= 9, never -run1): one enumeration
+    assert WR.nav_exe(w, done)["equal"] is True                           # (review E1t0 minor 3)
     plain = F.cell_spec("c2", "out/nav-c2", reference_nav=F.PARENT_NAV)  # no ref phase (e.g. a rule cell)
     F.write_json(root, "scripts/specs/v8/lib-c2.json", plain)
     done2 = {"preflight": {"parent": {"nav": F.PARENT_NAV}}, "match": {"cell_spec": "scripts/specs/v8/lib-c2.json"}}
-    assert WR.nav_exe(w, done2, WU.phase_rows(w, "scripts/specs/v8/lib-c2.json")) == {
-        "parent": b, "cell": None, "equal": None, "ref": "none"}
+    assert WR.nav_exe(w, done2) == {"parent": b, "cell": None, "equal": None, "ref": "none"}
     # a whole fake wave: the timings rows carry the key and wave-result.json the verify record
     root = F.build(tmp_path / "wave")
     lines: list[str] = []
@@ -284,10 +289,14 @@ def test_ledger_append_lock_excl(tmp_path):
     two = json.dumps(dict(r2, prev_sha256=BI.line_sha256(one)), sort_keys=True, separators=(",", ":"))
     assert led.read_text(encoding="utf-8") == one + "\n" + two + "\n"                         # bytes unchanged
     before = led.read_bytes()
-    lock.write_text('{"pid": 4242}\n')                                    # another writer holds it
-    with pytest.raises(ValueError, match=r"trials.jsonl.lock is held \(\{\"pid\": 4242\}\)"):
+    me = psutil.Process(os.getpid())
+    lock.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time()}) + "\n")    # a live holder
+    with pytest.raises(ValueError, match=rf"trials.jsonl.lock is held by pid {me.pid} \(running\) after 0.2 s"):
         BI.ledger_append(led, [F.construction_line("c3", sha(b"3"), 1.2)], chain=True, lock_seconds=0.2)
     assert led.read_bytes() == before and lock.exists()                   # nothing appended; not ours to remove
+    lock.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time() - 3600}) + "\n")   # pid reused
+    with pytest.raises(ValueError, match="not running: a killed writer left it; remove it"):        # (E1t0 minor 2)
+        BI.ledger_append(led, [F.construction_line("c3", sha(b"3"), 1.2)], chain=True, lock_seconds=0.1)
     lock.unlink()
     broken = tmp_path / "broken.jsonl"
     broken.write_text(one + "\n" + json.dumps(dict(r2, prev_sha256="f" * 64), sort_keys=True,
@@ -311,6 +320,44 @@ def test_ledger_append_lock_excl(tmp_path):
     assert errors == [] and not lock.exists()
     records = BI.ledger_read(led)                                         # the chain verifies
     assert len(records) == 2 + n and {r["cell"] for r in records} == {"c1", "c2"} | {f"t{k}" for k in range(n)}
+
+
+def test_ledger_lock_permission_and_unlink(tmp_path, monkeypatch, capsys):
+    """Review E1t0 minors 1 and 2: a lock that cannot be created (permission denied, no lock file) is named as such;
+    a lock whose removal is blocked by another handle after the append is warned about, never raised over the
+    finished append (the lines stay written, the call returns)."""
+    led = tmp_path / "trials.jsonl"
+    real_open, real_unlink = os.open, Path.unlink
+
+    def no_create(path, *a, **k):
+        if str(path).endswith(".lock"):
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, *a, **k)
+    monkeypatch.setattr(os, "open", no_create)
+    with pytest.raises(ValueError, match=r"cannot create .*trials.jsonl.lock \(permission denied for 0.1 s\)"):
+        BI.ledger_append(led, [F.construction_line("c1", sha(b"1"), 1.0)], chain=True, lock_seconds=0.1)
+    monkeypatch.setattr(os, "open", real_open)
+    assert not led.exists()
+
+    def held_open(self, *a, **k):
+        if self.name.endswith(".lock"):
+            raise PermissionError(32, "The process cannot access the file", str(self))
+        return real_unlink(self, *a, **k)
+    monkeypatch.setattr(Path, "unlink", held_open)
+    appended, _ = BI.ledger_append(led, [F.construction_line("c1", sha(b"1"), 1.0)], chain=True)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert len(appended) == 1 and len(BI.ledger_read(led)) == 1
+    assert "warning: could not remove" in capsys.readouterr().err
+    (tmp_path / "trials.jsonl.lock").unlink()
+
+
+def test_runner_override_seconds_refused():
+    """The noted task-0 gap: --runner-override seconds above RUNNER_MAX_SECONDS is refused when parsed (exit 2),
+    not as a runner exit 2 with no receipt half way through a cycle."""
+    assert RC.parse_runner_overrides(["seconds=600", "max_rss_mib=2048"]) == {"seconds": 600, "max_rss_mib": 2048}
+    with pytest.raises(RC.CycleError, match="--runner-override seconds 900 is above the bounded runner's maximum") as e:
+        RC.parse_runner_overrides(["seconds=900"])
+    assert e.value.code == RC.EXIT_USAGE
 
 
 # ------------------------------------------------------------------ (g) F-7: the two-seed suite command

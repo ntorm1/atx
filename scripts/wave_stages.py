@@ -30,11 +30,14 @@ on, each stage's inputs re-check the digests its predecessor recorded (wave_stag
 
 Layout (Ruling PM8-12: no file over ~400 lines, split by stage): wave_stage_preflight.py (preflight and the budget),
 wave_stage_library.py (register, screen, spec), wave_stage_cell.py (run, match, the readers), wave_stage_record.py
-(verify, judge, record), wave_stage_util.py (shared pieces); this module assembles the chain.
+(verify, judge, record), wave_stage_util.py (shared pieces); this module assembles the chain, every stage through
+``timed`` (under driver.timings its receipt records the processes it ran: P9 OR section 5).
 """
 from __future__ import annotations
 
-from wave_stage_util import Stage
+import functools
+
+from wave_stage_util import Stage, fold_processes, timings_on
 from wave_stage_preflight import (admission_new, admission_trial_id, admission_used, budget_check,  # noqa: F401
                                   preflight, preflight_inputs, preflight_plan)
 from wave_stage_library import (register, register_plan, screen, screen_inputs, screen_plan, spec_inputs,
@@ -43,12 +46,27 @@ from wave_stage_cell import match, match_inputs, match_plan, run_inputs, run_pla
 from wave_stage_record import (judge, judge_inputs, judge_plan, record, record_inputs, record_plan, verify,
                                verify_inputs, verify_plan)
 
-STAGES = [Stage("preflight", preflight, preflight_inputs, preflight_plan),
-          Stage("register", register, None, register_plan),
-          Stage("screen", screen, screen_inputs, screen_plan),
-          Stage("spec", spec_stage, spec_inputs, spec_plan),
-          Stage("run", run_stage, run_inputs, run_plan),
-          Stage("match", match, match_inputs, match_plan),
-          Stage("verify", verify, verify_inputs, verify_plan),
-          Stage("judge", judge, judge_inputs, judge_plan),
-          Stage("record", record, record_inputs, record_plan)]
+
+def timed(run):
+    """A stage's run that starts with an empty process list (wave_context.Wave.processes); under driver.timings (P9 OR
+    section 5) its outputs gain "processes": every command and git query it ran, folded by what (wave_stage_util.
+    fold_processes); without the key the outputs are those of before."""
+    @functools.wraps(run)
+    def go(w, done, log):
+        w.processes = []
+        out = run(w, done, log)
+        if timings_on(w) and isinstance(out, dict):
+            out = dict(out, processes=fold_processes(w.processes))
+        return out
+    return go
+
+
+STAGES = [Stage("preflight", timed(preflight), preflight_inputs, preflight_plan),
+          Stage("register", timed(register), None, register_plan),
+          Stage("screen", timed(screen), screen_inputs, screen_plan),
+          Stage("spec", timed(spec_stage), spec_inputs, spec_plan),
+          Stage("run", timed(run_stage), run_inputs, run_plan),
+          Stage("match", timed(match), match_inputs, match_plan),
+          Stage("verify", timed(verify), verify_inputs, verify_plan),
+          Stage("judge", timed(judge), judge_inputs, judge_plan),
+          Stage("record", timed(record), record_inputs, record_plan)]

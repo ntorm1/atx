@@ -5,6 +5,7 @@ digests and the predecessor-digest check every stage's inputs use.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import wave_steps as WS
 from wave_context import Wave, stage_chain
@@ -23,8 +24,50 @@ def lib_spec(name: str) -> str:
 
 def cyc(w: Wave, verb: str, spec: str, *extra: str) -> list[str]:
     """research_cycle.py VERB SPEC ... --root <the wave's root> (it writes under that root, the root the driver
-    commits)."""
-    return WS.cycle_argv(w.python, verb, spec, *extra, root=w.root)
+    commits); a ``run`` carries the manifest's driver options (WS.driver_flags; none without a driver block)."""
+    flags = WS.driver_flags(w.manifest.get("driver")) if verb == "run" else []
+    return WS.cycle_argv(w.python, verb, spec, *extra, *flags, root=w.root)
+
+
+def timings_on(w: Wave) -> bool:
+    """driver.timings (P9 OR section 5): the stages record complete timings (processes, the screen's phase rows) and
+    wave-result.json carries them (stage seconds, readers, bundle)."""
+    return bool((w.manifest.get("driver") or {}).get("timings"))
+
+
+def fold_processes(rows: list[dict]) -> list[dict]:
+    """Process rows {what, seconds, exit_code} folded by what, in first-seen order: [{what, calls, seconds}]."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        t = out.setdefault(r["what"], {"what": r["what"], "calls": 0, "seconds": 0.0})
+        t["calls"] += 1
+        t["seconds"] = round(t["seconds"] + r["seconds"], 3)
+    return list(out.values())
+
+
+def lock_exes(w: Wave) -> bool:
+    """driver.lock_exes (P9 OR-2): the wave pins the exes of every cell spec it writes (`lock --exes --write`)."""
+    return bool((w.manifest.get("driver") or {}).get("lock_exes"))
+
+
+def pin_exes(w: Wave, spec: str) -> None:
+    """`lock SPEC --exes --write` before the spec's commit, under driver.lock_exes; nothing without it."""
+    if lock_exes(w):
+        w.run(cyc(w, "lock", spec, "--exes", "--write"), f"lock --exes {spec}")
+
+
+def verdict_file(w: Wave, cycle_dir: str, mode: str) -> str:
+    """The cycle verdict a stage reads and pins: <cycle dir>/cycle_verdict.json, as before; under driver.keep_verdicts
+    the newest per-run copy <cycle dir>/verdicts/<mode>-<k>.json that the research_cycle run the stage just ran wrote
+    (never overwritten, so the stage's pin never dangles: P9 OR section 3; a missing copy is a stop)."""
+    if not (w.manifest.get("driver") or {}).get("keep_verdicts"):
+        return f"{cycle_dir}/cycle_verdict.json"
+    d, n = w.path(f"{cycle_dir}/verdicts"), len(mode) + 1
+    ks = sorted(int(p.stem[n:]) for p in d.glob(f"{mode}-*.json") if p.stem[n:].isdigit()) if d.is_dir() else []
+    if not ks:
+        raise StageError(f"driver.keep_verdicts: no {mode} verdict copy under {cycle_dir}/verdicts (research_cycle "
+                         "--keep-verdicts writes one per run)", EXIT_PIN)
+    return f"{cycle_dir}/verdicts/{mode}-{ks[-1]}.json"
 
 
 def library_wave(w: Wave) -> bool:
@@ -64,6 +107,24 @@ def phase_rows(w: Wave, spec_rel: str) -> list[dict]:
     return rows
 
 
+def exe_notes(w: Wave, rows: list[dict]) -> list[str]:
+    """Ruling E1-REUSE-a2: one note per completed phase row whose K-P9-10 receipt (argv_sha256) names another
+    executable SHA than its executable (the receipt's command[0]) has on disk now: an output research_cycle reused on
+    a rebuilt exe without an exes_sha256 pin (a pinned mismatch stops the cycle). Empty for receipts before K-P9-10."""
+    out = []
+    for row in rows:
+        r = w.read_json(f"{row['run_dir']}/receipt.json") or {}
+        cmd, made = r.get("command"), r.get("executable_sha256")
+        if r.get("outcome") != "completed" or not isinstance(r.get("argv_sha256"), str) or not isinstance(made, str) \
+                or not (isinstance(cmd, list) and cmd and isinstance(cmd[0], str)):
+            continue
+        now = w.sha(cmd[0])
+        if now is not None and now != made:
+            out.append(f"{row['phase']} {row['run_dir']}: made by executable sha256 {made[:12]}, "
+                       f"{Path(cmd[0]).name} is sha256 {now[:12]} now")
+    return out
+
+
 def run_rows(w: Wave, phase: str, base: str) -> list[dict]:
     """One phase row per bounded run dir of the output ``base`` (``<base>-run[<k>]``) holding a receipt."""
     rows = []
@@ -75,12 +136,6 @@ def run_rows(w: Wave, phase: str, base: str) -> list[dict]:
                          "peak_mib": (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20,
                          "executable_sha256": r.get("executable_sha256")})
     return rows
-
-
-def completed_exe(rows: list[dict]) -> str | None:
-    """The executable_sha256 of the last completed (exit 0) run among phase rows (None: none, or none recorded)."""
-    done = [r for r in rows if r["outcome"] == "completed" and r["exit_code"] == 0]
-    return done[-1].get("executable_sha256") if done else None
 
 
 def reader_digests(w: Wave, names: list[str]) -> dict:

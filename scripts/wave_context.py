@@ -12,8 +12,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cycle_resume  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_spec  # noqa: E402
 import research_tree  # noqa: E402
@@ -41,6 +44,10 @@ class Wave:
         self.out_dir = self.manifest["out_dir"].rstrip("/")
         self._py: str | None = None
         self.seal_allow: dict[str, str] = {}     # research_wave.py --seal-allow TOKEN=RULING (wave_seal.py)
+        self._console_lock = threading.Lock()   # the judge's side-by-side commands number their consoles in turn
+        # P9 OR section 5: every command and git query of the stage running now, {what, seconds, exit_code} (in memory;
+        # wave_stages.timed folds them into the stage's outputs under driver.timings)
+        self.processes: list[dict] = []
 
     # -------------------------------------------------------------- paths
     def rel(self, path: Path) -> str:
@@ -132,13 +139,23 @@ class Wave:
 
     def run_dirs(self, base: str) -> list[str]:
         """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in attempt order (-run, then
-        k ascending: -run2 before -run10)."""
+        k ascending: -run2 before -run10), each followed by its attempt sub-dirs ``attempt-k`` (P9 OR-4: research_cycle
+        --auto-attempt's retries after a host refusal), k ascending: the timings rows and the seal scan read them all."""
         p = self.path(f"{base}-run")
         if not p.parent.is_dir():
             return []
         found = [d for d in p.parent.glob(p.name + "*")
                  if d.is_dir() and (d.name == p.name or d.name[len(p.name):].isdigit())]
-        return [self.rel(d) for d in sorted(found, key=lambda d: int(d.name[len(p.name):] or 0))]
+        out = []
+        for d in sorted(found, key=lambda d: int(d.name[len(p.name):] or 0)):
+            out.append(self.rel(d))
+            subs = [s for s in d.glob(cycle_resume.ATTEMPT_PREFIX + "*")
+                    if s.is_dir() and s.name[len(cycle_resume.ATTEMPT_PREFIX):].isdigit()]
+            out += [self.rel(s) for s in sorted(subs, key=lambda s: int(s.name[len(cycle_resume.ATTEMPT_PREFIX):]))]
+        return out
+
+    def exists_dir(self, rel: str) -> bool:
+        return self.path(rel).is_dir()
 
     # -------------------------------------------------------------- processes
     def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str:
@@ -146,18 +163,25 @@ class Wave:
         d = self.path(self.wave_path("consoles"))
         d.mkdir(parents=True, exist_ok=True)
         slug = "".join(ch if ch.isalnum() else "-" for ch in what.lower()).strip("-")[:48] or "command"
-        k = len(list(d.glob("*.log"))) + 1
-        while (d / f"{k:03d}-{slug}.log").exists():
-            k += 1
-        p = d / f"{k:03d}-{slug}.log"
-        with p.open("x", encoding="utf-8", newline="\n") as f:
-            f.write(f"$ {WS.fmt_argv(argv)}\n# exit {done.returncode}\n# stdout\n{done.stdout or ''}\n# stderr\n"
-                    f"{done.stderr or ''}\n")
+        with self._console_lock:
+            k = len(list(d.glob("*.log"))) + 1
+            while (d / f"{k:03d}-{slug}.log").exists():
+                k += 1
+            p = d / f"{k:03d}-{slug}.log"
+            with p.open("x", encoding="utf-8", newline="\n") as f:
+                f.write(f"$ {WS.fmt_argv(argv)}\n# exit {done.returncode}\n# stdout\n{done.stdout or ''}\n# stderr\n"
+                        f"{done.stderr or ''}\n")
         return self.rel(p)
+
+    def note_process(self, what: str, seconds: float, code) -> None:
+        with self._console_lock:
+            self.processes.append({"what": what, "seconds": round(seconds, 3), "exit_code": code})
 
     def run(self, argv: list[str], what: str, ok=(0,)) -> subprocess.CompletedProcess:
         self.log(WS.fmt_argv(argv))
+        started = time.monotonic()
         done = self.executor(argv, self.root, self.env())
+        self.note_process(what, time.monotonic() - started, done.returncode)
         self.console(argv, what, done)
         if done.returncode not in ok:
             tail = ((done.stderr or "") + (done.stdout or ""))[-600:]
@@ -169,7 +193,9 @@ class Wave:
 
     # -------------------------------------------------------------- git
     def git(self, *args: str) -> str:
+        started = time.monotonic()
         done = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
+        self.note_process(f"git {args[0] if args else ''}".strip(), time.monotonic() - started, done.returncode)
         if done.returncode != 0:
             raise stage_chain.StageError(f"git {' '.join(args)}: exit {done.returncode}: {done.stderr.strip()[:300]}")
         return done.stdout

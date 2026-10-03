@@ -363,7 +363,14 @@ def test_every_v8_spec_loads_and_plans(tmp_path, name):
     """Every live authored spec plans as authored (check_nominal_plan) and as it stands (check_live_plan): the same
     whether root has locked it, set a template's parent or filled its values or not. The authored set is the registry
     (a spec add-alpha generated is checked by test_every_generated_spec_plans_and_parents_the_templates)."""
-    assert spec_kind(V8 / name) in (BASE, TEMPLATE, ADD_ALPHA_COPY), name                # review F-9: no file list
+    # review F-9 (no file list): the kind from independent evidence: a template by its schema; a lib-NAME-gm.json
+    # beside a generated lib-NAME.json is that spec's hand copy (PM6-6), recognised from the copy's own content; any
+    # other plain spec is a base (review E1t0 minor 4: the old line could not fail)
+    copied = V8 / re.sub(r"-gm\.json$", ".json", name)
+    want = TEMPLATE if RS.is_template(json.loads((V8 / name).read_text(encoding="utf-8"))) else \
+        ADD_ALPHA_COPY if name.startswith("lib-") and name.endswith("-gm.json") and copied.is_file() and \
+        generated_by_add_alpha(copied) else BASE
+    assert spec_kind(V8 / name) == want, name
     check_nominal_plan(tmp_path, V8, name)
     check_live_plan(tmp_path, V8, name)
 

@@ -32,7 +32,10 @@ CHAIN = "atx.research-wave"
 
 
 def chain_of(w: Wave) -> stage_chain.Chain:
-    return stage_chain.Chain(CHAIN, wave_stages.STAGES, w.path(w.out_dir))
+    """The wave's stage chain; driver.receipt_digest "content" chains the receipts' content digests (P9 OR section 3:
+    no started_utc / seconds in a chain hash), absent the file digests of before."""
+    return stage_chain.Chain(CHAIN, wave_stages.STAGES, w.path(w.out_dir),
+                             digest=WM.driver(w.manifest, "receipt_digest", "file"))
 
 
 def main(argv=None, *, executor=execute, log=print) -> int:

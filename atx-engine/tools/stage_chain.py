@@ -22,6 +22,12 @@ started_utc, seconds}, written once (never overwritten). A stage that raises (St
 exception with code 4 and its type named) leaves ``<NN>-<name>.failed-<k>.json`` (k the first free number; kept for
 the record, never read for resume) and stops the chain; the next ``run`` retries it. ``run`` holds
 ``<state dir>/chain.lock`` (created O_EXCL, removed when it ends): a second run of the same state dir is refused.
+
+Digest (``Chain(..., digest=)``): "file" (the default, as before) chains the previous receipt's file SHA-256 as the
+input ``previous_receipt_sha256``; "content" (P9 OR section 3) chains ``content_sha256``, the SHA-256 of its canonical
+JSON without the time keys (TIME_KEYS: started_utc, seconds), as ``previous_receipt_content_sha256``, so a chain re-run
+on the same inputs and outputs has the same digests whatever its timing. A chain keeps one rule: a receipt recorded
+under the other rule reads as stale.
 Standard library only.
 """
 from __future__ import annotations
@@ -37,6 +43,9 @@ from typing import Callable
 
 SCHEMA = "atx.stage-receipt/v1"
 PREV = "previous_receipt_sha256"          # the input every stage after the first carries
+PREV_CONTENT = "previous_receipt_content_sha256"   # its name under digest="content" (P9 OR section 3)
+TIME_KEYS = ("started_utc", "seconds")    # a receipt's time keys: out of its content digest
+DIGESTS = ("file", "content")
 LOCK = "chain.lock"                       # <state dir>/chain.lock while a run holds the state dir
 EXIT_STALE, EXIT_STOP = 3, 4
 
@@ -81,12 +90,27 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def content_sha256(path: Path) -> str:
+    """SHA-256 of a receipt's content keys: its canonical JSON without TIME_KEYS (P9 OR section 3)."""
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    body = {k: v for k, v in doc.items() if k not in TIME_KEYS} if isinstance(doc, dict) else doc
+    return hashlib.sha256(canonical(body).encode("utf-8")).hexdigest()
+
+
 class Chain:
-    def __init__(self, name: str, stages: list[Stage], state_dir: Path, *, clock: Callable[[], str] = utc_now):
+    def __init__(self, name: str, stages: list[Stage], state_dir: Path, *, clock: Callable[[], str] = utc_now,
+                 digest: str = "file"):
         names = [s.name for s in stages]
         if not stages or len(set(names)) != len(names) or not all(n and n.replace("-", "").isalnum() for n in names):
             raise ValueError(f"chain {name}: stages need distinct names of letters, digits and '-' ({names})")
+        if digest not in DIGESTS:
+            raise ValueError(f"chain {name}: digest must be one of {', '.join(DIGESTS)}")
         self.name, self.stages, self.state_dir, self.clock = name, list(stages), Path(state_dir), clock
+        self.digest = digest
+
+    def receipt_digest(self, path: Path) -> str:
+        """A receipt file's digest under the chain's rule: its file SHA-256, or content_sha256 (digest="content")."""
+        return content_sha256(path) if self.digest == "content" else sha256_file(path)
 
     # -------------------------------------------------------------- receipts
     def receipt_dir(self) -> Path:
@@ -116,11 +140,12 @@ class Chain:
     def stage_inputs(self, index: int, ctx, done: dict) -> dict:
         st = self.stages[index]
         own = dict(st.inputs(ctx, done)) if st.inputs else {}
-        if PREV in own:
-            raise ValueError(f"stage {st.name}: input name {PREV} is the chain's own")
+        if PREV in own or PREV_CONTENT in own:
+            raise ValueError(f"stage {st.name}: input names {PREV}, {PREV_CONTENT} are the chain's own")
         if index > 0:
             prev = self.receipt_path(index - 1)
-            own[PREV] = sha256_file(prev) if prev.is_file() else None
+            own[PREV_CONTENT if self.digest == "content" else PREV] = \
+                self.receipt_digest(prev) if prev.is_file() else None
         return json.loads(canonical(own))
 
     @staticmethod

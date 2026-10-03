@@ -77,16 +77,41 @@ def cycle_argv(py: str, verb: str, spec: str, *extra: str, root=None) -> list[st
     return rooted([py, tool(RCY, root), verb, spec, *extra], root)
 
 
-def bounded_argv(py: str, run_dir: str, binds: list[str], command: list[str], root=None) -> list[str]:
+def driver_flags(driver: dict | None) -> list[str]:
+    """research_cycle run options of a manifest's driver block (wave_manifest.DRIVER_KEYS; none without one):
+    auto_attempt -> --auto-attempt (P9 OR-4), keep_verdicts -> --keep-verdicts (OR section 3), admission_wait_seconds
+    -> --admission-wait N (F-5 (a)), host_budget_mib -> --host-budget-mib N (OR section 5)."""
+    d = driver or {}
+    out = ["--auto-attempt"] if d.get("auto_attempt") else []
+    out += ["--keep-verdicts"] if d.get("keep_verdicts") else []
+    for key, flag in (("admission_wait_seconds", "--admission-wait"), ("host_budget_mib", "--host-budget-mib")):
+        if key in d:
+            out += [flag, str(d[key])]
+    return out
+
+
+def runner_launch_flags(driver: dict | None) -> list[str]:
+    """The bounded runner's launch admission options of a manifest's driver block (the readers' and the bundle's
+    runs; none without the keys): --admission-wait-seconds N, --host-budget-mib N."""
+    d, out = driver or {}, []
+    for key, flag in (("admission_wait_seconds", "--admission-wait-seconds"), ("host_budget_mib", "--host-budget-mib")):
+        if key in d:
+            out += [flag, str(d[key])]
+    return out
+
+
+def bounded_argv(py: str, run_dir: str, binds: list[str], command: list[str], root=None,
+                 driver: dict | None = None) -> list[str]:
+    """``command`` under the bounded runner with the readers' caps (and the driver block's launch options)."""
     argv = [py, tool(RUNNER, root), "--seconds", READER_CAPS["seconds"], "--max-rss-mib", READER_CAPS["max_rss_mib"],
-            "--min-free-mib", READER_CAPS["min_free_mib"], "--output", run_dir]
+            "--min-free-mib", READER_CAPS["min_free_mib"], *runner_launch_flags(driver), "--output", run_dir]
     for b in binds:
         argv += ["--bind", b]
     return argv + ["--", *command]
 
 
 def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str, root=None,
-                files: list | None = None) -> list[str]:
+                files: list | None = None, driver: dict | None = None) -> list[str]:
     """``files``: the NAVs' series the reader reads (daily_<scen>.csv, capacity_curve.csv), bound with summary.json."""
     readers = tool(READERS, root)
     cmd = [py, readers, kind]
@@ -94,16 +119,16 @@ def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str, root=Non
         cmd += ["--nav", f"{name}={d}"]
     cmd += ["--output", out]
     return bounded_argv(py, run_dir, [readers] + [f"{d}/summary.json" for d in navs.values()] + list(files or []),
-                        cmd, root)
+                        cmd, root, driver)
 
 
 def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, root=None,
-                files: list | None = None) -> list[str]:
+                files: list | None = None, driver: dict | None = None) -> list[str]:
     """``files``: the two NAVs' daily series (daily_<scen>.csv), bound with summary.json (bundle_once checks them)."""
     summ = tool(NAV_SUMM, root)
     cmd = [py, summ, "--protocol", "v8", "--bundle", base_nav, cell_nav, "--bundle-json", out]
     return bounded_argv(py, run_dir, [summ, f"{base_nav}/summary.json", f"{cell_nav}/summary.json"] + list(files or []),
-                        cmd, root)
+                        cmd, root, driver)
 
 
 def commit_argvs(paths: list[str], message: str) -> list[list[str]]:
@@ -173,11 +198,13 @@ def pool_only_marginal(doc: dict) -> dict:
     return out
 
 
-def marginal_ruled(doc: dict, rule: dict) -> dict:
+def marginal_ruled(doc: dict, rule: dict, candidates: list[str] | None = None) -> dict:
     """The manifest's "marginal" ruling (e.g. PM8-15: an add-alpha wave on a theme-erc parent with more themes than
     the marginal verb takes runs it on the pool only, PM6-8 (i); the phase's time cap): pool_only applies
-    pool_only_marginal, seconds sets runner.phases.marginal.seconds; a spec without a marginal phase is unchanged. A
-    cap above the bounded runner's maximum (research_tree.RUNNER_MAX_SECONDS) is refused (ValueError, P9 OR-1)."""
+    pool_only_marginal, seconds sets runner.phases.marginal.seconds, candidates_only (P9 ruling P4) sets
+    marginal.candidates to ``candidates`` (the wave's ids in the library: research_cycle passes them as the verb's
+    --candidates FILE); a spec without a marginal phase is unchanged. A cap above the bounded runner's maximum
+    (research_tree.RUNNER_MAX_SECONDS) is refused (ValueError, P9 OR-1)."""
     refusal = research_tree.seconds_cap_refusal("marginal.seconds", rule.get("seconds"))
     if refusal:
         raise ValueError(f"wave manifest {refusal}")
@@ -185,12 +212,17 @@ def marginal_ruled(doc: dict, rule: dict) -> dict:
     if "seconds" in rule and isinstance(out.get("marginal"), dict):
         phases = out.setdefault("runner", {}).setdefault("phases", {})
         phases["marginal"] = dict(phases.get("marginal") or {}, seconds=rule["seconds"])
+    if rule.get("candidates_only") and isinstance(out.get("marginal"), dict):
+        if not candidates:
+            raise ValueError("wave manifest marginal.candidates_only: no candidate ids to list")
+        out["marginal"]["candidates"] = list(candidates)
     return out
 
 
 def unpinned(doc: dict) -> dict:
     """A cell template without the pins `lock --write` writes into it (research_spec.lock_template: the "locked"
-    block, change.inputs.*.sha256, the fields manifest pin in change.set): a resumed rule cell compares on this."""
+    block, change.inputs.*.sha256, the fields manifest pin in change.set; `lock --exes`: change.set.exes_sha256): a
+    resumed rule cell compares on this."""
     out = copy.deepcopy(doc)
     out.pop("locked", None)
     change: dict = out["change"] if isinstance(out.get("change"), dict) else {}
@@ -198,6 +230,7 @@ def unpinned(doc: dict) -> dict:
         if isinstance(item, dict) and "sha256" in item:
             item["sha256"] = None
     sets = change.get("set") or {}
+    sets.pop("exes_sha256", None)               # `lock --exes --write` (P9 OR-2, driver.lock_exes)
     if "fields.manifest_sha256" in sets:
         sets["fields.manifest_sha256"] = None
     if isinstance(sets.get("fields"), dict) and "manifest_sha256" in sets["fields"]:

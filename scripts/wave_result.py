@@ -14,7 +14,11 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
    pbo, verdict{rule, text, accepted, checks, decided_by, criteria[]} | {accepted: false, reason},
    ledger{path, lines_before, lines_after, head, n_before, n_after, trial_id, admission_lines[]},
    next_parent{spec, library}, timings[{phase, run_dir, outcome, exit_code, seconds, peak_mib, executable_sha256}],
-   receipts{stage: sha256}}
+   receipts{stage: sha256},
+   exes_sha256{parent, cell, differ}   only when a spec pins its exes (lock --exes; verify's record, P9 OR-2),
+   stage_seconds{stage: s}, processes[{stage, what, calls, seconds}]   only under driver.timings (P9 OR section 5),
+                                       which also adds the screen spec's, the readers' ("reader:<name>") and the
+                                       bundle's runner rows to timings}
 """
 from __future__ import annotations
 
@@ -39,33 +43,72 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
                 "gross": mt["g_cell"], "gross_parent": mt["g_parent"], "gross_calibration": mt["g_calibration"],
                 "leverage_calibration": mt["leverage_calibration"], "corrected": mt["corrected"],
                 "gross_match": mt["mode"]}
+        if (done.get("run") or {}).get("exe_notes"):     # ruling E1-REUSE-a2: only when the run stage noted one
+            cell["exe_notes"] = done["run"]["exe_notes"]
     verdict = jd.get("verdict") or {"accepted": False, "reason": sp.get("reason") or "no cell"}
     parent = pre["parent"]
     accepted = bool(verdict.get("accepted"))
+    full = bool((m.get("driver") or {}).get("timings"))     # P9 OR section 5: complete timings
     timings = []
-    for key in ("run", "match", "judge"):
+    for key in ("run", "match", "judge") + (("screen",) if full else ()):
         timings += (done.get(key) or {}).get("phases") or []
+    if full:
+        timings += helper_rows(w)
     seen, rows = set(), []
     for r in timings:                      # each run dir once (the match and judge stages re-list the run's phases)
         if r["run_dir"] not in seen:
             seen.add(r["run_dir"])
             rows.append(r)
-    return {"schema": SCHEMA, "wave": m["wave"], "kind": "library" if library else "rule",
-            "description": m.get("description", ""), "manifest": pre["manifest"],
-            "library": m.get("library"), "template": (m.get("rule_cell") or {}).get("template"),
-            "budget": pre.get("budget"),
-            "parent": {k: parent.get(k) for k in ("spec", "spec_digest", "library", "nav", "leverage")},
-            "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
-                        "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
-                        "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
-            "cell": cell, "marginal": marginal_rows(sc, sp, jd), "mechanics": vf.get("mechanics"),
-            "nav_exe": vf.get("nav_exe"),
-            "seal_scan": seal if seal is not None else vf.get("seal_scan"),
-            "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
-            "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
-            "next_parent": ({"spec": cell["spec"], "library": cell["library"]} if accepted and cell else
-                            {"spec": parent["spec"], "library": parent["library"]}),
-            "timings": rows, "receipts": receipt_digests(w)}
+    doc = {"schema": SCHEMA, "wave": m["wave"], "kind": "library" if library else "rule",
+           "description": m.get("description", ""), "manifest": pre["manifest"],
+           "library": m.get("library"), "template": (m.get("rule_cell") or {}).get("template"),
+           "budget": pre.get("budget"),
+           "parent": {k: parent.get(k) for k in ("spec", "spec_digest", "library", "nav", "leverage")},
+           "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
+                       "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
+                       "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
+           "cell": cell, "marginal": marginal_rows(sc, sp, jd), "mechanics": vf.get("mechanics"),
+           "nav_exe": vf.get("nav_exe"),
+           "seal_scan": seal if seal is not None else vf.get("seal_scan"),
+           "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
+           "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
+           "next_parent": ({"spec": cell["spec"], "library": cell["library"]} if accepted and cell else
+                           {"spec": parent["spec"], "library": parent["library"]}),
+           "timings": rows, "receipts": receipt_digests(w)}
+    if vf.get("exes_sha256") is not None:   # P9 OR-2: only when a spec pins its exes (the layout of before otherwise)
+        doc["exes_sha256"] = vf["exes_sha256"]
+    if full:                                # P9 OR section 5: the stages' own seconds and processes
+        doc["stage_seconds"] = stage_seconds(w)
+        doc["processes"] = stage_processes(w, done)
+    return doc
+
+
+def helper_rows(w) -> list[dict]:
+    """Runner rows of the wave's own bounded processes: each reader (phase "reader:<name>") and the bundle."""
+    from wave_stage_util import run_rows  # noqa: PLC0415  (the scoreboard imports this module without the context)
+    readers = w.path(w.wave_path("readers"))
+    names = sorted(p.stem for p in readers.glob("*.json")) if readers.is_dir() else []
+    out = [r for n in names for r in run_rows(w, f"reader:{n}", w.wave_path("readers", n))]
+    return out + run_rows(w, "bundle", w.wave_path("bundle"))
+
+
+def stage_seconds(w) -> dict:
+    """{stage: seconds} of the wave's ok stage receipts so far (the record stage's own is written after)."""
+    d = w.path(w.wave_path("receipts"))
+    out = {}
+    for p in sorted(d.glob("[0-9][0-9]-*.json")) if d.is_dir() else []:
+        if ".failed-" not in p.name:
+            r = w.read_json(w.rel(p))
+            out[r.get("stage")] = r.get("seconds")
+    return out
+
+
+def stage_processes(w, done: dict) -> list[dict]:
+    """[{stage, what, calls, seconds}]: every command and git query each stage ran (its receipt's processes), the
+    record stage's own so far included (wave_context.Wave.processes)."""
+    from wave_stage_util import fold_processes  # noqa: PLC0415
+    out = [{"stage": stage, **p} for stage, o in done.items() for p in (o or {}).get("processes") or []]
+    return out + [{"stage": "record", **p} for p in fold_processes(getattr(w, "processes", []))]
 
 
 PER_ROW = ("id", "ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t")   # a row's own: pool / themes, not library
@@ -93,10 +136,14 @@ def marginal_rows(sc: dict, sp: dict, jd: dict | None = None) -> dict | None:
 
 
 def receipt_digests(w) -> dict:
-    """{receipt file stem: SHA-256} of the wave's ok receipts so far (the record stage's own is written after)."""
+    """{receipt file stem: SHA-256} of the wave's ok receipts so far (the record stage's own is written after): the
+    files' digests, or under driver.receipt_digest "content" their content digests (stage_chain.content_sha256, no
+    time keys: P9 OR section 3)."""
     from wave_context import stage_chain  # noqa: PLC0415  (the scoreboard imports this module without the context)
+    content = (w.manifest.get("driver") or {}).get("receipt_digest") == "content"
+    digest = stage_chain.content_sha256 if content else stage_chain.sha256_file
     d = w.path(w.wave_path("receipts"))
-    return {p.stem: stage_chain.sha256_file(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
+    return {p.stem: digest(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
 
 
 def what_ran(doc: dict) -> str:
@@ -167,6 +214,9 @@ def log_section(doc: dict) -> str:
                 f"G_parent {_f(cell['gross_parent'], '.10f')}" +
                 (f" -> corrected to L {cell['leverage']}, G {_f(cell['gross'], '.10f')}" if cell["corrected"] else
                  " (stands)") + ".", ""]
+        if cell.get("exe_notes"):
+            out += ["**Exe notes** (outputs reused on a rebuilt exe without an exes_sha256 pin, ruling E1-REUSE-a2): "
+                    + "; ".join(cell["exe_notes"]) + ".", ""]
         mech = doc.get("mechanics") or {}
         out += [f"**Mechanics (S2, read before any return): {'PASS' if mech.get('pass') else 'FAIL'}** (" +
                 "; ".join(f"{r['check']} {_f(r['value'], '.5g')} {r['limit']}" for r in mech.get("rows", [])) + ").", ""]
@@ -200,6 +250,9 @@ def log_section(doc: dict) -> str:
         out += [f"| {r['phase']} | `{r['run_dir']}` | {_f(r['seconds'], '.1f')} | {r['peak_mib']} | {r['outcome']} |"
                 for r in doc["timings"]]
         out.append("")
+    if doc.get("stage_seconds"):            # driver.timings (P9 OR section 5)
+        out += ["Stage seconds: " + ", ".join(f"{k} {_f(v, '.1f')}" for k, v in doc["stage_seconds"].items()) + ".",
+                ""]
     seal = doc.get("seal_scan") or {}
     tail = seal_tail(seal)
     out += [f"Hidden-data record: seal scan of {seal.get('files', 0)} log(s) (every run dir, reader and console of the "

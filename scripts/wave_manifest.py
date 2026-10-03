@@ -30,29 +30,67 @@ One wave is one cell on the current book, declared before anything is measured:
    "record": {"copy_to": DIR?},                   where the record stage copies wave-result.json and the log section
                                                   (outside the code pathspec too)
    "speed": {"reuse_screen_marginal": true, "screen_first": true},
-   "marginal": {"ruling": ID, "pool_only": BOOL?, "seconds": N?}}   optional: a PM ruling on the library's marginal
-                                                 phase (e.g. PM8-15: pool only, PM6-8 (i), on a theme-erc parent
-                                                 with more themes than the verb takes; the phase cap), applied
-                                                 to the screen library at register and to a b library that runs
-                                                 its own marginal; seconds above the bounded runner's maximum
-                                                 (research_tree.RUNNER_MAX_SECONDS, 600) is refused at load
+   "marginal": {"ruling": ID, "pool_only": BOOL?, "seconds": N?, "candidates_only": BOOL?}}   optional: a PM ruling
+                                                 on the library's marginal phase (e.g. PM8-15: pool only, PM6-8 (i), on
+                                                 a theme-erc parent with more themes than the verb takes; the phase
+                                                 cap), applied to the screen library at register and to a b library
+                                                 that runs its own marginal; seconds above the bounded runner's maximum
+                                                 (research_tree.RUNNER_MAX_SECONDS, 600) is refused at load;
+                                                 candidates_only (P9 ruling P4) writes the wave's candidate ids (the b
+                                                 library's: its kept ones) into the spec's marginal.candidates, which
+                                                 research_cycle passes as the verb's --candidates FILE (rows for the
+                                                 listed members only; absent, every member, as before)
                                                  the wave's own speed rules (wave_stages.py; both default true; they
                                                  change no input of a decision): the cell after a sign-rule drop
                                                  carries the screen's per-row marginal fields (report only) instead of
                                                  a second marginal pass when the screen ran its marginal mode, and a
                                                  b library runs --screen before its cell
+   "driver": {KEY: VALUE, ...}                    optional (P9 lane E1): how the driver runs the wave; every key is
+                                                 opt-in, and without it (or without the block) the wave's argv, behaviour
+                                                 and written bytes are those of before (DRIVER_KEYS):
+       "auto_attempt": BOOL                      research_cycle run --auto-attempt: a bounded step the host refused for
+                                                 memory with nothing written runs again in <run dir>/attempt-k (OR-4)
+       "admission_wait_seconds": N               every bounded process of the wave (research_cycle --admission-wait N;
+                                                 the readers' and the bundle's runner --admission-wait-seconds N) waits
+                                                 at most N s for free memory >= peak + floor and no compiler (F-5 (a))
+       "host_budget_mib": N                      (with admission_wait_seconds; at least the readers' cap) the host
+                                                 memory semaphore over declared caps (--host-budget-mib N), under which
+                                                 ref || u, card || marginal and the judge's summ || bundle || book reader
+                                                 run side by side (OR section 5); each launch also checks free memory
+                                                 net of the other claims' unallocated caps. Set N no higher than the
+                                                 host's free memory at wave start
+       "lock_exes": BOOL                         every cell spec the wave writes (the screen library, a b library, a
+                                                 rule cell) is pinned with `lock --exes --write` before its commit: its
+                                                 exes_sha256, checked by every run; verify records the parent's and the
+                                                 cell's pins (OR-2)
+       "receipt_digest": "file" | "content"      "content": the stage receipts are chained, and digested in
+                                                 wave-result.json, over their content keys (no started_utc / seconds:
+                                                 stage_chain.content_sha256; OR section 3); "file" = as before
+       "record_date": "YYYY-MM-DD"               the date of the record stage's queue history entries (OR section 3:
+                                                 the manifest's, not the day the record ran)
+       "keep_verdicts": BOOL                     research_cycle run --keep-verdicts: every run also writes its verdict
+                                                 to <cycle dir>/verdicts/<mode>-<k>.json (never overwritten), and the
+                                                 screen and judge stages read and pin that copy (OR section 3)
+       "timings": BOOL                           complete timings (OR section 5): each stage receipt records its
+                                                 processes (add-alpha, research_cycle, readers, bundle, git) and the
+                                                 screen its phase rows; wave-result.json adds the screen's, readers'
+                                                 and bundle's runner rows to timings, plus stage_seconds and processes
+                                                 (scoreboard --timings prints them)
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
    "origin" (prior | grid | mined), "hypothesis" (the hypothesis id: one variant per hypothesis),
    "kind": "add" | "replace", "replaces": [ID, ...] (kind replace), "rescreen": bool (one replaced member),
    "removes": [ID, ...] (kind add), "fields": [NAME, ...]?, "prior_sign_source"?, "form"?, "formula"?, "domain"?,
-   "deviation"?, "exception": {"limits": {LIMIT: N}, "basis": TEXT}?, "ruling"? (a second variant of a hypothesis)}
+   "deviation"?, "exception": {"limits": {LIMIT: N}, "basis": TEXT}?, "ruling"? (a second variant of a hypothesis),
+   contract K-P9-11 (P9, each optional; a rule_cell may carry them too): "source_sample_end" (YYYY: the last year of
+   the source paper's sample), "predicted_mechanism" (one line), "data_class" (H | W | P | N, lit section 3.1)}
 
 ``load`` validates and returns (manifest, its file SHA-256); every problem is listed at once (WaveError).
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from pathlib import Path
@@ -60,6 +98,7 @@ import re
 
 import research_tree
 import wave_rules
+import wave_steps
 
 SCHEMA = "atx.research-wave/v1"
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
@@ -69,13 +108,31 @@ ORIGINS = ("prior", "grid", "mined")
 KINDS = (wave_rules.ADD, wave_rules.REPLACE)
 CANDIDATE_REQUIRED = ("id", "dsl", "dsl_sha256", "theme", "tier", "prior_sign", "citation", "origin", "hypothesis")
 CANDIDATE_OPTIONAL = ("kind", "replaces", "rescreen", "removes", "fields", "prior_sign_source", "form", "formula",
-                      "domain", "deviation", "exception", "ruling", "notes", "lane", "report")
+                      "domain", "deviation", "exception", "ruling", "notes", "lane", "report",
+                      "source_sample_end", "predicted_mechanism", "data_class")
+# contract K-P9-11: the registration keys a candidate (and a rule_cell) may carry, each optional
+REGISTRATION_KEYS = ("source_sample_end", "predicted_mechanism", "data_class")
+DATA_CLASSES = ("H", "W", "P", "N")                 # lit section 3.1
 TOP_REQUIRED = ("schema", "wave", "parent", "fields", "acceptance", "gross_match", "budget", "ledger", "expect",
                 "out_dir")
 TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed",
-                "marginal")
+                "marginal", "driver")
 SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
-MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
+# "driver": the wave driver's opt-in behaviours (P9 lane E1; each absent = that of before): a key maps to its value
+# check and the text of its refusal
+DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
+               "admission_wait_seconds": (lambda v: type(v) is int and research_tree.launch_refusal(v, None) is None,
+                                          f"an integer number of seconds in [1, {research_tree.ADMISSION_MAX_SECONDS}]"),
+               "host_budget_mib": (lambda v: type(v) is int and
+                                   research_tree.HOST_BUDGET_MIB[0] <= v <= research_tree.HOST_BUDGET_MIB[1],
+                                   f"an integer number of MiB in {list(research_tree.HOST_BUDGET_MIB)}"),
+               "lock_exes": (lambda v: type(v) is bool, "true or false"),
+               "receipt_digest": (lambda v: v in ("file", "content"), '"file" (as before) or "content"'),
+               "record_date": (lambda v: isinstance(v, str) and _iso_date(v), "a date YYYY-MM-DD"),
+               "keep_verdicts": (lambda v: type(v) is bool, "true or false"),
+               "timings": (lambda v: type(v) is bool, "true or false")}
+# "marginal": a PM ruling on the library's marginal phase (candidates_only: P9 ruling P4)
+MARGINAL_KEYS = ("pool_only", "seconds", "ruling", "candidates_only")
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)
 BUDGET_KEYS = ("id", "admission_cap") + PREFIX_KEYS + ("admission_origin", "construction_cap")
@@ -83,6 +140,28 @@ BUDGET_KEYS = ("id", "admission_cap") + PREFIX_KEYS + ("admission_origin", "cons
 
 class WaveError(ValueError):
     pass
+
+
+def _iso_date(text: str) -> bool:
+    try:
+        return dt.date.fromisoformat(text).isoformat() == text
+    except ValueError:
+        return False
+
+
+def registration_problems(d: dict, where: str) -> list[str]:
+    """Problems of the K-P9-11 keys of a candidate or a rule_cell (each optional): source_sample_end a year YYYY (an
+    integer or its four digits), predicted_mechanism one line of text, data_class one of DATA_CLASSES."""
+    out = []
+    y = d.get("source_sample_end")
+    if "source_sample_end" in d and not (type(y) in (int, str) and re.fullmatch(r"(1[89]|20)[0-9]{2}", str(y))):
+        out.append(f"{where}: source_sample_end must be a year YYYY (contract K-P9-11)")
+    pm = d.get("predicted_mechanism")
+    if "predicted_mechanism" in d and not (_text(pm) and "\n" not in pm and "\r" not in pm):
+        out.append(f"{where}: predicted_mechanism must be one line of text (contract K-P9-11)")
+    if "data_class" in d and d["data_class"] not in DATA_CLASSES:
+        out.append(f"{where}: data_class must be one of {', '.join(DATA_CLASSES)} (contract K-P9-11)")
+    return out
 
 
 def dsl_sha256(dsl: str) -> str:
@@ -159,7 +238,7 @@ def candidate_problems(c, where: str, extra_keys: tuple = ()) -> list[str]:
                            not isinstance(ex["limits"], dict) or not ex["limits"] or
                            not all(k in BUDGET_LIMITS and type(v) is int and v > 0 for k, v in ex["limits"].items())):
         out.append(f"{where}: exception must be {{limits: {{{'|'.join(BUDGET_LIMITS)}: N}}, basis: TEXT}}")
-    return out
+    return out + registration_problems(c, where)
 
 
 def registration(c: dict) -> dict:
@@ -240,6 +319,9 @@ def validate(m) -> list[str]:
         out.append("marginal must be {ruling: the PM ruling, pool_only?: true | false, seconds?: a positive integer}")
     elif research_tree.seconds_cap_refusal("marginal.seconds", mg.get("seconds")):
         out.append(research_tree.seconds_cap_refusal("marginal.seconds", mg["seconds"]))
+    elif type(mg.get("candidates_only", False)) is not bool:
+        out.append("marginal.candidates_only must be true or false (P9 ruling P4)")
+    out += driver_problems(m.get("driver", {}))
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
     return out
@@ -265,9 +347,12 @@ def candidates_problems(m: dict) -> list[str]:
 
 def rule_cell_problems(r) -> list[str]:
     if not (isinstance(r, dict) and {"template", "template_sha256"} <= set(r) and
-            set(r) <= {"template", "template_sha256", "name", "constants"} and _rel(r["template"]) and
-            isinstance(r["template_sha256"], str) and SHA_RE.fullmatch(r["template_sha256"])):
-        return ["rule_cell must be {template: PATH, template_sha256: PIN, name?, constants?}"]
+            set(r) <= {"template", "template_sha256", "name", "constants", *REGISTRATION_KEYS} and
+            _rel(r["template"]) and isinstance(r["template_sha256"], str) and SHA_RE.fullmatch(r["template_sha256"])):
+        return ["rule_cell must be {template: PATH, template_sha256: PIN, name?, constants?, "
+                f"{', '.join(k + '?' for k in REGISTRATION_KEYS)}}}"]
+    if registration_problems(r, "rule_cell"):
+        return registration_problems(r, "rule_cell")
     c = r.get("constants", {})
     if not (isinstance(c, dict) and set(c) <= {"set", "flags"} and isinstance(c.get("set", {}), dict) and
             isinstance(c.get("flags", {}), dict) and all(isinstance(v, dict) for v in c.get("flags", {}).values())):
@@ -305,3 +390,23 @@ def budget_prefixes(b: dict) -> list[str]:
 
 def speed(m: dict, key: str) -> bool:
     return bool((m.get("speed") or {}).get(key, True))
+
+
+def driver_problems(d) -> list[str]:
+    """Problems of a manifest's driver block (empty: valid): known keys only, each value as DRIVER_KEYS checks it."""
+    if not isinstance(d, dict):
+        return [f"driver must be an object of {', '.join(DRIVER_KEYS)} (see the module doc)"]
+    out = [f"driver: unknown key {k!r} (known: {', '.join(DRIVER_KEYS)})" for k in sorted(set(d) - set(DRIVER_KEYS))]
+    out += [f"driver.{k} must be {DRIVER_KEYS[k][1]}" for k, v in d.items() if k in DRIVER_KEYS and
+            not DRIVER_KEYS[k][0](v)]
+    if "host_budget_mib" in d and "admission_wait_seconds" not in d:
+        out.append("driver.host_budget_mib needs driver.admission_wait_seconds (a claim is waited for)")
+    floor = int(wave_steps.READER_CAPS["max_rss_mib"])
+    if type(d.get("host_budget_mib")) is int and d["host_budget_mib"] < floor:
+        out.append(f"driver.host_budget_mib {d['host_budget_mib']} is below the readers' cap {floor} MiB")
+    return out
+
+
+def driver(m: dict, key: str, default=None):
+    """A driver key of the manifest (absent: ``default``, the behaviour of before)."""
+    return (m.get("driver") or {}).get(key, default)

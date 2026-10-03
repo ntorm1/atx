@@ -12,8 +12,8 @@ import wave_manifest as WM
 import wave_rules as WR
 import wave_steps as WS
 from wave_context import Wave
-from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc, lib_spec, library_wave, pinned,
-                             skipped, write_spec_file)
+from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc, lib_spec, library_wave, lock_exes,
+                             phase_rows, pin_exes, pinned, skipped, timings_on, verdict_file, write_spec_file)
 
 
 # ------------------------------------------------------------------ register (library waves)
@@ -65,8 +65,10 @@ def register(w: Wave, done: dict, log) -> dict:
     if replaces(m["candidates"]):
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     if m.get("marginal"):
-        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"]),
+        ids = [c["id"] for c in m["candidates"]]              # candidates_only (P9 ruling P4): the wave's strings
+        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"], ids),
                      f"marginal as ruled ({m['marginal']['ruling']}): {m['marginal']}")
+    pin_exes(w, lib_spec(name))
     commit = w.commit_paths(f"wave {m['wave']}: register library {name} ({len(m['candidates'])} frozen strings; "
                             f"manifest {w.manifest_rel} {w.manifest_sha[:12]})", add_alpha_files(w, name))
     spec = lib_spec(name)
@@ -82,6 +84,8 @@ def register_plan(w: Wave, done: dict) -> list[str]:
     if w.manifest.get("marginal"):
         lines.append(f"#   then: marginal as ruled ({w.manifest['marginal']['ruling']}): {w.manifest['marginal']} "
                      "(the library spec rewritten, lock dry)")
+    if lock_exes(w):
+        lines.append(WS.fmt_argv(cyc(w, "lock", lib_spec(w.manifest["library"]), "--exes", "--write")))
     return lines + ["#   then: git add -- <the files add-alpha wrote>; git commit -q -m \"wave ...: register ...\" -- "
                     "<the same paths>"]
 
@@ -100,7 +104,7 @@ def screen(w: Wave, done: dict, log) -> dict:
     if not isinstance(adm, dict) or not isinstance(adm.get("candidates"), list):
         raise StageError(f"screen: no candidate rows in {apath}")
     rows = [{k: x.get(k) for k in ROW_KEYS} for x in adm["candidates"] if isinstance(x, dict)]
-    vpath = f"{outs['cycle_dir']}/cycle_verdict.json"
+    vpath = verdict_file(w, outs["cycle_dir"], "screen")
     doc = w.read_json(vpath)
     marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in (doc or {}).get("marginal") or [] if isinstance(x, dict)]
     ids = {c["id"] for c in m["candidates"]}
@@ -114,9 +118,12 @@ def screen(w: Wave, done: dict, log) -> dict:
             f"{row['prior_sign']:+d} -> {row['decision']} ({row['reason']})")
     log(f"   gate {'PASS' if gate_ok else 'FAIL (no string admitted with its prior sign): no cell'}; kept "
         f"{dec['kept']}, dropped {dec['dropped']}")
-    return {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
-            "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
-            "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+    out = {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
+           "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
+           "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+    if timings_on(w):                  # P9 OR section 5: the screen's u, fit, card, marginal rows (a b library's cell
+        out["phases"] = phase_rows(w, spec)                       # spec is another spec)
+    return out
 
 
 def screen_plan(w: Wave, done: dict) -> list[str]:
@@ -151,7 +158,7 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
                 raise StageError(f"rule cell {cell}: its NAV output {nav} exists already (a template is used once: "
                                  "copy it under a new name with new outputs)", EXIT_PIN)
         write_spec_file(w, cell, doc, same=WS.unpinned)      # a resumed stage finds it locked already
-        w.run(cyc(w,"lock", cell, "--write"), "lock the rule cell")
+        w.run(cyc(w,"lock", cell, "--write", *(["--exes"] if lock_exes(w) else [])), "lock the rule cell")
         commit = w.commit_paths(f"wave {m['wave']}: rule cell {Path(cell).name} on {m['parent']['spec']}", {cell})
         return cell_out(w, done, cell, "rule", commit or w.committed(cell), m["parent"]["library"])
     sc = done["screen"]
@@ -178,8 +185,9 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
     elif want == "pool-only":
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     if not reuse and m.get("marginal"):
-        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"]),
+        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"], kept),   # P4: the kept ids
                      f"marginal as ruled ({m['marginal']['ruling']}): {m['marginal']}")
+    pin_exes(w, lib_spec(name))
     commit = w.commit_paths(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "
                             f"({m['sign_rule']}: dropped {', '.join(sc['decision']['dropped'])})",
                             add_alpha_files(w, name))
@@ -193,12 +201,14 @@ def spec_plan(w: Wave, done: dict) -> list[str]:
         rc = m["rule_cell"]
         cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
         return [f"#   write {cell}: {rc['template']} with parent {m['parent']['spec']} and the constants",
-                WS.fmt_argv(cyc(w,"lock", cell, "--write")), "#   then: git add / commit -- " + cell]
+                WS.fmt_argv(cyc(w,"lock", cell, "--write", *(["--exes"] if lock_exes(w) else []))),
+                "#   then: git add / commit -- " + cell]
     kept = ((done.get("screen") or {}).get("decision") or {}).get("kept")
     cands = [c for c in m["candidates"] if kept is None or c["id"] in kept]
     head = ("#   if the sign rule drops a string (known after the screen): add-alpha of each kept string into "
             f"{WM.b_library(m)}, then commit" if kept is None else f"#   kept {kept}")
-    return [head] + [WS.fmt_argv(add_alpha(w, c, WM.b_library(m))) for c in cands]
+    pin = [WS.fmt_argv(cyc(w, "lock", lib_spec(WM.b_library(m)), "--exes", "--write"))] if lock_exes(w) else []
+    return [head] + [WS.fmt_argv(add_alpha(w, c, WM.b_library(m))) for c in cands] + pin
 
 
 def screen_inputs(w: Wave, done: dict) -> dict:
