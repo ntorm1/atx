@@ -6,3 +6,5 @@ the coverage delta. Files: `alpha_panel/{fund_items,fund_catalog,fundamentals,fu
 
 Owner extension: read `owner-coverage-addendum.md`; explicitly map and measure all primitives needed for profitability/growth gold families. Diagnose the source/history balance cases in Task 3 final fix evidence without balance-equation plugs.
 
+Interface R6/R7: compustat_std schema v2/cstd-pit-v3 has available_at in vintage keys. Rebuild it using `compustat_std --fund-stage fundamentals_v11`, then rebuild ratios with `--std-stage <published_compustat_stage>`. Ratios consumes standardized fundq/funda, never raw fundamentals_v11; no raw-stage alias is required. Read the Task4 ratio-to-primitives mapping and final report before primitive recovery. Final rebuilt hashes invalidate earlier dependent factors/coverage until refreshed.
+
