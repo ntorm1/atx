@@ -1,0 +1,38 @@
+{
+  "schema": "atx.research-wave/v1",
+  "wave": "y-3",
+  "description": "Cell Y-3 norm-score-v1 (v8y-prereg sections 5, 6, 14; PM8-10 (c), (e); YP-7): rule wave, template scripts/specs/v8/y-norm-score.json @ 02633038 (blob 693c64f5), no free constant, NAV-only; parent = Y-S cell lib-v8ysb-gm.json (library v8ysb, L 1.1828; wave-result 57e9f5ea next_parent); fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); PM6-6 gross matching (gm template); budget construction N 57 + 1 <= 62 (N_c(X-F0) + 6), 0 admission trials.",
+  "parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "rule_cell": {
+    "template": "scripts/specs/v8/y-norm-score.json",
+    "template_sha256": "693c64f5471ceff6f21320c5bfee92d4f741226cbf7be295b1905e0a569e677f"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "v8y-construction-n57-plus-1",
+    "construction_cap": 62
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 57
+  },
+  "out_dir": "build-equity/waves/y-3",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-v8-20260929/waves"
+  }
+}
