@@ -19,7 +19,10 @@ the new spec_sha256 in cycle_verdict.json to the old cell's numbers. Now:
 
 Every other bounded output (u, fit, w, card, marginal, an every-phase fields or monitor; P9 OR-3, contract K-P9-10):
 a done step is reused only when the receipt of the run that made it names the command this spec would run now
-(``check_receipt_argv``; a receipt written before K-P9-10, without argv_sha256, is reused as before).
+(``check_receipt_argv``; a receipt written before K-P9-10, without argv_sha256, is reused as before). Every done
+bounded output (nav and ref too) with a K-P9-10 receipt is also reused only while its executable hashes as the
+receipt's executable_sha256 (``check_receipt_exe``, P9 ruling E1-REUSE (a): after a rebuild and `lock --exes`,
+an output of the old exe is never served as fresh).
 
 Attempt sub-dirs (P9 OR-4): attempt 1 of a bounded step runs in its run dir, attempt k >= 2 in
 <run dir>/attempt-k (``attempt_dirs``); research_cycle advances to the next one only under --auto-attempt and only
@@ -130,6 +133,27 @@ def check_receipt_argv(cycle, st) -> str | None:
                           "or run under a fresh --suffix)")
     neutral = made is not None and made != [str(a) for a in now]
     return f"argv sha256 {r['argv_sha256']} ({src})" + (", reuse-neutral options aside" if neutral else "")
+
+
+def check_receipt_exe(cycle, st) -> str | None:
+    """P9 ruling E1-REUSE (a), contract K-P9-10: raise ResumeError unless the done bounded step ``st`` (every bounded
+    phase, nav and ref included) was made by the executable it runs now: the receipt's executable_sha256 equals the
+    SHA-256 of the step's executable (the argv after the runner's ``--``) as it is now. None: the receipt predates
+    K-P9-10 (no argv_sha256) or records no executable_sha256, or the executable is not on disk (hash-only), so
+    reused as before; else how it matched (for the log)."""
+    r = cycle.receipt(st.run_dir)
+    if not (isinstance(r, dict) and isinstance(r.get("argv_sha256"), str) and
+            isinstance(r.get("executable_sha256"), str)):
+        return None
+    exe = st.argv[st.argv.index("--") + 1]
+    now = cycle.res.sha(exe)
+    if now is None:
+        return None
+    if now != r["executable_sha256"]:
+        raise ResumeError(f"{st.phase} output {st.output} was made by an executable with sha256 "
+                          f"{r['executable_sha256']} ({st.run_dir}/receipt.json); {exe} is sha256 {now} now: refusing "
+                          "to reuse it (outputs of an old exe are moved aside or run under a fresh --suffix)")
+    return f"executable sha256 {now} ({exe})"
 
 
 def spec_digest(cycle) -> str | None:

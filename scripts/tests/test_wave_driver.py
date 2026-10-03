@@ -3,6 +3,7 @@
 
   test_receipt_k_p9_10_keys               K-P9-10: argv_sha256, attempt, executable_sha256, build_type in receipts
   test_resume_refuses_argv_mismatch       OR-3: a done bounded output is reused only on the command that made it
+  test_resume_refuses_exe_mismatch        E1-REUSE (a): ... and only on the executable that made it
   test_attempt_subdir_after_floor_kill    OR-4: a planted floor kill resumes to completion in <run dir>/attempt-2
   test_driver_auto_attempt_manifest_flag  the manifest's driver block (each key opt-in) reaches research_cycle
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
@@ -164,6 +165,45 @@ def test_resume_refuses_argv_mismatch(tmp_path):
     assert len([c for c in T.calls(root)[n:] if not c.startswith(("check", "summ"))]) == 0   # nothing re-ran
     assert CR.reuse_args("fit", ["--a", "--theme-resid-parent", "p", "--theme-resid-parent-sha256", "s", "--b"]) == \
         ["--a", "--b"]
+
+
+def test_resume_refuses_exe_mismatch(tmp_path):
+    """P9 ruling E1-REUSE (a): a done bounded output whose K-P9-10 receipt records executable_sha256 is reused only
+    while the step's executable hashes the same (u through marginal, and the NAV / ref too): after a rebuild (and
+    `lock --exes --write`) an old-exe output is a HARD-STOP (exit 3), nothing runs. A receipt without argv_sha256 or
+    executable_sha256, or an executable not on disk, is reused as before."""
+    root, sp = T.make_root(tmp_path)
+    assert T.run(root, sp) == RC.EXIT_OK
+    n = len(T.calls(root))
+    u, nav = step_of(root, sp, "u"), step_of(root, sp, "nav")
+    for st, exe in ((u, "bin/ic.exe"), (nav, "bin/nav.exe")):
+        stamp(root, st.run_dir, CR.step_args(st))
+        p = root / st.run_dir / "receipt.json"
+        p.write_text(json.dumps(dict(json.loads(p.read_text()), executable_sha256=sha((root / exe).read_bytes()))))
+    log: list[str] = []
+    assert T.run(root, sp, log) == RC.EXIT_OK
+    assert f"   receipt exe: executable sha256 {sha(b'ic')} (bin/ic.exe)" in log
+    assert f"   receipt exe: executable sha256 {sha(b'nav')} (bin/nav.exe)" in log
+    (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                  # a rebuild: argv unchanged, exe moved
+    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[u\]: u output out/U-1 was made by an executable with "
+                                            rf"sha256 {sha(b'ic')} .* bin/ic.exe is sha256 {sha(b'ic rebuilt')} now: "
+                                            "refusing to reuse it") as e:
+        T.run(root, sp)
+    assert e.value.code == RC.EXIT_PIN
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    (root / "bin" / "nav.exe").write_bytes(b"nav rebuilt")
+    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[nav\]: nav output .* was made by an executable") as e:
+        T.run(root, sp)
+    assert e.value.code == RC.EXIT_PIN
+    assert all(c.startswith(("check", "summ")) for c in T.calls(root)[n:])           # nothing re-ran
+    p = root / nav.run_dir / "receipt.json"                               # no executable_sha256: reused as before
+    p.write_text(json.dumps({k: v for k, v in json.loads(p.read_text()).items() if k != "executable_sha256"}))
+    log = []
+    assert T.run(root, sp, log) == RC.EXIT_OK and not any(x.startswith("   receipt exe:") and "nav" in x for x in log)
+    (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                  # a legacy receipt (no argv_sha256) too
+    p = root / u.run_dir / "receipt.json"
+    p.write_text(json.dumps({k: v for k, v in json.loads(p.read_text()).items() if k != "argv_sha256"}))
+    assert T.run(root, sp) == RC.EXIT_OK
 
 
 def test_attempt_subdir_after_floor_kill(tmp_path):

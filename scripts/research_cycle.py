@@ -34,7 +34,9 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   latest (its receipt and NAV binding); attempt 1 keeps the run dir of before
   resume argv     (P9 OR-3, K-P9-10) a done bounded output (u, fit, w, card, marginal, every-phase fields / monitor) is
                   reused only when its run receipt's command equals the one this spec would run now
-                  (cycle_resume.REUSE_NEUTRAL options aside); a receipt written before K-P9-10 is reused as before
+                  (cycle_resume.REUSE_NEUTRAL options aside); a receipt written before K-P9-10 is reused as before.
+                  Ruling E1-REUSE (a): every done bounded output (nav, ref too) with a K-P9-10 receipt is reused only
+                  while its executable hashes as the receipt's executable_sha256 (else exit 3)
   --admission-wait S  (P9 F-5 (a)) every bounded process waits, at most S seconds, before its launch for free memory
                   >= its declared peak + floor and no compiler (run_bounded_research --admission-wait-seconds)
   --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
@@ -884,7 +886,8 @@ class Cycle:
                 raise CycleError(f"exe {key} missing: {rel} (spec {EXES_PIN} pins {want})", EXIT_PIN)
             if got != want:
                 raise CycleError(f"PIN MISMATCH exe {key}: {rel} is {got}, spec {EXES_PIN} pins {want} (a rebuilt exe "
-                                 "is re-pinned by `lock --exes --write`)", EXIT_PIN)
+                                 "is re-pinned by `lock --exes --write`; outputs the old exe made are then refused on "
+                                 "resume: move them aside or run under a fresh --suffix)", EXIT_PIN)
             out[key] = (rel, got)
         return out
 
@@ -1944,6 +1947,10 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                     how = cycle_resume.check_receipt_argv(cycle, st)               # reused only on the same argv
                     if how:
                         log(f"   receipt argv: {how}")
+                if st.kind == "bounded":        # E1-REUSE (a): and only on the same executable (K-P9-10 receipts)
+                    exe = cycle_resume.check_receipt_exe(cycle, st)
+                    if exe:
+                        log(f"   receipt exe: {exe}")
             except cycle_resume.ResumeError as exc:
                 raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
         elif st.kind == "internal":
