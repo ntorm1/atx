@@ -183,11 +183,12 @@ def lake(tmp_path, monkeypatch):
     monkeypatch.setattr(N, "MIN_FREE_GB", 0.0)
     (tmp_path / "raw").mkdir()
     z = write_zip(tmp_path / "raw" / "2021q1_notes.zip", fixture_tables())
+    before = N.process_memory()        # process-lifetime peak: other tests on this xdist worker may have raised it
     res = N.parse_archive(z, "2021q1", tmp_path / "work")
     N.ledger().append({"key": "2021q1", "kind": "zip", "status": "parsed", "url": "u", "bytes": z.stat().st_size,
                        "sha256": "x", "span": ["2021-01-01", "2021-03-31"], "repost": 0, **res})
     N.finalize()
-    return tmp_path, res
+    return tmp_path, {**res, "memory_before": before}
 
 
 # ---------------------------------------------------------------- notes_fetch: pure helpers
@@ -263,7 +264,8 @@ def test_parse_archive_filters_types_and_verifies(lake) -> None:
     kept_dims = {r[0] for r in con.execute(f"SELECT dimhash FROM {dim}").fetchall()}
     assert "h_prod" in kept_dims and "h_sub" in kept_dims and "0x00000000" not in kept_dims
     assert res["unparsed"]["num"] == {"value": 1}                                   # 'n/a' in a value column
-    assert res["memory"] == {} or res["memory"]["peak_commit_gb"] < 0.25
+    pre = (res.get("memory_before") or {}).get("peak_commit_gb") or 0.0
+    assert res["memory"] == {} or res["memory"]["peak_commit_gb"] < 0.25 or pre >= 0.25   # bound only if attributable
     assert (tmp / "raw" / "meta" / "2021q1_notes.notes-metadata.json.gz").exists()
     man = (N.parts_dir().parent / "manifest.json")
     assert man.exists() and '"num_items"' in man.read_text()

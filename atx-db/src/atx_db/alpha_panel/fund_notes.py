@@ -886,7 +886,8 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
                    w.debt_mat_y1 AS dd1, w.debt_mat_y2 AS dd2, w.debt_mat_y3 AS dd3, w.debt_mat_y4 AS dd4,
                    w.debt_mat_y5 AS dd5, w.debt_mat_after5 AS dd_after5, w.debt_mat_remainder_fy AS dd_rem_fy,
                    coalesce(w.oplease_liab, w.oplease_liab_current + w.oplease_liab_noncurrent) AS oplease_liab,
-                   w.oplease_rou, w.oplease_cost, w.oplease_rate,
+                   w.oplease_rou, w.oplease_cost,
+                   CASE WHEN w.oplease_rate BETWEEN 0 AND 1 THEN w.oplease_rate END AS oplease_rate,   -- 5.1 for 5.1%: NULL
                    coalesce(w.finlease_liab, w.finlease_liab_current + w.finlease_liab_noncurrent) AS finlease_liab,
                    w.oplease_pay_y1 AS mrc1, w.oplease_pay_y2 AS mrc2, w.oplease_pay_y3 AS mrc3, w.oplease_pay_y4 AS mrc4,
                    w.oplease_pay_y5 AS mrc5, w.oplease_pay_after5 AS mrcta,

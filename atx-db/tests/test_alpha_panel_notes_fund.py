@@ -60,6 +60,8 @@ def seg_tables() -> dict:
     _numd(t, G7, "LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo", "20211231", 0, "5.0")
     _numd(t, G7, "LongTermDebtMaturitiesRepaymentsOfPrincipalRemainderOfFiscalYear", "20211231", 0, "3.0")
     _numd(t, H8, "OperatingLeaseLiability", "20201231", 0, "35.0")
+    _numd(t, A, "OperatingLeaseWeightedAverageDiscountRatePercent", "20201231", 0, "0.045")
+    _numd(t, G7, "OperatingLeaseWeightedAverageDiscountRatePercent", "20211231", 0, "4.5")      # 4.5%: NULL
     _numd(t, I9, "Revenues", "20211231", 4, "95.0")                                          # Group = SubA + SubB
     for m, v in (("Group", "70.0"), ("SubA", "40.0"), ("SubB", "30.0"), ("Other", "25.0")):
         _numd(t, I9, "Revenues", "20211231", 4, v, f"BusinessSegments={m};")
@@ -220,6 +222,7 @@ def test_segment_features_debt_ladder_leases_sbc(lake_seg) -> None:
     assert (a.oplease_liab, a.oplease_cost, a.stkco, a.mrc1) == (33.0, 8.0, 7.0, None)
     g = x[G7]                                                                 # remainder bucket counts when dd1 absent
     assert (g.dd2, g.dd_rem_fy, g.dd_n_buckets, g.dd_sched_total, g.dd1_share) == (5.0, 3.0, 1, 8.0, None)
+    assert a.oplease_rate == 0.045 and g.oplease_rate is None                 # a rate must be a decimal in [0, 1]
 
 
 def test_segment_features_amendment_is_new_vintage_with_carry(lake_seg) -> None:
@@ -231,7 +234,7 @@ def test_segment_features_amendment_is_new_vintage_with_carry(lake_seg) -> None:
     assert h.oplease_liab == 35.0 and a.oplease_liab == 33.0                  # own value; the original row is unchanged
     assert (h.bseg_n, h.bseg_rev_hhi, h.foreign_sales_share, h.major_cust_share, h.dd1) == (
         a.bseg_n, a.bseg_rev_hhi, a.foreign_sales_share, a.major_cust_share, a.dd1)
-    assert (h.oplease_cost, h.stkco, h.carry_n) == (8.0, 7.0, 6)              # 4 blocks + 2 single columns
+    assert (h.oplease_cost, h.stkco, h.oplease_rate, h.carry_n) == (8.0, 7.0, 0.045, 7)   # 4 blocks + 3 columns
     assert C8_not_in(x)
 
 
