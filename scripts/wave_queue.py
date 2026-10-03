@@ -4,7 +4,9 @@ One JSON file per candidate, ``scripts/specs/v8/candidates/<id>.json`` (schema `
 registration fields of a wave candidate (wave_manifest.CANDIDATE_*: id, frozen DSL and its SHA-256, theme, tier, prior
 sign, citation, origin, hypothesis id, add or replace, ...) plus
 
-  status   proposed -> pinned (the PM) -> screened | admitted | dropped | in-book (the wave's record stage)
+  status   proposed -> pinned (the PM) -> screened | admitted | dropped | in-book (the wave's record stage:
+           screened = no cell, or kept but not admitted by the gate (weight 0); admitted / in-book = admitted and
+           in the cell, the cell accepted for in-book; dropped = the sign rule dropped it)
            proposed -> dropped (withdrawn); every later status is final (a re-test is a new variant with a ruling)
   wave     the wave that consumed it (null until then)
   history  [{status, at, by, wave?, note?}] every transition, in order
@@ -159,11 +161,16 @@ def checked(root: Path, docs: dict, d: str | None = None) -> None:
 
 # ------------------------------------------------------------------ the wave's record stage
 def outcome_status(cid: str, result: dict) -> str:
-    """The queue status a wave result gives one of its candidates."""
+    """The queue status a wave result gives one of its candidates: dropped by the sign rule; screened when there is no
+    cell or the gate did not admit it (kept at weight 0, PM7-35); else admitted, or in the book when the cell was
+    accepted."""
     sc = result.get("screen") or {}
     if cid in (sc.get("dropped") or []):
         return DROPPED
     if result.get("cell") is None:
+        return SCREENED
+    row = next((r for r in sc.get("rows") or [] if r.get("id") == cid), None)
+    if row is not None and row.get("status") != "admitted":
         return SCREENED
     return IN_BOOK if (result.get("verdict") or {}).get("accepted") else ADMITTED
 

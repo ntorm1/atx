@@ -117,6 +117,18 @@ def test_the_wave_sets_the_queue_status_of_its_candidates(tmp_path):
     assert RC.main(["candidates", "validate", "--root", str(root)]) == 0
 
 
+def test_a_kept_string_the_gate_did_not_admit_is_screened_not_admitted(tmp_path):
+    """Review YINFRA #15: PM7-35 keeps an addition the gate did not admit at weight 0; it is not in the book."""
+    root = queue_root(tmp_path)
+    fake = F.FakeCycle(root, {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", 0),
+                              "alpha_c": ("reject_redundant", 0)})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert res["screen"]["kept"] == ["alpha_a", "alpha_b", "alpha_c"] and res["verdict"]["accepted"] is True
+    assert {cid: c["status"] for cid, c in Q.load(root).items()} == {
+        "alpha_a": "in-book", "alpha_b": "in-book", "alpha_c": "screened"}
+
+
 def test_preflight_refuses_a_queued_candidate_that_is_not_pinned(tmp_path):
     root = queue_root(tmp_path, pin=False)
     lines: list[str] = []
