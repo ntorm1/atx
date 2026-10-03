@@ -280,3 +280,8 @@ Hand judgments bind the exact current seed/rule/sample hash. All 64 affected com
 | sec_filings | 5190fe99e4c2f1f13218d966a67d06995d51b7a31a73151dad2686e829aed693 |
 | security_master | 3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a |
 | security_master/share_exchange_history_manifest.json | 5c3c3bd7817ee69ef4f796f8b7789a35eb68d23c67fa28f8f7b1b2b8e9dc82cd |
+## Bounded authenticated continuation
+
+`build --max-new-years N` completes at most N new year payloads in `_tmp/universe-authenticated-v1`; `N=0` validates/resumes existing checkpoints only. Incomplete configured 2018–2026 inventory returns `status=partial_cache_only`, `published=false`, and exact missing years before any gate, coverage, validation/manifest publication or output promotion. `--years` limits work selection and cannot certify a shorter inventory. Uncapped execution retains the full build behavior.
+
+Each year binds exact configured years, input manifests and their actual declared payload SHA/size, actual panel inventory and calendar, helper/build code, complete panel-date daily counters/checksum, payload SHA/size and Parquet metadata row count. Every completed year and all current source/code identities are rechecked before promotion and final publication; actual promoted bytes must match their checkpoints. Legacy daily receipts are not adopted by existence. The old scratch remains untouched; new stale/corrupt/incomplete checkpoints stop with evidence preserved for inspection, requiring explicit operator recovery rather than automatic wiping. Partial scratch is not a released universe, and host stops during final promotion still require R9 inspection. Source semantics, gates, French FAIL/I4 and the pre-2023 return boundary are unchanged.

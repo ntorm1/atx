@@ -382,9 +382,10 @@ def test_r2000_and_hand_check_gates(tmp_path):
 
 
 def test_build_publishes_manifest_with_gate_status_and_resumes(tmp_path, monkeypatch):
+    monkeypatch.setattr(U,'YEARS',range(2021,2022))
     monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path))
     make_lake(tmp_path)
-    for name in U.INPUTS:
+    for name in (*U.INPUTS,*U.COVERAGE_INPUTS):
         stage, _, part = name.partition("/")
         f = tmp_path / stage / (part or "manifest.json")
         f.parent.mkdir(parents=True, exist_ok=True)

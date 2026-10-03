@@ -77,7 +77,7 @@ from .security_master import EXCHANGE_BY_CLASS, SYMBOL_SUFFIX
 STAGE = "universe"
 SCHEMA = "atx.alpha-panel.universe/v1"
 RULE = "universe-all-common-v3"
-MODULES = ("universe", "issuer_history", "issuer_classes", "market_index", "market_common", "security_master", "identity_v3", "common")
+MODULES = ("universe", "universe_checkpoint", "issuer_history", "issuer_classes", "market_index", "market_common", "security_master", "identity_v3", "common")
 MIN_PRICE = 1.0
 FINRA_STALE_DAYS = 45            # = panel.SI_STALE_DAYS (the panel's FINRA freshness rule; asserted in the tests)
 EXCHANGE_MAP = EXCHANGE_BY_CLASS
@@ -585,38 +585,60 @@ def hand_check_sample(con, seed: int = HAND_SEED) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------- build
-def build(years: range = YEARS) -> dict[str, Any]:
+def build(years: range | None = None, max_new_years: int | None = None) -> dict[str, Any]:
+    from . import universe_checkpoint as Q
+    import shutil
+    if max_new_years is not None and (type(max_new_years) is not int or max_new_years<0):raise ValueError("max-new-years must be nonnegative")
+    years=YEARS if years is None else years
+    required=list(YEARS)
+    if not required or any(y not in required for y in years):raise ValueError("years outside configured universe inventory")
     inputs = M.input_manifests(*INPUTS)
     missing = [k for k, v in inputs.items() if v is None]
     if missing:
         raise RuntimeError(f"universe: input manifests missing: {missing}")
-    receipt: dict[str, Any] = {"rule": RULE, "years": [years[0], years[-1]]}
+    all_inputs={**inputs, **M.input_manifests(*COVERAGE_INPUTS)}
+    ident=Q.identity(all_inputs,MODULES,required)
+    cache=Q.YearCache(C.build_root()/"_tmp/universe-authenticated-v1",ident,DAILY_COLS)
+    receipt: dict[str, Any] = {"rule": RULE, "years": required, "published":False}
+    expected={}
+    for y in required:
+        files=sorted((C.build_root()/"panel"/f"year={y}").glob("*.parquet"))
+        if not files:raise RuntimeError(f"required panel year missing: {y}")
+        expected[y]=files
     con = C.connect(memory="380MB", threads=2, db_file="universe.duckdb")
     with C.timed(receipt, "issuer_tables"):
         receipt["issuer_tables"] = load_issuer_tables(con)
     out = C.stage_dir(STAGE)
-    # a guard stop resumes at the first year without its receipt (kept while input manifests and code are unchanged)
-    work = M.resumable_dir("universe", inputs, MODULES)
     daily: dict[str, dict[str, int]] = {}
     receipt["rows"], receipt["resumed_years"] = {}, []
-    for y in years:
-        if not list((C.build_root() / "panel" / f"year={y}").glob("*.parquet")):
-            continue
-        dest, rec = out / f"year={y}" / "universe.parquet", work / f"daily_{y}.json"
-        if dest.exists() and rec.exists():
-            done = C.read_json(rec)
-            daily.update(done["daily"])
-            receipt["rows"][str(y)] = done["rows"]
-            receipt["resumed_years"].append(y)
-            continue
-        with C.timed(receipt, f"year_{y}"):
-            build_year(con, y)
-            yd = {r[0].isoformat(): dict(zip(DAILY_COLS, r[1:])) for r in year_receipt(con)}
-            n = C.copy_to_parquet(con, output_sql(), dest, row_group_size=131072)
-            C.write_json_atomic(rec, {"daily": yd, "rows": n})
-            daily.update(yd)
-            receipt["rows"][str(y)] = n
-        con.execute("DROP TABLE IF EXISTS t1; DROP TABLE IF EXISTS lk; DROP TABLE IF EXISTS t2; DROP TABLE IF EXISTS t3")
+    dates={y:[r[0].isoformat() for r in con.execute("SELECT DISTINCT session_date FROM read_parquet(?) ORDER BY 1",[[str(p) for p in expected[y]]]).fetchall()] for y in required}
+    new=0
+    for y in required:
+        done=cache.validate(y,dates[y])
+        if done is None:
+            if y not in years or (max_new_years is not None and new>=max_new_years):continue
+            with C.timed(receipt,f"year_{y}"):
+                build_year(con,y)
+                yd={r[0].isoformat():dict(zip(DAILY_COLS,r[1:])) for r in year_receipt(con)}
+                n=C.copy_to_parquet(con,output_sql(),cache.payload(y),row_group_size=131072)
+                if Q.identity(all_inputs,MODULES,required)!=ident:raise RuntimeError("inputs/code changed during year")
+                done=cache.seal(y,n,yd,dates[y])
+                new+=1
+            con.execute("DROP TABLE IF EXISTS t1; DROP TABLE IF EXISTS lk; DROP TABLE IF EXISTS t2; DROP TABLE IF EXISTS t3")
+        else:receipt["resumed_years"].append(y)
+        daily.update(done["daily"]);receipt["rows"][str(y)]=done["rows"]
+    receipt['missing_years']=[y for y in required if str(y) not in receipt['rows']]
+    if receipt['missing_years']:
+        if Q.identity({**M.input_manifests(*INPUTS),**M.input_manifests(*COVERAGE_INPUTS)},MODULES,required)!=ident:raise RuntimeError('inputs/code changed before continuation checkpoint')
+        con.close()
+        receipt['status']='partial_cache_only'
+        return receipt
+    if Q.identity({**M.input_manifests(*INPUTS),**M.input_manifests(*COVERAGE_INPUTS)},MODULES,required)!=ident:raise RuntimeError('inputs/code changed before publication')
+    for y in required:
+        cache.validate(y,dates[y])
+    for y in required:
+        dest=out/f'year={y}'/'universe.parquet';dest.parent.mkdir(parents=True,exist_ok=True)
+        tmp=dest.with_suffix('.partial');shutil.copyfile(cache.payload(y),tmp);tmp.replace(dest)
     with C.timed(receipt, "gates"):
         codes = {}
         for y in GATE_YEARS:
@@ -644,6 +666,10 @@ def build(years: range = YEARS) -> dict[str, Any]:
     con.close()
     (C.build_root() / "_tmp" / "universe.duckdb").unlink(missing_ok=True)
     all_years = range(min(int(d[:4]) for d in daily), max(int(d[:4]) for d in daily) + 1)
+    if Q.identity({**M.input_manifests(*INPUTS),**M.input_manifests(*COVERAGE_INPUTS)},MODULES,required)!=ident:raise RuntimeError("inputs/code changed during final measurements")
+    for y in required:
+        done=cache.validate(y,dates[y]);published=out/f"year={y}"/"universe.parquet"
+        if done["payload"]!={"sha256":C.sha256_file(published),"bytes":published.stat().st_size}:raise RuntimeError("published year differs from authenticated cache")
     validation = {"rule": RULE, "gates": gates, "counts": receipt["counts"], "coverage": cov,
                   "daily_per_year": {c: band_gate(daily, years=all_years, col=c)["per_year"] for c in DAILY_COLS},
                   "input_manifests_sha256": {**inputs, **M.input_manifests(*COVERAGE_INPUTS)}}
@@ -661,6 +687,7 @@ def build(years: range = YEARS) -> dict[str, Any]:
                                 "hand_check_precision": gates["hand_check"].get("precision")},
                    "measured_by": "validation/universe.json", "ruling": "T2-a (daily band 3,200-4,800)"}
     receipt["gate_status"] = gate_status
+    receipt["published"]=True;receipt["status"]="published"
     C.write_stage_manifest(STAGE, SCHEMA, MODULES, {
         "rule": RULE, "rule_text": __doc__, "staleness": "daily; rebuilt with the panel",
         "input_manifests_sha256": inputs, "gate_status": gate_status, "receipt": receipt})
@@ -676,8 +703,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step", nargs="?", choices=("build",), default="build")
     ap.add_argument("--years", type=_years, default=YEARS)
+    ap.add_argument("--max-new-years",type=int,default=None)
     args = ap.parse_args(argv)
-    rec = build(args.years)
+    rec = build(args.years,args.max_new_years)
     print(json.dumps(rec, default=str)[:8000], flush=True)
     return 0
 
