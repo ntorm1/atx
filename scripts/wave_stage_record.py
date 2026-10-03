@@ -3,12 +3,14 @@ scoring, bundle, book and verdict; the ledger re-read, wave-result.json, the log
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 from pathlib import Path
 import shutil
 
 import cycle_resume as CR
 import research_ledger
+import wave_manifest as WM
 import wave_queue
 import wave_result
 import wave_rules as WR
@@ -91,8 +93,8 @@ def bundle_once(w: Wave, base: str, cell: str) -> dict:
     doc = w.read_json(out)
     series = nav_series(w, [base, cell])
     if doc is None:
-        w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle")), w.root, series),
-              "bundle (PM5-23)")
+        w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle")), w.root, series,
+                             w.manifest.get("driver")), "bundle (PM5-23)")
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"bundle wrote no {out}")
@@ -112,19 +114,38 @@ def bundle_once(w: Wave, base: str, cell: str) -> dict:
             "path": out, "sha256": w.sha(out)}
 
 
+def scored_verdict(w: Wave, cell: str) -> tuple[str, dict]:
+    """(path, document) of the cell's cycle_verdict.json, which must carry the scoring blocks (paired, dsr)."""
+    vpath = f"{w.outputs(cell)['cycle_dir']}/cycle_verdict.json"
+    v = w.read_json(vpath)
+    if not isinstance(v, dict) or not isinstance(v.get("paired"), dict) or not isinstance(v.get("dsr"), dict):
+        raise StageError(f"judge: {vpath} has no scoring blocks (paired, dsr): a verdict spec scores its cell")
+    return vpath, v
+
+
 def judge(w: Wave, done: dict, log) -> dict:
     if no_cell(done):
         return skipped("no cell")
     m, mt = w.manifest, done["match"]
     cell, nav, parent_nav = mt["cell_spec"], mt["nav"], done["spec"]["reference_nav"]
-    w.run(cyc(w,"run", cell), "the cell's monitor and summ (nav_summ scores and ledgers the cell)")
+    navs = {"cell": nav, "parent": parent_nav}
+
+    def score() -> None:
+        w.run(cyc(w, "run", cell), "the cell's monitor and summ (nav_summ scores and ledgers the cell)")
+    budget = WM.driver(m, "host_budget_mib")
+    if budget:          # P9 OR section 5: none reads what another writes; each bounded process holds its claim
+        log(f"   the cell's summ || bundle || book reader, side by side under the host memory budget {budget} MiB")
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            jobs = [pool.submit(score), pool.submit(bundle_once, w, parent_nav, nav),
+                    pool.submit(read_once, w, "book", "book", navs)]
+            _, bundle, read = [j.result() for j in jobs]        # the first failure, in this order, stops the stage
+        vpath, v = scored_verdict(w, cell)
+    else:
+        score()
+        vpath, v = scored_verdict(w, cell)
+        bundle, read = bundle_once(w, parent_nav, nav), read_once(w, "book", "book", navs)
     outs = w.outputs(cell)
-    vpath = f"{outs['cycle_dir']}/cycle_verdict.json"
-    v = w.read_json(vpath)
-    if not isinstance(v, dict) or not isinstance(v.get("paired"), dict) or not isinstance(v.get("dsr"), dict):
-        raise StageError(f"judge: {vpath} has no scoring blocks (paired, dsr): a verdict spec scores its cell")
-    bundle = bundle_once(w, parent_nav, nav)
-    book = read_once(w, "book", "book", {"cell": nav, "parent": parent_nav})["navs"]
+    book = read["navs"]
     crit = WR.criteria_rows(m["acceptance"].get("printed", []), book["cell"], book["parent"])
     verdict = dict(WR.judge(m["acceptance"]["rule"], v["paired"].get("dsr"), done["verify"]["mechanics"]["pass"], crit),
                    criteria=crit)
@@ -140,10 +161,12 @@ def judge_plan(w: Wave, done: dict) -> list[str]:
     mt, s = done.get("match") or {}, done.get("spec") or {}
     cell, nav = mt.get("cell_spec", "<the cell spec>"), mt.get("nav", "<the cell NAV>")
     parent = s.get("reference_nav", "<parent NAV>")
+    budget = WM.driver(w.manifest, "host_budget_mib")
+    side = [f"#   the three run side by side under the host memory budget {budget} MiB"] if budget else []
     return [WS.fmt_argv(cyc(w,"run", cell)),
             WS.fmt_argv(WS.bundle_argv(w.python, parent, nav, w.wave_path("bundle.json"), w.wave_path("bundle-run1"),
-                                       w.root, nav_series(w, [parent, nav]))),
-            reader_plan(w, "book", "book", {"cell": nav, "parent": parent}),
+                                       w.root, nav_series(w, [parent, nav]), w.manifest.get("driver"))),
+            reader_plan(w, "book", "book", {"cell": nav, "parent": parent})] + side + [
             f"#   verdict by {w.manifest['acceptance']['rule']}"]
 
 

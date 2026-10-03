@@ -20,6 +20,18 @@ Contract K-P9-10: every receipt carries argv_sha256 (research_tree.argv_sha256 o
 the command after its executable), attempt (--attempt K, default 1),
 executable_sha256 and build_type (--build-type Debug | Release, else null);
 research_cycle refuses to resume an output whose receipt names another argv.
+
+Launch admission (P9 F-5 (a); each flag absent = no wait, as before):
+--admission-wait-seconds S waits, at most S seconds, before the launch until the
+host's free memory covers the declared peak plus the floor (--max-rss-mib +
+--min-free-mib) and no compiler or linker runs (COMPILERS); --host-budget-mib N
+(with S) also waits until the declared caps of every live bounded process that
+holds a claim under --host-claims DIR (default: the host's temp dir, so every
+worktree of the host shares it) plus this one fit in N MiB, then holds its claim
+until its process tree has ended: the host memory semaphore that lets research
+steps run side by side. A wait that times out writes outcome
+prelaunch-admission-timeout (nothing ran). The receipt's "admission" block (only
+with the flags) records the wait.
 """
 from __future__ import annotations
 
@@ -30,9 +42,11 @@ import json
 import math
 from pathlib import Path
 import re
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import psutil
@@ -41,6 +55,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_tree  # noqa: E402
 
 BUILD_TYPES = ("Debug", "Release")
+# P9 F-5 (a): a launch waits while one of these runs (a build competes for the host's memory)
+COMPILERS = frozenset(n + x for n in ("cl", "clang-cl", "ninja", "lld-link") for x in ("", ".exe"))
+POLL_SECONDS = 0.5                     # how often a waiting launch re-checks the host
+CLAIMS_DIR = Path(tempfile.gettempdir()) / "atx-host-claims"   # --host-claims default: one per host
+CLAIM_SUFFIX, CLAIMS_LOCK = ".claim", "claims.lock"
+OUTCOME_ADMISSION = "prelaunch-admission-timeout"
+
+
+class AdmissionTimeout(RuntimeError):
+    """The launch admission's wait ran out (the receipt's outcome OUTCOME_ADMISSION; nothing was launched)."""
+
+    def __init__(self, message: str, block: dict):
+        super().__init__(message)
+        self.block = block
 
 
 def digest(path: Path) -> str:
@@ -79,6 +107,154 @@ def stop_owned(owned: dict) -> None:
     psutil.wait_procs(alive, timeout=2)
 
 
+# ------------------------------------------------------------------ launch admission (P9 F-5 (a), OR section 5)
+def is_alive(pid: int, born: float) -> bool:
+    """Whether the process ``pid`` created at ``born`` still runs (a reused pid is not it); unknowable = alive."""
+    try:
+        return abs(psutil.Process(pid).create_time() - born) < 0.01
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, OSError, ValueError):
+        return True
+
+
+def compilers_running() -> list[str]:
+    """The names of the COMPILERS processes running now (sorted, each once)."""
+    found = set()
+    for proc in psutil.process_iter(["name"]):
+        name = (proc.info.get("name") or "").lower()
+        if name in COMPILERS:
+            found.add(name)
+    return sorted(found)
+
+
+def remove(path: Path) -> None:
+    """Remove a claim or lock file; a sharing violation (another process reading it) is retried, then left."""
+    for _ in range(20):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    print(f"run_bounded_research: warning: could not remove {path}", file=sys.stderr)
+
+
+class HostClaims:
+    """The host memory semaphore (--host-budget-mib): ``<dir>/<pid>-<ms>.claim`` = {pid, create_time, mib, output}
+    per admitted bounded process (its declared cap, --max-rss-mib), written under ``<dir>/claims.lock`` (O_CREAT |
+    O_EXCL, held only to check the sum and write the claim) and removed when the process tree has ended. A claim whose
+    process is gone (killed) is stale: dropped and removed by the next check."""
+
+    def __init__(self, directory: Path, budget_mib: int):
+        self.dir, self.budget = Path(directory), budget_mib
+        self.mine: Path | None = None
+
+    def live(self) -> list[dict]:
+        out = []
+        for p in sorted(self.dir.glob("*" + CLAIM_SUFFIX)):
+            try:
+                doc = json.loads(p.read_text(encoding="utf-8"))
+                running = is_alive(int(doc["pid"]), float(doc["create_time"]))
+                doc["mib"] = int(doc["mib"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue                                   # claims are written whole (os.replace): unreadable = gone
+            if running:
+                out.append(doc)
+            else:
+                remove(p)
+        return out
+
+    def acquire_lock(self, seconds: float = 30.0) -> Path:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        lock, end = self.dir / CLAIMS_LOCK, time.monotonic() + seconds
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    held = json.loads(lock.read_text(encoding="utf-8"))
+                    if not is_alive(int(held["pid"]), float(held["create_time"])):
+                        remove(lock)                       # a killed runner's lock
+                        continue
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass                                   # being written: held
+                if time.monotonic() > end:
+                    raise RuntimeError(f"host claims lock {lock} held for {seconds} s") from None
+                time.sleep(0.05)
+        me = psutil.Process()
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": me.pid, "create_time": me.create_time()}) + "\n")
+        return lock
+
+    def try_claim(self, mib: int, output: str) -> tuple[bool, int]:
+        """Claim ``mib`` when the live claims leave room under the budget: (claimed, MiB the others claim)."""
+        lock = self.acquire_lock()
+        try:
+            others = sum(d["mib"] for d in self.live())
+            if others + mib > self.budget:
+                return False, others
+            me = psutil.Process()
+            path = self.dir / f"{me.pid}-{int(me.create_time() * 1000)}{CLAIM_SUFFIX}"
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time(), "mib": mib,
+                                       "output": output}) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+            self.mine = path
+            return True, others
+        finally:
+            remove(lock)
+
+    def release(self) -> None:
+        if self.mine is not None:
+            remove(self.mine)
+            self.mine = None
+
+
+def admit(args, output: Path, *, available=lambda: psutil.virtual_memory().available, compilers=compilers_running,
+          clock=time.monotonic, sleep=time.sleep) -> tuple[dict, HostClaims | None]:
+    """Wait, at most args.admission_wait_seconds, until the launch may start: free memory >= the declared peak + the
+    floor (max_rss_mib + min_free_mib), no COMPILERS process, and with args.host_budget_mib a claim of max_rss_mib under
+    the host budget. Returns (the receipt's admission block, the claims holding this process's claim, or None); raises
+    AdmissionTimeout (its ``block``) when the wait runs out."""
+    need = args.max_rss_mib + args.min_free_mib
+    claims = HostClaims(args.host_claims, args.host_budget_mib) if args.host_budget_mib else None
+    block = {"wait_seconds": args.admission_wait_seconds, "need_free_mib": need, "host_budget_mib": args.host_budget_mib,
+             "claims_dir": str(claims.dir) if claims else None}
+    start, checks = clock(), 0
+    while True:
+        checks += 1
+        free, busy, others, why = available() >> 20, compilers(), None, []
+        if free < need:
+            why.append(f"free memory {free} MiB < {need} MiB (peak {args.max_rss_mib} + floor {args.min_free_mib})")
+        if busy:
+            why.append(f"running: {', '.join(busy)}")
+        if not why and claims is not None:
+            ok, others = claims.try_claim(args.max_rss_mib, str(output))
+            if not ok:
+                why.append(f"claimed {others} MiB + {args.max_rss_mib} MiB > host budget {args.host_budget_mib} MiB")
+        block.update(waited_seconds=round(clock() - start, 3), checks=checks, free_mib=free,
+                     claimed_by_others_mib=others)
+        if not why:
+            return block, claims
+        if clock() - start >= args.admission_wait_seconds:
+            block["refused"] = why
+            raise AdmissionTimeout(f"launch admission: still waiting after {args.admission_wait_seconds} s: "
+                                   + "; ".join(why), block)
+        sleep(POLL_SECONDS)
+
+
+def admission_refusal(args) -> str | None:
+    """Why the admission flags are refused (None: accepted, or not given): research_tree.launch_refusal, and a host
+    budget below this process's own cap would never admit it."""
+    refusal = research_tree.launch_refusal(args.admission_wait_seconds, args.host_budget_mib)
+    if refusal:
+        return f"--admission-wait-seconds / --host-budget-mib: {refusal}"
+    if args.host_budget_mib is not None and args.host_budget_mib < args.max_rss_mib:
+        return f"--host-budget-mib {args.host_budget_mib} is below --max-rss-mib {args.max_rss_mib}: never admitted"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -96,6 +272,12 @@ def main() -> int:
                         help="the attempt this run dir is (K-P9-10; research_cycle's attempt-k sub-dirs): recorded")
     parser.add_argument("--build-type", default=None,
                         help="the CMake build type of the executables (Debug | Release; K-P9-10): recorded")
+    parser.add_argument("--admission-wait-seconds", type=float, default=None,
+                        help="P9 F-5 (a): wait at most this long for free memory >= peak + floor and no compiler")
+    parser.add_argument("--host-budget-mib", type=int, default=None,
+                        help="P9 OR section 5: the host memory semaphore's budget (needs --admission-wait-seconds)")
+    parser.add_argument("--host-claims", type=Path, default=CLAIMS_DIR,
+                        help=f"the semaphore's claims dir (default {CLAIMS_DIR})")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -107,6 +289,9 @@ def main() -> int:
         parser.error("--role-id must match [A-Za-z0-9_]+")
     if not 1 <= args.attempt <= 99 or (args.build_type is not None and args.build_type not in BUILD_TYPES):
         parser.error(f"--attempt is 1..99 and --build-type one of {', '.join(BUILD_TYPES)}")
+    refusal = admission_refusal(args)
+    if refusal:
+        parser.error(refusal)
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     if args.no_git and research_tree.no_git_refusal(root):
         parser.error(research_tree.no_git_refusal(root))
@@ -131,12 +316,15 @@ def main() -> int:
             parser.error("commit the source before running a recorded research experiment (dirty in the code "
                          f"pathspec: {', '.join(blocking[:8])})")
     output.mkdir(parents=True, exist_ok=False)
+    limits = dict(seconds=args.seconds, max_rss_mib=args.max_rss_mib, min_free_mib=args.min_free_mib)
+    for key in ("admission_wait_seconds", "host_budget_mib"):     # F-5 (a): recorded only when given
+        if getattr(args, key) is not None:
+            limits[key] = getattr(args, key)
     receipt = dict(schema="atx.bounded-research-run/v1", source_sha=source,
         started_utc=dt.datetime.now(dt.timezone.utc).isoformat(), command=command,
         executable_sha256=digest(Path(command[0])), argv_sha256=research_tree.argv_sha256(command[1:]),
         attempt=args.attempt, build_type=args.build_type, bindings=bindings,
-        limits=dict(seconds=args.seconds, max_rss_mib=args.max_rss_mib,
-                    min_free_mib=args.min_free_mib), sampled_peak_tree_rss_bytes=0,
+        limits=limits, sampled_peak_tree_rss_bytes=0,
         minimum_system_free_bytes=psutil.virtual_memory().available,
         outcome="launch-failed", exit_code=None,
         git="none (--no-git: root outside any repository)" if args.no_git else "clean in the code pathspec",
@@ -147,8 +335,16 @@ def main() -> int:
     started = time.monotonic()
     child = None
     owned = {}
+    claims = None
     try:
         with (output / "stdout.log").open("xb") as stdout, (output / "stderr.log").open("xb") as stderr:
+            if args.admission_wait_seconds is not None:
+                try:
+                    receipt["admission"], claims = admit(args, output)
+                except AdmissionTimeout as exc:
+                    receipt["outcome"], receipt["admission"] = OUTCOME_ADMISSION, exc.block
+                    raise
+                started = time.monotonic()         # wall_seconds: the process's own, not the wait's
             if psutil.virtual_memory().available < args.min_free_mib * 1024**2:
                 receipt["outcome"] = "prelaunch-memory-refusal"
                 raise RuntimeError("available system memory is below the launch floor")
@@ -181,7 +377,7 @@ def main() -> int:
             if receipt["outcome"] == "launch-failed":
                 receipt["outcome"] = "completed" if child.returncode == 0 else "process-error"
     except BaseException as exc:
-        if receipt["outcome"] != "prelaunch-memory-refusal":
+        if receipt["outcome"] not in ("prelaunch-memory-refusal", OUTCOME_ADMISSION):
             receipt["outcome"] = "interrupted" if isinstance(exc, KeyboardInterrupt) else "runner-error"
         receipt["error"] = str(exc)
         if owned:
@@ -189,6 +385,8 @@ def main() -> int:
         if child is not None:
             receipt["exit_code"] = child.wait(timeout=5)
     finally:
+        if claims is not None:          # the host semaphore's claim ends with the process tree
+            claims.release()
         receipt["wall_seconds"] = time.monotonic() - started
         receipt["owned_processes"] = [{"pid": pid, "create_time": born} for pid, born in owned]
         receipt["ownership_scope"] = "sampled descendant identities; commands must not detach unsampled children"

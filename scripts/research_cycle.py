@@ -4,6 +4,7 @@
   research_cycle.py plan   SPEC [--root R] [--suffix S [--keep-fields]] [--attempt PHASE=N ...] [--reuse-fields DIR]
                                 [--ledger PATH] [--runner-override KEY=VALUE ...] [--lines-only] [--no-git] [--screen]
   research_cycle.py run    SPEC [same options] [--stop-after PHASE] [--auto-attempt]
+                                [--admission-wait S [--host-budget-mib N]]
   research_cycle.py status SPEC [same options]
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
   research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
@@ -34,6 +35,11 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   resume argv     (P9 OR-3, K-P9-10) a done bounded output (u, fit, w, card, marginal, every-phase fields / monitor) is
                   reused only when its run receipt's command equals the one this spec would run now
                   (cycle_resume.REUSE_NEUTRAL options aside); a receipt written before K-P9-10 is reused as before
+  --admission-wait S  (P9 F-5 (a)) every bounded process waits, at most S seconds, before its launch for free memory
+                  >= its declared peak + floor and no compiler (run_bounded_research --admission-wait-seconds)
+  --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
+                  --host-budget-mib), and the steps that read nothing of each other run side by side under it
+                  (PARALLEL: ref || u, card || marginal); a phase cap above N is refused when planned
   --no-git        (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
                   --root R --no-git, and a relative tool path (runner, builder, fit, card, monitor, summ scripts) that
                   is absent under R resolves to this worktree's copy
@@ -164,6 +170,7 @@ an rss-limit refusal to check the hard stop).
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -248,6 +255,9 @@ CAPACITY_FLAG, CAPACITY_FILES = "--capacity-curve", ("capacity_curve.csv", "v7_e
 RUNNER_PHASE_RULES = (
     {"phases": ("u", "w"), "when": {"role_dates_over": 1200}, "caps": {"seconds": 300, "max_rss_mib": 2560}},
 )
+# P9 OR section 5: under a host memory budget (--host-budget-mib) a pending step of the key phase runs side by side with
+# the next pending step of the value phase (only its own compare steps between): neither reads what the other writes
+PARALLEL = {"ref": "u", "card": "marginal"}
 
 
 class CycleError(Exception):
@@ -719,7 +729,7 @@ class Cycle:
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
                  screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None,
-                 auto_attempt: bool = False):
+                 auto_attempt: bool = False, launch: dict | None = None):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and as_built(spec.get("fields")):
@@ -740,6 +750,8 @@ class Cycle:
         self.reuse_fields, self.ledger, self.spec_path = reuse_fields, ledger, spec_path
         self.no_git, self.screen = no_git, screen
         self.auto_attempt = auto_attempt    # P9 OR-4: a refused attempt with no output advances to attempt-k
+        # P9 F-5 (a) / OR section 5: {admission_wait_seconds, host_budget_mib} for every bounded process ({}: none)
+        self.launch = {k: v for k, v in (launch or {}).items() if v is not None}
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
         # task H-1 (research_roles.py): an era of a roles: cycle keys its outputs and receipts by role_key; the
@@ -890,10 +902,25 @@ class Cycle:
             argv += ["--role-id", self.role_key]
         if self.spec.get("build") in research_tree.BUILD_TYPES:   # K-P9-10: the exes' build type in the receipt
             argv += ["--build-type", research_tree.BUILD_TYPES[self.spec["build"]]]
+        argv += self.launch_flags(caps, phase)
         argv += ["--output", run_dir]
         for b in binds:
             argv += ["--bind", b]
         return argv + ["--"]
+
+    def launch_flags(self, caps: dict, phase: str | None) -> list[str]:
+        """The runner's launch admission options (none without --admission-wait / --host-budget-mib); a phase whose
+        declared cap is above the host budget would never be admitted: refused when planned."""
+        out = []
+        if "admission_wait_seconds" in self.launch:
+            out += ["--admission-wait-seconds", format(self.launch["admission_wait_seconds"], "g")]
+        budget = self.launch.get("host_budget_mib")
+        if budget is not None:
+            if caps["max_rss_mib"] > budget:
+                raise CycleError(f"--host-budget-mib {budget} is below the {phase or 'runner'} cap max_rss_mib "
+                                 f"{caps['max_rss_mib']}: that process would never be admitted", EXIT_USAGE)
+            out += ["--host-budget-mib", str(budget)]
+        return out
 
     # -------------------------------------------------------------- attempt sub-dirs (P9 OR-4)
     def retarget(self, st: Step, run_dir: str, attempt: int) -> None:
@@ -1652,7 +1679,8 @@ def header(cycle: Cycle) -> list[str]:
              f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
              f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
              f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"
-             f"{'; --auto-attempt' if getattr(cycle, 'auto_attempt', False) else ''}"]
+             f"{'; --auto-attempt' if getattr(cycle, 'auto_attempt', False) else ''}"
+             + "".join(f"; {k} {v}" for k, v in (getattr(cycle, "launch", None) or {}).items())]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
     return lines + research_spec.header_lines(cycle.spec, cycle.spec_path, research_tree.REPO)
@@ -1731,6 +1759,96 @@ def execute(argv: list[str], root: Path, env: dict, capture: bool) -> subprocess
     return subprocess.run(argv, cwd=root, env=env, capture_output=capture, text=True)
 
 
+def parallel_partner(cycle: Cycle, steps: list[Step], idx: int, stop_after: str | None) -> int | None:
+    """P9 OR section 5: the index of the step that runs side by side with ``steps[idx]``, or None. Only under a host
+    memory budget (--host-budget-mib: every bounded process holds its declared cap in the host semaphore), only for a
+    pending bounded step of a PARALLEL key phase whose next step that is not one of its own compare steps (nor skipped)
+    is the pending bounded step of the paired phase, of the same era, with every pin resolved; never past --stop-after."""
+    st = steps[idx]
+    want = PARALLEL.get(st.phase)
+    if not cycle.launch.get("host_budget_mib") or want is None or st.kind != "bounded" or st.state != "pending" or \
+            stop_after in (st.phase, st.phase + COMPARE_SUFFIX):
+        return None
+    for j in range(idx + 1, len(steps)):
+        x = steps[j]
+        if x.phase == st.phase + COMPARE_SUFFIX or x.state == "skipped":
+            continue
+        ok = x.phase == want and x.kind == "bounded" and x.state == "pending" and x.role == st.role and \
+            "<sha256:" not in " ".join(x.argv)
+        return j if ok else None
+    return None
+
+
+def start_step(cycle: Cycle, st: Step, key: str, clean, log, seen: set) -> None:
+    """Before a process step runs: no unresolved upstream pin, no existing output (never overwritten), a clean tree;
+    then its log lines."""
+    if "<sha256:" in " ".join(st.argv):
+        raise CycleError(f"HARD-STOP [{key}]: an upstream pin is unresolved (upstream output missing)")
+    if st.output and st.state == "pending" and st.phase != "fit" and cycle.res.exists_dir(st.output):
+        raise CycleError(f"HARD-STOP [{key}]: output {st.output} exists (never overwritten)")
+    check_clean(cycle, clean, log, seen)
+    if st.phase == "summ" and cycle.spec.get("verdict"):
+        cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
+    log(f"== {key}" + (f" (attempt {st.attempt})" if st.attempt else ""))
+    log(fmt_argv(st.argv))
+
+
+def run_processes(pair: list, root: Path, env: dict, executor) -> list[tuple]:
+    """[(CompletedProcess, wall seconds)] of each (step, key): one step runs in this thread, as always; a parallel
+    pair in two threads (each bounded process waits for its own claim in the host semaphore)."""
+    def one(item) -> tuple:
+        started = time.monotonic()
+        done = executor(item[0].argv, root, env, item[0].kind == "bounded")
+        return done, time.monotonic() - started
+    if len(pair) == 1:
+        return [one(pair[0])]
+    with ThreadPoolExecutor(max_workers=len(pair)) as pool:
+        return list(pool.map(one, pair))
+
+
+def step_outcome(cycle: Cycle, st: Step, key: str, done, log) -> bool:
+    """A process step's result from its receipt (bounded) or exit code (direct); raises CycleError (HARD-STOP) on a
+    refusal or failure; True when the fit exited "incomplete" and its next pass runs (FIT_INCOMPLETE)."""
+    if st.kind != "bounded":
+        if st.kind == "direct" and done.returncode != 0:
+            raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
+        return False
+    r = cycle.receipt(st.run_dir)
+    if r is None:
+        tail = (done.stderr or "")[-400:]
+        raise CycleError(f"HARD-STOP [{key}]: no receipt in {st.run_dir} (runner exit {done.returncode}) {tail}")
+    peak = (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20
+    log(f"   receipt: outcome {r.get('outcome')} exit {r.get('exit_code')} {r.get('wall_seconds', 0):.1f} s peak "
+        f"{peak} MiB")
+    if st.phase == "fit" and r.get("exit_code") == FIT_INCOMPLETE and r.get("outcome") == "process-error":
+        if st.attempt >= int(cycle.spec["fit"].get("max_passes", 3)):
+            raise CycleError(f"HARD-STOP [fit]: still incomplete after {st.attempt} passes")
+        log("   fit incomplete (exit 3, the documented resume protocol): next pass resumes")
+        return True
+    if r.get("outcome") != "completed" or r.get("exit_code") != 0:
+        retry = r.get("outcome") in cycle_resume.AUTO_OUTCOMES and st.output and \
+            not cycle.res.exists_dir(st.output)   # P9 OR-4: the host refused it, nothing was written
+        raise CycleError(f"HARD-STOP [{key}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
+                         f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}"
+                         + ("; nothing was written: a resume with --auto-attempt runs the next attempt"
+                            if retry else ""))
+    return False
+
+
+def finish_step(cycle: Cycle, st: Step, key: str, idx: int, log) -> None:
+    """After a process step succeeded: its output is complete (the step re-resolved at its index ``idx``), the fields
+    check, a NAV's binding (review C-13, F-6), the summ's ledger copy."""
+    post = cycle.steps()[idx]
+    if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor", "marginal") and not post.done:
+        raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
+    if st.phase == "fields":
+        fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
+    if st.phase in ("nav", "ref"):  # review C-13 (F-6: ref too): what a later resume checks
+        cycle_resume.write_binding(cycle, st)
+    if st.phase == "summ":
+        copy_ledger(cycle, log)
+
+
 def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executor=execute,
               clean=git_scoped) -> int:
     root = cycle.res.root
@@ -1779,51 +1897,26 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
         elif st.kind == "compare":
             compare(cycle, st, log)
         else:
-            if "<sha256:" in " ".join(st.argv):
-                raise CycleError(f"HARD-STOP [{key}]: an upstream pin is unresolved (upstream output missing)")
-            if st.output and st.state == "pending" and st.phase != "fit" and cycle.res.exists_dir(st.output):
-                raise CycleError(f"HARD-STOP [{key}]: output {st.output} exists (never overwritten)")
-            check_clean(cycle, clean, log, seen)
-            if st.phase == "summ" and cycle.spec.get("verdict"):
-                cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
-            log(f"== {key}" + (f" (attempt {st.attempt})" if st.attempt else ""))
-            log(fmt_argv(st.argv))
-            started = time.monotonic()
-            done = executor(st.argv, root, env, st.kind == "bounded")
-            timings[key] = {"seconds": time.monotonic() - started, "run_dir": st.run_dir}
-            if st.kind == "bounded":
-                r = cycle.receipt(st.run_dir)
-                if r is None:
-                    tail = (done.stderr or "")[-400:]
-                    raise CycleError(f"HARD-STOP [{key}]: no receipt in {st.run_dir} (runner exit "
-                                     f"{done.returncode}) {tail}")
-                peak = (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20
-                log(f"   receipt: outcome {r.get('outcome')} exit {r.get('exit_code')} "
-                    f"{r.get('wall_seconds', 0):.1f} s peak {peak} MiB")
-                if st.phase == "fit" and r.get("exit_code") == FIT_INCOMPLETE and r.get("outcome") == "process-error":
-                    if st.attempt >= int(cycle.spec["fit"].get("max_passes", 3)):
-                        raise CycleError(f"HARD-STOP [fit]: still incomplete after {st.attempt} passes")
-                    log("   fit incomplete (exit 3, the documented resume protocol): next pass resumes")
-                    continue
-                if r.get("outcome") != "completed" or r.get("exit_code") != 0:
-                    retry = r.get("outcome") in cycle_resume.AUTO_OUTCOMES and st.output and \
-                        not cycle.res.exists_dir(st.output)   # P9 OR-4: the host refused it, nothing was written
-                    raise CycleError(f"HARD-STOP [{key}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
-                                     f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}"
-                                     + ("; nothing was written: a resume with --auto-attempt runs the next attempt"
-                                        if retry else ""))
-            else:
-                if st.kind == "direct" and done.returncode != 0:
-                    raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
-            post = cycle.steps()[phase_idx]
-            if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor", "marginal") and not post.done:
-                raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
-            if st.phase == "fields":
-                fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase in ("nav", "ref"):  # review C-13 (F-6: ref too): what a later resume checks
-                cycle_resume.write_binding(cycle, st)
-            if st.phase == "summ":
-                copy_ledger(cycle, log)
+            pair = [(st, key, phase_idx)]   # P9 OR section 5: with its PARALLEL partner under a host memory budget
+            j = parallel_partner(cycle, steps, phase_idx, stop_after)
+            if j is not None:
+                pair.append((steps[j], step_key(steps[j]), j))
+            for x, k, _ in pair:
+                start_step(cycle, x, k, clean, log, seen)
+            if j is not None:
+                log(f"   {key} || {pair[1][1]}: side by side under the host memory budget "
+                    f"{cycle.launch['host_budget_mib']} MiB")
+            results = run_processes(pair, root, env, executor)
+            for (x, k, _), (done, seconds) in zip(pair, results):
+                timings[k] = {"seconds": seconds, "run_dir": x.run_dir}
+            again = False
+            for (x, k, i), (done, _) in zip(pair, results):
+                if step_outcome(cycle, x, k, done, log):
+                    again = True        # the fit's next pass (the fit is never paired)
+                    break
+                finish_step(cycle, x, k, i, log)
+            if again:
+                continue
         # --stop-after PHASE stops after the last step of that phase (every era's, in a roles: cycle)
         if stop_after == st.phase and not any(x.phase == st.phase for x in steps[phase_idx + 1:]):
             log(f"== stopped after {st.phase} (--stop-after)")
@@ -2007,6 +2100,11 @@ def main(argv=None) -> int:
     ap.add_argument("--auto-attempt", action="store_true",
                     help="P9 OR-4: a step the host refused (memory) with nothing written runs again in <run dir>/"
                          "attempt-k (the wave passes it when its manifest's driver.auto_attempt is true)")
+    ap.add_argument("--admission-wait", type=float, default=None, metavar="SECONDS",
+                    help="P9 F-5 (a): every bounded process waits (bounded) for free memory and no compiler")
+    ap.add_argument("--host-budget-mib", type=int, default=None, metavar="N",
+                    help="P9 OR section 5: the host memory semaphore (needs --admission-wait); PARALLEL steps side by "
+                         "side")
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
     ap.add_argument("--write", action="store_true", help="lock: write the pins back into SPEC")
     ap.add_argument("--no-git", action="store_true", help="K3: a --root outside any git repository (test roots)")
@@ -2027,10 +2125,14 @@ def main(argv=None) -> int:
             return EXIT_OK
         if a.suffix is not None and (not a.suffix or any(c in a.suffix for c in "/\\ ")):
             raise CycleError("--suffix must be a non-empty name without separators or spaces", EXIT_USAGE)
+        refusal = research_tree.launch_refusal(a.admission_wait, a.host_budget_mib)
+        if refusal:
+            raise CycleError(f"--admission-wait / --host-budget-mib: {refusal}", EXIT_USAGE)
+        launch = {"admission_wait_seconds": a.admission_wait, "host_budget_mib": a.host_budget_mib}
         cycle = make_cycle(Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
                            reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
                            runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
-                           screen=a.screen, auto_attempt=a.auto_attempt)
+                           screen=a.screen, auto_attempt=a.auto_attempt, launch=launch)
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_resume  # noqa: E402
@@ -42,6 +43,7 @@ class Wave:
         self.out_dir = self.manifest["out_dir"].rstrip("/")
         self._py: str | None = None
         self.seal_allow: dict[str, str] = {}     # research_wave.py --seal-allow TOKEN=RULING (wave_seal.py)
+        self._console_lock = threading.Lock()   # the judge's side-by-side commands number their consoles in turn
 
     # -------------------------------------------------------------- paths
     def rel(self, path: Path) -> str:
@@ -157,13 +159,14 @@ class Wave:
         d = self.path(self.wave_path("consoles"))
         d.mkdir(parents=True, exist_ok=True)
         slug = "".join(ch if ch.isalnum() else "-" for ch in what.lower()).strip("-")[:48] or "command"
-        k = len(list(d.glob("*.log"))) + 1
-        while (d / f"{k:03d}-{slug}.log").exists():
-            k += 1
-        p = d / f"{k:03d}-{slug}.log"
-        with p.open("x", encoding="utf-8", newline="\n") as f:
-            f.write(f"$ {WS.fmt_argv(argv)}\n# exit {done.returncode}\n# stdout\n{done.stdout or ''}\n# stderr\n"
-                    f"{done.stderr or ''}\n")
+        with self._console_lock:
+            k = len(list(d.glob("*.log"))) + 1
+            while (d / f"{k:03d}-{slug}.log").exists():
+                k += 1
+            p = d / f"{k:03d}-{slug}.log"
+            with p.open("x", encoding="utf-8", newline="\n") as f:
+                f.write(f"$ {WS.fmt_argv(argv)}\n# exit {done.returncode}\n# stdout\n{done.stdout or ''}\n# stderr\n"
+                        f"{done.stderr or ''}\n")
         return self.rel(p)
 
     def run(self, argv: list[str], what: str, ok=(0,)) -> subprocess.CompletedProcess:

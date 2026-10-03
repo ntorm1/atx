@@ -46,6 +46,13 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  and written bytes are those of before (DRIVER_KEYS):
        "auto_attempt": BOOL                      research_cycle run --auto-attempt: a bounded step the host refused for
                                                  memory with nothing written runs again in <run dir>/attempt-k (OR-4)
+       "admission_wait_seconds": N               every bounded process of the wave (research_cycle --admission-wait N;
+                                                 the readers' and the bundle's runner --admission-wait-seconds N) waits
+                                                 at most N s for free memory >= peak + floor and no compiler (F-5 (a))
+       "host_budget_mib": N                      (with admission_wait_seconds; at least the readers' cap) the host
+                                                 memory semaphore over declared caps (--host-budget-mib N), under which
+                                                 ref || u, card || marginal and the judge's summ || bundle || book reader
+                                                 run side by side (OR section 5)
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
@@ -65,6 +72,7 @@ import re
 
 import research_tree
 import wave_rules
+import wave_steps
 
 SCHEMA = "atx.research-wave/v1"
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
@@ -82,7 +90,12 @@ TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule"
 SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
 # "driver": the wave driver's opt-in behaviours (P9 lane E1; each absent = that of before): a key maps to its value
 # check and the text of its refusal
-DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false")}
+DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
+               "admission_wait_seconds": (lambda v: type(v) is int and research_tree.launch_refusal(v, None) is None,
+                                          f"an integer number of seconds in [1, {research_tree.ADMISSION_MAX_SECONDS}]"),
+               "host_budget_mib": (lambda v: type(v) is int and
+                                   research_tree.HOST_BUDGET_MIB[0] <= v <= research_tree.HOST_BUDGET_MIB[1],
+                                   f"an integer number of MiB in {list(research_tree.HOST_BUDGET_MIB)}")}
 MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)
@@ -323,6 +336,11 @@ def driver_problems(d) -> list[str]:
     out = [f"driver: unknown key {k!r} (known: {', '.join(DRIVER_KEYS)})" for k in sorted(set(d) - set(DRIVER_KEYS))]
     out += [f"driver.{k} must be {DRIVER_KEYS[k][1]}" for k, v in d.items() if k in DRIVER_KEYS and
             not DRIVER_KEYS[k][0](v)]
+    if "host_budget_mib" in d and "admission_wait_seconds" not in d:
+        out.append("driver.host_budget_mib needs driver.admission_wait_seconds (a claim is waited for)")
+    floor = int(wave_steps.READER_CAPS["max_rss_mib"])
+    if type(d.get("host_budget_mib")) is int and d["host_budget_mib"] < floor:
+        out.append(f"driver.host_budget_mib {d['host_budget_mib']} is below the readers' cap {floor} MiB")
     return out
 
 

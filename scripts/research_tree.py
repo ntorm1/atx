@@ -12,6 +12,8 @@
 * ``argv_sha256`` is the one digest of a command's arguments after its executable (contract K-P9-10: the bounded
   runner's receipt, research_cycle's resume check and NAV binding); ``BUILD_TYPES`` maps a cycle spec's "build" to the
   CMake build type the runner records.
+* ``launch_refusal`` checks the launch admission options (a bounded wait, a host memory budget: P9 F-5 (a), OR
+  section 5) wherever they are given: the runner, research_cycle and a wave manifest's driver block.
 
 Standard library only (the bounded runner imports it before psutil is needed).
 """
@@ -29,6 +31,20 @@ CODE_PATHSPEC = ("atx-core", "atx-tsdb", "atx-engine", "atx-impl", "scripts", "C
 WINDOW_JSON = "atx-impl/strategies/research_window.json"     # W0-1: the one source of the research window
 RUNNER_MAX_SECONDS = 600                                     # run_bounded_research.py's hard time cap (P9 OR-1)
 BUILD_TYPES = {"equity": "Debug", "equity-rel": "Release"}  # research_cycle's spec "build" -> the CMake build type
+ADMISSION_MAX_SECONDS = 3600     # the runner's --admission-wait-seconds bound (P9 F-5 (a))
+HOST_BUDGET_MIB = (64, 65536)    # the runner's --host-budget-mib range (P9 OR section 5)
+
+
+def launch_refusal(wait, budget) -> str | None:
+    """Why launch admission options are refused: ``wait`` (seconds) in (0, ADMISSION_MAX_SECONDS], ``budget`` (MiB, an
+    integer in HOST_BUDGET_MIB) only with a wait; None = accepted (either may be None: not given)."""
+    if wait is not None and not (type(wait) in (int, float) and 0 < wait <= ADMISSION_MAX_SECONDS):
+        return f"the launch admission wait must be in (0, {ADMISSION_MAX_SECONDS}] seconds"
+    if budget is not None and (wait is None or type(budget) is not int or
+                               not HOST_BUDGET_MIB[0] <= budget <= HOST_BUDGET_MIB[1]):
+        return (f"the host memory budget needs a launch admission wait and is an integer in [{HOST_BUDGET_MIB[0]}, "
+                f"{HOST_BUDGET_MIB[1]}] MiB")
+    return None
 
 
 def argv_sha256(args) -> str:

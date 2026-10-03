@@ -71,7 +71,7 @@ def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
     doc = w.read_json(out)
     if doc is None:
         w.run(WS.reader_argv(w.python, kind, navs, out, w.free_run_dir(w.wave_path("readers", name)), w.root,
-                             nav_series(w, navs.values())), f"{kind} reader")
+                             nav_series(w, navs.values()), w.manifest.get("driver")), f"{kind} reader")
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"{kind} reader wrote no {out}")
@@ -85,7 +85,7 @@ def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
 def reader_plan(w: Wave, kind: str, name: str, navs: dict) -> str:
     out = w.wave_path("readers", f"{name}.json")
     return WS.fmt_argv(WS.reader_argv(w.python, kind, navs, out, w.wave_path("readers", f"{name}-run1"), w.root,
-                                      nav_series(w, navs.values())))
+                                      nav_series(w, navs.values()), w.manifest.get("driver")))
 
 
 # ------------------------------------------------------------------ match
