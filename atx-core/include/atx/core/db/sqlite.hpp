@@ -34,6 +34,15 @@
 //  * `column_text` / `column_blob` return a view into SQLite-owned memory that
 //    is valid only until the next `step()` / `reset()` / statement destruction.
 //    Copy out if you need to keep it.
+//
+// ===========================================================================
+//  Result codes (P9 SQL1, defect W3)
+// ===========================================================================
+//  Every connection runs with extended result codes on. Constraint failures
+//  map by their extended code: UNIQUE / PRIMARY KEY (and a plain CONSTRAINT)
+//  -> AlreadyExists; CHECK / NOT NULL / FOREIGN KEY / TRIGGER (RAISE) /
+//  DATATYPE (a STRICT column given the wrong storage class) ->
+//  InvalidArgument. Every other code maps by its primary part (rc & 0xff).
 
 #include <cstddef>     // std::byte
 #include <memory>      // std::unique_ptr (statement cache values)
@@ -41,6 +50,7 @@
 #include <string>      // std::string (statement-cache keys)
 #include <string_view> // std::string_view (SQL text, names)
 #include <unordered_map>
+#include <vector> // std::vector (checked_blob copy)
 
 #include "atx/core/error.hpp" // Result, Status, Error, ErrorCode
 #include "atx/core/types.hpp" // i32, i64, f64, u8
@@ -142,6 +152,19 @@ public:
   [[nodiscard]] i32 column_count() const noexcept;
   [[nodiscard]] ColumnType column_type(i32 col) const noexcept;
 
+  // --- checked column readers (0-based; call after step() == Row) -----------
+  // The readers above return 0 / empty for a NULL or a value of another
+  // storage class. These refuse instead: Err(OutOfRange) when no row is
+  // current or `col` is outside it; Err(InvalidArgument) for a NULL or a
+  // storage class other than the one requested (an INTEGER is accepted by
+  // checked_double and converted exactly as SQLite converts it). Text and blob
+  // are copied out, so the value outlives the next step(). Thread-safety: as
+  // the Statement (one thread).
+  [[nodiscard]] Result<i64> checked_int(i32 col) const;
+  [[nodiscard]] Result<f64> checked_double(i32 col) const;
+  [[nodiscard]] Result<std::string> checked_text(i32 col) const;
+  [[nodiscard]] Result<std::vector<std::byte>> checked_blob(i32 col) const;
+
   // Rewind for re-execution (keeps bindings) / clear all bindings to NULL.
   [[nodiscard]] Status reset() noexcept;
   [[nodiscard]] Status clear_bindings() noexcept;
@@ -170,7 +193,9 @@ class Database {
 public:
   // Open a database file (or any SQLite URI/path). Use open_memory() for an
   // in-memory database. Returns Err on failure (e.g. ReadOnly on a missing
-  // file, permission, I/O).
+  // file, permission, I/O). Extended result codes are enabled on the
+  // connection; no busy timeout, journal mode or hardening is set here (that is
+  // open_with_policy in connection.hpp).
   [[nodiscard]] static Result<Database> open(std::string_view path,
                                              OpenMode mode = OpenMode::ReadWriteCreate);
   // Open a private, in-memory database (":memory:").
@@ -187,7 +212,11 @@ public:
   // prepare().
   [[nodiscard]] Status exec(std::string_view sql);
 
-  // Compile a statement. The returned Statement owns the compiled program.
+  // Compile ONE statement. The returned Statement owns the compiled program.
+  // Err(OutOfRange) when `sql` exceeds INT_MAX bytes; Err(ParseError) when
+  // anything but whitespace and `--` / `/* */` comments follows the first
+  // statement (a second statement would otherwise be silently ignored; run
+  // multi-statement SQL through exec()).
   [[nodiscard]] Result<Statement> prepare(std::string_view sql);
 
   // Compile-or-reuse: returns a borrowed pointer to a Statement owned by this
