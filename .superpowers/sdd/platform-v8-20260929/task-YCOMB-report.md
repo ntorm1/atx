@@ -161,8 +161,9 @@ signal-specific decay decides how fast each bucket is traded, not how much of it
   - Fast sleeve aim: `L x desired_fast`. Slow sleeve aim: `L x desired_slow`, each built from its own blend.
   - Each sleeve carries its own holdings: `fast += theta_f (aim_fast - fast)` and `slow += theta_s (aim_slow - slow)`.
   - The book holds `fast + slow` and trades only the net change.
-  - `theta_s = .05`, the parent's aim-partial-v5 theta. `theta_f = 1 - 2^(-1/5) = .12945`: the fast aim gap closes at
-    the rate the fast alpha decays.
+  - `theta_s = .05`, the parent's aim-partial-v5 theta; the trade fraction must equal it (PM8-16 #3, enforced).
+    `theta_f = 1 - 2^(-C/5)` per rebalance at the cadence C (PM8-16 #4): the fast aim gap closes at the rate the fast
+    alpha decays, a 5-session half-life at any cadence (.12945 at the parent's C = 1).
 - **How it differs from the earlier rules.**
   - R-3: one aim with one theta and changed member weights. Y-5 keeps the weights and uses two aims and two rates.
   - R-4: a band on the whole book's rank. Y-5 has no band.
@@ -240,7 +241,8 @@ The cell sets the same flag on two steps: fit `--two-speed two-speed-v1` and nav
 3. **IC composition.** `IcComposition::set_theme_sleeves`:
    - In `finish`, a second pass adds each theme's unchanged per-date re-rank, times the mass in force, to its
      sleeve's plane. The mass in force includes theme-tsmom-v1's schedule when the parent carries one.
-   - It records the fast themes' mass share per date.
+   - It records the fast themes' mass share per date, over the themes with a present member at that date (0 when
+     none has one; PM8-16 #9).
    - The blend itself is untouched bit for bit.
 4. **w pass output.** The w pass writes:
    - `<role>_sleeve_fast.f64`, `<role>_sleeve_slow.f64` and `<role>_sleeve_fast_share.f64`;
@@ -254,16 +256,18 @@ The cell sets the same flag on two steps: fit `--two-speed two-speed-v1` and nav
    - On each rebalance, each sleeve gets the parent's construction: ranks, demean, gross 1, locate zeroing,
      neutralization, and norm-score-v1 when the parent carries it.
 6. **Netting (engine kernel).** `atx::engine::book::two_speed_aim`:
-   - advances the virtual fast sleeve, `F_next = F + theta_f (L m_f d_f - F)`, with theta_f = 1 - 2^(-1/5);
-   - returns the netted aim, `desired = (1 - m_f) d_s + (F + (F_next - F) / theta) / L`.
+   - advances the virtual fast sleeve, `F_next = F + theta_f (L m_f d_f - F)`, with theta_f = 1 - 2^(-C/5) at the
+     cadence C;
+   - returns the netted aim, `desired = (1 - m_f) d_s + (F + (F_next - F) / theta_s) / L`.
    - aim-partial-v5's unchanged step on that aim is exactly `F_next - F` plus the remainder's `(current - F)` step
-     toward `L (1 - m_f) d_s` at the parent's theta. Only the net is traded.
+     toward `L (1 - m_f) d_s` at theta_s = .05. Only the net is traded.
    - The parent's dust band, exits, locate block, costs and capacity curve are unchanged.
-   - F is book-independent (no drift, no fills), so it lives in the replay's shared construction state and one group
-     forms per (L, theta).
+   - F is book-independent (no drift, no fills), so it lives in the replay's shared construction state. A
+     construction grid has one cadence and forms one lockstep group per aim leverage (review #2).
 7. **Refusals.**
-   - Refused with spo (any version), aim-partial-v6, `--risk-target`, `--vol-target`, a non-fixed rate,
-     `--hold-band`, `--vol-scale` and `--adv-hold-q`.
+   - Refused with spo (any version), aim-partial-v6, a non-fixed rate (also by the NAV config itself, review #1), a
+     trade fraction other than .05, `--hold-band`, `--vol-scale`, `--adv-hold-q` and a grid mixing cadences.
+   - Composes with `--risk-target` and `--vol-target` since 3ff73201 (section "Y-5 / Y-1 composition").
    - Refused by `nav decide`, because the holdings file does not carry F.
    - Refused without a construction state (`form_desired` called bare). The target replay holds a state, so the
      construction also runs there when the sleeves are attached; it has no CLI flag.
@@ -277,15 +281,18 @@ The cell sets the same flag on two steps: fit `--two-speed two-speed-v1` and nav
   1. a calibration run at L_parent, which reads G_cal only;
   2. the trial at `L_parent x G_parent / G_cal`.
 - **Acceptance (PM7-34 default).** Paired S2 net dSR > 0 against the parent AND mechanics. Printed only: turnover per
-  unit gross, cost per traded dollar, net Sharpe at 4x, net annual return, and the fast mass share.
+  unit gross, cost per traded dollar, net Sharpe at 4x, net annual return, the fast mass share (read from the w
+  pass's `<role>_sleeve_fast_share.f64`, pinned by `<role>_sleeves.json`; nothing writes `provenance.two_speed`), and
+  the NAV summary's `construction.two_speed` block.
 
 ### Look-ahead surfaces
 
 - The half-life table is registered from the literature and reads no data.
 - The sleeves are the parent blend's own per-date theme parts. They carry no new information and no return.
-- `m_f(d)` comes from the masses in force at d. Under theme-tsmom-v1 those are the walk-forward schedule's (Y-2's
-  surfaces).
-- F uses only desired targets formed at or before the decision. The kernel reads no return.
+- `m_f(d)` comes from the masses in force at d and the themes present at d. Under theme-tsmom-v1 those are the
+  walk-forward schedule's (Y-2's surfaces).
+- F uses only desired targets formed at or before the decision. The kernel reads no return. Under a scaler the carry
+  reads L_t at d (the scaler's own surfaces) and the book's lambda at its previous rebalance.
 
 ### How root verifies flag absent
 
@@ -294,7 +301,15 @@ The cell sets the same flag on two steps: fit `--two-speed two-speed-v1` and nav
   `TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend` checks blend, targets and `__combined__` rows byte for byte
   even with the block present.
 - The parent's NAV argv must be byte-identical. Without `--two-speed`, form_desired never reaches the branch:
-  `TwoSpeed.ZeroFastShareIsTheParentRunBitForBit` shows even the on-path with m_f = 0 is the parent's run bit for bit.
+  `TwoSpeed.ZeroFastShareIsTheParentRunBitForBit` and, under price-risk-v1 and locate-in-aim,
+  `...UnderNeutralizationAndLocateInAimIsTheParentRunBitForBit` show even the on-path with m_f = 0 is the parent's
+  run bit for bit.
+- Not byte-identical, and not an output: with every flag absent `ConstructionDay` grows 16 B (Y-3's two fields; the
+  two-speed flags sit in its padding, review #8), so the per-row budget charges (target replay `:198`, `:855`; NAV
+  books x sessions) rise by 16 B a row. For the parent class (`--max-bytes 1073741824`, about 1,100 sessions with the
+  warm start, at most 16 books in a pass) that is at most 16 x 1,100 x 16 = 0.28 MB, 0.03% of the cap; the
+  integration log records the earlier `NavHolding` +16 B passing the same cap. Headroom is a bound, not a measured
+  run (no real data here).
 
 ### Tests added
 
@@ -330,19 +345,25 @@ X-10 inherits the parent's construction. The refusal stays only for spo, aim-par
 
 **How.**
 
-- The netted aim from `engine::book::two_speed_aim` is the book target, `T = L m_s d_s + F + (F_next - F) / theta`,
-  formed at the run's L.
-- The scaler's L_t replaces the run's L only in the plan of that target, so the book moves toward
-  `(L_t / L) x T`.
+- The netted aim from `engine::book::two_speed_aim` is the book target,
+  `T = L m_s d_s + F + (F_next - F) / theta_s`, formed at the run's L.
+- The scaler's L_t = lambda L replaces the run's L in the plan of that target.
+- The book's fast holding follows its scale, lambda F (PM8-16 #10, registered by the review fixes). Each rebalance
+  carries F from the book's lambda at its previous rebalance (`engine::book::two_speed_carry`), so the plan steps the
+  remainder `R = current - lambda_prev F` at theta_s toward `lambda L m_s d_s` and the fast part to `lambda F_next`.
+  Equal scales add nothing.
 - The scaler's sigma reads the book's own planned (net) weights. The virtual fast sleeve F never enters it and keeps
   evolving at the run's L.
 - Gross matching (PM6-6) is computed on the net book, which is the NAV's all-rows gross.
 
-**Mechanics printed in the NAV summary.** `construction.two_speed` now carries two counts, printed only:
+**Mechanics printed in the NAV summary.** `construction.two_speed` carries, printed only, the cadence C, theta_fast,
+theta_slow and three counts:
 
 - `rebalances_skipped_by_a_sleeve`: rebalances skipped because a sleeve's neutralization was skipped.
 - `parent_rebalances_skipped`: per decision, whether the parent's construction of the full blend would have been
-  skipped. This is computed in the same run; without a neutralization it is always 0.
+  skipped. This is computed in the same run; without a neutralization it is always 0. It costs a third construction
+  and neutralization per decision (about 3x the parent's construction time).
+- `parent_constructions_failed`: that diagnostic construction returned an error (recorded, never raised).
 
 The registered skip behaviour is unchanged.
 
@@ -350,9 +371,10 @@ The registered skip behaviour is unchanged.
 
 - `TwoSpeed.UnderVolTargetZeroShareIsTheParentRunBitForBit`: every NAV day and every recorded L_t equal the parent
   under vol-target-v1.
-- `TwoSpeed.UnderVolTargetTheScalerScalesTheNettedTarget`: with a fast share of .3, the hook's plan equals
-  update_weights at the recorded L_t bit for bit. In closed form at L_t = 1 against L 1.2, the book steps toward
-  `(1 / L) T`, and F follows the run's L.
+- `TwoSpeed.UnderVolTargetTheHookPlansTheCarriedNettedAimAtLt` (was `...TheScalerScalesTheNettedTarget`): the hook's
+  plan equals update_weights at the recorded L_t on the carried netted aim, bit for bit.
+- `TwoSpeed.UnderARiskTargetTheBookIsTheScaledSleeveDecomposition`: the closed form through `replay_nav` with
+  L_t != L (review #13).
 - `TwoSpeed.ParseComposesWithTheScalersAndRefusesTheRest`.
 - `TwoSpeed.SummaryPrintsTheSleeveSkipsBesideTheParents`.
 
@@ -419,8 +441,9 @@ R-8's `strategy_risk_target.{hpp,cpp}` gains a second law; the default is unchan
 1. All four C++ commits are unbuilt and must compile first time under clang-cl `/W4 /WX`. The likeliest friction:
    aggregate init of `IcThemeBlock`, the new `score_role` and `method_recipe` parameters, and the `ConstructionDay`
    fields Y-3 adds (two per day).
-2. Y-5 runs only with both flags (fit and nav). Under `--vol-target` or `--risk-target` the scaler scales the netted target
-   (section "Y-5 / Y-1 composition"); that composition is defined blind and is untested on real data.
+2. Y-5 runs only with both flags (fit and nav). Under `--vol-target` or `--risk-target` the scaler scales the netted
+   target and the book carries lambda F (section "Y-5 / Y-1 composition"); that composition is defined blind and is
+   untested on real data.
 3. Y-1 may be read under E-45 as a re-parameterisation of R-8. R-8 targets an absolute vol; Y-1 targets the book's own
    running mean, which is the Moreira-Muir form. The PM rules on that.
 4. Y-3 pushes gross to the tails. Single-name weights rise about 4x the mean |w|. Borrow on hard-to-borrow tails and
