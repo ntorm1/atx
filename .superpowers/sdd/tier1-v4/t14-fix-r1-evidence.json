@@ -1,0 +1,811 @@
+{
+  "files": [
+    [
+      "items/year=2019/items.parquet",
+      2436878,
+      16676874
+    ],
+    [
+      "items/year=2020/items.parquet",
+      2414313,
+      16450628
+    ],
+    [
+      "items/year=2021/items.parquet",
+      2411732,
+      16482233
+    ],
+    [
+      "items/year=2022/items.parquet",
+      2453801,
+      16689594
+    ],
+    [
+      "items/year=2023/items.parquet",
+      2404029,
+      16251825
+    ],
+    [
+      "items/year=2024/items.parquet",
+      2317184,
+      15575591
+    ],
+    [
+      "items/year=2025/items.parquet",
+      2328449,
+      15593265
+    ],
+    [
+      "items/year=2026/items.parquet",
+      1704459,
+      12071540
+    ],
+    [
+      "notes_wide.parquet",
+      197148,
+      17829282
+    ],
+    [
+      "segment_census.parquet",
+      201137,
+      2124326
+    ],
+    [
+      "segment_features.parquet",
+      164704,
+      9027384
+    ],
+    [
+      "segment_recon.parquet",
+      46513,
+      1641601
+    ],
+    [
+      "segments.parquet",
+      2484216,
+      23990714
+    ]
+  ],
+  "published_bytes": 180404857,
+  "span": [
+    "2019-01-02",
+    "2026-08-31",
+    "2019-01-02 21:13:00+00:00",
+    "2026-08-31 21:01:00+00:00",
+    "2011-09-30",
+    "2026-07-31"
+  ],
+  "residual": [
+    [
+      2020,
+      "direct",
+      1357
+    ],
+    [
+      2020,
+      "double_count",
+      85
+    ],
+    [
+      2020,
+      "no_total",
+      96
+    ],
+    [
+      2020,
+      "reconciled_search",
+      36
+    ],
+    [
+      2020,
+      "scale_or_unit",
+      1
+    ],
+    [
+      2020,
+      "segments_below_total",
+      78
+    ],
+    [
+      2020,
+      "segments_exceed_total",
+      101
+    ],
+    [
+      2020,
+      "with_reconciling",
+      146
+    ],
+    [
+      2021,
+      "direct",
+      1327
+    ],
+    [
+      2021,
+      "double_count",
+      71
+    ],
+    [
+      2021,
+      "no_total",
+      93
+    ],
+    [
+      2021,
+      "reconciled_search",
+      29
+    ],
+    [
+      2021,
+      "segments_below_total",
+      69
+    ],
+    [
+      2021,
+      "segments_exceed_total",
+      106
+    ],
+    [
+      2021,
+      "with_reconciling",
+      157
+    ],
+    [
+      2022,
+      "direct",
+      1338
+    ],
+    [
+      2022,
+      "double_count",
+      74
+    ],
+    [
+      2022,
+      "no_total",
+      93
+    ],
+    [
+      2022,
+      "reconciled_search",
+      26
+    ],
+    [
+      2022,
+      "scale_or_unit",
+      1
+    ],
+    [
+      2022,
+      "segments_below_total",
+      72
+    ],
+    [
+      2022,
+      "segments_exceed_total",
+      87
+    ],
+    [
+      2022,
+      "with_reconciling",
+      161
+    ],
+    [
+      2023,
+      "direct",
+      1345
+    ],
+    [
+      2023,
+      "double_count",
+      71
+    ],
+    [
+      2023,
+      "no_total",
+      86
+    ],
+    [
+      2023,
+      "reconciled_search",
+      23
+    ],
+    [
+      2023,
+      "scale_or_unit",
+      2
+    ],
+    [
+      2023,
+      "segments_below_total",
+      66
+    ],
+    [
+      2023,
+      "segments_exceed_total",
+      89
+    ],
+    [
+      2023,
+      "with_reconciling",
+      154
+    ],
+    [
+      2024,
+      "direct",
+      1309
+    ],
+    [
+      2024,
+      "double_count",
+      56
+    ],
+    [
+      2024,
+      "no_total",
+      82
+    ],
+    [
+      2024,
+      "reconciled_search",
+      27
+    ],
+    [
+      2024,
+      "scale_or_unit",
+      2
+    ],
+    [
+      2024,
+      "segments_below_total",
+      48
+    ],
+    [
+      2024,
+      "segments_exceed_total",
+      77
+    ],
+    [
+      2024,
+      "with_reconciling",
+      160
+    ],
+    [
+      2025,
+      "direct",
+      1280
+    ],
+    [
+      2025,
+      "double_count",
+      88
+    ],
+    [
+      2025,
+      "no_total",
+      104
+    ],
+    [
+      2025,
+      "reconciled_search",
+      30
+    ],
+    [
+      2025,
+      "segments_below_total",
+      56
+    ],
+    [
+      2025,
+      "segments_exceed_total",
+      91
+    ],
+    [
+      2025,
+      "with_reconciling",
+      164
+    ]
+  ],
+  "arithmetic_candidates": [
+    [
+      2020,
+      "dedup",
+      122
+    ],
+    [
+      2020,
+      "dedup+components",
+      11
+    ],
+    [
+      2020,
+      "mixed_tags",
+      7
+    ],
+    [
+      2020,
+      "mixed_tags+dedup",
+      2
+    ],
+    [
+      2020,
+      "reportable",
+      2
+    ],
+    [
+      2021,
+      "dedup",
+      112
+    ],
+    [
+      2021,
+      "dedup+components",
+      15
+    ],
+    [
+      2021,
+      "mixed_tags",
+      5
+    ],
+    [
+      2021,
+      "mixed_tags+dedup",
+      2
+    ],
+    [
+      2021,
+      "reportable",
+      2
+    ],
+    [
+      2021,
+      "reportable+components",
+      2
+    ],
+    [
+      2022,
+      "dedup",
+      91
+    ],
+    [
+      2022,
+      "dedup+components",
+      17
+    ],
+    [
+      2022,
+      "mixed_tags",
+      5
+    ],
+    [
+      2022,
+      "mixed_tags+dedup",
+      2
+    ],
+    [
+      2022,
+      "reportable",
+      2
+    ],
+    [
+      2023,
+      "dedup",
+      87
+    ],
+    [
+      2023,
+      "dedup+components",
+      17
+    ],
+    [
+      2023,
+      "mixed_tags",
+      4
+    ],
+    [
+      2023,
+      "mixed_tags+dedup",
+      2
+    ],
+    [
+      2023,
+      "reportable",
+      1
+    ],
+    [
+      2023,
+      "reportable+dedup",
+      2
+    ],
+    [
+      2024,
+      "dedup",
+      71
+    ],
+    [
+      2024,
+      "dedup+components",
+      13
+    ],
+    [
+      2024,
+      "mixed_tags",
+      1
+    ],
+    [
+      2024,
+      "mixed_tags+components",
+      1
+    ],
+    [
+      2024,
+      "mixed_tags+dedup",
+      1
+    ],
+    [
+      2024,
+      "reportable",
+      1
+    ],
+    [
+      2024,
+      "reportable+dedup",
+      1
+    ],
+    [
+      2025,
+      "dedup",
+      113
+    ],
+    [
+      2025,
+      "dedup+components",
+      17
+    ],
+    [
+      2025,
+      "mixed_tags",
+      3
+    ],
+    [
+      2025,
+      "reportable",
+      2
+    ]
+  ],
+  "contexts": [
+    [
+      "plain",
+      2483640,
+      89577
+    ],
+    [
+      "timing_transfer_partition",
+      576,
+      101
+    ]
+  ],
+  "amendments": [
+    5744,
+    985,
+    884
+  ],
+  "gate_status": {
+    "pass": false,
+    "segment_revenue_multi_segment_10k": {
+      "denominator_certified": false,
+      "fails": [
+        "2020",
+        "2021",
+        "2024"
+      ],
+      "measured": {
+        "2020": 0.8971,
+        "2021": 0.8999,
+        "2022": 0.9039,
+        "2023": 0.9,
+        "2024": 0.8889,
+        "2025": 0.9038
+      },
+      "observable_threshold_pass": false,
+      "pass": false,
+      "threshold": 0.9,
+      "verification_gap": "Independent all-filer multi-segment disclosure denominator unavailable"
+    },
+    "segment_sum_within_1pct": {
+      "fails": [
+        "2020",
+        "2021",
+        "2022",
+        "2023",
+        "2024",
+        "2025"
+      ],
+      "measured": {
+        "2020": 0.81,
+        "2021": 0.817,
+        "2022": 0.8234,
+        "2023": 0.829,
+        "2024": 0.8495,
+        "2025": 0.813
+      },
+      "pass": false,
+      "threshold": 0.95
+    }
+  },
+  "cells": {
+    "member_equity": {
+      "basis": "member_equity month-end cells; among annual rows visible at the cell (available_at < month-end session 22:00 UTC) with period within 548 days, the latest period, then the latest vintage",
+      "by_year": {
+        "2020": {
+          "annual_row": 0.8961,
+          "bseg_n": 0.8518,
+          "bseg_rev_hhi": 0.7874,
+          "cells": 27558,
+          "dd1": 0.4263,
+          "foreign_sales_share": 0.3564,
+          "linked": 0.9816,
+          "major_cust_share": 0.0532,
+          "oplease_liab": 0.6594,
+          "stkco": 0.8427
+        },
+        "2021": {
+          "annual_row": 0.8811,
+          "bseg_n": 0.8327,
+          "bseg_rev_hhi": 0.775,
+          "cells": 29100,
+          "dd1": 0.4146,
+          "foreign_sales_share": 0.3439,
+          "linked": 0.9825,
+          "major_cust_share": 0.0488,
+          "oplease_liab": 0.7717,
+          "stkco": 0.8196
+        },
+        "2022": {
+          "annual_row": 0.9021,
+          "bseg_n": 0.8622,
+          "bseg_rev_hhi": 0.8066,
+          "cells": 27861,
+          "dd1": 0.4474,
+          "foreign_sales_share": 0.3613,
+          "linked": 0.9904,
+          "major_cust_share": 0.0485,
+          "oplease_liab": 0.8125,
+          "stkco": 0.8483
+        },
+        "2023": {
+          "annual_row": 0.9117,
+          "bseg_n": 0.8708,
+          "bseg_rev_hhi": 0.8153,
+          "cells": 27601,
+          "dd1": 0.453,
+          "foreign_sales_share": 0.3648,
+          "linked": 0.9945,
+          "major_cust_share": 0.0482,
+          "oplease_liab": 0.8505,
+          "stkco": 0.8614
+        },
+        "2024": {
+          "annual_row": 0.9061,
+          "bseg_n": 0.8652,
+          "bseg_rev_hhi": 0.8056,
+          "cells": 27284,
+          "dd1": 0.4567,
+          "foreign_sales_share": 0.3617,
+          "linked": 0.9954,
+          "major_cust_share": 0.0491,
+          "oplease_liab": 0.8533,
+          "stkco": 0.8612
+        },
+        "2025": {
+          "annual_row": 0.9026,
+          "bseg_n": 0.8702,
+          "bseg_rev_hhi": 0.8068,
+          "cells": 26563,
+          "dd1": 0.4475,
+          "foreign_sales_share": 0.3703,
+          "linked": 0.9945,
+          "major_cust_share": 0.0513,
+          "oplease_liab": 0.8541,
+          "stkco": 0.8587
+        }
+      }
+    },
+    "univ_all_common": {
+      "basis": "univ_all_common month-end cells; among annual rows visible at the cell (available_at < month-end session 22:00 UTC) with period within 548 days, the latest period, then the latest vintage",
+      "by_year": {
+        "2020": {
+          "annual_row": 0.9718,
+          "bseg_n": 0.8671,
+          "bseg_rev_hhi": 0.7944,
+          "cells": 39931,
+          "dd1": 0.3601,
+          "foreign_sales_share": 0.324,
+          "linked": 1.0,
+          "major_cust_share": 0.0552,
+          "oplease_liab": 0.659,
+          "stkco": 0.9062
+        },
+        "2021": {
+          "annual_row": 0.947,
+          "bseg_n": 0.8275,
+          "bseg_rev_hhi": 0.7632,
+          "cells": 44468,
+          "dd1": 0.348,
+          "foreign_sales_share": 0.2999,
+          "linked": 1.0,
+          "major_cust_share": 0.0526,
+          "oplease_liab": 0.7812,
+          "stkco": 0.8704
+        },
+        "2022": {
+          "annual_row": 0.967,
+          "bseg_n": 0.8486,
+          "bseg_rev_hhi": 0.7895,
+          "cells": 44730,
+          "dd1": 0.3591,
+          "foreign_sales_share": 0.31,
+          "linked": 1.0,
+          "major_cust_share": 0.0504,
+          "oplease_liab": 0.8053,
+          "stkco": 0.8997
+        },
+        "2023": {
+          "annual_row": 0.9804,
+          "bseg_n": 0.8663,
+          "bseg_rev_hhi": 0.8062,
+          "cells": 42760,
+          "dd1": 0.3689,
+          "foreign_sales_share": 0.3261,
+          "linked": 1.0,
+          "major_cust_share": 0.0511,
+          "oplease_liab": 0.8783,
+          "stkco": 0.9216
+        },
+        "2024": {
+          "annual_row": 0.982,
+          "bseg_n": 0.8683,
+          "bseg_rev_hhi": 0.8039,
+          "cells": 42063,
+          "dd1": 0.3724,
+          "foreign_sales_share": 0.3281,
+          "linked": 1.0,
+          "major_cust_share": 0.0534,
+          "oplease_liab": 0.8959,
+          "stkco": 0.9195
+        },
+        "2025": {
+          "annual_row": 0.985,
+          "bseg_n": 0.8953,
+          "bseg_rev_hhi": 0.8167,
+          "cells": 41087,
+          "dd1": 0.3759,
+          "foreign_sales_share": 0.3394,
+          "linked": 1.0,
+          "major_cust_share": 0.0566,
+          "oplease_liab": 0.9049,
+          "stkco": 0.9253
+        }
+      }
+    },
+    "univ_r3000p": {
+      "basis": "univ_r3000p month-end cells; among annual rows visible at the cell (available_at < month-end session 22:00 UTC) with period within 548 days, the latest period, then the latest vintage",
+      "by_year": {
+        "2020": {
+          "annual_row": 0.9221,
+          "bseg_n": 0.8446,
+          "bseg_rev_hhi": 0.7711,
+          "cells": 35889,
+          "dd1": 0.4043,
+          "foreign_sales_share": 0.3262,
+          "linked": 0.9554,
+          "major_cust_share": 0.0483,
+          "oplease_liab": 0.657,
+          "stkco": 0.8598
+        },
+        "2021": {
+          "annual_row": 0.9334,
+          "bseg_n": 0.8494,
+          "bseg_rev_hhi": 0.7817,
+          "cells": 36073,
+          "dd1": 0.4142,
+          "foreign_sales_share": 0.3294,
+          "linked": 0.965,
+          "major_cust_share": 0.0484,
+          "oplease_liab": 0.802,
+          "stkco": 0.8713
+        },
+        "2022": {
+          "annual_row": 0.9424,
+          "bseg_n": 0.8649,
+          "bseg_rev_hhi": 0.8045,
+          "cells": 35895,
+          "dd1": 0.4255,
+          "foreign_sales_share": 0.3374,
+          "linked": 0.9778,
+          "major_cust_share": 0.0452,
+          "oplease_liab": 0.8233,
+          "stkco": 0.8852
+        },
+        "2023": {
+          "annual_row": 0.9448,
+          "bseg_n": 0.8679,
+          "bseg_rev_hhi": 0.8071,
+          "cells": 35839,
+          "dd1": 0.4275,
+          "foreign_sales_share": 0.3471,
+          "linked": 0.98,
+          "major_cust_share": 0.0448,
+          "oplease_liab": 0.8645,
+          "stkco": 0.8936
+        },
+        "2024": {
+          "annual_row": 0.9483,
+          "bseg_n": 0.8673,
+          "bseg_rev_hhi": 0.8031,
+          "cells": 35703,
+          "dd1": 0.4308,
+          "foreign_sales_share": 0.3458,
+          "linked": 0.9819,
+          "major_cust_share": 0.0471,
+          "oplease_liab": 0.8809,
+          "stkco": 0.8985
+        },
+        "2025": {
+          "annual_row": 0.9491,
+          "bseg_n": 0.8824,
+          "bseg_rev_hhi": 0.8083,
+          "cells": 35862,
+          "dd1": 0.4325,
+          "foreign_sales_share": 0.3519,
+          "linked": 0.981,
+          "major_cust_share": 0.048,
+          "oplease_liab": 0.8876,
+          "stkco": 0.8984
+        }
+      }
+    }
+  },
+  "existing_text_docs": [
+    373,
+    [
+      [
+        2020,
+        5583,
+        3066
+      ],
+      [
+        2021,
+        5890,
+        3234
+      ],
+      [
+        2022,
+        6552,
+        3419
+      ],
+      [
+        2023,
+        6279,
+        3377
+      ],
+      [
+        2024,
+        5813,
+        3242
+      ],
+      [
+        2025,
+        5560,
+        3156
+      ]
+    ]
+  ],
+  "coverage_inputs_sha256": {
+    "universe_manifest": "38f4028758d90e872cae50826d04fe61bf18014645b032b9030a748ad71586da",
+    "identity_manifest": "0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76",
+    "calendar": "dd9cb6958d8a4a84de1f6a4ac44d07a8f8e8f9ad8d6ebed477e30d89675fa44e"
+  },
+  "coverage_remeasured_at": "2026-10-03T16:23:48+00:00"
+}

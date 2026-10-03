@@ -1,0 +1,22 @@
+{
+  "file_hash_matches": {
+    "items/year=2019/items.parquet": true,
+    "items/year=2020/items.parquet": true,
+    "items/year=2021/items.parquet": true,
+    "items/year=2022/items.parquet": true,
+    "items/year=2023/items.parquet": true,
+    "items/year=2024/items.parquet": true,
+    "items/year=2025/items.parquet": true,
+    "items/year=2026/items.parquet": true,
+    "notes_wide.parquet": true,
+    "segment_census.parquet": true,
+    "segment_features.parquet": true,
+    "segment_recon.parquet": true,
+    "segments.parquet": true
+  },
+  "code_hash_match": true,
+  "duplicate_feature_keys": 0,
+  "candidate_promotions": 0,
+  "amendment_singleton_inferences": 884,
+  "census_recon_mismatches": 0
+}
