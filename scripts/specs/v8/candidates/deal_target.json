@@ -20,8 +20,8 @@
   "lane": "YDATA",
   "report": "task-YDATA-report.md",
   "schema": "atx.wave-candidate/v1",
-  "status": "pinned",
-  "wave": null,
+  "status": "in-book",
+  "wave": "y-s",
   "history": [
     {
       "status": "proposed",
@@ -34,6 +34,13 @@
       "at": "2026-10-02",
       "by": "PM",
       "note": "ruling PM8-14"
+    },
+    {
+      "status": "in-book",
+      "at": "2026-10-03",
+      "by": "research_cycle.py wave",
+      "wave": "y-s",
+      "note": "wave-result True"
     }
   ]
 }
