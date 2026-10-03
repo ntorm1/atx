@@ -117,3 +117,57 @@ commands and schema/clock/coverage/rollback contracts are in the dataset doc.
 
 Implementation checkpoint ready for independent named-risk review. No live
 exec job remains. No actual source/data command is authorized by this report.
+
+## Fix round 1/5 — independent initial findings
+
+Review: `review-T16-foundation-findings.md`, Needs fixes. All three Important
+findings and both Minors addressed in owned new integration files only.
+
+- **I1:** Sealing/admission now recomputes daily all-common, NYSE, code-presence
+  and missing-shrcd counts directly from the actual admitted payload. Every
+  original diagnostic counter is regenerated with native load_issuer_tables /
+  build_year / year_receipt from the authenticated reader snapshot and compared
+  exactly. A self-consistent daily object/hash cannot certify wrong counters.
+  Corrected fixture missing-code counters to zero for nonnull codes. Five
+  separate wrong-counter fixtures include native-intermediate diagnostics.
+- **I2:** Public validate_generation independently requires the exact current
+  reader_contract(REQUIRED), reader snapshot version, full code-path inventory,
+  binding/French/hand external inventory and exact external paths; versioned
+  binding document content must match complete products. It no longer trusts
+  abbreviated declarations supplied by a snapshot. Twelve public-validator
+  negative fixtures cover abbreviated/versioned input contracts and unsupported
+  qualification/status/gates before any warehouse IO.
+- **I3:** Public admission enforces exact stage/schema/complete status,
+  NOT_PRODUCTION_READY, BYTE_IDENTITY_BOUND, false source qualification, rule,
+  original gate definitions and all required years. Validation evidence has an
+  explicit schema and exact field inventory; independently derived measurement
+  contract pins original populations/criteria, all coverage fields/universes,
+  French60months, gate years and exact hand strata/seed. All native measurement
+  evidence is regenerated and compared, and manifest gate statuses must match.
+  Genuine measured FAIL remains permitted; fixture French10/60 stays FAIL.
+  Snapshot, payloads, receipts, validation and manifest identities are rechecked
+  after admission; receipt/output inventories are exact and reject extras.
+- **M1:** Native coverage now receives a private common-root accessor. The
+  two-context fixture actually exercises coverage history discovery using a
+  capturing connection and confirms each private root's prior-year path; native
+  shared globals remain unchanged.
+- **M2:** Rollback uses the same stage writer lock as build. Pointer changes
+  use a persisted transaction journal; consumers/builds hold on unfinished
+  transactions. Explicit guarded `recover` validates the intended current target,
+  checks retained previous manifest identity and completes both pointers before
+  removing the journal. Tests cover interruption before and after current write,
+  recovery, repeated reversible rollback and competing writer rejection.
+
+Final covering command is the exact pytest command recorded above.
+Final output: **32 passed in 40.47s**, offline, DuckDB128MB/one thread.
+Named findings: 5 addressed; independent re-review still required.
+No actual source scan/hash, data build, HTTP, return computation or producer edit
+occurred. Root's separate two-pass source byte audit is not accepted here as key,
+clock, economic or release qualification, and no new release binding was landed.
+
+Cost/limits: independent unit validation now replays native year SQL and public
+generation admission additionally replays all original measurements. Bounded
+new-year selection still does not bound full input hashing or native replay.
+Real warehouse peak/runtime and actual candidate/gate/source qualification remain
+NOT_MEASURED; all prior Task2/French/Task5/fullTask16 dependencies remain open.
+No live exec job remains at this coherent fix checkpoint.

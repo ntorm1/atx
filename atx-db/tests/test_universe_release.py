@@ -127,21 +127,29 @@ def test_wildcard_extra_and_path_escape(tmp_path):
         R.safe_path(tmp_path, "../outside")
 
 
-def candidate_fixture(tmp_path):
+def daily_fixture(day=D):
+    return {day.isoformat(): {col: (0 if col == "rows_without_shrcd" else 1) for col in U.DAILY_COLS}}
+
+
+def candidate_fixture(tmp_path, monkeypatch):
     panel = axis(tmp_path)
     frozen = R.snapshot(tmp_path, {"panel_2021": {"pattern": "panel/year=2021/*.parquet", "manifest": None},
                                   "calendar": {"pattern": "calendar.parquet", "manifest": None}},
                         {"panel_2021": binding(tmp_path, panel.relative_to(tmp_path).as_posix()),
                          "calendar": binding(tmp_path, "calendar.parquet")}, [])
+    import types
+    monkeypatch.setattr(V, "native_adapter", lambda root, gen: types.SimpleNamespace(
+        load_issuer_tables=lambda con: None, build_year=lambda con, year: None,
+        year_receipt=lambda con: [[D, *daily_fixture()[D.isoformat()].values()]]))
     return V.Candidate(tmp_path / "generation", frozen, tmp_path)
 
 
-def test_authenticated_resume_corruption_and_interruption(tmp_path, con):
-    candidate = candidate_fixture(tmp_path)
+def test_authenticated_resume_corruption_and_interruption(tmp_path, con, monkeypatch):
+    candidate = candidate_fixture(tmp_path, monkeypatch)
     payload(candidate.payload(2021))
     with pytest.raises(RuntimeError, match="interrupted"):
         candidate.admit(con, 2021)
-    daily = {D.isoformat(): {col: 1 for col in U.DAILY_COLS}}
+    daily = daily_fixture()
     sealed = candidate.seal(con, 2021, daily, None)
     resumed = V.Candidate(candidate.directory, candidate.frozen, tmp_path)
     assert resumed.admit(con, 2021) == sealed
@@ -150,10 +158,10 @@ def test_authenticated_resume_corruption_and_interruption(tmp_path, con):
         resumed.admit(con, 2021)
 
 
-def test_corrupt_daily_and_stale_sources(tmp_path, con):
-    candidate = candidate_fixture(tmp_path)
+def test_corrupt_daily_and_stale_sources(tmp_path, con, monkeypatch):
+    candidate = candidate_fixture(tmp_path, monkeypatch)
     payload(candidate.payload(2021))
-    daily = {D.isoformat(): {col: 1 for col in U.DAILY_COLS}}
+    daily = daily_fixture()
     candidate.seal(con, 2021, daily, None)
     receipt = candidate.directory / "year=2021/receipt.json"
     row = C.read_json(receipt)
@@ -166,6 +174,49 @@ def test_corrupt_daily_and_stale_sources(tmp_path, con):
         candidate.seal(con, 2021, daily, None)
 
 
+@pytest.mark.parametrize("counter", ["all_common", "nyse_all_common", "all_common_with_codes", "rows_without_shrcd", "all_common_no_price_screen"])
+def test_self_consistent_wrong_counter_refused(tmp_path, con, monkeypatch, counter):
+    candidate = candidate_fixture(tmp_path, monkeypatch)
+    payload(candidate.payload(2021))
+    daily = daily_fixture()
+    daily[D.isoformat()][counter] = 1 - daily[D.isoformat()][counter]
+    with pytest.raises(RuntimeError, match="counters"):
+        candidate.seal(con, 2021, daily, None)
+
+
+@pytest.mark.parametrize("mutation", ["version", "reader", "code", "external", "binding_version",
+                                    "stage", "schema", "status", "readiness", "qualification", "certification", "gate_definitions"])
+def test_public_validator_refuses_abbreviated_or_escalated_contract(tmp_path, con, monkeypatch, mutation):
+    """Reject forged self-consistent declarations before any warehouse IO."""
+    import copy
+    contract = R.reader_contract(V.REQUIRED)
+    products = {name: {"files": {}, "source": "fixture", "clock": "fixture", "admission": "fixture"} for name in contract}
+    binding_path = tmp_path / "bindings.json"
+    C.write_json_atomic(binding_path, {"version": "reader_binding_v1", "products": products})
+    hand, french = tmp_path / "hand.json", tmp_path / "french.parquet"
+    monkeypatch.setattr(U, "HAND_CHECK", hand)
+    monkeypatch.setattr(U, "FRENCH_BREAKPOINTS", french)
+    frozen = {"version": "reader_snapshot_v1", "contract": contract, "products": products,
+              "code": {str(path.resolve()): {} for path in V.code_paths()},
+              "external": {name: {"path": str(path.resolve())} for name,path in
+                           (("binding_document", binding_path), ("hand_verdicts", hand), ("french", french))}}
+    manifest = {"stage": V.STAGE, "schema": V.SCHEMA, "status": "complete", "readiness": "NOT_PRODUCTION_READY",
+                "qualification": "BYTE_IDENTITY_BOUND", "source_quality_certified": False, "rule": U.RULE, "original_gates": U.GATES}
+    if mutation == "version": frozen["version"] = "unsupported"
+    elif mutation == "reader": frozen["contract"] = {"calendar": contract["calendar"]}
+    elif mutation == "code": frozen["code"] = {}
+    elif mutation == "external": frozen["external"] = {}
+    elif mutation == "binding_version": C.write_json_atomic(binding_path, {"version": "unsupported", "products": products})
+    elif mutation == "certification": manifest["source_quality_certified"] = True
+    elif mutation == "gate_definitions": manifest["original_gates"] = {"daily_band": [0, 999999]}
+    else: manifest[mutation] = "unsupported"
+    generation = tmp_path / "forged"
+    C.write_json_atomic(generation / "snapshot.json", frozen)
+    C.write_json_atomic(generation / "manifest.json", manifest)
+    with pytest.raises(RuntimeError, match="unsupported|incomplete"):
+        V.validate_generation(tmp_path, generation, con)
+
+
 def test_adapter_isolation_and_full_inventory(tmp_path):
     original = U._p("universe", "year=2021", "universe.parquet")
     a = V.native_adapter(tmp_path / "a", tmp_path / "a_candidate")
@@ -173,6 +224,24 @@ def test_adapter_isolation_and_full_inventory(tmp_path):
     assert "a_candidate" in a.out_glob() and "b_candidate" in b.out_glob()
     assert "/a/" in a.M.calendar_sql() and "/b/" in b.M.calendar_sql()
     assert U._p("universe", "year=2021", "universe.parquet") == original
+    assert a.coverage.__globals__["C"].build_root() == tmp_path / "a"
+    assert b.coverage.__globals__["C"].build_root() == tmp_path / "b"
+    captured = []
+    class StopDiscovery(Exception): pass
+    class Capture:
+        def execute(self, sql):
+            captured.append(sql)
+            raise StopDiscovery
+    for root_name, adapter in (("a", a), ("b", b)):
+        history = tmp_path / root_name / "panel/year=2019/history.parquet"
+        history.parent.mkdir(parents=True)
+        history.write_bytes(b"fixture-path-only")
+        candidate_year = tmp_path / f"{root_name}_candidate/year=2020/universe.parquet"
+        candidate_year.parent.mkdir(parents=True)
+        candidate_year.write_bytes(b"fixture-path-only")
+        with pytest.raises(StopDiscovery):
+            adapter.coverage(Capture(), years=range(2020, 2021))
+        assert f"/{root_name}/panel/year=2019/" in captured[-1]
     contract = R.reader_contract()
     assert all(f"panel_{y}" in contract for y in V.REQUIRED)
     assert all(name in contract for name in ("finra_names", "profile", "reconstitutions", "calendar"))
@@ -195,10 +264,32 @@ def test_publish_last_interruption_and_rollback(tmp_path, con, monkeypatch):
     monkeypatch.setattr(C, "write_json_atomic", interrupted)
     with pytest.raises(RuntimeError, match="interrupt"):
         V.publish_pointer(stage, second, second / "manifest.json")
-    assert V.resolve_current(tmp_path) == first.resolve()
+    assert C.read_json(stage / "current.json")["generation"] == "first"
+    with pytest.raises(RuntimeError, match="transaction"):
+        V.resolve_current(tmp_path)
     monkeypatch.setattr(C, "write_json_atomic", original)
-    V.publish_pointer(stage, second, second / "manifest.json")
     monkeypatch.setattr(V, "validate_generation", lambda root, generation, con: {})
+    V.recover(tmp_path, con)
+    assert V.resolve_current(tmp_path) == second.resolve()
+    V.rollback(tmp_path, con)
+    assert V.resolve_current(tmp_path) == first.resolve()
+    lock = stage / ".writer.lock"
+    lock.write_text("fixture competing writer")
+    with pytest.raises(RuntimeError, match="writer"):
+        V.rollback(tmp_path, con)
+    lock.unlink()
+    def interrupted_after_current(path, value):
+        original(path, value)
+        if path.name == "current.json":
+            raise RuntimeError("interrupt after current")
+    monkeypatch.setattr(C, "write_json_atomic", interrupted_after_current)
+    with pytest.raises(RuntimeError, match="after current"):
+        V.rollback(tmp_path, con)
+    with pytest.raises(RuntimeError, match="transaction"):
+        V.resolve_current(tmp_path)
+    monkeypatch.setattr(C, "write_json_atomic", original)
+    V.recover(tmp_path, con)
+    assert V.resolve_current(tmp_path) == second.resolve()
     V.rollback(tmp_path, con)
     assert V.resolve_current(tmp_path) == first.resolve()
     (first / "manifest.json").write_text("{}")
@@ -240,13 +331,14 @@ def test_full_inventory_bounded_resume_equivalence_and_honest_fail(tmp_path, mon
             state["year"] = year
         return types.SimpleNamespace(load_issuer_tables=lambda con: None, build_year=build_year,
             output_sql=lambda: "SELECT * FROM " + V.parquet_sql([tmp_path / f"panel/year={state['year']}/p.parquet"]),
-            year_receipt=lambda con: [[dt.date(state["year"], 1, 4), *([1] * len(U.DAILY_COLS))]])
+            year_receipt=lambda con: [[dt.date(state["year"], 1, 4), *daily_fixture(dt.date(state["year"], 1, 4))[dt.date(state["year"], 1, 4).isoformat()].values()]])
     monkeypatch.setattr(V, "native_adapter", adapter)
     calls = []
     def measured(con, native, daily):
         calls.append(len(daily))
-        return {"gates": {"french_nyse": {"pass": False, "months_outside": 10, "months": 60}},
-                "coverage": {"fixture": True}, "sample": {"fixture": True}}
+        return {"schema": "atx.alpha-panel.universe-release.validation/v1", "measurement_contract": V.measurement_contract(),
+                "gates": {"french_nyse": {"pass": False, "months_outside": 10, "months": 60}},
+                "coverage": {"fixture": True}, "sample": {"fixture": True}, "counts": {}, "daily_per_year": {}}
     monkeypatch.setattr(V, "measurements", measured)
     partial = V.build(bindings, "bounded", years=[2018], max_new_years=1)
     assert partial["missing_years"] == list(range(2019, 2027)) and not partial["published"]

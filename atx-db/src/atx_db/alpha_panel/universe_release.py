@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import types
 import uuid
+from contextlib import contextmanager
 from typing import Any
 
 from . import common as C
@@ -37,6 +38,10 @@ def native_adapter(root: Path, generation: Path):
                                     "lag(session_date) OVER (ORDER BY session_date) AS prev_session "
                                     f"FROM read_parquet('{(root / 'calendar.parquet').as_posix()}'))")
     namespace["M"] = market
+    private_common = types.SimpleNamespace(**vars(C))
+    private_common.build_root = lambda: root
+    private_common.calendar_path = lambda: root / "calendar.parquet"
+    namespace["C"] = private_common
     for name, value in vars(U).items():
         if isinstance(value, types.FunctionType) and value.__module__ == U.__name__:
             namespace[name] = types.FunctionType(value.__code__, namespace, name, value.__defaults__, value.__closure__)
@@ -141,22 +146,36 @@ class Candidate:
         keys = validate_keys(con, payload, self.panel(year), self.root / "calendar.parquet", year, schema)
         if row.get("keys") != keys:
             raise RuntimeError("unit key identity changed")
-        self.check_daily(row["daily"], keys)
+        self.check_daily(row["daily"], keys, con)
         if row.get("daily_sha256") != R.digest(row["daily"]):
             raise RuntimeError("unit daily receipt changed")
+        native = native_adapter(self.root, self.directory)
+        native.load_issuer_tables(con)
+        native.build_year(con, year)
+        replay = {r[0].isoformat(): dict(zip(U.DAILY_COLS, r[1:])) for r in native.year_receipt(con)}
+        if replay != row["daily"]:
+            raise RuntimeError("native diagnostic counters differ from authenticated replay")
         return row
 
     @staticmethod
-    def check_daily(daily, keys):
+    def check_daily(daily, keys, con):
         if set(daily) != set(keys["dates"]):
             raise RuntimeError("daily receipt date set mismatch")
         if any(set(row) != set(U.DAILY_COLS) or any(type(v) is not int or v < 0 or v > keys["rows"] for v in row.values()) for row in daily.values()):
             raise RuntimeError("daily receipt counters invalid")
+        rows = con.execute("""SELECT session_date, count(*) FILTER(WHERE univ_all_common),
+            count(*) FILTER(WHERE univ_all_common AND exchcd_like=1),
+            count(*) FILTER(WHERE univ_all_common AND shrcd_like IS NOT NULL AND exchcd_like IS NOT NULL),
+            count(*) FILTER(WHERE shrcd_like IS NULL) FROM release_u GROUP BY 1""").fetchall()
+        columns = ("all_common", "nyse_all_common", "all_common_with_codes", "rows_without_shrcd")
+        for date, *counts in rows:
+            if any(daily[date.isoformat()][name] != count for name, count in zip(columns, counts)):
+                raise RuntimeError("daily receipt differs from actual payload counters")
 
     def seal(self, con, year, daily, schema):
         R.recheck(self.root, self.frozen)
         keys = validate_keys(con, self.payload(year), self.panel(year), self.root / "calendar.parquet", year, schema)
-        self.check_daily(daily, keys)
+        self.check_daily(daily, keys, con)
         row = {"snapshot_sha256": R.digest(self.frozen), "year": year, "keys": keys,
                "daily": daily, "daily_sha256": R.digest(daily), "payload": R.identity(self.payload(year))}
         C.write_json_atomic(self.directory / f"year={year}" / "receipt.json", row)
@@ -176,9 +195,40 @@ def measurements(con, native, daily):
              "codes_on_all_common": {"pass": all(v is not None and v >= U.CODES_FLOOR for v in codes.values()), "per_year": codes,
                                      "criterion": "codes >=99% on all_common, each year 2020-2025"},
              "hand_check": U.hand_check_gate(sample=sample)}
-    return {"gates": gates, "coverage": native.coverage(con), "counts": native.measure_counts(con),
+    return {"schema": "atx.alpha-panel.universe-release.validation/v1", "measurement_contract": measurement_contract(), "gates": gates, "coverage": native.coverage(con), "counts": native.measure_counts(con),
             "sample": {"rows": sample, "sha256": U.sample_hash(sample), "seed": U.HAND_SEED},
             "daily_per_year": {col: U.band_gate(daily, years=U.YEARS, col=col)["per_year"] for col in U.DAILY_COLS}}
+
+
+def measurement_contract():
+    return {"required_years": list(REQUIRED), "gate_years": list(U.GATE_YEARS),
+            "gate_definitions": U.GATES, "rule": U.RULE, "french_start": "2018-01", "french_end": str(U.FRENCH_END),
+            "french_months": 60, "r2000_population": "every R2000P recon_summary effective_from",
+            "coverage_fields": [list(row) for row in U.FIELDS], "coverage_universes": U.COVERAGE_UNIVERSES,
+            "hand_seed": U.HAND_SEED, "hand_strata": {k: list(v) for k,v in U.HAND_STRATA.items()}}
+
+
+def code_paths():
+    return [Path(U.__file__).with_name(module + ".py") for module in (*U.MODULES, "release_inputs", "universe_release")]
+
+
+def validate_snapshot_contract(root, frozen):
+    if frozen.get("version") != "reader_snapshot_v1" or frozen.get("contract") != R.reader_contract(REQUIRED):
+        raise RuntimeError("unsupported/incomplete independent reader contract")
+    if set(frozen.get("code", {})) != {str(path.resolve()) for path in code_paths()}:
+        raise RuntimeError("unsupported/incomplete independent code inventory")
+    external = frozen.get("external", {})
+    if set(external) != {"binding_document", "hand_verdicts", "french"}:
+        raise RuntimeError("unsupported/incomplete independent external inventory")
+    for name, path in (("hand_verdicts", U.HAND_CHECK), ("french", U.FRENCH_BREAKPOINTS)):
+        if external[name].get("path") != str(path.resolve()):
+            raise RuntimeError("substituted external evidence")
+    binding_path = Path(external["binding_document"]["path"])
+    doc = C.read_json(binding_path)
+    if doc.get("version") != "reader_binding_v1" or doc.get("products") != frozen.get("products"):
+        raise RuntimeError("unsupported/substituted independent binding document")
+    if set(frozen.get("products", {})) != set(R.reader_contract(REQUIRED)):
+        raise RuntimeError("incomplete reader products")
 
 
 def publish_pointer(stage: Path, generation: Path, manifest: Path):
@@ -191,13 +241,30 @@ def publish_pointer(stage: Path, generation: Path, manifest: Path):
         raise RuntimeError("incomplete generation cannot publish")
     row = {"generation": generation.name, "manifest": R.identity(manifest), "status": "NOT_PRODUCTION_READY"}
     pointer = stage / "current.json"
-    if pointer.exists():
-        C.write_json_atomic(stage / "previous.json", C.read_json(pointer))
-    C.write_json_atomic(pointer, row)
+    pointer_transaction(stage, row, C.read_json(pointer) if pointer.exists() else None)
 
 
-def build(bindings_path: Path, generation_id: str, years=REQUIRED, max_new_years=None):
-    stage = C.build_root() / STAGE
+def pointer_transaction(stage, current, previous):
+    journal = stage / "pointer-transaction.json"
+    if journal.exists():
+        raise RuntimeError("unfinished pointer transaction; recover under writer lock")
+    C.write_json_atomic(journal, {"version": "pointer_transaction_v1", "current": current, "previous": previous})
+    finish_pointer_transaction(stage)
+
+
+def finish_pointer_transaction(stage):
+    journal = stage / "pointer-transaction.json"
+    row = C.read_json(journal)
+    if row.get("version") != "pointer_transaction_v1":
+        raise RuntimeError("unsupported pointer transaction")
+    if row["previous"] is not None:
+        C.write_json_atomic(stage / "previous.json", row["previous"])
+    C.write_json_atomic(stage / "current.json", row["current"])
+    journal.unlink()
+
+
+@contextmanager
+def writer_lock(stage):
     stage.mkdir(parents=True, exist_ok=True)
     lock = stage / ".writer.lock"
     try:
@@ -206,10 +273,17 @@ def build(bindings_path: Path, generation_id: str, years=REQUIRED, max_new_years
         raise RuntimeError("release writer active or interrupted; inspect retained lock, never bypass") from exc
     try:
         os.write(fd, str(os.getpid()).encode())
-        return _build(bindings_path, generation_id, years, max_new_years)
+        yield
     finally:
         os.close(fd)
         lock.unlink()
+
+
+def build(bindings_path: Path, generation_id: str, years=REQUIRED, max_new_years=None):
+    with writer_lock(C.build_root() / STAGE):
+        if (C.build_root() / STAGE / "pointer-transaction.json").exists():
+            raise RuntimeError("unfinished pointer transaction; recover before building")
+        return _build(bindings_path, generation_id, years, max_new_years)
 
 
 def _build(bindings_path: Path, generation_id: str, years=REQUIRED, max_new_years=None):
@@ -221,12 +295,13 @@ def _build(bindings_path: Path, generation_id: str, years=REQUIRED, max_new_year
         raise ValueError("invalid generation id")
     root = C.build_root()
     contract = R.reader_contract(REQUIRED)
-    code = [Path(U.__file__).with_name(module + ".py") for module in (*U.MODULES, "release_inputs", "universe_release")]
+    code = code_paths()
     binding_document = C.read_json(bindings_path)
     if binding_document.get("version") != "reader_binding_v1":
         raise RuntimeError("unsupported binding document version")
     frozen = R.snapshot(root, contract, binding_document["products"], code,
                         {"binding_document": bindings_path, "hand_verdicts": U.HAND_CHECK, "french": U.FRENCH_BREAKPOINTS})
+    validate_snapshot_contract(root, frozen)
     stage = root / STAGE
     generation = stage / "generations" / generation_id
     if (generation / "manifest.json").exists():
@@ -290,8 +365,15 @@ def _build(bindings_path: Path, generation_id: str, years=REQUIRED, max_new_year
 
 
 def validate_generation(root: Path, generation: Path, con):
+    manifest_identity = R.identity(generation / "manifest.json")
     manifest = C.read_json(generation / "manifest.json")
     frozen = C.read_json(generation / "snapshot.json")
+    validate_snapshot_contract(root, frozen)
+    invariants = {"stage": STAGE, "schema": SCHEMA, "status": "complete", "readiness": "NOT_PRODUCTION_READY",
+                  "qualification": "BYTE_IDENTITY_BOUND", "source_quality_certified": False, "rule": U.RULE,
+                  "original_gates": U.GATES}
+    if any(R.digest(manifest.get(name)) != R.digest(value) for name, value in invariants.items()) or manifest.get("source_quality_certified") is not False:
+        raise RuntimeError("unsupported generation qualification/schema/gates")
     if manifest["required_years"] != list(REQUIRED) or manifest["snapshot_sha256"] != R.digest(frozen):
         raise RuntimeError("incomplete/stale generation")
     if set(manifest["files"]) != {f"year={year}/universe.parquet" for year in REQUIRED} or C.output_hashes(generation) != manifest["files"]:
@@ -299,9 +381,16 @@ def validate_generation(root: Path, generation: Path, con):
     for field in ("snapshot", "validation"):
         if R.identity(generation / ("snapshot.json" if field == "snapshot" else "validation.json")) != manifest[field]:
             raise RuntimeError(f"changed {field}")
+    if set(manifest.get("receipts", {})) != {f"year={year}/receipt.json" for year in REQUIRED}:
+        raise RuntimeError("unsupported receipt inventory")
+    evidence = C.read_json(generation / "validation.json")
+    if (evidence.get("schema") != "atx.alpha-panel.universe-release.validation/v1"
+            or set(evidence) != {"schema", "measurement_contract", "gates", "coverage", "counts", "sample", "daily_per_year"}
+            or R.digest(evidence.get("measurement_contract")) != R.digest(measurement_contract())):
+        raise RuntimeError("unsupported measurement schema/criteria/populations")
     R.recheck(root, frozen)
     candidate = Candidate(generation, frozen, root)
-    schema = None
+    schema, daily = None, {}
     for year in REQUIRED:
         done = candidate.admit(con, year, schema)
         if done is None or done["payload"] != manifest["files"].get(f"year={year}/universe.parquet"):
@@ -310,13 +399,28 @@ def validate_generation(root: Path, generation: Path, con):
         if R.identity(generation / receipt) != manifest["receipts"].get(receipt):
             raise RuntimeError("changed receipt")
         schema = done["keys"]["schema"]
+        daily.update(done["daily"])
+    regenerated = measurements(con, native_adapter(root, generation), daily)
+    if R.digest(regenerated) != R.digest(evidence):
+        raise RuntimeError("measurement evidence differs from independent native replay")
+    gate_status = {name: "PASS" if row["pass"] else "FAIL" for name, row in regenerated["gates"].items()}
+    if manifest.get("gate_status") != gate_status:
+        raise RuntimeError("manifest gate status differs from measured evidence")
     R.recheck(root, frozen)
+    if (R.identity(generation / "manifest.json") != manifest_identity
+            or C.output_hashes(generation) != manifest["files"]
+            or R.identity(generation / "validation.json") != manifest["validation"]
+            or R.identity(generation / "snapshot.json") != manifest["snapshot"]
+            or any(R.identity(generation / relative) != recorded for relative, recorded in manifest["receipts"].items())):
+        raise RuntimeError("generation changed during admission")
     return manifest
 
 
 def resolve_current(root: Path):
     """Consumers use explicit immutable stage/path; no legacy fallback."""
     stage = root / STAGE
+    if (stage / "pointer-transaction.json").exists():
+        raise RuntimeError("unfinished pointer transaction; consumer admission held")
     pointer = C.read_json(stage / "current.json")
     generation = R.safe_path(stage / "generations", pointer["generation"])
     if R.identity(generation / "manifest.json") != pointer["manifest"]:
@@ -326,19 +430,43 @@ def resolve_current(root: Path):
 
 def rollback(root: Path, con):
     stage = root / STAGE
+    with writer_lock(stage):
+        _rollback(root, con)
+
+
+def _rollback(root, con):
+    stage = root / STAGE
+    if (stage / "pointer-transaction.json").exists():
+        raise RuntimeError("unfinished pointer transaction; recover first")
     previous = C.read_json(stage / "previous.json")
     generation = R.safe_path(stage / "generations", previous["generation"])
     if R.identity(generation / "manifest.json") != previous["manifest"]:
         raise RuntimeError("rollback manifest mismatch")
     validate_generation(root, generation, con)
     current = C.read_json(stage / "current.json")
-    C.write_json_atomic(stage / "current.json", previous)
-    C.write_json_atomic(stage / "previous.json", current)
+    pointer_transaction(stage, previous, current)
+
+
+def recover(root, con):
+    stage = root / STAGE
+    with writer_lock(stage):
+        row = C.read_json(stage / "pointer-transaction.json")
+        for index, pointer in enumerate((row["current"], row["previous"])):
+            if pointer is not None:
+                generation = R.safe_path(stage / "generations", pointer["generation"])
+                if R.identity(generation / "manifest.json") != pointer["manifest"]:
+                    raise RuntimeError("transaction manifest mismatch")
+                if index == 0:
+                    # Only the new current target is being admitted. The retained
+                    # prior pointer may correctly refer to an older source snapshot;
+                    # rollback will fully validate it before any future admission.
+                    validate_generation(root, generation, con)
+        finish_pointer_transaction(stage)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("contract", "build", "validate", "rollback"))
+    parser.add_argument("command", choices=("contract", "build", "validate", "rollback", "recover"))
     parser.add_argument("--bindings", type=Path)
     parser.add_argument("--generation")
     parser.add_argument("--years", type=U._years, default=REQUIRED)
@@ -357,6 +485,8 @@ def main(argv=None):
         try:
             if args.command == "rollback":
                 rollback(root, con)
+            elif args.command == "recover":
+                recover(root, con)
             else:
                 validate_generation(root, resolve_current(root), con)
         finally:

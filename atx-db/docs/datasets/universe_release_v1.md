@@ -15,7 +15,13 @@ The immutable explicit stage is
 bind this versioned stage, generation manifest and actual output files, never
 fall back to `universe/`. `resolve_current(root)` checks the pointer; full
 `validate_generation(root,generation,con)` additionally rechecks source/code,
-every unit, exact keys, schema, clocks, receipts and evidence. A pointer alone
+every unit, exact keys, schema, clocks, receipts and evidence. Admission
+independently derives the full static reader/code/external inventories rather
+than trusting the snapshot's own abbreviated declarations. It requires the
+original stage/schema/complete/NOT_PRODUCTION_READY/BYTE_IDENTITY_BOUND and
+false economic-certification invariants and original gate criteria/populations.
+It regenerates all native measurements and compares them with sealed evidence.
+A pointer alone
 does not certify the generation. Coordinate this contract with Task6/7 before
 any actual consumer measurements; their old coverage stays provisional.
 
@@ -93,9 +99,24 @@ atx-db/.venv/Scripts/python.exe -m atx_db.alpha_panel.universe_release contract
 ```
 
 Each admission boundary rehashes the full input/code inventory; bounded years
-do not bound identity hashing or issuer loading. Resource/runtime at warehouse
+do not bound identity hashing or issuer loading. Daily counters are independently
+compared to payload-derived all-common/NYSE/codes/missing-code counts and all
+native diagnostics are regenerated from the authenticated source snapshot on
+sealing and every admission. This repeats native year SQL and full measurement
+replay during public validation; warehouse runtime is unmeasured.
+Resource/runtime at warehouse
 scale remains unmeasured. Existing producer manifests may be stale/incomplete;
 no actual binding has been supplied yet. Task5 legacy fundamental batch reuse
 also remains unqualified: CODE_VERSION/source-size/mtime/output existence does
 not prove output SHA/code/preparation/key binding. This independent layer is
 reusable for future batch admission, but that adapter has not been implemented.
+
+Publication and rollback share the stage writer lock. A pointer transaction is
+journaled before either pointer changes; unfinished transactions hold consumer
+admission and further builds. `recover` (under the same guarded command pattern
+above) independently validates the intended current target and manifest identity
+of the retained previous pointer, then completes both pointer writes and removes
+the journal. Rollback always fully revalidates its target. Interrupted rollback
+after current-pointer replacement remains recoverable without losing the prior
+target. A hard-kill orphaned writer lock requires evidence inspection before
+recovery; never bypass an active lock.
