@@ -344,6 +344,12 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
                    "nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and "
                    "rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate "
                    "takes no rate parameters");
+  // two-speed-v1 nets the sleeves with one slow rate theta_s (two_speed_aim divides
+  // the fast move by it), so a per-name rate would break the netting identity.
+  if (two_speed_on(cfg.target) && cfg.rate != NavRateRule::Fixed)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: two-speed-v1 needs the fixed trading rate (its netted aim "
+                   "divides by the one slow rate theta_s); rate per-name-v1 is refused");
   // v6: the order basis is one of its two values; locate-in-aim only zeroes shorts
   // that a regression then re-balances (the borrow fields are checked with the input).
   if ((cfg.order_basis != NavOrderBasis::Target && cfg.order_basis != NavOrderBasis::Delta) ||
@@ -2237,19 +2243,19 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
 // The variants' lockstep groups (variant indices, in order of first appearance): one group
 // of every variant, except with the ADV cap (adv_hold_q > 0, shared by same_shared), whose
 // shared construction reads aim_leverage: then one group per distinct aim leverage (review
-// A-1), each variant capped at its own leverage as in its standalone run.
+// A-1), each variant capped at its own leverage as in its standalone run. With v8 Y-5
+// two-speed-v1 (never with the cap) likewise one group per distinct aim leverage: the
+// shared target encodes the fast sleeve F, built at L (theta_s is pinned at .05 and the
+// cadence is one per grid, so L alone separates the standalone constructions).
 std::vector<std::vector<usize>> leverage_groups(std::span<const NavReplayConfig> variants) {
   std::vector<std::vector<usize>> groups;
   const bool capped = variants.front().target.adv_hold_q > 0;
-  // v8 Y-5 two-speed-v1: the shared target encodes F (built at L) over L and theta, so one group
-  // per distinct (aim leverage, trade fraction).
   const bool two_speed = two_speed_on(variants.front().target);
   for (usize v = 0; v < variants.size(); ++v) {
     auto found = groups.begin();
     if (capped || two_speed)
       found = std::find_if(groups.begin(), groups.end(), [&](const std::vector<usize>& g) {
-        const auto& a = variants[g.front()].target; const auto& b = variants[v].target;
-        return a.aim_leverage == b.aim_leverage && (!two_speed || a.trade_fraction == b.trade_fraction);
+        return variants[g.front()].target.aim_leverage == variants[v].target.aim_leverage;
       });
     if (found == groups.end()) groups.push_back({v});
     else found->push_back(v);
@@ -2278,12 +2284,14 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
                      "monthly budget, band, dust, aim leverage and exit rate");
   // v8 hold-band-v1: the band's state advances on every shared cadence decision, i.e. on the
   // union of the variants' cadence days; a variant would then carry a state its standalone
-  // run never forms, so a hold-band grid has one cadence.
-  if (hold_band_on(base.target))
+  // run never forms, so a hold-band grid has one cadence. Likewise v8 Y-5 two-speed-v1,
+  // whose fast sleeve F lives in the shared construction state.
+  if (hold_band_on(base.target) || two_speed_on(base.target))
     for (const auto& variant : variants)
       if (variant.target.cadence != base.target.cadence)
         return co::Err(co::ErrorCode::InvalidArgument,
-                       "nav grid: with --hold-band every variant has the base cadence");
+                       "nav grid: with --hold-band or --two-speed every variant has the base "
+                       "cadence");
   // Books on a pool: the per-name-v1 rates share one buffer, and a v7 hook is
   // thread-local (a worker would silently run without it).
   if (base.book_workers > 1 &&
@@ -3106,6 +3114,13 @@ constexpr const char* leverage_groups_declaration =
     "--aim-leverage is a variant flag: the variants run in one lockstep per distinct aim "
     "leverage (these groups, in grid order), each group's shared construction capped at its "
     "own leverage, so every <id>/ stays byte for byte its standalone run";
+// Only with --two-speed and several aim leverages (v8 Y-5, review YCOMB #2).
+constexpr const char* two_speed_groups_declaration =
+    "v8 two-speed-v1 forms the shared desired target from the fast sleeve F, which moves "
+    "toward L m_f d_f, and --aim-leverage is a variant flag: the variants run in one lockstep "
+    "per distinct aim leverage (these groups, in grid order), each group's shared "
+    "construction carrying its own F at its own leverage on the grid's one cadence, so every "
+    "<id>/ stays byte for byte its standalone run";
 } // namespace
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
@@ -3274,8 +3289,9 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
         for (const usize v : group) members.push_back(grid.variants[v].id);
         ids.push_back(std::move(members));
       }
-      manifest["leverage_groups"] =
-          Json{{"rule", leverage_groups_declaration}, {"groups", std::move(ids)}};
+      const char* rule = two_speed_on(base.target) ? two_speed_groups_declaration
+                                                   : leverage_groups_declaration;
+      manifest["leverage_groups"] = Json{{"rule", rule}, {"groups", std::move(ids)}};
     }
     if (timed) manifest["stage_seconds"] = times.json();
     if (!label.is_null()) manifest["label_role_sha256"] = execution.label_role.manifest_sha256;

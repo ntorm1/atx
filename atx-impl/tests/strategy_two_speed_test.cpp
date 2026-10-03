@@ -9,6 +9,7 @@
 // Suite: TwoSpeed
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <memory>
@@ -431,6 +432,63 @@ TEST(TwoSpeed, ParseComposesWithTheScalersAndRefusesTheRest) {
     const auto r = parse(args);
     ASSERT_FALSE(r);
     EXPECT_NE(r.error().to_string().find("--two-speed"), std::string::npos) << r.error().to_string();
+  }
+}
+
+// Review YCOMB #1: the netted aim divides the fast move by the one slow rate, so a per-name rate
+// (each name stepping at its own theta_i) is refused by the NAV config itself, v7 flags or not.
+TEST(TwoSpeed, PerNameRateIsRefused) {
+  const Role role(30, 12, 53);
+  const Sleeves sleeves(role, 0.3);
+  auto in = role.nav();
+  sleeves.attach(in.target);
+  auto cfg = nav_config();
+  cfg.target.two_speed = true;
+  cfg.rate = st::NavRateRule::PerNameV1;
+  const auto r = st::replay_nav(in, cfg);
+  ASSERT_FALSE(r);
+  EXPECT_NE(r.error().to_string().find("two-speed-v1 needs the fixed trading rate"),
+            std::string::npos)
+      << r.error().to_string();
+}
+
+// Review YCOMB #2: F lives in the shared construction, so a two-speed grid has one cadence, and
+// its variants run one lockstep per aim leverage: each is its standalone replay bit for bit.
+TEST(TwoSpeed, GridHasOneCadenceAndOneLockstepPerLeverage) {
+  const Role role(40, 12, 53);
+  const Sleeves sleeves(role, 0.4);
+  auto in = role.nav();
+  sleeves.attach(in.target);
+  auto base = nav_config();
+  base.target.two_speed = true;
+  const std::array<st::NavScenario, 1> one{base.scenario};
+  auto slower = base;
+  slower.target.cadence = 2;
+  const std::vector<st::NavReplayConfig> mixed{base, slower};
+  const auto refused = st::replay_nav_grid(in, mixed, one);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("--two-speed every variant has the base cadence"),
+            std::string::npos)
+      << refused.error().to_string();
+  auto higher = base;
+  higher.target.aim_leverage = 1.5;
+  auto dusty = base; // the base's leverage: the base's lockstep group
+  dusty.target.dust_multiple = 0.2;
+  const std::vector<st::NavReplayConfig> grid{base, higher, dusty};
+  const auto run = st::replay_nav_grid(in, grid, one);
+  ASSERT_TRUE(run) << run.error().to_string();
+  ASSERT_EQ(run->size(), grid.size());
+  for (usize v = 0; v < grid.size(); ++v) {
+    const auto alone = st::replay_nav_scenarios(in, grid[v], one);
+    ASSERT_TRUE(alone) << alone.error().to_string();
+    ASSERT_EQ((*run)[v].size(), 1U) << v;
+    const auto& a = (*run)[v].front().days;
+    const auto& b = alone->front().days;
+    ASSERT_EQ(a.size(), b.size()) << v;
+    for (usize t = 0; t < a.size(); ++t) {
+      EXPECT_EQ(bits(a[t].net_return), bits(b[t].net_return)) << v << ' ' << t;
+      EXPECT_EQ(bits(a[t].planned_gross), bits(b[t].planned_gross)) << v << ' ' << t;
+    }
   }
 }
 
