@@ -1,11 +1,13 @@
-"""P9 lane AL-SIG's blind registrations: the two queue candidates (scripts/specs/p9/candidates/gia_13f.json,
-russell_recon.json) and the two blocked_on_data registrations (scripts/specs/p9/blocked/lazy_prices.json,
-hf_crowd.json).
+"""P9 lane AL-SIG's blind registrations: the queue candidate (scripts/specs/p9/candidates/russell_recon.json) and
+the two blocked_on_data registrations (scripts/specs/p9/blocked/lazy_prices.json, hf_crowd.json).
 
-Each is a valid wave candidate registration (wave_manifest.candidate_problems, the queue's own checks for the two
-candidates), carries the K-P9-11 keys, the horizon class and half-life of PM8-5 and the prior sign inside its string;
+Each is a valid wave candidate registration (wave_manifest.candidate_problems, the queue's own checks for the
+candidate), carries the K-P9-11 keys, the horizon class and half-life of PM8-5 and the prior sign inside its string;
 a candidate reads exactly its field, an engine-only row of the committed field registry (DEC-5) whose builder kind is
 the field; a blocked registration names no field the registry holds and is not in the queue. At most 10 strings.
+
+Ruling ALSIG-2: rank(gia_13f) is not registered (lit section 3.1 F3 estimates rho .15 to the themes, above the .1
+bar of lit section 3.0): it is in neither the queue nor the blocked set. Its engine-only field stays a registry row.
 
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider
      scripts/tests/test_p9_al_sig_registrations.py
@@ -28,7 +30,9 @@ import wave_queue as Q  # noqa: E402
 QUEUE = "scripts/specs/p9/candidates"
 BLOCKED = ROOT / "scripts" / "specs" / "p9" / "blocked"
 REGISTRY = ROOT / "atx-engine" / "tools" / "field_registry.json"
-CANDIDATES = ("gia_13f", "russell_recon")
+CANDIDATES = ("russell_recon",)
+FIELDS = ("gia_13f", "russell_recon")      # the lane's engine-only registry rows
+EXCLUDED_BY_BAR = ("gia_13f",)             # ruling ALSIG-2
 BLOCKED_IDS = ("lazy_prices", "hf_crowd")
 HORIZON = re.compile(r"horizon class (fast|medium|slow), half-life (\d+) sessions \(PM8-5")
 
@@ -80,8 +84,8 @@ def test_candidates_pass_the_queue_checks_together():
         assert cid not in by_id and doc["dsl_sha256"] not in by_dsl, cid
 
 
-@pytest.mark.parametrize("cid", CANDIDATES)
-def test_candidate_reads_an_engine_only_registry_row(cid):
+@pytest.mark.parametrize("cid", FIELDS)
+def test_field_is_an_engine_only_registry_row(cid):
     row = field_rows().get(cid)
     assert row is not None, f"{cid} is not a row of {REGISTRY.name}"
     assert row["kind"] == "engine" and row["builder"] == cid and row["dtype"] == "f64" and row["point_in_time"]
@@ -107,6 +111,14 @@ def test_blocked_registration(cid):
     # No field exists yet: not a registry row, and not a queue candidate a wave could pin.
     assert cid not in field_rows()
     assert cid not in Q.load(ROOT, QUEUE)
+
+
+@pytest.mark.parametrize("cid", EXCLUDED_BY_BAR)
+def test_string_excluded_by_the_bar_is_not_registered(cid):
+    queue = Q.load(ROOT, QUEUE)
+    assert cid not in queue and cid not in blocked_docs()
+    assert all(d.get("dsl") != f"rank({cid})" for d in queue.values() if isinstance(d, dict))
+    assert cid in field_rows()                              # the field itself stays buildable
 
 
 def test_blocked_dir_holds_only_the_two_and_the_lane_stays_within_ten_strings():
