@@ -22,12 +22,14 @@
 
 namespace atx::impl::strategy {
 inline constexpr std::string_view two_speed_rule = "two-speed-v1";
-// Registered blind (task-YCOMB-report.md, Y-5 half-life table): theme -> alpha half-life, sessions.
-inline constexpr std::array<std::pair<std::string_view, atx::f64>, 12> two_speed_half_lives{{
+// Registered blind (task-YCOMB-report.md, Y-5 half-life table): theme -> alpha half-life, sessions;
+// merger_arbitrage 126 (half its field's 252-session window; Rulings PM8-14, YP-10).
+inline constexpr std::array<std::pair<std::string_view, atx::f64>, 13> two_speed_half_lives{{
     {"value", 252.0},          {"profitability_quality", 252.0}, {"investment_issuance", 252.0},
     {"earnings_momentum", 63.0}, {"price_momentum", 126.0},       {"low_risk", 252.0},
     {"short_interest", 63.0},  {"reversal_seasonality", 5.0},    {"options_implied", 21.0},
-    {"ownership_flow", 63.0},  {"filing_events", 21.0},          {"price_volume", 5.0}}};
+    {"ownership_flow", 63.0},  {"filing_events", 21.0},          {"price_volume", 5.0},
+    {"merger_arbitrage", 126.0}}};
 // The registered half-life of `theme` in `out`; false when the theme is not registered.
 [[nodiscard]] constexpr bool two_speed_half_life(std::string_view theme, atx::f64& out) noexcept {
   for (const auto& [name, half_life] : two_speed_half_lives)

@@ -57,7 +57,7 @@ TEST(TwoSpeed, RegisteredTable) {
       {"earnings_momentum", 63.0}, {"price_momentum", 126.0}, {"low_risk", 252.0},
       {"short_interest", 63.0},
       {"reversal_seasonality", 5.0}, {"options_implied", 21.0}, {"ownership_flow", 63.0},
-      {"filing_events", 21.0}, {"price_volume", 5.0}};
+      {"filing_events", 21.0}, {"price_volume", 5.0}, {"merger_arbitrage", 126.0}};  // PM8-14, YP-10
   ASSERT_EQ(st::two_speed_half_lives.size(), registered.size());
   f64 h = 0;
   for (const auto& [theme, half_life] : registered) {
