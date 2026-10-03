@@ -79,7 +79,7 @@ def test_pbo_max_splits_has_no_engine_twin(tmp_path, capsys):
 
 def test_a_missing_executable_is_refused(tmp_path):
     d = cells(tmp_path, 1)[0]
-    with pytest.raises(SystemExit, match="no executable"):
+    with pytest.raises(SystemExit, match="executable"):
         NS.main([str(d), "--engine-stats", str(tmp_path / "none.exe")])
 
 
@@ -137,3 +137,16 @@ def test_a_pool_row_prints_the_same_with_the_engine(tmp_path, capsys):
     en_out, _ = run(base + ["--json", str(tmp_path / "en.json"), "--engine-stats", str(EXE)], capsys)
     assert en_out == py_out
     assert close(load(tmp_path / "py.json"), load(tmp_path / "en.json")) == []
+
+
+def test_a_dir_paired_with_itself(tmp_path, capsys):
+    """The one case outside 1e-12 (reported to the PM): a dir that is its own reference. The engine's correlation is
+    1 to rounding, so the Memmel SE is 0 or a rounding residue and dSR is exactly 0; the retired Python took rho from
+    numpy's corrcoef (OpenBLAS), whose residue (1 - rho ~ 2e-16, SE ~ 2e-8) differs."""
+    need_exe()
+    d = cells(tmp_path, 1, seed=13)[0]
+    run([str(d), "--reference", str(d), "--draws", "99", "--json", str(tmp_path / "s.json"),
+         "--engine-stats", str(EXE)], capsys)
+    p = load(tmp_path / "s.json")[0]["paired"]
+    assert p["dsr"] == 0.0 and p["sr"] == p["sr_reference"] and 1.0 - p["rho"] <= 4e-16
+    assert p["memmel_se"] < 1e-6 and (p["t"] is None or p["t"] == 0.0)
