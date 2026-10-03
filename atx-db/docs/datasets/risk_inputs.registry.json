@@ -1,0 +1,1 @@
+{"stage":"risk_inputs","schema_id":"atx.alpha-panel.risk-inputs/checkpoint-v1","keys":["session_date","security_id"],"path":null,"registration_status":"BLOCKED_incomplete_production_parquet_adapter","asof_macro_sql":null}
