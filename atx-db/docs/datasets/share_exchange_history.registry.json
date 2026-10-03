@@ -28,5 +28,6 @@
   "registered": "NOT registered: no LAKE_STAGES literal in identity_v3.py; Task 17 folds this stub into stagelake",
   "guard_gb": 0.45,
   "staleness": "daily; rebuilt with the panel",
-  "doc": "atx-db/docs/datasets/share_exchange_history.md"
+  "doc": "atx-db/docs/datasets/share_exchange_history.md",
+  "clock_rule": "share-exchange-runs-v2: available_at = 22:00 UTC of the session before valid_from minus 1 s; the run is visible from its first session (tested: tests/test_alpha_panel_identity_v3.py::test_share_exchange_history_as_of_returns_new_code_from_its_first_session)"
 }

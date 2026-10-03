@@ -114,3 +114,56 @@ all_common cell by construction (shrcd 11, exchcd 1-5).
 8. Self-review: the diff touches only the three modules, three test files and new docs; no data or scratch files
    committed; D6 is enforced (`factor_checks` raises for `end` > 2022-12-31, the history window stops at the
    stage's first month, `returns_validation` ends 2022-12-31); every new rule has a fixture test.
+
+## Fix round 1
+
+Review findings: (1) the share_exchange_history clock and the registered as-of path disagreed (a code change was
+invisible on its first session); (2) `liquidity.measure()` rewrote the published manifest, which made downstream
+`input_manifests_sha256` bindings stale.
+
+### Changes (commit 5b773a2f, docs + report in the next commit)
+
+1. `identity_v3.codes()` (rule `share-exchange-runs-v2`): `available_at` = 22:00 UTC of the calendar session before
+   `valid_from` minus 1 s (first calendar session: `valid_from` - 1 day 21:59:59). Stage path, keys and columns are
+   unchanged. The manifest records the input clocks (`CODES_CLOCK_NOTE`). I checked the claim in `panel.py`:
+   - SIC and the filer regime (`is_reit`, `is_fpi`, `is_adr_likely`) are as of `issuer_cutoff` = previous session
+     22:00 UTC, strict.
+   - FINRA names (`security_type`, `exchange`) are as of `dissemination_date < d`, with `available_at` =
+     dissemination 22:00 UTC. That clock can equal the cutoff, or fall on a non-session day before d.
+   - The CIK link behind `is_fpi` uses `available_at <= d 22:00` (identity convention).
+   - The Nasdaq directory snapshot is a non-PIT fallback for `security_type` / `is_etf`.
+   So the claim holds as "the panel's own visibility of its session-d row", not as strict GC1 on every input. The
+   codes inherit the panel's contract. This is documented in `docs/datasets/share_exchange_history.md`, which now
+   gives a single consumption path:
+   `share_exchange_history_as_of(lake_cutoff(d)) WHERE d BETWEEN valid_from AND valid_to`. The stub's
+   `as_of_usage` is that query, and it adds a `clock_rule`.
+2. `liquidity.py`: `build()` (steps `build` / `all`) measures the year files before publishing and writes
+   `gate_status` in the single `publish_part` call. `measure()` now writes only `validation/liquidity_coverage.json`
+   and never touches the manifest. The pure logic is split into `coverage()` and `gate_status()`.
+
+### Covering tests
+
+- `test_share_exchange_history_as_of_returns_new_code_from_its_first_session` (new): the transition falls on a
+  Monday. It runs the stub's `as_of_sql` and `as_of_usage` verbatim, with `lake_cutoff` as in `stagelake.catalog`.
+  The new code appears on its first session, the Friday still shows the old code, and the new run is absent as of
+  Friday's cutoff.
+- `test_share_exchange_history_runs` (updated to the new stamp, plus the first-session fallback).
+- `test_build_publishes_gate_once_and_measure_leaves_manifest_bytes` (replaces the old measure test): a full
+  `build()` on the fixture writes `gate_status` into the manifest, and a later `measure()` sees the changed coverage
+  but leaves the manifest bytes identical.
+- `pytest -n 0` on `test_alpha_panel_{liquidity,market,market_returns,indexes,identity_v3,shares,reference,
+  classification}.py`: 68 tests, 0 failures, 10.8 s (junit). The 5 core files hold 42 tests.
+
+### Rebuild evidence (guarded, from `C:/atx/atx-db`)
+
+| step | command | result |
+|---|---|---|
+| codes | `G(0.45) atx_db.alpha_panel.identity_v3 codes` | 397,050 runs, same shrcd counts; peak 0.306 GiB, 36 s; file sha256 c537e0f3..., 2,291,842 bytes |
+| clock check (real data) | guarded DuckDB query, stub macros verbatim | 397,050 / 397,050 runs stamped previous-session 22:00 - 1 s. As-of path = interval join on 2019-07-01, 2021-03-08, 2022-12-30, 2024-03-15 and 2026-09-18 (8,389 / 9,833 / 10,717 / 10,333 / 12,462 rows, equal sets; 84-249 runs start on those days) |
+| liquidity | `G(0.5) atx_db.alpha_panel.liquidity all` | same row counts per year; gate published in the manifest (measured_min 0.99343, PASS); peak 0.369 GiB, 320 s |
+| measure leaves manifest | sha256 of `market/market_liquidity_manifest.json` before and after `G(0.5) atx_db.alpha_panel.liquidity measure` | fc73dbfe... both times; `liquidity_coverage.json` refreshed (`measured`: standalone) |
+| indexes | `G(0.5) atx_db.alpha_panel.indexes build` | 73,177 constituents, 6,218,671 membership rows, R2000 companies 1,989..2,016 (PASS); peak 0.360 GiB, 35 s |
+| lake verify | `stagelake verify --stage market_liquidity --stage market_index --stage indexes --stage market_shares` | OK 4. Every manifest's code SHA equals the committed module |
+
+Gates are unchanged: 10 PASS / 0 FAIL / 2 documented GAPs. Note for Task 2: the share_exchange_history file was
+rewritten at 02:07Z (new clock only), and liquidity and indexes were republished at 02:13Z with the same rows.

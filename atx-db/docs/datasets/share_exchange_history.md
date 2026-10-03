@@ -1,12 +1,12 @@
 # share_exchange_history (`security_master/share_exchange_history.parquet`)
 
 CRSP-style dated share codes (`shrcd`) and exchange codes (`exchcd`) per line (tier1-v3 S2.5 codes, module
-`atx_db.alpha_panel.identity_v3 codes`). Rebuilt 2026-10-03 in tier1-v4 Task 1 (same 397,050 rows as the
-2026-09-30 build; the manifest now binds the current code). Manifest
+`atx_db.alpha_panel.identity_v3 codes`). Rebuilt 2026-10-03 in tier1-v4 Task 1 (fix round 1: clock restamped,
+rows otherwise identical to the 2026-09-30 build). Manifest
 `security_master/share_exchange_history_manifest.json` (schema `atx.alpha-panel.share-exchange-history/v1`; no
 done criterion is defined for it).
 
-- Path: `data/alpha_panel/v1/security_master/share_exchange_history.parquet` (397,050 rows, 2,291,538 bytes).
+- Path: `data/alpha_panel/v1/security_master/share_exchange_history.parquet` (397,050 rows, 2,291,842 bytes).
 - Keys: `(security_id, valid_from)`, unique; runs never overlap within a line (0 overlaps measured).
 - Span: 2018-01-02 .. 2026-09-18, 22,704 lines. Delisted lines included up to their last panel session.
 - Input: the v2 panel's point-in-time security flags (`panel/`, manifest SHA-256 in the manifest).
@@ -22,12 +22,35 @@ One row per maximal run of consecutive calendar sessions with the same `(exchang
   (`security_type` common / common_unverified); NULL otherwise (preferred, warrant, unit, right, note, SPAC, unknown).
   CRSP 10 is not used (11 covers ordinary common).
 
-## PIT rule
+## PIT rule (rule `share-exchange-runs-v2`)
 
-The panel's flags on session d use data visible before d-1 22:00 UTC. A run is stamped `available_at` =
-`valid_from` - 2 h (22:00 UTC of the calendar day before its first session). Under the strict lake rule
-(`available_at < lake_cutoff(d)`) a run becomes visible one session after `valid_from`; consumers that need the
-code of session d should interval-join on `valid_from <= d <= valid_to` (the flags themselves are point in time).
+A run is stamped `available_at` = 22:00 UTC of the calendar session before `valid_from`, minus 1 s (first calendar
+session: `valid_from` - 1 day, 21:59:59). It is therefore visible from its first session under the lake rule, and
+there is one consumption path:
+
+```sql
+SELECT security_id, shrcd, exchcd
+FROM share_exchange_history_as_of(lake_cutoff(DATE '2024-03-15'))
+WHERE DATE '2024-03-15' BETWEEN valid_from AND valid_to
+```
+
+It returns the run holding d, including on the first session of a code change, and never shows a run before its
+first session (fixture test `test_share_exchange_history_as_of_returns_new_code_from_its_first_session`). The
+result equals the interval join `valid_from <= d <= valid_to`.
+
+Why this stamp: the codes are the panel's session-d flags, and a panel row at session d is read at session d. The
+inputs behind those flags were checked in `panel.py`:
+
+- SIC and the SEC filer regime (`is_reit`, `is_fpi`, `is_adr_likely`) are as of `issuer_cutoff` = 22:00 UTC of the
+  previous session (strict `<`).
+- FINRA issue names (`security_type`, `exchange`) are as of `dissemination_date < d`, with `available_at` =
+  dissemination date 22:00 UTC. That clock can equal the cutoff (dissemination on the previous session) or fall
+  on a non-session day before d.
+- The CIK link behind `is_fpi` uses link `available_at <= d 22:00 UTC` (the identity convention).
+- The Nasdaq directory snapshot (`directory_type`, `directory_etf`, 2026-09-18) is a non-PIT fallback for
+  `security_type` / `is_etf`.
+
+The codes inherit these panel properties and are not more point in time than the panel row.
 
 ## Columns
 
@@ -36,11 +59,11 @@ code of session d should interval-join on `valid_from <= d <= valid_to` (the fla
 | security_id | BIGINT | id | vendor line | panel | - | - |
 | valid_from / valid_to | DATE | date | first / last session of the run (inclusive) | panel | - | daily |
 | sessions | BIGINT | count | sessions in the run | panel | - | - |
-| exchcd | INTEGER | code | CRSP-style exchange code (above) | panel `exchange` | valid_from - 2 h | daily |
-| exchange | VARCHAR | MIC | panel exchange (`XNYS`, `XNAS`, `XASE`, `ARCX`, `OTC`, NULL) | panel | valid_from - 2 h | daily |
-| shrcd | INTEGER | code | CRSP-style share code (above) | panel flags | valid_from - 2 h | daily |
-| security_type | VARCHAR | - | panel security type | panel | valid_from - 2 h | daily |
-| available_at | TIMESTAMP | UTC | valid_from - 2 h | - | - | - |
+| exchcd | INTEGER | code | CRSP-style exchange code (above) | panel `exchange` | available_at | daily |
+| exchange | VARCHAR | MIC | panel exchange (`XNYS`, `XNAS`, `XASE`, `ARCX`, `OTC`, NULL) | panel | available_at | daily |
+| shrcd | INTEGER | code | CRSP-style share code (above) | panel flags | available_at | daily |
+| security_type | VARCHAR | - | panel security type | panel | available_at | daily |
+| available_at | TIMESTAMP | UTC | previous session 22:00 UTC - 1 s (visible from valid_from) | - | - | - |
 
 ## Measured
 
