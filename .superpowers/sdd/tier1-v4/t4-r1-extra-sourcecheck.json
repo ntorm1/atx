@@ -1,0 +1,730 @@
+{
+  "scope": "2 additional primary formulas, existing filing primitives only; neither absent verdict certifies identity",
+  "counts": {
+    "match": 59,
+    "source_absent": 15,
+    "both_absent": 6
+  },
+  "checks": [
+    {
+      "cik": 40545,
+      "accession": "0000040545-21-000011",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": 0.17861840045093005,
+      "ratio_value": 0.17861840045093005,
+      "verdict": "match"
+    },
+    {
+      "cik": 40545,
+      "accession": "0000040545-21-000011",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.17537320087749023,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 40545,
+      "accession": "0000040545-25-000015",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.2805005882982137,
+      "ratio_value": 0.2805005882982137,
+      "verdict": "match"
+    },
+    {
+      "cik": 40545,
+      "accession": "0000040545-25-000015",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.24581297976273553,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 7084,
+      "accession": "0000007084-21-000008",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": null,
+      "ratio_value": 0.09038971638441134,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 7084,
+      "accession": "0000007084-21-000008",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.17588824111758883,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 7084,
+      "accession": "0000007084-25-000011",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": null,
+      "ratio_value": 0.07775377969762419,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 7084,
+      "accession": "0000007084-25-000011",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.2057377871401344,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1415404,
+      "accession": "0001415404-21-000005",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": -0.014393510718526086,
+      "ratio_value": -0.014393510718526086,
+      "verdict": "match"
+    },
+    {
+      "cik": 1415404,
+      "accession": "0001415404-21-000005",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.4473035165604689,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1415404,
+      "accession": "0001558370-25-001663",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": -0.006214633729282589,
+      "ratio_value": -0.006214633729282589,
+      "verdict": "match"
+    },
+    {
+      "cik": 1415404,
+      "accession": "0001558370-25-001663",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": 0.2788735800131709,
+      "ratio_value": 0.2788735800131709,
+      "verdict": "match"
+    },
+    {
+      "cik": 861884,
+      "accession": "0001558370-21-001836",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": 0.07215655880643286,
+      "ratio_value": 0.07215655880643286,
+      "verdict": "match"
+    },
+    {
+      "cik": 861884,
+      "accession": "0001558370-21-001836",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": 1.2938009787928222,
+      "ratio_value": 1.2938009787928222,
+      "verdict": "match"
+    },
+    {
+      "cik": 861884,
+      "accession": "0001558370-25-001806",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.11752186803552427,
+      "ratio_value": 0.11752186803552427,
+      "verdict": "match"
+    },
+    {
+      "cik": 861884,
+      "accession": "0001558370-25-001806",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": 1.1778235779060182,
+      "ratio_value": 1.1778235779060182,
+      "verdict": "match"
+    },
+    {
+      "cik": 1768224,
+      "accession": "0001564590-21-009872",
+      "session_date": "2021-03-31",
+      "ratio": "aftret_equity",
+      "source": -0.3416543347263493,
+      "ratio_value": -0.3416543347263493,
+      "verdict": "match"
+    },
+    {
+      "cik": 1768224,
+      "accession": "0001564590-21-009872",
+      "session_date": "2021-03-31",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": -1.4265059267785385,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1768224,
+      "accession": "0000950170-24-031156",
+      "session_date": "2024-03-28",
+      "ratio": "aftret_equity",
+      "source": -0.1083223249669749,
+      "ratio_value": -0.1083223249669749,
+      "verdict": "match"
+    },
+    {
+      "cik": 1768224,
+      "accession": "0000950170-24-031156",
+      "session_date": "2024-03-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": -0.9177816536364635,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1280784,
+      "accession": "0001280784-24-000007",
+      "session_date": "2024-02-29",
+      "ratio": "aftret_equity",
+      "source": 0.21065332153618804,
+      "ratio_value": 0.21065332153618804,
+      "verdict": "match"
+    },
+    {
+      "cik": 1280784,
+      "accession": "0001280784-24-000007",
+      "session_date": "2024-02-29",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": null,
+      "verdict": "both_absent"
+    },
+    {
+      "cik": 1280784,
+      "accession": "0001280784-25-000007",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.1386846512407948,
+      "ratio_value": 0.1386846512407948,
+      "verdict": "match"
+    },
+    {
+      "cik": 1280784,
+      "accession": "0001280784-25-000007",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": null,
+      "verdict": "both_absent"
+    },
+    {
+      "cik": 1831651,
+      "accession": "0001831651-23-000024",
+      "session_date": "2023-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.8683176434965144,
+      "ratio_value": 0.8683176434965144,
+      "verdict": "match"
+    },
+    {
+      "cik": 1831651,
+      "accession": "0001831651-23-000024",
+      "session_date": "2023-02-28",
+      "ratio": "profit_lct",
+      "source": 1.4602067576298887,
+      "ratio_value": 1.4602067576298887,
+      "verdict": "match"
+    },
+    {
+      "cik": 1831651,
+      "accession": "0001831651-24-000011",
+      "session_date": "2024-02-29",
+      "ratio": "aftret_equity",
+      "source": 0.09558927269031649,
+      "ratio_value": 0.09558927269031649,
+      "verdict": "match"
+    },
+    {
+      "cik": 1831651,
+      "accession": "0001831651-24-000011",
+      "session_date": "2024-02-29",
+      "ratio": "profit_lct",
+      "source": 0.9669005721688438,
+      "ratio_value": 0.9669005721688438,
+      "verdict": "match"
+    },
+    {
+      "cik": 764180,
+      "accession": "0000764180-21-000037",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": 0.9859838869881912,
+      "ratio_value": 0.9859838869881912,
+      "verdict": "match"
+    },
+    {
+      "cik": 764180,
+      "accession": "0000764180-21-000037",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": 1.2280701754385965,
+      "ratio_value": 1.2280701754385965,
+      "verdict": "match"
+    },
+    {
+      "cik": 764180,
+      "accession": "0000764180-25-000019",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": -3.8989269643475253,
+      "ratio_value": -3.8989269643475253,
+      "verdict": "match"
+    },
+    {
+      "cik": 764180,
+      "accession": "0000764180-25-000019",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": 1.3127206468511559,
+      "ratio_value": 1.3127206468511559,
+      "verdict": "match"
+    },
+    {
+      "cik": 1531152,
+      "accession": "0001437749-21-006555",
+      "session_date": "2021-03-31",
+      "ratio": "aftret_equity",
+      "source": 3.1777887638074898,
+      "ratio_value": 3.1777887638074898,
+      "verdict": "match"
+    },
+    {
+      "cik": 1531152,
+      "accession": "0001437749-21-006555",
+      "session_date": "2021-03-31",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.39870087415789196,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1531152,
+      "accession": "0001531152-25-000013",
+      "session_date": "2025-03-31",
+      "ratio": "aftret_equity",
+      "source": 0.32327144652414097,
+      "ratio_value": 0.32327144652414097,
+      "verdict": "match"
+    },
+    {
+      "cik": 1531152,
+      "accession": "0001531152-25-000013",
+      "session_date": "2025-03-31",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.40814543491489225,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1817358,
+      "accession": "0001817358-22-000039",
+      "session_date": "2022-03-31",
+      "ratio": "aftret_equity",
+      "source": 0.5206665247472885,
+      "ratio_value": 0.5206665247472885,
+      "verdict": "match"
+    },
+    {
+      "cik": 1817358,
+      "accession": "0001817358-22-000039",
+      "session_date": "2022-03-31",
+      "ratio": "profit_lct",
+      "source": 0.8989548491274144,
+      "ratio_value": 0.8989548491274144,
+      "verdict": "match"
+    },
+    {
+      "cik": 1817358,
+      "accession": "0001817358-25-000027",
+      "session_date": "2025-03-31",
+      "ratio": "aftret_equity",
+      "source": 0.21140707078234314,
+      "ratio_value": 0.21140707078234314,
+      "verdict": "match"
+    },
+    {
+      "cik": 1817358,
+      "accession": "0001817358-25-000027",
+      "session_date": "2025-03-31",
+      "ratio": "profit_lct",
+      "source": 0.6834446721290149,
+      "ratio_value": 0.6834446721290149,
+      "verdict": "match"
+    },
+    {
+      "cik": 1309402,
+      "accession": "0001309402-21-000014",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": -0.15553094640455775,
+      "ratio_value": -0.15553094640455775,
+      "verdict": "match"
+    },
+    {
+      "cik": 1309402,
+      "accession": "0001309402-21-000014",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": -0.09822430815191932,
+      "ratio_value": -0.09822430815191932,
+      "verdict": "match"
+    },
+    {
+      "cik": 1309402,
+      "accession": "0001309402-25-000008",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": -0.0965471155354054,
+      "ratio_value": -0.0965471155354054,
+      "verdict": "match"
+    },
+    {
+      "cik": 1309402,
+      "accession": "0001309402-25-000008",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": 0.11182124365093975,
+      "ratio_value": 0.11182124365093975,
+      "verdict": "match"
+    },
+    {
+      "cik": 74260,
+      "accession": "0000074260-21-000021",
+      "session_date": "2021-03-31",
+      "ratio": "aftret_equity",
+      "source": 0.0916737098640321,
+      "ratio_value": 0.0916737098640321,
+      "verdict": "match"
+    },
+    {
+      "cik": 74260,
+      "accession": "0000074260-21-000021",
+      "session_date": "2021-03-31",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": null,
+      "verdict": "both_absent"
+    },
+    {
+      "cik": 74260,
+      "accession": "0000074260-25-000042",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.14176697479550443,
+      "ratio_value": 0.14176697479550443,
+      "verdict": "match"
+    },
+    {
+      "cik": 74260,
+      "accession": "0000074260-25-000042",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": null,
+      "verdict": "both_absent"
+    },
+    {
+      "cik": 25445,
+      "accession": "0001628280-21-002871",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": 0.12056217944448144,
+      "ratio_value": 0.12056217944448144,
+      "verdict": "match"
+    },
+    {
+      "cik": 25445,
+      "accession": "0001628280-21-002871",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": 0.3694870338822639,
+      "ratio_value": 0.36948703388226384,
+      "verdict": "match"
+    },
+    {
+      "cik": 25445,
+      "accession": "0001628280-25-006754",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.18147764798659372,
+      "ratio_value": 0.18147764798659372,
+      "verdict": "match"
+    },
+    {
+      "cik": 25445,
+      "accession": "0001628280-25-006754",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": 0.6322901849217639,
+      "ratio_value": 0.6322901849217639,
+      "verdict": "match"
+    },
+    {
+      "cik": 1711279,
+      "accession": "0001711279-21-000006",
+      "session_date": "2021-03-31",
+      "ratio": "aftret_equity",
+      "source": -0.1299682018917248,
+      "ratio_value": -0.1299682018917248,
+      "verdict": "match"
+    },
+    {
+      "cik": 1711279,
+      "accession": "0001711279-21-000006",
+      "session_date": "2021-03-31",
+      "ratio": "profit_lct",
+      "source": -2.015790836137717,
+      "ratio_value": -2.015790836137717,
+      "verdict": "match"
+    },
+    {
+      "cik": 1711279,
+      "accession": "0001711279-25-000008",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.10337149518759482,
+      "ratio_value": 0.10337149518759482,
+      "verdict": "match"
+    },
+    {
+      "cik": 1711279,
+      "accession": "0001711279-25-000008",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.7026030687778813,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1511737,
+      "accession": "0001511737-21-000036",
+      "session_date": "2021-08-31",
+      "ratio": "aftret_equity",
+      "source": -4.212229171434525,
+      "ratio_value": -4.212229171434525,
+      "verdict": "match"
+    },
+    {
+      "cik": 1511737,
+      "accession": "0001511737-21-000036",
+      "session_date": "2021-08-31",
+      "ratio": "profit_lct",
+      "source": 2.730315615819863,
+      "ratio_value": 2.730315615819863,
+      "verdict": "match"
+    },
+    {
+      "cik": 1511737,
+      "accession": "0001511737-25-000053",
+      "session_date": "2025-08-29",
+      "ratio": "aftret_equity",
+      "source": 1.8653303987842582,
+      "ratio_value": 1.8653303987842582,
+      "verdict": "match"
+    },
+    {
+      "cik": 1511737,
+      "accession": "0001511737-25-000053",
+      "session_date": "2025-08-29",
+      "ratio": "profit_lct",
+      "source": 1.2072518305420936,
+      "ratio_value": 1.2072518305420936,
+      "verdict": "match"
+    },
+    {
+      "cik": 814547,
+      "accession": "0000814547-21-000019",
+      "session_date": "2021-11-30",
+      "ratio": "aftret_equity",
+      "source": 3.562133187971291,
+      "ratio_value": 3.562133187971291,
+      "verdict": "match"
+    },
+    {
+      "cik": 814547,
+      "accession": "0000814547-21-000019",
+      "session_date": "2021-11-30",
+      "ratio": "profit_lct",
+      "source": 0.9497037769555817,
+      "ratio_value": 0.9497037769555817,
+      "verdict": "match"
+    },
+    {
+      "cik": 814547,
+      "accession": "0000814547-25-000030",
+      "session_date": "2025-11-28",
+      "ratio": "aftret_equity",
+      "source": -0.48141399753291814,
+      "ratio_value": -0.48141399753291814,
+      "verdict": "match"
+    },
+    {
+      "cik": 814547,
+      "accession": "0000814547-25-000030",
+      "session_date": "2025-11-28",
+      "ratio": "profit_lct",
+      "source": 1.1066714554029309,
+      "ratio_value": 1.1066714554029309,
+      "verdict": "match"
+    },
+    {
+      "cik": 820027,
+      "accession": "0000820027-21-000012",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": 0.2645739910313901,
+      "ratio_value": 0.2645739910313901,
+      "verdict": "match"
+    },
+    {
+      "cik": 820027,
+      "accession": "0000820027-21-000012",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": null,
+      "verdict": "both_absent"
+    },
+    {
+      "cik": 820027,
+      "accession": "0000820027-25-000013",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.6831374912122126,
+      "ratio_value": 0.6831374912122126,
+      "verdict": "match"
+    },
+    {
+      "cik": 820027,
+      "accession": "0000820027-25-000013",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": null,
+      "verdict": "both_absent"
+    },
+    {
+      "cik": 1807794,
+      "accession": "0001628280-23-023187",
+      "session_date": "2023-06-30",
+      "ratio": "aftret_equity",
+      "source": -0.0485393034300482,
+      "ratio_value": -0.0485393034300482,
+      "verdict": "match"
+    },
+    {
+      "cik": 1807794,
+      "accession": "0001628280-23-023187",
+      "session_date": "2023-06-30",
+      "ratio": "profit_lct",
+      "source": -0.37770688321732404,
+      "ratio_value": -0.37770688321732404,
+      "verdict": "match"
+    },
+    {
+      "cik": 1807794,
+      "accession": "0001628280-25-033813",
+      "session_date": "2025-07-31",
+      "ratio": "aftret_equity",
+      "source": 0.0854212706051826,
+      "ratio_value": 0.0854212706051826,
+      "verdict": "match"
+    },
+    {
+      "cik": 1807794,
+      "accession": "0001628280-25-033813",
+      "session_date": "2025-07-31",
+      "ratio": "profit_lct",
+      "source": 0.5483376813881591,
+      "ratio_value": 0.5483376813881591,
+      "verdict": "match"
+    },
+    {
+      "cik": 82811,
+      "accession": "0000082811-21-000043",
+      "session_date": "2021-03-31",
+      "ratio": "aftret_equity",
+      "source": 0.07733632928199367,
+      "ratio_value": 0.07733632928199367,
+      "verdict": "match"
+    },
+    {
+      "cik": 82811,
+      "accession": "0000082811-21-000043",
+      "session_date": "2021-03-31",
+      "ratio": "profit_lct",
+      "source": 0.5006082725060828,
+      "ratio_value": 0.5006082725060828,
+      "verdict": "match"
+    },
+    {
+      "cik": 82811,
+      "accession": "0000082811-25-000046",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": 0.03113272665243849,
+      "ratio_value": 0.03113272665243849,
+      "verdict": "match"
+    },
+    {
+      "cik": 82811,
+      "accession": "0000082811-25-000046",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.6541910010693428,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1048286,
+      "accession": "0001628280-21-002433",
+      "session_date": "2021-02-26",
+      "ratio": "aftret_equity",
+      "source": -0.471315092674316,
+      "ratio_value": -0.471315092674316,
+      "verdict": "match"
+    },
+    {
+      "cik": 1048286,
+      "accession": "0001628280-21-002433",
+      "session_date": "2021-02-26",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.07058414464534075,
+      "verdict": "source_absent"
+    },
+    {
+      "cik": 1048286,
+      "accession": "0001628280-25-004818",
+      "session_date": "2025-02-28",
+      "ratio": "aftret_equity",
+      "source": -1.2928688078388677,
+      "ratio_value": -1.2928688078388677,
+      "verdict": "match"
+    },
+    {
+      "cik": 1048286,
+      "accession": "0001628280-25-004818",
+      "session_date": "2025-02-28",
+      "ratio": "profit_lct",
+      "source": null,
+      "ratio_value": 0.4503410798936293,
+      "verdict": "source_absent"
+    }
+  ]
+}

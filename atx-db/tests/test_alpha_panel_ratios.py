@@ -20,7 +20,7 @@ D = dt.date
 
 Q_ITEMS = sorted(set(R.FLOW_Q.values()) | set(R.EPS_Q.values()) | set(R.YTD_Q.values()) | set(R.BAL_Q.values()))
 A_ITEMS = sorted({c for v in R.ANN_LAGS.values() for c in v})
-DESC = [("cik", pa.int64()), ("datadate", pa.date32()), ("fqtr", pa.int64()), ("fyr", pa.int64()),
+DESC = [("cik", pa.int64()), ("datadate", pa.date32()), ("fqtr", pa.int64()), ("fyr", pa.int64()), ("fyearq", pa.int64()), ("fyear", pa.int64()),
         ("accession", pa.string()), ("form", pa.string()), ("filed", pa.date32()), ("available_at", pa.timestamp("us")),
         ("fin_template", pa.string()), ("sic", pa.int32()), ("curcd", pa.string()), ("fx_converted", pa.bool_()),
         ("first_reported", pa.bool_())]
@@ -40,7 +40,7 @@ class World:
 
     def q(self, cik, dd, fqtr, accn, avail, form="10-Q", **items):
         r = {f.name: None for f in FQ_SCHEMA}
-        r.update({"cik": cik, "datadate": dd, "fqtr": fqtr, "fyr": 12, "accession": accn, "form": form,
+        r.update({"cik": cik, "datadate": dd, "fqtr": fqtr, "fyr": 12, "fyearq": dd.year, "accession": accn, "form": form,
                   "filed": avail.date(), "available_at": avail, "fin_template": "other", "sic": 3570, "curcd": "USD",
                   "fx_converted": False, "first_reported": True})
         r.update(items)
@@ -49,7 +49,7 @@ class World:
 
     def a(self, cik, dd, accn, avail, form="10-K", **items):
         r = {f.name: None for f in FA_SCHEMA}
-        r.update({"cik": cik, "datadate": dd, "fqtr": 4, "fyr": 12, "accession": accn, "form": form,
+        r.update({"cik": cik, "datadate": dd, "fqtr": 4, "fyr": 12, "fyear": dd.year, "accession": accn, "form": form,
                   "filed": avail.date(), "available_at": avail, "fin_template": "other", "sic": 3570, "curcd": "USD",
                   "fx_converted": False, "first_reported": True})
         r.update(items)
@@ -78,7 +78,7 @@ class World:
              ("split_ratio", pa.float64())])), root / "corporate_actions" / "vendor_events.parquet")
         (root / "security_master").mkdir(exist_ok=True)
         pq.write_table(pa.table({"security_id": pa.array([901, 901, 100], pa.int64()),
-                                 "finra_type": ["warrant", "warrant", "common"]}),
+                                 "finra_type": ["warrant", "warrant", "common"], "available_at": [T(2017, 1, 1)] * 3}),
                        root / "security_master" / "finra_names.parquet")
         years = sorted({s.year for s in sessions})
         for y in years:
@@ -433,6 +433,7 @@ def test_hand_values_and_items_rules():
 def test_fy0_fallback_and_history_limited(world):
     # issuer 2 gets an FY2019 annual row: the missing 2019Q3 no longer blanks TTM; the FY0 value is used and listed
     a = annual(7)
+    world.a(2, D(2018, 12, 31), "prior-full-year", T(2019, 2, 21, 21), **annual(3))
     world.a(2, D(2019, 12, 31), "a2-15", T(2020, 2, 21, 21), **a)
     con = run(world)
     r = monthly(con, world.root, 200, D(2020, 5, 29))
@@ -442,7 +443,7 @@ def test_fy0_fallback_and_history_limited(world):
     assert r2["ttm_src"] == "annual" and r2["ttm_fy0_items"] is None
     # capei needs five fiscal years: issuer 1's first statement (2016-03-31) is too recent at FY0 2019 -> undefined
     r1 = monthly(con, world.root, 100, D(2020, 3, 31))
-    assert r1["capei"] is None and "capei" in r1["ratio_undefined"].split(",")
+    assert r1["capei"] is None and "capei" in r1["ratio_history_missing"].split(",")
     assert r1["hist_days"] == (D(2019, 12, 31) - D(2016, 3, 31)).days
     assert r1["piotroski_f"] is not None and "piotroski_f" not in (r1["ratio_undefined"] or "")
 
@@ -506,3 +507,68 @@ def test_hand_cash_includes_actual_short_term_investments():
     h=R.hand_items({'che':453001000.0,'short_invest':14185000.0})
     assert h['che']==467186000.0
     assert R.hand_items({'che':100.0})['che']==100.0
+
+
+def test_missing_history_is_eligible_with_empty_masks():
+    con = duckdb.connect()
+    cols = ", ".join(f"CAST(NULL AS DOUBLE) AS {n}" for n in R.ratio_names())
+    con.execute(f"CREATE TABLE cells AS SELECT 2020 AS year, 'other' AS fin_template, NULL::VARCHAR AS absent_items, NULL::VARCHAR AS ratio_undefined, 'capei' AS ratio_history_missing, {cols}")
+    row = R.coverage_gate(con, {})['by_ratio']['capei']['by_year']['2020']
+    assert row['cells'] == row['eligible'] == 1 and row['share'] == 0
+
+
+def test_identity_and_classification_strict_cutoff(world):
+    day = D(2020, 5, 29)
+    world.links[0]['available_at'] = T(2020, 5, 28, 22)
+    world.write(SESSIONS)
+    con = duckdb.connect()
+    # Read security ids by named projection; equality and later links are invisible.
+    def visible(cutoff):
+        sql = R.cells_sql(world.root, f"SELECT DATE '{day}' AS session_date", f"TIMESTAMP '{cutoff}'")
+        return {r[0] for r in con.execute(f"SELECT security_id FROM ({sql})").fetchall()}
+    assert 100 not in visible('2020-05-28 22:00:00')
+    assert 100 in visible('2020-05-29 22:00:00')
+    world.links[0]['available_at'] = T(2020, 5, 29, 22)
+    world.write(SESSIONS)
+    assert 100 not in visible('2020-05-29 22:00:00')
+    world.links[0]['available_at'] = T(2017, 1, 1)
+    world.write(SESSIONS)
+    pq.write_table(pa.table({'security_id': [100, 100], 'finra_type': ['common', 'warrant'],
+                            'available_at': [T(2017, 1, 1), T(2020, 5, 29, 22)]}),
+                   world.root / 'security_master' / 'finra_names.parquet')
+    assert 100 in visible('2020-05-29 22:00:00')
+    assert 100 not in visible('2020-05-29 22:00:01')
+
+
+def test_fiscal_sequence_and_transition_history(world):
+    # The elapsed date bins still fit, but the prior quarter belongs to a different fiscal calendar.
+    for row in world.fq:
+        if row['cik'] == 1 and row['datadate'] == D(2019, 9, 30):
+            row['fyr'] = 9
+    # A transition annual period cannot join the same-calendar year chain.
+    for row in world.fa:
+        if row['cik'] == 1 and row['datadate'] == D(2018, 12, 31):
+            row['fyr'] = 9
+    world.write(SESSIONS)
+    con = duckdb.connect()
+    R.build_splits(con, world.root)
+    R.build_state_bucket(con, world.root / 'compustat_std', 'cik = 1', world.root / 'transition.parquet')
+    assert con.execute("SELECT count(*) FROM qlag l JOIN q USING(rid) WHERE l.tau = TIMESTAMP '2020-02-20 21:00:00' AND q.datadate = DATE '2019-09-30'").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM alag l JOIN a USING(arid) WHERE a.datadate = DATE '2019-12-31'").fetchone()[0] == 0
+
+
+def test_incomplete_annual_comparative_fails_pair_screen(world):
+    # 335 days lies inside the legacy 365.25 +/-30 bins but is not a comparable full-year pair.
+    world.a(1, D(2019, 12, 1), 'transition-comparative', T(2020, 1, 15, 21), form='10-Q', **annual(7))
+    world.write(SESSIONS)
+    con = duckdb.connect()
+    R.build_splits(con, world.root)
+    R.build_state_bucket(con, world.root / 'compustat_std', 'cik = 1', world.root / 'short-annual.parquet')
+    assert con.execute("SELECT count(*) FROM alag JOIN a USING(arid) WHERE accession = 'transition-comparative'").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM a WHERE accession = 'transition-comparative'").fetchone()[0] == 1
+
+
+def test_source_cash_total_and_current_marketables():
+    assert R.hand_items({'che':896005000.,'short_invest':1638271000.})['che'] == 2534276000.
+    assert R.hand_items({'che':268269000.,'short_invest':2993000.,'che_total':271300000.})['che'] == 271300000.
+    assert 'MarketableSecuritiesCurrent' in R.HAND_ITEMS['short_invest'][1]

@@ -380,14 +380,14 @@ def _load(con, std: Path, where: str) -> None:
     qcols = sorted(set(FLOW_Q.values()) | set(EPS_Q.values()) | set(YTD_Q.values()) | set(BAL_Q.values()))
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE q AS
-        SELECT row_number() OVER () AS rid, cik, datadate, fqtr, fyr, accession, form, filed, available_at,
+        SELECT row_number() OVER () AS rid, cik, datadate, fyearq, fqtr, fyr, accession, form, filed, available_at,
                fin_template, sic, curcd, fx_converted, {', '.join(f'"{c}"' for c in qcols)}
         FROM read_parquet('{fq}') WHERE ({where}) AND datadate >= DATE '{ROWS_FROM}'""")
     acols = sorted({c for v in ANN_LAGS.values() for c in v})
     forms = ", ".join(f"'{f}'" for f in ANNUAL_FORMS)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE a AS
-        SELECT row_number() OVER () AS arid, cik, datadate, accession, form, filed, available_at,
+        SELECT row_number() OVER () AS arid, cik, datadate, fyear, fyr, accession, form, filed, available_at,
                {', '.join(f'"{c}"' for c in acols)}
         FROM read_parquet('{fa}') WHERE ({where}) AND datadate >= DATE '{ROWS_FROM}'""")
 
@@ -481,7 +481,7 @@ def _avg_sql() -> dict[str, str]:
 
 
 def _absent_sql() -> str:
-    """Comma list of input items structurally absent for the issuer: never non-NULL on the eight quarterly rows j =
+    """Observed missing-input diagnostic (not structural eligibility): never non-NULL on the eight quarterly rows j =
     0..7 (quarterly items) or on FY0 / FY-1 (annual-only items)."""
     parts = [f"CASE WHEN p.n_{x} = 0 THEN '{x}' END" for x in sorted({*FLOW_Q, *EPS_Q, *YTD_Q, *BAL_Q})]
     parts += [f"CASE WHEN coalesce(ap.na_{x}, 0) = 0 THEN '{x}' END" for x in ANNUAL_ONLY_ITEMS]
@@ -507,9 +507,15 @@ def build_state_bucket(con, std: Path, where: str, dest: Path) -> int:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE qlag AS
         WITH h AS (SELECT cik, tau, max(datadate) AS d0 FROM vis GROUP BY 1, 2),
-        x AS (SELECT v.cik, v.tau, v.rid, date_diff('day', v.datadate, h.d0) AS dd FROM vis v JOIN h USING (cik, tau)),
+        x AS (SELECT v.cik, v.tau, v.rid, date_diff('day', v.datadate, h.d0) AS dd,
+                     4 * (q0.fyearq - qi.fyearq) + q0.fqtr - qi.fqtr AS fiscal_lag,
+                     qi.fyr = q0.fyr AS same_calendar
+              FROM vis v JOIN h USING (cik, tau)
+              JOIN q qi ON qi.rid = v.rid
+              JOIN vis v0 ON v0.cik = v.cik AND v0.tau = v.tau AND v0.datadate = h.d0
+              JOIN q q0 ON q0.rid = v0.rid),
         y AS (SELECT *, CAST(round(dd / {Q_DAYS}) AS INTEGER) AS j FROM x)
-        SELECT cik, tau, rid, j FROM y WHERE j BETWEEN 0 AND {Q_LAGS} AND abs(dd - j * {Q_DAYS}) <= {Q_TOL}
+        SELECT cik, tau, rid, j FROM y WHERE same_calendar AND fiscal_lag = j AND j BETWEEN 0 AND {Q_LAGS} AND abs(dd - j * {Q_DAYS}) <= {Q_TOL}
         QUALIFY row_number() OVER (PARTITION BY cik, tau, j ORDER BY abs(dd - j * {Q_DAYS}), dd) = 1""")
     agg = ["max(CASE WHEN l.j = 0 THEN q.datadate END) AS datadate", "any_value(f.first_datadate) AS first_datadate",
            "max(CASE WHEN l.j = 0 THEN q.fyr END) AS fyr",
@@ -549,9 +555,17 @@ def build_state_bucket(con, std: Path, where: str, dest: Path) -> int:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE alag AS
         WITH h AS (SELECT cik, tau, max(datadate) AS d0 FROM visa GROUP BY 1, 2),
-        x AS (SELECT v.cik, v.tau, v.arid, date_diff('day', v.datadate, h.d0) AS dd FROM visa v JOIN h USING (cik, tau)),
+        x AS (SELECT v.cik, v.tau, v.arid, date_diff('day', v.datadate, h.d0) AS dd,
+                     a0.fyear - ai.fyear AS fiscal_lag, ai.fyr = a0.fyr AS same_calendar,
+                     EXISTS (SELECT 1 FROM visa vp JOIN a prior ON prior.arid = vp.arid
+                             WHERE vp.cik = v.cik AND vp.tau = v.tau AND prior.fyear = ai.fyear - 1
+                               AND prior.fyr = ai.fyr
+                               AND date_diff('day', prior.datadate, ai.datadate) BETWEEN 350 AND 380) AS full_year
+              FROM visa v JOIN h USING (cik, tau) JOIN a ai ON ai.arid = v.arid
+              JOIN visa v0 ON v0.cik = v.cik AND v0.tau = v.tau AND v0.datadate = h.d0
+              JOIN a a0 ON a0.arid = v0.arid),
         y AS (SELECT *, CAST(round(dd / {Y_DAYS}) AS INTEGER) AS k FROM x)
-        SELECT cik, tau, arid, k FROM y WHERE k BETWEEN 0 AND {Y_LAGS} AND abs(dd - k * {Y_DAYS}) <= {Y_TOL}
+        SELECT cik, tau, arid, k FROM y WHERE same_calendar AND full_year AND fiscal_lag = k AND k BETWEEN 0 AND {Y_LAGS} AND abs(dd - k * {Y_DAYS}) <= {Y_TOL}
         QUALIFY row_number() OVER (PARTITION BY cik, tau, k ORDER BY abs(dd - k * {Y_DAYS}), dd) = 1""")
     aagg = [f"max(CASE WHEN l.k = {k} THEN a.datadate END) AS datadate_a{k}" for k in range(Y_LAGS + 1)]
     aagg += ["max(CASE WHEN l.k = 0 THEN a.form END) AS form_a0", "max(CASE WHEN l.k = 0 THEN a.filed END) AS filed_a0",
@@ -622,9 +636,11 @@ def consume_sql(cells: str, state: str, spl: str) -> str:
         ratio_cols.append(f"CASE WHEN {fresh[r['freq']]} THEN {expr} END AS {r['name']}")
     comp_cols = [f"CASE WHEN fresh_a THEN {c} END AS {c}" for c in COMPONENTS]
     undefined = []
+    history_missing = []
     for r in list(RATIOS) + list(COMPOSITES):
-        conds = ([f"({r['den']}) = 0"] if r.get("den") else []) + ([f"coalesce({r['undef']}, false)"]
-                                                                   if r.get("undef") else [])
+        conds = ([f"({r['den']}) = 0"] if r.get("den") else [])
+        if r.get("undef"):
+            history_missing.append(f"CASE WHEN coalesce({r['undef']}, false) THEN '{r['name']}' END")
         if conds:
             undefined.append(f"CASE WHEN {fresh[r['freq']]} AND ({' OR '.join(conds)}) THEN '{r['name']}' END")
     return f"""
@@ -646,6 +662,7 @@ def consume_sql(cells: str, state: str, spl: str) -> str:
            {', '.join(ratio_cols)},
            {', '.join(comp_cols)},
            nullif(concat_ws(',', {', '.join(undefined)}), '') AS ratio_undefined,
+           nullif(concat_ws(',', {', '.join(history_missing)}), '') AS ratio_history_missing,
            'pe_exi,pe_inc,peg_trailing:missing_certified_security_class_diluted_EPS_alignment;divyield:missing_indicated_dividend_rate' AS ratio_missing_primitives,
            cutoff_clock AS available_at
     FROM x"""
@@ -653,28 +670,27 @@ def consume_sql(cells: str, state: str, spl: str) -> str:
 
 def cells_sql(root: Path, sessions: str, cutoff: str, year_glob: str = "*") -> str:
     """Line cells for the sessions selected by the SQL ``sessions`` (one column ``session_date``): common lines
-    (linkprim P/J) linked at the session (point-in-time tiers, the link known by 22:00 UTC of the session -- the
-    panel rule) with a raw close, the line's shrout, the issuer's market equity, and ``cutoff`` (SQL over
+    (linkprim P/J) linked at the session (point-in-time tiers, the link and latest dated FINRA type strictly known before the shared cutoff) with a raw close, the line's shrout, the issuer's market equity, and ``cutoff`` (SQL over
     session_date: the fundamentals cutoff) / ``cutoff_clock`` (22:00 UTC of the session: the row's clock)."""
     lt = _q(root / "identity" / "link_table_v3.parquet")
     px = _q(root / "prices" / f"year={year_glob}" / "prices.parquet")
     sh = _q(root / "market" / "shares_daily" / f"year={year_glob}" / "shares_daily.parquet")
     fn = root / "security_master" / "finra_names.parquet"
-    ltype = (f"SELECT security_id, mode(finra_type) AS line_type FROM read_parquet('{_q(fn)}') GROUP BY 1"
-             if fn.exists() else "SELECT CAST(NULL AS BIGINT) AS security_id, CAST(NULL AS VARCHAR) AS line_type "
-                                 "WHERE false")
+    ltype = (f"SELECT security_id, finra_type AS line_type, available_at FROM read_parquet('{_q(fn)}')"
+             if fn.exists() else "SELECT CAST(NULL AS BIGINT) AS security_id, CAST(NULL AS VARCHAR) AS line_type, "
+                                 "CAST(NULL AS TIMESTAMP) AS available_at WHERE false")
     tiers = ", ".join(f"'{t}'" for t in PIT_LINK_TIERS)
     prim = ", ".join(f"'{p}'" for p in COMMON_LINKPRIM)
     bad = ", ".join(f"'{t}'" for t in NON_EQUITY_TYPES)
     return f"""
-        WITH ms AS ({sessions}),
+        WITH ms AS (SELECT *, {cutoff} AS identity_cutoff FROM ({sessions}) sessions),
         ltype AS ({ltype}),
         lk AS (SELECT m.session_date, l.security_id, l.cik, l.link_tier, l.linkprim
                FROM ms m JOIN read_parquet('{lt}') l
                  ON m.session_date BETWEEN l.valid_from AND coalesce(l.valid_to, DATE '2100-01-01')
-               LEFT JOIN ltype t ON t.security_id = l.security_id
+               ASOF LEFT JOIN ltype t ON t.security_id = l.security_id AND m.identity_cutoff > t.available_at
                WHERE l.link_tier IN ({tiers}) AND l.linkprim IN ({prim}) AND l.cik IS NOT NULL
-                 AND l.available_at <= CAST(m.session_date AS TIMESTAMP) + INTERVAL 22 HOUR
+                 AND l.available_at < m.identity_cutoff
                  AND coalesce(t.line_type NOT IN ({bad}), true)),
         px AS (SELECT p.session_date, p.security_id, p.close AS prc FROM read_parquet('{px}', union_by_name = true) p
                WHERE p.session_date IN (SELECT session_date FROM ms) AND p.close > 0),
@@ -879,7 +895,7 @@ def coverage_gate(con, masks: dict[str, list[str]], basis: str = "member_equity"
         return "CAST([" + ", ".join(f"'{i}'" for i in v) + "] AS VARCHAR[])"
     mask_case = " ".join(f"WHEN fin_template = '{t}' THEN {lst(v)}" for t, v in masks.items())
     con.execute(f"""CREATE OR REPLACE TEMP TABLE cov AS
-                    SELECT *, CASE {mask_case} ELSE {lst([])} END AS tmask,
+                    SELECT *, {("CASE " + mask_case + " ELSE " + lst([]) + " END") if mask_case else lst([])} AS tmask,
                            string_split(coalesce(absent_items, ''), ',') AS absent,
                            string_split(coalesce(ratio_undefined, ''), ',') AS undef FROM cells""")
     fails = []
@@ -1059,7 +1075,8 @@ HAND_ITEMS: dict[str, tuple[str, tuple[str, ...]]] = {
     "pi": ("d", ("IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments")),
     "xint": ("d", ("InterestExpense", "InterestAndDebtExpense")),
     "che": ("i", ("CashAndCashEquivalentsAtCarryingValue",)),
-    "short_invest": ("i", ("ShortTermInvestments",)),
+    "short_invest": ("i", ("ShortTermInvestments", "MarketableSecuritiesCurrent")),
+    "che_total": ("i", ("CashCashEquivalentsAndShortTermInvestments",)),
     "invt": ("i", ("InventoryNet",)),
     "rect": ("i", ("AccountsReceivableNetCurrent",)),
     "xrd": ("d", ("ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
@@ -1104,9 +1121,11 @@ def hand_items(v: dict[str, Any]) -> dict[str, Any]:
     """Filing values -> the ratio inputs under the items' documented rules: sale (banks: interest and dividend income +
     noninterest income), ib (continuing operations, else ni - do, else ni), epsfx (continuing-operations diluted EPS,
     else total diluted EPS when no discontinued operations), lt (reported Liabilities only), pstk
-    and txditc 0 when not reported, be = seq + txditc - pstk."""
+    and txditc missing when not reported, be = seq + txditc - pstk."""
     h = dict(v)
-    if h.get("che") is not None and h.get("short_invest") is not None:
+    if h.get("che_total") is not None:
+        h["che"] = h["che_total"]
+    elif h.get("che") is not None and h.get("short_invest") is not None:
         h["che"] += h["short_invest"]
     if h.get("sale") is None and h.get("int_inc") is not None and h.get("nonint_inc") is not None:
         h["sale"] = h["int_inc"] + h["nonint_inc"]

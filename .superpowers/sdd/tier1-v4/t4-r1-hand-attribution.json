@@ -1,0 +1,4006 @@
+[
+  {
+    "cik": 40545,
+    "accession": "0000040545-21-000011",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "ge-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.32329242814581477,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.06527336439794522,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.17861840045093005,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.16928708094168538,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.653302181240971,
+        "ratio": "cash_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.13143847574071515,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.12350067195016265,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.03791920621484722,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 4636000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "che",
+        "source": null,
+        "state": 36630000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 5197000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 35546000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 28310000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 40545,
+    "accession": "0000040545-25-000015",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "ge-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.08706742850563479,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 11.485351263535737,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.1968890496615162,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.37191876388817113,
+        "ratio": "gpm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.2805005882982137,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.11689134318661686,
+        "ratio": "gprof",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.24782781984854524,
+        "ratio": "rect_act",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.13148798949563606,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.3959932542451733,
+        "ratio": "cash_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.19389178853806005,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.2184383236008475,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.057036837133990013,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 834000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "che",
+        "source": null,
+        "state": 13619000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "rect",
+        "source": null,
+        "state": 9327000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "cogs",
+        "source": null,
+        "state": 24308000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 7620000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 19342000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 27403000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 7084,
+    "accession": "0000007084-21-000008",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "adm-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.6742191250763749,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.5797534664703354,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.034527231761323905,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.08497985804718972,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.5972968080613046,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.48485,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 3.21775,
+        "ratio": "sale_equity",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.6122503956628615,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.022426507728053338,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.049693108538575094,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0682487515472278,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 2222000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "seq",
+        "source": null,
+        "state": 20000000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "seq_p",
+        "source": null,
+        "state": 19208000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 29697000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 21302000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 20402000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 7084,
+    "accession": "0000007084-25-000011",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "adm-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 1.0350596139179922,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.021390026939167,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0346194317783234,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0736542750168791,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.583675921232941,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.4026073619631902,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 3.8582641645615303,
+        "ratio": "sale_equity",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.6412375775898113,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.019650725243623966,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.047959780194083944,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0760319549220589,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 2961000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "seq",
+        "source": null,
+        "state": 22168000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "seq_p",
+        "source": null,
+        "state": 24132000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 31093000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 23436000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 25441000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1415404,
+    "accession": "0001415404-21-000005",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "sats-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 3.4171748799088357,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.3223711367647523,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.6057125695280541,
+        "ratio": "gpm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.16166719823925063,
+        "ratio": "gprof",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.25682462112805343,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.3376670566929409,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.08961198792492084,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 525011000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "cogs",
+        "source": null,
+        "state": 744378000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "csho",
+        "source": null,
+        "state": 97920000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 3902230000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 4021497000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1415404,
+    "accession": "0001558370-25-001663",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "tmb-20241231x10k.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 5.745495175592478,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.2170515354657974,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "csho",
+        "source": null,
+        "state": 274079000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 25180025000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 24894486000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 861884,
+    "accession": "0001558370-21-001836",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "rs-20201231x10k.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.36809838653969507,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.5833561402822849,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.20542207030595488,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.22904728393820584,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 2984100000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 861884,
+    "accession": "0001558370-25-001806",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "rs-20241231x10k.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 22.786600496277917,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 29.285359801488834,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 40300000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1768224,
+    "accession": "0001564590-21-009872",
+    "datadate": "2020-12-31",
+    "session_date": "2021-03-31",
+    "source_url": "arct-10k_20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.3653602457300745,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 2.7370246535765492,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "efftax",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -7.471013733095712,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -7.405598071076633,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.25292562285288733,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 882000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txt",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 396553000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1768224,
+    "accession": "0000950170-24-031156",
+    "datadate": "2023-12-31",
+    "session_date": "2024-03-28",
+    "source_url": "arct-20231231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.3064192883894689,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 3.2635021289161386,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.1083223249669749,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.16048057842073393,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.4511298029364684,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.17105919714840717,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 2957000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 278513000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 270312000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1280784,
+    "accession": "0001280784-24-000007",
+    "datadate": "2023-12-31",
+    "session_date": "2024-02-29",
+    "source_url": "htgc-20231231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 6.584194773450124,
+        "ratio": "ps",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.6302421205799732,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.586691792480898,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.7768521609023422,
+        "ratio": "npm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.13479359599713364,
+        "ratio": "at_turn",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.24098494152679362,
+        "ratio": "sale_equity",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.7772895206307188,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 190000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "sale",
+        "source": null,
+        "state": 434425000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1802706000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1280784,
+    "accession": "0001280784-25-000007",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "htgc-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 7.749791569598767,
+        "ratio": "ps",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.5495072368327523,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.8198122480857508,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.5628613319919947,
+        "ratio": "npm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.1386846512407948,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.12890774761237367,
+        "ratio": "at_turn",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.23482079895214117,
+        "ratio": "sale_equity",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.5638587741735249,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 4.408458736762971,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 466000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 77151000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "sale",
+        "source": null,
+        "state": 467195000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1989581000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 1802706000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1831651,
+    "accession": "0001831651-23-000024",
+    "datadate": "2022-12-31",
+    "session_date": "2023-02-28",
+    "source_url": "shls-20221231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.10538516770550112,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 9.489001363023878,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "csho",
+        "source": null,
+        "state": 114495000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 291374000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1831651,
+    "accession": "0001831651-24-000011",
+    "datadate": "2023-12-31",
+    "session_date": "2024-02-29",
+    "source_url": "shls-20231231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.2499617765467023,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 4.000611668773135,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.09558927269031649,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "csho",
+        "source": null,
+        "state": 164165000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 544996000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 291374000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 764180,
+    "accession": "0000764180-21-000037",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "mo-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.09096959508816771,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 28.5407089673397,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.01924968385555712,
+        "ratio": "rect_act",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "rect",
+        "source": null,
+        "state": 137000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 7371000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 11305000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 764180,
+    "accession": "0000764180-25-000019",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "mo-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.016002380752643035,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -42.19099645670468,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.03922003102149346,
+        "ratio": "rect_act",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 11.02135231316726,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 13.151245551601424,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 1124000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "rect",
+        "source": null,
+        "state": 177000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1511000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": -741000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1531152,
+    "accession": "0001437749-21-006555",
+    "datadate": "2021-01-30",
+    "session_date": "2021-03-31",
+    "source_url": "bj20201001_10k.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.059193202293699475,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 19.279612579028655,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.9409913647341879,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 15.946672220012715,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.3988866901024959,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.008546006512309112,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.03814875900655197,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.052485100956142824,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.15163795452055975,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 167454000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 5092203000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 364423000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": -8144000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1531152,
+    "accession": "0001531152-25-000013",
+    "datadate": "2025-02-01",
+    "session_date": "2025-03-31",
+    "source_url": "bj-20250201.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.12693486453809266,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 8.132458748784474,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.7385174454605994,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 2.824346912020543,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.48565625963639053,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.005418322600626196,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.03884950807255791,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.050447950824229905,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.15051728063461298,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 262068000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 5217851000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1907113000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 1533624000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1817358,
+    "accession": "0001817358-22-000039",
+    "datadate": "2022-01-29",
+    "session_date": "2022-03-31",
+    "source_url": "aso-20220129.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.49050399046260557,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 2.3405943936403926,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": 0.4575241477911603,
+        "ours": null,
+        "ratio": "roe",
+        "verdict": "absent_in_ratios"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1684158000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": 138703000.0,
+        "state": null,
+        "class": "state_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1817358,
+    "accession": "0001817358-25-000027",
+    "datadate": "2025-02-01",
+    "session_date": "2025-03-31",
+    "source_url": "aso-20250201.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.7397862058828624,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.5249662003739655,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 2260850000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 2209446000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1309402,
+    "accession": "0001309402-21-000014",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "gpre-20201231x10k.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.7165854976595102,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.3955068910355704,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.15441343478507752,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 646852000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 762028000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 10123000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1309402,
+    "accession": "0001309402-25-000008",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "gpre-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 2.2771102450859777,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.43915308982426654,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.0965471155354054,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -1.453210454751473,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -1.3050309714458377,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 33095000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 865215000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 843733000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 74260,
+    "accession": "0000074260-21-000021",
+    "datadate": "2020-12-31",
+    "session_date": "2021-03-31",
+    "source_url": "ori-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.9412429536818883,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.0738278255608165,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.10199553446832263,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.08991983516306623,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.0,
+        "ratio": "fcf_ocf",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.052217578254202125,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.08170527490929388,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.10574937203460787,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.03453060387546564,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 14.143529411764705,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 17.19529411764706,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 26900000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 42500000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "che",
+        "source": null,
+        "state": 868300000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 730900000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "capx",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 6253000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 6171400000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 66400000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 171300000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 74260,
+    "accession": "0000074260-25-000042",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "ori-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.6013913588850092,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.7010155071614732,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.13964647998542185,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.0,
+        "ratio": "fcf_ocf",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.07224589522185375,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.10836421065419426,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.14442082245034318,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.04375051753167294,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 11.685463659147869,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 14.403508771929825,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 39300000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 79800000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "che",
+        "source": null,
+        "state": 1605600000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 1149500000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "capx",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 5748000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 6516300000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 25445,
+    "accession": "0001628280-21-002871",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "cr-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.3244370249715268,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 3.1903198620582316,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.6663470548497461,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 2.0,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.34554254692916475,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.1801949113741906,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 3057800000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1582500000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 1529500000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 25445,
+    "accession": "0001628280-25-006754",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "cxt-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.37055581412433936,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 3.0002162685255582,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 1183900000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 1068500000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1711279,
+    "accession": "0001711279-21-000006",
+    "datadate": "2020-12-31",
+    "session_date": "2021-03-31",
+    "source_url": "krys-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.1708209731107412,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 5.854082094191748,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "at_turn",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "sale_equity",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "sale_nwc",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "efftax",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "txt",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pi",
+        "source": null,
+        "state": -32167000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "sale",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 292084000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1711279,
+    "accession": "0001711279-25-000008",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "krys-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.1832830304759477,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 5.45604247923667,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.9309467669483503,
+        "ratio": "gpm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.10337149518759482,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.25615103832216685,
+        "ratio": "gprof",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.3274392027950364,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.24667228886632359,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.07647238037918187,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 5967000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "cogs",
+        "source": null,
+        "state": 20061000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 946380000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 778641000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1511737,
+    "accession": "0001511737-21-000036",
+    "datadate": "2021-06-30",
+    "session_date": "2021-08-31",
+    "source_url": "ubnt-20210630.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.00013272822476113403,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 7534.192533650339,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -4.212229171434525,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 2699000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": -295458000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1511737,
+    "accession": "0001511737-25-000053",
+    "datadate": "2025-06-30",
+    "session_date": "2025-08-29",
+    "source_url": "ubnt-20250630.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.020925483283645022,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 47.812506497611515,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 668594000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 95552000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 814547,
+    "accession": "0000814547-21-000019",
+    "datadate": "2021-09-30",
+    "session_date": "2021-11-30",
+    "source_url": "fico-20210930.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": -0.011483424556425152,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -87.0820368163158,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 3.562133187971291,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": -110942000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 331082000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 814547,
+    "accession": "0000814547-25-000030",
+    "datadate": "2025-09-30",
+    "session_date": "2025-11-28",
+    "source_url": "fico-20250930.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": -0.04077552469963899,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -24.524515806141263,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -0.48141399753291814,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 5.878119224524307,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 7.005334949531227,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 133647000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": -1745784000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": -962679000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 820027,
+    "accession": "0000820027-21-000012",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "amp-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.22713655323725143,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 4.402637909872076,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.16666666666666666,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.2645739910313901,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.05563818618138186,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.14559290851312928,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.1839772537213581,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.013849064086544061,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 10.469135802469136,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 12.302469135802468,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 207000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 162000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "che",
+        "source": null,
+        "state": 8903000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 1993000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 5867000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 5729000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 820027,
+    "accession": "0000820027-25-000013",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "amp-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.10123058999551542,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 9.878436943262907,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.2563873703001227,
+        "ratio": "opmad",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.6831374912122126,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.05386121753937846,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.2643088251701439,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.026573638367443086,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 11.337386018237082,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 13.969604863221884,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 329000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "che",
+        "source": null,
+        "state": 9489000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "oiadp",
+        "source": null,
+        "state": 4596000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 5228000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 4729000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1807794,
+    "accession": "0001628280-23-023187",
+    "datadate": "2023-04-29",
+    "session_date": "2023-06-30",
+    "source_url": "crdo-20230429.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.1344797544362852,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 7.4360635486867075,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 347635000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1807794,
+    "accession": "0001628280-25-033813",
+    "datadate": "2025-05-03",
+    "session_date": "2025-07-31",
+    "source_url": "crdo-20250503.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.035597981841809095,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 28.0914801418748,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "divyield_paid",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "dpr",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0854212706051826,
+        "ratio": "roe",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "dvc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 681582000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 540198000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "txditc_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 82811,
+    "accession": "0000082811-21-000043",
+    "datadate": "2021-01-02",
+    "session_date": "2021-03-31",
+    "source_url": "rbc-20210102.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.4687077708361578,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 2.2777506593216725,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.4384397472216169,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.790756170413457,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.4085487077534791,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.30382703777335984,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 2012000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 2716400000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 2523000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 82811,
+    "accession": "0000082811-25-000046",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "rbc-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.8250957453115221,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.3698722046279432,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.5534178441893443,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.240694590881498,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.15653125603553725,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.050666323311659045,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.05991249295634592,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.13180748450396101,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0539825081197756,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.490868151113335,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.6149612209156867,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 165300000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 399700000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 7766500000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 7075300000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 7357000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1048286,
+    "accession": "0001628280-21-002433",
+    "datadate": "2020-12-31",
+    "session_date": "2021-02-26",
+    "source_url": "mar-20201231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": 0.010679489144636673,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 111.71164085251209,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.13801910888279253,
+        "ratio": "gpm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.982591797902919,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 56.444186046511625,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.05906643455730537,
+        "ratio": "gprof",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.23699064727452515,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.036133657451279305,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.005202913631633715,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.038406962444423424,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.016320951921530793,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 322000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "cogs",
+        "source": null,
+        "state": 9112000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 24271000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": 513000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": 993000000.0,
+        "class": "source_absent"
+      }
+    ]
+  },
+  {
+    "cik": 1048286,
+    "accession": "0001628280-25-004818",
+    "datadate": "2024-12-31",
+    "session_date": "2025-02-28",
+    "source_url": "mar-20241231.htm",
+    "ratios": [
+      {
+        "hand": null,
+        "ours": -0.03764934135237993,
+        "ratio": "bm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -25.84182810478647,
+        "ratio": "ptb",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.20322709163346614,
+        "ratio": "gpm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 1.11427698418761,
+        "ratio": "debt_at",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": -9.75066844919786,
+        "ratio": "de_ratio",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.0,
+        "ratio": "rd_sale",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.19482850813536018,
+        "ratio": "gprof",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.29646260368821553,
+        "ratio": "curr_debt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.013573730033591554,
+        "ratio": "cash_lt",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.09972111553784861,
+        "ratio": "cfm",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.1551792828685259,
+        "ratio": "opmbd",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 0.15022369639000308,
+        "ratio": "roa",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 4.41726618705036,
+        "ratio": "intcov",
+        "verdict": "absent_in_filing"
+      },
+      {
+        "hand": null,
+        "ours": 5.5338129496402875,
+        "ratio": "intcov_ratio",
+        "verdict": "absent_in_filing"
+      }
+    ],
+    "primitive_differences": [
+      {
+        "primitive": "dp",
+        "source": null,
+        "state": 128000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xint",
+        "source": null,
+        "state": 695000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "cogs",
+        "source": null,
+        "state": 19999000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "xrd",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "pstk_p",
+        "source": null,
+        "state": 0.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "lt",
+        "source": null,
+        "state": 29174000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be",
+        "source": null,
+        "state": -2911000000.0,
+        "class": "source_absent"
+      },
+      {
+        "primitive": "be_p",
+        "source": null,
+        "state": -473000000.0,
+        "class": "source_absent"
+      }
+    ]
+  }
+]

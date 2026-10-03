@@ -1,0 +1,324 @@
+{
+  "code_matches_manifest": true,
+  "coverage_roles": {
+    "coverage": {
+      "composites": {
+        "fails": [
+          "piotroski_f",
+          "altman_z",
+          "ohlson_o",
+          "beneish_m"
+        ],
+        "n_pass": 0,
+        "total": 4
+      },
+      "extensions": {
+        "fails": [
+          "divyield_paid"
+        ],
+        "n_pass": 2,
+        "total": 3
+      },
+      "primary": {
+        "fails": [
+          "capei",
+          "bm",
+          "evm",
+          "pe_exi",
+          "pe_inc",
+          "dpr",
+          "peg_trailing",
+          "divyield",
+          "opmbd",
+          "opmad",
+          "gpm",
+          "ptpm",
+          "cfm",
+          "roa",
+          "roe",
+          "roce",
+          "efftax",
+          "aftret_invcapx",
+          "pretret_noa",
+          "pretret_earnat",
+          "gprof",
+          "int_debt",
+          "int_totdebt",
+          "invt_act",
+          "rect_act",
+          "debt_ebitda",
+          "curr_debt",
+          "profit_lct",
+          "ocf_lct",
+          "debt_capital",
+          "intcov",
+          "intcov_ratio",
+          "cash_ratio",
+          "quick_ratio",
+          "curr_ratio",
+          "cash_conversion",
+          "inv_turn",
+          "pay_turn",
+          "rect_turn",
+          "sale_invcap",
+          "sale_nwc",
+          "adv_sale"
+        ],
+        "n_pass": 24,
+        "total": 66
+      }
+    },
+    "coverage_univ_all_common": {
+      "composites": {
+        "fails": [
+          "piotroski_f",
+          "altman_z",
+          "ohlson_o",
+          "beneish_m"
+        ],
+        "n_pass": 0,
+        "total": 4
+      },
+      "extensions": {
+        "fails": [
+          "divyield_paid"
+        ],
+        "n_pass": 2,
+        "total": 3
+      },
+      "primary": {
+        "fails": [
+          "capei",
+          "bm",
+          "evm",
+          "pe_exi",
+          "pe_inc",
+          "ps",
+          "dpr",
+          "peg_trailing",
+          "divyield",
+          "opmbd",
+          "opmad",
+          "gpm",
+          "ptpm",
+          "cfm",
+          "roa",
+          "roe",
+          "roce",
+          "efftax",
+          "aftret_invcapx",
+          "pretret_noa",
+          "pretret_earnat",
+          "gprof",
+          "int_debt",
+          "int_totdebt",
+          "invt_act",
+          "rect_act",
+          "debt_ebitda",
+          "curr_debt",
+          "profit_lct",
+          "ocf_lct",
+          "fcf_ocf",
+          "dltt_be",
+          "debt_capital",
+          "intcov",
+          "intcov_ratio",
+          "cash_ratio",
+          "quick_ratio",
+          "curr_ratio",
+          "cash_conversion",
+          "at_turn",
+          "inv_turn",
+          "pay_turn",
+          "rect_turn",
+          "sale_invcap",
+          "sale_nwc",
+          "rd_sale",
+          "adv_sale"
+        ],
+        "n_pass": 19,
+        "total": 66
+      }
+    },
+    "coverage_univ_r3000p": {
+      "composites": {
+        "fails": [
+          "piotroski_f",
+          "altman_z",
+          "ohlson_o",
+          "beneish_m"
+        ],
+        "n_pass": 0,
+        "total": 4
+      },
+      "extensions": {
+        "fails": [
+          "divyield_paid"
+        ],
+        "n_pass": 2,
+        "total": 3
+      },
+      "primary": {
+        "fails": [
+          "capei",
+          "bm",
+          "evm",
+          "pe_exi",
+          "pe_inc",
+          "ps",
+          "pcf",
+          "dpr",
+          "peg_trailing",
+          "divyield",
+          "npm",
+          "opmbd",
+          "opmad",
+          "gpm",
+          "ptpm",
+          "cfm",
+          "roa",
+          "roe",
+          "roce",
+          "efftax",
+          "aftret_invcapx",
+          "pretret_noa",
+          "pretret_earnat",
+          "gprof",
+          "equity_invcap",
+          "debt_invcap",
+          "totdebt_invcap",
+          "int_debt",
+          "int_totdebt",
+          "invt_act",
+          "rect_act",
+          "debt_ebitda",
+          "curr_debt",
+          "profit_lct",
+          "ocf_lct",
+          "cash_debt",
+          "fcf_ocf",
+          "lt_ppent",
+          "dltt_be",
+          "debt_capital",
+          "intcov",
+          "intcov_ratio",
+          "cash_ratio",
+          "quick_ratio",
+          "curr_ratio",
+          "cash_conversion",
+          "at_turn",
+          "inv_turn",
+          "pay_turn",
+          "rect_turn",
+          "sale_equity",
+          "sale_invcap",
+          "sale_nwc",
+          "rd_sale",
+          "adv_sale"
+        ],
+        "n_pass": 11,
+        "total": 66
+      }
+    }
+  },
+  "coverage_snapshot_status": {
+    "gc3": "PENDING controller final publication and output-integrity verification",
+    "is_latest_universe": false,
+    "manifest_hash_alone_certifies_output_integrity": false,
+    "measured_manifest_sha256": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e",
+    "overlap_coverage": "provisional/invalid for final acceptance: Task2 partial publication overlapped validation"
+  },
+  "gates": {
+    "coverage": "FAIL",
+    "coverage_univ_all_common": "FAIL",
+    "coverage_univ_r3000p": "FAIL",
+    "handcheck": "FAIL",
+    "ranges": "FAIL",
+    "spearman": "FAIL"
+  },
+  "handcheck": {
+    "issuers": 20,
+    "pass": false,
+    "rows": 40,
+    "rule": "``n`` seeded linked member issuers (USD 10-K filers, issuer-primary line, no split between the 10-K and the\n    date), two month-end dates each: the first month-end on which each of the issuer's earliest and latest 10-Ks\n    2021-2025 is the state's lag-0 row (fiscal-year TTM path). For each, fetch the 10-K's primary document\n    (``sec_http``, <= 5 req/s), read its inline XBRL facts and recompute ``HAND_RATIOS`` from the filing's values\n    (``hand_items``) and the row's market inputs (me, prc, eps_adj); match = relative difference <= 1e-6.",
+    "summary": {
+      "absent_in_filing": 297,
+      "absent_in_ratios": 1,
+      "both_absent": 143,
+      "match": 999
+    }
+  },
+  "input_matches_manifest": true,
+  "input_sha256": "9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325",
+  "one_sided_evidence": "t4-r1-hand-attribution.json: keyed source primitive absence vs retained state; narrow extraction absence does not establish upstream corruption",
+  "receipt_summary": {
+    "attribution-2": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.1756,
+      "returncode": 0,
+      "run_seconds": 5.0,
+      "status": "completed"
+    },
+    "build": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.6231,
+      "returncode": 0,
+      "run_seconds": 146.1,
+      "status": "completed"
+    },
+    "extra-sourcecheck": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.082,
+      "returncode": 0,
+      "run_seconds": 1.0,
+      "status": "completed"
+    },
+    "final-attribution": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.1753,
+      "returncode": 0,
+      "run_seconds": 5.0,
+      "status": "completed"
+    },
+    "final-build": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.6282,
+      "returncode": 0,
+      "run_seconds": 135.1,
+      "status": "completed"
+    },
+    "final-handcheck": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.2876,
+      "returncode": 0,
+      "run_seconds": 29.0,
+      "status": "completed"
+    },
+    "handcheck": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.2848,
+      "returncode": 0,
+      "run_seconds": 25.0,
+      "status": "completed"
+    },
+    "source-cases": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.1577,
+      "returncode": 0,
+      "run_seconds": 2.0,
+      "status": "completed"
+    },
+    "validate": {
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.5433,
+      "returncode": 0,
+      "run_seconds": 19.0,
+      "status": "completed"
+    }
+  },
+  "supplementary_counts": {
+    "both_absent": 6,
+    "match": 59,
+    "source_absent": 15
+  }
+}

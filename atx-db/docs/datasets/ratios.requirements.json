@@ -1,5 +1,12 @@
 {
   "clock": "fundamentals strict < monthly month-end22UTC or daily prior-session22UTC; market close <= session",
+  "coverage_snapshot_status": {
+    "gc3": "PENDING controller final publication and output-integrity verification",
+    "is_latest_universe": false,
+    "manifest_hash_alone_certifies_output_integrity": false,
+    "measured_manifest_sha256": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e",
+    "overlap_coverage": "provisional/invalid for final acceptance: Task2 partial publication overlapped validation"
+  },
   "coverage_universe_manifest_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d",
   "formula_authorities": {
     "P/E": "https://finance.wharton.upenn.edu/~mrrobert/resources/FDM/fdm-20230823.pdf",
@@ -1397,7 +1404,10 @@
     "averages": "q0 and same-quarter prior-year q4; missing either -> NULL",
     "bases": "ratio denominator zero -> NULL; signed denominators allowed except PEG requires positive EPS endpoints",
     "calendar": "quarter offsets91.3125d +/-20; annual365.25d +/-30; fiscal changes may cause history nulls",
+    "coverage": "Missing history, absent annual records, ordinary missing primitives and stale/missing states remain eligible. Only explicit sector applicability and true zero denominators exclude; history insufficiency is ratio_history_missing.",
     "currency": "standardized USD; fx_converted retained",
+    "fiscal_pairing": "Quarter lag must match 4*(fyearq0-fyearq)+fqtr0-fqtr and same fyr as well as elapsed-day tolerance. Annual lag requires fyear progression/same fyr and preceding end gap350..380; end-date screen is not source duration certification, missing/transition paths NULL.",
+    "identity_classification": "Identity available_at and latest dated FINRA observation strictly before common cutoff: prior calendar session22UTC daily; month-end22UTC monthly. No all-time modal FINRA filter.",
     "known_conventions": "Missing deferred taxes, NCI, preferred stock and historical averages remain NULL; source-stage explicit reported zeros preserved.",
     "restatement": "latest per(cik,datadate) at each distinct visible clock; annual comparative10Q supported",
     "structural": "bank/insurer cogs and inventory only; missing observed inputs do not establish structural applicability"
@@ -1501,6 +1511,9 @@
     }
   },
   "producer_needs": {
+    "annual_duration_certification": [
+      "Task5/compustat_std: source-backed period_start/end or verified full-year/comparable-period flag, with source available_at; adjacent fiscal-year end dates alone are not duration certification"
+    ],
     "divyield": [
       "Task13: source-backed indicated dividend rate with announcement and class/currency basis"
     ],
@@ -1521,13 +1534,24 @@
     ],
     "unmatched_source_checks": [
       "Task5: source concept/source-default audit; keyed evidence t4-hand-attribution.json; absence in narrow source chains is not proof a primitive does not exist"
-    ]
+    ],
+    "roe_prior_history_case": {
+      "cik": 1817358,
+      "accession": "0001817358-22-000039",
+      "datadate": "2022-01-29",
+      "source_prior_txditc": 138703000,
+      "paired_prior_txditc": null,
+      "need": "Task5: reconcile retained fiscal history and source period certification; absence of comparable retained history is not proof primitive absent"
+    }
   },
   "rebuild_chain": "compustat_std build --fund-stage fundamentals_v11 --stage <standardized>; ratios build --std-stage <standardized>",
   "schema": "atx.ratios-requirements/v1",
-  "coverage_snapshot_status": {
-    "is_latest_universe": false,
-    "measured_manifest_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d",
-    "pending": "GC3 coverage refresh after final Task2 universe publication; controller coordinates one refresh. Intermediate universe updates do not relabel this snapshot."
+  "sourcecheck_scope": {
+    "both_absent_is_certification": false,
+    "main_extensions": 3,
+    "main_primary": 33,
+    "supplementary_primary": 2,
+    "unverified_composites": 4,
+    "unverified_primary": 31
   }
 }

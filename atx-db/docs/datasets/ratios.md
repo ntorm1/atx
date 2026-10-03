@@ -147,11 +147,11 @@ Daily macros share monthly formula SQL; daily fundamental cutoff is prior calend
 |ohlson_o|DOUBLE|ratio/score (cash_conversion: days)|Ohlson (1980) model 1 O = -1.32 - 0.407 ln(at, USD millions, undeflated) + 6.03 lt/at - 1.43 (act - lct)/at + 0.0757 lct/act - 1.72 [lt > at] - 2.37 ni/at - 1.83 oancf/lt + 0.285 [ni < 0 both years] - 0.521 (ni_t - ni_t-1)/(|ni_t| + |ni_t-1|) (latest fiscal year); compustat_std/market|a freshness; strict availability; missing actual input/history remains NULL|
 |beneish_m|DOUBLE|ratio/score (cash_conversion: days)|Beneish (1999) 8-variable M = -4.84 + 0.920 DSRI + 0.528 GMI + 0.404 AQI + 0.892 SGI + 0.115 DEPI - 0.172 SGAI + 4.679 TATA - 0.327 LVGI (fiscal years t and t-1; TATA = (ib - oancf)/at); compustat_std/market|a freshness; strict availability; missing actual input/history remains NULL|
 
-session_date/datadate/fy0_datadate:DATE; security_id/cik/fqtr/hist_days/me_lines:BIGINT; available_at/fund_available_at:TIMESTAMP UTC; fresh_q/fresh_a/fx_converted:BOOLEAN; market values:DOUBLE; other descriptors and ratio_missing_primitives:VARCHAR. Keys are(session_date,security_id), issuer states(cik,available_at). Source clocks and stale flags are retained. Missing averages require both actual prior-year/current balances; missing or zero denominator never becomes zero. ratio_undefined marks history/zero/sign exclusions; absent_items marks missing history, never structural proof.
+session_date/datadate/fy0_datadate:DATE; security_id/cik/fqtr/hist_days/me_lines:BIGINT; available_at/fund_available_at:TIMESTAMP UTC; fresh_q/fresh_a/fx_converted:BOOLEAN; market values:DOUBLE; other descriptors and ratio_missing_primitives:VARCHAR. Keys are(session_date,security_id), issuer states(cik,available_at). Source clocks and stale flags are retained. Missing averages require both actual prior-year/current balances; missing or zero denominator never becomes zero. ratio_undefined marks zero-denominator exclusions; ratio_history_missing records missing history separately; absent_items marks missing history, never structural proof.
 
 ## Measured yearly coverage
 
-Exact formula/primitive/producer mapping is ratios.requirements.json; ratios.coverage.json stores every eligible count, all-linked fraction, primitive count and source/universe hash. Eligibility uses only explicitbank/insurercogs/inventory applicability, declared zero/history/sign exclusions; observed absence stays missing. All-common/R3000 universes retain rows missing from ratios in denominators. Source unavailable counterparts are separately visible primary FAILs.
+Exact formula/primitive/producer mapping is ratios.requirements.json; ratios.coverage.json stores every eligible count, all-linked fraction, primitive count and source/universe hash. Eligibility uses only explicitbank/insurercogs/inventory applicability, declared zero-denominator exclusions; observed absence stays missing. All-common/R3000 universes retain rows missing from ratios in denominators. Source unavailable counterparts are separately visible primary FAILs.
 
 coverage; role totals {"composites": {"fails": ["piotroski_f", "altman_z", "ohlson_o", "beneish_m"], "n_pass": 0, "total": 4}, "extensions": {"fails": [], "n_pass": 3, "total": 3}, "primary": {"fails": ["evm", "pe_exi", "pe_inc", "peg_trailing", "divyield", "opmbd", "opmad", "gpm", "cfm", "roa", "roe", "roce", "aftret_invcapx", "pretret_noa", "pretret_earnat", "gprof", "int_debt", "int_totdebt", "invt_act", "rect_act", "debt_ebitda", "curr_debt", "profit_lct", "ocf_lct", "debt_capital", "intcov", "intcov_ratio", "cash_ratio", "quick_ratio", "curr_ratio", "cash_conversion", "inv_turn", "pay_turn", "rect_turn", "sale_invcap", "sale_nwc", "adv_sale"], "n_pass": 29, "total": 66}}
 
@@ -389,10 +389,361 @@ coverage_univ_r3000p; role totals {"composites": {"fails": ["piotroski_f", "altm
 
 ## Limits and rebuild
 
-No source-backed indicated dividend-rate/classEPS certification yet. Narrow inlineXBRL chains can miss issuer-custom concepts and upstream source defaults; handcheck exceptions remain FAIL with keyed primitive evidence. Ohlson uses nominal assets in millions without an unavailableGNPdeflator; CAPEI uses nominalNI. ModalFINRAline typing is a documented classification/vintage qualification. Quarter lag91.3125d +/-20 and annual365.25d +/-30 tolerances can make fiscal-calendar changes history-null. Range envelopes are diagnostics, without complete source-backed literature certification. No return statistics are computed.
+No source-backed indicated dividend-rate/classEPS certification yet. Narrow inlineXBRL chains can miss issuer-custom concepts and upstream source defaults; handcheck exceptions remain FAIL with keyed primitive evidence. Ohlson uses nominal assets in millions without an unavailableGNPdeflator; CAPEI uses nominalNI. Dated FINRAline typing uses the latest strictly visible observation. Quarter and annual date tolerances are supplemented by fiscal sequence/calendar screens; transition history stays NULL. Annual source-duration certification remains unavailable. Range envelopes are diagnostics, without complete source-backed literature certification. No return statistics are computed.
 
 Task5 chain: compustat_std build --fund-stage fundamentals_v11 --stage <standardized>; ratios build --std-stage <standardized>. Raw fundamentals is not a ratios input. Task5 owns expanded profitability/growth primitive matrix and source recovery; Task7/16 integrate only named verified formulas. Universe refinement requires later coverage refresh.
 
 Source manifest SHA256: 9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325; universe manifest SHA256: 33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d.
 
 Coverage snapshot update: Task 2 subsequently published an intermediate universe and will publish its final universe after the remaining status audit. The recorded 33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d coverage snapshot is therefore historical, not current universe coverage. GC3 refresh is pending the final Task 2 hash; the controller will coordinate one coverage refresh. No full ratio rebuild or relabeling of the earlier measurements was performed.
+
+
+## Fix round 1 ? review-T4-r0
+
+R1 addresses I1/I2/I3 locally; I4 remains open. 26 focused offline tests PASS. Missing retained history/FY0 is now in the coverage denominator and separately exposed in `ratio_history_missing`; only genuine zero denominators and explicit sector applicability exclude cells. Empty structural-mask mappings produce valid SQL. Observed missing-input wording no longer calls absence structural.
+
+Identity links and latest dated FINRA classification require `available_at < cutoff`, using strict prior-calendar-session22UTC daily and month-end22UTC monthly. Same-session newly known links cannot select earlier fundamentals. No all-time modal FINRA classification participates in eligibility. Missing dated FINRA evidence remains unknown, governed by the visible common-link contract; this is not independent historical class certification.
+
+Quarter pairing requires fiscal-quarter progression, fiscal-year consistency and unchanged fiscal calendar as well as elapsed-day tolerance. Annual pairing requires fiscal-year progression, unchanged calendar, and preceding end dates350?380days apart. Tests retain raw annual rows while excluding a335day comparative and a fiscal-calendar transition from annual history pairing. Rejected annual history makes annual/fallback ratios NULL; missing history remains eligible. The standardized producer does not expose period start/duration: this end-date screen is **not source-backed full-period duration certification**. Task5 must publish dated period start/end or a verified full-period/comparability flag. Missing certification remains an explicit consumer qualification, not an equivalence claim.
+
+Ohlson still uses nominal assets/OCF proxy; complete formula/composite source-model certification remains unverified. No hard gate is waived. Main independent arithmetic covers33primary+3extensions; two additional existing-primitive formulas (`aftret_equity`, `profit_lct`) are checked separately by t4-r1-extra-sourcecheck.py.31primary and4composites remain unverified. Both-absent cells never certify formulas. No broader source discovery was performed.
+
+The guarded R1 rebuild/validate/handcheck/extra-sourcecheck commands use `run_memory_guarded.py --job-gb`1.0/.8/.6/.6 respectively, receipt/stdout/stderr paths `logs/t4-r1-{build,validate,handcheck,extra-sourcecheck}.*`, with child commands `-m atx_db.alpha_panel.ratios build --buckets32`, `validate`, `handcheck --n20`, and `../.superpowers/sdd/tier1-v4/t4-r1-extra-sourcecheck.py`. Working directory C:/atx/atx-db; PYTHONPATH=C:/atx/atx-db/src; OPENBLAS_NUM_THREADS=1. Offline command from C:/atx: `atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' atx-db/tests/test_alpha_panel_ratios.py -q`;26passed in19.44s.
+
+GC3 remains pending. R1 validation overlapped Task2 partial output publication: its all-common/R3000 measurements are **provisional/invalid for final acceptance**, regardless of recorded manifest hash. The controller must refresh against completed final output-integrity hashes. Earlier33a15585 measurements remain historical; neither snapshot is relabeled latest.
+
+Exact latest evidence follows (t4-r1-evidence.json); previous sections describe the pre-review snapshot:
+
+
+The four previously mismatching issuer-date cash cases were local independent-extraction defects: add actually reported MarketableSecuritiesCurrent or use explicitly reported CashCashEquivalentsAndShortTermInvestments. Retained t4-r1-source-cases.json records exact facts (no source-value fitting); the final module fixes these chains and fixtures cover priority/no double counting. Final build preserves source-hash lineage; main sourcecheck was rerun. Coverage/range/correlation formulas were unchanged by this sourcecheck-only correction, so their prior R1 measurements remain applicable with the stated universe invalidity.
+
+Task5 source/history gaps and Task13 indicated dividends remain open. Primary coverage is24/66 member; extensions2/3; composites0/4. Correlations remain below.99 and unsupported/range failures remain open. Provisional all-common/R3000 counts19/66 and11/66 are not valid final acceptance evidence. Preliminary attribution execution from C:/atx failed on a relative artifact path (exit1); successful attribution-2 used C:/atx/atx-db.
+
+```json
+{
+  "code_matches_manifest": true,
+  "input_matches_manifest": true,
+  "input_sha256": "9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325",
+  "coverage_snapshot_status": {
+    "is_latest_universe": false,
+    "gc3": "PENDING controller final publication and output-integrity verification",
+    "overlap_coverage": "provisional/invalid for final acceptance: Task2 partial publication overlapped validation",
+    "measured_manifest_sha256": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e",
+    "manifest_hash_alone_certifies_output_integrity": false
+  },
+  "gates": {
+    "coverage": "FAIL",
+    "coverage_univ_all_common": "FAIL",
+    "coverage_univ_r3000p": "FAIL",
+    "handcheck": "FAIL",
+    "ranges": "FAIL",
+    "spearman": "FAIL"
+  },
+  "coverage_roles": {
+    "coverage": {
+      "composites": {
+        "fails": [
+          "piotroski_f",
+          "altman_z",
+          "ohlson_o",
+          "beneish_m"
+        ],
+        "n_pass": 0,
+        "total": 4
+      },
+      "extensions": {
+        "fails": [
+          "divyield_paid"
+        ],
+        "n_pass": 2,
+        "total": 3
+      },
+      "primary": {
+        "fails": [
+          "capei",
+          "bm",
+          "evm",
+          "pe_exi",
+          "pe_inc",
+          "dpr",
+          "peg_trailing",
+          "divyield",
+          "opmbd",
+          "opmad",
+          "gpm",
+          "ptpm",
+          "cfm",
+          "roa",
+          "roe",
+          "roce",
+          "efftax",
+          "aftret_invcapx",
+          "pretret_noa",
+          "pretret_earnat",
+          "gprof",
+          "int_debt",
+          "int_totdebt",
+          "invt_act",
+          "rect_act",
+          "debt_ebitda",
+          "curr_debt",
+          "profit_lct",
+          "ocf_lct",
+          "debt_capital",
+          "intcov",
+          "intcov_ratio",
+          "cash_ratio",
+          "quick_ratio",
+          "curr_ratio",
+          "cash_conversion",
+          "inv_turn",
+          "pay_turn",
+          "rect_turn",
+          "sale_invcap",
+          "sale_nwc",
+          "adv_sale"
+        ],
+        "n_pass": 24,
+        "total": 66
+      }
+    },
+    "coverage_univ_all_common": {
+      "composites": {
+        "fails": [
+          "piotroski_f",
+          "altman_z",
+          "ohlson_o",
+          "beneish_m"
+        ],
+        "n_pass": 0,
+        "total": 4
+      },
+      "extensions": {
+        "fails": [
+          "divyield_paid"
+        ],
+        "n_pass": 2,
+        "total": 3
+      },
+      "primary": {
+        "fails": [
+          "capei",
+          "bm",
+          "evm",
+          "pe_exi",
+          "pe_inc",
+          "ps",
+          "dpr",
+          "peg_trailing",
+          "divyield",
+          "opmbd",
+          "opmad",
+          "gpm",
+          "ptpm",
+          "cfm",
+          "roa",
+          "roe",
+          "roce",
+          "efftax",
+          "aftret_invcapx",
+          "pretret_noa",
+          "pretret_earnat",
+          "gprof",
+          "int_debt",
+          "int_totdebt",
+          "invt_act",
+          "rect_act",
+          "debt_ebitda",
+          "curr_debt",
+          "profit_lct",
+          "ocf_lct",
+          "fcf_ocf",
+          "dltt_be",
+          "debt_capital",
+          "intcov",
+          "intcov_ratio",
+          "cash_ratio",
+          "quick_ratio",
+          "curr_ratio",
+          "cash_conversion",
+          "at_turn",
+          "inv_turn",
+          "pay_turn",
+          "rect_turn",
+          "sale_invcap",
+          "sale_nwc",
+          "rd_sale",
+          "adv_sale"
+        ],
+        "n_pass": 19,
+        "total": 66
+      }
+    },
+    "coverage_univ_r3000p": {
+      "composites": {
+        "fails": [
+          "piotroski_f",
+          "altman_z",
+          "ohlson_o",
+          "beneish_m"
+        ],
+        "n_pass": 0,
+        "total": 4
+      },
+      "extensions": {
+        "fails": [
+          "divyield_paid"
+        ],
+        "n_pass": 2,
+        "total": 3
+      },
+      "primary": {
+        "fails": [
+          "capei",
+          "bm",
+          "evm",
+          "pe_exi",
+          "pe_inc",
+          "ps",
+          "pcf",
+          "dpr",
+          "peg_trailing",
+          "divyield",
+          "npm",
+          "opmbd",
+          "opmad",
+          "gpm",
+          "ptpm",
+          "cfm",
+          "roa",
+          "roe",
+          "roce",
+          "efftax",
+          "aftret_invcapx",
+          "pretret_noa",
+          "pretret_earnat",
+          "gprof",
+          "equity_invcap",
+          "debt_invcap",
+          "totdebt_invcap",
+          "int_debt",
+          "int_totdebt",
+          "invt_act",
+          "rect_act",
+          "debt_ebitda",
+          "curr_debt",
+          "profit_lct",
+          "ocf_lct",
+          "cash_debt",
+          "fcf_ocf",
+          "lt_ppent",
+          "dltt_be",
+          "debt_capital",
+          "intcov",
+          "intcov_ratio",
+          "cash_ratio",
+          "quick_ratio",
+          "curr_ratio",
+          "cash_conversion",
+          "at_turn",
+          "inv_turn",
+          "pay_turn",
+          "rect_turn",
+          "sale_equity",
+          "sale_invcap",
+          "sale_nwc",
+          "rd_sale",
+          "adv_sale"
+        ],
+        "n_pass": 11,
+        "total": 66
+      }
+    }
+  },
+  "handcheck": {
+    "issuers": 20,
+    "pass": false,
+    "rows": 40,
+    "rule": "``n`` seeded linked member issuers (USD 10-K filers, issuer-primary line, no split between the 10-K and the\n    date), two month-end dates each: the first month-end on which each of the issuer's earliest and latest 10-Ks\n    2021-2025 is the state's lag-0 row (fiscal-year TTM path). For each, fetch the 10-K's primary document\n    (``sec_http``, <= 5 req/s), read its inline XBRL facts and recompute ``HAND_RATIOS`` from the filing's values\n    (``hand_items``) and the row's market inputs (me, prc, eps_adj); match = relative difference <= 1e-6.",
+    "summary": {
+      "absent_in_filing": 297,
+      "absent_in_ratios": 1,
+      "both_absent": 143,
+      "match": 999
+    }
+  },
+  "supplementary_counts": {
+    "match": 59,
+    "source_absent": 15,
+    "both_absent": 6
+  },
+  "one_sided_evidence": "t4-r1-hand-attribution.json: keyed source primitive absence vs retained state; narrow extraction absence does not establish upstream corruption",
+  "receipt_summary": {
+    "build": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.6231,
+      "run_seconds": 146.1
+    },
+    "validate": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.5433,
+      "run_seconds": 19.0
+    },
+    "handcheck": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.2848,
+      "run_seconds": 25.0
+    },
+    "extra-sourcecheck": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.082,
+      "run_seconds": 1.0
+    },
+    "final-build": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.6282,
+      "run_seconds": 135.1
+    },
+    "final-handcheck": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.2876,
+      "run_seconds": 29.0
+    },
+    "attribution-2": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.1756,
+      "run_seconds": 5.0
+    },
+    "source-cases": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.1577,
+      "run_seconds": 2.0
+    },
+    "final-attribution": {
+      "status": "completed",
+      "returncode": 0,
+      "cap_hit": false,
+      "native_peak_job_memory_gb": 0.1753,
+      "run_seconds": 5.0
+    }
+  }
+}
+```
+
+Remaining one-sided ROE case: CIK1817358, accession0001817358-22-000039, FY2022-01-29, session2022-03-31. Filing prior TXDITC138.703m is present; eligible prior annual-state TXDITC is NULL. This is an unavailable retained/comparable annual-history path, not a demonstrated arithmetic defect or proof that the issuer primitive is absent. Task5 must reconcile source-history/period certification; no current-only average or tax plug is introduced.297 narrow-chain source absences remain uncertified. Final main arithmetic:999matches,143both-absent,297source-absent,1ratio-absent,0numerical mismatches; supplementary80cells:59matches,6both-absent,15source-absent.
