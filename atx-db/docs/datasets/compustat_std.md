@@ -9,8 +9,8 @@ Built from the fundamentals stage (`--fund-stage`, default `fundamentals_v10`; t
 
 | file | rows (build 2026-10-03) | bytes | keys | content |
 | --- | --- | --- | --- | --- |
-| `compustat_std/fundq.parquet` | 747,073 (17,010 CIKs) | 70,163,590 | (cik, datadate, fyearq, fqtr, accession) | filing and restatement vintages |
-| `compustat_std/funda.parquet` | 235,563 (15,875 CIKs) | 45,917,402 | (cik, datadate, fyear, accession) | annual-form base periods and their restatement vintages: annual items + 81 catalog fields |
+| `compustat_std/fundq.parquet` | 747,073 (17,010 CIKs) | 70,193,167 | (cik, datadate, fyearq, fqtr, accession) | filing and restatement vintages |
+| `compustat_std/funda.parquet` | 235,563 (15,875 CIKs) | 45,919,123 | (cik, datadate, fyear, accession) | annual-form base periods and their restatement vintages: annual items + 81 catalog fields |
 | `compustat_std/validation.json` | | | | gate measurements (coverage, rdq, sum4, balance, fsds, cutoff, handcheck) |
 | `compustat_std/manifest.json` | | | | schema, code SHA-256, file SHA-256, input manifest SHA-256, counts, `gate_status` |
 
@@ -339,16 +339,22 @@ with the derivation and is not an independent annual-source benchmark.
 
 | year | issuer-quarters | atq = ltq + teqq (gate) | with temporary equity (info) | ltq or teqq missing |
 | --- | --- | --- | --- | --- |
-| 2020 | 10,375 | 0.9124 | 0.9427 | 39 |
-| 2021 | 11,272 | 0.9020 | 0.9424 | 40 |
-| 2022 | 10,387 | 0.9195 | 0.9599 | 42 |
-| 2023 | 9,700 | 0.9280 | 0.9635 | 31 |
-| 2024 | 9,829 | 0.9287 | 0.9688 | 29 |
-| 2025 | 9,614 | 0.9245 | 0.9688 | 22 |
+| 2020 | 10,375 | 0.9121 | 0.9415 | 39 |
+| 2021 | 11,272 | 0.9026 | 0.9422 | 40 |
+| 2022 | 10,387 | 0.9200 | 0.9602 | 42 |
+| 2023 | 9,700 | 0.9280 | 0.9632 | 31 |
+| 2024 | 9,829 | 0.9287 | 0.9682 | 29 |
+| 2025 | 9,614 | 0.9244 | 0.9685 | 22 |
 
-Gate (atq = ltq + teqq within 0.5% on >= 97%): FAIL. Temporary equity is neither liability nor permanent equity;
-with the same period's latest visible catalog temporary-equity term the share is 0.9424-0.9688.
-Upstream v10 balance/history issues remain for Task 5; the information term never uses another datadate.
+Gate (atq = ltq + teqq within 0.5% on >= 97%): FAIL. The temporary-equity information term uses the same
+period's latest visible catalog row. Final shares are 0.9026-0.9287, or 0.9415-0.9685 with temporary equity.
+A missing-old-history component bug was fixed: derived equity moves by actual published stock changes.
+The deterioration from initial filing-only balances is attributable to 554 base-pass/restatement-fail periods
+whose visible upstream stock history also fails: 552 USD and 2 FX periods. All have complete history and stage
+components match the failing history within the same 0.5% tolerance. Within this deterioration subset,
+no complete passing history becomes a failing reconstruction. Case keys/queries: `.superpowers/sdd/tier1-v4/t3-fix1-balance-attribution.py` and its JSON.
+Task 5 must verify upstream facts, concepts and clocks before repairing these discrepancies; no balancing plugs
+or gate waiver. Original Q4 and mezzanine issues also remain.
 
 ### Other gates
 
@@ -363,23 +369,22 @@ Upstream v10 balance/history issues remain for Task 5; the information term neve
 
 ```bash
 cd atx-db; export PYTHONPATH=src OPENBLAS_NUM_THREADS=1      # every command under the memory guard
-G="../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60"
+G="../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 1.0 --wait-minutes 60"
 python $G -- python -m atx_db.alpha_panel.compustat_std build --fund-stage fundamentals_v10 --earn-stage earnings_calendar --buckets 32
 python $G -- python -m atx_db.alpha_panel.compustat_std validate     # coverage rdq sum4 balance fsds
 python $G -- python -m atx_db.alpha_panel.compustat_std cutoff       # 0 differences required
 python $G -- python -m atx_db.alpha_panel.compustat_std handcheck    # network: SEC via atx_db.sec_http (<= 5 req/s)
 ```
 
-Measured: build 67 s, peak 0.69 GiB (guard cap 0.8 GiB; DuckDB 450 MB; 8 CIK buckets); validate 37 s / 0.57 GiB;
-cutoff 15 s / 0.51 GiB; handcheck 22 s / 0.12 GiB. Scratch `_tmp/compustat_std/facts.parquet` (33 MB, the prepared
-Company Facts subset) is kept for the cutoff check.
+Measured final publication: build 189.2 s, peak 0.7617 GiB (guard cap 1.0 GiB; DuckDB 450 MB; default 32 CIK buckets); validate 48.8 s at 0.8 GiB cap; cutoff 17.7 s at 0.8 GiB cap. Handcheck 28 s at 0.8 GiB cap. Scratch `_tmp/compustat_std/facts.parquet` (33 MB, the prepared Company Facts subset) is kept for the cutoff check. An earlier 0.8 GiB build exhausted native memory during final copy, so the registry requests 1.0 GiB.
 
 ## Known limits
 
 * Later filings that change older quarterly-history values emit additional fundq/funda vintages. Values supported
   by history move by the visible delta from the base filing; flows use four-quarter deltas, YTD uses visible
   quarters, and EPS/IB/share facts are recomputed. Other catalog fields and share/debt descriptors retain base
-  values where the upstream history has no corresponding item. FX restatements retain the base conversion rates.
+  values where the upstream history has no corresponding item. Derived equity moves with the actual published
+  component changes, including components first observed in history after the base. FX restatements retain the base conversion rates.
 * Quarterly items inherit the fundamentals stage's derivations (discrete quarter = 3-month fact, else YTD
   difference): filer tagging errors in a Q4 3-month fact pass through.
 * `cshoq` for multi-class issuers: Company Facts has no dimensional dei counts, so the balance-sheet or weighted-

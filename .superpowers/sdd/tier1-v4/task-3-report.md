@@ -544,3 +544,44 @@ Changed committed paths: `atx-db/src/atx_db/alpha_panel/compustat_std.py`, `atx-
 Sources landed: none, 0 raw bytes. Handcheck reads existing public SEC EDGAR primary filing documents through `sec_http`, <=5 requests/s; no external licensed data or new acquisition cadence. Disk published parquet 116,080,992 bytes (~110.7 MiB), plus validation/manifest and retained guarded scratch. Scratch facts support cutoff rebuilding; bucketed build uses 32 buckets at 450 MB DuckDB.
 
 Remaining qualifications: restatement values supported by quarterly_history move by visible deltas; fields without corresponding history (other catalog/share/debt descriptors) retain base values. FX restatements retain base conversion rates. Four-quarter annual derivation shares history with the sum4 metric, so sum4 is partly non-independent. The upstream v10 Q4 and mezzanine/balance/history issues remain explicitly FAIL and route to Task 5 under amended T3-a; rdq calendar coverage routes to Task 9. Task 4 can consume the documented stable schema now. No gate was weakened beyond the explicit T3-b ruling.
+
+### Final reconstruction correction, attribution and publication (supersedes preliminary fix-round measurements)
+
+Additional tested implementation commit: `2d2c5af5` (fix(compustat): align restated equity with newly observed stock components). Earlier fix commits: `791767cd` and `dc68f3bf`; original task commits: `d9c48999`, `bda46f04`. Final report/docs commit is returned in the controller contract.
+
+The controller requested attribution of the worse balance gate. Initial focused checks found 39 complete USD history periods that balanced while the reconstruction failed. Cause: a stock first observed in history moved its published stock column but derived ceq/teq/intan moved only when an old history value existed. Fixed by applying the actual published stock change to each defined derived component, including first observations. This is component bookkeeping, not an assets-minus-liabilities balancing plug. The fixture explicitly has base MIB 50 with no old history, new MIB 60, and asserts revised TEQ 470 with revised SEQ 410.
+
+The rdq gate additionally verifies clock provenance: only `fsds_accepted_utc` provides an acceptance ET date; modeled or unknown clocks fall back to `filed`. A delayed conservative item clock cannot extend the filing-date acceptance window. The new offline test covers modeled fc1 clocks.
+
+Final test command from `C:/atx`: `$env:PYTHONPATH="C:/atx/atx-db/src"; $env:OPENBLAS_NUM_THREADS="1"; atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' atx-db/tests/test_alpha_panel_compustat_std.py -q` -> `16 passed in 9.80s`.
+
+Final publication/measurements used stable committed source, all sequentially guarded. The build cap is now 1.0 GiB (allowed ceiling), overriding the preliminary section's 0.8 GiB maximum. Default buckets and registry build argument are 32; registry guard is 1.0. The first reconstruction-corrected build at 0.8 GiB failed during final atomic copy (205.2 s, 1 native cap-hit event, returncode 1). A 1.0 GiB retry completed (211.2 s); the stable-source publication below then completed with matching source SHA.
+
+```powershell
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 1.0 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-build.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-build.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-build.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std build --fund-stage fundamentals_v10 --earn-stage earnings_calendar --buckets 32
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-validate.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-validate.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-validate.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std validate
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-cutoff.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-cutoff.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-cutoff.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std cutoff
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-balance-attribution.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-balance-attribution.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-balance-attribution.err.log --quiet -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t3-fix1-balance-attribution.py
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-diagnostics.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-diagnostics.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-publish-diagnostics.err.log --quiet -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t3-fix1-diagnostics.py
+```
+
+Final publication: build returncode 0, 189.2 s, peak 0.7617 GiB, no native cap hit. Module bytes SHA matches the manifest: `true`. Rows/CIKs/clocks unchanged; final fundq 70,193,167 bytes and funda 45,919,123 bytes (116,112,290 published parquet bytes). Coverage, FSDS and sum4 measurements remain as in the preliminary fix table. Network handcheck from the resume phase remains valid for unchanged first-reported filing rows (30 issuer-quarters, 0 mismatches). Final cutoff: 19,956 rows /1,691,724 cells, 0 row-set and 0 cell differences. Schema audit remains all zero for duplicates, nonannual funda base leaks, absent annual bases, and backdated restatements.
+
+Final original acceptance criteria remain **5 PASS / 3 FAIL**. Balance final per-year shares below supersede the preliminary table; rdq same-date .9015-.9459 (strict .8500-.9008), saleq sum4 .9655-.9797 and niq .9697-.9847 remain FAIL against unchanged thresholds.
+
+| year | balance | balance + temporary equity (information) |
+| --- | --- | --- |
+| 2020 | 0.9121 | 0.9415 |
+| 2021 | 0.9026 | 0.9422 |
+| 2022 | 0.9200 | 0.9602 |
+| 2023 | 0.9280 | 0.9632 |
+| 2024 | 0.9287 | 0.9682 |
+| 2025 | 0.9244 | 0.9685 |
+
+Attribution results on linked member issuer-periods 2020-2025: 39,271 latest filing rows (36,479 balance passes) and 22,135 latest restatement rows (19,731 passes). Among **554 periods that passed their own latest base filing but fail their latest restatement**, **552 USD +2 FX** have complete visible history and match its already-failing stock/equity values within the same 0.5% tolerance. Within these 554 deterioration cases, there are **0 incomplete-history cases** and **0 complete passing-history cases made to fail by reconstruction**. The missing-old-history bug is closed; the remaining deterioration reflects visible upstream stock-history inconsistencies, not an assumed blanket upstream waiver.
+
+All 554 reproducible `(cik, datadate, accession, currency)` keys are saved under `upstream_case_keys` in `.superpowers/sdd/tier1-v4/t3-fix1-balance-attribution.json`, with diagnostic SQL in the sibling `.py` and representative numeric examples. Examples: USD CIK 1349929 /2020-12-31 /0001493152-22-008085; EUR CIK 1002242 /2022-12-31 /0001554855-25-000286 (base spot 1.0698); KRW CIK 1445930 /2022-12-31 /0001193125-25-094961 (base spot .0007935374311606278). Both FX periods have complete reporting-currency stock history, converted using the documented base spot; that history itself fails and the published components match it.
+
+Controller routing: carry these demonstrated upstream stock/history inconsistencies to Task 5's balance/history remit alongside the original Q4 and mezzanine issues. Task 5 must verify source values, concept choice, fiscal period and source/availability clocks before repair; do not introduce balancing plugs. No acceptance gate is waived. rdq residual remains Task 9. Unmapped catalog/share/debt history and retained base FX conversion policies remain the documented stage qualifications.
+
+Final changed paths remain the Task 3 module, covering test, dataset documentation, registry stub and report. No foreign-dirty or other-task path was edited/staged. The final report/docs commit is reported separately in the final controller contract.
