@@ -48,7 +48,49 @@
         "first_run_seconds": 19.6
       }
     },
-    "Release": null
+    "Release": {
+      "outputs": {
+        "u_orientations_json_sha256": "38115194d4d8b2d31b768343b84644860448d823640eaed557ed2794daf22cfe",
+        "fit_admission_decisions_sha256": "71b47e8707040e027f2a878533eca8deeb75d1da11a8087175ac866192e75f97",
+        "fit_weights_sha256": "d222c8769b4b6fa65e3eeda4268fcb7a7c1c191c7fe6ed100e6d316a7815f13e",
+        "w_combined_f64_sha256": "1f7ac0a8c6f4b5453b8fa0110f5a033b7f5b1af63e1d6f34d38650b067d369af",
+        "nav_primary_daily_csv_sha256": "eb385a1558cba831ce6fbf425f412f67d23eb71204dcaa9e31763c0160720227"
+      },
+      "primary_scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "planted": {
+        "planted_a": {
+          "mean": 0.028643040293040295,
+          "standard_error": 0.01883831341835128,
+          "t": 1.5204673399869106,
+          "planted": 0.04406974726037816,
+          "planted_t": 2.3393679827753457,
+          "z": -0.8189006427884352,
+          "band_se": 2.0,
+          "within_band": true
+        },
+        "planted_b": {
+          "mean": 0.010685531135531133,
+          "standard_error": 0.029983768293501994,
+          "t": 0.35637719151688063,
+          "planted": 0.04491101333227986,
+          "planted_t": 1.4978441966553238,
+          "z": -1.1414670051384432,
+          "band_se": 2.0,
+          "within_band": true
+        }
+      },
+      "recorded": {
+        "git_head": "506ea123ed7e928d4585f1376610c4693bba91eb",
+        "bin": "C:/atx-wt/pool-2/build-equity-rel/bin",
+        "exe_sha256": {
+          "ic": "ea370cecbc67d8481491b45f874d8df48a7efcda2ab2500170a3f01d6d01f051",
+          "nav": "93ea323ea02817ef8c7b6c84f304332718bc7b3ed6e46a6c61f7a96dc5b266cc"
+        },
+        "python": "3.12.2",
+        "numpy": "1.26.4",
+        "first_run_seconds": 12.6
+      }
+    }
   },
   "superseded_v1": {
     "fields_manifest_sha256": "dbcacd2e79eff39f2d8367ebb89aad3e3e151350782a5bce9c4bcb60665e8971",
