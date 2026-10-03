@@ -30,7 +30,9 @@
 #include "atx/engine/eval/hac.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
 #include "atx/engine/parallel/lockstep_grid.hpp" // v8 D-1: books on a pool, grid spec
+#include "build_provenance.hpp"  // P9 C1: summary.json producer identity
 #include "strategy_holdings.hpp" // v7 W4: the f64 holdings layout
+#include "strategy_risk_target.hpp" // P9 C1: each book's leverage rule
 #include "strategy_nav_replay_detail.hpp"
 #include "strategy_target_replay_detail.hpp"
 #include "strategy_nav_v7.hpp" // platform-v7 L4 hook (one seam object)
@@ -49,7 +51,9 @@ constexpr f64 inf = std::numeric_limits<f64>::infinity();
 constexpr i64 day_ns = 86'400'000'000'000LL;
 constexpr i64 hour_ns = 3'600'000'000'000LL;
 constexpr usize max_dates = 4096, max_names = 20000;
-constexpr usize max_scenarios = 8; // books run in lockstep by replay_nav_scenarios
+// Books run in lockstep by replay_nav_scenarios (P9 C1: 16, the main books and the capacity
+// books of --capacity-curve in one lockstep; 8 before).
+constexpr usize max_scenarios = 16;
 constexpr usize max_book_workers = 64; // NavReplayConfig::book_workers
 constexpr u64 max_grid_file_bytes = 1ULL << 20;
 constexpr u64 max_event_cap = 1ULL << 24;
@@ -281,6 +285,13 @@ struct Book {
   RateStatistics rates; // rate per-name-v1 only
   NavReplayResult result;
   std::unique_ptr<Trace> trace; // the observed book of --emit-holdings only
+  // P9 C1 (DEC-10): the book's own leverage rule state (null under a fixed leverage) and v7
+  // state (null without the v7 seam), both made on the calling thread before the books run;
+  // its label ("<trading id>+<financing id>") and whether it is a capacity book (no records).
+  std::string label;
+  bool capacity{};
+  std::unique_ptr<risk_target::BookLeverage> leverage;
+  std::unique_ptr<v7::BookState> v7_state;
 };
 
 // The shared per-session liquidity cache: always under rate per-name-v1 (its rates read
@@ -319,6 +330,14 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
   if (!valid_id(s.id) || !cost_ok || !valid_financing(s.financing) || !s.stale_exit_sessions ||
       s.stale_exit_sessions > max_dates)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: invalid scenario");
+  // P9 C1 (DEC-10): a leverage rule other than fixed-v1 sets aim-partial-v5's aim leverage.
+  const auto law = cfg.leverage.law;
+  if ((law != NavLeverageLaw::Fixed && law != NavLeverageLaw::RiskTargetV1 &&
+       law != NavLeverageLaw::VolTargetV1) ||
+      (law != NavLeverageLaw::Fixed && cfg.target.rule != TargetReplayRule::AimPartialV5))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: a leverage rule (risk-target-v1, vol-target-v1) needs "
+                   "aim-partial-v5, whose aim is aim_leverage x desired");
   if (!std::isfinite(cfg.initial_nav) || cfg.initial_nav <= 0 || cfg.liquidity_window < 2 ||
       cfg.liquidity_window > max_dates || cfg.min_vol_pairs < 2 ||
       cfg.min_vol_pairs > cfg.liquidity_window || !cfg.max_events ||
@@ -787,7 +806,10 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
 // still apply); `out` receives the decision's construction record. With
 // locate-in-aim, shared.no_short (the special tier at d) zeroes negative aims first.
 // v8 adv-hold-v1: the cap's inputs are every member's raw-dollar ADV the EXECUTE of this
-// decision's fills reads (window_liquidity at session d + 1: rows <= d) and the run's NAV.
+// decision's fills reads (window_liquidity at session d + 1: rows <= d) and the book's NAV:
+// the run's initial NAV, or for a capacity book (P9 C1) its multiple's, m x initial NAV (the
+// NAV-m book's cap; Ruling E-15 read the initial NAV at every multiple). replay_books forms one
+// construction per multiple (cfg is the group's first book).
 // v8 X inv-vol-v1: its input is the sigma of the same window.
 co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                      usize d, Construction& shared, ConstructionDay& out) {
@@ -797,7 +819,7 @@ co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplay
     for (usize i = 0; i < x.instruments; ++i)
       if (x.member[d * x.instruments + i])
         adv[i] = window_liquidity(x, x.volume, cfg, d + 1, i).adv;
-    shared.state.nav = cfg.initial_nav;
+    shared.state.nav = v7::nav_multiple(cfg.scenario) * cfg.initial_nav;
   }
   // v8 X inv-vol-v1: every member's execution volatility for this decision's fills (the same
   // window, NaN where the scenario's fallback sigma applies; the book-independent window).
@@ -915,6 +937,15 @@ struct PlanInputs {
   // v8 Y-5 two-speed-v1 (the replay only; empty otherwise): F entering this decision's step,
   // which a book under a leverage scaler carries at its own scale (Ruling PM8-16 #10).
   std::span<const f64> two_speed_fast;
+  // P9 C1 (DEC-10), the replay only (null otherwise: the loose v7 seam plans): the book's
+  // leverage rule state, its v7 state, its label, where its scored leverage records go (null:
+  // not scored) and the decision's shared liquidity (cost_v2::decision_liquidity; null when
+  // the decision does not rebalance or no book has v7 state).
+  risk_target::BookLeverage* leverage{};
+  v7::BookState* book_state{};
+  std::string_view label{};
+  std::vector<NavLeverageRecord>* records{};
+  const cost_v2::DecisionLiquidity* liquidity{};
 };
 // CONSTRUCTION-RULE DISPATCH SITE, shared by the NAV replay (plan_decision) and the
 // daily decide path (detail::nav_decide), so a rule added here runs in both. `planned`
@@ -925,10 +956,27 @@ co::Status plan_weights(const PlanInputs& p, f64 spent, std::span<const f64> rat
                         const std::vector<f64>& current, std::vector<f64>& planned, f64 nav_post,
                         std::span<f64> rule, TargetReplayDay& plan, NavReplayDay& day) {
   std::copy(current.begin(), current.end(), planned.begin());
-  // L4/W1 hook: detail::update_weights unless the v7 extension (aim-partial-v6, spo-v1) is
-  // installed; spo-v1 also reads the decision's borrow tiers and decide --locates.
-  ATX_TRY_VOID(v7::plan(p.x, p.cfg, p.d, p.rebalance, spent, nav_post, p.desired, planned, plan,
-                        rates, p.tiers.tier, p.no_locate, p.two_speed_fast));
+  if (p.leverage || p.book_state) {
+    // P9 C1 (DEC-10): a replay book's own leverage rule (L_t from its current weights, the
+    // target it hands on), then its own v7 rule at that leverage (base: its unscaled L).
+    const NavReplayConfig* cfg = &p.cfg;
+    const std::vector<f64>* desired = &p.desired;
+    f64 base = nan;
+    if (p.leverage) {
+      ATX_TRY(desired, p.leverage->plan(p.x, p.cfg, p.d, p.rebalance, p.label, current,
+                                        p.desired, p.two_speed_fast, p.records));
+      cfg = &p.leverage->config();
+      base = p.cfg.target.aim_leverage;
+    }
+    ATX_TRY_VOID(v7::plan_book(p.book_state, p.x, *cfg, base, p.d, p.rebalance, spent, nav_post,
+                               *desired, planned, plan, rates, p.tiers.tier, p.no_locate,
+                               p.liquidity));
+  } else {
+    // L4/W1 hook: detail::update_weights unless the v7 extension (aim-partial-v6, spo-v1) is
+    // installed; spo-v1 also reads the decision's borrow tiers and decide --locates.
+    ATX_TRY_VOID(v7::plan(p.x, p.cfg, p.d, p.rebalance, spent, nav_post, p.desired, planned,
+                          plan, rates, p.tiers.tier, p.no_locate, p.two_speed_fast));
+  }
   if (!rule.empty()) std::copy(planned.begin(), planned.end(), rule.begin());
   if (p.cfg.scenario.financing.block_special_shorts)
     block_special_plan(p.tiers, p.no_locate, current, planned, nav_post, day);
@@ -983,7 +1031,7 @@ void anchor_order(NameState& s, usize i, bool locate_guarded) {
 co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
                          const BorrowTiers& tiers, LiquidityCache& cache, usize d,
                          bool rebalance, const ConstructionDay& construction,
-                         NavReplayDay& day) {
+                         const cost_v2::DecisionLiquidity* liquidity, NavReplayDay& day) {
   const auto& x = c.x; auto& s = b.names; const usize n = x.instruments;
   if (day.calendar_month != b.month) { b.month = day.calendar_month; b.spent = 0; }
   for (usize i = 0; i < n; ++i) s.current[i] = s.held[i] / b.nav_post;
@@ -991,8 +1039,21 @@ co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
   std::span<const f64> rates;
   if (c.cfg.rate == NavRateRule::PerNameV1) { per_name_rates(c, b, d, cache); rates = cache.rate; }
-  const PlanInputs inputs{x, c.cfg, d, rebalance, shared.desired, tiers, {},
-                          std::span<const f64>(shared.state.fast_before)};
+  // P9 C1: a main book's scored decisions keep their leverage record (a capacity book none).
+  const bool scored = !b.capacity && d >= x.decision_begin;
+  const PlanInputs inputs{x,
+                          c.cfg,
+                          d,
+                          rebalance,
+                          shared.desired,
+                          tiers,
+                          {},
+                          std::span<const f64>(shared.state.fast_before),
+                          b.leverage.get(),
+                          b.v7_state.get(),
+                          b.label,
+                          scored ? &b.result.leverage : nullptr,
+                          liquidity};
   const auto rule = b.trace ? std::span<f64>(b.trace->rule) : std::span<f64>{};
   ATX_TRY_VOID(plan_weights(inputs, b.spent, rates, s.current, s.planned, b.nav_post, rule, plan,
                             day));
@@ -1206,6 +1267,9 @@ struct SharedDecision {
   bool rebalance{};
   TierCensus census;
   ConstructionDay construction;
+  // P9 C1: the decision liquidity of a rebalance decision (cost_v2::decision_liquidity over
+  // [d - w, d)), formed once here when some book has v7 state; null otherwise.
+  const cost_v2::DecisionLiquidity* liquidity{};
 };
 // A book's second phase of session t: its DECIDE (on a decision session), close, the
 // final-session report, then (scored rows only) the observer and the row. Book-owned
@@ -1220,7 +1284,7 @@ co::Status close_book(const TargetReplayInput& x, const Ctx& c, Book& b,
     const bool mine = cadence_day(s.t, s.begin, c.cfg.target.cadence);
     const ConstructionDay idle{};
     ATX_TRY_VOID(plan_decision(c, b, shared, tiers, cache, s.t, mine && decided.rebalance,
-                               mine ? decided.construction : idle, day));
+                               mine ? decided.construction : idle, decided.liquidity, day));
     day.member_tiers = decided.census.members;
     day.member_missing_predictors = decided.census.missing;
   }
@@ -1262,12 +1326,24 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   const bool delta_basis = base.order_basis == NavOrderBasis::Delta;
   std::vector<std::unique_ptr<Book>> books;
   books.reserve(count);
+  bool v7_books = false; // some book plans through the v7 seam (P9 C1)
   for (const auto& c : ctxs) {
     auto& b = *books.emplace_back(std::make_unique<Book>(x.instruments, delta_basis));
     b.cash = b.nav_pre = b.nav_post = c.cfg.initial_nav;
     b.result.deployment_index = end; b.result.days.reserve(end - begin);
     b.rates.reset(c.cfg.rate_min, c.cfg.rate_max);
+    // P9 C1 (DEC-10): the book's own leverage rule and v7 state, made here on the calling
+    // thread (the v7 extension is thread-local), each from a clean state.
+    const auto& sc = c.cfg.scenario;
+    b.label = sc.id + "+" + sc.financing.id;
+    b.capacity = v7::capacity_book(sc);
+    if (c.cfg.leverage.law != NavLeverageLaw::Fixed)
+      b.leverage = std::make_unique<risk_target::BookLeverage>(
+          risk_target::options_of(c.cfg.leverage), c.cfg.leverage.risk);
+    b.v7_state = v7::make_book_state(sc);
+    v7_books = v7_books || b.v7_state != nullptr;
   }
+  cost_v2::DecisionLiquidity liquidity; // the rebalance decision's, shared (v7 books only)
   Construction shared(x.instruments, base.locate_in_aim);
   // v8 D-1: every decision's price exposures from the session ring (each session logged
   // once per replay); the bits of recomputing each window (the ring's contract: x's
@@ -1315,17 +1391,34 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
               decide_construction(x, fields, base, t, cadence, {}, shared, tiers,
                                   decided.census, decided.construction));
       if (stages) stages->construction += seconds_since(started);
+      // P9 C1: the v7 rules' decision liquidity, once for every book of a rebalance decision
+      // (the same function and inputs each book's rule read before: x's rows [t - w, t)).
+      if (v7_books && decided.rebalance) {
+        cost_v2::decision_liquidity(x, t, base.liquidity_window, base.min_vol_pairs, liquidity);
+        decided.liquidity = &liquidity;
+      }
     }
     ATX_TRY_VOID(par::for_each_lane(pool, count, [&](usize k) {
       return close_book(x, ctxs[k], *books[k], shared, tiers, cache, s, decided, observer,
                         holdings, days[k]);
     }));
     // Review A-3: the warm-up must have built a book (row score_begin, EXECUTE included, of
-    // some book not flat). Without a warm start there is no boundary: nothing is checked.
-    if (s.boundary && std::none_of(days.begin(), days.end(), [](const NavReplayDay& day) {
-          return day.gross_leverage > 0;
-        }))
-      return refuse_inert_warm_start(x, warm);
+    // some book not flat). Without a warm start there is no boundary: nothing is checked. P9
+    // C1: the main books and the capacity books are checked apart, as their own passes were.
+    if (s.boundary) {
+      bool main_books = false, main_built = false, capacity_books = false;
+      bool capacity_built = false;
+      for (usize k = 0; k < count; ++k) {
+        const bool built = days[k].gross_leverage > 0;
+        if (books[k]->capacity) {
+          capacity_books = true; capacity_built = capacity_built || built;
+        } else {
+          main_books = true; main_built = main_built || built;
+        }
+      }
+      if ((main_books && !main_built) || (capacity_books && !capacity_built))
+        return refuse_inert_warm_start(x, warm);
+    }
   }
   // Accumulated: a grid of several leverage groups (review A-1) calls run_books per group.
   if (stages) stages->exposures += shared.price.exposure.ring.seconds;
@@ -1337,6 +1430,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     r.participation_p95 = b.participation.upper_quantile(.95);
     r.participation_max = b.participation.maximum();
     if (per_name) r.construction.rate_stats = b.rates.stats();
+    if (b.v7_state) r.transfer = std::move(b.v7_state->tc); // P9 C1: the book's own records
     results.push_back(std::move(r));
   }
   return co::Ok(std::move(results));
@@ -1610,7 +1704,7 @@ Json scenario_recipe(const NavScenario& s, bool primary, bool tiered) {
 // fields: the pinned borrow-field binding, or null without --fields. label: the summary's
 // label_role record (v8 E-25), or null without --label-role.
 Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
-                const std::vector<NavScenario>& scenarios, const NavTurnoverLimits& limits,
+                std::span<const NavScenario> scenarios, const NavTurnoverLimits& limits,
                 const Json& fields, const Json& label) {
   const bool tiered = !fields.is_null();
   Json list = Json::array();
@@ -2208,13 +2302,6 @@ u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool t
 }
 
 namespace {
-// True while a v7 extension is installed on this thread: its seams are then not the
-// identity, and extend_holdings writes its declarations exactly then (a read-only probe).
-bool v7_extension_installed() {
-  Json probe = Json::object();
-  v7::extend_holdings(probe);
-  return !probe.empty();
-}
 bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b) {
   return a.beta_window == b.beta_window && a.vol_window == b.vol_window &&
          a.adv_window == b.adv_window && a.min_return_pairs == b.min_return_pairs &&
@@ -2227,7 +2314,13 @@ bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b)
 // cap, v8 X inv-vol-v1) shape the shared desired target, so they are shared too. The ADV cap
 // Q ADV / (aim_leverage NAV) also reads aim_leverage, a variant flag: replay_books then forms one
 // construction per distinct leverage (review A-1).
+// P9 C1: the variants run one leverage rule (each book its own state of it).
+bool same_leverage(const NavLeverageRule& a, const NavLeverageRule& b) {
+  return a.law == b.law && a.risk == b.risk && a.params.sigma_star == b.params.sigma_star &&
+         a.params.bias == b.params.bias && a.params.cadence == b.params.cadence;
+}
 bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
+  if (!same_leverage(a.leverage, b.leverage)) return false;
   const auto& s = a.target; const auto& t = b.target;
   return s.neutralize == t.neutralize && same_price_risk(s.price_risk, t.price_risk) &&
          s.neutralize_max_amplification == t.neutralize_max_amplification &&
@@ -2266,14 +2359,40 @@ std::vector<std::vector<usize>> leverage_groups(std::span<const NavReplayConfig>
   }
   return groups;
 }
+// The lockstep groups of the books (book indices, in order of first appearance; P9 C1): one
+// group of every book, except where the shared construction reads a book's own setting: the
+// ADV cap reads its aim leverage (review A-1) and its NAV multiple (a capacity book's cap reads
+// m x NAV), two-speed-v1's F its aim leverage. Then one group per distinct (leverage,
+// multiple), each formed as in the book's standalone run. Over a grid's books this is
+// leverage_groups book by book (the variants' books in order), x1 joins the main books.
+std::vector<std::vector<usize>> book_groups(std::span<const NavReplayConfig> configs) {
+  std::vector<std::vector<usize>> groups;
+  const bool capped = configs.front().target.adv_hold_q > 0;
+  const bool two_speed = two_speed_on(configs.front().target);
+  const auto key = [&](usize k) {
+    return std::pair<f64, f64>{capped || two_speed ? configs[k].target.aim_leverage : 0.0,
+                               capped ? v7::nav_multiple(configs[k].scenario) : 1.0};
+  };
+  for (usize k = 0; k < configs.size(); ++k) {
+    const auto mine = key(k);
+    auto found = std::find_if(groups.begin(), groups.end(), [&](const std::vector<usize>& g) {
+      return key(g.front()) == mine;
+    });
+    if (found == groups.end()) groups.push_back({k});
+    else found->push_back(k);
+  }
+  return groups;
+}
 // Every variant x every scenario (book v * scenarios + k) in one lockstep run_books (with
-// the ADV cap at several aim leverages, one per leverage group: leverage_groups). One
-// variant is replay_nav_scenarios: the same validation and the same books.
+// the ADV cap at several aim leverages or NAV multiples, or two-speed-v1 at several leverages,
+// one per book group: book_groups). One variant is replay_nav_scenarios: the same validation
+// and the same books. P9 C1: each config gets the v7 seam's leverage rule (v7::configure) and
+// the books' records join the seam's after the replay (v7::observe).
 co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,
     std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages) {
   if (scenarios.empty() || scenarios.size() > max_scenarios)
-    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..8 scenarios per replay");
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..16 scenarios per replay");
   if (variants.empty() || variants.size() > nav_max_grid_variants)
     return co::Err(co::ErrorCode::InvalidArgument, "nav grid: 1..16 variants");
   if (observer.sink && (variants.size() != 1 || observer.book >= scenarios.size()))
@@ -2296,12 +2415,14 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
         return co::Err(co::ErrorCode::InvalidArgument,
                        "nav grid: with --hold-band or --two-speed every variant has the base "
                        "cadence");
-  // Books on a pool: the per-name-v1 rates share one buffer, and a v7 hook is
-  // thread-local (a worker would silently run without it).
+  // Books on a pool: the per-name-v1 rates share one buffer, and the spo engines hold every
+  // book's state. P9 C1: every other v7 rule and the leverage rule keep their state per book
+  // (made on this thread before the books run), so they run on the pool.
   if (base.book_workers > 1 &&
-      (base.rate == NavRateRule::PerNameV1 || v7_extension_installed()))
+      (base.rate == NavRateRule::PerNameV1 || v7::shared_plan_state()))
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "nav replay: --book-workers above 1 needs a fixed rate and no v7 extension");
+                   "nav replay: --book-workers above 1 needs a fixed rate and no spo rule (its "
+                   "engines hold every book's state)");
   const usize books = variants.size() * scenarios.size();
   // The NAV volume is authoritative, also for price-risk neutralization.
   TargetReplayInput x = in.target;
@@ -2318,6 +2439,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
       for (const auto& scenario : scenarios) {
         auto& cfg = configs.emplace_back(variant);
         cfg.scenario = scenario;
+        v7::configure(cfg); // P9 C1: --risk-target / --vol-target as the book's leverage rule
         ATX_TRY_VOID(validate_nav_config(cfg));
         if (scenario.financing.rule == NavFinancingRule::TieredSwapV1 &&
             in.financing.shares_out.empty())
@@ -2356,28 +2478,31 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     }
     std::unique_ptr<par::DetPool> pool;
     if (base.book_workers > 1) pool = std::make_unique<par::DetPool>(base.book_workers);
+    std::vector<NavReplayResult> flat(books);
+    const auto groups = book_groups(configs);
+    if (groups.size() == 1) { // every book in one lockstep run (always without the cap)
+      ATX_TRY(flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
+    } else {
+      // Review A-1 (P9 C1: and the capacity multiples): each group of books with one leverage
+      // and multiple runs its own lockstep (its shared construction capped at that leverage
+      // and NAV), so every book is its standalone replay; groups run one after the other. The
+      // observed book is observed in its own group.
+      std::vector<Ctx> members;
+      members.reserve(books);
+      for (const auto& group : groups) {
+        members.clear();
+        Observer seen{};
+        for (usize j = 0; j < group.size(); ++j) {
+          members.push_back(ctxs[group[j]]);
+          if (observer.sink && group[j] == observer.book) seen = Observer{observer.sink, j};
+        }
+        ATX_TRY(auto part, run_books(x, in.financing, members, seen, pool.get(), stages));
+        for (usize j = 0; j < part.size(); ++j) flat[group[j]] = std::move(part[j]);
+      }
+    }
+    v7::observe(flat); // P9 C1: the books' records join the v7 seam's (identity without it)
     std::vector<std::vector<NavReplayResult>> out(variants.size());
-    const auto groups = leverage_groups(variants);
-    if (groups.size() == 1) { // every variant in one lockstep run (always without the cap)
-      ATX_TRY(auto flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
-      for (usize k = 0; k < books; ++k)
-        out[k / scenarios.size()].push_back(std::move(flat[k]));
-      return co::Ok(std::move(out));
-    }
-    // Review A-1: the ADV cap at several aim leverages. Each group of variants with one
-    // leverage runs its own lockstep (its shared construction capped at that leverage), so
-    // every variant is its standalone replay; groups run one after the other.
-    std::vector<Ctx> members;
-    members.reserve(books);
-    for (const auto& group : groups) {
-      members.clear();
-      for (const usize v : group)
-        for (usize k = 0; k < scenarios.size(); ++k)
-          members.push_back(ctxs[v * scenarios.size() + k]);
-      ATX_TRY(auto flat, run_books(x, in.financing, members, observer, pool.get(), stages));
-      for (usize j = 0; j < flat.size(); ++j)
-        out[group[j / scenarios.size()]].push_back(std::move(flat[j]));
-    }
+    for (usize k = 0; k < books; ++k) out[k / scenarios.size()].push_back(std::move(flat[k]));
     return co::Ok(std::move(out));
   } catch (const std::system_error&) { // the book pool's threads could not start
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: book worker threads");
@@ -2593,20 +2718,29 @@ co::Result<std::string> timed_digest(StageTimes* times, Digest&& digest) {
   times->hash += seconds_since(started);
   return out;
 }
-// Everything one run publishes, computed before the output directory exists.
+// Everything one run publishes, computed before the output directory exists. scenarios,
+// results and summaries are the main books; P9 C1: capacity_* the capacity books of
+// --capacity-curve (empty without), published into <output>/capacity, and records the run's v7
+// records from its own books (null without the v7 seam; the capacity directory's run, where
+// capacity_pass, reads the same records and publishes no v7 file).
 struct NavRun {
   const TargetReplayRunConfig& cfg;
   const NavTurnoverLimits& limits;
   const NavReplayConfig& base;
-  const std::vector<NavScenario>& scenarios;
-  const std::vector<NavReplayResult>& results;
-  const std::vector<NavSummary>& summaries;
+  std::span<const NavScenario> scenarios;
+  std::span<const NavReplayResult> results;
+  std::span<const NavSummary> summaries;
   const std::string& manifest_json; // the pinned combined manifest
   const Json& fields;               // borrow-field binding; null without --fields
   const Json& warm_start;           // the summary's warm_start record; null without one
   StageTimes* times;                // --stage-timers: the clock (null: untimed)
   bool summary_timers;              // write stage_seconds into summary.json (single runs)
   const Json& label;                // v8 E-25: the summary's label_role record; null without
+  std::span<const NavScenario> capacity_scenarios{};
+  std::span<const NavReplayResult> capacity_results{};
+  std::span<const NavSummary> capacity_summaries{};
+  const v7::RunRecords* records{};
+  bool capacity_pass{};
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
 // accepted the input (warm_start_sessions <= decision_begin). The role rows of the first
@@ -2694,7 +2828,26 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
            << summary.mean_monthly_turnover_ex_deployment << ")\n";
   return co::Ok(std::move(entry));
 }
-// Exclusive directory: recipe.json, per-scenario CSVs, summary.json LAST.
+constexpr const char* producer_declaration =
+    "P9 C1 (NAV receipt completeness): the executable that wrote this directory: engine_git_sha "
+    "= the configure-time commit of its source tree (\"-dirty\": the tree had local changes; "
+    "\"unknown\": no git), build_type = release (NDEBUG) or debug; a comparison of two builds' "
+    "summaries drops this key (every other byte is the replay's)";
+// summary.json's producer record (main directories only).
+Json producer_json() {
+#ifdef NDEBUG
+  constexpr const char* build_type = "release";
+#else
+  constexpr const char* build_type = "debug";
+#endif
+  return Json{{"engine_git_sha", std::string(build_engine_git_sha())},
+              {"build_type", build_type},
+              {"definition", producer_declaration}};
+}
+co::Result<std::string> publish_capacity(const NavRun& run, std::ostream& progress);
+// Exclusive directory: recipe.json, per-scenario CSVs, summary.json LAST. P9 C1: under the v7
+// seam the capacity directory, the v7 files and v7_extras.json come before summary.json, which
+// binds v7_extras.json and capacity/summary.json (v7.files) and names its producer.
 co::Status publish_nav(const NavRun& run, std::ostream& progress) {
   const auto& cfg = run.cfg;
   const bool tiered = !run.fields.is_null();
@@ -2738,12 +2891,56 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     summary["warm_start"] = std::move(warm);
   }
   if (!run.label.is_null()) summary["label_role"] = run.label; // v8 E-25, only when on
-  v7::extend_summary(summary); // L4 hook: identity unless extended
+  if (run.records) {
+    // P9 C1: the v7 seam's files from this run's own books, before this summary, which binds
+    // them; the capacity directory's summary carries the v7 block of its pass, unbound.
+    Json binding(nullptr);
+    if (!run.capacity_pass) {
+      std::string capacity_sha;
+      if (!run.capacity_scenarios.empty()) {
+        ATX_TRY(capacity_sha, publish_capacity(run, progress));
+      }
+      ATX_TRY_VOID(v7::publish_extras(dir, *run.records, capacity_sha, binding));
+    }
+    v7::extend_summary(summary, *run.records, binding);
+  } else {
+    v7::extend_summary(summary); // L4 hook: identity unless extended
+  }
   if (run.times && run.summary_timers) { // v8 --stage-timers: the one key a clock writes
     summary["stage_seconds"] = run.times->json();
     progress << "nav replay stage seconds: " << summary.at("stage_seconds").dump() << '\n';
   }
+  if (!run.capacity_pass) summary["producer"] = producer_json(); // P9 C1
   return write_json(dir / "summary.json", summary);
+}
+// P9 C1: <output>/capacity, the capacity books' directory (recipe.json, daily and events CSVs,
+// summary.json), the bytes the capacity pass published before (its declarations read pass
+// "capacity"; no stage_seconds, no producer); returns its summary.json's SHA-256.
+co::Result<std::string> publish_capacity(const NavRun& run, std::ostream& progress) {
+  const v7::CapacityPublication pass;
+  auto own = run.cfg;
+  const auto dir = std::filesystem::path(run.cfg.output_directory) / "capacity";
+  own.output_directory = dir.string();
+  const NavRun capacity{own,
+                        run.limits,
+                        run.base,
+                        run.capacity_scenarios,
+                        run.capacity_results,
+                        run.capacity_summaries,
+                        run.manifest_json,
+                        run.fields,
+                        run.warm_start,
+                        run.times,
+                        false,
+                        run.label,
+                        {},
+                        {},
+                        {},
+                        run.records,
+                        true};
+  ATX_TRY_VOID(publish_nav(capacity, progress));
+  return timed_digest(run.times,
+                      [&] { return co::sha256_file((dir / "summary.json").string()); });
 }
 
 // ---- --emit-holdings (v7 B3) ----
@@ -3136,7 +3333,11 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     StageTimes* const timed = emit.stage_timers ? &times : nullptr;
     ATX_TRY_VOID(check_run(cfg, limits, fields, execution.label_role));
     const bool tiered = !fields.manifest_path.empty();
-    const auto scenarios = v7::run_scenarios(nav_scenario_matrix(tiered)); // L4 hook
+    // L4 hook: the books; P9 C1: the capacity books of --capacity-curve in the same lockstep,
+    // from lockstep.capacity_begin on (lockstep.books.size() without them).
+    const auto lockstep = v7::lockstep_scenarios(nav_scenario_matrix(tiered));
+    const auto& scenarios = lockstep.books;
+    const usize main_books = lockstep.capacity_begin;
     const auto base = run_base(cfg.target, rate, execution);
     const bool holdings = !emit.holdings_directory.empty();
     if (holdings) {
@@ -3185,8 +3386,28 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     ATX_TRY_VOID(v7::capture(scenarios, results, summaries));
     const Json warm = warm_start_record(base, view);
     const Json label = label_record(execution.label_role, marks);
-    const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
-                     loaded.binding, warm, timed, true, label};
+    // P9 C1: the main books, the capacity books and the run's v7 records (its own books').
+    const std::span<const NavScenario> all_scenarios(scenarios);
+    const std::span<const NavReplayResult> all_results(results);
+    const std::span<const NavSummary> all_summaries(summaries);
+    const v7::RunRecords records = v7::run_records(all_scenarios, all_results, all_summaries);
+    const NavRun run{cfg,
+                     limits,
+                     base,
+                     all_scenarios.first(main_books),
+                     all_results.first(main_books),
+                     all_summaries.first(main_books),
+                     blend.manifest_json,
+                     loaded.binding,
+                     warm,
+                     timed,
+                     true,
+                     label,
+                     all_scenarios.subspan(main_books),
+                     all_results.subspan(main_books),
+                     all_summaries.subspan(main_books),
+                     v7::installed() ? &records : nullptr,
+                     false};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
     if (!label.is_null())
@@ -3217,14 +3438,19 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
     if (!emit.holdings_directory.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav grid: --emit-holdings is a single-run option");
-    if (v7_extension_installed())
-      return co::Err(co::ErrorCode::InvalidArgument, "nav grid: not with a v7 extension");
+    // P9 C1: every v7 rule but the spo engines (which hold every book's state) keeps its state
+    // per book, so a grid runs it; each <id>/ publishes its own v7 files.
+    if (v7::shared_plan_state())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav grid: not with an spo rule (its engines hold every book's state)");
     const auto root = std::filesystem::path(cfg.output_directory);
     if (std::filesystem::exists(root))
       return co::Err(co::ErrorCode::AlreadyExists, "nav grid: output must not exist");
     ATX_TRY(const auto grid, read_grid(grid_path));
     const bool tiered = !fields.manifest_path.empty();
-    const auto scenarios = v7::run_scenarios(nav_scenario_matrix(tiered)); // identity here
+    const auto lockstep = v7::lockstep_scenarios(nav_scenario_matrix(tiered)); // L4 hook
+    const auto& scenarios = lockstep.books;
+    const usize main_books = lockstep.capacity_begin;
     const auto base = run_base(cfg.target, rate, execution);
     ATX_TRY(const auto targets, variant_targets(grid, base.target));
     std::vector<NavReplayConfig> configs(targets.size(), base);
@@ -3263,9 +3489,30 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
       auto own = cfg;
       own.target = targets[v];
       own.output_directory = (root / variant.id).string();
-      // The variant summaries carry no stage_seconds: they stay the standalone bytes.
-      const NavRun run{own, limits, configs[v], scenarios, results[v], summaries[v],
-                       blend.manifest_json, loaded.binding, warm, timed, false, label};
+      // The variant summaries carry no stage_seconds: they stay the standalone bytes. P9 C1:
+      // the variant's capacity books and v7 records are its own books'.
+      const std::span<const NavScenario> all_scenarios(scenarios);
+      const std::span<const NavReplayResult> all_results(results[v]);
+      const std::span<const NavSummary> all_summaries(summaries[v]);
+      const v7::RunRecords records =
+          v7::run_records(all_scenarios, all_results, all_summaries);
+      const NavRun run{own,
+                       limits,
+                       configs[v],
+                       all_scenarios.first(main_books),
+                       all_results.first(main_books),
+                       all_summaries.first(main_books),
+                       blend.manifest_json,
+                       loaded.binding,
+                       warm,
+                       timed,
+                       false,
+                       label,
+                       all_scenarios.subspan(main_books),
+                       all_results.subspan(main_books),
+                       all_summaries.subspan(main_books),
+                       v7::installed() ? &records : nullptr,
+                       false};
       ATX_TRY_VOID(publish_nav(run, progress));
       const auto dir = root / variant.id;
       ATX_TRY(auto recipe_sha, timed_digest(timed, [&] {
@@ -3307,7 +3554,34 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
   }
 }
 
+namespace {
+// The nav rule contract (P9 C1, K-P9-7, Ruling P7): {schema, capabilities, rules}; this lane
+// lists the leverage rules (risk_target::leverage_rules_json).
+Json nav_rules_json() {
+  return Json{{"schema", nav_rules_schema},
+              {"capabilities", Json::array({"leverage-rule-per-book", "capacity-main-lockstep",
+                                            "summary-binds-extras", "producer-identity",
+                                            "sqrt-impact-exact"})},
+              {"rules", risk_target::leverage_rules_json()}};
+}
+} // namespace
+
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
+  // P9 C1 (K-P9-7): `nav --list-rules [--json]`, before any other flag is read.
+  for (int i = 1; i < argc; ++i) {
+    if (std::string_view(argv[i]) != "--list-rules") continue;
+    bool json = false;
+    for (int j = 1; j < argc; ++j) json = json || std::string_view(argv[j]) == "--json";
+    const Json rules = nav_rules_json();
+    if (json) {
+      out << rules.dump(2) << '\n';
+    } else {
+      for (const auto& row : rules.at("rules"))
+        out << row.at("kind").get<std::string>() << ' ' << row.at("id").get<std::string>()
+            << '\n';
+    }
+    return 0;
+  }
   if (v7::claims_nav_args(argc, argv)) return v7::dispatch_nav_v7(argc, argv, out, err); // L4
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
@@ -3348,8 +3622,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "score from score_begin; K <= the role's score_begin)] "
                "[--hold-band B (aim-partial-v5; v8 hold-band-v1 rank hysteresis, B in [0, 1])] "
                "[--adv-hold-q Q (aim-partial-v5; v8 adv-hold-v1 holding cap Q x ADV, 0 = off; "
-               "the cap uses the run's initial NAV for every book, each --capacity-curve book "
-               "included)] "
+               "the cap uses each book's NAV: the run's initial NAV, m x that NAV for the "
+               "--capacity-curve book at multiple m)] "
                "[--vol-scale inv-vol-v1 (aim-partial-v5, not with --hold-band; v8 X: each "
                "member's tied rank x median sigma / max(sigma, .25 median sigma) before the "
                "demean, sigma the execution cost model's for the decision's fills)] "
@@ -3361,7 +3635,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "and slow sleeves, a virtual fast sleeve at theta_f = 1 - 2^(-C/5) at cadence C, "
                "the slow remainder at theta_s = .05, netted)] "
                "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
-               "bit-identical; fixed rate only)] [--stage-timers (summary.json "
+               "bit-identical; fixed rate only, not with an spo rule)] [--list-rules [--json] "
+               "(the rule contract atx.nav-rules/v1, then exit)] [--stage-timers (summary.json "
                "stage_seconds: load, exposures, construction, books, hash, write)] "
                "[--construction-grid GRID.json (atx.nav-construction-grid/v1 variants over "
                "--rule --cadence --trade-fraction --monthly-budget --band-multiple "
@@ -3410,8 +3685,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--label-role") execution.label_role.manifest_path = value; // v8 E-25
       else if (key == "--label-role-sha256") execution.label_role.manifest_sha256 = value;
       else if (key == "--holdings-format") {
-        // Accepted without --emit-holdings: the v7 capacity pass drops --emit-holdings
-        // and forwards every other flag (strategy_nav_v7.cpp).
+        // Accepted (and ignored) without --emit-holdings, as before P9 C1 (when the v7
+        // capacity pass dropped --emit-holdings and forwarded every other flag).
         if (value == "f64") emit.format = NavHoldingsFormat::F64;
         else if (value == "csv") emit.format = NavHoldingsFormat::Csv;
         else throw std::invalid_argument("unknown --holdings-format (f64|csv)");
@@ -3583,6 +3858,11 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav decide: rate per-name-v1 and monthly-budget-v2 carry book state "
                      "(pre-trade NAV, month-to-date plan) that positions do not");
+    // P9 C1: a leverage rule's estimates are per-book replay state positions do not carry.
+    if (cfg.leverage.law != NavLeverageLaw::Fixed)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav decide: a leverage rule (risk-target-v1, vol-target-v1) carries the "
+                     "book's estimates, which positions do not (replay only)");
     // v8 Y-5: two-speed-v1's virtual fast sleeve is replay state the holdings file does not carry.
     if (two_speed_on(cfg.target))
       return co::Err(co::ErrorCode::InvalidArgument,
@@ -3612,7 +3892,9 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
     out.plan.decision = d; out.plan.session = x.session_keys[d];
     out.plan.calendar_month = calendar_month(out.plan.session);
     NavReplayDay day; // receives the locate block's counts
-    const PlanInputs inputs{x, cfg, d, out.rebalance, shared.desired, tiers, no_locate, {}};
+    const PlanInputs inputs{x,         cfg, d,       out.rebalance, shared.desired, tiers,
+                            no_locate, {},  nullptr, nullptr,       {},             nullptr,
+                            nullptr};
     ATX_TRY_VOID(plan_weights(inputs, 0.0, {}, out.current, out.target, nav_post, out.rule,
                               out.plan, day));
     out.construction.banded_names = out.plan.construction.banded_names;

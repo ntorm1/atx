@@ -487,7 +487,12 @@ TEST(NavV7Hook, AimV6CapacityBookIsTheNavMultipleBookAndX1IsTheMainPass) {
   const auto genuine = pass(v7::NavV7Pass::Main, s2(), 4e8);          // the NAV-4 v6 book
   const auto unit = pass(v7::NavV7Pass::Capacity, books[1], 1e8);
   const auto x4 = pass(v7::NavV7Pass::Capacity, books[3], 1e8);
-  const auto base_priced = pass(v7::NavV7Pass::Main, books[3], 1e8); // c_i at base scale (pre-fix)
+  // c_i at base scale (pre-fix): x4's law under another id. P9 C1: under --capacity-curve a
+  // capacity id is a capacity book in the main pass too (it joins the main lockstep), so the
+  // base-scale pricing needs an id that is no capacity book.
+  auto relabeled = books[3];
+  relabeled.id = "modeled-x4-law-v1";
+  const auto base_priced = pass(v7::NavV7Pass::Main, relabeled, 1e8);
   ASSERT_TRUE(main && genuine && unit && x4 && base_priced);
   expect_same_days(*unit, *main);
   ASSERT_EQ(x4->days.size(), genuine->days.size());
@@ -514,6 +519,130 @@ TEST(NavV7Hook, AimV6CapacityBookIsTheNavMultipleBookAndX1IsTheMainPass) {
   EXPECT_GT(rebalances, 0U);
   EXPECT_TRUE(plan_differs);
   EXPECT_GT(base_gap, 1e-7); // the base-scale c_i replays another construction than the NAV-4 book
+}
+
+// ---- P9 C1: the capacity books in the main lockstep -----------------------------------------
+// --capacity-curve with aim-partial-v6 (whose reference-cost history and pricing law are per
+// book): the main books and the capacity books of one lockstep replay are, book for book, the
+// main pass and the capacity pass replayed apart (begin_run per pass, as dispatch_nav_v7 ran
+// them before P9 C1), bit for bit. The transfer coefficients are the main books' alone, in the
+// same order, each replay book hands its own back (NavReplayResult::transfer), and every book's
+// record (what capacity_curve.csv and v7_extras.json read: v7::run_records) is the one the two
+// captures of the separate passes recorded.
+TEST(NavCapacityLockstep, OneLockstepEqualsTheSeparatePassesBookForBook) {
+  const Role role(40, 12, 23);
+  v7::NavV7Options o; o.aim_v6 = true; o.capacity = true;
+  o.v6.band_b = aim_v5().dust_multiple; // else defaults: kappa 1, band exponent 1/3, clip .5,1.5
+  const auto cfg = nav_config(s2(), 1e8);
+  const auto matrix = st::fixed_nav_scenarios();
+  const auto summaries_of = [](const std::vector<st::NavReplayResult>& results) {
+    std::vector<st::NavSummary> out;
+    for (const auto& r : results) {
+      auto s = st::summarize_nav(r);
+      EXPECT_TRUE(s) << s.error().to_string();
+      out.push_back(s ? *s : st::NavSummary{});
+    }
+    return out;
+  };
+  std::vector<st::NavReplayResult> apart;
+  std::vector<v7::TcRecord> apart_tc;
+  std::vector<v7::BookRecord> apart_books;
+  {
+    v7::ScopedNavExtension extension(o);
+    extension.begin_run(v7::NavV7Pass::Main);
+    const auto main = st::replay_nav_scenarios(role.nav(), cfg, matrix);
+    ASSERT_TRUE(main) << main.error().to_string();
+    ASSERT_TRUE(v7::capture(matrix, *main, summaries_of(*main)));
+    extension.begin_run(v7::NavV7Pass::Capacity);
+    const auto books = v7::run_scenarios(matrix);
+    ASSERT_EQ(books.size(), cv::capacity_multiples.size());
+    const auto capacity = st::replay_nav_scenarios(role.nav(), cfg, books);
+    ASSERT_TRUE(capacity) << capacity.error().to_string();
+    ASSERT_TRUE(v7::capture(books, *capacity, summaries_of(*capacity)));
+    apart = *main;
+    apart.insert(apart.end(), capacity->begin(), capacity->end());
+    apart_tc.assign(extension.tc_records().begin(), extension.tc_records().end());
+    apart_books.assign(extension.books().begin(), extension.books().end());
+  }
+  v7::ScopedNavExtension extension(o);
+  const auto lockstep = v7::lockstep_scenarios(matrix);
+  ASSERT_EQ(lockstep.capacity_begin, matrix.size());
+  ASSERT_EQ(lockstep.books.size(), matrix.size() + cv::capacity_multiples.size());
+  EXPECT_EQ(lockstep.books[lockstep.capacity_begin + st::nav_primary_scenario_index].id,
+            "capacity-x1-v1");
+  const auto joint = st::replay_nav_scenarios(role.nav(), cfg, lockstep.books);
+  ASSERT_TRUE(joint) << joint.error().to_string();
+  ASSERT_EQ(joint->size(), apart.size());
+  for (usize k = 0; k < apart.size(); ++k) {
+    SCOPED_TRACE(lockstep.books[k].id);
+    expect_same_days((*joint)[k], apart[k]);
+    EXPECT_EQ(bits((*joint)[k].participation_p95), bits(apart[k].participation_p95));
+    EXPECT_EQ(bits((*joint)[k].participation_max), bits(apart[k].participation_max));
+    if (k >= lockstep.capacity_begin) EXPECT_TRUE((*joint)[k].transfer.empty());
+  }
+  const auto tc = extension.tc_records();
+  ASSERT_FALSE(tc.empty());
+  ASSERT_EQ(tc.size(), apart_tc.size());
+  for (usize k = 0; k < tc.size(); ++k) {
+    EXPECT_EQ(tc[k].session, apart_tc[k].session) << k;
+    EXPECT_EQ(tc[k].book, apart_tc[k].book) << k;
+    EXPECT_EQ(bits(tc[k].tc), bits(apart_tc[k].tc)) << k;
+    EXPECT_EQ(bits(tc[k].c_bar), bits(apart_tc[k].c_bar)) << k;
+    EXPECT_EQ(bits(tc[k].c_ref), bits(apart_tc[k].c_ref)) << k;
+    EXPECT_EQ(bits(tc[k].theta), bits(apart_tc[k].theta)) << k;
+    EXPECT_EQ(tc[k].book.rfind("capacity-", 0), std::string::npos) << k;
+  }
+  const auto records = v7::run_records(lockstep.books, *joint, summaries_of(*joint));
+  ASSERT_EQ(records.tc.size(), tc.size());
+  ASSERT_EQ(records.books.size(), apart_books.size());
+  for (usize k = 0; k < apart_books.size(); ++k) {
+    const auto& a = records.books[k];
+    const auto& b = apart_books[k];
+    SCOPED_TRACE(b.book);
+    EXPECT_EQ(a.pass, b.pass);
+    EXPECT_EQ(a.book, b.book);
+    EXPECT_EQ(a.primary, b.primary);
+    EXPECT_EQ(bits(a.multiple), bits(b.multiple));
+    EXPECT_EQ(bits(a.initial_nav), bits(b.initial_nav));
+    EXPECT_EQ(bits(a.traded_dollars), bits(b.traded_dollars));
+    EXPECT_EQ(bits(a.trade_cost_dollars), bits(b.trade_cost_dollars));
+    EXPECT_EQ(bits(a.summary.net_sharpe), bits(b.summary.net_sharpe));
+    ASSERT_EQ(a.net_returns.size(), b.net_returns.size());
+    for (usize t = 0; t < a.net_returns.size(); ++t)
+      EXPECT_EQ(bits(a.net_returns[t]), bits(b.net_returns[t])) << t;
+  }
+  // The capacity books are flagged by the extension (and only under --capacity-curve).
+  EXPECT_TRUE(v7::capacity_book(lockstep.books.back()));
+  EXPECT_FALSE(v7::capacity_book(lockstep.books.front()));
+  EXPECT_EQ(v7::nav_multiple(lockstep.books.back()), cv::capacity_multiples.back());
+  EXPECT_EQ(v7::nav_multiple(lockstep.books.front()), 1.0);
+}
+
+// The capacity books need room in one lockstep: with the stress books and the tiered matrix a
+// run has 7 + 5 books (the cap is 16, P9 C1; 8 before). Without --capacity-curve the books are
+// run_scenarios' (capacity_begin = their count), and without an extension the matrix.
+TEST(NavCapacityLockstep, LockstepBooksAndTheirCap) {
+  const auto tiered = st::nav_scenario_matrix(true);
+  {
+    const auto plain = v7::lockstep_scenarios(tiered);
+    EXPECT_EQ(plain.books.size(), tiered.size());
+    EXPECT_EQ(plain.capacity_begin, tiered.size());
+  }
+  v7::NavV7Options o; o.stress = true; o.capacity = true;
+  v7::ScopedNavExtension extension(o);
+  const auto all = v7::lockstep_scenarios(tiered);
+  EXPECT_EQ(all.capacity_begin, tiered.size() + 2);
+  EXPECT_EQ(all.books.size(), tiered.size() + 2 + cv::capacity_multiples.size());
+  EXPECT_LE(all.books.size(), 16U);
+  const Role role(30, 12, 29);
+  const auto cfg = nav_config(s2(), 1e8);
+  const auto run = st::replay_nav_scenarios(role.nav(), cfg,
+                                            std::vector<st::NavScenario>(16, s1()));
+  EXPECT_TRUE(run) << run.error().to_string();
+  const auto over = st::replay_nav_scenarios(role.nav(), cfg,
+                                             std::vector<st::NavScenario>(17, s1()));
+  ASSERT_FALSE(over);
+  EXPECT_NE(over.error().message().find("1..16"), std::string::npos);
 }
 // The CLI path (parse_nav_v7_args) of the pre-registered identity cell: kappa 0, band exponent
 // 0, clip 1,1 and the default band b = --dust-multiple replay aim-partial-v5 bit for bit.

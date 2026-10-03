@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <locale>
 #include <map>
@@ -43,8 +44,10 @@ spo::SpoParams capacity_params(spo::SpoParams p) {
 }
 } // namespace
 
-// Per-thread extension state. The decision-liquidity cache is keyed by the input's price
-// buffer and the decision, so every book of one lockstep decision shares one computation.
+// Per-thread extension state: the run's options, engines, scaler and records. The loose seam's
+// decision-liquidity cache is keyed by the input's price buffer and the decision, so every book
+// of one decision shares one computation; a replay hands its books one shared liquidity instead
+// (P9 C1) and keeps each book's state in its own BookState.
 struct ScopedNavExtension::State {
   explicit State(const NavV7Options& o)
       : options(o), s2(fixed_nav_scenarios()[nav_primary_scenario_index]),
@@ -65,38 +68,41 @@ struct ScopedNavExtension::State {
   NavV7Pass pass{NavV7Pass::Main};
   const f64* liquidity_key{};
   usize liquidity_decision{no_decision};
-  cost_v2::DecisionLiquidity liquidity;
-  std::map<std::string, std::vector<f64>> c_history; // per book: c_bar of recent decisions
+  cost_v2::DecisionLiquidity liquidity; // the loose seam's cache (one thread)
+  std::map<std::string, BookState, std::less<>> loose; // the loose seam's books, by label
   std::vector<TcRecord> tc;
   std::vector<BookRecord> books;
-  std::vector<f64> costs;
-  cost_v2::AimV6Decision decision;
   std::unique_ptr<spo::Engine> engine; // --rule spo-v1
-  // spo-v3 --capacity-curve (Ruling E-37): the capacity pass plans on this engine (its own
-  // rows, duals and timing), so `engine` keeps the main pass's rows, tripwire and summary.
+  // spo-v3 --capacity-curve (Ruling E-37): the capacity books plan on this engine (its own
+  // rows, duals and timing), so `engine` keeps the main books' rows, tripwire and summary.
   std::unique_ptr<spo::Engine> capacity_engine;
-  // v8 R-8 (--risk-target): the scaler, and the book's config at its L_t (scratch, per plan).
+  // v8 R-8 (--risk-target): the scaler of the loose seam's books and every book's records.
   std::unique_ptr<risk_target::Scaler> scaler;
-  NavReplayConfig scaled;
-  // v8 Y-5 two-speed-v1 under the scaler (Ruling PM8-16 #10): per book, lambda = L_t / L at its
-  // previous two-speed rebalance, and the carried desired target (scratch, per plan).
-  std::map<std::string, f64, std::less<>> two_speed_lambda;
-  std::vector<f64> carried;
   std::string void_reason;             // capture(): the tripwire voided the run
+  // A capacity book: in the capacity pass every book; in the main pass a capacity id under
+  // --capacity-curve (P9 C1: the capacity books join the main lockstep).
+  [[nodiscard]] bool is_capacity(const NavScenario& scenario) const {
+    return pass == NavV7Pass::Capacity ||
+           (options.capacity && std::isfinite(cost_v2::capacity_multiple(scenario.id)));
+  }
+  // The loose seam's state of the book of `scenario` (made on first use; begin_run drops it).
+  [[nodiscard]] BookState& loose_book(const NavScenario& scenario);
   [[nodiscard]] co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                                 bool rebalance, f64 spent, f64 nav_post,
                                 const std::vector<f64>& desired, std::vector<f64>& planned,
                                 TargetReplayDay& out, std::span<const f64> rates,
                                 std::span<const u8> tier, std::span<const u8> no_locate,
                                 std::span<const f64> two_speed_fast);
-  // The book's rule under `cfg` (base_leverage: the run's L when cfg carries L_t; NaN without
-  // the risk target).
-  [[nodiscard]] co::Status plan_rule(const TargetReplayInput& x, const NavReplayConfig& cfg,
-                                     f64 base_leverage, usize d, bool rebalance, f64 spent,
-                                     f64 nav_post, const std::vector<f64>& desired,
-                                     std::vector<f64>& planned, TargetReplayDay& out,
-                                     std::span<const f64> rates, std::span<const u8> tier,
-                                     std::span<const u8> no_locate);
+  // The book's rule under `cfg` (base_leverage: the book's L when its leverage rule moved cfg's
+  // to L_t; NaN under a fixed leverage). shared: the decision's liquidity (nullptr: the cache).
+  // Reads the run's state only (options, the S2 law, the engines); writes the book's.
+  [[nodiscard]] co::Status plan_rule(BookState& b, const TargetReplayInput& x,
+                                     const NavReplayConfig& cfg, f64 base_leverage, usize d,
+                                     bool rebalance, f64 spent, f64 nav_post,
+                                     const std::vector<f64>& desired, std::vector<f64>& planned,
+                                     TargetReplayDay& out, std::span<const f64> rates,
+                                     std::span<const u8> tier, std::span<const u8> no_locate,
+                                     const cost_v2::DecisionLiquidity* shared);
 };
 
 namespace {
@@ -199,7 +205,8 @@ constexpr const char* capacity_spo_v3_declaration =
     "spo-v3 tracker of the NAV-m book, planned on its own engine under the primary S2 law at NAV "
     "m x NAV_post, so its trade limit p ADV_i / (m NAV) and its impact impact_y sigma_i sqrt(m "
     "NAV / ADV_i) are the NAV-m book's; the aim is the run's L x desired, whose ADV cap "
-    "(--adv-hold-q) reads the initial NAV for every multiple (Ruling E-15); gamma is calibrated "
+    "(--adv-hold-q) reads the multiple's NAV m x NAV (P9 C1; Ruling E-15 read the initial NAV "
+    "for every multiple); gamma is calibrated "
     "on the same first scored decision as the main pass (gamma_equals_main); the capacity "
     "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
     "voiding the run: it has no primary book, and its rows never enter the main pass's rows, "
@@ -216,6 +223,31 @@ constexpr const char* v6_declaration =
     "0) and the median band; everything else (aim = aim_leverage * target, dusted members keep "
     "their weight, nonmember exits and exit_rate decay inside dust_multiple / N_d, non-rebalance "
     "decisions) is aim-partial-v5";
+// P9 C1: the recipe's adv_hold_rule under --capacity-curve (the target replay's text states the
+// retired Ruling E-15 rule; the main books' cap is unchanged).
+constexpr const char* capacity_adv_hold_rule =
+    "adv-hold-v1 (v8 R-5, ADV holding cap): on every rebalance decision that proceeds, after the "
+    "post-processing (the projection), |desired_i| <= adv_hold_q * ADV_i / (aim_leverage * NAV), "
+    "ADV_i = the raw-dollar ADV the execution trade limit reads for this decision's fills "
+    "(session d + 1: present raw_close x volume over rows [d + 1 - w, d + 1) / w, w = "
+    "liquidity_window; rows <= d only), NAV = the book's NAV: initial_nav for every main book, "
+    "m x initial_nav for every capacity book at multiple m (P9 C1: the NAV-m book's cap, so the "
+    "capacity book holds up to adv_hold_q of ADV at its NAV; Ruling E-15's initial-NAV cap at "
+    "every multiple is retired; each multiple forms its own capped construction, x1 the main "
+    "books'); each clipped name is set to its cap and the clipped mass is added to the same "
+    "side's unclipped names pro rata to their weight, one pass (side gross preserved; unplaced "
+    "when no unclipped name is left on the side); names the pass lifts above their cap stay and "
+    "are reported as the residual breach (summary construction.adv_hold)";
+// summary.json's v7.extras: a published run (P9 C1) binds its v7 files; the capacity directory
+// keeps the sentence of a run without the binding.
+constexpr const char* unbound_extras =
+    "v7_transfer_coefficient.csv, capacity_curve.csv (with --capacity-curve), "
+    "spo_diagnostics.csv (spo-v1/v2) and v7_extras.json are written after this summary";
+constexpr const char* bound_extras =
+    "v7_transfer_coefficient.csv, the risk / vol target series, capacity/ and capacity_curve.csv "
+    "(with --capacity-curve), spo_diagnostics.csv (spo rules) and v7_extras.json are written "
+    "before this summary, which binds v7_extras.json and capacity/summary.json (v7.files, "
+    "SHA-256); v7_extras.json binds the rest (its files)";
 constexpr const char* tc_declaration =
     "transfer coefficient (R2.5, Clarke-de Silva-Thorley 2002) per rebalance decision and book: "
     "corr over members with a finite decision-window sigma_i > 0 of desired_i / sigma_i (= "
@@ -256,15 +288,16 @@ Json declarations(const ScopedNavExtension::State& s) {
   }
   return j;
 }
-// v8 R-8: the "risk_target" block (with the per-book summary when `books`) and the rule id
-// suffix of recipe.json, summary.json and the holdings manifest; nothing without --risk-target.
-// v8 Y (vol-target-v1, the same scaler under Law::vol_target_v1): the "vol_target" block and the
-// rule id suffix +vol-target-v1 instead.
-void add_risk_target(const ScopedNavExtension::State& s, Json& doc, bool books) {
+// v8 R-8: the "risk_target" block (with the per-book summary of `books` when non-null) and the
+// rule id suffix of recipe.json, summary.json and the holdings manifest; nothing without
+// --risk-target. v8 Y (vol-target-v1, the same scaler under Law::vol_target_v1): the
+// "vol_target" block and the rule id suffix +vol-target-v1 instead.
+void add_risk_target(const ScopedNavExtension::State& s, Json& doc,
+                     const std::span<const risk_target::Record>* books) {
   if (!s.scaler || !doc.is_object()) return;
   const auto& o = s.options.risk_target;
   auto block = risk_target::parameters_json(o);
-  if (books) block["books"] = risk_target::summary_json(s.scaler->records(), o.law);
+  if (books) block["books"] = risk_target::summary_json(*books, o.law);
   doc[risk_target::block_key(o)] = std::move(block);
   if (doc.contains("rule") && doc.at("rule").is_string())
     doc["rule"] =
@@ -343,12 +376,20 @@ std::string capacity_csv(const Json& rows) {
   return text;
 }
 // A complete run's extras, or (void_reason non-empty) a voided run's: the spo diagnostics
-// and the transfer coefficients only, with status "void" -- no NAV or return quantity.
-co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtension& ext,
-                        const NavV7Options& o, const std::string& void_reason) {
+// and the transfer coefficients only, with status "void" -- no NAV or return quantity. The
+// records are the run's own (P9 C1: its books', or the extension's on a void run);
+// capacity_sha: capacity/summary.json's SHA-256 (empty: none). Returns v7_extras.json's SHA-256.
+co::Result<std::string> write_extras(const std::filesystem::path& dir,
+                                     const ScopedNavExtension::State& s,
+                                     const std::string& void_reason,
+                                     std::span<const TcRecord> tc,
+                                     std::span<const risk_target::Record> leverage,
+                                     std::span<const BookRecord> books,
+                                     const std::string& capacity_sha) {
+  const NavV7Options& o = s.options;
   Json files = Json::object();
   const auto tc_path = dir / "v7_transfer_coefficient.csv";
-  ATX_TRY_VOID(write_text(tc_path, tc_csv(ext.tc_records())));
+  ATX_TRY_VOID(write_text(tc_path, tc_csv(tc)));
   ATX_TRY(auto tc_sha, co::sha256_file(tc_path.string()));
   files["v7_transfer_coefficient.csv"] = tc_sha;
   Json extras{{"schema", "atx.nav-v7-extras/v1"}, {"capacity_curve", o.capacity}};
@@ -357,7 +398,7 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
     extras["void_reason"] = void_reason;
     // Ruling E-31a: a run its primary book's limits_unmet voided says so, with the count and the
     // first session (spo-v3's tripwire record).
-    if (const auto* engine = ext.spo_engine(); engine && engine->params().version == 3) {
+    if (const auto* engine = s.engine.get(); engine && engine->params().version == 3) {
       const auto trip = engine->rows_tripwire_json();
       if (trip.contains("voided")) {
         extras["voided"] = trip.at("voided");
@@ -370,21 +411,21 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
   }
   // v8 R-8: the risk target's series (no NAV or return quantity: also on a void run); v8 Y
   // vol-target-v1: vol_target.csv and the "vol_target" block.
-  if (const auto* scaler = ext.risk_target_scaler()) {
+  if (s.scaler) {
     const auto& rt = o.risk_target;
     const auto path = dir / risk_target::series_file(rt);
-    ATX_TRY_VOID(write_text(path, risk_target::records_csv(scaler->records(), rt.law)));
+    ATX_TRY_VOID(write_text(path, risk_target::records_csv(leverage, rt.law)));
     ATX_TRY(auto sha, co::sha256_file(path.string()));
     files[risk_target::series_file(rt)] = sha;
     auto block = risk_target::parameters_json(rt);
-    block["books"] = risk_target::summary_json(scaler->records(), rt.law);
+    block["books"] = risk_target::summary_json(leverage, rt.law);
     extras[risk_target::block_key(rt)] = std::move(block);
   }
-  if (o.capacity && void_reason.empty()) { // a void run stops before the capacity pass
+  if (o.capacity && void_reason.empty()) { // a void run publishes no capacity book
     Json rows = Json::array();
     const BookRecord* primary = nullptr;
     const BookRecord* unit = nullptr;
-    for (const auto& b : ext.books()) {
+    for (const auto& b : books) {
       if (b.pass == NavV7Pass::Main && b.primary) primary = &b;
       if (b.pass != NavV7Pass::Capacity) continue;
       rows.push_back(capacity_row(b));
@@ -400,7 +441,7 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
     extras["capacity_x1_equals_primary_bit_for_bit"] =
         primary && unit && same_bits(primary->net_returns, unit->net_returns);
   }
-  if (const auto* engine = ext.spo_engine()) {
+  if (const auto* engine = s.engine.get()) {
     const auto path = dir / "spo_diagnostics.csv";
     ATX_TRY_VOID(write_text(path, engine->rows_csv()));
     ATX_TRY(auto sha, co::sha256_file(path.string()));
@@ -414,8 +455,8 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
   }
   // spo-v3's capacity pass (Ruling E-37): the capacity engine's report, beside (never in) the
   // main pass's spo block above.
-  const auto* main_engine = ext.spo_engine();
-  if (const auto* capacity = ext.spo_capacity_engine();
+  const auto* main_engine = s.engine.get();
+  if (const auto* capacity = s.capacity_engine.get();
       capacity && main_engine && o.capacity && void_reason.empty()) {
     const u64 capacity_gamma = std::bit_cast<u64>(capacity->calibration().gamma);
     const u64 main_gamma = std::bit_cast<u64>(main_engine->calibration().gamma);
@@ -426,10 +467,125 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
              {"tripwire", capacity->rows_tripwire_json()},
              {"books", capacity->rows_summary_json()}};
   }
+  if (!capacity_sha.empty()) files["capacity/summary.json"] = capacity_sha; // P9 C1
   extras["files"] = std::move(files);
-  return write_text(dir / "v7_extras.json", extras.dump(2) + "\n");
+  const auto extras_path = dir / "v7_extras.json";
+  ATX_TRY_VOID(write_text(extras_path, extras.dump(2) + "\n"));
+  return co::sha256_file(extras_path.string());
+}
+
+// The run's records of one kind, merged across its books in session order and, within a
+// session, in book order: the order the lockstep made them in (each book makes at most one per
+// session, in session order).
+template <class Record>
+std::vector<Record> merged(std::span<const NavReplayResult> results,
+                           std::vector<Record> NavReplayResult::*list) {
+  usize total = 0;
+  for (const auto& r : results) total += (r.*list).size();
+  std::vector<usize> at(results.size(), 0);
+  std::vector<Record> out;
+  out.reserve(total);
+  while (out.size() < total) {
+    usize pick = results.size();
+    for (usize k = 0; k < results.size(); ++k) {
+      const auto& items = results[k].*list;
+      if (at[k] == items.size()) continue;
+      if (pick == results.size() ||
+          items[at[k]].session < (results[pick].*list)[at[pick]].session)
+        pick = k;
+    }
+    out.push_back((results[pick].*list)[at[pick]]);
+    ++at[pick];
+  }
+  return out;
+}
+// Every book's record (the capacity books flagged by the extension), aligned spans only.
+std::vector<BookRecord> book_records(const ScopedNavExtension::State& s,
+                                     std::span<const NavScenario> scenarios,
+                                     std::span<const NavReplayResult> results,
+                                     std::span<const NavSummary> summaries) {
+  std::vector<BookRecord> out;
+  if (scenarios.size() != results.size() || results.size() != summaries.size()) return out;
+  usize main = 0, capacity = 0; // each book's index among its kind (the primary: S2 / x1)
+  for (usize k = 0; k < scenarios.size(); ++k) {
+    const bool book_capacity = s.is_capacity(scenarios[k]);
+    BookRecord b;
+    b.pass = book_capacity ? NavV7Pass::Capacity : NavV7Pass::Main;
+    b.book = book_label(scenarios[k]);
+    b.primary = (book_capacity ? capacity++ : main++) == nav_primary_scenario_index;
+    b.multiple = book_capacity ? cost_v2::capacity_multiple(scenarios[k].id) : nan;
+    const auto& r = results[k];
+    b.initial_nav = r.days.empty() ? nan : r.days.front().pretrade_nav;
+    for (const auto& day : r.days) {
+      b.traded_dollars += day.traded_dollars; b.trade_cost_dollars += day.trade_cost_dollars;
+      if (day.return_observation) b.net_returns.push_back(day.net_return);
+    }
+    b.summary = summaries[k];
+    b.participation_p95 = r.participation_p95; b.participation_max = r.participation_max;
+    out.push_back(std::move(b));
+  }
+  return out;
+}
+// summary.json's v7 block over `tc` and (main pass) `leverage`, with the extras sentence.
+void summarize(const ScopedNavExtension::State& s, Json& summary, std::span<const TcRecord> tc,
+               std::span<const risk_target::Record> leverage, const char* extras) {
+  std::map<std::string, std::vector<const TcRecord*>> by_book;
+  for (const auto& r : tc) by_book[r.book].push_back(&r);
+  Json books = Json::object();
+  for (const auto& [book, records] : by_book) {
+    std::vector<f64> tcs, theta, c_bar;
+    usize at_lo = 0, at_hi = 0;
+    for (const auto* r : records) {
+      tcs.push_back(r->tc); theta.push_back(r->theta); c_bar.push_back(r->c_bar);
+      if (s.options.aim_v6 && std::isfinite(r->c_ref) && std::isfinite(r->c_bar) &&
+          r->c_bar > 0) {
+        const f64 raw = std::sqrt(r->c_ref / r->c_bar);
+        at_lo += raw <= s.options.v6.clip_lo ? 1U : 0U;
+        at_hi += raw >= s.options.v6.clip_hi ? 1U : 0U;
+      }
+    }
+    Json entry{{"transfer_coefficient", distribution(tcs)},
+               {"rebalance_decisions", records.size()}};
+    if (s.options.aim_v6)
+      entry["aim_partial_v6"] = Json{{"theta", distribution(theta)},
+          {"c_bar", distribution(c_bar)}, {"decisions_at_clip_lo", at_lo},
+          {"decisions_at_clip_hi", at_hi}};
+    books[book] = std::move(entry);
+  }
+  summary["v7"] = Json{{"declarations", declarations(s)}, {"books", std::move(books)},
+                       {"extras", extras}};
+  // The pass's own engine: spo-v3's capacity pass (Ruling E-37) summarises its capacity books.
+  const spo::Engine* engine =
+      s.pass == NavV7Pass::Capacity && s.capacity_engine ? s.capacity_engine.get()
+                                                         : s.engine.get();
+  if (engine) {
+    const std::string key = spo::json_key(engine->params());
+    summary["v7"][key + "_books"] = engine->rows_summary_json();
+    summary["v7"][key + "_tripwire"] = engine->rows_tripwire_json();
+  }
+  if (const char* id = rule_id(s.options);
+      id && summary.contains("rule") && summary.at("rule").is_string())
+    summary["rule"] = relabel_v6(summary.at("rule").get<std::string>(), id);
+  // v8 R-8: the per-book block over the main books' records (the capacity pass: parameters).
+  add_risk_target(s, summary, s.pass == NavV7Pass::Main ? &leverage : nullptr);
+}
+std::span<const risk_target::Record> scaler_records(const ScopedNavExtension::State& s) {
+  return s.scaler ? s.scaler->records() : std::span<const risk_target::Record>{};
 }
 } // namespace
+
+BookState& ScopedNavExtension::State::loose_book(const NavScenario& scenario) {
+  std::string label = book_label(scenario);
+  auto found = loose.find(label);
+  if (found == loose.end()) {
+    BookState b;
+    b.run = this;
+    b.label = label;
+    b.capacity = is_capacity(scenario);
+    found = loose.emplace(std::move(label), std::move(b)).first;
+  }
+  return found->second;
+}
 
 co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                            usize d, bool rebalance, f64 spent, f64 nav_post,
@@ -438,68 +594,58 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
                                            std::span<const f64> rates, std::span<const u8> tier,
                                            std::span<const u8> no_locate,
                                            std::span<const f64> two_speed_fast) {
-  if (!scaler)
-    return plan_rule(x, cfg, nan, d, rebalance, spent, nav_post, desired, planned, out, rates,
-                     tier, no_locate);
-  // v8 R-8 (risk-target-v1): the book's L_t, from its current weights (`planned` on entry) and
-  // the risk row d, replaces --aim-leverage in the config its rule reads (every decision, the
-  // warm-up included; the main pass's scored decisions are recorded). spo-v3 keeps the run's L
-  // for its gross bound and its gamma (BookDecision::base_leverage).
-  const bool scored = pass == NavV7Pass::Main && d >= x.decision_begin;
-  // v8 Y-5 two-speed-v1 (Ruling PM8-16 #10): the book's fast holding follows its scale lambda =
-  // L_t / L. Its rebalance plans at L_t the netted desired target plus the carry of F from the
-  // book's lambda at its previous two-speed rebalance (its first: lambda itself, no carry), so
-  // the remainder moves at theta_s toward lambda L m_s d_s and the fast part becomes lambda F_next.
-  // Checked before the scaler moves.
-  const bool carry = two_speed_on(cfg.target) && rebalance;
-  const usize n = x.instruments;
-  if (carry && (two_speed_fast.size() != n || desired.size() != n || d >= x.dates))
-    return co::Err(co::ErrorCode::InvalidArgument,
-                   "nav v7: two-speed-v1 under --risk-target / --vol-target needs the fast "
-                   "sleeve F entering the rebalance");
-  const std::string book = book_label(cfg.scenario);
-  ATX_TRY(const f64 leverage, scaler->leverage(x, d, rebalance, book, cfg.target.aim_leverage,
-                                               planned, scored));
-  scaled = cfg;
-  scaled.target.aim_leverage = leverage;
-  if (!carry)
-    return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, desired,
-                     planned, out, rates, tier, no_locate);
-  const f64 lambda = leverage / cfg.target.aim_leverage;
-  const auto held = two_speed_lambda.try_emplace(book, lambda).first;
-  carried.assign(desired.begin(), desired.end());
-  ATX_TRY_VOID(bk::two_speed_carry(x.member.subspan(d * n, n), two_speed_fast, held->second,
-                                   lambda, cfg.target.aim_leverage, cfg.target.trade_fraction,
-                                   carried));
-  held->second = lambda;
-  return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, carried,
-                   planned, out, rates, tier, no_locate);
+  BookState& b = loose_book(cfg.scenario);
+  const NavReplayConfig* rule_cfg = &cfg;
+  const std::vector<f64>* target = &desired;
+  f64 base = nan;
+  if (scaler) {
+    // v8 R-8 (risk-target-v1): the book's L_t, from its current weights (`planned` on entry) and
+    // the risk row d, replaces --aim-leverage in the config its rule reads (every decision, the
+    // warm-up included; the main books' scored decisions are recorded). spo-v3 keeps the run's
+    // L for its gross bound and its gamma (BookDecision::base_leverage). Under two-speed-v1 the
+    // book's stage carries F at its own scale (risk_target::BookLeverage::plan, Ruling PM8-16
+    // #10), checked before the scaler moves.
+    const bool scored = !b.capacity && d >= x.decision_begin;
+    auto& leverage = scaler->book(b.label);
+    ATX_TRY(target, leverage.plan(x, cfg, d, rebalance, b.label, planned, desired, two_speed_fast,
+                                  scored ? scaler->sink() : nullptr));
+    rule_cfg = &leverage.config();
+    base = cfg.target.aim_leverage;
+  }
+  auto status = plan_rule(b, x, *rule_cfg, base, d, rebalance, spent, nav_post, *target, planned,
+                          out, rates, tier, no_locate, nullptr);
+  // The loose seam keeps its transfer coefficients here (tc_records), in the order it made them.
+  tc.insert(tc.end(), std::make_move_iterator(b.tc.begin()), std::make_move_iterator(b.tc.end()));
+  b.tc.clear();
+  return status;
 }
 
-co::Status ScopedNavExtension::State::plan_rule(const TargetReplayInput& x,
+co::Status ScopedNavExtension::State::plan_rule(BookState& b, const TargetReplayInput& x,
                                                 const NavReplayConfig& cfg, f64 base_leverage,
                                                 usize d, bool rebalance, f64 spent, f64 nav_post,
                                                 const std::vector<f64>& desired,
                                                 std::vector<f64>& planned, TargetReplayDay& out,
                                                 std::span<const f64> rates,
                                                 std::span<const u8> tier,
-                                                std::span<const u8> no_locate) {
+                                                std::span<const u8> no_locate,
+                                                const cost_v2::DecisionLiquidity* shared) {
   // A warm-start decision (v8 D-0: d before the role's decision_begin) plans the book but is
   // not scored: it leaves no transfer-coefficient record. Without a warm start every
-  // decision the replay makes has d >= decision_begin, so nothing changes.
+  // decision the replay makes has d >= decision_begin, so nothing changes. A capacity book is
+  // never scored (P9 C1: in the main lockstep as in its own pass before).
   const bool v6 = options.aim_v6;
-  const bool observe = pass == NavV7Pass::Main && d >= x.decision_begin;
+  const bool scored = !b.capacity && d >= x.decision_begin;
   if ((v6 || engine) && !rates.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
                    "aim-partial-v6 / spo-v1: the per-name rate is not part of the rule "
                    "(--rate fixed)");
-  // The spo rule's engine and NAV. Capacity pass (Ruling E-37, spo-v3 only): a book here is the
-  // NAV-m book at the initial NAV, so it plans on the capacity engine as the tracker of NAV m x
-  // NAV_post under the primary S2 law: its trade limit p ADV / (m NAV) and its impact
-  // impact_y sigma sqrt(m NAV / ADV) are the NAV-m book's (m = 1: the main pass bit for bit).
+  // The spo rule's engine and NAV. A capacity book (Ruling E-37, spo-v3 only) is the NAV-m book
+  // at the initial NAV, so it plans on the capacity engine as the tracker of NAV m x NAV_post
+  // under the primary S2 law: its trade limit p ADV / (m NAV) and its impact
+  // impact_y sigma sqrt(m NAV / ADV) are the NAV-m book's (m = 1: the main book bit for bit).
   spo::Engine* rule = engine.get();
   f64 rule_nav = nav_post;
-  if (engine && pass == NavV7Pass::Capacity) {
+  if (engine && b.capacity) {
     const f64 m = cost_v2::capacity_multiple(cfg.scenario.id);
     if (!capacity_engine || engine->params().version != 3 || !std::isfinite(m))
       return co::Err(co::ErrorCode::InvalidArgument,
@@ -510,28 +656,31 @@ co::Status ScopedNavExtension::State::plan_rule(const TargetReplayInput& x,
   }
   // Non-rebalance decisions keep every member and only trade exits: aim-partial-v5's move
   // (spo: its shadow book makes the same move).
-  if (!rebalance || (!v6 && !engine && !observe)) {
+  if (!rebalance || (!v6 && !engine && !scored)) {
     if (rule && !rebalance)
-      ATX_TRY_VOID(rule->hold(x, cfg, d, desired, book_label(cfg.scenario)));
+      ATX_TRY_VOID(rule->hold(x, cfg, d, desired, b.label));
     return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
   }
   const usize n = x.instruments;
   if (d >= x.dates || desired.size() != n || planned.size() != n)
     return co::Err(co::ErrorCode::InvalidArgument, "nav v7: decision geometry");
-  if (liquidity_key != x.close.data() || liquidity_decision != d) {
-    cost_v2::decision_liquidity(x, d, cfg.liquidity_window, cfg.min_vol_pairs, liquidity);
-    liquidity_key = x.close.data(); liquidity_decision = d;
+  if (!shared) { // the loose seam: one computation per decision for every book
+    if (liquidity_key != x.close.data() || liquidity_decision != d) {
+      cost_v2::decision_liquidity(x, d, cfg.liquidity_window, cfg.min_vol_pairs, liquidity);
+      liquidity_key = x.close.data(); liquidity_decision = d;
+    }
+    shared = &liquidity;
   }
+  const cost_v2::DecisionLiquidity& window = *shared;
   const auto member = x.member.subspan(d * n, n);
   const usize members = detail::members_at(x, d);
-  const std::string book = book_label(cfg.scenario);
-  TcRecord record{x.session_keys[d], book, nan, members, 0, 0, nan, nan, nan};
+  TcRecord record{x.session_keys[d], b.label, nan, members, 0, 0, nan, nan, nan};
   if (v6) {
-    // Capacity pass (R1 I-1): a book here is the NAV-m book at the initial NAV. Its c_i is the
-    // S2 law at the NAV-m trade m q, which is exactly the book's own law (impact_y * m^delta,
-    // cost_v2::capacity_scenarios) at the base-scale q. The main pass prices every book with S2.
+    // A capacity book (R1 I-1) is the NAV-m book at the initial NAV. Its c_i is the S2 law at
+    // the NAV-m trade m q, which is exactly the book's own law (impact_y * m^delta,
+    // cost_v2::capacity_scenarios) at the base-scale q. A main book is priced with S2.
     const NavScenario* law = &s2;
-    if (pass == NavV7Pass::Capacity) {
+    if (b.capacity) {
       if (!std::isfinite(cost_v2::capacity_multiple(cfg.scenario.id)))
         return co::Err(co::ErrorCode::InvalidArgument,
                        "aim-partial-v6: capacity pass book " + cfg.scenario.id +
@@ -541,33 +690,35 @@ co::Status ScopedNavExtension::State::plan_rule(const TargetReplayInput& x,
     const f64 q = members ? cfg.target.trade_fraction * cfg.target.aim_leverage * nav_post /
                                 static_cast<f64>(members)
                           : nan;
-    costs.assign(n, nan);
+    b.costs.assign(n, nan);
     for (usize i = 0; i < n; ++i)
       if (member[i])
-        costs[i] = cost_v2::marginal_cost_s2(*law, q, liquidity.adv[i], liquidity.sigma[i]);
-    const f64 c_bar = cost_v2::finite_median(costs);
-    auto& history = c_history[book];
+        b.costs[i] = cost_v2::marginal_cost_s2(*law, q, window.adv[i], window.sigma[i]);
+    const f64 c_bar = cost_v2::finite_median(b.costs);
+    auto& history = b.c_history;
     if (std::isfinite(c_bar)) {
       history.push_back(c_bar);
       if (history.size() > options.v6.reference_decisions) history.erase(history.begin());
     }
     const f64 c_ref = reference_cost(history);
-    cost_v2::form_aim_v6(member, desired, costs, c_bar, c_ref, cfg.target.trade_fraction,
-                         options.v6, true, decision);
-    ATX_TRY_VOID(cost_v2::aim_partial_v6_weights(x, cfg.target, d, true, decision, planned, out));
-    record.c_bar = c_bar; record.c_ref = c_ref; record.theta = decision.theta;
-    record.costed = decision.costed;
+    cost_v2::form_aim_v6(member, desired, b.costs, c_bar, c_ref, cfg.target.trade_fraction,
+                         options.v6, true, b.decision);
+    ATX_TRY_VOID(
+        cost_v2::aim_partial_v6_weights(x, cfg.target, d, true, b.decision, planned, out));
+    record.c_bar = c_bar; record.c_ref = c_ref; record.theta = b.decision.theta;
+    record.costed = b.decision.costed;
   } else if (rule) {
-    const spo::BookDecision in{x, cfg, s2, d, rule_nav, desired, tier, no_locate, liquidity,
-                               book, base_leverage};
+    const spo::BookDecision in{x, cfg, s2, d, rule_nav, desired, tier, no_locate, window,
+                               b.label, base_leverage};
     ATX_TRY_VOID(rule->plan(in, planned, out));
   } else {
-    ATX_TRY_VOID(detail::update_weights(x, cfg.target, d, true, spent, desired, planned, out, rates));
+    ATX_TRY_VOID(
+        detail::update_weights(x, cfg.target, d, true, spent, desired, planned, out, rates));
   }
   record.banded = out.construction.banded_names;
-  if (observe) {
-    record.tc = cost_v2::transfer_coefficient(member, desired, liquidity.sigma, planned);
-    tc.push_back(std::move(record));
+  if (scored) {
+    record.tc = cost_v2::transfer_coefficient(member, desired, window.sigma, planned);
+    b.tc.push_back(std::move(record));
   }
   return co::Ok();
 }
@@ -581,8 +732,7 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
   state_->pass = pass;
   state_->liquidity_key = nullptr;
   state_->liquidity_decision = no_decision;
-  state_->c_history.clear();
-  state_->two_speed_lambda.clear();
+  state_->loose.clear();
   if (state_->engine) state_->engine->begin_run();
   if (state_->capacity_engine) state_->capacity_engine->begin_run();
   if (state_->scaler) state_->scaler->begin_run();
@@ -630,8 +780,52 @@ std::vector<NavScenario> run_scenarios(std::vector<NavScenario> matrix) {
   return matrix;
 }
 
+LockstepBooks lockstep_scenarios(std::vector<NavScenario> matrix) {
+  const auto* s = active_state;
+  const bool capacity = s && s->pass == NavV7Pass::Main && s->options.capacity &&
+                        matrix.size() > nav_primary_scenario_index;
+  const NavScenario primary = capacity ? matrix[nav_primary_scenario_index] : NavScenario{};
+  LockstepBooks out;
+  out.books = run_scenarios(std::move(matrix));
+  out.capacity_begin = out.books.size();
+  if (capacity) // the books the capacity pass replayed before (P9 C1: in this lockstep)
+    for (auto& book : cost_v2::capacity_scenarios(primary)) out.books.push_back(std::move(book));
+  return out;
+}
+
+bool capacity_book(const NavScenario& scenario) {
+  const auto* s = active_state;
+  return s && s->is_capacity(scenario);
+}
+
+f64 nav_multiple(const NavScenario& scenario) {
+  const f64 m = cost_v2::capacity_multiple(scenario.id);
+  return capacity_book(scenario) && std::isfinite(m) ? m : 1.0;
+}
+
 co::Result<std::unique_ptr<const bk::ReplayCostModel>> extension_cost_model(const NavScenario& s) {
   return cost_v2::reserved_cost_model(s);
+}
+
+void configure(NavReplayConfig& cfg) {
+  const auto* s = active_state;
+  if (!s || !s->options.risk_target.on || cfg.leverage.law != NavLeverageLaw::Fixed) return;
+  cfg.leverage = risk_target::leverage_rule(s->options.risk_target, s->options.spo_risk);
+}
+
+std::unique_ptr<BookState> make_book_state(const NavScenario& scenario) {
+  auto* s = active_state;
+  if (!s) return nullptr;
+  auto book = std::make_unique<BookState>();
+  book->run = s;
+  book->label = book_label(scenario);
+  book->capacity = s->is_capacity(scenario);
+  return book;
+}
+
+bool shared_plan_state() {
+  const auto* s = active_state;
+  return s && (s->engine || s->capacity_engine);
 }
 
 co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d, bool rebalance,
@@ -645,6 +839,31 @@ co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
   return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
 }
 
+co::Status plan_book(BookState* book, const TargetReplayInput& x, const NavReplayConfig& cfg,
+                     f64 base_leverage, usize d, bool rebalance, f64 spent, f64 nav_post,
+                     const std::vector<f64>& desired, std::vector<f64>& planned,
+                     TargetReplayDay& out, std::span<const f64> rates, std::span<const u8> tier,
+                     std::span<const u8> no_locate,
+                     const cost_v2::DecisionLiquidity* liquidity) {
+  if (!book || !book->run)
+    return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out,
+                                  rates);
+  return book->run->plan_rule(*book, x, cfg, base_leverage, d, rebalance, spent, nav_post,
+                              desired, planned, out, rates, tier, no_locate, liquidity);
+}
+
+void observe(std::span<const NavReplayResult> results) {
+  auto* s = active_state;
+  if (!s) return;
+  auto tc = merged(results, &NavReplayResult::transfer);
+  s->tc.insert(s->tc.end(), std::make_move_iterator(tc.begin()),
+               std::make_move_iterator(tc.end()));
+  if (s->scaler) {
+    const auto leverage = merged(results, &NavReplayResult::leverage);
+    s->scaler->append(leverage);
+  }
+}
+
 co::Status capture(std::span<const NavScenario> scenarios,
                    std::span<const NavReplayResult> results,
                    std::span<const NavSummary> summaries) {
@@ -653,8 +872,8 @@ co::Status capture(std::span<const NavScenario> scenarios,
   // The spo specific-ceiling tripwire (R2 M-1) and, under spo-v3, the primary book's
   // limits_unmet (Ruling E-31a, whatever the void flag), read before any byte is published: the
   // replay returns this error before its output directory exists, so no NAV or return file
-  // (and no return statistic on the console) exists for a void run. It reads the main pass's
-  // rows only: spo-v3's capacity pass (Ruling E-37, report only) plans on capacity_engine,
+  // (and no return statistic on the console) exists for a void run. It reads the main books'
+  // rows only: spo-v3's capacity books (Ruling E-37, report only) plan on capacity_engine,
   // whose tripwire is recorded in v7_extras.json and never voids the run.
   if (s->engine) {
     auto tripwire = s->engine->rows_tripwire();
@@ -663,22 +882,46 @@ co::Status capture(std::span<const NavScenario> scenarios,
       return tripwire;
     }
   }
-  if (scenarios.size() != results.size() || results.size() != summaries.size()) return co::Ok();
-  for (usize k = 0; k < scenarios.size(); ++k) {
-    BookRecord b;
-    b.pass = s->pass; b.book = book_label(scenarios[k]);
-    b.primary = k == nav_primary_scenario_index;
-    b.multiple = s->pass == NavV7Pass::Capacity ? cost_v2::capacity_multiple(scenarios[k].id) : nan;
-    const auto& r = results[k];
-    b.initial_nav = r.days.empty() ? nan : r.days.front().pretrade_nav;
-    for (const auto& day : r.days) {
-      b.traded_dollars += day.traded_dollars; b.trade_cost_dollars += day.trade_cost_dollars;
-      if (day.return_observation) b.net_returns.push_back(day.net_return);
-    }
-    b.summary = summaries[k];
-    b.participation_p95 = r.participation_p95; b.participation_max = r.participation_max;
-    s->books.push_back(std::move(b));
+  auto books = book_records(*s, scenarios, results, summaries);
+  s->books.insert(s->books.end(), std::make_move_iterator(books.begin()),
+                  std::make_move_iterator(books.end()));
+  return co::Ok();
+}
+
+RunRecords run_records(std::span<const NavScenario> scenarios,
+                       std::span<const NavReplayResult> results,
+                       std::span<const NavSummary> summaries) {
+  RunRecords out;
+  const auto* s = active_state;
+  if (!s) return out;
+  out.tc = merged(results, &NavReplayResult::transfer);
+  out.leverage = merged(results, &NavReplayResult::leverage);
+  out.books = book_records(*s, scenarios, results, summaries);
+  return out;
+}
+
+bool installed() { return active_state != nullptr; }
+
+CapacityPublication::CapacityPublication() {
+  if (auto* s = active_state) {
+    previous_ = s->pass;
+    s->pass = NavV7Pass::Capacity;
   }
+}
+CapacityPublication::~CapacityPublication() {
+  if (auto* s = active_state) s->pass = previous_;
+}
+
+co::Status publish_extras(const std::filesystem::path& dir, const RunRecords& records,
+                          const std::string& capacity_summary_sha256, Json& binding) {
+  binding = Json(nullptr);
+  const auto* s = active_state;
+  if (!s) return co::Ok();
+  ATX_TRY(auto extras_sha, write_extras(dir, *s, std::string(), records.tc, records.leverage,
+                                        records.books, capacity_summary_sha256));
+  binding = Json{{"v7_extras.json", std::move(extras_sha)}};
+  if (!capacity_summary_sha256.empty())
+    binding["capacity/summary.json"] = capacity_summary_sha256;
   return co::Ok();
 }
 
@@ -698,51 +941,24 @@ void extend_recipe(Json& recipe) {
   if (const char* id = rule_id(s->options);
       id && recipe.contains("rule") && recipe.at("rule").is_string())
     recipe["rule"] = relabel_v6(recipe.at("rule").get<std::string>(), id);
-  add_risk_target(*s, recipe, false);
+  add_risk_target(*s, recipe, nullptr);
+  // P9 C1: under --capacity-curve every capacity book's ADV cap reads its multiple's NAV.
+  if (s->options.capacity && recipe.contains("adv_hold_rule"))
+    recipe["adv_hold_rule"] = capacity_adv_hold_rule;
 }
 
 void extend_summary(Json& summary) {
   const auto* s = active_state;
   if (!s || !summary.is_object()) return;
-  std::map<std::string, std::vector<const TcRecord*>> by_book;
-  for (const auto& r : s->tc) by_book[r.book].push_back(&r);
-  Json books = Json::object();
-  for (const auto& [book, records] : by_book) {
-    std::vector<f64> tc, theta, c_bar;
-    usize at_lo = 0, at_hi = 0;
-    for (const auto* r : records) {
-      tc.push_back(r->tc); theta.push_back(r->theta); c_bar.push_back(r->c_bar);
-      if (s->options.aim_v6 && std::isfinite(r->c_ref) && std::isfinite(r->c_bar) && r->c_bar > 0) {
-        const f64 raw = std::sqrt(r->c_ref / r->c_bar);
-        at_lo += raw <= s->options.v6.clip_lo ? 1U : 0U;
-        at_hi += raw >= s->options.v6.clip_hi ? 1U : 0U;
-      }
-    }
-    Json entry{{"transfer_coefficient", distribution(tc)}, {"rebalance_decisions", records.size()}};
-    if (s->options.aim_v6)
-      entry["aim_partial_v6"] = Json{{"theta", distribution(theta)},
-          {"c_bar", distribution(c_bar)}, {"decisions_at_clip_lo", at_lo},
-          {"decisions_at_clip_hi", at_hi}};
-    books[book] = std::move(entry);
-  }
-  summary["v7"] = Json{{"declarations", declarations(*s)}, {"books", std::move(books)},
-      {"extras", "v7_transfer_coefficient.csv, capacity_curve.csv (with --capacity-curve), "
-                 "spo_diagnostics.csv (spo-v1/v2) and v7_extras.json are written after this "
-                 "summary"}};
-  // The pass's own engine: spo-v3's capacity pass (Ruling E-37) summarises its capacity books.
-  const spo::Engine* engine =
-      s->pass == NavV7Pass::Capacity && s->capacity_engine ? s->capacity_engine.get()
-                                                           : s->engine.get();
-  if (engine) {
-    const std::string key = spo::json_key(engine->params());
-    summary["v7"][key + "_books"] = engine->rows_summary_json();
-    summary["v7"][key + "_tripwire"] = engine->rows_tripwire_json();
-  }
-  if (const char* id = rule_id(s->options);
-      id && summary.contains("rule") && summary.at("rule").is_string())
-    summary["rule"] = relabel_v6(summary.at("rule").get<std::string>(), id);
-  // v8 R-8: the per-book block over the main pass's records (the capacity pass: parameters).
-  add_risk_target(*s, summary, s->pass == NavV7Pass::Main);
+  summarize(*s, summary, s->tc, scaler_records(*s), unbound_extras);
+}
+
+void extend_summary(Json& summary, const RunRecords& records, const Json& binding) {
+  const auto* s = active_state;
+  if (!s || !summary.is_object()) return;
+  summarize(*s, summary, records.tc, records.leverage,
+            binding.is_null() ? unbound_extras : bound_extras);
+  if (!binding.is_null()) summary["v7"]["files"] = binding;
 }
 
 void extend_holdings(Json& manifest) {
@@ -752,16 +968,18 @@ void extend_holdings(Json& manifest) {
   if (const char* id = rule_id(s->options);
       id && manifest.contains("rule") && manifest.at("rule").is_string())
     manifest["rule"] = relabel_v6(manifest.at("rule").get<std::string>(), id);
-  add_risk_target(*s, manifest, false);
+  add_risk_target(*s, manifest, nullptr);
 }
 
 void append_help(std::ostream& out) {
   out << "v7 (lane L4; any of these adds <output>/v7_transfer_coefficient.csv and "
-         "v7_extras.json after summary.json): [--cost-v2 (stress books S2-KO "
+         "v7_extras.json before summary.json, which binds them): [--cost-v2 (stress books S2-KO "
          "modeled-1bn-ko-v1 and S2-FIM modeled-1bn-fim-v1 beside S1/S2/S3; S2 stays PRIMARY)] "
-         "[--capacity-curve (second pass: S2 at NAV x .5,1,2,4,8 into <output>/capacity, then "
-         "<output>/capacity_curve.csv; fixed rate only; --emit-holdings observes the main "
-         "pass only)] [--rule aim-partial-v6 (aim-partial-v5 flags plus a cost-scaled target, "
+         "[--capacity-curve (the capacity books S2 at NAV x .5,1,2,4,8 in the main lockstep, "
+         "published into <output>/capacity, then <output>/capacity_curve.csv; with "
+         "--adv-hold-q each capacity book's cap reads its multiple's NAV; fixed rate only; "
+         "--emit-holdings observes the main primary book only)] [--rule aim-partial-v6 "
+         "(aim-partial-v5 flags plus a cost-scaled target, "
          "band and regime rate; fixed rate only) --cost-shrink-kappa 1 --band-b "
          "<--dust-multiple> --band-exponent .3333 (1/3; 0: the uniform dust band) "
          "--rate-clip .5,1.5; kappa 0, band exponent 0 and clip 1,1 = aim-partial-v5] "
@@ -1112,27 +1330,16 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
         err << "nav v7: void run; " << dir.string() << " exists, diagnostics not written\n";
         return 1;
       }
-      const auto status = write_extras(dir, extension, o, extension.void_reason());
+      const auto& state = *active_state; // this extension's (installed above)
+      const auto status = write_extras(dir, state, extension.void_reason(), state.tc,
+                                       scaler_records(state), {}, std::string());
       if (!status) { err << status.error().to_string() << '\n'; return 1; }
       out << "nav v7: run VOID (" << extension.void_reason() << "); spo diagnostics written to "
           << dir.string() << '\n';
       return 3;
     }
-    if (o.capacity) {
-      std::vector<std::string> tokens{args.front()};
-      for (usize k = 1; k < args.size(); ++k) {
-        if (args[k] == "--emit-holdings" && k + 1 < args.size()) { ++k; continue; } // main only
-        tokens.push_back(args[k]);
-        if (args[k] == "--output" && k + 1 < args.size()) {
-          tokens.push_back((dir / "capacity").string());
-          ++k;
-        }
-      }
-      extension.begin_run(NavV7Pass::Capacity);
-      if (const int code = run(std::move(tokens)); code != 0) return code;
-    }
-    const auto status = write_extras(dir, extension, o, std::string());
-    if (!status) { err << status.error().to_string() << '\n'; return 1; }
+    // P9 C1: the capacity books ran in the main lockstep, and the replay published the capacity
+    // directory and the v7 files before its summary.json (publish_extras); no second pass.
     // Console only: solve timing is not a published byte.
     if (const auto* engine = extension.spo_engine()) {
       const auto t = engine->timing();
