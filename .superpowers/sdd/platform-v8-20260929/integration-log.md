@@ -7303,3 +7303,19 @@ no research process (two other lanes' pytest running, not blocking); free memory
 All three receipts: completed, exit 0, "clean in the code pathspec", dirty outside only the untracked png, stderr empty.
 **P13 (a) PASS** (the parent's fit, w and NAV argv reproduce on the P5 build with `--two-speed` absent) and **(b) PASS**.
 (c) follows stage 04. Comparisons by SHA-256 and JSON paths only; no value read.
+
+### R0-9 R0-7-MAN: Y-5 manifest committed
+
+Keys: `wave` y-5, `rule_cell` = the template + `e29365d1` (R0-9-PIN), `parent` = the Y-2 driver's `next_parent`,
+`expect.n_before` 59, `budget.id` v8y-construction-n59-plus-1, `out_dir` build-equity/waves/y-5; `schema`, `fields`,
+`acceptance` (pm7-34; printed as Y-S, Y-3, Y-2), `gross_match` pm6-6 (v8y 6: PM6-6 yes for Y-5, gm template),
+`budget.construction_cap` 62, `ledger`, `record` copied from `y-2.json`. Registered constants (theta_s .05 = the parent's
+`--trade-fraction`, theta_f .12945, section 11's table) live inside the template's `--two-speed two-speed-v1` flags (C++):
+no `rule_cell.constants` key, no free constant. The description records both template SHAs and the description-only diff.
+
+| step | argv | exit | result |
+|---|---|---|---|
+| manifest | written from `y-2.json` by key (2-space JSON, LF); key-by-key diff vs `y-2.json` = wave, description, rule_cell, budget, expect, out_dir (key order equal) | - | `scripts/specs/v8/waves/y-5.json` sha256 `f538f9f590570d3cb80f31aa9e3e8dd1f38fd3b1cb168cc738756ad4da762e89` (`i/lf w/lf`) |
+| plan (pre-commit) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-5.json --root C:/atx-wt/pool-2` | **0** | 9 stages pending; cell file `scripts/specs/v8/y-two-speed-y-5.json`; nothing written |
+| pre-registration commit | `git commit -m "wave y-5: manifest (pre-registration of cell Y-5; v8y-prereg sections 5, 6, 13 P13, 14)"` | 0 | **`43128be8`** |
+| plan (committed) | same argv | **0** | 27 lines; state `build-equity/waves/y-5/receipts` |
