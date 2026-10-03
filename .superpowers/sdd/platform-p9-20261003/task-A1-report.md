@@ -349,3 +349,27 @@ $ "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-e
 exit_code=0
 ```
 The tools count went from 382 to 398: the two regression classes add 16 tests.
+
+## Fix round 3
+**Outcome:** DONE. FIX_BASE `66f77a6e`. Re-review 2 (`task-A1-rereview-2.md`) found N1 and N2 addressed and opened one major, N3. This round changes tests only; `field_registry.py`, `field_registry.json` (sha256 `6c56b739...3e51`) and the builder are unchanged.
+
+**Commit:** `b8bf67fa` test(fields): engine-only set assertion holds with real DEC-5 rows (P9 A1 fix 3). Changes `atx-engine/tools/test_field_registry.py`, +3/-1.
+
+**N3 (major).** `test_the_copy_holds_the_engine_only_row` used to assert `engine_only_names(doc) == {"syn_dec5"}`, so the first real DEC-5 row in the committed file would fail it in both regression classes.
+- `setUpClass` now records the committed file's engine-only set (`cls.committed_only`) before it appends `syn_dec5` and patches `fr.DEFAULT_PATH`.
+- The test asserts that `syn_dec5` is not among those rows, and that the copy's set equals `committed_only | {"syn_dec5"}`.
+- The `names[-1]` / dtype assertion is kept.
+
+**Proof** (scratch only; no tree edited). A scratch pytest plugin, `dec5_probe.py` in the session scratchpad, writes the committed file plus a `gia_13f` engine-only row (`registry:DEC-5`, 93 rows) to scratch and points `fr.DEFAULT_PATH` at it. That path reaches the fresh interpreters too. The plugin was run from `atx-engine/tools` with `-p dec5_probe` on `test_field_registry.py`:
+```
+DEC5_DTYPE=f64    35 passed in 5.88s   (0 failed)
+DEC5_DTYPE=group  35 passed in 5.55s   (0 failed)
+```
+Under the probe, `test_valid_and_in_v15_order` counts 92 producible rows out of 93. So `gia_13f` was recognised as engine-only, and the old assertion would have failed, as re-review 2 reproduced.
+
+**Evidence** (pool-12, `PYTHONDONTWRITEBYTECODE=1`, the committed registry):
+```
+$ "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tools
+398 passed, 6 subtests passed in 168.54s (0:02:48)
+exit_code=0
+```
