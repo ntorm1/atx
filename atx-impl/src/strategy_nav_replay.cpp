@@ -344,6 +344,12 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
                    "nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and "
                    "rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate "
                    "takes no rate parameters");
+  // two-speed-v1 nets the sleeves with one slow rate theta_s (two_speed_aim divides
+  // the fast move by it), so a per-name rate would break the netting identity.
+  if (two_speed_on(cfg.target) && cfg.rate != NavRateRule::Fixed)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: two-speed-v1 needs the fixed trading rate (its netted aim "
+                   "divides by the one slow rate theta_s); rate per-name-v1 is refused");
   // v6: the order basis is one of its two values; locate-in-aim only zeroes shorts
   // that a regression then re-balances (the borrow fields are checked with the input).
   if ((cfg.order_basis != NavOrderBasis::Target && cfg.order_basis != NavOrderBasis::Delta) ||
@@ -906,6 +912,9 @@ struct PlanInputs {
   const std::vector<f64>& desired;
   const BorrowTiers& tiers;
   std::span<const u8> no_locate; // decide --locates only; empty in the replay
+  // v8 Y-5 two-speed-v1 (the replay only; empty otherwise): F entering this decision's step,
+  // which a book under a leverage scaler carries at its own scale (Ruling PM8-16 #10).
+  std::span<const f64> two_speed_fast;
 };
 // CONSTRUCTION-RULE DISPATCH SITE, shared by the NAV replay (plan_decision) and the
 // daily decide path (detail::nav_decide), so a rule added here runs in both. `planned`
@@ -919,7 +928,7 @@ co::Status plan_weights(const PlanInputs& p, f64 spent, std::span<const f64> rat
   // L4/W1 hook: detail::update_weights unless the v7 extension (aim-partial-v6, spo-v1) is
   // installed; spo-v1 also reads the decision's borrow tiers and decide --locates.
   ATX_TRY_VOID(v7::plan(p.x, p.cfg, p.d, p.rebalance, spent, nav_post, p.desired, planned, plan,
-                        rates, p.tiers.tier, p.no_locate));
+                        rates, p.tiers.tier, p.no_locate, p.two_speed_fast));
   if (!rule.empty()) std::copy(planned.begin(), planned.end(), rule.begin());
   if (p.cfg.scenario.financing.block_special_shorts)
     block_special_plan(p.tiers, p.no_locate, current, planned, nav_post, day);
@@ -982,7 +991,8 @@ co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
   std::span<const f64> rates;
   if (c.cfg.rate == NavRateRule::PerNameV1) { per_name_rates(c, b, d, cache); rates = cache.rate; }
-  const PlanInputs inputs{x, c.cfg, d, rebalance, shared.desired, tiers, {}};
+  const PlanInputs inputs{x, c.cfg, d, rebalance, shared.desired, tiers, {},
+                          std::span<const f64>(shared.state.fast_before)};
   const auto rule = b.trace ? std::span<f64>(b.trace->rule) : std::span<f64>{};
   ATX_TRY_VOID(plan_weights(inputs, b.spent, rates, s.current, s.planned, b.nav_post, rule, plan,
                             day));
@@ -2223,6 +2233,8 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
          s.neutralize_max_amplification == t.neutralize_max_amplification &&
          s.neutralize_max_excluded_share == t.neutralize_max_excluded_share &&
          s.hold_band == t.hold_band && s.adv_hold_q == t.adv_hold_q && s.inv_vol == t.inv_vol &&
+         s.norm_score == t.norm_score && // v8 Y norm-score-v1 shapes the shared target too
+         s.two_speed == t.two_speed &&   // v8 Y-5 two-speed-v1 forms the shared target (and F)
          s.one_way_bps == t.one_way_bps && s.annual_borrow_bps == t.annual_borrow_bps &&
          s.max_working_bytes == t.max_working_bytes && a.initial_nav == b.initial_nav &&
          a.liquidity_window == b.liquidity_window && a.min_vol_pairs == b.min_vol_pairs &&
@@ -2235,13 +2247,17 @@ bool same_shared(const NavReplayConfig& a, const NavReplayConfig& b) {
 // The variants' lockstep groups (variant indices, in order of first appearance): one group
 // of every variant, except with the ADV cap (adv_hold_q > 0, shared by same_shared), whose
 // shared construction reads aim_leverage: then one group per distinct aim leverage (review
-// A-1), each variant capped at its own leverage as in its standalone run.
+// A-1), each variant capped at its own leverage as in its standalone run. With v8 Y-5
+// two-speed-v1 (never with the cap) likewise one group per distinct aim leverage: the
+// shared target encodes the fast sleeve F, built at L (theta_s is pinned at .05 and the
+// cadence is one per grid, so L alone separates the standalone constructions).
 std::vector<std::vector<usize>> leverage_groups(std::span<const NavReplayConfig> variants) {
   std::vector<std::vector<usize>> groups;
   const bool capped = variants.front().target.adv_hold_q > 0;
+  const bool two_speed = two_speed_on(variants.front().target);
   for (usize v = 0; v < variants.size(); ++v) {
     auto found = groups.begin();
-    if (capped)
+    if (capped || two_speed)
       found = std::find_if(groups.begin(), groups.end(), [&](const std::vector<usize>& g) {
         return variants[g.front()].target.aim_leverage == variants[v].target.aim_leverage;
       });
@@ -2272,12 +2288,14 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
                      "monthly budget, band, dust, aim leverage and exit rate");
   // v8 hold-band-v1: the band's state advances on every shared cadence decision, i.e. on the
   // union of the variants' cadence days; a variant would then carry a state its standalone
-  // run never forms, so a hold-band grid has one cadence.
-  if (hold_band_on(base.target))
+  // run never forms, so a hold-band grid has one cadence. Likewise v8 Y-5 two-speed-v1,
+  // whose fast sleeve F lives in the shared construction state.
+  if (hold_band_on(base.target) || two_speed_on(base.target))
     for (const auto& variant : variants)
       if (variant.target.cadence != base.target.cadence)
         return co::Err(co::ErrorCode::InvalidArgument,
-                       "nav grid: with --hold-band every variant has the base cadence");
+                       "nav grid: with --hold-band or --two-speed every variant has the base "
+                       "cadence");
   // Books on a pool: the per-name-v1 rates share one buffer, and a v7 hook is
   // thread-local (a worker would silently run without it).
   if (base.book_workers > 1 &&
@@ -3100,6 +3118,13 @@ constexpr const char* leverage_groups_declaration =
     "--aim-leverage is a variant flag: the variants run in one lockstep per distinct aim "
     "leverage (these groups, in grid order), each group's shared construction capped at its "
     "own leverage, so every <id>/ stays byte for byte its standalone run";
+// Only with --two-speed and several aim leverages (v8 Y-5, review YCOMB #2).
+constexpr const char* two_speed_groups_declaration =
+    "v8 two-speed-v1 forms the shared desired target from the fast sleeve F, which moves "
+    "toward L m_f d_f, and --aim-leverage is a variant flag: the variants run in one lockstep "
+    "per distinct aim leverage (these groups, in grid order), each group's shared "
+    "construction carrying its own F at its own leverage on the grid's one cadence, so every "
+    "<id>/ stays byte for byte its standalone run";
 } // namespace
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
@@ -3268,8 +3293,9 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
         for (const usize v : group) members.push_back(grid.variants[v].id);
         ids.push_back(std::move(members));
       }
-      manifest["leverage_groups"] =
-          Json{{"rule", leverage_groups_declaration}, {"groups", std::move(ids)}};
+      const char* rule = two_speed_on(base.target) ? two_speed_groups_declaration
+                                                   : leverage_groups_declaration;
+      manifest["leverage_groups"] = Json{{"rule", rule}, {"groups", std::move(ids)}};
     }
     if (timed) manifest["stage_seconds"] = times.json();
     if (!label.is_null()) manifest["label_role_sha256"] = execution.label_role.manifest_sha256;
@@ -3327,6 +3353,13 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--vol-scale inv-vol-v1 (aim-partial-v5, not with --hold-band; v8 X: each "
                "member's tied rank x median sigma / max(sigma, .25 median sigma) before the "
                "demean, sigma the execution cost model's for the decision's fills)] "
+               "[--rank-shape norm-score-v1 (aim-partial-v5, not with --hold-band or "
+               "--vol-scale; v8 Y: each member's tied rank replaced by its van der Waerden "
+               "normal score before the demean)] "
+               "[--two-speed two-speed-v1 (aim-partial-v5 at the fixed rate and --trade-fraction "
+               ".05, not with --hold-band, --vol-scale or --adv-hold-q; v8 Y-5: the saved fast "
+               "and slow sleeves, a virtual fast sleeve at theta_f = 1 - 2^(-C/5) at cadence C, "
+               "the slow remainder at theta_s = .05, netted)] "
                "[--book-workers 1 (1..64: every book's phases on a deterministic pool, "
                "bit-identical; fixed rate only)] [--stage-timers (summary.json "
                "stage_seconds: load, exposures, construction, books, hash, write)] "
@@ -3392,6 +3425,14 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--vol-scale") { // v8 X (lane XCOMB) inv-vol-v1
         if (value != "inv-vol-v1") throw std::invalid_argument("unknown --vol-scale (inv-vol-v1)");
         cfg.target.inv_vol = true;
+      } else if (key == "--rank-shape") { // v8 Y (lane YCOMB) norm-score-v1
+        if (value != "norm-score-v1")
+          throw std::invalid_argument("unknown --rank-shape (norm-score-v1)");
+        cfg.target.norm_score = true;
+      } else if (key == "--two-speed") { // v8 Y-5 (lane YCOMB) two-speed-v1
+        if (value != "two-speed-v1")
+          throw std::invalid_argument("unknown --two-speed (two-speed-v1)");
+        cfg.target.two_speed = true;
       } else if (key == "--warm-start-sessions") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("warm start exceeds bound");
@@ -3542,6 +3583,11 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav decide: rate per-name-v1 and monthly-budget-v2 carry book state "
                      "(pre-trade NAV, month-to-date plan) that positions do not");
+    // v8 Y-5: two-speed-v1's virtual fast sleeve is replay state the holdings file does not carry.
+    if (two_speed_on(cfg.target))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav decide: two-speed-v1 carries the fast sleeve's state, which positions "
+                     "do not (replay only)");
     ATX_TRY_VOID(validate_nav_input(input, cfg, 1));
     const usize n = x.instruments;
     if (d < x.decision_begin || d >= x.decision_end)
@@ -3566,7 +3612,7 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
     out.plan.decision = d; out.plan.session = x.session_keys[d];
     out.plan.calendar_month = calendar_month(out.plan.session);
     NavReplayDay day; // receives the locate block's counts
-    const PlanInputs inputs{x, cfg, d, out.rebalance, shared.desired, tiers, no_locate};
+    const PlanInputs inputs{x, cfg, d, out.rebalance, shared.desired, tiers, no_locate, {}};
     ATX_TRY_VOID(plan_weights(inputs, 0.0, {}, out.current, out.target, nav_post, out.rule,
                               out.plan, day));
     out.construction.banded_names = out.plan.construction.banded_names;

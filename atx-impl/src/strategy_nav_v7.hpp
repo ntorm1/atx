@@ -192,13 +192,18 @@ extension_cost_model(const NavScenario& scenario);
 // observes the transfer coefficient), or aim-partial-v6 / spo-v1 on rebalance decisions.
 // tier: the decision's borrow tier per name (empty without tiers); no_locate: decide
 // --locates (empty in the replay). Only spo-v1 reads them (its locate floor and financing).
+// two_speed_fast: two-speed-v1's F entering the decision (DesiredState::fast_before; empty
+// otherwise); under --risk-target / --vol-target a two-speed rebalance needs it: the book's plan
+// carries its fast holding at its own scale lambda_t = L_t / L (engine::book::two_speed_carry,
+// Ruling PM8-16 #10).
 [[nodiscard]] atx::core::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                      atx::usize d, bool rebalance, atx::f64 spent,
                                      atx::f64 nav_post, const std::vector<atx::f64>& desired,
                                      std::vector<atx::f64>& planned, TargetReplayDay& out,
                                      std::span<const atx::f64> rates,
                                      std::span<const atx::u8> tier = {},
-                                     std::span<const atx::u8> no_locate = {});
+                                     std::span<const atx::u8> no_locate = {},
+                                     std::span<const atx::f64> two_speed_fast = {});
 // After the replay and before anything is published: records the books and reads the spo
 // tripwire (spo::Engine::rows_tripwire: spo-v1/v2 the specific-ceiling tripwire, spo-v3 its
 // own) over the scored decisions (a warm-up decision leaves no spo row). An error voids the

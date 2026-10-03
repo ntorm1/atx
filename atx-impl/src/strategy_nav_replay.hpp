@@ -426,10 +426,11 @@ public:
 // differ only in the target construction keys of nav_grid_variant_flags (rule, cadence,
 // trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage, exit_rate);
 // any other difference (the v8 hold_band, adv_hold_q and inv_vol included) is InvalidArgument, and
-// with a hold band every variant has the base's cadence (the band's state advances on the
-// shared cadence decisions). With adv_hold_q > 0 the cap Q ADV / (aim_leverage NAV) reads a
-// variant flag: the variants then run in one lockstep per distinct aim_leverage, each
-// capped at its own (review A-1; without the cap, one lockstep as before). 1 <= variants <=
+// with a hold band or two-speed-v1 every variant has the base's cadence (the band's state
+// and the fast sleeve F advance on the shared cadence decisions). With adv_hold_q > 0 the
+// cap Q ADV / (aim_leverage NAV) reads a variant flag, and with two-speed-v1 the shared F
+// moves toward L m_f d_f: the variants then run in one lockstep per distinct aim_leverage,
+// each at its own (review A-1, review YCOMB #2; otherwise one lockstep). 1 <= variants <=
 // nav_max_grid_variants; the workspace budget is charged for every book.
 inline constexpr atx::usize nav_max_grid_variants = 16;
 [[nodiscard]] atx::core::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
@@ -647,8 +648,9 @@ struct NavEmitOptions {
 // (exclusive): <output>/<id>/ byte for byte the directory the standalone nav run with the
 // variant's flags publishes, then <output>/grid_manifest.json LAST (atx.nav-grid-run/v1:
 // the grid file SHA, each variant's flags and file SHAs; stage_seconds with --stage-timers,
-// which then stay out of the variant summaries; leverage_groups, only with --adv-hold-q and
-// several aim leverages: the lockstep groups, review A-1; label_role_sha256 with --label-role,
+// which then stay out of the variant summaries; leverage_groups, only with --adv-hold-q or
+// --two-speed and several aim leverages: the lockstep groups and the rule of the one that
+// applies, review A-1 / review YCOMB #2; label_role_sha256 with --label-role,
 // whose load is the grid's one load). Refused with --emit-holdings and while a v7 extension is
 // installed.
 [[nodiscard]] atx::core::Status run_nav_grid(const TargetReplayRunConfig& cfg,

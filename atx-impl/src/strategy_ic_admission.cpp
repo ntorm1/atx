@@ -35,7 +35,8 @@ Json theme_order_json(std::span<const std::string> order) {
   return out;
 }
 Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,bool themed,
-                   std::string_view standardised,std::span<const std::string> residualised) {
+                   std::string_view standardised,std::span<const std::string> residualised,
+                   std::string_view scheduled,std::string_view sleeved) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -85,6 +86,11 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
         recipe["composition_residualise"]=theme_residualise_rule;
         recipe["composition_residualise_order"]=theme_order_json(residualised);
       }
+      // theme-tsmom-v1 (v8 Y-2) schedules the theme masses of that standardisation; absent
+      // otherwise, so the bytes above are unchanged (the schedule itself is pinned by the weights SHA).
+      if (!scheduled.empty()) recipe["composition_schedule"]=std::string(scheduled);
+      // two-speed-v1 (v8 Y-5) saves the fast and slow sleeves beside the blend; absent otherwise.
+      if (!sleeved.empty()) recipe["composition_sleeves"]=std::string(sleeved);
     }
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
@@ -225,7 +231,8 @@ struct Budget {
 } // namespace
 // `themes`: pinned themes under `rule` (0: none, admission unchanged).
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
-                      std::string pin,std::string name,bool enforce_budget,usize themes,IcThemeRule rule) {
+                      std::string pin,std::string name,bool enforce_budget,usize themes,IcThemeRule rule,
+                      bool sleeves) {
   ATX_TRY(auto text,pinned_text(path,pin));
   // Ruling E-10 (review B-3): every role the runner admits carries signals, so a role
   // built with --delisting-returns is refused here, before any payload or output.
@@ -238,7 +245,7 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: role shape/warmup/maturity");
   const auto cells=d*n,score_dates=end-begin;
   ATX_TRY(auto composition,ic_composition_working_bytes(static_cast<usize>(d),
-      static_cast<usize>(n),lib.candidates.size(),themes,rule));
+      static_cast<usize>(n),lib.candidates.size(),themes,rule,sleeves));
   Budget b{std::numeric_limits<u64>::max(),0};
   // One role26, guard4, effective+VM masks2, returned signal8, VM scratch32;
   // One maximum compiled slot payload: the runner destroys an undersized Engine
@@ -809,6 +816,8 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   ATX_TRY_VOID(composition_standardise(j,lib,pinned));
   ATX_TRY_VOID(composition_recorded_rule(j));          // finding R6B-C-5: provenance.rule writes the block
   ATX_TRY_VOID(composition_residualise(j,lib,pinned)); // v8 R-11 theme-resid-v1 (strategy_ic_theme_resid.cpp)
+  ATX_TRY_VOID(composition_schedule(j,lib,pinned));    // v8 Y-2 theme-tsmom-v1 (strategy_ic_theme_tsmom.cpp)
+  ATX_TRY_VOID(composition_sleeves(j,lib,pinned));     // v8 Y-5 two-speed-v1 (strategy_ic_two_speed.cpp)
   const bool v2=j.at("schema")==weights_schema_v2;
   const bool standardise=!pinned.standardise.empty();
   if (!pinned.themes.empty() && standardise)
@@ -842,6 +851,13 @@ Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const
   if (!pinned.standardise.empty()) out["standardise"]=pinned.standardise;
   // theme-resid-v1 only (absent otherwise).
   if (pinned.residualise) out["residualise"]=theme_residualise_rule;
+  // theme-tsmom-v1 only (absent otherwise): its rule, blocks, first block session, theme-blocks off.
+  if (!pinned.schedule.empty())
+    out["schedule"]=Json{{"rule",pinned.schedule},{"blocks",pinned.schedule_from.size()},
+        {"first_session",pinned.schedule_from.front()},{"theme_blocks_off",pinned.schedule_off}};
+  // two-speed-v1 only (absent otherwise): its rule and fast themes.
+  if (!pinned.sleeves.empty())
+    out["sleeves"]=Json{{"rule",pinned.sleeves},{"fast_themes",pinned.sleeve_fast_themes}};
   return out;
 }
 // Review M1 (root ruling, strict): weights applied against a frozen TRAIN artifact

@@ -19,9 +19,11 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/risk_target.hpp"
+#include "atx/engine/book/two_speed.hpp"
 #include "strategy_risk_target.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
+#include "strategy_vol_target.hpp"
 
 namespace atx::impl::strategy::v7 {
 namespace {
@@ -76,12 +78,17 @@ struct ScopedNavExtension::State {
   // v8 R-8 (--risk-target): the scaler, and the book's config at its L_t (scratch, per plan).
   std::unique_ptr<risk_target::Scaler> scaler;
   NavReplayConfig scaled;
+  // v8 Y-5 two-speed-v1 under the scaler (Ruling PM8-16 #10): per book, lambda = L_t / L at its
+  // previous two-speed rebalance, and the carried desired target (scratch, per plan).
+  std::map<std::string, f64, std::less<>> two_speed_lambda;
+  std::vector<f64> carried;
   std::string void_reason;             // capture(): the tripwire voided the run
   [[nodiscard]] co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                                 bool rebalance, f64 spent, f64 nav_post,
                                 const std::vector<f64>& desired, std::vector<f64>& planned,
                                 TargetReplayDay& out, std::span<const f64> rates,
-                                std::span<const u8> tier, std::span<const u8> no_locate);
+                                std::span<const u8> tier, std::span<const u8> no_locate,
+                                std::span<const f64> two_speed_fast);
   // The book's rule under `cfg` (base_leverage: the run's L when cfg carries L_t; NaN without
   // the risk target).
   [[nodiscard]] co::Status plan_rule(const TargetReplayInput& x, const NavReplayConfig& cfg,
@@ -251,11 +258,14 @@ Json declarations(const ScopedNavExtension::State& s) {
 }
 // v8 R-8: the "risk_target" block (with the per-book summary when `books`) and the rule id
 // suffix of recipe.json, summary.json and the holdings manifest; nothing without --risk-target.
+// v8 Y (vol-target-v1, the same scaler under Law::vol_target_v1): the "vol_target" block and the
+// rule id suffix +vol-target-v1 instead.
 void add_risk_target(const ScopedNavExtension::State& s, Json& doc, bool books) {
   if (!s.scaler || !doc.is_object()) return;
-  auto block = risk_target::parameters_json(s.options.risk_target);
-  if (books) block["books"] = risk_target::summary_json(s.scaler->records());
-  doc["risk_target"] = std::move(block);
+  const auto& o = s.options.risk_target;
+  auto block = risk_target::parameters_json(o);
+  if (books) block["books"] = risk_target::summary_json(s.scaler->records(), o.law);
+  doc[risk_target::block_key(o)] = std::move(block);
   if (doc.contains("rule") && doc.at("rule").is_string())
     doc["rule"] =
         doc.at("rule").get<std::string>() + risk_target::rule_suffix(s.options.risk_target);
@@ -358,15 +368,17 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
       }
     }
   }
-  // v8 R-8: the risk target's series (no NAV or return quantity: also on a void run).
+  // v8 R-8: the risk target's series (no NAV or return quantity: also on a void run); v8 Y
+  // vol-target-v1: vol_target.csv and the "vol_target" block.
   if (const auto* scaler = ext.risk_target_scaler()) {
-    const auto path = dir / "risk_target.csv";
-    ATX_TRY_VOID(write_text(path, risk_target::records_csv(scaler->records())));
+    const auto& rt = o.risk_target;
+    const auto path = dir / risk_target::series_file(rt);
+    ATX_TRY_VOID(write_text(path, risk_target::records_csv(scaler->records(), rt.law)));
     ATX_TRY(auto sha, co::sha256_file(path.string()));
-    files["risk_target.csv"] = sha;
-    auto block = risk_target::parameters_json(o.risk_target);
-    block["books"] = risk_target::summary_json(scaler->records());
-    extras["risk_target"] = std::move(block);
+    files[risk_target::series_file(rt)] = sha;
+    auto block = risk_target::parameters_json(rt);
+    block["books"] = risk_target::summary_json(scaler->records(), rt.law);
+    extras[risk_target::block_key(rt)] = std::move(block);
   }
   if (o.capacity && void_reason.empty()) { // a void run stops before the capacity pass
     Json rows = Json::array();
@@ -424,7 +436,8 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
                                            const std::vector<f64>& desired,
                                            std::vector<f64>& planned, TargetReplayDay& out,
                                            std::span<const f64> rates, std::span<const u8> tier,
-                                           std::span<const u8> no_locate) {
+                                           std::span<const u8> no_locate,
+                                           std::span<const f64> two_speed_fast) {
   if (!scaler)
     return plan_rule(x, cfg, nan, d, rebalance, spent, nav_post, desired, planned, out, rates,
                      tier, no_locate);
@@ -433,11 +446,33 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
   // warm-up included; the main pass's scored decisions are recorded). spo-v3 keeps the run's L
   // for its gross bound and its gamma (BookDecision::base_leverage).
   const bool scored = pass == NavV7Pass::Main && d >= x.decision_begin;
-  ATX_TRY(const f64 leverage, scaler->leverage(x, d, rebalance, book_label(cfg.scenario),
-                                               cfg.target.aim_leverage, planned, scored));
+  // v8 Y-5 two-speed-v1 (Ruling PM8-16 #10): the book's fast holding follows its scale lambda =
+  // L_t / L. Its rebalance plans at L_t the netted desired target plus the carry of F from the
+  // book's lambda at its previous two-speed rebalance (its first: lambda itself, no carry), so
+  // the remainder moves at theta_s toward lambda L m_s d_s and the fast part becomes lambda F_next.
+  // Checked before the scaler moves.
+  const bool carry = two_speed_on(cfg.target) && rebalance;
+  const usize n = x.instruments;
+  if (carry && (two_speed_fast.size() != n || desired.size() != n || d >= x.dates))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav v7: two-speed-v1 under --risk-target / --vol-target needs the fast "
+                   "sleeve F entering the rebalance");
+  const std::string book = book_label(cfg.scenario);
+  ATX_TRY(const f64 leverage, scaler->leverage(x, d, rebalance, book, cfg.target.aim_leverage,
+                                               planned, scored));
   scaled = cfg;
   scaled.target.aim_leverage = leverage;
-  return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, desired,
+  if (!carry)
+    return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, desired,
+                     planned, out, rates, tier, no_locate);
+  const f64 lambda = leverage / cfg.target.aim_leverage;
+  const auto held = two_speed_lambda.try_emplace(book, lambda).first;
+  carried.assign(desired.begin(), desired.end());
+  ATX_TRY_VOID(bk::two_speed_carry(x.member.subspan(d * n, n), two_speed_fast, held->second,
+                                   lambda, cfg.target.aim_leverage, cfg.target.trade_fraction,
+                                   carried));
+  held->second = lambda;
+  return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, carried,
                    planned, out, rates, tier, no_locate);
 }
 
@@ -547,6 +582,7 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
   state_->liquidity_key = nullptr;
   state_->liquidity_decision = no_decision;
   state_->c_history.clear();
+  state_->two_speed_lambda.clear();
   if (state_->engine) state_->engine->begin_run();
   if (state_->capacity_engine) state_->capacity_engine->begin_run();
   if (state_->scaler) state_->scaler->begin_run();
@@ -567,7 +603,7 @@ bool claims_nav_args(int argc, char** argv) {
     const std::string_view key = argv[i];
     if (key == "--cost-v2" || key == "--capacity-curve" || key == "--cost-shrink-kappa" ||
         key == "--band-b" || key == "--band-exponent" || key == "--rate-clip" || spo_flag(key) ||
-        risk_target_flag(key))
+        risk_target_flag(key) || key == "--vol-target")
       return true;
     if (key == "--rule" && i + 1 < argc &&
         (std::string_view(argv[i + 1]) == "aim-partial-v6" || spo_rule(argv[i + 1])))
@@ -601,10 +637,11 @@ co::Result<std::unique_ptr<const bk::ReplayCostModel>> extension_cost_model(cons
 co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d, bool rebalance,
                 f64 spent, f64 nav_post, const std::vector<f64>& desired,
                 std::vector<f64>& planned, TargetReplayDay& out, std::span<const f64> rates,
-                std::span<const u8> tier, std::span<const u8> no_locate) {
+                std::span<const u8> tier, std::span<const u8> no_locate,
+                std::span<const f64> two_speed_fast) {
   if (auto* s = active_state)
     return s->plan(x, cfg, d, rebalance, spent, nav_post, desired, planned, out, rates, tier,
-                   no_locate);
+                   no_locate, two_speed_fast);
   return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
 }
 
@@ -765,6 +802,12 @@ void append_help(std::ostream& out) {
          "--risk-model DIR --risk-model-sha256 SHA; adds <output>/risk_target.csv, the "
          "risk_target blocks and the rule id +risk-target-S) [--risk-target-bias b (default "
          "1.15)] [--risk-target-cadence C (default 21)]]\n";
+  out << "v8 Y: [--vol-target vol-target-v1 (each book's aim leverage becomes L_t = clip(L x "
+         "sigma_ref / sigma_hat, 1, L), L = --aim-leverage (the cap), sigma_hat the risk "
+         "target's forecast, sigma_ref the mean of the book's estimates so far, re-estimated "
+         "every 21 sessions; aim-partial-v5 only; not with --risk-target; needs --risk-model DIR "
+         "--risk-model-sha256 SHA; adds <output>/vol_target.csv, the vol_target blocks and the "
+         "rule id +vol-target-v1)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -775,6 +818,7 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     std::set<std::string> seen;
     bool band_given = false, v6_params = false;
     bool risk_target_tuned = false; // --risk-target-bias or --risk-target-cadence given
+    bool vol_target_given = false;  // --vol-target vol-target-v1 (v8 Y)
     u32 spo_version = 1;
     std::vector<std::pair<std::string, std::string>> spo_values; // applied after the scan
     std::string risk_model, risk_model_sha256;
@@ -835,6 +879,15 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         }
         continue;
       }
+      if (key == "--vol-target") { // v8 Y (lane YCOMB): vol-target-v1, the scaler's other law
+        if (!seen.insert(key).second || i + 1 >= argc)
+          throw std::invalid_argument("duplicate/missing value: " + key);
+        const std::string value = argv[++i];
+        if (value != vol_target::rule_id)
+          throw std::invalid_argument("--vol-target vol-target-v1 (the only value)");
+        vol_target_given = true;
+        continue;
+      }
       if (spo_flag(key)) {
         if (!seen.insert(key).second || i + 1 >= argc)
           throw std::invalid_argument("duplicate/missing value: " + key);
@@ -871,6 +924,32 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
           "--cost-shrink-kappa/--band-b/--band-exponent/--rate-clip need --rule aim-partial-v6");
     if (risk_target_tuned && !o.risk_target.on)
       throw std::invalid_argument("--risk-target-bias/--risk-target-cadence need --risk-target");
+    if (vol_target_given) { // v8 Y: the scaler under Law::vol_target_v1 (registered constants only)
+      if (o.risk_target.on)
+        throw std::invalid_argument("--vol-target and --risk-target are exclusive (both set the "
+                                    "aim leverage)");
+      o.risk_target.on = true;
+      o.risk_target.law = risk_target::Law::vol_target_v1;
+    }
+    // v8 Y-5 two-speed-v1: the replay's shared construction composes the sleeves into the netted
+    // aim that aim-partial-v5 trades at its own theta; so no rule that replaces that plan, and the
+    // fixed rate (validate_nav_config refuses a per-name rate too, review YCOMB #1). Composition
+    // with --risk-target / --vol-target (Ruling on Y-5 / Y-1, registered order Y-5 -> X-10 ->
+    // Y-1): the netted target is the book target; the scaler's L_t replaces the run's L in the
+    // plan of that target, i.e. scales it by lambda = L_t / L, and its sigma reads the book's own
+    // (net) weights, never the virtual fast sleeve F (built at the run's L). The book's fast
+    // holding follows its scale, lambda F (Ruling PM8-16 #10: State::plan carries F from the
+    // book's previous lambda, engine::book::two_speed_carry).
+    if (std::find(args.begin(), args.end(), "--two-speed") != args.end() &&
+        (o.spo_v1 || o.aim_v6 || (rate && *rate != "fixed")))
+      throw std::invalid_argument("--two-speed two-speed-v1 needs aim-partial-v5 at the fixed "
+                                  "rate, without spo or aim-partial-v6");
+    // v8 Y norm-score-v1 is registered on aim-partial-v5 (task-YCOMB-report.md Y-3), whose
+    // tied ranks it shapes; aim-partial-v6 is rewritten to v5 above, so it is refused here
+    // (review YCOMB #11, Ruling PM8-16 #11).
+    if (o.aim_v6 && std::find(args.begin(), args.end(), "--rank-shape") != args.end())
+      throw std::invalid_argument("--rank-shape norm-score-v1 needs aim-partial-v5 (refused with "
+                                  "--rule aim-partial-v6)");
     // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
     // value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {
@@ -927,7 +1006,8 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       // refuse it.
       if (spo_version != 3)
         for (usize k = 1; k < args.size(); ++k)
-          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q" || args[k] == "--vol-scale")
+          if (args[k] == "--hold-band" || args[k] == "--adv-hold-q" || args[k] == "--vol-scale" ||
+              args[k] == "--rank-shape") // v8 Y norm-score-v1 shapes desired too
             throw std::invalid_argument(args[k] + " needs --rule spo-v3 (spo-v1/v2 refuse the "
                                                   "desired-target shaping)");
       // Ruling E-37: spo-v3 runs the capacity curve as a report-only pass (its capacity books
@@ -960,7 +1040,17 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
                                     "holdings stream writes NAV before the tripwire is read "
                                     "(pass --specific-ceiling-void off to emit holdings)");
     }
-    if (o.risk_target.on) { // v8 R-8: risk-target-v1 scales aim-partial-v5's and spo-v3's aim
+    if (o.risk_target.on && o.risk_target.law == risk_target::Law::vol_target_v1) {
+      // v8 Y vol-target-v1: aim-partial-v5's aim only (the leverage cell's rule); the cap is the
+      // run's --aim-leverage (the replay holds it in [1, 2]), the floor 1.
+      const auto* rule = value_of("--rule");
+      if (o.aim_v6 || o.spo_v1 || !rule || *rule != "aim-partial-v5")
+        throw std::invalid_argument("--vol-target needs --rule aim-partial-v5 (its aim is "
+                                    "--aim-leverage x desired)");
+      if (risk_model.empty() || risk_model_sha256.empty())
+        throw std::invalid_argument("--vol-target needs --risk-model and --risk-model-sha256 "
+                                    "(the atx-risk-v1 store of the role)");
+    } else if (o.risk_target.on) { // v8 R-8: risk-target-v1 scales aim-partial-v5's, spo-v3's aim
       const auto* rule = value_of("--rule"); // the spo rules and v6 read aim-partial-v5 here
       if (o.aim_v6 || (o.spo_v1 && spo_version != 3) || !rule || *rule != "aim-partial-v5")
         throw std::invalid_argument("--risk-target needs --rule aim-partial-v5 or spo-v3 (the "

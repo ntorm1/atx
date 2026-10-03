@@ -105,10 +105,42 @@ struct TargetReplayConfig {
   // ADV cap. Not with hold_band (both act between the ranks and the demean). Writes recipe,
   // rule-id and summary keys.
   bool inv_vol{};
+  // norm-score-v1 (v8 Y, lane YCOMB, concentration; aim-partial-v5; nav --rank-shape
+  // norm-score-v1). false (default): off, every output unchanged. On: on every rebalance decision
+  // the members' centred tied ranks are replaced by their van der Waerden normal scores
+  // (engine::book::normal_scores: z = Phi^{-1}(mean 1-based rank of the tie block / (N + 1)))
+  // BEFORE the demean; then the unchanged demean, gross 1, locate zeroing, neutralization and ADV
+  // cap. Not with hold_band or inv_vol (all three act between the ranks and the demean). Writes
+  // recipe, rule-id and summary keys.
+  bool norm_score{};
+  // two-speed-v1 (v8 Y-5, lane YCOMB; aim-partial-v5; nav --two-speed two-speed-v1; it needs the
+  // replay's construction state (the target and NAV replays hold one; nav decide refuses) and the
+  // saved sleeves). false (default): off, every output unchanged. On: on every rebalance decision
+  // the fast and the slow sleeve blends (TargetReplayInput::sleeve_*) each get the construction
+  // above (ranks, demean, gross 1, locate zeroing, neutralization); a virtual fast sleeve F moves
+  // toward L m_f d_f at theta_f = 1 - 2^(-C/5) at the cadence C (engine/book/two_speed.hpp; 0 off
+  // membership; Ruling PM8-16 #4), the book's remainder (current - F) is the slow sleeve, moving
+  // toward L m_s d_s at trade_fraction, which must be the registered theta_s = .05 (PM8-16 #3),
+  // and the desired target is the aim whose aim-partial-v5 step is exactly that netted move:
+  //   desired = m_s d_s + (F_prev + (F_next - F_prev) / trade_fraction) / L,
+  // m_f the fast themes' mass share of the decision over the themes with a present member (m_s =
+  // 1 - m_f). Under the NAV's leverage scaler (--risk-target / --vol-target) a book plans at
+  // L_t = lambda L and carries its fast holding at lambda F (Ruling PM8-16 #10: nav_v7's plan,
+  // engine::book::two_speed_carry). Not with hold_band, inv_vol or adv_hold. Writes recipe,
+  // rule-id and summary keys.
+  bool two_speed{};
 };
 // inv-vol-v1's registered floor: s_i is raised to at least this fraction of the median (so the
 // multiplier is at most 4).
 inline constexpr atx::f64 inv_vol_floor_fraction = 0.25;
+// norm-score-v1 is on.
+[[nodiscard]] constexpr bool norm_score_on(const TargetReplayConfig& c) noexcept {
+  return c.norm_score;
+}
+// two-speed-v1 is on.
+[[nodiscard]] constexpr bool two_speed_on(const TargetReplayConfig& c) noexcept {
+  return c.two_speed;
+}
 // adv-hold-v1 is on (Q > 0).
 [[nodiscard]] constexpr bool adv_hold_on(const TargetReplayConfig& c) noexcept {
   return c.adv_hold_q > 0;
@@ -138,15 +170,25 @@ struct TargetReplayInput {
   // Industry group id per cell (the industry ids only; empty otherwise): an integer
   // in [0, kMaxGroupId] as f64, NaN = unknown (one residual group). Same geometry.
   std::span<const atx::f64> industry{};
+  // two-speed-v1 (v8 Y-5; empty otherwise): the fast and slow sleeve blends (the geometry of
+  // `signal`) and the fast themes' mass share per date (`dates` entries).
+  std::span<const atx::f64> sleeve_fast{}, sleeve_slow{}, sleeve_fast_share{};
 };
 // Per-decision construction record (neutralization outcome and band activity).
 enum class NeutralizeOutcome : atx::u8 {
   NotAttempted = 0, Applied = 1, SkippedTooFewNames = 2, SkippedExcludedShare = 3,
   SkippedRefused = 4, SkippedAmplification = 5
 };
+// v8 growth with every flag absent (review YCOMB #8): norm-score-v1's two fields add 16 B; the
+// two-speed flags sit in the padding after `neutralize` and add none. Every output is unchanged;
+// the budget charges per decision row (target replay, NAV books x sessions) rise by 16 B a row.
 struct ConstructionDay {
   bool rebalance{}; // effective: a cadence decision that was not skipped
   NeutralizeOutcome neutralize{NeutralizeOutcome::NotAttempted};
+  // two-speed-v1 (v8 Y-5; mechanics, printed only): the rebalance was skipped because a sleeve's
+  // neutralization was skipped; the parent's construction of the full blend would have been
+  // skipped; that diagnostic construction returned an error (recorded, never raised).
+  bool two_speed_sleeve_skipped{}, two_speed_parent_skipped{}, two_speed_parent_failed{};
   atx::usize neutralize_used{}, neutralize_excluded{}, banded_names{};
   atx::f64 neutralize_excluded_share{}; // excluded-row gross / entry gross
   atx::f64 neutralize_amplification{};  // entry gross / residual gross; NaN if undefined
@@ -170,6 +212,10 @@ struct ConstructionDay {
   // multiplier. 0 unless the kernel ran (every cadence decision with the rule on); no CSV column.
   atx::usize inv_vol_scaled{}, inv_vol_filled{}, inv_vol_floored{};
   atx::f64 inv_vol_median{}, inv_vol_max_multiplier{};
+  // norm-score-v1 (v8 Y): members given a normal score and the largest |score|. 0 unless the
+  // kernel ran (every cadence decision with the rule on); no CSV column.
+  atx::usize norm_scored{};
+  atx::f64 norm_max_abs{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input

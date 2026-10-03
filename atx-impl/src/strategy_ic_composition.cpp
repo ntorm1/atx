@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include "atx/engine/combine/group_rerank.hpp"
@@ -72,7 +74,7 @@ co::Status pooled_date_bands(engine::parallel::DetPool& pool, usize dates, usize
 } // namespace
 
 co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize count, usize themes,
-                                             IcThemeRule rule) {
+                                             IcThemeRule rule, bool sleeves) {
   if (!dates || !names || !count || count > max_candidates || themes > max_themes)
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: invalid dimensions/count");
   u64 total = 4096;
@@ -94,6 +96,9 @@ co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize cou
   // support index (add_theme_residualised's scratch); none otherwise.
   if (themes && rule == IcThemeRule::residualise &&
       !add(names, sizeof(f64) * static_cast<u64>(themes) + sizeof(usize)))
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
+  // two-speed-v1 (v8 Y-5): the fast and slow sleeve planes and the fast share per date; none otherwise.
+  if (sleeves && (!add(dates * names, 2 * sizeof(f64)) || !add(dates, sizeof(f64))))
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
   return co::Ok(total);
 }
@@ -117,6 +122,8 @@ struct IcComposition::Impl {
   std::vector<f64> std_mass;
   std::vector<std::vector<f64>> std_plane;
   bool residualise{}; // theme-resid-v1 on the std planes (theme index = registered-order position)
+  std::vector<IcThemeBlock> schedule; // theme-tsmom-v1 mass schedule on the std planes (empty: W_theme throughout)
+  std::vector<u8> sleeve_of;          // two-speed-v1: per theme index 1 fast, 0 slow (empty: no sleeves)
   IcCompositionResult result;
   usize next{};
   bool finished{};
@@ -317,6 +324,65 @@ co::Status IcComposition::add_standardised(usize index, std::span<const f64> sig
   ++p.next; return co::Ok();
 }
 
+co::Status IcComposition::schedule_theme_masses(std::span<const IcThemeBlock> blocks) {
+  if (!impl_ || impl_->finished)
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme schedule after finish");
+  auto& p = *impl_;
+  if (p.std_mass.empty() || p.residualise)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: a theme schedule (theme-tsmom-v1) needs the standardise rule");
+  usize last = 0;
+  for (const auto& block : blocks) {
+    if (block.begin < last || block.begin > p.cfg.dates || block.mass.size() != p.std_mass.size() ||
+        std::any_of(block.mass.begin(), block.mass.end(), [](f64 m) { return !std::isfinite(m) || m < 0; }))
+      return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme schedule blocks need a non-decreasing "
+                     "begin <= dates and one finite mass >= 0 per theme");
+    last = block.begin;
+  }
+  try {
+    p.schedule.assign(blocks.begin(), blocks.end());
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: theme schedule allocation");
+  } catch (const std::length_error&) {
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: theme schedule allocation");
+  }
+  return co::Ok();
+}
+
+co::Status IcComposition::set_theme_sleeves(std::span<const u8> fast) {
+  if (!impl_ || impl_->finished)
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme sleeves after finish");
+  auto& p = *impl_;
+  if (p.std_mass.empty() || p.residualise)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: theme sleeves (two-speed-v1) need the standardise rule");
+  const auto fast_count = std::count(fast.begin(), fast.end(), u8{1});
+  if (fast.size() != p.std_mass.size() || std::any_of(fast.begin(), fast.end(), [](u8 v) { return v > 1; }) ||
+      fast_count == 0 || static_cast<usize>(fast_count) == fast.size())
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme sleeves need one flag (1 fast, 0 slow) "
+                   "per theme and at least one theme of each");
+  ATX_TRY(const auto bytes, ic_composition_working_bytes(p.cfg.dates, p.cfg.instruments, p.candidates.size(),
+                                                         p.std_mass.size(), IcThemeRule::standardise, true));
+  if (bytes > p.cfg.max_working_bytes)
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: working budget exceeded (theme sleeves)");
+  auto& out = p.result;
+  try {
+    // Under the standardise rule add() never writes `signal`: it is still members 0, nonmembers NaN.
+    out.sleeve_fast = out.signal; out.sleeve_slow = out.signal;
+    out.sleeve_fast_share.assign(p.cfg.dates, 0.0);
+    p.sleeve_of.assign(fast.begin(), fast.end());
+  } catch (const std::bad_alloc&) {
+    std::vector<f64>().swap(out.sleeve_fast); std::vector<f64>().swap(out.sleeve_slow);
+    std::vector<f64>().swap(out.sleeve_fast_share); std::vector<u8>().swap(p.sleeve_of);
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: theme sleeves allocation");
+  } catch (const std::length_error&) {
+    std::vector<f64>().swap(out.sleeve_fast); std::vector<f64>().swap(out.sleeve_slow);
+    std::vector<f64>().swap(out.sleeve_fast_share); std::vector<u8>().swap(p.sleeve_of);
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: theme sleeves allocation");
+  }
+  return co::Ok();
+}
+
 co::Result<IcCompositionResult> IcComposition::finish() {
   if (!impl_ || impl_->finished || impl_->next != impl_->candidates.size())
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: incomplete/finished input");
@@ -336,11 +402,54 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   // theme-resid-v1 instead residualises the re-ranked planes in index order per date.
   if (p.residualise) {
     ATX_TRY_VOID(add_theme_residualised(p.std_plane, p.std_mass, p.cfg.instruments, out.signal, p.row));
-  } else {
+  } else if (p.schedule.empty()) {
     for (usize t = 0; t < p.std_plane.size(); ++t)
       ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
                                         out.signal, p.row));
+  } else {
+    // theme-tsmom-v1: the same re-rank, times the mass in force at each date (W_theme before the
+    // first block). Each cell still receives its themes in index order, so a schedule repeating
+    // W_theme is the branch above bit for bit; a zero mass adds nothing.
+    for (usize t = 0; t < p.std_plane.size(); ++t)
+      for (usize b = 0; b <= p.schedule.size(); ++b) {
+        const usize begin = b == 0 ? 0 : p.schedule[b - 1].begin;
+        const usize end = b == p.schedule.size() ? p.cfg.dates : p.schedule[b].begin;
+        const f64 mass = b == 0 ? p.std_mass[t] : p.schedule[b - 1].mass[t];
+        if (begin == end || !(mass > 0)) continue;
+        ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, begin, end, mass, out.signal, p.row));
+      }
   }
+  // two-speed-v1 (else no-op): each theme's same re-rank times the same mass in force, added to its
+  // sleeve's plane (a second pass; `signal` above is untouched), and per date d the fast themes'
+  // share of the mass in force of the themes with a present member at d (Ruling PM8-16 #9: a
+  // theme without one adds nothing to the blend at d, so it carries no share there), summed in
+  // theme index order; no such theme: 0.
+  if (!p.sleeve_of.empty()) {
+    const usize names = p.cfg.instruments;
+    for (usize b = 0; b <= p.schedule.size(); ++b) {
+      const usize begin = b == 0 ? 0 : p.schedule[b - 1].begin;
+      const usize end = b == p.schedule.size() ? p.cfg.dates : p.schedule[b].begin;
+      if (begin == end) continue;
+      const std::vector<f64>& mass = b == 0 ? p.std_mass : p.schedule[b - 1].mass;
+      for (usize t = 0; t < p.std_plane.size(); ++t) {
+        if (!(mass[t] > 0)) continue;
+        auto& plane = p.sleeve_of[t] ? out.sleeve_fast : out.sleeve_slow;
+        ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], names, begin, end, mass[t], plane,
+                                          p.row));
+      }
+      for (usize d = begin; d < end; ++d) {
+        f64 fast = 0, total = 0;
+        for (usize t = 0; t < p.std_plane.size(); ++t) {
+          const auto row = std::span<const f64>(p.std_plane[t]).subspan(d * names, names);
+          if (std::all_of(row.begin(), row.end(), [](f64 v) { return std::isnan(v); })) continue;
+          total += mass[t];
+          if (p.sleeve_of[t]) fast += mass[t];
+        }
+        out.sleeve_fast_share[d] = total > 0 ? fast / total : 0.0;
+      }
+    }
+  }
+  std::vector<IcThemeBlock>().swap(p.schedule);
   std::vector<std::vector<f64>>().swap(p.std_plane);
   for (usize d = 0; d < p.cfg.dates; ++d)
     out.contribution_fraction[d] = out.eligible_names[d]

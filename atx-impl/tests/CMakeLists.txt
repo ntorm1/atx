@@ -104,6 +104,8 @@ add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
     # platform v8 X (XCOMB): composition theme-erc-v1 (the rule and its engine kernel)
     strategy_ic_theme_erc_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_group_erc_test.cpp"
+    # platform v8 Y (YCOMB): composition schedule theme-tsmom-v1 (the mass kernel and the schedule)
+    strategy_ic_theme_tsmom_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_screen_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_research_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_marginal_rank_ic_test.cpp")
@@ -121,9 +123,16 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     strategy_spo_v3_test.cpp
     strategy_spo_v3_pin_test.cpp
     strategy_risk_target_test.cpp
+    strategy_vol_target_test.cpp  # platform v8 Y (YCOMB): vol-target-v1
+    strategy_norm_score_test.cpp  # platform v8 Y (YCOMB): norm-score-v1
+    strategy_two_speed_test.cpp  # platform v8 Y-5 (YCOMB): two-speed-v1 (composition sleeves, NAV construction)
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_target_shaping_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_risk_target_test.cpp"
-    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_inverse_vol_test.cpp")
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_inverse_vol_test.cpp"
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_vol_target_test.cpp"
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_normal_score_test.cpp"
+    # platform v8 Y (YCOMB) rule Y-5: two-speed netted sleeves (engine kernel; NAV wiring is a follow-up)
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_two_speed_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 
 # Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
