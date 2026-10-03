@@ -406,15 +406,21 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
     for c in m["candidates"]:
         if c["id"] in kept:
             w.run(add_alpha(w, c, name), f"add-alpha {c['id']} into {name}")
-    if WM.speed(m, "reuse_screen_marginal"):
-        rewrite_spec(w, lib_spec(name), WS.without_marginal, "no second marginal pass: the screen's rows are carried "
-                                                             "(speed.reuse_screen_marginal; report only)")
-    elif replaces([c for c in m["candidates"] if c["id"] in kept]):
+    # the b library's marginal mode: pool-only when a kept string replaces a member (PM6-8 (i)), else themes. The
+    # screen's rows are carried only when the screen ran the same mode (marginal_ic21 and its HAC t depend on it)
+    want = "pool-only" if replaces([c for c in m["candidates"] if c["id"] in kept]) else "themes"
+    have = WS.marginal_mode(w.read_json(sc["spec"]))
+    reuse = WM.speed(m, "reuse_screen_marginal") and have == want
+    if reuse:
+        rewrite_spec(w, lib_spec(name), WS.without_marginal, "no second marginal pass: the screen's per-row marginal "
+                                                             f"fields ({want}) are carried (report only)")
+    elif want == "pool-only":
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     commit = w.commit_paths(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "
                             f"({m['sign_rule']}: dropped {', '.join(sc['decision']['dropped'])})",
                             add_alpha_files(w, name))
-    return cell_out(w, done, lib_spec(name), "b-library", commit or w.committed(lib_spec(name)), name)
+    return dict(cell_out(w, done, lib_spec(name), "b-library", commit or w.committed(lib_spec(name)), name),
+                marginal={"mode": want, "screen_mode": have, "reuse": reuse})
 
 
 def spec_plan(w: Wave, done: dict) -> list[str]:
@@ -631,6 +637,7 @@ def judge(w: Wave, done: dict, log) -> dict:
     return {"cycle_verdict": vpath, "cycle_verdict_sha256": w.sha(vpath),
             "summ_json_sha256": w.sha(f"{outs['cycle_dir']}/summ.json"), "paired": v["paired"], "dsr": v["dsr"],
             "pbo": v.get("pbo"), "bundle": bundle, "book": book, "readers": reader_digests(w, ["book"]),
+            "marginal": [{k: x.get(k) for k in MARGINAL_KEYS} for x in v.get("marginal") or [] if isinstance(x, dict)],
             "verdict": verdict, "phases": phase_rows(w, cell)}
 
 

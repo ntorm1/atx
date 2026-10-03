@@ -117,7 +117,8 @@ def gm_doc(doc: dict, resolved: dict, new: str, note: str) -> dict:
 
 def without_marginal(doc: dict) -> dict:
     """A plain cell spec without its marginal phase (and that phase's runner cap): the wave's b library carries the
-    screen's marginal rows instead of a second pass (speed.reuse_screen_marginal; the marginal decides nothing)."""
+    screen's per-row marginal fields instead of a second pass of the same mode (speed.reuse_screen_marginal; the
+    marginal decides nothing)."""
     out = copy.deepcopy(doc)
     out.pop("marginal", None)
     phases = (out.get("runner") or {}).get("phases")
@@ -126,6 +127,13 @@ def without_marginal(doc: dict) -> dict:
         if not phases:
             out["runner"].pop("phases")
     return out
+
+
+def marginal_mode(doc) -> str | None:
+    """A plain cell spec's marginal mode: "themes" (the pool and the parent's theme weights), "pool-only" (PM6-8 (i)),
+    or None (no marginal phase)."""
+    m = doc.get("marginal") if isinstance(doc, dict) else None
+    return None if not isinstance(m, dict) else "themes" if "themes" in m else "pool-only"
 
 
 def pool_only_marginal(doc: dict) -> dict:

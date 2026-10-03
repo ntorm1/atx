@@ -277,3 +277,34 @@ def test_verify_compares_the_navs_binding_with_the_cell_spec(tmp_path):
     code, _ = wave(root, OtherSpecBinding(root, KEPT_ALL), "run")
     err = failed(root, "07-verify.failed-1.json")
     assert code == 4 and f"names spec {'0' * 64} (spec-digest-v1), not the cell spec" in err
+
+
+# ------------------------------------------------------------------ MAJOR 6: carried marginal rows
+def result(root: Path) -> dict:
+    return json.loads((root / STATE / "wave-result.json").read_text())
+
+
+def test_carried_rows_hold_only_the_per_row_fields(tmp_path):
+    root = F.build(tmp_path / "r")
+    assert wave(root, F.FakeCycle(root, ONE_DROPPED), "run")[0] == 0
+    assert receipt(root, "04-spec.json")["outputs"]["marginal"] == {"mode": "themes", "screen_mode": "themes",
+                                                                   "reuse": True}
+    mg = result(root)["marginal"]
+    assert mg["mode"] == "themes" and [r["id"] for r in mg["rows"]] == ["alpha_a", "alpha_c"]
+    assert mg["rows"][0] == {"id": "alpha_a", "ic21": 0.01, "ic21_hac_t": 2.0, "marginal_ic21": 0.005,
+                             "marginal_hac_t": 1.5, "max_abs_rho": None, "max_rho_member": None}
+
+
+def test_reuse_is_off_when_the_screens_marginal_mode_differs(tmp_path):
+    """A replacing wave screens pool-only; its replacement dropped, the b library adds only and runs themes: the
+    screen's rows are not the b library's, so it runs its own marginal (reuse on in the manifest)."""
+    cands = [F.candidate("alpha_a"), F.candidate("alpha_r", kind="replace", replaces=["m1"])]
+    root = F.build(tmp_path / "r", candidates=cands)
+    assert wave(root, F.FakeCycle(root, {"alpha_a": ("admitted", 1), "alpha_r": ("admitted", -1)}), "run")[0] == 0
+    assert receipt(root, "04-spec.json")["outputs"]["marginal"] == {"mode": "themes", "screen_mode": "pool-only",
+                                                                   "reuse": False}
+    b = json.loads((root / "scripts/specs/v8/lib-w1b.json").read_text())
+    assert b["marginal"]["themes"] == "reference_weights"                             # its own pass, themes
+    mg = result(root)["marginal"]
+    assert mg["source"].startswith("the cell's own marginal (scripts/specs/v8/lib-w1b.json, themes)")
+    assert [r["id"] for r in mg["rows"]] == ["alpha_a"] and mg["rows"][0]["max_abs_rho"] == 0.3

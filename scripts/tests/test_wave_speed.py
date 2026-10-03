@@ -1,7 +1,8 @@
 """The wave's speed rules (platform v8 lane YINFRA, item 4) and the replacing-wave marginal (PM6-8 (i)).
 
-  reuse_screen_marginal  the b library's cell spec has no marginal phase (no second 134.6-175.5 s pass); the
-                         screen's rows of the kept strings are carried into wave-result.json (report only)
+  reuse_screen_marginal  the b library's cell spec has no marginal phase (no second 134.6-175.5 s pass) when the
+                         screen ran the b library's marginal mode; the screen's per-row fields of the kept strings
+                         are carried into wave-result.json (report only)
   screen_first           a b library runs `run --screen` before its cell (its u pass without the unread blend)
 Both default on and change no input of a decision; off, the b library runs as add-alpha derives it.
 
@@ -47,7 +48,7 @@ def test_the_b_cell_reuses_the_screen_marginal_and_screens_first(tmp_path):
     k = runs.index(["run", B_SPEC, "--screen"])
     assert runs[k - 1] == ["lock", B_SPEC] and runs[k + 1] == ["run", B_SPEC, "--stop-after", "nav"]
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
-    assert res["marginal"]["source"] == "the screen (scripts/specs/v8/lib-w1.json)"
+    assert res["marginal"]["source"].startswith("the screen (scripts/specs/v8/lib-w1.json): per-row fields carried")
     assert [r["id"] for r in res["marginal"]["rows"]] == ["alpha_a", "alpha_c"]          # the kept strings' rows
 
 

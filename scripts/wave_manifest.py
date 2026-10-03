@@ -27,8 +27,9 @@ One wave is one cell on the current book, declared before anything is measured:
    "speed": {"reuse_screen_marginal": true, "screen_first": true}}
                                                  the wave's own speed rules (wave_stages.py; both default true; they
                                                  change no input of a decision): the cell after a sign-rule drop
-                                                 carries the screen's marginal rows (report only) instead of a second
-                                                 marginal pass, and a b library runs --screen before its cell
+                                                 carries the screen's per-row marginal fields (report only) instead of
+                                                 a second marginal pass when the screen ran its marginal mode, and a
+                                                 b library runs --screen before its cell
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",

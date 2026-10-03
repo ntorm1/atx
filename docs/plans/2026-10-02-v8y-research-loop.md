@@ -133,9 +133,11 @@ Three largest wall-clock costs of a wave (integration log, X batch 1; Debug buil
 
 Implemented in Python (manifest `speed`, both default on, no decision input moves):
 
-- `reuse_screen_marginal`: the b library's cell spec has no marginal phase; the screen's rows of the kept strings are
-  carried into `wave-result.json` (source named; computed on the screen library, a superset, so `max_rho_member` may
-  name a dropped string). Saves the second pass, 134.6-167.0 s per wave with a drop.
+- `reuse_screen_marginal`: when the screen ran the b library's marginal mode (themes, or pool-only when a kept string
+  replaces a member), the b library's cell spec has no marginal phase and the screen's per-row fields of the kept
+  strings (`ic21`, `ic21_hac_t`, `marginal_ic21`, `marginal_hac_t`) are carried into `wave-result.json`;
+  `max_abs_rho` / `max_rho_member` are over the whole screen library and are left null (review YINFRA #6). Another
+  mode runs the b library's own marginal. Saves the second pass, 134.6-167.0 s per wave with a drop.
 - `screen_first`: a b library runs `--screen` before its cell, so its u pass is the screen's (no unread u-pass blend,
   the IC exe's `--no-composition`) and the cell resumes it, as every screen library's cell already does (X-3: the b
   u pass took 26.6 s against the screen's 16.2 s).

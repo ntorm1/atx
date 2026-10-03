@@ -271,9 +271,14 @@ class FakeCycle:
             return self.ok(args)
         daily = (self.root / nav / "daily_s2.csv").read_bytes()
         write_json(self.root, f"{c.cycle_dir()}/summ.json", [{"dir": nav}])
+        lib = self.root / "atx-impl/strategies/libraries" / f"{spec['name'].removesuffix('-gm')}.json"
+        members = json.loads(lib.read_text())["members"] if lib.is_file() else []
+        marginal = [{"id": cid, "ic21": 0.01, "ic21_hac_t": 2.0, "marginal_ic21": 0.004, "marginal_hac_t": 1.2,
+                     "max_abs_rho": 0.3, "max_rho_member": "m1"} for cid in self.admission if cid in members] \
+            if "marginal" in spec else []
         write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json",
                    {"admission": [], "paired": {"dsr": self.dsr, "se": 0.1, "cbb_ci": [-0.1, 0.2], "lw_p": 0.3},
-                    "dsr": {"n": 3, "cell_count": 0.6}, "pbo": 0.2})
+                    "dsr": {"n": 3, "cell_count": 0.6}, "pbo": 0.2, "marginal": marginal})
         sr = json.loads((self.root / nav / "summary.json").read_text())["scenarios"][0]["net_sharpe"]
         BI.ledger_append(self.root / LEDGER, [construction_line(nav, sha(daily), sr)], chain=True)
         return self.ok(args)

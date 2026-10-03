@@ -5,7 +5,7 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
 
   {schema, wave, kind (library | rule), manifest{path, sha256, commit}, parent{spec, spec_digest, library, nav,
    leverage}, screen{spec, gate_exit, rows[], kept[], dropped[], sign_rule} | null, cell{spec, spec_digest, library,
-   kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, rows[]} | null (report only),
+   kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, mode, rows[]} | null (report only),
    mechanics{rule, pass, rows[]} | null,
    stats{cell, parent} (the book reader's rows) | null, paired{...} | null, bundle{...} | null, dsr{...} | null,
    pbo, verdict{rule, text, accepted, checks, decided_by, criteria[]} | {accepted: false, reason},
@@ -53,7 +53,7 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
             "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
                         "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
                         "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
-            "cell": cell, "marginal": marginal_rows(sc, sp), "mechanics": vf.get("mechanics"),
+            "cell": cell, "marginal": marginal_rows(sc, sp, jd), "mechanics": vf.get("mechanics"),
             "seal_scan": seal if seal is not None else vf.get("seal_scan"),
             "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
             "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
@@ -62,14 +62,28 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
             "timings": rows, "receipts": receipt_digests(w)}
 
 
-def marginal_rows(sc: dict, sp: dict) -> dict | None:
-    """The marginal IC rows (contract K6, report only) of the cell's strings: the screen's. A b library carries them
-    (speed.reuse_screen_marginal: computed on the screen library, a superset, so max_rho_member may name a dropped
-    string); a screen-library cell's marginal is its own screen's."""
+PER_ROW = ("id", "ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t")   # a row's own: pool / themes, not library
+LIBRARY_WIDE = ("max_abs_rho", "max_rho_member")                           # over the whole library's members
+
+
+def marginal_rows(sc: dict, sp: dict, jd: dict | None = None) -> dict | None:
+    """The marginal IC rows (contract K6, report only) of the cell's strings. A screen-library cell's (and a no-cell
+    wave's) are its screen's. A b library that carried the screen's (spec.marginal.reuse: the same mode) gets only the
+    per-row fields, max_abs_rho / max_rho_member null (the screen's are over a library that held dropped strings); a b
+    library that ran its own marginal (another mode, or reuse off) reports its cell's rows."""
     if not sc.get("decision"):
         return None
+    mg = sp.get("marginal") or {}
+    if sp.get("kind") == "b-library" and not mg.get("reuse"):
+        return {"source": f"the cell's own marginal ({sp['cell_spec']}, {mg.get('mode')})", "mode": mg.get("mode"),
+                "rows": list((jd or {}).get("marginal") or [])}
     kept = set(sc["decision"]["kept"]) if sp.get("cell_spec") else set(r["id"] for r in sc["decision"]["rows"])
-    return {"source": f"the screen ({sc['spec']})", "rows": [r for r in sc.get("marginal") or [] if r.get("id") in kept]}
+    rows = [r for r in sc.get("marginal") or [] if r.get("id") in kept]
+    if sp.get("kind") != "b-library":
+        return {"source": f"the screen ({sc['spec']})", "mode": mg.get("screen_mode"), "rows": rows}
+    return {"source": f"the screen ({sc['spec']}): per-row fields carried, {', '.join(LIBRARY_WIDE)} left null (over "
+                      "the screen library)", "mode": mg["mode"],
+            "rows": [dict({k: r.get(k) for k in PER_ROW}, **{k: None for k in LIBRARY_WIDE}) for r in rows]}
 
 
 def receipt_digests(w) -> dict:
