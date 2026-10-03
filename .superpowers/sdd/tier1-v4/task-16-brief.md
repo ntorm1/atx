@@ -14,3 +14,5 @@ alpha-admission panel (different stage name; do not edit it). Files: new `alpha_
 
 Owner extensions: read `task-16-evaluation-addendum.md` and `owner-coverage-addendum.md`. Gold panels must include PIT 13F, profitability and growth families, bronze-to-gold lineage and qualified predictive evidence at 5/21/63 sessions.
 
+R9 source consistency: before final golden materialization, require quiescent completed producers and verify the actual input file SHA/size set against each recorded manifest. Stable manifest hashes alone are insufficient after an interrupted partition rewrite. Recheck input snapshot integrity before accepting/publishing evidence; fail on changed or inconsistent inputs and rebuild on a complete snapshot. Source-certified segment partitions and unverified tagged structures must remain distinguishable in gold eligibility/quality metadata.
+

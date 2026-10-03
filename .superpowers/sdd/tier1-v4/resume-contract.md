@@ -10,6 +10,8 @@ Ruling R5: own aggregate portfolio/factor/index-return product computation is al
 
 Ruling R6: compustat_std vintage identity includes available_at, because one accession may supply components at distinct legitimate clocks. Preserve successive visible snapshots and cutoff invariance; do not drop delayed components or use future metadata to suppress earlier rows. Updated Task 3 schema/stub/doc is the authoritative interface for consumers.
 
+Ruling R9: do not accept consumer measurements while their producer is rewriting stage files. A stable manifest hash does not prove a stable file snapshot: interrupted universe builds have left partial year writes before manifest finalization. Wait for producer completion and verify every required output SHA/size against its manifest before coordinated downstream refresh. Any overlap-era coverage is provisional, not final acceptance evidence. Preserve measured receipts and rerun once on the final complete publication.
+
 Prefer codebase graph tools for code discovery if available. The controller found no callable graph tools in this runtime; targeted rg / source reads are an authorized fallback for insufficient tools. Use UTF-8 for file reads and writes. Do not paste diffs or full reports back to controller. Report status, commit SHAs, test summary, gate counts, concerns, artifact path in <=15 lines.
 
 Reviewers are read-only except writing their assigned findings Markdown file (no staging/committing it). Do not run full suites/builds. Named-risk focused checks only. Keep full findings in the artifact and return a short summary with both spec and quality verdicts.
