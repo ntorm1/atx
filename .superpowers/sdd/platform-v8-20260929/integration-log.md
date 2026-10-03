@@ -6856,3 +6856,9 @@ stop, no receipt, 0 trials.
 | **nav** | 180 / 1,536 | **59.7** | 586 | 0 | `26fdb2820217fb292feed665acc49b7548b7036bfb3c46cd06718a08df8d1525` | exe `72ff6d2d`; `mega-nav-v8x-theme-erc-L1.1720-v8ysb` at L 1.1720 (`summary.json` `26921704`; `capacity_curve.csv`, `v7_extras.json` present); binding `41c1da0e` |
 
 Ledger after: 127 lines, `869a0c6a` (unchanged: 0 trials). Nothing read from the NAV beyond file names and hashes.
+
+### Stage 05 run (source `de5823f2`; gate 4,322 MiB: free 5,191 at 12:45:46Z, no compiler running)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 05 run | 0 | 2.3 / 2.08 | - (no exe launched: every phase done) | 5,191 / 5,134 | `05-run.json` `eb23472eb751dd75a54edc2d872658050b2cc1a598a85d8703acddd143612571` | **the driver adopts attempt 2**: console 033 (`run lib-v8ysb.json --screen`, exit 0: u/fit/card done, 0 admission lines appended / 9 already ledgered, gate p1-v8ysb PASS), console 034 (`run lib-v8ysb.json --stop-after nav`, exit 0, attempts auto): ref done (binding `027092b5`), **ref-s2-daily IDENTICAL** (`529062d6`, 941,374 bytes), u-compare IDENTICAL, **w: done (`mega-v8xw-train-theme-erc-v8ysb-2`)**, **nav: done** (binding spec `ae4808b8`, argv `84d9944c`); no w or nav launched a third time. Receipt phases: u run1, fit run1, card run, ref run, **w run2** (52.8 s, 1,436 MiB, exe `985019d9`), nav run (59.7 s, 586 MiB, exe `72ff6d2d`); w run1 (killed, no receipt) has no row. NAV `mega-nav-v8x-theme-erc-L1.1720-v8ysb`, `summary_sha256` `26921704`. No driver commit (the run stage commits nothing). Ledger 127 lines, `869a0c6a` (0 trials) |
