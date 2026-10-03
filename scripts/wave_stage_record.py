@@ -17,8 +17,9 @@ import wave_steps as WS
 from wave_context import Wave
 from wave_stage_cell import nav_series, read_once, reader_plan, unbound
 from wave_stage_preflight import ledger_state
-from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, StageError, completed_exe, cyc, no_cell, phase_rows, pinned,
-                             reader_digests, run_rows, skipped)
+import research_cycle as RC
+from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, StageError, cyc, no_cell, phase_rows, pinned, reader_digests,
+                             skipped)
 
 
 # ------------------------------------------------------------------ verify
@@ -38,7 +39,7 @@ def verify(w: Wave, done: dict, log) -> dict:
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
     problems = []
-    exe = nav_exe(w, done, rows)
+    exe = nav_exe(w, done)
     if exe["equal"] is False and exe["ref"] == "missing":
         problems.append(f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']} and the cell "
                         "spec's reference construction did not run on it (no completed ref run with that exe)")
@@ -62,18 +63,18 @@ def verify(w: Wave, done: dict, log) -> dict:
                                            "exit 4, which stops the stage)"}
 
 
-def nav_exe(w: Wave, done: dict, rows: list[dict]) -> dict:
-    """P9 OR-2: the executable_sha256 of the parent NAV's and the cell NAV's last completed run receipts (``rows``: the
-    cell's phase rows), whether they are equal (None when either is unknown) and the cell's reference construction:
-    "ran" (a completed ref run on the cell's exe: research_cycle runs the ref when the exes differ), "missing" (the
-    cell spec has a ref phase and none ran on that exe), or "none" (the spec has no ref phase, e.g. a rule cell)."""
-    parent = completed_exe(run_rows(w, "nav", done["preflight"]["parent"]["nav"]))
-    cell = completed_exe([r for r in rows if r["phase"] == "nav"])
-    refs = [r for r in rows if r["phase"] == "ref"]
-    has_ref = "ref" in w.phase_bases(done["match"]["cell_spec"])
-    ran = any(r["outcome"] == "completed" and r["exit_code"] == 0 and r.get("executable_sha256") == cell for r in refs)
+def nav_exe(w: Wave, done: dict) -> dict:
+    """P9 OR-2: the executable_sha256 of the parent NAV's and the cell NAV's last completed run receipts, whether they
+    are equal (None when either is unknown) and the cell's reference construction: "ran" (a completed ref run on the
+    cell's exe: research_cycle runs the ref when the exes differ), "missing" (the cell spec has a ref phase and none
+    ran on that exe), or "none" (the spec has no ref phase, e.g. a rule cell). Every NAV run dir is enumerated as
+    research_cycle enumerates them (cycle_resume.completed_exes, its attempt bound: review E1t0 minor 3)."""
+    parent = CR.completed_exe_sha256(w, done["preflight"]["parent"]["nav"], RC.MAX_ATTEMPTS)
+    bases = w.phase_bases(done["match"]["cell_spec"])
+    cell = CR.completed_exe_sha256(w, bases["nav"], RC.MAX_ATTEMPTS)
+    ran = "ref" in bases and cell in CR.completed_exes(w, bases["ref"], RC.MAX_ATTEMPTS)
     return {"parent": parent, "cell": cell, "equal": parent == cell if parent and cell else None,
-            "ref": "none" if not has_ref else "unknown" if not cell else "ran" if ran else "missing"}
+            "ref": "none" if "ref" not in bases else "unknown" if not cell else "ran" if ran else "missing"}
 
 
 def verify_plan(w: Wave, done: dict) -> list[str]:

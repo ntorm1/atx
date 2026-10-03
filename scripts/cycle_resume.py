@@ -34,18 +34,30 @@ class ResumeError(ValueError):
     """A done output that cannot be scored under the current spec (research_cycle.py: a pin stop, exit 3)."""
 
 
-def completed_exe_sha256(res, out: str, attempts: int) -> str | None:
-    """The executable_sha256 of the last completed (exit 0) bounded run of the output ``out``: its run dirs
-    <out>-run, then <out>-run<k> for k = 2..attempts (research_cycle's NAV attempt dirs), read through the cycle's
-    Resolver ``res``; None when no such receipt records one (P9 OR-2: the parent NAV's exe, which a cell's NAV exe
-    is compared with)."""
-    found = None
-    for d in [f"{out}-run"] + [f"{out}-run{k}" for k in range(2, attempts + 1)]:
+def nav_run_dirs(out: str, attempts: int) -> list[str]:
+    """The run dirs research_cycle gives the NAV (or ref) output ``out``, in attempt order: <out>-run, then
+    <out>-run<k> for k = 2..attempts (``--attempt nav=k``). The one enumeration of them: research_cycle's ref skip and
+    the wave's verify both read it (review E1t0, minor 3)."""
+    return [f"{out}-run"] + [f"{out}-run{k}" for k in range(2, attempts + 1)]
+
+
+def completed_exes(res, out: str, attempts: int) -> list[str]:
+    """The executable_sha256 of every completed (exit 0) run receipt of the NAV output ``out`` (nav_run_dirs), in
+    attempt order, read through ``res`` (anything with read_json: a research_cycle Resolver, a wave)."""
+    found = []
+    for d in nav_run_dirs(out, attempts):
         r = res.read_json(f"{d}/receipt.json")
         if isinstance(r, dict) and r.get("outcome") == "completed" and r.get("exit_code") == 0 and \
                 isinstance(r.get("executable_sha256"), str):
-            found = r["executable_sha256"]
+            found.append(r["executable_sha256"])
     return found
+
+
+def completed_exe_sha256(res, out: str, attempts: int) -> str | None:
+    """The executable_sha256 of the last completed (exit 0) run of the NAV output ``out`` (completed_exes); None when
+    no receipt records one (P9 OR-2: the parent NAV's exe, which a cell's NAV exe is compared with)."""
+    found = completed_exes(res, out, attempts)
+    return found[-1] if found else None
 
 
 def argv_digest(args: list[str]) -> str:

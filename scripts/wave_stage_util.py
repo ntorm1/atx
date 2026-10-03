@@ -77,12 +77,6 @@ def run_rows(w: Wave, phase: str, base: str) -> list[dict]:
     return rows
 
 
-def completed_exe(rows: list[dict]) -> str | None:
-    """The executable_sha256 of the last completed (exit 0) run among phase rows (None: none, or none recorded)."""
-    done = [r for r in rows if r["outcome"] == "completed" and r["exit_code"] == 0]
-    return done[-1].get("executable_sha256") if done else None
-
-
 def reader_digests(w: Wave, names: list[str]) -> dict:
     return {n: w.sha(w.wave_path("readers", f"{n}.json")) for n in names}
 

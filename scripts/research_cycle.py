@@ -617,6 +617,9 @@ def parse_runner_overrides(items: list[str]) -> dict:
         if key not in ("seconds", "max_rss_mib", "min_free_mib") or not value.replace(".", "", 1).isdigit():
             raise CycleError(f"--runner-override {item}: expected seconds|max_rss_mib|min_free_mib=NUMBER", EXIT_USAGE)
         out[key] = int(value) if value.isdigit() else float(value)
+        refusal = research_tree.seconds_cap_refusal("--runner-override seconds", out[key]) if key == "seconds" else None
+        if refusal:                                       # P9 OR-1: refused here, not as a runner exit 2 mid-cycle
+            raise CycleError(refusal, EXIT_USAGE)
     return out
 
 
