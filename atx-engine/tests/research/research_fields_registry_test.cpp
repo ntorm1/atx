@@ -34,9 +34,10 @@ fields::BuildSpec plan_spec(std::vector<std::string> names) {
 
 TEST(ResearchFieldsRegistry, KindLookup) {
   const auto kinds = fields::builder_kinds();
-  ASSERT_EQ(kinds.size(), 3U);
+  ASSERT_EQ(kinds.size(), 5U);
   const auto ids = fields::builder_kind_ids();
-  const std::vector<std::string_view> want{"si_shares", "si_dtc", "vol_126"};
+  const std::vector<std::string_view> want{"si_shares", "si_dtc", "vol_126", "gia_13f",
+                                           "russell_recon"}; // + lane AL-SIG's engine-only kinds
   EXPECT_TRUE(std::equal(ids.begin(), ids.end(), want.begin(), want.end()));
   const auto names = fields::engine_field_names(); // the registry-less names are the kind ids
   EXPECT_TRUE(std::equal(names.begin(), names.end(), want.begin(), want.end()));
@@ -45,8 +46,12 @@ TEST(ResearchFieldsRegistry, KindLookup) {
     ASSERT_NE(found, nullptr) << kind.id;
     EXPECT_EQ(found, &kind);
     EXPECT_TRUE(kind.parse != nullptr && kind.build != nullptr) << kind.id;
-    // A ported kind builds exactly its own field: its plan names the field and pins its spec.
-    const auto plan = kind.parse(kind.id, Json::object(), plan_spec({std::string(kind.id)}));
+    // A kind builds exactly its own field: its plan names the field and pins its spec (the AL-SIG
+    // kinds also need their stage request).
+    auto spec = plan_spec({std::string(kind.id)});
+    spec.thirteenf = fields::StageRequest{"thirteenf", std::string(64, 'a')};
+    spec.indexes = fields::StageRequest{"indexes", std::string(64, 'a')};
+    const auto plan = kind.parse(kind.id, Json::object(), spec);
     ASSERT_TRUE(plan.has_value()) << plan.error().message();
     EXPECT_EQ(plan->name, kind.id);
     ASSERT_NE(plan->spec, nullptr);

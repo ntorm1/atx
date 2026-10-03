@@ -361,3 +361,16 @@ target_link_libraries(atx-engine-research-admission
         nlohmann_json::nlohmann_json)
 add_executable(atx-research-admission EXCLUDE_FROM_ALL src/research/admission/admission_main.cpp)
 target_link_libraries(atx-research-admission PRIVATE atx::engine-research-admission atx_warnings)
+
+# P9 lane AL-SIG (cross-lane append): the atx-db stage readers (research/fields/sources/, ruling P18: the pinned
+# stage, its parquet column decoders, the 13F and Russell-proxy readers) and the engine-only field kinds gia_13f
+# and russell_recon (DEC-5) join the research-fields library. The readers use atx::core's parquet reader only.
+target_sources(atx-engine-research-fields PRIVATE
+    src/research/fields/sources/stage.cpp
+    src/research/fields/sources/parquet_columns.cpp
+    src/research/fields/sources/thirteenf_filings.cpp
+    src/research/fields/sources/thirteenf_holdings.cpp
+    src/research/fields/sources/russell_proxy.cpp
+    src/research/fields/gia_13f_field.cpp
+    src/research/fields/gia_13f_skill.cpp
+    src/research/fields/russell_recon_field.cpp)

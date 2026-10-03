@@ -15,8 +15,9 @@
 // there, K-P9-2 source half).
 //
 // Registered kinds, in table order: si_shares and si_dtc (finra_asof_field.hpp), vol_126
-// (volume_mean_field.hpp). Each builds exactly its own field and accepts only the option
-// {"group": <its spec group>} (the producer group a registry row records), or no option.
+// (volume_mean_field.hpp), then lane AL-SIG's engine-only kinds gia_13f (gia_13f_field.hpp) and
+// russell_recon (russell_recon_field.hpp). Each builds exactly its own field and accepts only the
+// option {"group": <its spec group>} (the producer group a registry row records), or no option.
 //
 // plan_fields: without a registry, a field name names its kind (the ported builders' fields, in
 // spec order). With a registry (K-P9-1), each field must be a row of kind engine whose builder is a
@@ -39,6 +40,7 @@
 #include "atx/engine/research/fields/field_writer.hpp"
 #include "atx/engine/research/fields/finra_asof_field.hpp"
 #include "atx/engine/research/fields/role_axes.hpp"
+#include "atx/engine/research/fields/sources/stage.hpp"
 
 namespace atx::engine::research::fields {
 
@@ -55,6 +57,8 @@ struct FieldPlan {
 // Inputs read once per run and shared by every kind that needs them.
 struct SharedSources {
   std::optional<DisseminationSchedule> finra_schedule;
+  std::optional<PinnedStage> thirteenf; // lane AL-SIG: the pinned 13F stage (gia_13f; A4 reuses)
+  std::optional<PinnedStage> indexes;   // lane AL-SIG: the pinned Russell-proxy stage
 };
 
 struct BuildContext {
@@ -92,5 +96,10 @@ struct BuilderKind {
 // set. Err(InvalidArgument) for a field no kind builds, a repeated field or a refused request.
 [[nodiscard]] core::Result<std::vector<FieldPlan>> plan_fields(const BuildSpec &spec,
                                                                const FieldRegistry *registry);
+
+// The request check of a kind that builds exactly its own field (lane AL-SIG's kinds use the
+// ported kinds' rule): `field` is spec.name and `options` holds at most {"group": spec.group}.
+[[nodiscard]] core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
+                                              const nlohmann::json &options);
 
 } // namespace atx::engine::research::fields

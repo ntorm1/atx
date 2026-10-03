@@ -1,0 +1,37 @@
+{
+  "id": "russell_recon",
+  "dsl": "rank(russell_recon)",
+  "dsl_sha256": "2aad0b8685fa53e2db135b13a8a5c9fee9ca007d8305a832c451a380d14411fe",
+  "theme": "ownership_flow",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Chang, Hong and Liskovich (2015, RFS 28(1)) Regression discontinuity and the price effects of stock market indexing",
+  "origin": "prior",
+  "hypothesis": "russell_recon",
+  "kind": "add",
+  "fields": [
+    "russell_recon"
+  ],
+  "prior_sign_source": "Chang-Hong-Liskovich 2015",
+  "form": "R(x)",
+  "formula": "russell_recon (engine-only C++ kind, atx-engine russell_recon_field.hpp, formula id russell-recon-r1k-r2k-move-v1): on the house Russell proxy (atx-db indexes stage, rule russell-proxy-v1), +1 for a line in the R1000 at the prior reconstitution and in the R2000 at the upcoming one (predicted R2000 addition), -1 for the reverse move, 0 for a line that stays; read from the session after the rank date's 22:00 UTC visibility to the last session before the reconstitution day",
+  "domain": "NaN outside the yearly event window (about 30 sessions, rank date to the June reconstitution), for a line not in both proxy snapshots or in both indexes of one, and before the stage's second reconstitution (2019; the proxy holds 2018-06 on)",
+  "deviation": "house proxy of the Russell lists (official lists unlicensed): its own rank and band rules, no float adjustment, IPO and spin-off additions not modelled; every predicted boundary crosser is signed, not only those near the rank-1000 cutoff of the CHL discontinuity; window from the proxy's rank date (May, the last business day of April from 2023) to the day before the reconstitution, where CHL hold May to July; one variant, nothing tuned",
+  "notes": "horizon class medium, half-life 21 sessions (PM8-5: the price pressure builds over the window and the CHL effect reverts after the reconstitution, so the field is NaN from the reconstitution day); bar of lit section 3.0 argued from the mechanism, not measured: rho to the book about 0 (lit 3.1 F8: index-flow demand at one yearly date, spanned by no theme), small breadth (the boundary crossers, tens of lines a year), so the gain is small (+.00 to +.02 lit section 6) and the string also serves root as a do-no-harm trade-filter input",
+  "lane": "AL-SIG",
+  "report": "task-AL-SIG-report.md",
+  "source_sample_end": 2012,
+  "predicted_mechanism": "benchmark weight jumps for a line that crosses from the Russell 1000 to the Russell 2000 and falls for the reverse move, so index-fund demand pushes the predicted R2000 additions up and the predicted R1000 additions down before the June reconstitution",
+  "data_class": "H",
+  "schema": "atx.wave-candidate/v1",
+  "status": "proposed",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-03",
+      "by": "AL-SIG",
+      "note": "P9 lane AL-SIG (lit section 3.1 F8 [56] [57], section 6 row russell_recon); blind registration, trials 0"
+    }
+  ]
+}

@@ -4,6 +4,8 @@
 #include <array>
 #include <utility>
 
+#include "atx/engine/research/fields/gia_13f_field.hpp"
+#include "atx/engine/research/fields/russell_recon_field.hpp"
 #include "atx/engine/research/fields/volume_mean_field.hpp"
 
 namespace atx::engine::research::fields {
@@ -136,10 +138,12 @@ using Paths = std::vector<std::filesystem::path>;
 }
 
 // The kind table. Its order is engine_field_names()' (research_fields_cli.hpp).
-constexpr std::array<BuilderKind, 3> kKinds{{
+constexpr std::array<BuilderKind, 5> kKinds{{
     {"si_shares", &parse_si_shares, &build_finra_kind},
     {"si_dtc", &parse_si_dtc, &build_finra_kind},
     {"vol_126", &parse_vol_126, &build_vol_126_kind},
+    {"gia_13f", &parse_gia_13f_kind, &build_gia_13f_kind},             // lane AL-SIG (DEC-5)
+    {"russell_recon", &parse_russell_recon_kind, &build_russell_recon_kind}, // lane AL-SIG
 }};
 
 constexpr std::array<std::string_view, kKinds.size()> kKindIds = [] {
@@ -224,6 +228,11 @@ core::Result<std::vector<FieldPlan>> plan_fields(const BuildSpec &spec,
     std::stable_sort(plans.begin(), plans.end(), registered_before);
   }
   return core::Ok(std::move(plans));
+}
+
+core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
+                                const nlohmann::json &options) {
+  return check_request(spec, field, options);
 }
 
 } // namespace atx::engine::research::fields

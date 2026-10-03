@@ -437,3 +437,12 @@ target_link_libraries(atx-engine-research-admission-tests PRIVATE
 target_include_directories(atx-engine-research-admission-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(atx-engine-research-admission-tests PRIVATE
     "ATX_RESEARCH_ADMISSION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_admission\"")
+
+# P9 lane AL-SIG (cross-lane append): the stage readers' and engine-only kinds' gtests (gtest filter
+# ResearchFieldsAlSig*; synthetic stage fixture fixtures/research_fields_al_sig, found beside the slice-1 fixture)
+# join the research-fields test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_al_sig_thirteenf_test.cpp
+    research/research_fields_al_sig_gia_test.cpp
+    research/research_fields_al_sig_russell_test.cpp
+    research/research_fields_al_sig_fixture_test.cpp)

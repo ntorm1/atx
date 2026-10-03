@@ -1,0 +1,157 @@
+{
+  "finite": {
+    "gia_13f": 2072,
+    "russell_recon": 132
+  },
+  "gia_13f": {
+    "effective_filings": 105,
+    "filings_after_deadline_ignored": 1,
+    "holdings_rows_kept": 731,
+    "per_quarter": [
+      {
+        "filers_with_return": 0,
+        "managers_ranked": 0,
+        "positions": true,
+        "quarter": "2018-09-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 0
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 0,
+        "positions": true,
+        "quarter": "2018-12-31",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 0
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 0,
+        "positions": true,
+        "quarter": "2019-03-31",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 0
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 0,
+        "positions": true,
+        "quarter": "2019-06-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 0
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 0,
+        "positions": true,
+        "quarter": "2019-09-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 0
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 0,
+        "positions": true,
+        "quarter": "2019-12-31",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 0
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2020-03-31",
+        "rows_mapped": 58,
+        "rows_price_outlier": 1,
+        "securities_scored": 8
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2020-06-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 8
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2020-09-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 8
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2020-12-31",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 8
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2021-03-31",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 8
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2021-06-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 8
+      },
+      {
+        "filers_with_return": 8,
+        "managers_ranked": 8,
+        "positions": true,
+        "quarter": "2021-09-30",
+        "rows_mapped": 56,
+        "rows_price_outlier": 0,
+        "securities_scored": 8
+      }
+    ],
+    "quarters": [
+      "2018-09-30",
+      "2018-12-31",
+      "2019-03-31",
+      "2019-06-30",
+      "2019-09-30",
+      "2019-12-31",
+      "2020-03-31",
+      "2020-06-30",
+      "2020-09-30",
+      "2020-12-31",
+      "2021-03-31",
+      "2021-06-30",
+      "2021-09-30"
+    ]
+  },
+  "pins": {
+    "indexes": "154cf2379af0aef9abcaf6bc128fd85cc395aaa25016b43bf9bda0c38d25ada3",
+    "role": "8165f1bc9a6c573f27f52e0b7181f7e9293c980f0e6d86ea77fb6b7a4f062a1b",
+    "thirteenf": "64ff19ffb40d18d7e128eeac1edc12c3df10393bf840ce065940549bd9da8c7b"
+  },
+  "russell_recon": {
+    "reconstitutions": 3,
+    "rows_other_index": 24,
+    "rows_sealed": 2,
+    "rows_total": 46,
+    "rows_unusable": 1
+  }
+}

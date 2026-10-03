@@ -3342,6 +3342,90 @@
         "staleness": "NaN when the line's latest visible name row is more than 45 days older than date(t) (listing market unknown, as regsho_threshold_days63), or when the visible name rows (any line of the role) do not reach back 410 days (365 + 45) before date(t) (short history: an earlier move could not be seen); session 0 -> NaN",
         "units": "indicator (0/1)"
       }
+    },
+    {
+      "builder": "gia_13f",
+      "dtype": "f64",
+      "first_session": null,
+      "formula_sha256": "2e693083686ee1db475c9222922218a393524e9af9407acc785dd01622ffe54f",
+      "kind": "engine",
+      "name": "gia_13f",
+      "options": {
+        "group": "13f_skill"
+      },
+      "owner": "engine-only:DEC-5 (P9 lane AL-SIG)",
+      "point_in_time": true,
+      "requires": [],
+      "sources": [
+        "thirteenf"
+      ],
+      "spec_text": {
+        "clock": "13f-quarter-skill-asof-v1: V(q) = the maximum available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of quarter q filed by its deadline (effective or not, notices included); the value of quarter P reads the positions of quarters P-8..P only and is visible at V*(P) = the maximum V(q) over the quarters q <= P with positions; session t reads the latest quarter P with V*(P) < date(t-1) 22:00 UTC, P <= date(t) and date(t) - P <= 150 days in which the line has a mapped 13F position (forward fill across a quarter without one); session 0 -> NaN",
+        "definition": "Skill-weighted 13F holdings (after Wermers, Yao and Zhao 2012, RFS 25(12)). Positions of quarter q: the 13f-asof45-effective-v1 filings of q; holdings rows with sshprnamt_type SH, no put/call, shares > 0 and a finite value_usd >= 0, value x filing_checks.unit_factor (1 when unlisted, not finite or not positive), CUSIP -> security_id by cusip_map_pit at q (unmapped rows dropped); a priced row whose implied price value/shares lies outside [1/10, 10] x its security's median implied price is dropped; (filer CIK, security) pairs summed; p_q(i) = the median implied price of i's kept priced rows; a filer's total = the sum of its kept values. Share basis a_q(i) = 13f-basis-change-v1 (the median N_q / N_(q-1) of i's holders in both quarters when there are at least 5 of them, it lies outside [1/1.2, 1.2] and the price offsets it within [1/1.5, 1.5], else 1). Holdings return of filer k over quarter q: the value-weighted mean over k's pairs of q-1 with value > 0 of r_q(i) = a_q(i) p_q(i) / p_(q-1)(i) - 1 (a price ratio outside [1/10, 10] or a missing price: no return for i), NaN when those pairs hold less than half of k's total of q-1; the aggregate 13F book's return likewise over every pair. Skill s_k(P) = the mean of k's excess return (filer minus aggregate) over quarters P-7..P, NaN with fewer than 6. u_k = the centered average rank of s_k among the filers of P with a skill, (rank - (m + 1) / 2) / m, undefined when m < 3. Value of security i at P = the sum of w_ki u_k over the sum of w_ki over the filers k of P with a skill holding i, w_ki = k's value of i / k's total; NaN with fewer than 5 such holders. Formula id gia-13f-skill-wavg-v1.",
+        "domain": [
+          -0.5,
+          0.5
+        ],
+        "non_pit_aspects": [],
+        "point_in_time": true,
+        "source_columns": [
+          "filings.accession",
+          "filings.filer_cik",
+          "filings.period_q",
+          "filings.filing_date",
+          "filings.submission_type",
+          "filings.amendment_type",
+          "filings.available_at",
+          "filings.deadline",
+          "filings.source_period",
+          "holdings.accession",
+          "holdings.cusip",
+          "holdings.shares",
+          "holdings.sshprnamt_type",
+          "holdings.put_call",
+          "holdings.value_usd",
+          "filing_checks.unit_factor",
+          "cusip_map_pit.security_id"
+        ],
+        "staleness": "date(t) - P > 150 days -> NaN (stage staleness_days 150); no visible fresh quarter with a mapped position of the line -> NaN; a NaN value at the anchor quarter stays NaN (no skip-back); session 0 -> NaN",
+        "units": "skill score of the line's 13F holders: the portfolio-weight-weighted mean of their centered skill ranks (decimal in (-0.5, 0.5))"
+      }
+    },
+    {
+      "builder": "russell_recon",
+      "dtype": "f64",
+      "first_session": null,
+      "formula_sha256": "cf77e5c01b96e372ad2a18b678001774d69dc9aa42389bed7760ff92249ac150",
+      "kind": "engine",
+      "name": "russell_recon",
+      "options": {
+        "group": "russell_proxy"
+      },
+      "owner": "engine-only:DEC-5 (P9 lane AL-SIG)",
+      "point_in_time": true,
+      "requires": [],
+      "sources": [
+        "indexes"
+      ],
+      "spec_text": {
+        "clock": "russell-proxy-rank-date-v1: reconstitution R (the indexes constituents rows of index r1000 or r2000 with recon_date R) is visible at V(R) = the maximum available_at (rank date 22:00 UTC) of its rows and of the prior reconstitution's rows; session t reads the latest R with V(R) < date(t-1) 22:00 UTC while date(t) < recon_date(R); session 0 -> NaN",
+        "definition": "Russell 1000 / 2000 reconstitution price pressure (Chang, Hong and Liskovich 2015, RFS 28(1)) on the house Russell proxy (indexes stage, rule russell-proxy-v1: ranked on the May rank day, the last business day of April from 2023, effective after the fourth Friday of June). snapshot(R) = the r1000 and r2000 rows with recon_date R; the prior reconstitution R' = the latest recon_date before R. Value of a line: +1 when in r1000 at R' and in r2000 at R (predicted R2000 addition, R1000 deletion), -1 when in r2000 at R' and in r1000 at R (predicted R1000 addition), 0 when in the same one of the two at R' and R. Rows available on or after the research seal are dropped. Formula id russell-recon-r1k-r2k-move-v1.",
+        "domain": [
+          -1.0,
+          1.0
+        ],
+        "non_pit_aspects": [],
+        "point_in_time": true,
+        "source_columns": [
+          "constituents.index_id",
+          "constituents.security_id",
+          "constituents.rank_date",
+          "constituents.recon_date",
+          "constituents.available_at"
+        ],
+        "staleness": "NaN outside the event window (from the first session at which the reconstitution is visible to the last session dated before its recon_date); NaN for a line not in the r1000 or r2000 rows of both R and the prior reconstitution, for a line in both indexes of one snapshot, and at the first reconstitution of the stage (no prior snapshot)",
+        "units": "predicted Russell 1000 / 2000 boundary move of the line at the upcoming June reconstitution: +1 R1000 -> R2000, -1 R2000 -> R1000, 0 a line that stays in the R1000 or in the R2000"
+      }
     }
   ],
   "schema": "atx.field-registry/v1"
