@@ -1,0 +1,252 @@
+{
+  "code_matches_build_manifest": true,
+  "gates": {
+    "coverage": "FAIL",
+    "coverage_univ_all_common": "FAIL",
+    "coverage_univ_r3000p": "FAIL",
+    "handcheck": "FAIL",
+    "ranges": "FAIL",
+    "spearman": "FAIL"
+  },
+  "http": {
+    "exact_historical_attempts": null,
+    "r2_attempts": 0,
+    "recorded_historical_all_attempt_upper_bound": 1127
+  },
+  "input_matches_build_manifest": true,
+  "primary_coverage": {
+    "coverage": 24,
+    "coverage_univ_all_common": 19,
+    "coverage_univ_r3000p": 11
+  },
+  "proxy_counts": [
+    {
+      "cap_diff": 144881,
+      "cells": 163231,
+      "clock_diff": 6282,
+      "close_diff": 0,
+      "currency_label_diff": 3953,
+      "issuer_diff": 2737,
+      "period_diff": 6184,
+      "shares_diff": 147879
+    }
+  ],
+  "proxy_min_rho": {
+    "bm": 0.9800244129180223,
+    "ep": 0.9828026896570711,
+    "gpa": 0.9617082185816596,
+    "sp": 0.9885772426820664
+  },
+  "receipts": [
+    {
+      "cap_gb": 0.6,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-attribution.py"
+      ],
+      "name": "t4-r2-attribution-final.receipt.json",
+      "peak_gb": 0.2213,
+      "returncode": 0,
+      "seconds": 2.0
+    },
+    {
+      "cap_gb": 0.6,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-attribution.py"
+      ],
+      "name": "t4-r2-attribution.receipt.json",
+      "peak_gb": 0.221,
+      "returncode": 0,
+      "seconds": 3.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-comparability.py"
+      ],
+      "name": "t4-r2-comparability-2.receipt.json",
+      "peak_gb": 0.4687,
+      "returncode": 1,
+      "seconds": 11.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-comparability.py"
+      ],
+      "name": "t4-r2-comparability-3.receipt.json",
+      "peak_gb": 0.467,
+      "returncode": 0,
+      "seconds": 9.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-comparability.py"
+      ],
+      "name": "t4-r2-comparability.receipt.json",
+      "peak_gb": 0.4674,
+      "returncode": 0,
+      "seconds": 14.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-final-coverage.py"
+      ],
+      "name": "t4-r2-final-coverage.receipt.json",
+      "peak_gb": 0.5313,
+      "returncode": 0,
+      "seconds": 16.0
+    },
+    {
+      "cap_gb": 0.3,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-http-budget.py"
+      ],
+      "name": "t4-r2-http-budget.receipt.json",
+      "peak_gb": 0.0349,
+      "returncode": 0,
+      "seconds": 1.0
+    },
+    {
+      "cap_gb": 0.4,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-report.py"
+      ],
+      "name": "t4-r2-report.receipt.json",
+      "peak_gb": 0.0135,
+      "returncode": null,
+      "seconds": null
+    },
+    {
+      "cap_gb": 0.3,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-schema.py"
+      ],
+      "name": "t4-r2-schema.receipt.json",
+      "peak_gb": 0.0395,
+      "returncode": 0,
+      "seconds": 1.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py"
+      ],
+      "name": "t4-r2-sourcecheck-2.receipt.json",
+      "peak_gb": 0.1469,
+      "returncode": 0,
+      "seconds": 4.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py"
+      ],
+      "name": "t4-r2-sourcecheck-3.receipt.json",
+      "peak_gb": 0.147,
+      "returncode": 0,
+      "seconds": 8.1
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py"
+      ],
+      "name": "t4-r2-sourcecheck-final.receipt.json",
+      "peak_gb": 0.1453,
+      "returncode": 0,
+      "seconds": 4.0
+    },
+    {
+      "cap_gb": 0.8,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py"
+      ],
+      "name": "t4-r2-sourcecheck.receipt.json",
+      "peak_gb": 0.0701,
+      "returncode": 1,
+      "seconds": 1.0
+    },
+    {
+      "cap_gb": 0.6,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-tail-provenance.py"
+      ],
+      "name": "t4-r2-tail-provenance-final.receipt.json",
+      "peak_gb": 0.0493,
+      "returncode": 0,
+      "seconds": 1.0
+    },
+    {
+      "cap_gb": 0.6,
+      "cap_hit": false,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t4-r2-tail-provenance.py"
+      ],
+      "name": "t4-r2-tail-provenance.receipt.json",
+      "peak_gb": 0.0492,
+      "returncode": 0,
+      "seconds": 1.0
+    }
+  ],
+  "snapshot": {
+    "gc3": "REFRESHED after R9 release; all9fileSHA/size verified before/after",
+    "is_latest_universe": true,
+    "measured_manifest_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e",
+    "output_integrity_verified": true,
+    "supersedes": "R1 overlap-era provisional/invalid coverage; R0 historical coverage preserved only as earlier report history",
+    "universe_parity": "NOT certified: Task2 French10/60FAIL remains"
+  },
+  "source_attribution": {
+    "input_history_or_source_basis_difference": 11,
+    "source_available_history_null": 7
+  },
+  "source_counts": {
+    "blocked_contract": 200,
+    "both_absent": 363,
+    "match": 1337,
+    "mismatch": 11,
+    "ratio_absent": 7,
+    "source_absent": 1002
+  },
+  "tail_quantiles": [
+    {
+      "n": 147952,
+      "quantiles": [
+        -17.28,
+        0.09226143648748002,
+        2.4072076671878824
+      ]
+    }
+  ]
+}

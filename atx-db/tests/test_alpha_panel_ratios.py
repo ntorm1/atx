@@ -572,3 +572,21 @@ def test_source_cash_total_and_current_marketables():
     assert R.hand_items({'che':896005000.,'short_invest':1638271000.})['che'] == 2534276000.
     assert R.hand_items({'che':268269000.,'short_invest':2993000.,'che_total':271300000.})['che'] == 271300000.
     assert 'MarketableSecuritiesCurrent' in R.HAND_ITEMS['short_invest'][1]
+
+
+def test_retained_source_arithmetic_and_explicit_missing_fields():
+    import runpy
+    from pathlib import Path
+    audit = runpy.run_path(str(Path(__file__).resolve().parents[2] / '.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py'))
+    h = dict(ni=10.,txt=2.,xint=1.,seq=50.,pstk=5.,seq_p=40.,pstk_p=5.,dltt=20.,dlc=10.,mib=2.,
+             dltt_p=15.,dlc_p=5.,oiadp=12.,dp=3.,che=4.,at=100.,lt=60.,act=30.,lct=15.,re=8.,sale=80.)
+    r = audit['additional'](h,{'me':120.})
+    assert r['roce'] == 13./65.
+    assert r['aftret_eq'] == 10./40.
+    assert r['capital_ratio'] == 20./70.
+    assert r['equity_invcap'] == 45./72.
+    assert r['altman_z'] == pytest.approx(1.2*15/100+1.4*8/100+3.3*12/100+.6*120/60+80/100)
+    assert r['cash_conversion'] is None and r['beneish_m'] is None
+    h.pop('mib')
+    assert audit['additional'](h,{'me':120.})['equity_invcap'] is None
+    assert 'source_full_year_comparability' in audit['BLOCKED']['capei']['fields']

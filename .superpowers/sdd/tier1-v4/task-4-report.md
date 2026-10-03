@@ -438,3 +438,144 @@ Task5 source/history gaps and Task13 indicated dividends remain open. Primary co
 ```
 
 Remaining one-sided ROE case: CIK1817358, accession0001817358-22-000039, FY2022-01-29, session2022-03-31. Filing prior TXDITC138.703m is present; eligible prior annual-state TXDITC is NULL. This is an unavailable retained/comparable annual-history path, not a demonstrated arithmetic defect or proof that the issuer primitive is absent. Task5 must reconcile source-history/period certification; no current-only average or tax plug is introduced.297 narrow-chain source absences remain uncertified. Final main arithmetic:999matches,143both-absent,297source-absent,1ratio-absent,0numerical mismatches; supplementary80cells:59matches,6both-absent,15source-absent.
+
+
+## Fix round 2 ? retained I4, R10 and released R9
+
+No ratio expression or PIT consumer was changed: I1/I2/I3 remain closed. Corrected the independent source auditor's debt extraction: current LTD alone is not total current debt, and total LongTermDebt is not noncurrent debt. Use explicitly reported DebtCurrent, or add actually reported current maturities and short borrowing; derive noncurrent debt from explicitly reported total minus current only when both exist. Missing components stay NULL. Removed a finite-lived-only intangible fallback that could omit indefinite-lived assets. These are source-audit corrections, not numerical fitting. The final ratio module/input hashes still match the published build; no formula rebuild was needed.
+
+27 offline covering tests passed in14.43s. One new fixture checks independent ROCE/common equity/invested capital/Altman arithmetic and NULLs when NCI/source fields are absent. The exploratory fixture originally miscomputed average capital employed62.5; corrected expected value65 (current75, prior55), then the full focused file passed.
+
+Every one of66 primary,3 extensions,4 composites now has a per-formula status, exact source fields/concept chains, missing-field counts, producer obligations and qualification in ratios.requirements.json. Retained40 issuer-date filings yielded2,920 classified cells:1,337 matches,1,002 source-absent,363 both-absent,11 numerical differences,7 ratio/history absences,200 contract-blocked cells (five primary formulas).57 primary have at least one positive numerical match; only 2 primary match all 40 cells. Neither partial matches, both-absent cells, nor documented-score arithmetic constitute full formula/source-model certification.
+
+No positive source check exists for CAPEI, EVM, pe_exi/inc, PEG, divyield, ROCE, totdebt_invcap, debt_capital and Piotroski (nine primary plus one composite). The matrix states actual missing preferred/NCI/debt/interest/5-year NI history or class EPS/indicated-rate prerequisites; it does not call every unresolved formula generically unverified. Altman/Ohlson/Beneish have positive implemented-formula checks but source-model equivalence remains qualified; Piotroski lacks FY-2assets/issuance and comparable histories. Ohlson remains nominal-assets/OCF proxy; source GNP deflator/funds-from-operations identity is required for exact source-model equivalence.
+
+All11 numerical differences independently reproduce the published arithmetic from exact retained state primitives. Causal evidence t4-r2-attribution.json isolates: CIK7084 FY2024 DLTT7.600b source versus7.580b state (six cells; debt net/gross/lease basis); CIK1415404 priorDLTT2.389168b versus2.389733b, priorNI-74.252m versus-62.917m, FY2023COGS9.510427b versus16.180753b and DLTT19.717266b versus0; CIK40545 priorNI9.482b versus9.483b; CIK1768224 RE-143.800m versus-143.816m. Seven one-sided cells follow missing comparable prior annual state history despite reported comparative values. These are precise Task5 source/basis/history reconciliation obligations, not proof every extraction value is the exact standardized economic primitive, and not a local ratio arithmetic failure. No zero plug/current-only average was introduced.
+
+### Same-date characteristic comparison
+
+R10: no published characteristics files exist, so the binding published-char_monthly comparison is BLOCKED/FAIL. Reconstructed char_registry/panel values are diagnostic proxies only.163,231 member month-end cells differ in issuer2,737, fundamental clock6,282, period6,184, reporting-currency label3,953, issuer cap144,881, shares147,879, and raw close0. Reporting currency label differences are not evidence of a money-unit error: both contracts publish converted USD values.
+
+Proxy minimum per-date rho: bm0.980024,ep0.982803,sp0.988577,gpa0.961708. Paired counts/numerator differences: bm135,760/52,726; ep107,017/4,634; sp140,933/6,615; gpa103,346/11,659. Conditional cohorts in evidence are attribution diagnostics, never substitutes for the binding gate. Five keyed largest-relative-difference issuer samples per formula retain both currencies, cap/share/close inputs, issuer ids, clocks, dates, book/tax/preferred primitives and earnings/sales/gross-profit/assets.
+
+Examples: CIK77159/session2022-02-28 has identical raw close33.759998 and fundamental clock, but ratios shares15,000 versus panel21,088,000 (issuer caps0.5064m versus711.9308m). This is an inherited market-share basis discrepancy, not established local ratio multiplication error. CIK1868778/session2024-07-31 has ratio filing at20:18that session (June quarter), while panel uses May2clock (March quarter); this is the correct monthly-versus-prior-session visibility distinction. CIK1815442/session2025-05-30 has panel GP0 versus ratio sale58.885m minusCOGS47.072m on identical date/clock; Task7 must reconcile source-derived GP/defaults. No unsafe foreign clocks or chain outputs were copied or edited.
+
+Task7 recomparison contract is machine-readable: publish raw char_monthly on the same finalized universe, identical issuer/common line cap, USD money/FX provenance, strictly monthend22UTC identity/classification/fund clocks, same standardized accession/vintage/history/freshness/null/sign eligibility. BM uses actualSEQ+TXDITC-PSTK; EP is inverse issuer-NI extension (not diluted P/E); SP=SALE/ME; GPA=(SALE-COGS)/AT. Retain all stated lineage fields before comparing same-key raw values and testing rho>=.99.
+
+### PTPM tails and unsupported range criterion
+
+[WRDS Research Team manual2016, pp2-3](https://people.tamu.edu/~cschulman/ECMT461/Termp/WRDS_Industry_Financial_Ratio_Manual.pdf) defines raw firm-level ratios without truncation/smoothing; its1%outlier treatment applies to industry aggregation. It supplies no fixed firm-level PTPM[-200,2] band. Existing numeric envelopes are indicative diagnostics, not source-backed literature-range acceptance evidence. R10 keeps the binding literature gate UNVERIFIABLE/FAIL pending named reference publication/cohort/formula/universe/timing/treatment/threshold. No licensed WRDS acquisition, invented range or clipping occurred.
+
+Measured PTPM147,952 cells: p1-17.28,median0.0922614,p992.4072077. Eight distinct issuer-period tail cases trace standardized annual amounts, exact catalog event and retained original CompanyFacts concepts/units/periods/accessions. CIK1080709 FY2021 pretax-616.433m and sales54k, CIK1668243 FY2019 pretax-105.146m and sales18k, CIK1326190 FY2022 pretax-84.910m and sales-68k are directly source-supported extremes. CIK1296774 FY2020 CNYpretax402.764770m /CNYsales625,488 equals the converted USD ratio643.920859; same-currency FX cancels, so this is not a ratio currency defect.
+
+Source issues stay separate: CIK30625 FY2018/FY2020 source Revenues0 precedes explicit contractual revenue3.832666b/3.728134b, and annual restatement denominators become-1000/13000. Task5/standardization must repair total-sales concept selection/history while preserving source clocks; ratio arithmetic correctly consumes the published inputs. CIK1253986 financial sales185k versus reported InterestIncomeOperating466.087m requires financial-revenue/pretax scope certification. CIK1895618 tiny revenue256 is reported, but bounded PIcorroboration is NI rather than a certified pretax source. Do not label these unresolved PI/basis cases fully valid extremes.
+
+### Final GC3 coverage refresh and HTTP accounting
+
+Controller R9 released finalTask2manifest90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e. Exactly one guarded final coverage refresh verified every 9 output file SHA/size before and after, with unchanged standardized input identity. Current primary passes remain24/66member,19/66all-common,11/66R3000; extensions2/3each and composites0/4each. This replaces R1 overlap-era provisional evidence. Stable final output is not universe parity: Task2French10/60FAIL remains. Hard gates remain0/6PASS; source, coverage, missing published comparator and unsupported literature reference are still open.
+
+R2 makes zero new SEC HTTP attempts/retries/redirects; every source audit reuses retained filings/CompanyFacts. One web-tool read of the public TAMU-hosted WRDS manual is outside the SEC request budget; its backend HTTP-hop count is not exposed. Historical Task4 has seven recorded guarded handcheck executions and280 successful primary-document receipts. Exact all-attempt count is unrecoverable because ATX_SEC_RATE_LOG was not enabled; primary receipts omit headers/index/retries/redirects. A conservative upper bound for the recorded execution inventory is1,127 attempts, sum ceil(5*(child run_seconds+1))+1 per job under enforced shared5/sceiling, covering headers, optional index,6-attempt retry policy and redirects. This upper bound depends on complete guarded execution inventory; retained metadata cannot prove absence of an unrecorded historical invocation. Budget coordinator should reserve the upper bound, never280successes as total attempts. Exact receipts/inventory: t4-r2-http-budget.json and data/raw/sec_ratios_handcheck/{receipts.jsonl,initial-build/receipts.jsonl}.
+
+### Actual guarded commands and results
+
+Working directoryC:/atx/atx-db; PYTHONPATH=C:/atx/atx-db/src and OPENBLAS_NUM_THREADS=1. Each command below uses `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb <cap> --wait-minutes60 --receipt ../.superpowers/sdd/tier1-v4/logs/<name>.receipt.json --stdout .../<name>.out.log --stderr .../<name>.err.log --quiet -- .venv/Scripts/python.exe <child>`. Receipts are copied to receipts/. All successful named checks stayed below1GiB; no external return statistics or foreign chain was executed.
+
+Exploratory schema check found zero published characteristic files. Comparability-2 failed because glob included *.stats.parquet; numeric-only batchglob corrected in comparability-3. Sourcecheck initial failed because historical records omit security_id; use their issuer-primary published row explicitly. Corrected debt/intangible extraction and finalized per-field metadata in sourcecheck-final. No failed exploratory run is acceptance evidence.
+
+|receipt name|cap GiB|child command|exit|peak GiB|seconds|
+|---|---|---|---|---|---|
+|t4-r2-attribution-final.receipt.json|0.6|../.superpowers/sdd/tier1-v4/t4-r2-attribution.py|0|0.2213|2.0|
+|t4-r2-attribution.receipt.json|0.6|../.superpowers/sdd/tier1-v4/t4-r2-attribution.py|0|0.221|3.0|
+|t4-r2-comparability-2.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-comparability.py|1|0.4687|11.0|
+|t4-r2-comparability-3.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-comparability.py|0|0.467|9.0|
+|t4-r2-comparability.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-comparability.py|0|0.4674|14.0|
+|t4-r2-final-coverage.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-final-coverage.py|0|0.5313|16.0|
+|t4-r2-http-budget.receipt.json|0.3|../.superpowers/sdd/tier1-v4/t4-r2-http-budget.py|0|0.0349|1.0|
+|t4-r2-report.receipt.json|0.4|../.superpowers/sdd/tier1-v4/t4-r2-report.py|None|0.0135|None|
+|t4-r2-schema.receipt.json|0.3|../.superpowers/sdd/tier1-v4/t4-r2-schema.py|0|0.0395|1.0|
+|t4-r2-sourcecheck-2.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py|0|0.1469|4.0|
+|t4-r2-sourcecheck-3.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py|0|0.147|8.1|
+|t4-r2-sourcecheck-final.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py|0|0.1453|4.0|
+|t4-r2-sourcecheck.receipt.json|0.8|../.superpowers/sdd/tier1-v4/t4-r2-sourcecheck.py|1|0.0701|1.0|
+|t4-r2-tail-provenance-final.receipt.json|0.6|../.superpowers/sdd/tier1-v4/t4-r2-tail-provenance.py|0|0.0493|1.0|
+|t4-r2-tail-provenance.receipt.json|0.6|../.superpowers/sdd/tier1-v4/t4-r2-tail-provenance.py|0|0.0492|1.0|
+
+Formula-specific statuses and missing fields (counts are independent source arithmetic cells, not a suite certification):
+
+|formula|role|status|matches|mismatches|missing source fields|
+|---|---|---|---|---|---|
+|capei|primary|blocked_contract|0|0|ni_fy0, ni_fy1, ni_fy2, ni_fy3, ni_fy4, source_full_year_comparability|
+|bm|primary|partially_checked|2|0|txditc, pstk, seq|
+|evm|primary|blocked_source_fields|0|0|dlc, che, oiadp, dp, pstk, mib, dltt|
+|pe_issuer_ib|extension|checked_sample|40|0||
+|pe_issuer_ni|extension|checked_sample|40|0||
+|pe_exi|primary|blocked_contract|0|0|security_class_diluted_eps_continuing, adr_ratio, eps_share_basis, split_available_at|
+|pe_inc|primary|blocked_contract|0|0|security_class_diluted_eps_total, adr_ratio, eps_share_basis, split_available_at|
+|ps|primary|partially_checked|37|0|sale|
+|pcf|primary|checked_sample|40|0||
+|dpr|primary|partially_checked|23|0|dvc|
+|peg_trailing|primary|blocked_contract|0|0|security_class_diluted_eps_fy0, security_class_diluted_eps_fy3, source_full_year_comparability, split_available_at|
+|divyield_paid|extension|partially_checked|23|0|dvc|
+|ptb|primary|partially_checked|3|0|pstk, seq|
+|divyield|primary|blocked_contract|0|0|indicated_annual_dividend_rate, dividend_announcement_available_at, security_class_currency_basis|
+|npm|primary|partially_checked|37|0|sale|
+|opmbd|primary|partially_checked|20|0|oiadp, dp, sale|
+|opmad|primary|partially_checked|29|0|oiadp, sale|
+|gpm|primary|partially_checked|26|0|cogs, sale|
+|ptpm|primary|partially_checked|37|0|pi, sale|
+|cfm|primary|partially_checked|23|0|dp, sale|
+|roa|primary|partially_checked|21|0|oiadp, dp|
+|roe|primary|partially_checked|17|0|txditc, txditc_p, seq, seq_p|
+|roce|primary|blocked_source_fields|0|0|xint, dlc, dlc_p, pstk, pstk_p, seq, seq_p, txt, dltt, dltt_p|
+|efftax|primary|partially_checked|36|0|txt, pi|
+|aftret_eq|primary|partially_checked|3|0|pstk, pstk_p, seq, seq_p|
+|aftret_invcapx|primary|partially_checked|1|0|xint, pstk, seq, mib, dltt|
+|aftret_equity|primary|partially_checked|38|0|seq, seq_p|
+|pretret_noa|primary|partially_checked|27|0|oiadp, ppent, ppent_p, act, lct, act_p, lct_p|
+|pretret_earnat|primary|partially_checked|27|0|oiadp, ppent, ppent_p, act, act_p|
+|gprof|primary|partially_checked|26|0|cogs, sale|
+|equity_invcap|primary|partially_checked|3|0|pstk, seq, mib, dltt|
+|debt_invcap|primary|partially_checked|3|0|pstk, seq, mib, dltt|
+|totdebt_invcap|primary|blocked_source_fields|0|0|dlc, pstk, seq, mib, dltt|
+|capital_ratio|primary|partially_checked|3|0|pstk, seq, dltt|
+|int_debt|primary|numeric_mismatch|12|2|xint, dltt, dltt_p|
+|int_totdebt|primary|numeric_mismatch|4|1|xint, dlc, dlc_p, dltt, dltt_p|
+|cash_lt|primary|partially_checked|24|0|che, lt|
+|invt_act|primary|partially_checked|25|0|invt, act|
+|rect_act|primary|partially_checked|28|0|rect, act|
+|debt_at|primary|partially_checked|30|0|lt|
+|debt_ebitda|primary|partially_checked|3|0|dlc, oiadp, dp, dltt|
+|short_debt|primary|numeric_mismatch|6|1|dlc, dltt|
+|curr_debt|primary|partially_checked|24|0|lt, lct|
+|lt_debt|primary|partially_checked|17|0|lt, dltt|
+|profit_lct|primary|partially_checked|21|0|oiadp, dp, lct|
+|ocf_lct|primary|partially_checked|34|0|lct|
+|cash_debt|primary|numeric_mismatch|6|1|dlc, dltt|
+|fcf_ocf|primary|partially_checked|38|0|capx|
+|lt_ppent|primary|partially_checked|9|0|lt, intan|
+|dltt_be|primary|partially_checked|2|0|txditc, pstk, seq, dltt|
+|de_ratio|primary|partially_checked|30|0|lt, seq|
+|debt_assets|primary|numeric_mismatch|6|1|dlc, dltt|
+|debt_capital|primary|blocked_source_fields|0|0|ap, dlc, pstk, seq, dltt|
+|intcov|primary|partially_checked|15|0|xint|
+|intcov_ratio|primary|partially_checked|14|0|xint, txt|
+|cash_ratio|primary|partially_checked|32|0|che, lct|
+|quick_ratio|primary|partially_checked|25|0|invt, act, lct|
+|curr_ratio|primary|partially_checked|34|0|act, lct|
+|cash_conversion|primary|partially_checked|19|0|ap, rect, cogs, invt, sale|
+|at_turn|primary|partially_checked|37|0|sale|
+|inv_turn|primary|partially_checked|22|0|cogs, invt, invt_p|
+|pay_turn|primary|partially_checked|21|0|ap, ap_p, cogs, invt, invt_p|
+|rect_turn|primary|partially_checked|28|0|rect, rect_p, sale|
+|sale_equity|primary|partially_checked|35|0|seq, sale|
+|sale_invcap|primary|partially_checked|3|0|pstk, seq, mib, dltt, sale|
+|sale_nwc|primary|partially_checked|33|0|sale, act, lct|
+|accrual|primary|checked_sample|40|0||
+|rd_sale|primary|partially_checked|21|0|xrd, sale|
+|adv_sale|primary|partially_checked|7|0|xad, sale|
+|piotroski_f|composite|blocked_source_fields|0|0|at_p2, sstk, cogs, cogs_p, ib_p, dltt, dltt_p, act, lct, act_p, lct_p, sale, sale_p|
+|altman_z|composite|numeric_mismatch|20|1|oiadp, lt, act, lct, sale|
+|ohlson_o|composite|numeric_mismatch|17|2|lt, act, lct|
+|beneish_m|composite|numeric_mismatch|10|2|dp, dp_p, rect, rect_p, cogs, cogs_p, ppent, ppent_p, xsga, xsga_p, dltt, dltt_p, sale, sale_p, act, act_p, lct, lct_p|
+
+Composite source-model certification remains blocked separately from numerical formula arithmetic. Piotroski needs source FY0/FY1/FY2 period certification, beginning assets and common equity issuance-event/share-count identity. Altman needs certified EBIT rather than assumed OIADP equivalence, retained earnings and population applicability. Ohlson needs the GNP price-level deflator, source funds-from-operations identity and comparable prior NI; nominal assets/OCF remain proxies. Beneish needs original total-accruals definition plus certified comparable GP/debt/SG&A/D&A histories; IB-minus-OCF is not assumed equivalent. Exact fields/owners are composite_source_model_certification in requirements JSON.

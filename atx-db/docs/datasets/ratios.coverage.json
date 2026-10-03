@@ -4530,20 +4530,20 @@
             "2023": {
               "cells": 42676,
               "eligible": 42673,
-              "info_share_all": 0.9504,
-              "share": 0.9505
+              "info_share_all": 0.9507,
+              "share": 0.9508
             },
             "2024": {
               "cells": 41991,
               "eligible": 41988,
-              "info_share_all": 0.9492,
-              "share": 0.9493
+              "info_share_all": 0.9495,
+              "share": 0.9496
             },
             "2025": {
               "cells": 41015,
               "eligible": 41015,
-              "info_share_all": 0.9428,
-              "share": 0.9428
+              "info_share_all": 0.9431,
+              "share": 0.9431
             }
           },
           "min_share": 0.8958,
@@ -5832,14 +5832,14 @@
             "2023": {
               "cells": 42676,
               "eligible": 40455,
-              "info_share_all": 0.8922,
-              "share": 0.9412
+              "info_share_all": 0.892,
+              "share": 0.941
             },
             "2024": {
               "cells": 41991,
               "eligible": 39861,
-              "info_share_all": 0.8943,
-              "share": 0.9421
+              "info_share_all": 0.8942,
+              "share": 0.942
             },
             "2025": {
               "cells": 41015,
@@ -9643,14 +9643,16 @@
       "pass": false
     }
   },
-  "historical_primitive_coverage_evidence": "t4-evidence.json; not refreshed in R1",
+  "historical_primitive_coverage_evidence": "t4-evidence.json is historical; this refresh certifies ratio coverage counts, not that earlier primitive matrix is current",
   "input_sha256": "9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325",
+  "output_integrity_evidence": "t4-r2-final-coverage.json",
   "snapshot_status": {
-    "gc3": "PENDING controller final publication and output-integrity verification",
-    "is_latest_universe": false,
-    "manifest_hash_alone_certifies_output_integrity": false,
-    "measured_manifest_sha256": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e",
-    "overlap_coverage": "provisional/invalid for final acceptance: Task2 partial publication overlapped validation"
+    "gc3": "REFRESHED after R9 release; all9fileSHA/size verified before/after",
+    "is_latest_universe": true,
+    "measured_manifest_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e",
+    "output_integrity_verified": true,
+    "supersedes": "R1 overlap-era provisional/invalid coverage; R0 historical coverage preserved only as earlier report history",
+    "universe_parity": "NOT certified: Task2 French10/60FAIL remains"
   },
-  "universe_sha256": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e"
+  "universe_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e"
 }
