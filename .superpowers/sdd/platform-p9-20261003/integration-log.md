@@ -193,3 +193,136 @@ ledger 133 lines `27e40f9f`. Next build tag `p9-1l`.
 
 G-P after M1d (partial): G-P4 counts measured (atx_research 106, atx_equity_strategy 577; registered and running) --
 tick once the wave-1 suite gate passes with pytest; G-P3 IC half, G-P8, G-P6 tick still open (blocks 2-3 not reached).
+
+### M1d resume (root-m1d resume, 2026-10-03): P9-B0 substitution list (written before any P9-B0 run)
+
+Written and committed alone before any P9-B0 run (DEC-20; Ruling B0-Y1). Compared by file SHA-256 and JSON path only;
+for CSVs only header names, row keys and counts of differing rows / cells, never a value. No statistic is read.
+
+**Current parent and runs.** Parent = Y-F0 (`scripts/specs/v8/lib-v8ysb-gm.json`, the last accepted unlevered cell;
+plan §5.2). Its u / fit / w / NAV, plus the two levered NAV books on the same w that later cells pair against: X-10
+(`x-leverage-L2.0.json`, fixed L 2.0) and Y-1 (`y-vol-target-y-1.json`, vol-target-v1 at L 2.0; brief-COV step 4
+needs its re-based reference). Every run = the reference receipt's argv with **only `--output` changed** (scratch
+`rerun.py`: asserts exactly one token substituted), through `run_bounded_research.py` with the reference receipt's
+limits, `--build-type Debug` for an exe, admission wait <= 3,600 s. Debug tree `build-equity` (equity-dev,
+configured at `ad406718`), bin = p9-1k: ic `393183c0`, targets `407c34ad` (code = wave-1 head `b52a5de7`). 0 trials.
+
+| run | reference (exe / source) | new dir |
+|---|---|---|
+| u | `mega-v8-b0b-train-u-v8ysb-1` (receipt `-run1`; ic `985019d9` = v8-16d, `816be40b`; warm shared cache) | `p9-b0-yf0-u` |
+| fit | `mega-weights-v8x-theme-erc-v8ysb` (`-run1`; fitter at `816be40b`) | `p9-b0-yf0-fit` |
+| w | `mega-v8xw-train-theme-erc-v8ysb-2` (`-run2`; ic `985019d9`; warm shared cache) | `p9-b0-yf0-w` |
+| NAV Y-F0 (L 1.1828) | `mega-nav-v8x-theme-erc-L1.1828-v8ysb` (targets `72ff6d2d` = v8-16d) | `p9-b0-yf0-nav` |
+| NAV X-10 (L 2.0) | `mega-nav-v8x-theme-erc-L2.0-v8ysb` (`72ff6d2d`) | `p9-b0-x10-nav` |
+| NAV Y-1 (vol-target, L 2.0) | `mega-nav-v8y-vol-target-L2.0` (`72ff6d2d`) | `p9-b0-y1-nav` |
+
+Each stage consumes the reference's own inputs (the argv pins them), so each stage is compared alone.
+
+Code basis: `d7c1c520..816be40b` and `d7c1c520..1239a5ff` change no NAV, vol-target or fitter source (git log / diff
+empty for `fit_composition_weights.py`, `strategy_nav_*`, `strategy_risk_target.*`, `strategy_vol_target.*`,
+`strategy_cost_v2.cpp`, `atx-engine/src/book/`); so the references are the v8-16d code, and the moves since are S1 / D1
+(IC, fitter: shown byte-neutral flag-absent in M1b) and C1 (NAV: sqrt + structure, M1c).
+
+Labels as M1c: L0 `linear-6bps-stale5-v1+swap-fin-v1` (FlatBpsV1, no sqrt); L1 `modeled-1bn-stale5-v1+swap-fin-v1`
+(primary); L2 `modeled-1bn-terminal-adverse-v1+swap-fin-v1`; L3 `modeled-1bn-stale5-v1+flat-300-v0`; L4
+`modeled-1bn-stale5-v1+engine-tiers-v1` (L1-L4 SqrtImpactV1, delta .5); K = `capacity-x{0p5,1,2,4,8}-v1+swap-fin-v1`
+(S2 law). The three NAV references hold exactly these 27 files (Y-1: + `vol_target.csv` = 28).
+
+**u** (`p9-b0-yf0-u` vs reference; 5 files):
+
+| file | expected |
+|---|---|
+| `orientations.json`, `recipe.json`, `train_daily_ic.csv` | byte-identical |
+| `summary.json` | differs only at timing leaves: paths with a segment `wall_seconds`, `hash_seconds` or `stage_seconds` (`/roles/*/{wall_seconds, hash_seconds, stage_seconds/*}`, `/roles/*/candidates/*/{wall_seconds, stage_seconds/*}`); every other leaf identical, incl. cache counters and identity strings (both warm on the spec's cache `mega-candidate-cache-v8-lo3`, Debug root `dslvm1_clang18.1`: S1 keeps the Debug identity strings) |
+| `train_candidates.jsonl` | same line count; each line differs only at `/stage_seconds/*`, `/wall_seconds` |
+
+**fit** (`p9-b0-yf0-fit`; 3 files): `admission.csv` byte-identical; `admission.json` only `/inputs/script_sha256`
+(D1 edited the fitter, `85b19345`); `composition_weights.json` only `/provenance/script_sha256` and
+`/provenance/admission_sha256` (the new admission.json's SHA). Unlike the PM7-30 / D1 precedent on X-5,
+`/provenance/std/registry_sha256` is expected **identical**: `atx-impl/strategies/alphas/registry.json` last changed at
+`a5914373`, an ancestor of `816be40b` (X-5's fit predated it); composition modules (`*/module_sha256`) unchanged since
+`816be40b`.
+
+**w** (`p9-b0-yf0-w`; 12 files): `orientations.json`, `recipe.json`, `train_combined.{f64,json}`,
+`train_combined_{finite.u8,ids.u64,member.u8,sessions.i64}`, `train_daily_ic.csv`, `train_planned_targets.csv`
+byte-identical (10); `summary.json` only the timing leaves as for u (incl. `stage_seconds/{composition,
+save_combined}`); `train_candidates.jsonl` only `/stage_seconds/*`, `/wall_seconds` per line.
+
+**NAV Y-F0 and X-10** (27 files each; the union of the M1c stage-1 and stage-2 lists above):
+
+| file | expected |
+|---|---|
+| `daily_L0.csv`, `events_L0.csv`, `recipe.json`, `capacity/recipe.json` | byte-identical |
+| `daily_` / `events_` of L1-L4 (8), `capacity/daily_K`, `capacity/events_K` (10), `capacity_curve.csv`, `v7_transfer_coefficient.csv` | may differ (sqrt) |
+| `summary.json` | only `/scenarios/1..4` (subtrees), `/warm_start/score_begin_gross_leverage/<L1..L4>`, `/v7/books/<L1..L4>` (subtrees), `/v7/extras` (changed), `/v7/files/*` (added), `/producer/*` (added: `build_type`, `definition`, `engine_git_sha`; C1-PROD) |
+| `capacity/summary.json` | only `/scenarios/0..4` (subtrees), `/warm_start/score_begin_gross_leverage/<K>` (5), `/v7/books/<L1..L4>` (subtrees) |
+| `v7_extras.json` | only `/files/v7_transfer_coefficient.csv`, `/files/capacity_curve.csv`, `/capacity/0..4` (subtrees), `/files/capacity/summary.json` (added); `/capacity_x1_equals_primary_bit_for_bit` identical |
+
+No file on one side only.
+
+**NAV Y-1** (28 files): the NAV list above, plus (Ruling B0-Y1, by code reading only):
+
+| file | added to the list |
+|---|---|
+| `vol_target.csv` | may differ only as: header line identical; same row count and the same `(session, book)` key sequence; every row of book L0 byte-identical; rows of books L1-L4 may differ in any other column |
+| `summary.json` | `/vol_target/books/<L1..L4>` (subtrees); `/vol_target/books/<L0>`, every other `/vol_target/*` leaf and `/rule` identical |
+| `v7_extras.json` | `/vol_target/books/<L1..L4>` (subtrees), `/files/vol_target.csv`; the rest of `/vol_target` identical |
+| `capacity/summary.json`, `recipe.json`, `capacity/recipe.json` | nothing added: their `/vol_target` block is parameters only (no books) and identical |
+
+Code-path proof per added entry (post-C1 code at `b52a5de7`):
+1. Sqrt kernel: `SqrtImpactCost::cost_fraction` -> `participation_power` (`atx-engine/src/book/replay_cost.cpp:26-28,
+   92-102`, `std::sqrt` at delta .5) prices every fill of books L1-L4 and every K book; L0 is FlatBpsV1 (C1 report book
+   table).
+2. Cost -> NAV: `strategy_nav_replay.cpp:762` `c.model.cost(...)` -> `cost += priced.cost_dollars` (:786) -> `b.cash -=
+   cost` (:792), `b.nav_post = b.nav_pre - cost` (:795).
+3. NAV -> leverage state: the book's next DECIDE `s.current[i] = s.held[i] / b.nav_post` (`plan_decision`, :1037) ->
+   `plan_weights` (:966-967) -> `BookLeverage::plan(... current ...)` (`strategy_risk_target.cpp:175-192`) ->
+   `BookScaler::leverage` / `estimate` (gross, priced_share, sigma_hat / sigma_ref via `vol_target_update`, the in-force
+   L_t and clip; :95-169) -> a `Record` (:118-133) only for a main book's scored decision (`scored = !b.capacity && d >=
+   x.decision_begin`, nav_replay :1043). L_t then scales that book's own aim (`scaled_.target.aim_leverage`), so its
+   later fills, costs and records follow; every field of an L1-L4 row is downstream of its book's sqrt-priced costs.
+4. Records -> files: `merged(results, &NavReplayResult::leverage)` (`strategy_nav_v7.cpp:498-522, 885, 921`) ->
+   `records_csv` (risk_target :228-242, one row per record, `book` = the record's own book) -> `vol_target.csv` and
+   `files["vol_target.csv"]` (nav_v7 :435-443); `summary_json` (risk_target :277-312, one subtree per record.book) ->
+   `/vol_target/books/<book>` in `v7_extras.json` (nav_v7 :441-443) and `summary.json` (`add_risk_target`, :316-326,
+   called at :591 with the main pass's records).
+5. Per-book isolation: each book owns its `BookLeverage` (`Book::leverage`, nav_replay :293, made at :1341), its names
+   and cash; the shared inputs across books are the desired target, borrow tiers and the session liquidity (market data
+   only), so no L1-L4 cost bit reaches L0's rows or block.
+6. Capacity books keep no record (`scored` false); the capacity publication's `/vol_target` is parameters only
+   (`s.pass == Capacity` -> `nullptr` at nav_v7 :591; `CapacityPublication` :928-936).
+7. C1 left the record format and the blocks unchanged: `git diff 1239a5ff b52a5de7 -- strategy_risk_target.cpp` does not
+   touch `records_csv`, `summary_json` or `parameters_json` (vol law: `strategy_vol_target.cpp`, unchanged); it moves the
+   per-book state from the shared `Scaler` map into `BookScaler` (same law, same per-book state; working buffers per book).
+
+**A1 manifest keys (Ruling M1a-ID):** not exercised: no stage of P9-B0 builds a fields manifest (u / w / NAV read the
+pinned fields-v15 manifest `26fee5ce`); the M1a-ID keys stay ruled for the next fields rebuild.
+
+Anything outside these lists, a file on one side only, or a changed row key in `vol_target.csv` is a STOP. The re-based
+references, once they hold, are the six new dirs.
+
+### M1d resume: Release IC adoption expectation (G-P3 IC half; written before the Release runs)
+
+S1 report "How root verifies" 2-4 and fix round 1 step 4. Debug side = this tree's p9-1k exes; Release side = the
+`equity-rel` exes of this resume's Release tag. X-5 family (library v8x3b, fields v13), so the marginal's candidates are
+the u pass's. DIR = `build-equity/p9-m1d-rel-cache`, a hard-link copy of `p9-d1-x5-cand-cache-empty` (Debug-only
+entries: D1's cold Debug w of X-5, 174 files); removed afterwards (Ruling DISK).
+
+| step | run | expected |
+|---|---|---|
+| 1 | Debug marginal on DIR (argv of `p9-s1-x5-marginal-new-run`, `--candidate-cache DIR`, `--output`) | completes |
+| 2 | Release marginal on DIR, same argv | refuses NotFound ("no candidate cache entry"), nonzero exit |
+| 3 | Debug u on DIR (argv of `mega-v8-b0b-train-u-v8x3b-run1`, `--candidate-cache DIR`, `--output`) | completes (warm Debug) |
+| 4 | Release u on DIR, same argv | completes (cold Release; writes `DIR/dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/`) |
+| 5 | Debug w on DIR (argv of `p9-d1-x5-w-run`, `--candidate-cache DIR`, `--output`) | completes (warm Debug) |
+| 6 | Release w on DIR, same argv | completes (warm Release) |
+| 7 | Release marginal on DIR, as step 2 | completes |
+
+Identity: u (3 vs 4) and w (5 vs 6): every payload (`orientations.json`, `train_daily_ic.csv`, `recipe.json`,
+`train_combined.*`, w's `train_planned_targets.csv`) byte-identical; `train_candidates.jsonl` equal outside
+`/stage_seconds/*`, `/wall_seconds`; `summary.json` differs by design only at identity strings (suffix
+`_opt_md_ndebug_xs13.0.0`), cache-root paths, cache counters (warm vs cold) and timing leaves (listed by path).
+Marginal (1 vs 7): `marginal_ic.json` identical outside `/stage_seconds/*` and `/inputs/candidate_cache/build_vm_identity`.
+Plus Release gtests: `atx-impl-strategy-ic-tests` S1 filter and whole binary; alpha oracle / conformance suites
+(`atx-engine-w1-foundation-tests`). A payload difference here is not a P9-B0 stop: G-P3's IC half is then reported
+unmet with the first differing file.
