@@ -9,7 +9,9 @@ No C++ was built and no real data was read (lane rules). The Python checker and 
 | 2 | `97e6befc` | the as-of rank family (106 to 111 with `group_delay`), `group_delay`, the oracle twin, `yops_check.py` (10 frozen strings) |
 | 3 | `b5596bd1` | `alpha_formulaic_ops_test.cpp` (gtest) and `test_yops_check.py` (pytest) |
 | 3 | `75a73cac` | cross-lane: lists `asof_ops.hpp` in the DSL-VM sources tripwire and re-pins it (no semantics bump) |
-| 4 | this commit | this report |
+| 4 | `7bfead7a` | this report |
+| - | `6674e986` | vm.hpp comment (the ChunkAxis vocabulary); the tripwire pin was computed with it and matches at HEAD |
+| - | `fe790af7` | test battery: a 6-session as-of correlation on `close` (robust finite-cell check) |
 
 **No registration changed.** No existing registry row, opcode id, kernel result, typecheck rule for an existing op, or
 factory table changed (section 7 gives the proof and how root checks it).
@@ -339,7 +341,40 @@ Output ends `yops_check: PASS`.
   - `AlphaFormulaicOps_Typecheck`: 27 refusals and 9 lookbacks.
   - `AlphaFormulaicOps_Registry`: tables 74 / 17 / 7, names absent from the factory tables, `group_count` still arity 2,
     opcode ids 88 / 104 to 111, chunk axes.
-  - `AlphaFormulaicOps_Frozen`: the 10 strings, SHA-256 pinned, ≤ 4,096 bytes, VM == oracle, finite cells present.
+  - `AlphaFormulaicOps_Frozen`: the 10 strings, SHA-256 pinned, ≤ 4,096 bytes, the minimum-history table (analyze's
+    lookback = section 4's bars) asserted per string, VM == oracle on the usual holed fixture, and finite cells at
+    dates ≥ each string's lookback on a complete fixture of (max lookback 91) + 1 + 40 = 132 sessions x 16 names.
+
+**Addendum (root build v8-16a, merge 8544a36f).** The build passed with 0 warnings and 15 of 16 `AlphaFormulaicOps`
+tests passing. The failure was the Frozen test's `finite > 0` check for #88 on `make_fixture(130, 8)`; VM == oracle and the
+SHA pins held.
+
+**Diagnosis: fixture degeneracy, not a VM or oracle defect.**
+
+- #88's second term `ts_rank(decay_linear(correlation(ts_rank(close, 8), ts_rank(adv60, 20), 8), 6), 2)` has lookback 91.
+  A finite cell therefore needs every raw_close and volume cell of its last 92 sessions present.
+- The fixture removes 4% of cells (2% sessions without a bar, 2% universe gaps), so P = 0.96^92 = 2.3% per (date, name).
+  At 39 eligible dates x 8 names that is about 7 cells expected, many of them in the same runs.
+- I replicated the fixture's rules in numpy and evaluated #88 with yops_check's interpreter (proven equal to the printed
+  formula), over 20 seeds:
+
+  | panel (dates x names) | missing cells | fixtures where #88 has no finite cell | mean finite cells of #88 |
+  |---|---|---|---|
+  | 130 x 8 | 4% | 14 of 20 | 2.0 |
+  | 260 x 8 | 4% | 5 of 20 | not recorded |
+  | 400 x 8 | 4% | 2 of 20 | not recorded |
+  | 130 x 8 | none | 0 of 20 | 143 |
+
+  Term A (the decayed rank composite, lookback 7) is finite on about 709 cells even on the holed 130 x 8 panel.
+- A longer holed panel is not a fix: 2 of 20 seeds still have no finite #88 cell at 400 sessions.
+
+**Fix (test only).**
+
+- Each string's minimum history is pinned and asserted against `analyze()`.
+- The VM == oracle check stays on the holed fixture.
+- The finite-cell check moves to a complete fixture (`make_fixture(..., complete = true)`) whose length is derived, not
+  chosen: max lookback + 1 + 40 sessions, with 16 names. With 8 names, #15's 3-session rank correlations can be all flat;
+  the minimum over 30 replica seeds at 132 x 16 is 72 finite cells for #15 and higher for every other string.
 
 ## 6. Deviations from the brief
 
