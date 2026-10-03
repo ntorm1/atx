@@ -1,0 +1,85 @@
+{
+  "name": "ratios",
+  "lane": "tier1-v4 lane B (task 4)",
+  "schema": "atx.alpha-panel.ratios/v1",
+  "module": "atx_db.alpha_panel.ratios",
+  "args": [
+    [
+      "build",
+      "--std-stage",
+      "compustat_std"
+    ],
+    [
+      "validate"
+    ],
+    [
+      "handcheck"
+    ]
+  ],
+  "inputs": [
+    "compustat_std",
+    "market_shares",
+    "prices",
+    "corporate_actions",
+    "identity_table"
+  ],
+  "inputs_note": "the compustat_std stage is a parameter (--std-stage); task 5 rebuilds on the v11-based stage. Reads <std stage>/{fundq,funda}.parquet, market/shares_daily/year=*/shares_daily.parquet, prices/year=*/prices.parquet, corporate_actions/vendor_events.parquet, identity/link_table_v3.parquet, calendar.parquet; validation also reads panel/ (member_equity, characteristic inputs) and universe/ when it has a manifest",
+  "manifest": "ratios/manifest.json",
+  "vintage": "vintage",
+  "staleness": "quarterly-based values NULL when session - datadate > 400 days (550 for 20-F/40-F filers); annual-based values when session - FY0 datadate > 550 days",
+  "guard_gb": 0.8,
+  "code": [
+    "ratios",
+    "common"
+  ],
+  "doc": "docs/datasets/ratios.md",
+  "outputs": [
+    {
+      "view": "ratios_monthly",
+      "glob": "ratios/monthly/year=*/ratios_monthly.parquet",
+      "clock": "available_at",
+      "vintage": "monthly",
+      "keys": [
+        "session_date",
+        "security_id"
+      ],
+      "primary_key": [
+        "session_date",
+        "security_id"
+      ],
+      "doc": "WFRS-analog ratios (66) and composite scores (Piotroski F, Altman Z, Ohlson O, Beneish M) per common line at each month-end session; fundamentals with available_at < 22:00 UTC of the month-end session, shares and raw close of that session; available_at = 22:00 UTC of the session"
+    },
+    {
+      "view": "ratios_fund_state",
+      "glob": "ratios/fund_state.parquet",
+      "clock": "available_at",
+      "vintage": "vintage",
+      "keys": [
+        "cik"
+      ],
+      "order": [
+        "available_at"
+      ],
+      "primary_key": [
+        "cik",
+        "available_at"
+      ],
+      "doc": "issuer fundamental state vintages (TTM flows, balances, averages, annual history, price-free ratios); the latest row with available_at < cutoff is the issuer's state at the cutoff"
+    },
+    {
+      "view": "ratios_split_events",
+      "glob": "ratios/split_events.parquet",
+      "clock": "ex_date",
+      "vintage": "event",
+      "keys": [
+        "cik",
+        "ex_date"
+      ],
+      "doc": "issuer split / reverse-split events (vendor corporate actions of the issuer's common lines) with the cumulative log ratio; puts per-share EPS on one share basis"
+    }
+  ],
+  "asof_macros": {
+    "ratios_asof": "generated: ratios.macros_sql(<root>) -- CREATE OR REPLACE MACRO ratios_asof(d) AS TABLE <the monthly SELECT for the single session d with the fundamentals cutoff 22:00 UTC of the previous calendar session>; the full SQL is stored in ratios/manifest.json (macro_sql)"
+  },
+  "asof_note": "ratios_asof(d): daily as-of view for session d (DATE): fund_state row with available_at < 22:00 UTC of the previous calendar session (GC1 daily), shares_daily.shrout and raw close of d, issuer splits between the state's date and d. Same columns as ratios_monthly. The monthly table uses the GC1 monthly cutoff (22:00 UTC of the month-end session itself)."
+}
