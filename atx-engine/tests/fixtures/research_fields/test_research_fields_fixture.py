@@ -10,6 +10,7 @@ the gtest ResearchFieldsFixture.* (atx-engine-research-fields-tests), which read
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -19,8 +20,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import make_research_fields_fixture as fx  # noqa: E402
 
-COMMITTED = sorted(p.relative_to(HERE).as_posix() for p in HERE.rglob("*")
-                   if p.is_file() and p.parent.name != "__pycache__" and p.suffix != ".py" and p.name != ".gitattributes")
+DATA_DIRS = ("role", "finra", "expected")              # what build() writes (tool caches elsewhere are ignored)
+COMMITTED = sorted(p.relative_to(HERE).as_posix() for d in DATA_DIRS for p in (HERE / d).rglob("*") if p.is_file())
 
 
 def test_the_fixture_is_the_python_builders_output(tmp_path):
@@ -44,3 +45,14 @@ def test_the_fixture_exercises_every_rule():
     assert np.isfinite(vol[126:, fx.IDS.index(11)]).all()
     si = np.frombuffer((HERE / "expected" / "si_shares.f64").read_bytes(), dtype="<f8").reshape(shape)
     assert np.isnan(si[:, fx.IDS.index(55)]).all() and np.isfinite(si).any()
+    # Signed zeros: si_dtc carries both zeros, and its minimum and median are zeros whose sign numpy's
+    # reduction tree and partition chose (+0.0); si_shares' minimum and p1 are -0.0.
+    dtc = np.frombuffer((HERE / "expected" / "si_dtc.f64").read_bytes(), dtype="<f8")
+    assert (np.signbit(dtc) & (dtc == 0)).any() and (~np.signbit(dtc) & (dtc == 0)).any()
+    sign = lambda x: math.copysign(1.0, x)
+    cov = {f["name"]: f["coverage"] for f in m["fields"]}
+    assert cov["si_dtc"]["member_finite_min"] == 0 and sign(cov["si_dtc"]["member_finite_min"]) == 1.0
+    assert cov["si_dtc"]["member_finite_quantiles"]["p50"] == 0
+    assert sign(cov["si_dtc"]["member_finite_quantiles"]["p50"]) == 1.0
+    assert sign(cov["si_shares"]["member_finite_min"]) == -1.0
+    assert sign(cov["si_shares"]["member_finite_quantiles"]["p1"]) == -1.0

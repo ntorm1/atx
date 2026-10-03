@@ -97,7 +97,7 @@
         {
           "bytes": 237,
           "path": "<fixture>/finra/asof/manifest.json",
-          "sha256": "83eae245f51a2df5d294123ad3b94b8a863db5ff77078053a17bc5fe1d4d2a4a"
+          "sha256": "139fbef2a0081446a81e11aef5d038594c24a4791ab0ad8921873d668f16954c"
         },
         {
           "bytes": 3063,
@@ -116,24 +116,24 @@
       ],
       "clock": "finra-asof:latest-row-with-available_at<date(session)-strict;available_at=official-dissemination-date;replicates-atx-impl-build_asof_column",
       "coverage": {
-        "finite_cells_all": 161,
-        "finite_member_cells": 156,
-        "finite_member_frac": 0.06918,
+        "finite_cells_all": 451,
+        "finite_member_cells": 434,
+        "finite_member_frac": 0.192461,
         "member_cells": 2255,
         "member_finite_max": 3.125,
-        "member_finite_mean": 1.891025641025641,
-        "member_finite_min": 1.0,
+        "member_finite_mean": 0.8225806451612904,
+        "member_finite_min": 0.0,
         "member_finite_quantiles": {
-          "p0.1": 1.0,
-          "p1": 1.0,
-          "p50": 1.5,
+          "p0.1": 0.0,
+          "p1": 0.0,
+          "p50": 0.0,
           "p99": 3.125,
           "p99.9": 3.125
         },
         "per_year": {
           "2021": {
-            "finite_member_cells": 123,
-            "finite_member_frac": 0.063142,
+            "finite_member_cells": 401,
+            "finite_member_frac": 0.205852,
             "member_cells": 1948
           },
           "2022": {
@@ -143,12 +143,12 @@
           }
         },
         "score_window": {
-          "finite_member_cells": 93,
-          "finite_member_frac": 0.071429,
+          "finite_member_cells": 124,
+          "finite_member_frac": 0.095238,
           "member_cells": 1302
         },
         "vintage_risk": {
-          "finite_member_cells": 61,
+          "finite_member_cells": 308,
           "first_session_vintage_safe": "2021-07-09",
           "last_session_with_republished_visible_cell": "2021-07-08",
           "rule": "visible row disseminated on or before 2021-06-09 (settlement before 2021-06-01): later FINRA republication"
@@ -160,7 +160,7 @@
       "name": "si_dtc",
       "non_pit_aspects": [],
       "point_in_time": true,
-      "sha256": "edd6256ae9357a989b260c3e0b9b26332ee698c92b3172870e58c37a225df8b5",
+      "sha256": "6ad53de4acc99153411973d5835aa23f67244d3f90c85f5ac1598f36d899a8c4",
       "shape": [
         300,
         8
@@ -170,14 +170,14 @@
       ],
       "sources": [
         {
-          "bytes": 148,
+          "bytes": 318,
           "path": "<fixture>/finra/asof/si_dtc.csv",
-          "sha256": "ceb769f458512c5e999912232bfc4742e1f6d37d3c32200190c6ded0b5742d4a"
+          "sha256": "c7ad6f30ea8f1a64a00e8ce4dc3767c49aceae1f7a4be988586091dc1bc7a684"
         },
         {
           "bytes": 237,
           "path": "<fixture>/finra/asof/manifest.json",
-          "sha256": "83eae245f51a2df5d294123ad3b94b8a863db5ff77078053a17bc5fe1d4d2a4a"
+          "sha256": "139fbef2a0081446a81e11aef5d038594c24a4791ab0ad8921873d668f16954c"
         },
         {
           "bytes": 3063,
@@ -267,7 +267,7 @@
   "files": {
     "si_dtc.f64": {
       "bytes": 19200,
-      "sha256": "edd6256ae9357a989b260c3e0b9b26332ee698c92b3172870e58c37a225df8b5"
+      "sha256": "6ad53de4acc99153411973d5835aa23f67244d3f90c85f5ac1598f36d899a8c4"
     },
     "si_shares.f64": {
       "bytes": 19200,
@@ -311,8 +311,8 @@
       "max_stale_days": 45,
       "rows_available_on_or_after_2025_dropped": 0,
       "rows_ignored_unknown_id": 0,
-      "rows_matched_axis": 6,
-      "rows_total": 6
+      "rows_matched_axis": 15,
+      "rows_total": 15
     },
     "si_shares": {
       "max_stale_days": 45,

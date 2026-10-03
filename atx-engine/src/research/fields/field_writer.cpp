@@ -1,6 +1,5 @@
 #include "atx/engine/research/fields/field_writer.hpp"
 
-#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -127,13 +126,9 @@ void FieldWriter::account(std::span<const f64> row) {
     return;
   }
   // The Python takes the row's numpy min / max / sum, then folds them into its running Python
-  // min(), max() and +=.
-  f64 row_min = row_values_.front();
-  f64 row_max = row_values_.front();
-  for (const f64 v : row_values_) {
-    row_min = v < row_min ? v : row_min;
-    row_max = v > row_max ? v : row_max;
-  }
+  // min() and max() (the earlier value survives a tie) and +=.
+  const f64 row_min = numpy_reduce_min(row_values_);
+  const f64 row_max = numpy_reduce_max(row_values_);
   value_min_ = row_min < value_min_ ? row_min : value_min_;
   value_max_ = row_max > value_max_ ? row_max : value_max_;
   value_sum_ += numpy_pairwise_sum(row_values_);
@@ -177,12 +172,11 @@ core::Result<WrittenField> FieldWriter::close() {
     out.coverage.member_finite_min = value_min_;
     out.coverage.member_finite_max = value_max_;
     out.coverage.member_finite_mean = value_sum_ / static_cast<f64>(count);
-    std::sort(member_values_.begin(), member_values_.end());
-    const std::span<const f64> sorted(member_values_);
-    out.coverage.member_finite_quantiles = MemberQuantiles{
-        numpy_linear_quantile(sorted, kQuantiles[0]), numpy_linear_quantile(sorted, kQuantiles[1]),
-        numpy_linear_quantile(sorted, kQuantiles[2]), numpy_linear_quantile(sorted, kQuantiles[3]),
-        numpy_linear_quantile(sorted, kQuantiles[4])};
+    // np.quantile(values, QUANTILES, overwrite_input=True) on the values in write order: numpy's
+    // own partition decides which of two equal values (-0.0, +0.0) each quantile reads.
+    std::array<f64, kQuantiles.size()> q{};
+    numpy_quantiles(member_values_, kQuantiles, q);
+    out.coverage.member_finite_quantiles = MemberQuantiles{q[0], q[1], q[2], q[3], q[4]};
   }
   return core::Ok(std::move(out));
 }

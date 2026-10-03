@@ -122,6 +122,12 @@ SI_SHARES = [  # (security_id, available_at, value): unsorted on purpose
 SI_DTC = [
     (11, "2021-01-09", "1.00"), (11, "2021-05-24", "2.75"), (22, "2021-06-24", "1.5"),
     (44, "2021-08-09", "NaN"), (88, "2021-10-09", "3.125"), (88, "2022-01-09", "1"),
+    # Signed zeros (YARCH, PM8-18): the minimum and the median are zeros of both signs, so numpy's
+    # reduction tree (row min: +0.0 where the first zero is -0.0) and its partition (p50: +0.0 where a
+    # stable sort reads -0.0) decide the manifest's signs; the engine must reproduce both.
+    (33, "2021-02-09", "-0.0"), (55, "2021-02-09", "0.0"), (66, "2021-02-24", "-0.0"), (77, "2021-03-09", "0.0"),
+    (33, "2021-03-24", "-0"), (55, "2021-04-09", "0.0"), (66, "2021-04-24", "-0"), (77, "2021-05-09", "-0.0"),
+    (66, "2021-11-09", "2"),
 ]
 
 

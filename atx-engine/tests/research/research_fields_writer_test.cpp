@@ -59,6 +59,87 @@ TEST(ResearchFieldsWriter, LinearQuantileIsNumpys) {
   EXPECT_TRUE(support::same_bits(fields::numpy_linear_quantile(zeros, 0.01), 0.0));
 }
 
+namespace {
+
+// The seeded sequences of the signed-zero cases (64-bit LCG; the same generator produced the numpy
+// expectations): pool[(x >> 33) % pool.size()].
+std::vector<f64> seeded(u64 seed, std::size_t n, const std::vector<f64> &pool) {
+  std::vector<f64> out;
+  u64 x = seed;
+  for (std::size_t i = 0; i < n; ++i) {
+    x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+    out.push_back(pool[static_cast<std::size_t>((x >> 33U) % pool.size())]);
+  }
+  return out;
+}
+
+// 'm' -0.0, 'p' +0.0, anything else 1.0.
+std::vector<f64> pattern(const std::string &text) {
+  std::vector<f64> out;
+  for (const char c : text) {
+    out.push_back(c == 'm' ? -0.0 : (c == 'p' ? 0.0 : 1.0));
+  }
+  return out;
+}
+
+constexpr f64 kNegZero = -0.0;
+
+} // namespace
+
+// numpy 1.26.4 on the AVX2 reference host: of two equal values (-0.0, +0.0) the reduction tree's
+// second operand wins, so neither "first zero" nor "last zero" is the rule.
+TEST(ResearchFieldsWriter, ReduceMinMaxAreNumpys) {
+  const auto min_of = [](const std::vector<f64> &v) { return fields::numpy_reduce_min(v); };
+  const auto max_of = [](const std::vector<f64> &v) { return fields::numpy_reduce_max(v); };
+  EXPECT_TRUE(support::same_bits(min_of({kNegZero}), kNegZero));
+  EXPECT_TRUE(support::same_bits(min_of({-0.0, 0.0, 1.0}), 0.0));
+  EXPECT_TRUE(support::same_bits(min_of({0.0, -0.0, 1.0}), kNegZero));
+  EXPECT_TRUE(support::same_bits(min_of({0.0, -0.0, 1.0, -0.0, 0.0, 2.0}), 0.0));
+  EXPECT_TRUE(support::same_bits(max_of({-1.0, -0.0, 0.0}), 0.0));
+  EXPECT_TRUE(support::same_bits(max_of({-1.0, 0.0, -0.0}), kNegZero));
+  // Every value a zero (min and max agree). Seeds 1 and 2 start with -0.0, seed 3 with +0.0.
+  const std::vector<f64> zeros{-0.0, 0.0};
+  EXPECT_TRUE(support::same_bits(min_of(seeded(2, 5, zeros)), 0.0));
+  EXPECT_TRUE(support::same_bits(min_of(seeded(1, 1000, zeros)), 0.0));
+  EXPECT_TRUE(support::same_bits(max_of(seeded(1, 1000, zeros)), 0.0));
+  EXPECT_TRUE(support::same_bits(min_of(seeded(3, 1000, zeros)), kNegZero));
+  EXPECT_TRUE(support::same_bits(max_of(seeded(3, 1000, zeros)), kNegZero));
+  const std::vector<f64> mixed = seeded(5, 333, {-2.5, 3.0, 0.5, 7.25, -9.0});
+  EXPECT_EQ(min_of(mixed), -9.0);
+  EXPECT_EQ(max_of(mixed), 7.25);
+}
+
+// np.quantile(values, [.001, .01, .5, .99, .999], overwrite_input=True) partitions with numpy's
+// introselect: the zero a quantile reads is numpy's, not a sort's (a stable sort of the first case
+// gives +0.0 at p50).
+TEST(ResearchFieldsWriter, QuantilesPartitionLikeNumpy) {
+  const std::vector<f64> probabilities{0.001, 0.01, 0.5, 0.99, 0.999};
+  std::vector<f64> out(5);
+  std::vector<f64> small = pattern("mmm11mppm111");
+  fields::numpy_quantiles(small, probabilities, out);
+  EXPECT_TRUE(support::same_bits(out[0], 0.0));
+  EXPECT_TRUE(support::same_bits(out[1], 0.0));
+  EXPECT_TRUE(support::same_bits(out[2], kNegZero));
+  EXPECT_EQ(out[3], 1.0);
+  EXPECT_EQ(out[4], 1.0);
+  // 1,000 values: median-of-3 rounds and the pivot stack across the seven kth.
+  std::vector<f64> large = seeded(1, 1000, {-0.0, 0.0, -2.5, 3.0, 0.5});
+  fields::numpy_quantiles(large, probabilities, out);
+  EXPECT_EQ(out[0], -2.5);
+  EXPECT_EQ(out[1], -2.5);
+  EXPECT_TRUE(support::same_bits(out[2], kNegZero));
+  EXPECT_EQ(out[3], 3.0);
+  EXPECT_EQ(out[4], 3.0);
+  std::vector<f64> unsorted{4.0, 1.0, 3.0, 2.0};
+  fields::numpy_quantiles(unsorted, probabilities, out);
+  EXPECT_EQ(out, (std::vector<f64>{1.003, 1.03, 2.5, 3.9699999999999998, 3.997}));
+  std::vector<f64> one{kNegZero};
+  fields::numpy_quantiles(one, probabilities, out);
+  for (const f64 x : out) {
+    EXPECT_TRUE(support::same_bits(x, 0.0)); // _lerp(-0.0, -0.0, gamma >= 1) is +0.0
+  }
+}
+
 TEST(ResearchFieldsWriter, RoundedFractionIsPythonRound) {
   EXPECT_EQ(fields::rounded_fraction(1, 3), 0.333333);
   EXPECT_EQ(fields::rounded_fraction(2, 3), 0.666667);
