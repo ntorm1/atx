@@ -7357,3 +7357,4 @@ Cell w vs the parent's w (`mega-v8yw-train-two-speed-1` vs `mega-v8xw-train-them
   `train_sleeve_fast_share.f64` `f38407e8` (11,240 B), `train_sleeves.json` `4f536da8` (values not read here).
 
 **P13 (c) PASS. P13: PASS (a, b, c; `parent` set in the copy at stage 04).** The run adds 0 trials (ledger 130 lines).
+| 05 run | 0 | 80.1 | 713 (nav) | 5,131 / 4,040 (gate 3,072: fit, card and w already done by P13 (c), so only the NAV, cap 1,536, remained) | `fdc99f643c9939f6972870cebbf8412342e0efa64ce286bb2f2b249c59154ba3` | - | driver argv `research_cycle.py run scripts/specs/v8/y-two-speed-y-5.json --stop-after nav`; it **adopted** P13 (c)'s fit (`mega-weights-v8y-two-speed-run1`), card and w (`mega-v8yw-train-two-speed-run1`) as done (same run dirs; nothing re-run); u = the parent's receipt; calibration NAV at L 1.1828 `mega-nav-v8y-two-speed-run` 78.9 s 713 MiB (exe `72ff6d2d`), exit 0 completed; summary sha256 `6620eabc` (not read: no return before mechanics) |
