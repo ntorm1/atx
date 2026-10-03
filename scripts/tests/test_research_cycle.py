@@ -244,7 +244,8 @@ receipt("completed", 0)
 # unbounded config) and pinned; test_marginal_argv_is_the_verbs_full_cli re-reads the C++ and fails if it moves.
 VERB_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
 VERB_OPTIONS = {"--candidate-cache", "--library", "--library-sha256", "--pool", "--pool-sha256", "--role", "--themes",
-                "--fields", "--output", "--min-names", "--max-memory-mib"}   # dispatch_marginal_ic, each takes a value
+                "--fields", "--output", "--min-names", "--max-memory-mib",   # dispatch_marginal_ic, each takes a value
+                "--candidates", "--pair-cache", "--verified-digests"}        # + lane S1's (P9 E1 x S1 merge note)
 FAKE_RUNNER = FAKE_RUNNER.replace("@MARGINAL_REQUIRED@", repr(VERB_REQUIRED))
 
 FAKE_FIELDS = r'''

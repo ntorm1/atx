@@ -240,8 +240,11 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
 # pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
 # output); marginal.flags may set only MARGINAL_SPEC_FLAGS (unsigned integers; --min-names defaults to the u pass's).
 MARGINAL_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
-MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields")
 MARGINAL_CANDIDATES = "--candidates"   # P9 ruling P4: marginal.candidates -> the verb's --candidates FILE (lane S1)
+# Lane S1's value options --pair-cache DIR and --verified-digests FILE (P9 E1 x S1 merge note) belong to the step, never
+# to marginal.flags: no spec sets them until E2 wires them (S1's --workers / --exclude-self are not value pairs here).
+MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields", MARGINAL_CANDIDATES,
+                                      "--pair-cache", "--verified-digests")
 MEMBER_ID_RE = re.compile(r"[A-Za-z0-9_.:-]+")
 W_BUILT = ("--library", "--library-sha256", "--train", "--train-sha256", "--train-fields", "--train-fields-sha256",
            "--output", "--candidate-cache", "--composition-weights", "--composition-weights-sha256")
