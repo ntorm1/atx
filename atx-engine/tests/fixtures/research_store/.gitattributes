@@ -1,0 +1,3 @@
+*.sqlite binary
+*.json text eol=lf
+*.py text eol=lf
