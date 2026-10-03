@@ -89,6 +89,18 @@ def test_x7_over_its_cap_is_refused_with_the_hand_numbers(tmp_path):
     assert code == 3 and "13 admission trials used + 12 new > cap 24" in failed(root, "01-preflight.failed-1.json")
 
 
+def test_the_driver_counts_trials_by_the_gates_own_trial_id_rule():
+    """The budget's trial_id is cycle_admission's (one function, PM8-12: call, do not re-implement), and that rule is
+    the documented one: (admission, SHA-256 of [candidate, DSL SHA-256, role pin, window id])."""
+    import hashlib  # noqa: PLC0415
+    import cycle_admission  # noqa: PLC0415
+    wid = F.BI.window_id()
+    want = F.BI.trial_id("admission", hashlib.sha256(json.dumps(["x", "d" * 64, "r" * 64, wid],
+                                                                separators=(",", ":")).encode()).hexdigest())
+    assert wave_stages.admission_trial_id("x", "d" * 64, "r" * 64) == want == \
+        cycle_admission.trial_id("x", "d" * 64, "r" * 64, wid)
+
+
 def test_new_trials_leave_out_rescreens_other_origins_and_trials_already_ledgered(tmp_path):
     root = F.build(tmp_path / "r", budget={"id": "b", "admission_cap": 10, "admission_cycle_prefix": "w",
                                            "admission_origin": "prior"},

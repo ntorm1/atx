@@ -47,6 +47,13 @@ def library_dsl(cycle) -> dict:
             if isinstance(c, dict) and isinstance(c.get("id"), str) and isinstance(c.get("dsl"), str)}
 
 
+def trial_id(cid: str, dsl_or_library_pin: str | None, role_pin: str | None, wid: str) -> str:
+    """The admission trial id of one candidate (see the module doc): one rule for the gate and its callers (the wave
+    driver's budget count)."""
+    ident = json.dumps([cid, dsl_or_library_pin, role_pin, wid], separators=(",", ":"))
+    return research_ledger.backtest_integrity().trial_id(KIND, hashlib.sha256(ident.encode()).hexdigest())
+
+
 def admission_lines(cycle, w_dir: str) -> list[dict]:
     """The admission lines of the gate's listed candidates with a row in ``w_dir``/admission.json."""
     s = cycle.spec
@@ -66,12 +73,10 @@ def admission_lines(cycle, w_dir: str) -> list[dict]:
         if origin not in bi.ORIGINS:
             raise ValueError(f"admission line {cid}: no origin class (contract K5) in the alpha registry ({REGISTRY}) "
                              "or summ.origin")
-        ident = json.dumps([cid, dsl.get(cid) or lib, role, wid], separators=(",", ":"))
         out.append({"schema": bi.LEDGER_SCHEMA, "kind": KIND, "count": 1, "candidate": cid, "cycle": s["name"],
                     "status": row.get("status"), "origin": origin, "window_id": wid, "window": window,
                     "pins": {"library_sha256": lib, "role_sha256": role, "admission_sha256": cycle.res.sha(rel)},
-                    "dsl_sha256": dsl.get(cid),
-                    "trial_id": bi.trial_id(KIND, hashlib.sha256(ident.encode()).hexdigest())})
+                    "dsl_sha256": dsl.get(cid), "trial_id": trial_id(cid, dsl.get(cid) or lib, role, wid)})
     return out
 
 

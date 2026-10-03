@@ -22,6 +22,7 @@ Classes of a token dated at or after the seal (``scan``):
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
 
 from wave_context import Wave
@@ -37,21 +38,25 @@ SEEDS = {"20260927": "nav_summ's default bootstrap seed (not a date)",
 
 
 def tokens(line: str) -> list[tuple[str, str, str]]:
-    """[(raw token, its ISO date, form)] of one line (an impossible month or day is no date)."""
+    """[(raw token, its ISO date, form)] of one line (an impossible date is no date). A year's and a quarter's date
+    is research_window.period_begin's (the seal's own rule for partitions)."""
     out = []
     for form, rx in FORMS.items():
         for mt in rx.finditer(line):
             g = mt.groups()
-            if form in ("iso", "compact"):
-                if not (1 <= int(g[1]) <= 12 and 1 <= int(g[2]) <= 31):
-                    continue
-                iso = f"{g[0]}-{g[1]}-{g[2]}"
-            elif form == "year":
-                iso = f"{g[0]}-01-01"
-            else:
-                iso = f"{g[0]}-{3 * int(g[1]) - 2:02d}-01"
-            out.append((mt.group(0), iso, form))
+            try:
+                if form in ("iso", "compact"):
+                    day = dt.date(int(g[0]), int(g[1]), int(g[2]))
+                else:
+                    day = RW.period_begin(int(g[0]), int(g[1]) if form == "quarter" else None)
+            except ValueError:
+                continue
+            out.append((mt.group(0), day.isoformat(), form))
     return out
+
+
+def sealed(iso: str) -> bool:
+    return RW.is_sealed(RW.date_ns(iso))
 
 
 def wave_specs(done: dict) -> list[str]:
@@ -96,7 +101,7 @@ def scan(w: Wave, files: list[str], ruled: dict | None = None) -> dict:
         n = 0
         for line in w.path(rel).read_text(encoding="utf-8", errors="replace").splitlines():
             for raw, iso, _form in tokens(line):
-                if iso < RW.SEAL_DATE:
+                if not sealed(iso):
                     continue
                 if raw in allow:
                     a = allowed.setdefault(raw, {"token": raw, "ruling": allow[raw], "tokens": 0, "files": []})

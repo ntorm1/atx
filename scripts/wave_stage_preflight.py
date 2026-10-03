@@ -3,10 +3,9 @@ count) and the code pathspec, before anything runs.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 
+import cycle_admission
 import research_ledger
 import research_spec
 import research_tree
@@ -36,12 +35,11 @@ def sealed_years(text: str) -> list[str]:
     return sorted({y for y in YEAR.findall(text) if int(y) >= RW.FIRST_SEALED_YEAR})
 
 
-def admission_trial_id(cid: str, dsl_sha: str, role_sha: str) -> str:
-    """The trial_id the gate ledgers for one screened string (cycle_admission.admission_lines: [candidate, its DSL
-    SHA-256, the role pin, the research window id]), so a string ledgered already is no new trial."""
-    bi = research_ledger.backtest_integrity()
-    ident = json.dumps([cid, dsl_sha, role_sha, bi.window_id()], separators=(",", ":"))
-    return bi.trial_id("admission", hashlib.sha256(ident.encode()).hexdigest())
+def admission_trial_id(cid: str, dsl_sha: str, role_sha: str | None) -> str:
+    """The trial_id the gate ledgers for one screened string, by the gate's own rule (cycle_admission.trial_id:
+    [candidate, its DSL SHA-256, the role pin, the research window id]), so a string ledgered already is no new
+    trial."""
+    return cycle_admission.trial_id(cid, dsl_sha, role_sha, research_ledger.backtest_integrity().window_id())
 
 
 def role_pin(w: Wave) -> str | None:
@@ -82,7 +80,7 @@ def admission_new(w: Wave, records: list[dict], b: dict) -> list[str]:
     role = role_pin(w)
     return [c["id"] for c in w.manifest.get("candidates") or []
             if not c.get("rescreen") and budget_selects(b, c["origin"]) and
-            admission_trial_id(c["id"], c["dsl_sha256"], role or "") not in have]
+            admission_trial_id(c["id"], c["dsl_sha256"], role) not in have]
 
 
 def ledger_state(w: Wave) -> tuple[list[dict], dict]:
