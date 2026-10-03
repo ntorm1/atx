@@ -4,6 +4,8 @@
 
 Read progress.md after this file; it and git log supersede the historical table below. New resume-contract.md applies alongside IMPLEMENTER/REVIEWER. Actual agents are gpt-6.1-sol, per owner. The SDD skill was found at C:/Users/natha/.claude/plugins/cache/claude-plugins-official/superpowers/6.4.1/skills/subagent-driven-development/SKILL.md. No callable codebase graph tools were exposed; targeted reads/searches are fallback.
 
+Owner added explicit 13F bronze completeness and predictive ownership gold features, plus complete profitability/growth primitives and gold families. Read owner-coverage-addendum.md and the updated Task 4/5/7/11/16/17 briefs before dispatching those tasks. Commit 55041b89 preserves the core addition.
+
 Three current agent lanes (list live agents before dispatching duplicates):
 
 | Agent | Current work | State/artifacts |

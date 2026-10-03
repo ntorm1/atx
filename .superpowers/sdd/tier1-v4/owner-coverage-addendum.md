@@ -1,6 +1,6 @@
 # Owner coverage steering — 2026-10-03
 
-Binding addition to Tasks 5/7/11/16/17: complete 13F coverage, including retained bronze sources, and high-quality gold features with measured cross-sectional predictive evidence. Complete profitability/growth primitives and gold-panel families. This extends the existing goal; PIT, holdout, memory and foreign-file constraints remain binding.
+Binding addition to Tasks 4/5/7/11/16/17: complete 13F coverage, including retained bronze sources, and high-quality gold features with measured cross-sectional predictive evidence. Complete profitability/growth primitives and gold-panel families. This extends the existing goal; PIT, holdout, memory and foreign-file constraints remain binding.
 
 ## Task 11: 13F source completeness and features
 
