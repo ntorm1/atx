@@ -102,8 +102,9 @@ N49 = f"group_count({R21}, grp_ff49)"
 CANDIDATES = {  # rank order (prior of marginal contribution to the book's Sharpe and gross return)
     "peer_mom_1m": f"rank(decay_linear((((group_mean({R21}, grp_ff49) * {N49}) - {R21}) / ({N49} - 1)), 21))",
     "so_wang_rev": "rank((ea_window_pre5 * (-1 * group_neutralize(((close / delay(close, 3)) - 1), grp_ff49))))",
-    "iv_vol_of_vol": "rank(decay_linear(((-1 * (ts_std_mp(iv_atm_21d, 21, 12) / ts_mean_mp(iv_atm_21d, 21, 12))) + "
-                     "(0 * log(ts_std_mp(iv_atm_21d, 21, 12)))), 21))",
+    # PM8-8 (6), PM8-14 (YP-5): the LIB2 string with every read of iv_atm_21d delayed one session (REPAIRED below)
+    "iv_vol_of_vol": "rank(decay_linear(((-1 * (ts_std_mp(delay(iv_atm_21d, 1), 21, 12) / ts_mean_mp(delay(iv_atm_21d, "
+                     "1), 21, 12))) + (0 * log(ts_std_mp(delay(iv_atm_21d, 1), 21, 12)))), 21))",
     "day_rev_freq": "rank(decay_linear(ts_mean_mp((((ret_overnight > 0) && (ret_intraday < 0)) ? 1 : 0), 21, 15), 21))",
     "mom_turn": "rank(decay_linear(((rank(((delay(close, 21) / delay(close, 252)) - 1)) - 0.5) * "
                 "(rank(delay(ts_mean((volume / shares_out), 231), 21)) - 0.5)), 21))",
@@ -119,10 +120,15 @@ CANDIDATES = {  # rank order (prior of marginal contribution to the book's Sharp
 ROUND_2B = ("ins_cluster",)
 CARRIED = ("iv_vol_of_vol", "day_rev_freq", "exch_switch")       # LIB2 (R-12) registrations, lapsed at 0 trials
 LIB2_SHA16 = {"iv_vol_of_vol": "c5ecec15fbdb4807", "day_rev_freq": "a5416c4ea13d4422", "exch_switch": "f433b32af008e74c"}
+# iv_vol_of_vol's clock repair (PM8-8 (6); spelling YP-5, ruled by PM8-14; v8y-prereg section 10; 0 trials, before the
+# Y-S screen): the vendor delivers IV after t's mark, so every read of iv_atm_21d is delayed one session (rows
+# t-21..t-1); in the LIB2 add-alpha line only --dsl and --deviation change. The LIB2 string stays checked byte for byte.
+REPAIRED = {"iv_vol_of_vol": {"sha16": "4d42a72b859c3ff4", "read": ("iv_atm_21d", "delay(iv_atm_21d, 1)"),
+                              "deviation_tail": "; IV rows t-21..t-1, the vendor IV clock (PM8-8 (6) repair)"}}
 EXPECTED = {  # (bars, slots, nodes, extra fields): what K1 should print
     "peer_mom_1m": (41, 6, 15, ["grp_ff49"]),
     "so_wang_rev": (3, 5, 13, ["ea_window_pre5", "grp_ff49"]),
-    "iv_vol_of_vol": (40, 5, 13, ["iv_atm_21d"]),
+    "iv_vol_of_vol": (41, 5, 15, ["iv_atm_21d"]),           # the repaired string (the LIB2 string: 40, 5, 13)
     "day_rev_freq": (40, 4, 12, ["ret_intraday", "ret_overnight"]),
     "mom_turn": (272, 6, 22, ["shares_out"]),
     "ea_uvol": (211, 5, 26, ["ea_days_since", "shares_out"]),
@@ -245,9 +251,30 @@ def lib2_lines() -> dict:
     return out
 
 
+def lib2_text(cid: str) -> str:
+    """The LIB2 string of a carried candidate (the repaired one with its delayed reads put back)."""
+    text = CANDIDATES[cid]
+    if cid in REPAIRED:
+        old, new = REPAIRED[cid]["read"]
+        text = text.replace(new, old)
+        assert text.replace(old, new) == CANDIDATES[cid], f"{cid}: the repair is not every read delayed"
+    return text
+
+
+def repaired_line(cid: str, line: str) -> str:
+    """The LIB2 line with only --dsl and --deviation changed (v8y-prereg section 10)."""
+    old_dsl, new_dsl = f'--dsl "{lib2_text(cid)}"', f'--dsl "{CANDIDATES[cid]}"'
+    assert line.count(old_dsl) == 1, f"{cid}: LIB2 --dsl not found once"
+    line = line.replace(old_dsl, new_dsl)
+    head, dev = line.split(' --deviation "')
+    assert dev.endswith('"') and dev.count('"') == 1, f"{cid}: --deviation is not the line's last option"
+    return f'{head} --deviation "{dev[:-1]}{REPAIRED[cid]["deviation_tail"]}"'
+
+
 def add_alpha_line(cid: str) -> str:
     if cid in CARRIED:
-        return f"{lib2_lines()[cid]} {PY_ARGS_TAIL}"
+        line = lib2_lines()[cid]
+        return f"{repaired_line(cid, line) if cid in REPAIRED else line} {PY_ARGS_TAIL}"
     r = REGISTRATION[cid]
     return (f'"$PY" scripts/research_cycle.py add-alpha --id {cid} --dsl "{CANDIDATES[cid]}" --theme {r["theme"]} '
             f'--tier {r["tier"]} --prior-sign 1 --citation "{r["citation"]}" --origin prior '
@@ -649,8 +676,10 @@ def main():
         assert len(s["extra_fields"]) <= xs.HOUSE["extra_fields"] and s["bytes"] <= xs.HOUSE["bytes"], cid
         assert s["sha256"] not in shas and xwq.canonical(xs.parse(text)) not in canon, f"{cid} restates a reader"
         if cid in CARRIED:
-            assert s["sha256"][:16] == LIB2_SHA16[cid], f"{cid}: not the LIB2 string"
-            assert f'--dsl "{text}"' in carried[cid], f"{cid}: not the LIB2 add-alpha line"
+            assert sha(lib2_text(cid))[:16] == LIB2_SHA16[cid], f"{cid}: not the LIB2 string"
+            assert f'--dsl "{lib2_text(cid)}"' in carried[cid], f"{cid}: not the LIB2 add-alpha line"
+            if cid in REPAIRED:
+                assert s["sha256"][:16] == REPAIRED[cid]["sha16"], f"{cid}: not the re-pinned repair"
         rows = [f for f in s["extra_fields"] if f not in REG["fields"]]
         new_reads = [f for f in s["extra_fields"] if f in unread or f not in V14]
         print(f"{cid:13s} bars {s['bars']:3d} slots {s['slots']} nodes {s['nodes']:2d} bytes {s['bytes']:3d} "
