@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 import re
 
+from research_common import fmt_argv  # noqa: F401  (P9 E2: the one copy; callers use WS.fmt_argv)
 import research_spec
 import research_tree
 
@@ -133,11 +134,6 @@ def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, r
 
 def commit_argvs(paths: list[str], message: str) -> list[list[str]]:
     return [["git", "add", "--", *paths], ["git", "commit", "-q", "-m", message, "--", *paths]]
-
-
-def fmt_argv(argv: list[str]) -> str:
-    """One command line as research_cycle prints it: an argument holding a space double-quoted."""
-    return " ".join(f'"{a}"' if " " in a else a for a in argv)
 
 
 # ------------------------------------------------------------------ spec files

@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_resume  # noqa: E402
+from research_common import RUN_SUFFIX, dirty_or_error, execute, free_run_dir  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_spec  # noqa: E402
 import research_tree  # noqa: E402
@@ -27,10 +28,6 @@ if ENGINE_TOOLS not in sys.path:
 import stage_chain  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 import wave_steps as WS  # noqa: E402
-
-
-def execute(argv: list[str], root: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
 
 
 class Wave:
@@ -82,10 +79,7 @@ class Wave:
 
     def free_run_dir(self, base: str) -> str:
         """<base>-run<k>, k the first number whose dir does not exist (the bounded runner never reuses a dir)."""
-        k = 1
-        while self.exists(f"{base}-run{k}"):
-            k += 1
-        return f"{base}-run{k}"
+        return free_run_dir(base, self.exists)
 
     # -------------------------------------------------------------- specs
     @property
@@ -125,23 +119,15 @@ class Wave:
                 "reference_nav": (spec["inputs"].get("reference_cell") or {}).get("dir")}
 
     def phase_bases(self, spec_rel: str) -> dict:
-        """{phase: output base} of a cell spec's bounded phases (their run dirs are ``<base>-run[<k>]``)."""
-        spec = self.load_spec(spec_rel)
-        c = RC.Cycle(spec, RC.Resolver(self.root), verify=False)
-        bases = {"u": c.out(spec["ic"]["u_output"]), "fit": c.out(spec["fit"]["output"], keyed=False),
-                 "w": c.out(spec["ic"]["w_output"]), "nav": c.out(spec["nav"]["output"])}
-        for key in ("card", "marginal", "ref", "monitor"):
-            if key in spec:
-                bases[key] = c.out(spec[key]["output"])
-        for phase in ("check", "summ"):
-            bases[phase] = f"{c.cycle_dir()}/{phase}"
-        return bases
+        """{phase: output base} of a cell spec's bounded phases (their run dirs are ``<base>-run[<k>]``): the cycle's
+        own naming (research_cycle Cycle.phase_bases, research_common.run_dir_of; OR section 4), never re-derived."""
+        return RC.Cycle(self.load_spec(spec_rel), RC.Resolver(self.root), verify=False).phase_bases()
 
     def run_dirs(self, base: str) -> list[str]:
         """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in attempt order (-run, then
         k ascending: -run2 before -run10), each followed by its attempt sub-dirs ``attempt-k`` (P9 OR-4: research_cycle
         --auto-attempt's retries after a host refusal), k ascending: the timings rows and the seal scan read them all."""
-        p = self.path(f"{base}-run")
+        p = self.path(f"{base}{RUN_SUFFIX}")
         if not p.parent.is_dir():
             return []
         found = [d for d in p.parent.glob(p.name + "*")
@@ -202,10 +188,10 @@ class Wave:
 
     def dirty_code(self) -> list[str]:
         """Dirty paths inside the code pathspec (research_tree.CODE_PATHSPEC): what the bounded runner refuses."""
-        try:
-            return research_tree.dirty_paths(self.root)[0]
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise stage_chain.StageError(f"git status failed: {exc}") from exc
+        blocking, _, error = dirty_or_error(self.root)
+        if error is not None:
+            raise stage_chain.StageError(f"git status failed: {error}")
+        return blocking
 
     def committed(self, rel: str) -> str | None:
         """The last commit of a tracked, unmodified file; None when it is untracked or modified."""

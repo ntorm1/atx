@@ -7,6 +7,7 @@ import re
 
 import cycle_admission
 import research_ledger
+from research_common import ledger_view
 import research_spec
 import research_tree
 import wave_manifest as WM
@@ -87,15 +88,10 @@ def admission_new(w: Wave, records: list[dict], b: dict) -> list[str]:
 
 
 def ledger_state(w: Wave) -> tuple[list[dict], dict]:
-    bi = research_ledger.backtest_integrity()
-    p = w.path(w.manifest["ledger"])
     try:
-        records = bi.ledger_read(p)
-        head = bi.ledger_head(p)
+        return ledger_view(w.path(w.manifest["ledger"]), w.manifest["ledger"])
     except (OSError, ValueError) as exc:
         raise StageError(f"ledger {w.manifest['ledger']}: {exc}", EXIT_PIN) from exc
-    return records, {"path": w.manifest["ledger"], "lines": len(records), "head": head,
-                     "n": bi.ledger_n(records, True)}
 
 
 def budget_check(w: Wave, records: list[dict], n_before: int) -> tuple[dict, list[str]]:

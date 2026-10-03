@@ -168,10 +168,6 @@ def dsl_sha256(dsl: str) -> str:
     return hashlib.sha256(dsl.encode("utf-8")).hexdigest()
 
 
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
 def _rel(value) -> bool:
     return isinstance(value, str) and bool(value) and not Path(value).is_absolute() and ".." not in Path(value).parts
 

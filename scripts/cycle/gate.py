@@ -13,7 +13,7 @@ import research_ledger
 from cycle.phases import Cycle
 from cycle.spec import EXIT_GATE, SUMM_V8, CycleError, as_built, summ_protocol
 from cycle_verdict import VERDICT, write_verdict as _write_verdict
-from research_common import sha256_file
+from research_common import read_ledger, sha256_file
 
 
 # ------------------------------------------------------------------ internal checks
@@ -125,10 +125,10 @@ def ledger_state(cycle) -> dict | None:
     rel = cycle.ledger or (cycle.spec.get("summ") or {}).get("ledger")
     if not rel or not cycle.res.path(rel).is_file():
         return None
-    bi = research_ledger.backtest_integrity()
     p = cycle.res.path(rel)
-    check_recorded_heads(cycle, p, bi)
-    return {"path": rel, "head": bi.ledger_head(p), "lines": len(bi.ledger_read(p))}
+    check_recorded_heads(cycle, p, research_ledger.backtest_integrity())
+    records, head = read_ledger(p)
+    return {"path": rel, "head": head, "lines": len(records)}
 
 
 def check_recorded_heads(cycle, p: Path, bi) -> None:

@@ -187,7 +187,6 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
-import subprocess
 import sys
 import time
 
@@ -203,7 +202,7 @@ from cycle.resolver import Resolver
 from cycle.spec import (COMPARE_SUFFIX, EXES_PIN, EXIT_OK, EXIT_PIN, EXIT_USAGE, FIT_INCOMPLETE, PARALLEL, STOP_PHASES,
                         SCRIPTS_DIR, CycleError, find_spec, load_spec, parse_attempts, parse_runner_overrides)
 from cycle_verdict import step_key
-from research_common import fmt_argv, sha256_file
+from research_common import dirty_or_error, execute, fmt_argv, sha256_file
 
 
 # ------------------------------------------------------------------ plan / status / run
@@ -265,10 +264,8 @@ def status_lines(cycle: Cycle) -> list[str]:
 
 def git_scoped(root: Path) -> tuple[list[str], list[str]]:
     """(blocking, ignored) dirty paths: inside the code pathspec, outside it. Git failing is a blocking entry."""
-    try:
-        return research_tree.dirty_paths(root)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        return [f"<git status failed: {exc}>"], []
+    blocking, ignored, error = dirty_or_error(root)
+    return ([f"<git status failed: {error}>"], []) if error is not None else (blocking, ignored)
 
 
 def git_clean(root: Path) -> bool:
@@ -289,10 +286,6 @@ def check_clean(cycle: Cycle, clean, log, seen: set) -> None:
         seen.update(new)
         log(f"# dirty outside the code pathspec (listed, not a stop): {', '.join(new[:12])}"
             f"{' ...' if len(new) > 12 else ''}")
-
-
-def execute(argv: list[str], root: Path, env: dict, capture: bool) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, cwd=root, env=env, capture_output=capture, text=True)
 
 
 def parallel_partner(cycle: Cycle, steps: list[Step], idx: int, stop_after: str | None) -> int | None:

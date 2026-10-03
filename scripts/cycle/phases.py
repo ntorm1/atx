@@ -21,6 +21,7 @@ from cycle.spec import (CAP_KEYS, CAPACITY_FILES, CAPACITY_FLAG, COMPARE_SUFFIX,
                         SEC_STAGE_INPUTS, SOURCE_FLAGS, SUMM_V8, BUILDS, CycleError, as_built, effective_exes,
                         input_dir, load_spec, option_value, summ_protocol)
 from cycle_verdict import PBO_JSON, SUMM_JSON
+from research_common import free_run_dir, run_dir_of
 
 
 # ------------------------------------------------------------------ the cycle
@@ -370,13 +371,24 @@ class Cycle:
             st.note += (f"; refused with nothing written: a resume with --auto-attempt runs attempt {len(dirs) + 1} in "
                         f"{nxt}")
 
+    def phase_bases(self) -> dict:
+        """{phase: output base} of a cell spec's bounded phases: u, fit, w, nav, then card, marginal, ref and monitor
+        when the spec runs them, then check and summ (<cycle dir>/<phase>); each run dir is research_common.run_dir_of
+        (<base>-run[<k>]) with attempt sub-dirs under it. The wave's timings and seal scan read these (OR section 4:
+        the cycle's own naming, so a rename here reaches the scan)."""
+        s = self.spec
+        bases = {"u": self.out(s["ic"]["u_output"]), "fit": self.out(s["fit"]["output"], keyed=False),
+                 "w": self.out(s["ic"]["w_output"]), "nav": self.out(s["nav"]["output"])}
+        for key in ("card", "marginal", "ref", "monitor"):
+            if key in s:
+                bases[key] = self.out(s[key]["output"])
+        for phase in ("check", "summ"):
+            bases[phase] = f"{self.cycle_dir()}/{phase}"
+        return bases
+
     def always_run_dir(self, phase: str) -> str:
         """A fresh receipt dir of an always-run phase (check, summ): <cycle dir>/<phase>-run<k>, k the first unused."""
-        base = f"{self.cycle_dir()}/{phase}-run"
-        k = 1
-        while self.res.exists_dir(f"{base}{k}"):
-            k += 1
-        return f"{base}{k}"
+        return free_run_dir(f"{self.cycle_dir()}/{phase}", self.res.exists_dir)
 
     def every_phase(self) -> bool:
         return self.spec.get("receipts") == "every-phase"
@@ -403,17 +415,17 @@ class Cycle:
             n = self.attempts[phase]
             if self.complete_summary(f"{base}-{n}"):
                 return n, "done", ""
-            if self.res.exists_dir(f"{base}-{n}") or self.res.exists_dir(f"{base}-run{n}"):
-                return n, "failed", self.failure_note(f"{base}-run{n}")
+            if self.res.exists_dir(f"{base}-{n}") or self.res.exists_dir(run_dir_of(base, n)):
+                return n, "failed", self.failure_note(run_dir_of(base, n))
             return n, "pending", ""
         tried = 0
         for n in range(1, MAX_ATTEMPTS + 1):
             if self.complete_summary(f"{base}-{n}"):
                 return n, "done", ""
-            if self.res.exists_dir(f"{base}-{n}") or self.res.exists_dir(f"{base}-run{n}"):
+            if self.res.exists_dir(f"{base}-{n}") or self.res.exists_dir(run_dir_of(base, n)):
                 tried = n
         if tried:
-            return tried, "failed", (self.failure_note(f"{base}-run{tried}") +
+            return tried, "failed", (self.failure_note(run_dir_of(base, tried)) +
                                      f"; never overwritten: rerun with --attempt {phase}={tried + 1}")
         return 1, "pending", ""
 
@@ -452,7 +464,7 @@ class Cycle:
             ic = s["ic"]
             base = self.out(ic["u_output"])
             n, state, note = self.ic_attempt("u", base)
-            u_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
+            u_out, run_dir = f"{base}-{n}", run_dir_of(base, n)
             flags = list(ic["flags"])
             if self.screen and "no-composition" in self.capabilities() and "--no-composition" not in flags:
                 # B-1: a screen skips the u-pass blend nobody reads (and so has no combined signal to save)
@@ -481,7 +493,7 @@ class Cycle:
             ic = s["ic"]
             base = self.out(ic["w_output"])
             n, state, note = self.ic_attempt("w", base)
-            wt_out, run_dir = f"{base}-{n}", f"{base}-run{n}"
+            wt_out, run_dir = f"{base}-{n}", run_dir_of(base, n)
             weights = f"{w_dir}/{self.weights_name}"
             w_flags = research_spec.apply_flags(ic["flags"], ic.get("w_flags") or {}, "ic.w_flags")   # E-28
             argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights], "w") + [
@@ -549,7 +561,7 @@ class Cycle:
         s, m = self.spec, self.spec["marginal"]
         ic_exe, role_m = s["exes"]["ic"], self.ipath("role")
         m_out = self.out(m["output"])
-        run_dir = f"{m_out}-run"
+        run_dir = run_dir_of(m_out)
         pool_key, themes = m.get("pool", "reference_combined"), m.get("themes")
         pool = self.ipath(pool_key)
         self.check_marginal_bindings(pool_key, themes)
@@ -694,7 +706,7 @@ class Cycle:
         """A NAV replay (the cycle's cell, or the reference construction for the ref phase)."""
         s = self.spec
         k = self.attempts.get("nav", 1) if phase == "nav" else 1
-        run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
+        run_dir = run_dir_of(n_out) if k == 1 else run_dir_of(n_out, k)
         flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
         binds, label = [s["exes"]["nav"], comb, fdm], []
         if "label_role" in s["inputs"]:   # v8 E-25: the label role marks every replayed book (review F-8: ref too)
@@ -799,7 +811,7 @@ class Cycle:
         else:
             state, note = "pending", ""
         if self.every_phase():
-            run_dir = f"{fd}-run"
+            run_dir = run_dir_of(fd)
             if state == "pending" and self.res.exists_dir(run_dir):
                 state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
             return Step("fields", "bounded", self.runner(run_dir, [self.tool(f["builder"]), self.ipath("role")], "fields") + argv,
@@ -826,7 +838,7 @@ class Cycle:
     def card_step(self, u_out: str, w_dir: str, role_m: str, role_sha: str) -> Step:
         c = self.spec["card"]
         c_out = self.out(c["output"])
-        run_dir = f"{c_out}-run"
+        run_dir = run_dir_of(c_out)
         adm = f"{w_dir}/admission.json"
         argv = self.runner(run_dir, [self.tool(c["script"]), role_m, f"{u_out}/summary.json", adm], "card") + [
             self.py, self.tool(c["script"]), "--u-pass", u_out, "--train", role_m, "--train-sha256", role_sha,
@@ -846,7 +858,7 @@ class Cycle:
                 argv += [flag, m[key]]
         argv += [*m.get("flags", []), "--output", m_out]
         if self.every_phase():
-            run_dir = f"{m_out}-run"
+            run_dir = run_dir_of(m_out)
             return Step("monitor", "bounded", self.runner(run_dir, [self.tool(m["script"])], "monitor") + argv, m_out, run_dir,
                         None, *self.single_state(m_out, run_dir, f"{m_out}/monitor.json"))
         if self.res.exists(f"{m_out}/monitor.json"):
@@ -862,17 +874,17 @@ class Cycle:
         w_dir = self.out(fit["output"], keyed=False)   # H-1: one pooled fit for every era
         o, sm = f"{u_out}/orientations.json", f"{u_out}/summary.json"
         max_passes = int(fit.get("max_passes", 3))
-        runs = [j for j in range(1, MAX_ATTEMPTS + 1) if self.res.exists_dir(f"{w_dir}-run{j}")]
+        runs = [j for j in range(1, MAX_ATTEMPTS + 1) if self.res.exists_dir(run_dir_of(w_dir, j))]
         if "fit" in self.attempts:
             j = self.attempts["fit"]
         elif self.res.exists(f"{w_dir}/composition_weights.json"):
             j = runs[-1] if runs else 1
         elif runs:   # the pass's last attempt (an attempt-k sub-dir after a refusal, P9 OR-4) decides the next pass
-            last = self.receipt(cycle_resume.attempt_dirs(self.res, f"{w_dir}-run{runs[-1]}", MAX_ATTEMPTS)[-1])
+            last = self.receipt(cycle_resume.attempt_dirs(self.res, run_dir_of(w_dir, runs[-1]), MAX_ATTEMPTS)[-1])
             j = runs[-1] + 1 if last and last.get("exit_code") == FIT_INCOMPLETE else runs[-1]
         else:
             j = 1
-        run_dir = f"{w_dir}-run{j}"
+        run_dir = run_dir_of(w_dir, j)
         if self.res.exists(f"{w_dir}/composition_weights.json"):
             state, note = "done", ""
         elif self.res.exists_dir(run_dir):

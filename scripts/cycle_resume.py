@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 
+from research_common import run_dir_of
 import research_spec
 import research_tree
 
@@ -67,7 +68,7 @@ def nav_run_dirs(out: str, attempts: int) -> list[str]:
     """The run dirs research_cycle gives the NAV (or ref) output ``out``, in attempt order: <out>-run, then
     <out>-run<k> for k = 2..attempts (``--attempt nav=k``); each may hold attempt-k sub-dirs (attempt_dirs). The one
     enumeration of them: research_cycle's ref skip and the wave's verify both read it (review E1t0, minor 3)."""
-    return [f"{out}-run"] + [f"{out}-run{k}" for k in range(2, attempts + 1)]
+    return [run_dir_of(out)] + [run_dir_of(out, k) for k in range(2, attempts + 1)]
 
 
 def completed_exes(res, out: str, attempts: int) -> list[str]:

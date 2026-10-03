@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -58,6 +57,7 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_tree  # noqa: E402
+from research_common import sha256_file as digest  # noqa: E402  (P9 E2: one copy)
 
 BUILD_TYPES = ("Debug", "Release")
 # P9 F-5 (a): a launch waits while one of these runs (a build competes for the host's memory)
@@ -76,14 +76,6 @@ class AdmissionTimeout(RuntimeError):
     def __init__(self, message: str, block: dict):
         super().__init__(message)
         self.block = block
-
-
-def digest(path: Path) -> str:
-    result = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(chunk)
-    return result.hexdigest()
 
 
 def live_owned(owned: dict) -> list[psutil.Process]:
