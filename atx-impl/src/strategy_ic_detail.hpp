@@ -6,6 +6,7 @@
 //   strategy_ic_library.cpp       pinned inputs, library + field plan, field residency
 //   strategy_ic_admission.cpp     method recipe, frozen TRAIN, memory admission,
 //                                 fields binding, composition weights
+//   strategy_ic_rules.cpp         composition rule table, theme table (strategy_ic_rules.hpp)
 //   strategy_ic_signal_cache.cpp  VM identity + source pin, candidate signal cache, report
 //   strategy_ic_result_cache.cpp  IC identity + source pin, IC-result cache
 //   strategy_ic_runner.cpp        score_role, outputs, run_ic, dispatch_ic
@@ -123,7 +124,12 @@ struct FieldFile {
 // to load (in Library::extra_fields order), each with its manifest-pinned SHA256
 // and exact extent, and every declared extra's definition.
 struct RoleFields { std::string directory,sha; std::vector<FieldFile> load; std::map<std::string,Json> declared; };
-struct Role { std::string path,sha,name; Json metadata; u64 bytes{}; RoleFields fields; };
+// `bytes`: the admitted working bytes; `memory`: their terms by name (admit), printed by a
+// --plan-only refused for the budget. `memory` keeps a default member initializer, so an
+// aggregate initialised up to `fields` (strategy_research_role.cpp) stays warning-free.
+struct Role {
+  std::string path,sha,name; Json metadata; u64 bytes{}; RoleFields fields; Json memory{};
+};
 // train_fields_sha: the frozen TRAIN fields manifest pin (empty: none).
 struct FrozenTrain {
   Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; std::string train_fields_sha;
@@ -143,6 +149,9 @@ struct FrozenTrain {
 // `residualise`: a theme_residualise block (theme-resid-v1, v8 R-11) rides on that rerank-true
 // block; std_themes are then each theme's position in the block's registered order, and
 // `residualise_order` that order (the recipe and the combined manifest record it; empty: no block).
+// `rules`: the composition rule table rows the file carries, in table order (P9 lane D1,
+// strategy_ic_rules.hpp; empty: none); the rows whose stage runs are the composition's stage list.
+struct CompositionRule;
 struct PinnedWeights {
   std::vector<f64> values; std::vector<int> signs; Json provenance; std::vector<usize> themes; usize theme_count{};
   std::vector<usize> std_themes; usize std_theme_count{}; std::string standardise; bool residualise{};
@@ -155,23 +164,14 @@ struct PinnedWeights {
   // two-speed-v1 (platform v8 Y-5, strategy_ic_two_speed.cpp): a theme_sleeves block on that rerank-true
   // block; `sleeves` its rule ("" none), the fast flag per composition theme index, the fast themes.
   std::string sleeves; std::vector<u8> sleeve_fast; std::vector<std::string> sleeve_fast_themes;
-  // What the composition and admission receive: the standardised themes under their rule,
-  // else the (possibly empty) within-theme-v1 themes under redistribute.
-  [[nodiscard]] IcThemeRule theme_rule() const noexcept {
-    if (std_themes.empty()) return IcThemeRule::redistribute;
-    return residualise?IcThemeRule::residualise:IcThemeRule::standardise;
-  }
+  std::vector<const CompositionRule*> rules;
+  // What the composition's grouping stage and admission receive: the standardised themes, else
+  // the (possibly empty) within-theme-v1 themes.
   [[nodiscard]] std::span<const usize> composition_themes() const noexcept {
     return std_themes.empty()?std::span<const usize>(themes):std::span<const usize>(std_themes);
   }
   [[nodiscard]] usize composition_theme_count() const noexcept {
     return std_themes.empty()?theme_count:std_theme_count;
-  }
-  // The theme_standardise rule the composition runs under ("" unless standardised, i.e. a block
-  // with rerank true; then `standardise` is exactly the block's rule), recorded by the recipe and
-  // the combined manifest. A view of `standardise`: valid while this object lives unchanged.
-  [[nodiscard]] std::string_view standardise_rule() const noexcept {
-    return std_themes.empty()?std::string_view{}:std::string_view(standardise);
   }
 };
 // ---- Candidate signal cache (layout: strategy_ic_signal_cache.cpp) ----------
@@ -282,38 +282,39 @@ co::Status check_field_extents(const Role& spec);
 co::Status verify_fields(const Role& spec,const FieldMask& needed,HashMeter& meter,
                          std::vector<std::optional<FileStamp>>& verified);
 // ---- strategy_ic_admission.cpp -----------------------------------------------
-// `standardised`: the theme_standardise rule of a standardised composition ("" none);
-// `residualised`: the theme order of theme-resid-v1 (v8 R-11) when the composition also runs it
-// (empty: it does not); `scheduled`: the theme_schedule rule (theme-tsmom-v1, v8 Y-2) when the
-// composition runs one ("" none); `sleeved`: the theme_sleeves rule (two-speed-v1, v8 Y-5) when the
-// runner also saves the fast and slow sleeves ("" none).
-Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,bool themed=false,
-                   std::string_view standardised={},std::span<const std::string> residualised={},
-                   std::string_view scheduled={},std::string_view sleeved={});
+// `pinned` (null: no composition rule): the composition rule table rows whose stage runs write
+// their composition statement and recipe keys (strategy_ic_rules.hpp; theme-resid-v1 also its
+// theme order). Only read when cfg.composition_weights_sha256 is set.
+Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false,
+                   const PinnedWeights* pinned=nullptr);
 // The JSON array of a theme order (the recipe's and the combined manifest's record of theme-resid-v1).
 Json theme_order_json(std::span<const std::string> order);
 Json fields_recipe(Json pins,const Library& lib);
 Json fields_pins(const IcRunnerConfig& cfg);
 bool fields_pinned(const IcRunnerConfig& cfg);
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train);
+// The role's admitted working bytes and their terms under the pinned composition's stage list;
+// no budget is enforced here (within_budget).
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
-                      std::string pin,std::string name,bool enforce_budget=true,usize themes=0,
-                      IcThemeRule rule=IcThemeRule::redistribute,bool sleeves=false);
+                      std::string pin,std::string name,const PinnedWeights& pinned);
+// Unavailable ("IC runner: required_bytes=... exceeds configured memory budget before payload
+// load") when the role's admitted bytes exceed cfg.max_working_bytes.
+co::Status within_budget(const IcRunnerConfig& cfg,const Library& lib,const Role& role);
 co::Status same_field_definitions(const Library& lib,const Role& train,const Role& validation);
 co::Status bind_fields(const Library& lib,Role& role,const std::string& directory,const std::string& pin,
                        bool scored);
-co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Library& lib);
+// `themes`: the theme table (strategy_ic_rules.hpp) the rules that read one take.
+struct ThemeTable;
+co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Library& lib,
+                                              const ThemeTable& themes);
 Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const char* binding);
 co::Result<Json> frozen_weights_binding(const IcRunnerConfig& cfg,const PinnedWeights& pinned,
                                         const FrozenTrain& frozen);
 co::Result<std::string> frozen_field_definitions(const Library& lib,const FrozenTrain& frozen,const Role& train,
                                                  const Role& validation);
-// ---- strategy_ic_theme_resid.cpp (v8 R-11) ------------------------------------
-co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeights& pinned);
-// ---- strategy_ic_theme_tsmom.cpp (v8 Y-2) ------------------------------------
-co::Status composition_schedule(const Json& j,const Library& lib,PinnedWeights& pinned);
-// ---- strategy_ic_two_speed.cpp (v8 Y-5) --------------------------------------
-co::Status composition_sleeves(const Json& j,const Library& lib,PinnedWeights& pinned);
+// The composition blocks' parses (theme-resid-v1 in strategy_ic_theme_resid.cpp, theme-tsmom-v1
+// in strategy_ic_theme_tsmom.cpp, two-speed-v1 in strategy_ic_two_speed.cpp, the rest in
+// strategy_ic_rules.cpp) are declared in strategy_ic_rules.hpp with the rule table.
 // ---- strategy_ic_signal_cache.cpp --------------------------------------------
 std::string vm_identity();
 co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,HashMeter* meter);

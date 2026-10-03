@@ -1,0 +1,486 @@
+{
+  "capabilities": [
+    "eval-mode-audit-exact",
+    "list-rules",
+    "marginal",
+    "no-composition",
+    "theme-registry"
+  ],
+  "rules": [
+    {
+      "block_key": "theme_redistribution",
+      "id": "within-theme-v1",
+      "incompatible": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "composition": {
+            "const": "ew-theme-v6"
+          },
+          "rule": {
+            "const": "within-theme-v1"
+          },
+          "themes": {
+            "additionalProperties": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "rule",
+          "composition",
+          "themes"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_redistribution",
+      "recipe_sha256": "7b5d3f444e8e2818c9eb79fba2cd47a712933be116a7d880a4ea6cb93648dd93",
+      "requires_any": [],
+      "stage": "redistribute",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "two f64 dates x names planes per theme (blend and present weight)"
+    },
+    {
+      "block_key": "theme_standardise",
+      "id": "ew-theme-std-v1",
+      "incompatible": [
+        "within-theme-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "rerank": {
+            "type": "boolean"
+          },
+          "rule": {
+            "const": "ew-theme-std-v1"
+          },
+          "themes": {
+            "additionalProperties": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "rule",
+          "rerank",
+          "themes"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_standardise",
+      "recipe_sha256": "60e81715611ad2d4b722d9e788d36fac043a0c6350ee4be204b025e95aa9237c",
+      "requires_any": [],
+      "stage": "standardise",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "one f64 dates x names plane per theme (the theme's summed member ranks), dropped before the planned-target pass"
+    },
+    {
+      "block_key": "theme_standardise",
+      "id": "ic-shrink-v1",
+      "incompatible": [
+        "within-theme-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "ic_shrink": {
+            "properties": {
+              "floor": {
+                "const": 0
+              },
+              "intensity": {
+                "const": 0.5
+              },
+              "members": {
+                "additionalProperties": {
+                  "properties": {
+                    "ic": {
+                      "type": "number"
+                    },
+                    "theme": {
+                      "pattern": "^[a-z0-9_]{1,64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "theme",
+                    "ic"
+                  ],
+                  "type": "object"
+                },
+                "minProperties": 1,
+                "type": "object"
+              }
+            },
+            "required": [
+              "intensity",
+              "floor",
+              "members"
+            ],
+            "type": "object"
+          },
+          "rerank": {
+            "const": true
+          },
+          "rule": {
+            "const": "ic-shrink-v1"
+          },
+          "themes": {
+            "additionalProperties": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "rule",
+          "rerank",
+          "themes",
+          "ic_shrink"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_standardise",
+      "recipe_sha256": "d90100d6cf0d2971a85bb426f938f1ab0875efa5ce9c1e68bdcdbcb49d6703de",
+      "requires_any": [],
+      "stage": "standardise",
+      "verified": true,
+      "version": "v1",
+      "working_bytes": "one f64 dates x names plane per theme (the theme's summed member ranks), dropped before the planned-target pass"
+    },
+    {
+      "block_key": "theme_standardise",
+      "id": "ic-shrink-aim-v1",
+      "incompatible": [
+        "within-theme-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "ic_shrink": {
+            "properties": {
+              "floor": {
+                "const": 0
+              },
+              "intensity": {
+                "const": 0.5
+              },
+              "members": {
+                "additionalProperties": {
+                  "properties": {
+                    "gain": {
+                      "exclusiveMinimum": 0,
+                      "type": "number"
+                    },
+                    "ic": {
+                      "type": "number"
+                    },
+                    "theme": {
+                      "pattern": "^[a-z0-9_]{1,64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "theme",
+                    "ic",
+                    "gain"
+                  ],
+                  "type": "object"
+                },
+                "minProperties": 1,
+                "type": "object"
+              }
+            },
+            "required": [
+              "intensity",
+              "floor",
+              "members"
+            ],
+            "type": "object"
+          },
+          "rerank": {
+            "const": true
+          },
+          "rule": {
+            "const": "ic-shrink-aim-v1"
+          },
+          "themes": {
+            "additionalProperties": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "rule",
+          "rerank",
+          "themes",
+          "ic_shrink"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_standardise",
+      "recipe_sha256": "481c86f855dcc3b735c00f32551b490b2d6e69edd941b01473f118824dab5c30",
+      "requires_any": [],
+      "stage": "standardise",
+      "verified": true,
+      "version": "v1",
+      "working_bytes": "one f64 dates x names plane per theme (the theme's summed member ranks), dropped before the planned-target pass"
+    },
+    {
+      "block_key": "theme_standardise",
+      "id": "theme-erc-v1",
+      "incompatible": [
+        "within-theme-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "rerank": {
+            "const": true
+          },
+          "rule": {
+            "const": "theme-erc-v1"
+          },
+          "theme_erc": {
+            "properties": {
+              "covariance": {
+                "properties": {
+                  "matrix": {
+                    "items": {
+                      "items": {
+                        "type": "number"
+                      },
+                      "type": "array"
+                    },
+                    "type": "array"
+                  },
+                  "themes": {
+                    "items": {
+                      "pattern": "^[a-z0-9_]{1,64}$",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "themes",
+                  "matrix"
+                ],
+                "type": "object"
+              },
+              "dispersion": {
+                "const": 1e-10
+              },
+              "members": {
+                "additionalProperties": {
+                  "properties": {
+                    "share": {
+                      "type": "number"
+                    },
+                    "theme": {
+                      "pattern": "^[a-z0-9_]{1,64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "theme",
+                    "share"
+                  ],
+                  "type": "object"
+                },
+                "minProperties": 1,
+                "type": "object"
+              },
+              "sweeps": {
+                "const": 10000
+              }
+            },
+            "required": [
+              "sweeps",
+              "dispersion",
+              "members",
+              "covariance"
+            ],
+            "type": "object"
+          },
+          "themes": {
+            "additionalProperties": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "rule",
+          "rerank",
+          "themes",
+          "theme_erc"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_standardise",
+      "recipe_sha256": "c3f304d49422dde006945115778c13bc0971841331bc62568f3fc7bc3985eb8c",
+      "requires_any": [],
+      "stage": "standardise",
+      "verified": true,
+      "version": "v1",
+      "working_bytes": "one f64 dates x names plane per theme (the theme's summed member ranks), dropped before the planned-target pass"
+    },
+    {
+      "block_key": "theme_residualise",
+      "id": "theme-resid-v1",
+      "incompatible": [
+        "theme-tsmom-v1",
+        "two-speed-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "order": {
+            "items": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rule": {
+            "const": "theme-resid-v1"
+          }
+        },
+        "required": [
+          "rule",
+          "order"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_residualise",
+      "recipe_sha256": "06cae3257c296973ab187d284f95696847033b37c2fdd86142b4b18bf595de6a",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "residualise",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "per name 8 B per theme plus 8 B of regression scratch, on the standardise planes"
+    },
+    {
+      "block_key": "theme_schedule",
+      "id": "theme-tsmom-v1",
+      "incompatible": [
+        "theme-resid-v1"
+      ],
+      "params_schema": {
+        "properties": {
+          "blocks": {
+            "items": {
+              "properties": {
+                "from_session": {
+                  "type": "integer"
+                },
+                "trailing": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "from_session",
+                "trailing"
+              ],
+              "type": "object"
+            },
+            "maxItems": 4096,
+            "minItems": 1,
+            "type": "array"
+          },
+          "lag": {
+            "const": 3
+          },
+          "lookback": {
+            "const": 252
+          },
+          "rule": {
+            "const": "theme-tsmom-v1"
+          },
+          "step": {
+            "const": 21
+          },
+          "themes": {
+            "items": {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rule",
+          "lookback",
+          "lag",
+          "step",
+          "themes",
+          "blocks"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_schedule",
+      "recipe_sha256": "9ad853909eef585a8ddfeca1b5397ba7dfc80030af73695781eefb25d568f52e",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "schedule",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "none beyond the standardise planes (the block masses)"
+    },
+    {
+      "block_key": "theme_sleeves",
+      "id": "two-speed-v1",
+      "incompatible": [
+        "theme-resid-v1"
+      ],
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "rule": {
+            "const": "two-speed-v1"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "type": "object"
+      },
+      "recipe_key": "composition_sleeves",
+      "recipe_sha256": "a37b270fb058980f83f00e6b5abda89e0a8d7285113b6426e591b0f17a128237",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "sleeves",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "two f64 dates x names sleeve planes and one f64 per date (the fast share)"
+    }
+  ],
+  "schema": "atx.composition-rules/v1"
+}

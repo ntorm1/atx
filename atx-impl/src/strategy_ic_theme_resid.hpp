@@ -3,29 +3,20 @@
 // task-R-11-report.md and atx-impl/tools/composition_resid.py): the per-session step the IC
 // composition (IcThemeRule::residualise) applies to the ew-theme-std-v1 theme planes. The weights
 // file's theme_residualise block is read by ic_detail::composition_residualise (declared in
-// strategy_ic_detail.hpp, defined in strategy_ic_theme_resid.cpp).
-#include <array>
+// strategy_ic_rules.hpp, defined in strategy_ic_theme_resid.cpp).
+// The registered theme order of theme-resid-v1 (Ruling PM4-11) is the theme table's (P9 lane D1,
+// strategy_ic_rules.hpp): the alpha registry's themes in registration order -- the ten themes
+// registered first (fit_composition_weights.V4_THEMES + ownership_flow, composition_resid.
+// FROZEN_PREFIX), then every theme registered later (filing_events, E7; price_volume, PM7-39;
+// merger_arbitrage, PM8-8 (2), PM8-14). A weights file's theme_residualise order must be that list
+// restricted to its weighted themes; a weighted theme outside it is refused.
 #include <span>
-#include <string_view>
 #include <utility>
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
 namespace atx::impl::strategy {
-// The registered theme order of theme-resid-v1 (Ruling PM4-11): the ten themes registered first,
-// in their registered order (fit_composition_weights.PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES,
-// composition_resid.FROZEN_PREFIX), then every theme registered later, in registration order
-// (v8.1's filing_events, library-v8-draft E7; v8 X-7's price_volume, Ruling PM7-39; v8 Y's
-// merger_arbitrage, Rulings PM8-8 (2), PM8-14). A weights file's theme_residualise order must be
-// this list restricted to its weighted themes; a weighted theme outside it is refused
-// (ic_detail::composition_residualise). test_composition_resid.py pins this copy against the
-// fitter's list.
-inline constexpr std::array<std::string_view, 13> theme_resid_order{
-    "value",          "profitability_quality", "investment_issuance", "earnings_momentum",
-    "price_momentum", "low_risk",              "short_interest",      "reversal_seasonality",
-    "options_implied", "ownership_flow",       "filing_events",       "price_volume",
-    "merger_arbitrage"};
 // `planes`: one date-major dates x `names` plane per theme, index = position in the registered
 // theme order, holding the sum of the theme's present members' w_k s_k rank_k (NaN = no member
 // present); `mass`: W_theme per plane. Per date, each row is first replaced by the theme's

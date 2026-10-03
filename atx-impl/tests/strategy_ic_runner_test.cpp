@@ -2889,7 +2889,8 @@ TEST(Workers, OutputsByteIdenticalAt4And8And16) {
 }
 // Review focus 3: --plan-only reports each role's required bytes; the per-worker
 // envelope is as coded, so 16 workers need exactly 12 envelopes more than 4; below
-// the requirement the run refuses before any payload, naming the bytes. OD-2: the
+// the requirement the run refuses before any payload, naming the bytes (P9 lane D1:
+// --plan-only prints its plan first, IcAdmission.PlanPrintsRequiredBytesOverCap). OD-2: the
 // CLI admits --max-memory-mib 2560 (bound 16,384) and --workers 16 (bound 16).
 TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
@@ -2917,7 +2918,7 @@ TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
     tight.plan_only=plan_only; const auto run=run_named(dir,tight,"tight");
     EXPECT_FALSE(run.ok);
     EXPECT_NE(run.error.find("required_bytes="+std::to_string(required)),std::string::npos) << run.error;
-    EXPECT_TRUE(run.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"tight"));
+    EXPECT_EQ(run.log.empty(),!plan_only); EXPECT_FALSE(std::filesystem::exists(dir.path/"tight"));
   }
   const auto cli=[&](const std::string& mib,const std::string& workers,std::string& out) {
     std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
@@ -2935,6 +2936,76 @@ TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
   EXPECT_EQ(admitted.at("max_working_bytes"),2560ULL<<20); EXPECT_EQ(admitted.at("workers"),16);
   EXPECT_EQ(cli("16385","16",printed),2); // the CLI's memory bound
   EXPECT_EQ(cli("2560","17",printed),1);  // bounded config
+}
+// P9 lane D1 (the memory model, strategy_ic_admission.cpp admit): a --plan-only whose scored
+// role exceeds the cap still prints its plan -- every role with its required_bytes, within_budget
+// and its memory terms, which sum to required_bytes -- then refuses with the unplanned run's
+// message (exit 1 through the CLI, the plan on stdout). Within the cap the plan carries none of
+// those keys, so its bytes are the v8 plan's. No payload is read either way.
+TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  cfg.plan_only=true; cfg.max_working_bytes=512ULL<<20;
+  std::ostringstream within_log;
+  const auto within=atx::impl::strategy::run_ic(cfg,within_log);
+  ASSERT_TRUE(within) << within.error().to_string();
+  const auto admitted=Json::parse(within_log.str());
+  EXPECT_FALSE(admitted.contains("admission"));
+  ASSERT_EQ(admitted.at("roles").size(),2U);
+  for (const auto& row:admitted.at("roles")) {
+    EXPECT_FALSE(row.contains("within_budget")); EXPECT_FALSE(row.contains("memory_terms"));
+  }
+  const auto required=admitted.at("roles").at(0).at("required_bytes").get<u64>();
+  auto over=cfg; over.max_working_bytes=required-1;
+  std::ostringstream log;
+  const auto refused=atx::impl::strategy::run_ic(over,log);
+  ASSERT_FALSE(refused);
+  const auto message=refused.error().to_string();
+  EXPECT_NE(message.find("required_bytes="+std::to_string(required)+" max_compiled_slots="),
+            std::string::npos) << message;
+  EXPECT_NE(message.find("exceeds configured memory budget before payload load"),std::string::npos)
+      << message;
+  const auto plan=Json::parse(log.str());
+  EXPECT_EQ(plan.at("admission"),"refused-required-bytes-exceed-max-working-bytes");
+  EXPECT_EQ(plan.at("max_working_bytes"),required-1);
+  EXPECT_EQ(plan.at("candidate_count"),admitted.at("candidate_count"));
+  ASSERT_EQ(plan.at("roles").size(),2U);
+  const std::vector<std::string> terms{"fixed_slack_bytes","role_and_worst_candidate_vm_bytes",
+      "composition_bytes","axis_bytes","research_field_bytes","label_bytes","worker_bytes"};
+  for (usize r=0;r<2;++r) {
+    SCOPED_TRACE(r);
+    const auto& row=plan.at("roles").at(r);
+    EXPECT_EQ(row.at("role"),admitted.at("roles").at(r).at("role"));
+    EXPECT_EQ(row.at("required_bytes"),admitted.at("roles").at(r).at("required_bytes"));
+    EXPECT_FALSE(row.at("within_budget").get<bool>());
+    const auto& memory=row.at("memory_terms");
+    ASSERT_EQ(memory.size(),terms.size());
+    u64 sum=0;
+    for (const auto& term:terms) {
+      ASSERT_TRUE(memory.contains(term)) << term;
+      sum+=memory.at(term).get<u64>();
+    }
+    EXPECT_EQ(sum,row.at("required_bytes").get<u64>());
+    EXPECT_EQ(memory.at("fixed_slack_bytes"),32ULL<<20);
+    EXPECT_EQ(memory.at("research_field_bytes"),0U); // no extra fields
+    EXPECT_EQ(memory.at("worker_bytes"),0U);         // one worker
+  }
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  // The CLI: exit 1, the plan on stdout.
+  std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,
+      "--library-sha256",cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",
+      cfg.train_sha256,"--validation",cfg.validation_manifest,"--validation-sha256",
+      cfg.validation_sha256,"--min-names","3","--min-dates","8","--max-memory-mib","32",
+      "--plan-only"};
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream stdout_log,stderr_log;
+  EXPECT_EQ(atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),
+                                             stdout_log,stderr_log),1);
+  EXPECT_EQ(Json::parse(stdout_log.str()).at("admission"),
+            "refused-required-bytes-exceed-max-working-bytes");
+  EXPECT_NE(stderr_log.str().find("exceeds configured memory budget before payload load"),
+            std::string::npos);
 }
 // Task H-2: --eval-mode audit-exact evaluates every candidate under the VM's AuditExact mode and
 // names it in the recipe's vm; absent, the recipe keeps ResearchFast. It is refused with
@@ -4122,5 +4193,98 @@ TEST(TwoSpeedRunner, BlockRefusalsPrecedeAnyPayloadOrOutput) {
       EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
     }
   }
+}
+// ---- P9 lane D1: the theme table from --theme-registry (strategy_ic_rules.hpp) ----
+// The alpha registry (atx-impl/strategies/alphas/registry.json) pinned by its SHA-256 gives the
+// built-in table's run byte for byte (the flag-absent identity: blend, masks, planned targets,
+// daily IC and recipe), and summary.json (and a plan) records the pin. Its order is the rule's: a
+// registry listing the themes in reverse makes theme-resid-v1's registered order [price_momentum,
+// value], so ab.json (order [value, price_momentum]) is refused before any payload and the
+// reversed order residualises value on price_momentum -- the blend ThemeResidRunner's swapped
+// names give under the built-in order. A bad pin or a path without its SHA is refused.
+TEST(ThemeRegistryRunner, RegistryOrderIsTheRegisteredOrder) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=
+      R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string swapped=
+      R"({"volume_level":"price_momentum","volume_rank":"value","volume_vee":"price_momentum"})";
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  const auto registry=std::filesystem::path(ATX_IMPL_TESTS_DIR)/".."/"strategies"/"alphas"/
+                      "registry.json";
+  const auto registry_sha=file_sha(registry);
+  ASSERT_FALSE(registry_sha.empty()) << registry.string();
+  ASSERT_TRUE(pin("ab.json",themed_text(weights_v2,cfg,weights,
+                                        signs+std_block(themes,true)+
+                                        resid_block(R"(["value","price_momentum"])"))));
+  const auto builtin=run_named(dir,cfg,"builtin"); ASSERT_TRUE(builtin.ok) << builtin.error;
+  auto with=cfg;
+  with.theme_registry_path=registry.string(); with.theme_registry_sha256=registry_sha;
+  const auto pinned=run_named(dir,with,"registry"); ASSERT_TRUE(pinned.ok) << pinned.error;
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8",
+                             "_planned_targets.csv","_daily_ic.csv"}) {
+      const auto expected=file_sha(dir.path/"builtin"/(role_name+suffix));
+      ASSERT_FALSE(expected.empty()) << role_name << suffix;
+      EXPECT_EQ(file_sha(dir.path/"registry"/(role_name+suffix)),expected) << role_name << suffix;
+    }
+  EXPECT_EQ(read_json(dir.path/"registry"/"recipe.json"),
+            read_json(dir.path/"builtin"/"recipe.json"));
+  EXPECT_EQ(read_json(dir.path/"registry"/"summary.json").at("theme_registry_sha256"),registry_sha);
+  EXPECT_FALSE(read_json(dir.path/"builtin"/"summary.json").contains("theme_registry_sha256"));
+  auto plan_cfg=with; plan_cfg.plan_only=true; std::ostringstream plan_log;
+  ASSERT_TRUE(atx::impl::strategy::run_ic(plan_cfg,plan_log));
+  EXPECT_EQ(Json::parse(plan_log.str()).at("theme_registry_sha256"),registry_sha);
+  // The built-in run of the swapped names under the built-in order.
+  ASSERT_TRUE(pin("ba.json",themed_text(weights_v2,cfg,weights,
+                                        signs+std_block(swapped,true)+
+                                        resid_block(R"(["value","price_momentum"])"))));
+  const auto ba=run_named(dir,cfg,"ba"); ASSERT_TRUE(ba.ok) << ba.error;
+  // The reversed registry (the registry's thirteen themes at the P9 base, last first).
+  const std::vector<std::string> order{"value","profitability_quality","investment_issuance",
+      "earnings_momentum","price_momentum","low_risk","short_interest","reversal_seasonality",
+      "options_implied","ownership_flow","filing_events","price_volume","merger_arbitrage"};
+  std::string reversed=R"({"schema":"atx.alpha-registry/v1","themes":{)";
+  for (usize t=order.size();t-->0;) reversed+="\""+order[t]+"\":{}"+(t?",":"");
+  reversed+="}}";
+  auto flipped=cfg; flipped.theme_registry_path=(dir.path/"reversed.json").string();
+  ASSERT_TRUE(text_file(flipped.theme_registry_path,reversed,flipped.theme_registry_sha256));
+  ASSERT_TRUE(pin("ab.json",themed_text(weights_v2,cfg,weights,
+                                        signs+std_block(themes,true)+
+                                        resid_block(R"(["value","price_momentum"])"))));
+  flipped.composition_weights_path=cfg.composition_weights_path;
+  flipped.composition_weights_sha256=cfg.composition_weights_sha256;
+  const auto refused=run_named(dir,flipped,"refused");
+  EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("[price_momentum, value], not [\"value\",\"price_momentum\"]"),
+            std::string::npos) << refused.error;
+  EXPECT_TRUE(refused.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"refused"));
+  ASSERT_TRUE(pin("rev.json",themed_text(weights_v2,cfg,weights,
+                                         signs+std_block(themes,true)+
+                                         resid_block(R"(["price_momentum","value"])"))));
+  flipped.composition_weights_path=cfg.composition_weights_path;
+  flipped.composition_weights_sha256=cfg.composition_weights_sha256;
+  const auto rev=run_named(dir,flipped,"rev"); ASSERT_TRUE(rev.ok) << rev.error;
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_finite.u8","_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/"rev"/(role_name+suffix)),
+                file_sha(dir.path/"ba"/(role_name+suffix))) << role_name << suffix;
+  EXPECT_EQ(read_json(dir.path/"rev"/"recipe.json").at("composition_residualise_order"),
+            Json::array({"price_momentum","value"}));
+  // Pin refusals precede any payload or output.
+  auto bad=with; bad.theme_registry_sha256=std::string(64,'0');
+  const auto bad_pin=run_named(dir,bad,"bad-pin");
+  EXPECT_FALSE(bad_pin.ok); EXPECT_TRUE(bad_pin.log.empty());
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"bad-pin"));
+  auto unpinned=with; unpinned.theme_registry_sha256.clear();
+  const auto no_sha=run_named(dir,unpinned,"no-sha");
+  EXPECT_FALSE(no_sha.ok);
+  EXPECT_NE(no_sha.error.find("bounded config"),std::string::npos) << no_sha.error;
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"no-sha"));
 }
 } // namespace

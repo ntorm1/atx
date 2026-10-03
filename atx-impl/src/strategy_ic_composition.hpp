@@ -54,6 +54,37 @@ struct IcCompositionResult {
     atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes = 0,
     IcThemeRule rule = IcThemeRule::redistribute, bool sleeves = false);
 
+// The ordered stage list of a pinned composition (P9 lane D1, DEC-8): the stages the rows of
+// the IC runner's composition rule table (strategy_ic_rules.hpp) run, in application order.
+// One theme grouping first (redistribute: ew-theme-v6's within-theme-v1; standardise:
+// ew-theme-std-v1's per-date rule, which every theme_standardise row runs), then on standardise
+// either residualise (theme-resid-v1) or schedule (theme-tsmom-v1) and/or sleeves
+// (two-speed-v1). Each kind at most once, in this enum's order; no stage = the pinned (or
+// default) weights path.
+enum class IcStageKind : atx::u8 { redistribute, standardise, residualise, schedule, sleeves };
+struct IcStage {
+  IcStageKind kind{};
+  std::vector<IcThemeBlock> blocks; // schedule only: the blocks schedule_theme_masses takes
+  std::vector<atx::u8> fast;        // sleeves only: the flags set_theme_sleeves takes
+};
+// What create_from_stages composes. `weights`: pinned weights in library order (empty: equal
+// family/within weights); `themes`: the grouping stage's theme index per candidate (empty exactly
+// when there is no grouping stage). Both borrowed for the create_from_stages call only.
+struct IcCompositionStages {
+  std::span<const atx::f64> weights;
+  std::span<const atx::usize> themes;
+  std::vector<IcStage> stages;
+};
+// ic_composition_working_bytes of a staged composition: the grouping's rule (residualise when a
+// residualise stage rides on standardise), `themes` the grouping's theme count (0 without one) and
+// the sleeve planes iff a sleeves stage is present. The model is the composition's peak: one
+// theme plane set per theme beside the blend (the worst single candidate's VM slots are admitted
+// by the caller, strategy_ic_admission.cpp). Refuses (InvalidArgument) a malformed stage order
+// and themes without a grouping stage, as create_from_stages does.
+[[nodiscard]] atx::core::Result<atx::u64> ic_composition_stage_bytes(
+    atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes,
+    std::span<const IcStageKind> kinds);
+
 // Streaming equal-family/equal-within-family centered tied-rank composition.
 // create copies membership and candidate metadata. add borrows one signal only
 // for that call and requires library order exactly once, including sign==0.
@@ -101,6 +132,14 @@ class IcComposition {
       std::span<const atx::f64> pinned_weights = {}, // empty: equal family/within
       std::span<const atx::usize> pinned_themes = {}, // empty: no redistribution
       IcThemeRule rule = IcThemeRule::redistribute);  // what pinned_themes switch on
+  // The runner's entry (P9 lane D1): create under the grouping stage's rule, then
+  // schedule_theme_masses for a schedule stage and set_theme_sleeves for a sleeves stage, in stage
+  // order; the result is that call sequence's, bit for bit. Refuses (InvalidArgument) a malformed
+  // stage order, a grouping stage without themes or themes without one, and whatever create,
+  // schedule_theme_masses or set_theme_sleeves refuse.
+  [[nodiscard]] static atx::core::Result<IcComposition> create_from_stages(
+      const IcCompositionConfig&, std::span<const IcCompositionCandidate>,
+      std::span<const atx::u8> decision_member, const IcCompositionStages& stages);
   // Optional `pool` (borrowed; alive for the call, never invoked from inside one
   // of its jobs): dates split into contiguous bands, each ranked in a per-worker
   // row. Every blend cell and per-date coverage sum is written by exactly one

@@ -213,3 +213,11 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/strategy_factors_verb.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_factors_verb.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
+# P9 lane D1: the IC runner's composition rule table and theme table (strategy_ic_rules.hpp,
+# contract K-P9-6), with the IC TUs' flag set (the Debug /O2 list above), so the inline variables
+# of strategy_ic_detail.hpp keep one definition.
+target_sources(atx-impl-core PRIVATE src/strategy_ic_rules.cpp)
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()

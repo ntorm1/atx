@@ -74,6 +74,12 @@ struct IcRunnerConfig {
   // recipe, cache keys and every output are byte-identical to runs without them.
   std::string train_fields_directory, train_fields_sha256;
   std::string validation_fields_directory, validation_fields_sha256;
+  // Optional pinned alpha registry (atx-impl/strategies/alphas/registry.json, SHA-256 of the file;
+  // P9 lane D1): its `themes` table, in document order, is the theme table that theme-resid-v1
+  // (registered order) and two-speed-v1 (theme set) read. Absent: the built-in table, the
+  // registry's themes at the P9 base, so every output is byte-identical to runs without it;
+  // present, summary.json (and a --plan-only plan) records theme_registry_sha256.
+  std::string theme_registry_path, theme_registry_sha256;
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.

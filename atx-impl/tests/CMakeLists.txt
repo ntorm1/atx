@@ -180,3 +180,8 @@ cmake_language(DEFER CALL atx_impl_register_research_tests)
 # Platform P9 B1: the `factors` verb (contract K-P9-4) on its synthetic role, beside the other
 # atx-equity-strategy-targets verbs (FactorsVerb.*; the glob above also compiles it into atx-impl-tests).
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_factors_verb_test.cpp)
+
+# P9 lane D1 (DEC-8, contract K-P9-6): the composition rule table, the theme table, the
+# --list-rules envelope and the ordered stage list (strategy_ic_rules.hpp) in the focused IC
+# target; atx-impl-tests already compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_rules_test.cpp)
