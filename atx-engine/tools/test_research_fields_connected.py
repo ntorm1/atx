@@ -309,6 +309,9 @@ class ConnectedField(unittest.TestCase):
     def setUpClass(cls):
         cls._reg = registered()
         cls._reg.__enter__()
+        # P9 T2: restored even when the fixture below raises (tearDownClass is skipped then), so no registered field
+        # stays bound in the builder for later modules; the second __exit__ after tearDownClass is a no-op.
+        cls.addClassCleanup(lambda: cls._reg.__exit__(None, None, None))
         cls.temp = tempfile.TemporaryDirectory()
         cls.fx = Fixture(Path(cls.temp.name))
         cls.manifest = cls.fx.run("fields", fields=RECIPE)

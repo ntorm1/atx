@@ -272,6 +272,7 @@ class NtFirst(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.stack = contextlib.ExitStack()
+        cls.addClassCleanup(cls.stack.close)  # P9 T2: unregistered even when setUpClass raises (close is idempotent)
         cls.stack.enter_context(drafted())
         cls.temp = cls.stack.enter_context(tempfile.TemporaryDirectory())
         cls.w = World(Path(cls.temp))
