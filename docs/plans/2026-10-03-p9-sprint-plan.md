@@ -111,6 +111,7 @@ None is a measurement on the book.
 | G-P7 statistics of record | DSR / PSR / MinTRL / PBO / ONC / paired dSR printed by one engine `eval` verb, tied to the old Python values by a golden fixture before the Python is deleted | F-1, OR-6; B2 tests |
 | G-P8 canary | tiny-world end-to-end cycle on the real exes, u / fit / w / NAV SHA-256 pinned, green on every build tag | F-14, P9-R10; `research-build.ps1` post-step |
 | G-P9 seal | every field consumer and `load_prior` refuses `seal.exclusive_end != kSealBeginDate`; tools tests run under the repository window (conftest bind removed) | FD-5 |
+| G-P10 artifact store (amended: SQL; printed at the freeze with its evidence; gates nothing, ruling SQL-8) | (a) the catalog of the integration head indexes every pin of every v8 / P9 spec, template, wave manifest, receipt and fields manifest: `atx-research-store verify --pins` prints counts by kind and state (`ok`, `declared`, `stale`, `missing`, `unresolved`); (b) the render-identity checker re-renders every receipt, start receipt, stage receipt, binding, verdict, wave result and candidate from its rows: mismatches of N printed; (c) two catalogs built from scratch on one tree: both catalog digests printed; (d) caches: X-5 fit / card byte-identical with no index, cold and warm index; X-5 u / w byte-identical with and without `--candidate-cache-index sqlite` (summary block and cache / timing-only files ruled before the run); root's identity runs only, no P9 cell uses an index (SQL-11); (e) every `atx.*/vN` record schema written by Python or C++ is registered in `atx-engine/schemas/research_store/classes.json` | root's store step at each P9-B0 (§4.2 "store"); SQL1-SQL4 tests; guard test `test_research_store_classes.py`; the freeze report prints (a)-(e) with what landed and what slipped to P10 |
 
 ### 0.5 Decisions (code review x literature; the PM records each as "Ruling: decision -- why -- cost if wrong")
 
@@ -133,9 +134,11 @@ None is a measurement on the book.
 | DEC-15 | The first P9 hypothesis cell is `theme-cov-hedge-v1` | 66% of variance is style (lit G-2a); theme-resid / price-risk do not hedge a theme's loading on its own factor (lit §1.1) | DMRS 2020 [21]: SR^2 1.31 -> 2.29; book +.05 to +.15 [est] | AL-COMB, P9-H |
 | DEC-16 | `info-clock-rate-v1` runs only if the PM rules it distinct from Y-5, and after Y-5 reads; `mom-volman-v1` after Y-2 reads | Y-5 buckets themes, the clock buckets name-days (lit §2.3) | [28][29] (clock); [18][19] (momentum sleeve); restatement risk lit §7 | AL-CLOCK, AL-COMB |
 | DEC-17 | The survival-conditioned IC label fix (DS-3) is a flag; adopting it for the book is one protocol cell (B0c precedent), counted | DS-3; terminal-return protocol precedent B0c (st6 table) | - | S2, P9-L |
-| DEC-18 | P9 caps: <= 6 hypothesis cells + <= 1 protocol cell; <= 10 hand-written admission strings; 0 mined campaigns | - | lit §5.2 (c): <= 6 cells / <= 10 strings keeps E[max] growth under ~2% | section 5 |
+| DEC-18 | P9 caps: <= 8 hypothesis cells (amended: COV; was 6: P9-V and P9-MV added by COV-6 / COV-7 / COV-8; P9-MV dropped at 0 if COV-MV is not merged and APPROVE before the P9 cells start) + <= 1 protocol cell; <= 10 hand-written admission strings; 0 mined campaigns | - | lit §5.2 (c): <= 6 cells / <= 10 strings keeps E[max] growth under ~2% | section 5 |
 | DEC-19 | Pools: 12-16 released at wave-1 dispatch (all merged by SHA, st7:88); 7 and 8 recovered after `-Status` shows the owner dead; 17-20 leased fresh; never 1, 2 (root), 6, 10 | lease status at plan time: 7, 8, 10 owner=dead; 12-16 alive | `global-constraints.md` (never 1 or 6); X briefs rule 4 (pool 10) | section 3 |
 | DEC-20 | Re-base P9-B0: after each wave that moves output bytes, root re-runs the current parent under the new build at 0 trials with a ruled substitution list; paired tests use the re-based reference | identity today is "all bytes but script_sha256" by hand (CM-5) | v8 prereg item 2: re-runs of ledgered cells add 0 | section 4.2 |
+| DEC-21 (amended: COV) | Covariance of record: recipe `atx-cov-v1` = atx-risk-v1.1 unchanged + Menchero-Wang-Orr eigenfactor adjustment (USE4's simulated form, a = 1, per-session seed) on the fully observed factor block, then VRA; written by the `risk` verb into an `atx.cov-container` file beside the legacy files (`--emit-container`); NAV rules read it through the unchanged `--risk-model` pin (a manifest `container` key switches `spo::RiskStore`); the default recipe and every existing store stay byte-identical; statistical factors, dense shrinkage and DCC-NL are P10 | the model of record has no eigen adjustment although the engine kernel exists (`strategy_risk_model.cpp`, `eigen_adjust.hpp:89-92`); no producer truncation test (`strategy_risk_model_test.cpp`); store read by seek-per-row and hashed whole per open (`strategy_spo.cpp:648-769`) | USE4 §4.2 (lowest-vol eigenfactors realise ~40% above forecast; shipped milder adjustment), MWO 2011; ELW 2019 GMV test and its forward-looking-universe caveat; Boyd et al. 2017 O(nk^2); cov-design §2; rulings COV-1..COV-8 | COV, D-COV, P9-V |
+| DEC-22 (amended: SQL; the amendment's DEC-21, renumbered because COV holds DEC-21) | Artifacts: JSON stays the authority for every pinned or chained class through the freeze; a SQLite catalog indexes them (path, SHA-256 verified or declared, typed keys, pins) and proves byte regeneration; unpinned caches move to SQLite (record store by recorded file presence, IC caches by explicit flag; in P9 only root's identity runs use an index, SQL-11); tables are compile-time C++ descriptors (no generated file, no Python generator, SQL-5) over the vendored `atx_sqlite3` (no new dependency, SQL-4); the trial ledger stays hash-chained JSONL (SQL-9); human-authored inputs stay text in git through P9 (P10: the owner's call) | SQLite vendored and wrapped (`atx-core/CMakeLists.txt:1-27`, `atx/core/db/sqlite.hpp`); receipts / bindings written in text mode (CRLF) vs stage receipts / verdicts / ledger LF (`run_bounded_research.py@e1:434, 497`; `stage_chain.py@e1:273`); record store content-keyed and absent from fitter / card outputs (`record_store.py:1-13`; `fit_composition_weights.py:1293-1325`); IC summary and marginal output record cache state (`strategy_ic_runner.cpp:583-596`; `strategy_marginal_ic.cpp@s1:1001-1048`) | rulings SQL-1..SQL-12, SQL1-EARLY; sqlite.org wal / howtocorrupt / intern-v-extern-blob / stricttables | SQL1-SQL4 |
 
 ### 0.6 Global constraints for P9 (every lane and root inherit them)
 
@@ -239,12 +242,18 @@ after the previous wave's merges and re-base).
 | S2 | INFRA-F | parallel VM kernels, one `OpSig` table, coverage gate config, survival-label flag, AuditExact flag | I, Sig | 2 | 18 | L | S1 |
 | AL-COMB | ALPHA | `theme-cov-hedge-v1` and `mom-volman-v1` as registry rules + templates (blind) | Sh | 2 | 19 | M | D1 |
 | AL-SIG | ALPHA | P9 signal set (<= 10 strings): `gia_13f`, `russell_recon` as C++ builder kinds + registrations (blind) | Sh, C | 2 | 20 | L | A2 (A3 by contract) |
+| COV (amended: COV) | INFRA-R | covariance of record without look-ahead: recipe `atx-cov-v1` (eigen adjustment), `atx.cov-container` mmap file + `RiskStore` read path, producer truncation suite, extended bias families, container bench | Sh, I | 2 | 22 (fresh, `-MaxPool 22`; COV-3) | L | C1, T1 |
 | C3 | INFRA-C | typed NavSpec JSON, cost-law and leverage-rule registries, split the NAV god-file, split `atx-impl-core` | I, G | 3 | 15 | L | C2 |
 | D3 | INFRA-D | walk-forward refit: weights v2 + C++ fold driver + manifest kind; theme-tsmom sleeves at apply time | Sig, Sh | 3 | 16 | L | D2, E2 |
 | AL-CLOCK | ALPHA | `info-clock-rate-v1` as a trade-rate registry rule + template (blind; DEC-16) | G, Sh | 3b | 19 | M | C3 |
+| COV-MV (amended: COV) | INFRA-R | `mv-aim-v1` NAV target rule (gross-normalised P V^-1 P alpha from the pinned store) for cell P9-MV; funded in P9 (COV-7); P9-MV dropped at 0 if this lane is not merged and APPROVE before the P9 cells start | Sh | 3b | at dispatch | M | COV, C3 |
 | AL-DATA | ALPHA | gated: text (Lazy Prices), Form ADV crowding, SG&A intangible value, option-implied borrow; builder kinds + registrations only for data that landed | Sh, Sig | 3 | 20 | M | A3, owner OD-P9-4..6 |
 | PRE | ALPHA | `p9-prereg.md`: cells, budget, predictions, contamination flags, OD-3 runbook | Sig | 3 | 13 | M | AL-COMB, AL-SIG, B2, E2 |
 | A4 | INFRA-A | stretch: SEC / holdings sources and builders to C++ (migration slice 5) | I | 3 | 12 | L | A3 |
+| SQL1 (amended: SQL) | INFRA-SQL | SQLite store core: `atx/core/db` wrapper over the vendored `atx_sqlite3` fixed in place + policy open; compile-time C++ table descriptors (DDL, bind / read, digest, schema JSON); `research/store` library (create, migrate, catalog digest); generic Python accessor; record-store cache on SQLite | I | 2 | 23 | L | none to start: coded from `20443022` before wave 1 closed (SQL1-EARLY); merges onto the wave-1 head |
+| SQL2 (amended: SQL) | INFRA-SQL | artifact catalog + `atx-research-store` (seal-safe walk from pins, verified / declared SHA-256, ingest, pins, query, `schema --json`, `cache init`), render-identity checker, class registry guard | I, Sig | 2 | 24 | L | SQL1 task 1 (K-P9-13); the wave-1 head (SQL1-EARLY) |
+| SQL3 (amended: SQL) | INFRA-SQL | dual-write: Python record writers ingest what they write into the catalog with a per-write render check; the receipt `store` block recording the catalog hook and cache-index selection | I | 3 | 17 | M | SQL2, E2 merged |
+| SQL4 (amended: SQL) | INFRA-SQL | IC signal / IC-result / pair cache indexes on SQLite behind explicit flags (payload files stay); ledger index head through B2's `research/ledger` | I | 3b | 18 | L | SQL3, S2, B2, C3, D3 merged; else P10 (SQL-12) |
 
 Reviews: one fresh read-only adversarial reviewer per lane head before merge (TEMPLATES "Review"; it found 7 + 2 MAJOR in
 YINFRA / YCOMB, st7:39-40). Reviewers read the lane SHA through `git show` from root's tree; they need no pool.
@@ -262,8 +271,22 @@ YINFRA / YCOMB, st7:39-40). Reviewers read the lane SHA through `git show` from 
 | S1 | `atx-impl/src/strategy_marginal_ic.{cpp,hpp}`, `atx-engine/.../combine/marginal_rank_ic.*`, `orthogonalize.*`, `atx-impl/src/strategy_ic_signal_cache.cpp`, `strategy_ic_result_cache.cpp` (identity token), `CMakePresets.json` (Release equity preset), tests |
 | T1 | `atx-impl/tests/CMakeLists.txt`, `atx-engine/tests/CMakeLists.txt` (CTest registration lines), `scripts/research-build.ps1` (canary post-step), `scripts/tests/fixtures/tiny_world.py`, `scripts/tests/test_cycle_e2e.py`, new guard tests, new `atx-engine/tests/fixtures/eval_tie/**`, the class-C deletion commit (audit §4 list) |
 | wave 2-3 | A3 `research/fields/sources/**` + builder kinds; B2 new `research/ledger/**`, `research/eval` exe, `atx-impl/tools/{nav_summ,backtest_integrity,dsr_total}.py`, `scripts/research_ledger.py`; C2 / C3 the C1 files + `atx-impl/src/config.*`, `scripts/wave_rules.py:110-119`, `atx-impl/CMakeLists.txt`; D2 / D3 the fitter, `composition_*.py`, new `research/composition/**`; E2 `scripts/research_cycle.py` (split into `scripts/cycle/`), `research_spec.py`, `research_add_alpha.py`, `cycle_admission.py`; S2 `atx-engine/include/atx/engine/alpha/**`, `src/factory/{ic_screen,op_catalog}.cpp`, `ic_screen_config.hpp`; AL-* new files plus append-only rows in the registries; PRE the sprint dir only |
+| COV (wave 2; amended: COV) | new `atx-engine/include/atx/engine/risk/cov_container.hpp`, `atx-engine/src/risk/cov_container.cpp`, `atx-engine/tests/risk/risk_cov_container_test.cpp`, `atx-engine/bench/risk_cov_container_bench.cpp`, `atx-impl/tests/strategy_cov_{fixture.hpp,model_test.cpp,store_test.cpp}`; modified `atx-impl/src/strategy_risk_model.{hpp,cpp}`, `strategy_risk_verb.cpp`, `atx-impl/tools/equity_strategy_risk.cpp`, the RiskStore section of `strategy_spo.{hpp,cpp}` (`.hpp:221-266`, `.cpp:629-777`), `strategy_risk_model_test.cpp` (fixture extraction only), `atx-engine/include/atx/engine/risk/README.md`; cross-lane one line in `atx-engine/CMakeLists.txt` (risk source list) and two lines in `atx-impl/tests/CMakeLists.txt` (`atx-impl-strategy-target-tests`, shared with C2). In wave 3 C3 inherits `strategy_spo.*` (its core split moves it) |
+| COV-MV (wave 3b; amended: COV) | new `atx-engine/{include/atx/engine,src}/book/mv_target.*`, `atx-engine/tests/book/book_mv_target_test.cpp`, template `scripts/specs/p9/templates/mv-aim.json` and its rule file; one registry row and one parser entry in C3's files (cross-lane) |
+| SQL1 (wave 2; amended: SQL) | `atx-core/{include/atx/core,src}/db/sqlite.*`, `atx-core/tests/db_sqlite_test.cpp` (ruling SQL-4); new `atx-core/{include/atx/core,src}/db/connection.*`, `atx-core/tests/db_connection_test.cpp`; one source line in `atx-core/CMakeLists.txt` and one line in `atx-core/tests/CMakeLists.txt`; new `atx-engine/include/atx/engine/research/store/{store,digest,rows_core,rows_cache,ops_core,ops_cache}.hpp`, `atx-engine/src/research/store/{detail/table.hpp,detail/table_ops.hpp,tables_core.hpp,tables_cache.hpp,core_ops.cpp,cache_ops.cpp,store.cpp,digest.cpp}`; `atx-engine/tools/research_store.py` (new), `atx-engine/tools/record_store.py`, `test_record_store.py` (ruling SQL-4); new tests `atx-engine/tests/research/research_store_*`, fixtures `atx-engine/tests/fixtures/research_store/{schema/catalog_core.json,schema/cache.json,make_store.py,digest_oracle.py,golden_*.json,make_py_fixture.py,py_created.sqlite}`, pytests `atx-engine/tools/test_research_store*.py`, `test_record_store_sqlite.py`; one appended block each in `atx-engine/CMakeLists.txt` and `atx-engine/tests/CMakeLists.txt` |
+| SQL2 (wave 2; amended: SQL) | new `atx-engine/include/atx/engine/research/store/catalog/**`, `atx-engine/src/research/store/catalog/**` (incl. `tables_records.hpp`, `records_ops.cpp`), `atx-engine/schemas/research_store/classes.json`, `atx-engine/tools/research_store_identity.py`, tests `atx-engine/tests/research/research_catalog_*`, `atx-engine/tools/test_research_store_{identity,classes,blind}.py`, fixtures `atx-engine/tests/fixtures/research_store/{schema/catalog_records.json,make_store_tree.py,tree/**}`; one appended block each in `atx-engine/CMakeLists.txt` and `atx-engine/tests/CMakeLists.txt` |
+| SQL3 (wave 3; amended: SQL) | new `scripts/research_store_hook.py` + test; `scripts/run_bounded_research.py` (the `store` block), `atx-engine/tools/stage_chain.py`, `scripts/wave_context.py`, `scripts/cycle_resume.py`, `scripts/cycle_verdict.py`, `scripts/wave_stage_record.py`, `scripts/wave_queue.py` (or the `scripts/cycle/` file E2 moved a writer into, named by the PM) and their tests; no spec keys for the index flags in P9 (SQL-11) |
+| SQL4 (wave 3b; amended: SQL) | `atx-impl/src/strategy_ic_signal_cache.cpp`, `strategy_ic_result_cache.cpp`, `strategy_marginal_pair_cache.{cpp,hpp}`, `strategy_marginal_ic.{cpp,hpp}` (flag + `pair_cache` key), `strategy_ic_runner.cpp` (flag + `candidate_cache` key), `strategy_ic_detail.hpp` (one field), new `atx-impl/src/strategy_ic_cache_index.*` + test (one line in `atx-impl/tests/CMakeLists.txt`), one link line in `atx-impl/CMakeLists.txt`; SQL2's `ingest_ledger.cpp` and catalog CMake block; SQL1's cache-group files if a v2 is needed |
 
 CMake: lanes that add a target append one block at the end of the owning list; root resolves textual conflicts at merge.
+
+(amended: COV) `strategy_risk_model.*`, `strategy_risk_verb.cpp`, `tools/equity_strategy_risk.cpp` and `strategy_spo.*`
+were owned by no lane before COV; the COV row assigns them (ruling COV-3).
+
+(amended: SQL) SQL lanes never touch `vcpkg.json`, `CMakePresets.json` or any dependency line (SQL-4), `pch.hpp`,
+`atx-engine/include/atx/engine/store/**`, `wave_manifest.py`, `scripts/cycle/**` beyond a file the PM names (E2 / D3),
+`backtest_integrity.py`, `research_ledger.py` (B2) or the fitter; no SQL lane adds a generated file or a
+code-generation step (SQL-5).
 
 ### 2.3 Cross-lane contracts (declared now, before dispatch)
 
@@ -280,6 +303,8 @@ CMake: lanes that add a target append one block at the end of the owning list; r
 | K-P9-9 manifest kinds | E2 | PRE, root | `atx.research-wave/v2`: `kind` in {add, replace, rule, field, role, horizon, walk-forward, leverage}; `rules: [{name, params}]` validated against K-P9-6 / K-P9-7 |
 | K-P9-10 run receipts | E1 | E2, scoreboard | every bounded run dir: `receipt.json` carries `argv_sha256`, `attempt`, `executable_sha256`, `build_type`; a resume refuses a mismatched argv |
 | K-P9-11 registrations | E1 (`wave_queue.py` schema) | AL-*, PRE | candidate / rule file gains `source_sample_end` (YYYY), `predicted_mechanism` (one line), `data_class` (H / W / P / N, lit §3.1) |
+| K-P9-12 covariance container (amended: COV) | COV | `spo::RiskStore` (vol-target-v1, risk-target-v1, spo-v1/2/3 through `--risk-model`), D-COV, PRE, AL-COMB's §8 Q5 diagnostic (may read either store), COV-MV (funded, COV-7) | `<store dir>/model.atxcov`, format `atx.cov-container` 1.0 (cov-design §4): magic `89 43 4F 56 0D 0A 1A 0A`, little-endian, 4 KiB header {major 1, minor, endian tag, flags (complete, f32 exposures), D, K = 1 + G + S, first / last session, recipe / role / inputs SHA-256, root}, 4 KiB-aligned per-session blocks with 64-byte-aligned arrays {ids u64, role_index u32, group u32 (1..G, 0 none), exposures f32 or f64 N x S, specific f64 (priced rows first, finite > 0), factor_cov f64 K x K, optional factor_return, factor / row flags, diag, eigen gammas}, date index {as_of, data_cutoff, history_first, offset, bytes, rows, priced_rows, flags}, per-block SHA-256 under `root_sha256`, trailer; the store's `manifest.json` (`atx.risk-model/v1`) gains `container: {file, format, bytes, file_sha256, root_sha256}` only when written; invariant: block t reads data at sessions <= t only and is stamped as_of = cutoff = session t; a decision at d reads block d (kept as today's consumers have it, COV-4); readers refuse a cutoff after the request, a role / axis / recipe / root mismatch, an unfinished file and unknown required sections (cov-design §3.2) |
+| K-P9-13 artifact store schema (amended: SQL) | SQL1 (descriptor API and DDL grammar, policy, digests, schema JSON, groups `catalog_core` and `cache`), SQL2 (group `catalog_records`, the `atx-research-store` CLI, `classes.json`), SQL3 (receipt key `store`), SQL4 (two index flags and their output keys) | SQL2, SQL3, SQL4, root, PRE (pins report), D3 (cache tables, optional) | one `constexpr` descriptor per record type (`store::table<Row>(name, opts, store::col<Sql::T>(name, &Row::m, flags)...)`; nullability = `std::optional`; flags key / indexed / volatile; `since` per table and column) from which templates produce the DDL (exact grammar, sql-design §3.6), bind / read, the record digest and the schema; instantiated only in `core_ops.cpp`, `cache_ops.cpp`, `records_ops.cpp`; consumers see plain row structs and non-template operations; schema document `atx.store-schema/v1` printed by `atx-research-store schema --json --db catalog\|cache` and stored in `store_info('schema_json')`, read from that row (no subprocess, SQL-10) by one generic Python accessor (`research_store.py`); catalog `build-equity/research-store/catalog.sqlite` (`application_id` 0x41545843, `user_version` 1), every cache index `<dir>/index.sqlite` (0x4154584B, 1), created and migrated only by C++; WAL, `BEGIN IMMEDIATE`, busy 30 s, `synchronous` FULL (catalog) / NORMAL (caches), `page_size` 8192 before WAL, STRICT + WITHOUT ROWID tables with natural keys, every read ordered by key; `artifact.sha_source` `verified` (hashed by the catalog) or `declared` (stated by a manifest, file not opened); record digest `atx.record-digest/v1` (typed TLV, reals as IEEE bit hex, volatile columns excluded) and catalog digest `atx.catalog-digest/v1`; values <= 1 MiB inline, payloads always files by SHA-256; typed columns hold no return / IC / Sharpe / turnover / NAV statistic; receipt `store` block `atx.run-store/v1` (absent when no catalog and no index); flags `--candidate-cache-index`, `--pair-cache-index` `{files,sqlite}` (default `files`; in P9 passed only by root's identity runs by direct argv, no spec key, SQL-11); CLI `atx-research-store {init, catalog, ingest, verify, query, digest, dump, cache init, cache prune, schema, quick-check}`, exit 0 / 2 / 3 / 4 |
 
 ### 2.4 Lane blocks
 
@@ -487,6 +512,64 @@ merge slot. The paste-ready briefs (files in scope, done criteria, out of scope)
   `generate_from_spec.py --spec specs/library-v71.json --check` exits 0). Root: canary goldens on Debug, then on Release;
   `ctest -N -L atx_research` count; tie gtest green. Trials 0. Merge slot 2.
 
+**INFRA-R: the covariance of record (amended: COV; owner directive, rulings COV-1..COV-8)**
+
+- **COV covariance + container (wave 2, fresh pool-22, COV-3).** Inputs: COV-1, COV-2, cov-design §1.4 (no eigen
+  adjustment in the model of record, no producer truncation test, seek-per-row store hashed whole per open, no per-row
+  stamp, no eigen / MVP / optimised bias families), USE4 §4-5, MWO 2011, ELW 2019 §6. Deliverables: `atx.cov-container`
+  writer and mmap reader in `atx-engine/risk` (K-P9-12); recipe `atx-cov-v1` in the `risk` verb (`--recipe`, default
+  `atx-risk-v1.1`); `--emit-container`; `RiskStore` reads a container-bearing store with bit-identical `RiskSlice`s,
+  so vol-target, risk-target and spo read it through the unchanged `--risk-model` pin and no NAV file changes;
+  producer truncation suite (delete-after, perturb-after, future instruments, planted leak); extended bias families
+  (eigen, minvar, optimized, QLIKE, MRAD) behind `--bias-families extended`; `cov-info` / `cov-diff`; container
+  bench. COV-4: the as-of rule stays as today's consumers have it (block t uses sessions <= t; a decision at d reads
+  block d); the reviewer traces, in the role builder and NAV replay, when a decision at d is formed and first traded
+  and shows block d holds nothing from after that point; the truncation test and the planted-leak probe are required.
+  Root: builds the engine risk group, `atx-impl-strategy-target-tests`, the risk and targets exes; the R-8 store
+  rebuilt flag-absent (payload SHAs equal, `producer` substituted), with `--emit-container` (`cov-diff --legacy` exit
+  0), and Y-1's NAV on it byte-identical to its P9-B0 reference except the store pin; one `atx-cov-v1` build timed (a
+  Release build of the producer only if that Debug run exceeds 600 s, and then only after Release-vs-Debug byte
+  identity on the synthetic fixture); bench on `rel`. Trials 0. Merge slot 9 of wave 2 (byte-neutral; may move
+  earlier).
+- **COV-MV max-Sharpe target (wave 3b; funded in P9, COV-7).** Inputs: cov-design §5.2, K-P9-7 `target` kind, C3's
+  registry. Deliverables: `mv-aim-v1` (gross-normalised P V^-1 P alpha over priced names, alpha = sigma z, from the
+  pinned store's row d; unpriced names pass through; gross matched to the desired target) as a NAV target rule;
+  template. Root: NAV identity with the rule absent. Trials 0 (P9-MV is root's). If COV-MV is not merged and reviewed
+  APPROVE before the P9 cells start, P9-MV is dropped at 0 (COV-7).
+
+**INFRA-SQL: the artifact store (amended: SQL; owner directive 2; rulings SQL-1..SQL-12, SQL1-EARLY, DEC-22)**
+
+- **SQL1 store core (wave 2, pool-23; started early from `20443022`, SQL1-EARLY).** Inputs: sql-design §0, §3; the
+  vendored SQLite (`atx_sqlite3`) and the `atx/core/db` wrapper (no new dependency, SQL-4). Deliverables: wrapper
+  defects fixed in place and a policy open in atx-core; compile-time table descriptors and their templates (no
+  generator, SQL-5); the `research/store` library (create, migrate, record and catalog digests, schema JSON); the
+  generic Python accessor; the record store (`record_store.py`) on SQLite when `index.sqlite` exists in its root or
+  parent, with read-through of legacy JSON and a stderr selection line (no P9 cell runs with an index; root's identity
+  runs only, SQL-11). Task 1 (descriptor machinery, core and cache descriptors, schema fixtures) is committed first as
+  SQL2's base. Root: builds `atx-core-tests`, `atx-engine-research-store`, `atx-engine-research-store-tests`; logs the
+  compile seconds of the instantiating TUs. Trials 0. Merge slot: wave 2 slot 10, after COV (9), onto the wave-1 head
+  (keep-both CMake tails or a rebase, SQL1-EARLY).
+- **SQL2 catalog (wave 2, pool-24).** Inputs: SQL1's task-1 commit and the wave-1 head (SQL-7, SQL1-EARLY); sql-design
+  §1, §3.7, §3.9. Deliverables: `atx-research-store` (walk from pins, seal guard, verified / declared SHA-256, ingest
+  of receipts, stage receipts, bindings, verdicts, wave results, specs, candidates, ledger lines, fields manifests and
+  build receipts; pins and their status; query, dump, digest; `schema --json`; `cache init` / `prune`); the Python
+  render-identity checker; `classes.json` and its guard test. Root: builds the catalog targets; fixture chain 0
+  mismatches; real tree as a root-only bounded run: pins report, render mismatches, a reproducible catalog digest;
+  SQL1's X-5 fit and card identity with no index, cold and warm index. Trials 0. Merge slot: wave 2 slot 11, directly
+  after SQL1.
+- **SQL3 writer dual-write (wave 3, pool 17).** Inputs: SQL2 merged; E2's split. Deliverables: one hook call after
+  each Python write of a receipt, start receipt, stage receipt, binding, verdict, wave result and candidate; the
+  bounded-run receipt's `store` block (catalog hook and cache-index selection, absent when neither exists). Root: E1's
+  tiny-world fake-wave identity without a catalog (byte-identical) and with one (the `store` block and the digests over
+  it as the only substitutions); 0 render mismatches. Trials 0. Merge slot 6 of wave 3, never under an in-flight wave.
+- **SQL4 cache indexes (wave 3b, pool 18).** Inputs: D3 and C3 merged; S2's cache identity tokens; B2's ledger
+  library (chain-head function, SQL-7). Deliverables: IC signal, IC-result and pair caches indexed in SQLite only under
+  `--candidate-cache-index sqlite` / `--pair-cache-index sqlite` (payload files unchanged, read-through; the output
+  records the index); the ledger index head from `research/ledger`. Root: X-5 u / w with no flag byte-identical (index
+  file present or not); with the flag cold and warm byte-identical apart from the summary block and the ruled cache /
+  timing-only files; marginal rows identical; `verify --ledger` exit 0. Trials 0. Merge: 3b, with AL-CLOCK and COV-MV;
+  if it is not merged and APPROVE before the P9 cells start it goes to P10 untouched (SQL-12).
+
 **ALPHA: blind registrations, never a result**
 
 Every ALPHA lane obeys `task-X-briefs.md` rules 2-3 (blind; one variant per hypothesis; constants fixed from the
@@ -577,6 +660,11 @@ graph LR
     S2[S2 VM + labels]
     ALC[AL-COMB hedge + momvol]
     ALS[AL-SIG 13F + Russell]
+    %% (amended: COV)
+    COV[COV covariance + container]
+    %% (amended: SQL)
+    SQ1[SQL1 store core]
+    SQ2[SQL2 catalog]
   end
   M1 --> A3
   M1 --> B2
@@ -595,6 +683,15 @@ graph LR
   S2 --> M2
   ALC --> M2
   ALS --> M2
+  %% (amended: COV)
+  M1 --> COV
+  COV --> M2
+  %% (amended: SQL) SQL1 coded from 20443022 before wave 1 closed (SQL1-EARLY); SQL2 waits for the wave-1 head
+  M1 -. SQL1-EARLY, coded before M1 .-> SQ1
+  SQ1 -. K-P9-13 task 1 .-> SQ2
+  M1 --> SQ2
+  SQ1 --> M2
+  SQ2 --> M2
 
   subgraph W3[wave 3]
     C3[C3 NavSpec + registries]
@@ -603,6 +700,14 @@ graph LR
     ALD[AL-DATA gated]
     PRE[PRE p9-prereg]
     A4[A4 SEC / holdings, stretch]
+    %% (amended: COV)
+    CMV[COV-MV mv-aim, 3b]
+    %% (amended: SQL)
+    SQ3[SQL3 dual-write]
+  end
+  %% (amended: SQL)
+  subgraph W3B[wave 3b]
+    SQ4[SQL4 cache indexes]
   end
   M2 --> C3
   M2 --> D3
@@ -619,8 +724,24 @@ graph LR
   ALD --> M3
   PRE --> RUL[PM rules p9-prereg]
   M3 --> RUL
+  %% (amended: COV)
+  M2 --> DCOV[D-COV diagnostic, 0 trials]
+  DCOV --> PRE
+  C3 --> CMV
+  COV --> CMV
+  CMV --> M3
+  %% (amended: SQL)
+  M2 --> SQ3
+  SQ3 --> M3
+  M3 --> SQ4
+  C3 --> SQ4
+  D3 --> SQ4
+  SQ4 -. merged before P9-L, else P10 .-> PL
   RUL --> PL[P9-L protocol] --> PS[P9-S signals] --> PH[P9-H hedge] --> PM[P9-M momvol] --> PC[P9-C clock]
-  PC --> PW[P9-W walk-forward] --> PX[P9-X leverage] --> AP9[P9 adoption print] --> OD3[OD-3 read once] --> FRZ[P9 freeze gate]
+  %% (amended: COV) P9-MV between P9-C and P9-W (COV-7); P9-V after P9-X (COV-6)
+  PC --> PMV[P9-MV mv-aim] --> PW[P9-W walk-forward] --> PX[P9-X leverage]
+  PX --> PV[P9-V vol-target on atx-cov-v1]
+  PV --> AP9[P9 adoption print] --> OD3[OD-3 read once] --> FRZ[P9 freeze gate]
 ```
 
 ### 3.2 Dependency table
@@ -631,7 +752,7 @@ graph LR
 | E1, T1, A1, B1, D1, C1, S1 | base `d7c1c520` | - | wave 1: E1 1, T1 2, A1 3, A2 4, S1 5, B1 6, D1 7, C1 8 |
 | A2 | base | A1 (K-P9-1) | after A1 |
 | wave-1 merges | R0-14 (PM8-12 (e)); each lane's review APPROVE | - | after the v8 report |
-| A3 | A2 merged | - | wave 2: E2 1, A3 2, S2 3, B2 4, D2 5, C2 6, AL-COMB 7, AL-SIG 8 |
+| A3 | A2 merged | - | wave 2: E2 1, A3 2, S2 3, B2 4, D2 5, C2 6, AL-COMB 7, AL-SIG 8, COV 9, SQL1 10, SQL2 11 (amended: COV, SQL; T2's slot as the PM orders) |
 | B2 | T1 merged (tie fixture) | - | |
 | C2 | C1 merged | - | |
 | D2 | D1, B1 merged | - | |
@@ -639,20 +760,35 @@ graph LR
 | S2 | S1 merged (identity token) | - | |
 | AL-COMB | D1 merged | the cell waits for the Y-2 read (DEC-16) | |
 | AL-SIG | A2 merged | A3 (K-P9-2 source interface) | after A3 |
-| C3 | C2 merged | - | wave 3: C3 1, D3 2, AL-CLOCK 3, AL-DATA 4, A4 5 |
+| COV (amended: COV) | C1, T1 merged (wave-1 merges + P9-B0 = the dispatch base) | C2 (shares the `atx-impl-strategy-target-tests` list, textual) | wave 2 slot 9 (COV-3) |
+| SQL1 (amended: SQL) | none to start: coded from `20443022` in pool-23 before wave 1 closed (SQL1-EARLY); merges onto the wave-1 head + P9-B0 | - | wave 2 slot 10, after COV |
+| SQL2 (amended: SQL) | SQL1 task 1 committed (ruling SQL-7); the wave-1 head (SQL1-EARLY) | SQL1 (K-P9-13 API) | wave 2 slot 11, directly after SQL1 (rebased on it) |
+| C3 | C2 merged | - | wave 3: C3 1, D3 2, AL-CLOCK 3, AL-DATA 4, A4 5, SQL3 6 (amended: SQL); wave 3b: AL-CLOCK, COV-MV, SQL4 (amended: COV, SQL) |
 | D3 | D2, E2 merged | - | |
 | AL-CLOCK | C3 merged; DEC-16 ruling; Y-5 read | - | wave 3b |
+| COV-MV (amended: COV) | COV, C3 merged; funded (COV-7) | - | wave 3b, after AL-CLOCK |
 | AL-DATA | A3 merged; data landed (OD-P9-4..6) | - | |
-| PRE | AL-COMB, AL-SIG, AL-CLOCK reports; B2, E2 merged | AL-DATA | doc, no merge conflict |
+| SQL3 (amended: SQL) | SQL2, E2 merged | - | wave 3, slot 6 |
+| SQL4 (amended: SQL) | SQL3, S2, B2, C3, D3 merged | B2 (chain-head function, ruling SQL-7) | wave 3b, with AL-CLOCK and COV-MV; not merged and APPROVE before the P9 cells start -> P10 untouched (SQL-12) |
+| D-COV (amended: COV) | COV merged; the store-of-record build of R-8's role under `atx-cov-v1` | - | root, between wave 2 and the P9 cells (§3.4 step 6) |
+| PRE | AL-COMB, AL-SIG, AL-CLOCK reports; B2, E2 merged | AL-DATA; D-COV printed; COV merged (amended: COV; PRE records D-COV's numbers as P9-V's predictions) | doc, no merge conflict |
 | P9 cells | PRE ruled; the infra each cell uses merged; P9-B0 re-base on the last build | - | root, serial |
+| P9-V (amended: COV) | COV merged; D-COV printed; P9-X is the Y-1 (vol-target) form; PRE ruled | - | root, serial, after P9-X |
+| P9-MV (amended: COV) | COV-MV merged and APPROVE before the P9 cells start, else dropped at 0 (COV-7); PRE ruled | - | root, serial, after P9-C |
+
+(amended: COV) **What COV hard-depends on:** C1 (the per-book `BookScaler` that calls `RiskStore::read`, and the
+vol-target replay fixtures COV's identity tests reuse) and T1 (CTest labels; the canary root re-checks). **What depends
+on COV in wave 3:** PRE (registers P9-V / P9-MV with D-COV's printed numbers), C3 (moves `strategy_spo.*` with COV's read
+path in its `atx-impl-core` split; NavSpec's `--risk-model` field must accept a container-bearing store, which needs no
+code because the flag is unchanged), COV-MV (funded, COV-7), and the cells P9-V and P9-MV.
 
 ### 3.3 Waves, pools and the critical path
 
 | wave | lanes (pool) | starts | ends |
 |---|---|---|---|
 | 1 | E1 (17), T1 (19), A1 (12), A2 (13), S1 (18), B1 (14), D1 (16), C1 (15) | R0-1, base `d7c1c520`; pools 12-16 released and re-leased under P9 run ids (DEC-19) | each lane DONE + review APPROVE; merges after R0-14 |
-| 2 | E2 (17), A3 (12), S2 (18), B2 (14), D2 (16), C2 (15), AL-COMB (19), AL-SIG (20) | wave-1 merges + P9-B0 on build `p9-1*` | merges + P9-B0 on `p9-2*` |
-| 3 | C3 (15), D3 (16), AL-DATA (20), PRE (13), A4 (12, stretch); AL-CLOCK (19) as 3b after C3 | wave-2 merges; pools 7, 8 available after recovery | merges + P9-B0 on `p9-3*`, then the P9 cells |
+| 2 | E2 (17), A3 (12), S2 (18), B2 (14), D2 (20), C2 (15), AL-COMB (19), AL-SIG (13), T2 (21, fresh), COV (22, fresh), SQL1 (23; started early from `20443022`, SQL1-EARLY), SQL2 (24; from SQL1's task-1 commit) (amended: COV, SQL; D2 / AL-SIG / T2 per the wave-2 pool remap ruling) | wave-1 merges + P9-B0 on build `p9-1*` (SQL1 excepted: SQL1-EARLY) | merges + P9-B0 on `p9-2*`; SQL1 / SQL2 move no output byte, so they add nothing to P9-B0 |
+| 3 | C3 (15), D3 (16), AL-DATA (20), PRE (13), A4 (12, stretch); AL-CLOCK (19) as 3b after C3; COV-MV (3b, after C3, pool at dispatch; funded, COV-7); SQL3 (17); SQL4 (18) as 3b after C3 and D3 (amended: COV, SQL) | wave-2 merges; pools 7, 8 available after recovery | merges + P9-B0 on `p9-3*`, then the P9 cells; SQL4's identity runs join the wave-3 identity set when it lands before the P9 cells, else it is P10 (SQL-12) |
 
 **Critical path.** Root is the bottleneck, so the critical path is root's serial chain: R0-0 -> E1 task 0 -> R0-2 ..
 R0-14 (Y-S, four rule cells, the leverage pair, the print, the report) -> wave-1 merges (8 builds of ~9-10 min each,
@@ -661,6 +797,11 @@ ruled -> P9-L .. P9-X -> P9 adoption print -> OD-3 -> freeze. The longest lane c
 AL-CLOCK (three merges plus a 3b lane). If DEC-16 rules info-clock not distinct from Y-5, the path becomes
 D1 -> D2 -> D3 -> P9-W and wave 3 shortens by the 3b step. Wave 1 is off the critical path as long as it finishes while
 root runs Phase 0 (Phase 0 is ~6 cells + a build-free print; wave-1 lanes are M-L effort).
+
+(amended: COV, SQL) The critical path is unchanged. COV is off root's chain; D-COV adds one zero-trial run of the risk
+exe (~1 root step). No SQL lane is on root's serial chain except its merge builds (SQL1, SQL2: one build each of small
+new targets plus the root-only real-tree catalog run; SQL4: the IC exe, Debug and Release). SQL4 slipping to P10
+changes no gate (ruling SQL-8).
 
 ### 3.4 What root does between waves (merge recipe, every wave)
 
@@ -679,7 +820,15 @@ root runs Phase 0 (Phase 0 is ~6 cells + a build-free print; wave-1 lanes are M-
 5. Release the wave's pools (`-Release pool-N -RunId <run>`), lease the next wave's, dispatch from the briefs file with
    the new frozen base SHA.
 6. Between wave 2 and the P9 cells: the AL-COMB zero-trial diagnostic (lit §8 Q5) and K1 `--plan-only` of every
-   AL-SIG string on the fields build that will carry P9-S (a refusal is rewritten mechanically or withdrawn at 0).
+   AL-SIG string on the fields build that will carry P9-S (a refusal is rewritten mechanically or withdrawn at 0);
+   and D-COV (amended: COV): the `risk` verb on R-8's role twice, `--recipe atx-risk-v1.1` and `--recipe atx-cov-v1`,
+   both `--bias-families extended --emit-container` (0 trials, <= 600 s / <= 8,192 MiB each; a Release build of the
+   producer only if root measures the Debug run over 600 s, and then only after Release-vs-Debug byte identity on the
+   synthetic fixture); every `atx-cov-v1` parameter (a = 1, half-lives, seeds) as fixed in brief-COV before the run
+   and not changed after it (a change is a new recipe id and a P10 note, COV-5); print the bias families random,
+   factor, eigen, minvar, optimized, QLIKE and MRAD side by side on identical observations into the integration log;
+   risk-forecast accuracy only: no book family, no NAV, no statistic of any book is read; the `atx-cov-v1` store's
+   manifest SHA becomes the pin P9-V registers.
 
 ---
 
@@ -702,12 +851,13 @@ root runs Phase 0 (Phase 0 is ~6 cells + a build-free print; wave-1 lanes are M-
 
 | check | content |
 |---|---|
-| suites | `atx-impl-strategy-ic-tests`, `atx-impl-strategy-target-tests`, `atx-impl-tests`, the engine alpha / factory / book groups, `atx-engine-research-fields-tests` and every new research test target (by CTest label after T1: `ctest -L atx_research`, `-L atx_equity_strategy`); pytest `scripts/tests` under `PYTHONHASHSEED` 0 and 1, `atx-engine/tools`, `atx-impl/tools`, `atx-impl/strategies`: 0 failed |
+| suites | `atx-impl-strategy-ic-tests`, `atx-impl-strategy-target-tests`, `atx-impl-tests`, the engine alpha / factory / book groups, `atx-engine-research-fields-tests` and every new research test target (by CTest label after T1: `ctest -L atx_research`, `-L atx_equity_strategy`); pytest `scripts/tests` under `PYTHONHASHSEED` 0 and 1, `atx-engine/tools`, `atx-impl/tools`, `atx-impl/strategies`: 0 failed; (amended: COV) `atx-engine-risk-tests` (`RiskCovContainer.*` and `Risk*` minus the 31-minute oracle), and in `atx-impl-strategy-target-tests` the `Cov*` suites; `atx-equity-strategy-risk cov-diff --legacy` on the current store of record exits 0 |
 | identity | the current parent's accepted u / fit / w / NAV byte-identical with every new flag absent, or the P9-B0 substitution list ruled before the run; golden `0x889874a3b9b29c55` at 1 and 4 workers; tiny-world canary goldens on Debug and Release |
 | scoreboard | `research_cycle.py scoreboard` re-reads every ledger line and `s2_net_sr` and reproduces the accepted lineage; the ledger chain verifies |
 | timings | `scoreboard --timings` table appended to the integration log (the speed claims of S1, S2, C2, E1 are measured against v8's table 1.2) |
 | reviews | every merged lane APPROVE; one read-only whole-wave review of the integration head (as v8 plan §15) with I / M findings fixed before the next wave |
 | platform gates | the G-P rows each wave makes checkable are ticked in the integration log |
+| store (amended: SQL) | from wave 2 on: root runs `atx-research-store catalog` on the integration head as a root-only bounded run, logs the catalog digest, `verify --pins` counts by state (`verified` / `declared` apart) and the render-identity mismatch count; a second from-scratch catalog reproduces the digest. Evidence for the G-P10 print; never a merge block by itself |
 
 ### 4.3 Per phase
 
@@ -729,6 +879,8 @@ root runs Phase 0 (Phase 0 is ~6 cells + a build-free print; wave-1 lanes are M-
 4. Accounting: the Appendix A block of every P9 result complete; N_c, K_a, M, N_tot within section 5's caps; every
    void and undefined cell logged.
 5. Housekeeping: every P9 pool released; lane branches merged by SHA; no dirty path in the research tree pathspec.
+6. (amended: SQL) G-P10 printed with its evidence ((a)-(e) of §0.4, each marked landed / partial / P10); it does not
+   gate the freeze, and item 3 stays G-P1..G-P9 (ruling SQL-8).
 
 ---
 
@@ -754,21 +906,34 @@ root runs Phase 0 (Phase 0 is ~6 cells + a build-free print; wave-1 lanes are M-
 | P9-C | trade rule | `info-clock-rate-v1` (only if DEC-16 rules it distinct) | dSR > 0 AND mechanics | fast-rate share of name-days, cost per traded $, 4x | N_c +1 |
 | P9-W | significance | the accepted book's fitted weights refit walk-forward (K-P9-8, expanding, lag 2, step 21) | decides nothing (the honest estimate of the fitted rules) | dSR vs the in-sample parent; feeds the OD-3 predictions | N_c +1 |
 | P9-X | leverage | the owner's chosen leverage rule (X-10 form or Y-1 form) on P9-F0 | X-10's rule: net higher AND S2 net Sharpe not lower by > .100 AND mechanics | Y-F0 / P9-F0 / P9-F side by side | N_c +1 |
-| ceiling | | | | | N_c <= 62 + 7 = 69; K_a <= 10; M + 0; N_tot <= 250 |
+| P9-V (amended: COV) | risk model (COV-2, COV-6) | vol-target-v1 with its registered constants (cap = the parent's L, floor 1, cadence 21, annualisation 252) on the P9 parent, reading the `atx-cov-v1` store pinned by D-COV instead of the atx-risk-v1.1 store; registered only if P9-X is the Y-1 form, else it lapses at 0 | paired dSR > 0 vs P9-X AND mechanics at P9-X's scaled limits | predicted (from D-COV, registered before the run): the book's sigma_hat bias closer to 1; mean L_t and its changes; 4x; D-COV's minvar / optimized bias rows beside the result | N_c +1 |
+| P9-MV (amended: COV) | construction (COV-2, COV-7; funded; dropped at 0 if COV-MV is not merged and APPROVE before the P9 cells start) | `mv-aim-v1` target on the P9 parent, gross-matched (PM6-6 via C2) | dSR > 0 AND mechanics | predicted: vol ratio < 1 at gross alpha ratio ~1; turnover per unit gross; capacity curve; 4x | N_c +1 |
+| ceiling | | | | | N_c <= 62 + 9 = 71 (amended: COV; was 69: P9-V and P9-MV, COV-8); K_a <= 10; M + 0; N_tot <= 252 |
 
-Order (signals before rules, house practice and lit §6): P9-L -> P9-S -> P9-H -> P9-M -> P9-C -> P9-W -> P9-X -> P9
-adoption print -> OD-3 -> freeze. Parent of every cell = the last accepted (P9-W and P9-X excepted as stated). PM6-6
-gross matching binds P9-S, P9-H, P9-M, P9-C (via C2's in-process calibration). A rejected cell is never retried
-(E-45); an idea from a result is a P10 note; unused budget lapses.
+Order (signals before rules, house practice and lit §6): P9-L -> P9-S -> P9-H -> P9-M -> P9-C -> P9-MV -> P9-W -> P9-X
+-> P9-V -> P9 adoption print -> OD-3 -> freeze (amended: COV; P9-MV only if COV-MV is merged and APPROVE before the P9
+cells start, COV-7). Parent of every cell = the last accepted (P9-W and P9-X excepted as stated). P9-V's parent and
+paired reference is P9-X; a rejected P9-X still serves as P9-V's reference (P9-V tests the store, not the leverage
+rule). PM6-6 gross matching binds P9-S, P9-H, P9-M, P9-C (via C2's in-process calibration). A rejected cell is never
+retried (E-45); an idea from a result is a P10 note; unused budget lapses.
 
 Deflation [arith; v8y §4's E[max] formula, gamma = .5772]: E[max] factor 2.357 at N_c 62 -> 2.397 at 69 (+1.7%);
-2.815 at N_tot 233 -> 2.838 at 250 (+.8%), inside lit §5.2 (c)'s "under about 2%". V decides more than N: every cell far
+2.815 at N_tot 233 -> 2.838 at 250 (+.8%), inside lit §5.2 (c)'s "under about 2%". (amended: COV) With P9-V and P9-MV:
+2.397 at N_c 69 -> 2.4025 at 70 (+0.22%) -> 2.4077 at 71 (+0.44%); 2.838 at N_tot 250 -> 2.839 at 251 (+0.04%) ->
+2.840 at 252 (+0.09%); both remain inside lit §5.2 (c)'s "under about 2%". V decides more than N: every cell far
 from the window's mean Sharpe raises V (v8y §4). DSR_tot, DSR_hand (N_tot - M - mined lines; "n/a" rule of YP-2) and
 DSR_v8 are printed at the P9 adoption print, gating nothing (PM7-34 (2)), from B2's `eval` verb with `house_v1`.
 
 Power, stated before any result (lit §5.3): MDE at 80% power = 2.49 x SE. Signal waves (SE ~.06-.12) cannot detect
 their expected +.01 to +.05; combination cells (SE ~.2) detect only ~.5. The decision-relevant test is the cumulative
-P9-F0 vs R-2 (G-B6) and the history read; single cells are sign-level evidence.
+P9-F0 vs R-2 (G-B6) and the history read; single cells are sign-level evidence. (amended: COV) P9-V's two books differ
+only by the store's forecasts, so their paired difference has low variance and the test is sharper than a combination
+cell's; its expected effect is small [est] because the eigen adjustment mainly moves the small eigen-directions that a
+diversified book loads on little. Registering it costs +0.22% of E[max]; skipping it leaves the store question to D-COV
+alone.
+
+(amended: COV) D-COV is a zero-trial diagnostic (no book statistic; like AL-COMB's lit §8 Q5 diagnostic; COV-5) run by
+root between wave 2 and the P9 cells; it gates nothing by itself; its printed numbers are P9-V's registered predictions.
 
 ### 5.3 The OD-3 history read in P9 (DEC-3; owner decision OD-P9-2)
 
@@ -787,7 +952,9 @@ P9-F0 vs R-2 (G-B6) and the history read; single cells are sign-level evidence.
 - **Coverage** (lit §5.3 caveat 1): theme coverage by year printed (FINRA short interest, FTD, Russell proxy from 2018;
   13F from 2013q2; options from 2012): 2015-2017 tests a different book.
 - **Not readable**: a NAV that reads `--risk-model` (Y-1, any risk-target leverage) gets no history read (v8y §8); the
-  unlevered P9-F0 is the book read.
+  unlevered P9-F0 is the book read. (amended: COV) P9-V reads `--risk-model` and is not read on history either. (P10
+  note: a COV build over the history block, registered and pinned before the read, would make a vol-targeted book
+  readable.)
 - **Pass rule (G-B8)**: S2 net Sharpe on history > 0 AND paired dSR vs R-2 > 0, both p printed. A fail is reported,
   never re-run.
 
@@ -829,6 +996,11 @@ P9-L protocol cell, and `p9-prereg.md`.
 | The wave driver's first real run (Y-S) finds new defects | medium | Phase 0 stops for rulings | stage-by-stage `--until` (P12); P0-FIX closes the two known blockers |
 | Data asks never arrive | medium | AL-DATA idle; short_interest starved | AL-DATA is gated; P9-S runs on in-house data (F3, F8) |
 | Token cost: ~22 lanes + ~22 reviews (multi-agent ~15x tokens, CLAUDE.md) | high | budget | 8 / 8 / <= 6 pools; A4 is a stretch lane that moves to P10 first |
+| (amended: SQL) Two writers on one SQLite file on Windows (parallel phases, two IC exes on one cache) | medium | a busy error drops a cache entry or delays a hook | WAL, `BEGIN IMMEDIATE`, 30 s busy timeout, short transactions; caches treat failure as a miss; hooks only warn |
+| (amended: SQL) The catalog opens a sealed file | low | a seal breach | roots from pins only, year-token backstop, payload SHA-256s recorded as `declared`, `field-source` pins never followed (SQL-7); fixture test with a decoy dir |
+| (amended: SQL) A store change moves a pinned byte | low | voided lineage evidence | SQL-2: JSON stays authority; record store by recorded presence, IC caches by explicit flag (SQL-6), root's identity runs only in P9 (SQL-11); every SQL lane's identity is byte-for-byte with and without the store |
+| (amended: SQL) Descriptor templates fail root's first build or compile slowly (SQL-5) | medium | a fix round; slower store TUs | three instantiating TUs plus one test TU; consumers see plain rows only; nothing in the PCH; root logs compile seconds, > 60 s per TU is a PM decision |
+| (amended: SQL) Token cost of four more lanes | high | budget | SQL4 (then SQL3) moves to P10 first; G-P10 is print-only (SQL-8) |
 
 ### 7.2 Expected outcome (planner's estimate; nothing here is a measurement)
 
@@ -884,3 +1056,23 @@ PYTHONHASHSEED=1 "$PY" -m pytest -q -p no:cacheprovider scripts/tests
   integration log at `d7c1c520` holds no result rows (R0-3, R0-4); (4) the Y-S screen library size: 58 + 15 = 73 members
   from the X-7 arithmetic (X-7 = v8x3b + 12 = 70), while the composition review cites "about 95" (the roster cap);
   DEC-1's timing estimate uses 73; (5) the exact numbers behind the literature's [verify] marks.
+
+**Deferred to P10: the artifact store (amended: SQL)**
+
+- Stage 3 (JSON retired) for every pinned or chained class (receipts, start receipts, stage receipts, bindings,
+  verdicts, wave results, candidates), after one full wave of dual-write with 0 mismatches, every reader reading
+  through the store, and one ruled re-pin of pins as record digests; `VACUUM INTO` snapshots and an
+  `integrity_check` gate for authority classes.
+- The owner's decision whether the hash-chained JSONL stays the trial ledger's authority beyond P9 or the SQLite index
+  takes a larger role (ruling SQL-9); likewise whether human-authored inputs stay text in git.
+- Dual-write by the C++ writers (NAV, IC, fitter, fields manifests, factors verb) and by `nav_summ` / readers.
+- The bounded runner, stage chain and receipt writer in C++ over the store; the scoreboard, pin checks and
+  `research_gc` reading the store.
+- Content-addressed payload storage for fields reuse (hard links instead of copies).
+- A C++ record-cache API with Python-compatible canonical JSON (when a C++ fit needs it); RFC 8785 canonical JSON for
+  JSON columns with two writer languages.
+- Porting the alpha-lifecycle store (`atx/engine/store/`) onto the descriptors.
+- SQL4 if it is not merged and APPROVE before the P9 cells start (SQL-12); the spec keys of the two index flags and
+  their `REUSE_NEUTRAL` status (SQL-11).
+- Owners for the modules no P9 lane owns (`sql-design.md` §2): roles and mine drivers, the card, monitor and
+  diagnostics readers, `holdout_gate`, `horizon_stats` deletion, role and data builders, audits, library generators.
