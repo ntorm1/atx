@@ -181,3 +181,15 @@ code unchanged since `d7c1c520`; Debug 338/338). Not from C1; needs a ruling. X-
 - G-P3 (Release adopted), NAV half: Release X-5 NAV = Debug bit for bit outside `producer`, with the sqrt probe
   green on both presets. Shown for X-5 (no rank shape); norm-score-v1 books are not covered (item 1). IC half: M1d.
 - NV-1..NV-4 (plan §1.2): C1's deliverables merged and exercised (capacity lockstep, summary binding, producer, sqrt).
+
+### M1d: post-merge gates, 2026-10-03 (STOPPED by the owner, partial; `handoff-root-m1d.md`)
+
+From `ad406718` (code `b52a5de7`). Debug tree reconfigured at `ad406718`; build **p9-1k** (14 test / exe targets)
+exit 0, 193.3 s, 36 TUs, 0 warnings. Debug suites: `ctest -L atx_research` 104/106 (failures = M1a-RED's two gtests,
+same assertion text); `-L atx_equity_strategy` 577/577; engine alpha 771, factory 392, book 184 all passed; golden
+`0x889874a3b9b29c55` holds at 1 and 4 workers. Not done: `atx-impl-tests` whole, all pytest (killed mid-run at the
+stop, no result), canary goldens, Release IC, P9-B0 (no substitution list written), scoreboard / timings. 0 trials;
+ledger 133 lines `27e40f9f`. Next build tag `p9-1l`.
+
+G-P after M1d (partial): G-P4 counts measured (atx_research 106, atx_equity_strategy 577; registered and running) --
+tick once the wave-1 suite gate passes with pytest; G-P3 IC half, G-P8, G-P6 tick still open (blocks 2-3 not reached).

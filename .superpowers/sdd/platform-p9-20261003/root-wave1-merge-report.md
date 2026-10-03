@@ -769,3 +769,29 @@ The Debug results above were committed first (`61ac4423`). Then:
   M1b's three.
 - **Host:** free memory 2.2-6.2 GB during my runs; another tree's build (pool-21) and pytest ran alongside. I left no
   process of my own (checked at hand-off).
+
+## M1d: post-merge gates (STOPPED by the owner, partial)
+
+Agent root-m1d, 2026-10-03, from `ad406718` (code `b52a5de7`). Stopped on the owner's request after block 1's gtest
+half; full state in `handoff-root-m1d.md` (same dir). No code commit, no merge, no expected hash touched; 0 trials
+(ledger 133 lines, `27e40f9f`).
+
+- **Debug reconfigure** (`atx-build.ps1 configure -Preset equity-dev`): exit 0, 37 s; `engine_git_sha`
+  `ad406718...-dirty` (was `1239a5ff...-dirty`).
+- **Build p9-1k** (equity-dev, 4 jobs, free 4,229 MiB): 14 targets (ic, targets, ic-tests, target-tests, impl-tests,
+  strategy-mine-tests, strategy-tests, engine alpha / factory / book tests, research-fields(-tests),
+  research-admission(-tests)) -> exit 0, 193.3 s, 36 TUs, 14 links, **0 warnings**. Exes: ic `393183c0`, targets
+  `407c34ad`, ic-tests `13d7b053`, target-tests `d08a739a`, impl-tests `dd58e3ad`, mine-tests `336e1b67`,
+  strategy-tests `e1b27211`, alpha `723508b1`, factory `d2c1284d`, book `1436bf72`, fields-tests `1b364bf8`.
+
+  | suite (Debug, p9-1k) | result |
+  |---|---|
+  | `ctest -L atx_research` (106 = fields 46 + admission 16 + mine 44) | 104 passed, 2 failed = M1a-RED's two gtests, assertion text identical to M1a's record |
+  | `ctest -L atx_equity_strategy` (577 = strategy-tests 46 + ic-tests 193 + target-tests 338) | 577 passed |
+  | `atx-engine-alpha-tests` / `-factory-tests` / `-book-tests` (whole) | 771 / 392 / 184 passed |
+  | golden `0x889874a3b9b29c55` (`SignalFitnessDefaults.*` workers 1 and 4; `NsgaSearch.ScalarRaw_*` 1/2/4/8) | holds |
+  | `atx-impl-tests` (whole) | not run (stop) |
+  | pytest (scripts/tests x2 seeds, engine/tools, impl/tools, impl/strategies) | killed mid scripts/tests seed 0 at the stop; no result |
+
+- Not started: canary goldens (both still null), Release IC adoption, P9-B0 (no substitution list written), scoreboard /
+  timings, G-P ticks. Next free build tag **p9-1l**.
