@@ -8043,3 +8043,59 @@ own v8 line: "TRAIN construction cells 62; admission trials this sprint 61; ...;
 3. the PBO grid.
 
 Count: 0 trials. Ledger 133 lines, `27e40f9f`, N 62 of 62.
+
+## R0-14 final v8 report (status 8), P9 n_before, Phase-0 exit gate, P9 branch cut (P9 Phase 0) (2026-10-03, 16:41Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `32b33236`. Report:
+`.superpowers/sdd/platform-p9-20261003/root-R0-14-report.md`. Status 8: `docs/plans/2026-10-03-platform-v8-status-8.md`.
+Rulings applied: P9 `progress.md:185` ("DSR up": three readings, no claim), `:186` (PBO: both values), `:14` (OD-P9-1
+placeholder 8.0%), `:18` (OD-P9-3: L <= 2.0), `:141` (E1-STALE). No build, no research run, no pytest; 0 trials.
+
+**Re-checks (read-only).** Every reader / bundle / PBO / wave-result file status 8 cites re-hashed equal to its logged
+prefix: book `642ad29b` / `d222b547` / `b85952b0`; mech `c397ac3f` / `603b5afb` / `99eb2484`; `dsr.json` `fdb6a972`,
+`dsr-run1/stdout.log` `cd1a6375`; bundles `803e5456` `f3098044` `24f6479b` `a57d82d0` `241c5bd9` `4c15e0be`; PBO
+`2beb256c` `556192c0`; wave results `57e9f5ea` `619809ea` `09fbd24e` `ec4e07c2`. `p9-r12-adopt/book.json` re-read for
+Y-F0, X-10, Y-1: equal to R0-12's table to every digit.
+
+**Side by side** (S2 `modeled-1bn-stale5-v1+swap-fin-v1`, TRAIN 2020-2023; `book.json` `642ad29b`, = lines 7990-8001):
+
+| book | L / mean L_t | mean gross | net annual (CAGR) | net Sharpe 1x | 4x | vol | max DD |
+|---|---|---|---|---|---|---|---|
+| Y-F0 `lib-v8ysb-gm.json` | 1.1828 fixed | .98621 | 5.654% (5.767%) | 1.8495 | 1.6994 | 3.057% | 2.580% |
+| X-10 `x-leverage-L2.0.json` | 2.0 fixed | 1.66672 | 9.306% (9.606%) | 1.8083 | 1.5829 | 5.146% | 4.326% |
+| Y-1 `y-vol-target-y-1.json` (= Y-F) | mean L_t 1.8671, cap 2.0 | 1.55566 | 8.799% (9.070%) | 1.8298 | 1.6281 | 4.809% | 3.602% |
+
+Verdicts (registered): Y-S ACCEPTED; Y-3, Y-2, Y-5 NOT ACCEPTED (rejected, counted); X-10 and Y-1 ACCEPTED by hand,
+re-derived independently at R0-12 (match). Leverage decision laid out for the owner in status 8 §4 (OD-P9-3; L <= 2.0
+until ruled; Y-1 reads a risk model, so no history read, YP-11).
+
+**Ledger = P9 `n_before`** (`build-equity/trials.jsonl`: **133 lines, sha256 `27e40f9f`**, head `5a3ef9d9bf242dbb`;
+counted with `backtest_integrity.trial_counts` / `ledger_n`, aggregates only):
+
+| count | value | how | plan 5.1 projection |
+|---|---|---|---|
+| N_c | **62** | 70 construction lines - 8 window re-runs | <= 62: at the ceiling |
+| K_a hand-written | **40** | X 25 (v8x2 5, v8x3 8, v8x7 12) + Y 15 (v8ys) | 40: equal |
+| K_a all admission lines | 61 | + v8 12 (v80 7, v81 5) + X-4 re-screens 9 (v8x4); mined 0 | counted apart |
+| M | **110** | v9-mine-c1, line 112 (budget 110, adds 0 to trial_counts) | 110: equal |
+| N_tot | **233** | sum(trial_counts) 123 + M 110 | <= 233 (212 + 21): at the ceiling |
+
+N_hand 123; V 1.2957e-03 per session (33 cells). P9 room (plan 5.2): N_c <= 69, K_a <= 10, M + 0, N_tot <= 250.
+
+**Phase-0 exit gate (plan 4.3): met.** Y cells each ledgered (lines 128-133: `11c10defb3cf38a5`, `ee5487109c705108`,
+`aeeb2073e0bd8e2a`, `cc150c210a3f98e4`, `25f3b27aae4754ab`, `0ad7ea4c5122ebe3`; 0 undefined, 0 void); adoption print done
+(R0-12 `5292b46e`, `32b33236`); v8 report written (status 8, this commit); G-B1 printed for Y-F0 (1.849482: floor 1.0
+met, target 1.85 missed by .000518); ledger state recorded (above; status 8 5; R0-14 report).
+
+**`wave status`** (`research_cycle.py wave status scripts/specs/v8/waves/<w>.json --root C:/atx-wt/pool-2`, read-only):
+y-s, y-3, y-2, y-5 **9/9 done, exit 0**. `y-s.head.json`: exit 2, refused as a manifest ("a wave has exactly one of
+candidates ... and rule_cell"); it is y-s's manifest minus `candidates` (line 6677), not a separate wave. X-10 and Y-1
+have no manifest (by hand, YP-7). No wave in flight (E1-STALE holds). Re-run just before the branch cut.
+
+**Branch.** `feat/platform-p9-20261003` is cut in pool-2 from the commit that adds this section (`git switch -c`); its
+SHA, the v8 head, is recorded in `root-R0-14-report.md` on the P9 branch. `feat/platform-v8-20260929` is kept, not
+moved.
+
+Hard rules: nothing in `C:/atx`; `atx-db/` untouched; no push; no subagent; exact-path staging only (the design agents'
+`cov-*` / `sql-*` / `briefs/brief-COV.md` / `briefs/brief-SQL*.md` files untouched); the untracked png left alone;
+nothing dated 2024-01-01 or later opened. Count: 0 trials. Ledger 133 lines, `27e40f9f`, N 62 of 62.
