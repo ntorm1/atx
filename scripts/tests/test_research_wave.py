@@ -131,22 +131,31 @@ def test_readers_write_keys_only(tmp_path):
     assert b["gross_annual"] == pytest.approx(0.05 + 252 * (0.01 + 0.005 + 0.002) / 299)
 
 
-def test_add_alpha_save_plan_is_opt_in(tmp_path):
+def test_add_alpha_save_plan_is_opt_in(tmp_path, capsys):
     """--save-plan writes the validated K1 plan of record; without it add-alpha writes exactly the files it wrote
-    before (the same set, the same bytes)."""
+    before (the same set, the same bytes) and prints the same lines (review YINFRA #18: stdout compared too, the plan
+    line aside, each run's root path normalized)."""
     import test_research_cycle as T
-    trees = {}
+    trees, prints = {}, {}
     for tag, extra in (("without", []), ("with", ["--save-plan", "plans/ftd_fail.json"])):
         root = T.add_alpha_root(tmp_path / tag)
         s = root / "atx-impl" / "strategies"
         ids = [c["id"] for c in json.loads((s / "fund_industry_ic_v70.json").read_text())["candidates"]]
         plan = T.k1_plan(tmp_path / tag, ids + ["ftd_fail"])
+        capsys.readouterr()
         assert RC.main(T.add_argv(root, "ftd_fail") + ["--plan-json", str(plan)] + extra) == RC.EXIT_OK
+        out = capsys.readouterr().out
+        for form in {str(tmp_path / tag), (tmp_path / tag).as_posix(), str(root), root.as_posix()}:
+            out = out.replace(form, "<ROOT>")
+        prints[tag] = out.splitlines()
         trees[tag] = {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
         if extra:
             assert json.loads((root / "plans" / "ftd_fail.json").read_text()) == json.loads(plan.read_text())
     saved = trees["with"].pop("plans/ftd_fail.json")
     assert saved and trees["with"] == trees["without"]
+    plan_lines = [x for x in prints["with"] if x.startswith("K1 plan of record ")]
+    assert len(plan_lines) == 1 and "plans/ftd_fail.json" in plan_lines[0]
+    assert prints["without"] and [x for x in prints["with"] if x not in plan_lines] == prints["without"]
 
 
 # ------------------------------------------------------------------ the wave, end to end on fakes
