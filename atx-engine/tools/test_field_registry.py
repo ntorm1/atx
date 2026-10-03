@@ -6,6 +6,9 @@
 * ``dtype`` is declared (classifier units), not inferred from a ``grp_`` prefix;
 * the entry binds every module a row names, refuses a registry that disagrees with the code, expands ``--fields all``,
   and builds the same bytes as the plain builder; engine rows go to the executable only with ``--engine-exe``;
+* an engine-only row (``kind: engine``, no Python twin: how DEC-5 adds a field) passes ``check`` and the generator
+  round-trip (``regenerate``) with no edit to the loader, and the entry refuses it before any output when nothing can
+  compute it; today's rows still regenerate byte for byte through ``generate`` (review of A1, M1);
 * the four shims are thin deprecated wrappers; holdings is a late FIELD_MODULES module (its fields last).
 Synthetic data only (the slice-1 fixture's role and FINRA inputs).
 """
@@ -55,6 +58,16 @@ V15_FIELDS = (
 GROUP_FIELDS = {"grp_sic2", "grp_ff12", "grp_ff49", "grp_ff12f49", "ea_time_of_day"}
 
 
+def engine_only_row(name: str, requires=()) -> dict:
+    """A synthetic DEC-5 row: a field only the C++ executable produces (no Python twin), named by its BuilderKind id."""
+    return {"name": name, "kind": "engine", "builder": name, "dtype": "f64", "point_in_time": True,
+            "spec_text": {"units": "synthetic", "clock": "synthetic", "staleness": "synthetic", "source_columns": [],
+                          "definition": "a synthetic engine-only row", "point_in_time": True, "non_pit_aspects": [],
+                          "domain": None},
+            "formula_sha256": "5" * 64, "requires": list(requires), "options": {}, "sources": ["synthetic_source"],
+            "first_session": None, "owner": "registry:DEC-5"}
+
+
 @contextlib.contextmanager
 def every_module():
     """The builder with every shim's modules bound (the base commit's fields v13+ one-liner); restored on exit."""
@@ -75,30 +88,68 @@ class CommittedRegistry(unittest.TestCase):
     def test_valid_and_in_v15_order(self):
         doc = fr.load()
         names = fr.names(doc)
+        with every_module():
+            only = set(fr.engine_only(vars(tool), doc))
+        today = [x for x in names if x not in only]   # the Python-producible rows (DEC-5 adds engine-only rows)
         self.assertEqual(doc["schema"], "atx.field-registry/v1")
-        self.assertEqual(len(names), 92)
+        self.assertEqual(len(today), 92)
         self.assertEqual(len(V15_FIELDS), 84)
         self.assertEqual([x for x in names if x in V15_FIELDS], list(V15_FIELDS))   # v15's manifest order
         self.assertTrue(all(set(row) == set(fr.ROW_KEYS) for row in doc["fields"]))
-        # engine rows: only the ported fields the engine path routes, each named by its own BuilderKind id (lane A2's
-        # P5 flip of si_shares, si_dtc, vol_126 keeps this green; every other row is python)
-        flips = fr.engine_flips(doc)
-        self.assertTrue(set(flips) <= set(engine.ENGINE_FIELDS), flips)
-        self.assertTrue(all(kind_id == name for name, kind_id in flips.items()), flips)
-        self.assertEqual(names[-len(hold.HOLD_FIELDS):], list(hold.HOLD_FIELDS))    # holdings last, as manifests
+        # lane A2's P5 flip names each ported field the engine path routes by its own BuilderKind id; engine-only rows
+        # and later ports may carry any kind id (no pin to ENGINE_FIELDS: review of A1, M1)
+        ported = {name: kind_id for name, kind_id in fr.engine_flips(doc).items() if name in engine.ENGINE_FIELDS}
+        self.assertTrue(all(kind_id == name for name, kind_id in ported.items()), ported)
+        self.assertEqual(today[-len(hold.HOLD_FIELDS):], list(hold.HOLD_FIELDS))    # holdings last, as manifests
         self.assertEqual(fr.dump(doc), fr.DEFAULT_PATH.read_bytes())                # committed in dump's form
 
     def test_generated_from_the_four_mechanisms_equals_the_committed_file(self):
-        """Fresh interpreter, repository window: ``generate`` reproduces every committed byte and the entry's check
-        accepts the file (some SEC clock texts embed the seal date, so this harness's bound window cannot)."""
-        code = ("import hashlib, importlib, json\n"
+        """Fresh interpreter, repository window: the generator round-trip (``regenerate``: the code's rows, with any
+        committed engine-only rows spliced in at their positions) reproduces every committed byte, the entry's check
+        accepts the file, and the Python-producible rows alone are ``generate``'s bytes (flag-absent identity: with no
+        engine-only row, today's file is exactly ``generate``'s output). Some SEC clock texts embed the seal date, so
+        this harness's bound window cannot."""
+        code = ("import importlib, json\n"
                 "import prepare_research_fields as b, field_registry as fr\n"
                 "for s in fr.SHIMS: importlib.import_module(s).register(vars(b))\n"
-                "blob = fr.dump(fr.generate(vars(b), engine=fr.engine_flips(fr.load())))\n"
-                "fr.check(vars(b), fr.load())\n"
-                "print(json.dumps({'equal': blob == fr.DEFAULT_PATH.read_bytes(), 'rows': len(fr.load()['fields'])}))\n")
+                "d = fr.load()\n"
+                "only = set(fr.engine_only(vars(b), d))\n"
+                "today = {**d, 'fields': [r for r in d['fields'] if r['name'] not in only]}\n"
+                "fr.check(vars(b), d)\n"
+                "print(json.dumps({'equal': fr.dump(fr.regenerate(vars(b), d)) == fr.DEFAULT_PATH.read_bytes(),\n"
+                "                  'generate_equal': fr.dump(fr.generate(vars(b), engine=fr.engine_flips(today)))\n"
+                "                                    == fr.dump(today),\n"
+                "                  'rows': len(today['fields'])}))\n")
         got = isolated(TOOLS, code)
-        self.assertEqual(got, {"equal": True, "rows": 92})
+        self.assertEqual(got, {"equal": True, "generate_equal": True, "rows": 92})
+
+    def test_engine_only_rows_appended_to_the_committed_file_check_and_round_trip(self):
+        """DEC-5 in the repository window (fresh interpreter): the committed file plus two engine-only rows (one
+        mid-file, one appended) is accepted by the entry's bind and check and round-trips through ``regenerate`` byte
+        for byte, with no edit to the loader; ``generate`` alone refuses them (it only flips rows the code produces)."""
+        doc = fr.load()
+        doc["fields"].insert(40, engine_only_row("syn_engine_mid", requires=[doc["fields"][0]["name"]]))
+        doc["fields"].append(engine_only_row("syn_engine_last", requires=["syn_engine_mid"]))
+        code = ("import json, sys\n"
+                "from pathlib import Path\n"
+                "import prepare_research_fields as b, field_registry as fr\n"
+                "d = fr.load(sys.argv[1])\n"
+                "fr.bind(vars(b), d)\n"
+                "fr.check(vars(b), d)\n"
+                "try:\n"
+                "    fr.generate(vars(b), engine=fr.engine_flips(d))\n"
+                "    refused = ''\n"
+                "except fr.RegistryError as err:\n"
+                "    refused = str(err)\n"
+                "print(json.dumps({'equal': fr.dump(fr.regenerate(vars(b), d)) == Path(sys.argv[1]).read_bytes(),\n"
+                "                  'only': fr.engine_only(vars(b), d), 'refused': refused}))\n")
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "registry.json"
+            path.write_bytes(fr.dump(doc))
+            got = isolated(TOOLS, code, path)
+        self.assertEqual(got["only"], ["syn_engine_mid", "syn_engine_last"])
+        self.assertTrue(got["equal"])
+        self.assertIn("syn_engine_last, syn_engine_mid are not producible", got["refused"])
 
     def test_this_harness_generates_the_same_rows_up_to_window_dependent_text(self):
         doc = fr.load()
@@ -200,6 +251,36 @@ class Validation(unittest.TestCase):
             engine_row["fields"][0].update(kind="engine", builder="si_shares")
             fr.check(ns, engine_row)
 
+    def test_engine_only_rows_pass_check_and_the_generator_round_trip(self):
+        """A DEC-5 row (engine, no Python twin) next to an engine twin (A2's flip): accepted by ``check``, kept verbatim
+        at its position by ``regenerate``; the Python-producible rows around it are still held to the code."""
+        with every_module():
+            ns = vars(tool)
+            good = fr.generate(ns, engine={"si_shares": "si_shares"})
+            doc = copy.deepcopy(good)
+            doc["fields"].insert(10, engine_only_row("syn_engine_mid", requires=[doc["fields"][0]["name"]]))
+            doc["fields"].append(engine_only_row("syn_engine_last", requires=["syn_engine_mid"]))
+            fr.validate(doc)
+            fr.check(ns, doc)
+            self.assertEqual(fr.engine_only(ns, doc), ["syn_engine_mid", "syn_engine_last"])
+            self.assertEqual(fr.engine_only(ns, good), [])                  # the twin si_shares is producible
+            self.assertEqual(fr.dump(fr.regenerate(ns, doc)), fr.dump(doc))
+            self.assertEqual(fr.dump(fr.regenerate(ns, good)), fr.dump(good))   # none spliced: generate's bytes
+            self.assertEqual(fr.names(fr.regenerate(ns, doc))[10], "syn_engine_mid")
+            with self.assertRaisesRegex(fr.RegistryError, "not producible"):   # generate flips code rows only
+                fr.generate(ns, engine=fr.engine_flips(doc))
+            python_row = copy.deepcopy(doc)   # the same row declared python: nothing in the code produces it
+            python_row["fields"][-1]["kind"] = "python"
+            swapped = copy.deepcopy(doc)      # producible rows out of the code's order around an engine-only row
+            swapped["fields"][9], swapped["fields"][11] = swapped["fields"][11], swapped["fields"][9]
+            dropped = copy.deepcopy(doc)
+            dropped["fields"].pop(-2)
+            for bad, why in ((python_row, "rows the builder cannot produce: syn_engine_last"), (swapped, "order"),
+                             (dropped, "without a row: exch_up_365d")):
+                with self.assertRaisesRegex(fr.RegistryError, why):
+                    fr.check(ns, bad)
+                self.assertNotEqual(fr.dump(fr.regenerate(ns, bad)), fr.dump(bad))
+
     def test_select(self):
         doc = fr.load()
         self.assertEqual(fr.select(doc, "all"), fr.names(doc))
@@ -272,6 +353,26 @@ class Entry(unittest.TestCase):
         with plain_builder(), self.assertRaisesRegex(fr.RegistryError, "no requested row is of kind engine"):
             tool.main(self.argv("no-engine", "--fields", "si_shares", "--registry", str(flipped),
                                 "--engine-exe", str(self.base / "no-such.exe")))
+
+    def test_engine_only_rows_have_no_python_fallback(self):
+        """A requested engine-only row is refused before any output: without --engine-exe (nothing in Python produces
+        it) and with one the engine shim cannot route it to; the registry's other rows still build the plain bytes."""
+        doc = fr.load(self.registry)
+        doc["fields"].append(engine_only_row("syn_engine_last"))
+        path = self.base / "engine-only.json"
+        path.write_bytes(fr.dump(doc))
+        for out, fields, extra, why in (
+                ("eo-python", "si_shares,syn_engine_last", (), "syn_engine_last have no Python producer"),
+                ("eo-all", "all", (), "syn_engine_last have no Python producer"),
+                ("eo-exe", "syn_engine_last", ("--engine-exe", str(self.base / "no-such.exe")),
+                 "syn_engine_last have no route in prepare_research_fields_engine")):
+            with plain_builder(), self.assertRaisesRegex(fr.RegistryError, why):
+                tool.main(self.argv(out, "--fields", fields, "--registry", str(path), *extra))
+            self.assertFalse((self.base / out).exists(), out)
+        with plain_builder(), contextlib.redirect_stdout(io.StringIO()):
+            tool.main(self.argv("eo-entry", "--fields", "vol_126,si_shares", "--registry", str(path)))
+            tool.main(self.argv("eo-plain", "--fields", "vol_126,si_shares"))
+        self.same("eo-plain", "eo-entry")
 
     def test_the_script_entry_reproduces_the_identity_fixture(self):
         """``python prepare_research_fields.py --registry field_registry.json`` (the committed registry, a fresh
