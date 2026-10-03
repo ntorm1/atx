@@ -2,11 +2,11 @@
   "dtype_rule": "dtype is group iff the field's declared units begin with 'categorical code' (a classifier: the VM groups by its value), else f64; declared here, never inferred from a grp_ name prefix (DS review section 2)",
   "fields": [
     {
-      "builder": "prepare_research_fields",
+      "builder": "si_shares",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "0d8dedaef04cb65862f0578ca059f3b326f86fe26af8e54b6903a1b45ff50861",
-      "kind": "python",
+      "kind": "engine",
       "name": "si_shares",
       "options": {
         "group": "finra"
@@ -31,11 +31,11 @@
       }
     },
     {
-      "builder": "prepare_research_fields",
+      "builder": "si_dtc",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "051996be07062c67aaa798bcaf61f32a1cf6bd9816acdbb19a1af17cf399fb4c",
-      "kind": "python",
+      "kind": "engine",
       "name": "si_dtc",
       "options": {
         "group": "finra"
@@ -2244,11 +2244,11 @@
       }
     },
     {
-      "builder": "research_fields_price",
+      "builder": "vol_126",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "cb44b19e3eda43f3ca0969974a99d1b4439f5bbfa56d09436ad15e8cc572160e",
-      "kind": "python",
+      "kind": "engine",
       "name": "vol_126",
       "options": {
         "group": "price_volume"
