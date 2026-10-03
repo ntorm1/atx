@@ -258,8 +258,87 @@ TEST(TwoSpeed, ZeroFastShareIsTheParentRunBitForBit) {
   ASSERT_EQ(parent->days.size(), two->days.size());
   for (usize t = 0; t < parent->days.size(); ++t) {
     EXPECT_EQ(bits(two->days[t].net_return), bits(parent->days[t].net_return)) << t;
-    EXPECT_EQ(bits(two->days[t].turnover), bits(parent->days[t].turnover)) << t;
+    EXPECT_EQ(bits(two->days[t].one_way_turnover), bits(parent->days[t].one_way_turnover)) << t;
   }
+}
+
+// Review YCOMB #12: the same under price-risk-v1 and --locate-in-aim (borrow fields, so special
+// names' short aims are zeroed), with the fast sleeve the runner saves at a zero fast share (flat:
+// 0 at members). Every NAV day, every construction record (outcome, statistics, locate count) and
+// the construction and NAV summaries are the parent's bit for bit; only the two-speed keys differ.
+TEST(TwoSpeed, ZeroFastShareUnderNeutralizationAndLocateInAimIsTheParentRunBitForBit) {
+  const Role role(70, 12, 53);
+  Lcg g{11};
+  std::vector<f64> shares_out(role.d * role.n), si_shares(role.d * role.n);
+  for (usize k = 0; k < shares_out.size(); ++k) { // shares out 1e6..1e9, SI ratio 0..0.25
+    shares_out[k] = std::pow(10.0, 6 + 3 * g.next());
+    si_shares[k] = shares_out[k] * 0.25 * g.next();
+  }
+  auto parent_in = role.nav();
+  parent_in.financing = st::NavFinancingFields{shares_out, si_shares};
+  Sleeves sleeves(role, 0.0);
+  for (auto& v : sleeves.fast) if (!std::isnan(v)) v = 0.0;
+  auto in = parent_in;
+  sleeves.attach(in.target);
+  auto cfg = parent_config();
+  cfg.target = neutral_config(cfg.target);
+  cfg.locate_in_aim = true;
+  const auto parent = st::replay_nav(parent_in, cfg);
+  auto two_cfg = cfg;
+  two_cfg.target.two_speed = true;
+  const auto two = st::replay_nav(in, two_cfg);
+  ASSERT_TRUE(parent) << parent.error().to_string();
+  ASSERT_TRUE(two) << two.error().to_string();
+  ASSERT_EQ(parent->days.size(), two->days.size());
+  std::vector<st::ConstructionDay> parent_records, two_records;
+  usize zeroed = 0, skipped = 0;
+  for (usize t = 0; t < parent->days.size(); ++t) {
+    const auto& a = parent->days[t];
+    const auto& b = two->days[t];
+    EXPECT_EQ(bits(b.net_return), bits(a.net_return)) << t;
+    EXPECT_EQ(bits(b.one_way_turnover), bits(a.one_way_turnover)) << t;
+    EXPECT_EQ(bits(b.planned_gross), bits(a.planned_gross)) << t;
+    EXPECT_EQ(b.rebalance, a.rebalance) << t;
+    const auto& p = a.construction;
+    const auto& c = b.construction;
+    EXPECT_EQ(c.rebalance, p.rebalance) << t;
+    EXPECT_EQ(c.neutralize, p.neutralize) << t;
+    EXPECT_EQ(c.neutralize_used, p.neutralize_used) << t;
+    EXPECT_EQ(c.neutralize_excluded, p.neutralize_excluded) << t;
+    EXPECT_EQ(bits(c.neutralize_excluded_share), bits(p.neutralize_excluded_share)) << t;
+    EXPECT_EQ(bits(c.neutralize_amplification), bits(p.neutralize_amplification)) << t;
+    EXPECT_EQ(c.locate_zeroed, p.locate_zeroed) << t;
+    EXPECT_EQ(c.banded_names, p.banded_names) << t;
+    const bool parent_skip = p.neutralize != st::NeutralizeOutcome::NotAttempted &&
+                             p.neutralize != st::NeutralizeOutcome::Applied;
+    EXPECT_EQ(c.two_speed_sleeve_skipped, parent_skip) << t;
+    EXPECT_EQ(c.two_speed_parent_skipped, parent_skip) << t;
+    zeroed += p.locate_zeroed;
+    skipped += parent_skip ? 1U : 0U;
+    if (a.decision) { parent_records.push_back(p); two_records.push_back(c); }
+  }
+  EXPECT_GT(zeroed, 0U);  // locate-in-aim zeroes special names' short aims
+  EXPECT_GT(skipped, 0U); // early decisions skip (the windows fill)
+  auto parent_summary = Json::parse(st::detail::construction_summary_json(cfg.target,
+                                                                          parent_records));
+  auto two_summary = Json::parse(st::detail::construction_summary_json(two_cfg.target,
+                                                                       two_records));
+  ASSERT_TRUE(two_summary.at("construction").contains("two_speed"));
+  for (auto* s : {&parent_summary, &two_summary}) {
+    s->at("construction").erase("two_speed");
+    s->at("construction").erase("rule_id");
+  }
+  EXPECT_EQ(two_summary, parent_summary);
+  const auto pn = st::summarize_nav(*parent);
+  const auto tn = st::summarize_nav(*two);
+  ASSERT_TRUE(pn && tn);
+  EXPECT_EQ(bits(tn->total_net_return), bits(pn->total_net_return));
+  EXPECT_EQ(bits(tn->final_nav), bits(pn->final_nav));
+  EXPECT_EQ(bits(tn->total_actual_turnover), bits(pn->total_actual_turnover));
+  EXPECT_EQ(bits(tn->trade_cost_dollars), bits(pn->trade_cost_dollars));
+  EXPECT_EQ(bits(tn->borrow_dollars), bits(pn->borrow_dollars));
+  EXPECT_EQ(tn->blocked_short_name_decisions, pn->blocked_short_name_decisions);
+  EXPECT_EQ(tn->member_tier_days, pn->member_tier_days);
 }
 
 // A real fast sleeve moves the book: the run completes and differs from the parent's.
