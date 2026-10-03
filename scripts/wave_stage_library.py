@@ -13,7 +13,7 @@ import wave_rules as WR
 import wave_steps as WS
 from wave_context import Wave
 from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc, lib_spec, library_wave, lock_exes,
-                             pin_exes, pinned, skipped, verdict_file, write_spec_file)
+                             phase_rows, pin_exes, pinned, skipped, timings_on, verdict_file, write_spec_file)
 
 
 # ------------------------------------------------------------------ register (library waves)
@@ -117,9 +117,12 @@ def screen(w: Wave, done: dict, log) -> dict:
             f"{row['prior_sign']:+d} -> {row['decision']} ({row['reason']})")
     log(f"   gate {'PASS' if gate_ok else 'FAIL (no string admitted with its prior sign): no cell'}; kept "
         f"{dec['kept']}, dropped {dec['dropped']}")
-    return {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
-            "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
-            "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+    out = {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
+           "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
+           "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+    if timings_on(w):                  # P9 OR section 5: the screen's u, fit, card, marginal rows (a b library's cell
+        out["phases"] = phase_rows(w, spec)                       # spec is another spec)
+    return out
 
 
 def screen_plan(w: Wave, done: dict) -> list[str]:

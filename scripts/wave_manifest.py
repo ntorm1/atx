@@ -65,6 +65,11 @@ One wave is one cell on the current book, declared before anything is measured:
        "keep_verdicts": BOOL                     research_cycle run --keep-verdicts: every run also writes its verdict
                                                  to <cycle dir>/verdicts/<mode>-<k>.json (never overwritten), and the
                                                  screen and judge stages read and pin that copy (OR section 3)
+       "timings": BOOL                           complete timings (OR section 5): each stage receipt records its
+                                                 processes (add-alpha, research_cycle, readers, bundle, git) and the
+                                                 screen its phase rows; wave-result.json adds the screen's, readers'
+                                                 and bundle's runner rows to timings, plus stage_seconds and processes
+                                                 (scoreboard --timings prints them)
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
@@ -112,7 +117,8 @@ DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
                "lock_exes": (lambda v: type(v) is bool, "true or false"),
                "receipt_digest": (lambda v: v in ("file", "content"), '"file" (as before) or "content"'),
                "record_date": (lambda v: isinstance(v, str) and _iso_date(v), "a date YYYY-MM-DD"),
-               "keep_verdicts": (lambda v: type(v) is bool, "true or false")}
+               "keep_verdicts": (lambda v: type(v) is bool, "true or false"),
+               "timings": (lambda v: type(v) is bool, "true or false")}
 
 
 def _iso_date(text: str) -> bool:

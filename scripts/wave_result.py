@@ -15,7 +15,10 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
    ledger{path, lines_before, lines_after, head, n_before, n_after, trial_id, admission_lines[]},
    next_parent{spec, library}, timings[{phase, run_dir, outcome, exit_code, seconds, peak_mib, executable_sha256}],
    receipts{stage: sha256},
-   exes_sha256{parent, cell, differ}   only when a spec pins its exes (lock --exes; verify's record, P9 OR-2)}
+   exes_sha256{parent, cell, differ}   only when a spec pins its exes (lock --exes; verify's record, P9 OR-2),
+   stage_seconds{stage: s}, processes[{stage, what, calls, seconds}]   only under driver.timings (P9 OR section 5),
+                                       which also adds the screen spec's, the readers' ("reader:<name>") and the
+                                       bundle's runner rows to timings}
 """
 from __future__ import annotations
 
@@ -43,9 +46,12 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
     verdict = jd.get("verdict") or {"accepted": False, "reason": sp.get("reason") or "no cell"}
     parent = pre["parent"]
     accepted = bool(verdict.get("accepted"))
+    full = bool((m.get("driver") or {}).get("timings"))     # P9 OR section 5: complete timings
     timings = []
-    for key in ("run", "match", "judge"):
+    for key in ("run", "match", "judge") + (("screen",) if full else ()):
         timings += (done.get(key) or {}).get("phases") or []
+    if full:
+        timings += helper_rows(w)
     seen, rows = set(), []
     for r in timings:                      # each run dir once (the match and judge stages re-list the run's phases)
         if r["run_dir"] not in seen:
@@ -69,7 +75,38 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
            "timings": rows, "receipts": receipt_digests(w)}
     if vf.get("exes_sha256") is not None:   # P9 OR-2: only when a spec pins its exes (the layout of before otherwise)
         doc["exes_sha256"] = vf["exes_sha256"]
+    if full:                                # P9 OR section 5: the stages' own seconds and processes
+        doc["stage_seconds"] = stage_seconds(w)
+        doc["processes"] = stage_processes(w, done)
     return doc
+
+
+def helper_rows(w) -> list[dict]:
+    """Runner rows of the wave's own bounded processes: each reader (phase "reader:<name>") and the bundle."""
+    from wave_stage_util import run_rows  # noqa: PLC0415  (the scoreboard imports this module without the context)
+    readers = w.path(w.wave_path("readers"))
+    names = sorted(p.stem for p in readers.glob("*.json")) if readers.is_dir() else []
+    out = [r for n in names for r in run_rows(w, f"reader:{n}", w.wave_path("readers", n))]
+    return out + run_rows(w, "bundle", w.wave_path("bundle"))
+
+
+def stage_seconds(w) -> dict:
+    """{stage: seconds} of the wave's ok stage receipts so far (the record stage's own is written after)."""
+    d = w.path(w.wave_path("receipts"))
+    out = {}
+    for p in sorted(d.glob("[0-9][0-9]-*.json")) if d.is_dir() else []:
+        if ".failed-" not in p.name:
+            r = w.read_json(w.rel(p))
+            out[r.get("stage")] = r.get("seconds")
+    return out
+
+
+def stage_processes(w, done: dict) -> list[dict]:
+    """[{stage, what, calls, seconds}]: every command and git query each stage ran (its receipt's processes), the
+    record stage's own so far included (wave_context.Wave.processes)."""
+    from wave_stage_util import fold_processes  # noqa: PLC0415
+    out = [{"stage": stage, **p} for stage, o in done.items() for p in (o or {}).get("processes") or []]
+    return out + [{"stage": "record", **p} for p in fold_processes(getattr(w, "processes", []))]
 
 
 PER_ROW = ("id", "ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t")   # a row's own: pool / themes, not library
@@ -208,6 +245,9 @@ def log_section(doc: dict) -> str:
         out += [f"| {r['phase']} | `{r['run_dir']}` | {_f(r['seconds'], '.1f')} | {r['peak_mib']} | {r['outcome']} |"
                 for r in doc["timings"]]
         out.append("")
+    if doc.get("stage_seconds"):            # driver.timings (P9 OR section 5)
+        out += ["Stage seconds: " + ", ".join(f"{k} {_f(v, '.1f')}" for k, v in doc["stage_seconds"].items()) + ".",
+                ""]
     seal = doc.get("seal_scan") or {}
     tail = seal_tail(seal)
     out += [f"Hidden-data record: seal scan of {seal.get('files', 0)} log(s) (every run dir, reader and console of the "

@@ -10,6 +10,7 @@
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
   test_reader_reuse_keyed_on_code_and_verdict_per_run  OR section 3: code-keyed reuse; per-run verdict copies
+  test_timings_complete                   OR section 5: screen, readers, bundle, register, git, stage seconds
 
 Every file is synthetic (fake tools, sessions 2020-2021); no data of the repository is read.
 
@@ -40,6 +41,7 @@ import run_bounded_research as RB  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake cycle tools)
 import wave_manifest as WM  # noqa: E402
 import wave_queue as WQ  # noqa: E402
+import wave_scoreboard as S  # noqa: E402
 import wave_stage_cell as WSC  # noqa: E402
 import wave_stage_record as WR  # noqa: E402
 import wave_stage_util as WU  # noqa: E402
@@ -625,3 +627,52 @@ def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):
                               log=lambda s: None) == 0
     judge = json.loads((root / "out/waves/w1/receipts/08-judge.json").read_text())["outputs"]
     assert judge["cycle_verdict"] == "build-equity/cycle-w1/cycle_verdict.json"
+
+
+# ------------------------------------------------------------------ OR section 5: complete timings
+DROP_B = {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", -1), "alpha_c": ("admitted", 1)}   # a b-library wave
+
+
+def test_timings_complete(tmp_path):
+    """P9 OR section 5: under driver.timings a wave records complete timings: the screen library's phase rows (a b
+    library's cell spec is another spec), every reader's and the bundle's runner rows, each stage's seconds and every
+    command and git query a stage ran (register's add-alpha, research_cycle, commits); scoreboard --timings prints the
+    register and git phases and a table by stage. Without the key wave-result.json, the receipts and the scoreboard
+    are those of before."""
+    root = F.build(tmp_path / "t", driver={"timings": True})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, DROP_B),
+                              log=lambda s: None) == 0
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert res["cell"]["kind"] == "b-library" and res["cell"]["spec"] == "scripts/specs/v8/lib-w1b.json"
+    runs = {(r["phase"], r["run_dir"]) for r in res["timings"]}
+    assert ("u", "build-equity/u-w1-run") not in runs                        # (the fixture's u output names)
+    assert ("u", "out/u-w1-run") in runs and ("u", "out/u-w1b-run") in runs  # the screen library's and the cell's
+    assert ("bundle", "out/waves/w1/bundle-run1") in runs
+    assert {p for p, _ in runs} >= {"reader:book", "reader:mech-calibration", "nav", "u"}
+    assert list(res["stage_seconds"]) == ["preflight", "register", "screen", "spec", "run", "match", "verify", "judge"]
+    procs = {(p["stage"], p["what"]): p for p in res["processes"]}
+    assert procs[("register", "add-alpha alpha_a")]["calls"] == 1 and procs[("register", "commit")]["calls"] == 2
+    assert ("screen", "screen") in procs and ("judge", "bundle (PM5-23)") in procs and ("record", "git status") in procs
+    assert all(set(p) == {"stage", "what", "calls", "seconds"} for p in res["processes"])
+    rec = json.loads((root / "out/waves/w1/receipts/02-register.json").read_text())["outputs"]
+    assert [p["what"] for p in rec["processes"]][:3] == ["git status", "add-alpha alpha_a", "add-alpha alpha_b"]
+    assert "Stage seconds: preflight" in (root / "out/waves/w1/wave-log.md").read_text()
+    b = S.board(root, ["out/waves/*/wave-result.json"])
+    t = b["timings"][0]
+    assert {"register", "git", "bundle", "reader:book"} <= set(t["phases"]) and list(t["stages"])[0] == "preflight"
+    assert t["phases"]["register"]["runs"] == 5                               # 3 add-alpha + 2 into the b library
+    assert t["seconds"] == round(sum(res["stage_seconds"].values()), 1)
+    md = S.markdown(b, with_timings=True)
+    assert "### Wall-clock by stage (s)" in md and "| wave | preflight | register |" in md
+    root = F.build(tmp_path / "n")                                            # no key: as before
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, DROP_B),
+                              log=lambda s: None) == 0
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert "stage_seconds" not in res and "processes" not in res
+    assert not {r["phase"] for r in res["timings"]} & {"bundle", "reader:book"}
+    assert ("u", "out/u-w1-run") not in {(r["phase"], r["run_dir"]) for r in res["timings"]}
+    assert all("processes" not in json.loads(p.read_text())["outputs"] and "phases" not in
+               json.loads(p.read_text())["outputs"] or p.stem in ("05-run", "06-match", "08-judge")
+               for p in (root / "out/waves/w1/receipts").glob("0*.json"))
+    b = S.board(root, ["out/waves/*/wave-result.json"])
+    assert "stages" not in b["timings"][0] and "Wall-clock by stage" not in S.markdown(b, with_timings=True)

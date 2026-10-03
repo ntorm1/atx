@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_resume  # noqa: E402
@@ -44,6 +45,9 @@ class Wave:
         self._py: str | None = None
         self.seal_allow: dict[str, str] = {}     # research_wave.py --seal-allow TOKEN=RULING (wave_seal.py)
         self._console_lock = threading.Lock()   # the judge's side-by-side commands number their consoles in turn
+        # P9 OR section 5: every command and git query of the stage running now, {what, seconds, exit_code} (in memory;
+        # wave_stages.timed folds them into the stage's outputs under driver.timings)
+        self.processes: list[dict] = []
 
     # -------------------------------------------------------------- paths
     def rel(self, path: Path) -> str:
@@ -169,9 +173,15 @@ class Wave:
                         f"{done.stderr or ''}\n")
         return self.rel(p)
 
+    def note_process(self, what: str, seconds: float, code) -> None:
+        with self._console_lock:
+            self.processes.append({"what": what, "seconds": round(seconds, 3), "exit_code": code})
+
     def run(self, argv: list[str], what: str, ok=(0,)) -> subprocess.CompletedProcess:
         self.log(WS.fmt_argv(argv))
+        started = time.monotonic()
         done = self.executor(argv, self.root, self.env())
+        self.note_process(what, time.monotonic() - started, done.returncode)
         self.console(argv, what, done)
         if done.returncode not in ok:
             tail = ((done.stderr or "") + (done.stdout or ""))[-600:]
@@ -183,7 +193,9 @@ class Wave:
 
     # -------------------------------------------------------------- git
     def git(self, *args: str) -> str:
+        started = time.monotonic()
         done = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
+        self.note_process(f"git {args[0] if args else ''}".strip(), time.monotonic() - started, done.returncode)
         if done.returncode != 0:
             raise stage_chain.StageError(f"git {' '.join(args)}: exit {done.returncode}: {done.stderr.strip()[:300]}")
         return done.stdout

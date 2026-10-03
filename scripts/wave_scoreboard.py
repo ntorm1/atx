@@ -13,6 +13,8 @@ verified); never a NAV file. Prints, as markdown (and JSON with --json):
             drawdown, N after the wave, paired dSR, bundle p (one-sided), ledger DSR
   checks    each cell's ledger line is present (trial_id) and its s2_net_sr equals the result's net Sharpe (1e-6);
             the ledger's N now; two results of one wave id that differ are refused
+  timings   (--timings) wall seconds by phase per wave; a result written under driver.timings (P9 OR section 5) adds
+            the screen's, readers' and bundle's rows, register and git, and a table by stage
 """
 from __future__ import annotations
 
@@ -132,16 +134,39 @@ def board(root: Path, patterns: list[str], ledger: str | None = None) -> dict:
             "timings": sorted((timing(d) for d in docs), key=lambda t: t["wave"])}
 
 
+def process_phase(p: dict) -> str | None:
+    """The timings phase of a process row a wave recorded (driver.timings, P9 OR section 5): "register" (add-alpha),
+    "git" (commits and git queries); None for a process whose time is in a runner row already (research_cycle runs, the
+    readers, the bundle) or that is no phase (lock)."""
+    what = str(p.get("what", ""))
+    if what.startswith("add-alpha"):
+        return "register"
+    if what == "commit" or what.startswith("git"):
+        return "git"
+    return None
+
+
 def timing(doc: dict) -> dict:
-    """Wall seconds and peak MiB by phase of one wave (its bounded-runner receipts, every attempt): the speed record
-    a later wave is compared with."""
+    """Wall seconds and peak MiB by phase of one wave (its bounded-runner receipts, every attempt; under driver.timings
+    also the screen's, the readers' and the bundle's rows and the register and git processes): the speed record a
+    later wave is compared with. A result with stage_seconds adds them ("stages") and totals them."""
     by: dict[str, dict] = {}
     for r in doc.get("timings") or []:
         t = by.setdefault(r["phase"], {"runs": 0, "seconds": 0.0, "peak_mib": 0})
         t["runs"] += 1
         t["seconds"] += r.get("seconds") or 0.0
         t["peak_mib"] = max(t["peak_mib"], r.get("peak_mib") or 0)
-    return {"wave": doc["wave"], "phases": by, "seconds": round(sum(t["seconds"] for t in by.values()), 1)}
+    for p in doc.get("processes") or []:
+        phase = process_phase(p)
+        if phase:
+            t = by.setdefault(phase, {"runs": 0, "seconds": 0.0, "peak_mib": 0})
+            t["runs"] += p.get("calls") or 0
+            t["seconds"] += p.get("seconds") or 0.0
+    out = {"wave": doc["wave"], "phases": by, "seconds": round(sum(t["seconds"] for t in by.values()), 1)}
+    if doc.get("stage_seconds"):
+        out["stages"] = dict(doc["stage_seconds"])
+        out["seconds"] = round(sum(v or 0.0 for v in doc["stage_seconds"].values()), 1)
+    return out
 
 
 def timings_markdown(b: dict) -> list[str]:
@@ -152,6 +177,13 @@ def timings_markdown(b: dict) -> list[str]:
         cells = [f"{t['phases'][p]['seconds']:.1f} ({t['phases'][p]['runs']})" if p in t["phases"] else "-"
                  for p in phases]
         out.append(f"| {t['wave']} | " + " | ".join(cells) + f" | {t['seconds']:.1f} |")
+    staged = [t for t in b["timings"] if t.get("stages")]
+    if staged:                              # P9 OR section 5: the stage receipts' seconds
+        names = list(dict.fromkeys(s for t in staged for s in t["stages"]))
+        out += ["", "### Wall-clock by stage (s)", "", "| wave | " + " | ".join(names) + " |",
+                "|" + "---|" * (len(names) + 1)]
+        out += [f"| {t['wave']} | " + " | ".join(_f(t["stages"].get(s), ".1f") for s in names) + " |"
+                for t in staged]
     return out + [""]
 
 

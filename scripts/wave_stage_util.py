@@ -28,6 +28,22 @@ def cyc(w: Wave, verb: str, spec: str, *extra: str) -> list[str]:
     return WS.cycle_argv(w.python, verb, spec, *extra, *flags, root=w.root)
 
 
+def timings_on(w: Wave) -> bool:
+    """driver.timings (P9 OR section 5): the stages record complete timings (processes, the screen's phase rows) and
+    wave-result.json carries them (stage seconds, readers, bundle)."""
+    return bool((w.manifest.get("driver") or {}).get("timings"))
+
+
+def fold_processes(rows: list[dict]) -> list[dict]:
+    """Process rows {what, seconds, exit_code} folded by what, in first-seen order: [{what, calls, seconds}]."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        t = out.setdefault(r["what"], {"what": r["what"], "calls": 0, "seconds": 0.0})
+        t["calls"] += 1
+        t["seconds"] = round(t["seconds"] + r["seconds"], 3)
+    return list(out.values())
+
+
 def lock_exes(w: Wave) -> bool:
     """driver.lock_exes (P9 OR-2): the wave pins the exes of every cell spec it writes (`lock --exes --write`)."""
     return bool((w.manifest.get("driver") or {}).get("lock_exes"))
