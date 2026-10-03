@@ -26,3 +26,29 @@ def disclosure_claims(text: str, reporting_period: str) -> list[dict]:
                     'reporting_period':reporting_period,'claim_period_years':sorted(set(years)),
                     'quality':kind,'certified':False})
     return out
+
+
+def named_current_disclosures(text: str, reporting_period: str) -> list[dict]:
+    """Independent positive denominator evidence from an explicit current named list.
+
+    No NUM/DIM members, revenue values or reconciliation outcomes enter this parser.
+    Absent/ambiguous lists remain unknown; a positive partial frame is not a census.
+    Offsets address the retained section's exact decoded text.
+    """
+    out=[]
+    for claim in disclosure_claims(text,reporting_period):
+        if claim['quality']!='explicit_claim_period_uncorroborated':continue
+        start=claim['end_offset'];end=text.find('.',start)
+        if end<0 or end-start>300:continue
+        tail=text[start:end].strip()
+        tail=re.sub(r'^[\s,:-]*(?:namely\s+|consisting of\s+|which are\s+)?','',tail,flags=re.I)
+        # Pure list only. Descriptions and revenue/product prose need richer semantics.
+        tail=re.sub(r'\([^)]{0,40}\)','',tail)
+        names=[re.sub(r'^\s*\(?\d+\)?[.)]?\s*','',s).strip(' \t\r\n\"\u201c\u201d')
+               for s in re.split(r'\s*(?:;|,|\band\b)\s*',tail,flags=re.I) if s.strip()]
+        if len(names)!=claim['declared_count'] or len(set(n.lower() for n in names))!=len(names):continue
+        if any(not n or len(n)>80 or len(n.split())>8 or re.search(r'(?i)\b(?:includes?|provides?|sells?|products?|revenues?|which|that|will|formerly)\b',n) for n in names):continue
+        out.append(claim|{'names':names,'list_end_offset':end,'source_text':text[claim['start_offset']:end],
+                          'certified_current_named_disclosure':True,
+                          'certified':False,'denominator_scope':'positive retained disclosure only; not all-filer certification'})
+    return out

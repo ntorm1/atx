@@ -220,6 +220,11 @@ def cached_structure(rawroot: Path, accession: str, tag: str, period: str, fact_
         # A taxonomy hierarchy can describe products or units below reportable segments.
         # Identity of the economic cut requires independent primary disclosure corroboration.
         result['status']='validated_graph_requires_reportable_cut'
+    if primary:
+        from .fund_notes_semantic import semantic_cut
+        semantic=semantic_cut(primary,concept,period,fact_members,roles,contexts)
+        if semantic['status']=='verified_structure':result=semantic
+        else:result['semantic_diagnostic']=semantic
     corroboration=CORROBORATED.get(accession)
     if corroboration and primary and hashlib.sha256(primary).hexdigest()==corroboration['primary_sha256'] and concept==corroboration['concept']:
         matches=[r for r in roles if r['role']==corroboration['role'] and r['kind']=='presentationLink']
@@ -251,4 +256,7 @@ def cached_structure(rawroot: Path, accession: str, tag: str, period: str, fact_
         bridge=primary_contexts(primary,concept,period,'srt:ConsolidationItemsAxis')
         graph_members={local_member(n) for r in roles if r['role']==corroboration['role'] for a,b,_ in r['edges'] for n in (a,b)}
         result['bridge_context_ids']={m:bridge[m] for m in corroboration['bridge_members'] if m in bridge and m in graph_members}
+    if result['status']=='verified_structure' and primary:
+        from .fund_notes_semantic import source_bridge_contexts
+        result['source_bridge_contexts']=source_bridge_contexts(primary,concept,period,set(result['members']),roles)
     return result | {'sources':sources,'concept':concept,'period':period,'context_ids':contexts}

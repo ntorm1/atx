@@ -533,8 +533,10 @@ def test_structure_primary_context_period_and_concept():
     assert S.primary_contexts(html,'x_EconomicIncomeRevenue','2024-12-31')=={}
 
 
-def test_source_structure_production_economics_and_clock(lake_seg,monkeypatch):
+@pytest.mark.parametrize('extra_name_filter',[False,True])
+def test_source_structure_production_economics_and_clock(lake_seg,monkeypatch,extra_name_filter):
     from atx_db.alpha_panel import fund_notes_structure as S
+    if extra_name_filter:monkeypatch.setattr(FN,'RECONCILING_RE',FN.RECONCILING_RE+'|^Other$')
     monkeypatch.setattr(S,'cached_accessions',lambda root:{I9})
     monkeypatch.setattr(S,'cached_structure',lambda root,adsh,tag,period,members:{
         'status':'verified_structure','members':['SubA','SubB','Other'],
@@ -545,13 +547,13 @@ def test_source_structure_production_economics_and_clock(lake_seg,monkeypatch):
     FN.build()
     out=N.C.stage_dir(FN.STAGE); row=_features(out)[I9]
     assert (row.bseg_n,row.bseg_rev_n,row.bseg_recon_class)==(3,3,'reconciled_search')
-    assert row.bseg_n_tagged==4 and row.bseg_basis=='source_role_structure'
+    assert row.bseg_n_tagged==(3 if extra_name_filter else 4) and row.bseg_basis=='source_role_structure'
     assert row.bseg_partition_quality=='source_verified_reportable' and row.bseg_partition_source_adsh==I9
     assert row.bseg_rev_hhi==pytest.approx((40**2+30**2+25**2)/95**2)
     assert row.available_at==dt.datetime(2022,3,7,21,30,tzinfo=UTC)
     con=duckdb.connect()
     census=con.execute(f"SELECT n_members,n_members_source_tagged,member_basis FROM read_parquet('{out/'segment_census.parquet'}') WHERE adsh=?",[I9]).fetchone()
-    assert census==(3,4,'source_role_structure')
+    assert census==(3,3 if extra_name_filter else 4,'source_role_structure')
     assert con.execute(f"SELECT count(*) FROM read_parquet('{out/'segment_structure.parquet'}')").fetchone()[0]==1
     import json
     proof=json.loads(con.execute(f"SELECT proof_json FROM read_parquet('{out/'segment_structure.parquet'}')").fetchone()[0])

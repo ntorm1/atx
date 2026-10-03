@@ -89,7 +89,7 @@ THREADS = 1                               # derived pivots: 0.68 GiB peak with 2
 STITCH_MEMORY = "150MB"                   # DuckDB limit while pyarrow stitches the yearly parts
 ITEMS_THREADS = 2                         # items extraction (joins, no wide pivot): within the 0.6 GiB cap
 RECON_TOL = 0.01
-MODULES = ("fund_notes", "fund_notes_structure", "fund_notes_disclosure", "notes_fetch", "common")
+MODULES = ("fund_notes", "fund_notes_structure", "fund_notes_semantic", "fund_notes_disclosure", "notes_fetch", "common")
 
 #: (item, group, kind, concept chain in priority order)
 ITEMS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
@@ -791,17 +791,20 @@ def recon_overlay(con, items: str, seg: str, strict: str):
                 continue
             selected={m:values[m] for m in proof['members']}
             bridge=[]
-            for member,context_ids in proof.get('bridge_context_ids',{}).items():
+            bridge_contexts={m:{'context_ids':ids,'segments':f'ConsolidationItems={m};'} for m,ids in proof.get('bridge_context_ids',{}).items()}
+            bridge_contexts.update(proof.get('source_bridge_contexts',{}))
+            for member,source_context in bridge_contexts.items():
+                context_ids=source_context['context_ids']
                 facts=con.execute(f"""SELECT DISTINCT value,segments FROM read_parquet('{items}',hive_partitioning=false)
                   WHERE adsh=? AND tag=? AND ddate=? AND qtrs=4 AND uom=? AND coreg IS NULL
                     AND segments=? AND value IS NOT NULL""",
-                  [adsh,tag,_per,_cur,f'ConsolidationItems={member};']).fetchall()
+                  [adsh,tag,_per,_cur,source_context['segments']]).fetchall()
                 if len(facts)==1:
                     bridge.append({'member':member,'value':facts[0][0],'segments':facts[0][1],'context_ids':context_ids})
             proof['source_bridge_terms']=bridge
             # Structural identity is independent of reconciliation success and arithmetic values.
-            con.execute('DELETE FROM business_census WHERE adsh=? AND member NOT IN (SELECT unnest(?))',
-                        [adsh,proof['members']])
+            con.execute('DELETE FROM business_census WHERE adsh=?',[adsh])
+            con.execute('INSERT INTO business_census SELECT ?,unnest(?)',[adsh,proof['members']])
             con.execute('INSERT INTO structure_evidence VALUES (?,?,?)',[adsh,tag,json.dumps(proof)])
             rows.append({'adsh':adsh,'recon_rule':'source_role_structure','candidate_only':False,
                          'dropped_members':sorted(set(values)-set(selected)),
@@ -985,7 +988,8 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
                    any_value(o.recon_rule),
                    count(*) FILTER (WHERE o.rep AND o.value > 0),
                    sum(o.value) FILTER (WHERE o.rep AND o.value > 0), sum(o.value * o.value) FILTER (WHERE o.rep AND o.value > 0)
-            FROM (SELECT ov.*, NOT regexp_matches(ov.member, '{RECONCILING_RE}') AS rep FROM ov) o
+            FROM (SELECT ov.*, CASE WHEN recon_rule='source_role_structure' THEN true
+                       ELSE NOT regexp_matches(ov.member, '{RECONCILING_RE}') END AS rep FROM ov) o
             JOIN read_parquet('{recon}') r ON r.adsh = o.adsh
             GROUP BY 1
         ),
