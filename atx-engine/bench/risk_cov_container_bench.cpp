@@ -80,7 +80,8 @@ struct Synthetic {
       }
     }
     cov.assign(static_cast<usize>(factors) * factors, 0.0);
-    for (u32 k = 0; k < factors; ++k) cov[k * factors + k] = 1e-5 * (1.0 + 0.01 * k);
+    for (u32 k = 0; k < factors; ++k)
+      cov[static_cast<usize>(k) * factors + k] = 1e-5 * (1.0 + 0.01 * static_cast<f64>(k));
   }
   [[nodiscard]] er::CovBlockInput block(usize t) const {
     er::CovBlockInput b;

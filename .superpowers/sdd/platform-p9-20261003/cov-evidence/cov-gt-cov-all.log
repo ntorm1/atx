@@ -1,0 +1,77 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*
+[==========] Running 26 tests from 6 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from CovTruncation
+[ RUN      ] CovTruncation.BlocksBeforeTheCutAreByteIdentical
+[       OK ] CovTruncation.BlocksBeforeTheCutAreByteIdentical (26320 ms)
+[ RUN      ] CovTruncation.PerturbedFutureLeavesThePastUnchanged
+[       OK ] CovTruncation.PerturbedFutureLeavesThePastUnchanged (12033 ms)
+[ RUN      ] CovTruncation.FutureInstrumentsDoNotMoveThePast
+[       OK ] CovTruncation.FutureInstrumentsDoNotMoveThePast (12510 ms)
+[ RUN      ] CovTruncation.DetectsAPlantedLeak
+[       OK ] CovTruncation.DetectsAPlantedLeak (16848 ms)
+[----------] 4 tests from CovTruncation (67730 ms total)
+
+[----------] 8 tests from CovEigen
+[ RUN      ] CovEigen.RecipeV11IsBitIdenticalToToday
+[       OK ] CovEigen.RecipeV11IsBitIdenticalToToday (504 ms)
+[ RUN      ] CovEigen.ZeroSimulationsEqualsV11
+[       OK ] CovEigen.ZeroSimulationsEqualsV11 (635 ms)
+[ RUN      ] CovEigen.SmallEigenfactorsInflatedLargeNearOne
+[       OK ] CovEigen.SmallEigenfactorsInflatedLargeNearOne (390 ms)
+[ RUN      ] CovEigen.SeededPerSessionAndWorkerInvariant
+[       OK ] CovEigen.SeededPerSessionAndWorkerInvariant (112 ms)
+[ RUN      ] CovEigen.StructuralBorderAndPdScalingApplied
+[       OK ] CovEigen.StructuralBorderAndPdScalingApplied (11305 ms)
+[ RUN      ] CovEigen.VraReadsTheAdjustedPrior
+[       OK ] CovEigen.VraReadsTheAdjustedPrior (11810 ms)
+[ RUN      ] CovEigen.ResultIsPositiveDefinite
+[       OK ] CovEigen.ResultIsPositiveDefinite (11124 ms)
+[ RUN      ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio
+[       OK ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio (1872 ms)
+[----------] 8 tests from CovEigen (37756 ms total)
+
+[----------] 4 tests from CovBias
+[ RUN      ] CovBias.EigenFamilyInBandOnAPlantedModel
+[       OK ] CovBias.EigenFamilyInBandOnAPlantedModel (12886 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly
+[       OK ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly (11974 ms)
+[ RUN      ] CovBias.MissingReturnCountsZeroNeverRenormalised
+[       OK ] CovBias.MissingReturnCountsZeroNeverRenormalised (12097 ms)
+[ RUN      ] CovBias.V1FamiliesBytesUnchanged
+[       OK ] CovBias.V1FamiliesBytesUnchanged (12208 ms)
+[----------] 4 tests from CovBias (49168 ms total)
+
+[----------] 4 tests from CovRecipe
+[ RUN      ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore
+[       OK ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore (2563 ms)
+[ RUN      ] CovRecipe.FlagsAbsentOutputsUnchanged
+[       OK ] CovRecipe.FlagsAbsentOutputsUnchanged (5314 ms)
+[ RUN      ] CovRecipe.ManifestNamesTheContainerRoot
+[       OK ] CovRecipe.ManifestNamesTheContainerRoot (2253 ms)
+[ RUN      ] CovRecipe.CovV1RecipeRecorded
+[       OK ] CovRecipe.CovV1RecipeRecorded (55607 ms)
+[----------] 4 tests from CovRecipe (65739 ms total)
+
+[----------] 4 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (4469 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (401 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (244 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (156 ms)
+[----------] 4 tests from CovStore (5271 ms total)
+
+[----------] 2 tests from CovDiff
+[ RUN      ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock
+[       OK ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock (4382 ms)
+[ RUN      ] CovDiff.LegacyModeComparesBitForBit
+[       OK ] CovDiff.LegacyModeComparesBitForBit (2263 ms)
+[----------] 2 tests from CovDiff (6646 ms total)
+
+[----------] Global test environment tear-down
+[==========] 26 tests from 6 test suites ran. (232313 ms total)
+[  PASSED  ] 26 tests.

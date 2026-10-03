@@ -1,0 +1,25 @@
+{
+    "Source":  "16233715583587237a9997e354f124adf5546570",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "ad406718e3d1929c9f27bf308d590c3e0e11b621-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4012,
+    "CommitMiB":  5115,
+    "Targets":  [
+                    "atx-engine-risk-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  312.22950929999996,
+    "CompiledTUs":  52,
+    "Links":  2,
+    "Tag":  "p9-cov-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-engine-risk-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-engine-risk-tests.exe",
+                                                      "Sha256":  "639ec6ed847aa7a56c44a4663b1351fe8eed398acb6a72cc2839da1e6a8b8da3"
+                                                  }
+                    }
+}

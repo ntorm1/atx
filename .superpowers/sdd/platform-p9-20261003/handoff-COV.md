@@ -1,5 +1,9 @@
 # Lane COV hand-off (owner stop, 2026-10-03)
 
+> **Superseded (resumed and finished the same day):** every step below is done; the state of record is
+> `task-COV-report.md` (commits after `16233715`, builds `p9-cov-b..e`, 18 + 26 named gtests green, evidence in
+> `cov-evidence/`). This file is kept as the resume map that was followed.
+
 - **Pool** `C:/atx-wt/pool-24` (fresh lease; run id `p9-cov-20261003`, heartbeat `p9-cov-hb`, still held).
 - **Branch** `feat/p9-cov-20261003`, **base** `ad406718` (all eight wave-1 lanes merged, C1 included).
 - **Head** the WIP commit `6fa702b2` plus the commit that adds this file (see `git log`).
