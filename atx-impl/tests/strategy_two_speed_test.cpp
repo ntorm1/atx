@@ -145,8 +145,15 @@ TEST(TwoSpeed, CompositionSleeveRefusalsKeepNothing) {
 }
 
 // ---- the NAV construction ----
+// The fixture's NAV book at two-speed-v1's registered slow rate theta_s = .05 as its trade fraction
+// (Ruling PM8-16 #3), two-speed off: the parent every two-speed run is compared with.
+st::NavReplayConfig parent_config() {
+  auto c = nav_config();
+  c.target.trade_fraction = atx::engine::book::two_speed_slow_theta;
+  return c;
+}
 st::TargetReplayConfig two_speed_config(bool on) {
-  auto c = nav_config().target;
+  auto c = parent_config().target;
   c.two_speed = on;
   return c;
 }
@@ -204,7 +211,7 @@ TEST(TwoSpeed, ZeroFastShareIsTheParentRunBitForBit) {
   const Sleeves sleeves(role, 0.0);
   auto in = role.nav();
   sleeves.attach(in.target);
-  auto cfg = nav_config();
+  auto cfg = parent_config();
   const auto parent = st::replay_nav(role.nav(), cfg);
   cfg.target.two_speed = true;
   const auto two = st::replay_nav(in, cfg);
@@ -223,7 +230,7 @@ TEST(TwoSpeed, NavReplayTradesTheNettedSleeves) {
   const Sleeves sleeves(role, 0.4);
   auto in = role.nav();
   sleeves.attach(in.target);
-  auto cfg = nav_config();
+  auto cfg = parent_config();
   const auto parent = st::replay_nav(role.nav(), cfg);
   cfg.target.two_speed = true;
   const auto two = st::replay_nav(in, cfg);
@@ -271,6 +278,18 @@ TEST(TwoSpeed, RefusedOutsideItsConstruction) {
     ASSERT_FALSE(r);
     EXPECT_NE(r.error().to_string().find("two-speed-v1 needs aim-partial-v5"), std::string::npos)
         << r.error().to_string();
+  }
+  // Ruling PM8-16 #3: theta_s is the registered .05, so any other trade fraction is refused.
+  for (const f64 theta : {0.25, 0.0500001, 1.0}) {
+    auto other = two_speed_config(true);
+    other.trade_fraction = theta;
+    const auto r = st::replay_targets(x, other);
+    ASSERT_FALSE(r) << theta;
+    EXPECT_NE(r.error().to_string().find("two-speed-v1 needs trade_fraction .05"),
+              std::string::npos)
+        << r.error().to_string();
+    other.two_speed = false; // the parent at that rate runs
+    EXPECT_TRUE(st::replay_targets(role.target(), other)) << theta;
   }
 }
 
@@ -321,7 +340,7 @@ TEST(TwoSpeed, UnderVolTargetZeroShareIsTheParentRunBitForBit) {
   v7::NavV7Options o;
   o.risk_target = vol_options();
   o.spo_risk = risk;
-  auto cfg = nav_config();
+  auto cfg = parent_config();
   std::vector<f64> parent_returns, parent_leverage;
   {
     const v7::ScopedNavExtension extension(o);
@@ -356,7 +375,7 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
   const Role role(50, 12, 41);
   const auto risk = clean_store(dir, role, 5);
   ASSERT_NE(risk, nullptr);
-  auto cfg = nav_config();
+  auto cfg = parent_config();
   cfg.target.two_speed = true;
   const Sleeves sleeves(role, 0.3);
   auto x = role.target();
@@ -442,7 +461,7 @@ TEST(TwoSpeed, PerNameRateIsRefused) {
   const Sleeves sleeves(role, 0.3);
   auto in = role.nav();
   sleeves.attach(in.target);
-  auto cfg = nav_config();
+  auto cfg = parent_config();
   cfg.target.two_speed = true;
   cfg.rate = st::NavRateRule::PerNameV1;
   const auto r = st::replay_nav(in, cfg);
@@ -459,7 +478,7 @@ TEST(TwoSpeed, GridHasOneCadenceAndOneLockstepPerLeverage) {
   const Sleeves sleeves(role, 0.4);
   auto in = role.nav();
   sleeves.attach(in.target);
-  auto base = nav_config();
+  auto base = parent_config();
   base.target.two_speed = true;
   const std::array<st::NavScenario, 1> one{base.scenario};
   auto slower = base;

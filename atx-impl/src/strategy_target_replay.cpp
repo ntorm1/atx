@@ -161,10 +161,16 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
                    "and no vol_scale");
   // two-speed-v1 (v8 Y-5): aim-partial-v5 only (its step is the netted sleeve move), and none of
   // the options that keep per-name state or cap the desired target in the shared state.
-  if (two_speed_on(cfg) && (!aim_partial(cfg) || hold_band_on(cfg) || inv_vol_on(cfg) || adv_hold_on(cfg)))
+  if (two_speed_on(cfg) &&
+      (!aim_partial(cfg) || hold_band_on(cfg) || inv_vol_on(cfg) || adv_hold_on(cfg)))
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "target replay: two-speed-v1 needs aim-partial-v5, no hold_band, no vol_scale and "
-                   "no adv_hold");
+                   "target replay: two-speed-v1 needs aim-partial-v5, no hold_band, no "
+                   "vol_scale and no adv_hold");
+  // Its slow rate is the registered theta_s = .05 (Ruling PM8-16 #3): the trade fraction is it.
+  if (two_speed_on(cfg) && cfg.trade_fraction != eb::two_speed_slow_theta)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs trade_fraction .05 (its registered slow "
+                   "rate theta_s)");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
