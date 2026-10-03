@@ -325,6 +325,33 @@ target_sources(atx-engine-research-fields PRIVATE "${_atx_fields_identity_cpp}")
 add_executable(atx-research-fields EXCLUDE_FROM_ALL src/research/fields/research_fields_main.cpp)
 target_link_libraries(atx-research-fields PRIVATE atx::engine-research-fields atx_warnings)
 
+# P9 lane SQL1 (K-P9-13, ruling SQL-5): the research-artifact SQLite store core -- compile-time
+# table descriptors and their templates (DDL, bind / read, record digest, schema JSON), the
+# catalog_core and cache groups, store open / create / migrate and the catalog digest. SQLite is
+# the vendored atx_sqlite3 reached only through atx::core's db wrapper (ruling SQL-4). The
+# descriptor templates sit in private headers under src/ (reached as research/store/detail/...)
+# and are instantiated in exactly one TU per group (core_ops.cpp, cache_ops.cpp). No PCH entry.
+# EXCLUDE_FROM_ALL: nothing links it until a consumer asks.
+add_library(atx-engine-research-store ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/store/core_ops.cpp
+    src/research/store/cache_ops.cpp
+    src/research/store/digest.cpp
+    src/research/store/store.cpp)
+add_library(atx::engine-research-store ALIAS atx-engine-research-store)
+target_include_directories(atx-engine-research-store
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(atx-engine-research-store PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-store
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()

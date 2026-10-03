@@ -422,3 +422,23 @@ cmake_language(DEFER CALL atx_engine_register_research_tests)
 target_sources(atx-engine-research-fields-tests PRIVATE
     research/research_fields_registry_test.cpp
     research/research_fields_manifest_test.cpp)
+
+# P9 lane SQL1 (K-P9-13): the research-store gtests (descriptor templates, schema fixtures, digests,
+# open / migrate). Sources in tests/research/ (not a test group), no shared test PCH; the private
+# engine src/ dir is on the include path because the tests instantiate toy descriptors through
+# research/store/detail/*. Registered directly under the CTest label atx_research (the deferred
+# registration above skips a target that is already registered).
+add_executable(atx-engine-research-store-tests EXCLUDE_FROM_ALL
+    research/research_store_table_test.cpp
+    research/research_store_schema_test.cpp
+    research/research_store_digest_test.cpp
+    research/research_store_open_test.cpp)
+target_link_libraries(atx-engine-research-store-tests PRIVATE
+    atx::engine-research-store GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-store-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(atx-engine-research-store-tests PRIVATE
+    "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\"")
+gtest_discover_tests(atx-engine-research-store-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-store-tests." PROPERTIES LABELS atx_research)
