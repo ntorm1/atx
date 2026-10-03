@@ -34,19 +34,27 @@ fields::BuildSpec plan_spec(std::vector<std::string> names) {
 
 TEST(ResearchFieldsRegistry, KindLookup) {
   const auto kinds = fields::builder_kinds();
-  ASSERT_EQ(kinds.size(), 3U);
+  ASSERT_EQ(kinds.size(), 9U);
   const auto ids = fields::builder_kind_ids();
-  const std::vector<std::string_view> want{"si_shares", "si_dtc", "vol_126"};
+  // P9 A3 appended the six vendor-panel kinds (vendor_fields.hpp) after lane A2's three.
+  const std::vector<std::string_view> want{"si_shares",     "si_dtc",       "vol_126",
+                                           "ret_overnight", "ret_intraday", "ceq_iss_5y",
+                                           "open_adj",      "high_adj",     "low_adj"};
   EXPECT_TRUE(std::equal(ids.begin(), ids.end(), want.begin(), want.end()));
   const auto names = fields::engine_field_names(); // the registry-less names are the kind ids
   EXPECT_TRUE(std::equal(names.begin(), names.end(), want.begin(), want.end()));
+  auto spec_of = [](std::string_view id) {
+    auto spec = plan_spec({std::string(id)});
+    spec.price_source = support::fixture_dir() / "vendor" / "th.parquet"; // vendor kinds' input
+    return spec;
+  };
   for (const fields::BuilderKind &kind : kinds) {
     const fields::BuilderKind *found = fields::find_builder_kind(kind.id);
     ASSERT_NE(found, nullptr) << kind.id;
     EXPECT_EQ(found, &kind);
     EXPECT_TRUE(kind.parse != nullptr && kind.build != nullptr) << kind.id;
     // A ported kind builds exactly its own field: its plan names the field and pins its spec.
-    const auto plan = kind.parse(kind.id, Json::object(), plan_spec({std::string(kind.id)}));
+    const auto plan = kind.parse(kind.id, Json::object(), spec_of(kind.id));
     ASSERT_TRUE(plan.has_value()) << plan.error().message();
     EXPECT_EQ(plan->name, kind.id);
     ASSERT_NE(plan->spec, nullptr);

@@ -4,6 +4,7 @@
 #include <array>
 #include <utility>
 
+#include "atx/engine/research/fields/vendor_fields.hpp"
 #include "atx/engine/research/fields/volume_mean_field.hpp"
 
 namespace atx::engine::research::fields {
@@ -135,11 +136,106 @@ using Paths = std::vector<std::filesystem::path>;
   return core::Ok(std::move(out));
 }
 
+// ---- the vendor-panel kinds (P9 A3): the price_source file first, then (ohlc) the role's close,
+// raw close and presence, in the entry's source order.
+
+[[nodiscard]] core::Result<FieldPlan> parse_vendor(std::string_view kind, std::string_view field,
+                                                   const Json &options, const BuildSpec &spec) {
+  const FieldSpec *s = vendor_field_spec(kind);
+  if (s == nullptr) {
+    return core::Err(refused("no vendor-panel field " + std::string(kind)));
+  }
+  ATX_TRY_VOID(check_request(*s, field, options));
+  if (!spec.price_source) {
+    return core::Err(refused(s->name + " needs price_source (the role's vendor TickerHistory3)"));
+  }
+  Paths inputs{*spec.price_source};
+  if (reads_role_close(kind)) {
+    for (const char *file : {"close.f64", "raw_close.f64", "present.u8"}) {
+      inputs.push_back(spec.role_dir / file);
+    }
+  }
+  return core::Ok(plan_of(*s, options, std::move(inputs)));
+}
+
+[[nodiscard]] core::Result<FieldPlan> parse_ret_overnight(std::string_view field,
+                                                          const Json &options,
+                                                          const BuildSpec &spec) {
+  return parse_vendor("ret_overnight", field, options, spec);
+}
+
+[[nodiscard]] core::Result<FieldPlan> parse_ret_intraday(std::string_view field,
+                                                         const Json &options,
+                                                         const BuildSpec &spec) {
+  return parse_vendor("ret_intraday", field, options, spec);
+}
+
+[[nodiscard]] core::Result<FieldPlan> parse_ceq_iss_5y(std::string_view field, const Json &options,
+                                                       const BuildSpec &spec) {
+  return parse_vendor("ceq_iss_5y", field, options, spec);
+}
+
+[[nodiscard]] core::Result<FieldPlan> parse_open_adj(std::string_view field, const Json &options,
+                                                     const BuildSpec &spec) {
+  return parse_vendor("open_adj", field, options, spec);
+}
+
+[[nodiscard]] core::Result<FieldPlan> parse_high_adj(std::string_view field, const Json &options,
+                                                     const BuildSpec &spec) {
+  return parse_vendor("high_adj", field, options, spec);
+}
+
+[[nodiscard]] core::Result<FieldPlan> parse_low_adj(std::string_view field, const Json &options,
+                                                    const BuildSpec &spec) {
+  return parse_vendor("low_adj", field, options, spec);
+}
+
+// Loads the run's vendor panel once, with the union of every vendor plan's request (the plan being
+// built included), so the file is hashed and scanned once whatever the field order.
+[[nodiscard]] core::Status ensure_vendor_panel(const FieldPlan &plan, BuildContext &ctx) {
+  if (ctx.sources.vendor_panel) {
+    return core::Ok();
+  }
+  if (!ctx.spec.price_source) {
+    return core::Err(refused(plan.name + " needs price_source"));
+  }
+  VendorPanelRequest request;
+  for (const FieldPlan &p : ctx.plans) {
+    if (const auto need = vendor_request(p.name)) {
+      request.merge(*need);
+    }
+  }
+  if (const auto need = vendor_request(plan.name)) {
+    request.merge(*need);
+  }
+  ATX_TRY(auto panel, VendorPanel::load(*ctx.spec.price_source, ctx.role, request));
+  ctx.sources.vendor_panel = std::move(panel);
+  return core::Ok();
+}
+
+[[nodiscard]] core::Result<KindOutput> build_vendor_kind(const FieldPlan &plan, BuildContext &ctx) {
+  ATX_TRY_VOID(ensure_vendor_panel(plan, ctx));
+  ATX_TRY(auto built, build_vendor_field(plan.name, *ctx.sources.vendor_panel, ctx.role,
+                                         ctx.spec.output_dir));
+  KindOutput out;
+  out.field = std::move(built.field);
+  out.sources = std::move(built.sources);
+  out.blocks = Json{{"extra", std::move(built.extra)},
+                    {"source_checks", std::move(built.source_checks)}};
+  return core::Ok(std::move(out));
+}
+
 // The kind table. Its order is engine_field_names()' (research_fields_cli.hpp).
-constexpr std::array<BuilderKind, 3> kKinds{{
+constexpr std::array<BuilderKind, 9> kKinds{{
     {"si_shares", &parse_si_shares, &build_finra_kind},
     {"si_dtc", &parse_si_dtc, &build_finra_kind},
     {"vol_126", &parse_vol_126, &build_vol_126_kind},
+    {"ret_overnight", &parse_ret_overnight, &build_vendor_kind},
+    {"ret_intraday", &parse_ret_intraday, &build_vendor_kind},
+    {"ceq_iss_5y", &parse_ceq_iss_5y, &build_vendor_kind},
+    {"open_adj", &parse_open_adj, &build_vendor_kind},
+    {"high_adj", &parse_high_adj, &build_vendor_kind},
+    {"low_adj", &parse_low_adj, &build_vendor_kind},
 }};
 
 constexpr std::array<std::string_view, kKinds.size()> kKindIds = [] {

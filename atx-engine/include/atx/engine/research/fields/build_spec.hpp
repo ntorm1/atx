@@ -25,6 +25,9 @@ struct BuildSpec {
   std::vector<std::string> fields; // distinct names the engine builds, in build order
   std::optional<std::filesystem::path> finra;
   std::optional<ReuseRequest> reuse; // registry builds only (atx.research-fields-spec/v2)
+  // The role's vendor TickerHistory3 parquet (spec key price_source; the vendor-panel kinds, P9
+  // A3). Absent: no vendor kind can be planned, and nothing else changes.
+  std::optional<std::filesystem::path> price_source;
 };
 
 } // namespace atx::engine::research::fields

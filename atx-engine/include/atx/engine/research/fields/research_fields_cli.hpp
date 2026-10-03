@@ -9,7 +9,9 @@
 // Without --registry (the engine path of prepare_research_fields_engine.py; unchanged contract):
 // SPEC is atx.research-fields-spec/v1
 //   {"schema", "role": {"dir", "manifest_sha256"}, "output_dir", "fields": [name, ...],
-//    "finra": dir (required with si_shares / si_dtc)}
+//    "finra": dir (required with si_shares / si_dtc),
+//    "price_source": the role's vendor TickerHistory3 parquet (required with the vendor-panel
+//    kinds, registry.hpp; optional key, P9 A3: a spec without it parses and builds as before)}
 // and each field name names its builder kind (registry.hpp). Every field is written to
 // output_dir/<name>.f64, created exclusively (an existing file is never replaced). After the last
 // field closes, RECEIPT (atx.research-fields-receipt/v1) is created exclusively: one entry per

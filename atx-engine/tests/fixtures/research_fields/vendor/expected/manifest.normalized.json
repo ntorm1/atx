@@ -1,0 +1,665 @@
+{
+  "cell_rule": "NaN where the field is not visible at the session decision or the source is absent",
+  "common_stock_verified": false,
+  "coverage_basis": "member.u8 cells of the role (member cells with a finite value / member cells)",
+  "excluded_source_columns": [
+    {
+      "columns": "atmCenH_* (proposed hv_<tenor>)",
+      "reason": "not realized historical volatility: equals atmCenI_<tenor> exactly whenever nEarnCnt_<tenor> == 0 (sample H/I p10=p50=p90=1.000) and differs only when a scheduled earnings event falls inside the tenor (corr with atmCenI_21d 0.95); an alternate earnings adjustment of the same IV built from the forward-looking earnings calendar and *EMove family. Realized volatility is computable from close in the DSL."
+    },
+    {
+      "columns": "nEarnCnt_5d..nEarnCnt_504d",
+      "reason": "count FUTURE earnings events within the next N sessions (nEarnCnt_5d is 1 on the five sessions up to and including earnFlag -1 and 0 from the reaction session on): forward-looking"
+    },
+    {
+      "columns": "nEarnCnt",
+      "reason": "semantics unverified (typically 8, sometimes 7 on event sessions)"
+    },
+    {
+      "columns": "hEMove, iEMove, wkD1, shD1, qtrD1, lnD1",
+      "reason": "forward-horizon moves; excluded as look-ahead by the ORATS history loader design (2026-06-16)"
+    },
+    {
+      "columns": "earnFlag == -1",
+      "reason": "presumes a known future event date; mapped to 0 (same as N)"
+    },
+    {
+      "columns": "same-date vendor shares",
+      "reason": "A8: vendor runs start at the filing cover date; replaced by the 90-day lag (shares_out)"
+    }
+  ],
+  "fields": [
+    {
+      "caveats": [
+        "the open is the vendor's (TickerHistory3 open), not an auction print; the research projection never carried it",
+        "a factor step dated t-1 (dividend, split) is inside the overnight part, as the vendor dates it",
+        "one price line's values (the vendor securityID), not an issuer total"
+      ],
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "coverage": {
+        "finite_cells_all": 2433,
+        "finite_member_cells": 2235,
+        "finite_member_frac": 0.988938,
+        "member_cells": 2260,
+        "member_finite_max": 0.1037499665401207,
+        "member_finite_mean": 0.00016116078879049387,
+        "member_finite_min": -0.010152252541759887,
+        "member_finite_quantiles": {
+          "p0.1": -0.010066594208889463,
+          "p1": -0.009834399474654894,
+          "p50": 0.0,
+          "p99": 0.009893485691410145,
+          "p99.9": 0.011947518773469055
+        },
+        "per_year": {
+          "2020": {
+            "finite_member_cells": 1184,
+            "finite_member_frac": 0.983389,
+            "member_cells": 1204
+          },
+          "2021": {
+            "finite_member_cells": 1051,
+            "finite_member_frac": 0.995265,
+            "member_cells": 1056
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 1693,
+          "finite_member_frac": 0.988902,
+          "member_cells": 1712
+        }
+      },
+      "definition": "row t: a = session t-1, b = session t-2 (extended axis); O_a F_a / (C_b F_b) - 1, C = vendor close, O = vendor open, F = chained factor (SOURCE_RULE); needs observations at a and b, a finite positive open at a, no kept_gap step in (b, a], and the house guard on the adjusted log ratio (|x| <= 1.5 and |x| <= |log(O_a / C_b)| + 0.10)",
+      "dtype": "<f8",
+      "file": "ret_overnight.f64",
+      "formula_id": "price-ret-overnight-lag1-v1",
+      "formula_sha256": "e5248a03c54fe2692da408af3d9bc7c7314276c76133ea45536db0e987bb0f88",
+      "guarded_member_cells": 3,
+      "lag_sessions": 1,
+      "layout": "date-major",
+      "min_history": "2 extended sessions (row 0 reads the two sessions before the role)",
+      "name": "ret_overnight",
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "session_calendar": {
+        "first": "1970-01-01",
+        "last": "2023-12-31",
+        "rule": "nyse-rule-v1",
+        "sessions": 13598,
+        "sha256": "442fab2f7306672df9ddc84f7621d1e38c4474acbc1140104690ff06fad0aba7"
+      },
+      "sha256": "948474c5fac0bc7602f7ccd3af027f80dc6ad888421b598fd078e4fcd711cd3e",
+      "shape": [
+        41,
+        60
+      ],
+      "source_columns": [
+        "open",
+        "close",
+        "cumulReturnFactor",
+        "volume",
+        "tradingDate",
+        "securityID"
+      ],
+      "sources": [
+        {
+          "bytes": 121342,
+          "path": "<fixture>/th.parquet",
+          "row_groups": 6,
+          "rows": 5210,
+          "sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+        }
+      ],
+      "staleness": "no fill: an absent observation, open or guard failure -> NaN",
+      "units": "simple return, decimal: adjusted open over the previous adjusted close, minus 1"
+    },
+    {
+      "caveats": [
+        "the open is the vendor's (TickerHistory3 open), not an auction print; the research projection never carried it",
+        "a factor step dated t-1 (dividend, split) is inside the overnight part, as the vendor dates it",
+        "one price line's values (the vendor securityID), not an issuer total"
+      ],
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "coverage": {
+        "finite_cells_all": 2440,
+        "finite_member_cells": 2241,
+        "finite_member_frac": 0.991593,
+        "member_cells": 2260,
+        "member_finite_max": 1.0108108293873745,
+        "member_finite_mean": 0.00018997229295013144,
+        "member_finite_min": -0.024701871167532974,
+        "member_finite_quantiles": {
+          "p0.1": -0.02368696231193619,
+          "p1": -0.02210191331623381,
+          "p50": -0.0004303024518211851,
+          "p99": 0.022326263545857643,
+          "p99.9": 0.02390277204738793
+        },
+        "per_year": {
+          "2020": {
+            "finite_member_cells": 1188,
+            "finite_member_frac": 0.986711,
+            "member_cells": 1204
+          },
+          "2021": {
+            "finite_member_cells": 1053,
+            "finite_member_frac": 0.997159,
+            "member_cells": 1056
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 1698,
+          "finite_member_frac": 0.991822,
+          "member_cells": 1712
+        }
+      },
+      "definition": "row t: a = session t-1; C_a / O_a - 1 (the factor cancels within a session); needs an observation at a with a finite positive open, and |log(C_a / O_a)| <= 1.5",
+      "dtype": "<f8",
+      "file": "ret_intraday.f64",
+      "formula_id": "price-ret-intraday-lag1-v1",
+      "formula_sha256": "63f2284abb392b05c6f476f9766ed870a5934e7fe064459905dedbbaa6ae22c6",
+      "guarded_member_cells": 2,
+      "lag_sessions": 1,
+      "layout": "date-major",
+      "min_history": "1 extended session",
+      "name": "ret_intraday",
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "session_calendar": {
+        "first": "1970-01-01",
+        "last": "2023-12-31",
+        "rule": "nyse-rule-v1",
+        "sessions": 13598,
+        "sha256": "442fab2f7306672df9ddc84f7621d1e38c4474acbc1140104690ff06fad0aba7"
+      },
+      "sha256": "94bab82612f45d65bf920df9e75fe7135b6b012b4039c2132f5913d09dddb936",
+      "shape": [
+        41,
+        60
+      ],
+      "source_columns": [
+        "open",
+        "close",
+        "cumulReturnFactor",
+        "volume",
+        "tradingDate",
+        "securityID"
+      ],
+      "sources": [
+        {
+          "bytes": 121342,
+          "path": "<fixture>/th.parquet",
+          "row_groups": 6,
+          "rows": 5210,
+          "sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+        }
+      ],
+      "staleness": "no fill: an absent observation or open, or a guard failure -> NaN",
+      "units": "simple return, decimal: close over open of the same session, minus 1"
+    },
+    {
+      "caveats": [
+        "vendor share runs start at the filing cover date; the 90-day lag (A8) keeps each share count point in time",
+        "one price line's share count (an ADR line counts ADS), not the issuer total across share classes",
+        "genuine splits missing from the vendor factor are not restated (as shares_out)"
+      ],
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "coverage": {
+        "finite_cells_all": 111,
+        "finite_member_cells": 105,
+        "finite_member_frac": 0.04646,
+        "member_cells": 2260,
+        "member_finite_max": 0.135765937049813,
+        "member_finite_mean": 0.04658450715328279,
+        "member_finite_min": -0.003996005325346275,
+        "member_finite_quantiles": {
+          "p0.1": -0.003996005325346275,
+          "p1": -0.003996005325346275,
+          "p50": -0.003996005325346275,
+          "p99": 0.135765937049813,
+          "p99.9": 0.135765937049813
+        },
+        "per_year": {
+          "2020": {
+            "finite_member_cells": 51,
+            "finite_member_frac": 0.042359,
+            "member_cells": 1204
+          },
+          "2021": {
+            "finite_member_cells": 54,
+            "finite_member_frac": 0.051136,
+            "member_cells": 1056
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 77,
+          "finite_member_frac": 0.044977,
+          "member_cells": 1712
+        }
+      },
+      "definition": "row t: a = session t-1, b = a - 1260 sessions (extended axis). ME_s = 1000 x shares(o_s) x F_s / F(o_s) x C_s: the A8 house market equity, o_s = the line's last share observation dated <= date(s) - 90 days and >= date(s) - 490 days (vendor shares in thousands, 0 < shares <= the A9 ceiling). The price terms cancel exactly, so the value is ln(q(o_a) / q(o_b)), q = shares / F: share growth net of splits (they move shares and F together) and of dividends (a dividend raises F: paid-out cash counts as negative issuance, as in Daniel-Titman). Needs price observations at a and b, both share observations, no kept_gap step in (o_b, a], the line not withheld under C-81 at a (its first above-ceiling row dated <= date(a)), and a value inside the declared domain",
+      "domain": [
+        -4.605170185988092,
+        4.605170185988092
+      ],
+      "dtype": "<f8",
+      "file": "ceq_iss_5y.f64",
+      "formula_id": "price-ceq-iss-5y-lag1-v1",
+      "formula_sha256": "ad3068dd2fbf4a211ba9c3e49879fdb23eefdceb822efdeb35a72e592a0c0878",
+      "lag_sessions": 1,
+      "layout": "date-major",
+      "min_history": "1,261 extended sessions plus the 490-day share lookback before the role start",
+      "name": "ceq_iss_5y",
+      "non_pit_aspects": [],
+      "outside_domain_member_cells": 39,
+      "point_in_time": true,
+      "session_calendar": {
+        "first": "1970-01-01",
+        "last": "2023-12-31",
+        "rule": "nyse-rule-v1",
+        "sessions": 13598,
+        "sha256": "442fab2f7306672df9ddc84f7621d1e38c4474acbc1140104690ff06fad0aba7"
+      },
+      "sha256": "b968e28f658c4e39da048f865655189b36a9018b1b4b30927a2f73afa9de77a4",
+      "shape": [
+        41,
+        60
+      ],
+      "source_columns": [
+        "shares",
+        "cumulReturnFactor",
+        "close",
+        "volume",
+        "tradingDate",
+        "securityID"
+      ],
+      "sources": [
+        {
+          "bytes": 121342,
+          "path": "<fixture>/th.parquet",
+          "row_groups": 6,
+          "rows": 5210,
+          "sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+        }
+      ],
+      "staleness": "no fill: any missing term -> NaN; outside [-ln 100, ln 100] -> NaN, counted (outside_domain_member_cells)",
+      "units": "log ratio: 5-year composite equity issuance (Daniel-Titman 2006), ln(ME_a / ME_b) - ln(P_a / P_b)"
+    },
+    {
+      "caveats": [
+        "the vendor's open, high and low (TickerHistory3), not exchange auction or consolidated prints",
+        "same modeled clock as the role's close (vendor end-of-day row at the 22:00 UTC mark); the vendor's real delivery time and history vintage are the open caveats of every same-date vendor value, close included",
+        "the role's adjustment (vendor cumulReturnFactor, unrepaired, as close.f64): any vendor factor artefact in close (the 2021-01-04 re-anchoring) is carried identically, so cross-session ratios equal close's",
+        "one price line's values (the vendor securityID), not an issuer total"
+      ],
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "coverage": {
+        "finite_cells_all": 2438,
+        "finite_member_cells": 2239,
+        "finite_member_frac": 0.990708,
+        "member_cells": 2260,
+        "member_finite_max": 867.4000244140625,
+        "member_finite_mean": 35.225501292183885,
+        "member_finite_min": 4.380000114440918,
+        "member_finite_quantiles": {
+          "p0.1": 16.123318806040192,
+          "p1": 17.973672472449383,
+          "p50": 34.55397061157227,
+          "p99": 55.94619995117188,
+          "p99.9": 57.76098161315923
+        },
+        "per_year": {
+          "2020": {
+            "finite_member_cells": 1185,
+            "finite_member_frac": 0.984219,
+            "member_cells": 1204
+          },
+          "2021": {
+            "finite_member_cells": 1054,
+            "finite_member_frac": 0.998106,
+            "member_cells": 1056
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 1696,
+          "finite_member_frac": 0.990654,
+          "member_cells": 1712
+        }
+      },
+      "definition": "ohlc-bar-v1: x_adj[t] = x[t] * close.f64[t] / raw_close.f64[t], x = the vendor open of (session t, line) held as float32 (the vendor column precision, as the role's close) and widened to f64; NaN unless present.u8[t] = 1 with finite positive close and raw close, exactly one vendor row has that (tradingDate, securityID) key (duplicates quarantined), open, high and low are finite and positive, and low <= min(open, raw close) and high >= max(open, raw close) (a violating bar is withheld whole)",
+      "dtype": "<f8",
+      "file": "open_adj.f64",
+      "formula_id": "ohlc-open-adj-v1",
+      "formula_sha256": "2853374e5b363a271750784d853cbffd55981e445320d9290e14fdda15b9592f",
+      "lag_sessions": 0,
+      "layout": "date-major",
+      "min_history": "0 sessions (row t reads session t only)",
+      "missing_bar_member_cells": 3,
+      "name": "open_adj",
+      "non_pit_aspects": [],
+      "order_violation_member_cells": 2,
+      "point_in_time": true,
+      "sha256": "1f2a07a09ceb316c05da119063831edbd196facb61e2c2085c1e6e4224147c7e",
+      "shape": [
+        41,
+        60
+      ],
+      "source_columns": [
+        "tradingDate",
+        "securityID",
+        "open",
+        "high",
+        "low",
+        "close.f64",
+        "raw_close.f64",
+        "present.u8"
+      ],
+      "sources": [
+        {
+          "bytes": 121342,
+          "path": "<fixture>/th.parquet",
+          "sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+        },
+        {
+          "bytes": 19680,
+          "path": "<fixture>/role/close.f64",
+          "sha256": "67d159420abe0c26cfb713852b900f7a2383aa2bfc04f5053e7fef2ca95a8fae"
+        },
+        {
+          "bytes": 19680,
+          "path": "<fixture>/role/raw_close.f64",
+          "sha256": "334e492ec930dddb692752f3c474b073733e99d80fd2ff4e104c90166040f156"
+        },
+        {
+          "bytes": 2460,
+          "path": "<fixture>/role/present.u8",
+          "sha256": "e8147a23a285f9d4ad3813530863b6ad2d38110b5d3a73852766e50f78c252f9"
+        }
+      ],
+      "staleness": "same-session vendor bar only; no fill: an absent, duplicated, invalid or order-violating bar, or an absent role close -> NaN",
+      "units": "price on the role close's adjusted basis: the session's vendor open x close / raw close"
+    },
+    {
+      "caveats": [
+        "the vendor's open, high and low (TickerHistory3), not exchange auction or consolidated prints",
+        "same modeled clock as the role's close (vendor end-of-day row at the 22:00 UTC mark); the vendor's real delivery time and history vintage are the open caveats of every same-date vendor value, close included",
+        "the role's adjustment (vendor cumulReturnFactor, unrepaired, as close.f64): any vendor factor artefact in close (the 2021-01-04 re-anchoring) is carried identically, so cross-session ratios equal close's",
+        "one price line's values (the vendor securityID), not an issuer total"
+      ],
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "coverage": {
+        "finite_cells_all": 2438,
+        "finite_member_cells": 2239,
+        "finite_member_frac": 0.990708,
+        "member_cells": 2260,
+        "member_finite_max": 868.27001953125,
+        "member_finite_mean": 35.5780786161741,
+        "member_finite_min": 16.097130344009397,
+        "member_finite_quantiles": {
+          "p0.1": 16.347866249219514,
+          "p1": 18.25652237481283,
+          "p50": 34.96499862670898,
+          "p99": 56.27239860534668,
+          "p99.9": 58.1071614532471
+        },
+        "per_year": {
+          "2020": {
+            "finite_member_cells": 1185,
+            "finite_member_frac": 0.984219,
+            "member_cells": 1204
+          },
+          "2021": {
+            "finite_member_cells": 1054,
+            "finite_member_frac": 0.998106,
+            "member_cells": 1056
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 1696,
+          "finite_member_frac": 0.990654,
+          "member_cells": 1712
+        }
+      },
+      "definition": "ohlc-bar-v1: x_adj[t] = x[t] * close.f64[t] / raw_close.f64[t], x = the vendor high of (session t, line) held as float32 (the vendor column precision, as the role's close) and widened to f64; NaN unless present.u8[t] = 1 with finite positive close and raw close, exactly one vendor row has that (tradingDate, securityID) key (duplicates quarantined), open, high and low are finite and positive, and low <= min(open, raw close) and high >= max(open, raw close) (a violating bar is withheld whole)",
+      "dtype": "<f8",
+      "file": "high_adj.f64",
+      "formula_id": "ohlc-high-adj-v1",
+      "formula_sha256": "9a4e3fba2365f0e6eca11271c0f97f085d3aa754c05b1851f05caf5b4008c625",
+      "lag_sessions": 0,
+      "layout": "date-major",
+      "min_history": "0 sessions (row t reads session t only)",
+      "missing_bar_member_cells": 3,
+      "name": "high_adj",
+      "non_pit_aspects": [],
+      "order_violation_member_cells": 2,
+      "point_in_time": true,
+      "sha256": "63bf6505e5087fda99e4fca2ea128e484fc8874cff7349a86134e83193d3fbab",
+      "shape": [
+        41,
+        60
+      ],
+      "source_columns": [
+        "tradingDate",
+        "securityID",
+        "open",
+        "high",
+        "low",
+        "close.f64",
+        "raw_close.f64",
+        "present.u8"
+      ],
+      "sources": [
+        {
+          "bytes": 121342,
+          "path": "<fixture>/th.parquet",
+          "sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+        },
+        {
+          "bytes": 19680,
+          "path": "<fixture>/role/close.f64",
+          "sha256": "67d159420abe0c26cfb713852b900f7a2383aa2bfc04f5053e7fef2ca95a8fae"
+        },
+        {
+          "bytes": 19680,
+          "path": "<fixture>/role/raw_close.f64",
+          "sha256": "334e492ec930dddb692752f3c474b073733e99d80fd2ff4e104c90166040f156"
+        },
+        {
+          "bytes": 2460,
+          "path": "<fixture>/role/present.u8",
+          "sha256": "e8147a23a285f9d4ad3813530863b6ad2d38110b5d3a73852766e50f78c252f9"
+        }
+      ],
+      "staleness": "same-session vendor bar only; no fill: an absent, duplicated, invalid or order-violating bar, or an absent role close -> NaN",
+      "units": "price on the role close's adjusted basis: the session's vendor high x close / raw close"
+    },
+    {
+      "caveats": [
+        "the vendor's open, high and low (TickerHistory3), not exchange auction or consolidated prints",
+        "same modeled clock as the role's close (vendor end-of-day row at the 22:00 UTC mark); the vendor's real delivery time and history vintage are the open caveats of every same-date vendor value, close included",
+        "the role's adjustment (vendor cumulReturnFactor, unrepaired, as close.f64): any vendor factor artefact in close (the 2021-01-04 re-anchoring) is carried identically, so cross-session ratios equal close's",
+        "one price line's values (the vendor securityID), not an issuer total"
+      ],
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "coverage": {
+        "finite_cells_all": 2438,
+        "finite_member_cells": 2239,
+        "finite_member_frac": 0.990708,
+        "member_cells": 2260,
+        "member_finite_max": 57.18000030517578,
+        "member_finite_mean": 34.52457473796461,
+        "member_finite_min": 4.380000114440918,
+        "member_finite_quantiles": {
+          "p0.1": 15.962274706771089,
+          "p1": 17.841301180336806,
+          "p50": 34.236000823974614,
+          "p99": 55.29860038757324,
+          "p99.9": 56.740958793640154
+        },
+        "per_year": {
+          "2020": {
+            "finite_member_cells": 1185,
+            "finite_member_frac": 0.984219,
+            "member_cells": 1204
+          },
+          "2021": {
+            "finite_member_cells": 1054,
+            "finite_member_frac": 0.998106,
+            "member_cells": 1056
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 1696,
+          "finite_member_frac": 0.990654,
+          "member_cells": 1712
+        }
+      },
+      "definition": "ohlc-bar-v1: x_adj[t] = x[t] * close.f64[t] / raw_close.f64[t], x = the vendor low of (session t, line) held as float32 (the vendor column precision, as the role's close) and widened to f64; NaN unless present.u8[t] = 1 with finite positive close and raw close, exactly one vendor row has that (tradingDate, securityID) key (duplicates quarantined), open, high and low are finite and positive, and low <= min(open, raw close) and high >= max(open, raw close) (a violating bar is withheld whole)",
+      "dtype": "<f8",
+      "file": "low_adj.f64",
+      "formula_id": "ohlc-low-adj-v1",
+      "formula_sha256": "00069d88559cc77d2db42b9b21697f8da2d4e88b77c8af0c555618a0623b7209",
+      "lag_sessions": 0,
+      "layout": "date-major",
+      "min_history": "0 sessions (row t reads session t only)",
+      "missing_bar_member_cells": 3,
+      "name": "low_adj",
+      "non_pit_aspects": [],
+      "order_violation_member_cells": 2,
+      "point_in_time": true,
+      "sha256": "b5fece2a0e33b0fb287954eda7ae3319766051d2afd5ab9a4ba334d9db864464",
+      "shape": [
+        41,
+        60
+      ],
+      "source_columns": [
+        "tradingDate",
+        "securityID",
+        "open",
+        "high",
+        "low",
+        "close.f64",
+        "raw_close.f64",
+        "present.u8"
+      ],
+      "sources": [
+        {
+          "bytes": 121342,
+          "path": "<fixture>/th.parquet",
+          "sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+        },
+        {
+          "bytes": 19680,
+          "path": "<fixture>/role/close.f64",
+          "sha256": "67d159420abe0c26cfb713852b900f7a2383aa2bfc04f5053e7fef2ca95a8fae"
+        },
+        {
+          "bytes": 19680,
+          "path": "<fixture>/role/raw_close.f64",
+          "sha256": "334e492ec930dddb692752f3c474b073733e99d80fd2ff4e104c90166040f156"
+        },
+        {
+          "bytes": 2460,
+          "path": "<fixture>/role/present.u8",
+          "sha256": "e8147a23a285f9d4ad3813530863b6ad2d38110b5d3a73852766e50f78c252f9"
+        }
+      ],
+      "staleness": "same-session vendor bar only; no fill: an absent, duplicated, invalid or order-violating bar, or an absent role close -> NaN",
+      "units": "price on the role close's adjusted basis: the session's vendor low x close / raw close"
+    }
+  ],
+  "files": {
+    "ceq_iss_5y.f64": {
+      "bytes": 19680,
+      "sha256": "b968e28f658c4e39da048f865655189b36a9018b1b4b30927a2f73afa9de77a4"
+    },
+    "high_adj.f64": {
+      "bytes": 19680,
+      "sha256": "63bf6505e5087fda99e4fca2ea128e484fc8874cff7349a86134e83193d3fbab"
+    },
+    "low_adj.f64": {
+      "bytes": 19680,
+      "sha256": "b5fece2a0e33b0fb287954eda7ae3319766051d2afd5ab9a4ba334d9db864464"
+    },
+    "open_adj.f64": {
+      "bytes": 19680,
+      "sha256": "1f2a07a09ceb316c05da119063831edbd196facb61e2c2085c1e6e4224147c7e"
+    },
+    "ret_intraday.f64": {
+      "bytes": 19680,
+      "sha256": "94bab82612f45d65bf920df9e75fe7135b6b012b4039c2132f5913d09dddb936"
+    },
+    "ret_overnight.f64": {
+      "bytes": 19680,
+      "sha256": "948474c5fac0bc7602f7ccd3af027f80dc6ad888421b598fd078e4fcd711cd3e"
+    }
+  },
+  "historical_vintage_verified": false,
+  "instrument_namespace": "spiderrock.securityID",
+  "non_point_in_time_fields": [],
+  "point_in_time_definition": "point_in_time is true when both a field's cell values and which of its cells are NaN use only information available by the session's decision (every finite cell of every field is known by the session-date 22:00 UTC mark, before the 23:00 UTC decision). A false flag carries point_in_time_reason and non_pit_aspects (values and/or presence). Revision vintage of the sources (FINRA republication, unproven vendor vintage) is reported separately (historical_vintage_verified, vintage_safe_from, caveats) and does not set this flag. Consumers that must avoid look-ahead refuse point_in_time false fields unless explicitly allowed.",
+  "role": {
+    "clock_recipe": "modeled-session+22h-mark+23h-decision-v1",
+    "dates": 41,
+    "first_session": "2020-12-01",
+    "ids_sha256": "b787c033ddc20d83bc72a747fa088d7e2df1af7b09d0a8d294583403075690ac",
+    "instruments": 60,
+    "last_session": "2021-01-29",
+    "manifest_sha256": "6dadbc0ee09321bd55cb4447832f89191c3d8d5137434ddb26ca4185266cec90",
+    "member_sha256": "936ec2ac5b054d565afd696012f28a727bd36b2175835110ba93474b33300612",
+    "path": "<fixture>/role",
+    "score_begin": 10,
+    "score_end": 41,
+    "sessions_sha256": "e766d89b56f54058be5e3f57c3a41a79130e8baa5d73a4c2662bcfa98ff624f0",
+    "source_sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d"
+  },
+  "schema": "atx.research-role-fields/v1",
+  "seal": {
+    "exclusive_end": "2024-01-01",
+    "rule": "every source row available on or after 2024-01-01 is dropped before use; role sessions asserted < 2024-01-01"
+  },
+  "source_checks": {
+    "ohlc": {
+      "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
+      "lag_sessions": 0,
+      "seal": "2024-01-01",
+      "source": {
+        "duplicate_keys_quarantined": 1,
+        "rows_off_calendar": 1,
+        "rows_on_or_after_seal_skipped": 31,
+        "rows_scanned": 5210,
+        "rows_selected": 2450,
+        "rule": "ohlc-bar-v1: x_adj[t] = x[t] * close.f64[t] / raw_close.f64[t], x = the vendor open / high / low of (session t, line) held as float32 (the vendor column precision, as the role's close) and widened to f64; NaN unless present.u8[t] = 1 with finite positive close and raw close, exactly one vendor row has that (tradingDate, securityID) key (duplicates quarantined), open, high and low are finite and positive, and low <= min(open, raw close) and high >= max(open, raw close) (a violating bar is withheld whole)"
+      },
+      "window": "research-window-v2"
+    },
+    "price": {
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "lag_sessions": 1,
+      "source": {
+        "calendar": "nyse-rule-v1 before the role, the role's sessions inside it",
+        "duplicate_keys_quarantined": 1,
+        "extended_sessions": 1641,
+        "factor_break": {
+          "kept_gap_steps": 1,
+          "mass_sessions": [
+            "2021-01-04"
+          ],
+          "repaired_steps": 56,
+          "rule": "factor-break-v1"
+        },
+        "first_session": "2014-07-25",
+        "rows_off_calendar": 1,
+        "rows_on_or_after_seal_skipped": 31,
+        "rows_scanned": 5210,
+        "rows_selected": 5130,
+        "rule": "--price-source = the vendor TickerHistory3 parquet whose SHA-256 is the role manifest's source_sha256; the role's lines on the extended axis (NYSE rule sessions before the role, the role's sessions inside it); observation = unique positive (tradingDate, securityID) key with finite positive close and cumulReturnFactor and finite volume >= 0 (duplicate keys quarantined); adjusted price P = close x F, F = cumulReturnFactor with every factor-break-v1 repaired step divided out (prepare_research_fields.factor_breaks, as shares_out); a span across a kept_gap step -> NaN",
+        "sessions_before_role": 1600,
+        "shares_lines_withheld_c81": 1,
+        "shares_rows_above_a9_ceiling": 1
+      }
+    }
+  },
+  "status": "complete",
+  "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role close clock), before the 23:00 UTC decision"
+}

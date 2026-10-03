@@ -361,3 +361,12 @@ target_link_libraries(atx-engine-research-admission
         nlohmann_json::nlohmann_json)
 add_executable(atx-research-admission EXCLUDE_FROM_ALL src/research/admission/admission_main.cpp)
 target_link_libraries(atx-research-admission PRIVATE atx::engine-research-admission atx_warnings)
+
+# Platform P9 A3 (cross-lane append, ruling P2; migration slice 4): the shared vendor panel (one hashed TickerHistory3
+# scan per build, the seal pushed down; K-P9-2 source half), factor-break-v1, the NYSE rule calendar and the
+# vendor-panel builder kinds join the fields library. Arrow / Parquet reach it through atx::core (PUBLIC).
+target_sources(atx-engine-research-fields PRIVATE
+    src/research/fields/sources/factor_break.cpp
+    src/research/fields/sources/nyse_calendar.cpp
+    src/research/fields/sources/vendor_panel.cpp
+    src/research/fields/vendor_fields.cpp)

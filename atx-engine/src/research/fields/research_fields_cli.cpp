@@ -105,7 +105,7 @@ void merge_blocks(Json &entry, const Json &blocks) {
 // Builds every plan through its kind, in order, sharing one context; the receipt entries.
 [[nodiscard]] core::Result<Json> build_entries(const BuildSpec &spec, const RoleAxes &role,
                                                std::span<const FieldPlan> plans) {
-  BuildContext ctx{spec, role, {}};
+  BuildContext ctx{spec, role, {}, plans};
   Json fields = Json::array();
   for (const FieldPlan &plan : plans) {
     ATX_TRY(const auto built, plan.kind->build(plan, ctx));
@@ -161,7 +161,7 @@ void merge_blocks(Json &entry, const Json &blocks) {
 
 [[nodiscard]] bool is_known_key(std::string_view key, bool registry) {
   return key == "schema" || key == "role" || key == "output_dir" || key == "fields" ||
-         key == "finra" || (registry && key == "reuse");
+         key == "finra" || key == "price_source" || (registry && key == "reuse");
 }
 
 // "reuse": {"dir", "manifest_sha256"?} of a v2 spec; the pin is compared lower-case.
@@ -320,6 +320,10 @@ core::Result<BuildSpec> parse_build_spec(std::string_view json_text,
     if (j.contains("finra")) {
       ATX_TRY(const auto finra, required_string(j, "finra"));
       out.finra = std::filesystem::path(finra);
+    }
+    if (j.contains("price_source")) { // the vendor-panel kinds' input (P9 A3)
+      ATX_TRY(const auto price_source, required_string(j, "price_source"));
+      out.price_source = std::filesystem::path(price_source);
     }
     if (j.contains("reuse")) {
       ATX_TRY(auto reuse, parse_reuse(j.at("reuse")));
