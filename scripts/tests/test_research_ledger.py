@@ -57,9 +57,8 @@ def nav_summ_n(root: Path, ledger: Path, rel: str) -> int:
     records = BI.ledger_read(ledger)
     present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
     daily = root / rel / f"daily_{SCEN}.csv"
-    moments = NS.net_moments(np.array(list(NS.net_series(NS.load_daily(root / rel, SCEN)).values())))
     tid = BI.trial_id("construction", BI.sha256_file(daily))
-    return NS.ledger_dsr(moments, records, tid in present, BI.window_id())["n"]
+    return BI.ledger_n(records, tid in present)        # the N nav_summ's ledger DSR row prints (engine: house_v1)
 
 
 def cycle_n(root: Path, sp: Path) -> int:
