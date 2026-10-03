@@ -7750,3 +7750,59 @@ the cap) whatever the verdict; 0 admission trials.
 - `PYTHONHASHSEED=0 python -m pytest -q -p no:cacheprovider scripts/tests/test_research_spec.py` with the new locked
   file on disk: **87 passed** (179.7 s).
 - **Pre-registration commit** of the cell: the spec and this log section together (next commit). No Y-1 run has started.
+
+### R0-11 Y-1 stage 1: NAV (`run --stop-after nav`), mechanics and `vol_target.csv` before any return (source `ac74a48c`)
+
+Host check before each launch (psutil): no compiler, no `atx-*` exe, no other research process; free memory sampled
+every 0.25 s (scratch `gate_run.py`, as R0-10; console logs kept in the scratchpad and scanned below).
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| NAV (the cell) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/y-vol-target-y-1.json --stop-after nav --root C:/atx-wt/pool-2` (launch 15:27:37Z) | 3,072 (met at once) / 6,452 / 5,693 | **0** | 48.1 / 590 (cycle wall 48.8) | `cefce32db0a9a0862e299798a17032580e7f7654ca1e450fced2960694442cb4` | `build-equity/mega-nav-v8y-vol-target-L2.0` (run dir `-run`): fields / u / fit / card / w Y-F0's (done); gate p1-v8ysb re-read PASS (0 status changes; 0 admission lines appended, 9 already ledgered); receipt completed, "clean in the code pathspec" (dirty outside: the untracked png only), source `ac74a48c`, NAV exe `72ff6d2d` (= X-10's and Y-F0's); recipe rule `aim-partial-v5+neutral-price-risk-v1+vol-target-v1`; `summary.json` `876d107b`, S2 daily `d6d145ef`, `vol_target.csv` `100286a5` (returns not read) |
+| mechanics reader | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r11-y1/mech-run1 --bind scripts/wave_readers.py --bind <three summary.json> --bind <the three NAVs' daily_*.csv and capacity_curve.csv> -- python scripts/wave_readers.py mechanics --nav cell=<Y-1 NAV> --nav parent=<X-10 NAV> --nav yf0=<Y-F0 NAV> --output build-equity/p9-r11-y1/mech.json` (the driver's `reader_argv`) | 3,072 / 6,383 / 6,336 | **0** | 0.5 / 44 | `461fb4840bc6e0b3f359499d3e64ae81ecd8bda8a1b537e0d95d3dcb85bab5dc` | `mech.json` `99eb2484efcd753938f576cc633d020795d349837d4c621f537f3dbbf1e11468` (construction keys only) |
+
+**Mechanics (S2 `modeled-1bn-stale5-v1+swap-fin-v1`, the limits written at `d1f2d7f2`; scratch `mechy1.py`): PASS 6/6.**
+
+| row | Y-1 | limit | result | X-10 / Y-F0 (beside) |
+|---|---|---|---|---|
+| all-rows mean gross | **1.555665** | [.828796, 1.672591] | PASS | 1.666718 / .986213 |
+| abs(all-rows mean net) | **.009668** | <= .033818 | PASS | .010446 / .005340 |
+| tau mean | **.028536** | <= .338181 | PASS | .028189 / .028134 |
+| tau p95 | **.034943** | <= .507271 | PASS | .033163 / .033410 |
+| max return identity error | 4.20e-16 | <= 1e-09 | PASS | 3.39e-16 / 3.68e-16 |
+| max cash book relative error | 3.78e-14 | <= 1e-09 | PASS | 4.80e-14 / 1.11e-13 |
+
+Also (keys only): aim_leverage 2.0 (the cap); post-ramp gross 1.5575 (943 rows); max gross 1.8099; max |net| .0441; gross
+by year 1.382 / 1.638 / 1.547 / 1.658; 1,006 CSV rows, 1,005 return rows, 1,004 tau sessions; the NAV's turnover flags
+`meets_daily_turnover_mean` / `_p95` true. Gross ratio Y-1 / X-10 .933370 (= mean multiplier .933566 within .0002);
+Y-1 / Y-F0 1.577412.
+
+**`vol_target.csv` and the summary `vol_target` block (S2 book; scratch `vty1.py`, `vty1b.py`; keys only, no return
+column), in the order written at `d1f2d7f2`:**
+- (a) **estimates 48** in the 1,004 scored decisions (1,004 / 21 = 47.81); the 47 gaps between them all exactly 21
+  decisions (cadence 1: 21 sessions); none fewer than 21.
+- (b) **decisions_before_first_estimate 0** (the NAV's own summary block). The rule's state runs through the 60-session
+  warm-up (the code's declaration: "every book runs on its own state, the warm-up included"; `vol_target.csv` holds "one
+  row per scored decision"), so the book's first estimates fall in the unscored warm-up and the first scored decision
+  carries their state: sigma_ref .020866 at scored row 0, the first in-window estimate at scored row 4. The exact
+  reconstruction: sigma_ref of every in-window estimate = the running mean of 3 warm-up estimates (n_w solved from rows 0
+  and 4: 3.000000000) and the in-window sigma_hat, **max error 0.0 over 48 estimates**; L_t = clip(2.0 x sigma_ref /
+  sigma_hat, 1, 2.0) **exactly (max error 0.0) on all 1,004 decisions**; sigma_hat, sigma_ref and L_t held between
+  estimates on every non-update row. The same shape as R-8 on this store (batch 2g: decisions_before_first_estimate 0,
+  48 estimates).
+- (c) decisions at the cap 2.0 **584**, at the floor 1 **21**, unclipped **399**; estimates at the cap 28, at the floor
+  1, unclipped 19 (of 48); **L_t n 1,004, mean 1.867132, min 1.0, max 2.0** (multiplier mean .933566); sigma_hat over the
+  48 estimates mean .025992 (min .013146, max .046352); sigma_ref mean .025920 (min .017902, max .027769). First scored
+  decision 2020-01-02, last 2023-12-27 (ns stamps).
+- (d) **priced_share mean .998634** (min .995193, max 1.0; 1,004 rows).
+- **Stop checks (`d1f2d7f2`): none fires.** Every L_t in [1, 2.0]; no scored decision before the first estimate, so "L
+  before the first" has no scored row, and the exact running-mean fit gives sigma_ref = sigma_hat at the book's first
+  estimate (a mean of one); no two estimates fewer than 21 apart; 48 estimates; priced_share mean .998634 >= .9956.
+  Disclosure: the scratch `vty1.py` first took the first in-window update (row 4) as the book's first estimate and
+  printed "sigma_ref_1 != sigma_hat_1"; that was its indexing, not the rule: the first estimate is a warm-up one, as
+  `vty1b.py`'s exact reconstruction shows.
+
+**Seal (SEAL-ALLOW per-hit check; scratch `sealx10.py`, wave_seal's four forms and date rule over `stdout.log`,
+`stderr.log`, `receipt.json` of the NAV and mech run dirs and the NAV, mech and identity-gtest console logs; 9 files):
+`2026-10-02` source (a) x4 (the png name in the runner's dirty list), `2026-10-03` source (b) x3 (receipt
+`started_utc`), **0 OTHER**.** No return, Sharpe or NAV figure has been read. Trials so far: 0 (ledger 132 lines).
