@@ -27,7 +27,7 @@ from . import ea_publication as P
 
 STAGE = "ea_actuals"
 SCHEMA = "atx.alpha-panel.ea-actuals/v1"
-VERSION = "ex99-qualified-quarter-v2"
+VERSION = "ex99-qualified-quarter-v3"
 HOLDOUT = dt.date(2023, 1, 1)
 FIELDS = ("saleq", "epsfiq", "niq")
 MONTHS = "January February March April May June July August September October November December".split()
@@ -106,11 +106,72 @@ def fiscal_identity(text: str,period_end: dt.date | None=None) -> dict[str, Any]
             "quarter_identity_reason":"fiscal_quarter_or_calendar_unqualified"}
 
 
+def quarter_columns(rows: list[list[tuple[int,int,str]]], prefix: str) -> dict[tuple[int,int],dt.date]:
+    """Bind source dates to physical quarter-only column bands.
+
+    Split month/day plus year headers need an enclosing duration span. YTD
+    spans, overlapping/contradictory labels and percent-change columns never
+    supply quarter observations. Rowspan support remains deliberately absent.
+    """
+    header_rows=[]
+    for row in rows:
+        if any(metric(txt) for _,_,txt in row):
+            break
+        header_rows.append(row)
+    cells=[c for row in header_rows for c in row]
+    text=prefix+' '+' '.join(txt for _,_,txt in cells)
+    quarter=re.compile(r'three[- ]months?|3[- ]months?|quarter ended',re.I)
+    ytd=re.compile(r'six[- ]months?|nine[- ]months?|twelve[- ]months?|year ended|annual',re.I)
+    mixed=bool(ytd.search(text))
+    duration=[]
+    for lo,hi,txt in cells:
+        if quarter.search(txt) and not ytd.search(txt):
+            duration.append((lo,hi,txt))
+    candidates: dict[tuple[int,int],set[dt.date]]=defaultdict(set)
+    for lo,hi,txt in cells:
+        parents=[s for a,b,s in duration if a<=lo and hi<=b]
+        if mixed and not parents:
+            continue
+        for date in dates(txt):
+            candidates[(lo,hi)].add(date)
+        if re.fullmatch(r'20\d{2}',txt):
+            for parent in parents:
+                md=re.findall(r'\b('+'|'.join(MONTHS)+r')\s+(\d{1,2}),?(?!\d)',parent,re.I)
+                if len(md)==1 and not dates(parent):
+                    try:
+                        candidates[(lo,hi)].add(dt.date(int(txt),MONTHS.index(md[0][0].capitalize())+1,int(md[0][1])))
+                    except ValueError:
+                        pass
+    # Abbott-style 2Q15/2Q14 requires the explicit quarter/date pair in the
+    # immediately preceding caption; no fiscal-calendar inference is used.
+    caption=re.search(r'\b(first|second|third|fourth) quarter ended\s+('+'|'.join(MONTHS)+r')\s+(\d{1,2}),?\s+(20\d{2})\s+and\s+(20\d{2})\b',prefix,re.I)
+    if caption and not mixed:
+        ordinal={'first':1,'second':2,'third':3,'fourth':4}[caption[1].lower()]
+        years={int(caption[4]),int(caption[5])}
+        for lo,hi,txt in cells:
+            token=re.fullmatch(r'([1-4])Q(\d{2}|20\d{2})',txt,re.I)
+            if token and int(token[1])==ordinal:
+                year=int(token[2]); year=year+2000 if year<100 else year
+                if year in years:
+                    try:
+                        candidates[(lo,hi)].add(dt.date(year,MONTHS.index(caption[2].capitalize())+1,int(caption[3])))
+                    except ValueError:
+                        pass
+    if any(len(ds)!=1 for ds in candidates.values()):
+        return {}
+    result={band:next(iter(ds)) for band,ds in candidates.items()}
+    # A broad date span plus subordinate date columns is ambiguous geometry.
+    bands=list(result)
+    if any(max(a,c)<min(b,d) for i,(a,b) in enumerate(bands) for c,d in bands[i+1:]):
+        return {}
+    return result
+
+
 def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
     """Strict current-quarter table extraction; conflicts are never rank-selected.
 
-    Header dates must align with physical numeric cells; spanning date cells and
-    mixed-duration columns are rejected. Currency/scale must be declared in or
+    Header dates must align with physical numeric cells; explicit duration spans
+    may separate quarter columns from YTD. Currency/scale must be declared in or
     immediately before that table. EPS bypasses monetary scale only when the
     source explicitly excludes per-share amounts from the monetary scale.
     """
@@ -143,9 +204,26 @@ def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
         if BAD_BASIS.search(context) or not re.search(r"three months|3 months|quarter ended", context, re.I):
             out["extraction_reasons"].append(f"table_{table_no}:non_gaap_or_quarter_duration_unqualified")
             continue
-        if re.search(r"six months|nine months|twelve months|year ended|annual", text[:1800], re.I):
-            out["extraction_reasons"].append(f"table_{table_no}:mixed_duration_columns")
-            continue  # duration-column ambiguity remains missing
+        physical_rows=[]
+        invalid_geometry=False
+        for tr,cells in zip(trs,rows):
+            physical=[]; offset=0
+            for el,txt in zip(tr.xpath('./td|./th'),cells):
+                try:
+                    span=int(el.get('colspan','1')); rowspan=int(el.get('rowspan','1'))
+                except ValueError:
+                    invalid_geometry=True; break
+                if span<1 or span>30 or rowspan!=1:
+                    invalid_geometry=True; break
+                physical.append((offset,offset+span,txt)); offset+=span
+            physical_rows.append(physical)
+        if invalid_geometry:
+            out['extraction_reasons'].append(f'table_{table_no}:unsupported_header_geometry')
+            continue
+        header=quarter_columns(physical_rows,prefix)
+        if not header:
+            out['extraction_reasons'].append(f'table_{table_no}:quarter_column_geometry_unqualified')
+            continue
         currencies = set(re.findall(r"\b(USD|CAD|EUR|GBP|RMB|CNY|JPY)\b", context.upper()))
         if re.search(r"U\.?S\.? dollars|United States dollars", context, re.I):
             currencies.add("USD")
@@ -161,22 +239,6 @@ def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
             out["extraction_reasons"].append(f"table_{table_no}:monetary_scale_unqualified")
             continue
         per_share = bool(re.search(r"except[^.;\n]{0,80}(?:per.share|earnings per share)", context, re.I))
-        header: dict[tuple[int, int], dt.date] = {}
-        physical_rows = []
-        for tr, cells in zip(trs, rows):
-            physical = []
-            offset = 0
-            for i, (el, txt) in enumerate(zip(tr.xpath("./td|./th"), cells)):
-                span = int(el.get("colspan", "1"))
-                if span < 1 or span > 30 or int(el.get("rowspan", "1")) != 1:
-                    physical = []
-                    break  # unimplemented rowspan geometry remains unqualified
-                physical.append((offset, offset+span, txt))
-                ds = dates(txt)
-                if len(ds) == 1:
-                    header[(offset, offset+span)] = ds[0]
-                offset += span
-            physical_rows.append(physical)
         current = [d for d in header.values() if 0 <= (filing_date - d).days <= 150]
         if not current:
             out["extraction_reasons"].append(f"table_{table_no}:period_column_unqualified")
@@ -192,6 +254,8 @@ def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
                 if not (d == pe or 345 <= (pe-d).days <= 385):
                     continue
                 band = [txt for begin,end,txt in physical if begin>=lo and end<=hi]
+                if sum(bool(re.search(r'\d',txt)) for txt in band)!=1:
+                    continue  # split currency/parenthesis cells are allowed, two amounts are not
                 cell_text = ''.join(band)
                 value = number(cell_text)
                 if value is None:
@@ -478,6 +542,8 @@ def parse_stage(limit_new_documents: int | None = None) -> dict[str, Any]:
                 extracts.append(cached_extract(blob,row,document,cache,run_key,cache_counts,limit_new_documents))
             except ParseUnitLimit:
                 con.close()
+                if verify_input('sec_filings')['sha256']!=inputs['sec_filings']['sha256'] or C.sha256_file(catalog)!=catalog_sha:
+                    raise RuntimeError('source snapshot changed during bounded parsing; no checkpoint receipt admitted')
                 receipt = {'status':'partial_cache_only','run_key':run_key,'cache_counts':dict(cache_counts),
                            'published':False,'input_manifests_sha256':inputs,'catalog_sha256':catalog_sha}
                 C.write_json_atomic(cache/'progress.json',receipt)

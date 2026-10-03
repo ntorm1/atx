@@ -28,6 +28,53 @@ def test_quarter_current_comparative_units_and_loss_sign():
     assert r["period_days"] is None
 
 
+def test_aar_original_shaped_split_header_quarter_ytd_and_unknown_currency():
+    # Geometry transcribed from 0001104659-18-018959 table 0. Explicit USD
+    # is a synthetic positive control; the retained original only says '$'.
+    blob='''<html><p>{currency} in millions except per share data</p><table>
+    <tr><td></td><td></td><td colspan="5">Three Months Ended February 28,</td><td></td><td colspan="5">Nine Months Ended February 28,</td><td></td></tr>
+    <tr><td></td><td></td><td colspan="2">2018</td><td></td><td colspan="2">2017</td><td></td><td colspan="2">2018</td><td></td><td colspan="2">2017</td><td></td></tr>
+    <tr><td>Sales</td><td></td><td>$</td><td>456.3</td><td></td><td>$</td><td>407.2</td><td></td><td>$</td><td>1,274.8</td><td></td><td>$</td><td>1,140.3</td><td></td></tr>
+    </table></html>'''
+    r=EA.parse_release(blob.format(currency='USD').encode(),dt.date(2018,3,20))
+    assert r['saleq']==456.3e6 and r['saleq_seasonal_comparative']==407.2e6
+    assert r['period_end']==dt.date(2018,2,28)
+    assert r['fiscal_quarter'] is None  # no historical fiscal calendar supplied
+    original=EA.parse_release(blob.format(currency='').encode(),dt.date(2018,3,20))
+    assert original['saleq'] is None
+    assert any('currency_missing_or_ambiguous' in s for s in original['extraction_reasons'])
+    # A year outside its explicit duration span cannot be rescued by order.
+    bad=blob.replace('colspan="5">Three Months','colspan="1">Three Months')
+    assert EA.parse_release(bad.format(currency='USD').encode(),dt.date(2018,3,20))['saleq'] is None
+    two_amounts=blob.replace('<td>$</td><td>456.3','<td>1</td><td>456.3')
+    assert EA.parse_release(two_amounts.format(currency='USD').encode(),dt.date(2018,3,20))['saleq'] is None
+
+
+def test_abbott_original_shaped_quarter_abbreviations_exclude_percent_columns():
+    # 0001104659-15-052323 table 11: source caption binds year tokens.
+    blob='''<html><p>Second Quarter Ended June 30, 2015 and 2014</p>
+    <p>{currency} in millions, except per share data</p><p>unaudited</p><table>
+    <tr><td></td><td></td><td colspan="2">2Q15</td><td></td><td colspan="2">2Q14</td><td></td><td>% Change</td><td></td></tr>
+    <tr><td>Net Sales</td><td></td><td>$</td><td>5,170</td><td></td><td>$</td><td>5,057</td><td></td><td>2.2</td><td></td></tr>
+    </table></html>'''
+    r=EA.parse_release(blob.format(currency='USD').encode(),dt.date(2015,7,22))
+    assert r['saleq']==5170e6 and r['saleq_seasonal_comparative']==5057e6
+    assert r['period_end']==dt.date(2015,6,30)
+    assert all('2.2' not in e for e in r['evidence'])
+    assert EA.parse_release(blob.format(currency='').encode(),dt.date(2015,7,22))['saleq'] is None
+    for changed in (blob.replace('2Q14','3Q14'),blob.replace('2015 and 2014','2015 and 2013')):
+        r=EA.parse_release(changed.format(currency='USD').encode(),dt.date(2015,7,22))
+        assert r.get('saleq_seasonal_comparative') is None
+
+
+def test_quarter_column_conflict_overlap_and_rowspan_fail_closed():
+    assert EA.quarter_columns([[(0,3,'Three Months Ended March 31, 2020')],
+                              [(1,2,'March 31, 2019')]],'')=={}
+    assert EA.quarter_columns([[(1,2,'March 31, 2020')],[(1,2,'March 31, 2019')]],'Three months ended')=={}
+    r=parse(release().replace(b'<td>March 31, 2020',b'<td rowspan="2">March 31, 2020'))
+    assert r['saleq'] is None and any('unsupported_header_geometry' in s for s in r['extraction_reasons'])
+
+
 @pytest.mark.parametrize("unit", ["in millions", "USD CAD in millions", "USD", "USD in millions and in thousands"])
 def test_unknown_or_conflicting_currency_and_scale_is_missing(unit):
     assert parse(release(unit=unit))["saleq"] is None
