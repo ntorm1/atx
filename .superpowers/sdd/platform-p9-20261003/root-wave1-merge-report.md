@@ -260,3 +260,82 @@ ruled.** I did not fix either (neither is a merge slip; both touch pinned test e
   ruled; count them, do not fix them in a merge.
 - Host: VS Code held ~3 GB; free memory sat at 2.8-3.2 GB between my runs. A 1,536-cap run's 3,072 gate is usually
   reachable within a minute; a 2,048-cap gate (3,584) was not reached in the several minutes I waited.
+
+## M1b: slots 5-7 (S1, B1, D1)
+
+Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration head at dispatch: `20443022`
+(confirmed: `68ee0c33` design docs, `6476b927` S1 merge, `20443022` MARGINAL_BUILT fix; tree clean but `progress.md`
+(PM lines) and the owner's png). Same Python and pytest flags as M1a; pytest only with explicit suite paths
+(PY-HYG); scratch logs `gt-*.log` / `pyt-*.log` in the session scratchpad. Slot 5 was re-derived from git and the
+`build-equity` run dirs (receipts, exe SHAs, outputs); nothing the killed agent left was taken on its word.
+
+### Slot 5: S1 (`34ef92dd`, pool-18)
+
+- **Merge** (killed agent, verified from git): `git merge --no-ff 34ef92dd` -> **`6476b927`** (16 files: the
+  `build_flavor.hpp` token, `marginal_rank_ic`, `strategy_marginal_ic`, new `strategy_marginal_pair_cache`, IC
+  identity / source pin `2d758bff` (S1-PIN), `CMakePresets.json` equity-rel deps dir + `equity-rel-ic`, one
+  `atx-impl/CMakeLists.txt` tail line, tests). Merged with no conflict (parents `68ee0c33`, `34ef92dd`).
+- **E1 x S1 merge note** (killed agent, verified): **`20443022`** `fix(cycle): S1's marginal value options join
+  MARGINAL_BUILT` -- `research_cycle.MARGINAL_BUILT` gains `--candidates`, `--pair-cache`, `--verified-digests`; the
+  test's verb-option set gains the same three. Python only.
+- **Build p9-1c** (killed agent's run, verified by receipt `build-equity/mega-p9-1c-receipt.json`): source
+  `20443022` (C++ = the S1 merge; `20443022` is Python only), equity-dev, targets exactly S1's
+  `atx-equity-strategy-ic, atx-impl-strategy-ic-tests`, 4 jobs, free 3,442 MiB at admission -> **exit 0, 97.9 s,
+  33 TUs, 4 links, 0 warnings** (UTF-16 build log decoded: 0 "warning" lines, 0 "error" lines). Executables
+  `atx-equity-strategy-ic` **`4e321143053e9fadd689983917aaab67b4ffa0c1d0ef3ebedd82c8d3dc079b0f`**,
+  `atx-impl-strategy-ic-tests` `efff612a...18a3`; both re-hashed on disk now = the receipt (no later build touched
+  them). The engine-side copy of `combine_marginal_rank_ic_test.cpp` is compiled into `atx-impl-strategy-ic-tests`
+  (no separate engine target is configured under `ATX_EQUITY_ONLY`).
+- **gtests, Debug** (run by me; S1 report's anchored filter
+  `MarginalIc.*:IcIdentity.*:CombineMarginalRankIc.*:StrategyIcRunner.IcSourcesPinnedToSemanticsVersion:StrategyIcRunner.VmSourcesPinnedToSemanticsVersion`):
+  **31 passed / 0 failed**, exit 0, 14.8 s (MarginalIc 15 incl. `CacheRootsNeverShareAcrossBuilds`, IcIdentity 1,
+  CombineMarginalRankIc 13, StrategyIcRunner 2 pins).
+- **gtests, Release: deferred to M1d.** pool-2 has no Release tree (`build-equity-rel` absent; S1 moved equity-rel's
+  deps to a fresh `deps/equity-rel`), so the first Release configure fetches deps and compiles the IC closure from
+  scratch -- not cheap under the ~3 GB host budget. M1d's Release IC adoption (G-P3) builds that tree anyway; run
+  `MarginalIc.*` (and S1's full filter + the whole binary) there.
+- **pytest** (touched suite: `20443022` edits `scripts/research_cycle.py` + `scripts/tests/test_research_cycle.py`;
+  the S1 merge touches no Python):
+
+  | command | result | exit | wall |
+  |---|---|---|---|
+  | `PYTHONHASHSEED=0 -m pytest scripts/tests/test_research_cycle.py` | 92 passed, 3 skipped | 0 | 50 s |
+  | `PYTHONHASHSEED=1 -m pytest scripts/tests/test_research_cycle.py` | 92 passed, 3 skipped | 0 | 48 s |
+
+- **Identity: flag-absent Debug X-5 marginal** (S1 report step 3 / fix round 1 step 3). The killed agent's two runs
+  were reused after proving their provenance; I re-ran nothing.
+  - argv = the v8 X-5 lineage's marginal step (X-5 = `x-theme-erc` -> `lib-v8x3b-gm`, T1 review): exactly the argv
+    of v8's `mega-v8-b0b-train-u-v8x3b-marginal-poolonly-run` (candidate cache `mega-candidate-cache-v8-lo3`, library
+    `fund_industry_ic_v8x3b.json` `32f8d69f`, pool `848612980`, role lo3 `e1c67101`, themes `c67edffa`, fields v13,
+    `--min-names 1000`), only `--output` changed; through `run_bounded_research.py` (360 s, cap 1,024 MiB), both
+    under source `20443022`, code pathspec clean.
+  - **old exe** = `build-equity/p9-m1b-ref-ic/atx-equity-strategy-ic.exe`, sha256 **`985019d9...c989`**. Proof of
+    origin: it is the `Executables.atx-equity-strategy-ic` of research-build receipt `mega-v8-16d-receipt.json`
+    (tag v8-16d, Source `e0fd0297`, equity-dev, 0 dirty), file mtime 2026-10-02 21:51:41 (after `e0fd0297`'s
+    21:47 commit), and the exe of the P9 R0 runs (`p9-r05-*`, `p9-r09-p13-w-run`). `e0fd0297` is an ancestor of the
+    lane base `d7c1c520` and `e0fd0297..68ee0c33` changes no source of this exe (C++ diff: `strategy_ic_runner_test.cpp`
+    (tests only) and the `atx-engine-research-fields` library, which `atx-impl-core` does not link) -- so it is the
+    d7c1c520 / pre-S1 Debug IC exe in code.
+  - **new exe** = `build-equity/bin/atx-equity-strategy-ic.exe` `4e321143...` = p9-1c.
+
+  | run dir | exe | outcome | wall | peak RSS | `marginal_ic.json` sha256 |
+  |---|---|---|---|---|---|
+  | `p9-s1-x5-marginal-old(-run)` | old `985019d9` | completed, exit 0 | 198.8 s | 253 MiB | `6e4f084c...53ad` |
+  | `p9-s1-x5-marginal-new(-run)` | new `4e321143` | completed, exit 0 | 178.2 s | 252 MiB | `1556aaee...527d` |
+
+  | compared | expected (S1 report) | observed | match |
+  |---|---|---|---|
+  | bytes outside the `stage_seconds` object | byte-identical | 41,991 B each with the object replaced by a marker, sha256 `778a9472...de4a` both; `cmp` equal | **yes** |
+  | `stage_seconds` | gains labels, hash, read, kernel, pairwise | JSON paths differ only at `/stage_seconds/{hash,kernel,labels,pairwise,read}` (added) and `/stage_seconds/{stream,total}` (timings) | yes |
+  | `build_vm_identity` | legacy identity unchanged, legacy cache roots read | `dslvm1_clang18.1` (no flavour suffix) in both; 58 candidates read from `mega-candidate-cache-v8-lo3` (warm, no recompute) | yes |
+  | old vs v8's recorded output (`mega-v8-b0b-train-u-v8x3b-marginal-poolonly`, exe `67f72921`) | -- (extra check) | equal outside `stage_seconds` | yes |
+
+  **Result: flag-absent identity holds.**
+- **Speed (S1 report step 5, logged only):** same argv with `--workers 8 --pair-cache build-equity/p9-s1-x5-pair-cache`
+  (cold cache; killed agent's run `p9-s1-x5-marginal-w8-run`, exe `4e321143`, verified the same way): completed,
+  **129.3 s wall** (vs 178.2 s at 1 worker, 198.8 s old), peak 297 MiB; stdout `computed_pairs=1653 cached_pairs=0`,
+  kernel 889.9 CPU-s summed over 8 workers. Its `candidates` block equals the 1-worker run; it differs only at
+  `/inputs/pair_cache`, `/workers`, `/working_bytes` (362,136,670 -> 407,280,558) and `stage_seconds`. No warm
+  pair-cache rerun was made (the pairwise stage is 7.5-11.7 s of the wall; the kernel dominates).
+- **Slips fixed:** none. The `20443022` merge note was the planned E1 x S1 follow-up, not a slip.
+- **Trial ledger:** 0 trials.

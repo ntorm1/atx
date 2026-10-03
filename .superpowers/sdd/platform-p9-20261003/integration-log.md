@@ -53,3 +53,12 @@ outputs compared by SHA and JSON path only.
   M1d with the full suite.
 - G-P7 first half (eval_tie): `generate_eval_tie.py --check` tied; fixture test 7 passed.
 - G-P8 (canary goldens): not yet -- recorded after C1 (M1c/M1d).
+
+### M1b: slots 5-7 (S1, B1, D1), 2026-10-03
+
+Base `20443022` (S1 merged and its MARGINAL_BUILT note applied by the killed root-m1b; slot 5 re-derived from git and
+run receipts by root-m1b2). Detail in `root-wave1-merge-report.md` "M1b".
+
+| slot | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity |
+|---|---|---|---|---|---|---|---|---|
+| 5 S1 | `34ef92dd` | `6476b927` (+ `20443022` E1 x S1 note) | none | **p9-1c** `atx-equity-strategy-ic, atx-impl-strategy-ic-tests`, 97.9 s | 0 | Debug S1 filter 31/31 (MarginalIc 15, IcIdentity 1, CombineMarginalRankIc 13, 2 pins); Release deferred to M1d (no Release tree) | `test_research_cycle.py` 92p/3s x2 seeds | flag-absent Debug X-5 marginal: old `985019d9` (v8-16d = pre-S1 code) vs new `4e321143` byte-identical outside `stage_seconds`; also = v8's recorded output |
