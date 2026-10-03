@@ -106,22 +106,26 @@ TEST(ResearchFieldsVolumeMean, NegativeZeroIsAcceptedAndCounted) {
   EXPECT_EQ(row[1], 2.0);
 }
 
+// Every volume here is accepted (finite, >= 0: vol_126's rule, as volume_mean_rows' `ok`), so the
+// sums see every slot. Expected values: research_fields_price.volume_mean_rows' ring rule run in
+// numpy 1.26.4 on these sessions (ring.sum(axis=0) / maximum(k, 1)).
 TEST(ResearchFieldsVolumeMean, SumOrderIsNumpys) {
-  // Two columns: numpy adds the ring's slots in slot order from 0.0. After sessions 0..3 of a
-  // 3-slot window the slots hold sessions 3, 1, 2: (-1e16 + 1e16) + 1 = 1, where session order
-  // would give (1e16 + 1) - 1e16 = 0.
-  const Matrix sessions{{5.0, 1.0}, {1e16, 1.0}, {1.0, 1.0}, {-1e16, 1.0}, {0.0, 1.0}};
+  // Two columns: numpy adds the ring's slots in slot order. After sessions 0..3 of a 3-slot window
+  // the slots hold sessions 3, 1, 2: (1 + 1) + 1e16 = 1e16 + 2, where session order would give
+  // (1 + 1e16) + 1 = 1e16 (each + 1 ties to the even 1e16).
+  const Matrix sessions{{5.0, 1.0}, {1.0, 1.0}, {1e16, 1.0}, {1.0, 1.0}};
   auto mean = fields::TrailingMean::create(2, 3, 1).value();
   std::vector<f64> row(2);
-  for (std::size_t t = 0; t < 4; ++t) {
-    mean.push(sessions[t], std::vector<u8>{1, 1});
+  for (const auto &session : sessions) {
+    mean.push(session, std::vector<u8>{1, 1});
   }
   mean.value(row);
-  EXPECT_EQ(row[0], 1.0 / 3.0);
+  EXPECT_EQ(row[0], 3333333333333334.0); // numpy; session order gives 3333333333333333.5
+  EXPECT_EQ(row[1], 1.0);
   // One column: the slots are contiguous and numpy sums them pairwise (eight accumulators):
-  // ((1 + 1e16) + (-1e16 + 1)) + ... = 0, where slot order gives 1 (numpy: ring.sum(axis=0) = 0.0
-  // and 1.0).
-  const std::vector<f64> slots{1.0, 1e16, -1e16, 1.0, 0, 0, 0, 0, 0};
+  // ((1e16 + 0) + (1 + 1)) + ... = 1e16 + 2, where slot order gives 1e16 (numpy: ring.sum(axis=0)
+  // / 9 = 1111111111111111.4 with one column, 1111111111111111.1 with two).
+  const std::vector<f64> slots{1e16, 0, 1.0, 1.0, 0, 0, 0, 0, 0};
   auto single = fields::TrailingMean::create(1, 9, 1).value();
   auto pair = fields::TrailingMean::create(2, 9, 1).value();
   for (const f64 v : slots) {
@@ -130,9 +134,22 @@ TEST(ResearchFieldsVolumeMean, SumOrderIsNumpys) {
   }
   std::vector<f64> one(1);
   single.value(one);
-  EXPECT_EQ(one[0], 0.0);
+  EXPECT_EQ(one[0], 1111111111111111.4);
   pair.value(row);
-  EXPECT_EQ(row[0], 1.0 / 9.0);
+  EXPECT_EQ(row[0], 1111111111111111.1);
+  EXPECT_EQ(row[1], 1.0);
+}
+
+// A negative volume is never accepted (vol_126's rule): its slot holds 0.0 and is not counted, as
+// research_fields_price.volume_mean_rows' `ok = present & isfinite(v) & (v >= 0)`.
+TEST(ResearchFieldsVolumeMean, NegativeVolumeIsNotAccepted) {
+  auto mean = fields::TrailingMean::create(1, 3, 1).value();
+  for (const f64 v : {4.0, -1e16, 2.0}) {
+    mean.push(std::vector<f64>{v}, std::vector<u8>{1});
+  }
+  std::vector<f64> one(1);
+  mean.value(one);
+  EXPECT_EQ(one[0], 3.0); // (4 + 0 + 2) / 2 accepted sessions
 }
 
 TEST(ResearchFieldsVolumeMean, LookAheadProbeHoldsAndCatchesALeak) {
