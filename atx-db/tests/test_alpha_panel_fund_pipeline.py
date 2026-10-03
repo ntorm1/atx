@@ -73,17 +73,20 @@ def test_process_batch_end_to_end(monkeypatch, tmp_path):
 
 def test_prepare_step_cache(tmp_path):
     """A prepare step whose output exists with the same SQL fingerprint is skipped (guard stops resume prepare);
-    a changed query recomputes."""
+    a changed query recomputes. Certified fixture snapshots are required."""
     import duckdb
 
+    from .test_alpha_panel_fund_prepare_cache import snapshot
+    from atx_db.alpha_panel import fund_prepare_cache as fpc
+    cache = fpc.PreparationCache(snapshot(tmp_path / "source"), {})
     con = duckdb.connect()
     try:
         dest = tmp_path / "x.parquet"
-        r: dict = {}
+        r: dict = {"_prepare_cache": cache}
         assert fu.cached_copy(con, "SELECT 1 AS a UNION ALL SELECT 2", dest, r, "x") == 2 and r["cached"] == []
-        r2: dict = {}
+        r2: dict = {"_prepare_cache": cache}
         assert fu.cached_copy(con, "SELECT 1 AS a UNION ALL SELECT 2", dest, r2, "x") == 2 and r2["cached"] == ["x"]
-        r3: dict = {}
+        r3: dict = {"_prepare_cache": cache}
         assert fu.cached_copy(con, "SELECT 5 AS a", dest, r3, "x") == 1 and r3["cached"] == []
     finally:
         con.close()
@@ -106,12 +109,15 @@ def test_per_quarter_matches_global(monkeypatch, tmp_path):
         pq.write_table(pa.Table.from_pylist([{"adsh": a, "stmt": s, "inpth": False, "tag": t, "version": v, "plabel": lab}
                                              for a, s, t, v, lab in rows], schema=schema), fsds / "pre" / f"{q}.parquet")
         pq.write_table(pa.table({"adsh": ["x"]}), fsds / "num" / f"{q}.parquet")
+    from .test_alpha_panel_fund_prepare_cache import snapshot
+    from atx_db.alpha_panel import fund_prepare_cache as fpc
+    cache = fpc.PreparationCache(snapshot(fsds), {})
     monkeypatch.setattr(common, "FSDS_DIR", fsds)
     monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path / "lake"))
     monkeypatch.setenv("ATX_FUND_STAGE", "fund_pq")
     con = duckdb.connect()
     try:
-        r: dict = {}
+        r: dict = {"_prepare_cache": cache}
         dest = tmp_path / "flags.parquet"
         assert fu.per_quarter(con, "pre_flags", lambda pre, num: fu.pre_flags_sql(pre), dest, r) == 2
         got = {row["adsh"]: row for row in pq.read_table(dest).to_pylist()}
@@ -122,7 +128,7 @@ def test_per_quarter_matches_global(monkeypatch, tmp_path):
             assert (a, row[1], row[2], row[3], row[4]) == (a, got[a]["c_tstk"], got[a]["c_dltis_ttm"], got[a]["c_aqc_ttm"],
                                                            got[a]["has_is"])
         assert got["a"]["c_tstk"] and got["a"]["c_dltis_ttm"] and got["b"]["c_aqc_ttm"]
-        r2: dict = {}
+        r2: dict = {"_prepare_cache": cache}
         fu.per_quarter(con, "pre_flags", lambda pre, num: fu.pre_flags_sql(pre), dest, r2)
         assert sorted(r2["cached"]) == ["pre_flags", "pre_flags/2020q1", "pre_flags/2020q2"]
     finally:
