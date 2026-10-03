@@ -585,3 +585,42 @@ All 554 reproducible `(cik, datadate, accession, currency)` keys are saved under
 Controller routing: carry these demonstrated upstream stock/history inconsistencies to Task 5's balance/history remit alongside the original Q4 and mezzanine issues. Task 5 must verify source values, concept choice, fiscal period and source/availability clocks before repair; do not introduce balancing plugs. No acceptance gate is waived. rdq residual remains Task 9. Unmapped catalog/share/debt history and retained base FX conversion policies remain the documented stage qualifications.
 
 Final changed paths remain the Task 3 module, covering test, dataset documentation, registry stub and report. No foreign-dirty or other-task path was edited/staged. The final report/docs commit is reported separately in the final controller contract.
+
+
+## Fix round 2
+
+Status: DONE_WITH_CONCERNS. Addressed review-T3-r1-findings.md I1 under controller ruling R6. Implementer is Codex, GPT-6 family; requested gpt-6.1-sol routing is not independently exposed. Implementation, covering tests, dataset docs and registry stub committed as `61b804ce`. Prior Task 3 commits are `d9c48999`, `bda46f04`, `791767cd`, `dc68f3bf`, `2d2c5af5`, `d8f28ad6`; the report-only commit is returned separately in the final controller contract.
+
+The stage now retains each legitimate history availability snapshot instead of collapsing all components of an accession to its minimum clock. Schema is `atx.alpha-panel.compustat-std/v2`, rule version `cstd-pit-v3`, code version `compustat-std-v3`. Physical fundq key is `(cik, datadate, fyearq, fqtr, accession, available_at)`; funda key is `(cik, datadate, fyear, accession, available_at)`. Operational vintage uniqueness is `(cik, datadate, accession, available_at)`. Logical as-of grouping remains `(cik, datadate)`, choosing latest availability then accession with strict `available_at < timestamp`. Item names, stage paths and macro signatures are unchanged. Task 4 received this migration contract before final validation.
+
+Vintage selection, component pivots, YTD/annual arithmetic, assembly, FSDS comparison, cutoff keys and handcheck binding all carry the clock. Metadata joins permit only metadata visible at that snapshot. Neither a future maximum clock nor a per-accession minimum suppresses earlier output. Parametrized quarterly/annual and same/new-accession behavioral tests assert base sale100/assets1000 at t0, sale90/assets1000 at t1, then sale90/assets1010 at t2 (annual sale400/390). Assets do not leak before t2 and become visible after t2. Exact-clock strict as-of boundaries, duplicate keys and full-build versus each cutoff are asserted. The existing delayed-CFO regression now asserts all three snapshots, including eventual CFO9.
+
+Covering command from C:/atx (PYTHONPATH and BLAS configuration also used for real jobs):
+
+```powershell
+$env:PYTHONPATH='C:/atx/atx-db/src'
+$env:OPENBLAS_NUM_THREADS='1'
+atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' atx-db/tests/test_alpha_panel_compustat_std.py -q
+```
+
+Final isolated result: **20 passed in 22.51s**. An earlier overlapping validation/test run passed all20 but took60.47s; the isolated final run resolves that timing concern. Initial fixture run passed20 in14.44s. Explicit owned-path `git diff --check` passed. No new SEC requests were needed: previously inspected unchanged first-filing values were rebound to exact clock keys.
+
+Real commands from C:/atx/atx-db, each guarded at <=1 GiB, sequential heavy jobs:
+
+```powershell
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 1.0 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix2-build.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix2-build.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix2-build.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std build --fund-stage fundamentals_v10 --earn-stage earnings_calendar --buckets 32
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix2-validate.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix2-validate.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix2-validate.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std validate
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix2-cutoff.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix2-cutoff.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix2-cutoff.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std cutoff
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix2-diagnostics.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix2-diagnostics.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix2-diagnostics.err.log --quiet -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t3-fix2-diagnostics.py
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix2-balance-attribution.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix2-balance-attribution.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix2-balance-attribution.err.log --quiet -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t3-fix2-balance-attribution.py
+```
+
+Build returned0 in214.2s, peak0.7623GiB, cap_hit=false. Validation took44.5s. Cutoff took16.1s: 90CIKs including19FX, five cutoffs, 19,956rows/1,691,724cells, **0 row-set differences and 0 cell differences**. Extended-key duplicate counts are zero in both tables. Current v10 input has zero multi-clock accession groups; synthetic regressions directly exercise those cases. Nonannual funda filing rows are zero. Module SHA matches published manifest. First-filing handcheck rebinding:30 issuer-quarters,0 missing/duplicate rows,0 item-value differences, PASS. Evidence is `.superpowers/sdd/tier1-v4/t3-fix2-evidence.json`; commands and receipts above are reproducible without fresh network checks.
+
+Published fundq:747,073rows/17,010CIKs,70,193,182bytes; funda:235,563rows/15,875CIKs,45,919,124bytes. Total116,112,306bytes. Availability and datadate windows, first-reported406,166/restatement325,843 rows, FX7,267 rows and quarterly labels are unchanged. FSDS:6,084 eligible cells,6,039 mapped(.9926),6,030 matched(.9985 of mapped).
+
+Original acceptance criteria remain **5 PASS / 3 FAIL**, without waiver: coverage, FSDS, cutoff, handcheck and date window PASS; rdq, sum4 and balance FAIL. Same-ET-date rdq .9015-.9459, strict .8500-.9008; saleq sum4 .9655-.9797 and niq .9697-.9847. Balance by2020-2025 remains .9121,.9026,.9200,.9280,.9287,.9244; temporary-equity-inclusive informational shares remain .9415,.9422,.9602,.9632,.9682,.9685. No returns or post-2023 selection metrics were introduced.
+
+Clock-key-aware attribution rerun preserves the demonstrated554 deterioration cases:552USD+2FX complete visible upstream histories already fail and match emitted components;0 incomplete-history cases and0 passing complete histories made to fail in this subset. `.superpowers/sdd/tier1-v4/t3-fix2-balance-attribution.json` contains all554 reproducible `(cik, datadate, accession, available_at, currency)` keys; sibling `.py` is the guarded diagnostic command above. The EUR1002242/2022-12-31/0001554855-25-000286 and KRW1445930/2022-12-31/0001193125-25-094961 cases retain complete reporting-currency source history and documented base FX conversion. Task5 owns these demonstrated balance/history inconsistencies alongside existing Q4/mezzanine carry, must validate source concepts/periods/clocks, and must not add balancing plugs. Task9 retains the rdq residual. These remain explicit FAIL gates; the vintage-clock fix does not waive them.
+
+Owned changes are limited to the Task3 module, covering test, dataset docs, registry stub and this report. No progress or foreign-dirty path was edited or staged. No work remains within the round2 review finding; downstream Task4 must consume the schema-v2 physical key.
