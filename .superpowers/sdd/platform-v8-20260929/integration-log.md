@@ -6909,3 +6909,19 @@ wall-clock (PM SEAL-ALLOW)"`
 | stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
 |---|---|---|---|---|---|---|
 | 07 verify | 0 | 0.9 / - | - (no exe) | 5,333 / 5,357 | `07-verify.json` `82f72a1b11c10d018b17fcc31c7aba7c5148036ee972440770f081bd1c63fe86` | as printed: mechanics (6 rows as in the first attempt) **PASS**; binding `a9bf5d2a9177` (spec `1e3ec118273c`); **seal scan 68 log(s), 0 tokens** (allowed: 2026-10-02 x7 in 7 files, 2026-10-03 x2 in 2 files, rulings kept in the receipt); NAV exe `72ff6d2d7070` vs parent `a95f6f0af069` (ref ran: equal false, ref-s2-daily identical). The first attempt's `07-verify.failed-1.json` stays for the record |
+
+### Stage 08 judge (source `4284b822`; gate 3,072 MiB: free 5,303 at 12:54:09Z, no compiler running)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 08 judge | 0 | 46.5 / 46.28 | 626 (summ) | 5,303 / 4,524 | `08-judge.json` `5fdc3b015ac4fe4cfe7d9c9fa76e33ab80310a158d5e076a8372ce3fac0a9c46` | driver prints: **`verdict (pm7-34): ACCEPTED {'dsr_positive': True, 'mechanics': True, 'criteria': False}`**. Ledger 127 -> **128 lines** (file `f665ed9e`; the cell's line, re-read by the record stage). No driver commit |
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| `research_cycle.py run scripts/specs/v8/lib-v8ysb-gm.json` (console 041): monitor | 180 / 1,536 | 1.6 | 128 | 0 | `95f14829eaab5922560168435ccf89db9c2b2931a49fc32427514a747460309a` | `mega-monitor-v8x-theme-erc-v8ysb` |
+| summ (nav_summ, ledgers the cell) | 180 / 1,536 | 40.0 | 626 | 0 | `a769a6c31ca2554bf6c90eb937cd06c61912d403cd50f64593dfc8b3e5802806` | `cycle-v8ysb-gm/summ.json` `0ef36000`, `cycle_verdict.json` `ea3112ec` |
+| bundle PM5-23 (console 042) | 180 / 1,536 | 1.0 | 318 | 0 | `929e7fad938f46aefd500ca7b9f6bac4e52e5d394182e75d116142c44822a19d` | `waves/y-s/bundle.json` `570018ba` (X-5 NAV vs the cell) |
+| book reader (console 043) | 180 / 1,536 | 0.5 | 45 | 0 | `1c949fd68c748491ed50993a5c4308d056e41d650f9af0e3dda7ab077bbd850e` | `readers/book.json` `9f895ca9` |
+
+The statistics of record (dSR, SE, p, DSR, PBO, the printed-only criteria) are pasted from the driver's own log section
+after the record stage.
