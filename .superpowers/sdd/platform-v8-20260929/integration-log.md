@@ -6836,3 +6836,23 @@ picks an attempt by itself only among complete ones (`ic_attempt`, research_cycl
 re-runs stage 05 "from receipts 01-04" but does not name the attempt; root asks for a ruling (options in the R0-6 report)
 and does not run stage 05. Nothing was built; no exe launched by root; nothing dated 2024-01-01 or later opened; `C:/atx`,
 `atx-db/` untouched; no push.
+
+### R0-6-ATT: w attempt 2 by the cycle's documented recovery (PM ruling R0-6-ATT, P9 `progress.md`:102; option A)
+
+`mcheck.py` copied first to `.superpowers/sdd/platform-p9-20261003/tools/mcheck.py` (sha256 `51db5e18587f...` = the scratchpad
+copy). Gate 4,322 MiB: free 5,573 at 12:42:23Z, no compiler, no research process. Run **once**:
+`"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/lib-v8ysb.json --stop-after nav
+--attempt w=2 --root C:/atx-wt/pool-2` -- **exit 0, wall 114 s (12:42:37Z-12:44:31Z), min free during 3,546 MiB (12:44:14Z),
+no compiler seen.** Attempt 1 (`mega-v8xw-train-theme-erc-v8ysb-run1` / `-1`) stays on disk as it was: killed by the owner
+stop, no receipt, 0 trials.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| fields | - | - | - | done | - | v15 `26fee5ce`, 84 rows == the spec list |
+| ref | (attempt 05-killed) | 61.9 | 586 | done | binding argv `027092b5` | **ref-s2-daily IDENTICAL** bit for bit (941,374 bytes, `529062d6`) vs X-5's S2 daily |
+| u / fit / card | - | - | - | done | - | u-compare IDENTICAL (58 objects; 169,708 rows of 58 keys; b adds 9 / 26,334) |
+| gate p1-v8ysb | internal | - | - | **PASS** | - | 0 admission lines appended, 9 already ledgered; 7 of 9 with the prior sign; reference members 0 status changes |
+| **w attempt 2** | 300 / 3,072 | **52.8** | 1,436 | 0 | `543860bb562ced79bdc14b24b53f75b67926fbc6ce7f3e1e441e610403b57453` | exe `985019d9`; output `mega-v8xw-train-theme-erc-v8ysb-2`, `train_combined.json` `e13fbc4d` |
+| **nav** | 180 / 1,536 | **59.7** | 586 | 0 | `26fdb2820217fb292feed665acc49b7548b7036bfb3c46cd06718a08df8d1525` | exe `72ff6d2d`; `mega-nav-v8x-theme-erc-L1.1720-v8ysb` at L 1.1720 (`summary.json` `26921704`; `capacity_curve.csv`, `v7_extras.json` present); binding `41c1da0e` |
+
+Ledger after: 127 lines, `869a0c6a` (unchanged: 0 trials). Nothing read from the NAV beyond file names and hashes.
