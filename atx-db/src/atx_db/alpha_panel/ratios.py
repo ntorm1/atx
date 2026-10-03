@@ -2,7 +2,7 @@
 point in time, built from ``compustat_std`` (``--std-stage``; task 5 rebuilds on the v11 stage) and the market stages
 (``market/shares_daily``, ``prices``). No new source.
 
-Outputs (rule ``wfrs-pit-v1``, schema ``atx.alpha-panel.ratios/v1``):
+Outputs (rule ``wfrs-pit-v2``, schema ``atx.alpha-panel.ratios/v2``):
 
 * ``ratios/fund_state.parquet`` -- issuer fundamental state vintages keyed (cik, available_at): one row per distinct
   ``available_at`` of the issuer's ``fundq`` / ``funda`` rows (every filing, amendment and restatement vintage). A
@@ -19,11 +19,11 @@ Outputs (rule ``wfrs-pit-v1``, schema ``atx.alpha-panel.ratios/v1``):
 * ``ratios_asof(d)`` (``macros_sql``) -- the daily as-of view: the same columns for session d from the state row with
   ``available_at`` < 22:00 UTC of session d-1 and the shares / raw close of d (GC1 daily).
 
-Definitions (``RATIOS``, WFRS names; 66 ratios + 4 composite scores). Inputs per issuer state:
+Definitions (``RATIOS``, WFRS names; 66 original ratios + 3 honestly named extensions + 4 composite scores). Inputs per issuer state:
 
 * Quarter lags: the visible fundq rows (latest vintage per datadate) are placed on quarter offsets j = round((D -
   datadate) / 91.3125 days) from the latest datadate D, kept when within 20 days of j quarters (closest wins), j = 0..8.
-* TTM flows (``<x>_ttm``): when the lag-0 row is fiscal quarter 4 and an annual-form funda vintage of D is visible,
+* TTM flows (``<x>_ttm``): when the lag-0 row is fiscal quarter 4 and an genuine annual-period funda vintage of D is visible,
   the fiscal-year value; else the sum of the four discrete quarters j = 0..3 (all four rows present and non-NULL);
   else (WFRS: annual data when quarterly data are unavailable) the latest fiscal-year value FY0 when its datadate is
   within 365 days of D (``ttm_fy0_items`` lists the items that fell back); else NULL -- a missing quarter is never
@@ -31,22 +31,21 @@ Definitions (``RATIOS``, WFRS names; 66 ratios + 4 composite scores). Inputs per
   fqtr k < 4 = YTD(j0) + YTD(prior fiscal-year end, j = k, fqtr 4) - YTD(j = 4, same fqtr); else the FY0 fallback.
   ``ttm_src`` = ``annual`` / ``q4`` / NULL (the row structure).
 * Balances: lag 0 (``<x>_q0``) and lag 4 (``<x>_q4``, the same quarter a year earlier); averages ("most recent two
-  periods", WFRS) = (q0 + q4) / 2, else q0 when the lag-4 row is missing (``avg_fallback``).
+  periods", WFRS) = (q0 + q4) / 2, NULL when either balance is missing; ``avg_fallback`` flags unavailable lag-4 assets.
 * EPS: per-share TTM sums put every quarter on the share basis of the state's date by the issuer's split events
   between the quarter's filing date and that date (a split before a filing is already restated in it); ``csho_b`` =
-  the lag-0 cshoq on the same basis. ``epsfi_ttm`` (incl. discontinued operations): the annual EPSFI at a 10-K, else
-  the quarterly EPSFX sum x ni_ttm / ib_ttm (fundq carries no quarterly EPSFI), else FY0 EPSFI.
+  the lag-0 cshoq on the same basis. ``epsfi_ttm`` (incl. discontinued operations): annual EPSFI or a flagged FY0 fallback;
+  fundq carries no quarterly total EPSFI, so no NI/IB inference is permitted.
 * Book equity ``be`` = seq + txditc - pstk (the fundamentals rule; txditc from the latest annual row within 400 days,
-  else 0 as in the catalog). Invested capital ``icapt`` = dltt + pstk + mib + ceq. EV debt = dltt + dlc + pstk + mib -
-  che. Unreported ``mib`` counts as 0 in icapt / EV (Compustat MIB); every other NULL input makes the ratio NULL.
-* Annual rows (funda, annual forms only): FY0 = the latest visible fiscal year, FY-k by 365.25-day offsets (+-30 d).
+  else NULL). Invested capital ``icapt`` = dltt + pstk + mib + ceq. EV debt = dltt + dlc + pstk + mib -
+  che. Unreported ``mib`` remains NULL; every missing input makes the derived ratio NULL.
+* Annual rows (funda, including later comparative restatements): FY0 = the latest visible fiscal year, FY-k by 365.25-day offsets (+-30 d).
   ``ptpm``, ``efftax``, ``adv_sale`` (no quarterly pretax income / advertising in fundq), ``capei``, the EPS growth
   of ``peg_trailing`` and the composite scores use annual values.
 * Market equity ``me`` = sum over the issuer's common lines (linkprim P/J, modal FINRA type not preferred / warrant /
   unit / right / note / ETF / ETN / fund -- the market_shares rule) of ``shares_daily.shrout`` x raw close of the
-  session (NULL when a priced common line has no shrout); ``prc`` = the line's raw close. Per-share P/E uses the
-  issuer's price per reported common share, me / cshoq (EPS and cshoq on one split basis), so ADRs (EPS per ordinary
-  share) and multi-class issuers are consistent; ``eps_adj`` reports the issuer splits between the state's date and
+  session (NULL when a priced common line has no shrout); ``prc`` = the line's raw close. P/E uses issuer aggregate ME / NI or IB in USD. It is an explicitly qualified cap/earnings analog;
+  diluted EPS, cover-date shares and ordinary/ADR per-share conventions do not enter its denominator; ``eps_adj`` reports the issuer splits between the state's date and
   the session.
 * Staleness: quarterly-based values are NULL when session - D > 400 days (550 when the lag-0 form is 20-F / 40-F,
   annual-only filers); annual-based values when session - FY0 datadate > 550 days.
@@ -70,13 +69,14 @@ import re
 import sys
 import time
 from pathlib import Path
+import hashlib
 from typing import Any
 
 from . import common as C
 
 STAGE = "ratios"
-SCHEMA = "atx.alpha-panel.ratios/v1"
-RULE = "wfrs-pit-v1"
+SCHEMA = "atx.alpha-panel.ratios/v2"
+RULE = "wfrs-pit-v2"
 MODULES = ("ratios", "common")
 DEFAULT_STD_STAGE = "compustat_std"
 N_BUCKETS = 8
@@ -103,7 +103,7 @@ EPS_Q = {"epsfx": "epsfxq", "epspx": "epspxq"}
 YTD_Q = {"oancf": "oancfy", "capx": "capxy", "dvc": "dvy", "xrd": "xrdy", "sstk": "sstky", "prstkc": "prstkcy"}
 BAL_Q = {"at": "atq", "lt": "ltq", "ceq": "ceqq", "seq": "seqq", "che": "cheq", "act": "actq", "lct": "lctq",
          "invt": "invtq", "rect": "rectq", "ap": "apq", "ppent": "ppentq", "dlc": "dlcq", "dltt": "dlttq",
-         "pstk": "pstkq", "mib": "mibq", "csho": "cshoq"}
+         "intan": "intanq", "pstk": "pstkq", "mib": "mibq", "csho": "cshoq"}
 # funda items per fiscal-year lag k (Compustat names; epspx/epsfx = excl. discontinued operations, epsfi = incl.)
 ANN_LAGS: dict[int, tuple[str, ...]] = {
     0: ("sale", "cogs", "xsga", "oiadp", "oibdp", "dp", "xint", "ni", "ib", "pi", "txt", "xad", "at", "lt", "act",
@@ -159,26 +159,30 @@ RATIOS: tuple[dict[str, Any], ...] = (
     _r("bm", "valuation", "q", True, "be_q0", "me", ["seq"], "Book/Market: book equity / market equity"),
     _r("evm", "valuation", "q", True, "me + ev_debt", "oibdp_ttm", ["dltt", "dlc", "che", "oibdp"],
        "Enterprise value multiple: (me + dltt + dlc + pstk + mib - che) / EBITDA (oibdp) TTM"),
-    _r("pe_exi", "valuation", "q", True, "me", "epsfx_ttm * csho_b", ["epsfx", "csho"],
-       "P/E (diluted, excl. EI): price per reported common share (me / cshoq) / diluted EPS excl. extraordinary items "
-       "and discontinued operations TTM (EPS and cshoq on one split basis)"),
-    _r("pe_inc", "valuation", "q", True, "me", "epsfi_ttm * csho_b", ["epsfx", "ni", "ib", "csho"],
-       "P/E (diluted, incl. EI): price per reported common share (me / cshoq) / diluted EPS incl. extraordinary items "
-       "and discontinued operations TTM"),
+    _r("pe_issuer_ib", "valuation", "q", True, "me", "ib_ttm", ["ib"],
+       "Issuer aggregate common market equity / income before extraordinary items TTM (USD); cap/earnings analog, not diluted EPS P/E"),
+    _r("pe_issuer_ni", "valuation", "q", True, "me", "ni_ttm", ["ni"],
+       "Issuer aggregate common market equity / parent net income TTM (USD); cap/earnings analog, not diluted EPS P/E"),
+    _r("pe_exi", "valuation", "q", True, "prc", "epsfx_ttm * eps_adj", ["epsfx"],
+       "WFRS price / diluted EPS excluding EI; NULL until certified security-class/ADR/EPS share-basis alignment is available", expr="CAST(NULL AS DOUBLE)"),
+    _r("pe_inc", "valuation", "q", True, "prc", "epsfi_ttm * eps_adj", ["epsfi"],
+       "WFRS price / diluted EPS including EI; NULL until certified security-class/ADR/EPS share-basis alignment is available", expr="CAST(NULL AS DOUBLE)"),
     _r("ps", "valuation", "q", True, "me", "sale_ttm", ["sale"], "Price/Sales: market equity / sales TTM"),
     _r("pcf", "valuation", "q", True, "me", "oancf_ttm", ["oancf"],
        "Price/Cash flow: market equity / operating cash flow TTM"),
     _r("dpr", "valuation", "q", False, "dvc_ttm", "ib_ttm", ["dvc", "ib"],
        "Dividend payout ratio: common cash dividends TTM / income before extraordinary items TTM"),
-    _r("peg_trailing", "valuation", "qa", True, _d("me", "epsfx_ttm * csho_b"), "eps_g3 * 100", ["epsfx", "csho"],
+    _r("peg_trailing", "valuation", "qa", True, _d("prc", "epsfx_ttm * eps_adj"), "eps_g3 * 100", ["epsfx"],
        "Trailing PEG: pe_exi / 3-year compound annual growth (percent) of annual diluted EPS excl. EI (both > 0)",
-       undef=f"({_hist(1066)} OR epsfx_a0 <= 0 OR epsfx_a3 <= 0)"),
-    _r("divyield", "valuation", "q", True, "dvc_ttm", "me", ["dvc"],
+       expr="CAST(NULL AS DOUBLE)", undef=f"({_hist(1066)} OR epsfx_a0 <= 0 OR epsfx_a3 <= 0)"),
+    _r("divyield_paid", "valuation", "q", True, "dvc_ttm", "me", ["dvc"],
        "Dividend yield: common cash dividends TTM / market equity"),
     _r("ptb", "valuation", "q", True, "me", "ceq_q0", ["ceq"], "Price/Book: market equity / common equity"),
+    _r("divyield", "valuation", "q", True, "CAST(NULL AS DOUBLE)", "prc", ["indicated_dividend_rate"],
+       "Indicated dividend rate / price (WFRS); NULL: no source-backed indicated rate primitive", expr="CAST(NULL AS DOUBLE)"),
     # profitability
-    _r("npm", "profitability", "q", False, "ib_ttm", "sale_ttm", ["ib", "sale"],
-       "Net profit margin: income before extraordinary items TTM / sales TTM"),
+    _r("npm", "profitability", "q", False, "ni_ttm", "sale_ttm", ["ni", "sale"],
+       "Net profit margin: net income TTM / sales TTM"),
     _r("opmbd", "profitability", "q", False, "oibdp_ttm", "sale_ttm", ["oibdp", "sale"],
        "Operating profit margin before depreciation: oibdp TTM / sales TTM"),
     _r("opmad", "profitability", "q", False, "oiadp_ttm", "sale_ttm", ["oiadp", "sale"],
@@ -191,18 +195,18 @@ RATIOS: tuple[dict[str, Any], ...] = (
        "Cash flow margin: (income before extraordinary items + depreciation) TTM / sales TTM"),
     _r("roa", "profitability", "q", False, "oibdp_ttm", "avg_at", ["oibdp", "at"],
        "Return on assets: oibdp TTM / average total assets"),
-    _r("roe", "profitability", "q", False, "ib_ttm", "avg_be", ["ib", "seq"],
-       "Return on equity: income before extraordinary items TTM / average book equity"),
-    _r("roce", "profitability", "q", False, "oiadp_ttm", "avg_capemp", ["oiadp", "dltt", "dlc", "ceq"],
-       "Return on capital employed: EBIT (oiadp) TTM / average (dltt + dlc + ceq)"),
+    _r("roe", "profitability", "q", False, "ni_ttm", "avg_wrds_be", ["ni", "seq", "txditc"],
+       "Return on equity: NI TTM / average (parent stockholder equity + deferred taxes and investment tax credit)"),
+    _r("roce", "profitability", "q", False, "ni_ttm + txt_ttm + xint_ttm", "avg_capemp", ["ni", "txt", "xint", "dltt", "dlc", "ceq"],
+       "Return on capital employed: EBIT (NI + tax + interest) TTM / average (dltt + dlc + ceq)"),
     _r("efftax", "profitability", "a", False, "txt_a0", "pi_a0", ["txt", "pi"],
        "Effective tax rate: income taxes / pretax income (latest fiscal year)"),
-    _r("aftret_eq", "profitability", "q", False, "ib_ttm", "avg_ceq", ["ib", "ceq"],
-       "After-tax return on average common equity: ib TTM / average ceq"),
-    _r("aftret_invcapx", "profitability", "q", False, "ib_ttm + xint_ttm", "avg_icapt", ["ib", "xint", "dltt", "ceq"],
-       "After-tax return on invested capital: (ib + xint) TTM / average invested capital"),
-    _r("aftret_equity", "profitability", "q", False, "ib_ttm", "avg_seq", ["ib", "seq"],
-       "After-tax return on total stockholders' equity: ib TTM / average seq"),
+    _r("aftret_eq", "profitability", "q", False, "ni_ttm", "avg_ceq", ["ni", "ceq"],
+       "After-tax return on average common equity: NI TTM / average ceq"),
+    _r("aftret_invcapx", "profitability", "q", False, "ni_ttm + xint_ttm", "icapt_q0", ["ni", "xint", "dltt", "ceq"],
+       "After-tax return on invested capital: (NI + interest) TTM / invested capital"),
+    _r("aftret_equity", "profitability", "q", False, "ni_ttm", "avg_seq", ["ni", "seq"],
+       "After-tax return on total stockholders' equity: NI TTM / average seq"),
     _r("pretret_noa", "profitability", "q", False, "oiadp_ttm", "avg_noa", ["oiadp", "ppent", "act", "lct"],
        "Pre-tax return on net operating assets: oiadp TTM / average (ppent + act - lct)"),
     _r("pretret_earnat", "profitability", "q", False, "oiadp_ttm", "avg_tea", ["oiadp", "ppent", "act"],
@@ -227,8 +231,8 @@ RATIOS: tuple[dict[str, Any], ...] = (
        "Cash and short-term investments / total liabilities"),
     _r("invt_act", "solvency_fin", "q", False, "invt_q0", "act_q0", ["invt", "act"], "Inventory / current assets"),
     _r("rect_act", "solvency_fin", "q", False, "rect_q0", "act_q0", ["rect", "act"], "Receivables / current assets"),
-    _r("debt_at", "solvency_fin", "q", False, "dltt_q0 + dlc_q0", "at_q0", ["dltt", "dlc", "at"],
-       "Total debt / total assets"),
+    _r("debt_at", "solvency_fin", "q", False, "lt_q0", "at_q0", ["lt", "at"],
+       "Total liabilities / total assets (WFRS debt_at)"),
     _r("debt_ebitda", "solvency_fin", "q", False, "dltt_q0 + dlc_q0", "oibdp_ttm", ["dltt", "dlc", "oibdp"],
        "Total debt / EBITDA TTM"),
     _r("short_debt", "solvency_fin", "q", False, "dlc_q0", "dltt_q0 + dlc_q0", ["dltt", "dlc"],
@@ -245,20 +249,20 @@ RATIOS: tuple[dict[str, Any], ...] = (
        "Operating cash flow TTM / total debt"),
     _r("fcf_ocf", "solvency_fin", "q", False, "oancf_ttm - capx_ttm", "oancf_ttm", ["oancf", "capx"],
        "Free cash flow / operating cash flow"),
-    _r("lt_ppent", "solvency_fin", "q", False, "lt_q0", "ppent_q0", ["lt", "ppent"],
-       "Total liabilities / total tangible assets (net PP&E)"),
+    _r("lt_ppent", "solvency_fin", "q", False, "lt_q0", "at_q0 - intan_q0", ["lt", "at", "intan"],
+       "Total liabilities / total tangible assets (AT - INTAN)"),
     _r("dltt_be", "solvency_fin", "q", False, "dltt_q0", "be_q0", ["dltt", "seq"], "Long-term debt / book equity"),
     # solvency
     _r("de_ratio", "solvency", "q", False, "lt_q0", "ceq_q0 + pstk_q0", ["lt", "ceq"],
        "Total debt/equity: total liabilities / shareholders' equity (common and preferred)"),
-    _r("debt_assets", "solvency", "q", False, "lt_q0", "at_q0", ["lt", "at"],
-       "Total debt/total assets: total liabilities / total assets"),
+    _r("debt_assets", "solvency", "q", False, "dltt_q0 + dlc_q0", "at_q0", ["dltt", "dlc", "at"],
+       "Financial debt / total assets"),
     _r("debt_capital", "solvency", "q", False, "ap_q0 + dlc_q0 + dltt_q0", "ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0",
        ["ap", "dlc", "dltt", "ceq"], "Total debt/capital: (ap + dlc + dltt) / (ap + dlc + dltt + ceq + pstk)"),
     _r("intcov", "solvency", "q", False, "xint_ttm + ib_ttm", "xint_ttm", ["xint", "ib"],
        "After-tax interest coverage: (xint + ib) TTM / xint TTM"),
-    _r("intcov_ratio", "solvency", "q", False, "oiadp_ttm", "xint_ttm", ["oiadp", "xint"],
-       "Interest coverage ratio: EBIT (oiadp) TTM / xint TTM"),
+    _r("intcov_ratio", "solvency", "q", False, "ni_ttm + txt_ttm + xint_ttm", "xint_ttm", ["ni", "txt", "xint"],
+       "Interest coverage ratio: EBIT (NI + tax + interest) TTM / xint TTM"),
     # liquidity
     _r("cash_ratio", "liquidity", "q", False, "che_q0", "lct_q0", ["che", "lct"],
        "Cash and short-term investments / current liabilities"),
@@ -267,10 +271,10 @@ RATIOS: tuple[dict[str, Any], ...] = (
     _r("curr_ratio", "liquidity", "q", False, "act_q0", "lct_q0", ["act", "lct"],
        "Current ratio: current assets / current liabilities"),
     _r("cash_conversion", "liquidity", "q", False, None, "cogs_ttm * sale_ttm", ["rect", "ap", "cogs", "sale"],
-       "Cash conversion cycle (days): 365 x (average inventories / cogs + average receivables / sales - average "
-       "payables / cogs), TTM flows",
-       expr="CASE WHEN cogs_ttm <> 0 AND sale_ttm <> 0 THEN 365.0 * (avg_invt_z / cogs_ttm + avg_rect / sale_ttm"
-            " - avg_ap / cogs_ttm) END"),
+       "Cash conversion cycle (days): 365 x (inventories / cogs + receivables / sales - "
+       "payables / cogs), current balances and TTM flows",
+       expr="CASE WHEN cogs_ttm <> 0 AND sale_ttm <> 0 THEN 365.0 * (invt_q0 / cogs_ttm + rect_q0 / sale_ttm"
+            " - ap_q0 / cogs_ttm) END"),
     # efficiency
     _r("at_turn", "efficiency", "q", False, "sale_ttm", "avg_at", ["sale", "at"],
        "Asset turnover: sales TTM / average total assets"),
@@ -385,7 +389,7 @@ def _load(con, std: Path, where: str) -> None:
         CREATE OR REPLACE TEMP TABLE a AS
         SELECT row_number() OVER () AS arid, cik, datadate, accession, form, filed, available_at,
                {', '.join(f'"{c}"' for c in acols)}
-        FROM read_parquet('{fa}') WHERE ({where}) AND datadate >= DATE '{ROWS_FROM}' AND form IN ({forms})""")
+        FROM read_parquet('{fa}') WHERE ({where}) AND datadate >= DATE '{ROWS_FROM}'""")
 
 
 def _state_sql() -> str:
@@ -415,9 +419,9 @@ def _state_sql() -> str:
                    f"WHEN p.fqtr_q0 IN (1, 2, 3) AND {fa} = 4 AND p.fqtr_q4 = p.fqtr_q0 "
                    f"THEN p.{x}_q0 + {ya} - p.{x}_q4 END")
         h[f"{x}_ttm"] = ttm(x, primary, f"ap.{x}_a0")
-    # EPS incl. discontinued operations: annual EPSFI at a 10-K, else the quarterly EPSFX sum scaled by ni / ib,
+    # EPS incl. discontinued operations: annual EPSFI at a 10-K, else the no quarterly total-EPS inference,
     # else FY0 EPSFI
-    scaled = _d(f"({eps_q['epsfx']}) * ({h['ni_ttm']})", h["ib_ttm"])
+    scaled = "CAST(NULL AS DOUBLE)"  # Total diluted EPS cannot be inferred from NI/IB.
     h["epsfi_ttm"] = ttm("epsfi", scaled, "(ap.epsfi_a0 * exp(-coalesce(sl_a0, 0)))")
     h["ttm_src"] = f"CASE WHEN {ann_d} THEN 'annual' WHEN {q4ok} THEN 'q4' END"
     h["ttm_fy0_items"] = f"nullif(concat_ws(',', {', '.join(fallback)}), '')"
@@ -426,16 +430,17 @@ def _state_sql() -> str:
     for x in BAL_Q:
         h[f"{x}_q0"] = f"p.{x}_q0"
         h[f"{x}_q4"] = f"p.{x}_q4"
-    # txditc of the latest annual row at or before the balance date, within TXDITC_DAYS (catalog: else 0)
+    # txditc of the latest annual row at or before the balance date, within TXDITC_DAYS; unavailable history remains NULL
     for j in (0, 4):
         dd = f"p.datadate_q{j}"
         tx = (f"CASE WHEN ap.datadate_a0 <= {dd} AND date_diff('day', ap.datadate_a0, {dd}) <= {TXDITC_DAYS} "
-              f"THEN coalesce(ap.txditc_a0, 0) WHEN ap.datadate_a1 <= {dd} "
-              f"AND date_diff('day', ap.datadate_a1, {dd}) <= {TXDITC_DAYS} THEN coalesce(ap.txditc_a1, 0) ELSE 0 END")
+              f"THEN ap.txditc_a0 WHEN ap.datadate_a1 <= {dd} "
+              f"AND date_diff('day', ap.datadate_a1, {dd}) <= {TXDITC_DAYS} THEN ap.txditc_a1 END")
+        h[f"wrds_be_q{j}"] = f"p.seq_q{j} + ({tx})"
         h[f"be_q{j}"] = f"p.seq_q{j} + ({tx}) - p.pstk_q{j}"
-        h[f"icapt_q{j}"] = f"p.dltt_q{j} + p.pstk_q{j} + coalesce(p.mib_q{j}, 0) + p.ceq_q{j}"
-        h[f"invt_z{j}"] = f"coalesce(p.invt_q{j}, CASE WHEN p.n_invt = 0 THEN 0.0 END)"
-    h["ev_debt"] = "p.dltt_q0 + p.dlc_q0 + p.pstk_q0 + coalesce(p.mib_q0, 0) - p.che_q0"
+        h[f"icapt_q{j}"] = f"p.dltt_q{j} + p.pstk_q{j} + p.mib_q{j} + p.ceq_q{j}"
+        h[f"invt_z{j}"] = f"p.invt_q{j}"
+    h["ev_debt"] = "p.dltt_q0 + p.dlc_q0 + p.pstk_q0 + p.mib_q0 - p.che_q0"
     h["csho_b"] = "p.csho_q0 * exp(coalesce(sl_q0, 0))"   # lag-0 shares on the state's split basis
     for k, items in ANN_LAGS.items():
         for x in items:
@@ -448,8 +453,9 @@ def _state_sql() -> str:
 
 def _avg_sql() -> dict[str, str]:
     def avg(a0: str, a4: str) -> str:
-        return f"CASE WHEN ({a4}) IS NOT NULL THEN (({a0}) + ({a4})) / 2.0 ELSE ({a0}) END"
+        return f"(({a0}) + ({a4})) / 2.0"
     out = {"avg_" + x: avg(f"{x}_q0", f"{x}_q4") for x in ("at", "be", "ceq", "seq", "icapt", "dltt", "rect", "ap")}
+    out["avg_wrds_be"] = avg("wrds_be_q0", "wrds_be_q4")
     out["avg_invt"] = avg("invt_q0", "invt_q4")
     out["avg_invt_z"] = avg("invt_z0", "invt_z4")
     out["avg_totdebt"] = avg("dltt_q0 + dlc_q0", "dltt_q4 + dlc_q4")
@@ -640,6 +646,7 @@ def consume_sql(cells: str, state: str, spl: str) -> str:
            {', '.join(ratio_cols)},
            {', '.join(comp_cols)},
            nullif(concat_ws(',', {', '.join(undefined)}), '') AS ratio_undefined,
+           'pe_exi,pe_inc,peg_trailing:missing_certified_security_class_diluted_EPS_alignment;divyield:missing_indicated_dividend_rate' AS ratio_missing_primitives,
            cutoff_clock AS available_at
     FROM x"""
 
@@ -694,12 +701,12 @@ def month_end_sessions(con, root: Path) -> list[dt.date]:
     return [r[0] for r in rows]
 
 
-def macros_sql(root: Path | None = None) -> str:
+def macros_sql(root: Path | None = None, stage: str = STAGE) -> str:
     """``ratios_asof(d)``: the daily as-of view for session ``d`` (a DATE): fundamentals with available_at < 22:00 UTC
     of the previous calendar session, the shares and raw close of d. ``<root>`` = the alpha-panel build root."""
     root = Path(root) if root else C.build_root()
-    st = _q(root / STAGE / "fund_state.parquet")
-    sp = _q(root / STAGE / "split_events.parquet")
+    st = _q(root / stage / "fund_state.parquet")
+    sp = _q(root / stage / "split_events.parquet")
     cal = _q(root / "calendar.parquet")
     sessions = "SELECT CAST(d AS DATE) AS session_date"
     cutoff = (f"(SELECT CAST(max(session_date) AS TIMESTAMP) + INTERVAL 22 HOUR FROM read_parquet('{cal}') "
@@ -784,7 +791,7 @@ def build(std_stage: str = DEFAULT_STD_STAGE, stage: str = STAGE, buckets: int =
                    for r in list(RATIOS) + list(COMPOSITES)],
         "components": list(COMPONENTS), "gate_status": prior.get("gate_status", {}),
         "published_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "macro_sql": macros_sql(root)})
+        "macro_sql": macros_sql(root, stage)})
     return receipt
 
 
@@ -797,7 +804,9 @@ def build(std_stage: str = DEFAULT_STD_STAGE, stage: str = STAGE, buckets: int =
 # (Fama-French BE/ME; Piotroski 2000 F in [0, 9]; Altman 1968; Ohlson 1980; Beneish 1999; WFRS ratio documentation).
 # They catch unit, scale and sign errors, not distribution shape.
 LIT_RANGES: dict[str, tuple[float, float, str]] = {
+    "divyield_paid": (0, 0.3, "paid TTM dividend yield"),
     "capei": (-500, 1000, "P/E-type: near-zero earnings tails"), "bm": (-1, 10, "Fama-French BE/ME"),
+    "pe_issuer_ni": (-1000, 1000, "issuer cap/NI"), "pe_issuer_ib": (-1000, 1000, "issuer cap/IB"),
     "evm": (-500, 500, "EV/EBITDA tails near zero EBITDA"), "pe_exi": (-1000, 1000, "P/E tails"),
     "pe_inc": (-1000, 1000, "P/E tails"), "ps": (0, 1000, "price/sales, pre-revenue tails"),
     "pcf": (-1000, 1000, "P/CF tails"), "dpr": (-10, 10, "payout ratio"), "peg_trailing": (-100, 100, "PEG"),
@@ -815,7 +824,7 @@ LIT_RANGES: dict[str, tuple[float, float, str]] = {
     "debt_ebitda": (-100, 200, "debt / EBITDA"), "short_debt": (0, 1, "share of total debt"),
     "curr_debt": (0, 1, "share of total liabilities"), "lt_debt": (0, 1, "share of total liabilities"),
     "profit_lct": (-50, 50, "coverage"), "ocf_lct": (-50, 50, "coverage"), "cash_debt": (-100, 1000, "coverage"),
-    "fcf_ocf": (-100, 100, "fcf share"), "lt_ppent": (0, 10000, "liabilities / net PP&E"),
+    "fcf_ocf": (-100, 100, "fcf share"), "lt_ppent": (0, 10000, "liabilities / tangible assets"),
     "dltt_be": (-50, 50, "LTD / BE"), "de_ratio": (-100, 200, "liabilities / equity"),
     "debt_assets": (0, 5, "liabilities / assets"), "debt_capital": (-5, 5, "debt / capital"),
     "intcov": (-1000, 1000, "coverage"), "intcov_ratio": (-5000, 5000, "coverage"),
@@ -831,7 +840,7 @@ LIT_RANGES: dict[str, tuple[float, float, str]] = {
 SPEARMAN_PAIRS = {
     "bm": ("CASE WHEN p.me_company > 0 AND p.be > 0 THEN p.be / p.me_company END", "r.bm"),
     "ep": ("CASE WHEN p.me_company > 0 AND p.ni_ttm > 0 THEN p.ni_ttm / p.me_company END",
-           "CASE WHEN r.pe_inc > 0 THEN 1.0 / r.pe_inc END"),
+           "CASE WHEN r.pe_issuer_ni > 0 THEN 1.0 / r.pe_issuer_ni END"),
     "sp": ("CASE WHEN p.me_company > 0 AND p.sale_ttm > 0 THEN p.sale_ttm / p.me_company END",
            "CASE WHEN r.ps > 0 THEN 1.0 / r.ps END"),
     "gpa": ('CASE WHEN p."at" > 0 THEN p.gp_ttm / p."at" END', "r.gprof"),
@@ -841,27 +850,9 @@ MASK_TEMPLATES = ("bank", "insurer", "reit", "utility")   # 'other' firms: issue
 
 
 def structural_masks(con, std: Path) -> dict[str, list[str]]:
-    """Per fin_template, the input items NULL on more than half of the template's first-reported 10-Q/10-K rows
-    2020-2025 (quarterly items, fundq) or 10-K rows (annual-only items, funda): structural for that template."""
-    fq, fa = _q(std / "fundq.parquet"), _q(std / "funda.parquet")
-    out: dict[str, list[str]] = {}
-    qitems = {**FLOW_Q, **EPS_Q, **YTD_Q, **BAL_Q}
-    sel = ", ".join(f'avg(("{c}" IS NULL)::INT) AS {x}' for x, c in qitems.items())
-    rows = con.execute(f"""SELECT fin_template, {sel} FROM read_parquet('{fq}')
-                           WHERE first_reported AND form IN ('10-Q', '10-K') AND year(datadate) BETWEEN 2020 AND 2025
-                           GROUP BY 1""").fetchall()
-    for row in rows:
-        if row[0] in MASK_TEMPLATES:
-            out[row[0]] = [x for x, v in zip(qitems, row[1:]) if v is not None and v > TEMPLATE_STRUCTURAL_SHARE]
-    sel = ", ".join(f'avg(("{x}" IS NULL)::INT) AS {x}' for x in ANNUAL_ONLY_ITEMS)
-    rows = con.execute(f"""SELECT fin_template, {sel} FROM read_parquet('{fa}')
-                           WHERE first_reported AND form = '10-K' AND year(datadate) BETWEEN 2020 AND 2025
-                           GROUP BY 1""").fetchall()
-    for row in rows:
-        if row[0] in MASK_TEMPLATES:
-            out.setdefault(row[0], []).extend(x for x, v in zip(ANNUAL_ONLY_ITEMS, row[1:])
-                                              if v is not None and v > TEMPLATE_STRUCTURAL_SHARE)
-    return out
+    """Explicit sector applicability; observed missingness never establishes structural absence."""
+    return {"bank": ["cogs", "invt"], "insurer": ["cogs", "invt"], "reit": [], "utility": []}
+
 
 
 def member_cells(con, root: Path, stage_out: Path) -> None:
@@ -881,7 +872,7 @@ def member_cells(con, root: Path, stage_out: Path) -> None:
 
 def coverage_gate(con, masks: dict[str, list[str]], basis: str = "member_equity") -> dict[str, Any]:
     """Per ratio and year: share non-NULL of linked member cells whose inputs are non-structural (not in the
-    template's structural set, not absent from the issuer's last eight quarters / two fiscal years) and whose
+    explicit template structural set (observed absence remains missing)) and whose
     denominator is not 0; info: share of every linked member cell."""
     res: dict[str, Any] = {"basis": basis, "gate": COVERAGE_GATE, "masks": masks, "by_ratio": {}}
     def lst(v: list[str]) -> str:
@@ -895,7 +886,7 @@ def coverage_gate(con, masks: dict[str, list[str]], basis: str = "member_equity"
     for r in list(RATIOS) + list(COMPOSITES):
         n = r["name"]
         inputs = lst(list(r["inputs"]))
-        elig = (f"NOT list_has_any(tmask, {inputs}) AND NOT list_has_any(absent, {inputs}) "
+        elig = (f"NOT list_has_any(tmask, {inputs}) "
                 f"AND NOT list_contains(undef, '{n}')")
         rows = con.execute(f"""
             SELECT year, count(*) AS cells, count({n}) AS nonnull,
@@ -914,12 +905,17 @@ def coverage_gate(con, masks: dict[str, list[str]], basis: str = "member_equity"
     res["fails"] = fails
     res["n_pass"] = len(res["by_ratio"]) - len(fails)
     res["pass"] = not fails
+    extension_names = {"pe_issuer_ni", "pe_issuer_ib", "divyield_paid"}
+    groups = {"primary": [r["name"] for r in RATIOS if r["name"] not in extension_names],
+              "extensions": sorted(extension_names), "composites": [r["name"] for r in COMPOSITES]}
+    res["by_role"] = {k: {"total": len(names), "n_pass": sum(res["by_ratio"][n]["pass"] for n in names),
+                           "fails": [n for n in names if not res["by_ratio"][n]["pass"]]} for k,names in groups.items()}
     return res
 
 
 def spearman_gate(con, root: Path) -> dict[str, Any]:
     """Same-date cross-sectional Spearman between the panel characteristics bm / ep / sp / gpa (char_registry formulas
-    on the panel's columns) and the ratio-suite counterparts (bm, 1/pe_inc, 1/ps, gprof) on linked member month-end
+    on the panel's columns) and the ratio-suite counterparts (bm, 1/pe_issuer_ni, 1/ps, gprof) on linked member month-end
     cells where both are defined; per month-end date, summarised per year (gate: every date >= 0.99)."""
     panel = _q(root / "panel" / "year=*" / "*.parquet")
     cols = ", ".join(f"{a} AS c_{k}, {b} AS r_{k}" for k, (a, b) in SPEARMAN_PAIRS.items())
@@ -969,19 +965,19 @@ def ranges_gate(con) -> dict[str, Any]:
     return res
 
 
-def universe_cells(con, root: Path) -> bool:
+def universe_cells(con, root: Path, stage: str = STAGE, basis: str = "univ_all_common") -> bool:
     """Replace ``cells`` by univ_all_common cells when the universe stage has a manifest."""
     if not (root / "universe" / "manifest.json").exists():
         return False
     uni = _q(root / "universe" / "year=*" / "universe.parquet")
-    mon = _q(root / STAGE / "monthly" / "year=*" / "ratios_monthly.parquet")
+    mon = _q(root / stage / "monthly" / "year=*" / "ratios_monthly.parquet")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE cells AS
         SELECT u.session_date, u.security_id, year(u.session_date) AS year, r.* EXCLUDE (session_date, security_id)
         FROM (SELECT session_date, security_id FROM read_parquet('{uni}')
-              WHERE univ_all_common AND year(session_date) BETWEEN {GATE_YEARS[0]} AND {GATE_YEARS[-1]}
+              WHERE {basis} AND year(session_date) BETWEEN {GATE_YEARS[0]} AND {GATE_YEARS[-1]}
                 AND session_date IN (SELECT DISTINCT session_date FROM read_parquet('{mon}'))) u
-        JOIN read_parquet('{mon}') r USING (session_date, security_id)""")
+        LEFT JOIN read_parquet('{mon}') r USING (session_date, security_id)""")
     return True
 
 
@@ -1002,9 +998,11 @@ def validate(stage: str = STAGE, std_stage: str = DEFAULT_STD_STAGE,
             doc["spearman"] = spearman_gate(con, root)
         if "ranges" in checks:
             doc["ranges"] = ranges_gate(con)
-        if "coverage" in checks and universe_cells(con, root):
-            doc["coverage_univ_all_common"] = coverage_gate(con, structural_masks(con, root / std_stage),
-                                                            basis="univ_all_common")
+        if "coverage" in checks:
+            for basis in ("univ_all_common", "univ_r3000p"):
+                if universe_cells(con, root, stage, basis):
+                    doc["coverage_" + basis] = coverage_gate(con, masks, basis=basis)
+            doc["universe_manifest_sha256"] = _manifest_sha(root / "universe" / "manifest.json")
     finally:
         con.close()
     doc["validated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -1019,7 +1017,7 @@ def publish_gate_status(stage: str = STAGE) -> dict[str, str]:
     if not vpath.exists() or not mpath.exists():
         return {}
     doc = C.read_json(vpath)
-    status = {k: ("PASS" if doc[k].get("pass") else "FAIL") for k in ("coverage", "spearman", "ranges", "handcheck")
+    status = {k: ("PASS" if doc[k].get("pass") else "FAIL") for k in ("coverage", "coverage_univ_all_common", "coverage_univ_r3000p", "spearman", "ranges", "handcheck")
               if isinstance(doc.get(k), dict) and "pass" in doc[k]}
     man = C.read_json(mpath)
     man["gate_status"] = status
@@ -1056,11 +1054,19 @@ HAND_ITEMS: dict[str, tuple[str, tuple[str, ...]]] = {
                    "PaymentsToAcquireMachineryAndEquipment", "PaymentsToAcquireOtherPropertyPlantAndEquipment",
                    "PaymentsToAcquireProductiveAssets")),
     "dvc": ("d", ("PaymentsOfDividendsCommonStock", "PaymentsOfDividends")),
+    "dp": ("d", ("DepreciationDepletionAndAmortization", "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment")),
+    "txt": ("d", ("IncomeTaxExpenseBenefit",)),
+    "pi": ("d", ("IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments")),
+    "xint": ("d", ("InterestExpense", "InterestAndDebtExpense")),
+    "che": ("i", ("CashAndCashEquivalentsAtCarryingValue",)),
+    "invt": ("i", ("InventoryNet",)),
+    "rect": ("i", ("AccountsReceivableNetCurrent",)),
     "xrd": ("d", ("ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
                   "ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost")),
     "epsfi": ("d", ("EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted")),
     "epsfx_cont": ("d", ("IncomeLossFromContinuingOperationsPerDilutedShare",
                          "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare")),
+    "csho": ("i", ("CommonStockSharesOutstanding",)),
     "at": ("i", ("Assets",)), "at_p": ("p", ("Assets",)),
     "liab": ("i", ("Liabilities",)),
     "seq": ("i", ("StockholdersEquity",)), "seq_p": ("p", ("StockholdersEquity",)),
@@ -1081,14 +1087,22 @@ def _hdiv(a, b):
     return None if a is None or b is None or b == 0 else a / b
 
 
+def _hadd(a, b):
+    return None if a is None or b is None else a+b
+
+
+def _hsub(a, b):
+    return None if a is None or b is None else a-b
+
+
 def _havg(a, b):
-    return None if a is None else (a if b is None else (a + b) / 2)
+    return None if a is None or b is None else (a + b) / 2
 
 
 def hand_items(v: dict[str, Any]) -> dict[str, Any]:
     """Filing values -> the ratio inputs under the items' documented rules: sale (banks: interest and dividend income +
     noninterest income), ib (continuing operations, else ni - do, else ni), epsfx (continuing-operations diluted EPS,
-    else total diluted EPS when no discontinued operations), lt (Liabilities, else assets - equity incl. NCI), pstk
+    else total diluted EPS when no discontinued operations), lt (reported Liabilities only), pstk
     and txditc 0 when not reported, be = seq + txditc - pstk."""
     h = dict(v)
     if h.get("sale") is None and h.get("int_inc") is not None and h.get("nonint_inc") is not None:
@@ -1100,42 +1114,55 @@ def hand_items(v: dict[str, Any]) -> dict[str, Any]:
     if h["epsfx"] is None and not h.get("do"):
         h["epsfx"] = h.get("epsfi")
     h["lt"] = h.get("liab")
-    if h["lt"] is None and h.get("at") is not None:
-        eq = h.get("seq_nci")
-        if eq is None and h.get("seq") is not None:
-            eq = h["seq"] + (h.get("mib") or 0.0)
-        h["lt"] = None if eq is None else h["at"] - eq
-    for k in ("pstk", "pstk_p", "txditc", "txditc_p"):
-        h[k] = h.get(k) or 0.0
-    h["be"] = None if h.get("seq") is None else h["seq"] + h["txditc"] - h["pstk"]
-    h["be_p"] = None if h.get("seq_p") is None else h["seq_p"] + h["txditc_p"] - h["pstk_p"]
+    h["be"] = None if any(h.get(k) is None for k in ("seq", "txditc", "pstk")) else h["seq"] + h["txditc"] - h["pstk"]
+    h["be_p"] = None if any(h.get(k) is None for k in ("seq_p", "txditc_p", "pstk_p")) else h["seq_p"] + h["txditc_p"] - h["pstk_p"]
     return h
 
 
 HAND_RATIOS: dict[str, Any] = {
     "ps": lambda h, m: _hdiv(m["me"], h.get("sale")),
     "pcf": lambda h, m: _hdiv(m["me"], h.get("oancf")),
-    "pe_inc": lambda h, m: _hdiv(m["prc"], None if h.get("epsfi") is None else h["epsfi"] * m["eps_adj"]),
-    "pe_exi": lambda h, m: _hdiv(m["prc"], None if h.get("epsfx") is None else h["epsfx"] * m["eps_adj"]),
+    "pe_issuer_ni": lambda h, m: _hdiv(m["me"], h.get("ni")),
+    "pe_issuer_ib": lambda h, m: _hdiv(m["me"], h.get("ib")),
     "bm": lambda h, m: _hdiv(h.get("be"), m["me"]),
-    "ptb": lambda h, m: _hdiv(m["me"], None if h.get("seq") is None else h["seq"] - h["pstk"]),
-    "divyield": lambda h, m: _hdiv(h.get("dvc"), m["me"]),
+    "ptb": lambda h, m: _hdiv(m["me"], None if h.get("seq") is None or h.get("pstk") is None else h["seq"] - h["pstk"]),
+    "divyield_paid": lambda h, m: _hdiv(h.get("dvc"), m["me"]),
     "dpr": lambda h, m: _hdiv(h.get("dvc"), h.get("ib")),
-    "npm": lambda h, m: _hdiv(h.get("ib"), h.get("sale")),
+    "npm": lambda h, m: _hdiv(h.get("ni"), h.get("sale")),
     "opmad": lambda h, m: _hdiv(h.get("oiadp"), h.get("sale")),
     "gpm": lambda h, m: _hdiv(None if h.get("sale") is None or h.get("cogs") is None else h["sale"] - h["cogs"],
                               h.get("sale")),
-    "roe": lambda h, m: _hdiv(h.get("ib"), _havg(h.get("be"), h.get("be_p"))),
+    "roe": lambda h, m: _hdiv(h.get("ni"), _havg(None if h.get("seq") is None or h.get("txditc") is None else h["seq"]+h["txditc"], None if h.get("seq_p") is None or h.get("txditc_p") is None else h["seq_p"]+h["txditc_p"])),
     "at_turn": lambda h, m: _hdiv(h.get("sale"), _havg(h.get("at"), h.get("at_p"))),
     "accrual": lambda h, m: _hdiv(None if h.get("ib") is None or h.get("oancf") is None else h["ib"] - h["oancf"],
                                   _havg(h.get("at"), h.get("at_p"))),
-    "debt_assets": lambda h, m: _hdiv(h.get("lt"), h.get("at")),
+    "debt_at": lambda h, m: _hdiv(h.get("lt"), h.get("at")),
     "curr_ratio": lambda h, m: _hdiv(h.get("act"), h.get("lct")),
     "de_ratio": lambda h, m: _hdiv(h.get("lt"), h.get("seq")),
     "fcf_ocf": lambda h, m: _hdiv(None if h.get("oancf") is None or h.get("capx") is None else h["oancf"] - h["capx"],
                                   h.get("oancf")),
     "rd_sale": lambda h, m: _hdiv(h.get("xrd"), h.get("sale")),
 }
+
+HAND_RATIOS.update({
+    "gprof": lambda h,m: _hdiv(_hsub(h.get("sale"),h.get("cogs")),h.get("at")),
+    "sale_equity": lambda h,m: _hdiv(h.get("sale"),h.get("seq")),
+    "sale_nwc": lambda h,m: _hdiv(h.get("sale"),_hsub(h.get("act"),h.get("lct"))),
+    "curr_debt": lambda h,m: _hdiv(h.get("lct"),h.get("lt")),
+    "invt_act": lambda h,m: _hdiv(h.get("invt"),h.get("act")),
+    "rect_act": lambda h,m: _hdiv(h.get("rect"),h.get("act")),
+    "cash_lt": lambda h,m: _hdiv(h.get("che"),h.get("lt")),
+    "cash_ratio": lambda h,m: _hdiv(h.get("che"),h.get("lct")),
+    "quick_ratio": lambda h,m: _hdiv(_hsub(h.get("act"),h.get("invt")),h.get("lct")),
+    "ocf_lct": lambda h,m: _hdiv(h.get("oancf"),h.get("lct")),
+    "ptpm": lambda h,m: _hdiv(h.get("pi"),h.get("sale")),
+    "efftax": lambda h,m: _hdiv(h.get("txt"),h.get("pi")),
+    "cfm": lambda h,m: _hdiv(_hadd(h.get("ib"),h.get("dp")),h.get("sale")),
+    "opmbd": lambda h,m: _hdiv(_hadd(h.get("oiadp"),h.get("dp")),h.get("sale")),
+    "roa": lambda h,m: _hdiv(_hadd(h.get("oiadp"),h.get("dp")),_havg(h.get("at"),h.get("at_p"))),
+    "intcov": lambda h,m: _hdiv(_hadd(h.get("ib"),h.get("xint")),h.get("xint")),
+    "intcov_ratio": lambda h,m: _hdiv(_hadd(_hadd(h.get("ni"),h.get("txt")),h.get("xint")),h.get("xint")),
+})
 
 
 def _hand_values(facts: list[dict[str, Any]], datadate: dt.date) -> dict[str, Any]:
@@ -1166,6 +1193,14 @@ def _hand_values(facts: list[dict[str, Any]], datadate: dt.date) -> dict[str, An
         out[item] = val
         if used:
             out[item + "_concept"] = used
+    # Match the standardized source contract: DEI cover share count at end-15d..end+120d,
+    # then period-end balance shares. Never substitute a different share basis to force a match.
+    cover = [f for f in facts if f["concept"] == "EntityCommonStockSharesOutstanding"
+             and f["instant"] and not f["dim"]
+             and -15 <= (dt.date.fromisoformat(f["end"]) - datadate).days <= 120]
+    if cover:
+        f = max(cover, key=lambda x: x["end"])
+        out["csho"], out["csho_concept"] = f["value"], f["concept"]
     return out
 
 
@@ -1221,7 +1256,16 @@ def handcheck(stage: str = STAGE, n: int = HAND_N, seed: int = HAND_SEED) -> dic
                 if primary is None:
                     idx = json.loads(sec_http.sec_get(f"{base}/index.json", limiter=lim))
                     primary = next(i["name"] for i in idx["directory"]["item"] if i["name"].endswith(".htm"))
-                html = sec_http.sec_get(f"{base}/{primary}", limiter=lim).decode("utf-8", "replace")
+                url = f"{base}/{primary}"
+                raw = sec_http.sec_get(url, limiter=lim)
+                retained = root.parents[1] / "raw" / "sec_ratios_handcheck"
+                retained.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(raw).hexdigest()
+                (retained / f"{acc}-{digest[:16]}.htm").write_bytes(raw)
+                with (retained / "receipts.jsonl").open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"url": url, "bytes": len(raw), "sha256": digest,
+                                        "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(), "http_status": 200}) + "\n")
+                html = raw.decode("utf-8", "replace")
             except Exception as exc:  # noqa: BLE001 - recorded; the issuer is replaced by the next pick
                 checks.append({"cik": cik, "accession": acc, "error": str(exc)[:200]})
                 ok = False

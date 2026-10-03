@@ -117,7 +117,7 @@ def base_items(i):
             "dpq": 5.0, "xintq": 2.0, "txtq": 6.0, "niq": 20.0 + i, "ibq": 20.0 + i, "epspxq": 0.20 + 0.01 * i,
             "epsfxq": 0.19 + 0.01 * i, "atq": 1000.0 + 10 * i, "ltq": 600.0, "ceqq": 390.0 + 10 * i,
             "seqq": 400.0 + 10 * i, "cheq": 50.0, "actq": 300.0, "lctq": 150.0, "invtq": 60.0 + i, "rectq": 80.0,
-            "apq": 40.0, "ppentq": 200.0, "dlcq": 20.0, "dlttq": 200.0, "pstkq": 10.0, "mibq": None,
+            "apq": 40.0, "ppentq": 200.0, "dlcq": 20.0, "dlttq": 200.0, "pstkq": 10.0, "mibq": 0.0,
             "cshoq": 100.0}
 
 
@@ -299,11 +299,11 @@ def test_eps_split_basis(world):
     # P/E = me / (EPS x cshoq) with EPS and cshoq on the state's basis (cshoq 100 in every fixture filing)
     r = monthly(con, world.root, 100, D(2020, 3, 31))
     eps = sum(0.19 + 0.01 * i for i in (4, 5, 6, 7))
-    assert close(r["eps_adj"], 0.5) and close(r["pe_exi"], r["me"] / (eps * 100.0))
+    assert close(r["eps_adj"], 0.5) and close(r["pe_issuer_ib"], r["me"] / annual(7)["ib"])
     # 2020-05-29: the Q1'20 10-Q (filed after the split) is on the new basis; earlier quarters are halved
     r2 = monthly(con, world.root, 100, D(2020, 5, 29))
     eps2 = sum((0.19 + 0.01 * i) / 2 for i in (5, 6, 7)) + (0.19 + 0.01 * 8)
-    assert close(r2["eps_adj"], 1.0) and close(r2["pe_exi"], r2["me"] / (eps2 * 100.0))
+    assert close(r2["eps_adj"], 1.0) and close(r2["pe_issuer_ib"], r2["me"] / sum(20.0+i for i in (5,6,7,8)))
     # an amendment of an older quarter filed after the split moves the state's basis: cshoq of the pre-split lag-0
     # row is doubled, its EPS halved, the product (and P/E) unchanged
     # the split also reaches the J line of the same issuer (issuer-level split table)
@@ -314,7 +314,7 @@ def test_me_null_when_a_common_line_lacks_shares(world):
     world.sh = [r for r in world.sh if not (r["security_id"] == 101 and r["session_date"] == D(2020, 5, 29))]
     con = run(world)
     r = monthly(con, world.root, 100, D(2020, 5, 29))
-    assert r["me"] is None and r["bm"] is None and r["pe_exi"] is None and r["npm"] is not None
+    assert r["me"] is None and r["bm"] is None and r["pe_issuer_ib"] is None and r["npm"] is not None
 
 
 def test_composite_scores_match_formulas(world):
@@ -387,12 +387,12 @@ def test_coverage_gate_structural_and_undefined(world):
     cr = res["by_ratio"]["curr_ratio"]["by_year"]["2020"]
     assert cr["eligible"] == 2 and cr["share"] == 0.5          # bank masked, undefined (lct = 0) excluded
     it = res["by_ratio"]["inv_turn"]["by_year"]["2020"]
-    assert it["eligible"] == 2 and it["share"] == 0.0          # bank masked, issuer without inventory excluded
+    assert it["eligible"] == 3 and it["share"] == 0.3333       # missing inventory is a gap, not structural
 
 
 def test_ratio_spec_complete():
     names = R.ratio_names()
-    assert len(names) == len(set(names)) == 70
+    assert len(names) == len(set(names)) == 73
     assert set(names) == set(R.LIT_RANGES)
     for r in R.RATIOS:
         assert r["inputs"] and r["family"] and r["definition"]
@@ -409,7 +409,7 @@ def test_hand_values_and_items_rules():
              fact("Revenues", 9e9, "2023-01-01", dim=True),                                    # dimensional ignored
              fact("NetIncomeLoss", 90.0, "2023-01-01"), fact("IncomeLossFromDiscontinuedOperationsNetOfTax", -10.0,
                                                              "2023-01-01"),
-             fact("EarningsPerShareDiluted", 0.9, "2023-01-01"),
+             fact("EarningsPerShareDiluted", 0.9, "2023-01-01"), fact("CommonStockSharesOutstanding", 500.0),
              fact("NetCashProvidedByUsedInOperatingActivities", 150.0, "2023-01-01"),
              fact("Assets", 2000.0), fact("Assets", 1800.0, end="2022-12-31"),
              fact("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", 800.0),
@@ -420,13 +420,13 @@ def test_hand_values_and_items_rules():
     h = R.hand_items(v)
     assert h["ib"] == 100.0                     # ni - do (no continuing-operations concept)
     assert h["epsfx"] is None                   # DO present and no continuing-operations EPS: not total EPS
-    assert h["lt"] == 1200.0                    # assets - equity incl. NCI
-    assert h["be"] == 780.0 and h["be_p"] == 700.0 and h["pstk"] == 0.0
+    assert h["lt"] is None                     # missing liabilities never become a balance plug
+    assert h["be"] is None and h["be_p"] is None and h.get("pstk") is None
     m = {"me": 5000.0, "prc": 10.0, "eps_adj": 1.0}
     assert R.HAND_RATIOS["ps"](h, m) == 5.0
-    assert R.HAND_RATIOS["roe"](h, m) == 100.0 / 740.0
+    assert R.HAND_RATIOS["roe"](h, m) is None
     assert R.HAND_RATIOS["at_turn"](h, m) == 1000.0 / 1900.0
-    assert R.HAND_RATIOS["pe_inc"](h, m) == 10.0 / 0.9 and R.HAND_RATIOS["pe_exi"](h, m) is None
+    assert R.HAND_RATIOS["pe_issuer_ni"](h, m) == 5000.0 / 90.0 and R.HAND_RATIOS["pe_issuer_ib"](h, m) == 5000.0 / 100.0
     assert set(R.HAND_RATIOS) <= set(R.ratio_names())
 
 
@@ -445,3 +445,58 @@ def test_fy0_fallback_and_history_limited(world):
     assert r1["capei"] is None and "capei" in r1["ratio_undefined"].split(",")
     assert r1["hist_days"] == (D(2019, 12, 31) - D(2016, 3, 31)).days
     assert r1["piotroski_f"] is not None and "piotroski_f" not in (r1["ratio_undefined"] or "")
+
+
+def test_annual_comparative_restatement_and_successive_clocks(world):
+    a = annual(7)
+    a["sale"] = 900.0
+    world.a(1, D(2019, 12, 31), "annual-comparative", T(2020, 6, 10, 21), form="10-Q", **a)
+    a = dict(a, sale=950.0)
+    world.a(1, D(2019, 12, 31), "annual-comparative", T(2020, 7, 10, 21), form="10-Q", **a)
+    con = run(world)
+    state = (world.root / "ratios" / "fund_state.parquet").as_posix()
+    values = con.execute(f"SELECT available_at, sale_a0 FROM read_parquet('{state}') WHERE cik=1 AND available_at IN (TIMESTAMP '2020-06-10 21:00:00', TIMESTAMP '2020-07-10 21:00:00') ORDER BY available_at").fetchall()
+    assert [v[1] for v in values] == [900.0, 950.0]
+    assert monthly(con, world.root, 100, D(2020, 5, 29))["fund_available_at"] < T(2020, 6, 10, 21)
+
+
+def test_missing_prior_average_stays_null():
+    con = duckdb.connect()
+    expr = R._avg_sql()["avg_at"]
+    assert con.execute(f"SELECT {expr} FROM (SELECT 100.0 at_q0, NULL::DOUBLE at_q4)").fetchone()[0] is None
+    assert con.execute(f"SELECT {expr} FROM (SELECT 100.0 at_q0, 80.0 at_q4)").fetchone()[0] == 90.0
+    con.close()
+
+
+def test_hand_share_count_uses_dated_cover_contract():
+    facts=[{"concept":"CommonStockSharesOutstanding","start":None,"end":"2020-12-31","instant":True,"dim":False,"value":100.0},
+           {"concept":"EntityCommonStockSharesOutstanding","start":None,"end":"2021-01-31","instant":True,"dim":False,"value":95.0}]
+    assert R._hand_values(facts,D(2020,12,31))["csho"] == 95.0
+
+
+def test_issuer_pe_ignores_cover_shares_eps_and_class_price(world):
+    for row in world.fq:
+        row["cshoq"] = 999999.0
+        row["epsfxq"] = 17.0
+    con=run(world)
+    p=monthly(con,world.root,100,D(2020,5,29))
+    j=monthly(con,world.root,101,D(2020,5,29))
+    income=sum(20.0+i for i in (5,6,7,8))
+    assert p["prc"] != j["prc"]
+    assert close(p["pe_issuer_ni"],p["me"]/income) and p["pe_issuer_ni"] == j["pe_issuer_ni"]
+
+
+def test_custom_stage_daily_macro_binds_that_stage():
+    sql=R.macros_sql(C.build_root(),"ratios_v11")
+    assert "/ratios_v11/fund_state.parquet" in sql
+    assert "/ratios_v11/split_events.parquet" in sql
+    assert "/ratios/fund_state.parquet" not in sql
+
+
+def test_wrds_pe_not_fabricated_without_share_class_alignment(world):
+    con=run(world)
+    r=monthly(con,world.root,100,D(2020,5,29))
+    assert r["pe_exi"] is None and r["pe_inc"] is None and r["peg_trailing"] is None
+    assert 'missing_certified_security_class_diluted_EPS_alignment' in r['ratio_missing_primitives']
+    assert next(x for x in R.RATIOS if x['name']=='debt_at')['num']=='lt_q0'
+    assert next(x for x in R.RATIOS if x['name']=='roe')['num']=='ni_ttm'
