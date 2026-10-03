@@ -1,5 +1,7 @@
 ### Task 6: Factor returns + risk input pack `factors/`, `risk_inputs/`
 
+Release recovery binding (R14): use final explicit fundamentals_v11, compustat_std_v11 and ratios_v11 inputs, with their exact manifest and output hashes. Do not silently fall back to the preserved old stage defaults. Code and offline fixtures may proceed before final producers; real source diagnostics/builds need the controller's exclusive guarded slot, and final coverage/correlation evidence waits for completed Task2/Task5 snapshots under R9. Missing historical membership or required source periods remain measured exclusions/failures; latest snapshots must not be backfilled into the 2013-2022 benchmark window.
+
 Spec: gap-analysis §2 item 5 (binding). Universe from Task 2 (`univ_all_common`, NYSE breakpoints), book equity /
 op. profitability / investment from Task 3 (or v10 directly if Task 3 is not landed). Daily and monthly factor
 returns; per line-day exposures. Files: new `alpha_panel/factors.py`, `alpha_panel/risk_inputs.py`, tests. Report:

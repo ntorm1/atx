@@ -156,6 +156,8 @@ Branch `feat/tier1-v3-warehouse`, start HEAD a3e02c6e. Workspace `.superpowers/s
 
 ## Release objective recovery (2026-10-03)
 
+- Task9 independent prebuild review found five Important defects: mixed metric currencies, missing quarterly history continuity, ignored comparative conflicts, overwritten feature input identities, and stale features certified after reparse. Fix round1 dispatched to original implementer, with immutable/phase-qualified publication and regressions before any data run. Actual gates remain0/5 and manual precision0/200. Task5 focused fix round2 dispatched for exact extraction inventory and prior-period formula bindings; neither task has a real-data grant yet.
+
 - Runtime prerequisite completed: consumer-runtime-v1.json pins the newly built atx-equity-strategy-ic binary and inspected loader sources. Target-only equity-dev build used one worker under a 1GiB guard, exit0, 49.3s, peak0.2203GiB; --help exit0. Dependency /MP warnings and dirty code identity are disclosed. No return data read, real load, smoke, or release acceptance yet.
 - Task5 prebuild fix round1 commit9221b5d0 submitted with96 focused offline tests; scoped independent reviewer verifies the null/TEQ/error fixes but reproduced incomplete exact inventory validation and missing prior-period formula bindings. Task9 prebuild checkpoint63c0c067 submitted with23 tests and0/5 actual gates passed; fresh independent reviewer /root/t9_prebuild_review dispatched. No full data job is running or granted. T2 cache engineering continues after two guarded external-memory stops, with review required before retry.
 
