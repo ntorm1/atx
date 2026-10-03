@@ -2,6 +2,40 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+Latest at23:16UTC: root has no live data job. Task16 independent review in
+review-T16-foundation-findings.md Needs fixes: I1 counters not bound to payload,
+I2 fullvalidator accepts abbreviated reader/code/external inventory, I3 unsupported
+status/economic claims; M1 coverage root isolation and M2 rollback transaction.
+Original author owns fixround1/5 offline. Task6 author owns fixround2/5 offline
+for invalid-ME issuer denominators. Task11 native cohort/coverage work continues.
+
+Root independent two-pass Task16 source-byte audit completed35.2s/.0462GiB:
+161unique reader/producer-declared files,7,046,096,278bytes,13manifest identities,
+both passes identical and zero actual-vs-manifest mismatches. Evidence
+task16-reader-byte-audit-v1.json, helper and logs. BYTE_MATCH_ONLY; no code/current
+key/clock/economic qualification, production binding or candidate publication.
+
+Latest at23:08UTC: no root data job live. Task6 fixround1 ac5b86d5 has independent
+Needs fixes in review-T6-prebuild-r1-findings.md: I2-I6/M1 closed, I1 multiclass
+invalid-ME rows still disappear before issuer qualification. Round2 next after
+author finishes independent Task16 foundation review. Foundation5b86179d has15
+offline fixture passes and no actual candidate; /root/t6_factors independently
+reviews it because fresh/cached reviewer dispatch hit runtime thread limit.
+
+Root Task16 metadata-only preflight2s/.0428GiB found52required reader products,
+148files/6,495,305,898logicalbytes,13present nonempty manifests, no missing products
+and no consumed file omitted from current declarations. This is NOT byte/key/
+source qualification. Artifact task16-reader-preflight-v1.json; logs v2 retain
+successful retry after v1 helper root-path AttributeError before data IO.
+
+Task11 submissions pilot completed6s/.0477GiB, childexit2 intentionally reports
+UNQUALIFIED_PARTITION:250main+39history members,138filings,0exceptions, boundhit,
+lastmain CIK0000005818.json. Full archiveSHA702fbcd8...67165 verified; outputSHA
+46d9f789695ee444c6df3e2681c608d45f46d2a9418bc355c1a0a67fed102b21. Source/quality
+freeze released. Original filing bronze still unproven. Agent continues native
+cohort/coverage/NPORT vintages under new R16 task-11-cohort-ruling.md; final future
+manager inventory must never backfill historical feature populations.
+
 Latest at22:55UTC: roothasNOlivejob. Fundresumev2 session24746 ended lowcommit497.8s/.5738GiB; prepcompleted386s andbatch0000completed55.42s. Freshread-only verification18.2s/.1077GiB certifies144prepunits; binding3c03f0275fae6dcedb4c76a92052d1335828351793f31332c2d2347ea3520c6d, summarydb1f29b6ecce4dfe4a33800fc331aec09bd6eeec74fd85e8bb190b2f3eb74741. Legacy_batch_done onlychecksmetadata/existence; independentlyunqualified. RootadvancedONLYnewbatches1-4 afterprepverification/absentreceipts viaexistingCLI; stopped25.4s/.4793GiB lowcommitbeforenewcompletion, session33166ended. Longretriesheld. See t5-operational-recovery-v3.md andlogs. No finalv11manifest/acceptance.
 
 Currentagents: /root/t6_factors fixing6reviewImportantissues round1offline; /root/t11_ownership continuesnativequality/features/NPORTvintages aftercheckpoint0c92521b; /root/t16_release_foundation implementsnewindependentrelease_inputs/universe_release perR15. Task2cappedat5with2authdefects+French/I4, no sixthTask2fix ornativecachedataresume. R15binding task-2-cap-ruling.md; independentversioneduniverse_release_v1 candidateadmission neededbeforeTask6/7acceptedconsumption. Task16foundationdesign acceptedexplicitreaderinventory/side-productbytebindings, isolatednativefunctioncontext, typedexactpanelkeys, immutableunits/pointer; economicqualification staysseparate. Task5legacybatchproofdependencyreportedforfutureintegration, no Task5sourceedits.

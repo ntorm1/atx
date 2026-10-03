@@ -156,6 +156,33 @@ Branch `feat/tier1-v3-warehouse`, start HEAD a3e02c6e. Workspace `.superpowers/s
 
 ## Release objective recovery (2026-10-03)
 
+- 23:16UTC: Task16 initial independent review Needs fixes (review-T16-foundation-
+  findings.md): payload counter binding, validator's independently complete input/
+  code/evidence contract, invariant manifest/gate schema; plus root-isolation and
+  rollback-transaction minors. Author fixround1/5 offline. Task6 author fixround2/5
+  for invalid-ME constituent loss. Task11 continues R16 native cohort/coverage.
+- Root source-byte audit35.2s/.0462GiB under.3cap:161unique reader and producer
+  declared files/7,046,096,278bytes,13manifests, two identical passes,0mismatches.
+  task16-reader-byte-audit-v1.json proves only current retained byte identity;
+  no keys/clocks/economic qualification or build/admission claim. No live job.
+
+- 23:08UTC: Task6 fixround1 ac5b86d5 independently reviewed Needs fixes:
+  I2-I6/M1 closed; invalid-ME classes still removed before issuer certification.
+  See review-T6-prebuild-r1-findings.md. Fixround2 pending author completion of
+  independent Task16 foundation5b86179d review. Foundation has15offline passes,
+  no actual candidate. Runtime thread limit prevented fresh reviewer; Task6
+  author is independent of Task16 and has read-only reviewer scope.
+- Root Task16 reader metadata preflight:52products/148files/6,495,305,898bytes;
+  13nonempty manifests, no missing/undeclared consumed products. Guard2s/.0428GiB,
+  no content hashes or key/source certification. v1 failed helper path lookup
+  before data IO; v2 succeeded, both receipts preserved.
+- Root Task11 bounded archive inventory:250main+39history/13813Ffilings,
+  0exceptions,6s/.0477GiB; exit2 is UNQUALIFIED_PARTITION, not parser failure.
+  Full retained archive content SHA verified; source/quality freeze released.
+  Ruling R16 task-11-cohort-ruling.md separates PIT prior-visible and arrived
+  populations from retrospective inventory completeness; no futuremanager leak,
+  no table-absence economic zero, no arrival-driven buying. Native work continues.
+
 - 22:55UTC Task5resumev2 ends lowcommit497.8s/.5738GiB afterprepare386s+batch0000 55.42s. Guardedread-onlyverification18.2s/.1077GiB authenticates144prepunits (binding3c03f027...3520c6d), notfinancialgates. Legacy_batch_done usesmetadata/existence, missingpayload/code/prepidentity; unchangedbatchcache remainsunqualified androutedTask16integration. RootNEW-onlybatches1-4 viaexistingCLI afterverificationandabsentreceipts stopped25.4s/.4793GiB lowcommitbeforecompletion; nofinalmanifest. t5-operational-recovery-v3.md retainsdetails; no rootjobnow/longretriesheld.
 - Task16foundation /root/t16_release_foundation dispatchedGPT6.1Sol forR15complete-reader-input/exactkeyadmission andindependentuniverse_release_v1 candidate, noTask2edits/nativescratchtrust. Explicitindependent side-productbytebindings acceptedwithseparatesemanticqualification, immutablepointer/unit testsrequired. Task6fixround1continuesoffline; Task11coherentpartialcheckpoint0c92521b continuesnativeassembly/coverage/NPORTvintages. RootTask11directorycacheinspection3.0s/.0517GiB validatesindexdigest+archivestats only,985667main/5374history/1other; sourcearchivecontentsandpubliccohortcompletenessunverified. NoHTTP.
 
