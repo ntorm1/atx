@@ -53,7 +53,9 @@ import research_fields_price as price      # same directory: vol_126's module (b
 
 REGISTRY = Path(__file__).resolve().parent / "field_registry.json"   # K-P9-1 (the engine rows: kind "engine")
 REGISTRY_SCHEMA = "atx.field-registry/v1"
-ROUTES = ("si_shares", "si_dtc", "vol_126")   # the producer calls routed here: finra_field, volume_mean_rows
+# The fields this wrapper can route (its producer hooks: finra_field, volume_mean_rows); the registry decides which of
+# them are engine rows. Public name kept: the builder entry (lane A1) validates engine rows against it.
+ENGINE_FIELDS = ("si_shares", "si_dtc", "vol_126")
 SPEC_SCHEMA = "atx.research-fields-spec/v1"
 RECEIPT_SCHEMA = "atx.research-fields-receipt/v1"
 RECEIPT_DIR = "engine_fields"
@@ -110,9 +112,10 @@ def engine_rows(registry=None) -> list:
 def routable(names) -> list:
     """``names`` when this wrapper routes every one of them, else refuse."""
     names = list(names)
-    unrouted = [x for x in names if x not in ROUTES]
+    unrouted = [x for x in names if x not in ENGINE_FIELDS]
     if unrouted:
-        raise EngineError(f"no engine route in this wrapper for {', '.join(unrouted)} (routes: {', '.join(ROUTES)})")
+        raise EngineError(f"no engine route in this wrapper for {', '.join(unrouted)} "
+                          f"(routes: {', '.join(ENGINE_FIELDS)})")
     return names
 
 

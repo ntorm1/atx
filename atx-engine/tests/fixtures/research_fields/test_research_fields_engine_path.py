@@ -241,6 +241,7 @@ def test_flag_errors(tmp_path, monkeypatch):
 
 
 def test_engine_rows_follow_the_registry(tmp_path, field_registry):
+    assert engine.ENGINE_FIELDS == ("si_shares", "si_dtc", "vol_126")   # the routable fields (lane A1 imports it)
     assert engine.engine_rows() == ["si_shares", "si_dtc", "vol_126"]          # registration order, python rows out
     assert engine.engine_rows(field_registry) == ["si_shares", "si_dtc", "vol_126"]
     flipped = write_registry(tmp_path / "other.json", {"vol_126": "engine", "si_dtc": "python", "si_shares": "python"})

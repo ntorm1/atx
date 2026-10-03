@@ -147,7 +147,8 @@ A reused entry is the prior entry unchanged (its producer stays the original pro
 
 **Engine shim.**
 - `--engine-fields` accepts only `kind: "engine"` rows of `field_registry.json` (module global `REGISTRY`) that the
-  shim can route (`ROUTES`: si_shares, si_dtc, vol_126).
+  shim can route (`ENGINE_FIELDS`: si_shares, si_dtc, vol_126). A1's entry imports `ENGINE_FIELDS`, so it keeps
+  its name; a pytest pins its value.
 - `engine_path(exe, names)` keeps its signature, because A1's entry calls it. It refuses names it cannot route.
 - The receipt's `engine.exe_sha256` must equal the SHA-256 of the executable that was run.
 - The producer block reaches each entry through the builder's own extras. The FINRA extras are spread by `run()`.
@@ -269,7 +270,10 @@ manifest may differ only in the producer blocks of those three entries.
    flip once it is present. A1 confirmed that its entry never imports an engine row's `builder`: it resolves the
    module from `owner`, or the builder binds it itself. A1 also confirmed that with no executable the build falls
    back to Python, byte-identical (`test_field_registry.py Entry.test_engine_rows_need_the_executable`). So the
-   default path is unchanged by the flip.
+   default path is unchanged by the flip. A1's registry tests accept exactly these three flips:
+   `CommittedRegistry.test_lane_a2_flip_keeps_the_registry_tests_green`. The generator-equality check reproduces
+   the file's engine rows, engine rows must be in `ENGINE_FIELDS` with builder equal to the row name, and no
+   registry SHA is pinned.
 
 ## Deviations from brief
 
