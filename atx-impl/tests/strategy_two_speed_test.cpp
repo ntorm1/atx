@@ -169,16 +169,20 @@ struct Sleeves {
 
 // Closed form over every decision: d_f and d_s are each sleeve's own construction (two_speed off),
 // F_next = F + theta_f (L m_f d_f - F) (0 off membership), desired = m_s d_s + (F + (F_next - F) /
-// theta) / L.
-TEST(TwoSpeed, DesiredIsTheNettedSleeveAim) {
+// theta) / L, with theta_f = 1 - 2^(-C/5) at the cadence C (Ruling PM8-16 #4: C 1 .1294, C 5 .5).
+class TwoSpeedCadence : public ::testing::TestWithParam<usize> {};
+TEST_P(TwoSpeedCadence, DesiredIsTheNettedSleeveAim) {
   const Role role(30, 40, 29);
   const Sleeves sleeves(role, 0.3);
   auto x = role.target();
   sleeves.attach(x);
   auto fast_x = x, slow_x = x;
   fast_x.signal = sleeves.fast; slow_x.signal = sleeves.slow;
-  const auto on = two_speed_config(true), off = two_speed_config(false);
-  const f64 L = on.aim_leverage, theta = on.trade_fraction, theta_f = atx::engine::book::two_speed_fast_theta();
+  auto on = two_speed_config(true), off = two_speed_config(false);
+  on.cadence = off.cadence = GetParam();
+  const f64 L = on.aim_leverage, theta = on.trade_fraction;
+  const f64 theta_f = 1.0 - std::exp2(-static_cast<f64>(GetParam()) / 5.0);
+  EXPECT_EQ(theta_f, GetParam() == 5U ? 0.5 : atx::engine::book::two_speed_fast_theta(1.0));
   st::detail::DesiredState state;
   std::vector<f64> F(role.n, 0.0);
   std::vector<Ranked> row;
@@ -204,6 +208,7 @@ TEST(TwoSpeed, DesiredIsTheNettedSleeveAim) {
     }
   }
 }
+INSTANTIATE_TEST_SUITE_P(TwoSpeed, TwoSpeedCadence, ::testing::Values(usize{1}, usize{5}));
 
 // A zero fast share and the blend as the slow sleeve: F stays 0 and every NAV day is the parent's.
 TEST(TwoSpeed, ZeroFastShareIsTheParentRunBitForBit) {
@@ -300,14 +305,27 @@ TEST(TwoSpeed, RuleIdRecipeAndSummaryCarryTheRuleOnlyWhenOn) {
   auto recipe_on = Json::parse(st::detail::construction_recipe_json(on));
   const auto recipe_off = Json::parse(st::detail::construction_recipe_json(off));
   EXPECT_EQ(recipe_on.at("two_speed"), "two-speed-v1");
-  EXPECT_EQ(recipe_on.at("two_speed_theta_fast").get<f64>(), atx::engine::book::two_speed_fast_theta());
-  recipe_on.erase("two_speed"); recipe_on.erase("two_speed_theta_fast"); recipe_on.erase("two_speed_rule");
+  EXPECT_EQ(recipe_on.at("two_speed_theta_fast").get<f64>(),
+            atx::engine::book::two_speed_fast_theta(1.0));
+  recipe_on.erase("two_speed"); recipe_on.erase("two_speed_theta_fast");
+  recipe_on.erase("two_speed_rule");
   EXPECT_EQ(recipe_on, recipe_off);
   const std::vector<st::ConstructionDay> days(3);
   const auto summary_on = Json::parse(st::detail::construction_summary_json(on, days));
   const auto summary_off = Json::parse(st::detail::construction_summary_json(off, days));
-  EXPECT_EQ(summary_on.at("construction").at("two_speed").at("theta_slow").get<f64>(), on.trade_fraction);
+  const auto& block = summary_on.at("construction").at("two_speed");
+  EXPECT_EQ(block.at("theta_slow").get<f64>(), 0.05);
+  EXPECT_EQ(block.at("cadence").get<usize>(), 1U);
+  EXPECT_EQ(block.at("theta_fast").get<f64>(), atx::engine::book::two_speed_fast_theta(1.0));
   EXPECT_FALSE(summary_off.at("construction").contains("two_speed"));
+  // Ruling PM8-16 #4: at cadence 5 the recipe and the summary print C and theta_f = 1 - 2^(-1) = .5.
+  auto weekly = on;
+  weekly.cadence = 5;
+  EXPECT_EQ(Json::parse(st::detail::construction_recipe_json(weekly)).at("two_speed_theta_fast"),
+            0.5);
+  const auto summary_weekly = Json::parse(st::detail::construction_summary_json(weekly, days));
+  EXPECT_EQ(summary_weekly.at("construction").at("two_speed").at("cadence").get<usize>(), 5U);
+  EXPECT_EQ(summary_weekly.at("construction").at("two_speed").at("theta_fast").get<f64>(), 0.5);
 }
 // ---- Y-5 / Y-1 composition (registered order Y-5 -> X-10 -> Y-1): the netted aim is the book target;
 // --vol-target / --risk-target scale its leverage (the scaler reads the net book, never F) ----
@@ -388,7 +406,7 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
   auto fixed = cfg.target;
   fixed.aim_leverage = 1.0; fixed.dust_multiple = 0.0; fixed.exit_rate = 1.0;
   const f64 L = cfg.target.aim_leverage, theta = cfg.target.trade_fraction;
-  const f64 theta_f = atx::engine::book::two_speed_fast_theta();
+  const f64 theta_f = atx::engine::book::two_speed_fast_theta(1.0);
   v7::NavV7Options o;
   o.risk_target = vol_options();
   o.spo_risk = risk;

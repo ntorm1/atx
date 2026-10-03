@@ -1,10 +1,10 @@
 // book_two_speed_test.cpp — platform v8 Y (lane YCOMB, rule Y-5, Ruling PM8-5): two-speed netted
 // sleeves (atx::engine::book, two_speed.hpp).
 //
-//   The registered constants (theta_f = 1 - 2^(-1/5)); one step on two names in closed form; equal
-//   rates are one partial adjustment toward the summed aim (the single-sleeve book, within rounding);
-//   opposite sleeve trades cancel in the netted trade; the fast sleeve halves an aim gap in five
-//   steps; refusals before any write.
+//   The registered constants (theta_f = 1 - 2^(-C/5) at cadence C); one step on two names in
+//   closed form; equal rates are one partial adjustment toward the summed aim (the single-sleeve
+//   book, within rounding); opposite sleeve trades cancel in the netted trade; the fast sleeve
+//   halves an aim gap in five sessions; refusals before any write.
 //
 // Suite: BookTwoSpeed
 
@@ -28,8 +28,23 @@ TEST(BookTwoSpeed, RegisteredConstants) {
   EXPECT_EQ(eb::two_speed_slow_theta, 0.05);
   EXPECT_EQ(eb::two_speed_fast_half_life, 5.0);
   EXPECT_EQ(eb::two_speed_fast_bound, 10.0);
-  EXPECT_NEAR(eb::two_speed_fast_theta(), 0.12944943670387588, 1e-15);
-  EXPECT_NEAR(std::pow(1.0 - eb::two_speed_fast_theta(), 5.0), 0.5, 1e-15);
+  EXPECT_NEAR(eb::two_speed_fast_theta(1.0), 0.12944943670387588, 1e-15);
+  EXPECT_NEAR(std::pow(1.0 - eb::two_speed_fast_theta(1.0), 5.0), 0.5, 1e-15);
+}
+
+// Ruling PM8-16 #4: theta_f = 1 - 2^(-C/5) per rebalance at cadence C, so the fast half-life is five
+// sessions at any cadence (C = 5: one step halves the gap; C = 10: one step leaves a quarter).
+TEST(BookTwoSpeed, FastThetaFollowsTheCadence) {
+  EXPECT_EQ(eb::two_speed_fast_theta(5.0), 0.5);
+  EXPECT_EQ(eb::two_speed_fast_theta(10.0), 0.75);
+  for (const f64 cadence : {1.0, 2.0, 3.0, 5.0, 7.0, 21.0}) {
+    const f64 theta = eb::two_speed_fast_theta(cadence);
+    EXPECT_GT(theta, 0.0) << cadence;
+    EXPECT_LE(theta, 1.0) << cadence;
+    // 5 / C rebalances (5 sessions) leave half of a constant aim gap.
+    EXPECT_NEAR(std::pow(1.0 - theta, eb::two_speed_fast_half_life / cadence), 0.5, 1e-14) << cadence;
+  }
+  EXPECT_EQ(eb::two_speed_fast_theta(4096.0), 1.0); // the replay's largest cadence: one step
 }
 
 TEST(BookTwoSpeed, OneStepClosedForm) {
@@ -70,10 +85,11 @@ TEST(BookTwoSpeed, EqualRatesAreOneBookTowardTheSummedAim) {
 
 // A fast sleeve leaving a name while the slow sleeve enters it: the trades cancel in the book.
 TEST(BookTwoSpeed, OppositeSleeveTradesNet) {
-  const f64 theta_f = eb::two_speed_fast_theta();
+  const f64 theta_f = eb::two_speed_fast_theta(1.0);
   const std::vector<f64> aim_fast{0.0}, aim_slow{0.2};
   std::vector<f64> fast{0.1}, slow{0.0}, book{0.1};
-  const auto r = eb::two_speed_step(aim_fast, aim_slow, theta_f, eb::two_speed_slow_theta, fast, slow, book);
+  const auto r =
+      eb::two_speed_step(aim_fast, aim_slow, theta_f, eb::two_speed_slow_theta, fast, slow, book);
   ASSERT_TRUE(r);
   const f64 d_fast = theta_f * 0.1, d_slow = 0.05 * 0.2;
   EXPECT_NEAR(r->sleeve_trade, d_fast + d_slow, 1e-15);
@@ -85,8 +101,10 @@ TEST(BookTwoSpeed, OppositeSleeveTradesNet) {
 TEST(BookTwoSpeed, FastSleeveHalvesItsGapInFiveSteps) {
   const std::vector<f64> aim{1.0};
   std::vector<f64> fast{0.0}, slow{0.0}, book{0.0};
+  const f64 theta_f = eb::two_speed_fast_theta(1.0);
   for (int step = 0; step < 5; ++step)
-    ASSERT_TRUE(eb::two_speed_step(aim, aim, eb::two_speed_fast_theta(), eb::two_speed_slow_theta, fast, slow, book));
+    ASSERT_TRUE(
+        eb::two_speed_step(aim, aim, theta_f, eb::two_speed_slow_theta, fast, slow, book));
   EXPECT_NEAR(fast[0], 0.5, 1e-14);
   EXPECT_NEAR(slow[0], 1.0 - std::pow(0.95, 5.0), 1e-14);
 }
@@ -135,7 +153,8 @@ TEST(BookTwoSpeed, NettedAimClosedForm) {
 TEST(BookTwoSpeed, AimPartialStepOnTheAimIsTheNettedSleeveMove) {
   const std::vector<atx::u8> member{1, 1, 1, 1};
   const std::vector<f64> fast_desired{0.3, -0.1, 0.0, -0.4}, slow_desired{-0.2, 0.25, 0.1, 0.05};
-  const f64 share = 0.35, L = 1.4, theta_f = eb::two_speed_fast_theta(), theta_s = eb::two_speed_slow_theta;
+  const f64 share = 0.35, L = 1.4, theta_f = eb::two_speed_fast_theta(1.0);
+  const f64 theta_s = eb::two_speed_slow_theta;
   std::vector<f64> fast{0.02, -0.05, 0.0, 0.1};
   const std::vector<f64> before = fast;
   std::vector<f64> desired = slow_desired;

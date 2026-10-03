@@ -16,8 +16,9 @@
 // sum and trades only the net change, so opposite sleeve trades cancel before they cost anything.
 //   slow: theta_s = two_speed_slow_theta (the parent's aim-partial-v5 theta; the slow sleeve trades
 //         as the whole book does today);
-//   fast: theta_f = 1 - 2^(-1 / two_speed_fast_half_life): the fast sleeve's aim gap closes at the
-//         rate its alpha decays (half-life matched), so it is held while it still forecasts.
+//   fast: theta_f = 1 - 2^(-C / two_speed_fast_half_life) per rebalance at cadence C sessions
+//         (Ruling PM8-16 #4): the fast sleeve's aim gap closes at the rate its alpha decays
+//         (half-life matched, 5 sessions at any cadence), so it is held while it still forecasts.
 // Not R-4 (a band on the whole book's rank), not R-9 (one book-level theta), not R-3 (one aim, one
 // theta, per-signal weights): two aims, two rates, one netted trade.
 //
@@ -37,9 +38,11 @@ inline constexpr atx::f64 two_speed_slow_theta = 0.05;      // aim-partial-v5's 
 inline constexpr atx::f64 two_speed_fast_half_life = 5.0;   // sessions: reversal_seasonality, price_volume
 inline constexpr atx::f64 two_speed_fast_bound = 10.0;      // a theme with half-life <= 10 sessions is fast
 
-// theta_f = 1 - 2^(-1 / h_f): after h_f sessions half of an aim gap is left, as half of the alpha is.
-[[nodiscard]] inline atx::f64 two_speed_fast_theta() noexcept {
-  return 1.0 - std::exp2(-1.0 / two_speed_fast_half_life);
+// theta_f = 1 - 2^(-C / h_f), C the rebalance cadence in sessions (one step per rebalance): after
+// h_f sessions half of an aim gap is left, as half of the alpha is, at any cadence (C = 1: .1294;
+// C = 5: .5). C >= 1 (the replay's cadence is 1..4096).
+[[nodiscard]] inline atx::f64 two_speed_fast_theta(atx::f64 cadence) noexcept {
+  return 1.0 - std::exp2(-cadence / two_speed_fast_half_life);
 }
 
 struct TwoSpeedTrade {

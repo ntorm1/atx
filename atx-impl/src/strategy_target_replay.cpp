@@ -77,6 +77,11 @@ const char* neutralize_name(TargetNeutralize id) {
 bool aim_partial(const TargetReplayConfig& cfg) {
   return cfg.rule == TargetReplayRule::AimPartialV5;
 }
+// two-speed-v1's fast rate per rebalance at the config's cadence C (Ruling PM8-16 #4):
+// 1 - 2^(-C/5), so the fast half-life is 5 sessions at any cadence.
+f64 two_speed_theta_fast(const TargetReplayConfig& cfg) {
+  return eb::two_speed_fast_theta(static_cast<f64>(cfg.cadence));
+}
 // v6 prereg C2: nonmembers decay at exit_rate instead of exiting at once (1 = off).
 bool decaying_exit(const TargetReplayConfig& cfg) { return cfg.exit_rate != 1.0; }
 // Rate of the aim-partial-v5 move in the target replay: one fixed theta
@@ -574,7 +579,7 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
 // v8 Y-5 two-speed-v1. Each sleeve blend gets the construction (the config with two_speed off: ranks,
 // demean, gross 1, locate zeroing, neutralization); a skipped neutralization of either skips the
 // rebalance and F does not move. Otherwise the engine kernel engine::book::two_speed_aim advances
-// the virtual fast sleeve F (theta_f = engine::book::two_speed_fast_theta()) and turns the slow
+// the virtual fast sleeve F (theta_f = 1 - 2^(-C/5) at cadence C) and turns the slow
 // desired target into the netted aim that aim-partial-v5 trades at trade_fraction. The
 // construction record is the slow sleeve's (its locate count includes the fast sleeve's).
 co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
@@ -614,8 +619,9 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   }
   if (!fast_ok || !slow_ok) return co::Ok(false);
   if (state->fast.size() != n) state->fast.assign(n, 0.0);
-  ATX_TRY_VOID(eb::two_speed_aim(in.member.subspan(d * n, n), state->fast_desired, share, cfg.aim_leverage,
-                                 eb::two_speed_fast_theta(), cfg.trade_fraction, state->fast, desired));
+  ATX_TRY_VOID(eb::two_speed_aim(in.member.subspan(d * n, n), state->fast_desired, share,
+                                 cfg.aim_leverage, two_speed_theta_fast(cfg), cfg.trade_fraction,
+                                 state->fast, desired));
   return co::Ok(true);
 }
 void rough_return(const TargetReplayInput& in, const TargetReplayConfig& cfg,
@@ -1209,11 +1215,13 @@ constexpr const char* inv_vol_rule_declaration =
     "neutralization and ADV cap. Book-independent: every scenario and capacity book holds the "
     "same scaled target (summary construction.vol_scale)";
 constexpr const char* two_speed_rule_declaration =
-    "two-speed-v1 (v8 Y-5, lane YCOMB, multi-horizon; PM8-5, PM8-10): the saved fast sleeve (themes with a "
-    "registered alpha half-life <= 10 sessions) and slow sleeve each get the construction; a virtual fast "
-    "sleeve F moves toward L m_f d_f at theta_f = 1 - 2^(-1/5) (0 off membership); the book's remainder "
-    "current - F moves toward L m_s d_s at theta; the book trades only the netted change (desired = m_s d_s "
-    "+ (F + (F_next - F) / theta) / L under aim-partial-v5); m_f the fast themes' mass share of the decision";
+    "two-speed-v1 (v8 Y-5, lane YCOMB, multi-horizon; PM8-5, PM8-10, PM8-16): the saved fast "
+    "sleeve (themes with a registered alpha half-life <= 10 sessions) and slow sleeve each get "
+    "the construction; a virtual fast sleeve F moves toward L m_f d_f at theta_f = 1 - 2^(-C/5) "
+    "per rebalance at cadence C (a 5-session half-life at any cadence; 0 off membership); the "
+    "book's remainder current - F moves toward L m_s d_s at theta_s = trade_fraction = .05; the "
+    "book trades only the netted change (desired = m_s d_s + (F + (F_next - F) / theta_s) / L "
+    "under aim-partial-v5); m_f the fast themes' mass share of the decision";
 constexpr const char* norm_score_rule_declaration =
     "norm-score-v1 (v8 Y, lane YCOMB, concentration): on every rebalance decision each member's "
     "centred tied rank is replaced by its van der Waerden normal score z = Phi^{-1}(u) before the "
@@ -1304,7 +1312,7 @@ Json construction_recipe(const TargetReplayConfig& c) {
   }
   if (two_speed_on(c)) { // v8 Y-5 (lane YCOMB); absent when off
     j["two_speed"] = "two-speed-v1";
-    j["two_speed_theta_fast"] = eb::two_speed_fast_theta();
+    j["two_speed_theta_fast"] = two_speed_theta_fast(c);
     j["two_speed_rule"] = two_speed_rule_declaration;
   }
   return j;
@@ -1500,7 +1508,8 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
       sleeve_skipped += day.two_speed_sleeve_skipped ? 1U : 0U;
       parent_skipped += day.two_speed_parent_skipped ? 1U : 0U;
     }
-    body["two_speed"] = Json{{"id", "two-speed-v1"}, {"theta_fast", eb::two_speed_fast_theta()},
+    body["two_speed"] = Json{{"id", "two-speed-v1"}, {"cadence", c.cadence},
+                             {"theta_fast", two_speed_theta_fast(c)},
                              {"theta_slow", c.trade_fraction},
                              {"fast_half_life", eb::two_speed_fast_half_life},
                              {"fast_bound", eb::two_speed_fast_bound},

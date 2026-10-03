@@ -11,8 +11,9 @@
 //     (<role>_sleeves.json, pinned in the combined manifest as composition_sleeves);
 //   - the NAV replay (nav --two-speed two-speed-v1) forms each sleeve's desired target with the
 //     parent's construction, moves a virtual fast sleeve F toward L m_f d_f at theta_f = 1 -
-//     2^(-1/5), lets the book's remainder (current - F) be the slow sleeve moving toward L m_s d_s
-//     at the parent's theta, and trades only the netted change (strategy_target_replay.cpp).
+//     2^(-C/5) at the cadence C, lets the book's remainder (current - F) be the slow sleeve moving
+//     toward L m_s d_s at the registered theta_s = .05, and trades only the netted change
+//     (strategy_target_replay.cpp).
 #include <array>
 #include <string_view>
 #include <utility>
