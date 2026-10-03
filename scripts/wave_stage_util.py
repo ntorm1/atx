@@ -109,8 +109,10 @@ def phase_rows(w: Wave, spec_rel: str) -> list[dict]:
 
 def exe_notes(w: Wave, rows: list[dict]) -> list[str]:
     """Ruling E1-REUSE-a2: one note per completed phase row whose K-P9-10 receipt (argv_sha256) names another
-    executable SHA than its executable (the receipt's command[0]) has on disk now: an output research_cycle reused on
-    a rebuilt exe without an exes_sha256 pin (a pinned mismatch stops the cycle). Empty for receipts before K-P9-10."""
+    executable SHA than its executable (the receipt's command[0]) has on disk now. Report only, and neutral (review
+    E1-N4): research_cycle judged the output by the exes_sha256 pin of the spec that made it (refused on a pin
+    mismatch, reused without a pin or on a pin match, e.g. an inherited output whose ancestor's pin is the old exe),
+    so a note says only that the exe on disk moved. Empty for receipts before K-P9-10."""
     out = []
     for row in rows:
         r = w.read_json(f"{row['run_dir']}/receipt.json") or {}

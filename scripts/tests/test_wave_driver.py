@@ -363,7 +363,7 @@ def test_run_stage_notes_unpinned_exe_reuse(tmp_path):
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lines.append) == 0
     run = json.loads((root / "out/waves/w1/receipts/05-run.json").read_text())["outputs"]
     assert run["exe_notes"] == WU.exe_notes(w, [row])
-    assert sum("exe notes (reused on a rebuilt exe" in x for x in lines) == 1
+    assert sum("exe notes (made by another executable than the one on disk now" in x for x in lines) == 1
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
     assert res["cell"]["exe_notes"] == run["exe_notes"]
     assert sum(x.startswith("**Exe notes**") for x in (root / "out/waves/w1/wave-log.md").read_text().splitlines()) == 1
