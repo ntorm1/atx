@@ -24,7 +24,8 @@ The concerns:
 |---|---|
 | `8ab9ec60` | C++ (library, executable, CMake, gtests) |
 | `106db131` | engine shim and its pytest |
-| (this report's commit) | report only |
+| `9cf8d1de` | the shim's public name `ENGINE_FIELDS` restored (A1 imports it), pinned by a pytest |
+| (report commits) | report only |
 
 ## Frozen base / lease
 
