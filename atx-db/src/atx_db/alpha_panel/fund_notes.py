@@ -221,6 +221,11 @@ REVENUE_TIER2: tuple[str, ...] = (
 #: tier-3 segment revenue: filer extension tags named as revenue / sales, on a business-segment axis only
 CUSTOM_REVENUE_RE = r"(?i)(segment|net|total|operating)*(revenues?|sales)(net|fromcontracts?withcustomers?|fromexternalcustomers)?"
 TIER2_PRIO, CUSTOM_PRIO = 100, 200
+FULL_REVENUE_TAGS = ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax',
+                    'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet',
+                    'RevenuesNetOfInterestExpense', 'SegmentReportingInformationRevenue',
+                    'RevenueFromExternalCustomers', 'HealthCareOrganizationRevenue',
+                    'RegulatedAndUnregulatedOperatingRevenue', 'InsuranceServicesRevenue')
 AXES = {"business": "BusinessSegments", "geographic": "Geographical"}
 #: business-segment members that are not a reportable segment (reconciling lines, totals)
 RECONCILING_RE = (r"(?i)elimina|corporate|reconcil|unallocat|intersegment|intercompany|consolidat|^total|segmenttotal|"
@@ -317,7 +322,8 @@ def _fits(s: float, total: float, recon: float | None = None, tol: float = RECON
 
 def dedup_members(vals: dict[str, float], dups: bool = True, rel: float = DEDUP_REL,
                   max_n: int = DEDUP_MAX_N) -> tuple[dict[str, float], list[str]]:
-    """Drop business-segment members that roll up others (a member equal, within ``rel``, to the sum of >= 2
+    """Diagnostic arithmetic candidates only; never evidence of an economic disclosure hierarchy.
+    Drop business-segment members that roll up others (a member equal, within ``rel``, to the sum of >= 2
     smaller members) and, with ``dups``, members that repeat another member (same non-zero value): XBRL member
     hierarchies on one axis (group and sub-segments) read as one flat list. Returns (kept, dropped sorted)."""
     keep = dict(sorted(vals.items()))
@@ -439,6 +445,7 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
         WHERE s.form IN ({per})
         QUALIFY row_number() OVER (PARTITION BY s.adsh ORDER BY src.ord) = 1""")
     out = C.stage_dir(STAGE)
+    con.execute('CREATE TABLE business_census (adsh VARCHAR, member VARCHAR)')
     all_years = [r[0] for r in con.execute("SELECT DISTINCT year(filed) FROM sub ORDER BY 1").fetchall()]
     receipt["items_rows"] = {}
     ax_b, ax_g, ax_c = AXES["business"], AXES["geographic"], CUSTOMER_AXIS
@@ -448,6 +455,20 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     for y in years or all_years:
         # the data sets that supplied this year's accessions (in practice the year's own: filed dates lie in the span)
         srcs = [r[0] for r in con.execute(f"SELECT DISTINCT source FROM sub WHERE year(filed) = {y} ORDER BY 1").fetchall()]
+        # Independent of the item registry: every retained numeric fact on the current-period business axis.
+        # Work one source at a time; joining a full-year DIM set can exceed the DuckDB budget.
+        for src in srcs:
+            source_part = parts / f'source={src}'
+            con.execute(f"""CREATE OR REPLACE TEMP TABLE census_dim AS SELECT dimhash,
+                regexp_extract(segments, '(^|;)BusinessSegments=([^;]*)', 2) AS member
+                FROM read_parquet('{(source_part / 'dim.parquet').as_posix()}')
+                WHERE segments LIKE '%BusinessSegments=%' AND NOT regexp_matches(
+                    regexp_extract(segments, '(^|;)BusinessSegments=([^;]*)', 2), '{RECONCILING_RE}')""")
+            con.execute(f"""INSERT INTO business_census SELECT DISTINCT n.adsh,d.member
+                FROM read_parquet('{(source_part / 'num_items.parquet').as_posix()}') n
+                JOIN sub s ON n.adsh=s.adsh AND n.source=s.source
+                JOIN census_dim d ON n.dimh=d.dimhash
+                WHERE year(s.filed)={y} AND n.ddate=s.period AND n.coreg IS NULL""")
         g_num = [(parts / f"source={k}" / "num_items.parquet").as_posix() for k in srcs]
         g_dim = [(parts / f"source={k}" / "dim.parquet").as_posix() for k in srcs]
         with C.timed(receipt, f"items_{y}"):
@@ -495,6 +516,10 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     if tmp.exists():
         shutil.rmtree(tmp)
     con.execute(f"SET threads = {THREADS}")
+    C.copy_to_parquet(con, """SELECT s.cik,s.adsh,s.form,s.period,s.filed,s.available_at,
+        count(DISTINCT b.member) AS n_members, count(DISTINCT b.member)>=2 AS multi_segment
+        FROM sub s LEFT JOIN business_census b USING(adsh) GROUP BY ALL ORDER BY s.filed,s.adsh""",
+        out / 'segment_census.parquet')
     done_years = sorted(int(d.name.split("=", 1)[1]) for d in (out / "items").glob("year=*"))
     for kind in ("segments", "recon_strict", "recon", "wide", "features"):
         (tmp / kind).mkdir(parents=True)
@@ -508,17 +533,10 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
                     WHERE uom NOT IN ('shares', 'pure') AND regexp_full_match(uom, '[A-Z]{{3}}') GROUP BY 1, 2)
                 GROUP BY 1""")
             seg = tmp / "segments" / f"{y}.parquet"
-            C.copy_to_parquet(con, f"""
-                SELECT i.cik, i.adsh, i.form, i.period, i.fy, i.fp, i.filed, i.available_at, i.clock_basis,
-                       i.item AS metric, i.axis_kind, i.member, i.consolidation_member, i.tag, i.segments, i.value, i.uom,
-                       i.ddate, i.end_date, i.qtrs, i.source
-                FROM read_parquet('{items}') i
-                WHERE i.item_group = 'segment' AND i.coreg IS NULL AND i.segments IS NOT NULL
-                  AND regexp_matches(i.segments, '{SEGMENTS_ONLY_RE}')
-                ORDER BY i.cik, i.adsh, metric, i.axis_kind, i.member, i.tag, i.ddate, i.qtrs, i.segments, i.uom, i.value""", seg)
+            C.copy_to_parquet(con, segments_sql(items), seg)
             rc, wd = tmp / "recon" / f"{y}.parquet", tmp / "wide" / f"{y}.parquet"
             strict = tmp / "recon_strict" / f"{y}.parquet"
-            C.copy_to_parquet(con, recon_sql(items, seg.as_posix()), strict)
+            C.copy_to_parquet(con, recon_sql(items, seg.as_posix(), y), strict)
             con.register("recon_ov", recon_overlay(con, items, seg.as_posix(), strict.as_posix()))
             C.copy_to_parquet(con, recon_final_sql(strict.as_posix()), rc)
             con.unregister("recon_ov")
@@ -556,6 +574,11 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
                   "customer_axis": CUSTOMER_AXIS, "conc_axes_re": CONC_AXES_RE, "customer_class_re": CUSTOMER_CLASS_RE,
                   "domestic_re": DOMESTIC_RE, "us_re": US_RE, "foreign_re": FOREIGN_RE, "non_us_re": NON_US_RE,
                   "share_tolerance": SHARE_TOL, "stale_days_member_coverage": STALE_DAYS},
+        "verification": {"arithmetic_candidates": "diagnostic only, never economic member deletion",
+                         "extra_context_projection": "explicit exhaustive timing_transfer_partition only",
+                         "full_revenue_tags": list(FULL_REVENUE_TAGS),
+                         "monthly_cutoff": "month-end session 22:00 UTC",
+                         "denominator_certified": False},
         "receipt": receipt,
     }
     C.write_stage_manifest(STAGE, SCHEMA, MODULES, payload)
@@ -564,19 +587,50 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     return receipt
 
 
-def recon_sql(items: str, seg: str) -> str:
+def segments_sql(items: str) -> str:
+    """Project only the exhaustive, mutually exclusive ASC 606 timing partition.
+
+    Both explicit timing members must occur, with no other extra axis, and no plain
+    segment total for that fact key. No equality or subset fitting is used. Original
+    contexts are retained as provenance. Other extra-axis contexts stay in items.
+    """
+    timing = 'TimingOfTransferOfGoodOrService'
+    return f"""
+      WITH i AS (SELECT * FROM read_parquet('{items}') WHERE item_group='segment' AND coreg IS NULL
+                        AND segments IS NOT NULL),
+      b AS (SELECT * FROM i WHERE regexp_matches(segments,'{SEGMENTS_ONLY_RE}')),
+      p AS (SELECT *, regexp_replace(segments,
+           '{timing}=(TransferredOverTime|TransferredAtPointInTime);','','g') AS projected,
+           regexp_extract(segments,'{timing}=([^;]*)',1) AS timing_member FROM i WHERE item='revenue'),
+      t AS (SELECT cik,adsh,form,period,fy,fp,filed,available_at,clock_basis,item,axis_kind,member,
+            consolidation_member,tag,projected AS segments,sum(value) AS value,uom,ddate,end_date,qtrs,source,
+            list(segments ORDER BY segments) AS context_provenance
+            FROM p WHERE regexp_matches(projected,'{SEGMENTS_ONLY_RE}') AND timing_member IN
+                 ('TransferredOverTime','TransferredAtPointInTime')
+            GROUP BY ALL HAVING count(*)=2 AND count(value)=2 AND count(DISTINCT timing_member)=2)
+      SELECT cik,adsh,form,period,fy,fp,filed,available_at,clock_basis,item AS metric,axis_kind,member,
+             consolidation_member,tag,segments,value,uom,ddate,end_date,qtrs,source,
+             'plain' AS context_basis,[segments] AS context_provenance FROM b
+      UNION ALL
+      SELECT t.* EXCLUDE(context_provenance), 'timing_transfer_partition' AS context_basis,context_provenance
+      FROM t WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.adsh=t.adsh AND b.item=t.item AND b.tag=t.tag
+           AND b.member=t.member AND b.ddate=t.ddate AND b.qtrs=t.qtrs AND b.uom=t.uom)
+      ORDER BY cik,adsh,metric,axis_kind,member,tag,ddate,qtrs,segments,uom,value"""
+
+
+def recon_sql(items: str, seg: str, filing_year: int) -> str:
     """Business-segment revenue reconciliation per original 10-K / 10-KT (current fiscal-year context)."""
+    full = ','.join(repr(t) for t in FULL_REVENUE_TAGS)
+    total = f"CASE WHEN b.tag IN ({full}) THEN coalesce(nullif(b.own_total, 0), a.total) END"
     return f"""
         WITH k AS (
-            SELECT DISTINCT i.cik, i.adsh, i.form, i.period, i.fy, i.fp, i.filed, i.available_at, i.clock_basis, c.currency
-            FROM read_parquet('{items}', hive_partitioning = false) i LEFT JOIN cur c USING (adsh)
-            WHERE i.form IN ('10-K', '10-KT')
+            SELECT i.cik, i.adsh, i.form, i.period, i.fy, i.fp, i.filed, i.available_at, i.clock_basis, c.currency
+            FROM sub i LEFT JOIN cur c USING (adsh)
+            WHERE i.form IN ('10-K', '10-KT') AND year(i.filed)={filing_year}
         ),
         mem AS (          -- business-segment members of the filing (any fact), reportable-looking only
-            SELECT adsh, count(DISTINCT member) AS n_members_all,
-                   count(DISTINCT member) FILTER (WHERE NOT regexp_matches(member, '{RECONCILING_RE}')) AS n_members
-            FROM read_parquet('{items}', hive_partitioning = false)
-            WHERE axis_kind = 'business' AND member IS NOT NULL AND coreg IS NULL GROUP BY 1
+            SELECT adsh,count(DISTINCT member) AS n_members_all,count(DISTINCT member) AS n_members
+            FROM business_census GROUP BY 1
         ),
         rv AS (           -- one value per (filing, tag, member): segment-only context preferred over OperatingSegments
             SELECT s.adsh, s.tag, s.member, s.uom,
@@ -617,7 +671,7 @@ def recon_sql(items: str, seg: str) -> str:
         ),
         anytot AS (       -- consolidated revenue fallback: the first tier-1 chain tag with a non-zero total
             SELECT adsh, arg_min(total, {rev_prio_sql('tag')}) AS total, arg_min(tag, {rev_prio_sql('tag')}) AS tag
-            FROM tot WHERE total <> 0 AND {rev_prio_sql('tag')} < {TIER2_PRIO} GROUP BY 1
+            FROM tot WHERE total <> 0 AND tag IN ({full}) GROUP BY 1
         )
         SELECT k.cik, k.adsh, k.form, k.period, k.fy, k.fp, k.filed, k.available_at, k.clock_basis, k.currency,
                coalesce(m.n_members, 0) AS n_members, coalesce(m.n_members_all, 0) AS n_members_all,
@@ -626,11 +680,13 @@ def recon_sql(items: str, seg: str) -> str:
                CASE WHEN b.prio < {TIER2_PRIO} THEN 1 WHEN b.prio < {CUSTOM_PRIO} THEN 2 WHEN b.prio IS NOT NULL THEN 3 END
                    AS revenue_tier,
                coalesce(b.n_rev_members, 0) AS n_revenue_members, b.seg_sum,
-               b.recon AS reconciling_items, coalesce(nullif(b.own_total, 0), a.total) AS consolidated_revenue,
-               CASE WHEN coalesce(b.own_total, 0) <> 0 THEN b.tag ELSE a.tag END AS consolidated_tag,
+               b.recon AS reconciling_items, {total} AS consolidated_revenue,
+               coalesce(nullif(b.own_total,0),a.total) AS candidate_total,
+               CASE WHEN b.tag IN ({full}) THEN 'full_revenue_concept' ELSE 'component_or_extension_unverified' END AS total_basis,
+               CASE WHEN b.tag IN ({full}) THEN CASE WHEN coalesce(b.own_total, 0) <> 0 THEN b.tag ELSE a.tag END END AS consolidated_tag,
                (b.seg_sum - coalesce(nullif(b.own_total, 0), a.total)) / nullif(abs(coalesce(nullif(b.own_total, 0), a.total)), 0)
                    AS rel_diff,
-               {recon_class_sql('b.seg_sum', 'coalesce(nullif(b.own_total, 0), a.total)', 'b.recon', 'coalesce(b.n_rev_members, 0)')}
+               {recon_class_sql('b.seg_sum', total, 'b.recon', 'coalesce(b.n_rev_members, 0)')}
                    AS recon_class
         FROM k LEFT JOIN mem m USING (adsh) LEFT JOIN best b USING (adsh) LEFT JOIN anytot a USING (adsh)
         ORDER BY k.filed, k.cik, k.adsh"""
@@ -638,7 +694,7 @@ def recon_sql(items: str, seg: str) -> str:
 
 def _overlay_schema():
     import pyarrow as pa
-    return pa.schema([("adsh", pa.string()), ("recon_rule", pa.string()), ("dropped_members", pa.list_(pa.string())),
+    return pa.schema([("adsh", pa.string()), ("recon_rule", pa.string()), ("candidate_only", pa.bool_()), ("dropped_members", pa.list_(pa.string())),
                       ("seg_sum_reconciled", pa.float64()), ("reconciling_used", pa.float64()),
                       ("seg_members", pa.list_(pa.struct([("member", pa.string()), ("value", pa.float64())])))])
 
@@ -683,6 +739,7 @@ def recon_overlay(con, items: str, seg: str, strict: str):
         r = recon_search(mem.get(adsh, {}), total, tag, cs)
         if r is not None:
             rows.append({"adsh": adsh, "recon_rule": r["rule"], "dropped_members": r["dropped"],
+                         "candidate_only": r["rule"] != "components",
                          "seg_sum_reconciled": r["seg_sum"], "reconciling_used": r["reconciling"],
                          "seg_members": [{"member": m, "value": v} for m, v in sorted(r["members"].items())]})
     return pa.Table.from_pylist(rows, schema=_overlay_schema())
@@ -692,9 +749,9 @@ def recon_final_sql(strict: str) -> str:
     """Strict recon rows plus the search overlay (registered as ``recon_ov``): ``recon_class`` becomes
     ``reconciled_search`` where the search succeeded; ``recon_class_strict`` keeps the strict class."""
     return f"""
-        SELECT r.* REPLACE (CASE WHEN o.adsh IS NOT NULL THEN 'reconciled_search' ELSE r.recon_class END AS recon_class),
+        SELECT r.* REPLACE (CASE WHEN o.adsh IS NOT NULL AND NOT o.candidate_only THEN 'reconciled_search' ELSE r.recon_class END AS recon_class),
                r.recon_class AS recon_class_strict, o.recon_rule, o.dropped_members, o.seg_sum_reconciled,
-               o.reconciling_used, o.seg_members
+               o.reconciling_used, o.seg_members, coalesce(o.candidate_only, false) AS candidate_only
         FROM read_parquet('{strict}') r LEFT JOIN recon_ov o USING (adsh)
         ORDER BY r.filed, r.cik, r.adsh"""
 
@@ -741,7 +798,7 @@ DD_BUCKETS = ("dd1", "dd2", "dd3", "dd4", "dd5", "dd_after5")
 #: (key column, columns) inherited together by a later vintage of the same (cik, period) whose key is NULL, from
 #: the latest earlier vintage whose key is set: each row is the state of knowledge at its available_at
 CARRY_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("bseg_n", ("bseg_n", "bseg_n_tagged", "bseg_rev_n", "bseg_rev_tag", "bseg_rev_rule", "bseg_rev_hhi",
+    ("bseg_n", ("bseg_n", "bseg_basis", "bseg_n_tagged", "bseg_rev_n", "bseg_rev_tag", "bseg_rev_rule", "bseg_rev_hhi",
                 "bseg_recon_class")),
     ("geo_rev_n", ("geo_rev_n", "foreign_sales_share", "foreign_basis")),
     ("major_cust_n", ("major_cust_n", "major_cust_share")),
@@ -781,6 +838,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
     dd_n = " + ".join(f"({c} IS NOT NULL)::INTEGER" for c in DD_BUCKETS)
     dd_sum = " + ".join(f"coalesce({c}, 0)" for c in DD_BUCKETS)
     lo, hi = -SHARE_TOL, 1 + SHARE_TOL
+    full = ','.join(repr(t) for t in FULL_REVENUE_TAGS)
     return f"""
         WITH f AS (
             SELECT w.cik, w.adsh, w.form, w.period, w.fy, w.fp, w.filed, w.available_at, w.clock_basis, w.currency,
@@ -790,12 +848,16 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
         ctx AS (          -- current-period revenue facts of the filing (filer context and currency)
             SELECT i.adsh, i.tag, i.qtrs, i.axis_kind, i.member, i.consolidation_member, i.segments, i.value,
                    {rev_prio_sql('i.tag')} AS prio, f.flow_qtrs
-            FROM read_parquet('{items}', hive_partitioning = false) i JOIN f USING (adsh)
+            FROM (SELECT adsh,tag,qtrs,axis_kind,member,consolidation_member,segments,value,item_group,item,coreg,ddate,uom
+                  FROM read_parquet('{items}', hive_partitioning = false)
+                  UNION ALL SELECT adsh,tag,qtrs,axis_kind,member,consolidation_member,segments,value,
+                                   'segment',metric,NULL,ddate,uom
+                  FROM read_parquet('{seg}') WHERE context_basis='timing_transfer_partition') i JOIN f USING (adsh)
             WHERE i.item_group = 'segment' AND i.item = 'revenue' AND i.coreg IS NULL AND i.ddate = f.period
               AND i.uom = f.currency AND (i.qtrs = f.flow_qtrs OR (f.flow_qtrs IN (2, 3) AND i.qtrs = 1))
         ),
         tot AS (SELECT adsh, tag, qtrs, min(prio) AS prio, min(value) AS total FROM ctx WHERE segments IS NULL GROUP BY 1, 2, 3),
-        anytot AS (SELECT adsh, qtrs, arg_min(total, prio) AS total FROM tot WHERE total <> 0 AND prio < {TIER2_PRIO}
+        anytot AS (SELECT adsh, qtrs, arg_min(total, prio) AS total FROM tot WHERE total <> 0 AND tag IN ({full})
                    GROUP BY 1, 2),
         sm AS (           -- one value per (filing, axis, tag, qtrs, member)
             SELECT adsh, axis_kind, tag, qtrs, member, min(prio) AS prio, max(flow_qtrs) AS flow_qtrs,
@@ -827,7 +889,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
         sel AS (SELECT s.*, b.total FROM sm s JOIN best b USING (adsh, axis_kind, tag, qtrs)),
         ov AS (           -- the reconciled member set of an annual filing reconciled by the search pass
             SELECT adsh, recon_rule, dropped_members, unnest(seg_members, recursive := true)
-            FROM read_parquet('{recon}') WHERE seg_members IS NOT NULL
+            FROM read_parquet('{recon}') WHERE seg_members IS NOT NULL AND NOT candidate_only
         ),
         bus AS (
             SELECT adsh, any_value(tag) AS bseg_rev_tag, NULL::VARCHAR AS bseg_rev_rule,
@@ -861,20 +923,21 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
         ),
         mem AS (          -- reportable business-segment members over every fact of the filing (the recon rule),
                           -- without the roll-up / duplicate members the search pass dropped
-            SELECT i.adsh, count(DISTINCT i.member) FILTER (WHERE NOT regexp_matches(i.member, '{RECONCILING_RE}')
-                                                          AND NOT list_contains(coalesce(r.dropped_members, []), i.member)) AS n
-            FROM read_parquet('{items}', hive_partitioning = false) i LEFT JOIN read_parquet('{recon}') r USING (adsh)
-            WHERE i.axis_kind = 'business' AND i.member IS NOT NULL AND i.coreg IS NULL GROUP BY 1
+            SELECT adsh,count(DISTINCT member) AS n FROM business_census GROUP BY 1
         ),
         x AS (
             SELECT f.cik, f.adsh, f.form, f.period, f.fy, f.fp, f.filed, f.available_at, f.clock_basis, f.currency,
                    f.flow_qtrs, f.flow_qtrs = 4 AS is_annual, f.form LIKE '%/A' AS is_amendment, f.country AS countryba,
                    ft.total AS rev_consolidated,
                    coalesce(m.n, 0) AS bseg_n_tagged,
-                   CASE WHEN coalesce(m.n, 0) >= 1 THEN m.n WHEN f.flow_qtrs = 4 AND ft.total IS NOT NULL THEN 1 END AS bseg_n,
+                   CASE WHEN coalesce(m.n, 0) >= 1 THEN m.n
+                        WHEN f.flow_qtrs = 4 AND f.form NOT LIKE '%/A' AND ft.total IS NOT NULL THEN 1 END AS bseg_n,
+                   CASE WHEN coalesce(m.n,0)>=1 THEN 'current_period_numeric_tags'
+                        WHEN f.flow_qtrs=4 AND f.form NOT LIKE '%/A' AND ft.total IS NOT NULL THEN 'inferred_singleton' END AS bseg_basis,
                    b.bseg_rev_n, b.bseg_rev_tag, b.bseg_rev_rule,
                    CASE WHEN coalesce(m.n, 0) >= 2 AND b.bseg_rev_n >= 2 THEN b.s2 / (b.s1 * b.s1)
-                        WHEN coalesce(m.n, 0) <= 1 AND (b.bseg_rev_n = 1 OR (f.flow_qtrs = 4 AND ft.total > 0)) THEN 1.0
+                        WHEN coalesce(m.n, 0) <= 1 AND (b.bseg_rev_n = 1 OR
+                             (f.flow_qtrs = 4 AND f.form NOT LIKE '%/A' AND ft.total > 0)) THEN 1.0
                         END AS bseg_rev_hhi,
                    r.recon_class AS bseg_recon_class,
                    g.geo_rev_n,
@@ -901,7 +964,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
                CASE WHEN {dd_n} > 0 THEN {dd_sum} + CASE WHEN dd1 IS NULL THEN coalesce(dd_rem_fy, 0) ELSE 0 END
                     WHEN dd_rem_fy IS NOT NULL THEN dd_rem_fy END AS dd_sched_total,
                CASE WHEN dd1 IS NOT NULL AND {dd_sum} > 0 THEN dd1 / ({dd_sum}) END AS dd1_share
-        FROM x WHERE {nn}
+        FROM x WHERE {nn} OR is_amendment
         ORDER BY filed, cik, adsh"""
 
 
@@ -909,7 +972,9 @@ def coverage(con, out) -> dict[str, Any]:
     """S4.4 done tests per filing year: segment revenue for multi-segment 10-K filers and the reconciliation rate."""
     rc = (out / "segment_recon.parquet").as_posix()
     wide = (out / "notes_wide.parquet").as_posix()
-    res: dict[str, Any] = {"segments": {}, "recon_classes": {}, "wide_nonnull_10k": {}}
+    res: dict[str, Any] = {"segments": {}, "recon_classes": {}, "wide_nonnull_10k": {},
+                          "denominator_certified": False,
+                          "denominator_basis": "tag-observable original 10-K/10-KT filings; no independent census of untagged multi-segment disclosures"}
     rows = con.execute(f"""
         SELECT year(filed) AS y, count(*) AS n10k, count(*) FILTER (WHERE multi_segment) AS multi,
                count(*) FILTER (WHERE multi_segment AND n_revenue_members >= 1) AS with_rev,
@@ -1006,7 +1071,7 @@ def cell_coverage(con, out, years: tuple[int, ...] = GATE_YEARS) -> dict[str, An
 def member_coverage(con, out, years: tuple[int, ...] = GATE_YEARS, panel: str = "member_equity") -> dict[str, Any]:
     """Coverage on month-end cells (last session of each month) of ``panel``: panel ``member_equity`` or a
     ``universe`` flag; the cell's CIK is ``identity/link_table_v3`` valid that day, else the cell row's own CIK. The
-    cell sees, among annual ``segment_features`` rows with ``available_at`` < 22:00 UTC of the previous session and
+    cell sees, among annual ``segment_features`` rows with ``available_at`` < 22:00 UTC of the month-end session and
     ``period`` >= session - :data:`STALE_DAYS` days, the latest period (then the latest vintage)."""
     root = C.build_root()
     lt, cal = root / "identity" / "link_table_v3.parquet", C.calendar_path()
@@ -1029,7 +1094,7 @@ def member_coverage(con, out, years: tuple[int, ...] = GATE_YEARS, panel: str = 
                      FROM read_parquet('{cal.as_posix()}')),
              me AS (SELECT max(session_date) AS d FROM cal GROUP BY date_trunc('month', session_date))
         SELECT m.session_date, m.security_id, coalesce(l.cik, m.cik0) AS cik,
-               CAST(c.prev AS TIMESTAMP) + INTERVAL {C.MARK_HOUR_UTC} HOUR AS cutoff
+               CAST(c.session_date AS TIMESTAMP) + INTERVAL {C.MARK_HOUR_UTC} HOUR AS cutoff
         FROM ({union}) m JOIN me ON me.d = m.session_date JOIN cal c ON c.session_date = m.session_date
         LEFT JOIN read_parquet('{lt.as_posix()}') l ON l.security_id = m.security_id
              AND m.session_date BETWEEN l.valid_from AND coalesce(l.valid_to, DATE '2100-01-01') AND l.cik IS NOT NULL
@@ -1041,7 +1106,7 @@ def member_coverage(con, out, years: tuple[int, ...] = GATE_YEARS, panel: str = 
         FROM read_parquet('{feat}') WHERE is_annual""")
     agg = ", ".join(f"round(avg((fresh AND {c} IS NOT NULL)::INT), 4)" for c in cols)
     res: dict[str, Any] = {"basis": f"{panel} month-end cells; among annual rows visible at the cell "
-                                    f"(available_at < previous session {C.MARK_HOUR_UTC}:00 UTC) with period within "
+                                    f"(available_at < month-end session {C.MARK_HOUR_UTC}:00 UTC) with period within "
                                     f"{STALE_DAYS} days, the latest period, then the latest vintage", "by_year": {}}
     for r in con.execute(f"""
             SELECT year(session_date), count(*), round(avg((cik IS NOT NULL)::INT), 4), round(avg(fresh::INT), 4), {agg}
@@ -1063,6 +1128,12 @@ def gate_status(cov: dict[str, Any], years: tuple[int, ...] = GATE_YEARS) -> dic
         measured = {str(y): seg.get(str(y), {}).get(key) for y in years}
         fails = [y for y, v in measured.items() if v is None or v < thr]
         out[name] = {"threshold": thr, "measured": measured, "fails": fails, "pass": not fails}
+        if name == "segment_revenue_multi_segment_10k":
+            out[name]["observable_threshold_pass"] = not fails
+            out[name]["denominator_certified"] = cov.get("denominator_certified", False)
+            out[name]["pass"] = not fails and out[name]["denominator_certified"]
+            if not out[name]["denominator_certified"]:
+                out[name]["verification_gap"] = "Independent all-filer multi-segment disclosure denominator unavailable"
     out["pass"] = all(v["pass"] for v in out.values() if isinstance(v, dict))
     return out
 

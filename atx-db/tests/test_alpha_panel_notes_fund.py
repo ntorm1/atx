@@ -80,6 +80,31 @@ def seg_tables() -> dict:
     _numd(t, L12, rfc, "20221231", 4, "100.0")
     _numd(t, L12, rfc, "20221231", 4, "60.0", "BusinessSegments=X;")
     _numd(t, L12, rfc, "20221231", 4, "40.0", "BusinessSegments=Y;")
+    # A partial amendment repeats the consolidated total without a segment disclosure.
+    _numd(t, H8, "Revenues", "20201231", 4, "105.0")
+    for cik, accession, total, values in [
+        (13, "0000000013-24-000013", 90, [50, 50, 40]),
+        (14, "0000000014-24-000014", 30, [10, 20, 30]),
+    ]:
+        t['sub'].append(_sub(accession, cik, '10-K', '20231231', '2023', 'FY', '20240301', '2024-03-01 10:00:00.0'))
+        _numd(t, accession, 'Revenues', '20231231', 4, str(total))
+        for name, value in zip(['A', 'B', 'C'], values):
+            _numd(t, accession, 'Revenues', '20231231', 4, str(value), f'BusinessSegments={name};')
+    for cik in (15,16):
+        accession = f'00000000{cik:02d}-25-0000{cik:02d}'
+        t['sub'].append(_sub(accession,cik,'10-K','20241231','2024','FY','20250301','2025-03-01 10:00:00.0'))
+        _numd(t,accession,'Revenues','20241231',4,'100')
+        for member, point, over in [('A',40,20),('B',30,10)]:
+            for timing,value in [('TransferredAtPointInTime',point),('TransferredOverTime',over)]:
+                if cik==16 and timing=='TransferredOverTime':
+                    continue
+                _numd(t,accession,'Revenues','20241231',4,str(value),
+                      f'BusinessSegments={member};TimingOfTransferOfGoodOrService={timing};')
+    # Unknown metric facts still establish a multi-segment disclosure denominator.
+    accession='0000000017-25-000017'
+    t['sub'].append(_sub(accession,17,'10-K','20241231','2024','FY','20250301','2025-03-01 10:00:00.0'))
+    for member in ('A','B'):
+        _numd(t,accession,'SegmentUnmappedMetric','20241231',0,'5',f'BusinessSegments={member};', custom=True)
     return t
 
 
@@ -247,9 +272,9 @@ def test_segment_features_member_coverage_pit_and_gates(lake_seg) -> None:
     cov = rec["coverage"]
     m = cov["cells"]["member_equity"]["by_year"]
     assert "not published" in cov["cells"]["universe"]
-    # 2021 month-end cells: 02-26 (A accepted after the 02-25 22:00 cutoff), 03-31 (A), 03-31 unlinked, 04-30 (10-K/A)
-    assert (m["2021"]["cells"], m["2021"]["linked"], m["2021"]["annual_row"]) == (4, 0.75, 0.5)
-    assert m["2021"]["bseg_rev_hhi"] == 0.5 and m["2021"]["major_cust_share"] == 0.5 and m["2021"]["oplease_liab"] == 0.5
+    # Month-end clock includes A accepted on 02-26 at 21:05, strictly before m 22:00.
+    assert (m["2021"]["cells"], m["2021"]["linked"], m["2021"]["annual_row"]) == (4, 0.75, 0.75)
+    assert m["2021"]["bseg_rev_hhi"] == 0.75 and m["2021"]["major_cust_share"] == 0.75 and m["2021"]["oplease_liab"] == 0.75
     assert (m["2022"]["cells"], m["2022"]["annual_row"]) == (1, 0.0)          # period 2020-12 is stale by 2022-09
     assert cov["segments_member"]["2021"] == {"multi_segment": 1, "with_segment_revenue": 1, "share_segment_revenue": 1.0,
                                              "reconciled_1pct": 1, "share_reconciled": 1.0}
@@ -257,7 +282,7 @@ def test_segment_features_member_coverage_pit_and_gates(lake_seg) -> None:
     assert (f10k["ten_k"], f10k["with_row"], f10k["bseg_rev_hhi"], f10k["foreign_sales_share"]) == (5, 1.0, 1.0, 0.4)
     gs = rec["gate_status"]
     assert gs["segment_revenue_multi_segment_10k"]["measured"]["2021"] == 1.0
-    assert gs["segment_sum_within_1pct"]["measured"]["2022"] == 0.6667          # D (with_reconciling), I9 (search)
+    assert gs["segment_sum_within_1pct"]["measured"]["2022"] == 0.3333          # only D; I9 arithmetic candidate unverified
     assert "2022" in gs["segment_sum_within_1pct"]["fails"]
     assert cov["segments"]["2022"]["share_reconciled_strict"] == 0.3333
     assert gs["pass"] is False and "2020" in gs["segment_revenue_multi_segment_10k"]["fails"]   # no data -> FAIL
@@ -266,12 +291,17 @@ def test_segment_features_member_coverage_pit_and_gates(lake_seg) -> None:
 
 
 def test_gate_status_thresholds() -> None:
-    cov = {"segments": {str(y): {"share_segment_revenue": 0.95, "share_reconciled": 0.96} for y in FN.GATE_YEARS}}
+    cov = {"denominator_certified": True,
+           "segments": {str(y): {"share_segment_revenue": 0.95, "share_reconciled": 0.96} for y in FN.GATE_YEARS}}
     assert FN.gate_status(cov)["pass"] is True
     cov["segments"]["2023"]["share_reconciled"] = 0.949
     gs = FN.gate_status(cov)
     assert gs["pass"] is False and gs["segment_sum_within_1pct"]["fails"] == ["2023"]
     assert gs["segment_revenue_multi_segment_10k"]["pass"] is True
+    cov['denominator_certified'] = False
+    gs = FN.gate_status(cov)
+    assert gs['segment_revenue_multi_segment_10k']['observable_threshold_pass'] is True
+    assert gs['segment_revenue_multi_segment_10k']['pass'] is False
 
 
 # ---------------------------------------------------------------- reconciliation search (strict misses)
@@ -319,10 +349,10 @@ def test_recon_search_overlay_in_build(lake_seg) -> None:
     con = duckdb.connect()
     r = con.execute(f"""SELECT recon_class, recon_class_strict, recon_rule, dropped_members, seg_sum, seg_sum_reconciled
                         FROM read_parquet('{(out / 'segment_recon.parquet').as_posix()}') WHERE adsh = '{I9}'""").fetchone()
-    assert r == ("reconciled_search", "segments_exceed_total", "dedup", ["Group"], 165.0, 95.0)
+    assert r == ("segments_exceed_total", "segments_exceed_total", "dedup", ["Group"], 165.0, 95.0)
     x = _features(out)[I9]
-    assert (x.bseg_n, x.bseg_n_tagged, x.bseg_rev_n, x.bseg_rev_rule, x.bseg_recon_class) == (3, 3, 3, "dedup", "reconciled_search")
-    assert x.bseg_rev_hhi == pytest.approx((40 ** 2 + 30 ** 2 + 25 ** 2) / 95 ** 2)    # the parent is not a segment
+    assert (x.bseg_n, x.bseg_n_tagged, x.bseg_rev_n, x.bseg_rev_rule, x.bseg_recon_class) == (4, 4, 4, None, "segments_exceed_total")
+    assert x.bseg_rev_hhi == pytest.approx((40 ** 2 + 30 ** 2 + 25 ** 2 + 70 ** 2) / 165 ** 2)
     assert rec["coverage"]["recon_rules"]["2022"] == {"dedup": 1}
     a = _features(out)[A]
     assert a.bseg_rev_rule is None and a.bseg_recon_class == "direct"
@@ -353,8 +383,8 @@ def test_revenue_tiers_and_zero_totals(lake_seg) -> None:
     rc = {r[0]: r[1:] for r in con.execute(f"""
         SELECT adsh, revenue_tag, revenue_tier, recon_class, consolidated_revenue, seg_sum
         FROM read_parquet('{(out / 'segment_recon.parquet').as_posix()}')""").fetchall()}
-    assert rc[J10] == ("SupplementaryInsuranceInformationPremiumRevenue", 2, "direct", 100.0, 100.0)
-    assert rc[K11] == ("SegmentRevenue", 3, "direct", 50.0, 50.0)          # the cost extension is not revenue
+    assert rc[J10] == ("SupplementaryInsuranceInformationPremiumRevenue", 2, "no_total", None, 100.0)
+    assert rc[K11] == ("SegmentRevenue", 3, "no_total", None, 50.0)       # extension equivalence unverified
     assert rc[L12] == ("RevenueFromContractWithCustomerExcludingAssessedTax", 1, "direct", 100.0, 100.0)
     assert rc[A][:2] == ("Revenues", 1)
     x = _features(out)
@@ -371,3 +401,55 @@ def test_revenue_tiers_and_zero_totals(lake_seg) -> None:
 def test_recon_search_reportable_variant() -> None:
     r = FN.recon_search({"Revenues": {"A": 50.0, "B": 30.0, "IntercompanyRevenue": 20.0}}, 80.0, "Revenues", [])
     assert r["rule"] == "reportable" and r["dropped"] == ["IntercompanyRevenue"] and r["seg_sum"] == 80.0
+
+
+def test_arithmetic_candidates_preserve_economic_segments(lake_seg) -> None:
+    FN.build()
+    out = N.C.stage_dir(FN.STAGE)
+    x = _features(out)
+    con = duckdb.connect()
+    for accession, values, total in [
+        ('0000000013-24-000013', [50, 50, 40], 90),
+        ('0000000014-24-000014', [10, 20, 30], 30),
+    ]:
+        row = x[accession]
+        assert (row.bseg_n, row.bseg_rev_n, row.bseg_rev_rule) == (3, 3, None)
+        assert row.bseg_rev_hhi == pytest.approx(sum(v*v for v in values) / sum(values)**2)
+        candidate, status = con.execute(f"SELECT candidate_only,recon_class FROM read_parquet('{out.as_posix()}/segment_recon.parquet') WHERE adsh=?", [accession]).fetchone()
+        assert candidate is True and status != 'reconciled_search'
+
+
+def test_partial_amendment_total_only_carries_segments(lake_seg) -> None:
+    FN.build()
+    x = _features(N.C.stage_dir(FN.STAGE))
+    assert x[H8].rev_consolidated == 105
+    assert x[H8].bseg_n == x[A].bseg_n == 2
+    assert x[H8].bseg_rev_hhi == x[A].bseg_rev_hhi == pytest.approx(.52)
+    assert x[H8].available_at > x[A].available_at
+
+
+def test_exhaustive_timing_projection_and_independent_census(lake_seg) -> None:
+    rec=FN.build()
+    out=N.C.stage_dir(FN.STAGE)
+    con=duckdb.connect()
+    complete='0000000015-25-000015'
+    incomplete='0000000016-25-000016'
+    projection=con.execute(f"SELECT member,value,context_basis,len(context_provenance) FROM read_parquet('{out.as_posix()}/segments.parquet') WHERE adsh=? ORDER BY member",[complete]).fetchall()
+    assert projection==[('A',60.,'timing_transfer_partition',2),('B',40.,'timing_transfer_partition',2)]
+    assert con.execute(f"SELECT count(*) FROM read_parquet('{out.as_posix()}/segments.parquet') WHERE adsh=?",[incomplete]).fetchone()[0]==0
+    assert _features(out)[complete].bseg_rev_hhi==pytest.approx(.52)
+    status=con.execute(f"SELECT recon_class,n_members FROM read_parquet('{out.as_posix()}/segment_recon.parquet') WHERE adsh='0000000017-25-000017'").fetchone()
+    assert status==('no_segment_revenue',2)
+    assert rec['coverage']['segments']['2025']['multi_segment']==3
+    assert rec['coverage']['segments']['2025']['with_segment_revenue']==1
+
+
+def test_monthly_clock_strict_boundary(lake_seg) -> None:
+    FN.build()
+    out=N.C.stage_dir(FN.STAGE)
+    con=duckdb.connect()
+    features=out/'segment_features.parquet'
+    con.execute(f"CREATE TABLE features AS SELECT * REPLACE (CASE WHEN adsh='{A}' THEN TIMESTAMPTZ '2021-02-26 22:00:00+00' ELSE available_at END AS available_at) FROM read_parquet('{features.as_posix()}')")
+    con.execute(f"COPY features TO '{features.as_posix()}' (FORMAT PARQUET)")
+    cov=FN.remeasure()['cells']['member_equity']['by_year']['2021']
+    assert cov['annual_row']==.5   # exact m22 boundary excluded, later months included
