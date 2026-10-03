@@ -600,9 +600,40 @@ TEST(TwoSpeed, SummaryPrintsTheSleeveSkipsBesideTheParents) {
   days[3].two_speed_parent_skipped = true;
   days[4].two_speed_parent_skipped = true;
   days[0].two_speed_parent_skipped = true;
+  days[2].two_speed_parent_failed = true; // review YCOMB #6: a diagnostic error is a count
   const auto s = Json::parse(st::detail::construction_summary_json(two_speed_config(true), days));
   const auto& block = s.at("construction").at("two_speed");
   EXPECT_EQ(block.at("rebalances_skipped_by_a_sleeve").get<usize>(), 2U);
   EXPECT_EQ(block.at("parent_rebalances_skipped").get<usize>(), 3U);
+  EXPECT_EQ(block.at("parent_constructions_failed").get<usize>(), 1U);
+}
+
+// Review YCOMB #6: under a neutralization the parent diagnostic runs beside the sleeves on every
+// decision and records (never raises); on the fixture it never fails, and its skip count is the
+// parent's own run's skip count.
+TEST(TwoSpeed, ParentDiagnosticRecordsAndMatchesTheParentsSkips) {
+  const Role role(70, 12, 53);
+  const Sleeves sleeves(role, 0.3);
+  auto x = role.target();
+  sleeves.attach(x);
+  const auto on = neutral_config(two_speed_config(true));
+  const auto parent = st::replay_targets(role.target(), neutral_config(two_speed_config(false)));
+  const auto two = st::replay_targets(x, on);
+  ASSERT_TRUE(parent) << parent.error().to_string();
+  ASSERT_TRUE(two) << two.error().to_string();
+  ASSERT_EQ(parent->days.size(), two->days.size());
+  usize parent_skips = 0, diagnosed = 0;
+  for (usize t = 0; t < two->days.size(); ++t) {
+    const auto& p = parent->days[t].construction;
+    const auto& c = two->days[t].construction;
+    EXPECT_FALSE(c.two_speed_parent_failed) << t;
+    const bool skipped = p.neutralize != st::NeutralizeOutcome::NotAttempted &&
+                         p.neutralize != st::NeutralizeOutcome::Applied;
+    EXPECT_EQ(c.two_speed_parent_skipped, skipped) << t;
+    parent_skips += skipped ? 1U : 0U;
+    diagnosed += c.two_speed_parent_skipped ? 1U : 0U;
+  }
+  EXPECT_GT(parent_skips, 0U); // the windows fill after the first sessions: early skips
+  EXPECT_EQ(diagnosed, parent_skips);
 }
 } // namespace

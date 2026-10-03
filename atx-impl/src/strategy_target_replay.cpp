@@ -623,13 +623,16 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   out.locate_zeroed += fast_day.locate_zeroed;
   // Mechanics only (the skip rule above is unchanged): would the parent's construction of the full
   // blend have been skipped at d? Only a neutralization can skip, so without one it never is.
+  // Neutralizing, it is a third construction and neutralization per decision (about 3x the
+  // parent's construction time); printed only, so an error is recorded, never raised.
   out.two_speed_sleeve_skipped = !fast_ok || !slow_ok;
   if (neutralizing(inner)) {
     if (state->parent_desired.size() != n) state->parent_desired.assign(n, 0.0);
     ConstructionDay parent_day;
-    ATX_TRY(const bool parent_ok, form_desired(in, inner, d, row, state->parent_desired, scratch, parent_day,
-                                               no_short, state));
-    out.two_speed_parent_skipped = !parent_ok;
+    const auto parent = form_desired(in, inner, d, row, state->parent_desired, scratch,
+                                     parent_day, no_short, state);
+    out.two_speed_parent_failed = !parent;
+    out.two_speed_parent_skipped = parent && !*parent;
   }
   if (!fast_ok || !slow_ok) return co::Ok(false);
   if (state->fast.size() != n) state->fast.assign(n, 0.0);
@@ -1517,10 +1520,11 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
   if (inv_vol_on(c)) body["vol_scale"] = inv_vol_summary(decisions);
   if (norm_score_on(c)) body["rank_shape"] = norm_score_summary(decisions);
   if (two_speed_on(c)) { // v8 Y-5: the registered constants and the skip mechanics (printed only)
-    usize sleeve_skipped = 0, parent_skipped = 0;
+    usize sleeve_skipped = 0, parent_skipped = 0, parent_failed = 0;
     for (const auto& day : decisions) {
       sleeve_skipped += day.two_speed_sleeve_skipped ? 1U : 0U;
       parent_skipped += day.two_speed_parent_skipped ? 1U : 0U;
+      parent_failed += day.two_speed_parent_failed ? 1U : 0U;
     }
     body["two_speed"] = Json{{"id", "two-speed-v1"}, {"cadence", c.cadence},
                              {"theta_fast", two_speed_theta_fast(c)},
@@ -1528,7 +1532,8 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
                              {"fast_half_life", eb::two_speed_fast_half_life},
                              {"fast_bound", eb::two_speed_fast_bound},
                              {"rebalances_skipped_by_a_sleeve", sleeve_skipped},
-                             {"parent_rebalances_skipped", parent_skipped}};
+                             {"parent_rebalances_skipped", parent_skipped},
+                             {"parent_constructions_failed", parent_failed}};
   }
   return Json{{"construction", std::move(body)}};
 }
