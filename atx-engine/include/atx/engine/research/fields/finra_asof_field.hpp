@@ -63,7 +63,8 @@ read_dissemination_schedule(const std::filesystem::path &finra_root);
 
 struct FinraStats {
   u64 rows_total{};
-  // Manifest key rows_available_on_or_after_2025_dropped (the Python's historical name).
+  // Manifest key rows_sealed_dropped (renamed with the Python builder, FD-5: the old key named the
+  // superseded 2025 boundary).
   u64 rows_sealed{};
   u64 rows_matched_axis{};
   u64 rows_ignored_unknown_id{};

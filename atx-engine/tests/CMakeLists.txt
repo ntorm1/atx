@@ -416,3 +416,9 @@ function(atx_engine_register_research_tests)
     endforeach()
 endfunction()
 cmake_language(DEFER CALL atx_engine_register_research_tests)
+
+# P9 lane A2 (cross-lane append, ruling P2): the field registry / builder-kind (K-P9-1, K-P9-2) and
+# publish-last manifest / producer / reuse (K-P9-3) gtests join the research-fields test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_registry_test.cpp
+    research/research_fields_manifest_test.cpp)
