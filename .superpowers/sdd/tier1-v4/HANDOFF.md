@@ -11,10 +11,10 @@ Three current agent lanes (list live agents before dispatching duplicates):
 | Agent | Current work | State/artifacts |
 |---|---|---|
 | /root/t2_fix_r1 | Task 2 fix round 2 | r1 commits d306e776,f0ab20f5,21d6c4ac; I1/I2/I3/I5 addressed, I4 French FAIL remains (27/60). Task 2x separately review-clean COMPLETE. Dated header backfill and independent class/REIT audit underway; <=3000 HTTP attempts /1 per sec, 200 reserved for later audit. |
-| /root/t3_review_r2 | Task 3 scoped review round 2 | fix commits 61b804ce,faccdf7c; package review-T3-r2.diff. R6 available_at keys, schema v2/cstd-pit-v3; 20 tests, guarded build214.2s/0.7623GiB, cutoff/duplicate checks clean,30 handchecks rebound. Five gates PASS/three dependency FAILs. |
-| /root/t14_review_r2 | Task 14 scoped review round 2 | fix commits 1b1856c2,1fae76ef,f986d6fe,20cd6ffe; package review-T14-r2.diff. N1 fixed with omitted-year preservation;26 tests, rebuild112.1s/0.5399GiB. Pilot recovered3 accession-scoped filings;1945 reconciliation misses/1235 missing revenue;0PASS/2FAIL. General hierarchy ingestion still missing. |
+| /root/t4_ratios | Task 4 implementation recovery | Task3 review-clean COMPLETE with known Task5/9 gate dependencies. Task4 resumes WIP fd9d67b7 and consumes R6 v2 clock keys plus owner profitability/growth requirements. Universe refresh still pending. |
+| /root/t14_notes | Task 14 fix round 3 | r2 commits1b1856c2,1fae76ef,f986d6fe,20cd6ffe; N1 addressed/no new blocker, I4 and denominator still open. Implement general role-aware hierarchy extraction on retained100-pilot, then bounded300more/1500attempt tranche after fixtures; see ledger. |
 
-Latest completed reviews are round1; Task3/14 round2 reviews now active. Task4 follows Task3 review (WIP fd9d67b7; no report), must receive R6 updated clock keys. Task9 still orientation only; follows Task14. All remaining ordering remains below; Task2x is already complete, not a new dispatch.
+Latest completed reviews: review-T3-r2-findings.md Approved and review-T14-r2-findings.md Needs fixes (I4/denominator only). Task3 is complete under recorded Task5/9 dependency rulings. Task9 still orientation only; follows Task14. All remaining ordering remains below; Task2x is already complete, not a new dispatch.
 
 R5 is critical: market_index --end originally bounded only validation and a resumed run still computed product aggregate returns through 2026. Owner's strict GC2 includes portfolio-return products. Agent corrected actual source aggregation bounds and rebuilt market_index through 2022, with regression; no post-2022 evaluation values were inspected. Carry this boundary to Tasks 6/8/16. Latest membership/code/value/coverage outputs remain authorized.
 
