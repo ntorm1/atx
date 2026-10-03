@@ -2979,9 +2979,11 @@ def published_checks(value):
 def require_research_seal(manifest: dict, what: str) -> None:
     """Refuse a fields manifest written under another research seal: its ``seal.exclusive_end`` is present and is not
     this window's seal (P9 G-P9, finding FD-5). A manifest without a seal block is accepted as legacy and logged (P9
-    ruling P13: refused from wave 2, once every live manifest is shown to carry one)."""
-    seal = manifest.get("seal")
-    end = seal.get("exclusive_end") if isinstance(seal, dict) else None
+    ruling P13: refused from wave 2, once every live manifest is shown to carry one); a seal block that is not an object
+    is malformed, never legacy, and is refused like a different seal."""
+    if "seal" in manifest and not isinstance(manifest["seal"], dict):
+        raise rw.SealError(f"{what} carries a malformed seal block (not an object); refusing")
+    end = manifest.get("seal", {}).get("exclusive_end")
     if end is None:
         print(f"{what}: no seal.exclusive_end recorded; accepted as a legacy manifest (P13)", file=sys.stderr,
               flush=True)

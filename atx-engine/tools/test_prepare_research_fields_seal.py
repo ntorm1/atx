@@ -5,15 +5,21 @@ bind and re-dating 25 modules is wave-2 lane T2's), so every check here runs in 
 it, on the slice-1 synthetic inputs (sessions 2021-2022, one FINRA row disseminated 2024-02-07):
 * the manifest's seal block is the repository seal and the sealed row is published as ``rows_sealed_dropped``;
 * ``--reuse`` refuses a prior manifest written under another seal (``load_prior``), before any payload is copied;
-* a prior without a seal block is accepted as legacy and logged (ruling P13: refused from wave 2).
+* a prior without a seal block is accepted as legacy and logged (ruling P13: refused from wave 2);
+* a seal block that is not an object is malformed, never legacy, and is refused (review m3, ruling A1-M3; this case is
+  window-independent, so it runs in this harness).
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
+import prepare_research_fields as tool
+import research_window as rw
 from test_research_window import isolated
 
 TOOLS = Path(__file__).resolve().parent
@@ -74,6 +80,19 @@ class SealUnderTheRepositoryWindow(unittest.TestCase):
         self.assertEqual((got["other_published"], got["other_payloads"]), (False, []))   # refused before any copy
         self.assertEqual(got["legacy_reused"], ["si_shares", "si_dtc"])
         self.assertTrue(got["legacy_logged"])
+
+
+class MalformedSealBlock(unittest.TestCase):
+    def test_a_non_object_seal_is_refused_and_legacy_is_still_logged(self):
+        for seal in ("2024-01-01", None, ["2024-01-01"]):
+            with self.assertRaisesRegex(rw.SealError, "malformed seal block"):
+                tool.require_research_seal({"seal": seal}, "prior")
+        for legacy in ({}, {"seal": {}}):   # absent seal, or no exclusive_end: legacy, logged (P13)
+            log = io.StringIO()
+            with contextlib.redirect_stderr(log):
+                self.assertIsNone(tool.require_research_seal(legacy, "prior"))
+            self.assertIn("accepted as a legacy manifest (P13)", log.getvalue())
+        self.assertIsNone(tool.require_research_seal({"seal": {"exclusive_end": tool.SEAL.isoformat()}}, "prior"))
 
 
 if __name__ == "__main__":
