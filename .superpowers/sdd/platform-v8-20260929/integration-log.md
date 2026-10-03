@@ -7710,3 +7710,43 @@ Printed, deciding nothing: dSR against Y-F0 (bundle Y-F0 vs Y-1), both p of each
 and max drawdown of Y-F0, X-10 and Y-1 side by side; mean L_t; net Sharpe at 1x and at 4x NAV; cost per traded dollar;
 DSR (N 62); PBO; year table. If accepted, Y-1 replaces X-10 as Y-F (v8y 1). Count: 1 construction trial (N 61 -> 62 =
 the cap) whatever the verdict; 0 admission trials.
+
+### R0-11 identity, cell spec, lock and plan (source `d1f2d7f2`, the plan commit)
+
+- **Identity (template "before any return"):** `build-equity/bin/atx-impl-strategy-target-tests.exe` (v8-16d receipt
+  `d504994d...ed0c` = disk) `--gtest_filter=VolTarget.*:RiskTarget.*:BookVolTarget.* --gtest_output=xml:build-equity/p9-r11-y1/voltarget-identity.xml`
+  (gate 3,072 met; host check clean): exit 0, **17 / 17 passed** (VolTarget 5, RiskTarget 7 incl.
+  `FlagAbsentKeepsThePinnedBenchDigests`, BookVolTarget 5); xml `cd9401955f246ef77acbb567c7b161f0e99570b63d62fc3c57db6dabcea02b52`
+  (tests 17, failures 0, errors 0). The parent's NAV argv on the targets exe `72ff6d2d` reproduced Y-F0's files 27 / 27
+  (R0-9 P13 (a)); X-10's NAV ran on the same exe; the Y-1 NAV binds it (plan below).
+- **File** `scripts/specs/v8/y-vol-target-y-1.json` (template, `i/lf`), written by the driver's own builder
+  `wave_steps.rule_cell_doc(template, "scripts/specs/v8/y-vol-target.json", "scripts/specs/v8/x-leverage-L2.0.json",
+  {constants: {flags: {nav: fills}}}, "y-1")` at `wave_steps.rule_cell_path` and serialised as `wave_context.write_json`
+  (indent 2, LF). Against the template (`4e190f54`) exactly three keys differ: `name` `v8y-vol-target-y-1` (the driver's
+  "-<wave>" rule); `parent` `x-leverage-L2.0.json` (Y1-PARENT); `change.flags.nav` the two registered root fills
+  `--risk-model build-equity/v8-risk-lo3-v10` and `--risk-model-sha256 862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a`
+  (v8y 8 / the template text; the values R-8's `r8.json` carries). `description`, `nominal_parent`, `change.set`
+  (`nav.output` `build-equity/mega-nav-v8y-vol-target-L2.0`, `nav.leverage` "2.0") and `--vol-target vol-target-v1` are
+  the template's bytes. No free constant.
+- `lock` (dry) exit 0; **`lock --write` exit 0**: reference_cell = **X-10's** `summary.json` `1bc1b6ca`,
+  reference_admission `121f7046` (derived from the parent chain); dry after exit 0. File sha256
+  **`faffee1795ba500fbebaa5a52e2449acaf02c92f7ee972011a267a52ba265f77`**, spec digest (template chain)
+  **`95a2173d195006578bcab0449e5838b5a13792fff55e5271b52504aa4ae5a98f`**.
+- **`plan` exit 0** (25 lines): 6 pins `[locked, verified]` (library `41010b0b`, recipe `9d357c75`, role `e1c67101`,
+  label_role `95e16cfe`, reference_cell `1bc1b6ca` (X-10), reference_admission `121f7046`); chain
+  `y-vol-target-y-1.json` -> `x-leverage-L2.0.json` -> `lib-v8ysb-gm.json`; fields v15 `26fee5ce` (pinned, done); u,
+  fit, card, w (`mega-v8xw-train-theme-erc-v8ysb-2`, combined `e13fbc4d`) and monitor = Y-F0's (done); gate read-out;
+  **nav pending** -> `build-equity/mega-nav-v8y-vol-target-L2.0` (run dir `-run`, 180 s / 1,536 MiB); summ (always) ->
+  `build-equity/cycle-v8y-vol-target-y-1/summ-run1`, **`--reference` X-10's NAV** (`mega-nav-v8x-theme-erc-L2.0-v8ysb`),
+  **`--dsr-n 62`**, 71 listed dirs (the cell last), `--ledger build-equity/trials.jsonl --ledger-kind construction
+  --dsr-ledger build-equity/trials.jsonl --origin prior`.
+- **NAV argv vs X-10's NAV receipt** (`mega-nav-v8x-theme-erc-L2.0-v8ysb-run`, by script, 47 vs 53 tokens): equal except
+  `--output` (`build-equity/mega-nav-v8y-vol-target-L2.0`) and the six inserted tokens **`--vol-target vol-target-v1
+  --risk-model build-equity/v8-risk-lo3-v10 --risk-model-sha256 862515d9...4ecd5a`** (and the exe path spelled relative
+  vs absolute: the same file). `--aim-leverage 2.0` (the cap), `--rule aim-partial-v5`, `--trade-fraction .05`,
+  `--neutralize price-risk-v1`, `--daily-turnover-mean-max .20`, `--daily-turnover-p95-max .30`,
+  `--warm-start-sessions 60`, `--capacity-curve`, the label role: carried. NAV exe
+  `build-equity/bin/atx-equity-strategy-targets.exe` sha256 `72ff6d2d...` = X-10's NAV receipt `executable_sha256`.
+- `PYTHONHASHSEED=0 python -m pytest -q -p no:cacheprovider scripts/tests/test_research_spec.py` with the new locked
+  file on disk: **87 passed** (179.7 s).
+- **Pre-registration commit** of the cell: the spec and this log section together (next commit). No Y-1 run has started.
