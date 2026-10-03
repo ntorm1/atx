@@ -10,7 +10,9 @@ the C++ that decides the rule (or will: "new in <lane>") and the lane that retir
   - a definition that is not a row fails (a new mirror, or a copy of one under another module);
   - a row whose module is gone, or no longer defines a listed symbol, fails (the retiring commit deletes the row, so
     the list cannot go stale);
-  - the list never grows, and every row names a retiring lane (P10 = outside the P9 list, kept until after P9);
+  - the list only shrinks: its (module, symbol) pairs stay a subset of FROZEN_PAIRS (the base snapshot, which also
+    supplies the names the scan looks for, so a retired rule's name stays detected); every row names a retiring lane
+    (P10 = outside the P9 list, kept until after P9);
   - P9_FREEZE: root sets it True at the P9 freeze; from then on every row retired by a P9 lane must be gone (the G-P5
     count is the number of such rows still listed, printed by test_report_the_g_p5_count).
 Expiry is the retiring lane's deletion commit, not the C++ file's arrival: plan section 0.6 keeps a Python copy until
@@ -75,10 +77,27 @@ ALLOWLIST = (
     ("python/src/atxpy/pbo.py", ("cscv_pbo",), "atxpy's standalone pandas CSCV (outside the P9 list)",
      "atx-engine/include/atx/engine/eval/pbo.hpp (bound as atxpy._core.pbo_cscv)", "P10"),
 )
-FROZEN_ROWS = 16
+# The (module, symbol) pairs of ALLOWLIST at FROZEN_AT. The live rows must stay a subset (a retired pair cannot come
+# back, and a row cannot be swapped for a new one); the rule names to detect come from here, so retiring a row never
+# weakens the scan. A ruled new row (e.g. A1 / A2's seal rule, preflight section 5 row 5) is added here by root.
+FROZEN_PAIRS = frozenset((module, symbol) for module, symbols in (
+    ("atx-impl/tools/backtest_integrity.py", "psr min_trl deflated_sharpe expected_max_sr lo_null_dsr effective_n_dsr "
+                                             "cscv_pbo onc onc_base effective_trials"),
+    ("atx-impl/tools/nav_summ.py", "deflated_sharpe expected_max_sr dsr_rows memmel_se cbb_indices paired_stats"),
+    ("atx-impl/tools/dsr_total.py", "dsr_at ledger_rows"),
+    ("atx-impl/tools/composition_rules.py", "ew_theme_std ew_theme_aim_v2 tier_weights member_cap theme_gain_weights"),
+    ("atx-impl/tools/composition_resid.py", "centred_tied_ranks tie_block_means"),
+    ("atx-impl/tools/composition_theme_erc.py", "erc_shares theme_erc"),
+    ("atx-impl/tools/composition_ic_shrink.py", "shrunk_shares ic_shrink"),
+    ("atx-impl/tools/fit_composition_weights.py", "newey_west_t screen_v4"),
+    ("atx-impl/tools/horizon_stats.py", "theta_weights ic_theta theta_book_returns"),
+    ("scripts/wave_rules.py", "matched_leverage gross_matches sign_pm7_35"),
+    ("atx-impl/tools/mega_report/data.py", "memmel_se"),
+    ("python/src/atxpy/pbo.py", "cscv_pbo"),
+) for symbol in symbols.split())
 # (module, symbol): wrappers that call the C++ core, checked to still do so.
 BINDINGS = {("python/src/atxpy/eval.py", "deflated_sharpe"): "_core.deflated_sharpe("}
-RULE_SYMBOLS = frozenset(s for _m, symbols, _r, _c, _l in ALLOWLIST for s in symbols) | {s for _m, s in BINDINGS}
+RULE_SYMBOLS = frozenset(s for _m, s in FROZEN_PAIRS) | {s for _m, s in BINDINGS}
 
 
 def scanned_modules() -> list[Path]:
@@ -141,7 +160,10 @@ def test_bindings_still_call_the_core():
 
 
 def test_the_allowlist_only_shrinks_and_names_rule_owner_and_lane():
-    assert len(ALLOWLIST) <= FROZEN_ROWS, f"the mirror allowlist frozen at {FROZEN_AT} gained rows"
+    pairs = [(module, s) for module, symbols, _r, _c, _l in ALLOWLIST for s in symbols]
+    assert len(pairs) == len(set(pairs)), "a (module, symbol) pair is listed twice"
+    grown = sorted(set(pairs) - FROZEN_PAIRS)
+    assert not grown, f"rows outside the allowlist frozen at {FROZEN_AT} (only removals are allowed): {grown}"
     for module, symbols, rule, cpp, lane in ALLOWLIST:
         assert symbols and rule and cpp and lane in LANES, module
         if not cpp.startswith("new in "):

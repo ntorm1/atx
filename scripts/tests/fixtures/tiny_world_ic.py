@@ -2,14 +2,17 @@
 
 The canary (scripts/tests/test_cycle_e2e.py) checks the u pass's per-candidate rank IC at the orientation horizon
 against this reference, so a regression in the label, the rank correlation or the HAC rule is caught on the real
-executable, and it reports the planted members against the value the generator planted (DS review section 6).
+executable, and it asserts the planted members lie within a pre-registered band around the value the generator
+planted (DS review section 6; PM ruling T1-SE: 2 SE).
 
   member_signal(world, member)        the member's DSL evaluated in numpy (dates x names; NaN before its window)
   rank_ic_series(signal, close, h)    the daily rank IC of the runner's recipe over tiny_world's mature score rows
   estimate(daily, h)                  mean, HAC standard error, t, lag: the runner's rule (ic_screen.cpp estimate)
   research_ic(world, member, h)       the three above for one member
   planted_rank_ic(member, h)          the population rank IC the generator plants (None for an unplanted member)
-  planted_report(mean, se, planted)   the distance of an estimate from its planted value in standard errors
+  planted_report(mean, se, planted, band_se)
+                                      the distance of an estimate from its planted value in standard errors, and
+                                      whether it lies inside the band
   min_relative_gap(signal)            the smallest gap between two names' signal values on a score row, relative
                                       to the row's range (a near tie could let the executable's arithmetic swap two
                                       ranks; the offline test asserts the reference is far from that)
@@ -198,8 +201,8 @@ def planted_rank_ic(member: str, horizon: int = TW.HORIZON) -> float | None:
     return 6.0 / math.pi * math.asin(pearson / 2.0)
 
 
-def planted_report(mean: float, se: float, planted: float) -> dict:
-    """An estimate against its planted value: t, planted t, z = (mean - planted) / SE, within one SE."""
+def planted_report(mean: float, se: float, planted: float, band_se: float) -> dict:
+    """An estimate against its planted value: t, planted t, z = (mean - planted) / SE, and whether |z| <= band_se."""
     z = (mean - planted) / se
     return {"mean": mean, "standard_error": se, "t": mean / se, "planted": planted, "planted_t": planted / se,
-            "z": z, "within_one_se": abs(z) <= 1.0}
+            "z": z, "band_se": band_se, "within_band": abs(z) <= band_se}

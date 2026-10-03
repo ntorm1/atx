@@ -18,20 +18,25 @@ and asserts
     reference: mean within 1e-12 (absolute), HAC standard error within 1e-9 (relative), HAC lag and valid dates
     exact. The tolerance is rounding, not a model: the reference sums the per-row correlation with numpy reductions,
     the executable with its own loops (fixtures/tiny_world_ic.py states the recipe it mirrors);
+  - planted signal recovery (DS review section 6; PM ruling T1-SE): for planted_a and planted_b the executable's
+    h-21 mean rank IC lies within PLANTED_BAND_SE = 2 HAC standard errors of the value the generator planted,
+    |z| <= 2 with z = (mean - planted) / SE. The band is pre-registered at 2 SE, not 1: the runner's lag-42 HAC SE on
+    250 overlapping dates under-covers the realised dispersion (at seed 7 the reference puts planted_a at z -0.82 and
+    planted_b at z -1.14; the T1 report gives the seed scan). noise_c stays out of the band: its planted value is 0
+    and the reference puts it at z +2.23 (a sampling draw of a persistent state);
   - the time budget (ATX_E2E_MAX_SECONDS, default 15 s for the first run), and that a second run finds every phase
     up to date and creates nothing.
-It prints, and --record stores, the planted members' estimates against the value the generator planted (mean, HAC
-t, z = (mean - planted) / SE, within one SE). That comparison is reported, not asserted: at seed 7 the reference
-puts planted_b 1.14 SE below its planted value (a sampling draw; the T1 report gives the evidence), and a one-SE band
-holds for a correct executable on only part of the seeds.
+It prints, and --record stores, the planted block (mean, HAC t, planted value, z, band, inside the band).
 
 Output paths are found by payload name, not by run-dir name: today's IC attempt dirs <output>-<k>/, lane E1's attempt
 sub-dirs <output>/attempt-<k>/ (K-P9-10) and single-attempt <output>/ all resolve (a first fresh run has one).
 
 Goldens: root records one entry per build type after a build with
     python scripts/tests/test_cycle_e2e.py --record --bin DIR --build-type Debug|Release
-(runs the same cycle once in a fresh temporary root, checks the IC reference first, and writes the digests, the
-planted block and the executables' SHA-256s into builds[<build type>]).
+(runs the same cycle once in a fresh temporary root; refuses unless copy_b is rejected as redundant, planted_a and
+planted_b are admitted, the IC reference ties and both planted members lie inside the band; then writes the digests,
+the planted block and the executables' SHA-256s into builds[<build type>]). An entry already recorded is replaced
+only with --repin (a ruled re-pin, plan section 0.6), and the old and new digests are printed.
 """
 from __future__ import annotations
 
@@ -72,6 +77,7 @@ PLANTED = ("planted_a", "planted_b")
 ORIENTATION_HORIZON = 21
 IC_MEAN_ABS_TOLERANCE = 1e-12
 IC_SE_REL_TOLERANCE = 1e-9
+PLANTED_BAND_SE = 2.0           # PM ruling T1-SE (P9 progress.md): planted recovery asserted within 2 HAC SE
 
 
 # ------------------------------------------------------------------ outputs and digests
@@ -158,13 +164,31 @@ def ic_reference_problems(candidates: dict, world: dict) -> list[str]:
 
 
 def planted_block(candidates: dict) -> dict:
-    """The planted members' executable estimates against their planted rank IC (reported, never a gate)."""
+    """The planted members' executable estimates against their planted rank IC and the T1-SE band."""
     out = {}
     for member in PLANTED:
         est = rank_estimate(candidates[member], ORIENTATION_HORIZON)
         planted = TIC.planted_rank_ic(member, ORIENTATION_HORIZON)
-        out[member] = TIC.planted_report(est["mean"], est["standard_error"], planted)
+        out[member] = TIC.planted_report(est["mean"], est["standard_error"], planted, PLANTED_BAND_SE)
     return out
+
+
+def planted_problems(block: dict) -> list[str]:
+    """Planted members outside the band (empty when the planted signal is recovered)."""
+    return [f"{member}: mean rank IC {r['mean']!r} lies {r['z']:+.3f} SE from the planted {r['planted']!r} "
+            f"(band {r['band_se']} SE, PM ruling T1-SE)" for member, r in block.items() if not r["within_band"]]
+
+
+def admission_problems(rows: dict) -> list[str]:
+    """The fixture's admission facts: copy_b redundant with planted_b, both planted members admitted."""
+    problems = []
+    copy_b = rows["copy_b"]
+    if copy_b["status"] != "reject_redundant" or copy_b.get("redundant_with") != "planted_b":
+        problems.append(f"copy_b is {copy_b['status']} (redundant with {copy_b.get('redundant_with')!r}), not "
+                        "reject_redundant with planted_b")
+    problems += [f"{member} is {rows[member]['status']}, not admitted" for member in PLANTED
+                 if rows[member]["status"] != "admitted"]
+    return problems
 
 
 # ------------------------------------------------------------------ the cycle
@@ -310,8 +334,49 @@ def test_planted_values_follow_the_generator():
     assert 0.040 < a < b < 0.050
     assert TIC.planted_rank_ic("copy_b") == b and TIC.planted_rank_ic("noise_c") == 0.0
     assert TIC.planted_rank_ic("not_a_member") is None
-    report = TIC.planted_report(0.03, 0.02, b)
-    assert report["within_one_se"] is (abs(0.03 - b) <= 0.02) and math.isclose(report["t"], 1.5)
+    report = TIC.planted_report(0.03, 0.02, b, PLANTED_BAND_SE)
+    assert report["within_band"] is (abs(0.03 - b) <= 2 * 0.02) and math.isclose(report["t"], 1.5)
+    assert report["band_se"] == PLANTED_BAND_SE == 2.0
+
+
+def test_reference_planted_members_sit_inside_the_band_at_seed_7():
+    """PM ruling T1-SE checked without an executable: at seed 7 the numpy reference of the runner's estimate puts
+    planted_a at z -0.82 and planted_b at z -1.14 (inside 2 SE, so a correct executable passes the live band), while
+    noise_c sits at z +2.23 from its planted 0 (outside, which is why the band covers the planted members only)."""
+    w = TW.simulate(TW.DEFAULT_SEED)
+    block = {}
+    for member in MEMBERS:
+        est = TIC.research_ic(w, member, ORIENTATION_HORIZON)
+        block[member] = TIC.planted_report(est["mean"], est["standard_error"],
+                                           TIC.planted_rank_ic(member, ORIENTATION_HORIZON), PLANTED_BAND_SE)
+    assert planted_problems({m: block[m] for m in PLANTED}) == []
+    assert math.isclose(block["planted_a"]["z"], -0.82, abs_tol=0.005)
+    assert math.isclose(block["planted_b"]["z"], -1.14, abs_tol=0.005)
+    assert math.isclose(block["noise_c"]["z"], 2.23, abs_tol=0.005) and not block["noise_c"]["within_band"]
+    moved = dict(block["planted_b"], z=-2.5, within_band=False)          # a collapsed planted signal is refused
+    assert planted_problems({"planted_b": moved}) and "planted_b" in planted_problems({"planted_b": moved})[0]
+
+
+def test_record_refuses_to_overwrite_a_recorded_entry_without_repin(tmp_path, monkeypatch):
+    """A recorded build type is replaced only by a ruled re-pin (--repin); the refusal comes before any run."""
+    doc = load_goldens()
+    doc["builds"]["Debug"] = {"outputs": {k: "0" * 64 for k in OUTPUT_KEYS}, "primary_scenario": "s",
+                              "planted": {m: {} for m in PLANTED}, "recorded": {}}
+    goldens = tmp_path / "goldens.json"
+    goldens.write_bytes((json.dumps(doc, indent=2) + "\n").encode("utf-8"))
+    monkeypatch.setattr(sys.modules[__name__], "GOLDENS", goldens)
+    monkeypatch.setattr(sys.modules[__name__], "accepts_no_git", lambda: True)
+    with pytest.raises(SystemExit, match="ruled re-pin"):
+        record(tmp_path / "bin", "Debug")
+    assert json.loads(goldens.read_bytes()) == doc
+
+
+def test_admission_problems_name_every_broken_fact():
+    good = {"copy_b": {"status": "reject_redundant", "redundant_with": "planted_b"},
+            "planted_a": {"status": "admitted"}, "planted_b": {"status": "admitted"}}
+    assert admission_problems(good) == []
+    bad = dict(good, copy_b={"status": "admitted"}, planted_a={"status": "reject_veto"})
+    assert len(admission_problems(bad)) == 2
 
 
 def test_find_output_resolves_every_attempt_layout(tmp_path):
@@ -399,15 +464,16 @@ def _live_cycle(root: Path) -> None:
     spec = json.loads((root / TW.SPEC).read_bytes())
     done, seconds = run_cycle(root)
     assert done.returncode == 0, done.stdout[-4000:] + done.stderr[-4000:]
-    rows = admission_rows(root, spec)
-    assert rows["copy_b"]["status"] == "reject_redundant" and rows["copy_b"]["redundant_with"] == "planted_b"
-    assert rows["planted_a"]["status"] == rows["planted_b"]["status"] == "admitted"
+    admission = admission_problems(admission_rows(root, spec))
+    assert not admission, "admission facts of the fixture broken:\n" + "\n".join(admission)
     candidates = orientation_candidates(root, spec)
     problems = ic_reference_problems(candidates, TW.simulate(TW.DEFAULT_SEED))
     assert not problems, "the u pass's rank IC disagrees with the numpy reference:\n" + "\n".join(problems)
     planted = planted_block(candidates)
-    print(f"\ntiny_world canary ({BUILD_TYPE}): planted members at h {ORIENTATION_HORIZON} (reported, not a gate): "
-          + json.dumps(planted, sort_keys=True))
+    print(f"\ntiny_world canary ({BUILD_TYPE}): planted members at h {ORIENTATION_HORIZON}, band {PLANTED_BAND_SE} SE "
+          "(PM ruling T1-SE): " + json.dumps(planted, sort_keys=True))
+    outside = planted_problems(planted)
+    assert not outside, "planted signal not recovered:\n" + "\n".join(outside)
     got = digests(root, spec)
     entry = goldens["builds"][BUILD_TYPE]
     assert entry is not None, (f"{BUILD_TYPE} goldens not recorded: python scripts/tests/test_cycle_e2e.py --record "
@@ -427,7 +493,7 @@ def _live_cycle(root: Path) -> None:
 
 
 # ------------------------------------------------------------------ --record
-def record(bin_dir: Path, build_type: str, keep: bool = False) -> dict:
+def record(bin_dir: Path, build_type: str, keep: bool = False, repin: bool = False) -> dict:
     if build_type not in TW.BUILD_TYPES:
         raise SystemExit(f"--build-type {build_type!r} is not one of {TW.BUILD_TYPES}")
     if not accepts_no_git():
@@ -435,25 +501,32 @@ def record(bin_dir: Path, build_type: str, keep: bool = False) -> dict:
     doc = load_goldens()
     if doc["fields_manifest_sha256"] != template_fields_pin():
         raise SystemExit("goldens name another world than scripts/specs/tiny.json: reset them first")
+    old = doc["builds"][build_type]
+    if old is not None and not repin:
+        raise SystemExit(f"{build_type} goldens are recorded already: a change is a ruled re-pin (plan section 0.6); "
+                         "pass --repin with the ruling, nothing recorded")
     root = fresh_root()
     TW.build(root, bin_dir=bin_dir, build_type=build_type)
     spec = json.loads((root / TW.SPEC).read_bytes())
     done, seconds = run_cycle(root)
     if done.returncode != 0:
         raise SystemExit(f"cycle failed (exit {done.returncode}) in {root}:\n{done.stdout[-4000:]}\n{done.stderr[-4000:]}")
-    rows = admission_rows(root, spec)
-    if rows["copy_b"]["status"] != "reject_redundant":
-        raise SystemExit(f"copy_b is {rows['copy_b']['status']}, not reject_redundant: nothing recorded ({root})")
+    refusals = admission_problems(admission_rows(root, spec))
     candidates = orientation_candidates(root, spec)
-    problems = ic_reference_problems(candidates, TW.simulate(TW.DEFAULT_SEED))
-    if problems:
-        raise SystemExit("the u pass's rank IC disagrees with the numpy reference: nothing recorded\n" +
-                         "\n".join(problems))
+    refusals += ic_reference_problems(candidates, TW.simulate(TW.DEFAULT_SEED))
+    planted = planted_block(candidates)
+    refusals += planted_problems(planted)
+    if refusals:
+        raise SystemExit(f"nothing recorded ({root}):\n" + "\n".join(refusals))
     got = digests(root, spec)
+    if old is not None:
+        for key in OUTPUT_KEYS + ("primary_scenario",):
+            before = old["outputs"].get(key) if key in OUTPUT_KEYS else old.get(key)
+            print(f"re-pin {build_type} {key}: {before} -> {got[key]}", file=sys.stderr)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
     doc["builds"][build_type] = {
         "outputs": {k: got[k] for k in OUTPUT_KEYS}, "primary_scenario": got["primary_scenario"],
-        "planted": planted_block(candidates),
+        "planted": planted,
         "recorded": {"git_head": head or None, "bin": Path(bin_dir).as_posix(),
                      "exe_sha256": {k: sha256_file(Path(spec["exes"][k])) for k in sorted(spec["exes"])},
                      "python": sys.version.split()[0], "numpy": np.__version__, "first_run_seconds": round(seconds, 1)}}
@@ -472,10 +545,12 @@ def main(argv=None) -> int:
     ap.add_argument("--build-type", choices=TW.BUILD_TYPES, default=BUILD_TYPE,
                     help="the executables' build type (ATX_EQUITY_BUILD_TYPE, default Debug)")
     ap.add_argument("--keep", action="store_true", help="keep the temporary root")
+    ap.add_argument("--repin", action="store_true",
+                    help="replace an already recorded entry (a ruled re-pin; old and new digests are printed)")
     a = ap.parse_args(argv)
     if a.bin is None:
         ap.error("--bin (or ATX_EQUITY_BIN) is required")
-    print(json.dumps(record(a.bin, a.build_type, a.keep), indent=2))
+    print(json.dumps(record(a.bin, a.build_type, a.keep, a.repin), indent=2))
     return 0
 
 

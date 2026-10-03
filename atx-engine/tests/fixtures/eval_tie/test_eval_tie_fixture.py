@@ -30,9 +30,10 @@ def test_the_committed_values_are_todays_python():
 
 
 def test_regenerating_writes_the_committed_bytes(tmp_path):
-    if EXPECTED["numpy"] != np.__version__:
-        pytest.skip(f"the series stream is numpy {EXPECTED['numpy']}'s; this is {np.__version__} (values still "
-                    "checked by test_the_committed_values_are_todays_python)")
+    if EXPECTED["host"] != G.host_identity():
+        pytest.skip(f"the fixture was written on {EXPECTED['host']}; this is {G.host_identity()} (the series stream "
+                    "and the last bits are host-bound; values still checked at 1e-12 by "
+                    "test_the_committed_values_are_todays_python)")
     G.write(tmp_path)
     for name in COMMITTED:
         assert (tmp_path / name).read_bytes() == (HERE / name).read_bytes(), name

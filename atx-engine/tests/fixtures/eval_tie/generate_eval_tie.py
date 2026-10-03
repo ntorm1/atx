@@ -45,6 +45,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import platform
 import sys
 
 import numpy as np
@@ -291,11 +292,22 @@ def file_entry(directory: Path, name: str, **extra) -> dict:
     return dict(extra, file=name, sha256=sha256_bytes((directory / name).read_bytes()))
 
 
+def host_identity() -> dict:
+    """What decides the last bit of numpy's BLAS-backed products (corrcoef, @): the numpy build, its BLAS and the
+    CPU (OpenBLAS picks its kernel per CPU, DYNAMIC_ARCH)."""
+    try:
+        blas = (np.show_config(mode="dicts") or {}).get("Build Dependencies", {}).get("blas", {}) or {}
+    except TypeError:                     # numpy < 1.25: show_config has no mode
+        blas = {}
+    return {"numpy": np.__version__, "blas": f"{blas.get('name')} {blas.get('version')}",
+            "machine": platform.machine(), "processor": platform.processor()}
+
+
 def document(directory: Path, series: np.ndarray, records: list[dict], picks: list) -> dict:
     values = compute_values(series, records, picks)
     return {
         "schema": SCHEMA, "generator": GENERATOR,
-        "python": sys.version.split()[0], "numpy": np.__version__,
+        "python": sys.version.split()[0], "numpy": np.__version__, "host": host_identity(),
         "inputs": {
             "series": file_entry(directory, SERIES, dtype="<f8", layout="date-major", shape=[T, K],
                                  names=list(NAMES), book=NAMES[BOOK], reference=NAMES[REFERENCE], seed=SERIES_SEED,
@@ -351,15 +363,15 @@ def check(directory: Path = HERE) -> list[str]:
             problems.append(f"{entry['file']}: SHA-256 differs from expected.json")
     series, records = read_series(directory), read_records(directory)
     got = compute_values(series, records, want["inputs"]["onc_picks"]["picks"])
-    problems += compare(want["values"], got, exact=want.get("numpy") == np.__version__)
+    problems += compare(want["values"], got, exact=want.get("host") == host_identity())
     if not np.array_equal(read_starts(directory), make_starts()):
         problems.append("cbb_starts.u16 is not default_rng(20260929)'s first draw")
     return problems
 
 
 def compare(want, got, exact: bool, path: str = "values") -> list[str]:
-    """Deep comparison: equal structure and integers; floats equal (``exact``, the recorded numpy) or within 1e-12
-    relative (another numpy build may sum in another order)."""
+    """Deep comparison: equal structure and integers; floats equal (``exact``: the recorded host identity, i.e. numpy
+    build, BLAS and CPU) or within 1e-12 relative (another numpy, BLAS or CPU kernel may sum in another order)."""
     if isinstance(want, dict) and isinstance(got, dict):
         if set(want) != set(got):
             return [f"{path}: keys {sorted(set(want) ^ set(got))} differ"]

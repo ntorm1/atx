@@ -1,5 +1,11 @@
 {
  "generator": "atx-engine/tests/fixtures/eval_tie/generate_eval_tie.py",
+ "host": {
+  "blas": "openblas64 0.3.23.dev",
+  "machine": "AMD64",
+  "numpy": "1.26.4",
+  "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel"
+ },
  "house_v1": "values.dsr_house_v1.v8 (N = construction count by ledger_n, V = dsr_variance of the window's construction lines; K-P9-5 dsr.house_v1); values.dsr_house_v1.tot is the total-count row",
  "inputs": {
   "cbb_starts": {
