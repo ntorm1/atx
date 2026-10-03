@@ -17,8 +17,10 @@ Point in time. ``available_at`` = 22:00 UTC of ``session_date``. A row uses its 
 * ``filer_regime``: ``sec_filings/filer_regime`` of the CIK as of the cutoff (interval holding d): ``domestic``
   (10-K filer), ``fpi_20f``, ``canadian_40f``, ``fund`` (N-CSR filer), ``none``; NULL when unknown or unlinked.
 * SIC: ``classification/issuer_industry`` (SIC in force per filing) of the CIK, latest with clock < cutoff.
-* incorporation: the latest 10-K / 10-Q / 8-K cover page ``dei:EntityIncorporationStateCountryCode``
-  (``identity_cover``) with clock < cutoff, otherwise unknown; undated issuer-profile snapshots never change historical membership.
+* incorporation: the latest original EDGAR issuer header or 10-K / 10-Q / 8-K cover
+  ``dei:EntityIncorporationStateCountryCode`` with clock < cutoff; cover wins equal clocks.
+  Original headers use max(actual acceptance, filing/change date end-of-day Eastern).
+  Sparse missing observations remain unknown; undated profiles never change history.
 * BDC: the CIK filed a 10-K, 10-Q, 8-K, N-54A, N-6F or N-2 (or amendment) under an ``814-`` (Investment Company
   Act BDC) file number with clock < cutoff, status is the latest qualifying election/support or N-54C withdrawal event strictly before the cutoff.
 * index proxies: ``indexes_membership_as_of(cutoff) WHERE session_date = d`` (membership is known at its rank date).
@@ -70,8 +72,8 @@ from .security_master import EXCHANGE_BY_CLASS, SYMBOL_SUFFIX
 
 STAGE = "universe"
 SCHEMA = "atx.alpha-panel.universe/v1"
-RULE = "universe-all-common-v2"
-MODULES = ("universe", "market_index", "market_common", "security_master", "identity_v3", "common")
+RULE = "universe-all-common-v3"
+MODULES = ("universe", "issuer_history", "issuer_classes", "market_index", "market_common", "security_master", "identity_v3", "common")
 MIN_PRICE = 1.0
 FINRA_STALE_DAYS = 45            # = panel.SI_STALE_DAYS (the panel's FINRA freshness rule; asserted in the tests)
 EXCHANGE_MAP = EXCHANGE_BY_CLASS
@@ -96,7 +98,7 @@ FRENCH_BREAKPOINTS = C.PACKAGE_ROOT / "data" / "raw" / "benchmarks" / "parsed" /
 HAND_CHECK = C.PACKAGE_ROOT / "docs" / "datasets" / "universe_hand_check.json"
 INPUTS = ("panel", "market/market_shares_manifest.json", "indexes", "security_master",
           "security_master/share_exchange_history_manifest.json", "identity/link_table_v3_manifest.json",
-          "sec_filings", "classification", "identity_cover")
+          "sec_filings", "classification", "identity_cover", "issuer_history", "issuer_classes")
 COVERAGE_INPUTS = ("market/market_liquidity_manifest.json", "borrow_proxy")
 PANEL_COLUMNS = ("session_date", "security_id", "cik", "ticker", "exchange", "raw_close", "security_type", "is_adr",
                  "is_adr_likely", "is_fpi", "is_reit", "is_lp", "is_royalty_trust", "is_operating", "is_index",
@@ -127,7 +129,8 @@ def flags_sql(a: str = "t") -> dict[str, str]:
     us = _in(US_JURISDICTIONS)
     return {
         "is_adr": f"coalesce({a}.is_adr, false) OR coalesce({a}.is_adr_likely, false)",
-        "is_reit": f"coalesce({a}.is_reit, false) OR coalesce({a}.sic_asof = {REIT_SIC}, false)",
+        "is_reit": (f"coalesce({a}.reit_observed, "
+                    f"(coalesce({a}.is_reit, false) OR coalesce({a}.sic_asof = {REIT_SIC}, false)))"),
         "is_spac": (f"coalesce({a}.is_spac, false) OR "
                     f"(coalesce({a}.sic_asof = {SPAC_SIC}, false) AND coalesce({a}.sale_ttm, 0) = 0)"),
         "is_cef_etf": (f"coalesce({a}.is_etf, false) OR coalesce({a}.security_type = 'fund', false) "
@@ -140,12 +143,14 @@ def flags_sql(a: str = "t") -> dict[str, str]:
 
 def base_rule_sql(a: str = "t", exchange: str = "exchange_u") -> str:
     """The ``market_index`` all_common rule (imported filter and exchange list) on listing exchange ``exchange``."""
-    return (f"({common_filter(a)}) AND coalesce({a}.is_operating, false) AND NOT coalesce({a}.is_index, false) "
+    filt = common_filter(a).replace(f"NOT coalesce({a}.is_reit, false)",
+                                   f"(NOT coalesce({a}.is_reit, false) OR coalesce({a}.reit_observed = false, false))")
+    return (f"({filt}) AND coalesce({a}.is_operating, false) AND NOT coalesce({a}.is_index, false) "
             f"AND coalesce({a}.{exchange} IN ({_in(LISTED)}), false)")
 
 
 def all_common_sql(a: str = "t", price: bool = True) -> str:
-    """Rule ``universe-all-common-v2`` over a step-3 row ``a`` (``price=False`` drops the $1 screen)."""
+    """Rule ``universe-all-common-v3`` over a step-3 row ``a`` (``price=False`` drops the $1 screen)."""
     f = flags_sql(a)
     px = f"coalesce({a}.raw_close >= {MIN_PRICE}, false) AND " if price else ""
     return (f"{base_rule_sql(a)} AND {px}coalesce({a}.shrout > 0, false) "
@@ -186,6 +191,30 @@ def load_issuer_tables(con) -> dict[str, int]:
                      AND form IN ({_in(BDC_FORMS + BDC_WITHDRAW_FORMS)})
                    GROUP BY 1, 2""",
     }
+    header_paths = [Path(_p(stage, 'incorporation.parquet')) for stage in ('issuer_history','issuer_classes')]
+    header_paths = [p for p in header_paths if p.exists()]
+    if header_paths:
+        header_union = ' UNION ALL '.join(f"""SELECT cik, CAST(available_at AT TIME ZONE 'UTC' AS TIMESTAMP),
+                   inc_state_country, accession, 0, CAST(accepted_at AT TIME ZONE 'UTC' AS TIMESTAMP)
+            FROM read_parquet('{p.as_posix()}')
+            WHERE inc_state_country IS NOT NULL AND available_at IS NOT NULL AND cik IS NOT NULL""" for p in header_paths)
+        stmts['inc_hist'] = f"""WITH observations AS (
+            SELECT cik, CAST(available_at AT TIME ZONE 'UTC' AS TIMESTAMP) AS available_at,
+                   inc_state_country AS inc, adsh AS accession, 1 AS priority,
+                   CAST(available_at AT TIME ZONE 'UTC' AS TIMESTAMP) AS accepted_sort
+            FROM read_parquet('{_p('identity_cover', 'cover_page.parquet')}')
+            WHERE inc_state_country IS NOT NULL AND available_at IS NOT NULL AND cik IS NOT NULL
+            UNION ALL
+            {header_union})
+            SELECT cik, available_at, inc FROM observations
+            QUALIFY row_number() OVER(PARTITION BY cik,available_at ORDER BY priority DESC,accepted_sort DESC,accession DESC)=1"""
+    reit_path = Path(_p('issuer_classes','reit_status.parquet'))
+    stmts['reit_hist'] = (f"""SELECT cik, CAST(available_at AT TIME ZONE 'UTC' AS TIMESTAMP) AS available_at,
+                              reit_status AS reit_observed
+                              FROM read_parquet('{reit_path.as_posix()}') WHERE reit_status IS NOT NULL
+                              QUALIFY row_number() OVER(PARTITION BY cik,available_at ORDER BY accepted_at DESC,accession DESC)=1"""
+                          if reit_path.exists() else
+                          "SELECT CAST(NULL AS BIGINT) cik, CAST(NULL AS TIMESTAMP) available_at, CAST(NULL AS BOOLEAN) reit_observed WHERE false")
     out = {}
     for name, sql in stmts.items():
         con.execute(f"CREATE OR REPLACE TABLE {name} AS {sql}")
@@ -227,7 +256,7 @@ def build_year(con, y: int) -> None:
         "false AS r1000, false AS r2000, false AS r3000, false AS sp500"
     con.execute(f"""CREATE OR REPLACE TABLE t3 AS
         SELECT t2.*, c.shrcd AS shrcd_like, c.exchcd AS exchcd_v3, r.regime AS filer_regime, si.sic AS sic_asof,
-               ic.inc AS inc,
+               ic.inc AS inc, rh.reit_observed,
                coalesce(b.elected, false) AS is_bdc,
                {mcols}
         FROM t2
@@ -238,7 +267,8 @@ def build_year(con, y: int) -> None:
         {mem}
         ASOF LEFT JOIN bdc b ON b.cik = t2.cik_u AND t2.cutoff > b.available_at
         ASOF LEFT JOIN sic_hist si ON si.cik = t2.cik_u AND t2.cutoff > si.available_at
-        ASOF LEFT JOIN inc_hist ic ON ic.cik = t2.cik_u AND t2.cutoff > ic.available_at""")
+        ASOF LEFT JOIN inc_hist ic ON ic.cik = t2.cik_u AND t2.cutoff > ic.available_at
+        ASOF LEFT JOIN reit_hist rh ON rh.cik = t2.cik_u AND t2.cutoff > rh.available_at""")
     # a panel row must stay one row (the interval inputs never overlap; checked, not assumed)
     n1, n3, keys = con.execute("""SELECT (SELECT count(*) FROM t1), count(*), count(DISTINCT (session_date, security_id))
                                   FROM t3""").fetchone()

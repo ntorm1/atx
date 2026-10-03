@@ -219,6 +219,61 @@ def test_later_foreign_snapshot_never_backfills_missing_cover(lake):
     assert not _flag(con, "is_foreign_issuer", 2, CAL[0])
 
 
+def test_original_header_transition_and_future_append_preserve_history(lake):
+    con, root = lake
+    rows = [{"cik": 102, "accession": "prior", "inc_state_country": "DE", "available_at": T(2021,5,28,4,tzinfo=UTC)},
+            {"cik": 102, "accession": "redomicile", "inc_state_country": "E9", "available_at": T(2021,6,3,4,tzinfo=UTC)}]
+    rows=[{**r,'accepted_at':r['available_at']-dt.timedelta(hours=6)} for r in rows]
+    rel = "issuer_history/incorporation.parquet"
+    _w(root, rel, rows)
+    U.load_issuer_tables(con); U.build_year(con,2021)
+    assert _flag(con,"inc",2,CAL[0]) == "DE"
+    assert _flag(con,"univ_all_common",2,CAL[0])
+    assert _flag(con,"inc",2,D(2021,6,3)) == "DE"  # prior-session22 cutoff
+    assert _flag(con,"inc",2,D(2021,6,4)) == "E9"
+    assert not _flag(con,"univ_all_common",2,D(2021,6,4))
+    before=con.execute("SELECT session_date,security_id,inc,univ_all_common FROM t ORDER BY 1,2").fetchall()
+    _w(root,rel,rows+[{"cik":102,"accession":"future","inc_state_country":"NV","available_at":T(2022,1,1,tzinfo=UTC),'accepted_at':T(2021,12,31,20,tzinfo=UTC)}])
+    U.load_issuer_tables(con);U.build_year(con,2021)
+    assert before==con.execute("SELECT session_date,security_id,inc,univ_all_common FROM t ORDER BY 1,2").fetchall()
+
+
+def test_dated_reit_election_termination_and_future_append(lake):
+    con,root=lake
+    rel='issuer_classes/reit_status.parquet'
+    rows=[{'cik':102,'accession':'election','available_at':T(2021,6,2,4,tzinfo=UTC),'reit_status':True},
+          {'cik':102,'accession':'termination','available_at':T(2021,6,7,4,tzinfo=UTC),'reit_status':False},
+          {'cik':112,'accession':'stale_sic_termination','available_at':T(2021,6,3,4,tzinfo=UTC),'reit_status':False}]
+    rows=[{**r,'accepted_at':r['available_at']-dt.timedelta(hours=6)} for r in rows]
+    _w(root,rel,rows);U.load_issuer_tables(con);U.build_year(con,2021)
+    assert not _flag(con,'is_reit',2,CAL[0])
+    assert _flag(con,'is_reit',2,D(2021,6,3))
+    assert not _flag(con,'univ_all_common',2,D(2021,6,3))
+    assert not _flag(con,'is_reit',2,D(2021,6,8))
+    assert _flag(con,'univ_all_common',2,D(2021,6,8))
+    assert _flag(con,'is_reit',12,CAL[0])
+    assert not _flag(con,'is_reit',12,D(2021,6,4))
+    assert _flag(con,'univ_all_common',12,D(2021,6,4))
+    before=con.execute('SELECT session_date,security_id,is_reit,univ_all_common FROM t ORDER BY 1,2').fetchall()
+    _w(root,rel,rows+[{'cik':102,'accession':'future','available_at':T(2022,1,1,tzinfo=UTC),'accepted_at':T(2021,12,31,20,tzinfo=UTC),'reit_status':True}])
+    U.load_issuer_tables(con);U.build_year(con,2021)
+    assert before==con.execute('SELECT session_date,security_id,is_reit,univ_all_common FROM t ORDER BY 1,2').fetchall()
+
+
+def test_source_termination_overrides_stale_panel_reit_flag(lake):
+    con,root=lake;path=root/'panel/year=2021/panel-01.parquet'
+    panel=pq.read_table(path).to_pylist()
+    for row in panel:
+        if row['security_id']==2:row['is_reit']=True
+    pq.write_table(pa.Table.from_pylist(panel),path)
+    _w(root,'issuer_classes/reit_status.parquet',[{'cik':102,'accession':'termination','accepted_at':T(2021,6,1,18,tzinfo=UTC),'available_at':T(2021,6,2,4,tzinfo=UTC),'reit_status':False}])
+    U.load_issuer_tables(con);U.build_year(con,2021)
+    assert _flag(con,'is_reit',2,CAL[0])
+    assert not _flag(con,'univ_all_common',2,CAL[0])
+    assert not _flag(con,'is_reit',2,D(2021,6,3))
+    assert _flag(con,'univ_all_common',2,D(2021,6,3))
+
+
 def test_retained_spac_sic_with_operating_revenue(lake):
     con, root = lake
     path = root / "panel/year=2021/panel-01.parquet"
