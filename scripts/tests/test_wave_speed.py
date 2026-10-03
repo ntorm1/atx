@@ -33,7 +33,7 @@ def run(root: Path, fake) -> list[str]:
 
 
 def cycle_runs(fake) -> list[list[str]]:
-    return [c[2:] for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] in ("run", "lock")]
+    return [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] in ("run", "lock")]
 
 
 def test_the_b_cell_reuses_the_screen_marginal_and_screens_first(tmp_path):

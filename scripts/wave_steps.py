@@ -1,6 +1,8 @@
 """The commands and spec files a research wave writes (research_wave.py): pure builders, no process runs here.
 
-Commands (each an argv list, run from the root with no shell):
+Commands (each an argv list, run from the root with no shell; given the wave's root, research_cycle.py and add-alpha
+get ``--root ROOT`` and every tool path is root-relative when the tool exists under the root, else this repository's
+absolute path):
   add_alpha_argv   research_cycle.py add-alpha for one frozen candidate (its registration fields verbatim, the wave's
                    parent, name, fields dir and --save-plan for the K1 plan of record)
   cycle_argv       research_cycle.py run SPEC [--screen | --stop-after nav] / lock SPEC
@@ -26,6 +28,7 @@ from pathlib import Path
 import re
 
 import research_spec
+import research_tree
 
 RCY = "scripts/research_cycle.py"
 RUNNER = "scripts/run_bounded_research.py"
@@ -35,10 +38,23 @@ READER_CAPS = {"seconds": "180", "max_rss_mib": "1536", "min_free_mib": "512"}
 OPTIONAL_FLAGS = ("prior_sign_source", "form", "formula", "domain", "deviation")
 
 
+def tool(rel: str, root) -> str:
+    """A tool's argv path: root-relative when ``root`` is None or the tool exists under it (the wave's own checkout),
+    else the absolute path in this scripts' repository (research_tree.REPO)."""
+    if root is None or (Path(root) / rel).is_file():
+        return rel
+    return (research_tree.REPO / rel).as_posix()
+
+
+def rooted(argv: list[str], root) -> list[str]:
+    """``--root ROOT`` appended (research_cycle.py and add-alpha write under it), none without a root."""
+    return argv if root is None else argv + ["--root", Path(root).as_posix()]
+
+
 def add_alpha_argv(py: str, c: dict, *, parent: str, parent_spec: str, name: str, fields_dir: str,
-                   plan_out: str) -> list[str]:
-    argv = [py, RCY, "add-alpha", "--id", c["id"], "--dsl", c["dsl"], "--theme", c["theme"], "--tier", c["tier"],
-            "--prior-sign", str(c["prior_sign"]), "--citation", c["citation"], "--origin", c["origin"],
+                   plan_out: str, root=None) -> list[str]:
+    argv = [py, tool(RCY, root), "add-alpha", "--id", c["id"], "--dsl", c["dsl"], "--theme", c["theme"],
+            "--tier", c["tier"], "--prior-sign", str(c["prior_sign"]), "--citation", c["citation"], "--origin", c["origin"],
             "--parent", parent, "--name", name, "--parent-spec", parent_spec, "--fields", fields_dir]
     for rid in c.get("replaces", []):
         argv += ["--replaces", rid]
@@ -54,32 +70,34 @@ def add_alpha_argv(py: str, c: dict, *, parent: str, parent_spec: str, name: str
     for key in OPTIONAL_FLAGS:
         if key in c:
             argv += [f"--{key.replace('_', '-')}", c[key]]
-    return argv + ["--save-plan", plan_out]
+    return rooted(argv + ["--save-plan", plan_out], root)
 
 
-def cycle_argv(py: str, verb: str, spec: str, *extra: str) -> list[str]:
-    return [py, RCY, verb, spec, *extra]
+def cycle_argv(py: str, verb: str, spec: str, *extra: str, root=None) -> list[str]:
+    return rooted([py, tool(RCY, root), verb, spec, *extra], root)
 
 
-def bounded_argv(py: str, run_dir: str, binds: list[str], command: list[str]) -> list[str]:
-    argv = [py, RUNNER, "--seconds", READER_CAPS["seconds"], "--max-rss-mib", READER_CAPS["max_rss_mib"],
+def bounded_argv(py: str, run_dir: str, binds: list[str], command: list[str], root=None) -> list[str]:
+    argv = [py, tool(RUNNER, root), "--seconds", READER_CAPS["seconds"], "--max-rss-mib", READER_CAPS["max_rss_mib"],
             "--min-free-mib", READER_CAPS["min_free_mib"], "--output", run_dir]
     for b in binds:
         argv += ["--bind", b]
     return argv + ["--", *command]
 
 
-def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str) -> list[str]:
-    cmd = [py, READERS, kind]
+def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str, root=None) -> list[str]:
+    readers = tool(READERS, root)
+    cmd = [py, readers, kind]
     for name, d in navs.items():
         cmd += ["--nav", f"{name}={d}"]
     cmd += ["--output", out]
-    return bounded_argv(py, run_dir, [READERS] + [f"{d}/summary.json" for d in navs.values()], cmd)
+    return bounded_argv(py, run_dir, [readers] + [f"{d}/summary.json" for d in navs.values()], cmd, root)
 
 
-def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str) -> list[str]:
-    cmd = [py, NAV_SUMM, "--protocol", "v8", "--bundle", base_nav, cell_nav, "--bundle-json", out]
-    return bounded_argv(py, run_dir, [NAV_SUMM, f"{base_nav}/summary.json", f"{cell_nav}/summary.json"], cmd)
+def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, root=None) -> list[str]:
+    summ = tool(NAV_SUMM, root)
+    cmd = [py, summ, "--protocol", "v8", "--bundle", base_nav, cell_nav, "--bundle-json", out]
+    return bounded_argv(py, run_dir, [summ, f"{base_nav}/summary.json", f"{cell_nav}/summary.json"], cmd, root)
 
 
 def commit_argvs(paths: list[str], message: str) -> list[list[str]]:

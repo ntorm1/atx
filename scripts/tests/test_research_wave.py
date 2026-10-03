@@ -185,7 +185,7 @@ def test_a_library_wave_with_every_string_kept_runs_to_its_result(tmp_path):
     assert "### Wave w1 (library wave): ACCEPTED, N 3" in log and "Mechanics (S2, read before any return): PASS" in log
     adds = [c for c in fake.calls if "add-alpha" in c]
     assert len(adds) == 3 and all(c[c.index("--name") + 1] == "w1" for c in adds)
-    runs =[c[2:] for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]
+    runs = [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]
     assert runs == [["run", "scripts/specs/v8/lib-w1.json", "--screen"],
                     ["run", "scripts/specs/v8/lib-w1.json", "--stop-after", "nav"],
                     ["run", "scripts/specs/v8/lib-w1.json"]]
@@ -301,4 +301,4 @@ def test_a_rule_wave_writes_its_cell_on_the_parent(tmp_path):
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
     assert res["kind"] == "rule" and res["screen"] is None and res["cell"]["kind"] == "rule"
     assert not any("add-alpha" in c for c in fake.calls)
-    assert ["lock", "scripts/specs/v8/x-rule-w1.json", "--write"] in [c[2:] for c in fake.calls]
+    assert ["lock", "scripts/specs/v8/x-rule-w1.json", "--write"] in [F.unrooted(c[2:]) for c in fake.calls]

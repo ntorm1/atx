@@ -64,6 +64,12 @@ def lib_spec(name: str) -> str:
     return f"{SPECS_V8}/lib-{name}.json"
 
 
+def cyc(w: Wave, verb: str, spec: str, *extra: str) -> list[str]:
+    """research_cycle.py VERB SPEC ... --root <the wave's root> (it writes under that root, the root the driver
+    commits)."""
+    return WS.cycle_argv(w.python, verb, spec, *extra, root=w.root)
+
+
 def library_wave(w: Wave) -> bool:
     return "candidates" in w.manifest
 
@@ -254,7 +260,8 @@ def preflight_plan(w: Wave, done: dict) -> list[str]:
 def add_alpha(w: Wave, c: dict, name: str) -> list[str]:
     m = w.manifest
     return WS.add_alpha_argv(w.python, c, parent=m["parent"]["library"], parent_spec=m["parent"]["spec"], name=name,
-                             fields_dir=m["fields"]["dir"], plan_out=w.wave_path("plans", name, f"{c['id']}.json"))
+                             fields_dir=m["fields"]["dir"], plan_out=w.wave_path("plans", name, f"{c['id']}.json"),
+                             root=w.root)
 
 
 def rewrite_spec(w: Wave, rel: str, fn, why: str) -> bool:
@@ -266,7 +273,7 @@ def rewrite_spec(w: Wave, rel: str, fn, why: str) -> bool:
         return False
     w.path(rel).write_text(json.dumps(new, indent=2) + "\n", encoding="utf-8", newline="\n")
     w.log(f"   {rel}: {why}")
-    w.run(WS.cycle_argv(w.python, "lock", rel), f"lock (dry) {rel}")
+    w.run(cyc(w,"lock", rel), f"lock (dry) {rel}")
     return True
 
 
@@ -318,7 +325,7 @@ def screen(w: Wave, done: dict, log) -> dict:
     if not library_wave(w):
         return skipped("a rule wave has no admission strings")
     m, spec = w.manifest, done["register"]["spec"]
-    done_screen = w.run(WS.cycle_argv(w.python, "run", spec, "--screen"), "screen", ok=(RC.EXIT_OK, RC.EXIT_GATE))
+    done_screen = w.run(cyc(w,"run", spec, "--screen"), "screen", ok=(RC.EXIT_OK, RC.EXIT_GATE))
     outs = w.outputs(spec)
     # the rows: the fit's admission.json (every candidate). cycle_verdict.json lists only gate.admitted, from which
     # add-alpha leaves a mixed wave's re-screens out (they are gate.report), so it cannot carry the sign rule
@@ -349,7 +356,7 @@ def screen(w: Wave, done: dict, log) -> dict:
 def screen_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
         return ["#   (rule wave: no screen)"]
-    return [WS.fmt_argv(WS.cycle_argv(w.python, "run", lib_spec(w.manifest["library"]), "--screen")),
+    return [WS.fmt_argv(cyc(w,"run", lib_spec(w.manifest["library"]), "--screen")),
             f"#   then: the sign rule {w.manifest['sign_rule']} on every string's row of the fit's admission.json"]
 
 
@@ -393,7 +400,7 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
                 raise StageError(f"rule cell {cell}: its NAV output {nav} exists already (a template is used once: "
                                  "copy it under a new name with new outputs)", EXIT_PIN)
         write_spec_file(w, cell, doc, same=WS.unpinned)      # a resumed stage finds it locked already
-        w.run(WS.cycle_argv(w.python, "lock", cell, "--write"), "lock the rule cell")
+        w.run(cyc(w,"lock", cell, "--write"), "lock the rule cell")
         commit = w.commit_paths(f"wave {m['wave']}: rule cell {Path(cell).name} on {m['parent']['spec']}", {cell})
         return cell_out(w, done, cell, "rule", commit or w.committed(cell), m["parent"]["library"])
     sc = done["screen"]
@@ -431,7 +438,7 @@ def spec_plan(w: Wave, done: dict) -> list[str]:
         rc = m["rule_cell"]
         cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
         return [f"#   write {cell}: {rc['template']} with parent {m['parent']['spec']} and the constants",
-                WS.fmt_argv(WS.cycle_argv(w.python, "lock", cell, "--write")), "#   then: git add / commit -- " + cell]
+                WS.fmt_argv(cyc(w,"lock", cell, "--write")), "#   then: git add / commit -- " + cell]
     kept = ((done.get("screen") or {}).get("decision") or {}).get("kept")
     cands = [c for c in m["candidates"] if kept is None or c["id"] in kept]
     head = ("#   if the sign rule drops a string (known after the screen): add-alpha of each kept string into "
@@ -465,8 +472,8 @@ def run_stage(w: Wave, done: dict, log) -> dict:
         return skipped("no cell")
     cell = done["spec"]["cell_spec"]
     if screen_first(w, done):
-        w.run(WS.cycle_argv(w.python, "run", cell, "--screen"), "the b library's screen (its gate re-read)")
-    w.run(WS.cycle_argv(w.python, "run", cell, "--stop-after", "nav"), "calibration run (--stop-after nav)")
+        w.run(cyc(w,"run", cell, "--screen"), "the b library's screen (its gate re-read)")
+    w.run(cyc(w,"run", cell, "--stop-after", "nav"), "calibration run (--stop-after nav)")
     nav = w.outputs(cell)["nav"]
     if not w.exists(f"{nav}/summary.json"):
         raise StageError(f"run: no NAV output {nav}/summary.json")
@@ -480,8 +487,8 @@ def run_plan(w: Wave, done: dict) -> list[str]:
     if not sp:
         lines.append("#   (a b library with speed.screen_first runs `run <cell> --screen` first)")
     elif screen_first(w, done):
-        lines.append(WS.fmt_argv(WS.cycle_argv(w.python, "run", cell, "--screen")))
-    return lines + [WS.fmt_argv(WS.cycle_argv(w.python, "run", cell, "--stop-after", "nav"))]
+        lines.append(WS.fmt_argv(cyc(w,"run", cell, "--screen")))
+    return lines + [WS.fmt_argv(cyc(w,"run", cell, "--stop-after", "nav"))]
 
 
 # ------------------------------------------------------------------ readers
@@ -491,7 +498,7 @@ def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
     out = w.wave_path("readers", f"{name}.json")
     doc = w.read_json(out)
     if doc is None:
-        w.run(WS.reader_argv(w.python, kind, navs, out, w.free_run_dir(w.wave_path("readers", name))),
+        w.run(WS.reader_argv(w.python, kind, navs, out, w.free_run_dir(w.wave_path("readers", name)), w.root),
               f"{kind} reader")
         doc = w.read_json(out)
         if doc is None:
@@ -505,7 +512,7 @@ def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
 
 def reader_plan(w: Wave, kind: str, name: str, navs: dict) -> str:
     out = w.wave_path("readers", f"{name}.json")
-    return WS.fmt_argv(WS.reader_argv(w.python, kind, navs, out, w.wave_path("readers", f"{name}-run1")))
+    return WS.fmt_argv(WS.reader_argv(w.python, kind, navs, out, w.wave_path("readers", f"{name}-run1"), w.root))
 
 
 # ------------------------------------------------------------------ match
@@ -535,10 +542,10 @@ def match(w: Wave, done: dict, log) -> dict:
     nav = w.outputs(gm)["nav"]
     if nav == done["run"]["nav"]:
         raise StageError(f"{gm}: the matched NAV output equals the calibration's ({nav})")
-    w.run(WS.cycle_argv(w.python, "lock", gm), "lock (dry: every pin of the -gm copy verified)")
+    w.run(cyc(w,"lock", gm), "lock (dry: every pin of the -gm copy verified)")
     commit = w.commit_paths(f"wave {m['wave']}: {Path(gm).name} at L {new} (gross matching, PM6-6)", {gm}) \
         or w.committed(gm)
-    w.run(WS.cycle_argv(w.python, "run", gm, "--stop-after", "nav"), "matched run (--stop-after nav)")
+    w.run(cyc(w,"run", gm, "--stop-after", "nav"), "matched run (--stop-after nav)")
     got = read_once(w, "mechanics", "mech-matched", {"cell": nav})
     g2 = got["navs"]["cell"]["mean_gross_leverage_all_rows"]
     log(f"   matched: L {new}, G {g2} vs G_parent {gp}")
@@ -609,7 +616,8 @@ def bundle_once(w: Wave, base: str, cell: str) -> dict:
     out = w.wave_path("bundle.json")
     doc = w.read_json(out)
     if doc is None:
-        w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle"))), "bundle (PM5-23)")
+        w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle")), w.root),
+              "bundle (PM5-23)")
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"bundle wrote no {out}")
@@ -627,7 +635,7 @@ def judge(w: Wave, done: dict, log) -> dict:
         return skipped("no cell")
     m, mt = w.manifest, done["match"]
     cell, nav, parent_nav = mt["cell_spec"], mt["nav"], done["spec"]["reference_nav"]
-    w.run(WS.cycle_argv(w.python, "run", cell), "the cell's monitor and summ (nav_summ scores and ledgers the cell)")
+    w.run(cyc(w,"run", cell), "the cell's monitor and summ (nav_summ scores and ledgers the cell)")
     outs = w.outputs(cell)
     vpath = f"{outs['cycle_dir']}/cycle_verdict.json"
     v = w.read_json(vpath)
@@ -650,8 +658,9 @@ def judge_plan(w: Wave, done: dict) -> list[str]:
     mt, s = done.get("match") or {}, done.get("spec") or {}
     cell, nav = mt.get("cell_spec", "<the cell spec>"), mt.get("nav", "<the cell NAV>")
     parent = s.get("reference_nav", "<parent NAV>")
-    return [WS.fmt_argv(WS.cycle_argv(w.python, "run", cell)),
-            WS.fmt_argv(WS.bundle_argv(w.python, parent, nav, w.wave_path("bundle.json"), w.wave_path("bundle-run1"))),
+    return [WS.fmt_argv(cyc(w,"run", cell)),
+            WS.fmt_argv(WS.bundle_argv(w.python, parent, nav, w.wave_path("bundle.json"), w.wave_path("bundle-run1"),
+                                       w.root)),
             reader_plan(w, "book", "book", {"cell": nav, "parent": parent}),
             f"#   verdict by {w.manifest['acceptance']['rule']}"]
 

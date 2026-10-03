@@ -39,6 +39,14 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def unrooted(argv: list[str]) -> list[str]:
+    """argv without its ``--root ROOT`` (every research_cycle / add-alpha call carries the wave's root)."""
+    if "--root" not in argv:
+        return list(argv)
+    k = argv.index("--root")
+    return list(argv[:k]) + list(argv[k + 2:])
+
+
 def git(root: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
 

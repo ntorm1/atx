@@ -436,3 +436,18 @@ def test_a_rule_wave_resumes_after_lock_write_rewrote_its_cell(tmp_path):
     edited = json.loads(json.dumps(doc))
     edited["change"]["flags"]["fit"]["--rule"] = "erc-v2"                              # a real edit still differs
     assert WS.unpinned(edited) != WS.unpinned(doc) and WS.unpinned(dict(doc, locked={"x": 1})) == WS.unpinned(doc)
+
+
+# ------------------------------------------------------------------ MINOR 13: the wave's root reaches every tool
+def test_research_cycle_and_add_alpha_get_the_waves_root(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL)
+    assert wave(root, fake, "run")[0] == 0
+    cycles = [c for c in fake.calls if Path(c[1]).name == "research_cycle.py"]
+    assert cycles and all(c[c.index("--root") + 1] == root.resolve().as_posix() for c in cycles)
+    assert all(c[1] == (F.research_tree.REPO / WS.RCY).as_posix() for c in cycles)    # not under this root
+    F.write(root, WS.RCY, "# the root's own copy\n")                                  # a checkout that has the tool
+    assert WS.cycle_argv("py", "run", "s.json", root=root)[1] == WS.RCY
+    assert WS.cycle_argv("py", "run", "s.json") == ["py", WS.RCY, "run", "s.json"]    # no root: as before
+    readers = WS.reader_argv("py", "book", {"cell": "n"}, "o.json", "r1", root=tmp_path / "elsewhere")
+    assert readers[1].endswith("scripts/run_bounded_research.py") and Path(readers[1]).is_absolute()
