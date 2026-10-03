@@ -326,3 +326,31 @@ Marginal (1 vs 7): `marginal_ic.json` identical outside `/stage_seconds/*` and `
 Plus Release gtests: `atx-impl-strategy-ic-tests` S1 filter and whole binary; alpha oracle / conformance suites
 (`atx-engine-w1-foundation-tests`). A payload difference here is not a P9-B0 stop: G-P3's IC half is then reported
 unmet with the first differing file.
+
+### M1d resume: P9-B0 result (list committed first: `7d5b2ec9`)
+
+All six runs completed (exit 0) through `run_bounded_research.py` (scratch `rerun.py`, one argv token changed:
+`--output`; reference limits; receipts "clean in the code pathspec"). Compared by `b0_compare.py` (session scratchpad
+`m1d/`): file SHA-256, JSON leaf paths classified against the list, CSV header names and differing-row counts only.
+
+| run | exe | wall / peak / admission wait | files same / differ | outside the list | verdict |
+|---|---|---|---|---|---|
+| u `p9-b0-yf0-u` | ic `393183c0` | 20.2 s / 530 MiB / 557 s | 3 / 2 (`summary.json` 140 timing leaves; `train_candidates.jsonl` 134 timing leaves) | 0 | **inside** |
+| fit `p9-b0-yf0-fit` | python fitter (HEAD) | 3.8 s / 60 MiB / 527 s | 1 / 2 (`admission.json` `/inputs/script_sha256`; `composition_weights.json` `/provenance/{script_sha256, admission_sha256}`) | 0 | **inside** |
+| w `p9-b0-yf0-w` | ic `393183c0` | 133.8 s / 1,435 MiB / 0 s | 10 / 2 (`summary.json` 277 timing leaves; `train_candidates.jsonl` 268) | 0 | **inside** |
+| NAV Y-F0 `p9-b0-yf0-nav` | targets `407c34ad` | 89.5 s / 590 MiB / 61 s | 16 / 11 (8 sqrt CSVs; `summary.json` `/scenarios/1..4`, `/v7/extras`, `/v7/files` +2, `/producer` +3; `capacity/summary.json` `/scenarios/1..4`; `v7_extras.json` `/files/capacity/summary.json` +1) | 0 | **inside** |
+| NAV X-10 `p9-b0-x10-nav` | targets `407c34ad` | 79.3 s / 591 MiB / 153 s | 15 / 12 (9 sqrt CSVs; same JSON paths, `capacity/summary.json` `/scenarios/0..4`) | 0 | **inside** |
+| NAV Y-1 `p9-b0-y1-nav` | targets `407c34ad` | 84.0 s / 602 MiB / 0 s | 17 / 11 (8 sqrt CSVs; same JSON paths, `capacity/summary.json` `/scenarios/0..3`) | 0 | **inside** |
+
+- Every moved CSV column is a cost column (`impact_cost_dollars`, `unrationed_cost_dollars`, `trade_cost_dollars`,
+  `trade_cost_return`), 1-8 rows of 1,006 per file; no events file, no L0 file, no recipe moved; `capacity_curve.csv`
+  and `v7_transfer_coefficient.csv` identical in all three books; `capacity-x1` daily = the primary daily in all three.
+- **Y-1 (B0-Y1):** `vol_target.csv` byte-identical (`100286a5`), and no `/vol_target` leaf moved in `summary.json` or
+  `v7_extras.json`: none of the B0-Y1 additions was needed (allowed, not exercised).
+- u / w cache counters and identity strings identical (warm on `mega-candidate-cache-v8-lo3`, Debug root).
+- **P9-B0 holds: 0 differences outside the written list. Re-based references (pinned for the next paired tests):**
+  u `build-equity/p9-b0-yf0-u` (orientations `d0d16f30` = the reference's), fit `p9-b0-yf0-fit` (`admission.json`
+  `0dc97aff`, `composition_weights.json` `fdbcb918`), w `p9-b0-yf0-w` (combined json `e13fbc4d` = the reference's),
+  NAV Y-F0 `p9-b0-yf0-nav` (`summary.json` `4f048210`, S2 daily `e7eb5720`, was `73b69bcc`), X-10 `p9-b0-x10-nav`
+  (`summary.json` `42d104fc`), Y-1 `p9-b0-y1-nav` (`summary.json` `07e23261`, `vol_target.csv` `100286a5`).
+- 0 trials; `build-equity/trials.jsonl` 133 lines, `27e40f9f` (mtime 11:32, unchanged).
