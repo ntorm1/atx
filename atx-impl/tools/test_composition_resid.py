@@ -258,10 +258,11 @@ class DeclaredRule(unittest.TestCase):
         self.assertIn('theme_residualise_rule="theme-resid-v1";', detail)
         self.assertIn('"theme_residualise"', (REPO / "atx-impl" / "src" / "strategy_ic_theme_resid.cpp").read_text(
             encoding="utf-8"))
-        # finding R6B-O-4: the runner's copy of the registered order (strategy_ic_theme_resid.hpp theme_resid_order)
-        # extends the fitter's PRIOR_THEMES and places filing_events after the frozen ten (Ruling PM4-11)
-        header = (REPO / "atx-impl" / "src" / "strategy_ic_theme_resid.hpp").read_text(encoding="utf-8")
-        listed = re.search(r"theme_resid_order\{([^}]*)\}", header)
+        # finding R6B-O-4: the runner's built-in theme table (P9 lane D1: strategy_ic_rules.hpp builtin_registry_themes,
+        # the order theme-resid-v1 reads without --theme-registry; it replaced strategy_ic_theme_resid.hpp's
+        # theme_resid_order) extends the fitter's PRIOR_THEMES and places filing_events after the frozen ten (PM4-11)
+        header = (REPO / "atx-impl" / "src" / "strategy_ic_rules.hpp").read_text(encoding="utf-8")
+        listed = re.search(r"builtin_registry_themes\{([^}]*)\}", header)
         self.assertIsNotNone(listed)
         cpp = tuple(re.findall(r'"([a-z0-9_]+)"', listed.group(1)))
         self.assertEqual(cpp[:len(fcw.PRIOR_THEMES)], fcw.PRIOR_THEMES)
