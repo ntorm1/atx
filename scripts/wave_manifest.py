@@ -22,8 +22,10 @@ One wave is one cell on the current book, declared before anything is measured:
                                           whose trial_id is not ledgered yet
    "ledger": PATH,                                the sprint ledger of record (the cells' summ.ledger)
    "expect": {"n_before": N},                     the ledger N the wave was planned on (a stale plan is refused)
-   "out_dir": DIR,                                the wave's state dir (receipts, plans, readers, wave-result.json)
+   "out_dir": DIR,                                the wave's state dir (receipts, plans, readers, wave-result.json);
+                                                  outside the code pathspec (research_tree.CODE_PATHSPEC)
    "record": {"copy_to": DIR?},                   where the record stage copies wave-result.json and the log section
+                                                  (outside the code pathspec too)
    "speed": {"reuse_screen_marginal": true, "screen_first": true}}
                                                  the wave's own speed rules (wave_stages.py; both default true; they
                                                  change no input of a decision): the cell after a sign-rule drop
@@ -47,6 +49,7 @@ import json
 from pathlib import Path
 import re
 
+import research_tree
 import wave_rules
 
 SCHEMA = "atx.research-wave/v1"
@@ -83,6 +86,13 @@ def _rel(value) -> bool:
 
 def _text(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def in_code_pathspec(value: str) -> bool:
+    """Whether a root-relative path lies inside research_tree.CODE_PATHSPEC (what the bounded runner requires clean and
+    what a wave stage commits), case-insensitively (a Windows checkout)."""
+    parts = [p for p in Path(value).parts if p not in ("", ".")]
+    return bool(parts) and parts[0].lower() in {s.lower() for s in research_tree.CODE_PATHSPEC}
 
 
 def candidate_problems(c, where: str, extra_keys: tuple = ()) -> list[str]:
@@ -165,6 +175,9 @@ def validate(m) -> list[str]:
     for key in ("ledger", "out_dir"):
         if key in m and not _rel(m[key]):
             out.append(f"{key} must be a root-relative path")
+    if _rel(m.get("out_dir")) and in_code_pathspec(m["out_dir"]):
+        out.append(f"out_dir {m['out_dir']!r} lies inside the code pathspec ({', '.join(research_tree.CODE_PATHSPEC)}): "
+                   "receipts, readers and results would dirty it (choose a dir outside, e.g. under the build dir)")
     has_c, has_r = "candidates" in m, "rule_cell" in m
     if has_c == has_r:
         out.append("a wave has exactly one of candidates (a library wave) and rule_cell (a rule wave)")
@@ -196,6 +209,9 @@ def validate(m) -> list[str]:
     r = m.get("record", {})
     if not (isinstance(r, dict) and set(r) <= {"copy_to"} and ("copy_to" not in r or _rel(r["copy_to"]))):
         out.append("record must be {copy_to: a root-relative dir}")
+    elif "copy_to" in r and in_code_pathspec(r["copy_to"]):
+        out.append(f"record.copy_to {r['copy_to']!r} lies inside the code pathspec: the copies would stay dirty and "
+                   "the next wave's preflight would refuse (choose a dir outside, e.g. the sprint dir)")
     sp = m.get("speed", {})
     if not (isinstance(sp, dict) and set(sp) <= set(SPEED_KEYS) and all(type(v) is bool for v in sp.values())):
         out.append(f"speed must map {', '.join(SPEED_KEYS)} to true or false")

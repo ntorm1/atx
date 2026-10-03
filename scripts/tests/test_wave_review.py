@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE.parent))
 import wave_fixture as F  # noqa: E402
 import research_wave  # noqa: E402
 import wave_context  # noqa: E402
+import wave_manifest as WM  # noqa: E402
 import wave_stages  # noqa: E402
 
 KEPT_ALL = {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", 0), "alpha_c": ("reject_redundant", 0)}
@@ -308,3 +309,23 @@ def test_reuse_is_off_when_the_screens_marginal_mode_differs(tmp_path):
     mg = result(root)["marginal"]
     assert mg["source"].startswith("the cell's own marginal (scripts/specs/v8/lib-w1b.json, themes)")
     assert [r["id"] for r in mg["rows"]] == ["alpha_a"] and mg["rows"][0]["max_abs_rho"] == 0.3
+
+
+# ------------------------------------------------------------------ MAJOR 7: no state or copies in the code pathspec
+def test_out_dir_and_copy_to_inside_the_code_pathspec_are_refused():
+    m = F.manifest()
+    m["fields"]["manifest_sha256"] = "0" * 64
+    assert WM.validate(m) == []
+    for out_dir, copy_to in (("scripts/waves/w1", "sprint/waves"), ("./atx-impl/out", "sprint/waves"),
+                             ("out/waves/w1", "Scripts/specs/v8/waves"), ("out/waves/w1", "CMakeLists.txt"),
+                             ("out/waves/w1", "cmake/waves")):
+        bad = dict(m, out_dir=out_dir, record={"copy_to": copy_to})
+        problems = " | ".join(WM.validate(bad))
+        assert "inside the code pathspec" in problems, (out_dir, copy_to)
+    assert WM.validate(dict(m, out_dir="build-equity/waves/w1", record={"copy_to": ".superpowers/sdd/x"})) == []
+
+
+def test_a_manifest_with_its_state_in_the_code_pathspec_never_runs(tmp_path):
+    root = F.build(tmp_path / "r", out_dir="atx-impl/waves/w1")
+    code, _ = wave(root, F.FakeCycle(root, KEPT_ALL), "run")
+    assert code == 2 and not (root / "atx-impl/waves").exists()
