@@ -367,9 +367,10 @@ struct KernelPolicy {
 //    * Cells       — element-wise maps, Const, Select, Pin, Split2: cell i depends
 //                    only on input cell i;
 //    * Dates       — LoadField and every Cs* op: a date row depends only on that
-//                    date's rows;
-//    * Instruments — every Ts*/OU/recurrence/Kalman op: instrument column j
-//                    depends only on input column j.
+//                    date's rows; the v8 as-of ops: date row t depends only on
+//                    input rows <= t (inputs are complete before the node runs);
+//    * Instruments — every Ts*/OU/recurrence/Kalman op (and v8 group_delay):
+//                    instrument column j depends only on input column j.
 //  A kernel executed over a sub-range [lo, hi) of its axis therefore writes
 //  exactly the cells the full-range call writes for that range, with the SAME
 //  per-cell arithmetic in the SAME order — so any partition of the axis across
