@@ -7066,4 +7066,54 @@ Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cy
 | 06 match | 0 | 53.8 | 586 (nav) | 4,021 / 2,353 | `6d0b78fb726803bcaf62c779725089681893e4e1b342ba7be48d804bdf2c7cf2` | `5049f58f` (D) | PM6-6: calibration G 1.0016936049 vs G_parent .9862134133 (miss .0155 > .005) -> one correction L 1.1828 x .98621 / 1.00169 = **L 1.1645**; `y-norm-score-y-3-gm.json` (sha256 `27a49f50`, digest `e4b72314`; differs from the cell only in name, description, nav.leverage, nav.output); matched NAV `mega-nav-v8y-norm-score-L1.1645-run` exit 0, 50.9 s, 586 MiB, exe `72ff6d2d`: **G .9861866382** (within .005); readers mech-calibration `38b0e85f`, mech-matched `1f572154`; matched daily CSV `7599e870` |
 | 07 verify | 0 | 0.5 | - (no exe) | 3,496 / 3,380 | `63dfb015ab2ce900f94123d9887dadf276e3e2a4cc3bd6aba425b4c8670e55ce` | - | SEAL-ALLOW: `tools/sealsrc.py --manifest scripts/specs/v8/waves/y-3.json` exit 0 before the run: 6 hits over 30 files, `2026-10-02` source (a) x4 (consoles 004:4, 005:93, 009:4, 010:63), `2026-10-03` source (b) x2 (005:7, 010:7), **0 OTHER**; argv adds `--seal-allow "2026-10-02=untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc wall-clock (PM SEAL-ALLOW)"`. Mechanics **PASS** 6/6 (gross_all_rows .98619 in [.90, 1.05]; abs net .00574 <= .02; tau mean .02933 <= .20; p95 .03473 <= .30; return identity 3.59e-16, cash book 8.44e-14 <= 1e-09); binding argv `cba99575`, file `908fb987`, spec `e4b72314`; seal scan 30 logs, 0 tokens; NAV exe cell `72ff6d2d` = parent `72ff6d2d` (ref none) |
 | 08 judge | 0 | 40.2 | 580 (summ) | 3,819 / 3,133 | `7f4964cd2a55bf437d36404ba79eef2dbbbae14438dad4221ceb098b9d5a9659` | - | driver: `run y-norm-score-y-3-gm.json` (summ 37.2 s, 580 MiB, ledgered the cell), bundle (`f67bc6d1`), book reader (`2ed88bf0`); printed **`verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False, 'mechanics': True, 'criteria': False}`**; dSR -0.0376 (Memmel SE .0401); ledger 128 -> 129 lines |
+| 09 record | 0 | 0.5 | - (no exe) | 3,927 / 3,927 | `3712c174053ee4cc4c13a40f2ba7131ff08ff65444d561031f901e7c7ffed522` | - (no queue: rule wave) | SEAL-ALLOW per-hit check before the run (`tools/sealsrc.py` exit 0): 11 hits over 39 files, `2026-10-02` (a) x7, `2026-10-03` (b) x4, **0 OTHER**; same two `--seal-allow` flags. `wave-result.json` **`619809ea396b173acf54d617f9b6838391ed0645eda89ad0e7497588cdb6583e`**, `wave-log.md` `bd6ebbb7`; copies under `.superpowers/sdd/platform-v8-20260929/waves/y-3/` byte-equal; ledger 128 -> **129** lines (head `a083edaa`), N 57 -> **58**, cell trial `ee5487109c705108`; seal scan 39 logs, 0 tokens |
+
+**Y-3 result (R0-7).** Driver verdict line as printed at judge: `verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False,
+'mechanics': True, 'criteria': False}`. Under PM7-34 the cell is **rejected and counted** (1 construction trial, N 58). The
+next parent stays `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828), as the driver prints.
+
+**YP-7 hand print (registered criterion of the hypothesis; decides nothing).** S2 gross-of-cost annual return per unit
+of all-rows gross, from `wave-result.json` `stats` (`gross_annual` / `mean_gross_leverage_all_rows`): cell .0729263299 /
+.9861866382 = **.0739477976**; parent .0706781735 / .9862134133 = **.0716662058**; difference +.0022815918: **above the
+parent's (met)**. Also printed (cell vs parent, S2 `modeled-1bn-stale5-v1+swap-fin-v1`): net annual 5.834% vs 5.654%;
+realised vol 3.220% vs 3.057%; turnover per unit gross .029742 vs .028528; cost per traded dollar 12.708 vs 12.658 bps;
+borrow .3306% vs .3276% a year; trade cost .9268% vs .8851%; 4x net Sharpe 1.6874 vs 1.6994; `construction.rank_shape`
+(cell NAV summary, every scenario): id norm-score-v1, max |z| 3.2806, 1,004 scored decisions, mean 1,846.3 names.
+
+**The driver's log section** (`build-equity/waves/y-3/wave-log.md`, pasted as written):
+
+### Cell y-3 (rule wave; template `y-norm-score.json` on v8ysb): N 58
+
+**NOT ACCEPTED.** Manifest `scripts/specs/v8/waves/y-3.json` sha256 `a49e53874a3432ed` (commit `c18a92b7c0ec`); parent `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828); driver `research_cycle.py wave run`.
+
+Budget v8y-construction-n57-plus-1: construction N 57 -> 58 of 62.
+
+**Cell** `scripts/specs/v8/y-norm-score-y-3-gm.json` (rule, library v8ysb): gross match pm6-6: calibration L 1.1828 G 1.0016936049 vs G_parent 0.9862134133 -> corrected to L 1.1645, G 0.9861866382.
+
+**Mechanics (S2, read before any return): PASS** (gross_all_rows 0.98619 [0.9, 1.05]; abs_net_all_rows 0.0057379 <= 0.02; tau_mean 0.029332 <= 0.2; tau_p95 0.034728 <= 0.3; max_return_identity_error 3.592e-16 <= 1e-09; max_cash_book_relative_error 8.4431e-14 <= 1e-09).
+
+**Statistics of record** (S2): net Sharpe 1.8119 vs parent 1.8495: dSR -0.0376, Memmel SE 0.0401, CBB 95% [-0.10597929739157326, 0.028037769129756952], LW p 0.2690; bundle p one-sided 0.8644, two-sided 0.2690. DSR (N 58): ledger 0.8221; PBO 0.0765.
+
+**Verdict (pm7-34: paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing): NOT ACCEPTED** {'criteria': False, 'dsr_positive': False, 'mechanics': True}.
+- criterion capacity-4x-higher (printed): unmet
+- criterion turnover-per-gross-not-higher (printed): unmet
+- criterion cost-bps-lower (printed): unmet
+
+Returns (S2, annual): net 5.83% (CAGR 5.95%) vs 5.65%; gross of cost 7.29% vs 7.07%; vol 3.22%; max drawdown 2.70%; 4x net Sharpe 1.6874 vs 1.6994; tau 0.02933 (per unit gross 0.02974).
+
+Ledger `build-equity/trials.jsonl`: lines 128 -> 129, head `a083edaa836b69ef`, N 57 -> 58, cell trial `ee5487109c705108`; admission lines appended 0.
+
+| phase | run dir | s | peak MiB | outcome |
+|---|---|---|---|---|
+| u | `build-equity/mega-v8-b0b-train-u-v8ysb-run1` | 12.7 | 530 | completed |
+| fit | `build-equity/mega-weights-v8x-theme-erc-v8ysb-run1` | 1.9 | 58 | completed |
+| w | `build-equity/mega-v8xw-train-theme-erc-v8ysb-run2` | 52.8 | 1436 | completed |
+| nav | `build-equity/mega-nav-v8y-norm-score-run` | 54.6 | 586 | completed |
+| card | `build-equity/mega-cards-v8x-theme-erc-v8ysb-run` | 24.5 | 1524 | completed |
+| monitor | `build-equity/mega-monitor-v8x-theme-erc-v8ysb-run` | 1.6 | 128 | completed |
+| nav | `build-equity/mega-nav-v8y-norm-score-L1.1645-run` | 50.9 | 586 | completed |
+| summ | `build-equity/cycle-v8y-norm-score-y-3-gm/summ-run1` | 37.2 | 580 | completed |
+
+Hidden-data record: seal scan of 39 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x67 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
+**Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
 

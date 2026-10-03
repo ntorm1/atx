@@ -1,0 +1,374 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "y-3",
+  "kind": "rule",
+  "description": "Cell Y-3 norm-score-v1 (v8y-prereg sections 5, 6, 14; PM8-10 (c), (e); YP-7): rule wave, template scripts/specs/v8/y-norm-score.json @ 02633038 (blob 693c64f5), no free constant, NAV-only; parent = Y-S cell lib-v8ysb-gm.json (library v8ysb, L 1.1828; wave-result 57e9f5ea next_parent); fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); PM6-6 gross matching (gm template); budget construction N 57 + 1 <= 62 (N_c(X-F0) + 6), 0 admission trials.",
+  "manifest": {
+    "commit": "c18a92b7c0ecd6ebe93c873a04427db731f2b6f8",
+    "path": "scripts/specs/v8/waves/y-3.json",
+    "sha256": "a49e53874a3432edcf29e492f660816b76f6de16d65635b663a0252063a1dc10"
+  },
+  "library": null,
+  "template": "scripts/specs/v8/y-norm-score.json",
+  "budget": {
+    "construction_cap": 62,
+    "id": "v8y-construction-n57-plus-1"
+  },
+  "parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "spec_digest": "1e3ec118273cb52d7248568011e7dc24a211e7204c25b1116f5a5bd7deaa8626",
+    "library": "v8ysb",
+    "nav": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+    "leverage": "1.1828"
+  },
+  "screen": null,
+  "cell": {
+    "spec": "scripts/specs/v8/y-norm-score-y-3-gm.json",
+    "spec_digest": "e4b723142b0bd0c45283b9b6f5a6edd5ef6db06e9dccad731ae1ba04ded34d50",
+    "library": "v8ysb",
+    "kind": "rule",
+    "nav": "build-equity/mega-nav-v8y-norm-score-L1.1645",
+    "leverage": "1.1645",
+    "gross": 0.9861866381578155,
+    "gross_parent": 0.9862134133265011,
+    "gross_calibration": 1.0016936048546479,
+    "leverage_calibration": "1.1828",
+    "corrected": true,
+    "gross_match": "pm6-6"
+  },
+  "marginal": null,
+  "mechanics": {
+    "pass": true,
+    "rows": [
+      {
+        "check": "gross_all_rows",
+        "limit": "[0.9, 1.05]",
+        "pass": true,
+        "value": 0.9861866381578155
+      },
+      {
+        "check": "abs_net_all_rows",
+        "limit": "<= 0.02",
+        "pass": true,
+        "value": 0.005737883254074282
+      },
+      {
+        "check": "tau_mean",
+        "limit": "<= 0.2",
+        "pass": true,
+        "value": 0.02933159875719262
+      },
+      {
+        "check": "tau_p95",
+        "limit": "<= 0.3",
+        "pass": true,
+        "value": 0.034728349716079174
+      },
+      {
+        "check": "max_return_identity_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.591961797444476e-16
+      },
+      {
+        "check": "max_cash_book_relative_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 8.443126091668232e-14
+      }
+    ],
+    "rule": "v8-mech"
+  },
+  "nav_exe": {
+    "cell": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "equal": true,
+    "parent": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "ref": "none"
+  },
+  "seal_scan": {
+    "files": 39,
+    "seal": "2024-01-01",
+    "forms": [
+      "iso",
+      "compact",
+      "year",
+      "quarter"
+    ],
+    "tokens_at_or_after_seal": 0,
+    "where": [],
+    "seal_references": {
+      "tokens": 0,
+      "files": []
+    },
+    "allowed": [
+      {
+        "token": "2026-10-02",
+        "ruling": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/y-3/consoles/004-calibration-run----stop-after-nav.log",
+          "build-equity/waves/y-3/consoles/005-mechanics-reader.log",
+          "build-equity/waves/y-3/consoles/009-matched-run----stop-after-nav.log",
+          "build-equity/waves/y-3/consoles/010-mechanics-reader.log",
+          "build-equity/waves/y-3/consoles/011-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/y-3/consoles/012-bundle--pm5-23.log",
+          "build-equity/waves/y-3/consoles/013-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-03",
+        "ruling": "receipt started_utc wall-clock (PM SEAL-ALLOW)",
+        "tokens": 4,
+        "files": [
+          "build-equity/waves/y-3/consoles/005-mechanics-reader.log",
+          "build-equity/waves/y-3/consoles/010-mechanics-reader.log",
+          "build-equity/waves/y-3/consoles/012-bundle--pm5-23.log",
+          "build-equity/waves/y-3/consoles/013-book-reader.log"
+        ]
+      },
+      {
+        "token": "20260927",
+        "ruling": "nav_summ's default bootstrap seed (not a date)",
+        "tokens": 1,
+        "files": [
+          "build-equity/cycle-v8y-norm-score-y-3-gm/summ-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20260929",
+        "ruling": "nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)",
+        "tokens": 67,
+        "files": [
+          "build-equity/cycle-v8y-norm-score-y-3-gm/summ-run1/stdout.log",
+          "build-equity/waves/y-3/bundle-run1/stdout.log"
+        ]
+      }
+    ],
+    "rulings": {
+      "2026-10-02": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+      "2026-10-03": "receipt started_utc wall-clock (PM SEAL-ALLOW)"
+    }
+  },
+  "stats": {
+    "cell": {
+      "ann_vol": 0.03219707424376145,
+      "annual_costs": {
+        "borrow": 0.0033064332650020994,
+        "long_financing": 0.0020134970239992973,
+        "trade_cost": 0.009267682286365488
+      },
+      "cagr": 0.05951805380236164,
+      "cost_bps_traded": 12.707524059716789,
+      "daily_csv_sha256": "7599e8701b1d0fd3a8daec82061cea0a4ab2f5192f1888226c99377dd60f89b0",
+      "dir": "build-equity/mega-nav-v8y-norm-score-L1.1645",
+      "gross_annual": 0.07292632992290438,
+      "gross_sharpe": 2.2647493574094186,
+      "max_drawdown": 0.02695766740419092,
+      "mean_gross_leverage_all_rows": 0.9861866381578155,
+      "net_annual": 0.05833871734753749,
+      "net_sharpe": 1.8119260435236995,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.02933159875719262,
+      "tau_per_gross": 0.029742441868796446,
+      "x4_net_sharpe": 1.687364694216834
+    },
+    "parent": {
+      "ann_vol": 0.030569717335626075,
+      "annual_costs": {
+        "borrow": 0.003275975200840431,
+        "long_financing": 0.0020127166514112933,
+        "trade_cost": 0.008851338874388331
+      },
+      "cagr": 0.05766642148886314,
+      "cost_bps_traded": 12.657953278624719,
+      "daily_csv_sha256": "73b69bcceb122b7c21bb3f75619058c51b8104ebd8a694bbbb1b12db14b401b0",
+      "dir": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+      "gross_annual": 0.07067817348886478,
+      "gross_sharpe": 2.3117806086991832,
+      "max_drawdown": 0.02580037230369092,
+      "mean_gross_leverage_all_rows": 0.9862134133265011,
+      "net_annual": 0.05653814276222473,
+      "net_sharpe": 1.849482026329859,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.028134396709054203,
+      "tau_per_gross": 0.028527696266223746,
+      "x4_net_sharpe": 1.6994264697927697
+    }
+  },
+  "paired": {
+    "cbb_ci": [
+      -0.10597929739157326,
+      0.028037769129756952
+    ],
+    "dsr": -0.037555982806160904,
+    "lw_p": 0.269,
+    "se": 0.040099109455233865
+  },
+  "bundle": {
+    "cbb_ci95": [
+      -0.10597929739157326,
+      0.028037769129756952
+    ],
+    "dsr": -0.037555982806160904,
+    "freeze_gate": false,
+    "lw_ci95": [
+      -0.10620651109220201,
+      0.03105714843220253
+    ],
+    "memmel_se": 0.040099109455233865,
+    "p_one_sided": 0.8644,
+    "p_two_sided": 0.269,
+    "path": "build-equity/waves/y-3/bundle.json",
+    "rho": 0.9968370874164126,
+    "sessions": 1005,
+    "sha256": "f67bc6d15106cc4d40ed2ff2681d4eb6044ab53385a2344c2871c324e746a7de"
+  },
+  "dsr": {
+    "cell_count": 0.8220897197713544,
+    "effective_n": 0.9328912591693014,
+    "legacy": {
+      "cells": 37,
+      "dsr": 0.9608242212285945,
+      "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"
+    },
+    "n": 58,
+    "source": "nav_summ --dsr-ledger (deflated_ledger)",
+    "variance_cells": 29,
+    "variance_sr": 0.0013025656241838102,
+    "window_id": "research-window-v2"
+  },
+  "pbo": 0.07653457653457653,
+  "verdict": {
+    "accepted": false,
+    "checks": {
+      "criteria": false,
+      "dsr_positive": false,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      },
+      {
+        "criterion": "cost-bps-lower",
+        "met": false,
+        "printed": "unmet",
+        "text": "S2 cost_bps_traded lower than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": -0.037555982806160904,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 128,
+    "lines_after": 129,
+    "head": "a083edaa836b69ef622c1b1fb08b2e0a5fb34fea1bc1f3e10cd6f0562959459e",
+    "n_before": 57,
+    "n_after": 58,
+    "trial_id": "ee5487109c705108",
+    "admission_lines": []
+  },
+  "next_parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "timings": [
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 530,
+      "phase": "u",
+      "run_dir": "build-equity/mega-v8-b0b-train-u-v8ysb-run1",
+      "seconds": 12.68800000000192
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 58,
+      "phase": "fit",
+      "run_dir": "build-equity/mega-weights-v8x-theme-erc-v8ysb-run1",
+      "seconds": 1.889999999999418
+    },
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1436,
+      "phase": "w",
+      "run_dir": "build-equity/mega-v8xw-train-theme-erc-v8ysb-run2",
+      "seconds": 52.79699999999866
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8y-norm-score-run",
+      "seconds": 54.609000000004016
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1524,
+      "phase": "card",
+      "run_dir": "build-equity/mega-cards-v8x-theme-erc-v8ysb-run",
+      "seconds": 24.485000000000582
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 128,
+      "phase": "monitor",
+      "run_dir": "build-equity/mega-monitor-v8x-theme-erc-v8ysb-run",
+      "seconds": 1.5780000000013388
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8y-norm-score-L1.1645-run",
+      "seconds": 50.875
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 580,
+      "phase": "summ",
+      "run_dir": "build-equity/cycle-v8y-norm-score-y-3-gm/summ-run1",
+      "seconds": 37.234000000004016
+    }
+  ],
+  "receipts": {
+    "01-preflight": "003e265c5436eda829785718a53c364562226b44c5616fa9ac159f00a1db323e",
+    "02-register": "b06d66b2eca413b28f0a0ec5a228681ec1825481dcb3131c921ade493af3e7a8",
+    "03-screen": "9d4571c0612f0419f73d59d16d8afc520da73bdf0430d708256842a62c99c4c0",
+    "04-spec": "47fcb6e2d0fe5d6404f9a20000804087996291f51bf673cbbcc18866fc00330a",
+    "05-run": "3aa00ea5da844f806e83a667e7a3fd19144d661669207d7021c1b73311bd86d2",
+    "06-match": "6d0b78fb726803bcaf62c779725089681893e4e1b342ba7be48d804bdf2c7cf2",
+    "07-verify": "63dfb015ab2ce900f94123d9887dadf276e3e2a4cc3bd6aba425b4c8670e55ce",
+    "08-judge": "7f4964cd2a55bf437d36404ba79eef2dbbbae14438dad4221ceb098b9d5a9659"
+  }
+}
