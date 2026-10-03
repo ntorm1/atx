@@ -206,6 +206,14 @@ def measure() -> dict[str, Any]:
                "pass": {c: overall[c] >= 0.99 for c in MEASURED},
                "input_manifests_sha256": M.input_manifests("panel", "market/market_liquidity_manifest.json")}
     C.write_json_atomic(C.stage_dir("validation") / "liquidity_coverage.json", summary)
+    # GC9: the published manifest carries the measured gate
+    path = C.build_root() / OUT_DIR / f"{STAGE}_manifest.json"
+    manifest = C.read_json(path)
+    manifest["gate_status"] = {"criterion": "S3.7: finite on >= 99% of panel member_equity cells 2019-2026",
+                               "pass": all(summary["pass"].values()),
+                               "measured_min": min(overall.values()), "per_column": overall,
+                               "measured_by": "validation/liquidity_coverage.json"}
+    C.write_json_atomic(path, manifest)
     return summary
 
 

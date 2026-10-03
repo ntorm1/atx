@@ -118,3 +118,23 @@ def test_liquidity_bucket_matches_reference_formulas(lake):
     assert got["adv_21"] == pytest.approx(sum(adv) / 21)
     assert got["available_at"] == T(2018, 2, 28, 22)
     assert out[D(2018, 1, 10)]["spread_cs_21"] is None            # fewer than 10 pairs
+
+
+def test_measure_writes_gate_status_into_manifest(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path))
+    from atx_db.alpha_panel import common, market_common
+    importlib.reload(common)
+    importlib.reload(market_common)
+    importlib.reload(L)
+    common.write_json_atomic(tmp_path / "market" / "market_liquidity_manifest.json", {"stage": L.STAGE, "files": {}})
+    cov = {c: 1.0 for c in L.MEASURED}
+    per_year = {"2019": {"cells": 300, **cov}, "2020": {"cells": 100, **cov, "turnover_63": 0.96}}
+    monkeypatch.setattr(market_common, "member_coverage", lambda *a, **k: per_year)
+    out = L.measure()
+    assert out["overall_2019_2026"]["turnover_63"] == pytest.approx(0.99)      # cell-weighted over the years
+    gate = common.read_json(tmp_path / "market" / "market_liquidity_manifest.json")["gate_status"]
+    assert gate["pass"] is True and gate["measured_min"] == pytest.approx(0.99)
+    per_year["2020"]["turnover_63"] = 0.9
+    assert common.read_json(tmp_path / "market" / "market_liquidity_manifest.json")["gate_status"]["pass"] is True
+    L.measure()
+    assert common.read_json(tmp_path / "market" / "market_liquidity_manifest.json")["gate_status"]["pass"] is False

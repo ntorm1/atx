@@ -63,6 +63,7 @@ RUSSELL_MIN_ME = 30e6
 BAND = 0.025
 SP_N, SP_BUFFER = 500, 600
 SP_LIQ_RATIO = 0.75
+R2000_COMPANIES = (1900, 2100)   # gate (task-MKT S3.6): R2000 proxy company count at every reconstitution
 INPUTS = ("panel", "market/market_shares_manifest.json", "market/market_liquidity_manifest.json", "security_master")
 
 LAKE_STAGES = [
@@ -132,6 +133,17 @@ def sp_schedule(first: dt.date, last: dt.date) -> list[tuple[dt.date, dt.date]]:
             if first <= rank_month_end and reb <= last:
                 out.append((rank_month_end, reb))
     return out
+
+
+def russell_gate(summary: list[dict[str, Any]], bounds: tuple[int, int] = R2000_COMPANIES) -> dict[str, Any]:
+    """GC9 gate status: the R2000 proxy holds ``bounds`` companies at every reconstitution (lines reported too)."""
+    r2 = [s for s in summary if s["index_id"] == "R2000P"]
+    outside = {str(s["recon_date"]): s["companies"] for s in r2 if not bounds[0] <= s["companies"] <= bounds[1]}
+    return {"criterion": f"R2000 proxy companies in [{bounds[0]}, {bounds[1]}] at every reconstitution",
+            "pass": bool(r2) and not outside, "outside": outside,
+            "companies": {str(s["recon_date"]): s["companies"] for s in r2},
+            "lines": {str(s["recon_date"]): s["lines"] for s in r2},
+            "official_overlap": "GAP: FTSE Russell / S&P DJI constituent lists are licensed (not measured)"}
 
 
 def last_session_on_or_before(cal: list[dt.date], d: dt.date) -> dt.date | None:
@@ -249,7 +261,7 @@ def build() -> dict[str, Any]:
     receipt["counts_on_recon"] = {f"{s['index_id']} {s['recon_date']}": s["lines"] for s in summary}
     C.write_stage_manifest(STAGE, SCHEMA, MODULES, {
         "rule": ["russell-proxy-v1", "sp500-proxy-v1"], "rule_text": __doc__, "staleness": "annual / quarterly",
-        "input_manifests_sha256": M.input_manifests(*INPUTS),
+        "input_manifests_sha256": M.input_manifests(*INPUTS), "gate_status": russell_gate(summary),
         "gap": "official constituent lists are licensed / terms-gated: no overlap measured", "receipt": receipt})
     return receipt
 

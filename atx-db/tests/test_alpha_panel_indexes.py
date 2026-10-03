@@ -75,3 +75,13 @@ def test_intervals_end_at_next_recon_or_last_session_and_turnover():
     assert (s["additions"], s["deletions"]) == (1, 0)                      # line 2 was gone before the recon
     assert s["turnover_oneway"] == pytest.approx(0.5) and s["turnover_cap"] == pytest.approx(0.4)
     assert r[(1, D(2020, 6, 26))]["available_at"] == dt.datetime(2020, 5, 8, 22)
+
+
+def test_russell_gate_counts_companies_per_recon():
+    summ = [{"index_id": "R2000P", "recon_date": D(2020, 6, 26), "companies": 1990, "lines": 2050},
+            {"index_id": "R2000P", "recon_date": D(2021, 6, 25), "companies": 2101, "lines": 2150},
+            {"index_id": "R1000P", "recon_date": D(2021, 6, 25), "companies": 1000, "lines": 1020}]
+    g = X.russell_gate(summ)
+    assert g["pass"] is False and g["outside"] == {"2021-06-25": 2101}
+    assert g["companies"] == {"2020-06-26": 1990, "2021-06-25": 2101} and g["lines"]["2020-06-26"] == 2050
+    assert X.russell_gate(summ[:1])["pass"] is True and X.russell_gate([])["pass"] is False
