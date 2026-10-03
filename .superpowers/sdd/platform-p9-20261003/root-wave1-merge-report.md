@@ -304,7 +304,8 @@ Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration
 
 - **Identity: flag-absent Debug X-5 marginal** (S1 report step 3 / fix round 1 step 3). The killed agent's two runs
   were reused after proving their provenance; I re-ran nothing.
-  - argv = the v8 X-5 lineage's marginal step (X-5 = `x-theme-erc` -> `lib-v8x3b-gm`, T1 review): exactly the argv
+  - argv = the marginal step of library v8x3b, owned by X-5's parent X-3 (`lib-v8x3b-gm.json`; X-5 =
+    `x-theme-erc-gm.json`, a child spec that inherits the parent's u / marginal outputs and changes only the fit): exactly the argv
     of v8's `mega-v8-b0b-train-u-v8x3b-marginal-poolonly-run` (candidate cache `mega-candidate-cache-v8-lo3`, library
     `fund_industry_ic_v8x3b.json` `32f8d69f`, pool `848612980`, role lo3 `e1c67101`, themes `c67edffa`, fields v13,
     `--min-names 1000`), only `--output` changed; through `run_bounded_research.py` (360 s, cap 1,024 MiB), both
@@ -380,8 +381,10 @@ Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration
   | `-m pytest atx-impl/tools/test_exposures_export.py atx-impl/tools/test_horizon_stats.py` (no exe env) | 11 passed, 1 skipped (needs the exe) | 0 | 5 s |
   | same, with `ATX_EQUITY_TARGETS_EXE` = the new exe | 12 passed, 0 skipped (`test_verb_export_reproduces_the_fitters_factors` on the p9-1d exe) | 0 | 5 s |
 
-- **Identity 1: existing verb bytes unchanged** (B1 step 4: "X-5's nav ... must stay byte-identical"). X-5's NAV
-  argv exactly as v8 recorded it (`mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b-run`: `nav
+- **Identity 1: existing verb bytes unchanged** (B1 step 4: "X-5's nav ... must stay byte-identical"). The NAV argv
+  of X-5's parent X-3 (`lib-v8x3b-gm`; I first took it for X-5's own -- X-5's own NAV, `x-theme-erc-gm` at L 1.1720,
+  is run in slot 7 on the post-D1 exe) exactly as v8 recorded it
+  (`mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b-run`: `nav
   --combined mega-v8-r1w-train-std-v8x3b-1/train_combined.json` `7f9a6bc5`, role lo3, fields v13, label role
   lo3-dlret, `aim-partial-v5`, L 1.1414, `--capacity-curve`, ...), only `--output` changed; bounded runner 300 s, cap
   1,536 MiB, `--admission-wait-seconds 600`, source `1ab97798`.
@@ -394,7 +397,7 @@ Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration
   | compared (SHA-256 per file, whole tree) | expected | observed | match |
   |---|---|---|---|
   | old vs new | all files byte-identical | 27 / 27 files identical (5 daily CSVs, 5 events CSVs, recipe, summary, v7_extras, v7 TC CSV, capacity_curve.csv, `capacity/*`); none on one side only | **yes** |
-  | old vs v8's recorded X-5 NAV dir (exe `a95f6f0a`) | (extra check) | 27 / 27 identical | yes |
+  | old vs v8's recorded X-3 NAV dir (exe `a95f6f0a`) | (extra check) | 27 / 27 identical | yes |
 
 - **Identity 2: admission comparator on real data** (B1 step 5; P12: decisions and order byte-equal, floats within
   1e-12 x max(1, |x|)). Scratch scripts `b1_signals.py`, `b1_factor_compare.py`, `b1_admission_compare.py`,
@@ -431,3 +434,116 @@ Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration
 - **Slips fixed:** none in code (the signals-path slip was in my own input file).
 - **B1 merge note** (`load_pinned_f64` from S1's TU, D1's header): built after S1 here; rebuilt after D1 in slot 7.
 - **Trial ledger:** 0 trials (reader runs; no ledger line).
+
+### Slot 7: D1 (`757ba582`, pool-20)
+
+- **Merge:** `git merge --no-ff 757ba582` -> **`1239a5ff`**. Two list-tail conflicts (ruling P2), every block kept,
+  the integration branch's first:
+  - `atx-impl/CMakeLists.txt`: S1's pair-cache line + B1's factors block, then D1's `strategy_ic_rules.cpp` block. Not
+    a plain marker strip: the conflict hunk ended before an `endif()` that B1's and D1's blocks share textually (git
+    took the common last line out of the hunk), so removing only the markers would have left B1's `if()` without its
+    `endif()` and given D1's two. Resolved as B1 block + `endif()`, then D1 block + `endif()` (6 `if(` / 6 `endif()` in
+    the file).
+  - `atx-impl/tests/CMakeLists.txt`: T1's deferred registration + B1's `target_sources`, then D1's `target_sources`
+    of `strategy_ic_rules_test.cpp` (a blank separator line added).
+  - No D1 file is in either S1-pinned source list (`dsl_vm_sources`, `ic_result_sources`: engine files only), so the
+    S1 pin `2d758bff` needs no recompute; no expected hash was touched.
+  - The merge was committed from the index only: the tree also held other agents' uncommitted edits
+    (`progress.md`, `wave2-carry.md`, `docs/plans/2026-10-03-p9-sprint-plan.md`), left as they were.
+- **Pre-build reference:** the S1-only IC exe (`4e321143`, p9-1c) was copied with the bin DLLs to
+  `build-equity/p9-m1b-ref-ic-s1/` before the build, for attribution had the D1 identity failed (not needed).
+- **Build p9-1e** (source `1239a5ff`, DirtyEntries 4 = the owner's png + the three other agents' files above, all
+  outside the code pathspec; equity-dev, 4 jobs, free 4,249 MiB at admission): targets exactly D1's four
+  `atx-equity-strategy-ic, atx-impl-strategy-ic-tests, atx-impl-strategy-target-tests, atx-impl-tests` -> **exit 0,
+  117.8 s, 41 TUs, 6 links, 0 warnings** (the one "error"-matching log line is again PowerShell wrapping cmake's
+  `-- GLOB mismatch!` notice). D1's `Role::memory` risk did not fire (no `-Wmissing-field-initializers` at
+  `strategy_research_role.cpp:121`); D1 compiled first time (no slip). Executables: `atx-equity-strategy-ic`
+  **`52892590e290b4a7a61a08bc4d1718a084cb1d4b36516ee39320f5c2a5e1fd2b`**, `atx-impl-strategy-ic-tests`
+  `609f4005...fe33`, `atx-impl-strategy-target-tests` `fce04cd1...5781`, `atx-impl-tests` `f9eb7a2a...9946`.
+- **Build p9-1f = B1's five targets rebuilt after D1** (B1 merge note; source `1239a5ff`, free 3,277 MiB): exit 0,
+  6.2 s, **0 TUs** (p9-1e had already compiled `atx-impl-core` with D1), 1 link, 0 warnings. `atx-equity-strategy-targets`
+  relinked -> **`f0ee3908fd16dec755cde89f36b06b8ee451185b8b6df827a959ad75a032683c`**; `atx-impl-strategy-target-tests`
+  = p9-1e's `fce04cd1`; `atx-research-admission` `416966bc` and `atx-engine-research-admission-tests` `c2b35ce7`
+  unchanged from p9-1d (engine library, no atx-impl dependency).
+- **gtests** (Debug, all exit 0, 0 failed):
+
+  | binary / filter | result |
+  |---|---|
+  | D1 new: `atx-impl-strategy-ic-tests --gtest_filter=CompositionRules.*:IcAdmission.*:ThemeRegistryRunner.*` | 8 passed (CompositionRules 6 incl. ListRulesJsonPinned / StageListIsTheV8CallSequence, IcAdmission 1, ThemeRegistryRunner 1) |
+  | D1 regressions: `atx-impl-strategy-ic-tests --gtest_filter=StrategyIcRunner.*:CompositionV8.*:ThemeResidRunner.*:ThemeTsmomRunner.*:TwoSpeedRunner.*:NoComposition.*:FieldCaps.*:Workers.*:StrategyIcComposition.*:ThemeResid.*:ThemeTsmom.*:IcShrinkV1.*:IcShrinkAimV1.*:ThemeErcV1.*:MarginalIc.*` | 132 passed in 15 suites (StrategyIcRunner 51, MarginalIc 15, CompositionV8 13, ThemeResid 9, ThemeTsmom 7, StrategyIcComposition 7, IcShrinkV1 5, ThemeErcV1 5, FieldCaps 4, ThemeResidRunner 4, IcShrinkAimV1 4, NoComposition 3, ThemeTsmomRunner 2, TwoSpeedRunner 2, Workers 1), 54.6 s |
+  | `atx-impl-strategy-target-tests --gtest_filter=TwoSpeed.*` | 20 passed |
+  | S1's filter again after D1 (`MarginalIc.*:IcIdentity.*:CombineMarginalRankIc.*:` + the 2 pins) | 31 passed |
+  | B1 after D1: `FactorsVerb.*` (target-tests) / `ResearchAdmission*` | 4 passed / 16 passed |
+  | `atx-impl-tests --gtest_filter=CompositionRules.*:Exposures.*:FactorsVerb.*` (D1 and B1 through the glob; closes slot 6's deferred `Exposures.*`) | 14 passed (CompositionRules 6, Exposures 4, FactorsVerb 4) |
+
+- **K-P9-6:** `atx-equity-strategy-ic.exe --list-rules --json` exit 0, output **JSON-equal** to
+  `atx-impl/tests/fixtures/composition_rules_list.json` (8 rules); `--list-rules --json --workers 4` exits 2 (P7).
+- **pytest** (touched: the fitter, `test_composition_resid.py`, the new plugin test; B1's comparator imports the
+  fitter, so its suites re-ran too):
+
+  | command | result | exit | wall |
+  |---|---|---|---|
+  | `-m pytest` on D1's ten fitter / composition suites (`atx-impl/tools/test_fit_composition_weights.py`, `_pool`, `_store`, `test_composition_ic_shrink.py`, `_resid`, `_rules`, `_theme_erc`, `_theme_tsmom`, `_two_speed`, `test_fit_composition_rule_plugins.py`) | **231 passed, 17 subtests** (= the lane's count) | 0 | 110 s |
+  | `ATX_EQUITY_TARGETS_EXE`, `ATX_RESEARCH_ADMISSION_EXE` = post-D1 exes: `test_factor_series_admission.py test_exposures_export.py test_horizon_stats.py` | 20 passed, 0 skipped | 0 | 12 s |
+
+- **Identity: X-5, flag absent** (D1 "How root verifies": R0-3's procedure with D1's exe and fitter). Argvs rebuilt
+  token by token from R0-3's receipts (scratch `rerun.py`), only the listed tokens changed; R0-3's runs (v8-16d,
+  source `d7c1c520`) are the references, X-5's own dirs the second reference; limits = R0-3's; source `1239a5ff`;
+  compared by SHA-256 and JSON path only (scratch `dircmp.py`, `jdiff.py`, `wclass.py`); no value of a summary, daily
+  IC or NAV file read.
+
+  | pass | changed tokens | exe | outcome / wall / peak | vs R0-3 | vs X-5's own | match |
+  |---|---|---|---|---|---|---|
+  | fit (`p9-d1-x5-fit`) | `--output` | python, D1 fitter | completed 0 / 1.0 s / 58 MiB; "computed 0, reused 58" (D1's unchanged producer fingerprints) | `admission.csv` byte-identical; `admission.json` differs only at `/inputs/script_sha256`; `composition_weights.json` only at `/provenance/{admission_sha256, script_sha256, std/registry_sha256}` | same three files, same paths (= R0-3's PM7-30 set vs X-5) | **yes** |
+  | w, cold cache (`p9-d1-x5-w`) | `--output`, `--candidate-cache` -> new empty `p9-d1-x5-cand-cache-empty` | ic `52892590` | completed 0 / 185.8 s / 2,401 MiB (cap 3,072; min free 1,276) | 10 / 12 files byte-identical (6 `train_combined.*`, daily IC, orientations, recipe, planned targets); `summary.json` 419 paths = 118 cache-directory paths (directory, fields_directory, 58 payload, 58 sidecar; each equal after substituting the cache dir) + 301 `*seconds` fields; `train_candidates.jsonl` 290 `*seconds` fields; I/O counters equal (both cold) | 10 / 12 identical | **yes** |
+  | cache entries the cold run wrote | -- | -- | -- | 174 files, same set as R0-3's cache; 58 / 58 `.f64` payloads byte-identical; the 116 sidecars differ only at `engine_git_sha` (build provenance) | -- | yes |
+  | NAV (`p9-d1-x5-nav`) | `--output` | targets `f0ee3908` (p9-1f, S1 + B1 + D1) | completed 0 / 54.1 s / 586 MiB | 27 / 27 byte-identical | 27 / 27 byte-identical; S2 daily `529062d6` = X-5's ledgered | **yes** |
+
+  **Flag present** (D1: "every output file byte-identical except that summary.json gains theme_registry_sha256"):
+  the w argv + `--theme-registry atx-impl/strategies/alphas/registry.json --theme-registry-sha256
+  26b74e100cb34cf64c8868c292aff38805b89aef7ae5ac30a0ebac76da796ded`, on the cache the cold run had just filled
+  (`p9-d1-x5-w-reg`): completed 0, 55.0 s, 1,371 MiB. Against X-5's own w (also warm): 10 / 12 identical;
+  `summary.json` differs only at the 118 cache-directory paths and **`/theme_registry_sha256` (added)** (+ seconds);
+  `train_candidates.jsonl` only seconds. Against my flag-absent cold run: the same added key, plus the warm-vs-cold
+  cache counters (`hits`, `misses`, `vm_evaluations`, `field_loads`, `loaded_bytes`, `peak_resident_fields`,
+  `verify_bytes`; `signal_cache` / `ic_result_cache` "miss" -> "hit") and seconds. **Match: yes.**
+
+  **Result: D1 identity holds** (flag absent: fit, cold w and NAV reproduce X-5 / R0-3; flag present: only
+  `theme_registry_sha256` added). These runs also re-check S1 (in the IC exe) and B1 (in the targets exe) at the
+  wave-1 head before C1.
+- **Slips fixed:** none in code (the shared-`endif()` hunk was a merge resolution, logged above).
+- **Trial ledger:** 0 trials; `build-equity/trials.jsonl` 133 lines, sha256 prefix `27e40f9f`, mtime 11:32 (unchanged by every M1b run).
+
+### M1b commits (first-parent, on `20443022`)
+
+| commit | what |
+|---|---|
+| `7d618e24` | slot 5 (S1) closed: report section + log row + PM's pending `progress.md` lines |
+| `1ab97798` | merge B1 (`01f20405`), 3 CMake list tails, all blocks kept |
+| `394fc8b8`, `e6b583f2` | slot 6 log row / report section |
+| `1239a5ff` | merge D1 (`757ba582`), 2 CMake list tails, all blocks kept (shared `endif()` resolved) |
+| (next) | slot 7 + this hand-off, the log, `progress.md` |
+
+### For M1c (slot 8, C1) and M1d
+
+- **Status: M1b DONE.** Slots 5-7 merged, built, tested and identity-checked; no stop condition met. Known-red set
+  untouched by my runs: none of the three known reds is in any filter or suite I ran, and no other failure occurred.
+- **Next free build tag: `p9-1g`** (p9-1c = S1, p9-1d = B1, p9-1e = D1, p9-1f = B1 rebuilt after D1).
+- **bin now** (equity-dev, source `1239a5ff`): ic `52892590`, targets `f0ee3908`, ic-tests `609f4005`, target-tests
+  `fce04cd1`, impl-tests `f9eb7a2a`, admission `416966bc`, admission-tests `c2b35ce7`, fields exe `666ae58f` (p9-1b).
+- **`atx-impl/CMakeLists.txt` tail** now ends with three blocks (S1 line; B1 `if()...endif()`; D1 `if()...endif()`).
+  C1's append will conflict the same way: check that every `if()` keeps exactly one `endif()` after the resolution.
+- **C1 stage-1 baseline:** `build-equity/p9-d1-x5-nav` is X-5's NAV at the wave-1 head minus C1 and is 27 / 27
+  identical to X-5's ledgered dir and R0-3's `v8-i16d-x5-nav`; any of the three serves as "old X-5 NAV".
+- **Reference exes kept** (with DLLs, runnable in place): `build-equity/p9-m1b-ref-ic` (v8-16d ic `985019d9`),
+  `p9-m1b-ref-ic-s1` (S1-only ic `4e321143`), `p9-m1b-ref-targets` (v8-16d targets `72ff6d2d`).
+- **Deferred to M1d:** S1's Release gtests (`MarginalIc.*`, S1's full filter, the whole IC test binary) and Release
+  marginal adoption: no Release tree exists in pool-2; the first `equity-rel` configure fetches deps into the new
+  `deps/equity-rel` (S1's preset change). G-P4 counts: D1's rules test is in `atx-impl-strategy-ic-tests` and
+  `atx-impl-tests`; B1's admission tests are a new `atx_research` target -- count at M1d.
+- **For E2 / D2** (B1, wave-2 carry): `signals.json` payload paths must be absolute or relative to the signals DIR
+  (`strategy_factors_verb.cpp:117`); B1's comparator recipe as written produces repo-relative paths. A missing payload
+  is reported as "extent" by the shared `load_pinned_f64` (minor: message conflates missing and wrong size).
+- **Host:** free memory 3.2-4.8 GB at my launches, dipping to ~1.3 GB during the cold w (2.4 GB peak) while another
+  session's processes ran. A pytest I did not start (PID 7524, `timeout.exe 1200 ... test_fit_composition_weights.py
+  test_alpha_report_card.py`, from 15:23) was alive at hand-off; I left it. I left no process of my own.
