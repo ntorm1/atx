@@ -26,7 +26,16 @@ class AttemptBudget:
         self.root=root
         root.mkdir(parents=True,exist_ok=True)
         self.path=root/'attempt-counter.json'
+        if not self.path.exists() and any((root/name).exists() for name in ('attempts.jsonl','receipts.jsonl')):
+            raise RuntimeError('Existing Task5 ledgers require durable attempt-counter reconciliation')
         self.state=C.read_json(self.path) if self.path.exists() else {'attempts':0,'raw_bytes':0}
+        if not (0 <= self.state['attempts'] <= MAX_ATTEMPTS and 0 <= self.state['raw_bytes'] <= MAX_TOTAL):
+            raise RuntimeError('Invalid durable Task5 attempt/byte counter')
+        ledger=root/'attempts.jsonl'
+        if ledger.exists():
+            recorded=[json.loads(line)['attempt'] for line in ledger.read_text(encoding='utf8').splitlines() if line.strip()]
+            if recorded and max(recorded)>self.state['attempts']:
+                raise RuntimeError('Task5 counter is behind durable attempt ledger')
         self.limiter=limiter or sec_http.SecRateLimiter(rate_per_s=1.0)
 
     def acquire(self,label=None):

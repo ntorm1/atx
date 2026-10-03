@@ -92,3 +92,13 @@ def test_attempt_counter_survives_restart_and_stops_before_thirteenth_http(tmp_p
     with pytest.raises(RuntimeError,match='cap exhausted'):b2.acquire('retry')
     assert lim.calls==12 and json.loads(b.path.read_text())['attempts']==12
     assert len((tmp_path/'attempts.jsonl').read_text().splitlines())==12
+
+
+def test_missing_or_regressed_counter_cannot_reset_consumed_allocation(tmp_path):
+    ledger=tmp_path/'attempts.jsonl'
+    ledger.write_text(json.dumps({'attempt':2})+'\n',encoding='utf8')
+    with pytest.raises(RuntimeError,match='reconciliation'):
+        D.AttemptBudget(tmp_path,Limiter())
+    (tmp_path/'attempt-counter.json').write_text(json.dumps({'attempts':1,'raw_bytes':0}),encoding='utf8')
+    with pytest.raises(RuntimeError,match='behind'):
+        D.AttemptBudget(tmp_path,Limiter())
