@@ -64,11 +64,11 @@
       "status": "BASELINE_PASS_FINAL_PENDING",
       "measurement": {
         "command": "python ../.superpowers/sdd/tier1-v4/release-baseline-audit.py",
-        "command_status": "DEFINED_NOT_RUN_FOR_FINAL_RELEASE",
+        "command_status": "IMMUTABLE_BASELINE_COMMAND_ONLY; FINAL_VERSIONED_ENTRYPOINT_REQUIRED",
         "environment": "C:/atx/atx-db; PYTHONPATH=src; OPENBLAS_NUM_THREADS=1; every data command wrapped in run_memory_guarded.py <=1GiB"
       },
       "evidence_artifact": ".superpowers/sdd/tier1-v4/release-baseline-v1.json",
-      "note": "241 manifest-listed files match; baseline is immutable. This covers bytes only, not source truth, unlisted work files, whole-lake integrity or current-code reproducibility. Final acceptance additionally requires externally confirmed producer completion and complete required-file verification both before and after consumer use. Baseline single-pass hashing alone does not prove global quiescence."
+      "note": "241 manifest-listed files match; baseline is immutable. This covers bytes only, not source truth, unlisted work files, whole-lake integrity or current-code reproducibility. Final acceptance additionally requires externally confirmed producer completion and complete required-file verification both before and after consumer use. Baseline single-pass hashing alone does not prove global quiescence. Baseline command intentionally refuses replacing v1; final measurement must provide a new versioned audit entrypoint and artifact."
     },
     {
       "id": "D02",
@@ -175,7 +175,7 @@
         "command_status": "DEFINED_NOT_RUN_FOR_FINAL_RELEASE",
         "environment": "C:/atx/atx-db; PYTHONPATH=src; OPENBLAS_NUM_THREADS=1; every data command wrapped in run_memory_guarded.py <=1GiB"
       },
-      "evidence_artifact": "atx-db/data/alpha_panel/v1/validation/compustat_std_v11.json",
+      "evidence_artifact": "atx-db/data/alpha_panel/v1/compustat_std_v11/validation.json",
       "note": ""
     },
     {
@@ -193,7 +193,7 @@
         "command_status": "DEFINED_NOT_RUN_FOR_FINAL_RELEASE",
         "environment": "C:/atx/atx-db; PYTHONPATH=src; OPENBLAS_NUM_THREADS=1; every data command wrapped in run_memory_guarded.py <=1GiB"
       },
-      "evidence_artifact": "atx-db/data/alpha_panel/v1/validation/compustat_std_v11.json",
+      "evidence_artifact": "atx-db/data/alpha_panel/v1/compustat_std_v11/validation.json",
       "note": ""
     },
     {
@@ -320,7 +320,7 @@
         "command_status": "DEFINED_NOT_RUN_FOR_FINAL_RELEASE",
         "environment": "C:/atx/atx-db; PYTHONPATH=src; OPENBLAS_NUM_THREADS=1; every data command wrapped in run_memory_guarded.py <=1GiB"
       },
-      "evidence_artifact": "atx-db/data/alpha_panel/v1/validation/compustat_std_v11.json",
+      "evidence_artifact": "atx-db/data/alpha_panel/v1/compustat_std_v11/validation.json",
       "note": ""
     },
     {
@@ -878,6 +878,6 @@
     }
   ],
   "supersedes": "readiness-matrix-v1.json",
-  "review": "review-readiness-v1-findings.md",
+  "review": "review-readiness-v2-findings.md",
   "revision_reason": "Correct stage-binding commands; enumerate owner coverage/config requirements and strict consumer role compatibility. No numerical gate changed."
 }
