@@ -6795,3 +6795,44 @@ per-row fields vs the source) is checked after the record stage.
 | stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
 |---|---|---|---|---|---|---|
 | 04 spec | 0 | 7.4 / 7.16 | 2 per plan-only | 5,235 / 5,080 | `04-spec.json` `ce88ee2925fc67b52dc794d918dc38578a6637da0ae7d832676cd51781bff1e9` | kind **b-library**: 9 add-alpha `--name v8ysb` exit 0 (plans `waves/y-s/plans/v8ysb/`); IC library `fund_industry_ic_v8ysb.json` `41010b0b` (67 members); `lib-v8ysb.json` `ae4808b8` (= spec digest): marginal phase and its runner cap removed (`speed.reuse_screen_marginal`, mode pool-only = the screen's: reuse true); gate p1-v8ysb lists the 9 kept; NAV `mega-nav-v8x-theme-erc-L1.1720-v8ysb` at L 1.1720, ref `...-v8ysb-ref`, paired reference = X-5's NAV; driver commit **`816be40b`** (5 files: IC library, recipe, library def, prereg stub, spec; registry unchanged) |
+
+### Resume after the owner stop (PM session 2; 2026-10-03): lock, receipts 01-04, the killed stage-05 attempt -- STOPPED for a ruling
+
+Stage-04 rows committed alone first: `d66f93f6` `log(p9): R0-6 Y-S stage 04 spec (816be40b)`.
+
+**chain.lock (PM resume ruling, P9 `progress.md`: "root removes the stale y-s chain.lock only after confirming pid 25424 is
+not alive and logs it"):** `build-equity/waves/y-s/chain.lock` held `{"pid": 25424, "started_utc": "2026-10-03T12:19:29+00:00"}`
+(file sha256 `35b22df35d5d5ca9c5e646e1d34dc2da17879a8006ce0d899054f24d5ba2dff1`). `Get-Process -Id 25424`: not found;
+`tasklist /FI "PID eq 25424"`: no task (12:31:13Z); process scan: no research python, compiler, cmake or ninja alive (editor
+mypy / formatter servers only). **Lock removed 12:35:03Z** (the remedy `stage_chain.Chain.acquire` names: "check that no
+run is alive, then remove it").
+
+**Receipts 01-04 under the driver's resume logic** (`wave status scripts/specs/v8/waves/y-s.json`: `Chain.state` re-reads
+every receipt and recomputes its inputs, runs nothing, takes no lock): exit 0; preflight, register, screen, spec **done**;
+run pending; match, verify, judge, record blocked. SHA-256 of the four receipts = the logged values (`f4f75908`,
+`facb7fb2`, `8562e09b`, `ce88ee29`). No receipt deleted; no `05-run.failed-*` receipt exists (the kill raised nothing
+inside the chain).
+
+**The killed stage-05 attempt (ruled: a failed attempt, not a cell, 0 trials).** Read from console 032 and the bounded
+runner's run dirs; free / min during not recorded (the previous root was killed):
+
+| step (attempt under lock 12:19:29Z) | argv (driver) | exit | s | peak MiB | run dir | result |
+|---|---|---|---|---|---|---|
+| b-library screen (its gate re-read) | `research_cycle.py run scripts/specs/v8/lib-v8ysb.json --screen --root C:/atx-wt/pool-2` | 0 | u 12.7, fit 1.9, card 24.5 | u 530, fit 58, card 1,524 | `...-u-v8ysb-run1`, `...-v8ysb-run1` (fit), `...-cards-...-v8ysb-run`: completed exit 0 | console `consoles/032-the-b-library-s-screen--its-gate-re-read.log`; u-compare **IDENTICAL** (58 objects; 169,708 rows of 58 keys; b adds 9 objects / 26,334 rows); ledger 0 appended, 9 already ledgered; gate p1-v8ysb **PASS** (7 of 9 listed admitted with the prior sign; reference members 0 status changes); verdict `build-equity/cycle-v8ysb/cycle_verdict.json` |
+| calibration run: ref | `research_cycle.py run scripts/specs/v8/lib-v8ysb.json --stop-after nav --root C:/atx-wt/pool-2` | completed exit 0 | 61.9 | 586 | `mega-nav-v8x-theme-erc-L1.1720-v8ysb-ref-run` (receipt) | primary daily CSV sha256 `529062d6f06f...` (as `research_cycle.py status` prints it; = X-5's S2 daily); the ref-compare step did not run |
+| calibration run: w attempt 1 | (same process) | **killed** | - | - | `mega-v8xw-train-theme-erc-v8ysb-run1`: `start.json` 12:21:16Z, **no receipt**; output `-1` partial | - |
+| nav, monitor | - | not started | - | - | - | - |
+
+No console exists for the killed command (the driver writes one when a command returns). Ledger after the attempt:
+`build-equity/trials.jsonl` 127 lines, sha256 `869a0c6a18ec...` = the post-stage-03 record: **0 trials** added.
+
+**Why stage 05 was not started (brief stop rule: a refusal; nothing improvised).** `research_cycle.py status
+scripts/specs/v8/lib-v8ysb.json` (read-only) prints `w failed build-equity/mega-v8xw-train-theme-erc-v8ysb-1 | attempt left
+build-equity/mega-v8xw-train-theme-erc-v8ysb-run1 without a receipt; never overwritten: rerun with --attempt w=2`. The cycle
+picks an attempt by itself only among complete ones (`ic_attempt`, research_cycle.py:909-928) and its run loop raises
+`HARD-STOP [w]` on a failed step (:1690); `wave run` takes no `--attempt` (research_wave.py: `--root`, `--until`,
+`--dry-run`, `--seal-allow`) and the run stage calls `run <cell> --stop-after nav` without one (wave_stage_cell.py
+`run_stage`). So `wave run ... --until run` would HARD-STOP at w (exit 4, `05-run.failed-1.json`). The PM's resume ruling
+re-runs stage 05 "from receipts 01-04" but does not name the attempt; root asks for a ruling (options in the R0-6 report)
+and does not run stage 05. Nothing was built; no exe launched by root; nothing dated 2024-01-01 or later opened; `C:/atx`,
+`atx-db/` untouched; no push.
