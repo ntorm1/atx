@@ -7806,3 +7806,67 @@ column), in the order written at `d1f2d7f2`:**
 `stderr.log`, `receipt.json` of the NAV and mech run dirs and the NAV, mech and identity-gtest console logs; 9 files):
 `2026-10-02` source (a) x4 (the png name in the runner's dirty list), `2026-10-03` source (b) x3 (receipt
 `started_utc`), **0 OTHER**.** No return, Sharpe or NAV figure has been read. Trials so far: 0 (ledger 132 lines).
+
+### R0-11 Y-1 stage 2: summ (ledger line), bundles and book reader (source `00f0521a`; after the mechanics passed)
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| cycle resume | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/y-vol-target-y-1.json --root C:/atx-wt/pool-2` (launch 15:32:15Z) | 3,072 / 5,748 / 4,967 | **0** | cycle 43.6; summ 42.5 / 562 | summ `6c3810efaa6eed971e974d19fdb731428b891b6f1d5ffe55139f2cd1960697dc` | fields / u / fit / card / w / monitor Y-F0's (done); nav done, binding spec `95a2173d`, argv `6c830675` (`cycle_binding.json` `34c86e52`); summ `--reference` X-10's NAV, `--dsr-n 62`, ledgered the cell; `cycle-v8y-vol-target-y-1/summ.json` `78aea78d`, `pbo.json` `2beb256c`, `cycle_verdict.json` `5c113f3f`; stderr: nav_summ's usual "70 listed dir(s) have a defined SR but --dsr-n is 62" warning |
+| bundle vs X-10 (PM5-23; deciding dSR's p) | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r11-y1/bundle-x10-run1 --bind atx-impl/tools/nav_summ.py --bind <both summary.json> --bind <both NAVs' daily_*.csv, capacity_curve.csv> -- python atx-impl/tools/nav_summ.py --protocol v8 --bundle <X-10 NAV> <Y-1 NAV> --bundle-json build-equity/p9-r11-y1/bundle-x10.json` (the driver's `bundle_argv`) | 3,072 / 5,802 / 5,403 | **0** | 0.8 / 468 | `98e17ee523d6bcef352046ddab34fc7faf8192e6c9558a6275e2d3e18fa166e8` | `bundle-x10.json` `241c5bd9248499dd9bb15623b03995209256f669b438724c7116d338c755b9c4` |
+| bundle vs Y-F0 (printed) | the same with `<Y-F0 NAV> <Y-1 NAV>`, run dir `bundle-yf0-run1`, `--bundle-json build-equity/p9-r11-y1/bundle-yf0.json` | 3,072 / 5,788 / 5,442 | **0** | 0.8 / 443 | `1eecc7728291adab13d5533fc115679a0f5894ba18be9c6c209d45552e04c50e` | `bundle-yf0.json` `4c15e0befd562654b9ec1a82993fcfe101252e3c60ed32b9ebc0266393633966` |
+| book reader | `... --output build-equity/p9-r11-y1/book-run1 ... -- python scripts/wave_readers.py book --nav cell=<Y-1 NAV> --nav parent=<X-10 NAV> --nav yf0=<Y-F0 NAV> --output build-equity/p9-r11-y1/book.json` (the driver's `reader_argv`) | 3,072 / 5,787 / 5,725 | **0** | 0.5 / 45 | `cc07453501a86307b4895a6600695c085073674354c2de20c7e6ec99eb7bc23b` | `book.json` `b85952b024a351b217b81d2d5cf87f8a86d15572114372674bcd5549d5917f2e` |
+
+All four receipts: completed, exit 0, "clean in the code pathspec", source `00f0521a`.
+
+**Ledger** `build-equity/trials.jsonl`: 132 -> **133 lines** (file `27e40f9f`, head `5a3ef9d9bf242dbb`); the new line:
+construction, trial **`0ad7ea4c5122ebe3`**, cell `build-equity/mega-nav-v8y-vol-target-L2.0`, s2_net_sr
+1.8297698079085447, origin prior, count 1, window research-window-v2, prev `15484aa1` (X-10's head). **N 61 -> 62**
+(`ledger_n`; construction cap 62: **the cap is reached, no slot left**). 0 admission lines appended (61 unchanged).
+
+**Seal (SEAL-ALLOW per-hit check over every Y-1 run dir and console: NAV, mech, summ, both bundles, book (stdout.log /
+stderr.log / receipt.json), the NAV, mech, gtest, run, bundle and book consoles, the six `start.json` and the NAV
+`cycle_binding.json`; 32 files): `2026-10-02` source (a) x18, `2026-10-03` source (b) x16, the bootstrap seeds
+`20260927` x1 / `20260929` x72 (wave_seal.SEEDS), **0 OTHER**.**
+
+**Statistics of record** (S2 `modeled-1bn-stale5-v1+swap-fin-v1`; the bundle vs X-10 and the cycle agree on dSR, SE, CI
+and two-sided p): net Sharpe **Y-1 1.8298** vs X-10 1.8083 vs Y-F0 1.8495. Paired vs **X-10** (studentized CBB, block 21,
+seed 20260929, 4,999 resamples, 1,005 sessions): **dSR +0.0215**, rho .99471, **Memmel SE .0518** (t .41), CBB 95%
+[-.0580, +.1061]; LW SE .0416, 95% [-.0660, +.1090]; **bootstrap p one-sided .2980, two-sided .6326**. By year (dSR vs
+X-10): 2020 -.0279, 2021 -.0456, 2022 +.1232, 2023 +.0042. Paired vs **Y-F0** (printed): **dSR -0.0197**, Memmel SE
+.0519, CBB 95% [-.1024, +.0649], p one-sided .6652, two-sided .6602. DSR (N 62, `--dsr-ledger`): ledger **.8251** (V[SR]
+1.2957e-03 per session, 33 research-window-v2 lines); effective-N .9316; legacy .9618. **PBO .1526.** (The bundles'
+`verdict` blocks are the v8-prereg item 9 freeze-gate part, not Y-1's rule: vs X-10 `pass: false, dsr_positive: true`.)
+
+**The v8y 8 report columns (book reader `book.json`; 4x from `capacity_curve.csv`):**
+
+| book | L (mean L_t) | all-rows gross | net annual (CAGR) | gross of cost | net Sharpe 1x | net Sharpe 4x | realised vol | max drawdown | cost bps / traded $ |
+|---|---|---|---|---|---|---|---|---|---|
+| Y-F0 (`lib-v8ysb-gm.json`) | 1.1828 (fixed) | .98621 | **5.654%** (5.767%) | 7.068% | **1.8495** | **1.6994** | **3.057%** | **2.580%** | 12.66 |
+| X-10 (`x-leverage-L2.0.json`) | 2.0 (fixed) | 1.66672 | **9.306%** (9.606%) | 11.922% | **1.8083** | **1.5829** | **5.146%** | **4.326%** | 14.51 |
+| Y-1 (`y-vol-target-y-1.json`) | cap 2.0; **mean L_t 1.8671** | 1.55566 | **8.799%** (9.070%) | 11.196% | **1.8298** | **1.6281** | **4.809%** | **3.602%** | 14.03 |
+
+Y-1 annual costs: trade 1.563%, borrow .516%, long financing .318% (X-10 1.722% / .554% / .340%). Capacity curve (net
+Sharpe; Y-1 / X-10 / Y-F0): .5x 1.8722 / 1.8545 / 1.8997, 1x 1.8298 / 1.8083 / 1.8495, 2x 1.7620 / 1.7261 / 1.7976, 4x
+1.6281 / 1.5829 / 1.6994, 8x 1.5098 / 1.4434 / 1.5538; capped share at 4x .1882 / .2047 / .1004.
+
+| year | net return Y-1 / X-10 / Y-F0 | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|
+| 2020 | .0605 / .0696 / .0431 | 1.250 / 1.278 / 1.335 | .0479 / .0538 / .0320 | .0312 / .0303 / .0304 | 15.87 / 17.12 / 14.98 |
+| 2021 | .1591 / .1673 / .0983 | 2.893 / 2.938 / 2.984 | .0515 / .0531 / .0316 | .0277 / .0275 / .0273 | 13.24 / 13.40 / 11.68 |
+| 2022 | .1114 / .1152 / .0691 | 2.170 / 2.046 / 2.099 | .0494 / .0542 / .0322 | .0280 / .0278 / .0278 | 14.07 / 14.37 / 12.36 |
+| 2023 | .0349 / .0354 / .0211 | .824 / .820 / .820 | .0430 / .0439 / .0260 | .0272 / .0271 / .0271 | 13.34 / 13.45 / 11.72 |
+
+**Verdict.** No tool prints Y-1's registered rule: `cycle_verdict.json` carries the paired / dsr / pbo blocks and no
+accepted field; the bundles' `verdict` blocks are the freeze-gate part. Root applies the registered rule (v8y 6 Y-1 row
+and v8y 8; written at `d1f2d7f2`) to those artifacts:
+
+`verdict (v8y 6 / 8 Y-1 registered rule, by hand): ACCEPTED {dsr_vs_x10_positive: True (+.021481; Memmel SE .0518;
+p one-sided .2980), x10_rule_vs_yf0: True (net_annual .087990 > .056538 AND net Sharpe 1.829770 >= 1.749482; dSR vs
+Y-F0 -.019712), mechanics: True (6/6; gross 1.555665 in [.828796, 1.672591])}`
+
+- **Printed, deciding nothing:** dSR vs Y-F0 -.0197 (p one-sided .6652); 4x net Sharpe 1.6281 (X-10 1.5829, Y-F0
+  1.6994); mean L_t 1.8671; cost 14.03 bps per traded dollar; DSR (N 62) .8251; PBO .1526.
+- **Y-F (v8y 1):** Y-1 is accepted, so **Y-1 replaces X-10 as Y-F**, the levered book offered to the owner. Y-F0 stays the
+  unlevered claims book; neither X-10 nor Y-1 is in the Sharpe claim. Which book is deployed is the owner's risk decision
+  (PM7-3); OD-P9-3 keeps P9 at L <= 2.0 (Y-1's L_t <= 2.0). Y-1 gets no OD-3 read (YP-11: a `--risk-model` NAV).
+- **Count:** 1 construction trial, **N 62 of 62** (the cap); it enters V.
