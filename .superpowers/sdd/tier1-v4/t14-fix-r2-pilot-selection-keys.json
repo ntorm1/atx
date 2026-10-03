@@ -1,0 +1,1802 @@
+[
+  {
+    "adsh": "0001515156-22-000005",
+    "cik": 1515156,
+    "filed": "2022-03-08",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 2890,
+    "issuer": "ADVANCED EMISSIONS SOLUTIONS, INC.",
+    "request": {
+      "adsh": "0001515156-22-000005",
+      "cik": 1515156,
+      "filed": "2022-03-08",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1515156/000151515622000005/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1515156/000151515622000005/ades-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000820027-22-000016",
+    "cik": 820027,
+    "filed": "2022-02-25",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 6282,
+    "issuer": "AMERIPRISE FINANCIAL INC",
+    "request": {
+      "adsh": "0000820027-22-000016",
+      "cik": 820027,
+      "filed": "2022-02-25",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002722000016/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002722000016/amp-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000820027-23-000014",
+    "cik": 820027,
+    "filed": "2023-02-23",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 6282,
+    "issuer": "AMERIPRISE FINANCIAL INC",
+    "request": {
+      "adsh": "0000820027-23-000014",
+      "cik": 820027,
+      "filed": "2023-02-23",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002723000014/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002723000014/amp-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001466538-20-000026",
+    "cik": 1466538,
+    "filed": "2020-03-04",
+    "status": "segments_below_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 6211,
+    "issuer": "COWEN INC.",
+    "request": {
+      "adsh": "0001466538-20-000026",
+      "cik": 1466538,
+      "filed": "2020-03-04",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1466538/000146653820000026/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1466538/000146653820000026/cown-20191231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001477932-20-007544",
+    "cik": 40570,
+    "filed": "2020-12-29",
+    "status": "no_segment_revenue",
+    "cause": "local_context_or_concept_review_needed",
+    "sic": 7361,
+    "issuer": "GEE GROUP INC.",
+    "request": {
+      "adsh": "0001477932-20-007544",
+      "cik": 40570,
+      "filed": "2020-12-29",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/40570/000147793220007544/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/40570/000147793220007544/job_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001104659-21-037098",
+    "cik": 1754170,
+    "filed": "2021-03-16",
+    "status": "segments_below_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 5080,
+    "issuer": "AERSALE CORP",
+    "request": {
+      "adsh": "0001104659-21-037098",
+      "cik": 1754170,
+      "filed": "2021-03-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1754170/000110465921037098/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1754170/000110465921037098/tm211117d1_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001140361-24-027200",
+    "cik": 1022408,
+    "filed": "2024-05-23",
+    "status": "double_count",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 5045,
+    "issuer": "EPLUS INC",
+    "request": {
+      "adsh": "0001140361-24-027200",
+      "cik": 1022408,
+      "filed": "2024-05-23",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1022408/000114036124027200/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1022408/000114036124027200/ef20026293_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001060391-24-000142",
+    "cik": 1060391,
+    "filed": "2024-02-29",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 4953,
+    "issuer": "REPUBLIC SERVICES, INC.",
+    "request": {
+      "adsh": "0001060391-24-000142",
+      "cik": 1060391,
+      "filed": "2024-02-29",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039124000142/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039124000142/rsg-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001722482-24-000012",
+    "cik": 1722482,
+    "filed": "2024-02-14",
+    "status": "no_segment_revenue",
+    "cause": "local_context_or_concept_review_needed",
+    "sic": 3826,
+    "issuer": "AVANTOR, INC.",
+    "request": {
+      "adsh": "0001722482-24-000012",
+      "cik": 1722482,
+      "filed": "2024-02-14",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1722482/000172248224000012/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1722482/000172248224000012/avtr-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001060391-23-000008",
+    "cik": 1060391,
+    "filed": "2023-02-23",
+    "status": "double_count",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 4953,
+    "issuer": "REPUBLIC SERVICES, INC.",
+    "request": {
+      "adsh": "0001060391-23-000008",
+      "cik": 1060391,
+      "filed": "2023-02-23",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039123000008/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039123000008/rsg-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001628280-25-009254",
+    "cik": 1674168,
+    "filed": "2025-03-03",
+    "status": "segments_below_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 7000,
+    "issuer": "HILTON GRAND VACATIONS INC.",
+    "request": {
+      "adsh": "0001628280-25-009254",
+      "cik": 1674168,
+      "filed": "2025-03-03",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1674168/000162828025009254/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1674168/000162828025009254/hgv-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-22-003617",
+    "cik": 1754170,
+    "filed": "2022-03-15",
+    "status": "segments_below_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 5080,
+    "issuer": "AERSALE CORP",
+    "request": {
+      "adsh": "0001558370-22-003617",
+      "cik": 1754170,
+      "filed": "2022-03-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1754170/000155837022003617/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1754170/000155837022003617/asle-20211231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001140361-23-014888",
+    "cik": 1829280,
+    "filed": "2023-03-30",
+    "status": "no_segment_revenue",
+    "cause": "local_context_or_concept_review_needed",
+    "sic": 7374,
+    "issuer": "FORIAN INC.",
+    "request": {
+      "adsh": "0001140361-23-014888",
+      "cik": 1829280,
+      "filed": "2023-03-30",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1829280/000114036123014888/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1829280/000114036123014888/brhc10050070_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001515156-21-000010",
+    "cik": 1515156,
+    "filed": "2021-03-10",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 2890,
+    "issuer": "ADVANCED EMISSIONS SOLUTIONS, INC.",
+    "request": {
+      "adsh": "0001515156-21-000010",
+      "cik": 1515156,
+      "filed": "2021-03-10",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1515156/000151515621000010/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1515156/000151515621000010/ades-20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001982518-25-000007",
+    "cik": 1982518,
+    "filed": "2025-03-21",
+    "status": "no_segment_revenue",
+    "cause": "local_context_or_concept_review_needed",
+    "sic": 1531,
+    "issuer": "SMITH DOUGLAS HOMES CORP.",
+    "request": {
+      "adsh": "0001982518-25-000007",
+      "cik": 1982518,
+      "filed": "2025-03-21",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1982518/000198251825000007/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1982518/000198251825000007/sdhc-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000820027-24-000015",
+    "cik": 820027,
+    "filed": "2024-02-22",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 6282,
+    "issuer": "AMERIPRISE FINANCIAL INC",
+    "request": {
+      "adsh": "0000820027-24-000015",
+      "cik": 820027,
+      "filed": "2024-02-22",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002724000015/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002724000015/amp-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001604643-20-000035",
+    "cik": 1604643,
+    "filed": "2020-11-20",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 3580,
+    "issuer": "EVOQUA WATER TECHNOLOGIES CORP.",
+    "request": {
+      "adsh": "0001604643-20-000035",
+      "cik": 1604643,
+      "filed": "2020-11-20",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1604643/000160464320000035/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1604643/000160464320000035/q4fy20evoqua10-kdoc.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001437749-24-010002",
+    "cik": 738214,
+    "filed": "2024-03-29",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 2860,
+    "issuer": "AEMETIS, INC",
+    "request": {
+      "adsh": "0001437749-24-010002",
+      "cik": 738214,
+      "filed": "2024-03-29",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/738214/000143774924010002/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/738214/000143774924010002/amtx20231231_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000109380-20-000092",
+    "cik": 109380,
+    "filed": "2020-02-26",
+    "status": "no_segment_revenue",
+    "cause": "local_context_or_concept_review_needed",
+    "sic": 6021,
+    "issuer": "ZIONS BANCORPORATION, NATIONAL ASSOCIATION /UT/",
+    "request": {
+      "adsh": "0000109380-20-000092",
+      "cik": 109380,
+      "filed": "2020-02-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/109380/000010938020000092/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/109380/000010938020000092/zions-20191231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000820027-25-000013",
+    "cik": 820027,
+    "filed": "2025-02-20",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 6282,
+    "issuer": "AMERIPRISE FINANCIAL INC",
+    "request": {
+      "adsh": "0000820027-25-000013",
+      "cik": 820027,
+      "filed": "2025-02-20",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002725000013/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/820027/000082002725000013/amp-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001047862-23-000038",
+    "cik": 1047862,
+    "filed": "2023-02-16",
+    "status": "segments_below_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 4931,
+    "issuer": "CONSOLIDATED EDISON INC",
+    "request": {
+      "adsh": "0001047862-23-000038",
+      "cik": 1047862,
+      "filed": "2023-02-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1047862/000104786223000038/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1047862/000104786223000038/ed-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001604643-21-000094",
+    "cik": 1604643,
+    "filed": "2021-11-17",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 3580,
+    "issuer": "EVOQUA WATER TECHNOLOGIES CORP.",
+    "request": {
+      "adsh": "0001604643-21-000094",
+      "cik": 1604643,
+      "filed": "2021-11-17",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1604643/000160464321000094/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1604643/000160464321000094/aqua-20210930.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001609253-25-000027",
+    "cik": 1609253,
+    "filed": "2025-03-03",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 1311,
+    "issuer": "CALIFORNIA RESOURCES CORP",
+    "request": {
+      "adsh": "0001609253-25-000027",
+      "cik": 1609253,
+      "filed": "2025-03-03",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1609253/000160925325000027/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1609253/000160925325000027/crc-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001047862-22-000039",
+    "cik": 1047862,
+    "filed": "2022-02-17",
+    "status": "segments_below_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 4931,
+    "issuer": "CONSOLIDATED EDISON INC",
+    "request": {
+      "adsh": "0001047862-22-000039",
+      "cik": 1047862,
+      "filed": "2022-02-17",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1047862/000104786222000039/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1047862/000104786222000039/ed-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001604643-22-000124",
+    "cik": 1604643,
+    "filed": "2022-11-16",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 3580,
+    "issuer": "EVOQUA WATER TECHNOLOGIES CORP.",
+    "request": {
+      "adsh": "0001604643-22-000124",
+      "cik": 1604643,
+      "filed": "2022-11-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1604643/000160464322000124/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1604643/000160464322000124/aqua-20220930.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001051512-21-000009",
+    "cik": 1051512,
+    "filed": "2021-02-18",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 4813,
+    "issuer": "TELEPHONE & DATA SYSTEMS INC /DE/",
+    "request": {
+      "adsh": "0001051512-21-000009",
+      "cik": 1051512,
+      "filed": "2021-02-18",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1051512/000105151221000009/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1051512/000105151221000009/tds-20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001515156-20-000018",
+    "cik": 1515156,
+    "filed": "2020-03-16",
+    "status": "double_count",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 2890,
+    "issuer": "ADVANCED EMISSIONS SOLUTIONS, INC.",
+    "request": {
+      "adsh": "0001515156-20-000018",
+      "cik": 1515156,
+      "filed": "2020-03-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1515156/000151515620000018/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1515156/000151515620000018/ades-20191231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001060391-25-000091",
+    "cik": 1060391,
+    "filed": "2025-02-14",
+    "status": "segments_exceed_total",
+    "cause": "local_alternate_full_concept_with_all_numeric_members",
+    "sic": 4953,
+    "issuer": "REPUBLIC SERVICES, INC.",
+    "request": {
+      "adsh": "0001060391-25-000091",
+      "cik": 1060391,
+      "filed": "2025-02-14",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039125000091/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039125000091/rsg-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001140361-22-012185",
+    "cik": 1829280,
+    "filed": "2022-03-31",
+    "status": "no_segment_revenue",
+    "cause": "local_context_or_concept_review_needed",
+    "sic": 7374,
+    "issuer": "FORIAN INC.",
+    "request": {
+      "adsh": "0001140361-22-012185",
+      "cik": 1829280,
+      "filed": "2022-03-31",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1829280/000114036122012185/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1829280/000114036122012185/brhc10035758_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000277638-25-000007",
+    "cik": 277638,
+    "filed": "2025-03-10",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 700,
+    "issuer": "DAVEY TREE EXPERT CO",
+    "request": {
+      "adsh": "0000277638-25-000007",
+      "cik": 277638,
+      "filed": "2025-03-10",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/277638/000027763825000007/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/277638/000027763825000007/davey-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-23-003621",
+    "cik": 314203,
+    "filed": "2023-03-14",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 1040,
+    "issuer": "MCEWEN MINING INC.",
+    "request": {
+      "adsh": "0001558370-23-003621",
+      "cik": 314203,
+      "filed": "2023-03-14",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/314203/000155837023003621/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/314203/000155837023003621/mux-20221231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001493152-20-004882",
+    "cik": 1490630,
+    "filed": "2020-03-27",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 1221,
+    "issuer": "RHINO RESOURCE PARTNERS LP",
+    "request": {
+      "adsh": "0001493152-20-004882",
+      "cik": 1490630,
+      "filed": "2020-03-27",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1490630/000149315220004882/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1490630/000149315220004882/form10-k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-25-001617",
+    "cik": 866829,
+    "filed": "2025-02-27",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 1389,
+    "issuer": "HELIX ENERGY SOLUTIONS GROUP INC",
+    "request": {
+      "adsh": "0001558370-25-001617",
+      "cik": 866829,
+      "filed": "2025-02-27",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/866829/000155837025001617/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/866829/000155837025001617/hlx-20241231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000950170-23-004361",
+    "cik": 916076,
+    "filed": "2023-02-24",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 1400,
+    "issuer": "MARTIN MARIETTA MATERIALS INC",
+    "request": {
+      "adsh": "0000950170-23-004361",
+      "cik": 916076,
+      "filed": "2023-02-24",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/916076/000095017023004361/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/916076/000095017023004361/mlm-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001628280-24-002371",
+    "cik": 920760,
+    "filed": "2024-01-26",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 1520,
+    "issuer": "LENNAR CORP /NEW/",
+    "request": {
+      "adsh": "0001628280-24-002371",
+      "cik": 920760,
+      "filed": "2024-01-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/920760/000162828024002371/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/920760/000162828024002371/len-20231130.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001357615-21-000040",
+    "cik": 1357615,
+    "filed": "2021-02-25",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 1600,
+    "issuer": "KBR, INC.",
+    "request": {
+      "adsh": "0001357615-21-000040",
+      "cik": 1357615,
+      "filed": "2021-02-25",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1357615/000135761521000040/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1357615/000135761521000040/kbr-20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000950170-22-002474",
+    "cik": 1796209,
+    "filed": "2022-03-01",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 1700,
+    "issuer": "API GROUP CORP",
+    "request": {
+      "adsh": "0000950170-22-002474",
+      "cik": 1796209,
+      "filed": "2022-03-01",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1796209/000095017022002474/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1796209/000095017022002474/apg-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001644406-21-000009",
+    "cik": 1644406,
+    "filed": "2021-02-24",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2050,
+    "issuer": "HOSTESS BRANDS, INC.",
+    "request": {
+      "adsh": "0001644406-21-000009",
+      "cik": 1644406,
+      "filed": "2021-02-24",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1644406/000164440621000009/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1644406/000164440621000009/twnk-20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000891092-20-002167",
+    "cik": 819793,
+    "filed": "2020-02-28",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2221,
+    "issuer": "ALBANY INTERNATIONAL CORP /DE/",
+    "request": {
+      "adsh": "0000891092-20-002167",
+      "cik": 819793,
+      "filed": "2020-02-28",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/819793/000089109220002167/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/819793/000089109220002167/ain10k2019.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001437749-23-007261",
+    "cik": 95574,
+    "filed": "2023-03-20",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 2300,
+    "issuer": "SUPERIOR GROUP OF COMPANIES, INC.",
+    "request": {
+      "adsh": "0001437749-23-007261",
+      "cik": 95574,
+      "filed": "2023-03-20",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/95574/000143774923007261/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/95574/000143774923007261/sgc20221231_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000060519-25-000005",
+    "cik": 60519,
+    "filed": "2025-02-19",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2400,
+    "issuer": "LOUISIANA-PACIFIC CORP",
+    "request": {
+      "adsh": "0000060519-25-000005",
+      "cik": 60519,
+      "filed": "2025-02-19",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/60519/000006051925000005/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/60519/000006051925000005/lpx-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001437749-23-001642",
+    "cik": 10329,
+    "filed": "2023-01-24",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2511,
+    "issuer": "BASSETT FURNITURE INDUSTRIES INC",
+    "request": {
+      "adsh": "0001437749-23-001642",
+      "cik": 10329,
+      "filed": "2023-01-24",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/10329/000143774923001642/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/10329/000143774923001642/bset20230109_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001213900-22-012344",
+    "cik": 1358190,
+    "filed": "2022-03-15",
+    "status": "double_count",
+    "cause": "unknown_discrepancy_requires_primary_disclosure",
+    "sic": 2670,
+    "issuer": "IT TECH PACKAGING, INC.",
+    "request": {
+      "adsh": "0001213900-22-012344",
+      "cik": 1358190,
+      "filed": "2022-03-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1358190/000121390022012344/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1358190/000121390022012344/f10k2021_ittechpackaging.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000027996-25-000051",
+    "cik": 27996,
+    "filed": "2025-02-21",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2780,
+    "issuer": "DELUXE CORP",
+    "request": {
+      "adsh": "0000027996-25-000051",
+      "cik": 27996,
+      "filed": "2025-02-21",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/27996/000002799625000051/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/27996/000002799625000051/dlx-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-23-003155",
+    "cik": 72162,
+    "filed": "2023-03-08",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2810,
+    "issuer": "NL INDUSTRIES INC",
+    "request": {
+      "adsh": "0001558370-23-003155",
+      "cik": 72162,
+      "filed": "2023-03-08",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/72162/000155837023003155/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/72162/000155837023003155/nl-20221231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001534504-22-000007",
+    "cik": 1534504,
+    "filed": "2022-02-17",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 2911,
+    "issuer": "PBF ENERGY INC.",
+    "request": {
+      "adsh": "0001534504-22-000007",
+      "cik": 1534504,
+      "filed": "2022-02-17",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1534504/000153450422000007/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1534504/000153450422000007/pbf-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001101302-25-000015",
+    "cik": 1101302,
+    "filed": "2025-02-12",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 3089,
+    "issuer": "ENTEGRIS INC",
+    "request": {
+      "adsh": "0001101302-25-000015",
+      "cik": 1101302,
+      "filed": "2025-02-12",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1101302/000110130225000015/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1101302/000110130225000015/entg-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-24-001165",
+    "cik": 812074,
+    "filed": "2024-02-14",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 3221,
+    "issuer": "O-I GLASS, INC. /DE/",
+    "request": {
+      "adsh": "0001558370-24-001165",
+      "cik": 812074,
+      "filed": "2024-02-14",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/812074/000155837024001165/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/812074/000155837024001165/oi-20231231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000022444-25-000138",
+    "cik": 22444,
+    "filed": "2025-10-16",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 3312,
+    "issuer": "COMMERCIAL METALS CO",
+    "request": {
+      "adsh": "0000022444-25-000138",
+      "cik": 22444,
+      "filed": "2025-10-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/22444/000002244425000138/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/22444/000002244425000138/cmc-20250831.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-25-001102",
+    "cik": 795403,
+    "filed": "2025-02-18",
+    "status": "double_count",
+    "cause": "unknown_discrepancy_requires_primary_disclosure",
+    "sic": 3490,
+    "issuer": "WATTS WATER TECHNOLOGIES INC",
+    "request": {
+      "adsh": "0001558370-25-001102",
+      "cik": 795403,
+      "filed": "2025-02-18",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/795403/000155837025001102/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/795403/000155837025001102/wts-20241231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000006955-22-000031",
+    "cik": 6955,
+    "filed": "2022-10-25",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 3590,
+    "issuer": "ENERPAC TOOL GROUP CORP",
+    "request": {
+      "adsh": "0000006955-22-000031",
+      "cik": 6955,
+      "filed": "2022-10-25",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/6955/000000695522000031/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/6955/000000695522000031/epac-20220831.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001493152-21-000157",
+    "cik": 1435064,
+    "filed": "2021-01-05",
+    "status": "double_count",
+    "cause": "unknown_discrepancy_requires_primary_disclosure",
+    "sic": 3670,
+    "issuer": "CEMTREX INC",
+    "request": {
+      "adsh": "0001493152-21-000157",
+      "cik": 1435064,
+      "filed": "2021-01-05",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1435064/000149315221000157/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1435064/000149315221000157/form10-k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000908255-20-000014",
+    "cik": 908255,
+    "filed": "2020-02-13",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 3714,
+    "issuer": "BORGWARNER INC",
+    "request": {
+      "adsh": "0000908255-20-000014",
+      "cik": 908255,
+      "filed": "2020-02-13",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/908255/000090825520000014/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/908255/000090825520000014/a2019123110k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001564590-22-006399",
+    "cik": 921582,
+    "filed": "2022-02-24",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 3861,
+    "issuer": "IMAX CORP",
+    "request": {
+      "adsh": "0001564590-22-006399",
+      "cik": 921582,
+      "filed": "2022-02-24",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/921582/000156459022006399/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/921582/000156459022006399/imax-10k_20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001417398-23-000094",
+    "cik": 1417398,
+    "filed": "2023-11-15",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 3990,
+    "issuer": "HILLENBRAND, INC.",
+    "request": {
+      "adsh": "0001417398-23-000094",
+      "cik": 1417398,
+      "filed": "2023-11-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1417398/000141739823000094/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1417398/000141739823000094/hi-20230930.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000793074-24-000014",
+    "cik": 793074,
+    "filed": "2024-02-26",
+    "status": "double_count",
+    "cause": "unknown_discrepancy_requires_primary_disclosure",
+    "sic": 4213,
+    "issuer": "WERNER ENTERPRISES INC",
+    "request": {
+      "adsh": "0000793074-24-000014",
+      "cik": 793074,
+      "filed": "2024-02-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/793074/000079307424000014/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/793074/000079307424000014/wern-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000766421-23-000009",
+    "cik": 766421,
+    "filed": "2023-02-13",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 4512,
+    "issuer": "ALASKA AIR GROUP, INC.",
+    "request": {
+      "adsh": "0000766421-23-000009",
+      "cik": 766421,
+      "filed": "2023-02-13",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/766421/000076642123000009/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/766421/000076642123000009/alk-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001084048-20-000012",
+    "cik": 1084048,
+    "filed": "2020-03-02",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 4822,
+    "issuer": "J2 GLOBAL, INC.",
+    "request": {
+      "adsh": "0001084048-20-000012",
+      "cik": 1084048,
+      "filed": "2020-03-02",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1084048/000108404820000012/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1084048/000108404820000012/jcom2019123110-k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000107815-25-000103",
+    "cik": 783325,
+    "filed": "2025-02-21",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 4931,
+    "issuer": "WEC ENERGY GROUP, INC.",
+    "request": {
+      "adsh": "0000107815-25-000103",
+      "cik": 783325,
+      "filed": "2025-02-21",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/783325/000010781525000103/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/783325/000010781525000103/wec-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001000228-22-000016",
+    "cik": 1000228,
+    "filed": "2022-02-15",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5047,
+    "issuer": "HENRY SCHEIN INC",
+    "request": {
+      "adsh": "0001000228-22-000016",
+      "cik": 1000228,
+      "filed": "2022-02-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1000228/000100022822000016/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1000228/000100022822000016/hsicform10k20211225.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001140361-24-008111",
+    "cik": 1021561,
+    "filed": "2024-02-15",
+    "status": "double_count",
+    "cause": "unknown_discrepancy_requires_primary_disclosure",
+    "sic": 5122,
+    "issuer": "NU SKIN ENTERPRISES, INC.",
+    "request": {
+      "adsh": "0001140361-24-008111",
+      "cik": 1021561,
+      "filed": "2024-02-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1021561/000114036124008111/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1021561/000114036124008111/ef20015265_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000050493-23-000021",
+    "cik": 50493,
+    "filed": "2023-11-29",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5411,
+    "issuer": "INGLES MARKETS INC",
+    "request": {
+      "adsh": "0000050493-23-000021",
+      "cik": 50493,
+      "filed": "2023-11-29",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/50493/000005049323000021/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/50493/000005049323000021/imkt-20230930x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000350698-21-000031",
+    "cik": 350698,
+    "filed": "2021-02-16",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5500,
+    "issuer": "AUTONATION, INC.",
+    "request": {
+      "adsh": "0000350698-21-000031",
+      "cik": 350698,
+      "filed": "2021-02-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/350698/000035069821000031/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/350698/000035069821000031/an-20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001319947-23-000014",
+    "cik": 1319947,
+    "filed": "2023-03-16",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5661,
+    "issuer": "DESIGNER BRANDS INC.",
+    "request": {
+      "adsh": "0001319947-23-000014",
+      "cik": 1319947,
+      "filed": "2023-03-16",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1319947/000131994723000014/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1319947/000131994723000014/dsw-20230128.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001628280-25-015037",
+    "cik": 719955,
+    "filed": "2025-03-27",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5700,
+    "issuer": "WILLIAMS SONOMA INC",
+    "request": {
+      "adsh": "0001628280-25-015037",
+      "cik": 719955,
+      "filed": "2025-03-27",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/719955/000162828025015037/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/719955/000162828025015037/wsm-20250202.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001704720-25-000015",
+    "cik": 1704720,
+    "filed": "2025-02-27",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5810,
+    "issuer": "CANNAE HOLDINGS, INC.",
+    "request": {
+      "adsh": "0001704720-25-000015",
+      "cik": 1704720,
+      "filed": "2025-02-27",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1704720/000170472025000015/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1704720/000170472025000015/cnne-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000098246-20-000042",
+    "cik": 98246,
+    "filed": "2020-03-20",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 5944,
+    "issuer": "TIFFANY & CO",
+    "request": {
+      "adsh": "0000098246-20-000042",
+      "cik": 98246,
+      "filed": "2020-03-20",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/98246/000009824620000042/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/98246/000009824620000042/tif-2020131x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001281761-22-000016",
+    "cik": 1281761,
+    "filed": "2022-02-24",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 6021,
+    "issuer": "REGIONS FINANCIAL CORP",
+    "request": {
+      "adsh": "0001281761-22-000016",
+      "cik": 1281761,
+      "filed": "2022-02-24",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1281761/000128176122000016/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1281761/000128176122000016/rf-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-25-001888",
+    "cik": 1167419,
+    "filed": "2025-02-28",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 6199,
+    "issuer": "RIOT PLATFORMS, INC.",
+    "request": {
+      "adsh": "0001558370-25-001888",
+      "cik": 1167419,
+      "filed": "2025-02-28",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1167419/000155837025001888/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1167419/000155837025001888/riot-20241231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001527166-24-000019",
+    "cik": 1527166,
+    "filed": "2024-02-22",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 6282,
+    "issuer": "CARLYLE GROUP INC.",
+    "request": {
+      "adsh": "0001527166-24-000019",
+      "cik": 1527166,
+      "filed": "2024-02-22",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1527166/000152716624000019/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1527166/000152716624000019/cg-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001822993-24-000009",
+    "cik": 1822993,
+    "filed": "2024-02-28",
+    "status": "double_count",
+    "cause": "unknown_discrepancy_requires_primary_disclosure",
+    "sic": 6311,
+    "issuer": "JACKSON FINANCIAL INC.",
+    "request": {
+      "adsh": "0001822993-24-000009",
+      "cik": 1822993,
+      "filed": "2024-02-28",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1822993/000182299324000009/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1822993/000182299324000009/jxn-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001564590-21-010973",
+    "cik": 25475,
+    "filed": "2021-03-04",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 6411,
+    "issuer": "CRAWFORD & CO",
+    "request": {
+      "adsh": "0001564590-21-010973",
+      "cik": 25475,
+      "filed": "2021-03-04",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/25475/000156459021010973/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/25475/000156459021010973/crda-10k_20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001628280-25-015336",
+    "cik": 1753162,
+    "filed": "2025-03-28",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 6531,
+    "issuer": "FATHOM HOLDINGS INC.",
+    "request": {
+      "adsh": "0001628280-25-015336",
+      "cik": 1753162,
+      "filed": "2025-03-28",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1753162/000162828025015336/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1753162/000162828025015336/fthm-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001526113-24-000007",
+    "cik": 1526113,
+    "filed": "2024-02-27",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 6798,
+    "issuer": "GLOBAL NET LEASE, INC.",
+    "request": {
+      "adsh": "0001526113-24-000007",
+      "cik": 1526113,
+      "filed": "2024-02-27",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1526113/000152611324000007/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1526113/000152611324000007/gnl-20231231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001653653-25-000004",
+    "cik": 1653653,
+    "filed": "2025-02-21",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 7011,
+    "issuer": "RED ROCK RESORTS, INC.",
+    "request": {
+      "adsh": "0001653653-25-000004",
+      "cik": 1653653,
+      "filed": "2025-02-21",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1653653/000165365325000004/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1653653/000165365325000004/rrr-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000089089-20-000010",
+    "cik": 89089,
+    "filed": "2020-02-18",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 7200,
+    "issuer": "SERVICE CORP INTERNATIONAL",
+    "request": {
+      "adsh": "0000089089-20-000010",
+      "cik": 89089,
+      "filed": "2020-02-18",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/89089/000008908920000010/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/89089/000008908920000010/sci-12312019x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001628280-20-010583",
+    "cik": 1576914,
+    "filed": "2020-07-23",
+    "status": "double_count",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 7372,
+    "issuer": "MIX TELEMATICS LTD",
+    "request": {
+      "adsh": "0001628280-20-010583",
+      "cik": 1576914,
+      "filed": "2020-07-23",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1576914/000162828020010583/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1576914/000162828020010583/mixt-20200331.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000929351-22-000017",
+    "cik": 929351,
+    "filed": "2022-05-26",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 7812,
+    "issuer": "LIONS GATE ENTERTAINMENT CORP /CN/",
+    "request": {
+      "adsh": "0000929351-22-000017",
+      "cik": 929351,
+      "filed": "2022-05-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/929351/000092935122000017/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/929351/000092935122000017/lgfa-20220331.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001903596-24-000279",
+    "cik": 792935,
+    "filed": "2024-05-07",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 8062,
+    "issuer": "ETHEMA HEALTH CORP",
+    "request": {
+      "adsh": "0001903596-24-000279",
+      "cik": 792935,
+      "filed": "2024-05-07",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/792935/000190359624000279/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/792935/000190359624000279/grst_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000104889-25-000022",
+    "cik": 104889,
+    "filed": "2025-02-26",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 8200,
+    "issuer": "GRAHAM HOLDINGS CO",
+    "request": {
+      "adsh": "0000104889-25-000022",
+      "cik": 104889,
+      "filed": "2025-02-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/104889/000010488925000022/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/104889/000010488925000022/ghc-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000886206-25-000085",
+    "cik": 886206,
+    "filed": "2025-11-12",
+    "status": "double_count",
+    "cause": "numeric_candidate_without_hierarchy_provenance_requires_disclosure",
+    "sic": 8741,
+    "issuer": "FRANKLIN COVEY CO",
+    "request": {
+      "adsh": "0000886206-25-000085",
+      "cik": 886206,
+      "filed": "2025-11-12",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/886206/000088620625000085/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/886206/000088620625000085/fc-20250831x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001287750-23-000010",
+    "cik": 1287750,
+    "filed": "2023-02-07",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": null,
+    "issuer": "ARES CAPITAL CORP",
+    "request": {
+      "adsh": "0001287750-23-000010",
+      "cik": 1287750,
+      "filed": "2023-02-07",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1287750/000128775023000010/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1287750/000128775023000010/arcc-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001193125-20-094235",
+    "cik": 1584549,
+    "filed": "2020-04-01",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 100,
+    "issuer": "VILLAGE FARMS INTERNATIONAL, INC.",
+    "request": {
+      "adsh": "0001193125-20-094235",
+      "cik": 1584549,
+      "filed": "2020-04-01",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1584549/000119312520094235/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1584549/000119312520094235/d853826d10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000950170-23-049730",
+    "cik": 1629210,
+    "filed": "2023-09-26",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 1000,
+    "issuer": "PARAMOUNT GOLD NEVADA CORP.",
+    "request": {
+      "adsh": "0000950170-23-049730",
+      "cik": 1629210,
+      "filed": "2023-09-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1629210/000095017023049730/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1629210/000095017023049730/pzg-20230630.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001477932-24-002122",
+    "cik": 1590715,
+    "filed": "2024-04-15",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 1220,
+    "issuer": "AMERICAN RESOURCES CORP",
+    "request": {
+      "adsh": "0001477932-24-002122",
+      "cik": 1590715,
+      "filed": "2024-04-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1590715/000147793224002122/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1590715/000147793224002122/arec_10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001705873-25-000018",
+    "cik": 1705873,
+    "filed": "2025-03-13",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 1311,
+    "issuer": "BERRY CORP (BRY)",
+    "request": {
+      "adsh": "0001705873-25-000018",
+      "cik": 1705873,
+      "filed": "2025-03-13",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1705873/000170587325000018/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1705873/000170587325000018/bry-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-22-003310",
+    "cik": 82020,
+    "filed": "2022-03-10",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 1400,
+    "issuer": "UNITED STATES LIME & MINERALS INC",
+    "request": {
+      "adsh": "0001558370-22-003310",
+      "cik": 82020,
+      "filed": "2022-03-10",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/82020/000155837022003310/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/82020/000155837022003310/uslm-20211231x10k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000833079-23-000022",
+    "cik": 833079,
+    "filed": "2023-02-15",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 1531,
+    "issuer": "MERITAGE HOMES CORP",
+    "request": {
+      "adsh": "0000833079-23-000022",
+      "cik": 833079,
+      "filed": "2023-02-15",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/833079/000083307923000022/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/833079/000083307923000022/mth-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001564590-20-006778",
+    "cik": 1372020,
+    "filed": "2020-02-26",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 1600,
+    "issuer": "GREAT LAKES DREDGE & DOCK CORP",
+    "request": {
+      "adsh": "0001564590-20-006778",
+      "cik": 1372020,
+      "filed": "2020-02-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1372020/000156459020006778/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1372020/000156459020006778/gldd-10k_20191231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000105634-23-000005",
+    "cik": 105634,
+    "filed": "2023-02-23",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 1731,
+    "issuer": "EMCOR GROUP, INC.",
+    "request": {
+      "adsh": "0000105634-23-000005",
+      "cik": 105634,
+      "filed": "2023-02-23",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/105634/000010563423000005/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/105634/000010563423000005/eme-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000024545-21-000004",
+    "cik": 24545,
+    "filed": "2021-02-11",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 2082,
+    "issuer": "MOLSON COORS BEVERAGE CO",
+    "request": {
+      "adsh": "0000024545-21-000004",
+      "cik": 24545,
+      "filed": "2021-02-11",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/24545/000002454521000004/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/24545/000002454521000004/tap-20201231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000029332-23-000015",
+    "cik": 29332,
+    "filed": "2023-03-08",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 2273,
+    "issuer": "DIXIE GROUP INC",
+    "request": {
+      "adsh": "0000029332-23-000015",
+      "cik": 29332,
+      "filed": "2023-03-08",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/29332/000002933223000015/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/29332/000002933223000015/dxyn-20221231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001050797-25-000023",
+    "cik": 1050797,
+    "filed": "2025-02-27",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 2300,
+    "issuer": "COLUMBIA SPORTSWEAR CO",
+    "request": {
+      "adsh": "0001050797-25-000023",
+      "cik": 1050797,
+      "filed": "2025-02-27",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1050797/000105079725000023/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1050797/000105079725000023/colm-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001558370-20-001462",
+    "cik": 912767,
+    "filed": "2020-02-26",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 2421,
+    "issuer": "UNIVERSAL FOREST PRODUCTS INC",
+    "request": {
+      "adsh": "0001558370-20-001462",
+      "cik": 912767,
+      "filed": "2020-02-26",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/912767/000155837020001462/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/912767/000155837020001462/ufpi-20191228x10kaa58c7.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001213900-25-023815",
+    "cik": 1643953,
+    "filed": "2025-03-14",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 2510,
+    "issuer": "PURPLE INNOVATION, INC.",
+    "request": {
+      "adsh": "0001213900-25-023815",
+      "cik": 1643953,
+      "filed": "2025-03-14",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1643953/000121390025023815/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1643953/000121390025023815/ea0230077-10k_purpleinnov.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001296435-22-000026",
+    "cik": 1296435,
+    "filed": "2022-02-18",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 2621,
+    "issuer": "NEENAH INC",
+    "request": {
+      "adsh": "0001296435-22-000026",
+      "cik": 1296435,
+      "filed": "2022-02-18",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1296435/000129643522000026/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1296435/000129643522000026/np-20211231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000071691-22-000006",
+    "cik": 71691,
+    "filed": "2022-02-23",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 2711,
+    "issuer": "NEW YORK TIMES CO",
+    "request": {
+      "adsh": "0000071691-22-000006",
+      "cik": 71691,
+      "filed": "2022-02-23",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/71691/000007169122000006/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/71691/000007169122000006/nyt-20211226.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000950170-25-029969",
+    "cik": 1831828,
+    "filed": "2025-02-28",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 2834,
+    "issuer": "VERA THERAPEUTICS, INC.",
+    "request": {
+      "adsh": "0000950170-25-029969",
+      "cik": 1831828,
+      "filed": "2025-02-28",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1831828/000095017025029969/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1831828/000095017025029969/vera-20241231.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0001493152-20-000477",
+    "cik": 1375063,
+    "filed": "2020-01-13",
+    "status": "no_segment_revenue",
+    "cause": "no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure",
+    "sic": 2990,
+    "issuer": "SYNTHESIS ENERGY SYSTEMS INC",
+    "request": {
+      "adsh": "0001493152-20-000477",
+      "cik": 1375063,
+      "filed": "2020-01-13",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/1375063/000149315220000477/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/1375063/000149315220000477/form10-k.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  },
+  {
+    "adsh": "0000910521-24-000017",
+    "cik": 910521,
+    "filed": "2024-05-24",
+    "status": "no_segment_revenue",
+    "cause": "unknown_extra_axis_structure_requires_disclosure",
+    "sic": 3021,
+    "issuer": "DECKERS OUTDOOR CORP",
+    "request": {
+      "adsh": "0000910521-24-000017",
+      "cik": 910521,
+      "filed": "2024-05-24",
+      "gate_case": true,
+      "index_url": "https://www.sec.gov/Archives/edgar/data/910521/000091052124000017/index.json",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/910521/000091052124000017/deck-20240331.htm",
+      "required": "whole annual document/Item8 segment note; relevant presentation/definition/calculation linkbases from filing index"
+    }
+  }
+]

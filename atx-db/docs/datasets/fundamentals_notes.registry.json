@@ -124,6 +124,13 @@
     "denominator_certified": false,
     "arithmetic_candidates": "diagnostic only",
     "monthly_coverage_cutoff": "month-end session 22:00 UTC",
-    "extra_context_projection": "exhaustive timing partition with original-context provenance"
+    "extra_context_projection": "exhaustive timing partition with original-context provenance",
+    "restricted_year_scope": "census recomputed for every republished existing item year",
+    "disclosed_reportable_container_exceptions": {
+      "0001140361-23-014888": "ReportableLegalEntities",
+      "0001722482-24-000012": "ReportableGeographicalComponents",
+      "0001982518-25-000007": "ReportableGeographicalComponents"
+    },
+    "primary_pilot": "100 deterministic residual filings; no all-filer denominator certification"
   }
 }

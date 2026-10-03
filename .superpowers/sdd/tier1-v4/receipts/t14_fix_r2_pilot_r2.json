@@ -1,0 +1,65 @@
+{
+  "guard_version": "c58-m0-r1",
+  "command": [
+    ".venv/Scripts/python.exe",
+    "../.superpowers/sdd/tier1-v4/t14-fix-r2-pilot.py"
+  ],
+  "job_limit_gb": 0.8,
+  "job_cap_bytes": 858992640,
+  "heavy": false,
+  "allow_nested_guards": false,
+  "parent_job": null,
+  "status": "failed",
+  "guard_pid": 17132,
+  "receipt": "..\\.superpowers\\sdd\\tier1-v4\\receipts\\t14_fix_r2_pilot_r2.json",
+  "headroom": {
+    "physical_free_gb": 1.7773,
+    "commit_free_gb": 4.3228,
+    "commit_free_bytes": 4641533952,
+    "commit_limit_gb": 23.692
+  },
+  "thresholds": {
+    "admission_reserve_gb": 1.0,
+    "slot_budget_gb": 2.0,
+    "stop_commit_gb": 0.75,
+    "stop_physical_gb": 0.25,
+    "thrash_seconds": 30.0,
+    "test_override": false,
+    "test_slot_dir": false
+  },
+  "native_peak_job_memory_gb": 0.2634,
+  "cap_hit": false,
+  "child_env_forced": {
+    "OPENBLAS_NUM_THREADS": "1",
+    "ATX_GUARD_JOB": "Local\\atx-memory-guard-17132-134355200511361523"
+  },
+  "admission": {
+    "slot_dir": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\slots",
+    "wait_limit_minutes": 60.0,
+    "requested_at_utc": "2026-10-03T16:54:11+00:00",
+    "reclaimed_slots": [],
+    "seq": 3252,
+    "last_reasons": [],
+    "last_detail": {
+      "effective_free_commit_gb": 3.1433,
+      "free_commit_gb": 3.9804,
+      "running_unclaimed_gb": 0.8372,
+      "running_caps_gb": 0.95,
+      "running_jobs": 1,
+      "heavy_running": false,
+      "earlier_waiters": 0
+    },
+    "wait_seconds": 0.0,
+    "reasons_seen": [],
+    "admitted_at_utc": "2026-10-03T16:54:11+00:00"
+  },
+  "min_headroom": {
+    "commit_free_gb": 3.5631,
+    "physical_free_gb": 1.0982
+  },
+  "child_pid": 20380,
+  "native_peak_job_memory_bytes": 282791936,
+  "cap_hit_events": 0,
+  "returncode": 1,
+  "run_seconds": 11.0
+}

@@ -1,0 +1,126 @@
+{
+  "census": {
+    "rows": 201137,
+    "sha256": "8a12ce5c623eed932433f6a0c69f8e5f6c4cfa09890e27de1c702981ae71e686"
+  },
+  "omitted_2020_2022_features": {
+    "rows": 65247,
+    "sha256": "1d9738c0255e737c7c8779ab2b0932e461ee49af0ab74d6a6dd9269816e84cb0"
+  },
+  "omitted_2020_2022_recon": {
+    "rows": 18025,
+    "sha256": "5739b6f40051de408fb13c3a2b985a4d506d8bc236ea1537809aad054937bd86"
+  },
+  "segments": {
+    "2019": {
+      "multi_segment": 2160,
+      "reconciled_1pct": 1551,
+      "reconciled_direct_only": 1391,
+      "reconciled_strict": 1516,
+      "share_direct": 0.7196,
+      "share_reconciled": 0.8024,
+      "share_reconciled_strict": 0.7843,
+      "share_segment_revenue": 0.8949,
+      "share_segment_revenue_tier1": 0.8648,
+      "ten_k": 5772,
+      "with_segment_revenue": 1933
+    },
+    "2020": {
+      "multi_segment": 2118,
+      "reconciled_1pct": 1539,
+      "reconciled_direct_only": 1357,
+      "reconciled_strict": 1503,
+      "share_direct": 0.7142,
+      "share_reconciled": 0.81,
+      "share_reconciled_strict": 0.7911,
+      "share_segment_revenue": 0.8971,
+      "share_segment_revenue_tier1": 0.872,
+      "ten_k": 5583,
+      "with_segment_revenue": 1900
+    },
+    "2021": {
+      "multi_segment": 2058,
+      "reconciled_1pct": 1513,
+      "reconciled_direct_only": 1327,
+      "reconciled_strict": 1484,
+      "share_direct": 0.7165,
+      "share_reconciled": 0.817,
+      "share_reconciled_strict": 0.8013,
+      "share_segment_revenue": 0.8999,
+      "share_segment_revenue_tier1": 0.8737,
+      "ten_k": 5890,
+      "with_segment_revenue": 1852
+    },
+    "2022": {
+      "multi_segment": 2049,
+      "reconciled_1pct": 1525,
+      "reconciled_direct_only": 1338,
+      "reconciled_strict": 1499,
+      "share_direct": 0.7225,
+      "share_reconciled": 0.8234,
+      "share_reconciled_strict": 0.8094,
+      "share_segment_revenue": 0.9039,
+      "share_segment_revenue_tier1": 0.8795,
+      "ten_k": 6552,
+      "with_segment_revenue": 1852
+    },
+    "2023": {
+      "multi_segment": 2040,
+      "reconciled_1pct": 1523,
+      "reconciled_direct_only": 1346,
+      "reconciled_strict": 1500,
+      "share_direct": 0.7327,
+      "share_reconciled": 0.8291,
+      "share_reconciled_strict": 0.8165,
+      "share_segment_revenue": 0.9005,
+      "share_segment_revenue_tier1": 0.8804,
+      "ten_k": 6279,
+      "with_segment_revenue": 1837
+    },
+    "2024": {
+      "multi_segment": 1981,
+      "reconciled_1pct": 1497,
+      "reconciled_direct_only": 1310,
+      "reconciled_strict": 1470,
+      "share_direct": 0.7435,
+      "share_reconciled": 0.8496,
+      "share_reconciled_strict": 0.8343,
+      "share_segment_revenue": 0.8894,
+      "share_segment_revenue_tier1": 0.8698,
+      "ten_k": 5813,
+      "with_segment_revenue": 1762
+    },
+    "2025": {
+      "multi_segment": 2006,
+      "reconciled_1pct": 1475,
+      "reconciled_direct_only": 1281,
+      "reconciled_strict": 1445,
+      "share_direct": 0.7062,
+      "share_reconciled": 0.8131,
+      "share_reconciled_strict": 0.7966,
+      "share_segment_revenue": 0.9043,
+      "share_segment_revenue_tier1": 0.8814,
+      "ten_k": 5560,
+      "with_segment_revenue": 1814
+    },
+    "2026": {
+      "multi_segment": 1788,
+      "reconciled_1pct": 1292,
+      "reconciled_direct_only": 1131,
+      "reconciled_strict": 1265,
+      "share_direct": 0.7078,
+      "share_reconciled": 0.8085,
+      "share_reconciled_strict": 0.7916,
+      "share_segment_revenue": 0.8937,
+      "share_segment_revenue_tier1": 0.868,
+      "ten_k": 5064,
+      "with_segment_revenue": 1598
+    }
+  },
+  "matches": {
+    "census": true,
+    "omitted_2020_2022_features": true,
+    "omitted_2020_2022_recon": true
+  },
+  "omitted_gate_counts_preserved": true
+}

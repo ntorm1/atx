@@ -1,0 +1,5 @@
+Command: .venv/Scripts/python.exe -m pytest -o addopts='' --run-slow tests/test_alpha_panel_notes.py tests/test_alpha_panel_notes_fund.py -q
+.......................... [100%]
+26 passed in 34.72s
+Final tool session 93481 exit 0. Includes unrelated generic-container exclusion.
+N1 targeted red: 1 failed in 3.02s; green: 1 passed in 2.28s.

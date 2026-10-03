@@ -1,0 +1,1443 @@
+{
+  "local_cases": [
+    {
+      "adsh": "0000109380-20-000092",
+      "status": "no_segment_revenue",
+      "selected_tag": null,
+      "n_revenue_members": 0,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [],
+      "revenue_context_samples": [
+        {
+          "tag": "Revenues",
+          "segments": "BusinessSegments=ConsolidatedEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2838000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001466538-20-000026",
+      "status": "segments_below_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          797386000.0,
+          797386000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ],
+        [
+          "RevenuesNetOfInterestExpense",
+          2,
+          916745000.0,
+          880815000.0,
+          "Revenues",
+          2,
+          2,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "InterestAndDividendIncomeOperating",
+          "segments": "BusinessSegments=AssetCompany;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "InterestAndDividendIncomeOperating",
+          "segments": "BusinessSegments=OperatingCompany;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetCompany;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 1263000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001515156-20-000018",
+      "status": "double_count",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 3,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerIncludingAssessedTax",
+          3,
+          70086000.0,
+          70086000.0,
+          "Revenues",
+          3,
+          3,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AllOtherSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2729000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AllOtherSegments;ProductOrService=Consumables;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2729000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AllOtherSegments;ProductOrService=LicenseRoyalitiesRelatedParty;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001604643-20-000035",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          1429456000.0,
+          1429456000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 485274000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 74361000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 485274000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001477932-20-007544",
+      "status": "no_segment_revenue",
+      "selected_tag": null,
+      "n_revenue_members": 0,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [],
+      "revenue_context_samples": [
+        {
+          "tag": "Revenues",
+          "segments": "BusinessSegments=ConsolidatedEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 129835000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001051512-21-000009",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 5,
+      "n_members": 5,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          5,
+          6093000000.0,
+          5120000000.0,
+          "Revenues",
+          5,
+          5,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=OtherSegment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 187000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=OtherSegment;ProductOrService=CommercialRevenue;TimingOfTransferOfGoodOrService=TransferredOverTime;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=OtherSegment;ProductOrService=EquipmentAndProductSales;TimingOfTransferOfGoodOrService=TransferredAtPointInTime;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 118000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001515156-21-000010",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerIncludingAssessedTax",
+          2,
+          61577000.0,
+          61577000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AdvancedPurificationTechnologies;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 48137000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AdvancedPurificationTechnologies;ConsolidationItems=OperatingSegments;ProductOrService=Consumables;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 48122000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AdvancedPurificationTechnologies;ConsolidationItems=OperatingSegments;ProductOrService=ProductAndServiceOther;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 15000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001104659-21-037098",
+      "status": "segments_below_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 1,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          3,
+          417876000.0,
+          208938247.0,
+          "Revenues",
+          1,
+          3,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetManagementSolutions;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 98711000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetManagementSolutions;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 3346000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetManagementSolutions;ProductOrService=LeasingArrangements;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 55649000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001604643-21-000094",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          1464429000.0,
+          1464429000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 504543000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 83537000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 504543000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001047862-22-000039",
+      "status": "segments_below_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          921000000.0,
+          13456000000.0,
+          "Revenues",
+          2,
+          2,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CleanEnergyBusinesses;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 917000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CleanEnergyBusinesses;ConsolidationItems=OperatingSegments;PublicUtility=EnergyService;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 234000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CleanEnergyBusinesses;ConsolidationItems=OperatingSegments;PublicUtility=OtherServices;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "adsh": "0000820027-22-000016",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 4,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenuesNetOfInterestExpense",
+          3,
+          13376000000.0,
+          13431000000.0,
+          "Revenues",
+          4,
+          3,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 7746000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionService;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2253000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionServiceInsuranceAndAnnuity;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 994000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001515156-22-000005",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerIncludingAssessedTax",
+          2,
+          100294000.0,
+          100294000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AdvancedPurificationTechnologies;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 85926000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AdvancedPurificationTechnologies;ConsolidationItems=OperatingSegments;ProductOrService=Consumables;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 85882000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AdvancedPurificationTechnologies;ConsolidationItems=OperatingSegments;ProductOrService=ProductAndServiceOther;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 44000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001558370-22-003617",
+      "status": "segments_below_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 1,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          3,
+          680874000.0,
+          340437000.0,
+          "Revenues",
+          1,
+          3,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetManagementSolutions;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 232010000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetManagementSolutions;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 6822000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AssetManagementSolutions;ProductOrService=LeasingArrangements;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 30657000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001140361-22-012185",
+      "status": "no_segment_revenue",
+      "selected_tag": null,
+      "n_revenue_members": 0,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=InformationAndSoftwareSegment;ConsolidationItems=ReportableLegalEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 14952247.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=ProductAndServiceOtherSegment;ConsolidationItems=ReportableLegalEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 804940.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=ServicesSegment;ConsolidationItems=ReportableLegalEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 1122528.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001604643-22-000124",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          1737076000.0,
+          1737076000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 552599000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 100646000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AppliedProductTechnologies;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 552599000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001047862-23-000038",
+      "status": "segments_below_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          1002000000.0,
+          15455000000.0,
+          "Revenues",
+          2,
+          2,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CleanEnergyBusinesses;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 998000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CleanEnergyBusinesses;ConsolidationItems=OperatingSegments;PublicUtility=DevelopTransferProject;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 44000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CleanEnergyBusinesses;ConsolidationItems=OperatingSegments;PublicUtility=EnergyService;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 317000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0000820027-23-000014",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 4,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenuesNetOfInterestExpense",
+          3,
+          13782000000.0,
+          14271000000.0,
+          "Revenues",
+          4,
+          3,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 7768000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionService;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2249000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionServiceBrokerageCash;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 324000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001060391-23-000008",
+      "status": "double_count",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 5,
+      "n_members": 4,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          4,
+          25433700000.0,
+          13511300000.0,
+          "Revenues",
+          5,
+          4,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CorporateEntitiesAndOtherSegment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 186500000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group1Segment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 6136000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group2Segment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 5972900000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001140361-23-014888",
+      "status": "no_segment_revenue",
+      "selected_tag": null,
+      "n_revenue_members": 0,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=InformationAndSoftwareSegment;ConsolidationItems=ReportableLegalEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 26185945.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=ProductAndServiceOtherSegment;ConsolidationItems=ReportableLegalEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 274256.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=ServicesSegment;ConsolidationItems=ReportableLegalEntities;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 1545656.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001722482-24-000012",
+      "status": "no_segment_revenue",
+      "selected_tag": null,
+      "n_revenue_members": 0,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [],
+      "revenue_context_samples": [
+        {
+          "tag": "Revenues",
+          "segments": "BusinessSegments=AmeaSegment;ConsolidationItems=ReportableGeographicalComponents;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 475200000.0
+        },
+        {
+          "tag": "Revenues",
+          "segments": "BusinessSegments=AmericasSegment;ConsolidationItems=ReportableGeographicalComponents;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 4071600000.0
+        },
+        {
+          "tag": "Revenues",
+          "segments": "BusinessSegments=EuropeSegment;ConsolidationItems=ReportableGeographicalComponents;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2420400000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0000820027-24-000015",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 4,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenuesNetOfInterestExpense",
+          3,
+          16172000000.0,
+          15535000000.0,
+          "Revenues",
+          4,
+          3,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 7985000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionService;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2273000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionServiceBrokerageCash;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 316000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001060391-24-000142",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 5,
+      "n_members": 4,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          4,
+          28304100000.0,
+          14964500000.0,
+          "Revenues",
+          5,
+          4,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CorporateEntitiesAndOtherSegment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group1Segment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 6694200000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group2Segment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 6645400000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001437749-24-010002",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 1,
+      "n_members": 4,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerIncludingAssessedTax",
+          4,
+          186717000.0,
+          186717000.0,
+          "Revenues",
+          1,
+          4,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AllOtherSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=AllOtherSegments;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=CaliforniaDairyRenewableNaturalGas;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 5455000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001140361-24-027200",
+      "status": "double_count",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 5,
+      "n_members": 5,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerIncludingAssessedTax",
+          5,
+          4314542000.0,
+          2160234000.0,
+          "Revenues",
+          5,
+          5,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=FinancingReportingUnit;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 5926000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=FinancingReportingUnit;ContractWithCustomerSalesChannel=SalesChannelDirectlyToConsumer;TimingOfTransferOfGoodOrService=TransferredAtPointInTime;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 5926000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+          "segments": "BusinessSegments=FinancingReportingUnit;ContractWithCustomerSalesChannel=SalesChannelDirectlyToConsumer;TimingOfTransferOfGoodOrService=TransferredOverTime;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001060391-25-000091",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 4,
+      "n_members": 4,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          4,
+          30221000000.0,
+          16032000000.0,
+          "Revenues",
+          4,
+          4,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group1Segment;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 7220000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group2Segment;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 6969000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Group3Segment;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 1843000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0000820027-25-000013",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 4,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenuesNetOfInterestExpense",
+          3,
+          18068000000.0,
+          17264000000.0,
+          "Revenues",
+          4,
+          3,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 9200000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionService;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2453000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=AdviceAndWealthManagement;ConsolidationItems=OperatingSegments;ProductOrService=DistributionServiceBrokerageCash;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 154000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001609253-25-000027",
+      "status": "segments_exceed_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 3,
+      "n_members": 3,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          3,
+          5074000000.0,
+          2537000000.0,
+          "Revenues",
+          3,
+          3,
+          false
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=CarbonManagementSegment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 0.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=OilAndNaturalGasSegment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 2537000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=OilAndNaturalGasSegment;ProductOrService=NaturalGasProduction;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 96000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001628280-25-009254",
+      "status": "segments_below_total",
+      "selected_tag": "Revenues",
+      "n_revenue_members": 2,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [
+        [
+          "RevenueFromContractWithCustomerExcludingAssessedTax",
+          2,
+          4465000000.0,
+          4465000000.0,
+          "Revenues",
+          2,
+          2,
+          true
+        ]
+      ],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=RealEstateSalesAndFinancingSegment;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 3010000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=RealEstateSalesAndFinancingSegment;ConsolidationItems=IntersegmentElimination;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": -73000000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=RealEstateSalesAndFinancingSegment;ConsolidationItems=OperatingSegments;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 3010000000.0
+        }
+      ]
+    },
+    {
+      "adsh": "0001982518-25-000007",
+      "status": "no_segment_revenue",
+      "selected_tag": null,
+      "n_revenue_members": 0,
+      "n_members": 2,
+      "alternate_full_concept_candidates": [],
+      "revenue_context_samples": [
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Central;ConsolidationItems=ReportableGeographicalComponents;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 365839000.0
+        },
+        {
+          "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+          "segments": "BusinessSegments=Southeast;ConsolidationItems=ReportableGeographicalComponents;",
+          "qtrs": 4,
+          "uom": "USD",
+          "value": 609624000.0
+        }
+      ]
+    }
+  ],
+  "notes_zip_sources": [
+    {
+      "key": "2020q1",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q1_notes.zip",
+      "bytes": 512526672,
+      "span": [
+        "2020-01-01",
+        "2020-03-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2020q2",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q2_notes.zip",
+      "bytes": 385144103,
+      "span": [
+        "2020-04-01",
+        "2020-06-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2020q3",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q3_notes.zip",
+      "bytes": 345497127,
+      "span": [
+        "2020-07-01",
+        "2020-09-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2020q4",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q4_notes.zip",
+      "bytes": 424497222,
+      "span": [
+        "2020-10-01",
+        "2020-12-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2021q1",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2021q1_notes.zip",
+      "bytes": 849812918,
+      "span": [
+        "2021-01-01",
+        "2021-03-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2021q2",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2021q2_notes.zip",
+      "bytes": 444672081,
+      "span": [
+        "2021-04-01",
+        "2021-06-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2021q3",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2021q3_notes.zip",
+      "bytes": 472318429,
+      "span": [
+        "2021-07-01",
+        "2021-09-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2021q4",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2021q4_notes.zip",
+      "bytes": 503299255,
+      "span": [
+        "2021-10-01",
+        "2021-12-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2022q1",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2022q1_notes.zip",
+      "bytes": 615895030,
+      "span": [
+        "2022-01-01",
+        "2022-03-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2022q2",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2022q2_notes.zip",
+      "bytes": 490267336,
+      "span": [
+        "2022-04-01",
+        "2022-06-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2022q3",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2022q3_notes.zip",
+      "bytes": 411491174,
+      "span": [
+        "2022-07-01",
+        "2022-09-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2022q4",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2022q4_notes.zip",
+      "bytes": 426047528,
+      "span": [
+        "2022-10-01",
+        "2022-12-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2023q1",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2023q1_notes.zip",
+      "bytes": 630939608,
+      "span": [
+        "2023-01-01",
+        "2023-03-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2023q2",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2023q2_notes.zip",
+      "bytes": 516928926,
+      "span": [
+        "2023-04-01",
+        "2023-06-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2023q3",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2023q3_notes.zip",
+      "bytes": 627139541,
+      "span": [
+        "2023-07-01",
+        "2023-09-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2023q4",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2023q4_notes.zip",
+      "bytes": 435789146,
+      "span": [
+        "2023-10-01",
+        "2023-12-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2024q1",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2024q1_notes.zip",
+      "bytes": 619443584,
+      "span": [
+        "2024-01-01",
+        "2024-03-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2024q2",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2024q2_notes.zip",
+      "bytes": 533034079,
+      "span": [
+        "2024-04-01",
+        "2024-06-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2024q3",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2024q3_notes.zip",
+      "bytes": 438987421,
+      "span": [
+        "2024-07-01",
+        "2024-09-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2024q4",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2024q4_notes.zip",
+      "bytes": 430780795,
+      "span": [
+        "2024-10-01",
+        "2024-12-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025q1",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025q1_notes.zip",
+      "bytes": 663293756,
+      "span": [
+        "2025-01-01",
+        "2025-03-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025q2",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025q2_notes.zip",
+      "bytes": 519984351,
+      "span": [
+        "2025-04-01",
+        "2025-06-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025_07",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025_07_notes.zip",
+      "bytes": 100641884,
+      "span": [
+        "2025-07-01",
+        "2025-07-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025_08",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025_08_notes.zip",
+      "bytes": 306416661,
+      "span": [
+        "2025-08-01",
+        "2025-08-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025_09",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025_09_notes.zip",
+      "bytes": 54174837,
+      "span": [
+        "2025-09-01",
+        "2025-09-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025_10",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025_10_notes.zip",
+      "bytes": 97554203,
+      "span": [
+        "2025-10-01",
+        "2025-10-31"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025_11",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025_11_notes.zip",
+      "bytes": 291956067,
+      "span": [
+        "2025-11-01",
+        "2025-11-30"
+      ],
+      "status": "parsed"
+    },
+    {
+      "key": "2025_12",
+      "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2025_12_notes.zip",
+      "bytes": 56910813,
+      "span": [
+        "2025-12-01",
+        "2025-12-31"
+      ],
+      "status": "parsed"
+    }
+  ],
+  "notes_zip_count": 28,
+  "notes_zip_download_bytes": 12205444547,
+  "largest_notes_zip_bytes": 849812918,
+  "existing_successful_document_size_sample": {
+    "rows": 37806,
+    "median_bytes": 3290188.0,
+    "p90_bytes": 7484062.0,
+    "max_bytes": 41698367
+  },
+  "request_counts": {
+    "all_original_10k": 35677,
+    "known_primary_document": 35676,
+    "gate_cases": 3183,
+    "case_primary_document_known": 3183
+  },
+  "document_estimates_median_bytes": {
+    "gate_cases": 10472668404,
+    "all_original_10k": 117384037276
+  },
+  "request_estimate": {
+    "case_known_doc_gets": 3183,
+    "case_index_gets": 3183,
+    "case_linkbase_gets_range": [
+      3183,
+      9549
+    ],
+    "all_filer_primary_gets": 35677
+  },
+  "disk_note": "Estimates from historical uncompressed response bytes; prospective sizes vary. Fetch sequentially, retain case structure/Item8 text, remove bulky originals only after receipt/verification. Preserve >=40 GB free before >1GB landing.",
+  "sec_access": "atx_db.sec_http approved User-Agent, <=5 requests/s; budget all requests/retries and write receipts."
+}
