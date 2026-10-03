@@ -89,7 +89,7 @@ THREADS = 1                               # derived pivots: 0.68 GiB peak with 2
 STITCH_MEMORY = "150MB"                   # DuckDB limit while pyarrow stitches the yearly parts
 ITEMS_THREADS = 2                         # items extraction (joins, no wide pivot): within the 0.6 GiB cap
 RECON_TOL = 0.01
-MODULES = ("fund_notes", "fund_notes_structure", "notes_fetch", "common")
+MODULES = ("fund_notes", "fund_notes_structure", "fund_notes_disclosure", "notes_fetch", "common")
 
 #: (item, group, kind, concept chain in priority order)
 ITEMS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
@@ -561,7 +561,9 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
         LEFT JOIN business_census_original raw USING(adsh) LEFT JOIN structure_evidence e USING(adsh)
         WHERE year(s.filed) IN ("""+','.join(map(str,done_years))+""") GROUP BY ALL ORDER BY s.filed,s.adsh""",
         out/'segment_census.parquet')
-    C.copy_to_parquet(con,'SELECT * FROM structure_evidence ORDER BY adsh,tag',out/'segment_structure.parquet')
+    C.copy_to_parquet(con,'''SELECT e.*,s.cik,s.period,s.filed,s.available_at,s.form
+        FROM structure_evidence e JOIN (SELECT DISTINCT adsh,cik,period,filed,available_at,form FROM sub) s USING(adsh)
+        ORDER BY adsh,tag''',out/'segment_structure.parquet')
     con.execute("DROP TABLE IF EXISTS ny")
     con.execute("DROP TABLE IF EXISTS dimy")
     con.execute(f"SET memory_limit = '{STITCH_MEMORY}'")   # pyarrow stitches next (0xC0000005 at the cap, 2026-10-03)
@@ -826,8 +828,11 @@ def recon_final_sql(strict: str) -> str:
                CASE WHEN o.recon_rule='source_role_structure' THEN len(o.seg_members) ELSE r.n_members END AS n_members,
                CASE WHEN o.recon_rule='source_role_structure' THEN len(o.seg_members) ELSE r.n_revenue_members END AS n_revenue_members,
                CASE WHEN o.recon_rule='source_role_structure' THEN o.reconciling_used ELSE r.reconciling_items END AS reconciling_items,
+               CASE WHEN o.recon_rule='source_role_structure' THEN (o.seg_sum_reconciled-r.consolidated_revenue)/nullif(abs(r.consolidated_revenue),0) ELSE r.rel_diff END AS rel_diff,
                CASE WHEN o.recon_rule='source_role_structure' THEN o.seg_sum_reconciled ELSE r.seg_sum END AS seg_sum),
-               r.recon_class AS recon_class_strict, o.recon_rule, o.dropped_members, o.seg_sum_reconciled,
+               r.recon_class AS recon_class_strict,r.rel_diff AS rel_diff_strict,
+               CASE WHEN o.recon_rule='source_role_structure' THEN (o.seg_sum_reconciled+coalesce(o.reconciling_used,0)-r.consolidated_revenue)/nullif(abs(r.consolidated_revenue),0) END AS rel_diff_after_source_bridge,
+               o.recon_rule, o.dropped_members, o.seg_sum_reconciled,
                o.reconciling_used, o.seg_members, coalesce(o.candidate_only, false) AS candidate_only
         FROM read_parquet('{strict}') r LEFT JOIN recon_ov o USING (adsh)
         ORDER BY r.filed, r.cik, r.adsh"""
@@ -876,8 +881,8 @@ DD_BUCKETS = ("dd1", "dd2", "dd3", "dd4", "dd5", "dd_after5")
 #: the latest earlier vintage whose key is set: each row is the state of knowledge at its available_at
 CARRY_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bseg_n", ("bseg_n", "bseg_basis", "bseg_n_tagged", "bseg_rev_n", "bseg_rev_tag", "bseg_rev_rule", "bseg_rev_hhi",
-                "bseg_recon_class")),
-    ("geo_rev_n", ("geo_rev_n", "foreign_sales_share", "foreign_basis")),
+                "bseg_recon_class", "bseg_partition_quality", "bseg_partition_source_adsh")),
+    ("geo_rev_n", ("geo_rev_n", "foreign_sales_share", "foreign_basis", "foreign_sales_quality")),
     ("major_cust_n", ("major_cust_n", "major_cust_share")),
     ("dd_sched_total", (*DD_BUCKETS, "dd_rem_fy", "dd_n_buckets", "dd_sched_total", "dd1_share")),
     *((c, (c,)) for c in ("oplease_liab", "oplease_rou", "oplease_cost", "oplease_rate", "finlease_liab", "mrc1",
@@ -1000,17 +1005,23 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
         ),
         mem AS (          -- reportable business-segment members over every fact of the filing (the recon rule),
                           -- without the roll-up / duplicate members the search pass dropped
-            SELECT adsh,count(DISTINCT member) AS n FROM business_census GROUP BY 1
+            SELECT b.adsh,count(DISTINCT b.member) AS n,count(DISTINCT raw.member) AS n_tagged
+            FROM business_census b LEFT JOIN business_census_original raw USING(adsh) GROUP BY 1
         ),
         x AS (
             SELECT f.cik, f.adsh, f.form, f.period, f.fy, f.fp, f.filed, f.available_at, f.clock_basis, f.currency,
                    f.flow_qtrs, f.flow_qtrs = 4 AS is_annual, f.form LIKE '%/A' AS is_amendment, f.country AS countryba,
                    ft.total AS rev_consolidated,
-                   coalesce(m.n, 0) AS bseg_n_tagged,
+                   coalesce(m.n_tagged, 0) AS bseg_n_tagged,
                    CASE WHEN coalesce(m.n, 0) >= 1 THEN m.n
                         WHEN f.flow_qtrs = 4 AND f.form NOT LIKE '%/A' AND ft.total IS NOT NULL THEN 1 END AS bseg_n,
-                   CASE WHEN coalesce(m.n,0)>=1 THEN 'current_period_numeric_tags'
+                   CASE WHEN f.adsh IN (SELECT adsh FROM structure_evidence) THEN 'source_role_structure'
+                        WHEN coalesce(m.n,0)>=1 THEN 'current_period_numeric_tags'
                         WHEN f.flow_qtrs=4 AND f.form NOT LIKE '%/A' AND ft.total IS NOT NULL THEN 'inferred_singleton' END AS bseg_basis,
+                   CASE WHEN f.adsh IN (SELECT adsh FROM structure_evidence) THEN 'source_verified_reportable'
+                        WHEN coalesce(m.n,0)>=1 THEN 'tagged_unverified_reportable'
+                        WHEN f.flow_qtrs=4 AND f.form NOT LIKE '%/A' AND ft.total IS NOT NULL THEN 'inferred_singleton_unverified' END AS bseg_partition_quality,
+                   CASE WHEN f.adsh IN (SELECT adsh FROM structure_evidence) THEN f.adsh END AS bseg_partition_source_adsh,
                    b.bseg_rev_n, b.bseg_rev_tag, b.bseg_rev_rule,
                    CASE WHEN coalesce(m.n, 0) >= 2 AND b.bseg_rev_n >= 2 THEN b.s2 / (b.s1 * b.s1)
                         WHEN coalesce(m.n, 0) <= 1 AND (b.bseg_rev_n = 1 OR
@@ -1021,6 +1032,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
                    CASE WHEN g.fs_raw BETWEEN {lo} AND {hi} THEN greatest(least(g.fs_raw, 1.0), 0.0) END AS foreign_sales_share,
                    CASE WHEN g.fs_raw IS NULL THEN NULL WHEN g.fs_raw NOT BETWEEN {lo} AND {hi} THEN 'out_of_range'
                         WHEN g.dom IS NOT NULL THEN 'domestic_member' ELSE 'foreign_member' END AS foreign_basis,
+                   CASE WHEN g.fs_raw IS NOT NULL THEN 'unverified_tagged_geography' END AS foreign_sales_quality,
                    c.major_cust_n,
                    CASE WHEN c.cus_total > 0 AND c.cmax > 0 AND c.cmax <= c.cus_total THEN c.cmax / c.cus_total END AS major_cust_share,
                    w.debt_mat_y1 AS dd1, w.debt_mat_y2 AS dd2, w.debt_mat_y3 AS dd3, w.debt_mat_y4 AS dd4,

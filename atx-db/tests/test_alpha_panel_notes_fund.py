@@ -65,6 +65,8 @@ def seg_tables() -> dict:
     _numd(t, I9, "Revenues", "20211231", 4, "95.0")                                          # Group = SubA + SubB
     for m, v in (("Group", "70.0"), ("SubA", "40.0"), ("SubB", "30.0"), ("Other", "25.0")):
         _numd(t, I9, "Revenues", "20211231", 4, v, f"BusinessSegments={m};")
+    _numd(t,I9,'Revenues','20211231',4,'10','ConsolidationItems=CorporateNonSegment;')
+    _numd(t,I9,'Revenues','20211231',4,'-10','ConsolidationItems=IntersegmentElimination;')
     prem = "SupplementaryInsuranceInformationPremiumRevenue"                                 # tier 2 (insurer)
     _numd(t, J10, "Revenues", "20221231", 4, "100.0")
     _numd(t, J10, prem, "20221231", 4, "60.0", "BusinessSegments=Alpha;")
@@ -538,16 +540,23 @@ def test_source_structure_production_economics_and_clock(lake_seg,monkeypatch):
         'status':'verified_structure','members':['SubA','SubB','Other'],
         'concept':'us-gaap_Revenues','period':period,'roles':[{'role':'fixture-note-8'}],
         'sources':[{'sha256':'fixture','url':'fixture'}],
+        'bridge_context_ids':{'CorporateNonSegment':['corporate'],'IntersegmentElimination':['elimination']},
         'context_ids':{'SubA':['original-a'],'SubB':['original-b'],'Other':['original-c']}})
     FN.build()
     out=N.C.stage_dir(FN.STAGE); row=_features(out)[I9]
     assert (row.bseg_n,row.bseg_rev_n,row.bseg_recon_class)==(3,3,'reconciled_search')
+    assert row.bseg_n_tagged==4 and row.bseg_basis=='source_role_structure'
+    assert row.bseg_partition_quality=='source_verified_reportable' and row.bseg_partition_source_adsh==I9
     assert row.bseg_rev_hhi==pytest.approx((40**2+30**2+25**2)/95**2)
     assert row.available_at==dt.datetime(2022,3,7,21,30,tzinfo=UTC)
     con=duckdb.connect()
     census=con.execute(f"SELECT n_members,n_members_source_tagged,member_basis FROM read_parquet('{out/'segment_census.parquet'}') WHERE adsh=?",[I9]).fetchone()
     assert census==(3,4,'source_role_structure')
     assert con.execute(f"SELECT count(*) FROM read_parquet('{out/'segment_structure.parquet'}')").fetchone()[0]==1
+    import json
+    proof=json.loads(con.execute(f"SELECT proof_json FROM read_parquet('{out/'segment_structure.parquet'}')").fetchone()[0])
+    assert [t['value'] for t in proof['source_bridge_terms']]==[10,-10]
+    assert con.execute(f"SELECT rel_diff_after_source_bridge,rel_diff_strict FROM read_parquet('{out/'segment_recon.parquet'}') WHERE adsh=?",[I9]).fetchone()==pytest.approx((0,70/95))
     con.close()
 
 
@@ -570,3 +579,14 @@ def test_cached_structure_requires_exact_source_role_and_cut(tmp_path,monkeypatc
     assert S.cached_structure(tmp_path,'fixture-amendment','Revenues','2024-12-31',{'A','B'})['status']=='missing_links'
     (tmp_path/'primary.gz').write_bytes(gzip.compress(primary+b'changed'))
     assert S.cached_structure(tmp_path,'fixture-original','Revenues','2024-12-31',{'A','B','Total'})['status']=='source_hash_mismatch'
+
+
+def test_disclosure_period_conditional_reorganization_uncertainty():
+    from atx_db.alpha_panel.fund_notes_disclosure import disclosure_claims
+    for prefix in ['Previously, ','If conditions change, ','Following our reorganization, ','In 2020, ']:
+        text=prefix+'we have two reportable segments.'
+        claims=disclosure_claims(text,'2024-12-31')
+        assert claims[0]['quality']=='temporal_or_reorganization_ambiguous' and not claims[0]['certified']
+        assert text[claims[0]['start_offset']:claims[0]['end_offset']]==claims[0]['claim']
+    assert disclosure_claims('We currently have two reportable segments.','2024-12-31')[0]['quality']=='explicit_claim_period_uncorroborated'
+    assert disclosure_claims('We have two operating segments.','2024-12-31')[0]['quality']=='operating_only_reportable_unverified'
