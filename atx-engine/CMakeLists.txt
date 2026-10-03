@@ -27,6 +27,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/risk/eigen_adjust.cpp
     src/risk/vol_regime.cpp
     src/risk/specific_risk.cpp
+    src/risk/cov_container.cpp
     src/eval/cross_section_ic.cpp
     src/eval/pbo.cpp
     src/eval/perf_metrics.cpp

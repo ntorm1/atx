@@ -48,6 +48,17 @@
 //    specific variance must lie in (0, max_specific_variance) or the run is refused
 //    (check_specific_variance).
 // Timing: every quantity at t reads rows <= t only.
+//
+// Recipe atx-cov-v1 (P9 lane COV, cov-design.md 3.1, brief COV; RiskRecipe::CovV1): every
+// atx-risk-v1.1 stage unchanged plus S2b, the Menchero-Wang-Orr simulated eigenfactor adjustment
+// (USE4 Eq. B7, amplification 1, the engine kernel eigen_adjust_v2) of the fully observed factor
+// block, after its eigenvalue floor and before the structural border: F_keep ->
+// eigen_adjust_v2(F_keep, n_eff_t, 64, 1.0, seed_t), n_eff_t = (sum w_s)^2 / sum w_s^2 with w_s =
+// 2^(-(t-s)/504) over the sessions s <= t with a market factor return, seed_t = splitmix64(7 XOR
+// session ns). The structural border, its PD scaling and the VRA read the adjusted block. A
+// session where it cannot run (fewer than K+1 effective observations, a kernel refusal such as a
+// non-positive eigenvalue) keeps the unadjusted block and is counted (RiskDay::eigen). RiskV11 is
+// the default and leaves every atx-risk-v1.1 byte unchanged.
 
 #include <array>
 #include <iosfwd>
@@ -58,10 +69,15 @@
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/risk/cov_container.hpp"
 
 namespace atx::impl::strategy::risk {
 
 inline constexpr const char* risk_model_id = "atx-risk-v1.1";
+inline constexpr const char* cov_model_id = "atx-cov-v1";
+enum class RiskRecipe : atx::u8 { RiskV11 = 0, CovV1 };
+// "atx-risk-v1.1" / "atx-cov-v1".
+[[nodiscard]] const char* recipe_id(RiskRecipe r) noexcept;
 inline constexpr atx::usize style_count = 11;
 inline constexpr std::array<const char*, style_count> style_names{
     "size", "beta", "residual_vol", "momentum", "value", "earnings_yield", "profitability",
@@ -112,8 +128,43 @@ struct RiskModelConfig {
   // industries.
   atx::f64 min_style_effective_names{10.0};
   atx::usize min_regression_names{100}; // rows per cross-sectional fit (> 62 parameters)
+  // P9 lane COV: the recipe (RiskV11 = atx-risk-v1.1, the default) and the atx-cov-v1 S2b
+  // constants, fixed in the brief before D-COV (a change is a new recipe id): 64 simulations,
+  // amplification 1 (USE4's un-amplified simulated adjustment; the engine default 1.4 is
+  // overridden), recipe seed 7 (per session: splitmix64(seed XOR session ns)), the kernel's
+  // workspace budget. RiskV11 never reads them.
+  RiskRecipe recipe{RiskRecipe::RiskV11};
+  atx::usize eigen_simulations{64};
+  atx::f64 eigen_amplification{1.0};
+  atx::u64 eigen_seed{7};
+  atx::u64 eigen_max_bytes{268'435'456};
 };
 [[nodiscard]] atx::core::Status validate_config(const RiskModelConfig& cfg);
+
+// ---- atx-cov-v1 S2b: the eigenfactor adjustment of one session (P9 COV) -------------------------
+enum class EigenOutcome : atx::u8 {
+  NotRun = 0,   // RiskV11, or no fully observed block at t
+  Adjusted,     // the kernel ran (simulations 0: the block unchanged, gammas 1)
+  ShortHistory, // fewer than K+1 effective observations (K = the block's size)
+  Refused,      // the kernel refused (a non-positive eigenvalue, an invalid simulation)
+};
+[[nodiscard]] const char* eigen_outcome_name(EigenOutcome o) noexcept;
+// splitmix64(recipe_seed XOR the session key's bits): the session's own stream, so block t
+// depends on (F_t, n_eff_t, session_t) only, never on draws made for earlier sessions.
+[[nodiscard]] atx::u64 eigen_session_seed(atx::u64 recipe_seed, atx::i64 session_ns) noexcept;
+struct EigenBlock {
+  EigenOutcome outcome{EigenOutcome::NotRun};
+  std::vector<atx::f64> covariance; // m x m row-major: the adjusted block, else the input
+  // m gammas in ascending eigenvalue order of the input (sqrt(u_k' F_adj u_k / d_k)); empty
+  // unless Adjusted.
+  std::vector<atx::f64> gamma;
+};
+// S2b on one symmetric positive definite m x m block (row-major) with n_eff effective
+// observations at `session_ns`, under cfg's eigen constants. Deterministic and thread-safe (no
+// shared state): the same inputs give the same bytes on any thread.
+[[nodiscard]] EigenBlock eigen_adjust_block(std::span<const atx::f64> block, atx::usize m,
+                                            atx::f64 effective_observations, atx::i64 session_ns,
+                                            const RiskModelConfig& cfg);
 
 // ---- cross-sectional regression kernel ----------------------------------------------------
 // Rows: industry slot (< industry_slots), style z (row-major rows x style_count), WLS weight
@@ -319,7 +370,20 @@ struct RiskDay {
   atx::f64 structural_sigma_lower{std::numeric_limits<atx::f64>::quiet_NaN()};
   atx::f64 structural_sigma_upper{std::numeric_limits<atx::f64>::quiet_NaN()};
   atx::usize structural_bounded_names{}, structural_clamped_names{};
+  // P9 COV. S2b at t (NotRun under RiskV11), the Kish effective count n_eff_t it used (computed
+  // under either recipe) and its gammas (factor_count, ascending eigenvalue order of the fully
+  // observed block; NaN past the block or when not Adjusted). vra_factor_applied: lambda2_factor
+  // is an EWMA (enough bias dates), not the default 1. returns_entered: some instrument's return
+  // over (t-1, t] entered an estimator (the first such session is the stamp's history_first).
+  // specific_flags (instruments): specific_structural (gamma < 1, the structural blend) |
+  // specific_bounded (its structural sigma sat at a bound).
+  EigenOutcome eigen{EigenOutcome::NotRun};
+  atx::f64 eigen_effective{std::numeric_limits<atx::f64>::quiet_NaN()};
+  std::span<const atx::f64> eigen_gamma;
+  bool vra_factor_applied{}, returns_entered{};
+  std::span<const atx::u8> specific_flags;
 };
+inline constexpr atx::u8 specific_structural = 1, specific_bounded = 2;
 class RiskSink {
 public:
   RiskSink() = default;
@@ -371,13 +435,29 @@ enum class SeriesStatus : atx::u8 { Ok = 0, Refused, Empty };
 // Empty: no kept observation; Refused: dropped_share > max_dropped_share; else Ok.
 [[nodiscard]] SeriesStatus series_status(const BiasSeries& s) noexcept;
 [[nodiscard]] const char* series_status_name(SeriesStatus s) noexcept;
+// --bias-families (P9 COV, cov-design 3.1 S7). V1: random, factor, book (every v1 byte unchanged).
+// Extended adds, under the same rules (complete forecasts only, a missing return counts 0 and is
+// reported, never renormalised on realised availability):
+//  - "eigen": the eigenportfolios of F_{t-1} (the forecast factor block, VRA included), one series
+//    per ascending eigenvalue rank k (eigen-00 ..): z = u_k' f_t / sqrt(lambda_k); a factor of the
+//    block without a return at t counts 0 and is reported;
+//  - "minvar": the fully invested minimum-variance book V_{t-1}^{-1} 1 / 1'V^{-1}1 over the eligible
+//    names with a complete forecast (an exposure row, a finite positive specific variance and a
+//    forecast for every factor they load), V = X F X' + D applied by Woodbury (never N x N);
+//  - "optimized": optimized_portfolios seeded random-alpha books V^{-1} alpha projected
+//    dollar-neutral (V^{-1} alpha - (1'V^{-1} alpha / 1'V^{-1} 1) V^{-1} 1), scaled to gross 1,
+//    over the same names; alpha_i = random_score(seed XOR optimized_seed_salt, q, id_i).
+enum class BiasFamilies : atx::u8 { V1 = 0, Extended };
+inline constexpr atx::usize optimized_portfolios = 32;
+inline constexpr atx::u64 optimized_seed_salt = 0x6F7074696D697A65ULL; // "optimize"
 class BiasHarness final : public RiskSink {
 public:
   // book: optional, any order; weights of sessions absent from the panel are refused by run.
   BiasHarness(const RiskPanel& panel, atx::usize random_portfolios, atx::u64 seed,
-              std::span<const BookWeight> book);
+              std::span<const BookWeight> book, BiasFamilies families = BiasFamilies::V1);
   [[nodiscard]] atx::core::Status on_day(const RiskDay& day) override;
   [[nodiscard]] const std::vector<BiasSeries>& series() const noexcept { return series_; }
+  [[nodiscard]] BiasFamilies families() const noexcept { return families_; }
 
 private:
   enum class Excluded : atx::u8 { None = 0, FactorExposure, UncoveredName };
@@ -391,8 +471,17 @@ private:
     atx::f64 vol{};
     Excluded excluded{Excluded::None};
   };
+  // The eigenportfolios formed at t (Extended): the block's factors, its eigenvectors (column k,
+  // m x m column-major) and ascending eigenvalues.
+  struct Eigenportfolios {
+    std::vector<atx::usize> factors;
+    std::vector<atx::f64> vectors, values;
+    bool live{};
+  };
   void realize(const RiskDay& day);
   void form(const RiskDay& day);
+  void form_extended(const RiskDay& day);
+  void realize_eigen(const RiskDay& day);
   static void apply_forecast(Held& held, Forecast forecast) noexcept;
   static void exclude(BiasSeries& s, Excluded why) noexcept;
   [[nodiscard]] Forecast forecast_vol(const RiskDay& day, const Held& held) const;
@@ -401,18 +490,96 @@ private:
   atx::u64 seed_{};
   std::vector<std::vector<std::pair<atx::usize, atx::f64>>> book_by_date_; // per panel date
   bool has_book_{};
-  std::vector<Held> held_;                  // random..., book (last when has_book_)
+  BiasFamilies families_{BiasFamilies::V1};
+  // random..., [Extended: minvar, optimized...], book (last when has_book_)
+  std::vector<Held> held_;
   std::vector<atx::f64> prior_factor_var_;  // factor_count, VRA-adjusted forecast at t-1
-  std::vector<BiasSeries> series_;          // random..., factor..., book
+  // random..., factor..., [Extended: eigen..., minvar, optimized...], book
+  std::vector<BiasSeries> series_;
   std::vector<atx::f64> scores_;            // random x instruments
+  std::vector<atx::f64> optimized_scores_;  // Extended: optimized_portfolios x instruments
+  Eigenportfolios eigen_;
   atx::usize unmatched_book_rows_{};        // book rows outside the role: on_day refuses
 };
 // Deterministic N(0, 1) score of (seed, portfolio, instrument id) (splitmix64 + Box-Muller).
 [[nodiscard]] atx::f64 random_score(atx::u64 seed, atx::usize portfolio, atx::u64 id) noexcept;
+// QLIKE of a series, mean(z^2 - ln z^2) over its finite nonzero z (NaN without one), and its
+// mean rolling absolute deviation, mean |b - 1| over the finite rolling-window b of
+// rolling_bias(z, window) (NaN without one). Reported per family under BiasFamilies::Extended.
+[[nodiscard]] atx::f64 qlike(std::span<const atx::f64> z) noexcept;
+[[nodiscard]] atx::f64 mrad(std::span<const atx::f64> z, atx::usize window);
+
+// ---- atx.cov-container blocks of the risk verb (K-P9-12; cov-design 4.6) ------------------------
+// One session in the legacy dense layout (the verb's per-session files: slot, specific, the f32
+// styles, the covariance) plus the container's optional arrays (empty spans: absent).
+inline constexpr atx::u32 cov_groups = static_cast<atx::u32>(industry_slots);
+inline constexpr atx::u32 cov_dense = static_cast<atx::u32>(style_count);
+struct CovDenseRow {
+  atx::usize date{};
+  atx::i64 session{}, history_first{};
+  atx::u32 flags{};                      // engine::risk::cov::date_* bits
+  std::span<const atx::u64> ids;         // instruments
+  std::span<const atx::u8> slot;         // instruments: 0..49, no_exposure = none
+  std::span<const atx::f64> specific;    // instruments: NaN none
+  std::span<const atx::f32> styles;      // instruments x style_count
+  std::span<const atx::f64> covariance;  // factor_count^2
+  std::span<const atx::f64> factor_return;
+  std::span<const atx::u8> factor_flags; // factor_count
+  std::span<const atx::u8> row_flags;    // instruments
+  std::span<const atx::f64> diag;        // engine::risk::cov::diag_count
+  std::span<const atx::f64> eigen_gamma; // factor_count
+};
+struct CovBlockScratch {
+  std::vector<atx::u64> ids;
+  std::vector<atx::u32> role, group;
+  std::vector<atx::f32> exposures;
+  std::vector<atx::f64> specific;
+  std::vector<atx::u8> row_flags;
+};
+// The row rule (lossless legacy scatter): rows = every instrument with an exposure row, a
+// specific variance other than the default quiet NaN, or a style whose f32 bits are not +0;
+// rows [0, P) are the priced ones (a slot < 50 and a finite positive specific variance), then the
+// rest, each part in ascending instrument index; GROUP = slot + 1 (0 without a row). The spans of
+// the returned input point into `row` and `scratch`. InvalidArgument on geometry or a slot in
+// [50, 255).
+[[nodiscard]] atx::core::Result<atx::engine::risk::CovBlockInput> cov_block_of(
+    const CovDenseRow& row, CovBlockScratch& scratch);
+// The inverse: block rows scattered into the dense legacy row (instruments without a row keep
+// slot no_exposure, the quiet-NaN specific variance and +0 styles; the covariance copied as is).
+// InvalidArgument on geometry or a role index outside the instruments.
+[[nodiscard]] atx::core::Status scatter_cov_block(const atx::engine::risk::CovBlockView& v,
+                                                  atx::usize instruments, std::span<atx::u8> slot,
+                                                  std::span<atx::f64> specific,
+                                                  std::span<atx::f32> styles,
+                                                  std::span<atx::f64> covariance);
+// The DIAG array's names (cov::diag_count; "" = reserved, NaN).
+[[nodiscard]] const std::array<const char*, atx::engine::risk::cov::diag_count>& cov_diag_names();
 
 // ---- CLI: atx-equity-strategy-risk risk ... -----------------------------------------------
 // risk --role PATH/manifest.json --role-sha256 SHA --fields PATH/manifest.json --fields-sha256
 // SHA --output NEWDIR [--book-weights CSV --book-weights-sha256 SHA] [--random-portfolios 64]
 // [--seed 7] [--emit-exposures none|last|all] [--max-bytes 1400000000]
+// [--recipe atx-risk-v1.1|atx-cov-v1] [--emit-container] [--bias-families v1|extended]
+// (P9 COV: the three absent = every output byte as before; --emit-container writes
+// model.atxcov and the manifest's `container` block).
 [[nodiscard]] int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& err);
+// cov-info FILE [--verify full|lazy]: header, geometry, sessions, flags, root, per-block status.
+// Exit 0 when the file opens (and, full, every block verifies), 1 otherwise, 2 on usage.
+[[nodiscard]] int dispatch_cov_info(int argc, char** argv, std::ostream& out, std::ostream& err);
+// cov-diff A B [--through SESSION]: exit 0 when every block hash agrees through the session (all
+// sessions without --through), else prints the first differing session and exits 1.
+// cov-diff --legacy DIR: every block of DIR's container scattered to the dense legacy layout equals
+// factor_covariance.f64, specific_variance.f64, style_exposures.f32 and industry_slot.u8 row for
+// row, bit for bit (exit 0), else prints the first difference (exit 1). 2 on usage or open errors.
+[[nodiscard]] int dispatch_cov_diff(int argc, char** argv, std::ostream& out, std::ostream& err);
+// The legacy comparison of cov-diff --legacy on a `risk` output directory (its manifest's
+// container, Full verification at the manifest's root): ok, or the first difference.
+struct LegacyComparison {
+  bool equal{};
+  atx::usize sessions{};
+  atx::i64 session{};     // the first differing session (when !equal)
+  std::string what;       // the differing file
+};
+[[nodiscard]] atx::core::Result<LegacyComparison> compare_container_to_legacy(
+    const std::string& directory);
 } // namespace atx::impl::strategy::risk

@@ -1,6 +1,7 @@
 #include "strategy_risk_model.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -12,6 +13,8 @@
 #include <sstream>
 #include <utility>
 #include <Eigen/Dense>
+#include "atx/core/linalg/decompose.hpp"
+#include "atx/engine/risk/eigen_adjust.hpp"
 
 namespace atx::impl::strategy::risk {
 namespace {
@@ -148,7 +151,74 @@ std::string factor_name(usize k) {
   return "unknown";
 }
 
+const char* recipe_id(RiskRecipe r) noexcept {
+  switch (r) {
+  case RiskRecipe::RiskV11: return risk_model_id;
+  case RiskRecipe::CovV1: return cov_model_id;
+  }
+  return "unknown";
+}
+
+const char* eigen_outcome_name(EigenOutcome o) noexcept {
+  switch (o) {
+  case EigenOutcome::NotRun: return "not_run";
+  case EigenOutcome::Adjusted: return "adjusted";
+  case EigenOutcome::ShortHistory: return "short_history";
+  case EigenOutcome::Refused: return "refused";
+  }
+  return "unknown";
+}
+
+u64 eigen_session_seed(u64 recipe_seed, i64 session_ns) noexcept {
+  return splitmix(recipe_seed ^ static_cast<u64>(session_ns));
+}
+
+EigenBlock eigen_adjust_block(std::span<const f64> block, usize m, f64 effective, i64 session_ns,
+                              const RiskModelConfig& cfg) {
+  EigenBlock out;
+  out.covariance.assign(block.begin(), block.end());
+  if (m == 0 || block.size() != m * m) {
+    out.outcome = EigenOutcome::Refused;
+    return out;
+  }
+  // The simulated history is the Kish count: fewer than K + 1 effective observations cannot
+  // identify K eigenfactors (the kernel's t > K), so the block stays as it is.
+  if (!(effective >= static_cast<f64>(m + 1))) {
+    out.outcome = EigenOutcome::ShortHistory;
+    return out;
+  }
+  atx::core::linalg::MatX f(ix(m), ix(m));
+  for (usize a = 0; a < m; ++a)
+    for (usize b = 0; b < m; ++b) f(ix(a), ix(b)) = block[a * m + b];
+  const auto adjusted = atx::engine::risk::eigen_adjust_v2(
+      f, effective, cfg.eigen_simulations, cfg.eigen_amplification,
+      eigen_session_seed(cfg.eigen_seed, session_ns), cfg.eigen_max_bytes);
+  if (!adjusted) {
+    out.outcome = EigenOutcome::Refused;
+    return out;
+  }
+  const auto& g = adjusted->covariance;
+  for (usize a = 0; a < m; ++a)
+    for (usize b = 0; b < m; ++b) out.covariance[a * m + b] = g(ix(a), ix(b));
+  // gamma_k from the kernel's own rotation: u_k' F_adj u_k = gamma_k^2 d_k on the input's
+  // (ascending) eigenbasis, the same decomposition eigen_adjust_v2 draws from.
+  out.gamma.assign(m, nan);
+  const auto eig = atx::core::linalg::symmetric_eig(f);
+  if (eig) {
+    for (usize k = 0; k < m; ++k) {
+      const Eigen::VectorXd u = eig->vectors.col(ix(k));
+      const f64 d = eig->values[ix(k)], q = u.dot(g * u);
+      out.gamma[k] = d > 0 && q >= 0 ? std::sqrt(q / d) : nan;
+    }
+  }
+  out.outcome = EigenOutcome::Adjusted;
+  return out;
+}
+
 co::Status validate_config(const RiskModelConfig& c) {
+  if (c.eigen_simulations > 10'000 || !std::isfinite(c.eigen_amplification) ||
+      c.eigen_amplification < 0 || c.eigen_max_bytes == 0)
+    return co::Err(co::ErrorCode::InvalidArgument, "risk model: invalid eigen adjustment constants");
   const bool ok = c.vol_halflife > 0 && c.correlation_halflife > 0 && c.nw_halflife > 0 &&
       c.vra_halflife > 0 && c.specific_halflife > 0 && c.variance_nw_lags <= 20 &&
       c.correlation_nw_lags <= 20 && c.specific_nw_lags <= 20 && c.vra_min_dates > 0 &&
@@ -606,7 +676,7 @@ struct Model {
         prior_spec_var(n, nan), factor_return(factor_count, nan),
         cov(factor_count * factor_count, nan), spec(n, nan), raw(n), zbuf(n), zbuf2(n),
         sigma_ts(n, nan), sigma_str(n, nan), blend(n, nan), structural_flag(factor_count, 0),
-        structural_vol_flag(n, 0) {}
+        structural_vol_flag(n, 0), eigen_gamma(factor_count, nan), specific_flag(n, 0) {}
   const RiskPanel& p;
   const RiskModelConfig& cfg;
   usize n;
@@ -625,6 +695,11 @@ struct Model {
   std::vector<f64> raw, zbuf, zbuf2, sigma_ts, sigma_str, blend;
   std::vector<u8> structural_flag; // factor_count: 1 = structural forecast at t (F2)
   std::vector<u8> structural_vol_flag; // instruments: structural_sigma_bounded | ..._clamped (F3)
+  // P9 COV: the Kish moments of the correlation half-life's weights over the sessions with a
+  // market factor return (sum w, sum w^2), S2b's gammas at t, the per-name specific flags.
+  f64 kish_sum{}, kish_sq{};
+  std::vector<f64> eigen_gamma;
+  std::vector<u8> specific_flag;
 
   [[nodiscard]] f64 cap_at(usize t, usize i) const { return p.cap[t * n + i]; }
   void update_prices(usize t);
@@ -635,6 +710,7 @@ struct Model {
   void factor_forecast(RiskDay& day);
   [[nodiscard]] bool fully_observed_forecast(RiskDay& day, std::vector<usize>& keep,
                                              Eigen::MatrixXd& f);
+  void adjust_block(RiskDay& day, usize m, Eigen::MatrixXd& f);
   void structural_forecast(RiskDay& day, const ExposureAudit& exposure,
                            std::span<const usize> keep, const Eigen::MatrixXd& full);
   [[nodiscard]] co::Status specific_forecast(RiskDay& day);
@@ -747,6 +823,13 @@ void Model::update_vra(usize t, RiskDay& day) {
   }
   day.lambda2_factor = vra(vra_f_acc, vra_f_mass, vra_f_n);
   day.lambda2_specific = vra(vra_s_acc, vra_s_mass, vra_s_n);
+  day.vra_factor_applied = vra_f_n >= cfg.vra_min_dates && vra_f_mass > 0 && vra_f_acc > 0;
+  // n_eff_t (S2b's simulated length): w_s = 2^(-(t-s)/HL_corr) over the sessions s <= t with a
+  // market factor return; read only under atx-cov-v1.
+  const f64 kish = std::exp2(-1.0 / static_cast<f64>(cfg.correlation_halflife));
+  kish_sum *= kish; kish_sq *= kish * kish;
+  if (std::isfinite(factor_return[0])) { kish_sum += 1.0; kish_sq += 1.0; }
+  day.eigen_effective = kish_sq > 0 ? kish_sum * kish_sum / kish_sq : nan;
 }
 
 // Exposures X_t: eligibility, industry slots (pooling small industries), 11 styles (robust
@@ -839,6 +922,7 @@ void Model::factor_forecast(RiskDay& day) {
   std::fill(cov.begin(), cov.end(), nan);
   std::fill(prior_factor_var.begin(), prior_factor_var.end(), nan);
   std::fill(structural_flag.begin(), structural_flag.end(), u8{0});
+  std::fill(eigen_gamma.begin(), eigen_gamma.end(), nan);
   const ExposureAudit exposure = audit_exposures(day.date);
   day.residual_names = exposure.residual_names;
   std::vector<usize> keep;
@@ -886,12 +970,28 @@ bool Model::fully_observed_forecast(RiskDay& day, std::vector<usize>& keep, Eige
       f = 0.5 * (repaired + repaired.transpose());
     }
   }
+  // atx-cov-v1 S2b: after the floor, before the structural border and the VRA (both read f).
+  if (cfg.recipe == RiskRecipe::CovV1) adjust_block(day, m, f);
   for (usize a = 0; a < m; ++a) {
     prior_factor_var[keep[a]] = f(ix(a), ix(a));
     for (usize b = 0; b < m; ++b)
       cov[keep[a] * factor_count + keep[b]] = day.lambda2_factor * f(ix(a), ix(b));
   }
   return true;
+}
+
+// S2b (atx-cov-v1): the fully observed block f (m x m, pre-VRA) replaced by its eigenfactor
+// adjustment when the kernel runs; otherwise f stays and the outcome says why.
+void Model::adjust_block(RiskDay& day, usize m, Eigen::MatrixXd& f) {
+  std::vector<f64> block(m * m);
+  for (usize a = 0; a < m; ++a)
+    for (usize b = 0; b < m; ++b) block[a * m + b] = f(ix(a), ix(b));
+  const EigenBlock adjusted = eigen_adjust_block(block, m, day.eigen_effective, day.session, cfg);
+  day.eigen = adjusted.outcome;
+  if (adjusted.outcome != EigenOutcome::Adjusted) return;
+  for (usize a = 0; a < m; ++a)
+    for (usize b = 0; b < m; ++b) f(ix(a), ix(b)) = adjusted.covariance[a * m + b];
+  for (usize k = 0; k < m && k < factor_count; ++k) eigen_gamma[k] = adjusted.gamma[k];
 }
 
 // Structural forecasts (F2; the rule is in the header): variance w own + (1 - w) prior with
@@ -969,6 +1069,7 @@ co::Status Model::specific_forecast(RiskDay& day) {
   std::fill(prior_spec_var.begin(), prior_spec_var.end(), nan);
   std::fill(sigma_str.begin(), sigma_str.end(), nan);
   std::fill(blend.begin(), blend.end(), nan);
+  std::fill(specific_flag.begin(), specific_flag.end(), u8{0});
   std::vector<u8> ind; std::vector<f64> sty, wgt, cap, val;
   for (usize i = 0; i < n; ++i) {
     sigma_ts[i] = nan;
@@ -1020,6 +1121,8 @@ void Model::blend_specific(RiskDay& day) {
     const u8 flag = structural_vol_flag[i];
     if (flag & structural_sigma_bounded) ++day.structural_bounded_names;
     if (flag & structural_exposure_clamped) ++day.structural_clamped_names;
+    specific_flag[i] = static_cast<u8>(
+        specific_structural | ((flag & structural_sigma_bounded) ? specific_bounded : u8{0}));
   }
 }
 } // namespace
@@ -1042,6 +1145,8 @@ co::Status run_risk_model(const RiskPanel& p, const RiskModelConfig& cfg,
       RiskDay day;
       day.date = t; day.session = p.sessions[t];
       model.update_prices(t);
+      day.returns_entered =
+          std::any_of(model.ret.begin(), model.ret.end(), [](f64 r) { return std::isfinite(r); });
       model.regress(t, day);
       model.update_vra(t, day);
       model.exposures(t, day);
@@ -1056,6 +1161,7 @@ co::Status run_risk_model(const RiskPanel& p, const RiskModelConfig& cfg,
       day.specific_variance = model.spec; day.industry_slot = model.slot_cur;
       day.eligible = model.elig_cur; day.styles = model.z_cur;
       day.factor_structural = model.structural_flag;
+      day.eigen_gamma = model.eigen_gamma; day.specific_flags = model.specific_flag;
       for (auto* sink : sinks) ATX_TRY_VOID(sink->on_day(day));
       std::swap(model.slot_prev, model.slot_cur);
       std::swap(model.elig_prev, model.elig_cur);
@@ -1077,9 +1183,9 @@ f64 random_score(u64 seed, usize portfolio, u64 id) noexcept {
 }
 
 BiasHarness::BiasHarness(const RiskPanel& panel, usize random_portfolios, u64 seed,
-                         std::span<const BookWeight> book)
+                         std::span<const BookWeight> book, BiasFamilies families)
     : panel_(panel), random_(random_portfolios), seed_(seed), book_by_date_(panel.dates),
-      has_book_(!book.empty()), prior_factor_var_(factor_count, nan) {
+      has_book_(!book.empty()), families_(families), prior_factor_var_(factor_count, nan) {
   for (const auto& w : book) {
     const auto s = std::lower_bound(panel.sessions.begin(), panel.sessions.end(), w.session);
     const auto id = std::lower_bound(panel.ids.begin(), panel.ids.end(), w.instrument_id);
@@ -1092,18 +1198,34 @@ BiasHarness::BiasHarness(const RiskPanel& panel, usize random_portfolios, u64 se
     book_by_date_[static_cast<usize>(s - panel.sessions.begin())].emplace_back(
         static_cast<usize>(id - panel.ids.begin()), w.weight);
   }
-  held_.resize(random_ + (has_book_ ? 1U : 0U));
+  const bool extended = families_ == BiasFamilies::Extended;
+  const usize books = extended ? 1 + optimized_portfolios : 0; // minvar, optimized...
+  held_.resize(random_ + books + (has_book_ ? 1U : 0U));
   scores_.resize(random_ * panel.instruments);
   for (usize q = 0; q < random_; ++q)
     for (usize i = 0; i < panel.instruments; ++i)
       scores_[q * panel.instruments + i] = random_score(seed_, q, panel.ids[i]);
-  for (usize q = 0; q < random_; ++q) {
+  const auto padded = [](usize q, usize width) {
     std::string name = std::to_string(q);
-    const std::string pad(3 - std::min<usize>(3, name.size()), '0');
-    series_.push_back(BiasSeries{"random", "random-" + pad + name, {}, {}, {}, {}, 0, 0, 0, 0, 0});
-  }
+    return std::string(width - std::min(width, name.size()), '0') + name;
+  };
+  for (usize q = 0; q < random_; ++q)
+    series_.push_back(BiasSeries{"random", "random-" + padded(q, 3), {}, {}, {}, {}, 0, 0, 0, 0, 0});
   for (usize k = 0; k < factor_count; ++k)
     series_.push_back(BiasSeries{"factor", factor_name(k), {}, {}, {}, {}, 0, 0, 0, 0, 0});
+  if (extended) {
+    for (usize k = 0; k < factor_count; ++k)
+      series_.push_back(BiasSeries{"eigen", "eigen-" + padded(k, 2), {}, {}, {}, {}, 0, 0, 0, 0, 0});
+    series_.push_back(BiasSeries{"minvar", "minvar", {}, {}, {}, {}, 0, 0, 0, 0, 0});
+    for (usize q = 0; q < optimized_portfolios; ++q)
+      series_.push_back(
+          BiasSeries{"optimized", "optimized-" + padded(q, 3), {}, {}, {}, {}, 0, 0, 0, 0, 0});
+    optimized_scores_.resize(optimized_portfolios * panel.instruments);
+    for (usize q = 0; q < optimized_portfolios; ++q)
+      for (usize i = 0; i < panel.instruments; ++i)
+        optimized_scores_[q * panel.instruments + i] =
+            random_score(seed_ ^ optimized_seed_salt, q, panel.ids[i]);
+  }
   if (has_book_) series_.push_back(BiasSeries{"book", "book", {}, {}, {}, {}, 0, 0, 0, 0, 0});
 }
 
@@ -1149,6 +1271,9 @@ void BiasHarness::realize(const RiskDay& day) {
     s.realized.push_back(r); s.z.push_back(r / held.vol);
   };
   for (usize q = 0; q < random_; ++q) settle(held_[q], series_[q]);
+  if (families_ == BiasFamilies::Extended)
+    for (usize j = 0; j < 1 + optimized_portfolios; ++j) // minvar, optimized...
+      settle(held_[random_ + j], series_[random_ + 2 * factor_count + j]);
   if (has_book_) settle(held_.back(), series_.back());
   for (usize k = 0; k < factor_count; ++k) {
     const f64 f = day.factor_return[k], v = prior_factor_var_[k];
@@ -1157,6 +1282,25 @@ void BiasHarness::realize(const RiskDay& day) {
     if (!(v > 0)) { exclude(s, Excluded::FactorExposure); continue; } // the factor is unforecast
     s.sessions.push_back(day.session); s.forecast_vol.push_back(std::sqrt(v));
     s.realized.push_back(f); s.z.push_back(f / std::sqrt(v));
+  }
+  if (families_ == BiasFamilies::Extended) realize_eigen(day);
+}
+
+// The eigenportfolios formed at t-1 realised over (t-1, t]: z_k = u_k' f_t / sqrt(lambda_k); a
+// block factor without a return at t counts 0 and is reported (missing_returns).
+void BiasHarness::realize_eigen(const RiskDay& day) {
+  if (!eigen_.live) return;
+  const usize m = eigen_.factors.size();
+  for (usize k = 0; k < m && k < factor_count; ++k) {
+    auto& s = series_[random_ + factor_count + k];
+    f64 r = 0;
+    for (usize a = 0; a < m; ++a) {
+      const f64 f = day.factor_return[eigen_.factors[a]];
+      if (std::isfinite(f)) r += eigen_.vectors[k * m + a] * f; else ++s.missing_returns;
+    }
+    const f64 vol = std::sqrt(eigen_.values[k]);
+    s.sessions.push_back(day.session); s.forecast_vol.push_back(vol);
+    s.realized.push_back(r); s.z.push_back(r / vol);
   }
 }
 
@@ -1203,6 +1347,7 @@ BiasHarness::Forecast BiasHarness::forecast_vol(const RiskDay& day, const Held& 
 void BiasHarness::form(const RiskDay& day) {
   for (auto& h : held_) { h.live = false; h.excluded = Excluded::None; h.weights.clear(); }
   std::fill(prior_factor_var_.begin(), prior_factor_var_.end(), nan);
+  eigen_.live = false;
   if (!day.forecast) return;
   for (usize k = 0; k < factor_count; ++k) prior_factor_var_[k] = day.covariance[k * factor_count + k];
   const usize n = panel_.instruments;
@@ -1223,6 +1368,7 @@ void BiasHarness::form(const RiskDay& day) {
       for (const usize i : names) h.weights.emplace_back(i, (s[i] - mean) / gross);
       apply_forecast(h, forecast_vol(day, h));
     }
+  if (families_ == BiasFamilies::Extended) form_extended(day);
   if (has_book_) {
     auto& h = held_.back();
     auto& s = series_.back();
