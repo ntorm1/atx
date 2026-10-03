@@ -61,6 +61,7 @@ constexpr std::string_view kUsage =
     "  schema --json --db catalog|cache\n"
     "  quick-check (--catalog DB | --cache DIR)\n"
     "exit: 0 ok, 2 usage, 3 refusal, 4 error\n"
+    "Only init, catalog and cache init create a store; every other verb refuses a missing one.\n"
     "cache init creates DIR/index.sqlite, the only way a cache index is made. WARNING (ruling\n"
     "SQL1-MON): book_monitor.py --fit-work does not yet read records that exist only in a\n"
     "SQLite cache index; never point it at an indexed fit-work dir. No P9 research cell uses a\n"
@@ -137,12 +138,14 @@ struct Args {
   return code;
 }
 
-// Opening a store: a foreign application_id or a non-store file (InvalidArgument) and a newer
-// schema (NotImplemented) are refusals.
+// Opening a store: a foreign application_id, a non-store file or schema drift
+// (InvalidArgument), a newer schema (NotImplemented) and no store at all for a verb that never
+// creates one (NotFound: only `init`, `catalog` and `cache init` create) are refusals.
 [[nodiscard]] int open_failure(std::ostream &err, const core::Error &e) {
   const bool refused = e.code() == core::ErrorCode::InvalidArgument ||
                        e.code() == core::ErrorCode::NotImplemented ||
-                       e.code() == core::ErrorCode::PermissionDenied;
+                       e.code() == core::ErrorCode::PermissionDenied ||
+                       e.code() == core::ErrorCode::NotFound;
   return fail(err, e, refused ? kExitRefusal : kExitError);
 }
 
@@ -208,7 +211,7 @@ struct Args {
     return core::Ok();
   }
   {
-    ATX_TRY(Database db, open_catalog(path));
+    ATX_TRY(Database db, open_catalog(path, StoreOpen::Existing));
     if (!core::db::checkpoint_truncate(db)) {
       return core::Err(core::ErrorCode::PermissionDenied,
                        path + " is in use (its WAL checkpoint did not complete): not rebuilt");
@@ -224,12 +227,13 @@ struct Args {
 }
 
 [[nodiscard]] std::optional<Database> open_or_report(const std::optional<std::string> &path,
+                                                     StoreOpen how,
                                                      std::ostream &err, int &code) {
   if (!path) {
     code = usage(err, "--catalog DB is required");
     return std::nullopt;
   }
-  auto db = open_catalog(*path);
+  auto db = open_catalog(*path, how);
   if (!db) {
     code = open_failure(err, db.error());
     return std::nullopt;
@@ -239,7 +243,8 @@ struct Args {
 
 int cmd_init(const Args &a, std::ostream &out, std::ostream &err) {
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), err, code);
+  std::optional<Database> db =
+      open_or_report(a.one("--catalog"), StoreOpen::CreateIfMissing, err, code);
   if (!db) {
     return code;
   }
@@ -267,7 +272,7 @@ int cmd_catalog(const Args &a, std::ostream &out, std::ostream &err) {
     return fail(err, registry.error(), kExitError);
   }
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(path, err, code);
+  std::optional<Database> db = open_or_report(path, StoreOpen::CreateIfMissing, err, code);
   if (!db) {
     return code;
   }
@@ -307,7 +312,7 @@ int cmd_ingest(const Args &a, std::ostream &out, std::ostream &err) {
     return fail(err, registry.error(), kExitError);
   }
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), err, code);
+  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
   if (!db) {
     return code;
   }
@@ -332,7 +337,7 @@ int cmd_verify(const Args &a, std::ostream &out, std::ostream &err) {
     return usage(err, "verify needs --pins");
   }
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), err, code);
+  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
   if (!db) {
     return code;
   }
@@ -379,7 +384,7 @@ int cmd_query(const Args &a, std::ostream &out, std::ostream &err) {
     return usage(err, "query needs one of artifacts, pins, stale-pins, runs, timings, producers");
   }
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), err, code);
+  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
   if (!db) {
     return code;
   }
@@ -398,7 +403,7 @@ int cmd_query(const Args &a, std::ostream &out, std::ostream &err) {
 
 int cmd_digest(const Args &a, std::ostream &out, std::ostream &err) {
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), err, code);
+  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
   if (!db) {
     return code;
   }
@@ -416,7 +421,7 @@ int cmd_dump(const Args &a, std::ostream &out, std::ostream &err) {
     return usage(err, "dump needs --table T");
   }
   int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), err, code);
+  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
   if (!db) {
     return code;
   }
@@ -444,7 +449,7 @@ int cmd_cache(const Args &a, std::ostream &out, std::ostream &err) {
       err << "atx-research-store: " << a.positional[2] << " is not a directory\n";
       return kExitRefusal;
     }
-    auto db = open_cache(dir);
+    auto db = create_cache(dir);
     if (!db) {
       return open_failure(err, db.error());
     }
@@ -508,7 +513,7 @@ int cmd_quick_check(const Args &a, std::ostream &out, std::ostream &err) {
   if (catalog.has_value() == cache.has_value()) {
     return usage(err, "quick-check needs --catalog DB or --cache DIR");
   }
-  auto db = catalog ? open_catalog(*catalog) : open_cache(fs_path(*cache));
+  auto db = catalog ? open_catalog(*catalog, StoreOpen::Existing) : open_cache(fs_path(*cache));
   if (!db) {
     return open_failure(err, db.error());
   }

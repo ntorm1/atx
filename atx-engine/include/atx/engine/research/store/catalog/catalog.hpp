@@ -42,8 +42,9 @@ namespace atx::engine::research::store::catalog {
 // The catalog DB's groups, in order: {core_group(), records_group()}.
 [[nodiscard]] std::span<const GroupOps *const> catalog_groups() noexcept;
 
-// open_store(path, Catalog, catalog_groups()).
-[[nodiscard]] core::Result<core::db::Database> open_catalog(std::string_view path);
+// open_store(path, Catalog, catalog_groups(), how): `init` and `catalog` create
+// (StoreOpen::CreateIfMissing); every other verb opens an existing catalog only.
+[[nodiscard]] core::Result<core::db::Database> open_catalog(std::string_view path, StoreOpen how);
 
 // The default --specs globs (root-relative).
 [[nodiscard]] std::vector<std::string> default_spec_globs();

@@ -53,8 +53,8 @@ std::span<const GroupOps *const> catalog_groups() noexcept {
   return groups;
 }
 
-core::Result<core::db::Database> open_catalog(std::string_view path) {
-  return open_store(path, DbKind::Catalog, catalog_groups());
+core::Result<core::db::Database> open_catalog(std::string_view path, StoreOpen how) {
+  return open_store(path, DbKind::Catalog, catalog_groups(), how);
 }
 
 std::vector<std::string> default_spec_globs() {
