@@ -1,0 +1,46 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "k-add",
+  "kind": "add",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind add (new signal): one frozen string into library p9k-add.",
+  "parent": {
+    "spec": "tiny.json",
+    "library": "tiny_world_v1"
+  },
+  "fields": {
+    "dir": "fields",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": []
+  },
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "p9-kinds-fixture",
+    "admission_cap": 1000,
+    "admission_cycle_prefix": "p9k",
+    "construction_cap": 1000
+  },
+  "ledger": "trials.jsonl",
+  "expect": {
+    "n_before": 0
+  },
+  "out_dir": "waves/k-add",
+  "library": "p9k-add",
+  "candidates": [
+    {
+      "id": "p9k_si_level",
+      "dsl": "rank((-1 * (si_shares / shares_out)))",
+      "dsl_sha256": "addb3059a8ff48922fa759d33843a47d75ca0e94d5f91ede4d60754bae94b9f7",
+      "theme": "short_interest",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "P9 kinds fixture (synthetic; no hypothesis)",
+      "origin": "prior",
+      "hypothesis": "p9k-p9k_si_level",
+      "kind": "add"
+    }
+  ],
+  "sign_rule": "pm7-35"
+}

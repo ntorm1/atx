@@ -14,6 +14,7 @@ import wave_manifest as WM
 import wave_queue
 from wave_context import Wave
 from wave_stage_util import EXIT_PIN, StageError, library_wave
+import wave_stage_kinds as SK
 
 import research_window as RW   # atx-engine/tools (wave_context puts it on the path): the one source of the seal
 
@@ -28,7 +29,7 @@ def preflight_inputs(w: Wave, done: dict) -> dict:
     out = {"manifest_sha256": w.manifest_sha,
            "parent_spec_digest": w.spec_digest(parent) if w.exists(parent) else None,
            "fields_manifest_sha256": w.sha(f"{m['fields']['dir']}/manifest.json")}
-    if not library_wave(w):
+    if not library_wave(w) and m.get("rule_cell") is not None:     # v2 leverage / walk-forward: may have none
         out["template_sha256"] = w.sha(m["rule_cell"]["template"])
     return out
 
@@ -126,6 +127,7 @@ def fields_check(w: Wave) -> tuple[dict, list[str]]:
         problems.append(f"fields {rel}: seal.exclusive_end {end!r} is not on or before the research seal "
                         f"{RW.SEAL_DATE} ({RW.WINDOW_ID})")
     names = [row.get("name") for row in doc.get("fields", []) if isinstance(row, dict)]
+    names += list((w.manifest.get("field") or {}).get("rows") or []) if SK.kind(w) == "field" else []
     for c in w.manifest.get("candidates") or []:
         miss = [x for x in c.get("fields", []) if x not in names]
         if miss:
@@ -167,11 +169,13 @@ def preflight(w: Wave, done: dict, log) -> dict:
     budget, more = budget_check(w, records, led["n"])
     problems += more
     problems += wave_queue.queue_check(w.root, m)
-    if not library_wave(w):
+    if not library_wave(w) and m.get("rule_cell") is not None:     # v2 leverage: the template is optional
         rc = m["rule_cell"]
         doc = w.read_json(rc["template"]) if w.exists(rc["template"]) else None
         if w.sha(rc["template"]) != rc["template_sha256"] or not research_spec.is_template(doc):
             problems.append(f"rule_cell.template {rc['template']} is not the pinned cell template")
+    kind, more = SK.preflight_kind(w, spec)                        # v2 only (contract K-P9-9): {} for v1
+    problems += more
     if problems:
         raise StageError("preflight refused: " + "; ".join(problems), EXIT_PIN)
     log(f"   preflight: manifest commit {(commit or '')[:12]}, parent {outs['name']} (L {outs['leverage']}), fields "
@@ -181,9 +185,10 @@ def preflight(w: Wave, done: dict, log) -> dict:
                            python=w.python),
             "fields": fields, "ledger": {"path": led["path"], "lines": led["lines"], "head": led["head"],
                                          "n_before": led["n"]},
-            "budget": budget, "window": {"id": RW.WINDOW_ID, "seal": RW.SEAL_DATE}}
+            "budget": budget, "window": {"id": RW.WINDOW_ID, "seal": RW.SEAL_DATE}, **({"kind": kind} if kind else {})}
 
 
 def preflight_plan(w: Wave, done: dict) -> list[str]:
     return [f"#   checks: manifest committed; parent {w.manifest['parent']['spec']} loads and has its NAV; fields pin; "
-            f"seal {RW.SEAL_DATE}; ledger chain, N == {w.manifest['expect']['n_before']}; budget; code pathspec clean"]
+            f"seal {RW.SEAL_DATE}; ledger chain, N == {w.manifest['expect']['n_before']}; budget; code pathspec "
+            "clean"] + SK.preflight_kind_plan(w)

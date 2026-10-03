@@ -255,7 +255,8 @@ class Cycle:
         key = next((k for k, v in (self.spec.get("exes") or {}).items() if v == exe), None)
         owner, depth = self.introducer(st.phase)
         pins = owner.get(EXES_PIN) or {}
-        whose = "the spec's" if depth == 0 else "the parent's" if depth == 1 else f"the ancestor's ({depth} templates up)"
+        whose = ("the spec's" if depth == 0 else "the parent's" if depth == 1 else
+                 f"the ancestor's ({depth} templates up)")
         return key, pins.get(key) if key else None, whose
 
     def pin(self, key: str) -> str:
