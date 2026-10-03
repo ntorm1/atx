@@ -15,21 +15,21 @@
 //      group whose tradingDate statistics start on or after the research seal is never read (its
 //      pages are never decompressed or decoded), nor is one wholly outside the axis window and
 //      before the seal; in a read row group the key columns (tradingDate, securityID) are decoded
-//      first, sealed rows and
-//      rows off the window, the role's lines or the axis calendar are dropped (and counted) by key,
-//      and the value columns are decoded only when a row survives;
+//      first, sealed rows and rows off the window, the role's lines or the axis calendar are
+//      dropped (and counted) by key, and the value columns are decoded only when a row survives;
 //   4. applies the observation contract once (finite positive cumulReturnFactor, finite positive
 //      close, finite volume >= 0, a unique (tradingDate, securityID) key: duplicate keys are
-//      quarantined to NaN in every matrix), runs factor-break-v1 once (factor_break.hpp) and divides
-//      every repaired step out of the factor.
+//      quarantined to NaN in every matrix), runs factor-break-v1 once (factor_break.hpp) and
+//      divides every repaired step out of the factor.
 //
 // Matrices (axis rows x role lines, date-major), each present only when the request asks for it:
-//   factor (f64) and close (f32): the price module's observation contract (NaN otherwise), the factor
-//     chained (repaired steps divided out); requested by `price`;
+//   factor (f64) and close (f32): the price module's observation contract (NaN otherwise), the
+//     factor chained (repaired steps divided out); requested by `price`;
 //   shares (f32): vendor shares (thousands) of an observation with 0 < shares <= the A9 ceiling
-//     (1e8), else NaN; first_above: the axis day of each line's first row above the ceiling (C-81);
-//     requested by `shares`;
-//   price_open (f32): the open of an observation with a finite positive open, else NaN (`price_open`);
+//     (1e8), else NaN; first_above: the axis day of each line's first row above the ceiling
+//     (C-81); requested by `shares`;
+//   price_open (f32): the open of an observation with a finite positive open, else NaN
+//     (`price_open`);
 //   bar_open / bar_high / bar_low (f32): the vendor values as stored (the ohlc module reads them
 //     without the observation contract; duplicates quarantined), requested by `bars`.
 // The panel is immutable after load and safe to read from several threads.
@@ -104,8 +104,9 @@ public:
   // The panel of `role` from `source` (see above). Err(InvalidArgument) for a source that is not
   // the role's (SHA-256), a missing or mistyped column, or a request the role's calendar cannot
   // serve; Err(IoError) for a file that cannot be read or changes while it is read.
-  [[nodiscard]] static core::Result<VendorPanel>
-  load(const std::filesystem::path &source, const RoleAxes &role, const VendorPanelRequest &request);
+  [[nodiscard]] static core::Result<VendorPanel> load(const std::filesystem::path &source,
+                                                      const RoleAxes &role,
+                                                      const VendorPanelRequest &request);
 
   // The scan's back end: observations in, the panel out (tests assemble panels from rows).
   class Assembler {
@@ -162,7 +163,9 @@ public:
   [[nodiscard]] f32 bar_high(usize row, usize line) const noexcept {
     return bar_high_[at(row, line)];
   }
-  [[nodiscard]] f32 bar_low(usize row, usize line) const noexcept { return bar_low_[at(row, line)]; }
+  [[nodiscard]] f32 bar_low(usize row, usize line) const noexcept {
+    return bar_low_[at(row, line)];
+  }
   // The axis day of the line's first row above the shares ceiling, kNeverDay when none.
   [[nodiscard]] i64 first_above(usize line) const noexcept { return first_above_[line]; }
 

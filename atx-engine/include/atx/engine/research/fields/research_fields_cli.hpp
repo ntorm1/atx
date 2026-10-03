@@ -19,9 +19,10 @@
 // formula_sha256, sources, coverage (member quantiles included; for the FINRA fields the
 // vintage_risk block), source_checks (sealed rows counted under rows_sealed_dropped) and extra
 // (FINRA) -- plus the engine identity {name, fields, exe_sha256, git_sha, build_type} (K-P9-3), the
-// spec's SHA-256 and the research window. A run that fails leaves no receipt: here the receipt is the publish-last
-// marker of a complete build. prepare_research_fields_engine.py reads it, writes the manifest
-// entries from it and stamps each engine entry's producer block from its engine identity.
+// spec's SHA-256 and the research window. A run that fails leaves no receipt: here the receipt is
+// the publish-last marker of a complete build. prepare_research_fields_engine.py reads it, writes
+// the manifest entries from it and stamps each engine entry's producer block from its engine
+// identity.
 //
 // With --registry (contract K-P9-1, schema atx.field-registry/v1): SPEC is
 // atx.research-fields-spec/v2, the v1 keys plus an optional "reuse": {"dir", "manifest_sha256"?};

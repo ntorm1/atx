@@ -13,7 +13,8 @@
 // coverage.vintage_risk, extra). An input that several kinds read is loaded once per run into
 // BuildContext::sources: the FINRA dissemination schedule, and the shared vendor panel (K-P9-2
 // source half, sources/vendor_panel.hpp), loaded by the first vendor kind of the run with the union
-// of every vendor plan's request (BuildContext::plans) so the vendor file is hashed and scanned once.
+// of every vendor plan's request (BuildContext::plans) so the vendor file is hashed and scanned
+// once.
 //
 // Registered kinds, in table order: si_shares and si_dtc (finra_asof_field.hpp), vol_126
 // (volume_mean_field.hpp), then the vendor-panel kinds ret_overnight, ret_intraday, ceq_iss_5y,

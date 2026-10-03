@@ -13,11 +13,11 @@
 //     <= prefix + t - 1 (the panel's extended axis: NYSE rule sessions before the role, the role's
 //     sessions inside it); ceq_iss_5y also reads the row 1260 sessions earlier and the shares
 //     observations the 90-day lag (A8) allows;
-//   ohlc-same-session-v1 (open_adj, high_adj, low_adj): role row t reads the vendor bar of session t
-//     and the role's close.f64, raw_close.f64, present.u8 of row t.
-// coskew_60m (price module) is not ported: its equal-weight market is a DuckDB fsum whose row order
-// is DuckDB's own, so no engine sum can claim its bits; xrd0_ttm reads other fields of the same run,
-// not the panel. Both stay Python fields.
+//   ohlc-same-session-v1 (open_adj, high_adj, low_adj): role row t reads the vendor bar of
+//     session t and the role's close.f64, raw_close.f64, present.u8 of row t.
+// coskew_60m (price module) is not ported: its equal-weight market is a DuckDB fsum whose row
+// order is DuckDB's own, so no engine sum can claim its bits; xrd0_ttm reads other fields of the
+// same run, not the panel. Both stay Python fields.
 //
 // The row kernels below are the builders' arithmetic for one row, given the axis row a clock
 // reads; the builders own the clock. Tests drive the kernels with a shifted clock to plant a leak

@@ -161,8 +161,8 @@ SealedLayout sealed_layout(const fs::path &parquet) {
         continue;
       }
       const auto chunk = rg->ColumnChunk(c);
-      const i64 start =
-          chunk->has_dictionary_page() ? chunk->dictionary_page_offset() : chunk->data_page_offset();
+      const i64 start = chunk->has_dictionary_page() ? chunk->dictionary_page_offset()
+                                                     : chunk->data_page_offset();
       out.ranges.push_back(ChunkRange{start, chunk->total_compressed_size()});
     }
   }
