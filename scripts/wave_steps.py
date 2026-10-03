@@ -54,8 +54,8 @@ def rooted(argv: list[str], root) -> list[str]:
 def add_alpha_argv(py: str, c: dict, *, parent: str, parent_spec: str, name: str, fields_dir: str,
                    plan_out: str, root=None) -> list[str]:
     argv = [py, tool(RCY, root), "add-alpha", "--id", c["id"], "--dsl", c["dsl"], "--theme", c["theme"],
-            "--tier", c["tier"], "--prior-sign", str(c["prior_sign"]), "--citation", c["citation"], "--origin", c["origin"],
-            "--parent", parent, "--name", name, "--parent-spec", parent_spec, "--fields", fields_dir]
+            "--tier", c["tier"], "--prior-sign", str(c["prior_sign"]), "--citation", c["citation"],
+            "--origin", c["origin"], "--parent", parent, "--name", name, "--parent-spec", parent_spec, "--fields", fields_dir]
     for rid in c.get("replaces", []):
         argv += ["--replaces", rid]
     if c.get("rescreen"):
