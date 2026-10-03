@@ -1,136 +1,145 @@
 {
-  "stage": "fundamentals_notes",
-  "lane": "FUND",
-  "task": "tier1-v4 Task 14 (S4.4 segments + notes; lane C)",
-  "schema": "atx.alpha-panel.fundamentals-notes/v1",
-  "module": "atx_db.alpha_panel.fund_notes",
-  "args": [
-    [
-      "build"
-    ],
-    [
-      "coverage"
-    ]
-  ],
-  "manifest": "fundamentals_notes/manifest.json",
-  "inputs": [
-    "notes"
-  ],
-  "inputs_note": "builds read only notes/parts/source=*/{sub,num_items,dim}.parquet; coverage (cell panels) also reads identity/link_table_v3.parquet, calendar.parquet, _tmp/panel_member/year=*.parquet and, once published, universe/year=*/universe.parquet",
-  "guard_gb": 0.9,
-  "code": [
-    "fund_notes",
-    "notes_fetch",
-    "common"
-  ],
-  "vintage": "vintage",
-  "staleness": "annual segment features describe the fiscal year at period; consumers bound staleness by session - period (coverage uses <= 548 days) or by the next 10-K",
-  "doc": "atx-db/docs/datasets/fundamentals_notes.md",
-  "outputs": [
-    {
-      "view": "fundamentals_notes_segment_features",
-      "glob": "fundamentals_notes/segment_features.parquet",
-      "clock": "available_at",
-      "vintage": "vintage",
-      "keys": [
-        "cik",
-        "period"
-      ],
-      "order": [
-        "available_at",
-        "adsh"
-      ],
-      "primary_key": [
-        "cik",
-        "period",
-        "adsh"
-      ],
-      "doc": "per (cik, fiscal period, filing) segment features: business-segment count, segment revenue HHI, foreign-sales share, major-customer share, debt-maturity ladder, leases, SBC; a later vintage inherits blocks it does not report (carry_n)"
-    },
-    {
-      "view": "fundamentals_notes_segment_recon",
-      "glob": "fundamentals_notes/segment_recon.parquet",
-      "clock": "available_at",
-      "vintage": "event",
-      "keys": [
-        "adsh"
-      ],
-      "doc": "all original 10-K/10-KT filings: verified reconciliation class plus separate candidate-only diagnostics"
-    },
-    {
-      "view": "fundamentals_notes_segments",
-      "glob": "fundamentals_notes/segments.parquet",
-      "clock": "available_at",
-      "vintage": "event",
-      "keys": [
-        "adsh",
-        "metric",
-        "axis_kind",
-        "member",
-        "tag",
-        "ddate",
-        "qtrs",
-        "segments",
-        "uom"
-      ],
-      "doc": "segment metrics with context_basis and original DIM context_provenance; plain or exhaustive timing-transfer projection"
-    },
-    {
-      "view": "fundamentals_notes_wide",
-      "glob": "fundamentals_notes/notes_wide.parquet",
-      "clock": "available_at",
-      "vintage": "event",
-      "keys": [
-        "adsh"
-      ],
-      "doc": "one row per periodic filing: current-period notes items (debt maturities, leases, pension, SBC, tax, impairments), filer currency, as filed"
-    },
-    {
-      "view": "fundamentals_notes_items",
-      "glob": "fundamentals_notes/items/year=*/items.parquet",
-      "clock": "available_at",
-      "vintage": "event",
-      "keys": [
-        "adsh",
-        "tag",
-        "is_custom",
-        "segments",
-        "ddate",
-        "qtrs",
-        "uom",
-        "coreg"
-      ],
-      "doc": "long table of every registry-tag fact (notes items, segment metrics and totals, major-customer revenue), as filed, one per fact key (lowest iprx)"
-    },
-    {
-      "view": "fundamentals_notes_segment_census",
-      "glob": "fundamentals_notes/segment_census.parquet",
-      "clock": "available_at",
-      "vintage": "event",
-      "keys": [
-        "adsh"
-      ],
-      "doc": "all periodic SUB filings and current-period numeric business-member counts independent of registry tags"
-    }
-  ],
-  "asof_macros": {
-    "segment_features_asof": "CREATE OR REPLACE MACRO segment_features_asof(ts) AS TABLE SELECT * FROM read_parquet('<root>/fundamentals_notes/segment_features.parquet') WHERE available_at < CAST(ts AS TIMESTAMPTZ) QUALIFY row_number() OVER (PARTITION BY cik, period ORDER BY available_at DESC, adsh DESC) = 1"
-  },
-  "asof_usage": "latest annual features per issuer visible at decision session d: SELECT * FROM segment_features_asof(lake_cutoff(d)) WHERE is_annual AND period >= d - INTERVAL 548 DAY QUALIFY row_number() OVER (PARTITION BY cik ORDER BY period DESC) = 1",
-  "asof_note": "available_at is TIMESTAMP WITH TIME ZONE (UTC); with the catalog's TimeZone='UTC' it compares to a naive UTC ts. Identical to the stagelake vintage <view>_as_of macro with keys (cik, period) and order (available_at, adsh).",
-  "registered": "NOT registered: Task 17 folds this stub into stagelake",
-  "coverage": "fundamentals_notes/coverage.json: corrected month-end panels, all-tag census proxy denominator, uncertified revenue gate, verified reconciliation gate",
-  "verification": {
-    "denominator_certified": false,
-    "arithmetic_candidates": "diagnostic only",
-    "monthly_coverage_cutoff": "month-end session 22:00 UTC",
-    "extra_context_projection": "exhaustive timing partition with original-context provenance",
-    "restricted_year_scope": "census recomputed for every republished existing item year",
-    "disclosed_reportable_container_exceptions": {
-      "0001140361-23-014888": "ReportableLegalEntities",
-      "0001722482-24-000012": "ReportableGeographicalComponents",
-      "0001982518-25-000007": "ReportableGeographicalComponents"
-    },
-    "primary_pilot": "100 deterministic residual filings; no all-filer denominator certification"
-  }
+    "stage":  "fundamentals_notes",
+    "lane":  "FUND",
+    "task":  "tier1-v4 Task 14 (S4.4 segments + notes; lane C)",
+    "schema":  "atx.alpha-panel.fundamentals-notes/v1",
+    "module":  "atx_db.alpha_panel.fund_notes",
+    "args":  [
+                 [
+                     "build"
+                 ],
+                 [
+                     "coverage"
+                 ]
+             ],
+    "manifest":  "fundamentals_notes/manifest.json",
+    "inputs":  [
+                   "notes"
+               ],
+    "inputs_note":  "builds read only notes/parts/source=*/{sub,num_items,dim}.parquet; coverage (cell panels) also reads identity/link_table_v3.parquet, calendar.parquet, _tmp/panel_member/year=*.parquet and, once published, universe/year=*/universe.parquet; exact retained primary/linkbase receipts supply filing/role/SHA-bound structural proof only",
+    "guard_gb":  0.9,
+    "code":  [
+                 "fund_notes",
+                 "fund_notes_structure",
+                 "fund_notes_disclosure",
+                 "notes_fetch",
+                 "common"
+             ],
+    "vintage":  "vintage",
+    "staleness":  "annual segment features describe the fiscal year at period; consumers bound staleness by session - period (coverage uses \u003c= 548 days) or by the next 10-K",
+    "doc":  "atx-db/docs/datasets/fundamentals_notes.md",
+    "outputs":  [
+                    {
+                        "view":  "fundamentals_notes_segment_features",
+                        "glob":  "fundamentals_notes/segment_features.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "vintage",
+                        "keys":  [
+                                     "cik",
+                                     "period"
+                                 ],
+                        "order":  [
+                                      "available_at",
+                                      "adsh"
+                                  ],
+                        "primary_key":  [
+                                            "cik",
+                                            "period",
+                                            "adsh"
+                                        ],
+                        "doc":  "per (cik, fiscal period, filing) segment features: business-segment count, segment revenue HHI, foreign-sales share, major-customer share, debt-maturity ladder, leases, SBC; a later vintage inherits blocks it does not report (carry_n)"
+                    },
+                    {
+                        "view":  "fundamentals_notes_segment_recon",
+                        "glob":  "fundamentals_notes/segment_recon.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "event",
+                        "keys":  [
+                                     "adsh"
+                                 ],
+                        "doc":  "all original 10-K/10-KT filings: verified reconciliation class plus separate candidate-only diagnostics"
+                    },
+                    {
+                        "view":  "fundamentals_notes_segments",
+                        "glob":  "fundamentals_notes/segments.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "event",
+                        "keys":  [
+                                     "adsh",
+                                     "metric",
+                                     "axis_kind",
+                                     "member",
+                                     "tag",
+                                     "ddate",
+                                     "qtrs",
+                                     "segments",
+                                     "uom"
+                                 ],
+                        "doc":  "segment metrics with context_basis and original DIM context_provenance; plain or exhaustive timing-transfer projection"
+                    },
+                    {
+                        "view":  "fundamentals_notes_wide",
+                        "glob":  "fundamentals_notes/notes_wide.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "event",
+                        "keys":  [
+                                     "adsh"
+                                 ],
+                        "doc":  "one row per periodic filing: current-period notes items (debt maturities, leases, pension, SBC, tax, impairments), filer currency, as filed"
+                    },
+                    {
+                        "view":  "fundamentals_notes_items",
+                        "glob":  "fundamentals_notes/items/year=*/items.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "event",
+                        "keys":  [
+                                     "adsh",
+                                     "tag",
+                                     "is_custom",
+                                     "segments",
+                                     "ddate",
+                                     "qtrs",
+                                     "uom",
+                                     "coreg"
+                                 ],
+                        "doc":  "long table of every registry-tag fact (notes items, segment metrics and totals, major-customer revenue), as filed, one per fact key (lowest iprx)"
+                    },
+                    {
+                        "view":  "fundamentals_notes_segment_census",
+                        "glob":  "fundamentals_notes/segment_census.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "event",
+                        "keys":  [
+                                     "adsh"
+                                 ],
+                        "doc":  "all periodic SUB filings and current-period numeric business-member counts independent of registry tags"
+                    },
+                    {
+                        "view":  "fundamentals_notes_segment_structure",
+                        "glob":  "fundamentals_notes/segment_structure.parquet",
+                        "clock":  "available_at",
+                        "vintage":  "event",
+                        "keys":  [
+                                     "adsh",
+                                     "tag"
+                                 ],
+                        "doc":  "exact filing/role/concept/context/source-SHA corroborated reportable cuts and signed bridge provenance;9 rows"
+                    }
+                ],
+    "asof_macros":  {
+                        "segment_features_asof":  "CREATE OR REPLACE MACRO segment_features_asof(ts) AS TABLE SELECT * FROM read_parquet(\u0027\u003croot\u003e/fundamentals_notes/segment_features.parquet\u0027) WHERE available_at \u003c CAST(ts AS TIMESTAMPTZ) QUALIFY row_number() OVER (PARTITION BY cik, period ORDER BY available_at DESC, adsh DESC) = 1"
+                    },
+    "asof_usage":  "latest annual features per issuer visible at decision session d: SELECT * FROM segment_features_asof(lake_cutoff(d)) WHERE is_annual AND period \u003e= d - INTERVAL 548 DAY QUALIFY row_number() OVER (PARTITION BY cik ORDER BY period DESC) = 1",
+    "asof_note":  "available_at is TIMESTAMP WITH TIME ZONE (UTC); with the catalog\u0027s TimeZone=\u0027UTC\u0027 it compares to a naive UTC ts. Identical to the stagelake vintage \u003cview\u003e_as_of macro with keys (cik, period) and order (available_at, adsh).",
+    "registered":  "NOT registered: Task 17 folds this stub into stagelake",
+    "coverage":  "fundamentals_notes/coverage.json: corrected month-end panels, all-tag census proxy denominator, uncertified revenue gate, verified reconciliation gate",
+    "verification":  {
+                         "denominator_certified":  false,
+                         "arithmetic_candidates":  "diagnostic only",
+                         "monthly_coverage_cutoff":  "month-end session 22:00 UTC",
+                         "extra_context_projection":  "exhaustive timing partition with original-context provenance",
+                         "business_partition_quality":  "bseg_partition_quality: source_verified_reportable / tagged_unverified_reportable / inferred_singleton_unverified; bseg_partition_source_adsh carries proof origin with amendments; bseg_n_tagged retains raw count",
+                         "foreign_sales_quality":  "unverified_tagged_geography; business proof never upgrades geographic quality",
+                         "source_structure":  "qualified graph plus exact accession/primary SHA/role/concept/current contexts and disclosed reportable cut; graph or arithmetic alone is insufficient"
+                     }
 }
