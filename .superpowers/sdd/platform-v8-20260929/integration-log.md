@@ -7152,3 +7152,4 @@ Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cy
 | stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
 |---|---|---|---|---|---|---|---|
 | 01 preflight | 0 | 0.3 | - (no exe) | 4,275 / 4,248 | `a7f876c13100abae6e73d82581d092f2c50cfc98fcd66b8cfa41401f642c62f3` | - | manifest commit `15017bb4`; parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `9d3548b6`; ledger 129 lines N 58 (head `a083edaa`); budget v8y-construction-n58-plus-1, construction cap 62 |
+| 02 register | 0 | 0.1 | - | 4,219 / 4,219 | `87a9551cc61431be410584d90df0065c13facf352cf97a5d0b77a4aeae7bbc0a` | - | `{"skipped": "a rule wave registers no strings"}` |
