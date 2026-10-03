@@ -1,6 +1,6 @@
 # universe (`universe/`)
 
-Rebuilt 2026-10-03, tier1-v4 Task 2 fix round 2 (Task 2x remains approved). Rule `universe-all-common-v3`, schema `atx.alpha-panel.universe/v1`; one joinable row per frozen panel key `(session_date, security_id)`. Delisted lines remain through their last panel session. Registry stub `universe.registry.json`; manifest `universe/manifest.json`; validation `validation/universe.json`.
+Published snapshot: tier1-v4 Task 2 fix round 2 (Task 2x remains approved). Fix round 3 source replay and universe publication are pending after two low-commit guard stops; the previous universe source snapshot is stale and downstream consumers remain on hold. Rule `universe-all-common-v3`, schema `atx.alpha-panel.universe/v1`; one joinable row per frozen panel key `(session_date, security_id)`. Delisted lines remain through their last panel session. Registry stub `universe.registry.json`; manifest `universe/manifest.json`; validation `validation/universe.json`.
 
 Build command from `C:/atx/atx-db` with `PYTHONPATH=C:/atx/atx-db/src OPENBLAS_NUM_THREADS=1`:
 `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build`.
@@ -22,7 +22,7 @@ Build command from `C:/atx/atx-db` with `PYTHONPATH=C:/atx/atx-db/src OPENBLAS_N
 | is_foreign_issuer | BOOLEAN | flag | panel `is_fpi`, regime `fpi_20f` / `canadian_40f`, or incorporation outside the US (dated cover or target-bound original header; unknown without dated evidence) | panel, sec_filings, identity_cover, issuer_history, issuer_classes | clocks < cutoff | daily |
 | filer_regime | VARCHAR | - | SEC filer regime of `cik` as of the cutoff: `domestic`, `fpi_20f`, `canadian_40f`, `fund`, `none`; NULL unknown / unlinked | sec_filings/filer_regime | `available_at` < cutoff | daily |
 | me | DOUBLE | USD | `market/shares_daily.shrout` x raw close of d (NULL when shares unknown) | shares_daily, panel | d close | daily |
-| univ_all_common | BOOLEAN | flag | rule `universe-all-common-v2` (below) | all of the above | d 22:00 | daily |
+| univ_all_common | BOOLEAN | flag | rule `universe-all-common-v3` (below) | all of the above | d 22:00 | daily |
 | univ_r3000p / univ_r1000p / univ_r2000p / univ_sp500p | BOOLEAN | flag | `indexes` proxy membership of d (false when not a member) | indexes | rank date 22:00 < cutoff | annual / quarterly recon |
 | available_at | TIMESTAMP | UTC | session_date 22:00 | - | - | - |
 

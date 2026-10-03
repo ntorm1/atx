@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse,html,json,re,os
 import datetime as dt
 from pathlib import Path
-from . import common as C,issuer_history as I,sec_filings as SF,listing_events as LE
+from . import common as C,issuer_history as I,issuer_class_replay as R,sec_filings as SF,listing_events as LE
 from atx_db import sec_http as H
 STAGE='issuer_classes';RULE='issuer-bound-original-reit-status-v3'
 PRIMARY_MAXIMUM=64_000_000
@@ -175,10 +175,15 @@ def fetch(cap:int=3000)->dict:
     result={'http_attempts_total_round':limiter.count,'cap':cap,'budget_stop':stopped,'remaining_observations':remaining}
     C.write_json_atomic(C.stage_dir(STAGE)/'fetch_status.json',result);print({k:v for k,v in result.items() if k!='remaining_observations'});return result
 
-def load()->dict:
+def load(checkpoint_dir:Path|None=None)->dict:
     import pyarrow as pa
     import pyarrow.parquet as pq
     plan=C.read_json(C.stage_dir(STAGE)/'plan.json');store=H.FetchLedgerStore(I.RAW).load();events=[];inc=[];assessment=[]
+    keys=[(r['cik'],r['accession']) for r in plan['rows']]
+    if len(set(keys))!=len(keys):raise ValueError('duplicate issuer-class source plan key')
+    plan_sha=C.sha256_file(C.stage_dir(STAGE)/'plan.json')
+    replay=R.AssertionReplay(checkpoint_dir,R.code_identity(Path(__file__),RULE,PRIMARY_MAXIMUM)) if checkpoint_dir is not None else None
+    ledger_sha=C.sha256_file(I.RAW/H.FETCH_LEDGER_NAME) if replay is not None else None
     for r in plan['rows']:
         head=store.lookup(r['header_url']);primary=store.lookup(r['primary_url'])
         item={'cik':r['cik'],'accession':r['accession'],'primary_url':r['primary_url'],'header_url':r['header_url'],'filing_date':r['filing_date']}
@@ -191,26 +196,32 @@ def load()->dict:
         if not clock or not name:assessment.append({**item,'status':None,'reason':'header_identity_state_or_clock_unverified'});continue
         if clock['inc_state_country'] is not None:
             inc.append({**clock,'source_url':r['header_url'],'raw_sha256':head.sha256,'fetched_at':head.fetched_at})
-        try:assertion=reit_assertion(store.read(primary,maximum=PRIMARY_MAXIMUM),name,r['cik'])
+        try:
+            process=lambda:reit_assertion(store.read(primary,maximum=PRIMARY_MAXIMUM),name,r['cik'])
+            assertion=replay.assertion(r,store,name,process) if replay is not None else process()
         except (ValueError,OSError) as exc:
             assessment.append({**item,'status':None,'reason':'primary_read_or_parse_failure','error':type(exc).__name__});continue
         period=report_period(rawhead)
         item={**item,**assertion,'issuer_name':name,'report_period_end':period,'available_at':clock['available_at'],'accepted_at':clock['accepted_at'],'primary_sha256':primary.sha256,'header_sha256':head.sha256};assessment.append(item)
         if assertion['status'] is not None:events.append({'cik':r['cik'],'accession':r['accession'],'accepted_at':clock['accepted_at'],'available_at':clock['available_at'],'report_period_end':period,'reit_status':assertion['status'],'primary_url':r['primary_url'],'primary_sha256':primary.sha256,'header_sha256':head.sha256,'evidence':json.dumps(assertion['evidence'])})
+    if len(assessment)!=len(keys) or {(r['cik'],r['accession']) for r in assessment}!=set(keys):raise RuntimeError('incomplete issuer-class source assessment')
+    if C.sha256_file(C.stage_dir(STAGE)/'plan.json')!=plan_sha:raise RuntimeError('source plan changed during assessment')
+    replay_receipt=replay.finish(R.code_identity(Path(__file__),RULE,PRIMARY_MAXIMUM)) if replay is not None else None
+    if replay is not None and C.sha256_file(I.RAW/H.FETCH_LEDGER_NAME)!=ledger_sha:raise RuntimeError('source receipts changed during replay')
     schema=pa.schema([('cik',pa.int64()),('accession',pa.string()),('accepted_at',pa.timestamp('us',tz='UTC')),('available_at',pa.timestamp('us',tz='UTC')),('report_period_end',pa.date32()),('reit_status',pa.bool_()),('primary_url',pa.string()),('primary_sha256',pa.string()),('header_sha256',pa.string()),('evidence',pa.string())])
     target=C.stage_dir(STAGE)/'reit_status.parquet';tmp=target.with_suffix('.partial');pq.write_table(pa.Table.from_pylist(events,schema=schema),tmp,compression='zstd');tmp.replace(target)
     ischema=pa.schema([('cik',pa.int64()),('accession',pa.string()),('inc_state_country',pa.string()),('accepted_at',pa.timestamp('us',tz='UTC')),('available_at',pa.timestamp('us',tz='UTC')),('clock',pa.string()),('revision_risk',pa.string()),('source_url',pa.string()),('raw_sha256',pa.string()),('fetched_at',pa.string())])
     target=C.stage_dir(STAGE)/'incorporation.parquet';tmp=target.with_suffix('.partial');pq.write_table(pa.Table.from_pylist(inc,schema=ischema),tmp,compression='zstd');tmp.replace(target)
     C.write_json_atomic(C.stage_dir(STAGE)/'assessment.json',{'rule':RULE,'rows':assessment})
     result={'rule':RULE,'observations':len(assessment),'explicit_status_events':len(events),'explicit_status_ciks':len({r['cik'] for r in events}),'verified_header_inc_rows':len(inc),'unknown_observations':sum(r['status'] is None for r in assessment),'plan_sha256':C.sha256_file(C.stage_dir(STAGE)/'plan.json'),'assessment_sha256':C.sha256_file(C.stage_dir(STAGE)/'assessment.json'),'raw_ledger_sha256':C.sha256_file(I.RAW/H.FETCH_LEDGER_NAME),'source_coverage':'sparse bounded primary observations; unknown is not false; source cap and remaining listed','fetch_status':C.read_json(C.stage_dir(STAGE)/'fetch_status.json'),
-        'network_contract_sha256':C.sha256_file(Path(H.__file__)),'guard_job':os.environ.get('ATX_GUARD_JOB'),
+        'network_contract_sha256':C.sha256_file(Path(H.__file__)),'guard_job':os.environ.get('ATX_GUARD_JOB'),'replay_checkpoint':replay_receipt,
         'source':{'terms':'SEC public EDGAR; fair-access policy','rate':'shared SEC limiter plus<=1 attempt/s,<=3000 combined round attempts','cadence':'issuer periodic filings; historical event observations'},
         'min_available_at':min((r['available_at'] for r in events),default=None),'max_available_at':max((r['available_at'] for r in events),default=None)}
-    C.write_stage_manifest(STAGE,'atx.alpha-panel.issuer-classes/v1',('issuer_classes','issuer_history','common','sec_filings','listing_events'),result);print(result);return result
+    C.write_stage_manifest(STAGE,'atx.alpha-panel.issuer-classes/v1',('issuer_classes','issuer_history','issuer_class_replay','common','sec_filings','listing_events'),result);print(result);return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['prepare','fetch','load']);p.add_argument('--cohort',type=Path);p.add_argument('--audit',type=Path);p.add_argument('--cap',type=int,default=3000);p.add_argument('--status-followup',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['prepare','fetch','load']);p.add_argument('--cohort',type=Path);p.add_argument('--audit',type=Path);p.add_argument('--cap',type=int,default=3000);p.add_argument('--status-followup',action='store_true');p.add_argument('--checkpoint-dir',type=Path);a=p.parse_args()
     if a.command=='prepare':prepare(a.cohort,a.audit,a.status_followup)
     elif a.command=='fetch':fetch(a.cap)
-    else:load()
+    else:load(a.checkpoint_dir)
 if __name__=='__main__':main()
