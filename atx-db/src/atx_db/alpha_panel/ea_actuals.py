@@ -23,10 +23,11 @@ import pyarrow.parquet as pq
 
 from . import common as C
 from . import events_sources as ES
+from . import ea_publication as P
 
 STAGE = "ea_actuals"
 SCHEMA = "atx.alpha-panel.ea-actuals/v1"
-VERSION = "ex99-qualified-quarter-v1"
+VERSION = "ex99-qualified-quarter-v2"
 HOLDOUT = dt.date(2023, 1, 1)
 FIELDS = ("saleq", "epsfiq", "niq")
 MONTHS = "January February March April May June July August September October November December".split()
@@ -85,6 +86,26 @@ def release_period(text: str, filing_date: dt.date) -> tuple[dt.date | None, str
     return None, "source_period_ambiguous" if current else "source_period_not_explicit"
 
 
+def fiscal_identity(text: str,period_end: dt.date | None=None) -> dict[str, Any]:
+    """Only an explicit fiscal quarter/year and fiscal-year-end declaration qualify."""
+    labels = {(int(year), {"first":1,"second":2,"third":3,"fourth":4}[quarter.lower()])
+              for quarter,year in re.findall(r"\b(first|second|third|fourth) quarter(?: of)?(?: fiscal)?(?: year)?\s+(20\d{2})\b",text[:1500],re.I)}
+    ends = {(month.lower(),int(day)) for month,day in re.findall(
+        r"fiscal year (?:ends|ending|end is)\s+("+'|'.join(MONTHS)+r")\s+(\d{1,2})",text,re.I)}
+    if len(labels)==1 and len(ends)==1:
+        year,quarter=next(iter(labels)); month,day=next(iter(ends))
+        end_month=MONTHS.index(month.capitalize())+1
+        expected_month=(end_month-3*(4-quarter)-1)%12+1
+        if period_end is None or period_end.month!=expected_month:
+            return {"fiscal_year_label":None,"fiscal_quarter":None,"fiscal_calendar_id":None,
+                    "quarter_identity_reason":"source_quarter_calendar_period_inconsistent"}
+        return {"fiscal_year_label":year,"fiscal_quarter":quarter,
+                "fiscal_calendar_id":f"{MONTHS.index(month.capitalize())+1:02d}-{day:02d}",
+                "quarter_identity_reason":"source_explicit_quarter_year_and_fye"}
+    return {"fiscal_year_label":None,"fiscal_quarter":None,"fiscal_calendar_id":None,
+            "quarter_identity_reason":"fiscal_quarter_or_calendar_unqualified"}
+
+
 def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
     """Strict current-quarter table extraction; conflicts are never rank-selected.
 
@@ -105,6 +126,7 @@ def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
         return out
     pe, period_reason = release_period(" ".join(root.text_content().split()), filing_date)
     out.update(period_end=pe, period_basis=period_reason)
+    out.update(fiscal_identity(' '.join(root.text_content().split()),pe))
     candidates: dict[tuple[dt.date, str], list[tuple[float, str, str]]] = defaultdict(list)
     for table_no, table in enumerate(root.xpath("//table")):
         # Container/layout tables must not leak descendant tables into one grid.
@@ -186,6 +208,11 @@ def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
         return out
     pe = next(iter(periods))
     out["period_end"] = pe
+    out.update(fiscal_identity(' '.join(root.text_content().split()),pe))
+    if len({currency for (period,field),values in candidates.items() if period==pe
+            for _,currency,_ in values}) != 1:
+        out.update(currency=None,reason="mixed_currencies_across_metrics")
+        return out
     reasons = []
     for field in (*FIELDS, *(f + "_seasonal_comparative" for f in FIELDS)):
         values = candidates.get((pe, field), [])
@@ -200,6 +227,34 @@ def parse_release(blob: bytes, filing_date: dt.date) -> dict[str, Any]:
     out["period_basis"] = "explicit_three_months"  # exact start date unknown
     out["eps_split_comparable"] = out.get("epsfiq_seasonal_comparative") is not None
     out["reason"] = ";".join(reasons) or "qualified"
+    return out
+
+
+def merge_extracts(extracts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Order-independent evidence union; conflicting inputs never win by position."""
+    fields=(*FIELDS,*(f+'_seasonal_comparative' for f in FIELDS))
+    out={f:None for f in fields}
+    reasons=[]
+    basis=('period_end','currency','period_basis','fiscal_year_label','fiscal_quarter',
+           'fiscal_calendar_id','quarter_identity_reason','period_days','eps_split_comparable')
+    for field in (*basis,*fields):
+        values={r[field] for r in extracts if r.get(field) is not None}
+        if len(values)==1:
+            out[field]=next(iter(values))
+        elif values:
+            out[field]=None; reasons.append(field+':conflicting_documents')
+    if any(r.startswith(('period_end:','currency:','period_basis:','fiscal_')) for r in reasons):
+        for field in fields: out[field]=None
+    if 'quarter_identity_reason:conflicting_documents' in reasons:
+        out.update(fiscal_year_label=None,fiscal_quarter=None,fiscal_calendar_id=None)
+    if any(r.get('reason')=='mixed_currencies_across_metrics' for r in extracts):
+        out['currency']=None
+        for field in fields: out[field]=None
+        reasons.append('currency:mixed_document_metrics')
+    out['evidence']=sorted({e for r in extracts for e in r.get('evidence',[])})
+    out['extraction_reasons']=sorted({e for r in extracts for e in r.get('extraction_reasons',[])})[:12]
+    out['reason']=';'.join(reasons) if reasons else ('qualified' if any(out[f] is not None for f in FIELDS)
+                      else ';'.join(sorted({r.get('reason','not_qualified') for r in extracts})))
     return out
 
 
@@ -226,6 +281,11 @@ def sue_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             out[name], out[name + "_reason"] = None, "missing_value_or_clock"
             if pe is None or at is None or row.get(field) is None:
                 continue
+            identity=(row.get('fiscal_year_label'),row.get('fiscal_quarter'),row.get('fiscal_calendar_id'))
+            if any(v is None for v in identity):
+                out[name+'_reason']='fiscal_quarter_or_calendar_unqualified'; continue
+            if field+'_seasonal_comparative:conflicting' in row.get('reason',''):
+                out[name+'_reason']='conflicting_seasonal_comparative'; continue
             visible = [r for r in history if r["available_at"] is not None and r["available_at"] < at
                        and r.get("currency") == row.get("currency")]
             # Latest visible vintage for each period, at this row's cutoff only.
@@ -246,10 +306,22 @@ def sue_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             surprise = row[field] - (comparative if comparative is not None else prior_year[0][field])
             out[field + "_surprise"] = surprise
-            prior = sorted((r for p, r in by_period.items() if p < pe and r.get(field + "_surprise") is not None),
-                           key=lambda r: r["period_end"])[-8:]
-            if len(prior) != 8:
-                out[name + "_reason"] = "fewer_than_8_prior_surprises"
+            index=identity[0]*4+identity[1]-1
+            quarters=defaultdict(list)
+            for r in by_period.values():
+                if r.get('fiscal_year_label') is not None and r.get('fiscal_quarter') is not None:
+                    quarters[r['fiscal_year_label']*4+r['fiscal_quarter']-1].append(r)
+            prior=[]
+            for expected in range(index-8,index):
+                matches=quarters.get(expected,[])
+                if len(matches)!=1: break
+                prior.append(matches[0])
+            sequence=[*prior,row]
+            if len(prior)!=8 or any(r.get(field+'_surprise') is None for r in prior):
+                out[name + "_reason"] = "missing_preceding_quarter_surprise"
+            elif any(r.get('fiscal_calendar_id')!=identity[2] for r in prior) or any(
+                    not 75<=(b['period_end']-a['period_end']).days<=105 for a,b in zip(sequence,sequence[1:])):
+                out[name+'_reason']='fiscal_calendar_transition_or_nonquarter_gap'
             else:
                 scale = statistics.stdev(r[field + "_surprise"] for r in prior)
                 if scale > 0 and math.isfinite(scale):
@@ -280,6 +352,8 @@ RELEASE_SCHEMA = pa.schema([
     ("available_at", pa.timestamp("us")), ("source_available_at", pa.timestamp("us")),
     ("acceptance_clock", pa.string()), ("clock_reason", pa.string()), ("period_end", pa.date32()),
     ("currency", pa.string()), ("period_basis", pa.string()), ("period_days", pa.int32()),
+    ("fiscal_year_label",pa.int32()),("fiscal_quarter",pa.int32()),
+    ("fiscal_calendar_id",pa.string()),("quarter_identity_reason",pa.string()),
     *((f, pa.float64()) for f in (*FIELDS, *(f + "_seasonal_comparative" for f in FIELDS))),
     ("eps_split_comparable", pa.bool_()), ("reason", pa.string()), ("evidence", pa.list_(pa.string())),
     ("extraction_reasons",pa.list_(pa.string())),
@@ -290,7 +364,7 @@ FEATURE_SCHEMA = pa.schema([*RELEASE_SCHEMA,
     ("sue_rev_ann_reason", pa.string()), ("sue_eps_ann_reason", pa.string())])
 
 
-def verify_input(stage: str, manifest_name: str = "manifest.json") -> dict[str, str]:
+def verify_input(stage: str, manifest_name: str = "manifest.json",required_phase: tuple[str,...] | None=None) -> dict[str, str]:
     """Fail closed on stale/partial producer publication, before reading its rows."""
     directory = C.build_root() / stage
     path = directory / manifest_name
@@ -298,6 +372,12 @@ def verify_input(stage: str, manifest_name: str = "manifest.json") -> dict[str, 
     before = C.sha256_file(path)
     if manifest.get("status") != "complete" or not manifest.get("files"):
         raise RuntimeError(f"{stage}: incomplete manifest")
+    if required_phase is not None and manifest.get('phase') not in required_phase:
+        raise RuntimeError(f'{stage}: stale or incompatible publication phase')
+    if stage==STAGE and manifest.get('phase') in ('features','validated'):
+        alias=directory/'releases_manifest.json'
+        if C.sha256_file(alias)!=manifest['parse_lineage']['sha256']:
+            raise RuntimeError('feature generation does not match active parse generation')
     for name, record in manifest["files"].items():
         file = directory / name
         if not file.is_file() or file.stat().st_size != record["bytes"] or C.sha256_file(file) != record["sha256"]:
@@ -352,7 +432,7 @@ def parse_stage(limit_new_documents: int | None = None) -> dict[str, Any]:
     inputs = {"sec_filings": verify_input("sec_filings")}
     catalog = ES.catalog_path()
     catalog_sha = C.sha256_file(catalog)
-    code = C.code_identity("ea_actuals","events_sources","common")
+    code = C.code_identity("ea_actuals","ea_publication","events_sources","common")
     run_key = hashlib.sha256(json.dumps({'code':{k:v['sha256_lf'] for k,v in code.items() if isinstance(v,dict)},
         'sec_filings':inputs['sec_filings']['sha256'],'catalog':catalog_sha,'version':VERSION},sort_keys=True).encode()).hexdigest()
     cache = C.build_root() / '_tmp' / 'ea_actuals' / 'parse_units' / run_key
@@ -403,29 +483,24 @@ def parse_stage(limit_new_documents: int | None = None) -> dict[str, Any]:
                 C.write_json_atomic(cache/'progress.json',receipt)
                 return receipt
         qualified = [r for r in extracts if any(r.get(f) is not None for f in FIELDS)]
-        if len(qualified) == 1:
-            row.update(qualified[0])
-        elif qualified:
-            keys = ("period_end", "currency", *FIELDS)
-            if len({tuple(r.get(k) for k in keys) for r in qualified}) == 1:
-                row.update(qualified[0])
-            else:
-                row.update(reason="conflicting_documents")
+        if qualified:
+            row.update(merge_extracts(extracts))
         else:
-            row.update(reason="no_cached_document" if not names else "no_qualified_quarter_table")
+            row.update(merge_extracts(extracts) if extracts else {'reason':'no_cached_document'})
             row["extraction_reasons"] = [reason for r in extracts for reason in r.get("extraction_reasons",[])][:12]
             periods = {r["period_end"] for r in extracts if r.get("period_end") is not None}
             if len(periods) == 1:
                 row.update(period_end=next(iter(periods)), period_basis="source_explicit_end_date")
             elif periods:
                 row.update(period_basis="conflicting_document_periods")
-        row.update(source_doc=names, doc_sha256=hashes)
+        pairs=sorted(zip(names,hashes))
+        row.update(source_doc=[p[0] for p in pairs], doc_sha256=[p[1] for p in pairs])
         counts[row["reason"]] += 1
         output.append(row)
     con.close()
     if C.sha256_file(catalog) != catalog_sha:
         raise RuntimeError("catalog changed during parsing")
-    dest = C.stage_dir(STAGE)
+    dest = P.create(STAGE)
     _write_rows(dest / "releases.parquet", output, RELEASE_SCHEMA)
     # Freeze independently of parser yield, periods, values or later comparators.
     sample = sorted((r for r in output if 2020 <= r["filing_date"].year <= 2025),
@@ -439,31 +514,40 @@ def parse_stage(limit_new_documents: int | None = None) -> dict[str, Any]:
                                     "manual_reviewed": 0}}
     # A separate stable parse publication prevents the calendar -> features
     # pipeline from creating a manifest dependency cycle within this stage.
-    C.write_json_atomic(dest / "releases_manifest.json", {
+    payload={
         "schema": SCHEMA, "status": "complete", "stage": STAGE,
-        "code": C.code_identity("ea_actuals", "events_sources", "common"),
-        "files": {p.name:{"bytes":p.stat().st_size,"sha256":C.sha256_file(p)}
-                  for p in (dest/"releases.parquet",dest/"precision_sample.parquet")},
-        "input_manifests_sha256":inputs,"receipt":receipt})
-    C.write_stage_manifest(STAGE, SCHEMA, ("ea_actuals", "events_sources", "common"), {
+        "code": C.code_identity("ea_actuals", "ea_publication", "events_sources", "common"),
         "parser_version": VERSION, "phase": "parsed", "receipt": receipt,
-        "input_manifests_sha256": inputs, "gate_status": {"precision": "FAIL_unreviewed", "recall": "FAIL_unmeasured"}})
+        "input_manifests_sha256": inputs, "gate_status": {"precision": "FAIL_unreviewed", "recall": "FAIL_unmeasured"}}
+    P.publish(STAGE,dest,'parsed',payload,('releases.parquet','precision_sample.parquet'))
     return receipt
 
 
 def build_features() -> dict[str, Any]:
-    root, directory = C.build_root(), C.stage_dir(STAGE)
+    root = C.build_root()
     inputs = {s: verify_input(s) for s in ("earnings_calendar_v2", "sec_filings", "panel", "prices")}
-    inputs["ea_actuals/releases_manifest.json"] = verify_input(STAGE,"releases_manifest.json")
-    prior = C.read_json(directory / "manifest.json")
-    releases = pq.read_table(directory / "releases.parquet").to_pylist()
+    inputs['calendar.parquet']={'path':str(C.calendar_path()),'sha256':C.sha256_file(C.calendar_path())}
+    parse_identity=verify_input(STAGE,"releases_manifest.json",('parsed',))
+    prior=C.read_json(root/STAGE/'releases_manifest.json')
+    active=C.read_json(root/STAGE/'manifest.json')
+    if active['phase']=='parsed' and active['generation']!=prior['generation']:
+        raise RuntimeError('parse publication activation incomplete')
+    if prior['input_manifests_sha256']['sec_filings']['sha256']!=inputs['sec_filings']['sha256']:
+        raise RuntimeError('parse and feature SEC filing snapshots incompatible; reparse required')
+    calendar=C.read_json(root/'earnings_calendar_v2'/'manifest.json')
+    if calendar['input_manifests_sha256']['ea_actuals/releases_manifest.json']['sha256']!=parse_identity['sha256']:
+        raise RuntimeError('calendar and parse generations incompatible')
+    parse_identity={'path':str(root/STAGE/prior['generation']/'manifest.json'),'sha256':parse_identity['sha256']}
+    inputs['ea_actuals/parse_generation']=parse_identity
+    directory=P.create(STAGE)
+    release_path=P.file(STAGE,'releases.parquet','releases_manifest.json').as_posix()
+    releases = pq.read_table(release_path).to_pylist()
     groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in releases:
         groups[row["cik"]].append(row)
     rows = [r for cik in sorted(groups) for r in sue_history(groups[cik])]
     _write_rows(directory / "ann_features.parquet", rows, FEATURE_SCHEMA)
     con = C.connect(memory="250MB", threads=1)
-    release_path = (directory / "releases.parquet").as_posix()
     # lag to the later original 10-Q is a separately clocked row, not backfilled
     # into announcement features using future filing metadata.
     lag_rows = C.copy_to_parquet(con, f"""WITH candidates AS (
@@ -487,20 +571,34 @@ def build_features() -> dict[str, Any]:
     receipt = {"rows": len(rows), "filing_lag_rows": lag_rows,
                "recall": {str(y): {"releases": n, "all_actuals": a, "all_actuals_share": a/n,
                                     "unknown_clocks": u} for y,n,a,u in recall}}
-    receipt["reaction_returns"] = build_reactions(con, directory)
+    try:
+        receipt["reaction_returns"] = build_reactions(con, directory,release_path)
+    except BaseException:
+        con.close()
+        raise
     con.close()
-    inputs.update(prior["input_manifests_sha256"])
-    C.write_stage_manifest(STAGE, SCHEMA, ("ea_actuals", "events_sources", "common"), {
+    for stage in ('earnings_calendar_v2','sec_filings','panel','prices'):
+        if verify_input(stage)['sha256']!=inputs[stage]['sha256']:
+            raise RuntimeError(f'{stage}: changed during feature generation')
+    if verify_input(STAGE,'releases_manifest.json',('parsed',))['sha256']!=parse_identity['sha256']:
+        raise RuntimeError('parse generation changed during feature build')
+    if C.sha256_file(C.calendar_path())!=inputs['calendar.parquet']['sha256']:
+        raise RuntimeError('calendar source changed during feature generation')
+    P.publish(STAGE,directory,'features',{
+        'schema':SCHEMA,'stage':STAGE,'code':C.code_identity('ea_actuals','ea_publication','events_sources','common'),
+        'parse_generation':prior['generation'],'parse_lineage':parse_identity,
+        'parse_input_manifests_sha256':prior['input_manifests_sha256'],
         "parser_version": VERSION, "phase": "features", "parse_receipt": prior.get("receipt"),
         "receipt": receipt, "input_manifests_sha256": inputs,
         "gate_status": {"precision": "FAIL_unreviewed", "recall": "PASS" if recall and all(a/n>=.85 for _,n,a,_ in recall) else "FAIL",
                         "sue_member_cells": "FAIL_unmeasured", "reaction_returns": "PASS_boundary_enforced"},
         "clock_rule": "announcement actuals/SUE at resolved acceptance; lag at 10-Q acceptance; reaction return at third reaction-session close",
-        "missingness": "unknown clocks, currencies, periods, scale, GAAP basis and conflicting cells remain NULL with reason"})
+        "missingness": "unknown clocks, currencies, periods, scale, GAAP basis and conflicting cells remain NULL with reason"},
+        ('ann_features.parquet','filing_lags.parquet','reaction_returns.parquet'))
     return receipt
 
 
-def build_reactions(con: Any, directory: Path) -> dict[str, Any]:
+def build_reactions(con: Any, directory: Path,release_path: str) -> dict[str, Any]:
     """Three reaction-session total returns, source dates bounded before arithmetic.
 
     Later reactions are NULL with a holdout reason. Features carry the complete
@@ -508,8 +606,8 @@ def build_reactions(con: Any, directory: Path) -> dict[str, Any]:
     session; a release cannot be mapped to a security using a future CIK snapshot.
     """
     root = C.build_root()
-    ann = (root / "earnings_calendar_v2" / "announcements.parquet").as_posix()
-    actual = (directory / "releases.parquet").as_posix()
+    ann = P.file('earnings_calendar_v2','announcements.parquet').as_posix()
+    actual = release_path
     panel = (root / "panel" / "year=*" / "*.parquet").as_posix()
     prices = (root / "prices" / "year=*" / "*.parquet").as_posix()
     cal = C.calendar_path().as_posix()
@@ -573,6 +671,7 @@ def audit_stage() -> dict[str, Any]:
     """Final-producer-only GC3 coverage and Task3 rdq refresh. No return reads."""
     from . import compustat_std as CS
     root, directory = C.build_root(), C.stage_dir(STAGE)
+    verify_input(STAGE,required_phase=('features','validated'))
     stages = (STAGE, "earnings_calendar_v2", "compustat_std", "universe", "panel")
     inputs = {s: verify_input(s) for s in stages}
     std = C.read_json(root / "compustat_std" / "manifest.json")
@@ -582,7 +681,7 @@ def audit_stage() -> dict[str, Any]:
     con = C.connect(memory="250MB", threads=1)
     CS.member_ciks(con)
     CS.coverage_gate(con, root / "compustat_std")  # preserve Task3 denominator
-    ann = (root / "earnings_calendar_v2" / "announcements.parquet").as_posix()
+    ann = P.file('earnings_calendar_v2','announcements.parquet').as_posix()
     con.execute(f"""CREATE OR REPLACE TEMP TABLE t9_ann AS SELECT * FROM read_parquet('{ann}')
              WHERE source='8k_202' AND is_primary AND announcement_utc IS NOT NULL AND available_at IS NOT NULL""")
     fund = (root / "fundamentals_v11" / "events.parquet").as_posix()
@@ -600,7 +699,7 @@ def audit_stage() -> dict[str, Any]:
         SELECT year,count(*),count(*) FILTER(WHERE same_et_date),count(*) FILTER(WHERE strict_timestamp)
         FROM j GROUP BY 1 ORDER BY 1""").fetchall()
     coverage = {}
-    features = (directory / "ann_features.parquet").as_posix()
+    features = P.file(STAGE,'ann_features.parquet').as_posix()
     calendar = C.calendar_path().as_posix()
     con.execute(f"""CREATE OR REPLACE TEMP TABLE t9_cutoffs AS SELECT session_date,
        lag(session_date) OVER(ORDER BY session_date)::TIMESTAMP+INTERVAL 22 HOUR cutoff
@@ -644,12 +743,16 @@ def audit_stage() -> dict[str, Any]:
                       "sue_cells":"PASS" if coverage and all(r['eps_sue_share'] is not None and r['eps_sue_share']>=.9 for r in coverage.values()) else "FAIL",
                       "rdq_same_date":"PASS" if rdq and all(n and a/n>=.95 for _,n,a,b in rdq) else "FAIL",
                       "precision_200_manual":"FAIL_unreviewed"}}
-    C.write_json_atomic(directory / "validation.json", result)
+    work=P.create(STAGE)
+    import shutil
+    for name in ('ann_features.parquet','filing_lags.parquet','reaction_returns.parquet'):
+        shutil.copy2(P.file(STAGE,name),work/name)
+    C.write_json_atomic(work / "validation.json", result)
     manifest = C.read_json(directory / "manifest.json")
-    manifest.update(validation=result,input_manifests_sha256={**manifest['input_manifests_sha256'],**inputs})
-    manifest['input_manifests_sha256'].pop(STAGE,None)
+    manifest.update(validation=result,audit_input_manifests_sha256=inputs,
+                    audit_code=C.code_identity('ea_actuals','ea_publication','common'))
     manifest['gate_status'].update(result['gate_status'])
-    C.write_json_atomic(directory / "manifest.json",manifest)
+    P.publish(STAGE,work,'validated',manifest,('ann_features.parquet','filing_lags.parquet','reaction_returns.parquet','validation.json'))
     return result
 
 

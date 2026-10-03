@@ -63,6 +63,7 @@ def test_ambiguous_and_missing_acceptance_clock():
 def test_prior_eight_surprises_and_cutoff_invariance():
     rows = [{"accession": str(i), "period_end": dt.date(2015+i//4, 3*(i%4+1), 28),
              "available_at": dt.datetime(2015+i//4, 3*(i%4+1), 29), "currency": "USD",
+             "fiscal_year_label":2015+i//4,"fiscal_quarter":i%4+1,"fiscal_calendar_id":"12-31",
              "saleq": 100+i*i, "saleq_seasonal_comparative": 100,
              "epsfiq": None} for i in range(12)]
     result = EA.sue_history(rows)
@@ -71,11 +72,56 @@ def test_prior_eight_surprises_and_cutoff_invariance():
     assert EA.sue_history(rows[:9]) == result[:9]
 
 
+def test_mixed_metric_table_currencies_fail_closed():
+    import re
+    first=re.sub(r'<tr><td>(?:Net income \(loss\)|Diluted earnings per share)</td>.*?</tr>','',release().decode())
+    first=first.replace('<html>','<html><div>').replace('</html>','</div>')
+    second=re.sub(r'<tr><td>Net revenues</td>.*?</tr>','',release(unit='CAD in millions, except per-share amounts').decode())
+    second=second.replace('<html>','<div>').replace('</html>','</div></html>')
+    r=parse((first+second).encode())
+    assert r['currency'] is None and all(r[f] is None for f in EA.FIELDS)
+    assert r['reason']=='mixed_currencies_across_metrics'
+
+
+def test_comparative_conflicts_merge_independent_of_document_order():
+    a=parse(release()); b=parse(release().replace(b'<td>100</td>',b'<td>99</td>'))
+    merged=EA.merge_extracts([a,b])
+    assert merged==EA.merge_extracts([b,a])
+    assert merged['saleq']==120e6 and merged['saleq_seasonal_comparative'] is None
+    assert 'saleq_seasonal_comparative:conflicting_documents' in merged['reason']
+    b={**a,'period_basis':'unsupported_other_basis'}
+    assert all(EA.merge_extracts([a,b])[f] is None for f in EA.FIELDS)
+
+
+def test_source_quarter_requires_explicit_calendar_and_matching_period():
+    text='First quarter 2020 financial results. Fiscal year ends December 31.'
+    assert EA.fiscal_identity(text,dt.date(2020,3,31))['fiscal_quarter']==1
+    assert EA.fiscal_identity('First quarter 2020 financial results',dt.date(2020,3,31))['fiscal_quarter'] is None
+    assert EA.fiscal_identity(text,dt.date(2020,9,30))['fiscal_quarter'] is None
+
+
+def test_annual_only_missing_quarter_and_calendar_transition_fail_sue():
+    annual=[{'accession':str(i),'period_end':dt.date(2010+i,3,31),'available_at':dt.datetime(2010+i,5,1),
+             'currency':'USD','saleq':100+i*i,'saleq_seasonal_comparative':100,
+             'fiscal_year_label':2010+i,'fiscal_quarter':1,'fiscal_calendar_id':'12-31'} for i in range(9)]
+    assert EA.sue_history(annual)[-1]['sue_rev_ann'] is None
+    quarterly=[{**r,'accession':str(i),'period_end':dt.date(2010+i//4,3*(i%4+1),28),
+                'available_at':dt.datetime(2010+i//4,3*(i%4+1),29),
+                'fiscal_year_label':2010+i//4,'fiscal_quarter':i%4+1} for i,r in enumerate(annual)]
+    assert EA.sue_history(quarterly)[-1]['sue_rev_ann'] is not None
+    assert EA.sue_history(quarterly[:4]+quarterly[5:])[-1]['sue_rev_ann'] is None
+    quarterly[-1]['fiscal_calendar_id']='09-30'
+    last=EA.sue_history(quarterly)[-1]
+    assert last['sue_rev_ann'] is None and 'calendar_transition' in last['sue_rev_ann_reason']
+
+
 def test_same_clock_and_future_restated_vintages_not_visible_to_sue():
-    rows = [{"accession": str(i), "period_end": dt.date(2010+i, 3, 31),
+    rows = [{"accession": str(i), "period_end": dt.date(2010+i//4, 3*(i%4+1), 28),
              "available_at": dt.datetime(2020, 1, 1), "currency": "USD", "saleq": i,
+             "fiscal_year_label":2010+i//4,"fiscal_quarter":i%4+1,"fiscal_calendar_id":"12-31",
              "saleq_seasonal_comparative": 0} for i in range(10)]
     assert all(r["sue_rev_ann"] is None for r in EA.sue_history(rows))
+    assert EA.sue_history([{**r,'available_at':dt.datetime.combine(r['period_end'],dt.time())+dt.timedelta(days=1)} for r in rows])[-1]['sue_rev_ann'] is not None
 
 
 def test_reaction_window_boundary_and_completion_clock():

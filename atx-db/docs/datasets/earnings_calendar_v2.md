@@ -3,6 +3,13 @@
 New stage `earnings_calendar_v2`, schema `atx.alpha-panel.earnings-calendar/v2`.
 Existing `earnings_calendar` is preserved for consumers and rollback.
 
+New v2 publications use immutable `generations/<id>/` directories, activated
+atomically by manifest.json. Resolve `products['announcements.parquet']` through
+ea_publication.file. Old generations remain available for explicit rollback.
+The FPI scratch parser's complete receipt pins classifier, module hashes, catalog
+hash, output size/hash and document evidence. Calendar build checks that identity
+before admitting FPI rows and again before activation; stale scratch is rejected.
+
 `announcements.parquet` is keyed by `(cik, accession)`. Source categories are
 `8k_202`, `6k_results` and `periodic_report`. The first uses 8-K item 2.02 metadata
 but gets fiscal period only from its release's own explicit period, via the

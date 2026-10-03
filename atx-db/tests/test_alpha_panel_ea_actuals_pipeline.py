@@ -4,9 +4,11 @@ import hashlib
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from atx_db.alpha_panel import common as C, ea_actuals as EA, earnings_calendar as EC
 from atx_db.alpha_panel import earnings_calendar_v2 as EV, events_sources as ES
+from atx_db.alpha_panel import ea_publication as P
 
 
 def publish(root, stage, name, rows, schema=None):
@@ -55,16 +57,54 @@ def test_cached_parse_calendar_features_no_future_clock(tmp_path, monkeypatch):
     parse_sha = C.sha256_file(tmp_path/'ea_actuals/releases_manifest.json')
     EV.phase_parse()
     EV.build_stage()
-    calendar = pq.read_table(tmp_path/'earnings_calendar_v2/announcements.parquet').to_pylist()
+    calendar = pq.read_table(P.file('earnings_calendar_v2','announcements.parquet')).to_pylist()
     assert len(calendar)==1 and calendar[0]['fiscal_period_end']==dt.date(2020,3,31)
     result = EA.build_features()
     assert result['filing_lag_rows']==1
-    returns = pq.read_table(tmp_path/'ea_actuals/reaction_returns.parquet').to_pylist()
+    returns = pq.read_table(P.file('ea_actuals','reaction_returns.parquet')).to_pylist()
     assert returns[0]['ea_ret_3d']>0
     assert returns[0]['available_at']==dt.datetime(2020,5,4,22)
-    lag = pq.read_table(tmp_path/'ea_actuals/filing_lags.parquet').to_pylist()[0]
+    lag = pq.read_table(P.file('ea_actuals','filing_lags.parquet')).to_pylist()[0]
     assert lag['ea_lag_days']==1 and lag['available_at']==dt.datetime(2020,5,1,18)
     assert C.sha256_file(tmp_path/'ea_actuals/releases_manifest.json')==parse_sha
+    first=C.read_json(tmp_path/'ea_actuals/manifest.json')
+    old_generation=first['generation']
+    old_outputs={name:C.sha256_file(tmp_path/'ea_actuals'/name) for name in first['files']}
+    old_price=first['input_manifests_sha256']['prices']['sha256']
+    publish(tmp_path,'prices','year=2020/part.parquet',[{'session_date':d,'security_id':10,'ret':.02,'ret_guarded':False} for d in sessions])
+    EA.build_features()
+    second=C.read_json(tmp_path/'ea_actuals/manifest.json')
+    assert second['input_manifests_sha256']['prices']['sha256']!=old_price
+    assert second['input_manifests_sha256']['prices']['sha256']==C.sha256_file(tmp_path/'prices/manifest.json')
+    assert second['parse_lineage']['sha256']==parse_sha
+    assert second['parse_input_manifests_sha256']==first['parse_input_manifests_sha256']
+    pointer=(tmp_path/'ea_actuals/manifest.json').read_bytes()
+    with monkeypatch.context() as m:
+        def interrupted(*args): raise RuntimeError('injected interruption')
+        m.setattr(EA,'build_reactions',interrupted)
+        with pytest.raises(RuntimeError,match='injected interruption'): EA.build_features()
+    assert (tmp_path/'ea_actuals/manifest.json').read_bytes()==pointer
+    EA.verify_input('ea_actuals',required_phase=('features',))
+    # A parse switches phase without certifying any older feature products.
+    EA.parse_stage()
+    parsed_manifest=C.read_json(tmp_path/'ea_actuals/manifest.json')
+    assert set(parsed_manifest['products'])=={'releases.parquet','precision_sample.parquet'}
+    with pytest.raises(RuntimeError,match='phase'):
+        EA.verify_input('ea_actuals',required_phase=('features',))
+    with pytest.raises(RuntimeError,match='phase'):
+        P.file('ea_actuals','ann_features.parquet')
+    assert all(C.sha256_file(tmp_path/'ea_actuals'/name)==sha for name,sha in old_outputs.items())
+    P.activate('ea_actuals',old_generation)
+    EA.verify_input('ea_actuals',required_phase=('features',))
+    assert C.read_json(tmp_path/'ea_actuals/manifest.json')['generation']==old_generation
+    source=(tmp_path/'sec_filings/manifest.json').read_bytes()
+    changed=C.read_json(tmp_path/'sec_filings/manifest.json'); changed['snapshot']='changed'
+    C.write_json_atomic(tmp_path/'sec_filings/manifest.json',changed)
+    with pytest.raises(RuntimeError,match='SEC filing snapshots incompatible'): EA.build_features()
+    (tmp_path/'sec_filings/manifest.json').write_bytes(source)
+    # FPI admission checks identity and classifier, not just physical file hash.
+    C.write_json_atomic(EV._tmp()/'fpi_parse_receipt.json',{**C.read_json(EV._tmp()/'fpi_parse_receipt.json'),'classifier_version':'obsolete'})
+    with pytest.raises(RuntimeError,match='stale FPI'): EV.build_stage()
 
 
 def test_missing_calendar_clock_never_promotes_primary():

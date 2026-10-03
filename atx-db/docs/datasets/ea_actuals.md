@@ -5,10 +5,22 @@ is experimental until the binding 200-release manual precision audit passes.
 All failed gates remain in its manifest; extraction qualification alone is not
 independent financial correctness certification.
 
+Each product lives in an immutable `generations/<id>/` directory. The atomic
+`manifest.json` activation identifies the current generation, phase and exact
+`products` paths. Resolve files with `ea_publication.file`; never glob all
+generations or assume root-level parquet paths. Consumers must require
+`features` or `validated` phase through `ea_actuals.verify_input`. Parse activation
+exposes only releases/sample, and invalidates older feature-phase admission.
+Interrupted builds leave the previous complete generation intact. Explicit
+rollback uses `ea_publication.activate(stage, generation)` after hash checks.
+
 `releases.parquet` and `ann_features.parquet` have one original 8-K item 2.02 row
 per `(cik, accession)`, including releases with no readable/qualified source.
-`releases_manifest.json` pins the parse publication independently of later feature
-and validation manifests; `earnings_calendar_v2` consumes that stable publication.
+`releases_manifest.json` activates the latest immutable parse publication;
+feature manifests separately pin its immutable generation manifest and original
+parse inputs, alongside newly verified feature-producer input identities.
+Calendar/parse snapshot mismatch and changed SEC filing snapshots require a
+reparse/calendar refresh before feature publication.
 
 | Column | Type / unit | Definition and source | Clock / staleness |
 |---|---|---|---|
@@ -17,6 +29,7 @@ and validation manifests; `earnings_calendar_v2` consumes that stable publicatio
 | available_at | UTC TIMESTAMP | Resolved EDGAR acceptance; unknown or ambiguous clocks are NULL | strict daily cutoff |
 | source_available_at, acceptance_clock, clock_reason | TIMESTAMP, VARCHAR | Original source clock and qualification reason | lineage only; unresolved source clock never promotes a feature |
 | period_end, period_basis, period_days | DATE, VARCHAR, INTEGER | Release's own explicit current period, without later filing labels; exact day duration is unknown unless disclosed | acceptance |
+| fiscal_year_label, fiscal_quarter, fiscal_calendar_id, quarter_identity_reason | INTEGER, INTEGER, VARCHAR, VARCHAR | Explicit source quarter/year plus fiscal-year-end declaration; incompatible quarter-end month or unknown calendar remains missing | acceptance |
 | saleq | DOUBLE, source currency | Explicit GAAP quarterly sales/revenues table cell, monetary scale applied | acceptance; 400-day consumer limit |
 | niq | DOUBLE, source currency | Reported quarterly net income/loss table cell; parent/consolidated basis needs independent validation | acceptance; 400-day consumer limit |
 | epsfiq | DOUBLE, currency per reported diluted share | Total diluted EPS, including discontinued operations; does **not** mean Compustat EPSFX continuing-operations EPS | acceptance; no ADR/share conversion invented |
@@ -28,8 +41,18 @@ and validation manifests; `earnings_calendar_v2` consumes that stable publicatio
 | sue_rev_ann, sue_eps_ann | DOUBLE, dimensionless | Surprise divided by sample standard deviation of the eight prior visible quarterly surprises; current surprise excluded | acceptance, 400 days |
 | *_reason | VARCHAR | Missing seasonal history, fewer than eight surprises, zero scale or unqualified EPS share basis | acceptance |
 
-Revenue SUE requires same currency and issuer. Every period uses the latest
-visible vintage at that row's cutoff. A same-release EPS comparative does not
+Revenue SUE requires same currency and issuer. A release with mixed qualified
+metric currencies loses all monetary current/comparative values; values are
+never relabeled to a different metric's currency. Cross-document values,
+comparatives and basis are merged independently of catalog order. Conflicting
+comparatives remain missing and cannot fall back silently to a historical value.
+Every period uses the latest
+visible vintage at that row's cutoff. The denominator must contain exactly the
+eight immediately preceding source-qualified fiscal quarters, with no missing
+surprises, a consistent declared calendar and 75-105-day quarter-end spacing.
+Annual-only history, calendar transitions and unqualified quarter identity fail
+closed. The timing bounds define quarterly continuity; they do not fabricate
+quarter identity from dates. A same-release EPS comparative does not
 establish the share basis of eight older surprises: EPS SUE remains missing until
 a source-backed historical split/share bridge qualifies that entire denominator.
 No implicit zeros, periodic-report actuals, annual/YTD-to-quarter differences or

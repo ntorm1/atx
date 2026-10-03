@@ -46,6 +46,7 @@ import pyarrow.parquet as pq
 from . import common as C
 from . import earnings_calendar as EC1
 from . import events_sources as ES
+from . import ea_publication as P
 
 STAGE = "earnings_calendar_v2"
 SCHEMA = "atx.alpha-panel.earnings-calendar/v2"
@@ -150,6 +151,8 @@ def _fye_months() -> dict[int, int]:
 
 
 def phase_parse() -> dict[str, Any]:
+    catalog_sha=C.sha256_file(ES.catalog_path())
+    code=C.code_identity('earnings_calendar_v2','events_sources','common')
     store = ES.open_store()
     by_accession: dict[str, dict[str, Any]] = {}
     seen: set[tuple[str, str]] = set()
@@ -193,11 +196,29 @@ def phase_parse() -> dict[str, Any]:
     tmp = dest.with_name(dest.name + ".partial")
     pq.write_table(pa.Table.from_pylist(rows, schema=FPI_SCHEMA), tmp, compression="zstd")
     os.replace(tmp, dest)
-    receipt = {"documents": len(rows), "results": sum(r["is_results"] for r in rows),
+    if C.sha256_file(ES.catalog_path())!=catalog_sha:
+        raise RuntimeError('FPI catalog changed during parse')
+    receipt = {"status":"complete","classifier_version":CLASSIFIER_VERSION,"catalog_sha256":catalog_sha,
+               "code":code,"output":{"bytes":dest.stat().st_size,"sha256":C.sha256_file(dest)},
+               "documents": len(rows), "results": sum(r["is_results"] for r in rows),
                "with_period": sum(r["period_end"] is not None for r in rows),
                "text_date": sum(r["period_basis"] == "text_date" for r in rows),
                "peak_memory": ES.peak_memory()}
     C.write_json_atomic(_tmp() / "fpi_parse_receipt.json", receipt)
+    return receipt
+
+
+def verify_fpi_parse() -> dict[str,Any]:
+    path=_tmp()/'fpi_releases.parquet'
+    receipt=C.read_json(_tmp()/'fpi_parse_receipt.json')
+    code=C.code_identity('earnings_calendar_v2','events_sources','common')
+    if receipt.get('status')!='complete' or receipt.get('classifier_version')!=CLASSIFIER_VERSION:
+        raise RuntimeError('incomplete or stale FPI parse phase')
+    if receipt.get('catalog_sha256')!=C.sha256_file(ES.catalog_path()) or any(
+            receipt.get('code',{}).get(k,{}).get('sha256_lf')!=v['sha256_lf'] for k,v in code.items() if isinstance(v,dict)):
+        raise RuntimeError('stale FPI code/catalog identity')
+    if path.stat().st_size!=receipt['output']['bytes'] or C.sha256_file(path)!=receipt['output']['sha256']:
+        raise RuntimeError('FPI parse output integrity mismatch')
     return receipt
 
 
@@ -239,10 +260,12 @@ def build_stage() -> dict[str, Any]:
     from .ea_actuals import verify_input
     root = C.build_root()
     inputs = {s: verify_input(s) for s in ("earnings_calendar", "sec_filings", "panel")}
-    inputs["ea_actuals/releases_manifest.json"] = verify_input("ea_actuals","releases_manifest.json")
+    inputs["ea_actuals/releases_manifest.json"] = verify_input("ea_actuals","releases_manifest.json",('parsed',))
+    inputs['calendar.parquet']={'path':str(C.calendar_path()),'sha256':C.sha256_file(C.calendar_path())}
     v1 = (root / "earnings_calendar" / "announcements.parquet").as_posix()
     filings = (root / "sec_filings" / "filings.parquet").as_posix()
     fpi = _tmp() / "fpi_releases.parquet"
+    fpi_receipt=verify_fpi_parse() if fpi.exists() else None
     con = C.connect(memory="350MB", threads=2)
     cal_dates = [r[0] for r in con.execute(
         f"SELECT session_date FROM read_parquet('{C.calendar_path().as_posix()}') ORDER BY 1").fetchall()]
@@ -251,7 +274,7 @@ def build_stage() -> dict[str, Any]:
     con.execute(f"""
         CREATE TABLE fpi_ciks AS SELECT DISTINCT cik FROM read_parquet('{filings}')
         WHERE form IN ('20-F', '40-F', '6-K') AND filing_date >= DATE '{START_PERIODIC}'""")
-    releases = (root / "ea_actuals" / "releases.parquet").as_posix()
+    releases = P.file('ea_actuals','releases.parquet','releases_manifest.json').as_posix()
     parts = [f"""
         SELECT a.cik, a.accession, a.form, a.items, a.filing_date, a.event_date, a.announcement_utc, a.available_at,
                a.acceptance_clock, a.vintage_risk, r.period_end AS fiscal_period_end, NULL AS fiscal_period_form,
@@ -271,8 +294,8 @@ def build_stage() -> dict[str, Any]:
         WHERE r.is_results""")
     reader = con.execute(f"""
         SELECT u.*, (u.cik IN (SELECT cik FROM fpi_ciks)) AS is_fpi FROM ({" UNION ALL ".join(parts)}) u
-        ORDER BY u.cik, u.announcement_utc, u.accession""").fetch_record_batch(50_000)
-    dest_dir = C.stage_dir(STAGE)
+        ORDER BY u.cik, u.announcement_utc, u.accession""").to_arrow_reader(50_000)
+    dest_dir = P.create(STAGE)
     dest = dest_dir / "announcements.parquet"
     tmp = dest.with_name(dest.name + ".partial")
     writer = pq.ParquetWriter(tmp, OUT_SCHEMA, compression="zstd")
@@ -303,8 +326,7 @@ def build_stage() -> dict[str, Any]:
     total += flush()
     writer.close()
     os.replace(tmp, dest)
-    receipt: dict[str, Any] = {"rows": total, "fpi_parse": C.read_json(_tmp() / "fpi_parse_receipt.json")
-                               if (_tmp() / "fpi_parse_receipt.json").exists() else None}
+    receipt: dict[str, Any] = {"rows": total, "fpi_parse": fpi_receipt}
     a = dest.as_posix()
     receipt["per_year_source"] = {
         str(y): dict(zip(("8k_202", "6k_results", "periodic_report", "primary", "fpi_rows"), map(int, v)))
@@ -328,7 +350,15 @@ def build_stage() -> dict[str, Any]:
                     r["covered_share"] is not None and r["covered_share"] >= .95
                     for y,r in receipt["member_coverage"].items() if int(y)>=2020) else "FAIL"},
                 **receipt}
-    C.write_json_atomic(dest_dir / "manifest.json", manifest)
+    if fpi.exists(): verify_fpi_parse()
+    for stage in ('earnings_calendar','sec_filings','panel'):
+        if verify_input(stage)['sha256']!=inputs[stage]['sha256']:
+            raise RuntimeError(f'{stage}: changed during calendar build')
+    if verify_input('ea_actuals','releases_manifest.json',('parsed',))['sha256']!=inputs['ea_actuals/releases_manifest.json']['sha256']:
+        raise RuntimeError('parse generation changed during calendar build')
+    if C.sha256_file(C.calendar_path())!=inputs['calendar.parquet']['sha256']:
+        raise RuntimeError('calendar source changed during build')
+    P.publish(STAGE,dest_dir,'calendar',manifest,('announcements.parquet',))
     return receipt
 
 

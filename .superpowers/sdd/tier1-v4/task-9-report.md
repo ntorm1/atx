@@ -249,3 +249,75 @@ EPS share-basis qualification. Remaining review risks: strict parser recall,
 mixed table geometry/source basis, full-build bounded memory/publication resume,
 frozen manual precision and final-producer audit SQL on real schemas. Do not
 certify these from offline fixtures alone.
+
+## Prebuild fix round 1/5 — scoped review checkpoint
+
+**NEEDS_REVIEW; I1-I5 and M1 addressed in code/fixtures, subject to independent
+rereview.** No HTTP, real-data job, actual corpus publication or real return
+calculation ran in this round. Binding gates remain **0 PASS / 5 FAIL or
+unmeasured**, manual precision remains **0/200**, and historical all-attempt
+accounting/allocation remains unresolved. Existing earnings_calendar v1 is
+unchanged. M2 resource evidence remains a required controller-coordinated guarded
+100-document experiment; these fixtures do not establish a full-corpus bound.
+
+| Finding | Correction | Focused evidence |
+|---|---|---|
+| I1 mixed metric currencies | Enforce one currency across all accepted current/comparative candidates; mixed currencies NULL all monetary values and currency with reason | Two separate tables: USD sales only, CAD income/EPS only; formerly mislabeled case now fails closed |
+| I2 arbitrary eight older surprises | Require explicit source quarter/year and fiscal-year-end declaration, compatible quarter-end month, exactly the preceding eight quarter identities, no missing surprise, consistent calendar and 75-105-day consecutive end spacing | Quarterly positive control; annual-only March history rejected; missing quarter and changed calendar rejected; same-clock exclusion and cutoff invariance retained |
+| I3 first-exhibit comparative wins | Order-independent value/basis equivalence, including every seasonal comparative and fiscal/EPS qualification; compatible evidence union sorted; conflicts NULL affected inputs with reasons; conflicting comparative cannot fall back silently | Both exhibit orders yield identical output; identical actual/different comparative keeps current value but NULLs comparative; incompatible basis fails closed |
+| I4 stale input identities overwrite fresh ones | Current feature producer identities remain current; immutable parse lineage and original parse inputs are separate; changed SEC snapshots and calendar/parse mismatch reject build | Changed price producer feature rebuild publishes its new hash and unchanged parse lineage; changed SEC snapshot rejects before computation |
+| I5 stale phase/in-place rebuild | Unique immutable generation directories; phase-specific explicit product sets; atomic manifest activation; consumers reject incompatible phase/product; pending failures never replace a complete generation; rollback checks old feature and parse outputs before activation | Parse-after-build advertises only releases/sample and rejects feature lookup; injected interruption after private writes leaves old manifest byte-identical; old outputs retain hashes; explicit rollback restores old complete generation and pinned parse alias |
+| M1 stale FPI scratch | Complete receipt pins classifier, code LF hashes, catalog hash, output SHA/size and exhibit evidence; checked before row admission and before activation | Obsolete classifier receipt rejects calendar build despite readable scratch parquet |
+| M3 deprecated iterator | v2 uses to_arrow_reader | Final fixture suite has no warnings |
+
+Parser version is now ex99-qualified-quarter-v2. Quarter identity is never
+manufactured from price/future-filing dates or the latest fiscal profile. An
+explicit quarter label without a qualified historical calendar stays unknown.
+The eight-quarter rule can lower measured SUE coverage; the acceptance threshold
+is unchanged and any resulting coverage failure remains a failure. Historical
+EPS share-basis qualification is still unresolved and is not inferred here.
+
+Publication helper: `alpha_panel/ea_publication.py`. Products live under
+`<stage>/generations/<id>/`. Root manifest.json activates one complete generation
+and carries explicit products/phase mappings. releases_manifest.json separately
+activates an immutable parse generation. Feature manifests pin that generation's
+immutable manifest path/hash and retain original parse inputs separately from
+current feature inputs. Validation retains its own audit lineage without
+relabelling the copied feature outputs' original input lineage. Every generation
+is retained; incomplete `_pending` directories are never admitted. No cleanup or
+deletion of prior generations was introduced.
+
+Paths now resolve with `ea_publication.file(stage, product, manifest_name)` and
+phase checks via `ea_actuals.verify_input`. Task17 integration must bind the
+resolved product path and honor required_phases in the updated registration
+stubs; it must not use a root-level parquet path or glob all generations.
+Rollback is `ea_publication.activate(stage, 'generations/<id>')`, under the guard
+and controller slot for real products. It restores the complete immutable
+generation and its pinned parse alias without rewriting old data. Producer
+changes during feature/calendar builds are checked again before activation.
+
+Exact covering command, from C:/atx/atx-db with the established environment:
+
+```powershell
+.venv/Scripts/python.exe -m pytest tests/test_alpha_panel_ea_actuals.py tests/test_alpha_panel_ea_actuals_pipeline.py tests/test_alpha_panel_events_sources_budget.py -q -n 0
+```
+
+Final output: **27 passed**, no warnings, approximately 4 seconds. These are
+offline fixtures only. Initial covering run exposed old test assumptions about
+root parquet paths and unqualified quarter identity; those expectations were
+updated to exercise the declared generation/quarter contracts, including a
+positive quarterly control. The final end-to-end fixture includes the changed
+producer, interruption, stale phase, rollback, incompatible SEC input and stale
+FPI receipt cases. No full suite or external data job was run.
+
+Owned changed paths: ea_actuals.py, new ea_publication.py,
+earnings_calendar_v2.py, the two ea_actuals fixture files, dataset docs/stubs and
+this report. events_sources.py remains at the prebuild checkpoint. No foreign
+files, shared controller files/registries, existing calendar publication or other
+event writer changed. No owned process is running at this checkpoint.
+
+Remaining evidence: M2 real peak/resume measurement, frozen 200-release manual
+source audit, full actuals recall/calendar/SUE measurements, source-qualified EPS
+history bridge, quiescent final Task2/Task5 producers and Task3 rdq refresh.
+Independent review of these fixes is required before bounded materialization;
+this implementer does not waive any of those requirements or grant acquisition.
