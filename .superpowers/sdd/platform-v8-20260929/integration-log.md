@@ -6789,3 +6789,9 @@ members; same trial ids, 0 new lines). Admission trials: X hand-written 25 + Y h
 **P12 b-reuse, first half:** the screen receipt's carried marginal rows equal the source `marginal_ic.json` rows 15 of 15 on
 all 7 K6 keys (canonical-JSON SHA-256 per row; `scratchpad/mcheck.py screen`). The second half (the wave result's carried
 per-row fields vs the source) is checked after the record stage.
+
+### Stage 04 spec (source `02d524d3`; gate 1,538 MiB: free 5,235)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 04 spec | 0 | 7.4 / 7.16 | 2 per plan-only | 5,235 / 5,080 | `04-spec.json` `ce88ee2925fc67b52dc794d918dc38578a6637da0ae7d832676cd51781bff1e9` | kind **b-library**: 9 add-alpha `--name v8ysb` exit 0 (plans `waves/y-s/plans/v8ysb/`); IC library `fund_industry_ic_v8ysb.json` `41010b0b` (67 members); `lib-v8ysb.json` `ae4808b8` (= spec digest): marginal phase and its runner cap removed (`speed.reuse_screen_marginal`, mode pool-only = the screen's: reuse true); gate p1-v8ysb lists the 9 kept; NAV `mega-nav-v8x-theme-erc-L1.1720-v8ysb` at L 1.1720, ref `...-v8ysb-ref`, paired reference = X-5's NAV; driver commit **`816be40b`** (5 files: IC library, recipe, library def, prereg stub, spec; registry unchanged) |
