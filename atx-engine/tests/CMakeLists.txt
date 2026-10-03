@@ -364,7 +364,7 @@ endif()
 # Platform core migration slice 1: the research field-builder library's own bounded target. Its sources live in
 # tests/research/, which is deliberately not a test group (ATX_ALL_TEST_GROUPS): the files are listed here and
 # compile into this executable only, without the shared test PCH (the fixture path is a target-local define).
-# Run it directly with a gtest filter (ResearchFields*); nothing is registered with CTest twice.
+# Run it directly with a gtest filter (ResearchFields*) or by CTest label atx_research (registered once, at the end).
 add_executable(atx-engine-research-fields-tests EXCLUDE_FROM_ALL
     research/research_fields_clock_test.cpp
     research/research_fields_writer_test.cpp
@@ -393,3 +393,26 @@ target_link_libraries(atx-engine-w1-data-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-data-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+# P9 lane T1 (gate G-P4): the research test executables join CTest under the label atx_research. The call is
+# deferred to the end of this directory, so a target that a later block of this file defines is registered too
+# (wave-1 lanes append their blocks below this one); a name with no target is skipped, and a target that another
+# line already registered (gtest_discover_tests sets CTEST_DISCOVERED_TEST_COUNTER) is not registered twice. The
+# targets stay EXCLUDE_FROM_ALL: PRE_TEST discovery enumerates each built one at ctest time, and one that is not
+# built appears as <target>_NOT_BUILT, which carries no label. Count: ctest -N -L atx_research.
+function(atx_engine_register_research_tests)
+    foreach(_research_tests IN ITEMS
+            atx-engine-research-fields-tests      # migration slice 1 (fields review section 1: unregistered before)
+            atx-engine-research-admission-tests)  # P9 lane B1 (research/admission), once its block lands
+        if(NOT TARGET ${_research_tests})
+            continue()
+        endif()
+        get_property(_registered TARGET ${_research_tests} PROPERTY CTEST_DISCOVERED_TEST_COUNTER SET)
+        if(_registered)
+            continue()
+        endif()
+        gtest_discover_tests(${_research_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_research_tests}."
+            PROPERTIES LABELS atx_research)
+    endforeach()
+endfunction()
+cmake_language(DEFER CALL atx_engine_register_research_tests)
