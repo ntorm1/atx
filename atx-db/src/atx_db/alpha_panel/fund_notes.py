@@ -227,6 +227,8 @@ FULL_REVENUE_TAGS = ('Revenues', 'RevenueFromContractWithCustomerExcludingAssess
                     'RevenueFromExternalCustomers', 'HealthCareOrganizationRevenue',
                     'RegulatedAndUnregulatedOperatingRevenue', 'InsuranceServicesRevenue')
 AXES = {"business": "BusinessSegments", "geographic": "Geographical"}
+# Exact source-declared reportable containers; no member deletion or hierarchy inference.
+REPORTABLE_CONSOLIDATION = ('OperatingSegments', 'ReportableLegalEntities', 'ReportableGeographicalComponents')
 #: business-segment members that are not a reportable segment (reconciling lines, totals)
 RECONCILING_RE = (r"(?i)elimina|corporate|reconcil|unallocat|intersegment|intercompany|consolidat|^total|segmenttotal|"
                   r"adjustment|nonsegment")
@@ -455,20 +457,6 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     for y in years or all_years:
         # the data sets that supplied this year's accessions (in practice the year's own: filed dates lie in the span)
         srcs = [r[0] for r in con.execute(f"SELECT DISTINCT source FROM sub WHERE year(filed) = {y} ORDER BY 1").fetchall()]
-        # Independent of the item registry: every retained numeric fact on the current-period business axis.
-        # Work one source at a time; joining a full-year DIM set can exceed the DuckDB budget.
-        for src in srcs:
-            source_part = parts / f'source={src}'
-            con.execute(f"""CREATE OR REPLACE TEMP TABLE census_dim AS SELECT dimhash,
-                regexp_extract(segments, '(^|;)BusinessSegments=([^;]*)', 2) AS member
-                FROM read_parquet('{(source_part / 'dim.parquet').as_posix()}')
-                WHERE segments LIKE '%BusinessSegments=%' AND NOT regexp_matches(
-                    regexp_extract(segments, '(^|;)BusinessSegments=([^;]*)', 2), '{RECONCILING_RE}')""")
-            con.execute(f"""INSERT INTO business_census SELECT DISTINCT n.adsh,d.member
-                FROM read_parquet('{(source_part / 'num_items.parquet').as_posix()}') n
-                JOIN sub s ON n.adsh=s.adsh AND n.source=s.source
-                JOIN census_dim d ON n.dimh=d.dimhash
-                WHERE year(s.filed)={y} AND n.ddate=s.period AND n.coreg IS NULL""")
         g_num = [(parts / f"source={k}" / "num_items.parquet").as_posix() for k in srcs]
         g_dim = [(parts / f"source={k}" / "dim.parquet").as_posix() for k in srcs]
         with C.timed(receipt, f"items_{y}"):
@@ -516,11 +504,17 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     if tmp.exists():
         shutil.rmtree(tmp)
     con.execute(f"SET threads = {THREADS}")
+    # Restricted --years controls item extraction, but stitching republishes every existing year.
+    # Recompute the independent census for the same complete output scope, including omitted years.
+    done_years = sorted(int(d.name.split("=", 1)[1]) for d in (out / "items").glob("year=*"))
+    with C.timed(receipt, 'business_census'):
+        collect_business_census(con, parts, done_years)
     C.copy_to_parquet(con, """SELECT s.cik,s.adsh,s.form,s.period,s.filed,s.available_at,
         count(DISTINCT b.member) AS n_members, count(DISTINCT b.member)>=2 AS multi_segment
-        FROM sub s LEFT JOIN business_census b USING(adsh) GROUP BY ALL ORDER BY s.filed,s.adsh""",
+        FROM sub s LEFT JOIN business_census b USING(adsh)
+        WHERE year(s.filed) IN (""" + ','.join(map(str,done_years)) + """ )
+        GROUP BY ALL ORDER BY s.filed,s.adsh""",
         out / 'segment_census.parquet')
-    done_years = sorted(int(d.name.split("=", 1)[1]) for d in (out / "items").glob("year=*"))
     for kind in ("segments", "recon_strict", "recon", "wide", "features"):
         (tmp / kind).mkdir(parents=True)
     for y in done_years:
@@ -575,6 +569,8 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
                   "domestic_re": DOMESTIC_RE, "us_re": US_RE, "foreign_re": FOREIGN_RE, "non_us_re": NON_US_RE,
                   "share_tolerance": SHARE_TOL, "stale_days_member_coverage": STALE_DAYS},
         "verification": {"arithmetic_candidates": "diagnostic only, never economic member deletion",
+                         "reportable_consolidation_members": list(REPORTABLE_CONSOLIDATION),
+                         "restricted_year_scope": "item extraction restricted; census recomputed for every republished partition year",
                          "extra_context_projection": "explicit exhaustive timing_transfer_partition only",
                          "full_revenue_tags": list(FULL_REVENUE_TAGS),
                          "monthly_cutoff": "month-end session 22:00 UTC",
@@ -585,6 +581,23 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     con.close()
     _drop_scratch("fundamentals_notes.duckdb")
     return receipt
+
+
+def collect_business_census(con, parts: Path, years: list[int]) -> None:
+    """Independent current-period members for every republished year, one bounded source at a time."""
+    for year in years:
+        srcs = con.execute(f'SELECT DISTINCT source FROM sub WHERE year(filed)={year} ORDER BY source').fetchall()
+        for (source,) in srcs:
+            part = parts / f'source={source}'
+            con.execute(f"""CREATE OR REPLACE TEMP TABLE census_dim AS SELECT dimhash,
+                regexp_extract(segments,'(^|;)BusinessSegments=([^;]*)',2) AS member
+                FROM read_parquet('{(part/'dim.parquet').as_posix()}')
+                WHERE segments LIKE '%BusinessSegments=%' AND NOT regexp_matches(
+                    regexp_extract(segments,'(^|;)BusinessSegments=([^;]*)',2),'{RECONCILING_RE}')""")
+            con.execute(f"""INSERT INTO business_census SELECT DISTINCT n.adsh,d.member
+                FROM read_parquet('{(part/'num_items.parquet').as_posix()}') n
+                JOIN sub s ON n.adsh=s.adsh AND n.source=s.source JOIN census_dim d ON n.dimh=d.dimhash
+                WHERE year(s.filed)={year} AND n.ddate=s.period AND n.coreg IS NULL""")
 
 
 def segments_sql(items: str) -> str:
@@ -637,7 +650,7 @@ def recon_sql(items: str, seg: str, filing_year: int) -> str:
                    arg_min(s.value, CASE WHEN s.consolidation_member IS NULL THEN 0 ELSE 1 END) AS value
             FROM read_parquet('{seg}') s JOIN k USING (adsh)
             WHERE s.metric = 'revenue' AND s.axis_kind = 'business' AND s.qtrs = 4 AND s.ddate = k.period
-              AND s.uom = k.currency AND (s.consolidation_member IS NULL OR s.consolidation_member = 'OperatingSegments')
+              AND s.uom = k.currency AND (s.consolidation_member IS NULL OR s.consolidation_member IN {REPORTABLE_CONSOLIDATION})
               AND NOT regexp_matches(s.member, '(?i)^total|^consolidat|segmenttotal')
             GROUP BY 1, 2, 3, 4
         ),
@@ -713,7 +726,7 @@ def recon_overlay(con, items: str, seg: str, strict: str):
             SELECT s.adsh, s.tag, s.member, arg_min(s.value, CASE WHEN s.consolidation_member IS NULL THEN 0 ELSE 1 END)
             FROM read_parquet('{seg}') s JOIN miss k USING (adsh)
             WHERE s.metric = 'revenue' AND s.axis_kind = 'business' AND s.qtrs = 4 AND s.ddate = k.period
-              AND s.uom = k.currency AND (s.consolidation_member IS NULL OR s.consolidation_member = 'OperatingSegments')
+              AND s.uom = k.currency AND (s.consolidation_member IS NULL OR s.consolidation_member IN {REPORTABLE_CONSOLIDATION})
               AND NOT regexp_matches(s.member, '(?i)^total|^consolidat|segmenttotal')
             GROUP BY 1, 2, 3 ORDER BY 1, 2, 3""").fetchall():
         mem.setdefault(adsh, {}).setdefault(tag, {})[member] = value
@@ -865,7 +878,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
             FROM ctx
             WHERE member IS NOT NULL AND (
                   (axis_kind IN ('business', 'geographic') AND regexp_matches(segments, '{SEGMENTS_ONLY_RE}')
-                   AND (consolidation_member IS NULL OR consolidation_member = 'OperatingSegments')
+                   AND (consolidation_member IS NULL OR consolidation_member IN {REPORTABLE_CONSOLIDATION})
                    AND NOT regexp_matches(member, '{tot_like}'))
                OR (axis_kind = 'customer'
                    AND regexp_full_match(regexp_replace(segments, '{CONC_AXES_RE}', '', 'g'), '{CUSTOMER_AXIS}=[^;]*;')

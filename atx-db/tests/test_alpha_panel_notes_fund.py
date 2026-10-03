@@ -105,6 +105,12 @@ def seg_tables() -> dict:
     t['sub'].append(_sub(accession,17,'10-K','20241231','2024','FY','20250301','2025-03-01 10:00:00.0'))
     for member in ('A','B'):
         _numd(t,accession,'SegmentUnmappedMetric','20241231',0,'5',f'BusinessSegments={member};', custom=True)
+    for cik,container in [(18,'ReportableLegalEntities'),(19,'ReportableGeographicalComponents')]:
+        accession=f'00000000{cik:02d}-26-0000{cik:02d}'
+        t['sub'].append(_sub(accession,cik,'10-K','20251231','2025','FY','20260301','2026-03-01 10:00:00.0'))
+        _numd(t,accession,'Revenues','20251231',4,'100')
+        for member,value in [('A',60),('B',40)]:
+            _numd(t,accession,'Revenues','20251231',4,str(value),f'BusinessSegments={member};ConsolidationItems={container};')
     return t
 
 
@@ -453,3 +459,30 @@ def test_monthly_clock_strict_boundary(lake_seg) -> None:
     con.execute(f"COPY features TO '{features.as_posix()}' (FORMAT PARQUET)")
     cov=FN.remeasure()['cells']['member_equity']['by_year']['2021']
     assert cov['annual_row']==.5   # exact m22 boundary excluded, later months included
+
+
+def test_restricted_year_rebuild_preserves_omitted_year_census(lake) -> None:  # noqa: F811
+    first=FN.build(years=[2021,2022])
+    out=N.C.stage_dir(FN.STAGE)
+    con=duckdb.connect()
+    def snapshot():
+        census=con.execute(f"SELECT adsh,n_members,multi_segment FROM read_parquet('{out.as_posix()}/segment_census.parquet') WHERE year(filed)=2021 ORDER BY adsh").fetchall()
+        features=con.execute(f"SELECT adsh,bseg_n,bseg_rev_hhi,bseg_basis FROM read_parquet('{out.as_posix()}/segment_features.parquet') WHERE year(filed)=2021 ORDER BY adsh").fetchall()
+        recon=con.execute(f"SELECT adsh,n_members,multi_segment,n_revenue_members,recon_class FROM read_parquet('{out.as_posix()}/segment_recon.parquet') WHERE year(filed)=2021 ORDER BY adsh").fetchall()
+        return census,features,recon
+    before=snapshot()
+    second=FN.build(years=[2022])
+    assert snapshot()==before
+    assert second['coverage']['segments']['2021']==first['coverage']['segments']['2021']
+    a=_features(out)[A]
+    assert a.bseg_n==2 and a.bseg_rev_hhi==pytest.approx(.52)
+
+
+def test_explicit_reportable_container_identity(lake_seg) -> None:
+    FN.build()
+    out=N.C.stage_dir(FN.STAGE)
+    features=_features(out)
+    for cik in (18,19):
+        row=features[f'00000000{cik:02d}-26-0000{cik:02d}']
+        assert (row.bseg_n,row.bseg_rev_n,row.bseg_recon_class)==(2,2,'direct')
+        assert row.bseg_rev_hhi==pytest.approx(.52)
