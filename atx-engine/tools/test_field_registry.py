@@ -231,6 +231,7 @@ class CommittedRegistryWithADec5Row(CommittedRegistry):
         super().setUpClass()
         cls.temp = tempfile.TemporaryDirectory()
         doc = fr.load()
+        cls.committed_only = engine_only_names(doc)   # real DEC-5 rows already in the file (review of A1, N3)
         doc["fields"].append(engine_only_row("syn_dec5", requires=[doc["fields"][0]["name"]], dtype=cls.DTYPE))
         path = Path(cls.temp.name) / "field_registry.json"
         path.write_bytes(fr.dump(doc))
@@ -245,7 +246,8 @@ class CommittedRegistryWithADec5Row(CommittedRegistry):
 
     def test_the_copy_holds_the_engine_only_row(self):
         doc = fr.load()
-        self.assertEqual(engine_only_names(doc), {"syn_dec5"})
+        self.assertNotIn("syn_dec5", self.committed_only)
+        self.assertEqual(engine_only_names(doc), self.committed_only | {"syn_dec5"})
         self.assertEqual((fr.names(doc)[-1], doc["fields"][-1]["dtype"]), ("syn_dec5", self.DTYPE))
 
 
