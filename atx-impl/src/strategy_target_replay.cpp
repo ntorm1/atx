@@ -576,14 +576,27 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   out.neutralize = outcome;
   return finish_desired(cfg, state, desired, out, outcome == NeutralizeOutcome::Applied);
 }
-// v8 Y-5 two-speed-v1. Each sleeve blend gets the construction (the config with two_speed off: ranks,
-// demean, gross 1, locate zeroing, neutralization); a skipped neutralization of either skips the
-// rebalance and F does not move. Otherwise the engine kernel engine::book::two_speed_aim advances
-// the virtual fast sleeve F (theta_f = 1 - 2^(-C/5) at cadence C) and turns the slow
-// desired target into the netted aim that aim-partial-v5 trades at trade_fraction. The
-// construction record is the slow sleeve's (its locate count includes the fast sleeve's).
-co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
-                                   std::vector<Ranked>& row, std::vector<f64>& desired,
+// The neutralization outcome and statistics of a construction record (the rest stays).
+void copy_neutralization(const ConstructionDay& from, ConstructionDay& to) {
+  to.neutralize = from.neutralize;
+  to.neutralize_used = from.neutralize_used;
+  to.neutralize_excluded = from.neutralize_excluded;
+  to.neutralize_excluded_share = from.neutralize_excluded_share;
+  to.neutralize_amplification = from.neutralize_amplification;
+  to.neutralize_groups = from.neutralize_groups;
+  to.neutralize_unknown_group_names = from.neutralize_unknown_group_names;
+  to.neutralize_fallback_names = from.neutralize_fallback_names;
+}
+// v8 Y-5 two-speed-v1. Each sleeve blend gets the construction (the config with two_speed off:
+// ranks, demean, gross 1, locate zeroing, neutralization); a skipped neutralization of either
+// skips the rebalance and F does not move. Otherwise the engine kernel
+// engine::book::two_speed_aim advances the virtual fast sleeve F (theta_f = 1 - 2^(-C/5) at
+// cadence C) and turns the slow desired target into the netted aim that aim-partial-v5 trades at
+// trade_fraction. The construction record is the slow sleeve's (its locate count includes the
+// fast sleeve's), except that when only the fast sleeve's neutralization skips, its outcome and
+// statistics are the record's, so the skip counts as one wherever the record is read.
+co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                                   usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
                                    PriceRiskScratch& scratch, ConstructionDay& out,
                                    std::span<const u8> no_short, detail::DesiredState* state) {
   const usize n = in.instruments, cells = in.dates * n;
@@ -606,6 +619,7 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   ATX_TRY(const bool fast_ok, form_desired(fast_in, inner, d, row, state->fast_desired, scratch, fast_day,
                                            no_short, state));
   ATX_TRY(const bool slow_ok, form_desired(slow_in, inner, d, row, desired, scratch, out, no_short, state));
+  if (!fast_ok && slow_ok) copy_neutralization(fast_day, out); // the skip is the fast sleeve's
   out.locate_zeroed += fast_day.locate_zeroed;
   // Mechanics only (the skip rule above is unchanged): would the parent's construction of the full
   // blend have been skipped at d? Only a neutralization can skip, so without one it never is.

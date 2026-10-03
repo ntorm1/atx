@@ -529,6 +529,69 @@ TEST(TwoSpeed, GridHasOneCadenceAndOneLockstepPerLeverage) {
   }
 }
 
+// price-risk-v1 on short windows a 70-session fixture fills (beta 40, vol 20: strategy_live_test's
+// v6.1 book).
+st::TargetReplayConfig neutral_config(st::TargetReplayConfig c) {
+  c.neutralize = st::TargetNeutralize::PriceRiskV1;
+  c.price_risk.beta_window = 40; c.price_risk.vol_window = 20;
+  c.price_risk.adv_window = 10; c.price_risk.min_return_pairs = 20;
+  c.price_risk.min_names = 5;
+  return c;
+}
+
+// Review YCOMB #5: when only the fast sleeve's neutralization skips, the record carries the fast
+// sleeve's outcome and statistics (before, the slow sleeve's Applied beside a skipped rebalance),
+// so the summary counts the decision as a cadence decision and as a neutralization skip.
+TEST(TwoSpeed, AFastOnlySkipIsTheRecordsSkip) {
+  const Role role(70, 12, 53), other(70, 12, 97); // one membership, two random blends
+  const std::vector<f64> share(role.d, 0.3);
+  auto x = role.target();
+  x.sleeve_fast = other.signal; x.sleeve_slow = role.signal; x.sleeve_fast_share = share;
+  auto fast_x = x;
+  fast_x.signal = other.signal;
+  const auto plain = neutral_config(two_speed_config(false));
+  // A decision where both sleeves neutralize and the fast sleeve amplifies more.
+  std::vector<Ranked> row;
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay fast_record, slow_record;
+  usize at = role.d;
+  for (usize d = 45; d < role.d && at == role.d; ++d) {
+    std::vector<f64> df(role.n, 0.0), ds(role.n, 0.0);
+    st::ConstructionDay rf, rs;
+    const auto f = st::detail::form_desired(fast_x, plain, d, row, df, scratch, rf);
+    const auto s = st::detail::form_desired(x, plain, d, row, ds, scratch, rs);
+    ASSERT_TRUE(f && s) << d;
+    if (*f && *s && std::isfinite(rf.neutralize_amplification) &&
+        std::isfinite(rs.neutralize_amplification) &&
+        rf.neutralize_amplification > rs.neutralize_amplification) {
+      at = d; fast_record = rf; slow_record = rs;
+    }
+  }
+  ASSERT_LT(at, role.d);
+  auto on = neutral_config(two_speed_config(true));
+  on.neutralize_max_amplification =
+      0.5 * (fast_record.neutralize_amplification + slow_record.neutralize_amplification);
+  st::detail::DesiredState state;
+  std::vector<f64> desired(role.n, 0.0);
+  st::ConstructionDay rec;
+  const auto r = st::detail::form_desired(x, on, at, row, desired, scratch, rec, {}, &state);
+  ASSERT_TRUE(r) << r.error().to_string();
+  EXPECT_FALSE(*r); // the fast sleeve's skip skips the rebalance
+  EXPECT_TRUE(rec.two_speed_sleeve_skipped);
+  EXPECT_EQ(rec.neutralize, st::NeutralizeOutcome::SkippedAmplification);
+  EXPECT_EQ(bits(rec.neutralize_amplification), bits(fast_record.neutralize_amplification));
+  EXPECT_EQ(rec.neutralize_used, fast_record.neutralize_used);
+  EXPECT_EQ(rec.neutralize_excluded, fast_record.neutralize_excluded);
+  EXPECT_EQ(bits(rec.neutralize_excluded_share), bits(fast_record.neutralize_excluded_share));
+  const std::vector<st::ConstructionDay> days{rec};
+  const auto s = Json::parse(st::detail::construction_summary_json(on, days)).at("construction");
+  EXPECT_EQ(s.at("cadence_rebalance_decisions").get<usize>(), 1U);
+  EXPECT_EQ(s.at("rebalanced_decisions").get<usize>(), 0U);
+  EXPECT_EQ(s.at("neutralize_skipped_decisions").get<usize>(), 1U);
+  EXPECT_EQ(s.at("neutralize_skip_reasons").at("amplification").get<usize>(), 1U);
+  EXPECT_EQ(s.at("two_speed").at("rebalances_skipped_by_a_sleeve").get<usize>(), 1U);
+}
+
 // The NAV summary's construction.two_speed prints both skip counts (mechanics only).
 TEST(TwoSpeed, SummaryPrintsTheSleeveSkipsBesideTheParents) {
   std::vector<st::ConstructionDay> days(5);
