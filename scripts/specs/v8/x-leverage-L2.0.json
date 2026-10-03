@@ -1,0 +1,23 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8x-leverage-L2.0",
+  "description": "Cell X-10 (id leverage-L2.0; v8y-prereg sections 1, 5, 6, 8, 14; v8x-prereg section 8; PM7-3, PM7-11, PM7-17, PM7-34 (3), PM8-3, PM8-10 (e), PM8-14 YP-7; P9 OD-P9-3 keeps L <= 2.0): the leverage cell, run by hand through research_cycle.py (YP-7: the wave driver has only the unscaled v8-mech limits and no leverage acceptance rule). Parent Y-F0 = the last accepted cell after Y-5 = the Y-S cell lib-v8ysb-gm.json (library v8ysb, L_P 1.1828, all-rows S2 gross .9862134133); defined because L_P < 2.0. The registered change verbatim: change.set nav.leverage 2.0 (the executable's maximum; one value, no grid) and nav.output, on Y-F0's spec with every NAV flag carried; NAV-only (u, fit, card, w and monitor are Y-F0's); not gross-matched (PM7-11). Mechanics restated (PM7-17), r = 2.0 / 1.1828 = 1.6909029421711192, written in the cell's plan (integration-log section R0-10) before the run: all-rows S2 gross inside [.90, 1.05] x r = [1.521813, 1.775448]; |all-rows mean net| <= .02 r = .033818; tau mean <= .20 r = .338181; tau p95 <= .30 r = .507271; accounting rows unchanged. Acceptance (PM7-34 (3)): S2 net annual return at 1x above Y-F0's AND S2 net Sharpe not lower than Y-F0's by more than .100 AND mechanics; the 4x guard, the paired dSR against Y-F0 and both p are printed and decide nothing. Counts once in N_c (inside PM8-8's +6) and in V; never in the Sharpe claim; Y-F = Y-1 if accepted, else X-10 if accepted (v8y 1).",
+  "parent": "lib-v8ysb-gm.json",
+  "nominal_parent": "lib-v8ysb-gm.json",
+  "change": {
+    "set": {
+      "nav.leverage": "2.0",
+      "nav.output": "build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb"
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb/summary.json",
+      "sha256": "2d30b7f6466cbcb3e5bf0f4758ce5570e853d26b15b44eba93814151e21aa525"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json",
+      "sha256": "121f70466884030f97d98ec3d965760e7df376c160385072d0abc8428b9bf255"
+    }
+  }
+}

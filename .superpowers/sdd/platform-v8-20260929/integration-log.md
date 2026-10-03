@@ -7493,3 +7493,32 @@ Printed, deciding nothing: the 4x guard (net Sharpe at 4x NAV vs Y-F0's 1.699426
 Y-F0, Memmel SE, CBB interval, both p; DSR (N 61); PBO; the v8y 8 report columns for Y-F0 and X-10 (net annual
 return, net Sharpe at 1x and 4x, realised vol, max drawdown; for X-10 L is fixed at 2.0, mean L_t = 2.0, mean
 all-rows gross printed). Count: 1 construction trial (N 60 -> 61 <= 62) whatever the verdict; 0 admission trials.
+
+### R0-10 cell spec (the registered form; R0-7-MAN applied to it), lock and plan (source `50406181`, the plan commit)
+
+- **File** `scripts/specs/v8/x-leverage-L2.0.json` (template, `i/lf`), name `v8x-leverage-L2.0`; every key from the
+  registration or the chain rule: `parent` = `lib-v8ysb-gm.json` (Y-F0; `nominal_parent` the same, so the nominal chain
+  is the real one); `change.set` = `nav.leverage` "2.0" (v8y 14's value verbatim) and `nav.output`
+  `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb` (the driver's PM6-6 output-naming rule `wave_steps.renamed_output`:
+  the token L1.1828 -> L2.0); nothing else (no flag, no unset, no input). The description states the scaled mechanics
+  and PM7-34 (3) as written above. No free constant.
+- `lock` (dry) exit 0; **`lock --write` exit 0**: reference_cell = Y-F0's `summary.json` `2d30b7f6`, reference_admission
+  `121f7046` (the derived pins, as Y-3's); dry after exit 0. File sha256
+  **`ebe68e6e4de3ad5b0dc5b86e38d8f749cf77d3bd637c55d5453e9c1e4a674975`**, spec digest (template chain)
+  **`234dbe71a210ec496fe13582ea9e025720c53ca71b9db6a42f84bbac5703a477`**.
+- **`plan` exit 0** (24 lines): 6 pins `[locked, verified]` (library `41010b0b`, recipe `9d357c75`, role `e1c67101`,
+  label_role `95e16cfe`, reference_cell `2d30b7f6`, reference_admission `121f7046`); fields v15 `26fee5ce` (pinned,
+  done); u, fit, card, w (`mega-v8xw-train-theme-erc-v8ysb-2`) and monitor = Y-F0's (done); gate read-out; **nav
+  pending** -> `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb` (run dir `-run`, 180 s / 1,536 MiB); summ (always) ->
+  `build-equity/cycle-v8x-leverage-L2.0/summ-run1`, `--reference` Y-F0's NAV, `--dsr-n 61`, `--ledger
+  build-equity/trials.jsonl --ledger-kind construction --dsr-ledger build-equity/trials.jsonl --origin prior`. No ref
+  phase (research_spec drops the parent's identity sections). Monitor is Y-F0's (the registration renames only
+  nav.output; X-6 precedent; the verdict reads none of it).
+- **NAV argv vs Y-F0's NAV receipt** (`mega-nav-v8x-theme-erc-L1.1828-v8ysb-run`, by script, 47 vs 47 tokens): equal
+  except `--output` (`...-L2.0-v8ysb`) and **`--aim-leverage 1.1828 -> 2.0`** (and the exe path spelled relative vs
+  absolute: the same file). Every other NAV flag carried (`--trade-fraction .05`, `--neutralize price-risk-v1`,
+  `--daily-turnover-mean-max .20`, `--daily-turnover-p95-max .30`, `--warm-start-sessions 60`, `--capacity-curve`, the
+  label role, ...). NAV exe `build-equity/bin/atx-equity-strategy-targets.exe` sha256 `72ff6d2d...` = Y-F0's NAV
+  receipt `executable_sha256` (source `c0f1fae6`).
+- `PYTHONHASHSEED=0 python -m pytest -q -p no:cacheprovider scripts/tests/test_research_spec.py` with the new locked file on disk: **86 passed** (181 s; the P0-FIX kind rule needs no tests-only commit).
+- **Pre-registration commit** of the cell: the spec and this log section together (next commit). No X-10 run has started.
