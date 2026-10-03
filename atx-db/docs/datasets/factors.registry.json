@@ -1,1 +1,13 @@
-{"stage":"factors","schema_id":"atx.alpha-panel.factors/checkpoint-v1","keys":["freq","session_date"],"path":null,"registration_status":"BLOCKED_incomplete_production_parquet_adapter","asof_macro_sql":null}
+{
+  "stage": "factors",
+  "path": "factors/{manifest.generation}/*.parquet",
+  "manifest_path": "factors/manifest.json",
+  "files_from_manifest": true,
+  "keys": [
+    "freq",
+    "session_date"
+  ],
+  "schema_id": "atx.alpha-panel.factors/v1",
+  "registration_status": "ready_for_Task17_manifest_generation_resolver",
+  "asof_macro_sql": "CREATE OR REPLACE MACRO factors_asof(ts) AS TABLE SELECT * FROM factors WHERE available_at < CAST(ts AS TIMESTAMPTZ);"
+}

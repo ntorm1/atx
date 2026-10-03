@@ -1,6 +1,7 @@
-"""Bounded single-line exposure kernel. Missing factor history remains NULL.
+"""Native risk pack and bounded line exposure kernels; missing histories stay NULL.
 
-No production source adapter/publication is enabled at this checkpoint.
+The native CLI binds final release snapshots and immutable own-factor outputs.
+Real source qualification and coverage must be measured independently.
 """
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import datetime as dt
 import argparse
 import json
 import uuid
+import os
 from pathlib import Path
 import numpy as np
 
@@ -101,55 +103,17 @@ def pack(row: dict) -> dict:
     return out
 
 
-def build(prepared: Path, binding: dict, destination: Path) -> Path:
-    from . import common as C
-    from .factors import require_release, config_hash
-    require_release(binding)
-    identity = {k: v['sha256'] for k, v in binding.items()}
-    source_sha = C.sha256_file(prepared)
-    generation = destination/('generation='+uuid.uuid4().hex)
-    generation.mkdir(parents=True, exist_ok=False)
-    output = generation/'risk_inputs.jsonl'
-    n, complete = 0, 0
-    previous = None
-    with prepared.open(encoding='utf-8') as source, output.open('x', encoding='utf-8') as target:
-        for line in source:
-            row = json.loads(line)
-            if row['input_manifests_sha256'] != identity or row['config_sha256'] != config_hash():
-                raise ValueError('stale prepared risk inputs')
-            key = (row['session_date'], row['security_id'])
-            if previous is not None and key <= previous:
-                raise ValueError('risk input keys must be unique/sorted')
-            previous = key
-            result = pack(row)
-            n += 1
-            complete += not result['missing_primitives'] and result['beta_252'] is not None and all(
-                b is not None for b in result['ff5_betas'])
-            target.write(json.dumps(result, sort_keys=True, default=str)+'\n')
-    if C.sha256_file(prepared) != source_sha:
-        raise ValueError('prepared risk source changed')
-    require_release(binding)
-    coverage = complete/n if n else 0
-    manifest = {'stage': 'risk_inputs', 'schema': 'atx.alpha-panel.risk-inputs/checkpoint-v1',
-                'status': 'complete', 'input_manifests_sha256': identity,
-                'prepared_sha256': source_sha, 'config_sha256': config_hash(), 'rows': n,
-                'files': {'risk_inputs.jsonl': {'bytes': output.stat().st_size, 'sha256': C.sha256_file(output)}},
-                'gate_status': {'exposure_coverage': {'status': 'PASS' if coverage >= .99 else 'FAIL',
-                                'complete': complete, 'denominator': n, 'coverage': coverage},
-                                'universe_denominator_certification': 'FAIL'}}
-    C.write_json_atomic(generation/'manifest.json', manifest)
-    C.write_json_atomic(destination/'manifest.json', {**manifest, 'generation': generation.name,
-        'files': {generation.name+'/'+k: v for k, v in manifest['files'].items()}})
-    return generation/'manifest.json'
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--prepared', type=Path, required=True)
-    parser.add_argument('--release-bindings', type=Path, required=True)
+    parser.add_argument('--native-spec', type=Path, required=True)
+    parser.add_argument('--start',type=dt.date.fromisoformat,default=dt.date(2020,1,1))
+    parser.add_argument('--end',type=dt.date.fromisoformat,required=True)
     parser.add_argument('--destination', type=Path, required=True)
     args = parser.parse_args()
-    build(args.prepared, json.loads(args.release_bindings.read_text(encoding='utf-8')), args.destination)
+    if not os.environ.get('ATX_GUARD_JOB'):
+        raise RuntimeError('native data CLI requires run_memory_guarded.py')
+    from ._factor_native import native_risk
+    native_risk(json.loads(args.native_spec.read_text(encoding='utf-8')),args.destination,args.start,args.end)
 
 
 if __name__ == '__main__':

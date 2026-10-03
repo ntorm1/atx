@@ -1,53 +1,97 @@
-# factors engineering checkpoint
+# factors
 
-This is an incomplete offline engineering checkpoint, not a certified factor dataset.
-No real sources were read, acquired or evaluated. Production adapters are pending.
-The configuration in `alpha_panel/factors.py:CONFIG` is versioned before comparisons;
-changes need a new rule/version and documented justification before data comparisons.
+Offline implementation checkpoint; real source qualification/build/acceptance remain pending.
+Code: `factors.py`, `_factor_native.py`, `_factor_sources.py`, `_factor_io.py`.
+Schema `atx.alpha-panel.factors/v1`; keys `(freq, session_date)`.
+Frozen configuration: `factors.config.json`, identical to code CONFIG. No real return
+comparisons occurred before this freeze. Configuration changes require a new recorded
+rule/version before comparisons; runtime manifest hashes bind exact final inputs.
 
-Prepared input interface: UTF-8 JSONL, sorted `(freq, session_date, cik)` with one
-consolidated issuer per period. Each row requires session_date, freq D/M, cik,
-formation_date, cutoff (aware UTC), source_available_at (aware UTC), me_lag (USD),
-ret (decimal total return), RF (decimal period risk-free return, spelled `rf`),
-nyse, signals, membership_basis=`dated_history`, cap_basis=`exact_source_certified`,
-config_sha256 and input_manifests_sha256. No source truth is inferred from names.
-The maximum bounded cross-section is 20,000 issuers. Unavailable signals stay null.
+## Outputs and clocks
 
-Explicit release bindings require exact final manifests/output hashes for
-fundamentals_v11, compustat_std_v11, ratios_v11, universe and prices_history.
-Old stages/defaults are forbidden. Physical compustat vintage keys include
-available_at; upstream adapters must select latest strictly visible issuer/period
-snapshots. Certified issuer caps require independently reconciled share class,
-units, issuer aggregation and availability. CIK 77159 remains unqualified pending
-the separate source-basis audit. A prepared input's assertion is not that audit.
+Immutable `factors/generation=<identity>/month=YYYY-MM.parquet`, each with one
+monthly row and daily session rows. `manifest.json` is a publish-last pointer to
+one complete generation. Consumers must resolve its exact files, never glob all
+generations. Progress records complete unit hashes; interrupted units resume only
+at identical source/config/code identities. Exclusive publisher lock protects the
+pointer; a stranded lock requires owner inspection, not automatic deletion.
 
-All return products are rejected outside 2013-2022 before portfolio computation.
-Formation precedes the return date and uses strictly earlier source clocks.
-Daily output carries session_date 22:00 UTC available_at; monthly inputs must use
-monthly stock returns from frozen portfolios, never compound daily long-short spreads.
-SMB is the average of independent value/profitability/investment small-minus-big
-2x3 spreads. Required legs missing => null. q ME/IA/ROE uses independent 2x3x3;
-q EG remains null pending its published model/source adapter. BAB uses ranked
-beta distance weights and beta-scaled excess leg returns. These implementations
-still require independent formula review, especially q formation conventions.
+| Columns | Type/unit | Definition/source/clock |
+|---|---|---|
+| freq, session_date | STRING D/M, DATE | Return frequency and period-end session |
+| available_at | UTC TIMESTAMP | Period-end 22 UTC; inherited price-vintage uncertainty remains unqualified |
+| MktRF | nullable DOUBLE/decimal | Certified dated issuer-cap VW total return less explicit period RF |
+| SMB/HML/RMW/CMA | nullable DOUBLE/decimal | French independent NYSE 2x3 size/value/profitability/investment spreads |
+| UMD/STREV/LTREV | nullable DOUBLE/decimal | Monthly formed 2x3 momentum/reversal spreads; fixed calendar lookbacks |
+| q_ME/q_IA/q_ROE | nullable DOUBLE/decimal | Independent 2x3x3; annual June ME/IA, monthly quarterly ROE |
+| q_EG | nullable DOUBLE/decimal | Monthly independent 2x3 one-year expected investment-growth forecast spread |
+| BAB | nullable DOUBLE/decimal | Monthly ranked beta-distance weights; beta-scaled excess long/short legs |
+| n_universe/n_qualified | BIGINT/issuers | Dated available issuer grid and independently qualified issuer count |
+| missing_reason | nullable STRING | Required source/formation/portfolio leg missing; no zero substitution |
 
-Outputs currently use immutable generation JSONL plus a publish-last manifest
-pointer, not the required production Parquet stage. Interrupted generations do
-not replace a previous pointer; source snapshots are rechecked before publication.
-Concurrent publisher locking and unit-level resume are pending. Source mutation
-while producers write is prohibited by the controller's exclusive slot (R9).
+Formation precedes return dates; accounting uses strict source clocks before formation
+22 UTC. Standardized vintages retain available_at in physical identities and select
+latest strictly visible issuer/period snapshots. June book equity uses prior calendar
+fiscal-year statements and prior December ME. Labels carry through June-to-June;
+monthly momentum/reversal/ROE/EG/BAB formation carries through the next month.
+Daily and monthly stock returns are aggregated separately. Long-short daily spreads
+are never compounded into monthly factors. Missing formed members/legs remain null.
+Raw vendor delisting/vintage limitations remain source qualification gaps.
 
-Return columns MktRF/SMB/HML/RMW/CMA/UMD/STREV/LTREV/q_ME/q_IA/q_ROE/q_EG/BAB
-are nullable DOUBLE, decimal period returns. n_universe is an issuer count;
-config_sha256 is the formation rule identity. Keys `(freq, session_date)`.
-Benchmark validator requires every one of 120 calendar months 2013-2022, reports
-FAIL on any missing month, and does not shrink the correlation window.
+All own aggregate return inputs are bounded strictly before 2023 before aggregation.
+The benchmark validator requires all 120 months 2013-01..2022-12, reports missing
+months as FAIL, and never shrinks the window. Thresholds are frozen in configuration.
 
-Coverage/gates: unmeasured; no publication accepted. Remaining native adapters:
-dated price-history universe/issuer shares; prices/delisting total return alignment;
-June annual accounting and December ME; monthly return lookbacks; RF/benchmark
-column normalization; q quarterly ROE/investment and EG estimation; daily carry
-of fixed formations. Formula sources still need complete primary-source review.
+## Explicit native source interface
 
-CLI (guarded real use is not yet authorized): `python -m atx_db.alpha_panel.factors
---prepared PATH --release-bindings PATH --destination PATH`.
+CLI: `python -m atx_db.alpha_panel.factors --native-spec PATH --destination PATH
+--phase build|validate`, under external memory guard <=1 GiB. Native spec must bind
+config_sha256 and explicit release objects for fundamentals_v11, compustat_std_v11,
+ratios_v11, universe and prices_history, each `{manifest, sha256}`. No old defaults.
+Every output SHA/size is verified before use and again before publication.
+
+`sources` must contain prices, universe, funda, fundq, ratios_state, calendar,
+cap_quality, liquidity, borrow, industry, rf and eg_training. Each is an explicit
+`{stage, manifest, sha256, files:[manifest-relative paths]}` object. Prices can use
+`parts` for separately bound prices_history and prices. Funda/fundq/ratios/universe
+must match final release identities. RF can use adapter `french_rf` and explicit
+frequency_files D/M, or an explicitly normalized `(freq,session_date,rf)` product.
+Native observed dates extend the calendar without inferring historical membership.
+
+cap_quality/eg_training may be explicitly null: typed missing relations are used;
+no current membership or vendor-share certification is manufactured. Native EG
+training derives dated annual outcomes/predictors when no external training stage
+is supplied. Forecast fitting requires independently visible outcome and predictor
+clocks at each historical fit cutoff, four calendar months of outcome seasoning,
+ME-weighted monthly WLS, 1/99 predictor winsorization, and 30 of the prior 120 monthly
+fits. Missing REVT remains null: inspected standardized sources have SALE, whose
+name is not assumed to prove equivalence. Missing required primitives fail closed.
+
+cap_quality requires an independently reviewed cap_basis_audit manifest, exact
+market_shares/universe/prices_history input hashes, hash-verified primary evidence,
+per-row evidence/source hashes and strict clocks. A Boolean assertion cannot certify
+a row. CIK77159 is excluded until the audit explicitly resolves its share-basis issue;
+neither market_shares nor the foreign panel is presumed correct.
+
+Validation spec additionally binds own_factors and benchmarks: each benchmark has
+exact manifest SHA, output file, date_column, canonical-to-source column mapping,
+and decimal/percent units. Mappings are explicit source contracts, never fitted.
+Validation writes a separate immutable-output-independent receipt; it does not
+rewrite the producer manifest. Initial producer gates report unmeasured FAIL.
+
+## Formula references and limits
+
+[French FF5 definitions](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_5_factors_2x3.html),
+[original q5 forecast setup](https://theinvestmentcapm.com/uploads/1/2/2/6/122679606/q5_2020jan_stylerf.pdf),
+[q book-equity/ROE definitions](https://theinvestmentcapm.com/uploads/1/2/2/6/122679606/securityanalysis_internetappendix_2019august.pdf),
+[q growth primitives](https://theinvestmentcapm.com/uploads/1/2/2/6/122679606/q5_2018nov.pdf),
+[original BAB](https://doi.org/10.1016/j.jfineco.2013.10.005).
+
+No new raw data landed. Current inspected historical prices have no dated universe,
+CIK or certified share/availability fields, and universe currently starts in 2018.
+These are explicit historical coverage failures, not permission to backfill latest
+membership. Preferred-stock redemption/liquidation and quarterly deferred-tax
+components are not present in the inspected schema; available standardized values
+use documented book-equity fallbacks, leaving source equivalence unqualified.
+Actual memory peak, build rows/bytes, all benchmark gates and source certification
+remain unmeasured until final producers and an authorized exclusive data slot.

@@ -1,1 +1,13 @@
-{"stage":"risk_inputs","schema_id":"atx.alpha-panel.risk-inputs/checkpoint-v1","keys":["session_date","security_id"],"path":null,"registration_status":"BLOCKED_incomplete_production_parquet_adapter","asof_macro_sql":null}
+{
+  "stage": "risk_inputs",
+  "path": "risk_inputs/{manifest.generation}/*.parquet",
+  "manifest_path": "risk_inputs/manifest.json",
+  "files_from_manifest": true,
+  "keys": [
+    "session_date",
+    "security_id"
+  ],
+  "schema_id": "atx.alpha-panel.risk-inputs/v1",
+  "registration_status": "ready_for_Task17_manifest_generation_resolver",
+  "asof_macro_sql": "CREATE OR REPLACE MACRO risk_inputs_asof(ts) AS TABLE SELECT * FROM risk_inputs WHERE available_at < CAST(ts AS TIMESTAMPTZ);"
+}
