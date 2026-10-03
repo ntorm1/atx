@@ -299,6 +299,46 @@ def test_nav_only_template_after_ic_rebuild(tmp_path):
     assert not T.cycle_of(root, sp).inherited("u")                          # a plain spec inherits nothing
 
 
+def test_inherited_output_judged_by_the_ancestor_that_made_it(tmp_path):
+    """Review E1-N3 on a 3-level template chain G -> P -> C. G (pinned at the old IC exe) made u and w; root rebuilds
+    the IC exe; P, a NAV-only template of G locked on the rebuilt exes, reuses G's u and w (judged by G's pin); C, a
+    NAV-only template of P, keeps the same u and w and judges them by G's pin too, never by P's (its resolved pin of
+    the rebuilt exe): it runs. A G pin that the receipts do not match refuses C as well, naming the ancestor."""
+    for case in ("ancestor-pin-matches", "ancestor-pin-moved"):
+        root, sp = T.make_root(tmp_path / case)
+        pin_exes(sp, ic=b"ic", nav=b"nav")                                  # G's lock --exes, before it runs
+        assert T.run(root, sp) == RC.EXIT_OK
+        u, w = step_of(root, sp, "u"), step_of(root, sp, "w")
+        stamp_exe(root, u, "bin/ic.exe")
+        stamp_exe(root, w, "bin/ic.exe")
+        (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                # root rebuilds the IC exe
+        p = nav_only_child(sp, **{RC.EXES_PIN: {"ic": sha(b"ic rebuilt"), "nav": sha(b"nav")}})
+        log: list[str] = []
+        assert T.run(root, p, log) == RC.EXIT_OK and f"   receipt exe: executable sha256 {sha(b'ic')} = the " \
+                                                     "parent's exes_sha256 pin of ic" in log
+        assert T.cycle_of(root, p).introducer("u")[1] == 1
+        c = sp.parent / "grandchild.json"                                    # its reference cell is P's NAV
+        c.write_text(json.dumps({"schema": RC.research_spec.TEMPLATE_SCHEMA, "name": "grandchild", "parent": p.name,
+                                 "change": {"set": {"nav.output": "out/N3"}}}))
+        cycle = T.cycle_of(root, c)
+        assert [cycle.introducer(x)[1] for x in ("fields", "u", "fit", "w", "nav")] == [2, 2, 2, 2, 0]
+        assert cycle.introducer("u")[0]["name"] == RC.load_spec(sp)["name"] and cycle.inherited("u")
+        if case == "ancestor-pin-moved":
+            pin_exes(sp, ic=b"another ic", nav=b"nav")
+            n = len(T.calls(root))
+            with pytest.raises(RC.CycleError, match=rf"HARD-STOP \[u\]: u output out/U-1 was made by an executable "
+                                                    rf"with sha256 {sha(b'ic')} .*the ancestor's \(2 templates up\) "
+                                                    rf"exes_sha256 pins ic {sha(b'another ic')}: refusing") as e:
+                T.run(root, c)
+            assert e.value.code == RC.EXIT_PIN and len(T.calls(root)) == n
+            continue
+        n, log = len(T.calls(root)), []
+        assert T.run(root, c, log) == RC.EXIT_OK                            # before E1-N3: exit 3 on P's pin
+        assert T.calls(root)[n] == "N3-run" and "== u: done (out/U-1)" in log
+        assert f"   receipt exe: executable sha256 {sha(b'ic')} = the ancestor's (2 templates up) exes_sha256 pin " \
+               "of ic" in log and not [x for x in log if x.startswith("   receipt exe NOTE:")]
+
+
 def test_run_stage_notes_unpinned_exe_reuse(tmp_path):
     """Ruling E1-REUSE-a2 in the wave: when a phase output the cell's calibration run reused was made by another
     executable than its exe has on disk now (a K-P9-10 receipt, no pin: research_cycle reused it), the run stage logs

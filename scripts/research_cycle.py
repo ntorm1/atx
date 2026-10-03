@@ -904,39 +904,62 @@ class Cycle:
             out[key] = (rel, got)
         return out
 
+    def template_chain(self) -> list[dict]:
+        """The resolved specs up this cycle's template chain, nearest first ([parent, grandparent, ...]; [] for a plain
+        spec, or without a spec file); loaded once. Ruling E1-REUSE-a2 with review E1-N3: an output a template keeps
+        is judged by the pins of the ancestor whose run made it, however many generations up."""
+        if not hasattr(self, "_template_chain"):
+            chain, path = [], self.spec_path
+            while path is not None:
+                try:
+                    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    break
+                if not (isinstance(doc, dict) and research_spec.is_template(doc)):
+                    break
+                path, _ = research_spec.parent_of(doc, Path(path), research_tree.REPO)
+                chain.append(load_spec(path))      # load_spec refuses a chain whose parents form a cycle
+            self._template_chain = chain
+        return self._template_chain
+
     def parent_spec(self) -> dict | None:
-        """The resolved spec of this cycle's template parent (None for a plain spec, or without a spec file); loaded
-        once. Ruling E1-REUSE-a2: the outputs a template keeps from its parent are judged by the parent's pins."""
-        if not hasattr(self, "_parent_spec"):
-            self._parent_spec = None
-            try:
-                doc = json.loads(Path(self.spec_path).read_text(encoding="utf-8")) if self.spec_path else None
-            except (OSError, ValueError):
-                doc = None
-            if isinstance(doc, dict) and research_spec.is_template(doc):
-                path, _ = research_spec.parent_of(doc, Path(self.spec_path), research_tree.REPO)
-                self._parent_spec = load_spec(path)
-        return self._parent_spec
+        """The resolved spec of this cycle's template parent (None for a plain spec, or without a spec file)."""
+        chain = self.template_chain()
+        return chain[0] if chain else None
+
+    def introducer(self, phase: str) -> tuple[dict, int]:
+        """(the resolved spec whose run made this cycle's ``phase`` output, how many templates up it is: 0 = this
+        spec). Review E1-N3: walk up the template chain while the phase's output name (PHASE_OUTPUTS) and out_root
+        stay the next ancestor's, the cycle running without --suffix (research_spec: every output a template keeps is
+        the parent's and resumes as done); the last such ancestor made it."""
+        keys = PHASE_OUTPUTS.get(phase)
+        if keys is None or self.suffix:
+            return self.spec, 0
+        owner, depth = self.spec, 0
+        for ancestor in self.template_chain():
+            name = (owner.get(keys[0]) or {}).get(keys[1])
+            if not (isinstance(name, str) and name == (ancestor.get(keys[0]) or {}).get(keys[1]) and
+                    owner.get("out_root") == ancestor.get("out_root")):
+                break
+            owner, depth = ancestor, depth + 1
+        return owner, depth
 
     def inherited(self, phase: str) -> bool:
-        """Whether this cycle's ``phase`` output is its template parent's (research_spec: every output a template keeps
-        is the parent's and resumes as done): the phase's output name (PHASE_OUTPUTS) and out_root are the parent's,
-        and the cycle runs without --suffix."""
-        keys, parent = PHASE_OUTPUTS.get(phase), self.parent_spec()
-        if keys is None or parent is None or self.suffix or self.spec.get("out_root") != parent.get("out_root"):
-            return False
-        name = (self.spec.get(keys[0]) or {}).get(keys[1])
-        return isinstance(name, str) and name == (parent.get(keys[0]) or {}).get(keys[1])
+        """Whether this cycle's ``phase`` output is an ancestor's (``introducer``: its template parent's, or one further
+        up the chain whose output the parent kept in turn)."""
+        return self.introducer(phase)[1] > 0
 
     def reuse_pin(self, st: Step) -> tuple[str | None, str | None, str]:
         """(exe key, its exes_sha256 pin or None, whose pin) that a done bounded step's receipt is judged by (ruling
-        E1-REUSE-a2): the step's executable (its argv after the runner's ``--``) as a key of exes; the pin of the
-        parent's resolved spec for an output the template inherited, else this spec's. No pin: not refused."""
+        E1-REUSE-a2, review E1-N3): the step's executable (its argv after the runner's ``--``) as a key of exes; the pin
+        of the resolved spec of the ancestor that made an inherited output (``introducer``), else this spec's. No pin:
+        not refused."""
         exe = st.argv[st.argv.index("--") + 1]
         key = next((k for k, v in (self.spec.get("exes") or {}).items() if v == exe), None)
-        inherited = self.inherited(st.phase)
-        pins = ((self.parent_spec() if inherited else self.spec) or {}).get(EXES_PIN) or {}
-        return key, pins.get(key) if key else None, "the parent's" if inherited else "the spec's"
+        owner, depth = self.introducer(st.phase)
+        pins = owner.get(EXES_PIN) or {}
+        whose = "the spec's" if depth == 0 else "the parent's" if depth == 1 else f"the ancestor's ({depth} templates up)"
+        return key, pins.get(key) if key else None, whose
 
     def pin(self, key: str) -> str:
         return self.pins[key][1]

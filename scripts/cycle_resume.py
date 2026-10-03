@@ -142,8 +142,9 @@ def check_receipt_exe(cycle, st) -> tuple[str | None, str | None]:
     matched, a note for a reuse on another executable); (None, None) for a receipt that predates K-P9-10 (no
     argv_sha256) or records no executable_sha256: reused as before.
 
-      pinned    the step's exe key has an exes_sha256 pin (Cycle.reuse_pin: the parent's resolved spec's for an output
-                a template inherited, else this spec's): a receipt naming another SHA raises ResumeError (exit 3)
+      pinned    the step's exe key has an exes_sha256 pin (Cycle.reuse_pin: for an output a template inherited, the
+                resolved spec's of the ancestor that made it, however far up the chain (review E1-N3); else this
+                spec's): a receipt naming another SHA raises ResumeError (exit 3)
       unpinned  no pin: a receipt naming another SHA than the exe on disk now is reused, with a note (one log line)
     """
     r = cycle.receipt(st.run_dir)
