@@ -10,6 +10,7 @@
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
+  test_code_reuse_keyed_on_import_closure E1-REUSE (b): the code key covers the in-repo import closure
   test_reader_reuse_keyed_on_code_and_verdict_per_run  OR section 3: code-keyed reuse; per-run verdict copies
   test_timings_complete                   OR section 5: screen, readers, bundle, register, git, stage seconds
   test_registration_keys_k_p9_11          K-P9-11: source_sample_end, predicted_mechanism, data_class (optional)
@@ -610,6 +611,43 @@ def test_receipt_digest_time_free(tmp_path):
     for bad in ({"receipt_digest": "mtime"}, {"record_date": "2026-13-01"}, {"record_date": "20261001"},
                 {"keep_verdicts": 1}):
         assert any(p.startswith("driver.") for p in WM.validate(manifest(driver=bad))), bad
+
+
+def test_code_reuse_keyed_on_import_closure(tmp_path):
+    """P9 ruling E1-REUSE (b): the code key of a reader's or the bundle's output covers the transitive in-repo import
+    closure of the code its run bound (wave_stage_cell.code_closure: nav_summ.py's backtest_integrity.py and
+    dsr_total.py, and what those load), not only the bound files: an imported module that differs from the run's
+    commit (receipt source_sha) makes the output stale (exit 3), at any depth, imported anywhere in the module,
+    changed in the tree or committed after the run. A receipt without source_sha (--no-git) or a module outside the
+    wave root is not checked, as before."""
+    names = {p.name for p in WSC.code_closure([HERE.parent / "wave_readers.py",
+                                               HERE.parents[1] / "atx-impl" / "tools" / "nav_summ.py"])}
+    assert {"wave_readers.py", "nav_summ.py", "backtest_integrity.py", "dsr_total.py", "era_pool.py",
+            "research_window.py"} <= names
+    root = F.build(tmp_path / "w")
+    (root / "tools").mkdir()
+    (root / "tools" / "reader.py").write_text("import json\nimport helper\n")
+    (root / "tools" / "helper.py").write_text("def f():\n    from deep import x\n    return x\n")
+    (root / "tools" / "deep.py").write_text("x = 1\n")
+    F.git(root, "add", "-A")
+    F.git(root, "commit", "-q", "-m", "reader code")
+    assert {p.name for p in WSC.code_closure([root / "tools" / "reader.py"])} == {"reader.py", "helper.py", "deep.py"}
+    w = Wave(F.MANIFEST, root, executor=F.FakeCycle(root, ADMIT_ALL), log=lambda s: None)
+    reader = root / "tools" / "reader.py"
+    bound = [{"path": str(reader), "sha256": RC.sha256_file(reader)}]
+    F.write_json(root, "out/r-run/receipt.json", {"outcome": "completed", "source_sha": w.head(), "bindings": bound})
+    assert WSC.stale_code(w, "out/r-run") == []                               # the run's code: reused
+    (root / "tools" / "deep.py").write_text("x = 2\n")                        # two imports down, in a function
+    deep = (root / "tools" / "deep.py").as_posix()
+    assert WSC.stale_code(w, "out/r-run") == [deep]
+    F.git(root, "commit", "-q", "-am", "deep moved")                          # committed after the run: still stale
+    assert WSC.stale_code(w, "out/r-run") == [deep]
+    with pytest.raises(WU.StageError, match=r"out/r\.json: its code .*deep\.py changed since the run out/r-run wrote "
+                                            r"it: never reused") as e:
+        WSC.refuse_stale_code(w, "out/r.json", "out/r-run")
+    assert e.value.code == WU.EXIT_PIN
+    F.write_json(root, "out/n-run/receipt.json", {"outcome": "completed", "bindings": bound})   # no source_sha
+    assert WSC.stale_code(w, "out/n-run") == []
 
 
 def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):

@@ -1,9 +1,17 @@
 """The run and match stages of a research wave (wave_stages.py), and the bounded readers they and the judge use:
 the calibration run, gross matching (Ruling PM6-6) and the -gm copy.
+
+A reader's or the bundle's output is reused only while its code is the code that made it (stale_code, P9 OR section
+3, ruling E1-REUSE (b)): every *.py its run's receipt binds hashes as bound, and every in-repo module those import
+(code_closure: e.g. nav_summ.py's backtest_integrity.py and dsr_total.py) is unchanged since the run's commit
+(receipt source_sha). Cycle-level Python phases (card, the fields builder) are not code-keyed: research_cycle's
+resume compares their argv and executable (the Python interpreter) only.
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+import re
 
 import wave_manifest as WM
 import wave_rules as WR
@@ -11,6 +19,11 @@ import wave_steps as WS
 from wave_context import Wave
 from wave_stage_util import (EXIT_PIN, StageError, cyc, no_cell, phase_rows, pinned, reader_digests, skipped,
                              write_spec_file)
+
+# the code-keyed reuse of a reader's or the bundle's output (stale_code): where an in-repo module they import lives,
+# and the loader calls that import a module by name (backtest_integrity: atx-engine/tools/<name>.py)
+CODE_DIRS = ("scripts", "atx-impl/tools", "atx-engine/tools")
+DYNAMIC_LOADERS = ("_engine_module",)
 
 
 # ------------------------------------------------------------------ run
@@ -70,12 +83,71 @@ def last_completed(w: Wave, base: str) -> str | None:
     return runs[-1] if runs else None
 
 
+def imported_names(path: Path) -> set[str]:
+    """The top-level module names ``path`` imports anywhere in its code (``import X``, ``from X import ...``, absolute
+    only) plus the names it loads through DYNAMIC_LOADERS (backtest_integrity's ``_engine_module("era_pool")``)."""
+    out = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+        if isinstance(node, ast.Import):
+            out |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            out.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Call) and getattr(node.func, "id", None) in DYNAMIC_LOADERS and node.args and \
+                isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            out.add(node.args[0].value)
+    return out
+
+
+def code_base(path: Path) -> Path | None:
+    """The repository directory holding ``path`` (the first parent with CODE_DIRS' scripts or atx-impl/tools)."""
+    return next((d for d in path.parents if (d / "scripts").is_dir() or (d / "atx-impl" / "tools").is_dir()), None)
+
+
+def code_closure(paths) -> list[Path]:
+    """The transitive in-repo import closure of the Python files ``paths`` (P9 ruling E1-REUSE (b)): each file and every
+    module it imports (imported_names) that resolves to ``<name>.py`` in the importer's directory or in one of
+    CODE_DIRS of its repository (code_base), recursively; standard-library and installed modules resolve to none. For
+    the readers and the bundle: wave_readers.py, nav_summ.py and what they import (backtest_integrity.py,
+    dsr_total.py, atx-engine/tools era_pool.py and research_window.py, ...)."""
+    seen: dict[Path, None] = {}
+    todo = [Path(p).resolve() for p in paths]
+    while todo:
+        p = todo.pop()
+        if p in seen or not p.is_file():
+            continue
+        seen[p] = None
+        base = code_base(p)
+        dirs = [p.parent] + ([base / c for c in CODE_DIRS] if base else [])
+        for name in sorted(imported_names(p)):
+            hit = next((d / f"{name}.py" for d in dirs if (d / f"{name}.py").is_file()), None)
+            if hit is not None:
+                todo.append(hit.resolve())
+    return sorted(seen, key=str)
+
+
+def changed_imports(w: Wave, receipt: dict, bound: list[Path]) -> list[str]:
+    """The in-repo modules the bound code imports (code_closure; the bound files aside, they are hashed in the
+    receipt) that differ now from the commit the run recorded (receipt source_sha: the bounded runner refuses a dirty
+    code pathspec, so that commit holds the code it ran): `git diff --name-only <source_sha> -- <modules>`. Modules
+    outside the wave root, or a receipt without source_sha (--no-git), are not checked (empty), as before."""
+    src = receipt.get("source_sha")
+    if not bound or not (isinstance(src, str) and re.fullmatch(r"[0-9a-f]{40}", src)):
+        return []
+    root, own = Path(w.root).resolve(), {p.resolve() for p in bound}
+    mods = [p.relative_to(root).as_posix() for p in code_closure(bound) if p not in own and p.is_relative_to(root)]
+    if not mods:
+        return []
+    return [w.path(x).as_posix() for x in w.git("diff", "--name-only", src, "--", *mods).split()]
+
+
 def stale_code(w: Wave, run_dir: str | None) -> list[str]:
-    """The code files (*.py) ``run_dir``'s receipt binds that no longer hash as bound: the reader or the bundle changed
-    since that run wrote the output it would reuse (P9 OR section 3). Empty without a run or bound code."""
+    """The code files (*.py) ``run_dir``'s receipt binds that no longer hash as bound, and the in-repo modules they
+    import that changed since the run's commit (changed_imports, P9 ruling E1-REUSE (b)): the reader or the bundle
+    changed since that run wrote the output it would reuse (P9 OR section 3). Empty without a run or bound code."""
     r = (w.read_json(f"{run_dir}/receipt.json") if run_dir else None) or {}
-    return [b["path"] for b in r.get("bindings") or [] if isinstance(b, dict) and
-            str(b.get("path", "")).endswith(".py") and w.sha(str(b["path"])) != b.get("sha256")]
+    code = [b for b in r.get("bindings") or [] if isinstance(b, dict) and str(b.get("path", "")).endswith(".py")]
+    stale = [b["path"] for b in code if w.sha(str(b["path"])) != b.get("sha256")]
+    return stale + changed_imports(w, r, [Path(b["path"]) for b in code if w.path(str(b["path"])).is_file()])
 
 
 def refuse_stale_code(w: Wave, out: str, run_dir: str | None) -> None:
