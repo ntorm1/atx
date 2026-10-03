@@ -173,6 +173,17 @@ def pool_only_marginal(doc: dict) -> dict:
     return out
 
 
+def marginal_ruled(doc: dict, rule: dict) -> dict:
+    """The manifest's "marginal" ruling (e.g. PM8-15: an add-alpha wave on a theme-erc parent with more themes than
+    the marginal verb takes runs it on the pool only, PM6-8 (i); the phase's time cap): pool_only applies
+    pool_only_marginal, seconds sets runner.phases.marginal.seconds; a spec without a marginal phase is unchanged."""
+    out = pool_only_marginal(doc) if rule.get("pool_only") else copy.deepcopy(doc)
+    if "seconds" in rule and isinstance(out.get("marginal"), dict):
+        phases = out.setdefault("runner", {}).setdefault("phases", {})
+        phases["marginal"] = dict(phases.get("marginal") or {}, seconds=rule["seconds"])
+    return out
+
+
 def unpinned(doc: dict) -> dict:
     """A cell template without the pins `lock --write` writes into it (research_spec.lock_template: the "locked"
     block, change.inputs.*.sha256, the fields manifest pin in change.set): a resumed rule cell compares on this."""

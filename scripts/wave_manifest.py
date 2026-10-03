@@ -26,7 +26,12 @@ One wave is one cell on the current book, declared before anything is measured:
                                                   outside the code pathspec (research_tree.CODE_PATHSPEC)
    "record": {"copy_to": DIR?},                   where the record stage copies wave-result.json and the log section
                                                   (outside the code pathspec too)
-   "speed": {"reuse_screen_marginal": true, "screen_first": true}}
+   "speed": {"reuse_screen_marginal": true, "screen_first": true},
+   "marginal": {"ruling": ID, "pool_only": BOOL?, "seconds": N?}}   optional: a PM ruling on the library's marginal
+                                                 phase (e.g. PM8-15: pool only, PM6-8 (i), on a theme-erc parent
+                                                 with more themes than the verb takes; the phase cap 720 s), applied
+                                                 to the screen library at register and to a b library that runs
+                                                 its own marginal
                                                  the wave's own speed rules (wave_stages.py; both default true; they
                                                  change no input of a decision): the cell after a sign-rule drop
                                                  carries the screen's per-row marginal fields (report only) instead of
@@ -63,8 +68,10 @@ CANDIDATE_OPTIONAL = ("kind", "replaces", "rescreen", "removes", "fields", "prio
                       "domain", "deviation", "exception", "ruling", "notes", "lane", "report")
 TOP_REQUIRED = ("schema", "wave", "parent", "fields", "acceptance", "gross_match", "budget", "ledger", "expect",
                 "out_dir")
-TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed")
+TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed",
+                "marginal")
 SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
+MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 
 
@@ -215,6 +222,11 @@ def validate(m) -> list[str]:
     sp = m.get("speed", {})
     if not (isinstance(sp, dict) and set(sp) <= set(SPEED_KEYS) and all(type(v) is bool for v in sp.values())):
         out.append(f"speed must map {', '.join(SPEED_KEYS)} to true or false")
+    mg = m.get("marginal", {"ruling": "-"})
+    if not (isinstance(mg, dict) and set(mg) <= set(MARGINAL_KEYS) and isinstance(mg.get("ruling"), str) and
+            mg["ruling"].strip() and type(mg.get("pool_only", False)) is bool and
+            ("seconds" not in mg or (type(mg["seconds"]) is int and mg["seconds"] > 0))):
+        out.append("marginal must be {ruling: the PM ruling, pool_only?: true | false, seconds?: a positive integer}")
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
     return out

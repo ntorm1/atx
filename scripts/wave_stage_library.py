@@ -64,6 +64,9 @@ def register(w: Wave, done: dict, log) -> dict:
         plans[c["id"]] = w.sha(w.wave_path("plans", name, f"{c['id']}.json"))
     if replaces(m["candidates"]):
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
+    if m.get("marginal"):
+        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"]),
+                     f"marginal as ruled ({m['marginal']['ruling']}): {m['marginal']}")
     commit = w.commit_paths(f"wave {m['wave']}: register library {name} ({len(m['candidates'])} frozen strings; "
                             f"manifest {w.manifest_rel} {w.manifest_sha[:12]})", add_alpha_files(w, name))
     spec = lib_spec(name)
@@ -76,6 +79,9 @@ def register_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
         return ["#   (rule wave: no strings to register)"]
     lines = [WS.fmt_argv(add_alpha(w, c, w.manifest["library"])) for c in w.manifest["candidates"]]
+    if w.manifest.get("marginal"):
+        lines.append(f"#   then: marginal as ruled ({w.manifest['marginal']['ruling']}): {w.manifest['marginal']} "
+                     "(the library spec rewritten, lock dry)")
     return lines + ["#   then: git add -- <the files add-alpha wrote>; git commit -q -m \"wave ...: register ...\" -- "
                     "<the same paths>"]
 
@@ -162,7 +168,8 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
             w.run(add_alpha(w, c, name), f"add-alpha {c['id']} into {name}")
     # the b library's marginal mode: pool-only when a kept string replaces a member (PM6-8 (i)), else themes. The
     # screen's rows are carried only when the screen ran the same mode (marginal_ic21 and its HAC t depend on it)
-    want = "pool-only" if replaces([c for c in m["candidates"] if c["id"] in kept]) else "themes"
+    want = "pool-only" if (replaces([c for c in m["candidates"] if c["id"] in kept]) or
+                           (m.get("marginal") or {}).get("pool_only")) else "themes"
     have = WS.marginal_mode(w.read_json(sc["spec"]))
     reuse = WM.speed(m, "reuse_screen_marginal") and have == want
     if reuse:
@@ -170,6 +177,9 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
                                                              f"fields ({want}) are carried (report only)")
     elif want == "pool-only":
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
+    if not reuse and m.get("marginal"):
+        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"]),
+                     f"marginal as ruled ({m['marginal']['ruling']}): {m['marginal']}")
     commit = w.commit_paths(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "
                             f"({m['sign_rule']}: dropped {', '.join(sc['decision']['dropped'])})",
                             add_alpha_files(w, name))

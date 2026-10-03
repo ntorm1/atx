@@ -74,6 +74,29 @@ def test_a_replacing_wave_runs_its_marginal_on_the_pool_only(tmp_path):
     assert b["themes"] == "reference_weights"
 
 
+def test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it(tmp_path):
+    """PM8-15 (integration of Y): an add-alpha wave on a theme-erc parent with more themes than the marginal verb
+    takes runs the marginal on the pool only (PM6-8 (i)) under the ruled phase cap; the b library carries the rows."""
+    rule = {"ruling": "PM8-15", "pool_only": True, "seconds": 720}
+    root = F.build(tmp_path / "r", marginal=rule)
+    fake = F.FakeCycle(root, ONE_DROPPED)
+    lines = run(root, fake)
+    s = json.loads((root / "scripts/specs/v8/lib-w1.json").read_text())
+    assert "themes" not in s["marginal"] and s["marginal"]["output"] == "out/u-w1-marginal-poolonly"
+    assert s["runner"]["phases"]["marginal"] == {"seconds": 720}
+    assert any("marginal as ruled (PM8-15)" in x for x in lines)
+    b = json.loads((root / B_SPEC).read_text())
+    assert "marginal" not in b and "phases" not in b["runner"]                         # the same mode: rows carried
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert [r["id"] for r in res["marginal"]["rows"]] == ["alpha_a", "alpha_c"]
+    off = F.build(tmp_path / "s", marginal=rule, speed={"reuse_screen_marginal": False})
+    run(off, F.FakeCycle(off, ONE_DROPPED))
+    b = json.loads((off / B_SPEC).read_text())
+    assert "themes" not in b["marginal"] and b["runner"]["phases"]["marginal"] == {"seconds": 720}
+    assert F.WM.validate(F.manifest(marginal={"pool_only": True})) and F.WM.validate(F.manifest(marginal={
+        "ruling": "PM8-15", "seconds": 0}))                                             # a ruling and a positive cap
+
+
 def test_the_scoreboard_prints_wall_seconds_by_phase(tmp_path, capsys):
     root = F.build(tmp_path / "r")
     run(root, F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}))   # calibration + matched NAV
