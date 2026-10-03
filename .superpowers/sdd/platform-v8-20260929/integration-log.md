@@ -6421,3 +6421,120 @@ template's). `test_research_mine.py` **42 passed**; `scripts/tests` **251 passed
   will hit it (a PM restatement of the cap, as PM7-31 did, would be needed before Y waves).
 - X-5's weights hold 11 themes, so every add-alpha wave on it needs PM6-8 (i) for the marginal (the verb takes 10 themes).
 - Disk 69,954,383,872 B free (65.1 GiB); other sessions' builds took about 50 GiB during the batch.
+
+## Y integration (root, PM session 8 dispatch, second session): merges, theme, repair, build v8-16, fields v15, Y cells (2026-10-02)
+
+Root in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `ac07c12a` (clean). Read: `C:/atx/CLAUDE.md`,
+progress "PM session 7" and "PM session 8" to the end, `v8x-prereg.md` sections 6-8, this log's last 330 lines (X batch 2
+and its resume), `pm8-rulings-draft.md`, `v8y-prereg.md` @ `87a9e0f4` in full (blob SHA-256 `d78aba66...57fe` = PM8-14's),
+integrator-rules. State at the start: book X-5 (`x-theme-erc-gm.json`), N_c 56, admission lines 46 (X hand-written 25),
+M 110, N_tot 212, ledger 112 lines (head `d1484e69`).
+
+### 0. Rulings recorded (`56fd1639`, `09b4ab71`)
+
+PM8-5..PM8-14 and the lane notes between them appended verbatim to progress.md from the PM's draft (draft deleted; it was
+git-ignored); PM8-15 and PM8-17 verbatim from the PM's messages. PM8-16 was not received by root.
+
+### 1. Merges (`--no-ff` by SHA, the dispatch's order; 0 conflicts)
+
+| # | lane | lane SHA (branch head at merge) | merge | content | suites |
+|---|---|---|---|---|---|
+| 1 | YPRE | `87a9e0f4` | `ddf8ad73` | `v8y-prereg.md` (committed blob `d78aba66...57fe` = PM8-14's pin), report | docs only: none affected |
+| 2 | YSIG | `5431831a` | `b5e84bb6` | report, `ysig_check.py` | `ysig_check: PASS`; `xsig_check: PASS`; `xwq_check: PASS` |
+| 3 | YDATA | `e1cf4135` | `cd90e6c6` | 5 field modules + tests, `prepare_research_fields_ydata.py`, vwap data ask | `atx-engine/tools` whole **340 passed**, 6 subtests (= the lane's count) |
+| 4a | YOPS | `97e6befc` (head when merged) | `fad041f7` | `group_sum`, as-of rank family, `group_delay`; `yops_check.py` | `yops_check: PASS` (40 planted errors fail); C++ at build v8-16 |
+| 4b | YOPS (delivered, PM message) | `fe790af7` | `8544a36f` | op tests (`alpha_formulaic_ops_test.cpp`), `asof_ops.hpp` listed and `dsl_vm_sources_sha256` re-pinned `fcf8021e...` without a semantics bump, report, `test_yops_check.py` | C++ at build v8-16a |
+| 5 | YINFRA | `85a98a5b` (cleared by the PM's message; report section 7 "Review fixes": 18 of 18 closed, each with its commit and tests) | `c3235084` | wave driver (`research_cycle.py wave`), candidate queue, scoreboard, `stage_chain.py` | see the suite table below |
+| - | YCOMB | not merged | - | waits for the PM's review verdict (dispatch) | - |
+
+No lane touched `atx-db/`. Build v8-16 (YOPS `97e6befc`) is superseded by v8-16a (YOPS `fe790af7`) before any run read
+an output of it: v8-16's ic-tests showed `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion` failing (vm.hpp includes
+the unlisted `asof_ops.hpp`; digest `7523...d830` vs pin `ad6c...3d62`), which the lane's `75a73cac` fixes at the source.
+
+### 2. Theme `merger_arbitrage` (`55eefd38`) and the iv_vol_of_vol repair (`cf0ec969`), 0 trials each
+
+- `merger_arbitrage` (PM8-8 (2), PM8-14, v8y-prereg section 10): registry themes table (YDATA's L1 text verbatim),
+  `fit_composition_weights.V7_APPENDED_THEMES` (4 entries), `theme_resid_order` 12 -> 13 entries in
+  `atx-impl/src/strategy_ic_theme_resid.hpp:24-29` (last); the pin literals of `test_composition_resid.py` (:243-245,
+  :268, :284, :677), `test_fit_composition_weights.py` (:2811-2815, :2885) and `test_fit_composition_weights_store.py`
+  (:212) follow (as `798d3b23`). The three files: **124 passed**, 17 subtests (R6B-O-4's C++/Python pin included).
+  `atx-impl/strategies` **163 passed**. The two-speed half-life row `{"merger_arbitrage", 126.0}` (YP-10) waits for the
+  YCOMB merge (the table is YCOMB's code).
+- iv_vol_of_vol (PM8-8 (6), YP-5): the registered string with every `iv_atm_21d` read as `delay(iv_atm_21d, 1)`, SHA-256
+  **`4d42a72b859c3ff4ae69ed82cf34c8263d9877c4f0600b03c6cc32887ac5fac0`** (= YP-5's); `ysig_check.py`: the candidate
+  string re-pinned (`REPAIRED`), the LIB2 string still checked byte for byte (`c5ecec15`), mirror figures 41 bars / 5
+  slots / 15 nodes / `iv_atm_21d` (house budget 314 / 7), the add-alpha line = the LIB2 line with only `--dsl` and
+  `--deviation` changed (deviation + "; IV rows t-21..t-1, the vendor IV clock (PM8-8 (6) repair)"): **line SHA-256
+  `60edfca89dba05d5e3faa1f29ce7da839114858a7a2bfee19a21af0fb8721493`** (was `06ef2910...37f8`). `ysig_check: PASS`.
+- Roster cap 80 -> 96 (PM8-6, P4): **not made**. The one-line registry edit was refused by this session's permission
+  system ("Modify Shared Resources"); not retried by other means. It binds nothing in Y: X-F0 = X-5 holds library v8x3b
+  (60 members; X-7 not accepted), so the Y-S screen library holds 60 + 15 = 75 <= 80. Reported to the PM.
+
+### 2b. P7 blind checks (citations; before any Y read; YP-6)
+
+- `mom_turn` (Lee-Swaminathan 2000): the paper's abstract: "high-volume portfolios, on average, realize higher momentum
+  profits"; Chen-Zimmermann `MomVol` (sign +1) keeps the high-volume tercile. The interaction's +1 agrees. Stands.
+- `dato` (Soliman 2008): Chen-Zimmermann `ChAssetTurnover` "Annual change in AssetTurnover", sign **+1**. Agrees. Stands.
+- `div_event` (MTW 1995): Chen-Zimmermann `DivInit` "not having paid a dividend in the last 24 months" (= the 504-session
+  gap) sign +1; `DivOmit` sign -1 (the field's -1). The 252-session window is MTW's one-year drift (CZ holds 6 months for
+  DivInit: a portfolio choice, not the paper's window). No contradiction. Stands.
+- `exch_switch`: Chen-Zimmermann `ExchSwitch` sign -1, "switched from AMEX or NASDAQ to NYSE within the past year, or from
+  NASDAQ to AMEX" = the string's -1 x up-switch flag over 365 days. Stands.
+- `deal_target` 252-session horizon: a mechanical cap, not a constant of Mitchell-Pulvino; not readable as a paper value.
+  Registration stands; risk printed (YP-6: "a paper that cannot be read leaves the registration standing").
+- `shD1` (PM8-8 (3)): SpiderRock's documentation names its slope fields "Interpolated 21 day ATM vol slope" (the same text
+  YDATA quotes for `shD1`), a surface property at the session, the slope the vendor defines as the volatility difference
+  between moneyness -0.5 and +0.5; the TickerHistory3 row of `shD1` itself was not reachable on the public site (risk
+  printed). The house exclusion (`docs/superpowers/specs/2026-06-16-orats-history-loader-design.md:95`) was a blanket
+  "forward horizon" label written without the dictionary. The field reads session t-1 only (`ivshape-lag1-v1`); its
+  look-ahead probe and teeth pass (`test_research_fields_ivshape.py`, in the 340). Accepted at lag 1 as PM8-8 (3) rules.
+
+Sources: onlinelibrary.wiley.com/doi/10.1111/0022-1082.00280 (LS 2000 abstract); github.com/OpenSourceAP/CrossSection
+SignalDoc.csv (CZ rows); docs.spiderrockconnect.com (slope fields).
+
+### 3. Build v8-16 / v8-16a and the identity of X-5 -- plan, written before the runs
+
+Builds (`scripts/research-build.ps1 -Preset equity-dev`, target-scoped, one at a time): **v8-16** at `cf0ec969` (YOPS
+`97e6befc`): `atx-equity-strategy, -ic, -targets, atx-impl-strategy-ic-tests, atx-engine-factory-tests,
+atx-engine-alpha-tests`: exit 0, 601.6 s, 180 TUs, 8 links, **0 compile fixes**; ic-tests 158 / 159 (the tripwire above).
+**v8-16a** at `09b4ab71` (YOPS `fe790af7`), the same six targets: exit 0, 535.4 s (3 jobs at 3,177 MiB free), 135 TUs,
+8 links, **0 compile fixes, 0 warning lines**; receipt `build-equity/mega-v8-16a-receipt.json`. Executables (SHA-256):
+ic **`d0afb8cabc23ade8d6f82fd57c75da09d8745e265c652c6510d3ffd143c25e61`**, targets
+**`1e7c304272f8fa4dafa3694cb8a93be32fb79777d54319604085291d071a9054`**, atx-equity-strategy `34e1dace...e1`, ic-tests
+`3f40261c...07ab`, factory-tests `11eb72c4...fed3`, alpha-tests `6438fe88...b884`. Unchanged since v8-14 / v8-15 (not
+rebuilt): risk `d7e424b2`, mine `2176fa4a`. After YCOMB a further tag builds YCOMB's targets.
+
+| suite (v8-16a) | result |
+|---|---|
+| `atx-impl-strategy-ic-tests` whole (xml `build-equity/v8-i16a-ic-tests.xml`) | **159 / 159** (`StrategyIcRunner.VmSourcesPinnedToSemanticsVersion` passes at `fcf8021e`) |
+| `atx-engine-factory-tests --gtest_filter=NsgaSearch.*:SignalFitness*` | **24 / 24**: `NsgaSearch.ScalarRaw_ReproducesGoldenDigest`, `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest`, `...ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (1 and 4 workers): **golden `0x889874a3b9b29c55` holds** |
+| `atx-engine-factory-tests` whole | **392 / 392** |
+| `atx-engine-alpha-tests --gtest_filter=AlphaVmSlotReuse.*` (xml `v8-i16a-slot-reuse.xml`) | **6 / 6** |
+| `atx-engine-alpha-tests --gtest_filter=AlphaFormulaicOps*` | **15 / 16**: `AlphaFormulaicOps_Frozen.ReportStringsArePinnedCompileAndMatchTheOracle` fails at `alpha_formulaic_ops_test.cpp:913` (`EXPECT_GT(finite, 0U) << "#88"`): string #88 has no finite cell on the test's 130 x 8 fixture; VM == oracle on every cell (:910) and every SHA pin pass. A fixture degeneracy in a lane test, not a VM defect; no Y string reads a new op (PM8-17). Not edited by root (a lane test); reported to the PM for a YOPS test-only fix |
+| `atx-engine-alpha-tests` whole | **770 / 771** (the same one) |
+
+The PM routed it to YOPS: fix **`b25c2a2f`** (test only: each frozen string's `analyze()` lookback pinned, max 91; VM ==
+oracle kept on the holed fixture; finite cells checked on a complete 132 x 16 fixture), merged **`7bea1a6d`**; build
+**v8-16b** (`atx-engine-alpha-tests` only; exit 0, 10.0 s, 1 TU, 1 link; `e6d300f1...`): `AlphaFormulaicOps*` **16 / 16**,
+whole alpha **771 / 771**. Every frozen string has finite cells on the C++ generator. The VM sources tripwire pin is
+unchanged by it; the research executables stay v8-16a's.
+
+Python suites after the YINFRA merge (`ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` = v8-16a, absolute):
+
+| suite | result |
+|---|---|
+| scripts/tests (whole) | 307 passed, 3 skipped, **1 failed**: `test_research_wave.py::test_add_alpha_save_plan_is_opt_in` (YINFRA #18's test). Cause: the stdout masking replaced the run's root path forms in `set` order, which follows the string hash; when `tmp/<tag>` went before `tmp/<tag>/root` a line kept `<ROOT>/root/` (fails or passes by `PYTHONHASHSEED`). **Fix `3a146fe7`** (tests only, `scripts/tests/test_research_wave.py:148-150`: longest form first); passes under seeds 0-5; `test_research_wave.py` 15 / 15 |
+| atx-engine/tools (whole) | **348 passed**, 6 subtests (340 + YINFRA's stage-chain tests) |
+| atx-impl/tools (whole) | **612 passed, 1 skipped**, 17 subtests |
+
+X-5 identity under v8-16a (PM7-30; bounded runner; argv = X-5's recorded receipt with only `--output` renamed, and for
+w also `--candidate-cache` -> a new empty directory `build-equity/v8-i16-cand-cache-empty` (PM message: the cache key is
+unchanged, so a warm cache would never run the new VM on the X-book strings); limits and bindings as recorded):
+
+| pass | base receipt | new output | compared to | expected |
+|---|---|---|---|---|
+| fit | `mega-weights-v8x-theme-erc-run1` | `v8-i16-x5-fit` | `mega-weights-v8x-theme-erc` | `admission.csv` byte-identical; `admission.json`, `composition_weights.json` identical after substituting `script_sha256`, `admission_sha256`, `provenance/std/registry_sha256` (fitter and registry gained `merger_arbitrage`) |
+| w (cold cache) | `mega-v8xw-train-theme-erc-run1` | `v8-i16-x5-w` | `mega-v8xw-train-theme-erc-1` | every file byte-identical but timing / cache-count paths; `train_combined.*` byte for byte (the library re-evaluated by the v8-16a VM) |
+| NAV | `mega-nav-v8x-theme-erc-L1.1720-run` | `v8-i16-x5-nav` | `mega-nav-v8x-theme-erc-L1.1720` | 27 / 27 byte-identical |
+
+A mismatch is a stop (PM8-4 (b)). No statistic is read: comparisons by SHA-256 and JSON paths only.
