@@ -19,6 +19,16 @@
                                 target that is an executable, after a successful build).
   -DryRun prints the plan (root, build dir, jobs, receipt, atx-build command) and writes and builds nothing.
 
+  -Canary (P9 G-P8) runs the tiny_world canary after a successful build: scripts\tests\test_cycle_e2e.py under
+  pytest with ATX_EQUITY_BIN = <BuildDir>\bin, ATX_EQUITY_BUILD_TYPE = the preset's build type (equity-dev Debug,
+  equity-rel Release) and ATX_CANARY_REQUIRED = 1 (a missing prerequisite fails instead of skipping). The tag must
+  build both canary executables (atx-equity-strategy-ic, atx-equity-strategy-targets), so the canary qualifies
+  exactly what this tag built. -CanaryRecord records that build type's goldens instead
+  (test_cycle_e2e.py --record; root commits scripts\tests\fixtures\tiny_world_goldens.json afterwards). Output:
+  build-equity\mega-<Tag>-canary.log; the receipt gains a Canary block {Mode, BuildType, Bin, ExitCode, Log,
+  WallSeconds}; a failed canary is the script's exit code. Without -Canary nothing of this runs and the receipt has
+  no Canary key.
+
 .PARAMETER Tag
   Unique receipt tag, e.g. v8-1 (letters, digits, '.', '_', '-').
 
@@ -33,6 +43,9 @@
 
 .EXAMPLE
   powershell -File scripts\research-build.ps1 -Tag v8-rel1 -Targets "atx-equity-strategy-ic" -Preset equity-rel
+
+.EXAMPLE
+  powershell -File scripts\research-build.ps1 -Tag p9-1a -Targets "atx-equity-strategy-ic,atx-equity-strategy-targets" -Canary
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -43,7 +56,10 @@ param(
   [string[]] $Targets,
   [ValidateSet('equity-dev', 'equity-rel')]
   [string] $Preset = 'equity-dev',
-  [switch] $DryRun
+  [switch] $DryRun,
+  [switch] $Canary,
+  [switch] $CanaryRecord,
+  [string] $Python = 'C:\Program Files\Python312\python.exe'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +67,11 @@ $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\', '/')
 $builder = Join-Path $root 'scripts\atx-build.ps1'
 $receiptDir = Join-Path $root 'build-equity'
+# The canary (P9 G-P8): the build type of each preset's tree and the executables the tiny_world cycle runs.
+$canaryBuildTypes = @{ 'equity-dev' = 'Debug'; 'equity-rel' = 'Release' }
+$canaryExes = @('atx-equity-strategy-ic', 'atx-equity-strategy-targets')
+$canaryTest = 'scripts\tests\test_cycle_e2e.py'
+$runCanary = $Canary.IsPresent -or $CanaryRecord.IsPresent
 
 # Resolve a configure preset's binaryDir as CMake does (the atx-build.ps1 rule): walk `inherits` to the first
 # binaryDir and expand ${sourceDir}. Bounded by the preset count, so a cyclic `inherits` cannot hang.
@@ -77,6 +98,13 @@ foreach ($target in $Targets) {
 }
 if (-not (Test-Path -LiteralPath $builder)) { throw "research-build: $builder not found" }
 $buildDir = Get-PresetBinaryDir -Root $root -Name $Preset
+if ($runCanary) {
+  $missing = @($canaryExes | Where-Object { $Targets -notcontains $_ })
+  if ($missing.Count -gt 0) {
+    throw "research-build: -Canary needs the tag to build $($canaryExes -join ' and ') (missing: $($missing -join ', '))"
+  }
+  if (-not (Test-Path -LiteralPath $Python)) { throw "research-build: -Canary: python not found at $Python" }
+}
 
 Set-Location -LiteralPath $root
 $dirty = @(& git status --porcelain).Count
@@ -92,12 +120,24 @@ $jobs = if ($free -ge 3400) { 4 } elseif ($free -ge 2200) { 3 } else { 2 }
 $base = Join-Path $receiptDir "mega-$Tag"
 $receipt = "$base-receipt.json"
 $log = "$base-build.log"
+$canaryLog = "$base-canary.log"
+$canaryBin = Join-Path $buildDir 'bin'
+$canaryBuildType = $canaryBuildTypes[$Preset]
+$canaryArgs = if ($CanaryRecord) {
+  @($canaryTest, '--record', '--bin', $canaryBin, '--build-type', $canaryBuildType)
+} else {
+  @('-m', 'pytest', '-q', '-s', '-p', 'no:cacheprovider', $canaryTest)
+}
 
 if ($DryRun) {
   [pscustomobject]@{Root = $root; Source = $source; DirtyEntries = $dirty; Preset = $Preset; BuildDir = $buildDir;
     Targets = $Targets; Jobs = $jobs; FreeMiB = $free; CommitMiB = $commit;
     Admitted = ($free -ge 1000 -and $commit -ge 2500); Receipt = $receipt; ReceiptExists = (Test-Path -LiteralPath $receipt);
     Command = "& '$builder' build -Preset $Preset -Jobs $jobs $($Targets -join ' ')"} | Format-List
+  if ($runCanary) {
+    [pscustomobject]@{Canary = "ATX_EQUITY_BIN=$canaryBin ATX_EQUITY_BUILD_TYPE=$canaryBuildType " +
+      "ATX_CANARY_REQUIRED=1 & '$Python' $($canaryArgs -join ' ') *> $canaryLog"} | Format-List
+  }
   exit 0
 }
 
@@ -131,12 +171,37 @@ if ($exit -eq 0) {
   }
 }
 
-[pscustomobject][ordered]@{Source = $source; Preset = $Preset; DirtyEntries = $dirty; ConfiguredProvenance = $provenance;
+# The canary (G-P8) runs only after a successful build, on the executables this tag just built.
+$canaryBlock = $null
+if ($runCanary) {
+  $canaryBlock = [ordered]@{Mode = $(if ($CanaryRecord) { 'record' } else { 'check' }); BuildType = $canaryBuildType;
+    Bin = $canaryBin; ExitCode = $null; Log = $null; WallSeconds = 0}
+  if ($exit -eq 0) {
+    $env:ATX_EQUITY_BIN = $canaryBin
+    $env:ATX_EQUITY_BUILD_TYPE = $canaryBuildType
+    $env:ATX_CANARY_REQUIRED = '1'
+    $canarySw = [Diagnostics.Stopwatch]::StartNew()
+    $ErrorActionPreference = 'Continue'
+    & $Python @canaryArgs *> $canaryLog
+    $canaryBlock['ExitCode'] = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    $canarySw.Stop()
+    $canaryBlock['Log'] = $canaryLog
+    $canaryBlock['WallSeconds'] = $canarySw.Elapsed.TotalSeconds
+  }
+}
+
+$receiptFields = [ordered]@{Source = $source; Preset = $Preset; DirtyEntries = $dirty; ConfiguredProvenance = $provenance;
   Jobs = $jobs; FreeMiB = $free; CommitMiB = $commit; Targets = $Targets; ExitCode = $exit;
   WallSeconds = $sw.Elapsed.TotalSeconds; CompiledTUs = $cxx; Links = $links; Tag = $Tag;
-  Script = 'scripts/research-build.ps1'; BuildDir = $buildDir; Executables = $executables} |
-  ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $receipt -Encoding ASCII
+  Script = 'scripts/research-build.ps1'; BuildDir = $buildDir; Executables = $executables}
+if ($null -ne $canaryBlock) { $receiptFields['Canary'] = $canaryBlock }
+[pscustomobject]$receiptFields | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $receipt -Encoding ASCII
 Get-Content -LiteralPath $receipt
 $lines | Where-Object { $_ -match 'error|FAILED|Building CXX|Linking' } | Select-Object -First 40 |
   ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
+if ($null -ne $canaryBlock -and $null -ne $canaryBlock['Log']) {
+  Get-Content -LiteralPath $canaryLog -Tail 20
+  if ($exit -eq 0) { exit $canaryBlock['ExitCode'] }
+}
 exit $exit

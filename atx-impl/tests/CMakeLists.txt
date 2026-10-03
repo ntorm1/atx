@@ -137,7 +137,8 @@ atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 
 # Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
 # search path, research IC fitness and op-catalogue tests it builds on. Run it directly with a
-# gtest filter (not in the atx_equity_strategy label).
+# gtest filter or by CTest label atx_research (registered at the end of this file; not in the
+# atx_equity_strategy label).
 add_executable(atx-impl-strategy-mine-tests EXCLUDE_FROM_ALL
     strategy_mine_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/factory_signal_fitness_test.cpp")
@@ -152,3 +153,26 @@ foreach(_strategy_tests IN ITEMS
     gtest_discover_tests(${_strategy_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_strategy_tests}."
         PROPERTIES LABELS atx_equity_strategy)
 endforeach()
+
+# P9 lane T1 (gate G-P4): the research test executables join CTest under the label atx_research (one label per
+# target: a list value does not pass through gtest_discover_tests' PROPERTIES intact; the regex
+# `ctest -L "atx_research|atx_equity_strategy"` selects both sets). Deferred to the end of this directory, so a target
+# a later block defines is registered too; a name with no target is skipped, and a target already registered
+# (CTEST_DISCOVERED_TEST_COUNTER set) is left alone. atx-engine-research-admission-tests is listed here as well in case
+# lane B1 defines it outside atx-engine/tests (that directory's own deferred call registers it when it exists there).
+function(atx_impl_register_research_tests)
+    foreach(_research_tests IN ITEMS
+            atx-impl-strategy-mine-tests          # platform v8 H-3 mining verb
+            atx-engine-research-admission-tests)  # P9 lane B1 (research/admission), fallback registration
+        if(NOT TARGET ${_research_tests})
+            continue()
+        endif()
+        get_property(_registered TARGET ${_research_tests} PROPERTY CTEST_DISCOVERED_TEST_COUNTER SET)
+        if(_registered)
+            continue()
+        endif()
+        gtest_discover_tests(${_research_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_research_tests}."
+            PROPERTIES LABELS atx_research)
+    endforeach()
+endfunction()
+cmake_language(DEFER CALL atx_impl_register_research_tests)

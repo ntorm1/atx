@@ -1,6 +1,6 @@
 """tiny_world: a deterministic synthetic research world for the end-to-end cycle test (platform v8, task E-3).
 
-  build(root, seed=7, *, bin_dir=None, python=None) -> dict
+  build(root, seed=7, *, bin_dir=None, python=None, build_type="Debug") -> dict
 
 writes, under ROOT (a new or empty directory; nothing in it is ever overwritten):
 
@@ -8,13 +8,17 @@ writes, under ROOT (a new or empty directory; nothing in it is ever overwritten)
                               and engine::data::read_strategy_role admits): 656 weekday sessions ending 2022-12-30 x
                               64 names, score_begin 384 (runner admission: score_begin >= 383, lookback <= 321)
   fields/                     atx.research-role-fields/v1 (the prepare_research_fields manifest layout the IC runner's
-                              bind_fields and the NAV's load_fields read): shares_out, si_shares, tiny_signal
+                              bind_fields and the NAV's load_fields read): shares_out, si_shares, tiny_signal; with
+                              the producers' seal block {exclusive_end: the research window's seal date, rule}
+                              (P9 ruling P13: the seal readers refuse a present-and-different exclusive_end)
   tiny_world_v1.json          atx.dsl-ic-library/v1, 4 members: 2 planted signals, 1 noise member, 1 copy
   tiny_world_v1.recipe.json   the recipe the fitter reads the lineage (theme, tier, prior sign) from
   registry.json               atx.alpha-registry/v1 (the task A-1 schema) of the 4 members and the 3 fields
   tiny.json                   scripts/specs/tiny.json with the scripts made absolute (this checkout), the executables
                               under BIN_DIR, the spec's python replaced by PYTHON (default: this interpreter) and the
-                              input pins verified against the template's locked pins
+                              input pins verified against the template's locked pins; BUILD_TYPE "Release" drops the
+                              template's Debug DLL directory (vcpkg .../debug/bin) from env_path_prepend, so Release
+                              executables load the Release runtime DLLs (research_cycle.py BUILDS["equity-rel"])
 
 and returns {"role_manifest_sha256", "fields_manifest_sha256", "library_sha256", "recipe_sha256", "registry_sha256",
 "spec": path of ROOT/tiny.json, "seed"}.
@@ -70,6 +74,9 @@ TEMPLATE = REPO / "scripts" / "specs" / SPEC
 EXES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
 SCRIPT_SECTIONS = ("runner", "fit", "card", "monitor", "summ", "static_check")
 GENERATOR = "scripts/tests/fixtures/tiny_world.py"
+BUILD_TYPES = ("Debug", "Release")
+DEBUG_DLL_SUFFIX = "/debug/bin"        # the vcpkg Debug runtime directory in the template's env_path_prepend
+WINDOW_TOOL = REPO / "atx-engine" / "tools" / "research_window.py"
 
 THEMES = {
     "short_interest": "tiny_world: short interest relative to shares outstanding (low short interest predicts higher "
@@ -213,6 +220,28 @@ def session_ns(day: dt.date) -> int:
     return (day - dt.date(1970, 1, 1)).days * DAY_NS
 
 
+def research_seal() -> str:
+    """The repository window's seal date (YYYY-MM-DD) from atx-engine/tools/research_window.py, loaded as a private
+    module and read through ``current()`` (the JSON, not the module constants a test harness may rebind)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("tiny_world_research_window", WINDOW_TOOL)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"tiny_world: cannot load {WINDOW_TOOL}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return str(module.current()["SEAL_DATE"])
+
+
+def seal_block(sessions: list[dt.date]) -> dict:
+    """The fields manifest's seal block (the prepare_research_fields shape); refuses a world that reaches the seal."""
+    seal = research_seal()
+    if sessions[-1].isoformat() >= seal:
+        raise ValueError(f"tiny_world: the last session {sessions[-1]} is at or after the research seal {seal}")
+    return {"exclusive_end": seal,
+            "rule": f"synthetic tiny_world: every session and every field cell is dated before {seal}; no source row "
+                    "exists to drop"}
+
+
 def generator_identity(seed: int) -> dict:
     return {"generator": GENERATOR, "version": 1, "seed": seed, "dates": DATES, "names": NAMES,
             "score_begin": SCORE_BEGIN, "last_session": LAST_SESSION.isoformat(), "ic": IC, "horizon": HORIZON,
@@ -283,6 +312,7 @@ def write_fields(directory: Path, w: dict, role_sha: str, role: dict) -> str:
                  "clock_recipe": role["clock_recipe"]},
         "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role "
                            "close clock), before the 23:00 UTC decision",
+        "seal": seal_block(w["sessions"]),
         "cell_rule": "every cell finite (synthetic)", "non_point_in_time_fields": [],
         "common_stock_verified": False, "historical_vintage_verified": False,
         "instrument_namespace": "spiderrock.securityID", "fields": rows, "files": files}
@@ -330,10 +360,15 @@ def registry_doc() -> dict:
 
 
 # ------------------------------------------------------------------ the spec
-def resolve_spec(template: dict, pins: dict, bin_dir: Path, python: str) -> dict:
-    """The template with this checkout's scripts, BIN_DIR's executables, PYTHON and the computed pins."""
+def resolve_spec(template: dict, pins: dict, bin_dir: Path, python: str, build_type: str = "Debug") -> dict:
+    """The template with this checkout's scripts, BIN_DIR's executables, PYTHON and the computed pins; a Release
+    build keeps only the template's non-Debug DLL directories."""
+    if build_type not in BUILD_TYPES:
+        raise ValueError(f"tiny_world: build_type {build_type!r} is not one of {BUILD_TYPES}")
     spec = json.loads(json.dumps(template))
     spec["python"] = python
+    if build_type == "Release" and "env_path_prepend" in spec:
+        spec["env_path_prepend"] = [p for p in spec["env_path_prepend"] if not p.endswith(DEBUG_DLL_SUFFIX)]
     for section in SCRIPT_SECTIONS:
         if section in spec and "script" in spec[section]:
             spec[section]["script"] = (REPO / spec[section]["script"]).as_posix()
@@ -355,7 +390,8 @@ def default_bin_dir() -> Path:
     return Path(env) if env else REPO / "build-equity" / "bin"
 
 
-def build(root: Path, seed: int = DEFAULT_SEED, *, bin_dir: Path | None = None, python: str | None = None) -> dict:
+def build(root: Path, seed: int = DEFAULT_SEED, *, bin_dir: Path | None = None, python: str | None = None,
+          build_type: str = "Debug") -> dict:
     """Write the world under ROOT (see the module doc) and return its manifest SHAs."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -376,7 +412,8 @@ def build(root: Path, seed: int = DEFAULT_SEED, *, bin_dir: Path | None = None, 
                          "a deliberate generator change relocks them: copy the four SHAs that "
                          "`python scripts/tests/fixtures/tiny_world.py <new dir>` prints into inputs.library, "
                          "inputs.recipe, inputs.role and fields.manifest_sha256, and re-record the goldens")
-    spec = resolve_spec(template, pins, bin_dir or default_bin_dir(), python or Path(sys.executable).as_posix())
+    spec = resolve_spec(template, pins, bin_dir or default_bin_dir(), python or Path(sys.executable).as_posix(),
+                        build_type)
     write_new(root / SPEC, (json.dumps(spec, indent=2) + "\n").encode("utf-8"))
     return {"role_manifest_sha256": role_sha, "fields_manifest_sha256": fields_sha, "library_sha256": library_sha,
             "recipe_sha256": recipe_sha, "registry_sha256": registry_sha, "spec": str(root / SPEC), "seed": seed}
@@ -388,5 +425,6 @@ if __name__ == "__main__":
     ap.add_argument("root", type=Path)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ap.add_argument("--bin", type=Path, default=None, help="directory of the equity executables (ATX_EQUITY_BIN)")
+    ap.add_argument("--build-type", choices=BUILD_TYPES, default="Debug", help="the executables' build type")
     a = ap.parse_args()
-    print(json.dumps(build(a.root, a.seed, bin_dir=a.bin), indent=2))
+    print(json.dumps(build(a.root, a.seed, bin_dir=a.bin, build_type=a.build_type), indent=2))

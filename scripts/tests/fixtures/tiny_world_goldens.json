@@ -1,23 +1,31 @@
 {
-  "schema": "atx.tiny-world-goldens/v1",
-  "note": "Golden output digests of research_cycle.py run on the tiny_world fixture (scripts/specs/tiny.json, seed 7). Null until root records them after a build: python scripts/tests/test_cycle_e2e.py --record --bin <dir of atx-equity-strategy-ic.exe>. orientations_json_sha256 and primary_daily_csv_sha256 are file SHA-256s; admission_decisions_sha256 is the SHA-256 of admission.json's canonical JSON without its inputs block (that block pins the u pass summary.json, whose wall_seconds and cache hit counts change on every run, and the fitter's own script SHA-256).",
+  "schema": "atx.tiny-world-goldens/v2",
+  "note": "Golden output digests of research_cycle.py run on the tiny_world fixture (scripts/specs/tiny.json, seed 7), one entry per executable build type (G-P8: green on every build tag). Null until root records it after a build: python scripts/tests/test_cycle_e2e.py --record --bin <dir of the equity executables> --build-type Debug|Release (or research-build.ps1 -Canary -CanaryRecord). outputs: u_orientations_json_sha256 (u pass orientations.json, file SHA-256), fit_admission_decisions_sha256 (admission.json canonical JSON without its inputs block: that block pins the u pass summary.json, whose wall_seconds and cache hit counts change every run, and the fitter's own script SHA-256), fit_weights_sha256 (composition_weights.json canonical JSON of schema, signs and weights only: its provenance carries the u summary SHA and the fitter's script SHA), w_combined_f64_sha256 (the w pass train_combined.f64 payload) and nav_primary_daily_csv_sha256 (the NAV primary scenario daily CSV). fields_manifest_sha256 names the world these goldens belong to (scripts/specs/tiny.json fields.manifest_sha256); a relocked world needs new goldens. superseded_v1 keeps the v1 digests recorded before the P9 seal block moved the fields manifest (orientations.json embeds its SHA-256); nothing reads it.",
   "seed": 7,
   "spec": "scripts/specs/tiny.json",
-  "outputs": {
-    "orientations_json_sha256": "b2143918708ceb0088ee462fd0e4e49e3e9de3fa51ccd224c0d0d2a78235f4f6",
-    "admission_decisions_sha256": "71b47e8707040e027f2a878533eca8deeb75d1da11a8087175ac866192e75f97",
-    "primary_daily_csv_sha256": "ca559404644af92e795ea718005d45c4c1d821f8b84f83a340abf02f7febe067"
+  "fields_manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac",
+  "builds": {
+    "Debug": null,
+    "Release": null
   },
-  "primary_scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
-  "recorded": {
-    "git_head": "464e98587cf1002725abb3dcc86c8344229cde04",
-    "bin": "C:/atx-wt/pool-2/build-equity/bin",
-    "exe_sha256": {
-      "ic": "3f43cef0a9ebde866823ffc9889b5d5bb657770dc51a8edc60c87c93095794a6",
-      "nav": "6f2778691cf0f5a0ae129736b371b4b4c2b76727faab4a97063d6c8e8c240425"
+  "superseded_v1": {
+    "fields_manifest_sha256": "dbcacd2e79eff39f2d8367ebb89aad3e3e151350782a5bce9c4bcb60665e8971",
+    "outputs": {
+      "orientations_json_sha256": "b2143918708ceb0088ee462fd0e4e49e3e9de3fa51ccd224c0d0d2a78235f4f6",
+      "admission_decisions_sha256": "71b47e8707040e027f2a878533eca8deeb75d1da11a8087175ac866192e75f97",
+      "primary_daily_csv_sha256": "ca559404644af92e795ea718005d45c4c1d821f8b84f83a340abf02f7febe067"
     },
-    "python": "3.12.2",
-    "numpy": "1.26.4",
-    "first_run_seconds": 3.6
+    "primary_scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+    "recorded": {
+      "git_head": "464e98587cf1002725abb3dcc86c8344229cde04",
+      "bin": "C:/atx-wt/pool-2/build-equity/bin",
+      "exe_sha256": {
+        "ic": "3f43cef0a9ebde866823ffc9889b5d5bb657770dc51a8edc60c87c93095794a6",
+        "nav": "6f2778691cf0f5a0ae129736b371b4b4c2b76727faab4a97063d6c8e8c240425"
+      },
+      "python": "3.12.2",
+      "numpy": "1.26.4",
+      "first_run_seconds": 3.6
+    }
   }
 }
