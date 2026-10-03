@@ -592,6 +592,17 @@ TEST(TwoSpeed, AFastOnlySkipIsTheRecordsSkip) {
   EXPECT_EQ(s.at("two_speed").at("rebalances_skipped_by_a_sleeve").get<usize>(), 1U);
 }
 
+// Review YCOMB #7: the workspace budget charges two-speed's per-name state (F, the fast desired
+// target, the parent diagnostic's scratch); off, nothing.
+TEST(TwoSpeed, BudgetChargesTheSleeveState) {
+  for (const usize n : {usize{1}, usize{12}, usize{20000}}) {
+    const auto on = st::detail::construction_scratch_bytes(two_speed_config(true), n);
+    const auto off = st::detail::construction_scratch_bytes(two_speed_config(false), n);
+    EXPECT_EQ(on - off, u64{n} * 3U * sizeof(f64)) << n;
+    EXPECT_EQ(off, 0U) << n; // no neutralization and no other v8 option: no state
+  }
+}
+
 // The NAV summary's construction.two_speed prints both skip counts (mechanics only).
 TEST(TwoSpeed, SummaryPrintsTheSleeveSkipsBesideTheParents) {
   std::vector<st::ConstructionDay> days(5);

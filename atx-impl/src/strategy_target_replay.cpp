@@ -192,10 +192,11 @@ u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
 }
 // The v8 construction state per name (detail::DesiredState): hold-band-v1's rank_set and
 // desired_prev, adv-hold-v1's ADV row and caps, inv-vol-v1's volatility row and its sorted
-// scratch. Zero with every v8 option off.
+// scratch, two-speed-v1's fast sleeve, fast desired target and parent diagnostic scratch
+// (review YCOMB #7). Zero with every v8 option off.
 u64 desired_state_bytes(const TargetReplayConfig& cfg, usize instruments) {
   const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U) +
-                       (inv_vol_on(cfg) ? 2U : 0U);
+                       (inv_vol_on(cfg) ? 2U : 0U) + (two_speed_on(cfg) ? 3U : 0U);
   return u64{instruments} * per_name * sizeof(f64);
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
