@@ -182,7 +182,8 @@ def test_a_library_wave_with_every_string_kept_runs_to_its_result(tmp_path):
     assert [c["printed"] for c in res["verdict"]["criteria"]] == ["met", "unmet"]
     assert (root / "sprint/waves/w1/wave-result.json").read_bytes() == (root / "out/waves/w1/wave-result.json").read_bytes()
     log = (root / "out/waves/w1/wave-log.md").read_text()
-    assert "### Wave w1 (library wave): ACCEPTED, N 3" in log and "Mechanics (S2, read before any return): PASS" in log
+    assert "### Cell w1 (library wave; library w1 on p0): N 3" in log and "**ACCEPTED.**" in log
+    assert "Mechanics (S2, read before any return): PASS" in log
     adds = [c for c in fake.calls if "add-alpha" in c]
     assert len(adds) == 3 and all(c[c.index("--name") + 1] == "w1" for c in adds)
     runs = [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]

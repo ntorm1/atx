@@ -3,7 +3,9 @@
 The record stage (wave_stages.record) builds both from the stage receipts' outputs; the book scoreboard
 (wave_scoreboard.py) reads only these files and the ledger. Layout:
 
-  {schema, wave, kind (library | rule), manifest{path, sha256, commit}, parent{spec, spec_digest, library, nav,
+  {schema, wave, kind (library | rule), manifest{path, sha256, commit}, library | null, template | null,
+   budget{id, admission_used, admission_new, admission_new_ids, admission_cap, admission_cycle_prefix,
+   admission_origin, construction_cap} (preflight's count), parent{spec, spec_digest, library, nav,
    leverage}, screen{spec, gate_exit, rows[], kept[], dropped[], sign_rule} | null, cell{spec, spec_digest, library,
    kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, mode, rows[]} | null (report only),
    mechanics{rule, pass, rows[]} | null,
@@ -49,6 +51,8 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
             rows.append(r)
     return {"schema": SCHEMA, "wave": m["wave"], "kind": "library" if library else "rule",
             "description": m.get("description", ""), "manifest": pre["manifest"],
+            "library": m.get("library"), "template": (m.get("rule_cell") or {}).get("template"),
+            "budget": pre.get("budget"),
             "parent": {k: parent.get(k) for k in ("spec", "spec_digest", "library", "nav", "leverage")},
             "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
                         "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
@@ -93,6 +97,33 @@ def receipt_digests(w) -> dict:
     return {p.stem: stage_chain.sha256_file(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
 
 
+def what_ran(doc: dict) -> str:
+    """The hand heading's parenthesis after the wave kind: "library v8x2 screen, then v8x2b on p0", "library v8x3 on
+    p0", "template `x-theme-erc.json` on p0"."""
+    parent, cell = doc["parent"]["library"], doc.get("cell") or {}
+    if doc["kind"] == "rule":
+        return f"template `{str(doc.get('template') or '').rsplit('/', 1)[-1]}` on {parent}"
+    lib = doc.get("library") or (doc.get("screen") or {}).get("spec", "")
+    if cell.get("kind") == "b-library":
+        return f"library {lib} screen, then {cell['library']} on {parent}"
+    return f"library {lib} on {parent}" + ("" if cell else " (screen; no cell)")
+
+
+def budget_line(b: dict, led: dict) -> str:
+    """The budget block (preflight's count), in the hand log's words: admission trials used + new of the cap
+    (re-screens left out), construction N of its cap."""
+    out = [f"Budget {b.get('id')}:"]
+    if "admission_cap" in b:
+        used, new = b.get("admission_used", 0), b.get("admission_new", 0)
+        out.append(f"admission trials {used} + {new} new = {used + new} of {b['admission_cap']} (cycles "
+                   f"{b.get('admission_cycle_prefix')}*" + (f", origin {b['admission_origin']}"
+                                                             if b.get("admission_origin") else "") +
+                   "; re-screens left out);")
+    if "construction_cap" in b:
+        out.append(f"construction N {led['n_before']} -> {led['n_after']} of {b['construction_cap']}.")
+    return " ".join(out)
+
+
 def seal_tail(seal: dict) -> str:
     """The seal scan's guard references and allow-listed tokens (wave_seal.scan), for the hidden-data line."""
     out = []
@@ -113,10 +144,12 @@ def log_section(doc: dict) -> str:
     """The integration-log section of the wave (markdown), in the log's order: registration, screen, cell, gross
     match, mechanics (read before any return), statistics of record, verdict, ledger, returns, timings."""
     led, par, cell = doc["ledger"], doc["parent"], doc.get("cell")
-    out = [f"### Wave {doc['wave']} ({doc['kind']} wave): {verdict_word(doc)}, N {led['n_after']}", "",
-           f"Manifest `{doc['manifest']['path']}` sha256 `{doc['manifest']['sha256'][:16]}` (commit "
-           f"`{(doc['manifest'].get('commit') or '')[:12]}`); parent `{par['spec']}` (library {par['library']}, "
-           f"L {par['leverage']}); driver `research_cycle.py wave run`.", ""]
+    out = [f"### Cell {doc['wave']} ({doc['kind']} wave; {what_ran(doc)}): N {led['n_after']}", "",
+           f"**{verdict_word(doc)}.** Manifest `{doc['manifest']['path']}` sha256 `{doc['manifest']['sha256'][:16]}` "
+           f"(commit `{(doc['manifest'].get('commit') or '')[:12]}`); parent `{par['spec']}` (library "
+           f"{par['library']}, L {par['leverage']}); driver `research_cycle.py wave run`.", ""]
+    if doc.get("budget"):
+        out += [budget_line(doc["budget"], led), ""]
     sc = doc.get("screen")
     if sc:
         out += [f"**Screen** (`{sc['spec']}`, gate exit {sc['gate_exit']}, sign rule {sc['sign_rule']}): kept "

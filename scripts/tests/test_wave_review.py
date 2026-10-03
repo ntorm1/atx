@@ -478,3 +478,18 @@ def test_a_bundle_whose_run_did_not_bind_the_series_now_is_refused(tmp_path):
     code, _ = wave(root, fake, "run")
     err = failed(root, "08-judge.failed-1.json")
     assert code == 3 and "did not bind the daily series" in err and "daily_s2.csv" in err
+
+
+# ------------------------------------------------------------------ MINOR 17: the hand log's heading and budget line
+def test_the_log_section_has_the_hand_heading_and_the_budget_line(tmp_path):
+    root = F.build(tmp_path / "r")
+    assert wave(root, F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}), "run")[0] == 0
+    log = (root / STATE / "wave-log.md").read_text()
+    assert log.splitlines()[0] == "### Cell w1 (library wave; library w1 screen, then w1b on p0): N 3"
+    assert "Budget syn: admission trials 0 + 3 new = 3 of 10 (cycles w*; re-screens left out); construction N 2 -> " \
+           "3 of 20." in log
+    assert result(root)["budget"]["admission_new_ids"] == ["alpha_a", "alpha_b", "alpha_c"]
+    rule = rule_root(tmp_path / "rule")
+    assert wave(rule, F.FakeCycle(rule, {}), "run")[0] == 0
+    assert (rule / STATE / "wave-log.md").read_text().splitlines()[0] == \
+        "### Cell w1 (rule wave; template `x-rule.json` on p0): N 3"
