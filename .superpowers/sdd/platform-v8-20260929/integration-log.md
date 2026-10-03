@@ -7330,3 +7330,30 @@ Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cy
 | 02 register | 0 | 0.1 | - | 4,604 / 4,604 | `05b1cd155d78f9f2a6de5f6fc80032088efa279ec1b516ac66e8644f2bdf17fa` | - | `{"skipped": "a rule wave registers no strings"}` |
 | 03 screen | 0 | 0.1 | - | 4,597 / 4,597 | `8b01c8bfd13700c65a2f72f937b6a4c3cc35f967e9dc3dfc14498d0a46880747` | - | `{"skipped": "a rule wave has no admission strings"}` (no gate, 0 admission trials) |
 | 04 spec | 0 | 0.6 | - (lock only) | 4,573 / 4,526 | `fff1031e9d253f7a6af8477a32c6873fe99f8ace3837ed4b10ec4207f2eecaff` | `875fcc0f` (D) | rule cell `scripts/specs/v8/y-two-speed-y-5.json` (sha256 `b2671dff`, spec digest `d2dd8ddd`): template + **`parent` `lib-v8ysb-gm.json`** (P13's "parent set in the copy"), name `v8y-two-speed-y-5`, `change` = the template's (fit and nav `--two-speed two-speed-v1`; outputs fit / card / w / nav / monitor renamed `*-v8y-two-speed`), description = the template's, L 1.1828 (the parent's, calibration), no constants; `lock --write` reference cell = parent NAV summary `2d30b7f6`, admission `121f7046`; paired reference NAV `mega-nav-v8x-theme-erc-L1.1828-v8ysb`; `research_cycle.py plan` of the cell: u done (the parent's receipt), fit / card / w / nav pending, w -> `mega-v8yw-train-two-speed-1` |
+
+**P13 (c): the cell's own w pass (source `ef1b77ac`; before any cell NAV).** Argv `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/y-two-speed-y-5.json --stop-after w --root C:/atx-wt/pool-2` (the strict prefix of stage 05's own `--stop-after nav`); gate 4,322: free 4,455 before, min 3,111; exit 0, 83.5 s. Phases: u done (the parent's receipt); gate read-out `p1-v8ysb PASS` (7 of 9, 0 status changes vs the parent's admission; ledger: 0 admission lines appended, 9 already ledgered).
+
+| phase | run dir | s / peak MiB | exe | receipt.json SHA-256 |
+|---|---|---|---|---|
+| fit | `mega-weights-v8y-two-speed-run1` | 1.0 / 58 | python `624bbc05` | `82632867a6251c4216143207ff64d3bb7818d7952e836ba3f52003425a55950f` |
+| card | `mega-cards-v8y-two-speed-run` | 18.8 / 1,363 | python `624bbc05` | `9d3544ee76872adf1654daf444bb6541ee25f6c2745463c4a098d8a3704ed91c` |
+| w | `mega-v8yw-train-two-speed-run1` -> `mega-v8yw-train-two-speed-1` | 62.2 / 1,559 | ic `985019d9` | `8a40eb399c5b307759a95f5474b5308ea961c5de94aff7200019987a677e027b` |
+
+Cell fit vs the parent's fit: `admission.csv` `c3933116` and `admission.json` `121f7046` byte-identical;
+`composition_weights.json` (`4660971c` vs `0c480773`) differs in 1 of 2,854 leaf paths, the added `/theme_sleeves/rule`.
+
+Cell w vs the parent's w (`mega-v8yw-train-two-speed-1` vs `mega-v8xw-train-theme-erc-v8ysb-2`), the
+`TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend` assertions on real outputs:
+- byte-identical: `train_combined.f64` `70d863f9` (66,563,280 B), `train_combined_finite.u8` `c61f5b62`,
+  `train_combined_member.u8` `c61f5b62`, `train_planned_targets.csv` `cb744a74`, `train_combined_ids.u64` `761bd1df`,
+  `train_combined_sessions.i64` `ab244802`;
+- `__combined__` rows of `train_daily_ic.csv`: 2,926 vs 2,926 rows, SHA-256 of the rows `9c225856` both, header equal (the
+  whole file is byte-identical, `45261f20`);
+- `train_combined.json` (`cfbad468` vs `e13fbc4d`): `files` 5 vs 5, equal; differs only in `/composition_sleeves/{rule,
+  manifest, manifest_sha256}` (two-speed-v1, `train_sleeves.json`, its SHA-256 = the file's `4f536da8`),
+  `/composition_weights_sha256` (the weights file above) and `/run_recipe_sha256` (follows `recipe.json`);
+- `recipe.json` (`15a2263f` vs `c248eff7`): differs only in `/composition_sleeves` and `/composition_weights_sha256`;
+- sleeve files written: `train_sleeve_fast.f64` `d486a407`, `train_sleeve_slow.f64` `f1c9bb84` (66,563,280 B each),
+  `train_sleeve_fast_share.f64` `f38407e8` (11,240 B), `train_sleeves.json` `4f536da8` (values not read here).
+
+**P13 (c) PASS. P13: PASS (a, b, c; `parent` set in the copy at stage 04).** The run adds 0 trials (ledger 130 lines).
