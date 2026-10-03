@@ -1,0 +1,12 @@
+{
+  "stage": "ea_actuals",
+  "path": "data/alpha_panel/v1/ea_actuals/ann_features.parquet",
+  "keys": ["cik", "accession"],
+  "schema_id": "atx.alpha-panel.ea-actuals/v1",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('data/alpha_panel/v1/ea_actuals/ann_features.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik ORDER BY available_at DESC, accession DESC) = 1",
+  "qualification": "experimental; gate_status and reason columns must be consulted; EPS share-basis and manual precision unresolved",
+  "separate_products": {
+    "filing_lags": {"keys": ["cik", "accession"], "clock": "matching later original 10-Q acceptance"},
+    "reaction_returns": {"keys": ["cik", "accession", "security_id"], "clock": "third reaction-session 22:00 UTC", "source_window": "entirely before 2023"}
+  }
+}

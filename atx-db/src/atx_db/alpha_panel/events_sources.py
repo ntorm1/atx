@@ -37,6 +37,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from urllib.parse import urljoin
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -117,6 +118,142 @@ HIT_SCHEMA = pa.schema([
 
 class BudgetExceeded(RuntimeError):
     """The lane's SEC request cap would be exceeded."""
+
+
+class AttemptLimiter:
+    """Durable allocation counting every adapter attempt, including retries/redirects.
+
+    The controller supplies a reconciled prior global usage plus other reservations.
+    This allocation cannot expand the shared 60,000 ceiling. Reservation is persisted
+    before acquiring a rate token; interruption can overcount, never undercount.
+    One fetching process owns this counter (threads share the mutex).
+    """
+
+    def __init__(self, root: Path, allocation: int, global_prior: int, reserved: int = 0,
+                 inner: Any = None) -> None:
+        if min(allocation, global_prior, reserved) < 0 or global_prior + reserved + allocation > 60_000:
+            raise ValueError("allocation would exceed the shared 60000 all-attempt ceiling")
+        self.root = root
+        self.path = root / "attempt-counter.json"
+        root.mkdir(parents=True, exist_ok=True)
+        self.state = C.read_json(self.path) if self.path.exists() else {"attempts": 0}
+        self.allocation = allocation
+        self.global_prior, self.reserved = global_prior, reserved
+        self.inner = inner or SH.SecRateLimiter(rate_per_s=4.0)
+        self.lock_path = getattr(self.inner, "lock_path", "")
+        self._lock = threading.Lock()
+
+    def acquire(self, label: str | None = None) -> float:
+        with self._lock:
+            if self.state["attempts"] >= self.allocation:
+                raise BudgetExceeded("Task9 all-attempt allocation exhausted")
+            self.state["attempts"] += 1
+            self.state.update(allocation=self.allocation, global_prior=self.global_prior,
+                              other_reserved=self.reserved)
+            C.write_json_atomic(self.path, self.state)
+            with (self.root / "attempts.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"attempt": self.state["attempts"], "url": label,
+                                     "reserved_at": dt.datetime.now(dt.UTC).isoformat()}) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        return float(self.inner.acquire(label))
+
+    def record_response(self, *args: Any, **kwargs: Any) -> None:
+        self.inner.record_response(*args, **kwargs)
+
+
+def fetch_fpi_pilot(urls: Iterable[str], *, allocation: int, global_prior: int,
+                    other_reserved: int = 0, max_documents: int = 100,
+                    response_cap: int = 128 * 1024**2, compressed_cap: int = 64 * 1024**2,
+                    per_response: int = 512 * 1024, store: Any = None) -> dict[str, Any]:
+    """Serial, hard-bounded pilot, never an implicit wholesale FPI fetch.
+
+    Redirects are explicit (automatic redirect bodies cannot bypass byte bounds).
+    Before every HTTP attempt reserve its entire bounded decoded body plus one
+    64KiB read chunk, and its worst-case gzip size. Reservations survive a crash;
+    overcounting is safe. Every response has a separate durable audit receipt.
+    """
+    import hashlib
+
+    if min(allocation, global_prior, other_reserved, max_documents, response_cap,
+           compressed_cap, per_response) < 0 or per_response == 0:
+        raise ValueError("pilot limits must be nonnegative with a positive response limit")
+    store = store or open_store()
+    directory = RAW_DIR / "task9_pilot"
+    limiter = AttemptLimiter(directory,allocation,global_prior,other_reserved)
+    counter = directory / "byte-reservations.json"
+    state = C.read_json(counter) if counter.exists() else {
+        "response_reserved":0,"compressed_reserved":0,"response_bytes":0,"compressed_bytes":0}
+    selected = sorted(set(urls), key=lambda u:hashlib.sha256((u+'/t9-fpi-pilot-v1').encode()).hexdigest())[:max_documents]
+    if any(not SH.is_sec_url(u) for u in selected):
+        raise ValueError("pilot source must be SEC URLs")
+    selection = directory / "selection.json"
+    if selection.exists() and C.read_json(selection)["urls"] != selected:
+        raise ValueError("frozen pilot selection changed")
+    C.write_json_atomic(selection,{"urls":selected,"rule":"lowest SHA256(url/t9-fpi-pilot-v1)",
+        "allocation":allocation,"global_prior":global_prior,"other_reserved":other_reserved,
+        "response_cap":response_cap,"compressed_cap":compressed_cap,"per_response":per_response})
+    session = SH.sec_session(limiter=limiter,max_attempts=1)
+    completed = []
+    try:
+        for original in selected:
+            cached = store.lookup(original)
+            if cached is not None and cached.ok:
+                completed.append({"url":original,"outcome":"cached"})
+                continue
+            target = original
+            for hop in range(4):
+                response_reservation = per_response+64*1024
+                compressed_reservation = per_response+1024
+                if state["response_reserved"]+response_reservation>response_cap or state["compressed_reserved"]+compressed_reservation>compressed_cap:
+                    return {"completed":completed,"stop":"cumulative_byte_reservation_exhausted",
+                            "attempts":limiter.state["attempts"],"bytes":state}
+                state["response_reserved"] += response_reservation
+                state["compressed_reserved"] += compressed_reservation
+                C.write_json_atomic(counter,state)
+                status, payload, error, redirect = 0,b"",None,None
+                try:
+                    with session.get(target,stream=True,allow_redirects=False,timeout=(15,60)) as response:
+                        status = int(response.status_code)
+                        redirect = response.headers.get('Location') if status in (301,302,303,307,308) else None
+                        payload = SH.read_bounded_response(response,per_response)
+                except BudgetExceeded:
+                    return {"completed":completed,"stop":"attempt_allocation_exhausted",
+                            "attempts":limiter.state["attempts"],"bytes":state}
+                except Exception as exc:
+                    error = str(exc)[:200] or type(exc).__name__
+                state["response_bytes"] += len(payload)
+                sha = hashlib.sha256(payload).hexdigest() if error is None else None
+                if status and error is None:
+                    compressed = gzip.compress(payload,mtime=0)
+                    if len(compressed)>compressed_reservation:
+                        raise RuntimeError("gzip reservation exceeded; body not landed")
+                    state["compressed_bytes"] += len(compressed)
+                    store._write_object(sha,payload)
+                C.write_json_atomic(counter,state)
+                receipt = {"url":target,"original_url":original,"hop":hop,"status":status,
+                           "bytes":len(payload),"sha256":sha,"error":error,
+                           "fetched_at":dt.datetime.now(dt.UTC).isoformat(),"redirect":redirect}
+                with (directory/'receipts.jsonl').open('a',encoding='utf-8') as fh:
+                    fh.write(json.dumps(receipt)+'\n'); fh.flush(); os.fsync(fh.fileno())
+                if redirect and error is None:
+                    target = urljoin(target,redirect)
+                    if not SH.is_sec_url(target):
+                        error = 'non_sec_redirect_refused'
+                        break
+                    continue
+                break
+            else:
+                error = 'redirect_hop_limit'
+            record = SH.FetchRecord(original,status,sha if status==200 and error is None else None,
+                                    dt.datetime.now(dt.UTC).isoformat(),len(payload),error)
+            store._append(record,rate_lock=str(limiter.lock_path))
+            completed.append({"url":original,"outcome":"ok" if record.ok else "missing",
+                              "status":status,"error":error})
+    finally:
+        session.close()
+    return {"completed":completed,"attempts":limiter.state["attempts"],"bytes":state,
+            "selection":str(selection),"stop":"selection_complete"}
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -312,7 +449,7 @@ def fts_hits_path(qid: str) -> Path:
 
 def fetch_documents(urls: Iterable[str], *, limit: int | None = None, workers: int = FETCH_WORKERS,
                     store: SH.FetchLedgerStore | None = None, budget: Budget | None = None,
-                    progress_every: int = 500) -> dict[str, int]:
+                    progress_every: int = 500, limiter: Any = None) -> dict[str, int]:
     """Fetch each URL not yet ledgered (<= ``limit`` new requests); resumable, budgeted, threaded."""
     store = store or open_store()
     budget = budget or Budget(store)
@@ -329,7 +466,7 @@ def fetch_documents(urls: Iterable[str], *, limit: int | None = None, workers: i
         todo = todo[:limit]
 
     def one(u: str) -> str:
-        rec = ensure(store, u, budget, maximum=MAX_DOCUMENT_BYTES)
+        rec = ensure(store, u, budget, maximum=MAX_DOCUMENT_BYTES, limiter=limiter)
         return "ok" if rec.ok else f"status_{rec.status}"
 
     pool = ThreadPoolExecutor(max_workers=max(1, min(workers, FETCH_WORKERS)), thread_name_prefix="evt-fetch")
@@ -604,6 +741,19 @@ def main(argv: list[str] | None = None) -> int:
     f = sub.add_parser("fetch")
     f.add_argument("url_list", type=Path, help="text file, one URL per line (priority order)")
     f.add_argument("--limit", type=int, default=None)
+    f.add_argument("--attempt-allocation", type=int, required=True)
+    f.add_argument("--global-prior", type=int, required=True,
+                   help="Controller reconciled usage BEFORE this Task9 allocation")
+    f.add_argument("--other-reserved", type=int, default=0)
+    p = sub.add_parser("pilot",help="frozen FPI pilot with durable attempt and cumulative body/gzip caps")
+    p.add_argument("url_list",type=Path)
+    p.add_argument("--attempt-allocation",type=int,required=True)
+    p.add_argument("--global-prior",type=int,required=True)
+    p.add_argument("--other-reserved",type=int,default=0)
+    p.add_argument("--max-documents",type=int,default=100)
+    p.add_argument("--response-cap",type=int,default=128*1024**2)
+    p.add_argument("--compressed-cap",type=int,default=64*1024**2)
+    p.add_argument("--per-response",type=int,default=512*1024)
     sub.add_parser("status")
     sub.add_parser("catalog", help="rebuild _tmp/events/doc_catalog.parquet (DuckDB: run guarded)")
     args = ap.parse_args(argv)
@@ -622,9 +772,18 @@ def main(argv: list[str] | None = None) -> int:
             out[qid] = harvest(qid, args.start, args.end, store, budget)
             _write_log("harvest", out[qid])
             print(json.dumps(out[qid], default=str), flush=True)
+    elif args.cmd == "pilot":
+        urls = [u.strip() for u in args.url_list.read_text(encoding="utf-8").splitlines() if u.strip()]
+        out = fetch_fpi_pilot(urls,allocation=args.attempt_allocation,global_prior=args.global_prior,
+            other_reserved=args.other_reserved,max_documents=args.max_documents,response_cap=args.response_cap,
+            compressed_cap=args.compressed_cap,per_response=args.per_response,store=store)
+        _write_log("pilot",out)
     elif args.cmd == "fetch":
         urls = [u.strip() for u in args.url_list.read_text(encoding="utf-8").splitlines() if u.strip()]
-        out = fetch_documents(urls, limit=args.limit, store=store, budget=budget)
+        limiter = AttemptLimiter(RAW_DIR / "task9", args.attempt_allocation, args.global_prior,
+                                 args.other_reserved)
+        out = fetch_documents(urls, limit=args.limit, store=store, budget=budget, limiter=limiter)
+        out["all_attempts_task9"] = limiter.state["attempts"]
         out["url_list"] = str(args.url_list)
         _write_log("fetch", out)
     else:

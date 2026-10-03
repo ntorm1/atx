@@ -1,0 +1,10 @@
+{
+  "stage": "earnings_calendar_v2",
+  "path": "data/alpha_panel/v1/earnings_calendar_v2/announcements.parquet",
+  "keys": ["cik", "accession"],
+  "schema_id": "atx.alpha-panel.earnings-calendar/v2",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('data/alpha_panel/v1/earnings_calendar_v2/announcements.parquet') WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "clock": "resolved EDGAR acceptance; unknown/ambiguous clocks remain NULL",
+  "preserves": "earnings_calendar v1",
+  "qualification": "calendar coverage gate must be measured on final Task2 universe"
+}
