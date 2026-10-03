@@ -1,6 +1,6 @@
 # Dataset `fundamentals_notes`: segments and notes, point in time
 
-Corrected Task 14 Fix round 3 publication (2026-10-03). Code `src/atx_db/alpha_panel/fund_notes.py`,
+Corrected Task 14 Fix round 4 publication (2026-10-03). Code `src/atx_db/alpha_panel/fund_notes.py`,
 schema `atx.alpha-panel.fundamentals-notes/v1`, clock `notes-accepted-v1`.
 Source: existing SEC DERA Financial Statement and Notes landing, 2019q1-2026_08; bounded primary-disclosure pilot supplies structural evidence, not new numeric facts.
 
@@ -21,13 +21,13 @@ Source: existing SEC DERA Financial Statement and Notes landing, 2019q1-2026_08;
 | `items/year=2025/items.parquet` | 2,328,449 | 15,593,265 |
 | `items/year=2026/items.parquet` | 1,704,459 | 12,071,540 |
 | `notes_wide.parquet` | 197,148 | 17,829,282 |
-| `segment_census.parquet` | 201,137 | 2,194,697 |
-| `segment_features.parquet` | 164,704 | 9,080,292 |
-| `segment_recon.parquet` | 46,513 | 1,703,731 |
-| `segment_structure.parquet` | 9 | 8,016 |
+| `segment_census.parquet` | 201,137 | 2,194,723 |
+| `segment_features.parquet` | 164,704 | 9,080,691 |
+| `segment_recon.parquet` | 46,513 | 1,704,267 |
+| `segment_structure.parquet` | 14 | 10,597 |
 | `segments.parquet` | 2,484,216 | 23,990,714 |
 
-Parquet total 180,598,282 bytes. Features filed 2019-01-02 through 2026-08-31, available_at 2019-01-02 21:13:00+00:00 through 2026-08-31 21:01:00+00:00, periods 2011-09-30 through 2026-07-31.
+Parquet total 180,601,824 bytes. Features filed 2019-01-02 through 2026-08-31, available_at 2019-01-02 21:13:00+00:00 through 2026-08-31 21:01:00+00:00, periods 2011-09-30 through 2026-07-31.
 
 Keys: segment_features `(cik,period,adsh)` (vintage `(cik,period)`); segment_recon and segment_census `adsh`;
 notes_wide `adsh`; items `(adsh,tag,is_custom,segments,ddate,qtrs,uom,coreg)`;
@@ -48,7 +48,7 @@ Additional diagnostic columns (source NUM/DIM and accession clock; same annual s
 | segment_recon | candidate_total | DOUBLE/filer currency | nonverified comparison total retained for diagnosis |
 | segment_recon | candidate_only | BOOLEAN | candidate arithmetic fit cannot promote verification or alter economic members |
 | segment_recon | recon_rule | VARCHAR | disclosed-component correction or candidate fitting rule |
-| segment_recon | dropped_members | VARCHAR[]/names | candidate-only suggested member deletions; never economic count deletion |
+| segment_recon | dropped_members | VARCHAR[]/names | when candidate_only=true, suggested diagnostic exclusions; for source_role_structure, source-verified nonselected hierarchy levels excluded from the economic count |
 | segment_recon | seg_sum_reconciled | DOUBLE/filer currency | candidate sum, verified only when candidate_only=false |
 | segment_recon | reconciling_used | DOUBLE/filer currency | disclosed component used in arithmetic comparison |
 | segment_recon | seg_members | STRUCT(member VARCHAR,value DOUBLE)[] | candidate/verified member set, separated by candidate_only |
@@ -144,26 +144,21 @@ exclusions and mixed-tag fitting are `candidate_only=true`: diagnostics (`recon_
 seg_sum_reconciled,reconciling_used,seg_members`) never alter verified class, count, or HHI.
 No numerical coincidence establishes an economic hierarchy.
 
-## Source structure and downstream quality (Fix round 3)
+## Source structure and downstream quality (Fix round 4)
 
-The role-aware parser validates qualified definition/presentation graphs, roots, leaves, cycles, overlapping parents, conflicting roles, exact GAAP revenue concepts and current annual primary contexts. A graph alone does not prove the economic reportable level. Production promotion requires exact accession, primary SHA, role, concept and primary-disclosure corroboration; nine unrelated filing-specific cuts are retained. Generic geographic/legal/product containers do not inherit these exceptions. Equal-valued siblings stay distinct. Cowen economic-income/component measures do not become equivalent consolidated GAAP revenue.
+The reusable primary parser certifies an explicit named current-reportable list only when exact annual inline revenue contexts, currency unit definitions, and a sound matching presentation role corroborate the selected level. Conditional, historical, reorganization, operating-only and product-line statements remain unresolved. Exact names can select an economic level above graph leaves. A conflicting unrelated role cannot replace the primary-declared cut; overlapping selected members are refused. Equal numeric values cannot merge siblings.
 
-`segment_structure.parquet` has key `(adsh,tag)`, clock `available_at`, and columns `cik,period,filed,form,proof_json`. Proof preserves source URLs/hashes, qualified role roots/leaves, selected reportable members, concept, primary context IDs and source-signed consolidation bridge terms. Bridges affect company reconciliation only; economic count/HHI remain at the disclosed reportable cut. `segment_recon.rel_diff_strict` preserves the original diagnostic, and `rel_diff_after_source_bridge` records the corroborated comparison. Source selection never uses a numeric fit.
+The retained 100-filing pilot has 14 source cuts: nine prior accession-specific proofs plus five automatically extracted cuts across ADES and Evoqua. The original nine primary gzip payloads were reopened independently: 9/9 primary SHA matches and 9/9 exact HTML citation spans are retained in `t14-fix-r4-reopened-proof.json`. Those source judgments certify reportable identity, not reconciliation or foreign sales.
 
-Gold consumers must use `bseg_partition_quality`: `source_verified_reportable` (9 rows), `tagged_unverified_reportable` (72,688), or `inferred_singleton_unverified` (20,374); 71,633 rows have no business block. `bseg_partition_source_adsh` identifies the proof accession for certified partitions; `bseg_n_tagged` preserves the original member count. Count and HHI on ambiguous/overlapping tagged structures remain unverified even when their sum happens to match revenue. Partial amendments inherit quality and origin with the business block, bounded by original availability. `foreign_sales_quality=unverified_tagged_geography` remains independent: business proof never certifies foreign sales.
+`segment_structure.parquet` key `(adsh,tag)` and clock `available_at` retain URLs, receipt/primary hashes, roles, context IDs, current claim offsets and revenue table spans. Signed bridge terms require the same primary revenue row, selected source context family and currency units. A separate intersegment-sales row cannot be subtracted from external-sales amounts. Explicit nonreportable All Other may bridge company revenue; named reportable All Other or Corporate remains in the economic count and HHI. Bridge amounts remain original NUM values and never alter economic values. The original strict diagnostic and post-source-bridge residual both remain inspectable.
 
-All 100 retained primary/linkbase pilot cases were processed: 9 corroborated structures, 4 validated graphs still requiring reportable-cut evidence, 24 flat ambiguous, 34 conflicting roles, 5 incomplete/unmapped, 20 without an eligible full-GAAP revenue concept, 3 invalid graphs, 1 missing links. Five cuts add verified reconciliations; four certified economic partitions still fail company reconciliation. Remaining 2020-2025 gaps are 1,940 revenue-bearing misses and 1,235 missing-revenue filings. Broad automatic narrative/table reportable-level extraction is still unimplemented; ambiguous cases are not declared intrinsic source failures.
+Gold must filter `bseg_partition_quality`: source_verified_reportable (14 rows), tagged_unverified_reportable (72683), inferred_singleton_unverified (20374); 71633 rows have no business block. Quality/source accession carry only with preceding visible business blocks. `bseg_n_tagged` retains the original tagged proxy; foreign geography remains independently unverified.
 
-Independent denominator remains unmet. Cached Business/Risk/MDNA sections cover 19,388 of 35,677 original annual filings. Their qualified span index finds 751 multi and 203 single candidates without period corroboration, 628 temporal/reorganization ambiguous, 16 conflicting and 459 operating-only claims; none is certified. Evidence retains offsets, text/source hash, accession, claimed years, reporting period and filing/availability clocks. No inference follows from absent or truncated text. 16,266 accessions lack both readable retained sections and pilot primary; one optional section partition is corrupt. Existing retained candidates can be corroborated first before acquiring missing primaries. The old 28 Notes ZIPs are absent, and landed parts retain no TAG/PRE/linkbase roles. No HTTP acquisition occurred in round 3.
+Current production source cuts reconcile 6 of 14; remaining 2020-2025 gaps are 1,939 revenue-bearing verified misses and 1,235 missing-revenue filings. Semantic quality is independent of the 1% test. Unresolved cases are not labeled intrinsic absence.
 
-Safe extra-axis projection supports exactly both standard ASC 606 timing members (TransferredAtPointInTime,
-TransferredOverTime), exactly two non-null facts, no other extra axis, same fact key/currency/duration,
-and no already-tagged plain segment total. Both mutually exclusive timing values are summed. `segments` rows
-carry `context_basis=timing_transfer_partition` and original DIM strings in `context_provenance`; plain rows carry
-`context_basis=plain`. Incomplete timing partitions and unproven geographic/product/entity hierarchies remain
-in items and are excluded from automatic aggregation. No fitted sum or arbitrary partition completeness assumption is used.
+The cached text pass independently extracts 698 current named disclosure spans across 497 accessions (447 multi/50 single), with 15 named multi accessions outside the numeric multi proxy. NUM/DIM values and fitted sums do not enter this classifier. It reopens the 2,057 prior positive candidates from the readable 19,388-accession cache; absent, truncated, ambiguous and unexamined disclosures remain unknown. The 35,180 other annual filings prevent exact all-filer certification. This is a nonprobability positive frame, not a census or a population estimate. One optional section partition remains corrupt. No new HTTP attempt or raw landing occurred in round 4.
 
-Restricted-year item extraction preserves omitted partitions: the source-wide census is recomputed for every republished year. OperatingSegments is generally admissible; the three primary-evidenced filing-specific legal/geographic container exceptions preserve each business member unchanged; no aggregate/member deletion is inferred.
+GC3 coverage input universe SHA256 `d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e` at `2026-10-03T18:34:51+00:00`. Task 2 final universe publication/one controller-coordinated refresh is pending; this records the current measurement without chasing intermediate builds.
 
 ## Gates
 
@@ -174,7 +169,7 @@ Sum denominator is the multi-segment filings with observed segment revenue; thre
 Exact command from atx-db with PYTHONPATH=src and OPENBLAS_NUM_THREADS=1:
 
 ```powershell
-.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/receipts/t14_fix_r3_build.json -- .venv/Scripts/python.exe -m atx_db.alpha_panel.fund_notes build --years 2025
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/receipts/t14_fix_r4_build_final.json -- .venv/Scripts/python.exe -m atx_db.alpha_panel.fund_notes build --years 2025
 ```
 
 | Year | All 10-Ks | Multi-segment numeric | Revenue | Revenue proxy >=90% | Reconciled | Sum >=95% |
@@ -184,13 +179,13 @@ Exact command from atx-db with PYTHONPATH=src and OPENBLAS_NUM_THREADS=1:
 | 2022 | 6,552 | 2,049 | 1,852 | PASS 0.9039 | 1,526/1,852 | FAIL 0.8240 |
 | 2023 | 6,279 | 2,040 | 1,837 | PASS 0.9005 | 1,524/1,837 | FAIL 0.8296 |
 | 2024 | 5,813 | 1,981 | 1,762 | FAIL 0.8894 | 1,497/1,762 | FAIL 0.8496 |
-| 2025 | 5,560 | 2,006 | 1,814 | PASS 0.9043 | 1,478/1,814 | FAIL 0.8148 |
+| 2025 | 5,560 | 2,006 | 1,814 | PASS 0.9043 | 1,479/1,814 | FAIL 0.8153 |
 
 Proxy observations above never constitute certified all-filer PASS. All diagnostics are value/coverage measurements; no return statistic is computed.
 
 ## Measured month-end coverage
 
-member_equity: member_equity month-end cells; among annual rows visible at the cell (available_at < month-end session 22:00 UTC) with period within 548 days, the latest period, then the latest vintage
+member_equity: strict month-end 22:00 UTC cutoff, period within548days; latest visible period/vintage.
 
 | Year | cells | linked | annual_row | bseg_n | bseg_rev_hhi | foreign_sales_share | major_cust_share | dd1 | oplease_liab | stkco |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -201,18 +196,18 @@ member_equity: member_equity month-end cells; among annual rows visible at the c
 | 2024 | 27284 | 0.9954 | 0.9061 | 0.8652 | 0.806 | 0.3617 | 0.0491 | 0.4567 | 0.8533 | 0.8612 |
 | 2025 | 26563 | 0.9945 | 0.9026 | 0.8702 | 0.8064 | 0.3703 | 0.0513 | 0.4475 | 0.8541 | 0.8587 |
 
-univ_all_common: univ_all_common month-end cells; among annual rows visible at the cell (available_at < month-end session 22:00 UTC) with period within 548 days, the latest period, then the latest vintage
+univ_all_common: strict month-end 22:00 UTC cutoff, period within548days; latest visible period/vintage.
 
 | Year | cells | linked | annual_row | bseg_n | bseg_rev_hhi | foreign_sales_share | major_cust_share | dd1 | oplease_liab | stkco |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 2020 | 39931 | 1.0 | 0.9718 | 0.8671 | 0.7944 | 0.324 | 0.0552 | 0.3601 | 0.659 | 0.9062 |
-| 2021 | 44468 | 1.0 | 0.947 | 0.8275 | 0.7632 | 0.2999 | 0.0526 | 0.348 | 0.7812 | 0.8704 |
-| 2022 | 44730 | 1.0 | 0.967 | 0.8486 | 0.7895 | 0.31 | 0.0504 | 0.3591 | 0.8053 | 0.8997 |
-| 2023 | 42760 | 1.0 | 0.9804 | 0.8663 | 0.8065 | 0.3261 | 0.0511 | 0.3689 | 0.8783 | 0.9216 |
-| 2024 | 42063 | 1.0 | 0.982 | 0.8683 | 0.8042 | 0.3281 | 0.0534 | 0.3724 | 0.8959 | 0.9195 |
-| 2025 | 41087 | 1.0 | 0.985 | 0.8953 | 0.8168 | 0.3394 | 0.0566 | 0.3759 | 0.9049 | 0.9253 |
+| 2020 | 39796 | 1.0 | 0.9717 | 0.8669 | 0.7941 | 0.3248 | 0.0554 | 0.3595 | 0.6589 | 0.9062 |
+| 2021 | 44365 | 1.0 | 0.9469 | 0.8277 | 0.7632 | 0.3006 | 0.0527 | 0.3479 | 0.7815 | 0.8704 |
+| 2022 | 44643 | 1.0 | 0.9669 | 0.8486 | 0.7894 | 0.3106 | 0.0505 | 0.359 | 0.8055 | 0.8996 |
+| 2023 | 42676 | 1.0 | 0.9804 | 0.8661 | 0.8066 | 0.3268 | 0.0512 | 0.3688 | 0.8784 | 0.9215 |
+| 2024 | 41991 | 1.0 | 0.9819 | 0.868 | 0.8045 | 0.3286 | 0.0535 | 0.3725 | 0.896 | 0.9193 |
+| 2025 | 41015 | 1.0 | 0.9849 | 0.8951 | 0.8167 | 0.34 | 0.0567 | 0.3757 | 0.905 | 0.9252 |
 
-univ_r3000p: univ_r3000p month-end cells; among annual rows visible at the cell (available_at < month-end session 22:00 UTC) with period within 548 days, the latest period, then the latest vintage
+univ_r3000p: strict month-end 22:00 UTC cutoff, period within548days; latest visible period/vintage.
 
 | Year | cells | linked | annual_row | bseg_n | bseg_rev_hhi | foreign_sales_share | major_cust_share | dd1 | oplease_liab | stkco |
 |---|---|---|---|---|---|---|---|---|---|---|

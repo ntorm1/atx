@@ -1,0 +1,15 @@
+{
+  "before": {
+    "universe_manifest": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e",
+    "identity_manifest": "0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76",
+    "calendar": "dd9cb6958d8a4a84de1f6a4ac44d07a8f8e8f9ad8d6ebed477e30d89675fa44e"
+  },
+  "after": {
+    "universe_manifest": "d30ef0408b1501bea38fc7e733da7e99df4d4bc9156e3f23b3d65ba39a46031e",
+    "identity_manifest": "0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76",
+    "calendar": "dd9cb6958d8a4a84de1f6a4ac44d07a8f8e8f9ad8d6ebed477e30d89675fa44e"
+  },
+  "source_hashes_stable_during_measurement": true,
+  "remeasured_at": "2026-10-03T18:34:51+00:00",
+  "final_task2_refresh_pending": true
+}

@@ -1,0 +1,53 @@
+{
+  "source_candidates_reopened": 2057,
+  "proof_spans": 698,
+  "positive_accessions": 497,
+  "conflicting_accessions": 0,
+  "by_year_multi_single_numeric_missing_multi": [
+    [
+      2020,
+      78,
+      5,
+      1
+    ],
+    [
+      2021,
+      70,
+      7,
+      4
+    ],
+    [
+      2022,
+      78,
+      10,
+      3
+    ],
+    [
+      2023,
+      74,
+      9,
+      2
+    ],
+    [
+      2024,
+      70,
+      8,
+      2
+    ],
+    [
+      2025,
+      77,
+      11,
+      3
+    ]
+  ],
+  "errors": [
+    {
+      "path": "data\\raw\\sec_text\\sections\\part-00127.parquet",
+      "error": "TProtocolException: Invalid data"
+    }
+  ],
+  "denominator_certified": false,
+  "unknown_unexamined_filings": 35180,
+  "sampling": "nonprobability retained explicit-claim subset; no census or statistical extrapolation"
+}
