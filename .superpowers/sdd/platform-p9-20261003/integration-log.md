@@ -87,3 +87,62 @@ X-5 fit, cold w (2,401 MiB peak), NAV, flag-present w. 0 trials; trial ledger 13
 - G-P4 (CTest registration): `atx-engine-research-admission-tests` now exists (T1's deferred call registers it under
   `atx_research`); D1's rules test is in the `atx_equity_strategy` IC target. Counts: M1d.
 - K-P9-4 (B1) and K-P9-6 (D1) contracts exercised on real data / the built exe (see the M1b report).
+
+### M1c: slot 8 (C1), 2026-10-03
+
+Base `d656bbfa` (M1b hand-off). Lane C1 head `10c35df3` (code head `a275088b`; sqrt-only commit `dd925b7f`).
+
+#### C1 NAV re-pin: DEC-20 substitution list (written before any C1 run)
+
+Written by root-m1c before the stage-1 build and before any C1 NAV run; committed on its own. Source: C1 report §4
+(fix round 1, M1 + M2), ruling C1-PROD, plan §2.4 C1. Compared by file SHA-256 and JSON path only; no value of a
+summary, daily or events file is read.
+
+Procedure in pool-2. C1 is merged in two steps so each stage builds a committed source (the bounded runner refuses a
+dirty code pathspec): first `git merge --no-ff dd925b7f` (sqrt only, on the wave-1 head) = the stage-1 source, then
+`git merge --no-ff 10c35df3` (the whole lane) = the stage-2 source. The final tree is the one a single merge of
+`10c35df3` gives. Every run: the argv of `build-equity/p9-d1-x5-nav-run/receipt.json` (X-5's NAV, L 1.1720, argv sha
+`7b517c04`) with only `--output` changed; `run_bounded_research.py`, `--build-type` set, cap 1,536 MiB, floor 512,
+admission wait 900 s.
+
+Labels: L0 `linear-6bps-stale5-v1+swap-fin-v1` (S1 law, no sqrt); L1 `modeled-1bn-stale5-v1+swap-fin-v1` (primary);
+L2 `modeled-1bn-terminal-adverse-v1+swap-fin-v1`; L3 `modeled-1bn-stale5-v1+flat-300-v0`; L4
+`modeled-1bn-stale5-v1+engine-tiers-v1` (L1-L4: S2 law, delta .5). Capacity books K = `capacity-x{0p5,1,2,4,8}-v1+swap-fin-v1`.
+summary.json `scenarios[i]` = Li (index order L0, L1, L2, L3, L4 in the reference).
+
+**Stage 1** = Debug (equity-dev) exe built at the dd925b7f merge (tag p9-1g) vs `build-equity/p9-d1-x5-nav`
+(pre-C1 head `1239a5ff`, exe `f0ee3908`; 27/27 = X-5's own dir and R0-3's `v8-i16d-x5-nav`).
+
+| file (27) | stage 1 |
+|---|---|
+| `daily_L0.csv`, `events_L0.csv`, `recipe.json`, `capacity/recipe.json` | byte-identical |
+| `daily_` / `events_` of L1-L4 (8 files) | may differ (sqrt) |
+| `capacity/daily_K`, `capacity/events_K` (10 files) | may differ (sqrt) |
+| `capacity_curve.csv`, `v7_transfer_coefficient.csv` | may differ (sqrt) |
+| `summary.json` | may differ only at `/scenarios/1`, `/scenarios/2`, `/scenarios/3`, `/scenarios/4` (whole subtrees), `/warm_start/score_begin_gross_leverage/<L1..L4>`, `/v7/books/<L1..L4>` (subtrees); `/scenarios/0`, `/recipe_sha256`, `/locate_in_aim` and every other path identical |
+| `capacity/summary.json` | may differ only at `/scenarios/0..4` (subtrees), `/warm_start/score_begin_gross_leverage/<K>` (all five), `/v7/books/<L1..L4>` (subtrees); `/v7/books/<L0>` and every other path identical |
+| `v7_extras.json` | may differ only at `/files/v7_transfer_coefficient.csv`, `/files/capacity_curve.csv`, `/capacity/0..4` (subtrees); `/capacity_x1_equals_primary_bit_for_bit` stays `true` (identical) |
+
+No file on one side only. Zero differences is a legitimate stage-1 result (the Debug CRT's `pow(x, .5)` may already
+round like `sqrt`).
+
+**Stage 2** = Debug exe built at the 10c35df3 merge (tag p9-1h, C1's three targets) vs the stage-1 output.
+
+| file | stage 2 |
+|---|---|
+| all 20 `daily_*` / `events_*` CSVs (main and `capacity/`), `recipe.json`, `capacity/recipe.json`, `capacity/summary.json`, `capacity_curve.csv`, `v7_transfer_coefficient.csv` (25 files) | byte-identical |
+| `summary.json` | differs only at `/v7/extras` (changed: the bound sentence), `/v7/files/*` (added: SHA-256 of `v7_extras.json` and `capacity/summary.json`), `/producer/*` (added: `engine_git_sha`, `build_type`, `definition`; C1-PROD) |
+| `v7_extras.json` | differs only at `/files/capacity/summary.json` (added) |
+
+No other file and no file on one side only. Anything else is a structural defect (per-book BookState / BookLeverage,
+the capacity lockstep, book_groups, the record merge) and a STOP.
+
+**Release clause** = Release (equity-rel) exe built at the same merge (C1's three targets, first Release tree in
+pool-2) vs the stage-2 Debug output: every file byte-identical after dropping `summary.json` `/producer` (build type
+differs by design); `/v7/files` stays identical because the files it binds are identical. Per plan §2.4 C1, a
+difference beyond `/producer` is CRT build noise outside the sqrt path (`guarded_move`'s `std::log`, the p95 log /
+log10 / pow(10), the cagr `pow`), not a C1 defect: then NAV stays Debug, G-P3's NAV half is reported unmet, and the
+first differing file and column (header name only) is recorded. If the build wrapper's memory gate does not admit the
+Release configure + build within 20 minutes: "Release clause deferred to M1d".
+
+Exe identity: `summary.json` `/producer` is the only exe-identity location (C1-PROD); cross-build comparisons drop it.
