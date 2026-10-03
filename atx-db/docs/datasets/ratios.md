@@ -394,3 +394,5 @@ No source-backed indicated dividend-rate/classEPS certification yet. Narrow inli
 Task5 chain: compustat_std build --fund-stage fundamentals_v11 --stage <standardized>; ratios build --std-stage <standardized>. Raw fundamentals is not a ratios input. Task5 owns expanded profitability/growth primitive matrix and source recovery; Task7/16 integrate only named verified formulas. Universe refinement requires later coverage refresh.
 
 Source manifest SHA256: 9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325; universe manifest SHA256: 33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d.
+
+Coverage snapshot update: Task 2 subsequently published an intermediate universe and will publish its final universe after the remaining status audit. The recorded 33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d coverage snapshot is therefore historical, not current universe coverage. GC3 refresh is pending the final Task 2 hash; the controller will coordinate one coverage refresh. No full ratio rebuild or relabeling of the earlier measurements was performed.

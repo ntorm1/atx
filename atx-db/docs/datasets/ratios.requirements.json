@@ -1524,5 +1524,10 @@
     ]
   },
   "rebuild_chain": "compustat_std build --fund-stage fundamentals_v11 --stage <standardized>; ratios build --std-stage <standardized>",
-  "schema": "atx.ratios-requirements/v1"
+  "schema": "atx.ratios-requirements/v1",
+  "coverage_snapshot_status": {
+    "is_latest_universe": false,
+    "measured_manifest_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d",
+    "pending": "GC3 coverage refresh after final Task2 universe publication; controller coordinates one refresh. Intermediate universe updates do not relabel this snapshot."
+  }
 }

@@ -10341,5 +10341,6 @@
     ]
   },
   "ratio_coverage_universe_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d",
-  "universe_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d"
+  "universe_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d",
+  "snapshot_status": "Measured historical snapshot; stale relative to a later Task2 intermediate universe. GC3 refresh pending final Task2 publication; controller coordinates."
 }
