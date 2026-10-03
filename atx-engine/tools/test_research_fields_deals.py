@@ -51,7 +51,7 @@ DEALS = [  # (cik, form, available_at, is_amendment)
     (1005, "SC 14D9", at(2022, 9, 1, 14), False),        # a 20-F filer: NaN
     (7777, "DEFM14A", at(2022, 9, 1, 14), False),        # unlinked
     (1013, "DEFM14A", at(2023, 8, 1, 14), False),        # after the role
-    (1013, "DEFM14A", at(2025, 3, 3, 14), False),        # sealed (the window conftest.py binds)
+    (1013, "DEFM14A", at(2024, 3, 4, 14), False),        # sealed (the repository window's seal 2024-01-01)
 ]
 
 

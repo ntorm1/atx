@@ -81,8 +81,8 @@ NT = [
     (1007, "NT 10-Q", at(2022, 10, 20, 12)),              # first; the line links from 11-01
     (1009, "NT 10-Q", at(2023, 2, 14, 21, 59)),           # first; 21:59 UTC -> usable 02-15
     (1009, "NT 10-K", at(2023, 8, 1, 14)),                # after the role
-    (1009, "NT 10-K", at(2024, 2, 1, 14)),                # after the role (sealed under the repository window)
-    (1009, "NT 10-Q", at(2025, 3, 3, 14)),                # sealed (the window conftest.py binds)
+    (1009, "NT 10-K", at(2023, 11, 1, 14)),               # after the role, before the seal
+    (1009, "NT 10-Q", at(2024, 3, 4, 14)),                # sealed (the repository window's seal 2024-01-01)
     (1010, "NT 10-K", at(2021, 12, 1, 15)),
     (1010, "NT 10-Q", at(2022, 12, 1, 15)),               # exactly 365 days later: not first
     (1010, "NT 10-K", at(2023, 3, 15, 15)),
@@ -132,8 +132,8 @@ def filing_rows():
                 if cik == 1012 and (y, form) == (2022, "10-K"):
                     form = "10-KT"                                       # a transition report: periodic too
                 rows.append((cik, form, at(y, m, d, 20), False))
-    rows += [(1001, "10-K", at(2024, 3, 1, 20), False), (1009, "10-K", at(2024, 3, 1, 20), False),
-             (1001, "10-Q", at(2025, 5, 12, 20), False)]                 # after the role / sealed
+    rows += [(1001, "10-K", at(2023, 12, 1, 20), False), (1009, "10-K", at(2023, 12, 1, 20), False),
+             (1001, "10-Q", at(2024, 5, 13, 20), False)]                 # after the role, before the seal / sealed
     rows += [(1006, f, a, False) for f, a in (("10-Q", at(2021, 8, 9, 20)), ("10-Q", at(2021, 11, 8, 20)),
                                               ("10-K", at(2022, 3, 1, 20)), ("10-Q", at(2022, 5, 16, 14)))]
     rows += [(1006, "10-Q/A", at(2023, 1, 17, 15), True)]                # an amendment never extends presence
@@ -360,15 +360,15 @@ class NtFirst(unittest.TestCase):
         self.assertEqual(ev["rows_total"], len(self.w.events))
         self.assertEqual(ev["rows_not_nt_form"], len(NOISE))
         self.assertEqual(ev["rows_nt_amendment"], 1)
-        self.assertEqual(ev["rows_sealed"], 1)                  # 2025-03-03 (the window conftest.py binds)
-        self.assertEqual(ev["rows_after_role"], 2)              # 2023-08-01 and 2024-02-01
+        self.assertEqual(ev["rows_sealed"], 1)                  # 2024-03-04
+        self.assertEqual(ev["rows_after_role"], 2)              # 2023-08-01 and 2023-11-01
         self.assertEqual(ev["rows_unlinked_cik"], 1)
         self.assertEqual(ev["accessions_with_clock_disagreement"], 1)
         # first: NT 10-K of 1003 (2022), 1004, 1006, 1010, 1011 (2021); NT 10-Q of 1001, 1003 (2021), 1007, 1009,
         # 1011 (2022), 1013; NT 20-F of 1005, 1012
         self.assertEqual(ev["notices_first"], {"NT 10-K": 5, "NT 10-Q": 6, "NT 20-F": 2})
         self.assertEqual(ev["notices_used"], {"NT 10-K": 8, "NT 10-Q": 9, "NT 20-F": 2})
-        # periodic rows after the role: 2023-08-09 and 2023-11-08 of the 10 domestic filers, two 2024 10-Ks
+        # periodic rows after the role: 2023-08-09 and 2023-11-08 of the 10 domestic filers, two 2023-12-01 10-Ks
         self.assertEqual((fi["rows_sealed"], fi["rows_after_role"], fi["rows_periodic_amendment"]), (1, 22, 1))
         self.assertEqual(fi["rows_used"], 10 * len(DOMESTIC) + 4)
 
@@ -441,7 +441,7 @@ class NtFirst(unittest.TestCase):
         self.assertEqual(got["manifest_seal"]["exclusive_end"], "2024-01-01")
         self.assertEqual(got["payload"], self.manifest["files"][f"{NAME}.f64"])
         sealed_nt = sum(1 for r in self.w.events if r[2].startswith("NT") and not r[4] and r[3] >= at(2024, 1, 1))
-        self.assertEqual((got["events"]["rows_sealed"], got["events"]["rows_after_role"]), (sealed_nt, 1))
+        self.assertEqual((got["events"]["rows_sealed"], got["events"]["rows_after_role"]), (sealed_nt, 2))
         self.assertEqual(got["filings"]["rows_sealed"], sum(1 for r in self.w.filings if r[2] >= at(2024, 1, 1)))
 
     def test_byte_identity_with_the_8k_fields(self):
