@@ -5,6 +5,7 @@ digests and the predecessor-digest check every stage's inputs use.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import wave_steps as WS
 from wave_context import Wave, stage_chain
@@ -104,6 +105,24 @@ def phase_rows(w: Wave, spec_rel: str) -> list[dict]:
     for phase, base in w.phase_bases(spec_rel).items():
         rows += run_rows(w, phase, base)
     return rows
+
+
+def exe_notes(w: Wave, rows: list[dict]) -> list[str]:
+    """Ruling E1-REUSE-a2: one note per completed phase row whose K-P9-10 receipt (argv_sha256) names another
+    executable SHA than its executable (the receipt's command[0]) has on disk now: an output research_cycle reused on
+    a rebuilt exe without an exes_sha256 pin (a pinned mismatch stops the cycle). Empty for receipts before K-P9-10."""
+    out = []
+    for row in rows:
+        r = w.read_json(f"{row['run_dir']}/receipt.json") or {}
+        cmd, made = r.get("command"), r.get("executable_sha256")
+        if r.get("outcome") != "completed" or not isinstance(r.get("argv_sha256"), str) or not isinstance(made, str) \
+                or not (isinstance(cmd, list) and cmd and isinstance(cmd[0], str)):
+            continue
+        now = w.sha(cmd[0])
+        if now is not None and now != made:
+            out.append(f"{row['phase']} {row['run_dir']}: made by executable sha256 {made[:12]}, "
+                       f"{Path(cmd[0]).name} is sha256 {now[:12]} now")
+    return out
 
 
 def run_rows(w: Wave, phase: str, base: str) -> list[dict]:

@@ -43,6 +43,8 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
                 "gross": mt["g_cell"], "gross_parent": mt["g_parent"], "gross_calibration": mt["g_calibration"],
                 "leverage_calibration": mt["leverage_calibration"], "corrected": mt["corrected"],
                 "gross_match": mt["mode"]}
+        if (done.get("run") or {}).get("exe_notes"):     # ruling E1-REUSE-a2: only when the run stage noted one
+            cell["exe_notes"] = done["run"]["exe_notes"]
     verdict = jd.get("verdict") or {"accepted": False, "reason": sp.get("reason") or "no cell"}
     parent = pre["parent"]
     accepted = bool(verdict.get("accepted"))
@@ -212,6 +214,9 @@ def log_section(doc: dict) -> str:
                 f"G_parent {_f(cell['gross_parent'], '.10f')}" +
                 (f" -> corrected to L {cell['leverage']}, G {_f(cell['gross'], '.10f')}" if cell["corrected"] else
                  " (stands)") + ".", ""]
+        if cell.get("exe_notes"):
+            out += ["**Exe notes** (outputs reused on a rebuilt exe without an exes_sha256 pin, ruling E1-REUSE-a2): "
+                    + "; ".join(cell["exe_notes"]) + ".", ""]
         mech = doc.get("mechanics") or {}
         out += [f"**Mechanics (S2, read before any return): {'PASS' if mech.get('pass') else 'FAIL'}** (" +
                 "; ".join(f"{r['check']} {_f(r['value'], '.5g')} {r['limit']}" for r in mech.get("rows", [])) + ").", ""]

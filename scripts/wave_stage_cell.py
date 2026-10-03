@@ -17,8 +17,8 @@ import wave_manifest as WM
 import wave_rules as WR
 import wave_steps as WS
 from wave_context import Wave
-from wave_stage_util import (EXIT_PIN, StageError, cyc, no_cell, phase_rows, pinned, reader_digests, skipped,
-                             write_spec_file)
+from wave_stage_util import (EXIT_PIN, StageError, cyc, exe_notes, no_cell, phase_rows, pinned, reader_digests,
+                             skipped, write_spec_file)
 
 # the code-keyed reuse of a reader's or the bundle's output (stale_code): where an in-repo module they import lives,
 # and the loader calls that import a module by name (backtest_integrity: atx-engine/tools/<name>.py)
@@ -44,7 +44,12 @@ def run_stage(w: Wave, done: dict, log) -> dict:
     nav = w.outputs(cell)["nav"]
     if not w.exists(f"{nav}/summary.json"):
         raise StageError(f"run: no NAV output {nav}/summary.json")
-    return {"spec": cell, "nav": nav, "summary_sha256": w.sha(f"{nav}/summary.json"), "phases": phase_rows(w, cell)}
+    out = {"spec": cell, "nav": nav, "summary_sha256": w.sha(f"{nav}/summary.json"), "phases": phase_rows(w, cell)}
+    notes = exe_notes(w, out["phases"])     # ruling E1-REUSE-a2: outputs reused on a rebuilt, unpinned exe
+    if notes:
+        log(f"   exe notes (reused on a rebuilt exe without an exes_sha256 pin, E1-REUSE-a2): {'; '.join(notes)}")
+        out["exe_notes"] = notes
+    return out
 
 
 def run_plan(w: Wave, done: dict) -> list[str]:

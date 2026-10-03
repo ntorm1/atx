@@ -3,7 +3,9 @@
 
   test_receipt_k_p9_10_keys               K-P9-10: argv_sha256, attempt, executable_sha256, build_type in receipts
   test_resume_refuses_argv_mismatch       OR-3: a done bounded output is reused only on the command that made it
-  test_resume_refuses_exe_mismatch        E1-REUSE (a): ... and only on the executable that made it
+  test_resume_exe_check_pinned_refuses_unpinned_notes  E1-REUSE-a2: a pinned exe refuses, unpinned notes
+  test_nav_only_template_after_ic_rebuild  E1-REUSE-a2: inherited outputs judged by the parent's pin
+  test_run_stage_notes_unpinned_exe_reuse  E1-REUSE-a2: the wave's run-stage note and wave-log line
   test_attempt_subdir_after_floor_kill    OR-4: a planted floor kill resumes to completion in <run dir>/attempt-2
   test_driver_auto_attempt_manifest_flag  the manifest's driver block (each key opt-in) reaches research_cycle
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
@@ -169,43 +171,166 @@ def test_resume_refuses_argv_mismatch(tmp_path):
         ["--a", "--b"]
 
 
-def test_resume_refuses_exe_mismatch(tmp_path):
-    """P9 ruling E1-REUSE (a): a done bounded output whose K-P9-10 receipt records executable_sha256 is reused only
-    while the step's executable hashes the same (u through marginal, and the NAV / ref too): after a rebuild (and
-    `lock --exes --write`) an old-exe output is a HARD-STOP (exit 3), nothing runs. A receipt without argv_sha256 or
-    executable_sha256, or an executable not on disk, is reused as before."""
+def stamp_exe(root: Path, st, exe: str) -> None:
+    """Give the fake receipt of the done step ``st`` the K-P9-10 keys of the real runner, executable_sha256 = the
+    SHA-256 of ``exe`` as it is now."""
+    stamp(root, st.run_dir, CR.step_args(st))
+    p = root / st.run_dir / "receipt.json"
+    p.write_text(json.dumps(dict(json.loads(p.read_text()), executable_sha256=sha((root / exe).read_bytes()))))
+
+
+def pin_exes(sp: Path, **pins: bytes) -> None:
+    """Set a spec's exes_sha256 (what `lock --exes --write` writes) to the SHA-256 of the given exe bytes."""
+    doc = json.loads(sp.read_text())
+    doc[RC.EXES_PIN] = {k: sha(v) for k, v in pins.items()}
+    sp.write_text(json.dumps(doc))
+
+
+def test_resume_exe_check_pinned_refuses_unpinned_notes(tmp_path):
+    """P9 rulings E1-REUSE (a) and E1-REUSE-a2 on one spec: a done bounded output whose K-P9-10 receipt records
+    executable_sha256 is judged by the spec's exes_sha256 pin of that exe. Pinned (after a rebuild and a re-lock), a
+    receipt naming another SHA is a HARD-STOP (exit 3) and nothing runs; a receipt that matches the pin is reused.
+    Unpinned, a receipt naming another SHA than the exe on disk is reused and logged (`receipt exe NOTE:`), not
+    refused. Receipts before K-P9-10, or without executable_sha256, are reused as before."""
     root, sp = T.make_root(tmp_path)
     assert T.run(root, sp) == RC.EXIT_OK
     n = len(T.calls(root))
     u, nav = step_of(root, sp, "u"), step_of(root, sp, "nav")
-    for st, exe in ((u, "bin/ic.exe"), (nav, "bin/nav.exe")):
-        stamp(root, st.run_dir, CR.step_args(st))
-        p = root / st.run_dir / "receipt.json"
-        p.write_text(json.dumps(dict(json.loads(p.read_text()), executable_sha256=sha((root / exe).read_bytes()))))
+    stamp_exe(root, u, "bin/ic.exe")
+    stamp_exe(root, nav, "bin/nav.exe")
     log: list[str] = []
     assert T.run(root, sp, log) == RC.EXIT_OK
     assert f"   receipt exe: executable sha256 {sha(b'ic')} (bin/ic.exe)" in log
-    assert f"   receipt exe: executable sha256 {sha(b'nav')} (bin/nav.exe)" in log
-    (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                  # a rebuild: argv unchanged, exe moved
-    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[u\]: u output out/U-1 was made by an executable with "
-                                            rf"sha256 {sha(b'ic')} .* bin/ic.exe is sha256 {sha(b'ic rebuilt')} now: "
-                                            "refusing to reuse it") as e:
+    (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                  # a rebuild, no pin: reused and noted
+    log = []
+    assert T.run(root, sp, log) == RC.EXIT_OK
+    assert f"   receipt exe NOTE: u output out/U-1 was made by an executable with sha256 {sha(b'ic')} " \
+           f"(out/U-run1/receipt.json); bin/ic.exe is sha256 {sha(b'ic rebuilt')} now: reused (no exes_sha256 pin; " \
+           "ruling E1-REUSE-a2)" in log
+    assert all(c.startswith(("check", "summ")) for c in T.calls(root)[n:])           # nothing re-ran
+    # pinned (`lock --exes` before the cell ran): a receipt that matches the pin is reused, a stale one refused
+    root, sp = T.make_root(tmp_path / "p")
+    pin_exes(sp, ic=b"ic", nav=b"nav")
+    assert T.run(root, sp) == RC.EXIT_OK
+    n = len(T.calls(root))
+    u, nav = step_of(root, sp, "u"), step_of(root, sp, "nav")
+    stamp_exe(root, u, "bin/ic.exe")
+    stamp_exe(root, nav, "bin/nav.exe")
+    log = []
+    assert T.run(root, sp, log) == RC.EXIT_OK
+    assert f"   receipt exe: executable sha256 {sha(b'ic')} = the spec's exes_sha256 pin of ic" in log
+    assert f"   receipt exe: executable sha256 {sha(b'nav')} = the spec's exes_sha256 pin of nav" in log
+
+    def stale(st, drop: str | None = None) -> dict:
+        p = root / st.run_dir / "receipt.json"
+        doc = json.loads(p.read_text())
+        p.write_text(json.dumps({k: v for k, v in dict(doc, executable_sha256=sha(b"an old exe")).items()
+                                 if k != drop}))
+        return doc
+    good = stale(u)                                                       # u made by another exe than the pin
+    with pytest.raises(RC.CycleError, match=rf"HARD-STOP \[u\]: u output out/U-1 was made by an executable with "
+                                            rf"sha256 {sha(b'an old exe')} .*the spec's exes_sha256 pins ic "
+                                            rf"{sha(b'ic')}: refusing to reuse it") as e:
         T.run(root, sp)
     assert e.value.code == RC.EXIT_PIN
-    (root / "bin" / "ic.exe").write_bytes(b"ic")
-    (root / "bin" / "nav.exe").write_bytes(b"nav rebuilt")
-    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[nav\]: nav output .* was made by an executable") as e:
+    (root / u.run_dir / "receipt.json").write_text(json.dumps(good))
+    stale(nav)                                                            # the NAV too
+    with pytest.raises(RC.CycleError, match=rf"HARD-STOP \[nav\]: nav output out/N was made by an executable with "
+                                            rf"sha256 {sha(b'an old exe')} .*pins nav {sha(b'nav')}") as e:
         T.run(root, sp)
     assert e.value.code == RC.EXIT_PIN
     assert all(c.startswith(("check", "summ")) for c in T.calls(root)[n:])           # nothing re-ran
-    p = root / nav.run_dir / "receipt.json"                               # no executable_sha256: reused as before
-    p.write_text(json.dumps({k: v for k, v in json.loads(p.read_text()).items() if k != "executable_sha256"}))
+    stale(nav, drop="executable_sha256")                                  # no executable_sha256: reused as before
+    stale(u, drop="argv_sha256")                                          # a receipt before K-P9-10: as before
     log = []
-    assert T.run(root, sp, log) == RC.EXIT_OK and not any(x.startswith("   receipt exe:") and "nav" in x for x in log)
-    (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                  # a legacy receipt (no argv_sha256) too
-    p = root / u.run_dir / "receipt.json"
-    p.write_text(json.dumps({k: v for k, v in json.loads(p.read_text()).items() if k != "argv_sha256"}))
-    assert T.run(root, sp) == RC.EXIT_OK
+    assert T.run(root, sp, log) == RC.EXIT_OK and not any(x.startswith("   receipt exe") for x in log)
+
+
+def nav_only_child(sp: Path, **change_set) -> Path:
+    """A NAV-only template on ``sp`` (research_spec: it reuses the parent's fields, u, fit, card and w)."""
+    child = sp.parent / "child.json"
+    child.write_text(json.dumps({"schema": RC.research_spec.TEMPLATE_SCHEMA, "name": "child", "parent": sp.name,
+                                 "change": {"set": {"nav.output": "out/N2", **change_set}}}))
+    return child
+
+
+def test_nav_only_template_after_ic_rebuild(tmp_path):
+    """Ruling E1-REUSE-a2 on the rule-cell path: a NAV-only template reuses its parent's u and w after an IC rebuild.
+    Unpinned (cell and parent), it runs (exit 0) and logs one NOTE per inherited output made by the old exe. With the
+    cell pinned (`lock --exes` on the template: change.set exes_sha256 = the rebuilt exes), the inherited outputs are
+    judged by the parent's pin only, never by the cell's: an unpinned parent notes them, a parent pin that matches
+    their receipts reuses them, a parent pin that does not refuses them (exit 3)."""
+    plain = None
+    for case in ("unpinned", "cell-pinned", "parent-pinned", "parent-pin-moved"):
+        root, sp = T.make_root(tmp_path / case)
+        plain = plain or (root, sp)
+        assert T.run(root, sp) == RC.EXIT_OK                                # the parent cell, on the old IC exe
+        u, w = step_of(root, sp, "u"), step_of(root, sp, "w")
+        stamp_exe(root, u, "bin/ic.exe")
+        stamp_exe(root, w, "bin/ic.exe")
+        if case == "parent-pinned":
+            pin_exes(sp, ic=b"ic", nav=b"nav")                              # the parent's lock --exes, before
+        if case == "parent-pin-moved":
+            pin_exes(sp, ic=b"another ic", nav=b"nav")
+        (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                # root rebuilds the IC exe
+        pins = {} if case == "unpinned" else {RC.EXES_PIN: {"ic": sha(b"ic rebuilt"), "nav": sha(b"nav")}}
+        child = nav_only_child(sp, **pins)
+        n, log = len(T.calls(root)), []
+        if case == "parent-pin-moved":
+            with pytest.raises(RC.CycleError, match=rf"HARD-STOP \[u\]: u output out/U-1 was made by an executable "
+                                                    rf"with sha256 {sha(b'ic')} .*the parent's exes_sha256 pins ic "
+                                                    rf"{sha(b'another ic')}: refusing") as e:
+                T.run(root, child, log)
+            assert e.value.code == RC.EXIT_PIN and len(T.calls(root)) == n
+            continue
+        assert T.run(root, child, log) == RC.EXIT_OK, case
+        assert T.calls(root)[n] == "N2-run" and "== u: done (out/U-1)" in log    # only the cell's NAV ran
+        notes = [x for x in log if x.startswith("   receipt exe NOTE:")]
+        if case == "parent-pinned":
+            assert not notes and f"   receipt exe: executable sha256 {sha(b'ic')} = the parent's exes_sha256 pin " \
+                                 "of ic" in log
+        else:
+            assert [x.split(" output ")[0] for x in notes] == ["   receipt exe NOTE: u", "   receipt exe NOTE: w"]
+            assert all(f"bin/ic.exe is sha256 {sha(b'ic rebuilt')} now: reused (no exes_sha256 pin" in x for x in notes)
+    root, sp = plain
+    c = T.cycle_of(root, nav_only_child(sp))                                 # which outputs a template inherits
+    assert [p for p in ("fields", "u", "fit", "card", "w", "nav") if c.inherited(p)] == ["fields", "u", "fit", "w"]
+    assert not T.cycle_of(root, sp).inherited("u")                          # a plain spec inherits nothing
+
+
+def test_run_stage_notes_unpinned_exe_reuse(tmp_path):
+    """Ruling E1-REUSE-a2 in the wave: when a phase output the cell's calibration run reused was made by another
+    executable than its exe has on disk now (a K-P9-10 receipt, no pin: research_cycle reused it), the run stage logs
+    one line and records exe_notes in its receipt, wave-result.json carries them in the cell block and wave-log.md
+    prints one line. No mismatch: no key, no line (the bytes of before)."""
+    root = F.build(tmp_path / "w")
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "spec"], executor=fake,
+                              log=lambda s: None) == 0
+    w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
+    cell = json.loads((root / "out/waves/w1/receipts/04-spec.json").read_text())["outputs"]["cell_spec"]
+    row = next(r for r in WU.phase_rows(w, cell) if r["phase"] == "u")
+    exe = root / "bin" / "ic.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"ic rebuilt")
+    p = root / row["run_dir"] / "receipt.json"
+    p.write_text(json.dumps(dict(json.loads(p.read_text()), argv_sha256="a" * 64, executable_sha256=sha(b"ic"),
+                                 command=[str(exe), "--x"])))
+    assert WU.exe_notes(w, [row]) == [f"u {row['run_dir']}: made by executable sha256 {sha(b'ic')[:12]}, ic.exe is "
+                                      f"sha256 {sha(b'ic rebuilt')[:12]} now"]
+    lines: list[str] = []
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lines.append) == 0
+    run = json.loads((root / "out/waves/w1/receipts/05-run.json").read_text())["outputs"]
+    assert run["exe_notes"] == WU.exe_notes(w, [row])
+    assert sum("exe notes (reused on a rebuilt exe" in x for x in lines) == 1
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert res["cell"]["exe_notes"] == run["exe_notes"]
+    assert sum(x.startswith("**Exe notes**") for x in (root / "out/waves/w1/wave-log.md").read_text().splitlines()) == 1
+    root = F.build(tmp_path / "n")                                            # no mismatch: as before
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, ADMIT_ALL),
+                              log=lambda s: None) == 0
+    assert "exe_notes" not in json.loads((root / "out/waves/w1/receipts/05-run.json").read_text())["outputs"]
+    assert "exe_notes" not in json.loads((root / "out/waves/w1/wave-result.json").read_text())["cell"]
 
 
 def test_attempt_subdir_after_floor_kill(tmp_path):

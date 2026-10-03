@@ -20,9 +20,10 @@ the new spec_sha256 in cycle_verdict.json to the old cell's numbers. Now:
 Every other bounded output (u, fit, w, card, marginal, an every-phase fields or monitor; P9 OR-3, contract K-P9-10):
 a done step is reused only when the receipt of the run that made it names the command this spec would run now
 (``check_receipt_argv``; a receipt written before K-P9-10, without argv_sha256, is reused as before). Every done
-bounded output (nav and ref too) with a K-P9-10 receipt is also reused only while its executable hashes as the
-receipt's executable_sha256 (``check_receipt_exe``, P9 ruling E1-REUSE (a): after a rebuild and `lock --exes`,
-an output of the old exe is never served as fresh).
+bounded output (nav and ref too) with a K-P9-10 receipt is also judged by its executable (``check_receipt_exe``,
+P9 rulings E1-REUSE (a) and E1-REUSE-a2): when the spec pins that exe (exes_sha256, `lock --exes`; for an output a
+template inherited, the parent's pin), a receipt naming another SHA is refused, so after a rebuild and a re-lock an
+output of the old exe is never served as fresh; without a pin a mismatch with the exe on disk is reused and noted.
 
 Attempt sub-dirs (P9 OR-4): attempt 1 of a bounded step runs in its run dir, attempt k >= 2 in
 <run dir>/attempt-k (``attempt_dirs``); research_cycle advances to the next one only under --auto-attempt and only
@@ -135,25 +136,34 @@ def check_receipt_argv(cycle, st) -> str | None:
     return f"argv sha256 {r['argv_sha256']} ({src})" + (", reuse-neutral options aside" if neutral else "")
 
 
-def check_receipt_exe(cycle, st) -> str | None:
-    """P9 ruling E1-REUSE (a), contract K-P9-10: raise ResumeError unless the done bounded step ``st`` (every bounded
-    phase, nav and ref included) was made by the executable it runs now: the receipt's executable_sha256 equals the
-    SHA-256 of the step's executable (the argv after the runner's ``--``) as it is now. None: the receipt predates
-    K-P9-10 (no argv_sha256) or records no executable_sha256, or the executable is not on disk (hash-only), so
-    reused as before; else how it matched (for the log)."""
+def check_receipt_exe(cycle, st) -> tuple[str | None, str | None]:
+    """P9 rulings E1-REUSE (a) and E1-REUSE-a2, contract K-P9-10: the done bounded step ``st`` (every bounded phase,
+    nav and ref included) against the executable its K-P9-10 receipt records (executable_sha256). Returns (how it
+    matched, a note for a reuse on another executable); (None, None) for a receipt that predates K-P9-10 (no
+    argv_sha256) or records no executable_sha256: reused as before.
+
+      pinned    the step's exe key has an exes_sha256 pin (Cycle.reuse_pin: the parent's resolved spec's for an output
+                a template inherited, else this spec's): a receipt naming another SHA raises ResumeError (exit 3)
+      unpinned  no pin: a receipt naming another SHA than the exe on disk now is reused, with a note (one log line)
+    """
     r = cycle.receipt(st.run_dir)
     if not (isinstance(r, dict) and isinstance(r.get("argv_sha256"), str) and
             isinstance(r.get("executable_sha256"), str)):
-        return None
+        return None, None
+    made, src = r["executable_sha256"], f"{st.run_dir}/receipt.json"
+    key, pin, whose = cycle.reuse_pin(st)
+    if pin is not None:
+        if made != pin:
+            raise ResumeError(f"{st.phase} output {st.output} was made by an executable with sha256 {made} ({src}); "
+                              f"{whose} exes_sha256 pins {key} {pin}: refusing to reuse it (outputs of an old exe are "
+                              "moved aside or run under a fresh --suffix)")
+        return f"executable sha256 {made} = {whose} exes_sha256 pin of {key}", None
     exe = st.argv[st.argv.index("--") + 1]
     now = cycle.res.sha(exe)
-    if now is None:
-        return None
-    if now != r["executable_sha256"]:
-        raise ResumeError(f"{st.phase} output {st.output} was made by an executable with sha256 "
-                          f"{r['executable_sha256']} ({st.run_dir}/receipt.json); {exe} is sha256 {now} now: refusing "
-                          "to reuse it (outputs of an old exe are moved aside or run under a fresh --suffix)")
-    return f"executable sha256 {now} ({exe})"
+    if now is None or now == made:
+        return (f"executable sha256 {made} ({exe})" if now else None), None
+    return None, (f"{st.phase} output {st.output} was made by an executable with sha256 {made} ({src}); {exe} is "
+                  f"sha256 {now} now: reused (no exes_sha256 pin; ruling E1-REUSE-a2)")
 
 
 def spec_digest(cycle) -> str | None:

@@ -35,8 +35,10 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   resume argv     (P9 OR-3, K-P9-10) a done bounded output (u, fit, w, card, marginal, every-phase fields / monitor) is
                   reused only when its run receipt's command equals the one this spec would run now
                   (cycle_resume.REUSE_NEUTRAL options aside); a receipt written before K-P9-10 is reused as before.
-                  Ruling E1-REUSE (a): every done bounded output (nav, ref too) with a K-P9-10 receipt is reused only
-                  while its executable hashes as the receipt's executable_sha256 (else exit 3)
+                  Rulings E1-REUSE (a), E1-REUSE-a2: a done bounded output (nav, ref too) whose K-P9-10 receipt names
+                  another executable SHA than the spec's exes_sha256 pin of that exe (for an output a template
+                  inherited: the parent's pin) is refused (exit 3); without a pin, a mismatch with the exe on disk is
+                  reused and logged (`receipt exe NOTE:`)
   --admission-wait S  (P9 F-5 (a)) every bounded process waits, at most S seconds, before its launch for free memory
                   >= its declared peak + floor and no compiler (run_bounded_research --admission-wait-seconds)
   --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
@@ -263,6 +265,11 @@ BUILDS = {
 EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
 EXES_PIN = "exes_sha256"               # P9 OR-2: spec {exe key: SHA-256}, written by `lock --exes`
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# ruling E1-REUSE-a2: the spec key naming each phase's output (Cycle.inherited: a template keeps its parent's output
+# when the name is the parent's)
+PHASE_OUTPUTS = {"fields": ("fields", "output"), "u": ("ic", "u_output"), "w": ("ic", "w_output"),
+                 "fit": ("fit", "output"), "card": ("card", "output"), "marginal": ("marginal", "output"),
+                 "monitor": ("monitor", "output"), "nav": ("nav", "output")}
 # P9 NV-4: the NAV verb (strategy_nav_v7.cpp) writes summary.json before the capacity pass and v7_extras.json; a NAV
 # whose argv carries CAPACITY_FLAG is done only when CAPACITY_FILES exist beside its summary.json
 CAPACITY_FLAG, CAPACITY_FILES = "--capacity-curve", ("capacity_curve.csv", "v7_extras.json")
@@ -893,6 +900,40 @@ class Cycle:
                                  "resume: move them aside or run under a fresh --suffix)", EXIT_PIN)
             out[key] = (rel, got)
         return out
+
+    def parent_spec(self) -> dict | None:
+        """The resolved spec of this cycle's template parent (None for a plain spec, or without a spec file); loaded
+        once. Ruling E1-REUSE-a2: the outputs a template keeps from its parent are judged by the parent's pins."""
+        if not hasattr(self, "_parent_spec"):
+            self._parent_spec = None
+            try:
+                doc = json.loads(Path(self.spec_path).read_text(encoding="utf-8")) if self.spec_path else None
+            except (OSError, ValueError):
+                doc = None
+            if isinstance(doc, dict) and research_spec.is_template(doc):
+                path, _ = research_spec.parent_of(doc, Path(self.spec_path), research_tree.REPO)
+                self._parent_spec = load_spec(path)
+        return self._parent_spec
+
+    def inherited(self, phase: str) -> bool:
+        """Whether this cycle's ``phase`` output is its template parent's (research_spec: every output a template keeps
+        is the parent's and resumes as done): the phase's output name (PHASE_OUTPUTS) and out_root are the parent's,
+        and the cycle runs without --suffix."""
+        keys, parent = PHASE_OUTPUTS.get(phase), self.parent_spec()
+        if keys is None or parent is None or self.suffix or self.spec.get("out_root") != parent.get("out_root"):
+            return False
+        name = (self.spec.get(keys[0]) or {}).get(keys[1])
+        return isinstance(name, str) and name == (parent.get(keys[0]) or {}).get(keys[1])
+
+    def reuse_pin(self, st: Step) -> tuple[str | None, str | None, str]:
+        """(exe key, its exes_sha256 pin or None, whose pin) that a done bounded step's receipt is judged by (ruling
+        E1-REUSE-a2): the step's executable (its argv after the runner's ``--``) as a key of exes; the pin of the
+        parent's resolved spec for an output the template inherited, else this spec's. No pin: not refused."""
+        exe = st.argv[st.argv.index("--") + 1]
+        key = next((k for k, v in (self.spec.get("exes") or {}).items() if v == exe), None)
+        inherited = self.inherited(st.phase)
+        pins = ((self.parent_spec() if inherited else self.spec) or {}).get(EXES_PIN) or {}
+        return key, pins.get(key) if key else None, "the parent's" if inherited else "the spec's"
 
     def pin(self, key: str) -> str:
         return self.pins[key][1]
@@ -1950,10 +1991,12 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                     how = cycle_resume.check_receipt_argv(cycle, st)               # reused only on the same argv
                     if how:
                         log(f"   receipt argv: {how}")
-                if st.kind == "bounded":        # E1-REUSE (a): and only on the same executable (K-P9-10 receipts)
-                    exe = cycle_resume.check_receipt_exe(cycle, st)
+                if st.kind == "bounded":        # E1-REUSE-a2: a pinned exe refuses another; unpinned: noted
+                    exe, note = cycle_resume.check_receipt_exe(cycle, st)
                     if exe:
                         log(f"   receipt exe: {exe}")
+                    if note:
+                        log(f"   receipt exe NOTE: {note}")
             except cycle_resume.ResumeError as exc:
                 raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
         elif st.kind == "internal":
