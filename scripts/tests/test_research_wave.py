@@ -145,7 +145,9 @@ def test_add_alpha_save_plan_is_opt_in(tmp_path, capsys):
         capsys.readouterr()
         assert RC.main(T.add_argv(root, "ftd_fail") + ["--plan-json", str(plan)] + extra) == RC.EXIT_OK
         out = capsys.readouterr().out
-        for form in {str(tmp_path / tag), (tmp_path / tag).as_posix(), str(root), root.as_posix()}:
+        # longest form first: root lies under tmp_path / tag, and a set's order is the string hash's (integration fix)
+        for form in sorted({str(tmp_path / tag), (tmp_path / tag).as_posix(), str(root), root.as_posix()}, key=len,
+                           reverse=True):
             out = out.replace(form, "<ROOT>")
         prints[tag] = out.splitlines()
         trees[tag] = {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
