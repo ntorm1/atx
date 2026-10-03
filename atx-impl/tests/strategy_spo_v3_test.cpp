@@ -1542,6 +1542,65 @@ TEST(SpoV3, CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone) {
       << stray.error().to_string();
 }
 
+// P9 C1 fix 1 (Ruling C1-SPO): without --adv-hold-q the spo-v3 capacity declaration is base
+// d7c1c520's sentence byte for byte: in the recipe (keyed off the recipe's own adv_hold_rule,
+// so the decide path, which runs no replay, agrees) and in the holdings manifest (keyed off the
+// replay's configs, v7::configure; off before any). With --adv-hold-q the sentence names the
+// multiple's NAV and the recipe's adv_hold_rule says every capacity book's cap reads it.
+TEST(SpoV3, CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes) {
+  const std::string base_sentence =
+      "spo-v3 in the capacity pass (Ruling E-37, report only; the primary series and the main "
+      "pass's spo_diagnostics.csv, tripwire and summary are unchanged): each capacity book is the "
+      "spo-v3 tracker of the NAV-m book, planned on its own engine under the primary S2 law at NAV "
+      "m x NAV_post, so its trade limit p ADV_i / (m NAV) and its impact impact_y sigma_i sqrt(m "
+      "NAV / ADV_i) are the NAV-m book's; the aim is the run's L x desired, whose ADV cap "
+      "(--adv-hold-q) reads the initial NAV for every multiple (Ruling E-15); gamma is calibrated "
+      "on the same first scored decision as the main pass (gamma_equals_main); the capacity "
+      "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
+      "voiding the run: it has no primary book, and its rows never enter the main pass's rows, "
+      "tripwire, counts or Ruling E-31a (review SPO-4); x1 is the main pass's S2 book bit for bit";
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto risk = clean_model(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  v7::NavV7Options o;
+  o.spo_v1 = true;
+  o.capacity = true;
+  o.spo_params = sp::v3_params();
+  o.spo_risk = risk;
+  v7::ScopedNavExtension extension(o);
+  ASSERT_NE(extension.spo_capacity_engine(), nullptr);
+  // The recipe: its own adv_hold_rule key decides.
+  Json plain = Json::object();
+  v7::extend_recipe(plain);
+  ASSERT_TRUE(plain.contains("v7"));
+  ASSERT_TRUE(plain.at("v7").contains("capacity_spo_v3"));
+  EXPECT_EQ(plain.at("v7").at("capacity_spo_v3").get<std::string>(), base_sentence);
+  EXPECT_FALSE(plain.contains("adv_hold_rule"));
+  Json capped{{"adv_hold_q", 0.1}, {"adv_hold_rule", "the target replay's sentence"}};
+  v7::extend_recipe(capped);
+  const auto capped_sentence = capped.at("v7").at("capacity_spo_v3").get<std::string>();
+  EXPECT_NE(capped_sentence, base_sentence);
+  EXPECT_NE(capped_sentence.find("reads the multiple's NAV m x NAV"), std::string::npos)
+      << capped_sentence;
+  EXPECT_NE(capped.at("adv_hold_rule").get<std::string>().find("every capacity book"),
+            std::string::npos);
+  // The holdings manifest: the replay's configs decide (v7::configure).
+  const auto manifest_sentence = [] {
+    Json manifest = Json::object();
+    v7::extend_holdings(manifest);
+    return manifest.at("v7").at("capacity_spo_v3").get<std::string>();
+  };
+  EXPECT_EQ(manifest_sentence(), base_sentence);
+  auto cfg = nav_config();
+  cfg.target.adv_hold_q = 0.1;
+  v7::configure(cfg);
+  EXPECT_EQ(manifest_sentence(), capped_sentence);
+  cfg.target.adv_hold_q = 0;
+  v7::configure(cfg);
+  EXPECT_EQ(manifest_sentence(), base_sentence);
+}
+
 // Ruling E-37 (review N-2): theta (--trade-fraction) has no effect on spo-v3 -- H is the
 // registered 20 and the tracker never reads theta -- so the book replayed at theta .25 and at
 // theta .1 is the same bit for bit (every day's net return, plan and trades, every tracking row's

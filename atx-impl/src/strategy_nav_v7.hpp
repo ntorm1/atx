@@ -234,9 +234,11 @@ struct NavV7Command {
 extension_cost_model(const NavScenario& scenario);
 // P9 C1, DEC-10: what the replay asks the installed extension on the calling thread before its
 // books run. configure: a book config under --risk-target / --vol-target gets the extension's
-// leverage rule (risk_target::leverage_rule) unless it carries one; identity otherwise.
-// make_book_state: the book's v7 state (nullptr without an extension). shared_plan_state: the
-// spo engines hold every book's state (books on a pool and grids are refused with them).
+// leverage rule (risk_target::leverage_rule) unless it carries one; identity otherwise (the
+// extension notes whether --adv-hold-q is on, which picks the spo-v3 capacity sentence of the
+// summary, holdings manifest and v7_extras.json; P9 C1 fix 1). make_book_state: the book's v7
+// state (nullptr without an extension). shared_plan_state: the spo engines hold every book's
+// state (books on a pool and grids are refused with them).
 void configure(NavReplayConfig& cfg);
 [[nodiscard]] std::unique_ptr<BookState> make_book_state(const NavScenario& scenario);
 [[nodiscard]] bool shared_plan_state();

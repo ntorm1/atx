@@ -79,6 +79,9 @@ struct ScopedNavExtension::State {
   // v8 R-8 (--risk-target): the scaler of the loose seam's books and every book's records.
   std::unique_ptr<risk_target::Scaler> scaler;
   std::string void_reason;             // capture(): the tripwire voided the run
+  // configure(): the replay's books carry --adv-hold-q (P9 C1 fix 1: picks the spo-v3 capacity
+  // sentence of the summary, holdings manifest and v7_extras.json; a recipe reads its own key).
+  bool adv_hold{};
   // A capacity book: in the capacity pass every book; in the main pass a capacity id under
   // --capacity-curve (P9 C1: the capacity books join the main lockstep).
   [[nodiscard]] bool is_capacity(const NavScenario& scenario) const {
@@ -199,7 +202,21 @@ constexpr const char* capacity_v6_declaration =
     "with impact_y * m^0.5), which at the base-scale reference trade q equals the S2 law at the "
     "NAV-m trade m q, so c_i/c_bar, band_i, theta_t and target_i are the NAV-m book's (the main "
     "pass prices every book with the primary S2 law); x1 is the main pass's S2 v6 book bit for bit";
+// Without --adv-hold-q: the base sentence byte for byte (P9 C1 fix 1, Ruling C1-SPO: a
+// flag-absent spo-v3 capacity recipe keeps its bytes).
 constexpr const char* capacity_spo_v3_declaration =
+    "spo-v3 in the capacity pass (Ruling E-37, report only; the primary series and the main "
+    "pass's spo_diagnostics.csv, tripwire and summary are unchanged): each capacity book is the "
+    "spo-v3 tracker of the NAV-m book, planned on its own engine under the primary S2 law at NAV "
+    "m x NAV_post, so its trade limit p ADV_i / (m NAV) and its impact impact_y sigma_i sqrt(m "
+    "NAV / ADV_i) are the NAV-m book's; the aim is the run's L x desired, whose ADV cap "
+    "(--adv-hold-q) reads the initial NAV for every multiple (Ruling E-15); gamma is calibrated "
+    "on the same first scored decision as the main pass (gamma_equals_main); the capacity "
+    "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
+    "voiding the run: it has no primary book, and its rows never enter the main pass's rows, "
+    "tripwire, counts or Ruling E-31a (review SPO-4); x1 is the main pass's S2 book bit for bit";
+// With --adv-hold-q (P9 C1): each capacity book's cap reads its multiple's NAV.
+constexpr const char* capacity_spo_v3_adv_hold_declaration =
     "spo-v3 in the capacity pass (Ruling E-37, report only; the primary series and the main "
     "pass's spo_diagnostics.csv, tripwire and summary are unchanged): each capacity book is the "
     "spo-v3 tracker of the NAV-m book, planned on its own engine under the primary S2 law at NAV "
@@ -211,6 +228,9 @@ constexpr const char* capacity_spo_v3_declaration =
     "engine's tripwire and per-book report are recorded (v7_extras.json capacity_spo_v3), never "
     "voiding the run: it has no primary book, and its rows never enter the main pass's rows, "
     "tripwire, counts or Ruling E-31a (review SPO-4); x1 is the main pass's S2 book bit for bit";
+[[nodiscard]] constexpr const char* capacity_spo_v3_rule(bool adv_hold) noexcept {
+  return adv_hold ? capacity_spo_v3_adv_hold_declaration : capacity_spo_v3_declaration;
+}
 constexpr const char* v6_declaration =
     "aim-partial-v6 (R2.2 + R2.3): on a rebalance decision d, c_i = marginal cost per dollar of "
     "the primary S2 law (half spread 5 + commission 1 bps + 1.5 * 0.6 * sigma_i * (q/ADV_i)^0.5) "
@@ -254,7 +274,8 @@ constexpr const char* tc_declaration =
     "alpha_i / sigma_i^2 with Grinold-Kahn alpha_i = IC sigma_i z_i, z = the neutralized rank "
     "aim) and the planned weight w_i after the rule";
 
-Json declarations(const ScopedNavExtension::State& s) {
+// adv_hold: the --adv-hold-q in force (the spo-v3 capacity sentence; P9 C1 fix 1).
+Json declarations(const ScopedNavExtension::State& s, bool adv_hold) {
   const auto& v6 = s.options.v6;
   Json j{{"hook", "platform-v7 lane L4 NAV extension (strategy_nav_v7)"},
          {"pass", pass_name(s.pass)},
@@ -270,7 +291,7 @@ Json declarations(const ScopedNavExtension::State& s) {
     j["capacity_multiples"] = Json(std::vector<f64>(cost_v2::capacity_multiples.begin(),
                                                     cost_v2::capacity_multiples.end()));
     if (s.options.aim_v6) j["capacity_aim_partial_v6"] = capacity_v6_declaration;
-    if (s.capacity_engine) j["capacity_spo_v3"] = capacity_spo_v3_declaration;
+    if (s.capacity_engine) j["capacity_spo_v3"] = capacity_spo_v3_rule(adv_hold);
   }
   if (s.options.aim_v6)
     j["aim_partial_v6"] = Json{{"rule", v6_declaration}, {"kappa", v6.kappa},
@@ -461,7 +482,7 @@ co::Result<std::string> write_extras(const std::filesystem::path& dir,
     const u64 capacity_gamma = std::bit_cast<u64>(capacity->calibration().gamma);
     const u64 main_gamma = std::bit_cast<u64>(main_engine->calibration().gamma);
     extras["capacity_" + std::string(spo::json_key(capacity->params()))] =
-        Json{{"rule", capacity_spo_v3_declaration},
+        Json{{"rule", capacity_spo_v3_rule(s.adv_hold)},
              {"calibration", capacity->rule_calibration_json()},
              {"gamma_equals_main", capacity_gamma == main_gamma},
              {"tripwire", capacity->rows_tripwire_json()},
@@ -552,8 +573,8 @@ void summarize(const ScopedNavExtension::State& s, Json& summary, std::span<cons
           {"decisions_at_clip_hi", at_hi}};
     books[book] = std::move(entry);
   }
-  summary["v7"] = Json{{"declarations", declarations(s)}, {"books", std::move(books)},
-                       {"extras", extras}};
+  summary["v7"] = Json{{"declarations", declarations(s, s.adv_hold)},
+                       {"books", std::move(books)}, {"extras", extras}};
   // The pass's own engine: spo-v3's capacity pass (Ruling E-37) summarises its capacity books.
   const spo::Engine* engine =
       s.pass == NavV7Pass::Capacity && s.capacity_engine ? s.capacity_engine.get()
@@ -808,8 +829,10 @@ co::Result<std::unique_ptr<const bk::ReplayCostModel>> extension_cost_model(cons
 }
 
 void configure(NavReplayConfig& cfg) {
-  const auto* s = active_state;
-  if (!s || !s->options.risk_target.on || cfg.leverage.law != NavLeverageLaw::Fixed) return;
+  auto* s = active_state;
+  if (!s) return;
+  s->adv_hold = cfg.target.adv_hold_q > 0; // adv_hold_on (P9 C1 fix 1)
+  if (!s->options.risk_target.on || cfg.leverage.law != NavLeverageLaw::Fixed) return;
   cfg.leverage = risk_target::leverage_rule(s->options.risk_target, s->options.spo_risk);
 }
 
@@ -937,7 +960,9 @@ void extend_recipe(Json& recipe) {
     }
   const auto* s = active_state;
   if (!s || !recipe.is_object()) return;
-  recipe["v7"] = declarations(*s);
+  // The recipe's own adv_hold_rule key (adv_hold_on) picks the spo-v3 capacity sentence, so the
+  // decide path, which runs no replay, forms the run's recipe (P9 C1 fix 1).
+  recipe["v7"] = declarations(*s, recipe.contains("adv_hold_rule"));
   if (const char* id = rule_id(s->options);
       id && recipe.contains("rule") && recipe.at("rule").is_string())
     recipe["rule"] = relabel_v6(recipe.at("rule").get<std::string>(), id);
@@ -964,7 +989,7 @@ void extend_summary(Json& summary, const RunRecords& records, const Json& bindin
 void extend_holdings(Json& manifest) {
   const auto* s = active_state;
   if (!s || !manifest.is_object()) return;
-  manifest["v7"] = declarations(*s);
+  manifest["v7"] = declarations(*s, s->adv_hold);
   if (const char* id = rule_id(s->options);
       id && manifest.contains("rule") && manifest.at("rule").is_string())
     manifest["rule"] = relabel_v6(manifest.at("rule").get<std::string>(), id);
