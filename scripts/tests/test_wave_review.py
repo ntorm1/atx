@@ -17,6 +17,7 @@ import wave_context  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 import wave_seal  # noqa: E402
 import wave_stages  # noqa: E402
+import wave_steps as WS  # noqa: E402
 
 KEPT_ALL = {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", 0), "alpha_c": ("reject_redundant", 0)}
 STATE = "out/waves/w1"
@@ -402,3 +403,36 @@ def test_verify_reads_the_binding_of_the_last_completed_nav_attempt(tmp_path):
     assert code == 0, out
     b = receipt(root, "07-verify.json")["outputs"]["binding"]
     assert b["path"].endswith("-run2/cycle_binding.json") and b["spec_sha256"] != "b" * 64
+
+
+# ------------------------------------------------------------------ MINOR 12: a rule wave resumes after lock --write
+def rule_root(path: Path) -> Path:
+    path.mkdir(parents=True)
+    tpl = {"schema": "atx.research-cycle-template/v1", "name": "x-rule", "description": "rule cell",
+           "parent": None, "nominal_parent": "lib-p0.json",
+           "change": {"set": {"nav.output": "out/nav-x-rule", "fit.output": "out/fit-x-rule"},
+                      "flags": {"fit": {"--rule": None}}}}
+    F.write_json(path, "scripts/specs/v8/x-rule.json", tpl)
+    rule = {"template": "scripts/specs/v8/x-rule.json",
+            "template_sha256": F.sha((path / "scripts/specs/v8/x-rule.json").read_bytes()), "name": "x-rule-w1",
+            "constants": {"flags": {"fit": {"--rule": "erc-v1"}}}}
+    return F.build(path, drop=("candidates", "sign_rule", "library"), rule_cell=rule)
+
+
+def test_a_rule_wave_resumes_after_lock_write_rewrote_its_cell(tmp_path):
+    root = rule_root(tmp_path / "r")
+    fake = F.FakeCycle(root, {}, fail={"commit": 4})                                   # the commit after lock fails
+    assert wave(root, fake, "run")[0] == 4
+    cell = json.loads((root / "scripts/specs/v8/x-rule-w1.json").read_text())
+    assert "locked" in cell                                                            # lock --write pinned it
+    fake.fail = {}
+    code, out = wave(root, fake, "run")
+    assert code == 0, out
+    assert F.git(root, "log", "-1", "--format=%s", "--", "scripts/specs/v8/x-rule-w1.json").startswith(
+        "wave w1: rule cell x-rule-w1.json")
+    assert receipt(root, "04-spec.json")["outputs"]["commit"] == F.git(root, "log", "-1", "--format=%H", "--",
+                                                                       "scripts/specs/v8/x-rule-w1.json").strip()
+    doc = json.loads((root / "scripts/specs/v8/x-rule-w1.json").read_text())
+    edited = json.loads(json.dumps(doc))
+    edited["change"]["flags"]["fit"]["--rule"] = "erc-v2"                              # a real edit still differs
+    assert WS.unpinned(edited) != WS.unpinned(doc) and WS.unpinned(dict(doc, locked={"x": 1})) == WS.unpinned(doc)

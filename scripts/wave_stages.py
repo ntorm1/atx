@@ -354,12 +354,14 @@ def screen_plan(w: Wave, done: dict) -> list[str]:
 
 
 # ------------------------------------------------------------------ spec
-def write_spec_file(w: Wave, rel: str, doc: dict) -> None:
-    """Write a cell spec once: an existing file must hold exactly these bytes (a resumed stage), else a stop."""
+def write_spec_file(w: Wave, rel: str, doc: dict, same=None) -> None:
+    """Write a cell spec once: an existing file must hold exactly these bytes (a resumed stage), or with ``same`` (a
+    normalizer, e.g. WS.unpinned after `lock --write`) the same document under it; else a stop."""
     text = json.dumps(doc, indent=2) + "\n"
     p = w.path(rel)
     if p.is_file():
-        if p.read_text(encoding="utf-8") != text:
+        have = p.read_text(encoding="utf-8")
+        if have != text and (same is None or same(json.loads(have)) != same(doc)):
             raise StageError(f"{rel} exists with other content: never overwritten (rename the cell)", EXIT_PIN)
         return
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -390,7 +392,7 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
             if w.exists(nav):
                 raise StageError(f"rule cell {cell}: its NAV output {nav} exists already (a template is used once: "
                                  "copy it under a new name with new outputs)", EXIT_PIN)
-        write_spec_file(w, cell, doc)
+        write_spec_file(w, cell, doc, same=WS.unpinned)      # a resumed stage finds it locked already
         w.run(WS.cycle_argv(w.python, "lock", cell, "--write"), "lock the rule cell")
         commit = w.commit_paths(f"wave {m['wave']}: rule cell {Path(cell).name} on {m['parent']['spec']}", {cell})
         return cell_out(w, done, cell, "rule", commit or w.committed(cell), m["parent"]["library"])

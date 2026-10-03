@@ -149,6 +149,23 @@ def pool_only_marginal(doc: dict) -> dict:
     return out
 
 
+def unpinned(doc: dict) -> dict:
+    """A cell template without the pins `lock --write` writes into it (research_spec.lock_template: the "locked"
+    block, change.inputs.*.sha256, the fields manifest pin in change.set): a resumed rule cell compares on this."""
+    out = copy.deepcopy(doc)
+    out.pop("locked", None)
+    change = out.get("change") if isinstance(out.get("change"), dict) else {}
+    for item in (change.get("inputs") or {}).values():
+        if isinstance(item, dict) and "sha256" in item:
+            item["sha256"] = None
+    sets = change.get("set") or {}
+    if "fields.manifest_sha256" in sets:
+        sets["fields.manifest_sha256"] = None
+    if isinstance(sets.get("fields"), dict) and "manifest_sha256" in sets["fields"]:
+        sets["fields"]["manifest_sha256"] = None
+    return out
+
+
 def gm_path(spec_path: str) -> str:
     p = Path(spec_path)
     return (p.parent / f"{p.stem}-gm{p.suffix}").as_posix()

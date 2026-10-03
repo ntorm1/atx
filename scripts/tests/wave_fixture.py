@@ -235,6 +235,10 @@ class FakeCycle:
         verb, rel = args[0], args[1]
         if verb == "lock":
             RC.load_spec(self.root / rel)
+            doc = json.loads((self.root / rel).read_text())
+            if "--write" in args and research_spec.is_template(doc):  # lock_template's pins, as `lock --write` writes
+                doc.setdefault("locked", {})["role"] = {"path": "role/manifest.json", "sha256": role_sha(self.root)}
+                write_json(self.root, rel, doc)
             return self.ok(args)
         spec, c = self.spec_outputs(rel)
         if "--screen" in args:
