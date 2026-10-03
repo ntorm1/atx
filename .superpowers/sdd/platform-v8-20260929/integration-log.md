@@ -6682,3 +6682,75 @@ Fixes made: none. Build: none. Open item: both descriptions still say "marginal 
 `marginal.seconds` 600. Hidden data: no real-data run; no output, receipt, NAV, IC or ledger value opened (the plan prints
 argv and receipt states only); nothing dated 2024-01-01 or later opened. `C:/atx`, `atx-db/` untouched; no push.
 Next: R0-6.
+
+## P9 Phase 0, root step R0-6: cell Y-S through the wave driver, stage by stage (v8y P9-P12; DEC-1; 2026-10-03)
+
+Root in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `4a5e84a0` (code pathspec clean; only the untracked
+`docs/plans/2026-10-02-x5-equity-curve.png`, not root's). Read: P9 plan sections 0.5 (DEC-1, DEC-2), 0.6, 1.1 (R0-6 and its
+pre-ruled marginal fallback), 1.2; `v8y-prereg.md` sections 3, 5, 6 (Y-S row), 7, 12, 13 (P9-P12), 14; integrator-rules;
+global-constraints; `y-s.json` (manifest sha256 `22b5534f`, commit `4492f301`); E1's task-0 report (concerns: forced ref,
+capacity completeness); root's R0-3..R0-5 report; driver code `research_wave.py`, `wave_stages.py`, `wave_stage_*.py`,
+`wave_context.py`, `wave_steps.py` (marginal rewrite), `wave_result.py` (marginal rows), `wave_scoreboard.py`.
+State dir `build-equity/waves/y-s/` does not exist yet (`wave status`: preflight pending, the rest blocked).
+
+### Plan, written before stage 01 runs
+
+Command per stage: `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-s.json
+--until <stage>`, one stage at a time, one real run at a time, no build (unless the pre-ruled fallback needs the IC exe).
+
+**Memory gate before each stage that runs an exe: free physical memory >= planned peak + 1,536 MiB, else wait (poll 60 s,
+up to 30 min).** Planned peaks (MiB) and gates:
+
+| stage | exes it runs | planned peak (source) | gate free MiB |
+|---|---|---|---|
+| 01 preflight | none (Python checks) | - | - |
+| 02 register | IC exe `--plan-only` x 15 (add-alpha K1, metadata only) | 2 (R0-5 plan-only receipt) | 1,538 |
+| 03 screen | u (IC), fit, card, marginal (pool only, 600 s), gate | 1,953 (u admission 1,952.5, R0-5; card 1,554 and marginal 296 measured on X-7) | 3,489 |
+| 04 spec | none if every string is kept; add-alpha `--plan-only` per kept string for a b library | 2 | 1,538 |
+| 05 run | ref NAV (forced: fields v15 vs v13 and NAV exe `72ff6d2d` vs X-5's `a95f6f0a`), w (IC), NAV; a b library re-screens first | 2,786 (w admission, R0-5 arith; cap 3,072) | 4,322 |
+| 06 match | mechanics reader; a -gm NAV if gross misses by > .005 | 586 (NAV, P8) | 2,122 |
+| 07 verify | none | - | - |
+| 08 judge | monitor, summ (nav_summ), bundle, book reader (Python) | 1,536 (cap; not measured) | 3,072 |
+| 09 record | none | - | - |
+
+**Hand plan for stage 01 (preflight; expected receipt `build-equity/waves/y-s/receipts/01-preflight.json`, exit 0):**
+- manifest `scripts/specs/v8/waves/y-s.json`, sha256 `22b5534f79dae93fb40d7e11f802211668c98b93123ee28fafa4c54aa05d8ac4`, commit
+  `4492f3015346f71ecde46199dbd0ed62ad23a82c`; code pathspec clean.
+- parent `scripts/specs/v8/x-theme-erc-gm.json`: name `v8x-theme-erc-gm`, L 1.1720, NAV `build-equity/mega-nav-v8x-theme-erc-L1.1720`
+  (`summary.json` `a03937cf...`; `capacity_curve.csv` and `v7_extras.json` present by name: the P0-FIX completeness rule is met),
+  summ ledger `build-equity/trials.jsonl` = the manifest's; library `v8x3b`.
+- fields `build-equity/train-2020-2023-lo3-fields-v15`, manifest `26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09`,
+  84 rows, status complete, `seal.exclusive_end` 2024-01-01; every candidate's declared fields in it (the 6 new ones included).
+- no sealed year in the fields dir, parent path, `build-equity/waves/y-s`, `v8ys`.
+- ledger 112 lines, head `d1484e69...`, N 56 = `expect.n_before` 56.
+- budget `v8x-hand-25-plus-y-15`: admission used **25** (X hand-written: cycles `v8x*`; X-4's 9 re-screens left out; no `v8ys*`
+  line yet), new **15** (the roster, in order), cap 40 (25 + 15 = 40, holds); prefixes `["v8x", "v8ys"]`; origin null;
+  construction cap 62 (56 + 1 = 57, holds).
+- queue: the 15 `scripts/specs/v8/candidates/<id>.json` pinned with the manifest's DSL SHA-256 (no problem line).
+- window `research-window-v2`, seal 2024-01-01.
+
+**Expectations for the later stages (checked when each runs):**
+- 02 register: 15 add-alpha exits 0 (`--name v8ys`, `--save-plan build-equity/waves/y-s/plans/v8ys/<id>.json`); library v8ys =
+  v8x3b's 58 + the 15 in roster order = 73 members; its IC library bytes compared with R0-5's scratch build
+  (`bbcfbf9d...`, not of record); `lib-v8ys.json` rewritten once by the PM8-15 ruling (marginal pool only, `-poolonly`
+  output, `runner.phases.marginal.seconds` 600), lock dry; one commit of exactly add-alpha's files.
+- 03 screen: u, fit, card, marginal, gate under the bounded runner (u 300 s / 2,560 MiB; card 300 / 2,560; marginal 600 /
+  1,536; fit 180 / 1,536); u-compare of the 58 parent rows identical (P8: the parent reads no new field); 15 admission lines
+  ledgered (ledger 112 -> 127 lines, N stays 56); the PM7-35 sign rule on the 15 rows. Gate exit 10 = no cell (logged, 0).
+- **Marginal fallback (pre-ruled, plan R0-6):** a time-cap failure (nothing written) gets ONE blind re-run on a quiet host
+  (no compiler running, free >= peak + 1,536 MiB); a second failure moves the marginal to the Release IC exe under v8y P6 after
+  its u / w identity (0 trials), building only the IC exe with `scripts/research-build.ps1` tag `p9-0r` if needed.
+- 04 spec: every string kept -> the cell is the screen library (`lib-v8ys.json`); some dropped -> b library `v8ysb` (same trial
+  ids, 0 new lines) with `speed.reuse_screen_marginal`: no second marginal pass; **b-reuse check (P12, once):** the
+  per-row marginal fields carried into the wave result equal the screen's `marginal_ic.json` rows of the kept ids byte for
+  byte (compared by canonical-JSON SHA-256, no value printed). If no string is dropped the b path does not run and the check
+  is logged as not applicable (the screen-library rows checked equal instead).
+- 05 run: ref compare `ref-s2-daily` reproduces X-5's S2 daily `529062d6` (P8 precedent) or exit 4 = stop; w, NAV.
+- 06 match: PM6-6 (tolerance .005 on all-rows S2 gross vs X-5's .9862260459), at most one correction.
+- 07 verify: mechanics (all-rows gross [.90, 1.05], |mean net| <= .02, tau mean <= .20, p95 <= .30) before any return is read;
+  C-13 binding; NAV exe parent vs cell (differ: ref must have run on the cell's exe); seal scan.
+- 08 judge: **acceptance PM7-34: paired S2 net dSR > 0 against X-5 AND mechanics**; printed only: capacity 4x, turnover per
+  gross, cost bps; bundle both p.
+- 09 record: ledger N 56 -> 57 (the cell's line among the lines appended since preflight); wave-result.json; copies to
+  `.superpowers/sdd/platform-v8-20260929/waves/y-s/`. **Scoreboard 4x check (P12):** `research_cycle.py scoreboard` 4x net
+  Sharpe row against the 4x row of one real `capacity_curve.csv` read directly.
