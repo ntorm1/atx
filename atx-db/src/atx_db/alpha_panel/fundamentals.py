@@ -400,13 +400,66 @@ def _prepare_code_identity() -> dict[str, str]:
 def _verify_preparation() -> dict:
     preparation = common.read_json(work_dir() / "prepare.json")
     snapshot = fpc.SourceSnapshot(common.FSDS_DIR)
-    expected = fpc.PreparationCache(snapshot, _prepare_code_identity()).binding
+    cache = fpc.PreparationCache(snapshot, _prepare_code_identity())
+    expected = cache.verify_units(preparation, _required_preparation_units(snapshot))
     if preparation.get("preparation_binding") != expected:
         raise ValueError("uncertified or stale fundamentals preparation")
-    for path, pin in preparation["preparation_units"].items():
-        if fpc.identity(Path(path)) != pin:
-            raise ValueError(f"preparation output drift: {path}")
     return expected
+
+
+def _sub_clock_sql() -> str:
+    sub_glob = (common.FSDS_DIR / "sub" / "*.parquet").as_posix()
+    return f"""
+                SELECT adsh, TRY_CAST(cik AS BIGINT) AS sub_cik, TRY_CAST(sic AS INTEGER) AS sic, form AS sub_form,
+                       fy AS sub_fy, fp AS sub_fp, filed AS sub_filed,
+                       CAST(accepted_utc AS TIMESTAMP) AS accepted_utc, quarter AS sub_quarter
+                FROM read_parquet('{sub_glob}')
+                """
+
+
+def _scope_sql() -> str:
+    return f"""
+                SELECT DISTINCT cik FROM read_parquet('{links_path().as_posix()}')
+                WHERE end_incl >= DATE '{SCOPE_LINK_END_MIN.isoformat()}'
+                """
+
+
+def _union_sql(parts, hashes) -> str:
+    listing = ", ".join(f"'{p.as_posix()}'" for p in parts)
+    return f"/* parts {hashlib.sha256('|'.join(hashes).encode()).hexdigest()} */ SELECT * FROM read_parquet([{listing}])"
+
+
+def _required_preparation_units(snapshot) -> dict:
+    """Fixed products plus both quarter products for every pinned configured quarter."""
+    tables = {t: sorted(p for p in snapshot.pins if p.startswith(t + "/"))
+              for t in ("sub", "num", "pre")}
+    quarters = {t: {Path(p).name for p in paths} for t, paths in tables.items()}
+    if not quarters["pre"] or not (quarters["sub"] == quarters["num"] == quarters["pre"]):
+        raise ValueError("incomplete configured FSDS quarter tables")
+    required = {}
+    def add(dest, key, sql, sources=(), dependencies=(), **options):
+        required[dest.as_posix()] = {"key": key, "sql": sql, "sources": list(sources),
+            "dependencies": [p.as_posix() for p in dependencies], "options": options}
+    num_glob = (common.FSDS_DIR / "num" / "*.parquet").as_posix()
+    add(sub_clock_path(), "sub_clock", _sub_clock_sql(), tables["sub"])
+    add(class_shares_path(), "class_shares", class_sum_sql(num_glob), tables["num"])
+    add(pos_sums_path(), "pos_sums", pos_sum_sql(num_glob), tables["num"])
+    for key, make_sql, dest, options in (
+            ("pre_flags", lambda pre, num: pre_flags_sql(pre), pre_flags_path(), {"row_group_size": 32768}),
+            ("label_lines", label_lines_sql, label_lines_path(), {})):
+        parts = []
+        for rel in tables["pre"]:
+            pre = common.FSDS_DIR / rel
+            num = common.FSDS_DIR / "num" / pre.name
+            part = work_dir() / key / pre.name
+            add(part, f"{key}/{pre.stem}", make_sql(pre.as_posix(), num.as_posix()),
+                (rel, f"num/{pre.name}"), **options)
+            parts.append(part)
+        def union(units, parts=tuple(parts)):
+            return _union_sql(parts, [units[p.as_posix()]["output"]["sha256"] for p in parts])
+        add(dest, key, union, dependencies=parts, **options)
+    add(scope_path(), "scope", _scope_sql(), dependencies=(links_path(),))
+    return required
 
 
 def cached_copy(con: Any, sql: str, dest: Path, receipt: dict[str, Any], key: str,
@@ -437,28 +490,22 @@ def per_quarter(con: Any, key: str, make_sql: Any, dest: Path, receipt: dict[str
                     sources=(f"pre/{pre.name}", f"num/{num.name}"), **kw)
         parts.append(part)
         fps.append(fpc.digest(part))
-    listing = ", ".join(f"'{p.as_posix()}'" for p in parts)
-    sql = f"/* parts {hashlib.sha256('|'.join(fps).encode()).hexdigest()} */ SELECT * FROM read_parquet([{listing}])"
+    sql = _union_sql(parts, fps)
     return cached_copy(con, sql, dest, receipt, key, dependencies=parts, **kw)
 
 
 def prepare() -> dict[str, Any]:
     snapshot = fpc.SourceSnapshot(common.FSDS_DIR)
     cache = fpc.PreparationCache(snapshot, _prepare_code_identity())
+    required = _required_preparation_units(snapshot)
     receipt: dict[str, Any] = {"_prepare_cache": cache}
     con = common.connect(memory=DUCKDB_MEM, threads=2)
     try:
         with common.timed(receipt, "sub_clock"):
-            sub_glob = (common.FSDS_DIR / "sub" / "*.parquet").as_posix()
             dest = sub_clock_path()
             n = cached_copy(
                 con,
-                f"""
-                SELECT adsh, TRY_CAST(cik AS BIGINT) AS sub_cik, TRY_CAST(sic AS INTEGER) AS sic, form AS sub_form,
-                       fy AS sub_fy, fp AS sub_fp, filed AS sub_filed,
-                       CAST(accepted_utc AS TIMESTAMP) AS accepted_utc, quarter AS sub_quarter
-                FROM read_parquet('{sub_glob}')
-                """,
+                _sub_clock_sql(),
                 dest, receipt, "sub_clock",
                 sources=tuple(p for p in snapshot.pins if p.startswith("sub/")),
             )
@@ -489,10 +536,7 @@ def prepare() -> dict[str, Any]:
         with common.timed(receipt, "scope"):
             n = cached_copy(
                 con,
-                f"""
-                SELECT DISTINCT cik FROM read_parquet('{links_path().as_posix()}')
-                WHERE end_incl >= DATE '{SCOPE_LINK_END_MIN.isoformat()}'
-                """,
+                _scope_sql(),
                 scope_path(), receipt, "scope", dependencies=(links_path(),),
             )
             receipt["scope_ciks"] = n
@@ -500,7 +544,7 @@ def prepare() -> dict[str, Any]:
         con.close()
     snapshot.verify()
     receipt.pop("_prepare_cache")
-    receipt["preparation_binding"] = cache.binding
+    receipt["preparation_binding"] = cache.verify_units(receipt, required)
     receipt["class_rule"] = CLASS_RULE
     receipt["pre_rule"] = PRE_RULE
     receipt["pos_rule"] = POS_RULE
@@ -1496,7 +1540,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "build-all":
         t0 = time.perf_counter()
         if not args.skip_prepare:
-            print({k: v for k, v in prepare().items() if not k.endswith("rule")}, flush=True)
+            print({k: v for k, v in prepare().items()
+                   if not k.endswith("rule") and k not in ("preparation_units", "preparation_binding")}, flush=True)
         print(f"prepare done {time.perf_counter() - t0:.0f}s", flush=True)
         run_batches(None)
         print(f"batches done {time.perf_counter() - t0:.0f}s", flush=True)

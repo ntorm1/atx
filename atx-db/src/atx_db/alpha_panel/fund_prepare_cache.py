@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 
 from . import common
 
-VERSION = "fund-prepare-cache-v1"
+VERSION = "fund-prepare-cache-v2"
 
 
 def digest(path: Path) -> str:
@@ -67,6 +67,34 @@ class PreparationCache:
         self.source = source
         self.binding = {"version": VERSION, "source": source.binding(), "code": code}
 
+    def verify_units(self, receipt, required):
+        """Certify exact required units, their complete sidecars and live dependencies."""
+        units = receipt.get("preparation_units")
+        if not isinstance(units, dict) or set(units) != set(required):
+            raise ValueError("incomplete or extra preparation inventory")
+        identities = {}
+        def live(path):
+            if path not in identities:
+                identities[path] = identity(Path(path))
+            return identities[path]
+        for path, spec in required.items():
+            unit = units[path]
+            side = common.read_json(Path(path).with_name(Path(path).name + ".prepare.json"))
+            dependencies = {p: live(p) for p in spec["dependencies"]}
+            sql = spec["sql"](units) if callable(spec["sql"]) else spec["sql"]
+            expected = {**self.binding, "sql": sql, "key": spec["key"],
+                        "dependencies": dependencies, "sources": list(spec["sources"]),
+                        "options": spec["options"]}
+            if (not isinstance(unit, dict) or unit.get("complete") is not True
+                    or side != unit or unit.get("binding") != expected):
+                raise ValueError(f"uncertified preparation unit or dependency drift: {path}")
+            if unit.get("output") != live(path):
+                raise ValueError(f"preparation output drift: {path}")
+            if (type(unit.get("rows")) is not int
+                    or unit["rows"] != pq.ParquetFile(path).metadata.num_rows):
+                raise ValueError(f"preparation row mismatch: {path}")
+        return {**self.binding, "units": units}
+
     def copy(self, con, sql, dest, receipt, key, *, sources=(), dependencies=(), **kw):
         receipt.setdefault("cached", [])
         sources = tuple(sources)
@@ -82,8 +110,11 @@ class PreparationCache:
             if (old["complete"] is True and old["binding"] == binding
                     and old["output"] == identity(dest)
                     and old["rows"] == pq.ParquetFile(dest).metadata.num_rows):
+                self.source.verify(sources)
+                if any(identity(p) != dependency_pins[p.as_posix()] for p in dependencies):
+                    raise ValueError("preparation dependency drift")
                 receipt["cached"].append(key)
-                receipt["preparation_units"][dest.as_posix()] = old["output"]
+                receipt["preparation_units"][dest.as_posix()] = old
                 return old["rows"]
         except (OSError, ValueError, KeyError, TypeError):
             pass
@@ -104,7 +135,7 @@ class PreparationCache:
             if old_path.exists():
                 os.replace(old_path, old_path.with_name(old_path.name + f".previous-{token}"))
         os.replace(candidate, dest)
-        common.write_json_atomic(side, {"complete": True, "binding": binding,
-                                       "output": output, "rows": rows})
-        receipt["preparation_units"][dest.as_posix()] = output
+        unit = {"complete": True, "binding": binding, "output": output, "rows": rows}
+        common.write_json_atomic(side, unit)
+        receipt["preparation_units"][dest.as_posix()] = unit
         return rows
