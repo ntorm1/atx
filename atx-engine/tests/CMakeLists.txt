@@ -457,3 +457,20 @@ target_compile_definitions(atx-engine-research-store-tests PRIVATE
     "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\"")
 gtest_discover_tests(atx-engine-research-store-tests DISCOVERY_MODE PRE_TEST
     TEST_PREFIX "atx-engine-research-store-tests." PROPERTIES LABELS atx_research)
+
+# P9 lane SQL2 (K-P9-13): the artifact catalog gtests (ResearchCatalog*, SealGuard*, StoreCli*) over
+# the synthetic tree fixtures/research_store/tree (and legacy_records). Sources in tests/research/
+# (not a test group), no shared test PCH; public catalog headers only. Registered directly under
+# the CTest label atx_research.
+add_executable(atx-engine-research-catalog-tests EXCLUDE_FROM_ALL
+    research/research_catalog_test.cpp
+    research/research_catalog_seal_test.cpp
+    research/research_catalog_cli_test.cpp)
+target_link_libraries(atx-engine-research-catalog-tests PRIVATE
+    atx::engine-research-catalog GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch)
+target_include_directories(atx-engine-research-catalog-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-catalog-tests PRIVATE
+    "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\""
+    "ATX_RESEARCH_STORE_CLASSES_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/../schemas/research_store/classes.json\"")
+gtest_discover_tests(atx-engine-research-catalog-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-catalog-tests." PROPERTIES LABELS atx_research)
