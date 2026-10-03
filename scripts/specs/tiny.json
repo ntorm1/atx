@@ -34,7 +34,7 @@
   },
   "fields": {
     "output": "fields",
-    "manifest_sha256": "dbcacd2e79eff39f2d8367ebb89aad3e3e151350782a5bce9c4bcb60665e8971",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac",
     "list": [
       "shares_out",
       "si_shares",
