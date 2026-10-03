@@ -1,0 +1,31 @@
+{
+  "stage": "market_liquidity",
+  "lane": "MKT",
+  "task": "tier1-v4 Task 1",
+  "schema": "atx.alpha-panel.market-liquidity/v1",
+  "module": "atx_db.alpha_panel.liquidity",
+  "args": [
+    "all"
+  ],
+  "manifest": "market/market_liquidity_manifest.json",
+  "inputs": [
+    "prices",
+    "market_shares"
+  ],
+  "outputs": [
+    {
+      "view": "market_liquidity",
+      "glob": "market/liquidity/year=*/liquidity.parquet",
+      "keys": [
+        "security_id",
+        "session_date"
+      ],
+      "clock": "available_at",
+      "vintage": "daily"
+    }
+  ],
+  "as_of_sql": "CREATE MACRO market_liquidity_as_of(ts) AS TABLE SELECT * FROM market_liquidity WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT * FROM market_liquidity_as_of(lake_cutoff(DATE '2024-03-15')) QUALIFY row_number() OVER (PARTITION BY security_id ORDER BY session_date DESC) = 1",
+  "registered": "already declared by the module LAKE_STAGES literal (name market_liquidity); stub records keys and as-of SQL",
+  "doc": "atx-db/docs/datasets/market_liquidity.md"
+}

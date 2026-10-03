@@ -1,0 +1,32 @@
+{
+  "stage": "share_exchange_history",
+  "lane": "ID",
+  "task": "tier1-v4 Task 1",
+  "schema": "atx.alpha-panel.share-exchange-history/v1",
+  "module": "atx_db.alpha_panel.identity_v3",
+  "args": [
+    "codes"
+  ],
+  "manifest": "security_master/share_exchange_history_manifest.json",
+  "inputs": [
+    "panel"
+  ],
+  "outputs": [
+    {
+      "view": "share_exchange_history",
+      "glob": "security_master/share_exchange_history.parquet",
+      "keys": [
+        "security_id",
+        "valid_from"
+      ],
+      "clock": "available_at",
+      "vintage": "interval"
+    }
+  ],
+  "as_of_sql": "CREATE MACRO share_exchange_history_as_of(ts) AS TABLE SELECT * FROM share_exchange_history WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT security_id, shrcd, exchcd FROM share_exchange_history_as_of(lake_cutoff(DATE '2024-03-15')) WHERE DATE '2024-03-15' BETWEEN valid_from AND valid_to",
+  "registered": "NOT registered: no LAKE_STAGES literal in identity_v3.py; Task 17 folds this stub into stagelake",
+  "guard_gb": 0.45,
+  "staleness": "daily; rebuilt with the panel",
+  "doc": "atx-db/docs/datasets/share_exchange_history.md"
+}

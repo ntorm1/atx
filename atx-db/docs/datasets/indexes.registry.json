@@ -1,0 +1,54 @@
+{
+  "stage": "indexes",
+  "lane": "MKT",
+  "task": "tier1-v4 Task 1",
+  "schema": "atx.alpha-panel.indexes/v1",
+  "module": "atx_db.alpha_panel.indexes",
+  "args": [
+    "build"
+  ],
+  "manifest": "indexes/manifest.json",
+  "inputs": [
+    "panel",
+    "market_shares",
+    "market_liquidity",
+    "security_master"
+  ],
+  "outputs": [
+    {
+      "view": "indexes_constituents",
+      "glob": "indexes/constituents.parquet",
+      "keys": [
+        "index_id",
+        "security_id",
+        "recon_date"
+      ],
+      "clock": "available_at",
+      "vintage": "interval"
+    },
+    {
+      "view": "indexes_membership",
+      "glob": "indexes/membership/year=*/membership.parquet",
+      "keys": [
+        "session_date",
+        "security_id"
+      ],
+      "clock": "available_at",
+      "vintage": "daily"
+    },
+    {
+      "view": "indexes_recon_summary",
+      "glob": "indexes/recon_summary.parquet",
+      "keys": [
+        "index_id",
+        "recon_date"
+      ],
+      "clock": null,
+      "vintage": "static"
+    }
+  ],
+  "as_of_sql": "CREATE MACRO indexes_membership_as_of(ts) AS TABLE SELECT * FROM indexes_membership WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT security_id, r1000, r2000, r3000, sp500 FROM indexes_membership_as_of(lake_cutoff(DATE '2024-03-15')) WHERE session_date = DATE '2024-03-15'",
+  "registered": "already declared by the module LAKE_STAGES literal; stub records keys and as-of SQL",
+  "doc": "atx-db/docs/datasets/indexes.md"
+}
