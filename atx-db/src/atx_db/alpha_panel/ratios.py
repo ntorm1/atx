@@ -266,11 +266,11 @@ RATIOS: tuple[dict[str, Any], ...] = (
     # liquidity
     _r("cash_ratio", "liquidity", "q", False, "che_q0", "lct_q0", ["che", "lct"],
        "Cash and short-term investments / current liabilities"),
-    _r("quick_ratio", "liquidity", "q", False, "act_q0 - invt_z0", "lct_q0", ["act", "lct"],
+    _r("quick_ratio", "liquidity", "q", False, "act_q0 - invt_z0", "lct_q0", ["act", "invt", "lct"],
        "Quick ratio (acid test): (current assets - inventories) / current liabilities"),
     _r("curr_ratio", "liquidity", "q", False, "act_q0", "lct_q0", ["act", "lct"],
        "Current ratio: current assets / current liabilities"),
-    _r("cash_conversion", "liquidity", "q", False, None, "cogs_ttm * sale_ttm", ["rect", "ap", "cogs", "sale"],
+    _r("cash_conversion", "liquidity", "q", False, None, "cogs_ttm * sale_ttm", ["invt", "rect", "ap", "cogs", "sale"],
        "Cash conversion cycle (days): 365 x (inventories / cogs + receivables / sales - "
        "payables / cogs), current balances and TTM flows",
        expr="CASE WHEN cogs_ttm <> 0 AND sale_ttm <> 0 THEN 365.0 * (invt_q0 / cogs_ttm + rect_q0 / sale_ttm"
@@ -280,7 +280,7 @@ RATIOS: tuple[dict[str, Any], ...] = (
        "Asset turnover: sales TTM / average total assets"),
     _r("inv_turn", "efficiency", "q", False, "cogs_ttm", "avg_invt", ["cogs", "invt"],
        "Inventory turnover: cogs TTM / average inventories"),
-    _r("pay_turn", "efficiency", "q", False, "cogs_ttm + (invt_z0 - invt_z4)", "avg_ap", ["cogs", "ap"],
+    _r("pay_turn", "efficiency", "q", False, "cogs_ttm + (invt_z0 - invt_z4)", "avg_ap", ["cogs", "invt", "ap"],
        "Payables turnover: (cogs TTM + change in inventories over the year) / average accounts payable"),
     _r("rect_turn", "efficiency", "q", False, "sale_ttm", "avg_rect", ["sale", "rect"],
        "Receivables turnover: sales TTM / average receivables"),
@@ -1059,6 +1059,7 @@ HAND_ITEMS: dict[str, tuple[str, tuple[str, ...]]] = {
     "pi": ("d", ("IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments")),
     "xint": ("d", ("InterestExpense", "InterestAndDebtExpense")),
     "che": ("i", ("CashAndCashEquivalentsAtCarryingValue",)),
+    "short_invest": ("i", ("ShortTermInvestments",)),
     "invt": ("i", ("InventoryNet",)),
     "rect": ("i", ("AccountsReceivableNetCurrent",)),
     "xrd": ("d", ("ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
@@ -1105,6 +1106,8 @@ def hand_items(v: dict[str, Any]) -> dict[str, Any]:
     else total diluted EPS when no discontinued operations), lt (reported Liabilities only), pstk
     and txditc 0 when not reported, be = seq + txditc - pstk."""
     h = dict(v)
+    if h.get("che") is not None and h.get("short_invest") is not None:
+        h["che"] += h["short_invest"]
     if h.get("sale") is None and h.get("int_inc") is not None and h.get("nonint_inc") is not None:
         h["sale"] = h["int_inc"] + h["nonint_inc"]
     h["ib"] = h.get("ib_cont")

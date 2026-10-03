@@ -500,3 +500,9 @@ def test_wrds_pe_not_fabricated_without_share_class_alignment(world):
     assert 'missing_certified_security_class_diluted_EPS_alignment' in r['ratio_missing_primitives']
     assert next(x for x in R.RATIOS if x['name']=='debt_at')['num']=='lt_q0'
     assert next(x for x in R.RATIOS if x['name']=='roe')['num']=='ni_ttm'
+
+
+def test_hand_cash_includes_actual_short_term_investments():
+    h=R.hand_items({'che':453001000.0,'short_invest':14185000.0})
+    assert h['che']==467186000.0
+    assert R.hand_items({'che':100.0})['che']==100.0
