@@ -367,7 +367,8 @@ def measure_coverage(specification: Path, features: Path, output: Path) -> dict[
                     OR CAST(c.previous_session_close AT TIME ZONE 'UTC' AS TIME)!=TIME '22:00:00'""").fetchone()[0]
             else:
                 invalid=con.execute(f"""SELECT count(*) FROM {actual_sql} m
-                    WHERE m.session_date!=last_day(m.session_date)
+                    WHERE m.session_date!=(SELECT max(c.session_date) FROM {calendar_sql} c
+                        WHERE date_trunc('month',c.session_date)=date_trunc('month',m.session_date))
                     OR m.cutoff!=(CAST(m.session_date AS TIMESTAMP)+INTERVAL 22 HOUR) AT TIME ZONE 'UTC'
                     OR NOT EXISTS(SELECT 1 FROM {calendar_sql} c
                         WHERE date_trunc('month',c.session_date)=date_trunc('month',m.session_date))""").fetchone()[0]

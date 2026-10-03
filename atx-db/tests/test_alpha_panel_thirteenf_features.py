@@ -141,7 +141,7 @@ def test_native_coverage_preserves_full_denominator_strict_clock_and_latest_quar
     for table,path in (("m",member),("m",expected),("f",features)):
         con.execute(f"COPY {table} TO '{path.as_posix()}' (FORMAT parquet)")
     calendar_path=tmp_path / "calendar.parquet"
-    con.execute(f"COPY (SELECT DISTINCT session_date,cutoff AS previous_session_close FROM m) TO '{calendar_path.as_posix()}' (FORMAT parquet)")
+    con.execute(f"COPY (SELECT DISTINCT session_date,cutoff AS previous_session_close FROM m UNION ALL SELECT DATE '2020-05-29',TIMESTAMPTZ '2020-05-28T22:00:00Z' UNION ALL SELECT DATE '2024-03-28',TIMESTAMPTZ '2024-03-27T22:00:00Z') TO '{calendar_path.as_posix()}' (FORMAT parquet)")
     specfile=tmp_path / "coverage.json"
     item=dict(calendar=str(calendar_path),calendar_sha256=sha256_file(calendar_path),cutoff_policy="daily_previous_session_close",path=str(member),path_sha256=sha256_file(member),expected_keys=str(expected),expected_keys_sha256=sha256_file(expected))
     spec={name:item.copy() for name in ("member_equity","univ_all_common","univ_r3000p")}
@@ -150,9 +150,12 @@ def test_native_coverage_preserves_full_denominator_strict_clock_and_latest_quar
     level=next(row for row in receipt["reports"]["member_equity"] if row["metric"]=="inst_ownership")
     assert level["benchmark_cells"]==3 and level["qualified_cells"]==1
     assert level["known_zero_cells"]==1 and level["no_visible_feature_cells"]==2
-    for date,clock,valid in (("2020-05-31","2020-05-31T22:00:00Z",True),
-                             ("2020-05-30","2020-05-30T22:00:00Z",False),
-                             ("2020-05-31","2020-05-29T22:00:00Z",False)):
+    for date,clock,valid in (("2020-05-29","2020-05-29T22:00:00Z",True),
+                             ("2020-05-31","2020-05-31T22:00:00Z",False),
+                             ("2020-05-29","2020-05-28T22:00:00Z",False),
+                             ("2024-03-28","2024-03-28T22:00:00Z",True),
+                             ("2024-03-29","2024-03-29T22:00:00Z",False),
+                             ("2024-03-31","2024-03-31T22:00:00Z",False)):
         for path in (member,expected):
             con.execute(f"COPY (SELECT DATE '{date}' AS session_date,security_id,TIMESTAMPTZ '{clock}' AS cutoff FROM m) TO '{path.as_posix()}' (FORMAT parquet)")
         for item in spec.values():
