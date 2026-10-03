@@ -451,3 +451,105 @@ R-8's `strategy_risk_target.{hpp,cpp}` gains a second law; the default is unchan
 5. Y-2 starts in 2021 (2020 is the parent's), has 12 themes and about 36 blocks. The paired dSR SE will be large.
 6. Decide and deploy carry no keys for `--vol-target`, `--rank-shape` or `composition_schedule`, so a manifest pinned to
    these runs is refused. That is intended; decide is out of scope.
+
+## Review fixes (review-ycomb.md, verdict MERGEABLE_WITH_FIXES; PM8-16 applied)
+
+Every finding was read against its cited lines and fixed in order; none is contested. The C++ stays unbuilt. Gtests
+are in `atx-impl-strategy-target-tests` unless noted.
+
+| # | Finding | Commit | Test |
+|---|---|---|---|
+| 1 | per-name rate accepted with two-speed | `0fa17a78` | `TwoSpeed.PerNameRateIsRefused` |
+| 2 | mixed-cadence two-speed grid; groups declaration | `0fa17a78` | `TwoSpeed.GridHasOneCadenceAndOneLockstepPerLeverage` |
+| 3 | theta_s = .05 not enforced | `5c5ea976` | `TwoSpeed.RefusedOutsideItsConstruction` |
+| 4 | theta_f per rebalance ignores the cadence | `e1460432` | `BookTwoSpeed.FastThetaFollowsTheCadence`, `TwoSpeed/TwoSpeedCadence.*`, `TwoSpeed.RuleIdRecipeAndSummaryCarryTheRuleOnlyWhenOn` |
+| 5 | fast-only skip left the slow sleeve's Applied in the record | `adddd4eb` | `TwoSpeed.AFastOnlySkipIsTheRecordsSkip` |
+| 6 | parent diagnostic aborted the run on error | `271c880c` | `TwoSpeed.ParentDiagnosticRecordsAndMatchesTheParentsSkips`, `...SummaryPrintsTheSleeveSkipsBesideTheParents` |
+| 7 | budget did not charge the sleeve state | `38746000` (4 vectors after #10) | `TwoSpeed.BudgetChargesTheSleeveState` |
+| 8 | ConstructionDay growth with flags absent | `ab1b4cf2` | `TwoSpeed.FlagsSitInTheRecordsPadding` |
+| 9 | fast share counted absent themes | `5ee9f039` | `TwoSpeed.FastShareCountsOnlyThemesPresentAtTheDate` |
+| 10 | F stale under the scaler | `573816d3` | `BookTwoSpeed.CarryKeepsTheFastHoldingAtTheBooksScale`, `BookTwoSpeed.CarryRefusalsWriteNothing`, `TwoSpeed.UnderVolTargetTheHookPlansTheCarriedNettedAimAtLt` |
+| 11 | `--rank-shape` accepted with aim-partial-v6 | `f51c7289` | `NormScore.NavParseRefusesTheRankShapeWithAimPartialV6` |
+| 12 | zero-share identity without neutralization or locate-in-aim | `7bed03e8`, `e1065b75` | `TwoSpeed.ZeroFastShareUnderNeutralizationAndLocateInAimIsTheParentRunBitForBit` |
+| 13 | fixed-L closed form was a tautology | `5ceea789`, `5894f77a` | `TwoSpeed.UnderARiskTargetTheBookIsTheScaledSleeveDecomposition` |
+| 14 | stale Python-copy clause | `a5d7b9e3` | none (comment) |
+| 15 | template and report said "refused with risk/vol-target" and `provenance.two_speed` | `b3b5dab4` | `scripts/tests/test_research_spec.py` |
+| 16 | lines over 100 columns | `c76bdb33` | none (layout) |
+
+**What each fix does.**
+
+1. `validate_nav_config` refuses `two_speed_on(cfg.target) && cfg.rate != Fixed`, so the refusal no longer depends on
+   a v7 flag claiming the argv.
+2. The grid's one-cadence guard now covers two-speed. Two-speed variants run one lockstep per aim leverage: theta_s is
+   pinned and the cadence is one, so L alone separates the constructions. `grid_manifest.json` writes
+   `two_speed_groups_declaration` instead of the ADV-cap text.
+3. `validate_config` refuses `trade_fraction != engine::book::two_speed_slow_theta`. The TwoSpeed fixture runs parent
+   and cell at .05.
+4. The rate is now `engine::book::two_speed_fast_theta(C) = 1 - 2^(-C/5)`, applied at the config's cadence. The
+   recipe's `two_speed_theta_fast` and the summary print theta_f, and the summary also prints `cadence`.
+5. On `!fast_ok && slow_ok` the record takes the fast sleeve's outcome and statistics (`copy_neutralization`). Cadence
+   decisions, neutralization skips, the NAV skip line and holdings days then count the skip.
+6. The diagnostic no longer uses `ATX_TRY`. An error sets `two_speed_parent_failed`, and the summary prints
+   `parent_constructions_failed`. The comment, the summary text and this report state its cost: a third construction
+   and neutralization per decision, about 3x the parent's construction time.
+   - On valid inputs a parent-only error is unreachable, because the parent shares the sleeves' config, prices,
+     members and mask, and the ranks are always finite. So the recording is pinned at the summary level, and the run
+     test shows zero failures with the parent's exact skip count.
+7. `desired_state_bytes` charges `two_speed_on ? 4 : 0` f64 per name: F, F entering the step (#10), the fast desired
+   target and the diagnostic scratch.
+8. The three two-speed bools moved into `ConstructionDay`'s padding after `neutralize`. With every flag absent the
+   record now grows 16 B (Y-3's two fields), not 24 B. The identity claim and its headroom bound are in "How root
+   verifies flag absent" above: at most 0.28 MB against the 1 GiB `--max-bytes`. That is a bound, not a measured run.
+9. Per date, m_f sums the mass in force over the themes whose re-ranked plane row has a present cell. If no theme is
+   present, m_f is 0. With every theme present the share is unchanged bit for bit.
+10. `engine::book::two_speed_carry` adds `(1 - lambda_prev / lambda) (1 - theta_s) / theta_s F / L` to each member's
+    netted desired target.
+    - The plan at `lambda L` then steps to `R + theta_s (lambda L m_s d_s - R) + lambda F_next`, with
+      `R = c - lambda_prev F`.
+    - The shared construction keeps F entering the step (`DesiredState::fast_before`). The replay passes it through
+      `PlanInputs` to `v7::plan`.
+    - `State::plan` keeps lambda per book (cleared per pass). It refuses a scaled two-speed rebalance without F before
+      the scaler moves.
+    - Equal scales write nothing, so unscaled runs and the zero-share identities are unchanged.
+11. `parse_nav_v7_args` refuses `--rank-shape` when `--rule aim-partial-v6` was given.
+12. Price-risk-v1 with `--locate-in-aim` runs on synthetic borrow fields, with the flat fast sleeve the runner saves at
+    m_f = 0. Every NAV day, every `ConstructionDay` field, both skip flags, the construction summary (minus the
+    two-speed keys) and the NAV summary equal the parent's.
+13. The test replaces the tautological fixed-L closed form. It runs `replay_nav_scenarios` with a holdings sink under
+    risk-target-v1 at sigma* 1e-4, where every estimate clips at .8 L.
+    - Each member's plan must equal the scaled sleeve decomposition, from independent sleeve constructions and the
+      scaler's recorded L_t.
+    - It asserts L_t != L, a scale change between rebalances, and a carry above 1e-6.
+14. The clause is deleted. The C++ table is the only copy.
+15. The `y-two-speed.json` description and this report's registered text now say:
+    - composition with `--risk-target` / `--vol-target` since 3ff73201, and the carry of lambda F;
+    - the fast share is read from `<role>_sleeve_fast_share.f64`;
+    - the PM8-16 constants and refusals.
+16. Every line this lane added over 100 columns is wrapped in the listed files (`two_speed.hpp`,
+    `book_two_speed_test.cpp`, `strategy_target_replay.{cpp,hpp}`, `strategy_nav_v7.cpp`, `strategy_nav_replay.cpp`)
+    and in `strategy_two_speed_test.cpp`.
+    - The C++ edits only rewrap; the test file also gains two named argv vectors and a longer header comment.
+    - The IC-family files (`strategy_ic_*`) keep their surrounding long-line style. At base they already carry
+      14 to 435 such lines each.
+
+**Found while fixing (not in the review).**
+
+- The delivered `TwoSpeed.ZeroFastShareIsTheParentRunBitForBit` read `NavReplayDay::turnover`, a field that does not
+  exist, so it would not have compiled. It now reads `one_way_turnover` (`7bed03e8`).
+- Two slips of mine were fixed in their own follow-up commits: a helper used before its definition (`e1065b75`) and a
+  missing `<map>` (`5894f77a`).
+- A field audit of the TwoSpeed, VolTarget and NormScore tests against the `NavReplayDay`, `ConstructionDay`,
+  `NavSummary` and `NavHolding` definitions finds no other unknown member.
+
+**Tests run (synthetic data only).**
+
+- `atx-impl/tools`: `test_composition_two_speed.py test_composition_theme_tsmom.py test_composition_theme_erc.py
+  test_fit_composition_weights.py test_composition_resid.py test_composition_ic_shrink.py test_composition_rules.py`
+  gave 178 passed, 17 subtests passed.
+- `scripts/tests/test_research_spec.py` gave 76 passed.
+
+**gtest filters to add for root.**
+
+- `atx-impl-strategy-target-tests`: `--gtest_filter=TwoSpeed.*:TwoSpeed/TwoSpeedCadence.*:BookTwoSpeed.*:NormScore.*`.
+  `TwoSpeed.DesiredIsTheNettedSleeveAim` is now the parametrised `TwoSpeed/TwoSpeedCadence.DesiredIsTheNettedSleeveAim/{0,1}`.
+- `atx-impl-strategy-ic-tests`: `TwoSpeedRunner.*` (unchanged).
