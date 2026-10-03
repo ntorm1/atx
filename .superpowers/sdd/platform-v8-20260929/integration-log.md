@@ -7328,3 +7328,4 @@ Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cy
 |---|---|---|---|---|---|---|---|
 | 01 preflight | 0 | 0.4 | - (no exe) | 4,688 / 4,665 | `c1d7ad9ab16cd9402de476490112880ee1a09627444b32073669181121de70e9` | - | manifest commit `43128be8` (`f538f9f5`); parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `e29365d1`; ledger 130 lines N 59 (head `58bce60e`); budget v8y-construction-n59-plus-1, construction cap 62 |
 | 02 register | 0 | 0.1 | - | 4,604 / 4,604 | `05b1cd155d78f9f2a6de5f6fc80032088efa279ec1b516ac66e8644f2bdf17fa` | - | `{"skipped": "a rule wave registers no strings"}` |
+| 03 screen | 0 | 0.1 | - | 4,597 / 4,597 | `8b01c8bfd13700c65a2f72f937b6a4c3cc35f967e9dc3dfc14498d0a46880747` | - | `{"skipped": "a rule wave has no admission strings"}` (no gate, 0 admission trials) |
