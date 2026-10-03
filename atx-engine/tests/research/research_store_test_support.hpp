@@ -112,6 +112,11 @@ inline constexpr GroupOps kMigGroupV2 =
 inline constexpr GroupOps kPlainCatalogGroup =
     group_ops<kPlainTable>("plain_group", DbKind::Catalog, 1);
 
+// The toy cache group whose printed form is fixtures/research_store/schema/toy.json: the
+// Python accessor tests use it for every Sql type (the real groups have no bool or blob).
+inline constexpr GroupOps kToyGroup =
+    group_ops<kStoreInfoTable, kToyTable, kPlainTable>("toy", DbKind::Cache, 1);
+
 inline std::string sha(char c) { return std::string(64, c); }
 
 inline ToyRow sample_toy(std::string key) {

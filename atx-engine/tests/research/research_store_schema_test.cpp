@@ -21,6 +21,8 @@ TEST(ResearchStoreSchema, GroupJsonEqualsFixture) {
   const std::string cache = store::group_schema_json(store::cache_group());
   EXPECT_EQ(core, store::test::read_bytes(store::test::fixture("schema/catalog_core.json")));
   EXPECT_EQ(cache, store::test::read_bytes(store::test::fixture("schema/cache.json")));
+  EXPECT_EQ(store::group_schema_json(store::test::kToyGroup),
+            store::test::read_bytes(store::test::fixture("schema/toy.json")));
   EXPECT_EQ(core.find('\r'), std::string::npos);
   EXPECT_EQ(core.back(), '\n');
 }
