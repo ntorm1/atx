@@ -1,0 +1,28 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8y-norm-score-y-3-gm",
+  "description": "Y cell (lane YCOMB, task-YCOMB-report.md rule Y-3; runs only under the PM's Y registration; parent = the last accepted unlevered book, X-F0 or a later accepted Y book): concentration rule norm-score-v1, registered blind before any read; no free constant. Hypothesis (Grinold and Kahn, Active Portfolio Management, 2nd ed., ch. 14: a forecast alpha = volatility x IC x score with a standard-normal score; van der Waerden 1952 scores): the blend's expected return is linear in the normal score of its rank, not in the uniform rank, so holding each member in proportion to its normal score puts more of the book's gross on the names whose expected return is largest and raises the return per unit of gross; at the executable's leverage cap 2.0 that is the only way the same gross earns more. Rule: on every rebalance decision each member's centred tied rank is replaced by z = Phi^{-1}(u), u = (b + e + 1) / (2 (N + 1)) for the tie block [b, e) of the N members sorted by the blend (the block's mean 1-based rank over N + 1; ties share one score), BEFORE the demean; then the parent's demean, gross 1, locate zeroing, neutralization (price-risk-v1) and trading rule unchanged; one shared target for every scenario and capacity book. At N = 1,850 the largest |z| is about 3.3 against a mean |z| of about .8 (the tied rank: .5 against .25). The change: nav --rank-shape norm-score-v1 (aim-partial-v5; refused with --hold-band, with --vol-scale, by spo-v1/v2). NAV-only: u, fit, card and w are the parent's. Gross matching (Ruling PM6-6) applies: the rule changes the shape of the target, not its scale, so it is judged at the parent's dollar gross; a calibration run at the parent's L (mechanics only: all-rows S2 gross G_cal, no return read), then the trial at L = L_parent x G_parent / G_cal (4 decimals) set by root as nav.leverage in a -gm copy. Identity before the cell: flag absent byte-identical (atx-impl-strategy-target-tests NormScore.* BookNormalScore.*; the parent's NAV argv re-run reproduces the parent's files). Decide is out of scope (no nav.rank_shape deploy key: a manifest pinned to this run is refused as a recipe pin mismatch). Acceptance (PM7-34 default): paired S2 net dSR > 0 against the parent AND mechanics. Registered criterion of the hypothesis, printed and deciding nothing: S2 gross-of-cost annual return per unit of all-rows gross above the parent's (at matched gross: gross return above the parent's). Also printed: net annual return, realised vol, turnover per unit gross, cost per traded dollar, borrow, net Sharpe at 4x NAV, summary construction.rank_shape. Wave y-3 at matched gross (Ruling PM6-6, research_cycle.py wave): calibration at L 1.1828 gave all-rows S2 gross 1.0016936049 vs G_parent 0.9862134133; L = 1.1828 x 0.9862134133 / 1.0016936049 -> 1.1645.",
+  "parent": "lib-v8ysb-gm.json",
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8y-norm-score-L1.1645",
+      "nav.leverage": "1.1645"
+    },
+    "flags": {
+      "nav": {
+        "--rank-shape": "norm-score-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb/summary.json",
+      "sha256": "2d30b7f6466cbcb3e5bf0f4758ce5570e853d26b15b44eba93814151e21aa525"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json",
+      "sha256": "121f70466884030f97d98ec3d965760e7df376c160385072d0abc8428b9bf255"
+    }
+  }
+}
