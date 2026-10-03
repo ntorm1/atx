@@ -9,7 +9,9 @@ No C++ was built and no real data was read (lane rules). The Python checker and 
 | 2 | `97e6befc` | the as-of rank family (106 to 111 with `group_delay`), `group_delay`, the oracle twin, `yops_check.py` (10 frozen strings) |
 | 3 | `b5596bd1` | `alpha_formulaic_ops_test.cpp` (gtest) and `test_yops_check.py` (pytest) |
 | 3 | `75a73cac` | cross-lane: lists `asof_ops.hpp` in the DSL-VM sources tripwire and re-pins it (no semantics bump) |
-| 4 | this commit | this report |
+| 4 | `7bfead7a` | this report |
+| - | `6674e986` | vm.hpp comment (the ChunkAxis vocabulary); the tripwire pin was computed with it and matches at HEAD |
+| - | `fe790af7` | test battery: a 6-session as-of correlation on `close` (robust finite-cell check) |
 
 **No registration changed.** No existing registry row, opcode id, kernel result, typecheck rule for an existing op, or
 factory table changed (section 7 gives the proof and how root checks it).
