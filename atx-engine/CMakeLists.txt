@@ -252,13 +252,18 @@ target_link_libraries(atx-shm-worker PRIVATE atx::engine atx_warnings)
 add_library(atx-engine-research-fields ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
     src/research/fields/asof_series.cpp
     src/research/fields/clock.cpp
+    src/research/fields/field_registry.cpp
     src/research/fields/field_spec.cpp
     src/research/fields/field_stats.cpp
     src/research/fields/field_writer.cpp
     src/research/fields/file_io.cpp
     src/research/fields/finra_asof_field.cpp
     src/research/fields/finra_inputs.cpp
+    src/research/fields/manifest.cpp
+    src/research/fields/producer.cpp
+    src/research/fields/registry.cpp
     src/research/fields/research_fields_cli.cpp
+    src/research/fields/reuse.cpp
     src/research/fields/role_axes.cpp
     src/research/fields/role_rows.cpp
     src/research/fields/trailing_mean.cpp
@@ -269,15 +274,54 @@ target_include_directories(atx-engine-research-fields
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
 target_compile_features(atx-engine-research-fields PUBLIC cxx_std_20)
+# nlohmann_json is PUBLIC: the field registry, builder-kind, manifest and reuse headers speak JSON
+# documents (K-P9-1 rows, kind blocks, manifest entries).
 target_link_libraries(atx-engine-research-fields
     PUBLIC
         atx::core
+        nlohmann_json::nlohmann_json
     PRIVATE
-        atx_warnings
-        nlohmann_json::nlohmann_json)
+        atx_warnings)
 
-# Slice 3: the field builder's executable (`atx-research-fields build --spec S --receipt R`), the
-# engine path of prepare_research_fields.py --engine-fields. EXCLUDE_FROM_ALL like its library.
+# P9 K-P9-3 producer identity: the git commit and build type baked at configure time into one
+# generated source (the atx-impl engine_git_sha rule: `git rev-parse HEAD`, "-dirty" for a modified
+# tree, "unknown" without git). configure_file rewrites it only when the text changes, so a no-op
+# build stays a no-op; a changed value recompiles that one source. The value is provenance; reuse is
+# keyed on the executable's own SHA-256 (producer.hpp).
+set(ATX_RESEARCH_FIELDS_GIT_SHA "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _atx_fields_git_sha
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _atx_fields_git_rc
+        ERROR_QUIET)
+    if(_atx_fields_git_rc EQUAL 0 AND _atx_fields_git_sha)
+        set(ATX_RESEARCH_FIELDS_GIT_SHA "${_atx_fields_git_sha}")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" status --porcelain
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _atx_fields_git_dirty
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(_atx_fields_git_dirty)
+            set(ATX_RESEARCH_FIELDS_GIT_SHA "${ATX_RESEARCH_FIELDS_GIT_SHA}-dirty")
+        endif()
+    endif()
+endif()
+set(ATX_RESEARCH_FIELDS_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+if(NOT ATX_RESEARCH_FIELDS_BUILD_TYPE)
+    set(ATX_RESEARCH_FIELDS_BUILD_TYPE "unknown")
+endif()
+set(_atx_fields_identity_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/research_fields_build_identity.cpp")
+configure_file(src/research/fields/build_identity.cpp.in "${_atx_fields_identity_cpp}" @ONLY)
+target_sources(atx-engine-research-fields PRIVATE "${_atx_fields_identity_cpp}")
+
+# Slice 3: the field builder's executable (`atx-research-fields build --spec S --receipt R
+# [--registry REGISTRY]`), the engine path of prepare_research_fields_engine.py and, with the field
+# registry (K-P9-1), a publish-last fields manifest with reuse. EXCLUDE_FROM_ALL like its library.
 add_executable(atx-research-fields EXCLUDE_FROM_ALL src/research/fields/research_fields_main.cpp)
 target_link_libraries(atx-research-fields PRIVATE atx::engine-research-fields atx_warnings)
 

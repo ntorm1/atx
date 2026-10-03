@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "atx/engine/research/fields/producer.hpp"
 #include "atx/engine/research/fields/research_fields_cli.hpp"
 #include "research/research_fields_test_support.hpp"
 
@@ -101,13 +102,23 @@ TEST(ResearchFieldsCli, ReceiptEqualsThePythonManifest) {
   const std::vector<std::string> names{"si_shares", "si_dtc", "vol_126"};
   const auto spec = fields::parse_build_spec(spec_text(out, names));
   ASSERT_TRUE(spec.has_value());
-  const auto text = fields::build_fields(*spec, std::string(64, 'a'));
+  const fields::ProducerIdentity producer{std::string(64, 'e'), "0123abc", "Debug"};
+  const auto text = fields::build_fields(*spec, std::string(64, 'a'), producer);
   ASSERT_TRUE(text.has_value()) << text.error().message();
   const Json receipt = Json::parse(*text);
   const Json manifest = expected_manifest();
   EXPECT_EQ(receipt.at("schema"), "atx.research-fields-receipt/v1");
   EXPECT_EQ(receipt.at("status"), "complete");
   EXPECT_EQ(receipt.at("spec_sha256"), std::string(64, 'a'));
+  // The engine identity (K-P9-3) that prepare_research_fields_engine.py stamps into each entry.
+  const Json &engine = receipt.at("engine");
+  EXPECT_EQ(engine.at("name"), "atx-research-fields");
+  EXPECT_EQ(engine.at("fields"), Json(names));
+  EXPECT_EQ(engine.at("exe_sha256"), std::string(64, 'e'));
+  EXPECT_EQ(engine.at("git_sha"), "0123abc");
+  EXPECT_EQ(engine.at("build_type"), "Debug");
+  EXPECT_FALSE(receipt.contains("registry")); // the registry-less receipt keeps its v1 keys
+  EXPECT_FALSE(receipt.contains("reused"));
   EXPECT_EQ(receipt.at("role").at("manifest_sha256"), manifest.at("role").at("manifest_sha256"));
   ASSERT_EQ(receipt.at("fields").size(), names.size());
   for (std::size_t i = 0; i < names.size(); ++i) {
@@ -150,6 +161,14 @@ TEST(ResearchFieldsCli, MainPublishesTheReceiptLastAndOnce) {
   ASSERT_EQ(fields::research_fields_main(args, out, err), 0) << err.str();
   const Json written = Json::parse(support::read_bytes(dir / "receipt.json"));
   EXPECT_EQ(written.at("spec_sha256"), support::sha256_of(support::read_bytes(dir / "spec.json")));
+  // The running executable's identity; the registry-less path publishes no manifest.
+  const auto self = fields::current_producer();
+  ASSERT_TRUE(self.has_value()) << self.error().message();
+  EXPECT_TRUE(fields::is_known(*self));
+  EXPECT_EQ(written.at("engine").at("exe_sha256"), self->exe_sha256);
+  EXPECT_EQ(written.at("engine").at("git_sha"), self->git_sha);
+  EXPECT_EQ(written.at("engine").at("build_type"), self->build_type);
+  EXPECT_FALSE(support::fs::exists(dir / "out" / "manifest.json"));
   // A second build finds the payload in place (exclusive create): exit 1, the receipt untouched.
   const std::string before = support::read_bytes(dir / "receipt.json");
   EXPECT_EQ(fields::research_fields_main(args, out, err), 1);

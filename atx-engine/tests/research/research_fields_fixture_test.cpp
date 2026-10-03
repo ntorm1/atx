@@ -167,9 +167,7 @@ TEST(ResearchFieldsFixture, FinraFieldsAreByteIdentical) {
     expect_sources(e, built.sources);
     const Json &checks = manifest.at("source_checks").at(name);
     EXPECT_EQ(checks.at("rows_total").get<atx::u64>(), built.stats.rows_total) << name;
-    EXPECT_EQ(checks.at("rows_available_on_or_after_2025_dropped").get<atx::u64>(),
-              built.stats.rows_sealed)
-        << name;
+    EXPECT_EQ(checks.at("rows_sealed_dropped").get<atx::u64>(), built.stats.rows_sealed) << name;
     EXPECT_EQ(checks.at("rows_matched_axis").get<atx::u64>(), built.stats.rows_matched_axis)
         << name;
     EXPECT_EQ(checks.at("rows_ignored_unknown_id").get<atx::u64>(),
@@ -192,9 +190,5 @@ TEST(ResearchFieldsFixture, FinraFieldsAreByteIdentical) {
   }
   // The seal probe: one synthetic si_shares row is dated after the seal; both builders drop and
   // count it.
-  EXPECT_EQ(manifest.at("source_checks")
-                .at("si_shares")
-                .at("rows_available_on_or_after_2025_dropped")
-                .get<int>(),
-            1);
+  EXPECT_EQ(manifest.at("source_checks").at("si_shares").at("rows_sealed_dropped").get<int>(), 1);
 }

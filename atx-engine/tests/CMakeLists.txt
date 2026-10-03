@@ -393,3 +393,9 @@ target_link_libraries(atx-engine-w1-data-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-data-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+# P9 lane A2 (cross-lane append, ruling P2): the field registry / builder-kind (K-P9-1, K-P9-2) and
+# publish-last manifest / producer / reuse (K-P9-3) gtests join the research-fields test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_registry_test.cpp
+    research/research_fields_manifest_test.cpp)
