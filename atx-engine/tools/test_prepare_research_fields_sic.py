@@ -16,10 +16,13 @@ import numpy as np
 import pyarrow as pa
 
 import prepare_research_fields as tool
+import t2_gold
 import test_prepare_research_fields as T
 
 # SHA-256 of the canonical files dict (payload pins) of the ISSUER_RUN build below, computed with
-# prepare_research_fields.py at the U2 base commit a5e4a10d (before --sic-events existed).
+# prepare_research_fields.py at the U2 base commit a5e4a10d (before --sic-events existed). Ruling T2-GOLD-4: it pins
+# that build on the pre-T2 (2024-dated) base fixture, so it is checked on t2_gold's frozen copy of that fixture under
+# research-seal-v1; every other test here runs on the re-dated fixture under the repository window.
 GOLDEN_ISSUER_FILES = "784e0496f18fde9d2b18cd5e5e7f73d8aaa19b5ee69488706ccfeee7ece56566"
 GRP = ("grp_sic2", "grp_ff12", "grp_ff49")
 STAGE_SCHEMA = pa.schema([("cik", pa.int64()), ("clock_utc", pa.timestamp("us")), ("sic", pa.int32()),
@@ -27,8 +30,8 @@ STAGE_SCHEMA = pa.schema([("cik", pa.int64()), ("clock_utc", pa.timestamp("us"))
                           ("accession", pa.string()), ("sic_basis", pa.string())])
 # (cik, clock, sic, accession, sic_basis): the events fixture's SIC rows, as the stage publishes them
 SAME = [(c, t, s, a, "fsds_sub") for c, t, s, a in T.SIC_EVENTS]
-DIFF = [(c, t, 2834 if a == "0000001001-24-000005" else s, a, "fsds_sub") for c, t, s, a in T.SIC_EVENTS] + [
-    (2002, T.at(2024, 10, 20, 12), 6022, "0000002002-24-000009", "carried")]   # re-dates 2002's 2023 SIC
+DIFF = [(c, t, 2834 if a == "0000001001-23-000005" else s, a, "fsds_sub") for c, t, s, a in T.SIC_EVENTS] + [
+    (2002, T.at(2023, 10, 22, 12), 6022, "0000002002-23-000009", "carried")]   # re-dates 2002's 2022 SIC
 
 
 def files_digest(manifest) -> str:
@@ -98,9 +101,12 @@ class SicEventsOverride(unittest.TestCase):
         return {e["name"]: e for e in manifest["fields"]}
 
     def test_without_the_option_every_payload_is_the_base_commit_bytes(self):
-        self.assertEqual(files_digest(self.plain), GOLDEN_ISSUER_FILES)
-        self.assertNotIn("sic_events_override", self.plain["source_checks"]["issuer"])
-        self.assertFalse(any("sic_events_override" in e for e in self.plain["fields"]))
+        with tempfile.TemporaryDirectory() as temp, t2_gold.superseded_window():   # ruling T2-GOLD-4
+            frozen = t2_gold.issuer_plain(Path(temp))
+        self.assertEqual(files_digest(frozen), GOLDEN_ISSUER_FILES)
+        for m in (frozen, self.plain):
+            self.assertNotIn("sic_events_override", m["source_checks"]["issuer"])
+            self.assertFalse(any("sic_events_override" in e for e in m["fields"]))
 
     def test_same_rows_every_payload_byte_identical(self):
         self.assertEqual(self.same["files"], self.plain["files"])
@@ -140,12 +146,12 @@ class SicEventsOverride(unittest.TestCase):
             moved |= ~same_nan(got, self.fx.field("plain", f"grp_{kind}"))
         a, b = T.IDS.index(101), T.IDS.index(202)
         want = np.zeros_like(moved)
-        want[T.t_of("2024-10-25"):, a] = True                  # 1001: 3674 -> 2834 from its s0 + 1
-        stale = [t for t, d in enumerate(T.SESSIONS) if (d - dt.date(2023, 5, 1)).days > 550 and d <= dt.date(2024, 12, 2)]
+        want[T.t_of("2023-10-25"):, a] = True                  # 1001: 3674 -> 2834 from its s0 + 1
+        stale = [t for t, d in enumerate(T.SESSIONS) if (d - dt.date(2022, 5, 2)).days > 550 and d <= dt.date(2023, 12, 4)]
         want[stale, b] = True                                  # 2002: the carried row keeps 6022 fresh
         np.testing.assert_array_equal(moved, want)
         self.assertTrue(stale)
-        self.assertEqual(self.fx.field("diff", "grp_ff12")[T.t_of("2024-11-04"), b], 11)
+        self.assertEqual(self.fx.field("diff", "grp_ff12")[T.t_of("2023-11-06"), b], 11)
         self.assertEqual(self.diff["source_checks"]["issuer"]["sic_events"]["rows_used_carried"], 1)
 
     def test_grp_only_needs_no_fund_events(self):
