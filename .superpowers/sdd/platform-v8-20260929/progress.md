@@ -2173,3 +2173,13 @@ significance and capacity. We need to clear the hurdle rate first to enter produ
   Sharpe 1.6087 (parent 1.7695); dSR -.1607, SE .1927, p one-sided .810 (two-sided .399); mechanics pass; capacity
   criterion unmet (4x 1.506 against 1.655); turnover .03562 (.02684). Net annual 4.61% (5.08%), gross of cost 6.26%
   (6.45%), max drawdown 2.18%. DSR at N 56 .731. Admission trials: X hand-written 25 (13 + 12). Parent stays X-5.
+- Campaign v9-mine-c1 (log "X batch 2, resumed", step 4) on H-F = X-5: A3 left 10 fields, B = 110 (z 3.5062, raw
+  discover t 5.3996); pool 47 members + the book composite; probe 3,737 / 2,577 / 2,560 MiB at 4 / 2 / 1 workers (the
+  12-field probe matches the joined model at the role's 5,922 names), W 4, cap 3,776 MiB. A tool defect stopped the
+  probe before any verb ran (Windows relative path), fixed in `research_mine.py` (`23b52a5d`, rule 7). Run 232.6 s,
+  completed; campaign line `f1ce3bf835d4dc54` (registry count 110), N_c unchanged 56, second line refused (exit 2);
+  mechanics pass (distinct 110 = 101 evaluated + 9 screen-rejected; racing / rung-failed 0). Shortlisted 0 (largest
+  raw f2 5.00 against 5.40), admitted 0. X-9 undefined (0). M 110; N_tot 212. Tests `a1d2ef74` (the registered
+  template kept as a fixture; the live spec pinned as locked): `scripts/tests` 251 passed, 0 failed.
+- X batch 2 stopped where PM8-3 puts the stop: X-10 deferred. Accepted X book = X-5 (S2 net Sharpe 1.7695, net 5.08%,
+  gross of cost 6.45%, 4x 1.655, tau .02684, max drawdown 2.06%). Ledger 112 lines, head `d1484e69`.

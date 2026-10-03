@@ -6352,3 +6352,72 @@ fills); fixed in tests only after the run (as `4d0c8d8f`).
   off); budget 110 (ceiling in force 10000)`; `Bonferroni z 3.5062`, `F 1.54`, `raw discover t 5.3996`; `Fc by m (m
   1..16: 1.77; cap 16)`; `discover [2020-01-01, 2023-01-01), confirm [2023-01-01, 2024-01-01)`; `--max-memory-mib 3776,
   runner 8192 MiB / 600 s`; registry `new`; no `# requires`, no `# fill` line.
+
+**Step 8, run** (`mine run scripts/specs/v9/mine-c1.json --date 2026-10-02`, source `a5df67ae` clean; launched by
+`scratchpad/mine_go.py` only when free physical memory was >= 3,776 + 1,536 MiB and no compiler ran: 6,201 MiB free; no
+other process of this session ran during it):
+
+| step | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| mine run (verb `2176fa4a`, W 4) | 600 / 8,192 / 512 free | 232.6 | 2,211 | 0 | `be23441d2bdf2d68569af3d42dc811877c0578c0c53bcc7880cd4b0376d0cdf2` | `build-equity/mine-v9-c1/`: `campaign.json` `10a64f8a`, `mined_members.json` `4f09e4e0`, `trials.csv` `d6d127a1`, `ledger_line.json` `90abe2c5` |
+
+Checked before any statistic, in the registered order (prereg section 9; runbook steps 9-10):
+1. **Receipt**: completed, exit 0, `clean in the code pathspec`, min system free 728 MiB.
+2. **Campaign line** appended by `mine run` before anything printed a statistic: trial **`f1ce3bf835d4dc54`**, kind
+   mining-campaign, count 0, registry count 110 (total 110), budget 110. Ledger 112 lines, file `0c9d36b6`, chain head
+   **`d1484e69`**; campaign lines 1; construction N **56 unchanged**. `ledger-campaign` again: **exit 2** ("shares
+   trial_id, recipe_sha256, campaign ... a second confirm read on the same identity is refused"); ledger unchanged.
+3. **Mechanics** (`mine run`'s checks; none failed): distinct **110** = evaluated 101 + screen-rejected 9 (ic-undefined) +
+   racing-rejected 0 + rung-failed 0 + failed 0 (budget 110, capacity 110); registry new 110, n_raw 110, 216,648 B, head
+   `3792dd6d`; hurdle z 3.506204726617 = z(110), overlap factor 1.54, ceiling 10,000; recipe confirm bands
+   [[16, 1.77], [64, 1.96], [256, 2.15]] (mined-v1's); label rows discover 734, confirm 228; recipe pins and windows =
+   the spec; fields = the spec's 10; footprint required_bytes 3,918,459,408 (= the probe), 232.2 s.
+4. Then, in order: **(a) counts: shortlisted 0, rho pass 0, confirm read 0, confirm defined 0, admitted 0.** (b)
+   promotions `[]`; `mined_members.json`: 0 members (registry head `3792dd6d`). (c) last, diagnostic, selects nothing:
+   `trials.csv` evaluated 101 with an f2; largest f2 4.998 (next 4.81, 4.76, 4.62, 4.05) against the raw discover hurdle
+   5.3996 (f2 / 1.54 >= 3.5062): **no trial cleared it**; 12 of 101 had f2 >= 2.
+5. `mine wave scripts/specs/v9/mine-c1.json --parent v8x3b --name v8x3bm1 --parent-spec
+   scripts/specs/v8/x-theme-erc-gm.json`: "v9-mine-c1 admitted no member: no wave, no cell, no admission trial".
+
+**Campaign v9-mine-c1: complete, final, admitted 0. M = 110** (registry count; enters N_tot by PM7-7). **X-9 (mined
+wave): undefined (0)** -- no member, no cell, no admission trial (prereg item 11; v8x prereg section 6). N_c stays 56.
+**N_tot = 102 (trial_counts of the ledger) + 110 (M) = 212.** Appendix A addition: `mined campaigns 1 (v9-mine-c1:
+budget 110, registry count 110, admitted 0)`.
+
+Tests (tests only, `a1d2ef74`): the spec edits broke `test_research_mine.py`'s 26 pins of the committed template, as
+announced; the registered template (`23b52a5d`'s bytes) is now the fixture `scripts/tests/fixtures/mine-c1.registered.json`
+that those tests read, and a new test pins the live spec as locked (A3 fields = the template's less the X members'
+fields, B 110, every pin locked, no requires, no fill, the cap a multiple of 64 <= 7,680, everything else the
+template's). `test_research_mine.py` **42 passed**; `scripts/tests` **251 passed, 3 skipped, 0 failed**;
+`test_trial_ledger_rules`, `test_mine_overlap_factor`, `test_dsr_total` **23 passed**.
+
+### State at the stop (PM8-3: X-10 deferred; root stops here)
+
+- **Accepted X book = X-5** (`scripts/specs/v8/x-theme-erc-gm.json`, library v8x3b, theme-erc-v1, L 1.1720): S2 net
+  Sharpe 1.7695, net annual 5.08%, gross of cost 6.45%, 4x net Sharpe 1.655, tau .02684, max drawdown 2.06%. H-F = X-5;
+  X-F0 so far = X-5 (Y cells next, PM8-2).
+- Cells this batch: X-7 NOT ACCEPTED (N 56, dSR -.161, p one-sided .810, two-sided .399); campaign admitted 0; X-9
+  undefined. N_c 56; admission lines 46 (v8 12, X hand-written 25, X-4 re-screens 9); M 110; N_tot 212; ledger 112
+  lines, head `d1484e69`.
+- Not run (PM8-3): X-10, the X gate / adoption print, the hidden block, OD-3.
+
+### Hidden-data record (X batch 2, resumed)
+
+- Inputs opened by tools: role lo3 and the lo3-dlret label role, fields v13 / v14 (v14 built from the role's
+  TickerHistory3 price source through the sealed builder: vendor rows on or after 2024-01-01 skipped and counted),
+  X-5's u / fit / w / NAV outputs, the lo3 candidate cache, the X-7 library outputs, the mine pool, the ledger. The fields
+  v14 build re-read the atx-db stage pins of v13's argv (hash checks; nothing under `atx-db/` written).
+- Read by me: receipts, manifests (metadata), gate rows, the cycle verdicts, the NAV mechanics keys before any return,
+  then X-7's returns after its mechanics passed, the campaign's receipt / ledger line / mechanics, then its counts and
+  the `trials.csv` f2 column (diagnostic). Every NAV's last session 2023-12-29; every manifest sealed at 2024-01-01.
+- **Nothing dated 2024-01-01 or later was opened. No 2013-2019 history read. No `stdout.log` of a NAV or of the campaign
+  verb was opened.** `C:/atx`, `atx-db/` and pools 7, 8, 10, 12-15 untouched; no push.
+
+### Open items (X batch 2, resumed)
+
+- Tool fix `23b52a5d` (`research_mine.launchable`): a code change in the scripts pathspec, outside the build; reviewers
+  may want it in the next scoped review.
+- The marginal phase is near its 360 s cap at 68-70 members (253-332 s on a quiet host); a wave above about 70 members
+  will hit it (a PM restatement of the cap, as PM7-31 did, would be needed before Y waves).
+- X-5's weights hold 11 themes, so every add-alpha wave on it needs PM6-8 (i) for the marginal (the verb takes 10 themes).
+- Disk 69,954,383,872 B free (65.1 GiB); other sessions' builds took about 50 GiB during the batch.
