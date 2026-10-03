@@ -6764,3 +6764,28 @@ up to 30 min).** Planned peaks (MiB) and gates:
 
 Gate list of `lib-v8ys.json`: the 15 strings, roster order, require any, sign_agrees. u 300 s / 2,560 MiB, w 300 / 3,072,
 card 300 / 2,560, marginal 600 / 1,536 (default rss), others 180 / 1,536.
+
+### Stage 03 screen (source `c25f7064`; gate 3,489 MiB: free 4,952 at 08:12:15, no compiler running)
+
+argv (driver): `research_cycle.py run scripts/specs/v8/lib-v8ys.json --screen --root C:/atx-wt/pool-2`. Stage exit 0, wall
+301.7 s (receipt 301.53 s); minimum system free during the stage 3,427 MiB. Receipt `03-screen.json`
+`8562e09b672d089d502b004b0e1e02d8b7f472f9fc2aea1fcdd26f66e28ce11f`; console `consoles/019-screen.log`.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 35.2 | 1,181 | 0 | `186ca092fb811b8fa5501eadc7c5ea749d2b525f9ea3a25e348152c67fac2137` | ic `985019d9` (v8-16d); **u-compare IDENTICAL**: orientations 58 objects (b adds 15), `train_daily_ic.csv` 169,708 rows of 58 keys byte for byte (b adds 43,890 rows of 15) |
+| fit | 180 / 1,536 | 8.7 | 452 | 0 | `82c5b16a7afce0611061c3c5a72337e0ac0330c735b5ed1f6f4e56dd97d2f413` | admission `b922673b` |
+| card | 300 / 2,560 | 31.6 | 1,558 | 0 | `ac133b10f4714c9356361b2d0cb38d8efa1ba82fc02507199941a96968766e9a` | - |
+| marginal (pool only) | **600** / 1,536 | **223.5** | 252 | 0 | `542b2e5e064c66ee2e880a037632caeff4d0089d06dbaaf626c196635b3b84bb` | `marginal_ic.json` `3df5f949` (73 rows); 37% of the cap: **no time-cap failure, the pre-ruled fallback did not trigger** |
+| gate p1-v8ys | internal | - | - | **PASS** (exit 0) | - | **15 admission lines appended, 0 already ledgered** (ledger 112 -> 127 lines, file `869a0c6a`; N stays 56); reference members vs X-5's admission: 0 status changes |
+
+**Admission (v4-prior-v1) and the PM7-35 sign rule, applied by the driver's code (`wave_rules.sign_pm7_35`):** 7 of 15 admitted
+with the prior sign: `iv_vol_of_vol`, `day_rev_freq`, `mom_turn`, `ea_uvol`, `dato`, `stio_trade`, `deal_target` (keep).
+`fscore_hbm` admitted with runner sign 0 (keep, R-2 precedent). `so_wang_rev` reject_turnover (tau .9659 > .70), runner sign +1
+(keep at weight 0). **Admitted with runner sign -1 against prior +1 -> dropped: `peer_mom_1m`, `exch_switch`, `ins_cluster`,
+`smile_slope`, `div_event`, `conn_rev`.** Kept 9, dropped 6 -> the cell is the b library **v8ysb** (v8x3b + the 9 kept, 67
+members; same trial ids, 0 new lines). Admission trials: X hand-written 25 + Y hand-written 15 = 40 (cap 40).
+
+**P12 b-reuse, first half:** the screen receipt's carried marginal rows equal the source `marginal_ic.json` rows 15 of 15 on
+all 7 K6 keys (canonical-JSON SHA-256 per row; `scratchpad/mcheck.py screen`). The second half (the wave result's carried
+per-row fields vs the source) is checked after the record stage.
