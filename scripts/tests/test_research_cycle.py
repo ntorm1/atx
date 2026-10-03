@@ -20,6 +20,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import research_cycle as RC  # noqa: E402
+import cycle.phases as CP  # noqa: E402  (P9 E2 split: Cycle reads window_id from its own module)
 
 FIX = HERE / "fixtures"
 V61 = HERE.parent / "specs" / "v61.json"
@@ -1432,7 +1433,7 @@ def test_runner_phase_caps_follow_the_od2_rule_and_the_spec(tmp_path):
 
 
 def test_out_root_places_outputs_and_derives_shared_stores(tmp_path, monkeypatch):
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root, sp = make_root(tmp_path)
     spec = json.loads(sp.read_text())
     spec["out_root"] = "research"
@@ -1453,7 +1454,7 @@ def test_out_root_places_outputs_and_derives_shared_stores(tmp_path, monkeypatch
 
     def absent():
         raise LookupError("no research window")
-    monkeypatch.setattr(RC, "window_id", absent)
+    monkeypatch.setattr(CP, "window_id", absent)
     with pytest.raises(RC.CycleError) as e:
         cycle_of(root, sp).steps()
     assert e.value.code == RC.EXIT_USAGE and "cannot be derived" in str(e.value)
@@ -1952,7 +1953,7 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- PM addition: cache gc
 def test_cache_gc_keeps_referenced_stores_and_never_touches_state(tmp_path, monkeypatch):
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root, sp = make_root(tmp_path)
     spec = json.loads(sp.read_text())
     spec["ic"]["cache"], spec["fit"]["work_dir"] = "build-equity/mega-candidate-cache-v2", "build-equity/mega-fit-work-v2"
@@ -1996,7 +1997,7 @@ def test_cache_gc_keeps_a_referenced_store_however_the_paths_are_spelled(tmp_pat
     used to name no referenced store, so --apply deleted them all; a spec's store spelled with './', a trailing slash or
     another case is the same store too."""
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root, sp = make_root(tmp_path)
     spec = json.loads(sp.read_text())
     cache = "./BUILD-EQUITY/mega-candidate-cache-v2/" if os.name == "nt" else "./build-equity//mega-candidate-cache-v2/"

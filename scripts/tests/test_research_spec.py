@@ -26,6 +26,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 import research_cycle as RC  # noqa: E402
+import cycle.phases as CP  # noqa: E402  (P9 E2 split: Cycle reads window_id from its own module)
+import cycle.spec as CS  # noqa: E402  (P9 E2 split: validate_spec reads INPUT_KEYS from its own module)
 import research_spec as RS  # noqa: E402
 import research_tree  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake tools and fixtures)
@@ -181,7 +183,7 @@ def label_role_input(monkeypatch):
     """Ruling E-25: lane R45 adds inputs.label_role to research_cycle (INPUT_KEYS and the NAV step's --label-role
     MANIFEST --label-role-sha256 SHA); until that merges the v8 specs are checked with the key registered here."""
     if "label_role" not in RC.INPUT_KEYS:
-        monkeypatch.setattr(RC, "INPUT_KEYS", RC.INPUT_KEYS + ("label_role",))
+        monkeypatch.setattr(CS, "INPUT_KEYS", CS.INPUT_KEYS + ("label_role",))
 
 
 def flat(node, pre: str = "") -> dict:
@@ -1400,7 +1402,7 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     """C-1: the v8 specs name the store base build-equity/fit-work; the fitter, the card and the monitor extend it with
     <role sha16>-<window id> themselves (the monitor reads every window of its role): --apply deletes none of it."""
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root = tmp_path / "root"
     specs = [V8 / n for n in V8_SPECS + GENERATED]                                   # authored and add-alpha's
     named ={RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}
