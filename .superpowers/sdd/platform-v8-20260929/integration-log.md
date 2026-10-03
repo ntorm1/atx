@@ -6662,3 +6662,23 @@ plans of record): slots 2-6, lookback 0-272, extra fields <= 4 (dato), all withi
   public lines (section "X batch 2, resumed"); no Y statistic exists or was read.
 - **Nothing dated 2024-01-01 or later was opened. No NAV `stdout.log` opened; no value of a `summary.json`, a daily CSV or
   `train_daily_ic.csv` read.** `C:/atx`, `atx-db/`, other pools and E1's files untouched; no build; no push.
+
+## P9 Phase 0, root step R0-2: P0-FIX merge and Y-S amendment (DEC-1, DEC-2; 2026-10-03)
+
+| item | result |
+|---|---|
+| head before | `fd962cb975d65e58fdfb5d2a8a6adc6808270638` (code pathspec clean; only the untracked `docs/plans/2026-10-02-x5-equity-curve.png`) |
+| merge | `git merge --no-ff 3fa2dd4affe4b4de718d222435801b318ebf5cf0` (lane E1 task 0 = P0-FIX, `feat/p9-e1-20261003`, review APPROVE `task-E1t0-review.md`) -> **`1b9b37e8`**; 18 files, +763 / -126, no conflict (root's commits since `d7c1c520` are docs / sprint files only); E1's report commit `a57961bb` and later commits not merged |
+| check live (pre-amend) | `wave plan scripts/specs/v8/waves/y-s.json` -> exit 2: `marginal.seconds 720 is above the bounded runner's maximum 600 s (research_tree.RUNNER_MAX_SECONDS; run_bounded_research.py refuses it)` |
+| `scripts/tests`, PYTHONHASHSEED=0 (`scripts/tests/run_two_seeds.py`) | **323 passed, 4 skipped**, 0 failed (403.5 s) |
+| `scripts/tests`, PYTHONHASHSEED=1 | **323 passed, 4 skipped**, 0 failed (329.6 s); runner exit 0 |
+| `atx-engine/tools` | **348 passed**, 6 subtests passed, 0 failed (232.7 s) |
+| `atx-impl/tools` | **625 passed, 2 skipped**, 17 subtests passed, 0 failed (255.0 s) |
+| amendment (pre-registration commit) | **`4492f3015346f71ecde46199dbd0ed62ad23a82c`** `prereg(v8): amend Y-S wave manifest per DEC-1, DEC-2 (R0-2)`: `y-s.json` and `y-s.head.json` `marginal.seconds` 720 -> 600 (DEC-1); budget `admission_cycle_prefix "v8x"` -> `admission_cycle_prefixes ["v8x", "v8ys"]` (DEC-2); 2 files, +7 / -4, nothing else; head = full manifest minus `candidates` (True); `wave_manifest.validate(head + candidates)` = `[]` |
+| `wave plan scripts/specs/v8/waves/y-s.json` | **exit 0**, 57 lines; manifest sha256 `22b5534f79dae93fb40d7e11f802211668c98b93123ee28fafa4c54aa05d8ac4`; stages 01 preflight .. 09 record all `pending` |
+
+Fixes made: none. Build: none. Open item: both descriptions still say "marginal pool only with a 720 s cap" (E1 report:
+"root's wording to update, not checked"); left as is because R0-2's dispatch allows no other change; the binding value is
+`marginal.seconds` 600. Hidden data: no real-data run; no output, receipt, NAV, IC or ledger value opened (the plan prints
+argv and receipt states only); nothing dated 2024-01-01 or later opened. `C:/atx`, `atx-db/` untouched; no push.
+Next: R0-6.
