@@ -6,9 +6,10 @@ This module reads that row and nothing else to learn the tables: no table or col
 bootstrap row itself. It never runs DDL, never migrates, and computes no digest.
 
 ``Store.open(path)`` opens an existing file (never creates one) with ``foreign_keys=ON``, ``trusted_schema=OFF``,
-``busy_timeout=30000`` and ``isolation_level=None`` (autocommit; ``transaction()`` is an explicit
-``BEGIN IMMEDIATE``), and refuses (``StoreError``) a file without the schema row, a schema document other than
-``atx.store-schema/v1``, or a ``user_version`` / ``application_id`` different from the document's.
+``busy_timeout=30000``, ``synchronous`` FULL for a catalog / NORMAL for a cache (sql-design section 3.3) and
+``isolation_level=None`` (autocommit; ``transaction()`` is an explicit ``BEGIN IMMEDIATE``), and refuses
+(``StoreError``) a UNC path, a file without the schema row, a schema document other than ``atx.store-schema/v1``, or a
+``user_version`` / ``application_id`` different from the document's.
 
 Generic per table: ``insert(table, row)``, ``upsert(table, row)``, ``get(table, key)``, ``select(table, where)``
 (always ``ORDER BY`` the primary key). Python values are checked against the column type before SQLite sees them:
@@ -158,6 +159,8 @@ class Store:
     @classmethod
     def open(cls, path) -> "Store":
         path = Path(path)
+        if str(path).startswith(("\\\\", "//")) or str(path.resolve()).startswith(("\\\\", "//")):
+            raise StoreError(f"store path refused (UNC path; WAL needs a local disk): {path}")
         if not path.is_file():
             raise StoreError(f"no store at {path}")
         # mode=rw: an existing file only; sqlite3.connect would otherwise create an empty one.
@@ -185,6 +188,7 @@ class Store:
             if document.get("application_id") != application_id:
                 raise StoreError(f"{path}: application_id {application_id:#010x} != schema "
                                  f"{document.get('application_id')!r}")
+            con.execute(f"PRAGMA synchronous = {'FULL' if document.get('db') == 'catalog' else 'NORMAL'}")
             return cls(con, path, found[0], document)
         except BaseException:
             con.close()
@@ -226,7 +230,12 @@ class Store:
         except BaseException:
             self._con.execute("ROLLBACK")
             raise
-        self._con.execute("COMMIT")
+        try:
+            self._con.execute("COMMIT")
+        except BaseException:
+            if self._con.in_transaction:  # a failed COMMIT must not leave the cached connection mid-transaction
+                self._con.execute("ROLLBACK")
+            raise
 
     # -- rows -------------------------------------------------------------------------------------------------------
     def insert(self, table: str, row: dict) -> None:

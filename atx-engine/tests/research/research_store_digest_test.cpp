@@ -143,7 +143,12 @@ TEST(ResearchStoreDigest, VolatileColumnsExcluded) {
   run.catalog_run_id = "r";
   run.roots = "[]";
   run.started_utc = "t";
-  EXPECT_EQ(store::digest(run).size(), 64U);
+  EXPECT_EQ(store::digest(run), sha256_of("atx.record-digest/v1\nrow catalog_run@1\n"
+                                          "catalog_run_id=t1:r\ngit_sha=~\nstore_exe_sha256=~\n"
+                                          "roots=t2:[]\nstarted_utc=t1:t\n"
+                                          "seconds=r0000000000000000\nfiles_seen=i0\n"
+                                          "files_verified=i0\nfiles_declared=i0\n"
+                                          "files_skipped=i0\ncatalog_digest=~\n"));
 }
 
 TEST(ResearchStoreDigest, RealsByBitPattern) {

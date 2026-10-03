@@ -2,7 +2,9 @@
 // a store made by Python's SQLite, and the catalog digest.
 
 #include <filesystem>
+#include <fstream>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -26,6 +28,9 @@ using atx::core::ErrorCode;
 using store::test::sha;
 
 namespace {
+
+constexpr store::StoreOpen kCreate = store::StoreOpen::CreateIfMissing;
+constexpr store::StoreOpen kExisting = store::StoreOpen::Existing;
 
 store::RecordRow record(std::string kind, char key) {
   store::RecordRow row;
@@ -79,7 +84,7 @@ TEST(ResearchStoreOpen, CreateThenReopen) {
   const auto dir = store::test::temp_path("cache_dir");
   std::filesystem::create_directories(dir);
   {
-    auto opened = store::open_cache(dir);
+    auto opened = store::create_cache(dir);
     ASSERT_TRUE(opened) << opened.error().to_string();
     ASSERT_TRUE(store::insert(*opened, record("factor", '1')));
     ASSERT_TRUE(db::checkpoint_truncate(*opened));
@@ -112,7 +117,7 @@ TEST(ResearchStoreOpen, MigratesToyV1ToV2) {
   const auto path = store::test::temp_path("mig.sqlite").string();
   {
     const store::GroupOps *const v1[] = {&store::test::kMigGroupV1};
-    auto opened = store::open_store(path, store::DbKind::Cache, v1);
+    auto opened = store::open_store(path, store::DbKind::Cache, v1, kCreate);
     ASSERT_TRUE(opened) << opened.error().to_string();
     for (const char *key : {"b", "a"}) {
       ASSERT_TRUE(store::execute_row(*opened, store::insert_sql(store::test::kMigV1Table),
@@ -120,7 +125,7 @@ TEST(ResearchStoreOpen, MigratesToyV1ToV2) {
     }
   }
   const store::GroupOps *const v2[] = {&store::test::kMigGroupV2};
-  auto migrated = store::open_store(path, store::DbKind::Cache, v2);
+  auto migrated = store::open_store(path, store::DbKind::Cache, v2, kExisting);
   ASSERT_TRUE(migrated) << migrated.error().to_string();
   EXPECT_EQ(store::test::scalar_int(*migrated, "PRAGMA user_version"), 2);
   EXPECT_EQ(store_info(*migrated, "schema_json"), store::schema_json(store::DbKind::Cache, v2));
@@ -136,7 +141,7 @@ TEST(ResearchStoreOpen, MigratesToyV1ToV2) {
                                  store::test::kMigV2Table, store::test::MigV2Row{"c", 1, 0.25}));
   // A store created at v2 directly has the same columns.
   const auto fresh = store::test::temp_path("fresh.sqlite").string();
-  auto created = store::open_store(fresh, store::DbKind::Cache, v2);
+  auto created = store::open_store(fresh, store::DbKind::Cache, v2, kCreate);
   ASSERT_TRUE(created) << created.error().to_string();
   const char *columns = "SELECT group_concat(name, ',') FROM pragma_table_info('mig')";
   EXPECT_EQ(store::test::scalar_text(*created, columns), "k,a,b");
@@ -146,14 +151,14 @@ TEST(ResearchStoreOpen, MigratesToyV1ToV2) {
 TEST(ResearchStoreOpen, RefusesForeignApplicationId) {
   const auto path = store::test::temp_path("catalog.sqlite").string();
   const store::GroupOps *const core[] = {&store::core_group()};
-  { ASSERT_TRUE(store::open_store(path, store::DbKind::Catalog, core)); }
+  { ASSERT_TRUE(store::open_store(path, store::DbKind::Catalog, core, kCreate)); }
   const store::GroupOps *const cache[] = {&store::cache_group()};
-  auto opened = store::open_store(path, store::DbKind::Cache, cache);
+  auto opened = store::open_store(path, store::DbKind::Cache, cache, kExisting);
   ASSERT_FALSE(opened);
   EXPECT_EQ(opened.error().code(), ErrorCode::InvalidArgument);
   // A group of the other kind is refused before any file is opened.
   auto mixed = store::open_store(store::test::temp_path("x.sqlite").string(),
-                                 store::DbKind::Catalog, cache);
+                                 store::DbKind::Catalog, cache, kCreate);
   ASSERT_FALSE(mixed);
   EXPECT_EQ(mixed.error().code(), ErrorCode::InvalidArgument);
 }
@@ -161,9 +166,9 @@ TEST(ResearchStoreOpen, RefusesForeignApplicationId) {
 TEST(ResearchStoreOpen, RefusesNewerVersion) {
   const auto path = store::test::temp_path("mig.sqlite").string();
   const store::GroupOps *const v2[] = {&store::test::kMigGroupV2};
-  { ASSERT_TRUE(store::open_store(path, store::DbKind::Cache, v2)); }
+  { ASSERT_TRUE(store::open_store(path, store::DbKind::Cache, v2, kCreate)); }
   const store::GroupOps *const v1[] = {&store::test::kMigGroupV1};
-  auto opened = store::open_store(path, store::DbKind::Cache, v1);
+  auto opened = store::open_store(path, store::DbKind::Cache, v1, kExisting);
   ASSERT_FALSE(opened);
   EXPECT_EQ(opened.error().code(), ErrorCode::NotImplemented);
 }
@@ -171,14 +176,14 @@ TEST(ResearchStoreOpen, RefusesNewerVersion) {
 TEST(ResearchStoreOpen, StoreInfoHoldsSchemaJson) {
   const auto dir = store::test::temp_path("cache_dir");
   std::filesystem::create_directories(dir);
-  auto opened = store::open_cache(dir);
+  auto opened = store::create_cache(dir);
   ASSERT_TRUE(opened) << opened.error().to_string();
   const store::GroupOps *const cache[] = {&store::cache_group()};
   EXPECT_EQ(store_info(*opened, "schema_json"), store::schema_json(store::DbKind::Cache, cache));
   EXPECT_EQ(store_info(*opened, "db_kind"), std::optional<std::string>{"cache"});
   const auto catalog_path = store::test::temp_path("catalog.sqlite").string();
   const store::GroupOps *const core[] = {&store::core_group()};
-  auto catalog = store::open_store(catalog_path, store::DbKind::Catalog, core);
+  auto catalog = store::open_store(catalog_path, store::DbKind::Catalog, core, kCreate);
   ASSERT_TRUE(catalog) << catalog.error().to_string();
   EXPECT_EQ(store_info(*catalog, "schema_json"), store::schema_json(store::DbKind::Catalog, core));
   EXPECT_EQ(store_info(*catalog, "db_kind"), std::optional<std::string>{"catalog"});
@@ -189,7 +194,7 @@ TEST(ResearchStoreOpen, ReadsPythonCreatedFixture) {
   const auto path = store::test::temp_path("py_created.sqlite");
   std::filesystem::copy_file(store::test::fixture("py_created.sqlite"), path);
   const store::GroupOps *const core[] = {&store::core_group()};
-  auto opened = store::open_store(path.string(), store::DbKind::Catalog, core);
+  auto opened = store::open_store(path.string(), store::DbKind::Catalog, core, kExisting);
   ASSERT_TRUE(opened) << opened.error().to_string();
   // Python assembled the same document from the committed fixture.
   EXPECT_EQ(store_info(*opened, "schema_json"), store::schema_json(store::DbKind::Catalog, core));
@@ -240,9 +245,9 @@ TEST(ResearchStoreOpen, CatalogDigestIndependentOfInsertOrder) {
   producer.module_name = "fit_composition_weights";
 
   auto first = store::open_store(store::test::temp_path("first.sqlite").string(),
-                                 store::DbKind::Catalog, core);
+                                 store::DbKind::Catalog, core, kCreate);
   auto second = store::open_store(store::test::temp_path("second.sqlite").string(),
-                                  store::DbKind::Catalog, core);
+                                  store::DbKind::Catalog, core, kCreate);
   ASSERT_TRUE(first) << first.error().to_string();
   ASSERT_TRUE(second) << second.error().to_string();
   ASSERT_TRUE(store::insert(*first, producer));
@@ -279,4 +284,96 @@ TEST(ResearchStoreOpen, CatalogDigestIndependentOfInsertOrder) {
   auto c = store::catalog_digest(*second, core);
   ASSERT_TRUE(c);
   EXPECT_NE(*a, *c);
+}
+
+// Fix round 1 (SQL1-FIX1, review finding 1): at an equal user_version the stored schema must
+// be this build's schema; a group added or a descriptor edited without a version bump is drift.
+TEST(ResearchStoreOpen, RefusesSchemaDriftAtSameVersion) {
+  const auto path = store::test::temp_path("mig.sqlite").string();
+  const store::GroupOps *const v1[] = {&store::test::kMigGroupV1};
+  { ASSERT_TRUE(store::open_store(path, store::DbKind::Cache, v1, kCreate)); }
+  const store::GroupOps *const edited[] = {&store::test::kMigGroupV1Edited};
+  auto drifted = store::open_store(path, store::DbKind::Cache, edited, kExisting);
+  ASSERT_FALSE(drifted);
+  EXPECT_EQ(drifted.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(drifted.error().message().find("schema drift"), std::string::npos)
+      << drifted.error().message();
+  // The store is untouched and still opens with the groups it was made with.
+  auto same = store::open_store(path, store::DbKind::Cache, v1, kExisting);
+  ASSERT_TRUE(same) << same.error().to_string();
+  EXPECT_EQ(store::test::scalar_text(*same, "SELECT group_concat(name, ',') FROM "
+                                            "pragma_table_info('mig')"),
+            "k,a");
+
+  // A group added at a version the store already has.
+  const auto catalog = store::test::temp_path("catalog.sqlite").string();
+  const store::GroupOps *const core[] = {&store::core_group()};
+  { ASSERT_TRUE(store::open_store(catalog, store::DbKind::Catalog, core, kCreate)); }
+  const store::GroupOps *const both[] = {&store::core_group(), &store::test::kPlainCatalogGroup};
+  auto added = store::open_store(catalog, store::DbKind::Catalog, both, kExisting);
+  ASSERT_FALSE(added);
+  EXPECT_EQ(added.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Fix round 1 (review finding 2): exactly one group of a store carries store_info, and table
+// names are distinct across groups; a valid two-group catalog opens and digests both groups.
+TEST(ResearchStoreOpen, RequiresExactlyOneStoreInfoGroup) {
+  const auto path = store::test::temp_path("catalog.sqlite").string();
+  const auto refused = [&](std::span<const store::GroupOps *const> groups) {
+    auto opened =
+        store::open_store(path, store::DbKind::Catalog, groups, kCreate);
+    return !opened && opened.error().code() == ErrorCode::InvalidArgument;
+  };
+  const store::GroupOps *const none[] = {&store::test::kPlainCatalogGroup};
+  const store::GroupOps *const twice[] = {&store::core_group(), &store::test::kDupInfoGroup};
+  const store::GroupOps *const clash[] = {&store::core_group(), &store::test::kPlainCatalogGroup,
+                                          &store::test::kPlainAgainGroup};
+  EXPECT_TRUE(refused(none));
+  EXPECT_TRUE(refused(twice));
+  EXPECT_TRUE(refused(clash));
+  EXPECT_FALSE(std::filesystem::exists(path)); // refused before any file is opened
+
+  const store::GroupOps *const two[] = {&store::core_group(), &store::test::kPlainCatalogGroup};
+  auto opened = store::open_store(path, store::DbKind::Catalog, two, kCreate);
+  ASSERT_TRUE(opened) << opened.error().to_string();
+  const store::ArtifactRow row = artifact("a.json", 'a', 1);
+  ASSERT_TRUE(store::insert(*opened, row));
+  const store::test::PlainRow plain{"p", 1, 0.5, "d"};
+  ASSERT_TRUE(store::execute_row(*opened, store::insert_sql(store::test::kPlainTable),
+                                 store::test::kPlainTable, plain));
+  auto digest = store::catalog_digest(*opened, two);
+  ASSERT_TRUE(digest) << digest.error().to_string();
+  auto expected = atx::core::sha256_hex("atx.catalog-digest/v1\nartifact " + store::digest(row) +
+                                        "\nplain " +
+                                        store::row_digest(store::test::kPlainTable, plain) + "\n");
+  ASSERT_TRUE(expected);
+  EXPECT_EQ(*digest, *expected);
+}
+
+// Fix round 1 (review finding 3): only create_cache / CreateIfMissing creates a store; a
+// consumer's open_cache never makes an index appear (record_store.py selects by presence).
+TEST(ResearchStoreOpen, OpenCacheNeverCreatesAnIndex) {
+  const auto dir = store::test::temp_path("cache_dir");
+  std::filesystem::create_directories(dir);
+  auto missing = store::open_cache(dir);
+  ASSERT_FALSE(missing);
+  EXPECT_EQ(missing.error().code(), ErrorCode::NotFound);
+  EXPECT_FALSE(std::filesystem::exists(dir / "index.sqlite"));
+  { std::ofstream empty{dir / "index.sqlite", std::ios::binary}; }
+  auto empty = store::open_cache(dir);
+  ASSERT_FALSE(empty);
+  EXPECT_EQ(empty.error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(std::filesystem::file_size(dir / "index.sqlite"), 0U); // left as it was
+  const store::GroupOps *const core[] = {&store::core_group()};
+  auto no_catalog = store::open_store((dir / "catalog.sqlite").string(), store::DbKind::Catalog,
+                                      core, kExisting);
+  ASSERT_FALSE(no_catalog);
+  EXPECT_EQ(no_catalog.error().code(), ErrorCode::NotFound);
+  EXPECT_FALSE(std::filesystem::exists(dir / "catalog.sqlite"));
+  // Explicit creation, then a consumer's open.
+  std::filesystem::remove(dir / "index.sqlite");
+  ASSERT_TRUE(store::create_cache(dir));
+  auto opened = store::open_cache(dir);
+  ASSERT_TRUE(opened) << opened.error().to_string();
+  EXPECT_EQ(store_info(*opened, "db_kind"), std::optional<std::string>{"cache"});
 }

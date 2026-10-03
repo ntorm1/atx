@@ -4,10 +4,12 @@
 #include "atx/engine/research/store/store.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -32,13 +34,18 @@ using core::db::Database;
   return kind == DbKind::Catalog ? kCatalogApplicationId : kCacheApplicationId;
 }
 
-// Validate the group list and return the store's schema version (the largest group version).
+constexpr std::string_view kStoreInfoTableName = "store_info";
+
+// Validate the group list and return the store's schema version (the largest group version):
+// complete groups of this kind with distinct names, table names distinct across groups, and
+// the shared store_info table carried by exactly one group (open_store writes it).
 [[nodiscard]] core::Result<i32> store_version(DbKind kind,
                                               std::span<const GroupOps *const> groups) {
   if (groups.empty()) {
     return core::Err(core::ErrorCode::InvalidArgument, "research store: no groups");
   }
   i32 version = 0;
+  std::vector<std::string> tables;
   for (usize i = 0; i < groups.size(); ++i) {
     const GroupOps *const g = groups[i];
     if (g == nullptr || g->tables == nullptr || g->steps == nullptr || g->digest == nullptr ||
@@ -56,9 +63,46 @@ using core::db::Database;
                          "research store: group " + std::string{g->name} + " given twice");
       }
     }
+    for (const TableSchema &table : g->tables()) {
+      if (std::find(tables.begin(), tables.end(), table.name) != tables.end()) {
+        return core::Err(core::ErrorCode::InvalidArgument,
+                         "research store: table " + table.name + " appears in two groups (" +
+                             std::string{g->name} + " is the second; exactly one group of a " +
+                             "store folds in the shared store_info descriptor)");
+      }
+      tables.push_back(table.name);
+    }
     version = std::max(version, g->version);
   }
+  if (std::find(tables.begin(), tables.end(), kStoreInfoTableName) == tables.end()) {
+    return core::Err(core::ErrorCode::InvalidArgument,
+                     "research store: no group carries the store_info table (exactly one group "
+                     "of a store must fold in the shared store_info descriptor)");
+  }
   return core::Ok(version);
+}
+
+// A UTF-8 path as a filesystem path; invalid UTF-8 is Err(InvalidArgument), not a throw.
+[[nodiscard]] core::Result<std::filesystem::path> path_from_utf8(std::string_view text) {
+  try {
+    return core::Ok(std::filesystem::path{std::u8string{text.begin(), text.end()}});
+  } catch (const std::exception &) {
+    return core::Err(core::ErrorCode::InvalidArgument,
+                     "research store: path is not valid UTF-8: " + std::string{text});
+  }
+}
+
+// StoreOpen::Existing: the file must exist and hold at least the database header.
+[[nodiscard]] core::Status require_existing(std::string_view path) {
+  ATX_TRY(const std::filesystem::path p, path_from_utf8(path));
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(p, ec);
+  if (ec || size == 0) {
+    return core::Err(core::ErrorCode::NotFound,
+                     "research store: no store at " + std::string{path} +
+                         " (stores are created only on request: StoreOpen::CreateIfMissing)");
+  }
+  return core::Ok();
 }
 
 [[nodiscard]] OJson column_json(const ColumnSchema &column) {
@@ -159,6 +203,31 @@ using core::db::Database;
   return stmt.checked_int(0);
 }
 
+// A store already at this build's version must hold exactly this build's schema: equal versions
+// with different groups or descriptors is drift (store.hpp, "Same version").
+[[nodiscard]] core::Status check_no_drift(Database &db, DbKind kind,
+                                          std::span<const GroupOps *const> groups, i32 version) {
+  auto rows = select_all_store_info(db);
+  if (!rows) {
+    return core::Err(core::ErrorCode::InvalidArgument,
+                     "research store: schema drift check cannot read store_info: " +
+                         rows.error().to_string());
+  }
+  const std::string expected = schema_json(kind, groups);
+  for (const StoreInfoRow &row : *rows) {
+    if (row.key == kSchemaJsonKey && row.value == expected) {
+      return core::Ok();
+    }
+  }
+  return core::Err(core::ErrorCode::InvalidArgument,
+                   "research store: schema drift: store_info('schema_json') differs from this "
+                   "build's groups at the same user_version " +
+                       std::to_string(version) +
+                       " (a group added or edited without a version past every version the "
+                       "store has reached); rebuild the derived store or migrate with a new "
+                       "version");
+}
+
 // Runs inside BEGIN IMMEDIATE: the pragmas are read again under the write lock, so a store
 // another process created or migrated meanwhile is not created or migrated twice.
 [[nodiscard]] core::Status create_or_migrate(Database &db, DbKind kind,
@@ -189,7 +258,7 @@ using core::db::Database;
                      "this build cannot read schema " + std::to_string(found));
   }
   if (found == version) {
-    return core::Ok();
+    return check_no_drift(db, kind, groups, version); // a concurrent opener got here first
   }
   ATX_TRY_VOID(apply_steps(db, groups, found + 1, version));
   ATX_TRY_VOID(create_views(db, groups));
@@ -221,13 +290,24 @@ core::db::StorePolicy store_policy(DbKind kind, i32 user_version) noexcept {
 }
 
 core::Result<Database> open_store(std::string_view path, DbKind kind,
-                                  std::span<const GroupOps *const> groups) {
+                                  std::span<const GroupOps *const> groups, StoreOpen how) {
   ATX_TRY(const i32 version, store_version(kind, groups));
+  const bool may_create = how == StoreOpen::CreateIfMissing;
+  if (!may_create) {
+    ATX_TRY_VOID(require_existing(path));
+  }
   const core::db::StorePolicy policy = store_policy(kind, version);
-  ATX_TRY(core::db::OpenedStore opened,
-          core::db::open_with_policy(path, core::db::OpenMode::ReadWriteCreate, policy));
+  const core::db::OpenMode mode =
+      may_create ? core::db::OpenMode::ReadWriteCreate : core::db::OpenMode::ReadWrite;
+  ATX_TRY(core::db::OpenedStore opened, core::db::open_with_policy(path, mode, policy));
   Database db = std::move(opened.db);
+  if (opened.created && !may_create) {
+    return core::Err(core::ErrorCode::NotFound,
+                     "research store: " + std::string{path} +
+                         " holds no store (created only on request: CreateIfMissing)");
+  }
   if (!opened.created && opened.user_version == version) {
+    ATX_TRY_VOID(check_no_drift(db, kind, groups, version));
     return core::Ok(std::move(db));
   }
   ATX_TRY_VOID(core::db::with_immediate(db, [&](Database &d) -> core::Status {
@@ -238,7 +318,14 @@ core::Result<Database> open_store(std::string_view path, DbKind kind,
 
 core::Result<Database> open_cache(const std::filesystem::path &dir) {
   const GroupOps *const groups[] = {&cache_group()};
-  return open_store(utf8(dir / std::string{kCacheIndexName}), DbKind::Cache, groups);
+  return open_store(utf8(dir / std::string{kCacheIndexName}), DbKind::Cache, groups,
+                    StoreOpen::Existing);
+}
+
+core::Result<Database> create_cache(const std::filesystem::path &dir) {
+  const GroupOps *const groups[] = {&cache_group()};
+  return open_store(utf8(dir / std::string{kCacheIndexName}), DbKind::Cache, groups,
+                    StoreOpen::CreateIfMissing);
 }
 
 std::string schema_json(DbKind kind, std::span<const GroupOps *const> groups) {

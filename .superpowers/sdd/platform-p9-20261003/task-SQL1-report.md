@@ -94,7 +94,8 @@ No file under `atx-impl/` or `scripts/`, no `vcpkg.json`, `CMakePresets.json`, `
 - `store.hpp`:
   - `DbKind {Catalog, Cache}`; `ColumnSchema`, `TableSchema`, `ViewSchema`;
   - `GroupOps {name, db, version, tables(), steps(v), digest(db, stream), views()}`;
-  - `store_policy(kind, v)`, `open_store(path, kind, span<const GroupOps* const>)`, `open_cache(dir)`;
+  - `store_policy(kind, v)`, `open_store(path, kind, span<const GroupOps* const>, StoreOpen how)`,
+    `open_cache(dir)` (never creates), `create_cache(dir)` (fix round 1: see "Fix round 1" below);
   - `schema_json(kind, groups)`, `group_schema_json(group)`, `catalog_digest(db, groups)`;
   - constants: `kCatalogApplicationId` 0x41545843, `kCacheApplicationId` 0x4154584B, `kStorePageSize` 8192,
     `kStoreBusyTimeoutMs` 30000, `kCacheIndexName` "index.sqlite", `kStoreSchemaId`, `kDbKindKey`, `kSchemaJsonKey`.
@@ -107,9 +108,12 @@ No file under `atx-impl/` or `scripts/`, no `vcpkg.json`, `CMakePresets.json`, `
   - `read_X` requires a statement whose result columns are the table's columns in row-member order.
 
 **Engine, groups (SQL2 `records_ops.cpp`, SQL4 v2)**
-- Include `research/store/detail/table.hpp`, `detail/table_ops.hpp` and `tables_common.hpp`. They are reachable
-  through the library's PRIVATE include dir `atx-engine/src`; a new instantiating TU added to the
-  `atx-engine-research-store` source list (or to a library with the same PRIVATE include) sees them.
+- Include `research/store/detail/table.hpp` and `detail/table_ops.hpp` only. They are reachable through the
+  library's PRIVATE include dir `atx-engine/src`; a new instantiating TU added to the `atx-engine-research-store`
+  source list (or to a library with the same PRIVATE include) sees them.
+- **Do not fold `kStoreInfoTable` (`tables_common.hpp`) into `catalog_records`** (corrected in fix round 1).
+  catalog_core already carries `store_info`. `open_store` refuses a store whose groups carry it zero times or twice,
+  or repeat any table name across groups.
 - A descriptor is `inline constexpr auto kX = table<XRow>("x", TableOpts{.version, .since, .append_only,
   .volatile_table, .check}, col<Sql::...>("c", &XRow::c, flags, allowed, since)...)`.
 - The group is `constexpr GroupOps kG = group_ops<kA, kB, ...>("name", DbKind::Catalog, 1, &views_fn)`.
@@ -290,11 +294,19 @@ after the rename: identical).
    "atx-core-tests,atx-engine-research-store,atx-engine-research-store-tests"`. Expect exit 0.
 2. Gtests:
    - `build-equity\bin\atx-core-tests.exe --gtest_filter=Db*`: 44 pass, including the 23 existing tests unchanged.
-   - `build-equity\bin\atx-engine-research-store-tests.exe --gtest_filter=ResearchStore*`: 24 pass.
+   - `build-equity\bin\atx-engine-research-store-tests.exe --gtest_filter=ResearchStore*`: 27 pass (24 + 3 from fix
+     round 1).
    - Or `ctest -L atx_research` for the store tests.
 3. Existing wrapper users: build and run `atx-engine-store-tests` and `atx-engine-library-tests` whole (my tag
    p9-sql1-c: `atx-engine-store-tests` 40/40 passed, `atx-engine-library-tests` 66/66 passed with 2 pre-existing
-   DISABLED).
+   DISABLED). Review finding 12: W1 and W3 also reach the pipeline stages through `atx/engine/store/*`, so root also
+   builds and runs the atx-impl gtests `store_discover_test`, `provenance_test` and `provenance_digest_test`. I did
+   not run these.
+   - The hygiene (PCH-off) check is already satisfied for the lane's TUs. In `equity-dev`, atx-core,
+     `atx-core-tests`, `atx-engine-research-store` and its tests compile without the PCH:
+     `build-equity/build.ninja` shows no `cmake_pch` force-include on `connection.cpp`, `sqlite.cpp`,
+     `db_connection_test.cpp`, `core_ops.cpp` or the store tests.
+   - `atx-build.ps1 check -Preset equity-hygiene` on them remains available to root.
 4. Pytest, two hash seeds:
    - `python -m pytest -q -p no:cacheprovider atx-engine/tools` (expect 426 passed);
    - `python -m pytest -q -p no:cacheprovider atx-impl/tools`.
@@ -353,3 +365,103 @@ Cross-lane edits: none.
   This is the measured cost of ruling SQL-5's compile-time generator.
 - A `consteval` factory can reject a descriptor with a readable rule name by calling a deliberately non-constexpr
   `descriptor_error_<rule>()` on the failing branch; clang 18 prints the function name in the diagnostic.
+
+## Fix round 1 (ruling SQL1-FIX1; review `task-SQL1-review.md` at 4d198fef: APPROVE, 12 minors)
+
+### Required fixes
+
+1. **Schema drift at an equal version (finding 1).**
+   - `open_store` now compares `store_info('schema_json')` with `schema_json(kind, groups)` whenever the stored
+     `user_version` equals this build's version. That covers the plain open, and the concurrent-creator path that
+     re-reads the pragmas under the write lock.
+   - A mismatch is `Err(InvalidArgument)` "schema drift: ... rebuild the derived store or migrate with a new
+     version".
+   - `store.hpp` now documents that versions are store-global: a group's new version must exceed every version the
+     store has reached.
+   - Test `ResearchStoreOpen.RefusesSchemaDriftAtSameVersion` covers two cases:
+     - a descriptor edited in place without a bump;
+     - a group added at a version the store already has.
+     In both, the store is left untouched and still opens with its own groups.
+2. **The `store_info` precondition (finding 2).**
+   - `open_store` validates the group list before touching any file. Table names must be distinct across groups,
+     and exactly one group must carry `store_info`. Breaking either is `Err(InvalidArgument)` with a message naming
+     the rule.
+   - Documented on `open_store` in `store.hpp`. The report's SQL2 note is corrected: SQL2 must NOT include
+     `tables_common.hpp` or fold `kStoreInfoTable` into `catalog_records`.
+   - Test `ResearchStoreOpen.RequiresExactlyOneStoreInfoGroup` refuses three group lists, with no file created:
+     no `store_info` at all, `store_info` twice, and a table name repeated.
+   - The same test opens a valid two-group catalog and checks `catalog_digest` over both groups against the exact
+     line sequence (closes that part of finding 11).
+3. **Creation is explicit (finding 3).**
+   - `open_store` takes a required `StoreOpen how`. `Existing` never creates a store: a missing or 0-byte file is
+     `Err(NotFound)` and is left untouched. `CreateIfMissing` creates one.
+   - `open_cache(dir)` is now `Existing`. The new `create_cache(dir)` is the only way to create a cache index (for
+     SQL2's `cache init`).
+   - Test `ResearchStoreOpen.OpenCacheNeverCreatesAnIndex` checks three things:
+     - `open_cache` on an empty dir creates nothing;
+     - on a 0-byte `index.sqlite` it leaves the file at 0 bytes;
+     - `open_store(Existing)` creates no catalog.
+     It then runs `create_cache` followed by `open_cache`.
+
+### Minors fixed (each small)
+
+- **4:** `Column` itself is now `requires StorableAs<M, T>`. `col()` deduces its return type so the readable
+  static_assert message still fires first. `research_store_table_test.cpp` gains `static_assert`s: `Column` is not
+  formable for `i32` / `bool` as Int, and `StorableAs` is false for the four named mismatches.
+- **5:** `col()` now rejects three combinations at compile time: `allowed` on a non-Text kind, `kKey | kVolatile`, and
+  a non-ASCII `allowed` byte. A temporary probe (reverted) showed each fails with
+  `descriptor_error_allowed_on_non_text_column`, `descriptor_error_bad_flags` and
+  `descriptor_error_allowed_value_has_quote_or_non_ascii`.
+- **6 + 7:** `connection.cpp`'s path resolution is now Windows-only (no unused helper elsewhere). Invalid UTF-8 is
+  `Err(InvalidArgument)` instead of a throw. The path is resolved with `weakly_canonical`, so links are followed. A
+  `\?\` final-path prefix is stripped, and `\?\UNC\` counts as a share.
+- **8:** `research_store.Store`:
+  - `transaction()` now rolls back when `COMMIT` itself fails, so a cached connection is never left in a
+    transaction. Pinned by `test_a_failed_commit_rolls_back`, which uses a deferred foreign key that fails at
+    COMMIT.
+  - `open` refuses UNC paths and sets `synchronous` to FULL for a catalog and NORMAL for a cache, pinned in the
+    open tests.
+- **10:** the two comments that called `sqlite.cpp` the only `<sqlite3.h>` TU now name `connection.cpp` too.
+- **11 (part):**
+  - The table test asserts only the `table.column: ` prefix and the code.
+  - The volatile test asserts the exact `catalog_run` record digest instead of its length.
+  - `catalog_digest` over two groups is now tested (fix 2).
+- **12:** root's verification list now adds the atx-impl wrapper-user gtests, plus the PCH-off note (above).
+
+### Minors left (larger than the round's ten-line bound)
+
+- **9:** `record_store` heals a damaged same-content row, and stops publishing a large body before the row check.
+- **11 (rest):** tests for `with_immediate`'s BUSY retry, the `GetDriveTypeW` branch, the concurrent-creator race and
+  migrating a table added at a later version.
+
+### API changes SQL2 must follow
+
+- `open_store(path, kind, groups, StoreOpen how)`: the fourth argument is required.
+  - `atx-research-store init` and `catalog` create with `StoreOpen::CreateIfMissing`.
+  - Readers (`verify`, `query`, `digest`, `dump`, `quick-check`) use `StoreOpen::Existing`.
+- `cache init DIR` calls `create_cache(DIR)`. A cache consumer (SQL4) calls `open_cache(DIR)`, which never creates.
+- `catalog_records` must not fold in `kStoreInfoTable` (catalog_core carries it), and must not repeat a table name of
+  catalog_core.
+- A group change ships with a version past every version the store has reached. Otherwise open refuses with
+  "schema drift".
+- `col()`: `allowed` lists only on `Sql::Text` columns, ASCII values only; no volatile key column.
+
+### Evidence (fix round 1)
+
+```
+research-build.ps1 -Tag p9-sql1-d -Targets "atx-core-tests,atx-engine-research-store,atx-engine-research-store-tests"
+  "ExitCode": 0, "WallSeconds": 65.5714994, "CompiledTUs": 11   (admitted on the first try after waiting for the
+  memory gate; 0 warnings)
+build-equity/bin/atx-engine-research-store-tests.exe --gtest_brief=1
+  [==========] 27 tests from 4 test suites ran. (753 ms total)   [  PASSED  ] 27 tests.
+build-equity/bin/atx-core-tests.exe --gtest_filter=Db* --gtest_brief=1
+  [==========] 44 tests from 10 test suites ran. (7874 ms total)  [  PASSED  ] 44 tests.
+python -m pytest -q -p no:cacheprovider atx-engine/tools/test_research_store_fixtures.py
+    atx-engine/tools/test_research_store.py atx-engine/tools/test_record_store_sqlite.py
+    atx-engine/tools/test_record_store.py
+  31 passed, 33 subtests passed in 5.68s        (PYTHONHASHSEED=1: 31 passed, 33 subtests, 5.50s)
+```
+
+The p9-sql1-c result (`atx-engine-store-tests` 40/40, `atx-engine-library-tests` 66/66) predates this round. This
+round changes `sqlite.cpp` / `sqlite.hpp` only in comments, and `connection.cpp` (the policy open, which neither
+suite calls). So their wrapper behaviour is unchanged, and they were not rebuilt.
