@@ -6883,3 +6883,29 @@ of the bounded-runner receipt the mechanics reader prints (consoles 035, 040). N
 y-s is the first wave whose verify stage has run (the log holds no `--seal-allow` ruling). The driver's remedy is
 `research_wave.py run ... --seal-allow TOKEN=RULING` (kept by the verify receipt for the record stage's second scan).
 Ledger 127 lines, `869a0c6a` (0 trials). Root stops for the PM's ruling (brief: a validator refuses).
+
+### Stage 07 verify, second attempt under PM ruling SEAL-ALLOW (P9 `progress.md`:108; source `88b51a3c`; no exe; free 5,333 at 12:53:29Z, no compiler)
+
+**Per-hit source check before use** (`.superpowers/sdd/platform-p9-20261003/tools/sealsrc.py`: the files
+`wave_seal.wave_logs` returns over receipts 01-06 = 68 files, the scanner's own regexes, seeds and seal-reference rule;
+prints file, line, token, form, source only). 9 hits = the scan's 9; **OTHER 0**:
+
+| file (`build-equity/waves/y-s/consoles/`) : line | token | source |
+|---|---|---|
+| `019-screen.log`:4 | 2026-10-02 | (a) dirty list: `docs/plans/2026-10-02-x5-equity-curve.png` |
+| `032-the-b-library-s-screen--its-gate-re-read.log`:4 | 2026-10-02 | (a) dirty list |
+| `033-the-b-library-s-screen--its-gate-re-read.log`:4 | 2026-10-02 | (a) dirty list |
+| `034-calibration-run----stop-after-nav.log`:4 | 2026-10-02 | (a) dirty list |
+| `035-mechanics-reader.log`:7 | 2026-10-03 | (b) receipt `"started_utc"` wall-clock |
+| `035-mechanics-reader.log`:93 | 2026-10-02 | (a) receipt `dirty_outside_pathspec` list |
+| `039-matched-run----stop-after-nav.log`:4 | 2026-10-02 | (a) dirty list |
+| `040-mechanics-reader.log`:7 | 2026-10-03 | (b) receipt `"started_utc"` wall-clock |
+| `040-mechanics-reader.log`:63 | 2026-10-02 | (a) receipt `dirty_outside_pathspec` list |
+
+argv: `wave run scripts/specs/v8/waves/y-s.json --until verify --seal-allow "2026-10-02=untracked owner plot file name
+docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc
+wall-clock (PM SEAL-ALLOW)"`
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 07 verify | 0 | 0.9 / - | - (no exe) | 5,333 / 5,357 | `07-verify.json` `82f72a1b11c10d018b17fcc31c7aba7c5148036ee972440770f081bd1c63fe86` | as printed: mechanics (6 rows as in the first attempt) **PASS**; binding `a9bf5d2a9177` (spec `1e3ec118273c`); **seal scan 68 log(s), 0 tokens** (allowed: 2026-10-02 x7 in 7 files, 2026-10-03 x2 in 2 files, rulings kept in the receipt); NAV exe `72ff6d2d7070` vs parent `a95f6f0af069` (ref ran: equal false, ref-s2-daily identical). The first attempt's `07-verify.failed-1.json` stays for the record |
