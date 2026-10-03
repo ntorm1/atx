@@ -318,8 +318,10 @@ All runs on the working tree that is commit `d19606dd` (no edit after the runs s
    manifest (today's exe would refuse `--candidates`).
 3. E2 (wave 2) moves `research_cycle.py`: carry the task 2-7 additions listed above in the move.
 4. To opt in, a new wave manifest adds e.g. `"driver": {"auto_attempt": true, "admission_wait_seconds": 900,
-   "host_budget_mib": 12000, "lock_exes": true, "receipt_digest": "content", "keep_verdicts": true, "timings": true}`
-   before its pre-registration commit (`host_budget_mib` needs `admission_wait_seconds` and >= 1536).
+   "host_budget_mib": 3584, "lock_exes": true, "receipt_digest": "content", "keep_verdicts": true, "timings": true}`
+   before its pre-registration commit (`host_budget_mib` needs `admission_wait_seconds` and >= 1536). Corrected in
+   fix round 1: the budget must not exceed the host's free memory at wave start (about 3,584 MiB today, plan
+   section 0.6). The value 12000 given here before never binds on this host.
 5. Verify: `$PY scripts/tests/run_two_seeds.py`; `$PY -m pytest -q -p no:cacheprovider atx-engine/tools`;
    `$PY -m pytest -q -p no:cacheprovider atx-impl/tools`; `$PY scripts/research_cycle.py wave plan
    scripts/specs/v8/waves/y-s.json` must print the same lines as before the merge.
@@ -338,3 +340,101 @@ All runs on the working tree that is commit `d19606dd` (no edit after the runs s
   content, never console logs, for identity.
 - K-P9-10 receipts make OR-3 checkable: a done bounded output is reused only on the command (argv_sha256) that made
   it (`cycle_resume.check_receipt_argv`, P9 E1 task 2, c925ea2d).
+
+## Fix round 1
+
+### Outcome
+DONE: the review's major and the two E1-REUSE minors (PM ruling) are fixed in three Python-only commits on FIX_BASE
+`e40c9152`. The other review minors stay deferred as ruled. Flag-absent identity still holds against e93d5c2b and
+against the review base 3fa2dd4a (evidence 4).
+
+### Commits
+| fix | commit | subject |
+|---|---|---|
+| E1-REUSE (a) | `e26292e4` | resume reuses a done bounded output only on the same executable |
+| E1-REUSE (b) | `c422313e` | code-keyed reuse covers the in-repo import closure |
+| major | `210d5de8` | host-budget admission checks free memory under the claims lock |
+
+This section is a separate commit on top of `210d5de8`.
+
+### What changed
+- **Major** (`scripts/run_bounded_research.py`, docs in `research_cycle.py` and `wave_manifest.py`): under
+  `--host-budget-mib`, `HostClaims.try_claim` reads free memory inside the claims lock. It admits only when both
+  hold: `free - sum(max(0, claim.mib - tree_rss_mib(claim)))` over the other live claims is at least
+  `max_rss_mib + min_free_mib`, and the claims plus this one fit the budget. Both checks are in the same critical
+  section. `tree_rss_mib` is the RSS of the claiming runner's descendants plus the adopted child's tree. After launch
+  the runner records its child in its claim (`HostClaims.adopt`), so the claim lives while the runner or its child
+  does: an orphaned child of a hard-killed runner keeps its share, and its RSS shrinks the claim's reservation.
+  The admission block gains `reserved_by_others_mib` (receipts only carry it with the flags). `admit` /
+  `HostClaims` take an optional `owner` (pid, create_time), default this process; tests use it.
+  Without `--host-budget-mib` the code path, refusal text and order are unchanged.
+- **E1-REUSE (a)** (`scripts/cycle_resume.py`, `research_cycle.py`): `check_receipt_exe` runs on every done bounded
+  step, nav and ref included. When the K-P9-10 receipt (it has `argv_sha256`) records `executable_sha256` and the
+  step's executable (argv after `--`) is on disk with another SHA, the step is a HARD-STOP, exit 3. The message
+  says to move the output aside or run under a fresh `--suffix`. Receipts without `argv_sha256` or
+  `executable_sha256`, and a hash-only exe, are reused as before. A matching receipt logs `   receipt exe: ...`.
+  The `exes_sha256` PIN MISMATCH message now says that outputs of the old exe will be refused.
+- **E1-REUSE (b)** (`scripts/wave_stage_cell.py`): `stale_code` adds `changed_imports`. The bound `*.py` files get
+  their transitive in-repo import closure (`code_closure`): AST imports anywhere in the module, plus the names
+  passed to backtest_integrity's `_engine_module(...)`. Names resolve to `<name>.py` in the importer's directory or
+  in the repo's `scripts`, `atx-impl/tools` and `atx-engine/tools`. For the readers and the bundle the closure is
+  wave_readers.py, nav_summ.py, backtest_integrity.py, dsr_total.py, engine_tools.py, and atx-engine/tools'
+  era_pool.py and research_window.py. A closure module that differs from the run's commit (receipt `source_sha`,
+  `git diff --name-only <source_sha> -- <modules>`) makes the output stale (exit 3). The runner refuses a dirty
+  code pathspec, so `source_sha` is the code the run used. No argv, binding or receipt byte changes, so identity
+  holds. Not checked: receipts without `source_sha` (`--no-git`) and modules outside the wave root. The module doc
+  states that cycle-level Python phases (card, the fields builder) are not code-keyed.
+
+Tests (all in `scripts/tests/test_wave_driver.py`, now 16):
+- `test_two_launches_never_overcommit`: two admits with u (2,560 + 512) and ref (1,536 + 512) against a constant
+  3,584 MiB free start at the same instant, using a barrier on the pre-lock compiler check. Exactly one is admitted;
+  the other times out with `reserved_by_others_mib` = the winner's cap. One after the other, ref waits while u's
+  claim reserves 2,560 MiB. The adopted child keeps u's claim alive after its runner is killed, and when the child
+  ends the claim is dropped.
+- `test_resume_refuses_exe_mismatch`: u and nav receipts stamped with K-P9-10 keys. A rebuilt `bin/ic.exe` or
+  `bin/nav.exe` stops with exit 3 and nothing re-runs. Legacy receipts and receipts without `executable_sha256` are
+  reused.
+- `test_code_reuse_keyed_on_import_closure`: the real reader/bundle closure contains backtest_integrity.py,
+  dsr_total.py, era_pool.py and research_window.py. In a committed synthetic reader, changing a module imported two
+  levels down inside a function makes `stale_code` name it, both in the tree and when committed after the run;
+  `refuse_stale_code` exits 3. A receipt without `source_sha` is not checked.
+
+### Evidence
+All on the clean tree at `210d5de8`.
+1. `"C:/Program Files/Python312/python.exe" scripts/tests/run_two_seeds.py` (`PYTHONDONTWRITEBYTECODE=1`) -> exit 0
+   ```
+   == PYTHONHASHSEED=0 -m pytest -q -p no:cacheprovider scripts/tests
+   341 passed, 4 skipped in 317.27s (0:05:17)
+   == PYTHONHASHSEED=0: exit 0
+   == PYTHONHASHSEED=1 -m pytest -q -p no:cacheprovider scripts/tests
+   341 passed, 4 skipped in 273.75s (0:04:33)
+   == PYTHONHASHSEED=1: exit 0
+   ```
+2. `... -m pytest -q -p no:cacheprovider atx-engine/tools` -> exit 0: `349 passed, 6 subtests passed in 160.80s`
+3. `... -m pytest -q -p no:cacheprovider atx-impl/tools` -> exit 0:
+   `625 passed, 2 skipped, 17 subtests passed in 194.45s`
+4. Identity, tiny-world wave (scratch, not committed; same method as Tasks 1+ evidence 5, no `driver` key, plain
+   and PM8-15-ruled): HEAD `210d5de8` vs `3fa2dd4a` (the review base): 0 differences. That covers argv 17/17 and
+   18/18, files 42/42 and 43/43, log lines 51/51 and 53/53, and library specs 3/3, with time keys and receipt-file
+   SHAs normalised. HEAD vs `e93d5c2b`: the same, except git's CRLF warnings in 1-2 commit console logs, which
+   also differ between two HEAD runs.
+
+### Deviations
+- (a) applies to every K-P9-10 receipt, not only when the spec carries `exes_sha256`: a rebuilt exe makes an old
+  output stale whether or not the spec pins it. Receipts written before K-P9-10 are untouched, so existing outputs
+  resume as before.
+- (b) is keyed on the run's commit (`source_sha`), not on new bindings. Binding the closure in the reader / bundle
+  argv would have changed every wave's argv and receipts (identity). Consequence: a module outside the wave root,
+  or a `--no-git` run, is not checked.
+- Major: on top of the required check, the claim adopts the child (the review's orphaned-child point).
+
+### Merge notes (correction)
+- Tasks 1+ merge note 4 is corrected above: `host_budget_mib` must not exceed the host's free memory at wave start.
+  N bounds the sum of declared caps; the in-lock free-memory check is what stops over-commit.
+- Merge `210d5de8` (or this report commit). Verification is the same as Tasks 1+ note 5.
+
+### Open risks
+- `changed_imports` runs `git diff` against the receipt's `source_sha`. If that commit is no longer in the repository
+  (rebased away and gc'd), git fails and the stage stops with exit 3 rather than reusing (fails closed).
+- The deferred minors remain: lock robustness, the template / add-alpha inheritance of `exes_sha256`, nested time
+  keys in content digests, completion order under parallel judge, and K-P9-10 attempt numbering.
