@@ -6,3 +6,6 @@ scripts/bootstrap-structured-output-contract.mjs text eol=lf
 *.jsonl text eol=lf
 # Exception: these two were committed with CRLF blobs; keep their bytes exactly as committed.
 .superpowers/sdd/tier1-parity/*-headroom-observations.jsonl -text
+# Spec files are pinned and digested by their bytes (research_spec.spec_digest, wave template_sha256; P9 R0-7-EOL):
+# LF in the working tree as in the blobs, never CRLF on checkout. The blobs are LF already (no renormalisation).
+scripts/specs/** text eol=lf
