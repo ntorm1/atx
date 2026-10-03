@@ -52,6 +52,25 @@ struct PboResult {
 pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates,
                  atx::usize n_splits, PboRule rule = PboRule::CachedMomentsV2);
 
+// One split of a traced run (P9 B2: the research eval verb's CSCV report reads the
+// winner's identity and Sharpes from here, so no second CSCV exists). winner = the IS
+// first maximum, rank = its OOS ascending rank (0 = worst; the logit's argument),
+// is_sharpe / oos_sharpe = the winner's Sharpes as the rule compared them (a V2 cached
+// estimate unless the split resolved it exactly).
+struct PboSplitTrace {
+  atx::usize winner{};
+  atx::usize rank{};
+  atx::f64 is_sharpe{};
+  atx::f64 oos_sharpe{};
+};
+
+// pbo_cscv_checked with one PboSplitTrace per split in split order (`trace` is
+// replaced). The result, its logits and its diagnostics equal pbo_cscv_checked's: the
+// trace records values the rule computes anyway and adds no comparison.
+[[nodiscard]] atx::core::Result<PboResult>
+pbo_cscv_traced(std::span<const atx::f64> perf, atx::usize n_candidates, atx::usize n_splits,
+                PboRule rule, std::vector<PboSplitTrace> &trace);
+
 // Convenience wrapper for the SAME checked preconditions, including rectangular
 // shape, S<=16 and finite used values/scores. Fails fast in every build on error;
 // call pbo_cscv_checked when validity is not statically guaranteed.
