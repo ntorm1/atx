@@ -1015,6 +1015,7 @@ def pin_rerun(before: dict, rec: dict) -> dict:
 
 
 CHAIN_GENESIS = "0" * 64
+CHAIN_RULE = "atx-ledger-chain-fold/v1"   # P9 B2: the name of this chain rule (research/ledger chain.hpp kChainRule)
 
 
 def line_sha256(line: str) -> str:
