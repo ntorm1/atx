@@ -19,6 +19,8 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/target_tracking.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
+#include "atx/engine/risk/cov_container.hpp"
+#include "strategy_risk_model.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
 
@@ -643,7 +645,13 @@ co::Status read_bytes(const std::filesystem::path& path, u64 offset, char* out, 
     return co::Err(co::ErrorCode::IoError, "spo-v1: short read " + path.string());
   return co::Ok();
 }
+// The container's mapping bound (a TRAIN container is ~10^8 bytes).
+constexpr u64 max_container_bytes = 64ULL << 30;
 } // namespace
+
+struct RiskStore::Container {
+  atx::engine::risk::CovModelFile file;
+};
 
 co::Result<RiskStore> RiskStore::open(const std::string& directory,
                                       const std::string& manifest_sha256,
@@ -684,7 +692,10 @@ co::Result<RiskStore> RiskStore::open(const std::string& directory,
         {slot_file, dates * names},
         {diagnostics_file, 0}};
     const auto& listed = m.at("files");
+    // P9 COV: with a container the four payloads are not read, so not required or hashed.
+    const bool packed = m.contains("container");
     for (const auto& [name, bytes] : files) {
+      if (packed && std::string_view(name) != diagnostics_file) continue;
       if (!listed.contains(name))
         return co::Err(co::ErrorCode::InvalidArgument,
                        std::string("spo-v1: the risk model lacks ") + name +
@@ -717,6 +728,37 @@ co::Result<RiskStore> RiskStore::open(const std::string& directory,
     }
     if (store.sessions_.size() != store.dates_)
       return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: diagnostics.csv rows != dates");
+    if (packed) {
+      namespace er = atx::engine::risk;
+      const auto& c = m.at("container");
+      const auto file_name = c.at("file").get<std::string>();
+      const auto root = er::cov_parse_hex(c.at("root_sha256").get<std::string>());
+      const auto role = er::cov_parse_hex(role_sha256);
+      if (c.at("format").get<std::string>() != er::cov::format_name || !root || !role ||
+          !listed.contains(file_name) ||
+          listed.at(file_name).at("bytes").get<u64>() != c.at("bytes").get<u64>())
+        return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: risk model container block");
+      auto mapped = er::CovModelFile::open((base / file_name).string(), *root, er::VerifyMode::Full,
+                                           max_container_bytes);
+      if (!mapped)
+        return co::Err(mapped.error().code(), "spo-v1: risk model container: " +
+                                                  mapped.error().to_string());
+      const auto& model = *mapped;
+      if (model.role_sha256() != *role)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "spo-v1: the risk model container was fitted on another role");
+      if (model.factors() != risk_factors || model.groups() != risk_industry_slots ||
+          model.dense() != risk_styles || model.date_count() != store.dates_)
+        return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: risk model container geometry");
+      for (usize t = 0; t < store.dates_; ++t) {
+        const auto& e = model.index()[t];
+        const bool forecast = (e.flags & er::cov::date_forecast) != 0;
+        if (e.as_of_session_ns != store.sessions_[t] || forecast != (store.forecast_[t] != 0))
+          return co::Err(co::ErrorCode::InvalidArgument,
+                         "spo-v1: risk model container sessions/forecast flags != diagnostics.csv");
+      }
+      store.container_ = std::make_shared<Container>(Container{std::move(*mapped)});
+    }
   } catch (const std::exception& e) {
     return co::Err(co::ErrorCode::ParseError, std::string("spo-v1: risk model: ") + e.what());
   }
@@ -749,15 +791,26 @@ co::Status RiskStore::read(usize d, RiskSlice& out) const {
   out.slot.resize(n);
   out.styles.resize(n * risk_styles);
   std::vector<f32> narrow(n * risk_styles);
-  // SAFETY: char views of trivially copyable f64/f32/u8 arrays sized exactly `bytes`; the
-  // payloads are little-endian (static_assert above) and validated in size at open().
-  ATX_TRY_VOID(read_bytes(base / covariance_file, date * cells * sizeof(f64),
-                          reinterpret_cast<char*>(out.covariance.data()), cells * sizeof(f64)));
-  ATX_TRY_VOID(read_bytes(base / specific_file, date * n * sizeof(f64),
-                          reinterpret_cast<char*>(out.specific.data()), n * sizeof(f64)));
-  ATX_TRY_VOID(read_bytes(base / styles_file, date * n * risk_styles * sizeof(f32),
-                          reinterpret_cast<char*>(narrow.data()), n * risk_styles * sizeof(f32)));
-  ATX_TRY_VOID(read_bytes(base / slot_file, date * n, reinterpret_cast<char*>(out.slot.data()), n));
+  if (container_) {
+    // P9 COV: block d scattered to the same dense layout (slot 255, the quiet-NaN specific and +0
+    // styles for names without a row; the covariance as stored), then the same rules below.
+    ATX_TRY(const auto view, container_->file.view(d));
+    if (view.as_of != sessions_[d])
+      return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: container block session");
+    ATX_TRY_VOID(atx::impl::strategy::risk::scatter_cov_block(view, n, out.slot, out.specific,
+                                                              narrow, out.covariance));
+  } else {
+    // SAFETY: char views of trivially copyable f64/f32/u8 arrays sized exactly `bytes`; the
+    // payloads are little-endian (static_assert above) and validated in size at open().
+    ATX_TRY_VOID(read_bytes(base / covariance_file, date * cells * sizeof(f64),
+                            reinterpret_cast<char*>(out.covariance.data()), cells * sizeof(f64)));
+    ATX_TRY_VOID(read_bytes(base / specific_file, date * n * sizeof(f64),
+                            reinterpret_cast<char*>(out.specific.data()), n * sizeof(f64)));
+    ATX_TRY_VOID(read_bytes(base / styles_file, date * n * risk_styles * sizeof(f32),
+                            reinterpret_cast<char*>(narrow.data()), n * risk_styles * sizeof(f32)));
+    ATX_TRY_VOID(
+        read_bytes(base / slot_file, date * n, reinterpret_cast<char*>(out.slot.data()), n));
+  }
   out.nan_covariance_entries = 0;
   for (f64& c : out.covariance)
     if (!std::isfinite(c)) { c = 0.0; ++out.nan_covariance_entries; }
