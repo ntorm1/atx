@@ -11,4 +11,6 @@ Deliverables:
 4. Before/after evidence: SC/BZX line and cell counts; NULL exchange counts by source class; all_common membership and index counts; SC representation in R2000p; unique keys; PIT/cutoff checks; inherited market/index/universe gates. No return checks >=2023-01-01.
 5. Publish accurate docs/manifests and input hashes. Existing FAIL gates remain FAIL unless measured fixed. Record residual coverage/data-source limits and exact commands in report.
 
+Ruling R5: market_index --end previously bounded only validation, while building aggregate returns through latest. Correct actual aggregate-return source bounds to <2023-01-01, regression-test, and republish only allowed return dates. Membership/index ranks and non-return coverage can span latest. Record the inherited builder's resume-run boundary violation transparently; do not inspect prohibited return values.
+
 Review package must list specific commits, never BASE..HEAD. No shared registry edits before Task 17. Explicit-pathspec commits. Report all original Task 1/2 artifact provenance relevant to rebuilds.
