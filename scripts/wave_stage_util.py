@@ -46,8 +46,15 @@ def fold_processes(rows: list[dict]) -> list[dict]:
 
 
 def lock_exes(w: Wave) -> bool:
-    """driver.lock_exes (P9 OR-2): the wave pins the exes of every cell spec it writes (`lock --exes --write`)."""
-    return bool((w.manifest.get("driver") or {}).get("lock_exes"))
+    """driver.lock_exes (P9 OR-2): the wave pins the exes of every cell spec it writes (`lock --exes --write`). Also
+    when the parent spec pins its exes, without the key (review E1 minor, sticky exes_sha256): a cell derived from
+    it (a template child, an add-alpha copy) inherits the parent's exes_sha256, so after an exe rebuild it would stop
+    (exit 3) until someone re-locked it by hand; the wave re-locks it, as under the key. The rule is one: a spec the
+    wave writes carries pins if the manifest asks for them or its parent has them. Neither: nothing, as before."""
+    if (w.manifest.get("driver") or {}).get("lock_exes"):
+        return True
+    parent = (w.manifest.get("parent") or {}).get("spec")
+    return bool(parent) and w.exists(parent) and bool(w.load_spec(parent).get("exes_sha256"))
 
 
 def pin_exes(w: Wave, spec: str) -> None:

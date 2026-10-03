@@ -157,8 +157,8 @@ def test_stage_names_and_unknown_until(tmp_path):
 
 
 def test_content_digest_chains_without_time_keys(tmp_path):
-    """P9 OR section 3: digest="content" chains each receipt's content digest (canonical JSON without started_utc and
-    seconds) as previous_receipt_content_sha256, so two runs at different times chain the same digests; the default
+    """P9 OR section 3: digest="content" chains each receipt's content digest (canonical JSON without the time keys at
+    any depth) as previous_receipt_content_sha256, so two runs at different times chain the same digests; the default
     "file" rule keeps previous_receipt_sha256 (the file's SHA-256, time included); a state dir is read under one
     rule (a receipt recorded under the other is stale)."""
     digests = {}
@@ -181,6 +181,16 @@ def test_content_digest_chains_without_time_keys(tmp_path):
     assert SC.content_sha256(p) == first                                      # time keys, order, layout aside
     p.write_text(json.dumps({"stage": "a", "outputs": {"x": 2}, "started_utc": "T1", "seconds": 1.5}))
     assert SC.content_sha256(p) != first                                      # content is digested
+    # review E1 minor: time values nested in the outputs (phase rows, process rows) move no digest either
+    rows = lambda s, mib, x: {"stage": "a", "seconds": s, "outputs": {  # noqa: E731
+        "phases": [{"phase": "u", "outcome": "completed", "seconds": s, "peak_mib": mib, "wall_seconds": s}],
+        "timings": {"processes": [{"what": "u", "calls": 1, "seconds": s}]}, "x": x}}
+    p.write_text(json.dumps(rows(1.5, 100, 1)))
+    nested = SC.content_sha256(p)
+    p.write_text(json.dumps(rows(7.25, 900, 1)))
+    assert SC.content_sha256(p) == nested
+    p.write_text(json.dumps(rows(1.5, 100, 2)))
+    assert SC.content_sha256(p) != nested
     ctx = Ctx(tmp_path / "content-2020")                                      # one rule per state dir
     ch = SC.Chain("test", [make("a"), make("b")], ctx.root / "state", clock=lambda: "T")
     with pytest.raises(SC.ChainError, match=r"STALE \[b\].*previous_receipt_content_sha256, previous_receipt_sha256") \

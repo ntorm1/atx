@@ -759,8 +759,8 @@ def test_parallel_steps_under_host_budget(tmp_path):
 def test_lock_exes_pins_and_verify_compares(tmp_path):
     """P9 OR-2: `lock --exes` writes exes_sha256 (the SHA-256 of every exe the cell runs; a template's into
     change.set); plan and run stop (exit 3) when an exe no longer hashes to its pin, and a re-lock re-pins it (noted
-    RELOCKED). Without --exes the lock writes what it wrote before. Under driver.lock_exes the wave locks every spec it
-    writes with --exes before the commit; verify records the parent's and the cell's pins and refuses a cell whose
+    RELOCKED). Without --exes the lock writes what it wrote before. Under driver.lock_exes (implied by a parent spec
+    that pins its exes) the wave locks every spec it writes with --exes before the commit; verify records the parent's and the cell's pins and refuses a cell whose
     pinned NAV exe moved without its reference construction on it."""
     root, sp = T.make_root(tmp_path / "c")
     plain, _ = RC.lock(sp, root)
@@ -812,6 +812,14 @@ def test_lock_exes_pins_and_verify_compares(tmp_path):
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
     assert "exes_sha256" not in res and "exes_sha256" not in json.loads(
         (root / "out/waves/w1/receipts/07-verify.json").read_text())["outputs"]
+    # review E1 minor (sticky pins): a parent that pins its exes implies the key (its cells inherit the pins)
+    root = F.build(tmp_path / "wp")
+    F.write_json(root, F.PARENT, dict(json.loads((root / F.PARENT).read_text()), exes_sha256={"ic": ic, "nav": nav}))
+    F.git(root, "commit", "-q", "-am", "the parent pins its exes")
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    assert [F.unrooted(a)[3:] for a in research_cycle_calls(fake, "lock") if "--exes" in a] == \
+        [["scripts/specs/v8/lib-w1.json", "--exes", "--write"]]
     # verify's record and refusal
     a, b = "a" * 64, "b" * 64
     F.write_json(root, F.PARENT, dict(F.cell_spec("p0", F.PARENT_NAV, reference_nav="out/nav-base"),

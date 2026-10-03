@@ -63,7 +63,8 @@ One wave is one cell on the current book, declared before anything is measured:
        "lock_exes": BOOL                         every cell spec the wave writes (the screen library, a b library, a
                                                  rule cell) is pinned with `lock --exes --write` before its commit: its
                                                  exes_sha256, checked by every run; verify records the parent's and the
-                                                 cell's pins (OR-2)
+                                                 cell's pins (OR-2). Implied when the parent spec carries exes_sha256
+                                                 (its derived cells inherit the pins: wave_stage_util.lock_exes)
        "receipt_digest": "file" | "content"      "content": the stage receipts are chained, and digested in
                                                  wave-result.json, over their content keys (no started_utc / seconds:
                                                  stage_chain.content_sha256; OR section 3); "file" = as before
