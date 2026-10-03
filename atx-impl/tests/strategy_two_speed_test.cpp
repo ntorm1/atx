@@ -203,6 +203,15 @@ st::TargetReplayConfig two_speed_config(bool on) {
   c.two_speed = on;
   return c;
 }
+// price-risk-v1 on short windows a 70-session fixture fills (beta 40, vol 20: strategy_live_test's
+// v6.1 book).
+st::TargetReplayConfig neutral_config(st::TargetReplayConfig c) {
+  c.neutralize = st::TargetNeutralize::PriceRiskV1;
+  c.price_risk.beta_window = 40; c.price_risk.vol_window = 20;
+  c.price_risk.adv_window = 10; c.price_risk.min_return_pairs = 20;
+  c.price_risk.min_names = 5;
+  return c;
+}
 struct Sleeves {
   std::vector<f64> fast, slow, share;
   Sleeves(const Role& role, f64 fast_share)
@@ -768,16 +777,6 @@ TEST(TwoSpeed, GridHasOneCadenceAndOneLockstepPerLeverage) {
       EXPECT_EQ(bits(a[t].planned_gross), bits(b[t].planned_gross)) << v << ' ' << t;
     }
   }
-}
-
-// price-risk-v1 on short windows a 70-session fixture fills (beta 40, vol 20: strategy_live_test's
-// v6.1 book).
-st::TargetReplayConfig neutral_config(st::TargetReplayConfig c) {
-  c.neutralize = st::TargetNeutralize::PriceRiskV1;
-  c.price_risk.beta_window = 40; c.price_risk.vol_window = 20;
-  c.price_risk.adv_window = 10; c.price_risk.min_return_pairs = 20;
-  c.price_risk.min_names = 5;
-  return c;
 }
 
 // Review YCOMB #5: when only the fast sleeve's neutralization skips, the record carries the fast
