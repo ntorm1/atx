@@ -8,8 +8,10 @@
 //
 // Suite: BookTwoSpeed
 
+#include <bit>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -192,6 +194,62 @@ TEST(BookTwoSpeed, NettedAimRefusalsWriteNothing) {
   EXPECT_TRUE(eb::two_speed_aim(std::vector<atx::u8>{0, 1}, loose, 0.5, 1.0, 0.1, 0.05, fast, desired));
   EXPECT_EQ(fast[0], 0.0);
   EXPECT_EQ(desired[0], 0.0);
+}
+
+// Ruling PM8-16 #10: under a scaler the plan at lambda L steps any current weight c to the remainder
+// R = c - lambda_prev F moving at theta_s toward lambda L m_s d_s plus the scaled fast sleeve
+// lambda F_next; equal scales write nothing (the netted aim bit for bit).
+TEST(BookTwoSpeed, CarryKeepsTheFastHoldingAtTheBooksScale) {
+  const std::vector<atx::u8> member{1, 1, 1, 0};
+  const std::vector<f64> fast_desired{0.3, -0.1, 0.0, 0.2}, slow_desired{-0.2, 0.25, 0.1, 0.0};
+  const f64 share = 0.35, L = 1.4, theta_f = eb::two_speed_fast_theta(1.0);
+  const f64 theta_s = eb::two_speed_slow_theta;
+  const std::vector<f64> before{0.02, -0.05, 0.03, 0.1};
+  std::vector<f64> fast = before, desired = slow_desired;
+  ASSERT_TRUE(eb::two_speed_aim(member, fast_desired, share, L, theta_f, theta_s, fast, desired));
+  const std::vector<f64> netted = desired;
+  for (const auto& [lambda_prev, lambda] : {std::pair{1.0, 0.8}, std::pair{0.8, 1.1},
+                                            std::pair{1.25, 0.96}}) {
+    std::vector<f64> carried = netted;
+    ASSERT_TRUE(eb::two_speed_carry(member, before, lambda_prev, lambda, L, theta_s, carried));
+    for (const f64 c : {-0.3, 0.0, 0.07, 0.5})
+      for (usize i = 0; i < 3U; ++i) { // the members
+        const f64 book_step = c + theta_s * (lambda * L * carried[i] - c);
+        const f64 remainder = c - lambda_prev * before[i];
+        const f64 sleeves = remainder +
+            theta_s * (lambda * L * (1.0 - share) * slow_desired[i] - remainder) + lambda * fast[i];
+        EXPECT_NEAR(book_step, sleeves, 1e-15) << lambda_prev << ' ' << lambda << ' ' << c << ' '
+                                               << i;
+      }
+    EXPECT_EQ(carried[3], 0.0); // a nonmember is untouched
+  }
+  std::vector<f64> same = netted;
+  ASSERT_TRUE(eb::two_speed_carry(member, before, 0.9, 0.9, L, theta_s, same));
+  for (usize i = 0; i < member.size(); ++i)
+    EXPECT_EQ(std::bit_cast<atx::u64>(same[i]), std::bit_cast<atx::u64>(netted[i])) << i;
+}
+
+TEST(BookTwoSpeed, CarryRefusalsWriteNothing) {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const std::vector<atx::u8> member{1, 0}, bad_member{2, 0};
+  const std::vector<f64> before{0.1, nan}; // a nonmember's NaN is no refusal
+  std::vector<f64> desired{0.3, 0.0};
+  const auto untouched = [&] {
+    EXPECT_EQ(desired[0], 0.3);
+    EXPECT_EQ(desired[1], 0.0);
+  };
+  EXPECT_FALSE(eb::two_speed_carry(member, before, 0.0, 1.0, 1.2, 0.05, desired)); // lambda_prev
+  EXPECT_FALSE(eb::two_speed_carry(member, before, 1.0, nan, 1.2, 0.05, desired));  // lambda
+  EXPECT_FALSE(eb::two_speed_carry(member, before, 1.0, 0.8, -1.0, 0.05, desired)); // leverage
+  EXPECT_FALSE(eb::two_speed_carry(member, before, 1.0, 0.8, 1.2, 1.5, desired));   // theta
+  EXPECT_FALSE(eb::two_speed_carry(bad_member, before, 1.0, 0.8, 1.2, 0.05, desired));
+  EXPECT_FALSE(eb::two_speed_carry(member, std::vector<f64>{nan, 0.0}, 1.0, 0.8, 1.2, 0.05,
+                                   desired));
+  EXPECT_FALSE(eb::two_speed_carry(member, std::vector<f64>{0.1}, 1.0, 0.8, 1.2, 0.05, desired));
+  untouched();
+  EXPECT_TRUE(eb::two_speed_carry(member, before, 1.0, 0.8, 1.2, 0.05, desired));
+  EXPECT_NE(desired[0], 0.3);
+  EXPECT_EQ(desired[1], 0.0);
 }
 
 } // namespace atx_test_v8_book_two_speed

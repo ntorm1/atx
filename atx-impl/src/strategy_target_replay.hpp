@@ -124,8 +124,11 @@ struct TargetReplayConfig {
   // which must be the registered theta_s = .05 (PM8-16 #3), and the desired target is the aim
   // whose aim-partial-v5 step is exactly that netted move:
   //   desired = m_s d_s + (F_prev + (F_next - F_prev) / trade_fraction) / L,
-  // m_f the fast themes' mass share of the decision (m_s = 1 - m_f). Not with hold_band, inv_vol or
-  // adv_hold. Writes recipe, rule-id and summary keys.
+  // m_f the fast themes' mass share of the decision over the themes with a present member (m_s =
+  // 1 - m_f). Under the NAV's leverage scaler (--risk-target / --vol-target) a book plans at
+  // L_t = lambda L and carries its fast holding at lambda F (Ruling PM8-16 #10: nav_v7's plan,
+  // engine::book::two_speed_carry). Not with hold_band, inv_vol or adv_hold. Writes recipe,
+  // rule-id and summary keys.
   bool two_speed{};
 };
 // inv-vol-v1's registered floor: s_i is raised to at least this fraction of the median (so the

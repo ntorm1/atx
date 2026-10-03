@@ -192,11 +192,11 @@ u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
 }
 // The v8 construction state per name (detail::DesiredState): hold-band-v1's rank_set and
 // desired_prev, adv-hold-v1's ADV row and caps, inv-vol-v1's volatility row and its sorted
-// scratch, two-speed-v1's fast sleeve, fast desired target and parent diagnostic scratch
-// (review YCOMB #7). Zero with every v8 option off.
+// scratch, two-speed-v1's fast sleeve (and its value entering the rebalance), fast desired
+// target and parent diagnostic scratch (review YCOMB #7). Zero with every v8 option off.
 u64 desired_state_bytes(const TargetReplayConfig& cfg, usize instruments) {
   const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U) +
-                       (inv_vol_on(cfg) ? 2U : 0U) + (two_speed_on(cfg) ? 3U : 0U);
+                       (inv_vol_on(cfg) ? 2U : 0U) + (two_speed_on(cfg) ? 4U : 0U);
   return u64{instruments} * per_name * sizeof(f64);
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
@@ -637,6 +637,7 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   }
   if (!fast_ok || !slow_ok) return co::Ok(false);
   if (state->fast.size() != n) state->fast.assign(n, 0.0);
+  state->fast_before.assign(state->fast.begin(), state->fast.end()); // F entering the step
   ATX_TRY_VOID(eb::two_speed_aim(in.member.subspan(d * n, n), state->fast_desired, share,
                                  cfg.aim_leverage, two_speed_theta_fast(cfg), cfg.trade_fraction,
                                  state->fast, desired));
@@ -1239,7 +1240,10 @@ constexpr const char* two_speed_rule_declaration =
     "per rebalance at cadence C (a 5-session half-life at any cadence; 0 off membership); the "
     "book's remainder current - F moves toward L m_s d_s at theta_s = trade_fraction = .05; the "
     "book trades only the netted change (desired = m_s d_s + (F + (F_next - F) / theta_s) / L "
-    "under aim-partial-v5); m_f the fast themes' mass share of the decision";
+    "under aim-partial-v5); m_f the fast themes' mass share of the decision over the themes "
+    "with a present member; under --risk-target / --vol-target a book plans at L_t = lambda L "
+    "and its fast holding follows its scale (lambda F: its plan carries F from its lambda at "
+    "its previous rebalance)";
 constexpr const char* norm_score_rule_declaration =
     "norm-score-v1 (v8 Y, lane YCOMB, concentration): on every rebalance decision each member's "
     "centred tied rank is replaced by its van der Waerden normal score z = Phi^{-1}(u) before the "

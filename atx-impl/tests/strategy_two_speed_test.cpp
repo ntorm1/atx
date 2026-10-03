@@ -417,10 +417,12 @@ TEST(TwoSpeed, UnderVolTargetZeroShareIsTheParentRunBitForBit) {
     EXPECT_EQ(bits(records[k].leverage), bits(parent_leverage[k])) << k;
 }
 
-// A fast share of .3 under vol-target-v1. (1) The hook plans the netted aim at the scaler's L_t:
-// update_weights with --aim-leverage L_t on the same desired target, bit for bit. (2) Closed form at
-// L_t = 1 against the run's L 1.2 (no dust, immediate exit): the book moves toward (1 / L) x the
-// netted target T = L m_s d_s + F + (F_next - F) / theta, and F follows the run's L whatever L_t is.
+// A fast share of .3 under vol-target-v1. (1) The hook plans the carried netted aim at the scaler's
+// L_t: update_weights with --aim-leverage L_t on the netted desired target plus the carry of F from
+// the book's previous lambda = L_t / L (engine::book::two_speed_carry; Ruling PM8-16 #10), bit for
+// bit; without F the hook refuses. (2) Closed form at L_t = 1 against the run's L 1.2 (no dust,
+// immediate exit): the book moves toward (1 / L) x the netted target T = L m_s d_s + F + (F_next -
+// F) / theta, and F follows the run's L whatever L_t is.
 TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
   const Directory dir;
   const Role role(50, 12, 41);
@@ -448,6 +450,7 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
   std::vector<Ranked> row;
   st::PriceRiskScratch scratch;
   std::vector<f64> current(role.n, 0.0), closed(role.n, 0.0), F(role.n, 0.0);
+  f64 lambda_prev = 0; // the book's lambda at its previous rebalance (none yet)
   for (usize d = 0; d < 45; ++d) {
     std::vector<f64> desired(role.n, 0.0), df(role.n, 0.0), ds(role.n, 0.0);
     st::ConstructionDay rec, rf, rs;
@@ -456,10 +459,23 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
     ASSERT_TRUE(st::detail::form_desired(slow_x, plain, d, row, ds, scratch, rs));
     std::vector<f64> hooked = current, at_lt = current;
     st::TargetReplayDay a, b;
-    ASSERT_TRUE(v7::plan(x, cfg, d, true, 0.0, 1e8, desired, hooked, a, {}));
+    if (d == 0) { // without F entering the rebalance the scaled two-speed plan refuses
+      std::vector<f64> untouched = current;
+      st::TargetReplayDay z;
+      EXPECT_FALSE(v7::plan(x, cfg, d, true, 0.0, 1e8, desired, untouched, z, {}));
+    }
+    ASSERT_TRUE(v7::plan(x, cfg, d, true, 0.0, 1e8, desired, hooked, a, {}, {}, {},
+                         state.fast_before));
     auto t = cfg.target;
     t.aim_leverage = extension.risk_target_scaler()->records().back().leverage;
-    ASSERT_TRUE(st::detail::update_weights(x, t, d, true, 0.0, desired, at_lt, b));
+    const f64 lambda = t.aim_leverage / L;
+    std::vector<f64> carried = desired;
+    ASSERT_TRUE(atx::engine::book::two_speed_carry(x.member.subspan(d * role.n, role.n),
+                                                   state.fast_before,
+                                                   lambda_prev > 0 ? lambda_prev : lambda, lambda,
+                                                   L, theta, carried));
+    lambda_prev = lambda;
+    ASSERT_TRUE(st::detail::update_weights(x, t, d, true, 0.0, carried, at_lt, b));
     for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(hooked[i]), bits(at_lt[i])) << d << ' ' << i;
     current = hooked;
     std::vector<f64> step = closed;
@@ -625,13 +641,13 @@ TEST(TwoSpeed, AFastOnlySkipIsTheRecordsSkip) {
   EXPECT_EQ(s.at("two_speed").at("rebalances_skipped_by_a_sleeve").get<usize>(), 1U);
 }
 
-// Review YCOMB #7: the workspace budget charges two-speed's per-name state (F, the fast desired
-// target, the parent diagnostic's scratch); off, nothing.
+// Review YCOMB #7: the workspace budget charges two-speed's per-name state (F, F entering the
+// rebalance, the fast desired target, the parent diagnostic's scratch); off, nothing.
 TEST(TwoSpeed, BudgetChargesTheSleeveState) {
   for (const usize n : {usize{1}, usize{12}, usize{20000}}) {
     const auto on = st::detail::construction_scratch_bytes(two_speed_config(true), n);
     const auto off = st::detail::construction_scratch_bytes(two_speed_config(false), n);
-    EXPECT_EQ(on - off, u64{n} * 3U * sizeof(f64)) << n;
+    EXPECT_EQ(on - off, u64{n} * 4U * sizeof(f64)) << n;
     EXPECT_EQ(off, 0U) << n; // no neutralization and no other v8 option: no state
   }
 }

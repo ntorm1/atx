@@ -912,6 +912,9 @@ struct PlanInputs {
   const std::vector<f64>& desired;
   const BorrowTiers& tiers;
   std::span<const u8> no_locate; // decide --locates only; empty in the replay
+  // v8 Y-5 two-speed-v1 (the replay only; empty otherwise): F entering this decision's step,
+  // which a book under a leverage scaler carries at its own scale (Ruling PM8-16 #10).
+  std::span<const f64> two_speed_fast;
 };
 // CONSTRUCTION-RULE DISPATCH SITE, shared by the NAV replay (plan_decision) and the
 // daily decide path (detail::nav_decide), so a rule added here runs in both. `planned`
@@ -925,7 +928,7 @@ co::Status plan_weights(const PlanInputs& p, f64 spent, std::span<const f64> rat
   // L4/W1 hook: detail::update_weights unless the v7 extension (aim-partial-v6, spo-v1) is
   // installed; spo-v1 also reads the decision's borrow tiers and decide --locates.
   ATX_TRY_VOID(v7::plan(p.x, p.cfg, p.d, p.rebalance, spent, nav_post, p.desired, planned, plan,
-                        rates, p.tiers.tier, p.no_locate));
+                        rates, p.tiers.tier, p.no_locate, p.two_speed_fast));
   if (!rule.empty()) std::copy(planned.begin(), planned.end(), rule.begin());
   if (p.cfg.scenario.financing.block_special_shorts)
     block_special_plan(p.tiers, p.no_locate, current, planned, nav_post, day);
@@ -988,7 +991,8 @@ co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
   std::span<const f64> rates;
   if (c.cfg.rate == NavRateRule::PerNameV1) { per_name_rates(c, b, d, cache); rates = cache.rate; }
-  const PlanInputs inputs{x, c.cfg, d, rebalance, shared.desired, tiers, {}};
+  const PlanInputs inputs{x, c.cfg, d, rebalance, shared.desired, tiers, {},
+                          std::span<const f64>(shared.state.fast_before)};
   const auto rule = b.trace ? std::span<f64>(b.trace->rule) : std::span<f64>{};
   ATX_TRY_VOID(plan_weights(inputs, b.spent, rates, s.current, s.planned, b.nav_post, rule, plan,
                             day));
@@ -3608,7 +3612,7 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
     out.plan.decision = d; out.plan.session = x.session_keys[d];
     out.plan.calendar_month = calendar_month(out.plan.session);
     NavReplayDay day; // receives the locate block's counts
-    const PlanInputs inputs{x, cfg, d, out.rebalance, shared.desired, tiers, no_locate};
+    const PlanInputs inputs{x, cfg, d, out.rebalance, shared.desired, tiers, no_locate, {}};
     ATX_TRY_VOID(plan_weights(inputs, 0.0, {}, out.current, out.target, nav_post, out.rule,
                               out.plan, day));
     out.construction.banded_names = out.plan.construction.banded_names;

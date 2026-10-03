@@ -132,4 +132,50 @@ struct TwoSpeedTrade {
   return atx::core::Ok();
 }
 
+// Under a leverage scaler (vol-target-v1, risk-target-v1) a book plans at L_t = lambda L, so its
+// fast holding is lambda F (Ruling PM8-16 #10: the fast holding follows the scaled book). With
+// lambda_prev the book's scale at its previous two-speed rebalance (its fast part lambda_prev F)
+// and the remainder R = c - lambda_prev F, the aim
+//   A = lambda L m_s d_s + lambda_prev F + (lambda F_next - lambda_prev F) / theta_slow
+// steps any current weight c to R + theta_slow (lambda L m_s d_s - R) + lambda F_next. Since
+// lambda L desired = lambda L m_s d_s + lambda F + lambda (F_next - F) / theta_slow for the netted
+// desired of two_speed_aim, A = lambda L desired + (lambda - lambda_prev) (1 - theta_slow) /
+// theta_slow F, so per member
+//   desired += (1 - lambda_prev / lambda) (1 - theta_slow) / theta_slow F / L
+// and the plan at lambda L steps to A. `fast_before` is F entering the decision (before
+// two_speed_aim). lambda_prev == lambda writes nothing (the netted aim bit for bit); a nonmember
+// is untouched (its desired is 0 and its exit is the plan's). lambdas and L finite and > 0, theta
+// in (0, 1], member flags 0/1, one entry per name and the members' entries finite;
+// Err(InvalidArgument) before any write otherwise.
+[[nodiscard]] inline atx::core::Status two_speed_carry(std::span<const atx::u8> member,
+                                                      std::span<const atx::f64> fast_before,
+                                                      atx::f64 lambda_prev, atx::f64 lambda,
+                                                      atx::f64 leverage, atx::f64 theta_slow,
+                                                      std::span<atx::f64> desired) {
+  const auto n = member.size();
+  if (fast_before.size() != n || desired.size() != n)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "two-speed carry: one entry per name in every span");
+  for (const atx::f64 positive : {lambda_prev, lambda, leverage})
+    if (!std::isfinite(positive) || !(positive > 0.0))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "two-speed carry: the scales and the leverage must be finite and > 0");
+  if (!std::isfinite(theta_slow) || !(theta_slow > 0.0) || theta_slow > 1.0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "two-speed carry: theta must lie in (0, 1]");
+  for (atx::usize i = 0; i < n; ++i) {
+    if (member[i] > atx::u8{1})
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "two-speed carry: member flags must be 0 or 1");
+    if (member[i] != atx::u8{0} && (!std::isfinite(fast_before[i]) || !std::isfinite(desired[i])))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "two-speed carry: a member's fast sleeve and desired must be finite");
+  }
+  if (lambda_prev == lambda) return atx::core::Ok();
+  const atx::f64 gain = (1.0 - lambda_prev / lambda) * (1.0 - theta_slow) / theta_slow / leverage;
+  for (atx::usize i = 0; i < n; ++i)
+    if (member[i] != atx::u8{0}) desired[i] += gain * fast_before[i];
+  return atx::core::Ok();
+}
+
 } // namespace atx::engine::book

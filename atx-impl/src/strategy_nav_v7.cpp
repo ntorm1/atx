@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/risk_target.hpp"
+#include "atx/engine/book/two_speed.hpp"
 #include "strategy_risk_target.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
@@ -77,12 +78,17 @@ struct ScopedNavExtension::State {
   // v8 R-8 (--risk-target): the scaler, and the book's config at its L_t (scratch, per plan).
   std::unique_ptr<risk_target::Scaler> scaler;
   NavReplayConfig scaled;
+  // v8 Y-5 two-speed-v1 under the scaler (Ruling PM8-16 #10): per book, lambda = L_t / L at its
+  // previous two-speed rebalance, and the carried desired target (scratch, per plan).
+  std::map<std::string, f64, std::less<>> two_speed_lambda;
+  std::vector<f64> carried;
   std::string void_reason;             // capture(): the tripwire voided the run
   [[nodiscard]] co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                                 bool rebalance, f64 spent, f64 nav_post,
                                 const std::vector<f64>& desired, std::vector<f64>& planned,
                                 TargetReplayDay& out, std::span<const f64> rates,
-                                std::span<const u8> tier, std::span<const u8> no_locate);
+                                std::span<const u8> tier, std::span<const u8> no_locate,
+                                std::span<const f64> two_speed_fast);
   // The book's rule under `cfg` (base_leverage: the run's L when cfg carries L_t; NaN without
   // the risk target).
   [[nodiscard]] co::Status plan_rule(const TargetReplayInput& x, const NavReplayConfig& cfg,
@@ -430,7 +436,8 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
                                            const std::vector<f64>& desired,
                                            std::vector<f64>& planned, TargetReplayDay& out,
                                            std::span<const f64> rates, std::span<const u8> tier,
-                                           std::span<const u8> no_locate) {
+                                           std::span<const u8> no_locate,
+                                           std::span<const f64> two_speed_fast) {
   if (!scaler)
     return plan_rule(x, cfg, nan, d, rebalance, spent, nav_post, desired, planned, out, rates,
                      tier, no_locate);
@@ -439,11 +446,33 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
   // warm-up included; the main pass's scored decisions are recorded). spo-v3 keeps the run's L
   // for its gross bound and its gamma (BookDecision::base_leverage).
   const bool scored = pass == NavV7Pass::Main && d >= x.decision_begin;
-  ATX_TRY(const f64 leverage, scaler->leverage(x, d, rebalance, book_label(cfg.scenario),
-                                               cfg.target.aim_leverage, planned, scored));
+  // v8 Y-5 two-speed-v1 (Ruling PM8-16 #10): the book's fast holding follows its scale lambda =
+  // L_t / L. Its rebalance plans at L_t the netted desired target plus the carry of F from the
+  // book's lambda at its previous two-speed rebalance (its first: lambda itself, no carry), so
+  // the remainder moves at theta_s toward lambda L m_s d_s and the fast part becomes lambda F_next.
+  // Checked before the scaler moves.
+  const bool carry = two_speed_on(cfg.target) && rebalance;
+  const usize n = x.instruments;
+  if (carry && (two_speed_fast.size() != n || desired.size() != n || d >= x.dates))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav v7: two-speed-v1 under --risk-target / --vol-target needs the fast "
+                   "sleeve F entering the rebalance");
+  const std::string book = book_label(cfg.scenario);
+  ATX_TRY(const f64 leverage, scaler->leverage(x, d, rebalance, book, cfg.target.aim_leverage,
+                                               planned, scored));
   scaled = cfg;
   scaled.target.aim_leverage = leverage;
-  return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, desired,
+  if (!carry)
+    return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, desired,
+                     planned, out, rates, tier, no_locate);
+  const f64 lambda = leverage / cfg.target.aim_leverage;
+  const auto held = two_speed_lambda.try_emplace(book, lambda).first;
+  carried.assign(desired.begin(), desired.end());
+  ATX_TRY_VOID(bk::two_speed_carry(x.member.subspan(d * n, n), two_speed_fast, held->second,
+                                   lambda, cfg.target.aim_leverage, cfg.target.trade_fraction,
+                                   carried));
+  held->second = lambda;
+  return plan_rule(x, scaled, cfg.target.aim_leverage, d, rebalance, spent, nav_post, carried,
                    planned, out, rates, tier, no_locate);
 }
 
@@ -553,6 +582,7 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
   state_->liquidity_key = nullptr;
   state_->liquidity_decision = no_decision;
   state_->c_history.clear();
+  state_->two_speed_lambda.clear();
   if (state_->engine) state_->engine->begin_run();
   if (state_->capacity_engine) state_->capacity_engine->begin_run();
   if (state_->scaler) state_->scaler->begin_run();
@@ -607,10 +637,11 @@ co::Result<std::unique_ptr<const bk::ReplayCostModel>> extension_cost_model(cons
 co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d, bool rebalance,
                 f64 spent, f64 nav_post, const std::vector<f64>& desired,
                 std::vector<f64>& planned, TargetReplayDay& out, std::span<const f64> rates,
-                std::span<const u8> tier, std::span<const u8> no_locate) {
+                std::span<const u8> tier, std::span<const u8> no_locate,
+                std::span<const f64> two_speed_fast) {
   if (auto* s = active_state)
     return s->plan(x, cfg, d, rebalance, spent, nav_post, desired, planned, out, rates, tier,
-                   no_locate);
+                   no_locate, two_speed_fast);
   return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
 }
 
@@ -900,16 +931,19 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       o.risk_target.on = true;
       o.risk_target.law = risk_target::Law::vol_target_v1;
     }
-    // v8 Y-5 two-speed-v1: the replay's shared construction composes the sleeves into the netted aim
-    // that aim-partial-v5 trades at its own theta; so no rule that replaces that plan, and the fixed
-    // rate. Composition with --risk-target / --vol-target (Ruling on Y-5 / Y-1, registered order Y-5 ->
-    // X-10 -> Y-1): the netted target is the book target; the scaler's L_t replaces the run's L in the
-    // plan of that target, i.e. scales the netted target by L_t / L, and its sigma reads the book's own
-    // (net) weights, never the virtual fast sleeve, which stays at the run's L.
+    // v8 Y-5 two-speed-v1: the replay's shared construction composes the sleeves into the netted
+    // aim that aim-partial-v5 trades at its own theta; so no rule that replaces that plan, and the
+    // fixed rate (validate_nav_config refuses a per-name rate too, review YCOMB #1). Composition
+    // with --risk-target / --vol-target (Ruling on Y-5 / Y-1, registered order Y-5 -> X-10 ->
+    // Y-1): the netted target is the book target; the scaler's L_t replaces the run's L in the
+    // plan of that target, i.e. scales it by lambda = L_t / L, and its sigma reads the book's own
+    // (net) weights, never the virtual fast sleeve F (built at the run's L). The book's fast
+    // holding follows its scale, lambda F (Ruling PM8-16 #10: State::plan carries F from the
+    // book's previous lambda, engine::book::two_speed_carry).
     if (std::find(args.begin(), args.end(), "--two-speed") != args.end() &&
         (o.spo_v1 || o.aim_v6 || (rate && *rate != "fixed")))
-      throw std::invalid_argument("--two-speed two-speed-v1 needs aim-partial-v5 at the fixed rate, without "
-                                  "spo or aim-partial-v6");
+      throw std::invalid_argument("--two-speed two-speed-v1 needs aim-partial-v5 at the fixed "
+                                  "rate, without spo or aim-partial-v6");
     // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
     // value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {
