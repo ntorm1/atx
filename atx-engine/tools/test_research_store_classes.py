@@ -109,7 +109,7 @@ class ClassRegistryGuard(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(registry["classes"][-1]["id"], "other")
         self.assertEqual(registry["classes"][-1]["globs"], ["**"])
-        owner: dict = {}
+        owners: dict = {}
         for c in registry["classes"]:
             with self.subTest(cls=c["id"]):
                 for key in ("id", "label", "globs", "schemas", "format", "ingest", "render", "writer", "pinned_by",
@@ -118,8 +118,21 @@ class ClassRegistryGuard(unittest.TestCase):
                 self.assertIn(c["format"], ("json", "jsonl", "bytes"))
                 for literal in [*c["schemas"], *c.get("registers", [])]:
                     self.assertRegex(literal, f"^{LITERAL.pattern}$")
-                    self.assertNotIn(literal, owner, f"{literal} in classes {owner.get(literal)} and {c['id']}")
-                    owner[literal] = c["id"]
+                    owners.setdefault(literal, []).append(c)
+        # One writer may stamp one schema on two file names (run_bounded_research.py: start.json and receipt.json).
+        # Such a literal is shared only by classes whose globs name the file (no catch-all) and do not overlap, so
+        # the first-match rule can never make the later class dead.
+        for literal, classes in owners.items():
+            if len(classes) < 2:
+                continue
+            with self.subTest(shared=literal):
+                seen: set = set()
+                for c in classes:
+                    globs = set(c["globs"])
+                    self.assertTrue(globs, f"{literal}: class {c['id']} has no globs")
+                    self.assertFalse(globs & {"**", "**/*.json"}, f"{literal}: class {c['id']} has a catch-all glob")
+                    self.assertFalse(globs & seen, f"{literal}: class {c['id']} repeats a glob of another class")
+                    seen |= globs
 
     def test_planted_unregistered_literal_fails(self):
         registry = load()
