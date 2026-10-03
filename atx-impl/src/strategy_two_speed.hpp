@@ -23,7 +23,11 @@
 namespace atx::impl::strategy {
 inline constexpr std::string_view two_speed_rule = "two-speed-v1";
 // Registered blind (task-YCOMB-report.md, Y-5 half-life table): theme -> alpha half-life, sessions;
-// merger_arbitrage 126 (half its field's 252-session window; Rulings PM8-14, YP-10).
+// merger_arbitrage 126 (half its field's 252-session window; Rulings PM8-14, YP-10). These are the
+// rule's registered parameters, not a theme list: the registered themes are the IC runner's theme
+// table (P9 lane D1, strategy_ic_rules.hpp: the alpha registry's themes), and a weighted theme
+// needs both a row here and a place in that table. A theme registered without a half-life is
+// refused only by two-speed-v1, when weighted.
 inline constexpr std::array<std::pair<std::string_view, atx::f64>, 13> two_speed_half_lives{{
     {"value", 252.0},          {"profitability_quality", 252.0}, {"investment_issuance", 252.0},
     {"earnings_momentum", 63.0}, {"price_momentum", 126.0},       {"low_risk", 252.0},

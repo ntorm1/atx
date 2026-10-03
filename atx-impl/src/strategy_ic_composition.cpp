@@ -20,24 +20,52 @@ namespace cb = atx::engine::combine;
 constexpr usize max_candidates = 256;
 constexpr usize max_themes = 32; // pinned within-theme redistribution (ew-theme-v6)
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
-using Ranked = std::pair<f64, usize>;
+// Every centred tied rank here is combine/group_rerank.hpp's for_each_centered_rank (P9 lane D1,
+// one helper): it sorts by (value, name index), so the explicit index tie break keeps the
+// accumulation order stable, and ranks with the expression this file used to copy, bit for bit.
+using Ranked = cb::RankedName;
 bool safe_name(const std::string& s) {
   return !s.empty() && s.size() <= 64 && std::all_of(s.begin(), s.end(), [](char c) {
     return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
   });
 }
-// Sort is bounded in-place; explicit index tie break makes accumulation stable.
-void sort_ranks(std::vector<Ranked>& values) { std::sort(values.begin(), values.end()); }
-template<class F> void each_centered_rank(const std::vector<Ranked>& v, F&& apply) {
-  if (v.size() < 2) return;
-  for (usize b = 0; b < v.size();) {
-    usize e = b + 1;
-    while (e < v.size() && v[e].first == v[b].first) ++e;
-    const auto r = (static_cast<f64>(b) + static_cast<f64>(e - 1)) /
-                   (2.0 * static_cast<f64>(v.size() - 1)) - 0.5;
-    for (usize k = b; k < e; ++k) apply(v[k].second, r);
-    b = e;
+// The validated shape of a stage list: the grouping's rule (redistribute without a grouping),
+// whether there is a grouping and whether sleeves are built.
+struct StagePlan { IcThemeRule rule{IcThemeRule::redistribute}; bool grouped{}, sleeves{}; };
+co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
+  StagePlan plan;
+  bool standardise = false, residualise = false, rides = false;
+  for (usize k = 0; k < kinds.size(); ++k) {
+    if (k > 0 && !(kinds[k] > kinds[k - 1]))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "IC composition: stages repeat or are out of order");
+    switch (kinds[k]) {
+      case IcStageKind::redistribute:
+        plan.grouped = true;
+        break;
+      case IcStageKind::standardise:
+        plan.grouped = standardise = true;
+        plan.rule = IcThemeRule::standardise;
+        break;
+      case IcStageKind::residualise:
+        residualise = true;
+        plan.rule = IcThemeRule::residualise;
+        break;
+      case IcStageKind::schedule:
+        rides = true;
+        break;
+      case IcStageKind::sleeves:
+        rides = plan.sleeves = true;
+        break;
+    }
   }
+  const bool redistribute = !kinds.empty() && kinds.front() == IcStageKind::redistribute;
+  if ((redistribute && kinds.size() > 1) || ((residualise || rides) && !standardise) ||
+      (residualise && rides))
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: stages must be one theme "
+                   "grouping (redistribute or standardise), then on standardise residualise, or "
+                   "schedule and/or sleeves");
+  return co::Ok(plan);
 }
 // f64 planes per theme: redistribute keeps a blend and a present-weight plane,
 // standardise (and residualise) one summed-rank plane (NaN = no member present).
@@ -101,6 +129,15 @@ co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize cou
   if (sleeves && (!add(dates * names, 2 * sizeof(f64)) || !add(dates, sizeof(f64))))
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
   return co::Ok(total);
+}
+
+co::Result<u64> ic_composition_stage_bytes(usize dates, usize names, usize count, usize themes,
+                                           std::span<const IcStageKind> kinds) {
+  ATX_TRY(const auto plan, stage_plan(kinds));
+  if (!plan.grouped && themes)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: themes without a grouping stage");
+  return ic_composition_working_bytes(dates, names, count, themes, plan.rule, plan.sleeves);
 }
 
 struct IcComposition::Impl {
@@ -223,6 +260,27 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
   }
 }
 
+co::Result<IcComposition> IcComposition::create_from_stages(const IcCompositionConfig& cfg,
+    std::span<const IcCompositionCandidate> candidates, std::span<const u8> member,
+    const IcCompositionStages& stages) {
+  std::vector<IcStageKind> kinds;
+  kinds.reserve(stages.stages.size());
+  for (const auto& stage : stages.stages) kinds.push_back(stage.kind);
+  ATX_TRY(const auto plan, stage_plan(kinds));
+  if (plan.grouped == stages.themes.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: a theme grouping stage and pinned themes go together");
+  ATX_TRY(auto composition,
+          create(cfg, candidates, member, stages.weights, stages.themes, plan.rule));
+  for (const auto& stage : stages.stages) {
+    if (stage.kind == IcStageKind::schedule)
+      ATX_TRY_VOID(composition.schedule_theme_masses(stage.blocks));
+    if (stage.kind == IcStageKind::sleeves)
+      ATX_TRY_VOID(composition.set_theme_sleeves(stage.fast));
+  }
+  return co::Ok(std::move(composition));
+}
+
 co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign,
                               engine::parallel::DetPool* pool) {
   if (!impl_ || impl_->finished || index != impl_->next || index >= impl_->candidates.size() ||
@@ -251,8 +309,7 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
         if (p.member[offset + i] && std::isfinite(signal[offset + i]))
           row.emplace_back(signal[offset + i], i);
       if (row.size() < 2) continue;
-      sort_ranks(row);
-      each_centered_rank(row, [&](usize i, f64 r) {
+      cb::for_each_centered_rank(row, [&](usize i, f64 r) {
         blend[offset + i] += static_cast<f64>(sign) * weight * r;
         if (present != nullptr) present[offset + i] += weight;
       });
@@ -461,8 +518,7 @@ co::Result<IcCompositionResult> IcComposition::finish() {
       std::fill(p.target.begin(), p.target.end(), 0); p.row.clear();
       for (usize i = 0; i < p.cfg.instruments; ++i)
         if (p.member[offset + i]) p.row.emplace_back(out.signal[offset + i], i);
-      sort_ranks(p.row);
-      each_centered_rank(p.row, [&](usize i, f64 r) { p.target[i] = r; });
+      cb::for_each_centered_rank(p.row, [&](usize i, f64 r) { p.target[i] = r; });
       f64 sum = 0;
       for (const auto& v : p.row) sum += p.target[v.second];
       const f64 mean = p.row.empty() ? 0 : sum / static_cast<f64>(p.row.size());

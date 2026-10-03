@@ -5,7 +5,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "strategy_ic_detail.hpp"
+#include "strategy_ic_rules.hpp"
 
 namespace atx::impl::strategy {
 namespace {
@@ -48,7 +48,8 @@ namespace atx::impl::strategy::ic_detail {
 // as IcComposition::create sums them) and its trailing sums, kept by composition theme index for
 // score_role, which places each block at the first session >= from_session. Absent: nothing changes.
 // Runs after composition_residualise, before any role payload.
-co::Status composition_schedule(const Json& j,const Library& lib,PinnedWeights& pinned) {
+co::Status composition_schedule(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
+  const auto& lib=in.lib;
   if (!j.contains("theme_schedule")) return co::Ok();
   const auto& block=j.at("theme_schedule");
   const auto registered=[&block](const char* key,usize value) {

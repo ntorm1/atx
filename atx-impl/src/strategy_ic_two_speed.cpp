@@ -2,7 +2,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "strategy_ic_detail.hpp"
+#include "strategy_ic_rules.hpp"
 #include "strategy_two_speed.hpp"
 
 namespace atx::impl::strategy::ic_detail {
@@ -11,10 +11,13 @@ namespace atx::impl::strategy::ic_detail {
 // block with rerank true and without theme_residualise. The rule itself is here: every weighted theme
 // of that block takes its registered half-life (two_speed_half_lives; a weighted theme outside the
 // table is refused), a theme of at most engine::book::two_speed_fast_bound sessions is fast, and at
-// least one weighted theme must be fast and one slow. Fills pinned.sleeves (the rule),
+// least one weighted theme must be fast and one slow. The half-lives are the rule's registered
+// parameters; the theme set is the theme table's (P9 lane D1, strategy_ic_rules.hpp): a weighted
+// theme with a half-life but outside the table is refused too. Fills pinned.sleeves (the rule),
 // pinned.sleeve_fast (one flag per composition theme index) and pinned.sleeve_fast_themes (ascending).
 // Absent: nothing changes. Runs after composition_schedule, before any role payload.
-co::Status composition_sleeves(const Json& j,const Library& lib,PinnedWeights& pinned) {
+co::Status composition_sleeves(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
+  const auto& lib=in.lib;
   if (!j.contains("theme_sleeves")) return co::Ok();
   const auto& block=j.at("theme_sleeves");
   if (!block.is_object() || block.size()!=1 || !block.contains("rule") || !block.at("rule").is_string() ||
@@ -36,6 +39,9 @@ co::Status composition_sleeves(const Json& j,const Library& lib,PinnedWeights& p
     if (!two_speed_half_life(names[t],half_life))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_sleeves: weighted theme "+names[t]+
           " has no registered half-life (two-speed-v1)");
+    if (!registered_theme(in.themes,names[t]))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_sleeves: weighted theme "+names[t]+
+          " is not a theme of the theme table (two-speed-v1)");
     if (two_speed_fast(half_life)) { fast[t]=1; fast_names.push_back(names[t]); }
   }
   if (fast_names.empty() || fast_names.size()==names.size())
