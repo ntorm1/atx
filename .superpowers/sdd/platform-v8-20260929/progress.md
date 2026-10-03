@@ -2219,3 +2219,76 @@ Concern: Lee-Swaminathan and Soliman signs from memory -> root verifies against 
 Round 2b (5431831a): +1 ins_cluster (ownership_flow, C+, medium) -> Y set = 10. Short interest / value exhausted on v14 fields.
 Data asks from YSIG: securities lending (utilisation, borrow fee, lendable supply); SG&A + R&D history fields (intangible value).
 ins_cluster: cluster rule 3 buyers / 21 sessions (looser than paper's 2 days) -- registered as is, one variant.
+
+## PM session 9 (P9 sprint, R0-0)
+
+Recorded by root (pool-2, `feat/platform-v8-20260929` @ `d7c1c520`) as plan `docs/plans/2026-10-03-p9-sprint-plan.md`
+section 1.1 step R0-0 requires: the PM's rulings DEC-1..DEC-4 and DEC-19 exactly as decided in plan section 0.5, made
+blind (no Y statistic exists; no Y cell has run). "[plan text]" marks a quotation from the plan. "Cost if wrong" is taken
+from plan section 6 (row OD-P9-2) for DEC-3 and from sections 1.2 / 7.1 for the others.
+
+- Ruling DEC-1 (blind; no Y statistic exists): Blocker 1 -- amend `y-s.json` marginal cap 720 -> 600 s (the runner's
+  hard maximum) before preflight; add one `RUNNER_MAX_SECONDS` constant checked at manifest and spec load (P0-FIX =
+  lane E1 task 0; the spec amended at R0-2) -- why: `y-s.json:41` asks for 720 s but `run_bounded_research.py:92-94`
+  refuses more than 600 s, and the validators accept any positive value (`wave_manifest.py:225-229`,
+  `research_cycle.py:369-376`, `wave_steps.py:181-183`; OR-1); X-7's pool-only marginal took 331.5 s at 70 members, so
+  Y-S at 58 + 15 = 73 members is ~360 s [arith, K^2 scaling, CM section 5], inside 600 s; X-7's 360.5 s failure was host
+  load (F-5) -- cost if wrong: "blocker; no output byte moves" [plan text, section 1.2 row `RUNNER_MAX_SECONDS`]; "The
+  wave driver's first real run (Y-S) finds new defects | medium | Phase 0 stops for rulings | stage-by-stage `--until`
+  (P12); P0-FIX closes the two known blockers" [plan text, section 7.1]. If 600 s proves too tight, R0-6's pre-ruled
+  fallback applies: "a time-cap failure (nothing written) gets one blind re-run on a quiet host (no compiler, free >=
+  peak + 1,536 MiB); a second failure moves the marginal to the Release IC exe under v8y P6 after its u / w identity
+  (0 trials)" [plan text, section 1.1 R0-6]. Note: the 720 s amended here is the cap of PM8-15 (a) / YP-12, which the
+  runner cannot honour.
+- Ruling DEC-2 (blind): Blocker 2 -- the admission budget counts a list of cycle prefixes; the Y-S budget is amended to
+  `["v8x", "v8ys"]` (P0-FIX `admission_cycle_prefixes`, the string form stays valid; the spec amended at R0-2) -- why:
+  `wave_stage_preflight.py:72` counts one prefix while `y-s.json:13` names library `v8ys` and `:27` prefix `v8x` (OR
+  section 4); the registered hand count is "X hand-written 25 + Y 15" (v8y section 3), which spans both prefixes -- cost
+  if wrong: "admission budget prefix list (`admission_cycle_prefixes`; the string form stays valid) | OR §4 |
+  **before** (P0-FIX) | blocker" [plan text, section 1.2]; "Phase 0 stops for rulings" [plan text, section 7.1 row "The
+  wave driver's first real run (Y-S) finds new defects"].
+- Ruling DEC-3 (blind; the PM's default pending owner decision OD-P9-2): OD-3 is not read at the end of v8; it is read
+  once at the P9 freeze on the frozen P9-F0 with Y-F0 beside it (R0-13: not read now; if the owner rules "read now",
+  v8x section 10's runbook on Y-F0 only, YP-11) -- why: `holdout_gate.py` is one-shot and the history block is
+  single-use; reading Y-F0 now leaves P9 with no clean test (lit section 5.2 (b), 5.3); PM8-10 (e)'s order (OD-3 read
+  last in v8) may change before a read at no cost -- cost if wrong: "none for ~2 sessions (root stops before OD-3
+  anyway, st7:68-69); reading now spends the only clean test on a book P9 is built to replace" [plan text, section 6
+  row OD-P9-2].
+- Ruling DEC-4 (blind): Before the Y cells only Python fixes that move no exe output byte land; anything that moves NAV,
+  IC, fit, weights or manifest bytes waits for the P9 re-base -- why: NV-4 (Python half), OR-2 (rows), OR-5, F-7, F-9
+  are byte-neutral; NV-1..NV-3, CM-5, CM-6, DS-3, FD-1, FD-5 are not; identity discipline (main review section 4) and
+  PM8-12 (e) (the migration lands after the Y cells) -- cost if wrong: the deferred fixes carry "moves NAV bytes: one
+  re-pin" (C1), "moves fit bytes" (D2), "moves IC bytes" (S2), "moves manifest bytes" (A1, A2) and "changes resume
+  semantics and the run-dir naming the seal scan re-derives (OR §4 coupling)" (E1) [plan text, section 1.2 "why"
+  column]; "Identity re-pin cascade: C1 (NAV summary keys, maybe cost bits), A1 (manifest keys), D2 (fit SHA) move
+  bytes; a wrong substitution list hides a real change | medium | a paired test against a stale reference" [plan text,
+  section 7.1].
+- Ruling DEC-19 (blind): Pools -- 12-16 released at wave-1 dispatch (all merged by SHA, st7:88); 7 and 8 recovered
+  after `-Status` shows the owner dead; 17-20 leased fresh; never 1, 2 (root), 6, 10 -- why: lease status at plan time
+  was 7, 8, 10 owner=dead and 12-16 alive (the v8y lanes, all merged, st7:88); `global-constraints.md` (never 1 or 6);
+  X briefs rule 4 (pool 10); wave 1 needs eight pools (section 3.3: A1 12, A2 13, B1 14, C1 15, D1 16, E1 17, S1 18,
+  T1 19) -- cost if wrong: sections 1.2 and 7.1 hold no row on pools; nearest plan text: "Root is the bottleneck ... |
+  high | waves stall; lanes idle" [plan text, section 7.1]. Root releases a pool only when its branch head is an
+  ancestor of `feat/platform-v8-20260929` and its tree holds nothing uncommitted; otherwise the pool stays leased and
+  is reported, so a wrong release costs no lane work.
+
+PM8-16 and PM8-18, recorded verbatim. Status 7 names them (`docs/plans/2026-10-02-platform-v8-status-7.md:57-58`:
+"PM8-16 YCOMB registration fixes. ... PM8-18 YARCH slices.") but this file held no text for either. Searched: status 7,
+`pm8-rulings-addendum.md`, `integration-log.md` (line 6436: "PM8-16 was not received by root."), `review-ycomb.md`,
+`task-YCOMB-report.md`, `git log --all --grep=PM8-16` / `--grep=PM8-18`. The fullest text is the PM's addendum
+`.superpowers/sdd/platform-v8-20260929/pm8-rulings-addendum.md` (git-ignored, never committed; mtime 2026-10-02 23:27),
+lines 27 and 31; PM8-16's per-finding rulings are also in `review-ycomb.md:5` (committed in `cc08ac35`). Commits citing
+them: PM8-16 `5c5ea976`, `e1460432`, `5ee9f039`, `573816d3`, `f51c7289`, `b3b5dab4`, `2206504b`, `cc08ac35`; PM8-18
+`e812a0fd`, `ffbbcb56`, `88cd7d49`.
+
+PM8-16 (verbatim, `pm8-rulings-addendum.md:27`):
+
+> - PM8-16 (YCOMB review, blind; `review-ycomb.md`): registration fixes -- theta_s = .05 enforced (refuse trade_fraction != .05 under two-speed); theta_f = 1 - 2^(-C/5) at cadence C; fast mass share over themes with a present member at d; carry lambda_t * F under vol/risk-target; refuse --rank-shape with aim-partial-v6. Two MAJOR (per-name rate accepted with two-speed; grid cadence guard) + 14 MINOR fixed before merge. Reviewer found no compile or look-ahead defect.
+
+PM8-16, the per-finding rulings (verbatim, `review-ycomb.md:5`):
+
+> PM rulings on the registration findings (PM8-16, blind): #3 theta_s = .05 is the registration: refuse `trade_fraction != two_speed_slow_theta` under two-speed. #4 theta_f = 1 - 2^(-C/5) so the fast half-life is 5 sessions at any cadence C; print C and theta_f in the summary. #9 the fast mass share is computed over themes with at least one present member at d (the parent's own re-ranking behaviour). #10 carry lambda_t * F (the fast holding follows the scaled book), registered now. #11 refuse `--rank-shape` with aim-partial-v6 (report says v5 only).
+
+PM8-18 (verbatim, `pm8-rulings-addendum.md:31`):
+
+> - PM8-18 (YARCH): slices 1-2 (C++ field library `atx-engine-research-fields-tests`, 26 tests, EXCLUDE_FROM_ALL; spec-driven `generate_from_spec.py` rebuilding the v71 library byte-for-byte) merge after root builds the test target; the 11 deprecated generators are deleted only after the `--plan-json` gate (saved live `--plan-only` output, check exit 0). Audit top 5 by lines retired: legacy generators 5,069 (done), field builders 8,891 (started), composition mirrors 1,756, integrity stats + trial counting 1,953, admission screens 1,520. Slices 3 (engine-fields exe + `--engine-fields` flag + 4 more builders) and 4 (composition mirrors to thin callers) dispatched.
