@@ -20,6 +20,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/engine/eval/stats_ext.hpp"
 #include "../src/strategy_nav_replay.hpp"
+#include "../src/strategy_nav_v7.hpp"
 #include "../src/strategy_target_replay.hpp"
 #include "../src/strategy_target_replay_detail.hpp"
 #include "strategy_spo_fixture.hpp"
@@ -28,6 +29,7 @@ namespace {
 using namespace atx;
 using namespace atx::impl::strategy::spo::fixture;
 namespace st = atx::impl::strategy;
+namespace v7 = atx::impl::strategy::v7;
 using Json = nlohmann::json;
 using Ranked = std::pair<f64, usize>;
 
@@ -127,6 +129,24 @@ TEST(NormScore, RefusedOutsideAimPartialAndWithTheOtherRankShapes) {
   auto plain_baseline = baseline;
   plain_baseline.norm_score = false;
   EXPECT_TRUE(st::replay_targets(x, plain_baseline)); // its control
+}
+
+// Review YCOMB #11 (Ruling PM8-16 #11): the nav parser rewrites --rule aim-partial-v6 to v5 for the
+// replay, so --rank-shape would have run under v6's plan; it is refused, and kept with v5.
+TEST(NormScore, NavParseRefusesTheRankShapeWithAimPartialV6) {
+  const auto parse = [](std::vector<std::string> args) {
+    std::vector<char*> argv;
+    for (auto& a : args) argv.push_back(a.data());
+    return v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data());
+  };
+  const auto v6 = parse({"nav", "--rule", "aim-partial-v6", "--output", "x", "--rank-shape",
+                         "norm-score-v1"});
+  ASSERT_FALSE(v6);
+  EXPECT_NE(v6.error().to_string().find("--rank-shape norm-score-v1 needs aim-partial-v5"),
+            std::string::npos)
+      << v6.error().to_string();
+  const auto v6_plain = parse({"nav", "--rule", "aim-partial-v6", "--output", "x"});
+  EXPECT_TRUE(v6_plain) << v6_plain.error().to_string(); // its control
 }
 
 TEST(NormScore, RuleIdRecipeAndSummaryCarryTheRuleOnlyWhenOn) {

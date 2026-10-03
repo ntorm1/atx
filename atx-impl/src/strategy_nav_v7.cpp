@@ -944,6 +944,12 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         (o.spo_v1 || o.aim_v6 || (rate && *rate != "fixed")))
       throw std::invalid_argument("--two-speed two-speed-v1 needs aim-partial-v5 at the fixed "
                                   "rate, without spo or aim-partial-v6");
+    // v8 Y norm-score-v1 is registered on aim-partial-v5 (task-YCOMB-report.md Y-3), whose
+    // tied ranks it shapes; aim-partial-v6 is rewritten to v5 above, so it is refused here
+    // (review YCOMB #11, Ruling PM8-16 #11).
+    if (o.aim_v6 && std::find(args.begin(), args.end(), "--rank-shape") != args.end())
+      throw std::invalid_argument("--rank-shape norm-score-v1 needs aim-partial-v5 (refused with "
+                                  "--rule aim-partial-v6)");
     // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
     // value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {
