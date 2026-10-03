@@ -399,3 +399,73 @@ def test_review_signal_history_requires_complete_daily_support():
     with pytest.raises(Exception,match='duplicate'):
         N.signal_history(con,dt.date(2022,3,31),1,0)
     con.close()
+
+
+def risk_tables(con):
+    con.execute('CREATE TABLE t6_liquidity(security_id BIGINT,session_date DATE,available_at TIMESTAMP,adv_21 DOUBLE,adv_63 DOUBLE,spread_cs_21 DOUBLE,amihud_21 DOUBLE)')
+    con.execute('CREATE TABLE t6_borrow(security_id BIGINT,session_date DATE,cutoff_utc TIMESTAMPTZ,si_to_io DOUBLE,si_shares DOUBLE,ftd_quantity DOUBLE,on_threshold_list BOOLEAN,si_to_io_available_at TIMESTAMPTZ,si_available_at TIMESTAMPTZ,ftd_available_at TIMESTAMPTZ,threshold_available_at TIMESTAMPTZ,ftd_settlement_date DATE,threshold_list_date DATE)')
+    con.execute('CREATE TABLE t6_industry(cik BIGINT,available_at TIMESTAMP,ff49_no BIGINT)')
+    con.execute('CREATE TABLE t6_ratios_state(cik BIGINT,available_at TIMESTAMP,be_q0 DOUBLE,at_q0 DOUBLE,at_q4 DOUBLE,debt_at DOUBLE,gprof DOUBLE,datadate DATE)')
+
+
+@pytest.mark.parametrize('bad_me',[None,0.,-1.,float('nan'),float('inf'),float('-inf')])
+def test_round2_all_eligible_constituents_invalidate_basis(bad_me):
+    con=fixture_con();risk_tables(con)
+    con.execute("INSERT INTO t6_calendar VALUES('2022-02-28'),('2022-03-01')")
+    for day in ('2022-02-28','2022-03-01'):
+        con.execute('INSERT INTO t6_universe(session_date,security_id,cik,me,exchcd_like,univ_all_common,univ_r3000p) VALUES(?,1,1,100,1,true,true),(?,2,1,?,1,true,true)',[day,day,bad_me])
+    audit(con);audit(con,2)
+    con.execute("INSERT INTO t6_prices VALUES('2022-03-01',1,.1,false,1),('2022-03-01',2,.2,false,1)")
+    formation=N.formation_issuers(con,dt.date(2022,2,28))[0]
+    assert formation['me'] is None and formation['certified'] is False
+    period=N.issuer_period(con,dt.date(2022,3,1),dt.date(2022,3,1),dt.date(2022,2,28))[0]
+    assert period['me'] is None and period['ret'] is None and period['certified'] is False
+    assert N.signal_history(con,dt.date(2022,3,1),1,0)[1] is None
+    con.execute("INSERT INTO t6_funda(cik,datadate,available_at,seq,\"at\",dltt,dlc) VALUES(1,'2022-02-28','2022-03-01',50,100,0,0)")
+    eg=list(N.rows(con,N.eg_predictors_sql(dt.date(2022,6,30),dt.datetime(2022,6,30,22,tzinfo=dt.UTC))))[0]
+    assert eg['log_q'] is None
+    primitives=list(N.rows(con,S.risk_primitives_sql(dt.date(2022,3,1),dt.datetime(2022,2,28,22,tzinfo=dt.UTC))))
+    assert len(primitives)==2 and all(r['me'] is None and not r['cap_qualified'] for r in primitives)
+    con.close()
+
+
+def test_round2_failed_null_class_with_absent_return_stays_in_issuer():
+    con=fixture_con()
+    con.execute("INSERT INTO t6_calendar VALUES('2022-02-28'),('2022-03-01')")
+    con.execute("INSERT INTO t6_universe(session_date,security_id,cik,me,exchcd_like,univ_all_common,univ_r3000p) VALUES('2022-02-28',1,1,100,1,true,true),('2022-02-28',2,1,NULL,1,true,true)")
+    audit(con);audit(con,2,cert=False)
+    con.execute("INSERT INTO t6_prices VALUES('2022-03-01',1,.1,false,1)")
+    assert not N.formation_issuers(con,dt.date(2022,2,28))[0]['certified']
+    out=N.issuer_period(con,dt.date(2022,3,1),dt.date(2022,3,1),dt.date(2022,2,28))
+    assert len(out)==1 and out[0]['me'] is None and out[0]['ret'] is None and not out[0]['certified']
+    con.close()
+
+
+@pytest.mark.parametrize('bad_me',[None,0.,-1.,float('nan'),float('inf')])
+def test_round2_bab_issuer_and_market_preserve_invalid_class(monkeypatch,bad_me):
+    con=fixture_con()
+    dates=[dt.date(2018,1,1)+dt.timedelta(days=i) for i in range(753)]
+    con.executemany('INSERT INTO t6_calendar VALUES(?)',[(d,) for d in dates])
+    con.executemany('INSERT INTO t6_universe(session_date,security_id,cik,me,exchcd_like,univ_all_common,univ_r3000p) VALUES(?,?,1,?,1,true,true)',[(d,s,100. if s==1 else bad_me) for d in dates for s in (1,2)])
+    con.executemany("INSERT INTO t6_cap_quality VALUES(?,?,?, ?,true,true,'fixture','independently_verified','e','s','m')",[(s,d,dt.datetime(2017,1,1),dt.datetime(2017,1,1)) for d in dates for s in (1,2)])
+    con.executemany('INSERT INTO t6_prices VALUES(?,?,.01,false,1)',[(d,s) for d in dates[1:] for s in (1,2)])
+    captures=[]
+    monkeypatch.setattr(F,'bab_beta',lambda stock,market:captures.append((stock,market)))
+    N.native_betas(con,dates[-1],dates)
+    assert len(captures)==1 and all(x is None for x in captures[0][0]) and all(x is None for x in captures[0][1])
+    con.close()
+
+
+def test_round2_eg_training_me_includes_null_constituent():
+    con=fixture_con()
+    dates=[dt.date(2019,12,31),dt.date(2021,2,28),dt.date(2022,2,28)]
+    con.executemany('INSERT INTO t6_calendar VALUES(?)',[(d,) for d in dates])
+    for y in (2018,2019,2020):
+        con.execute('INSERT INTO t6_funda(cik,datadate,available_at,seq,"at",dltt,dlc) VALUES(1,?,?,50,100,0,0)',[dt.date(y,12,31),dt.datetime(y+1,1,15)])
+    con.execute("INSERT INTO t6_universe(session_date,security_id,cik,me,exchcd_like,univ_all_common,univ_r3000p) VALUES('2019-12-31',1,1,100,1,true,true),('2019-12-31',2,1,50,1,true,true),('2022-02-28',1,1,100,1,true,true),('2022-02-28',2,1,NULL,1,true,true)")
+    audit(con);audit(con,2)
+    con.execute("INSERT INTO t6_cap_quality VALUES(1,'2019-12-31','2020-01-01','2019-12-31',true,true,'fixture','independently_verified','e','s','m'),(2,'2019-12-31','2020-01-01','2019-12-31',true,true,'fixture','independently_verified','e','s','m')")
+    training=list(N.native_training(con,dt.date(2022,4,1),dates))
+    target=[r for r in training if r['fit_month']==dt.date(2022,3,1)]
+    assert len(target)==1 and target[0]['me'] is None and target[0]['log_q']==pytest.approx(__import__('math').log(1.5))
+    con.close()

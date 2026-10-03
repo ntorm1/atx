@@ -160,7 +160,7 @@ def eg_predictors_sql(formation,cutoff):
         lag(ap) OVER w AS ap1,lag(xacc) OVER w AS xacc1 FROM visible WINDOW w AS(PARTITION BY cik ORDER BY datadate)),
       a AS (SELECT * FROM lagged QUALIFY row_number() OVER(PARTITION BY cik ORDER BY datadate DESC)=1),
       q AS ({quarter}),
-      fiscal_me AS (SELECT a.cik,CASE WHEN bool_and(coalesce(cq.certified,false) AND u.me>0) THEN sum(u.me) END AS me FROM a JOIN t6_universe u ON a.cik=u.cik
+      fiscal_me AS (SELECT a.cik,CASE WHEN bool_and(coalesce(cq.certified,false)) AND {S.cap_basis_sql('u.me')} THEN sum(u.me) END AS me FROM a JOIN t6_universe u ON a.cik=u.cik
         AND u.session_date=(SELECT max(c.session_date) FROM t6_calendar c WHERE c.session_date<=a.datadate)
         LEFT JOIN ({S.quality_sql(cutoff)}) cq ON cq.security_id=u.security_id AND cq.session_date=u.session_date
         WHERE u.univ_all_common GROUP BY a.cik)
@@ -193,7 +193,7 @@ def native_training(con,formation,dates):
           lag(datadate) OVER w AS date1,lag(datadate,2) OVER w AS date2 FROM v WINDOW w AS(PARTITION BY cik ORDER BY datadate)),
         a AS (SELECT * FROM lagged QUALIFY row_number() OVER(PARTITION BY cik ORDER BY datadate DESC)=1),
         x AS ({eg_predictors_sql(predictorday,_cutoff(predictorday))}),
-        me AS (SELECT u.cik,CASE WHEN bool_and(coalesce(cq.certified,false) AND u.me>0) THEN sum(u.me) END AS me FROM t6_universe u LEFT JOIN ({S.quality_sql(_cutoff(fitday))}) cq
+        me AS (SELECT u.cik,CASE WHEN bool_and(coalesce(cq.certified,false)) AND {S.cap_basis_sql('u.me')} THEN sum(u.me) END AS me FROM t6_universe u LEFT JOIN ({S.quality_sql(_cutoff(fitday))}) cq
           USING(security_id,session_date) WHERE u.session_date=DATE '{fitday}' AND u.univ_all_common
           GROUP BY u.cik)
         SELECT a.cik,a.datadate AS outcome_period_end,a.available_at AT TIME ZONE 'UTC' AS outcome_available_at,
@@ -227,10 +227,10 @@ def issuer_period(con, first, last, formation):
 def formation_issuers(con,formation):
     tau=_cutoff(formation).replace(tzinfo=None).isoformat()
     sql=f"""WITH q AS({S.quality_sql(_cutoff(formation))})
-      SELECT u.cik,sum(u.me) AS me,CAST(NULL AS DOUBLE) AS ret,bool_and(u.exchcd_like=1) AS nyse,
-      bool_and(coalesce(q.certified AND q.membership_certified,false)) AS certified
+      SELECT u.cik,CASE WHEN {S.cap_basis_sql('u.me')} THEN sum(u.me) END AS me,CAST(NULL AS DOUBLE) AS ret,bool_and(u.exchcd_like=1) AS nyse,
+      ({S.cap_basis_sql('u.me')} AND bool_and(coalesce(q.certified AND q.membership_certified,false))) AS certified
       FROM t6_universe u LEFT JOIN q USING(security_id,session_date)
-      WHERE u.session_date=DATE '{formation}' AND u.univ_all_common AND u.cik IS NOT NULL AND u.me>0 GROUP BY u.cik"""
+      WHERE u.session_date=DATE '{formation}' AND u.univ_all_common AND u.cik IS NOT NULL GROUP BY u.cik"""
     data=list(rows(con,sql))
     if len(data)>20000:
         raise ValueError('formation cross-section limit exceeded')
@@ -259,8 +259,8 @@ def signal_history(con, formation: dt.date, months: int, skip: int) -> dict:
     u AS (SELECT * FROM t6_universe WHERE session_date=DATE '{formation}' AND univ_all_common),
     r AS (SELECT security_id,CASE WHEN count(ret)={months} THEN
       CASE WHEN bool_or(ret=-1) THEN -1 ELSE exp(sum(ln(1+ret)))-1 END END AS value FROM m GROUP BY 1)
-    SELECT cik,CASE WHEN count(value)=count(*) THEN sum(me*value)/sum(me) END AS value
-    FROM u LEFT JOIN r USING(security_id) WHERE cik IS NOT NULL AND me>0 GROUP BY cik"""
+    SELECT cik,CASE WHEN {S.cap_basis_sql()} AND count(value)=count(*) THEN sum(me*value)/sum(me) END AS value
+    FROM u LEFT JOIN r USING(security_id) WHERE cik IS NOT NULL GROUP BY cik"""
     return {r['cik']:r['value'] for r in rows(con,sql)}
 
 
@@ -326,8 +326,8 @@ def native_betas(con,formation,dates):
         LEFT JOIN LATERAL (SELECT * FROM ({S.quality_sql_at("CAST(c.prev AS TIMESTAMP)+INTERVAL 22 HOUR")}) a
           WHERE a.session_date=u.session_date AND a.security_id=u.security_id) q ON true
         WHERE c.session_date BETWEEN DATE '{keep[0]}' AND DATE '{formation}'
-          AND c.session_date<DATE '2023-01-01' AND u.univ_all_common AND u.me>0 AND u.cik IS NOT NULL),
-      issuer AS (SELECT session_date,cik,sum(me) AS me,CASE WHEN bool_and(certified)
+          AND c.session_date<DATE '2023-01-01' AND u.univ_all_common AND u.cik IS NOT NULL),
+      issuer AS (SELECT session_date,cik,CASE WHEN {S.cap_basis_sql()} THEN sum(me) END AS me,CASE WHEN {S.cap_basis_sql()} AND bool_and(coalesce(certified,false))
         AND count(ret)=count(*) AND NOT bool_or(ret_guarded) THEN sum(me*ret)/sum(me) END AS ret
         FROM line GROUP BY 1,2),
       market AS (SELECT session_date,CASE WHEN count(ret)=count(*) THEN sum(me*ret)/sum(me) END AS mkt

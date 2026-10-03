@@ -25,11 +25,12 @@ START = dt.date(2013, 1, 1)
 FACTORS = ('MktRF', 'SMB', 'HML', 'RMW', 'CMA', 'UMD', 'STREV', 'LTREV',
            'q_ME', 'q_IA', 'q_ROE', 'q_EG', 'BAB')
 CONFIG = {
-    'rule': 'task6-frozen-v2-review1', 'start': str(START), 'end': str(END),
+    'rule': 'task6-frozen-v3-review2', 'start': str(START), 'end': str(END),
     'universe': 'univ_all_common', 'breakpoints': 'NYSE issuer ME median; signal 30/70',
     'accounting_formation': 'June annual; previous fiscal year visible before formation cutoff',
     'price_formation': 'monthly; UMD months -12:-2; STREV -1; LTREV -60:-13',
     'weights': 'lagged certified issuer ME; line returns combined within issuer first',
+    'issuer_cap_basis': 'retain every dated eligible constituent; any NULL/nonpositive/nonfinite line ME or invalid total invalidates issuer ME and qualification; never drop bad classes before weighting',
     'q_formation': 'independent 2x3x3; ME/IA annual June; ROE monthly; EG separate monthly 2x3',
     'q_EG': 'one-year dIA forecast; WLS ME weights; mean prior120 monthly coefficients minimum30; predictors winsorized1/99; all outcome clocks strict',
     'bab': 'rank beta; each leg dollar-weighted by distance from median rank; beta-scaled excess returns',

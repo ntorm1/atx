@@ -58,3 +58,8 @@ expected cells to published output, preserving absent cells and days as failures
 Each universe and year2020-2025 must meet the frozen 99% threshold. Unavailable
 member_equity explicitly fails, and missing universe rows on a calendar day fail.
 Sparse synthetic calendars test mechanics only and cannot certify production coverage.
+
+Review fix round 2 retains every eligible lagged share class before issuer ME
+consolidation. A NULL, nonpositive or nonfinite constituent ME invalidates the full
+issuer basis and every affected output line's cap qualification. Audited positive
+surviving classes cannot certify a partially observed issuer.

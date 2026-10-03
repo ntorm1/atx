@@ -85,6 +85,11 @@ def assert_price_keys(con):
         raise ValueError('duplicate/overlapping price line session')
 
 
+def cap_basis_sql(column='me') -> str:
+    """Every eligible constituent must have finite positive ME, including NULLs."""
+    return f"(bool_and(coalesce(isfinite({column}) AND {column}>0,false)) AND coalesce(isfinite(sum({column})) AND sum({column})>0,false))"
+
+
 def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: dt.datetime) -> str:
     if end >= dt.date(2023,1,1) or start > end or formation >= start:
         raise ValueError('invalid factor period/holdout boundary')
@@ -106,11 +111,13 @@ def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: 
     joined AS (SELECT u.*,r.ret,q.certified,q.membership_certified,q.reason AS cap_reason
       FROM u LEFT JOIN r USING(security_id)
       LEFT JOIN quality q ON q.security_id=u.security_id AND q.session_date=u.session_date)
-    SELECT cik, sum(me) AS me, CASE WHEN count(ret)=count(*) THEN sum(me*ret)/sum(me) END AS ret,
+    SELECT cik, CASE WHEN {cap_basis_sql()} THEN sum(me) END AS me,
+      CASE WHEN {cap_basis_sql()} AND count(ret)=count(*) THEN sum(me*ret)/sum(me) END AS ret,
       bool_and(exchcd_like=1) AS nyse,
-      bool_and(coalesce(certified,false) AND coalesce(membership_certified,false)) AS certified,
-      string_agg(DISTINCT coalesce(cap_reason,'missing_cap_or_membership_certification'),';') AS quality_reason
-    FROM joined WHERE cik IS NOT NULL AND me>0 GROUP BY cik"""
+      ({cap_basis_sql()} AND bool_and(coalesce(certified,false) AND coalesce(membership_certified,false))) AS certified,
+      CASE WHEN NOT {cap_basis_sql()} THEN 'invalid_eligible_constituent_me'
+        ELSE string_agg(DISTINCT coalesce(cap_reason,'missing_cap_or_membership_certification'),';') END AS quality_reason
+    FROM joined WHERE cik IS NOT NULL GROUP BY cik"""
 
 
 def risk_primitives_sql(day: dt.date, cutoff: dt.datetime) -> str:
@@ -121,7 +128,7 @@ def risk_primitives_sql(day: dt.date, cutoff: dt.datetime) -> str:
     lag_u AS (SELECT l.*,coalesce(q.certified AND l.available_at<TIMESTAMP '{tau}',false) AS cap_qualified FROM t6_universe l
       LEFT JOIN q USING(security_id,session_date)
       WHERE l.session_date=(SELECT max(session_date) FROM t6_calendar WHERE session_date<DATE '{day}')),
-    issuer AS (SELECT cik,CASE WHEN bool_and(cap_qualified AND me>0) THEN sum(me) END AS me
+    issuer AS (SELECT cik,CASE WHEN bool_and(coalesce(cap_qualified,false)) AND {cap_basis_sql()} THEN sum(me) END AS me
       FROM lag_u WHERE univ_all_common GROUP BY cik),
     l AS (SELECT * FROM t6_liquidity WHERE available_at<TIMESTAMP '{tau}'
       AND date_diff('day',session_date,DATE '{day}') BETWEEN 0 AND 10
@@ -133,7 +140,7 @@ def risk_primitives_sql(day: dt.date, cutoff: dt.datetime) -> str:
     r AS (SELECT * FROM t6_ratios_state WHERE available_at<TIMESTAMP '{tau}'
       AND date_diff('day',datadate,DATE '{day}') BETWEEN 0 AND 400
       QUALIFY row_number() OVER(PARTITION BY cik ORDER BY available_at DESC)=1)
-    SELECT u.session_date,u.security_id,u.cik,u.univ_all_common,u.univ_r3000p,issuer.me,coalesce(lag_u.cap_qualified,false) AS cap_qualified,
+    SELECT u.session_date,u.security_id,u.cik,u.univ_all_common,u.univ_r3000p,issuer.me,coalesce(lag_u.cap_qualified AND isfinite(issuer.me) AND issuer.me>0,false) AS cap_qualified,
       i.ff49_no AS ff49,l.adv_21,l.adv_63,l.spread_cs_21,l.amihud_21,
       CASE WHEN b.si_to_io_available_at<TIMESTAMPTZ '{cutoff.isoformat()}' THEN b.si_to_io END AS si_to_io,
       CASE WHEN b.si_available_at<TIMESTAMPTZ '{cutoff.isoformat()}' THEN b.si_shares END AS si_shares,

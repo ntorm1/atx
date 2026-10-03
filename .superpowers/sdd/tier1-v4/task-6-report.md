@@ -217,3 +217,53 @@ versioned universe binding/R15), audited economicbasis/delisting/history, genuin
 member_equity source, EG primitive/training gaps and production-memory measurements
 remain independent dependencies. This change does not accept unsafe Task2 checkpoints
 or certify synthetic audit flags/source membership as external evidence.
+
+
+### Fix round 2/5 - remaining I1 in review-T6-prebuild-r1-findings.md
+
+Status: DONE_WITH_CONCERNS engineering checkpoint only; independent review required.
+No actual lake/source read, scan/hash, build, return/forecast evaluation or HTTP job.
+
+Removed pre-aggregation me>0 constituent filters from formation, issuer periods,
+monthly signals and BAB history. One shared SQL cap_basis_sql predicate now requires
+EVERY eligible constituent ME to be nonnull, finite and positive, and the issuer sum
+to be finite/positive. Invalid basis produces NULL issuer ME/returns/signals and
+false qualification rather than dropping a class or trusting NULL-skipping bool_and.
+EG fiscal and training ME use the same null-safe basis predicate. Risk consolidates
+all eligible lagged classes and marks every affected line unqualified when the
+issuer basis is invalid. Period diagnostics explicitly record invalid constituent ME.
+Nothing certifies economics from these synthetic predicates.
+
+Configuration was explicitly refrozen BEFORE any real comparison as
+`task6-frozen-v3-review2`, adding the complete issuer-constituent policy.
+Canonical sorted-JSON semantic SHA256:
+`7e17b4e75e6261b9f4643cb2f5889e8736d8397652f48c88c83bb2cda0a7f3f7`.
+Physical LF artifact byte SHA256:
+`654d7fb5f2cd24015fb0bcfe4f63d0706172fac5c9f89b0a12445ef3d431fc68`.
+Prior v1/v2 entries above remain historical checkpoints; the committed current
+factors.config.json is v3. No outcome tuning, real trials or comparisons occurred.
+
+Focused synthetic checks (cwdC:/atx; PYTHONPATH=C:/atx/atx-db/src;
+OPENBLAS_NUM_THREADS=1; each DuckDB connection128MB,one thread,UTC):
+
+1. `atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts= -p no:cacheprovider -q --tb=short atx-db/tests/test_alpha_panel_factor_native.py -k round2`
+   12 PASS,21 deselected,33.79s: NULL/zero/negative/NaN/+infinity/-infinity classes
+   in formation/returns/signals/EG/risk, exact failed-null-class/absent-return repro,
+   and multiclass BAB issuer/market histories for five invalid ME cases.
+2. Same pytest command with `-k 'round2_eg_training or review_eg or review_complete_grid or review_risk or native_setup'`:
+   6 PASS,28 deselected,3.80s: genuinely distinct EG training-weight branch plus
+   earlier positive audit/grid/risk/source-binding controls.
+3. Same pytest command with `-k 'round2_failed_null or native_risk or review_factor_lineage'`:
+   3 PASS,31 deselected,2.58s after final config/diagnostic edits; includes actual
+   native risk CLI fixture and own-factor lineage rejection.
+
+13 new cases plus7 existing focused cases passed (20 distinct fixture cases,
+21 executions across the three calls). No unchanged broad suite was rerun.
+Owned-path git diff --check exited0. No live exec job remains at handoff.
+
+Real acceptance remains3 grouped FAIL/unmeasured; all120 benchmark months,
+all2020-2025 coverage years and independent eligible-cell denominators remain.
+R15 universe_release_v1 foundation is under independent repair; final explicit
+versioned source adapter/generation binding, production source-quality/cap audit,
+member_equity/history/accounting/training gaps and actual memory/gate measurements
+remain held dependencies. No legacy universe snapshot is accepted by this report.

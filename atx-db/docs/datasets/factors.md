@@ -119,3 +119,13 @@ before publication. Exact old snapshots cannot certify a new dependent release.
 The native spec also requires `member_equity`: explicit null for unavailable membership,
 or `{stage, manifest, sha256, files}` binding immutable session_date/security_id cells.
 Missing membership is a source/coverage FAIL. No caller Boolean supplies source evidence.
+
+## Review fix round 2 issuer-cap contract
+
+Every dated eligible class remains in its issuer aggregate, including classes with
+unknown or invalid ME. Any NULL, nonpositive, NaN/infinite constituent ME, or invalid
+aggregate ME, makes issuer ME NULL and cap qualification false. Period returns,
+monthly signals, EG fiscal/training ME and BAB issuer/market history cannot compute
+from surviving classes. SQL predicates explicitly map unknown validity to false;
+NULL-skipping aggregate behavior cannot certify the remaining class. Invalid basis
+has `quality_reason=invalid_eligible_constituent_me` in the period adapter.

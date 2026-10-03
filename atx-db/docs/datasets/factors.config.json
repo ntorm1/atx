@@ -1,5 +1,5 @@
 {
-  "rule": "task6-frozen-v2-review1",
+  "rule": "task6-frozen-v3-review2",
   "start": "2013-01-01",
   "end": "2022-12-31",
   "universe": "univ_all_common",
@@ -7,6 +7,7 @@
   "accounting_formation": "June annual; previous fiscal year visible before formation cutoff",
   "price_formation": "monthly; UMD months -12:-2; STREV -1; LTREV -60:-13",
   "weights": "lagged certified issuer ME; line returns combined within issuer first",
+  "issuer_cap_basis": "retain every dated eligible constituent; any NULL/nonpositive/nonfinite line ME or invalid total invalidates issuer ME and qualification; never drop bad classes before weighting",
   "q_formation": "independent 2x3x3; ME/IA annual June; ROE monthly; EG separate monthly 2x3",
   "q_EG": "one-year dIA forecast; WLS ME weights; mean prior120 monthly coefficients minimum30; predictors winsorized1/99; all outcome clocks strict",
   "bab": "rank beta; each leg dollar-weighted by distance from median rank; beta-scaled excess returns",
