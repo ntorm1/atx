@@ -339,7 +339,11 @@ class FakeCycle:
                                                                    "ci95": [-0.1, 0.2]}},
                         "verdict": {"pass": False}})
             code = 0
+        binds = [argv[i + 1] for i in range(k) if argv[i] == "--bind"]           # the runner records each bind
+        bindings = [{"path": str((self.root / b).resolve()), "sha256": sha((self.root / b).read_bytes())}
+                    for b in binds if (self.root / b).is_file()]
         write_json(self.root, f"{run_dir}/receipt.json", {"outcome": "completed", "exit_code": code,
-                                                          "wall_seconds": 0.8, "sampled_peak_tree_rss_bytes": 300 << 20})
+                                                          "wall_seconds": 0.8, "sampled_peak_tree_rss_bytes": 300 << 20,
+                                                          "bindings": bindings})
         write(self.root, f"{run_dir}/stdout.log", "reader\n")
         return self.ok(argv, code)

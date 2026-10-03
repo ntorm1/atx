@@ -492,14 +492,32 @@ def run_plan(w: Wave, done: dict) -> list[str]:
 
 
 # ------------------------------------------------------------------ readers
+def nav_series(w: Wave, navs) -> list[str]:
+    """The series files of NAV dirs a reader or the bundle reads (daily_<scen>.csv, capacity_curve.csv): bound in the
+    bounded runner's receipt with their SHA-256 (names only; nothing is read here)."""
+    out = []
+    for d in navs:
+        p = w.path(d)
+        out += [w.rel(f) for f in sorted(p.glob("daily_*.csv"))] if p.is_dir() else []
+        out += [f"{d}/capacity_curve.csv"] if w.path(f"{d}/capacity_curve.csv").is_file() else []
+    return out
+
+
+def unbound(w: Wave, run_dir: str, files: list[str]) -> list[str]:
+    """The files not bound in ``run_dir``'s receipt at their SHA-256 now (empty: the run read exactly these)."""
+    r = w.read_json(f"{run_dir}/receipt.json") or {}
+    got = {Path(b.get("path", "")).resolve(): b.get("sha256") for b in r.get("bindings") or [] if isinstance(b, dict)}
+    return [f for f in files if got.get(w.path(f).resolve()) != w.sha(f)]
+
+
 def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
     """The reader's output for these NAV dirs, run once under the bounded runner (a resumed stage re-uses it while
     every NAV's daily CSV still hashes as read)."""
     out = w.wave_path("readers", f"{name}.json")
     doc = w.read_json(out)
     if doc is None:
-        w.run(WS.reader_argv(w.python, kind, navs, out, w.free_run_dir(w.wave_path("readers", name)), w.root),
-              f"{kind} reader")
+        w.run(WS.reader_argv(w.python, kind, navs, out, w.free_run_dir(w.wave_path("readers", name)), w.root,
+                             nav_series(w, navs.values())), f"{kind} reader")
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"{kind} reader wrote no {out}")
@@ -512,7 +530,8 @@ def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
 
 def reader_plan(w: Wave, kind: str, name: str, navs: dict) -> str:
     out = w.wave_path("readers", f"{name}.json")
-    return WS.fmt_argv(WS.reader_argv(w.python, kind, navs, out, w.wave_path("readers", f"{name}-run1"), w.root))
+    return WS.fmt_argv(WS.reader_argv(w.python, kind, navs, out, w.wave_path("readers", f"{name}-run1"), w.root,
+                                      nav_series(w, navs.values())))
 
 
 # ------------------------------------------------------------------ match
@@ -613,16 +632,26 @@ def verify_plan(w: Wave, done: dict) -> list[str]:
 
 # ------------------------------------------------------------------ judge
 def bundle_once(w: Wave, base: str, cell: str) -> dict:
+    """The PM5-23 bundle of the cell against the parent, run once; its run's receipt must bind both NAVs' daily series
+    at their SHA-256 now (which daily series the bundle read)."""
     out = w.wave_path("bundle.json")
     doc = w.read_json(out)
+    series = nav_series(w, [base, cell])
     if doc is None:
-        w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle")), w.root),
+        w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle")), w.root, series),
               "bundle (PM5-23)")
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"bundle wrote no {out}")
     if Path(str(doc.get("base"))).as_posix() != base or Path(str(doc.get("final"))).as_posix() != cell:
         raise StageError(f"{out} is the bundle of {doc.get('final')} vs {doc.get('base')}, not {cell} vs {base}")
+    runs = [d for d in w.run_dirs(w.wave_path("bundle"))
+            if (w.read_json(f"{d}/receipt.json") or {}).get("outcome") == "completed"]
+    daily = [f for f in series if Path(f).name.startswith("daily_")]
+    loose = unbound(w, runs[-1], daily) if runs else daily
+    if not daily or loose:
+        raise StageError(f"{out}: its run {runs[-1] if runs else '(none)'} did not bind the daily series {loose or daily}"
+                         " at their SHA-256 now (the bundle read other series)", EXIT_PIN)
     p, lw = doc.get("paired") or {}, (doc.get("paired") or {}).get("lw") or {}
     return {"dsr": p.get("dsr"), "rho": p.get("rho"), "sessions": p.get("sessions"), "memmel_se": p.get("memmel_se"),
             "cbb_ci95": p.get("cbb_ci95"), "lw_ci95": lw.get("ci95"), "p_two_sided": lw.get("p_value"),
@@ -660,7 +689,7 @@ def judge_plan(w: Wave, done: dict) -> list[str]:
     parent = s.get("reference_nav", "<parent NAV>")
     return [WS.fmt_argv(cyc(w,"run", cell)),
             WS.fmt_argv(WS.bundle_argv(w.python, parent, nav, w.wave_path("bundle.json"), w.wave_path("bundle-run1"),
-                                       w.root)),
+                                       w.root, nav_series(w, [parent, nav]))),
             reader_plan(w, "book", "book", {"cell": nav, "parent": parent}),
             f"#   verdict by {w.manifest['acceptance']['rule']}"]
 

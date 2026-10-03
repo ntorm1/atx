@@ -451,3 +451,30 @@ def test_research_cycle_and_add_alpha_get_the_waves_root(tmp_path):
     assert WS.cycle_argv("py", "run", "s.json") == ["py", WS.RCY, "run", "s.json"]    # no root: as before
     readers = WS.reader_argv("py", "book", {"cell": "n"}, "o.json", "r1", root=tmp_path / "elsewhere")
     assert readers[1].endswith("scripts/run_bounded_research.py") and Path(readers[1]).is_absolute()
+
+
+# ------------------------------------------------------------------ MINOR 14: the series the readers / bundle read
+def binds(argv: list[str]) -> list[str]:
+    return [argv[i + 1] for i in range(argv.index("--")) if argv[i] == "--bind"]
+
+
+def test_readers_and_bundle_bind_the_daily_series_and_capacity_curve(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL)
+    assert wave(root, fake, "run")[0] == 0
+    bounded = [c for c in fake.calls if Path(c[1]).name == "run_bounded_research.py"]
+    nav = receipt(root, "05-run.json")["outputs"]["nav"]
+    for c in bounded:                                                                  # mechanics x1, bundle, book
+        for d in (nav, F.PARENT_NAV):
+            assert {f"{d}/summary.json", f"{d}/daily_s2.csv", f"{d}/capacity_curve.csv"} <= set(binds(c))
+
+
+def test_a_bundle_whose_run_did_not_bind_the_series_now_is_refused(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL)                                 # a bundle made by a run that bound no series
+    F.write_json(root, f"{STATE}/bundle.json", {"base": F.PARENT_NAV, "final": "out/nav-w1-L1.1474", "paired": {}})
+    F.write_json(root, f"{STATE}/bundle-run1/receipt.json", {"outcome": "completed", "exit_code": 0,
+                                                              "bindings": []})
+    code, _ = wave(root, fake, "run")
+    err = failed(root, "08-judge.failed-1.json")
+    assert code == 3 and "did not bind the daily series" in err and "daily_s2.csv" in err

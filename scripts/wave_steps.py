@@ -85,19 +85,25 @@ def bounded_argv(py: str, run_dir: str, binds: list[str], command: list[str], ro
     return argv + ["--", *command]
 
 
-def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str, root=None) -> list[str]:
+def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str, root=None,
+                files: list | None = None) -> list[str]:
+    """``files``: the NAVs' series the reader reads (daily_<scen>.csv, capacity_curve.csv), bound with summary.json."""
     readers = tool(READERS, root)
     cmd = [py, readers, kind]
     for name, d in navs.items():
         cmd += ["--nav", f"{name}={d}"]
     cmd += ["--output", out]
-    return bounded_argv(py, run_dir, [readers] + [f"{d}/summary.json" for d in navs.values()], cmd, root)
+    return bounded_argv(py, run_dir, [readers] + [f"{d}/summary.json" for d in navs.values()] + list(files or []),
+                        cmd, root)
 
 
-def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, root=None) -> list[str]:
+def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, root=None,
+                files: list | None = None) -> list[str]:
+    """``files``: the two NAVs' daily series (daily_<scen>.csv), bound with summary.json (bundle_once checks them)."""
     summ = tool(NAV_SUMM, root)
     cmd = [py, summ, "--protocol", "v8", "--bundle", base_nav, cell_nav, "--bundle-json", out]
-    return bounded_argv(py, run_dir, [summ, f"{base_nav}/summary.json", f"{cell_nav}/summary.json"], cmd, root)
+    return bounded_argv(py, run_dir, [summ, f"{base_nav}/summary.json", f"{cell_nav}/summary.json"] + list(files or []),
+                        cmd, root)
 
 
 def commit_argvs(paths: list[str], message: str) -> list[list[str]]:
@@ -172,7 +178,7 @@ def unpinned(doc: dict) -> dict:
     block, change.inputs.*.sha256, the fields manifest pin in change.set): a resumed rule cell compares on this."""
     out = copy.deepcopy(doc)
     out.pop("locked", None)
-    change = out.get("change") if isinstance(out.get("change"), dict) else {}
+    change: dict = out["change"] if isinstance(out.get("change"), dict) else {}
     for item in (change.get("inputs") or {}).values():
         if isinstance(item, dict) and "sha256" in item:
             item["sha256"] = None
