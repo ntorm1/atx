@@ -105,7 +105,7 @@ def seg_tables() -> dict:
     t['sub'].append(_sub(accession,17,'10-K','20241231','2024','FY','20250301','2025-03-01 10:00:00.0'))
     for member in ('A','B'):
         _numd(t,accession,'SegmentUnmappedMetric','20241231',0,'5',f'BusinessSegments={member};', custom=True)
-    for cik,container in [(18,'ReportableLegalEntities'),(19,'ReportableGeographicalComponents')]:
+    for cik,container in [(18,'ReportableLegalEntities'),(19,'ReportableGeographicalComponents'),(20,'ReportableGeographicalComponents')]:
         accession=f'00000000{cik:02d}-26-0000{cik:02d}'
         t['sub'].append(_sub(accession,cik,'10-K','20251231','2025','FY','20260301','2026-03-01 10:00:00.0'))
         _numd(t,accession,'Revenues','20251231',4,'100')
@@ -478,7 +478,10 @@ def test_restricted_year_rebuild_preserves_omitted_year_census(lake) -> None:  #
     assert a.bseg_n==2 and a.bseg_rev_hhi==pytest.approx(.52)
 
 
-def test_explicit_reportable_container_identity(lake_seg) -> None:
+def test_explicit_reportable_container_identity(lake_seg, monkeypatch) -> None:
+    monkeypatch.setattr(FN,'DISCLOSED_REPORTABLE_CONTAINERS', {
+        '0000000018-26-000018':'ReportableLegalEntities',
+        '0000000019-26-000019':'ReportableGeographicalComponents'})
     FN.build()
     out=N.C.stage_dir(FN.STAGE)
     features=_features(out)
@@ -486,3 +489,6 @@ def test_explicit_reportable_container_identity(lake_seg) -> None:
         row=features[f'00000000{cik:02d}-26-0000{cik:02d}']
         assert (row.bseg_n,row.bseg_rev_n,row.bseg_recon_class)==(2,2,'direct')
         assert row.bseg_rev_hhi==pytest.approx(.52)
+    # The same generic geographic container is insufficient without filing evidence.
+    unrelated=features['0000000020-26-000020']
+    assert unrelated.bseg_n==2 and unrelated.bseg_rev_hhi is None

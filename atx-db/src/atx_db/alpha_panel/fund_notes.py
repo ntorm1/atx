@@ -227,8 +227,21 @@ FULL_REVENUE_TAGS = ('Revenues', 'RevenueFromContractWithCustomerExcludingAssess
                     'RevenueFromExternalCustomers', 'HealthCareOrganizationRevenue',
                     'RegulatedAndUnregulatedOperatingRevenue', 'InsuranceServicesRevenue')
 AXES = {"business": "BusinessSegments", "geographic": "Geographical"}
-# Exact source-declared reportable containers; no member deletion or hierarchy inference.
-REPORTABLE_CONSOLIDATION = ('OperatingSegments', 'ReportableLegalEntities', 'ReportableGeographicalComponents')
+# Filing-specific primary-disclosure corroboration; generic geographic/legal containers
+# elsewhere do not establish operating-segment identity. Source receipts: Task14 round2 pilot.
+DISCLOSED_REPORTABLE_CONTAINERS = {
+    '0001140361-23-014888': 'ReportableLegalEntities',
+    '0001722482-24-000012': 'ReportableGeographicalComponents',
+    '0001982518-25-000007': 'ReportableGeographicalComponents',
+}
+
+
+def reportable_container_sql(alias: str = '') -> str:
+    prefix = alias + '.' if alias else ''
+    exceptions = ' OR '.join(f"({prefix}adsh='{adsh}' AND {prefix}consolidation_member='{member}')"
+                             for adsh, member in DISCLOSED_REPORTABLE_CONTAINERS.items()) or 'false'
+    return f"({prefix}consolidation_member IS NULL OR {prefix}consolidation_member='OperatingSegments' OR {exceptions})"
+
 #: business-segment members that are not a reportable segment (reconciling lines, totals)
 RECONCILING_RE = (r"(?i)elimina|corporate|reconcil|unallocat|intersegment|intercompany|consolidat|^total|segmenttotal|"
                   r"adjustment|nonsegment")
@@ -569,7 +582,8 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
                   "domestic_re": DOMESTIC_RE, "us_re": US_RE, "foreign_re": FOREIGN_RE, "non_us_re": NON_US_RE,
                   "share_tolerance": SHARE_TOL, "stale_days_member_coverage": STALE_DAYS},
         "verification": {"arithmetic_candidates": "diagnostic only, never economic member deletion",
-                         "reportable_consolidation_members": list(REPORTABLE_CONSOLIDATION),
+                         "disclosed_reportable_container_exceptions": DISCLOSED_REPORTABLE_CONTAINERS,
+                         "reportable_container_provenance": "Task14 round2 primary-document/linkbase receipts; exceptions accession-scoped",
                          "restricted_year_scope": "item extraction restricted; census recomputed for every republished partition year",
                          "extra_context_projection": "explicit exhaustive timing_transfer_partition only",
                          "full_revenue_tags": list(FULL_REVENUE_TAGS),
@@ -650,7 +664,7 @@ def recon_sql(items: str, seg: str, filing_year: int) -> str:
                    arg_min(s.value, CASE WHEN s.consolidation_member IS NULL THEN 0 ELSE 1 END) AS value
             FROM read_parquet('{seg}') s JOIN k USING (adsh)
             WHERE s.metric = 'revenue' AND s.axis_kind = 'business' AND s.qtrs = 4 AND s.ddate = k.period
-              AND s.uom = k.currency AND (s.consolidation_member IS NULL OR s.consolidation_member IN {REPORTABLE_CONSOLIDATION})
+              AND s.uom = k.currency AND {reportable_container_sql('s')}
               AND NOT regexp_matches(s.member, '(?i)^total|^consolidat|segmenttotal')
             GROUP BY 1, 2, 3, 4
         ),
@@ -726,7 +740,7 @@ def recon_overlay(con, items: str, seg: str, strict: str):
             SELECT s.adsh, s.tag, s.member, arg_min(s.value, CASE WHEN s.consolidation_member IS NULL THEN 0 ELSE 1 END)
             FROM read_parquet('{seg}') s JOIN miss k USING (adsh)
             WHERE s.metric = 'revenue' AND s.axis_kind = 'business' AND s.qtrs = 4 AND s.ddate = k.period
-              AND s.uom = k.currency AND (s.consolidation_member IS NULL OR s.consolidation_member IN {REPORTABLE_CONSOLIDATION})
+              AND s.uom = k.currency AND {reportable_container_sql('s')}
               AND NOT regexp_matches(s.member, '(?i)^total|^consolidat|segmenttotal')
             GROUP BY 1, 2, 3 ORDER BY 1, 2, 3""").fetchall():
         mem.setdefault(adsh, {}).setdefault(tag, {})[member] = value
@@ -878,7 +892,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
             FROM ctx
             WHERE member IS NOT NULL AND (
                   (axis_kind IN ('business', 'geographic') AND regexp_matches(segments, '{SEGMENTS_ONLY_RE}')
-                   AND (consolidation_member IS NULL OR consolidation_member IN {REPORTABLE_CONSOLIDATION})
+                   AND {reportable_container_sql()}
                    AND NOT regexp_matches(member, '{tot_like}'))
                OR (axis_kind = 'customer'
                    AND regexp_full_match(regexp_replace(segments, '{CONC_AXES_RE}', '', 'g'), '{CUSTOMER_AXIS}=[^;]*;')
