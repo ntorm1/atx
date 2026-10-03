@@ -7145,3 +7145,10 @@ Keys: `wave` y-2, `rule_cell` = the template + its registered pin, `parent` = th
 | pre-registration commit | `git commit -m "wave y-2: manifest (pre-registration of cell Y-2; v8y-prereg sections 5, 6, 14)"` | 0 | **`15017bb4`** |
 | plan (committed) | same argv | **0** | 27 lines; manifest sha256 `3655181d...`; state `build-equity/waves/y-2/receipts` |
 
+### R0-8 Y-2 stages
+
+Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-2.json --root C:/atx-wt/pool-2 --until <stage>`. Host check before each stage (psutil): no compiler, no `atx-*` exe, no research process; free memory sampled every 0.25 s during the stage. Gates: a stage with an exe needs free >= its peak + 1,536 MiB (05 run: w plan 2,786 + 1,536 = 4,322, the R0-6-ATT gate on the same library; 06 / 08: cap 1,536 + 1,536 = 3,072).
+
+| stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
+|---|---|---|---|---|---|---|---|
+| 01 preflight | 0 | 0.3 | - (no exe) | 4,275 / 4,248 | `a7f876c13100abae6e73d82581d092f2c50cfc98fcd66b8cfa41401f642c62f3` | - | manifest commit `15017bb4`; parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `9d3548b6`; ledger 129 lines N 58 (head `a083edaa`); budget v8y-construction-n58-plus-1, construction cap 62 |
