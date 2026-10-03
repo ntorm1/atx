@@ -58,7 +58,7 @@
         "fqtr",
         "accession"
       ],
-      "doc": "Compustat-shaped PIT quarterly fundamentals (fundq), one row per vintage (filing); rdq informational"
+      "doc": "Compustat-shaped PIT quarterly fundamentals (fundq), filing and restatement vintages (vintage_kind); rdq informational"
     },
     {
       "view": "funda",
@@ -78,7 +78,7 @@
         "fyear",
         "accession"
       ],
-      "doc": "Compustat-shaped PIT annual fundamentals (funda) = fundq vintages with fqtr 4, plus the 81 catalog items"
+      "doc": "Compustat-shaped PIT annual fundamentals (funda): annual-form base periods with fqtr 4 and their later restatement vintages; 81 catalog fields, including non-Compustat extensions tempeq and nicon"
     }
   ],
   "asof_macros": {

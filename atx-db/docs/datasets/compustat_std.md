@@ -1,6 +1,6 @@
 # Dataset `compustat_std` (fundq / funda, Compustat-shaped, point in time)
 
-Code `src/atx_db/alpha_panel/compustat_std.py` (rule `cstd-pit-v1`, schema `atx.alpha-panel.compustat-std/v1`);
+Code `src/atx_db/alpha_panel/compustat_std.py` (rule `cstd-pit-v2`, schema `atx.alpha-panel.compustat-std/v1`);
 registration stub `docs/datasets/compustat_std.registry.json`. Tier1-v4 task 3 (gap analysis section 2 item 2).
 Built from the fundamentals stage (`--fund-stage`, default `fundamentals_v10`; task 5 rebuilds it on
 `fundamentals_v11`) and `earnings_calendar`; no new source.
@@ -9,14 +9,14 @@ Built from the fundamentals stage (`--fund-stage`, default `fundamentals_v10`; t
 
 | file | rows (build 2026-10-03) | bytes | keys | content |
 | --- | --- | --- | --- | --- |
-| `compustat_std/fundq.parquet` | 421,230 (17,010 CIKs) | 54,090,742 | (cik, datadate, fyearq, fqtr, accession) | one row per vintage (filing) |
-| `compustat_std/funda.parquet` | 112,802 (15,876 CIKs) | 34,408,214 | (cik, datadate, fyear, accession) | fundq vintages with fqtr = 4: annual items + the 81 catalog items |
+| `compustat_std/fundq.parquet` | 747,073 (17,010 CIKs) | 70,163,590 | (cik, datadate, fyearq, fqtr, accession) | filing and restatement vintages |
+| `compustat_std/funda.parquet` | 235,563 (15,875 CIKs) | 45,917,402 | (cik, datadate, fyear, accession) | annual-form base periods and their restatement vintages: annual items + 81 catalog fields |
 | `compustat_std/validation.json` | | | | gate measurements (coverage, rdq, sum4, balance, fsds, cutoff, handcheck) |
 | `compustat_std/manifest.json` | | | | schema, code SHA-256, file SHA-256, input manifest SHA-256, counts, `gate_status` |
 
 datadate 2004-12-31 .. 2026-08-31; available_at 2010-01-05 19:00:00 .. 2026-09-19 22:00:00 UTC.
-406,166 first-reported rows, 5,384 FX-converted rows, 10 rows without a fiscal
-quarter (no FY row and no Q/FY label). `(cik, accession)` is unique in each file.
+406,166 first-reported rows, 325,843 restatement rows, 7,267 FX-converted rows, 29 rows without a fiscal
+quarter (no annual FY row and no usable Q/FY label). `(cik, datadate, accession)` is unique in each file.
 
 ## Point-in-time rule
 
@@ -27,7 +27,10 @@ quarter (no FY row and no Q/FY label). `(cik, accession)` is unique in each file
   month from FY rows already received, quarterly-history vintages, Company Facts facts at their filing clock,
   8-K 2.02 announcements already accepted, H.10 rates already published. The `cutoff` gate rebuilds the stage from
   the inputs visible before five cutoffs and compares it cell by cell with the published rows.
-* Vintages are new rows: an amendment or a later filing is a new row; nothing is overwritten. `first_reported` marks
+* Vintages are new rows: amendments and later restatements of older datadates add rows; nothing is overwritten.
+  `vintage_kind` (VARCHAR) distinguishes `filing` from `restatement`. Funda requires an annual-form base period
+  with fqtr 4. A later 10-Q can restate that annual period while retaining its annual values and base calendar;
+  its own current quarterly TTM values never become a funda base row. `first_reported` marks
   the earliest vintage of a (cik, datadate); `is_restated` / `restated_items` (fundamentals S4.6) mark filings that
   changed a previously reported value by more than 0.5%.
 * As-of macros (serving catalog; `<root>` = the alpha-panel build root):
@@ -55,8 +58,9 @@ CREATE OR REPLACE MACRO funda_asof(ts) AS TABLE SELECT * FROM read_parquet('<roo
 
 * effective month of a date = its month, or the previous month when the day is <= 7 (52/53-week years such as
   Apple's 2022-10-01);
-* `fyr` = effective month of the latest FY-labelled datadate visible at the row, else inferred from the row's own
-  label (Qk / FY): effective month + 3 (4 - k);
+* `fyr` = effective month of the latest FY-labelled annual-form datadate visible at the row, else inferred from
+  the row's own label (Qk / annual FY): effective month + 3 (4 - k). A 10-Q labelled FY cannot set/reset fyr.
+  Restatement vintages retain their base period's calendar.
 * `fqtr` = ((effective month - fyr - 1) mod 12) div 3 + 1 (dates win over the DEI label: 1,922 of
   308,729 Q1-Q3-labelled rows differ, mostly fiscal-year changes and mislabelled filings);
 * `fyearq` / `fyear` = calendar year of the fiscal year end the quarter belongs to, minus 1 when `fyr` < 6
@@ -85,7 +89,8 @@ fundq; funda has the same columns with `fyear` for `fyearq`, no `fqtr`, `fx_rate
 | `fx_converted` | BOOLEAN | money items converted from `curcd` at H.10 rates | events |
 | `fx_rate`, `fx_rate_avg_q`, `fx_rate_avg_ttm` | DOUBLE | USD per unit of `curcd`: datadate spot, 91-day and 365-day means | events |
 | `first_reported` | BOOLEAN | earliest vintage of (cik, datadate) | derived |
-| `is_restated`, `restated_items` | BOOLEAN, VARCHAR | the filing changed an earlier reported value by > 0.5% (watched chains) | events (S4.6) |
+| `vintage_kind` | VARCHAR | `filing` for the current period, `restatement` for an older period changed by a later filing | derived |
+| `is_restated`, `restated_items` | BOOLEAN, VARCHAR | filing rows inherit upstream >0.5% watched-chain markers; restatement rows are true and list changed items | events (S4.6), history deltas |
 | `is_amendment` | BOOLEAN | form ends with /A | events |
 | `nonreliance_402_at` | TIMESTAMP | latest 8-K item 4.02 within 365 days | events |
 | `fiscal_year`, `fiscal_period` | INTEGER, VARCHAR | SEC DEI fiscal year / period labels of datadate | events |
@@ -152,8 +157,8 @@ multiply money and per-share facts by `fx_rate_avg_q`. YTD items: fqtr 4 = the e
 quarterly_history vintage <= available_at), NULL when a quarter is missing, 0 when the TTM is 0; FX rows convert each
 quarter at its own 91-day H.10 mean (current quarter: `fx_rate_avg_q`).
 
-Derivation paths over all rows: ibq {'ib_3m': 47675, 'ib_fy_less_9m': 9298, 'niq_less_doq': 756, 'niq_no_do': 344062, 'null': 19439}; epspxq {'cont_3m': 39114, 'cont_fy_less_9m': 6426, 'null': 70914, 'total_3m': 257352, 'total_fy_less_9m': 47424};
-rdq {'8k_202': 226277, 'filing': 194953}.
+Derivation paths over all rows: ibq {'ib_3m': 110166, 'ib_fy_less_9m': 25958, 'niq_less_doq': 2285, 'niq_no_do': 582763, 'null': 25901}; epspxq {'cont_3m': 92087, 'cont_fy_less_9m': 18160, 'null': 111372, 'total_3m': 426994, 'total_fy_less_9m': 98460};
+rdq {'8k_202': 420211, 'filing': 326862}.
 
 ## funda items
 
@@ -192,11 +197,12 @@ rdq {'8k_202': 226277, 'filing': 194953}.
 | `sstk` | DOUBLE | USD | Sale of common and preferred stock, fiscal year | events.parquet `sstk_ttm` |
 | `xrd` | DOUBLE | USD | Research and development expense, fiscal year | events.parquet `xrd_ttm` |
 
-Catalog items (fundamentals `catalog.parquet`) under their Compustat names (lower-case first mnemonic token). Four
-columns are renamed where the catalog label contradicts Compustat semantics: catalog `intano` = gdwl + intan =
+Catalog items (fundamentals `catalog.parquet`) under their Compustat names (lower-case first mnemonic token).
+Columns are renamed where the catalog label contradicts Compustat semantics: catalog `intano` = gdwl + intan =
 Compustat INTAN; catalog `epspx_ttm`/`epsfx_ttm` = total EPS = Compustat EPSPI/EPSFI; catalog `epspi_ttm`/`epsfi_ttm`
-= continuing-operations EPS = Compustat EPSPX/EPSFX. `mibt` keeps the catalog name (MIBT/TEMP): it holds temporary
-(mezzanine) equity, not Compustat's MIBT (total noncontrolling interest). TTM flows at a 10-K are fiscal-year values.
+= continuing-operations EPS = Compustat EPSPX/EPSFX. `tempeq` carries upstream `mibt` (temporary/mezzanine
+equity); `nicon` carries upstream `nicon_ttm` (income available to common, basic). These two extensions have no
+verified Compustat equivalent; neither MIBT nor NIADJ is claimed. TTM flows at an annual base filing are fiscal-year values.
 
 | column | catalog column | unit | definition |
 | --- | --- | --- | --- |
@@ -225,7 +231,7 @@ Compustat INTAN; catalog `epspx_ttm`/`epsfx_ttm` = total EPS = Compustat EPSPI/E
 | `ceq` | `ceq` | USD | catalog ceq (mnemonic CEQ, derived), at datadate; seq - pstk (pstk 0 when unreported) |
 | `teq` | `teq` | USD | catalog teq (mnemonic TEQ, derived), at datadate; StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest, else seq + mib |
 | `lse` | `lse` | USD | catalog lse (mnemonic LSE, stock), at datadate; else at (the balance sheet identity) |
-| `mibt` | `mibt` | USD | catalog mibt (mnemonic MIBT/TEMP, stock), at datadate |
+| `tempeq` | `mibt` | USD | temporary/mezzanine equity; non-Compustat extension (upstream MIBT/TEMP label is misleading) |
 | `txp` | `txp` | USD | catalog txp (mnemonic TXP, stock), at datadate |
 | `lco` | `lco` | USD | catalog lco (mnemonic LCO, derived), at datadate; lct - ap - dlc - txp (Compustat's LCT = AP + DLC + TXP + LCO; txp 0 when missing), else the chain; structural where lct is |
 | `wcap` | `wcap` | USD | catalog wcap (mnemonic WCAP, derived), at datadate; act - lct (structural where act/lct are) |
@@ -245,7 +251,7 @@ Compustat INTAN; catalog `epspx_ttm`/`epsfx_ttm` = total EPS = Compustat EPSPI/E
 | `do` | `do_ttm` | USD | catalog do_ttm (mnemonic DO, flow), fiscal year |
 | `ib` | `ib_ttm` | USD | catalog ib_ttm (mnemonic IB, flow), fiscal year; else ni_ttm - do_ttm |
 | `xido` | `xido_ttm` | USD | catalog xido_ttm (mnemonic XIDO, flow), fiscal year |
-| `niadj` | `nicon_ttm` | USD | catalog nicon_ttm (mnemonic NIADJ, flow), fiscal year; else ni_ttm - dvp_ttm |
+| `nicon` | `nicon_ttm` | USD | net income available to common (basic); non-Compustat extension, not verified NIADJ (diluted numerator) |
 | `dvp` | `dvp_ttm` | USD | catalog dvp_ttm (mnemonic DVP, flow), fiscal year |
 | `epspi` | `epspx_ttm` | USD/share | catalog epspx_ttm (mnemonic EPSPX, per_share), fiscal year; published as Compustat EPSPI (catalog label EPSPX differs) |
 | `epsfi` | `epsfx_ttm` | USD/share | catalog epsfx_ttm (mnemonic EPSFX, per_share), fiscal year; published as Compustat EPSFI (catalog label EPSFX differs) |
@@ -300,57 +306,56 @@ Gates (saleq/ibq/atq/ceqq/cheq/cshoq >= 0.95 and oancfy/capxy >= 0.92 every year
 
 ### rdq (first-reported 10-Q/10-QT rows of linked member issuers)
 
-| year | periods | rdq_populated | rdq_from_8k_pit | info_rdq_equals_matched_8k_date_any_order | info_period_has_primary_8k_any_time | info_issuer_files_no_202_near_period |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2020 | 7,599 | 1.000 | 0.861 | 0.911 | 0.929 | 0.050 |
-| 2021 | 8,214 | 1.000 | 0.850 | 0.901 | 0.922 | 0.056 |
-| 2022 | 7,569 | 1.000 | 0.894 | 0.942 | 0.954 | 0.030 |
-| 2023 | 7,075 | 1.000 | 0.901 | 0.946 | 0.958 | 0.028 |
-| 2024 | 7,170 | 1.000 | 0.889 | 0.941 | 0.952 | 0.030 |
-| 2025 | 7,070 | 1.000 | 0.877 | 0.927 | 0.937 | 0.044 |
+| year | periods | rdq_populated | rdq_8k_same_date (gate) | rdq_from_8k_pit (strict) |
+| --- | --- | --- | --- | --- |
+| 2020 | 7,599 | 1.0000 | 0.9108 | 0.8610 |
+| 2021 | 8,214 | 1.0000 | 0.9015 | 0.8500 |
+| 2022 | 7,569 | 1.0000 | 0.9417 | 0.8938 |
+| 2023 | 7,075 | 1.0000 | 0.9459 | 0.9008 |
+| 2024 | 7,170 | 1.0000 | 0.9411 | 0.8891 |
+| 2025 | 7,070 | 1.0000 | 0.9267 | 0.8769 |
 
-Gate metric `rdq_from_8k_pit` >= 0.95: FAIL. 51.5% of these 10-Qs are filed on the same ET date as the 8-K 2.02;
-when the 10-Q is accepted first the PIT rule labels the row `filing` (the date is the same). 2.8-5.6% of periods
-belong to issuers that file no 8-K 2.02 near the period; FPI 6-K releases are not in `earnings_calendar`.
+Gate metric `rdq_8k_same_date` >= 0.95 (ruling T3-b): FAIL. Counts a matched primary 8-K accepted
+on or before the ET date of the row's filing clock (filed fallback), with strict PIT share reported alongside.
+This gate relaxation changes no published item clock or rdq sourcing. Residual calendar coverage routes to Task 9.
 
-### Four quarters vs the annual (latest vintages; 10-K annual rows of linked member issuers)
+### Four quarters vs the annual (latest vintages; annual-base periods of linked member issuers)
 
-| year | saleq FYs | saleq within 0.5% | saleq (quarters as known at the 10-K) | niq FYs | niq within 0.5% | niq (as known) | ibq within 0.5% |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 2020 | 2,268 | 0.962 | 0.982 | 2,373 | 0.965 | 0.984 | 0.932 |
-| 2021 | 2,452 | 0.944 | 0.962 | 2,566 | 0.953 | 0.970 | 0.919 |
-| 2022 | 2,355 | 0.965 | 0.976 | 2,432 | 0.966 | 0.981 | 0.943 |
-| 2023 | 2,200 | 0.968 | 0.979 | 2,274 | 0.976 | 0.986 | 0.952 |
-| 2024 | 2,214 | 0.961 | 0.976 | 2,290 | 0.977 | 0.985 | 0.945 |
-| 2025 | 2,126 | 0.968 | 0.979 | 2,221 | 0.973 | 0.985 | 0.946 |
+| year | saleq FYs | saleq within 0.5% | niq FYs | niq within 0.5% | ibq within 0.5% (info) |
+| --- | --- | --- | --- | --- | --- |
+| 2020 | 2,301 | 0.9770 | 2,385 | 0.9807 | 0.8961 |
+| 2021 | 2,492 | 0.9655 | 2,578 | 0.9697 | 0.8990 |
+| 2022 | 2,375 | 0.9768 | 2,443 | 0.9779 | 0.8998 |
+| 2023 | 2,221 | 0.9797 | 2,282 | 0.9838 | 0.9103 |
+| 2024 | 2,234 | 0.9781 | 2,299 | 0.9839 | 0.9197 |
+| 2025 | 2,132 | 0.9789 | 2,225 | 0.9847 | 0.9533 |
 
-Gate (saleq and niq within 0.5% on >= 98% every year): FAIL. Causes: (1) quarters restated after first report keep
-their first-reported fundq row (restated older quarters are vintages in `quarterly_history`, not new fundq rows);
-the quarters as known at the 10-K lift the share by 1-2 points; (2) fundamentals-stage quarter derivations that
-disagree with the fiscal-year fact (a filer-tagged Q4 3-month fact equal to the FY value; bank revenue built from
-interest + noninterest income whose Q1 comparative was later restated).
+Gate (saleq and niq within 0.5% on >= 98% every year): FAIL. Restatement vintages improve saleq to
+0.9655-0.9797 and niq to 0.9697-0.9847. Upstream v10 Q4 derivation and history limits remain for Task 5.
+Annual values move by the available quarterly-history deltas; the sum4 metric therefore partly shares inputs
+with the derivation and is not an independent annual-source benchmark.
 
 ### Balance identity (latest vintage per (cik, datadate) with atq, linked member issuers)
 
 | year | issuer-quarters | atq = ltq + teqq (gate) | with temporary equity (info) | ltq or teqq missing |
 | --- | --- | --- | --- | --- |
-| 2020 | 10,374 | 0.924 | 0.961 | 38 |
-| 2021 | 11,266 | 0.915 | 0.963 | 37 |
-| 2022 | 10,385 | 0.929 | 0.971 | 41 |
-| 2023 | 9,697 | 0.935 | 0.972 | 30 |
-| 2024 | 9,827 | 0.934 | 0.975 | 28 |
-| 2025 | 9,613 | 0.929 | 0.974 | 21 |
+| 2020 | 10,375 | 0.9124 | 0.9427 | 39 |
+| 2021 | 11,272 | 0.9020 | 0.9424 | 40 |
+| 2022 | 10,387 | 0.9195 | 0.9599 | 42 |
+| 2023 | 9,700 | 0.9280 | 0.9635 | 31 |
+| 2024 | 9,829 | 0.9287 | 0.9688 | 29 |
+| 2025 | 9,614 | 0.9245 | 0.9688 | 22 |
 
-Gate (atq = ltq + teqq within 0.5% on >= 97%): FAIL. US GAAP temporary (mezzanine) equity is neither a liability nor
-equity; with the catalog temporary-equity term the identity holds on 96.1-97.5%; the rest is temporary equity the
-fundamentals `mibt` chain does not capture (gap analysis item 4, task 5).
+Gate (atq = ltq + teqq within 0.5% on >= 97%): FAIL. Temporary equity is neither liability nor permanent equity;
+with the same period's latest visible catalog temporary-equity term the share is 0.9424-0.9688.
+Upstream v10 balance/history issues remain for Task 5; the information term never uses another datadate.
 
 ### Other gates
 
 * FSDS (own-filing FSDS NUM cells, datadate 2020-2025, stratified by column and year): cells 6084, strata 234, quota 26, mapped 6039 (0.9926), matched 6030 (0.9985 of mapped): PASS (>= 98%).
   Per column in `validation.json` (`fsds.by_col`).
 * Cutoff rebuild (90 seeded CIKs incl. 19 FX-converted; cutoffs 2017-06-30, 2020-03-31, 2021-08-13, 2023-05-10,
-  2025-11-14 22:00 UTC): 10,622 rows, 867,948 cells, 0 differences: PASS.
+  2025-11-14 22:00 UTC): 19,956 rows, 1,691,724 cells, 0 differences: PASS.
 * Hand check (30 seeded first-reported 10-Q rows 2021-2025 vs the filing's inline XBRL from EDGAR): 0 mismatches over
   240 item checks: PASS (row by row in `.superpowers/sdd/tier1-v4/task-3-report.md`).
 
@@ -359,7 +364,7 @@ fundamentals `mibt` chain does not capture (gap analysis item 4, task 5).
 ```bash
 cd atx-db; export PYTHONPATH=src OPENBLAS_NUM_THREADS=1      # every command under the memory guard
 G="../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60"
-python $G -- python -m atx_db.alpha_panel.compustat_std build --fund-stage fundamentals_v10 --earn-stage earnings_calendar
+python $G -- python -m atx_db.alpha_panel.compustat_std build --fund-stage fundamentals_v10 --earn-stage earnings_calendar --buckets 32
 python $G -- python -m atx_db.alpha_panel.compustat_std validate     # coverage rdq sum4 balance fsds
 python $G -- python -m atx_db.alpha_panel.compustat_std cutoff       # 0 differences required
 python $G -- python -m atx_db.alpha_panel.compustat_std handcheck    # network: SEC via atx_db.sec_http (<= 5 req/s)
@@ -371,8 +376,10 @@ Company Facts subset) is kept for the cutoff check.
 
 ## Known limits
 
-* Restated older quarters are not new fundq rows; their values are in the fundamentals stage's `quarterly_history`
-  (`fund_history_asof`, `fund_vintages`).
+* Later filings that change older quarterly-history values emit additional fundq/funda vintages. Values supported
+  by history move by the visible delta from the base filing; flows use four-quarter deltas, YTD uses visible
+  quarters, and EPS/IB/share facts are recomputed. Other catalog fields and share/debt descriptors retain base
+  values where the upstream history has no corresponding item. FX restatements retain the base conversion rates.
 * Quarterly items inherit the fundamentals stage's derivations (discrete quarter = 3-month fact, else YTD
   difference): filer tagging errors in a Q4 3-month fact pass through.
 * `cshoq` for multi-class issuers: Company Facts has no dimensional dei counts, so the balance-sheet or weighted-

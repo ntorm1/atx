@@ -2,14 +2,20 @@
 ``fundq.parquet`` and ``funda.parquet`` with ``rdq``, built from a fundamentals stage (``--fund-stage``, default
 ``fundamentals_v10``; task 5 rebuilds it on ``fundamentals_v11``) and ``earnings_calendar``. No new source.
 
-Rows (rule ``cstd-pit-v1``). One row per vintage: every event of the fundamentals stage (one per (cik, accession):
-10-Q, 10-K, 10-QT, 10-KT, 20-F, 40-F and their /A) whose ``period_end`` lies in [``DATADATE_MIN``, build date + 365
-days] becomes a ``fundq`` row keyed (cik, datadate, fyearq, fqtr, accession); ``datadate`` = the event's
-``period_end`` (the issuer's latest statement period end at that filing, actual date, not month-rounded). Rows
-outside the window are excluded and counted (the raw Company Facts extract carries period ends up to 6016-06-30).
-``funda`` = the ``fundq`` rows with ``fqtr`` = 4, keyed (cik, datadate, fyear, accession). A restatement of an older
-quarter is not a new row of that older ``datadate`` (its values are in the fundamentals stage's
-``quarterly_history`` / ``fund_vintages()``); every new filing is a new row of the then-current ``datadate``.
+Rows (rule ``cstd-pit-v2``). One row per vintage, keyed (cik, datadate, fyearq, fqtr, accession):
+
+* ``vintage_kind = 'filing'``: every event of the fundamentals stage (one per (cik, accession): 10-Q, 10-K, 10-QT,
+  10-KT, 20-F, 40-F and their /A) whose ``period_end`` lies in [``DATADATE_MIN``, build date + 365 days];
+  ``datadate`` = the event's ``period_end`` (the issuer's latest statement period end at that filing, actual date,
+  not month-rounded). Rows outside the window are excluded and counted (the raw Company Facts extract carries period
+  ends up to 6016-06-30).
+* ``vintage_kind = 'restatement'``: a later filing that changed a ``quarterly_history`` value of an older datadate
+  (a restated quarter, a restated annual comparative) adds a row of that older datadate at the restating filing's
+  clock and accession, ``is_restated`` = true (``_vintages``: the base row's values moved by the history deltas).
+
+``(cik, datadate, accession)`` is unique; a filing can carry rows of several datadates. ``funda`` = the ``fundq``
+rows with ``fqtr`` = 4 whose datadate's own filing is an annual form (10-K, 10-KT, 20-F, 40-F and /A; a 10-Q
+DEI-labelled FY is never an annual row), keyed (cik, datadate, fyear, accession).
 
 Clock: ``available_at`` = the event's ``available_at`` (filing clock, or later for FX-converted filers: the
 publication clock of every H.10 rate used). Every derived value below uses only inputs with a clock at or before the
@@ -20,9 +26,10 @@ Fiscal calendar (Compustat conventions):
 
 * effective month of a date = its month, or the previous month when the day is <= 7 (52/53-week years ending in the
   first days of a month, e.g. Apple's 2022-10-01);
-* ``fyr`` = the effective month of the issuer's latest ``FY``-labelled datadate visible at the row (an annual report
-  received at or before ``available_at``); with none yet, inferred from the row's own label Qk / FY (effective month
-  + 3 (4 - k) months);
+* ``fyr`` = the effective month of the issuer's latest ``FY``-labelled annual-form datadate visible at the row (an
+  annual report received at or before ``available_at``); with none yet, inferred from the row's own label Qk / FY
+  (effective month + 3 (4 - k) months; an FY label on a 10-Q is ignored); restatement vintages keep their base row's
+  ``fyr`` / ``fqtr`` / ``fyearq``;
 * ``fqtr`` = ((effective month - fyr - 1) mod 12) div 3 + 1 (``FY`` rows with fyr from themselves are 4);
 * ``fyearq`` (and ``fyear`` in funda) = the calendar year of the fiscal year end the quarter belongs to (the first
   month index at or after the effective month whose month is ``fyr``), minus 1 when ``fyr`` < 6 (Compustat: a year
@@ -92,8 +99,8 @@ from . import fund_fx as ffx
 
 STAGE = "compustat_std"
 SCHEMA = "atx.alpha-panel.compustat-std/v1"
-RULE = "cstd-pit-v1"
-CODE_VERSION = "compustat-std-v1"
+RULE = "cstd-pit-v2"
+CODE_VERSION = "compustat-std-v2"
 MODULES = ("compustat_std", "fund_catalog", "fund_fx", "common")
 DEFAULT_FUND_STAGE = "fundamentals_v10"
 DEFAULT_EARN_STAGE = "earnings_calendar"
@@ -105,6 +112,7 @@ Q_DUR, FY_DUR, NINE_DUR = (80, 120), (350, 380), (250, 290)
 N_BUCKETS = 8
 MEM = os.environ.get("ATX_CSTD_DUCKDB_MEM", "450MB")
 QUARTERLY_FORMS = ("10-Q", "10-K", "10-QT", "10-KT", "10-Q/A", "10-K/A", "10-QT/A", "10-KT/A")
+ANNUAL_FORMS = ("10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A")
 GATE_YEARS = tuple(range(2020, 2026))
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -197,9 +205,12 @@ FUNDA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
 )
 # fundamentals catalog columns whose content differs from their catalog mnemonic (Compustat semantics win):
 # intano holds gdwl + intan = Compustat INTAN (total); epspx/epsfx hold total EPS (NI based) = Compustat EPSPI/EPSFI;
-# epspi/epsfi hold continuing-operations EPS (total when do = 0) = Compustat EPSPX/EPSFX.
+# epspi/epsfi hold continuing-operations EPS (total when do = 0) = Compustat EPSPX/EPSFX; mibt holds temporary
+# (mezzanine) equity, not Compustat MIBT (total noncontrolling interest), and has no Compustat mnemonic (tempeq);
+# nicon_ttm is net income available to common (basic), not Compustat NIADJ (the diluted-EPS numerator) (nicon).
 CATALOG_RENAME = {"intano": "intan", "epspx_ttm": "epspi", "epsfx_ttm": "epsfi", "epspi_ttm": "epspx",
-                  "epsfi_ttm": "epsfx"}
+                  "epsfi_ttm": "epsfx", "mibt": "tempeq", "nicon_ttm": "nicon"}
+CATALOG_NOT_COMPUSTAT = frozenset({"mibt", "nicon_ttm"})
 
 
 def catalog_names() -> list[tuple[str, str, str, str]]:
@@ -212,7 +223,9 @@ def catalog_names() -> list[tuple[str, str, str, str]]:
             unit = "shares"
         span = "fiscal year" if it.kind in ("flow", "per_share") or it.col.endswith("_ttm") else "at datadate"
         note = f"catalog {it.col} (mnemonic {it.mnemonic}, {it.kind}), {span}" + (f"; {it.note}" if it.note else "")
-        if it.col in CATALOG_RENAME:
+        if it.col in CATALOG_NOT_COMPUSTAT:
+            note += f"; no Compustat equivalent: published as {name} (catalog label {it.mnemonic} is not its content)"
+        elif it.col in CATALOG_RENAME:
             note += f"; published as Compustat {name.upper()} (catalog label {it.mnemonic} differs)"
         out.append((name, it.col, unit, note))
     names = [n for n, _, _, _ in out]
@@ -238,9 +251,21 @@ EVENT_COLS = ("cik", "accession", "form", "filed", "clock_utc", "clock_basis", "
               "zero_filled")
 CAT_EXTRA = ("do_ttm", "xido_ttm")
 DESC_Q = ("cik", "datadate", "fyearq", "fqtr", "fyr", "accession", "form", "filed", "clock_utc", "available_at",
-          "rdq", "rdq_src", "curcd", "fx_converted", "fx_rate", "fx_rate_avg_q", "first_reported", "is_restated",
-          "restated_items", "is_amendment", "nonreliance_402_at", "fiscal_year", "fiscal_period", "fin_template",
-          "sic", "zero_filled")
+          "rdq", "rdq_src", "curcd", "fx_converted", "fx_rate", "fx_rate_avg_q", "first_reported", "vintage_kind",
+          "is_restated", "restated_items", "is_amendment", "nonreliance_402_at", "fiscal_year", "fiscal_period",
+          "fin_template", "sic", "zero_filled")
+# restatement vintages: event column -> quarterly_history item, by conversion rate (FX-converted rows)
+VINT_STOCK = {c: c for c in ("at", "lt", "seq", "che", "act", "lct", "invt", "rect", "ap", "ppe", "pstk", "mib",
+                             "gdwl", "ppegt", "intan")}
+VINT_FLOW_Q = {c: c for c in ("sale_q", "cogs_q", "xsga_q", "oi_q", "ebitda_q", "dp_q", "xint_q", "txt_q", "ni_q")}
+VINT_TTM = {"sale_ttm": "sale_q", "cogs_ttm": "cogs_q", "xsga_ttm": "xsga_q", "gp_ttm": "gp_q", "oi_ttm": "oi_q",
+            "ebitda_ttm": "ebitda_q", "dp_ttm": "dp_q", "xint_ttm": "xint_q", "ni_ttm": "ni_q", "cfo_ttm": "cfo_q",
+            "capx_ttm": "capx_q", "dvc_ttm": "dvc_q", "dvt_ttm": "dvt_q", "prstkc_ttm": "prstkc_q",
+            "sstk_ttm": "sstk_q", "xrd_ttm": "xrd_q"}
+# catalog columns moved by component deltas
+VINT_DERIVED = {"c_ceq": (("seq", 1), ("pstk", -1)), "c_teq": (("seq", 1), ("mib", 1)),
+                "c_intano": (("gdwl", 1), ("intan", 1))}
+HIST_ITEMS = tuple(sorted(set(VINT_STOCK.values()) | set(VINT_FLOW_Q.values()) | set(VINT_TTM.values())))
 SRC_Q = ("ibq_src", "epspxq_src")
 
 
@@ -340,6 +365,8 @@ def _setup(con, inp: Inputs, cik_where: str, cutoff: dt.datetime | None) -> None
     sel = ", ".join(("coalesce(e.fx_converted, false) AS fx_converted" if c == "fx_converted" else f'e."{c}"')
                     if c in ev_cols else (f'false AS "{c}"' if c == "fx_converted" else f'NULL AS "{c}"')
                     for c in EVENT_COLS)
+    if "nonreliance_402_at" not in ev_cols:
+        raise ValueError("fundamentals events lack nonreliance_402_at (fundamentals v10+ required)")
     q_srcs = sorted({s for _, s, _, _ in FUNDQ_ITEMS + FUNDA_ITEMS if not s.startswith("c_")} |
                     {t for _, _, t, _ in YTD_ITEMS})
     ev_items = ", ".join(f"e.{s}" if s.startswith('"') else f'e."{s}"' for s in q_srcs)
@@ -350,7 +377,12 @@ def _setup(con, inp: Inputs, cik_where: str, cutoff: dt.datetime | None) -> None
         SELECT {sel}, {ev_items}, {cat_items}, c.catalog_zero_filled
         FROM (SELECT * FROM read_parquet('{ev}') WHERE {cik_where}{cut}) e
         LEFT JOIN (SELECT * FROM read_parquet('{cat}') WHERE {cik_where}) c USING (cik, accession)""")
-    items = ", ".join(f"'{h}'" for _, h, _, _ in YTD_ITEMS)
+    items = ", ".join(f"'{h}'" for h in sorted(set(HIST_ITEMS) | {h for _, h, _, _ in YTD_ITEMS}))
+    ccut = f" AND clock_utc < {_ts(cutoff)}" if cutoff else ""
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE emeta AS
+        SELECT cik, accession, form, filed, clock_utc, nonreliance_402_at FROM read_parquet('{ev}')
+        WHERE {cik_where}{ccut}""")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE hist AS
         SELECT cik, item, period_end, value, currency, available_at, accession, {eff_idx_sql('period_end')} AS h_idx
@@ -394,42 +426,47 @@ def _fx_quarters(con, inp: Inputs, cutoff: dt.datetime | None) -> None:
 def _derive(con, inp: Inputs) -> None:
     """Temp tables ``q_out`` (fundq rows) and ``a_out`` (funda rows) from ``r0``, ``hist``, ``fct``, ``ann``."""
     ei = eff_idx_sql("period_end")
-    lab_k = ("CASE fiscal_period WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 WHEN 'Q4' THEN 4 "
-             "WHEN 'FY' THEN 4 END")
+    annual = ", ".join(f"'{f}'" for f in ANNUAL_FORMS)
+    # a 10-Q DEI-labelled FY is neither a fiscal-year-end source nor a Q4 label
+    lab_k = ("CASE WHEN fiscal_period = 'FY' AND form NOT IN ({a}) THEN NULL ELSE CASE fiscal_period "
+             "WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 WHEN 'Q4' THEN 4 WHEN 'FY' THEN 4 END END")
+    lab_k = lab_k.format(a=annual)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE r1 AS
         SELECT *, arg_max(eidx % 12 + 1, struct_pack(t := available_at, a := accession))
-                      FILTER (WHERE fiscal_period = 'FY')
+                      FILTER (WHERE fiscal_period = 'FY' AND form IN ({annual}))
                       OVER (PARTITION BY cik ORDER BY available_at RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
                       AS fyr_fy,
                (eidx % 12 + 3 * (4 - {lab_k})) % 12 + 1 AS fyr_label
         FROM (SELECT *, {ei} AS eidx FROM r0
               WHERE period_end BETWEEN DATE '{DATADATE_MIN}' AND DATE '{inp.datadate_max}')""")
     con.execute("""
-        CREATE OR REPLACE TEMP TABLE r2 AS
+        CREATE OR REPLACE TEMP TABLE r2e AS
         SELECT *, CASE WHEN fyr IS NOT NULL THEN ((eidx % 12 + 1 - fyr - 1 + 24) % 12) // 3 + 1 END AS fqtr,
                CASE WHEN fyr IS NOT NULL THEN eidx + ((fyr - 1 - eidx % 12 + 24) % 12) END AS fye_idx,
                CASE WHEN fx_converted THEN currency ELSE 'USD' END AS mccy,
                CASE WHEN fx_converted THEN fx_rate_avg_q ELSE 1.0 END AS rq,
-               row_number() OVER (PARTITION BY cik, period_end ORDER BY available_at, accession) = 1 AS first_reported,
                CASE WHEN clock_basis = 'fsds_accepted_utc'
                     THEN CAST(timezone('America/New_York', CAST(clock_utc AS TIMESTAMPTZ)) AS DATE)
-                    ELSE filed END AS filing_date
+                    ELSE filed END AS filing_date,
+               form AS dform, 'filing' AS vintage_kind
         FROM (SELECT *, coalesce(fyr_fy, fyr_label) AS fyr FROM r1)""")
+    _vintages(con)
     # ---- YTD sums from quarterly_history (fqtr 1..3) ----
     con.execute("""
         CREATE OR REPLACE TEMP TABLE ytd_m AS
-        SELECT r.cik, r.accession, r.fqtr, o.off, h.item, h.period_end AS hpe, h.value, r.fx_converted, r.currency,
+        SELECT r.cik, r.period_end AS pe, r.accession, r.fqtr, o.off, h.item, h.period_end AS hpe, h.value,
+               r.fx_converted, r.currency,
                r.fx_rate_avg_q, r.available_at
         FROM r2 r JOIN range(0, 3) o(off) ON o.off < r.fqtr
         JOIN hist h ON h.cik = r.cik AND h.h_idx = r.eidx - 3 * o.off AND h.available_at <= r.available_at
                    AND h.currency = r.mccy
         WHERE r.fqtr BETWEEN 1 AND 3
-        QUALIFY row_number() OVER (PARTITION BY r.cik, r.accession, o.off, h.item
+        QUALIFY row_number() OVER (PARTITION BY r.cik, r.period_end, r.accession, o.off, h.item
                                    ORDER BY h.period_end DESC, h.available_at DESC, h.accession DESC) = 1""")
     con.execute("""
         CREATE OR REPLACE TEMP TABLE ytd_v AS
-        SELECT m.cik, m.accession, m.item, any_value(m.fqtr) AS fqtr, count(*) AS n,
+        SELECT m.cik, m.pe, m.accession, m.item, any_value(m.fqtr) AS fqtr, count(*) AS n,
                count(CASE WHEN NOT m.fx_converted THEN m.value
                           WHEN m.off = 0 THEN m.value * m.fx_rate_avg_q
                           WHEN x.clock <= m.available_at THEN m.value * x.rate END) AS n_conv,
@@ -437,7 +474,7 @@ def _derive(con, inp: Inputs) -> None:
                         WHEN m.off = 0 THEN m.value * m.fx_rate_avg_q
                         WHEN x.clock <= m.available_at THEN m.value * x.rate END) AS v
         FROM ytd_m m LEFT JOIN fxq x ON m.fx_converted AND x.currency = m.currency AND x.period_end = m.hpe
-        GROUP BY 1, 2, 3""")
+        GROUP BY 1, 2, 3, 4""")
     ytd_cols = []
     for col, item, ttm, _ in YTD_ITEMS:
         ytd_cols.append(f"""CASE WHEN r.fqtr = 4 THEN r."{ttm}"
@@ -446,22 +483,22 @@ def _derive(con, inp: Inputs) -> None:
                       CASE WHEN r."{ttm}" = 0 THEN 0.0 END) END AS {col}""")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE ytd AS
-        SELECT r.cik, r.accession, {', '.join(ytd_cols)}
-        FROM r2 r LEFT JOIN ytd_v y ON y.cik = r.cik AND y.accession = r.accession
-        GROUP BY r.cik, r.accession, r.fqtr, {', '.join(f'r."{t}"' for _, _, t, _ in YTD_ITEMS)}""")
+        SELECT r.cik, r.period_end, r.accession, {', '.join(ytd_cols)}
+        FROM r2 r LEFT JOIN ytd_v y ON y.cik = r.cik AND y.pe = r.period_end AND y.accession = r.accession
+        GROUP BY r.cik, r.period_end, r.accession, r.fqtr, {', '.join(f'r."{t}"' for _, _, t, _ in YTD_ITEMS)}""")
     # ---- Company Facts: 3-month facts at datadate, and FY - 9M at fqtr 4 ----
     unit_ok = ("f.unit = CASE f.ukind WHEN 'shares' THEN 'shares' WHEN 'per_share' THEN r.mccy || '/shares' "
                "ELSE r.mccy END")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE f3 AS
-        SELECT r.cik, r.accession, f.key, f.value
+        SELECT r.cik, r.period_end, r.accession, f.key, f.value
         FROM r2 r JOIN fct f ON f.cik = r.cik AND f.period_end = r.period_end
              AND f.dur BETWEEN {Q_DUR[0]} AND {Q_DUR[1]} AND f.clock_utc <= r.available_at AND {unit_ok}
-        QUALIFY row_number() OVER (PARTITION BY r.cik, r.accession, f.key
+        QUALIFY row_number() OVER (PARTITION BY r.cik, r.period_end, r.accession, f.key
                                    ORDER BY f.rnk, f.clock_utc DESC, f.accession DESC) = 1""")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE f4 AS
-        SELECT r.cik, r.accession, f.key,
+        SELECT r.cik, r.period_end, r.accession, f.key,
                CASE WHEN f.key = 'waso_b' THEN 4 * f.value - 3 * b.value ELSE f.value - b.value END AS value
         FROM r2 r JOIN fct f ON f.cik = r.cik AND f.period_end = r.period_end
              AND f.dur BETWEEN {FY_DUR[0]} AND {FY_DUR[1]} AND f.clock_utc <= r.available_at AND {unit_ok}
@@ -469,39 +506,44 @@ def _derive(con, inp: Inputs) -> None:
              AND b.period_start = f.period_start AND b.dur BETWEEN {NINE_DUR[0]} AND {NINE_DUR[1]}
              AND b.clock_utc <= r.available_at
         WHERE r.fqtr = 4
-        QUALIFY row_number() OVER (PARTITION BY r.cik, r.accession, f.key
+        QUALIFY row_number() OVER (PARTITION BY r.cik, r.period_end, r.accession, f.key
                                    ORDER BY f.rnk, f.clock_utc DESC, b.clock_utc DESC, f.accession DESC,
                                             b.accession DESC) = 1""")
     piv3 = ", ".join(f"max(CASE WHEN f3.key = '{k}' THEN f3.value END) AS {k}_3" for k in FACT_KEYS)
     piv4 = ", ".join(f"max(CASE WHEN f4.key = '{k}' THEN f4.value END) AS {k}_4" for k in FACT_KEYS)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE fw AS
-        SELECT r.cik, r.accession, a.* EXCLUDE (cik, accession), b.* EXCLUDE (cik, accession),
+        SELECT r.cik, r.period_end, r.accession, a.* EXCLUDE (cik, period_end, accession),
+               b.* EXCLUDE (cik, period_end, accession),
                EXISTS (SELECT 1 FROM fct f WHERE f.cik = r.cik AND f.key = 'do' AND f.value <> 0
                        AND f.period_end = r.period_end AND f.clock_utc <= r.available_at) AS do_recent
         FROM r2 r
-        LEFT JOIN (SELECT cik, accession, {piv3} FROM f3 GROUP BY 1, 2) a USING (cik, accession)
-        LEFT JOIN (SELECT cik, accession, {piv4} FROM f4 GROUP BY 1, 2) b USING (cik, accession)""")
+        LEFT JOIN (SELECT cik, period_end, accession, {piv3} FROM f3 GROUP BY 1, 2, 3) a
+          USING (cik, period_end, accession)
+        LEFT JOIN (SELECT cik, period_end, accession, {piv4} FROM f4 GROUP BY 1, 2, 3) b
+          USING (cik, period_end, accession)""")
     # ---- rdq ----
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE rd AS
-        SELECT r.cik, r.accession, k.rdq_8k,
+        SELECT r.cik, r.period_end, r.accession, k.rdq_8k,
                min(r.filing_date) OVER (PARTITION BY r.cik, r.period_end ORDER BY r.available_at
                                         RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rdq_filing
         FROM r2 r LEFT JOIN (
-            SELECT r.cik, r.accession, min(a.ann_date) AS rdq_8k
+            SELECT r.cik, r.period_end, r.accession, min(a.ann_date) AS rdq_8k
             FROM r2 r JOIN ann a ON a.cik = r.cik AND a.available_at <= r.available_at
                  AND abs(datediff('day', a.fiscal_period_end, r.period_end)) <= {RDQ_MATCH_DAYS}
-            GROUP BY 1, 2) k USING (cik, accession)""")
+            GROUP BY 1, 2, 3) k USING (cik, period_end, accession)""")
     # ---- assemble ----
     no_do = "r.ni_q IS NOT NULL AND NOT w.do_recent" if inp.facts is not None else "false"
     doq = ("coalesce(w.do_3 * r.rq, CASE WHEN r.fqtr = 4 THEN w.do_4 * r.rq END, "
            f"CASE WHEN r.c_do_ttm = 0 OR ({no_do}) THEN 0.0 END)")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE j AS
-        SELECT r.*, y.* EXCLUDE (cik, accession), w.* EXCLUDE (cik, accession), d.rdq_8k, d.rdq_filing,
+        SELECT r.*, y.* EXCLUDE (cik, period_end, accession), w.* EXCLUDE (cik, period_end, accession), d.rdq_8k,
+               d.rdq_filing,
                {doq} AS doq
-        FROM r2 r JOIN ytd y USING (cik, accession) JOIN fw w USING (cik, accession) JOIN rd d USING (cik, accession)""")
+        FROM r2 r JOIN ytd y USING (cik, period_end, accession) JOIN fw w USING (cik, period_end, accession)
+        JOIN rd d USING (cik, period_end, accession)""")
     ibq = """CASE WHEN ib_3 IS NOT NULL THEN ib_3 * rq
                  WHEN fqtr = 4 AND ib_4 IS NOT NULL THEN ib_4 * rq
                  WHEN ni_q IS NOT NULL AND doq IS NOT NULL AND coalesce(c_xido_ttm, 0) = 0 THEN ni_q - doq END"""
@@ -529,7 +571,8 @@ def _derive(con, inp: Inputs) -> None:
             "fqtr": "fqtr", "fyr": "fyr", "accession": "accession", "form": "form", "filed": "filed",
             "clock_utc": "clock_utc", "available_at": "available_at", "rdq": rdq, "rdq_src": rdq_src,
             "curcd": "currency", "fx_converted": "fx_converted", "fx_rate": "fx_rate",
-            "fx_rate_avg_q": "fx_rate_avg_q", "first_reported": "first_reported", "is_restated": "is_restated",
+            "fx_rate_avg_q": "fx_rate_avg_q", "first_reported": "first_reported", "vintage_kind": "vintage_kind",
+            "is_restated": "is_restated",
             "restated_items": "restated_items", "is_amendment": "is_amendment",
             "nonreliance_402_at": "nonreliance_402_at", "fiscal_year": "fiscal_year", "fiscal_period": "fiscal_period",
             "fin_template": "fin_template", "sic": "sic_in_force", "zero_filled": zero}
@@ -555,7 +598,111 @@ def _derive(con, inp: Inputs) -> None:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE a_out AS
         SELECT {', '.join(a_desc)}, {', '.join(a_items)}
-        FROM j WHERE fqtr = 4""")
+        FROM j WHERE fqtr = 4 AND dform IN ({annual})""")
+
+
+def _delta(h: str, rate: str) -> str:
+    return (f"CASE WHEN d.{h}_n IS NOT NULL AND d.{h}_o IS NOT NULL THEN (d.{h}_n - d.{h}_o) * {rate} ELSE 0.0 END")
+
+
+def _vintages(con) -> None:
+    """``r2`` = the event rows ``r2e`` plus restatement vintages: for every filing A that changed a
+    ``quarterly_history`` value of an older datadate D of the issuer (A is not a filing of D and comes after D's
+    first vintage), one row (D, A) at A's clock. Base = D's latest event row at or before A; each item carried by the
+    history moves by h(A) - h(base) (the item's latest D vintage visible at A minus at the base; reporting-currency
+    deltas converted at the base row's spot / quarter / TTM rate), TTM flows by the summed delta over the four
+    quarters ending at D, ceq / teq / intan by their components' deltas, fqtr 1-3 YTD sums are recomputed from the
+    history visible at A; every other column is the base row's (identity, fiscal calendar, rdq inputs, cshoq,
+    dlcq, dlttq, catalog items; ibq / EPS / cshprq are recomputed from the facts visible at A). Rows that change no
+    column are dropped; ``restated_items`` lists the changed fundamentals item names."""
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE vk AS
+        SELECT h.cik, h.period_end, h.accession AS v_acc, min(h.available_at) AS t_a
+        FROM hist h
+        JOIN (SELECT cik, period_end, min(available_at) AS t0, list(accession) AS accs FROM r2e GROUP BY 1, 2) f
+          ON f.cik = h.cik AND f.period_end = h.period_end
+        WHERE h.available_at > f.t0 AND NOT list_contains(f.accs, h.accession)
+        GROUP BY 1, 2, 3""")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE vbase AS
+        SELECT k.v_acc, k.t_a, b.*
+        FROM vk k JOIN r2e b ON b.cik = k.cik AND b.period_end = k.period_end AND b.available_at <= k.t_a
+        QUALIFY row_number() OVER (PARTITION BY k.cik, k.period_end, k.v_acc
+                                   ORDER BY b.available_at DESC, b.accession DESC) = 1""")
+    key = "struct_pack(a := h.available_at, b := h.accession)"
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE vd_long AS
+        SELECT v.cik, v.period_end, v.v_acc, h.item,
+               arg_max(h.value, {key}) FILTER (WHERE h.available_at <= v.t_a) AS h_n,
+               arg_max(h.value, {key}) FILTER (WHERE h.available_at <= v.available_at) AS h_o
+        FROM vbase v JOIN hist h ON h.cik = v.cik AND h.period_end = v.period_end AND h.currency = v.mccy
+        GROUP BY 1, 2, 3, 4""")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE vd4_long AS
+        SELECT cik, period_end, v_acc, item, sum(h_n - h_o) AS d4 FROM (
+            SELECT v.cik, v.period_end, v.v_acc, h.item, h.period_end AS qpe,
+                   arg_max(h.value, {key}) FILTER (WHERE h.available_at <= v.t_a) AS h_n,
+                   arg_max(h.value, {key}) FILTER (WHERE h.available_at <= v.available_at) AS h_o
+            FROM vbase v JOIN range(0, 4) o(off) ON true
+            JOIN hist h ON h.cik = v.cik AND h.h_idx = v.eidx - 3 * o.off AND h.currency = v.mccy
+                       AND h.item IN ({", ".join(f"'{i}'" for i in sorted(set(VINT_TTM.values())))})
+            GROUP BY 1, 2, 3, 4, 5)
+        WHERE h_n IS NOT NULL AND h_o IS NOT NULL GROUP BY 1, 2, 3, 4""")
+    ytd_h = sorted({h for _, h, _, _ in YTD_ITEMS})
+    items = sorted(set(VINT_STOCK.values()) | set(VINT_FLOW_Q.values()) | set(ytd_h))
+    piv = ", ".join(f"max(CASE WHEN item = '{i}' THEN h_n END) AS {i}_n, max(CASE WHEN item = '{i}' THEN h_o END) "
+                    f"AS {i}_o" for i in items)
+    piv4 = ", ".join(f"max(CASE WHEN item = '{i}' THEN d4 END) AS {i}_d4" for i in sorted(set(VINT_TTM.values())))
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE vd AS
+        SELECT k.cik, k.period_end, k.v_acc, a.* EXCLUDE (cik, period_end, v_acc), b.* EXCLUDE (cik, period_end, v_acc)
+        FROM vk k
+        LEFT JOIN (SELECT cik, period_end, v_acc, {piv} FROM vd_long GROUP BY 1, 2, 3) a USING (cik, period_end, v_acc)
+        LEFT JOIN (SELECT cik, period_end, v_acc, {piv4} FROM vd4_long GROUP BY 1, 2, 3) b
+          USING (cik, period_end, v_acc)""")
+    spot = "CASE WHEN b.fx_converted THEN b.fx_rate ELSE 1.0 END"
+    ttm = "CASE WHEN b.fx_converted THEN b.fx_rate_avg_ttm ELSE 1.0 END"
+    new: dict[str, str] = {}
+    for col, h in VINT_STOCK.items():
+        rate = spot
+        new[col] = (f"CASE WHEN d.{h}_n IS NULL OR d.{h}_n IS NOT DISTINCT FROM d.{h}_o THEN b.\"{col}\" "
+                    f"WHEN b.\"{col}\" IS NULL OR d.{h}_o IS NULL THEN d.{h}_n * {rate} "
+                    f"ELSE b.\"{col}\" + (d.{h}_n - d.{h}_o) * {rate} END")
+    for col, h in VINT_FLOW_Q.items():
+        new[col] = (f"CASE WHEN d.{h}_n IS NULL OR d.{h}_n IS NOT DISTINCT FROM d.{h}_o THEN b.\"{col}\" "
+                    f"WHEN b.\"{col}\" IS NULL OR d.{h}_o IS NULL THEN d.{h}_n * b.rq "
+                    f"ELSE b.\"{col}\" + (d.{h}_n - d.{h}_o) * b.rq END")
+    for col, h in VINT_TTM.items():
+        new[col] = (f"CASE WHEN coalesce(d.{h}_d4, 0) = 0 OR b.\"{col}\" IS NULL THEN b.\"{col}\" "
+                    f"ELSE b.\"{col}\" + d.{h}_d4 * {ttm} END")
+    for col, parts in VINT_DERIVED.items():
+        moves = " + ".join(f"({sign}) * {_delta(h, spot)}" for h, sign in parts)
+        new[col] = f"CASE WHEN b.{col} IS NULL THEN NULL ELSE b.{col} + {moves} END"
+    changed = " || ".join([f"CASE WHEN ({expr}) IS DISTINCT FROM b.\"{col}\" THEN ',{col}' ELSE '' END"
+                           for col, expr in new.items()] +
+                          # a restated discrete quarter of a YTD flow moves the row's YTD sum (recomputed downstream)
+                          [f"CASE WHEN d.{h}_n IS NOT NULL AND d.{h}_n IS DISTINCT FROM d.{h}_o THEN ',{h}' ELSE '' END"
+                           for h in ytd_h])
+    repl = ", ".join(f"{expr} AS \"{col}\"" for col, expr in new.items())
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE vrows AS
+        SELECT * FROM (
+            SELECT b.* REPLACE ({repl},
+                       b.v_acc AS accession, b.t_a AS available_at, coalesce(m.clock_utc, b.t_a) AS clock_utc,
+                       m.filed AS filed, m.form AS form, coalesce(m.form LIKE '%/A', false) AS is_amendment,
+                       true AS is_restated, m.nonreliance_402_at AS nonreliance_402_at,
+                       CAST(timezone('America/New_York', CAST(b.t_a AS TIMESTAMPTZ)) AS DATE) AS filing_date,
+                       'restatement' AS vintage_kind),
+                   ltrim({changed}, ',') AS v_changed
+            FROM vbase b JOIN vd d ON d.cik = b.cik AND d.period_end = b.period_end AND d.v_acc = b.v_acc
+            LEFT JOIN emeta m ON m.cik = b.cik AND m.accession = b.v_acc)
+        WHERE v_changed <> ''""")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE r2 AS
+        SELECT * EXCLUDE (first_reported),
+               row_number() OVER (PARTITION BY cik, period_end ORDER BY available_at, accession) = 1 AS first_reported
+        FROM (SELECT * EXCLUDE (v_acc, t_a, v_changed, restated_items), v_changed AS restated_items FROM vrows
+              UNION ALL BY NAME SELECT *, NULL AS first_reported FROM r2e)""")
 
 
 ORDER = "ORDER BY cik, datadate, available_at, accession"
@@ -658,7 +805,8 @@ def summary_stats(con, out: Path) -> dict[str, Any]:
     fq, fa = _q(out / "fundq.parquet"), _q(out / "funda.parquet")
     r = con.execute(f"""SELECT count(*), count(DISTINCT cik), min(datadate), max(datadate), min(available_at),
                                max(available_at), count(*) FILTER (WHERE fqtr IS NULL),
-                               count(*) FILTER (WHERE first_reported), count(*) FILTER (WHERE fx_converted)
+                               count(*) FILTER (WHERE first_reported), count(*) FILTER (WHERE fx_converted),
+                               count(*) FILTER (WHERE vintage_kind = 'restatement')
                         FROM read_parquet('{fq}')""").fetchone()
     lab = con.execute(f"""SELECT count(*) FILTER (WHERE fiscal_period IN ('Q1', 'Q2', 'Q3')),
                                  count(*) FILTER (WHERE fiscal_period IN ('Q1', 'Q2', 'Q3')
@@ -669,7 +817,7 @@ def summary_stats(con, out: Path) -> dict[str, Any]:
     na = con.execute(f"SELECT count(*), count(DISTINCT cik) FROM read_parquet('{fa}')").fetchone()
     return {"fundq": {"rows": r[0], "ciks": r[1], "datadate_min": str(r[2]), "datadate_max": str(r[3]),
                       "available_at_min": str(r[4]), "available_at_max": str(r[5]), "fqtr_null": r[6],
-                      "first_reported_rows": r[7], "fx_converted_rows": r[8],
+                      "first_reported_rows": r[7], "fx_converted_rows": r[8], "restatement_rows": r[9],
                       "q_label_rows": lab[0], "fqtr_differs_from_q_label": lab[1], "sources": src},
             "funda": {"rows": na[0], "ciks": na[1]}}
 
@@ -754,7 +902,8 @@ def coverage_gate(con, out: Path) -> dict[str, Any]:
 def rdq_gate(con, out: Path, earn: Path) -> dict[str, Any]:
     ann = _q(earn / "announcements.parquet")
     con.execute(f"""CREATE OR REPLACE TEMP TABLE ann_all AS SELECT cik, fiscal_period_end, is_primary,
-                        CAST(timezone('America/New_York', CAST(announcement_utc AS TIMESTAMPTZ)) AS DATE) AS ann_date
+                        CAST(timezone('America/New_York', CAST(announcement_utc AS TIMESTAMPTZ)) AS DATE) AS ann_date,
+                        CAST(timezone('America/New_York', CAST(available_at AS TIMESTAMPTZ)) AS DATE) AS accepted_date
                     FROM read_parquet('{ann}')""")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE rq AS
@@ -763,6 +912,11 @@ def rdq_gate(con, out: Path, earn: Path) -> dict[str, Any]:
                        AND abs(datediff('day', a.fiscal_period_end, c.datadate)) <= {RDQ_MATCH_DAYS}) AS any_8k,
                EXISTS (SELECT 1 FROM ann_all a WHERE a.cik = c.cik AND a.is_primary AND a.ann_date = c.rdq
                        AND abs(datediff('day', a.fiscal_period_end, c.datadate)) <= {RDQ_MATCH_DAYS}) AS corroborated,
+               EXISTS (SELECT 1 FROM ann_all a WHERE a.cik = c.cik AND a.is_primary
+                       AND a.accepted_date <= CASE WHEN c.clock_utc IS NOT NULL
+                           THEN CAST(timezone('America/New_York', CAST(c.clock_utc AS TIMESTAMPTZ)) AS DATE)
+                           ELSE c.filed END
+                       AND abs(datediff('day', a.fiscal_period_end, c.datadate)) <= {RDQ_MATCH_DAYS}) AS same_date,
                NOT EXISTS (SELECT 1 FROM ann_all a WHERE a.cik = c.cik AND a.ann_date > c.datadate - 400
                            AND a.ann_date <= c.datadate + 120) AS issuer_no_202
         FROM cov c WHERE c.form IN ('10-Q', '10-QT')""")
@@ -770,18 +924,22 @@ def rdq_gate(con, out: Path, earn: Path) -> dict[str, Any]:
                            "gate": RDQ_GATE, "by_year": {}}
     fails = []
     for y in GATE_YEARS:
-        n, pop, k8, any8, cor, no202 = con.execute(f"""
+        n, pop, k8, any8, cor, no202, sd = con.execute(f"""
             SELECT count(*), count(rdq), count(*) FILTER (WHERE rdq_src = '8k_202'), count(*) FILTER (WHERE any_8k),
-                   count(*) FILTER (WHERE corroborated), count(*) FILTER (WHERE issuer_no_202)
+                   count(*) FILTER (WHERE corroborated), count(*) FILTER (WHERE issuer_no_202),
+                   count(*) FILTER (WHERE same_date)
             FROM rq WHERE year = {y}""").fetchone()
         res["by_year"][str(y)] = {"periods": n, "rdq_populated": _r(pop / n) if n else None,
+                                  "rdq_8k_same_date": _r(sd / n) if n else None,
                                   "rdq_from_8k_pit": _r(k8 / n) if n else None,
                                   "info_rdq_equals_matched_8k_date_any_order": _r(cor / n) if n else None,
                                   "info_period_has_primary_8k_any_time": _r(any8 / n) if n else None,
                                   "info_issuer_files_no_202_near_period": _r(no202 / n) if n else None}
-        if not n or k8 / n < RDQ_GATE:
+        if not n or sd / n < RDQ_GATE:
             fails.append(str(y))
-    res["metric"] = "rdq_from_8k_pit (rdq_src = 8k_202: a primary 8-K 2.02 matched to datadate, available by the row)"
+    res["metric"] = ("rdq_8k_same_date (ruling T3-b): a primary 8-K 2.02 matched to datadate accepted on or before the "
+                     "ET calendar date of the row's filing (clock_utc, filed fallback); rdq_from_8k_pit (strict: accepted by the "
+                     "row's available_at, rdq_src = 8k_202) is reported beside it")
     res["fails"], res["pass"] = fails, not fails
     return res
 
@@ -796,9 +954,8 @@ def sum4_gate(con, out: Path) -> dict[str, Any]:
         CREATE OR REPLACE TEMP TABLE la AS
         SELECT a.* FROM read_parquet('{fa}') a JOIN mem m ON m.cik = a.cik AND m.year = year(a.datadate)
         WHERE year(a.datadate) BETWEEN {GATE_YEARS[0]} AND {GATE_YEARS[-1]}
-          AND a.form IN ('10-K', '10-K/A', '10-KT', '10-KT/A')
         QUALIFY row_number() OVER (PARTITION BY a.cik, a.datadate ORDER BY a.available_at DESC, a.accession DESC) = 1""")
-    res: dict[str, Any] = {"basis": "latest funda row per (cik, datadate) of linked member issuers (10-K forms) with "
+    res: dict[str, Any] = {"basis": "latest funda row per (cik, datadate) of linked member issuers (any vintage) with "
                                     "four latest-vintage fundq quarters of the same (cik, fyearq) (fqtr 1-4, quarter "
                                     "ends within 400 days before datadate); |sum - annual| <= 0.5% of |annual|",
                            "gate": SUM4_GATE, "by_year": {}}
@@ -863,8 +1020,10 @@ def balance_gate(con, out: Path) -> dict[str, Any]:
         CREATE OR REPLACE TEMP TABLE bq AS
         SELECT year(q.datadate) AS year, q.atq, q.ltq, q.teqq, q.seqq, q.mibq, a.mibt
         FROM lq q JOIN mem m ON m.cik = q.cik AND m.year = year(q.datadate)
-        LEFT JOIN (SELECT cik, accession, mibt FROM read_parquet('{cat}')) a
-          ON a.cik = q.cik AND a.accession = q.accession
+        LEFT JOIN LATERAL (
+            SELECT mibt FROM read_parquet('{cat}') a
+            WHERE a.cik = q.cik AND a.period_end = q.datadate AND a.available_at <= q.available_at
+            ORDER BY a.available_at DESC, a.accession DESC LIMIT 1) a ON true
         WHERE year(q.datadate) BETWEEN {GATE_YEARS[0]} AND {GATE_YEARS[-1]} AND q.atq IS NOT NULL""")
     res: dict[str, Any] = {"basis": "latest fundq row per (cik, datadate) with atq, linked member issuers; "
                                     "|atq - (ltq + teqq)| <= 0.5% |atq|; info: with the fundamentals catalog "
@@ -933,7 +1092,8 @@ def fsds_gate(con, out: Path, n_cells: int = FSDS_CELLS) -> dict[str, Any]:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE own AS
         SELECT cik, accession, datadate, fqtr, form FROM read_parquet('{fq}')
-        WHERE year(datadate) BETWEEN {GATE_YEARS[0]} AND {GATE_YEARS[-1]} AND form IN ('10-Q', '10-K')""")
+        WHERE year(datadate) BETWEEN {GATE_YEARS[0]} AND {GATE_YEARS[-1]} AND form IN ('10-Q', '10-K')
+          AND vintage_kind = 'filing'""")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE fcells AS
         WITH n AS (
@@ -963,8 +1123,8 @@ def fsds_gate(con, out: Path, n_cells: int = FSDS_CELLS) -> dict[str, Any]:
         CREATE OR REPLACE TEMP TABLE fbm AS
         SELECT s.*, CASE WHEN s.tbl = 'q' THEN (CASE s.col {qcase} END) ELSE (CASE s.col {acase} END) END AS ours
         FROM fsamp s
-        LEFT JOIN read_parquet('{fq}') q ON q.cik = s.cik AND q.accession = s.accession
-        LEFT JOIN read_parquet('{fa}') a ON a.cik = s.cik AND a.accession = s.accession""")
+        LEFT JOIN read_parquet('{fq}') q ON q.cik = s.cik AND q.accession = s.accession AND q.datadate = s.datadate
+        LEFT JOIN read_parquet('{fa}') a ON a.cik = s.cik AND a.accession = s.accession AND a.datadate = s.datadate""")
     tol = f"abs(ours - fsds) <= {REL_TOL} * greatest(abs(fsds), 1e-9)"
     n, mapped, match = con.execute(f"SELECT count(*), count(ours), count(*) FILTER (WHERE ours IS NOT NULL AND {tol}) "
                                    "FROM fbm").fetchone()
@@ -1079,7 +1239,8 @@ def cutoff_check(stage: str = STAGE, n_ciks: int = CUTOFF_CIKS, seed: int = CUTO
                     res["differences"] += 1
                     res["examples"].append({"cutoff": cut.isoformat(), "table": name, "columns_differ": True})
                     continue
-                key = lambda row: (row[cols.index("cik")], row[cols.index("accession")])  # noqa: E731
+                key = lambda row: (row[cols.index("cik")], row[cols.index("datadate")],  # noqa: E731
+                                   row[cols.index("accession")])
                 pm, rm = {key(r): r for r in pub}, {key(r): r for r in reb}
                 if set(pm) != set(rm):
                     res["row_set_differences"] += len(set(pm) ^ set(rm))

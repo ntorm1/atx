@@ -274,6 +274,11 @@ def test_cutoff_rebuild_equals_published_asof_rows(monkeypatch, tmp_path):
         w.hist(11, "cfo_q", e["period_end"], 7.0, e["available_at"])
         w.fact(11, "EarningsPerShareBasic", e["period_end"] - dt.timedelta(days=89), e["period_end"], 0.1,
                e["accession"], "USD/shares")
+    w.hist(11, "sale_q", evs[1]["period_end"], 50.0, evs[1]["available_at"], accn=evs[1]["accession"])
+    w.hist(11, "sale_q", evs[1]["period_end"], 55.0, evs[2]["available_at"], accn=evs[2]["accession"])
+    w.hist(11, "cfo_q", evs[1]["period_end"], 9.0, evs[2]["available_at"] + dt.timedelta(minutes=1),
+           accn=evs[2]["accession"])
+    evs[1]["sale_q"] = 50.0
     w.ann.append({"cik": 11, "accession": "8", "announcement_utc": T(2021, 7, 20, 12),
                   "available_at": T(2021, 7, 20, 12), "fiscal_period_end": D(2021, 6, 30), "is_primary": True})
     _build(monkeypatch, w)
@@ -287,7 +292,9 @@ def test_cutoff_rebuild_equals_published_asof_rows(monkeypatch, tmp_path):
     reb = con.execute(f"SELECT * FROM q_out {cs.ORDER}").fetchall()
     pub = con.execute(f"SELECT * FROM read_parquet('{(out / 'fundq.parquet').as_posix()}') "
                       f"WHERE available_at < TIMESTAMP '2021-08-15' {cs.ORDER}").fetchall()
-    assert len(pub) == 3 and reb == pub
+    assert len(pub) == 4 and reb == pub
+    v = [r for r in pub if r[0] == 11 and r[1] == D(2021, 3, 31)]
+    assert len(v) == 2                                             # Q1 first vintage + restatement vintage
     con.close()
 
 
@@ -306,6 +313,9 @@ def test_member_gates_coverage_sum4_balance(monkeypatch, tmp_path):
         w.catalog[w.events.index(evs[-1])]["ib_ttm"] = 4.0
     w.ann.append({"cik": 21, "accession": "8k", "announcement_utc": T(2021, 4, 20, 12),
                   "available_at": T(2021, 4, 20, 12), "fiscal_period_end": D(2021, 3, 31), "is_primary": True})
+    # cik 22: the 8-K comes 90 minutes after the 10-Q (accepted 2021-05-05 21:00 UTC), same ET date
+    w.ann.append({"cik": 22, "accession": "8k2", "announcement_utc": T(2021, 5, 5, 22, 30),
+                  "available_at": T(2021, 5, 5, 22, 30), "fiscal_period_end": D(2021, 3, 31), "is_primary": True})
     _build(monkeypatch, w)
     (tmp_path / "_tmp" / "panel_member").mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table({"session_date": pa.array([D(2021, 6, 1)] * 2, pa.date32()),
@@ -324,7 +334,8 @@ def test_member_gates_coverage_sum4_balance(monkeypatch, tmp_path):
     assert cov["by_year"]["2021"]["ibq"] == 1.0 and cov["by_year"]["2021"]["oancfy"] == 0.25
     rq = cs.rdq_gate(con, out, tmp_path / "earn_x")["by_year"]["2021"]
     assert (rq["periods"], rq["rdq_populated"], rq["rdq_from_8k_pit"]) == (6, 1.0, round(1 / 6, 4))
-    assert rq["info_issuer_files_no_202_near_period"] == 0.5
+    assert rq["rdq_8k_same_date"] == round(2 / 6, 4)                 # the same-date 8-K counts (ruling T3-b)
+    assert rq["info_issuer_files_no_202_near_period"] == 0.0
     s4 = cs.sum4_gate(con, out)
     assert s4["by_year"]["2021"]["saleq"] == {"fiscal_years": 2, "within_0_5pct": 0.5, "within_0_5pct_or_1m": 1.0,
                                               "info_within_0_5pct_quarters_as_known_at_annual": 0.5}
@@ -375,7 +386,8 @@ def test_catalog_names_unique_and_renamed():
     names = {n: col for n, col, _, _ in cs.catalog_names()}
     assert len(names) == 81
     assert names["intan"] == "intano" and names["epspx"] == "epspi_ttm" and names["epspi"] == "epspx_ttm"
-    assert names["mibt"] == "mibt" and names["rouant"] == "rou" and names["niadj"] == "nicon_ttm"
+    assert names["tempeq"] == "mibt" and names["nicon"] == "nicon_ttm" and names["rouant"] == "rou"
+    assert "mibt" not in names and "niadj" not in names        # not Compustat MIBT / NIADJ
 
 
 def test_fsds_gate_own_filing_cells(monkeypatch, tmp_path):
@@ -403,3 +415,75 @@ def test_fsds_gate_own_filing_cells(monkeypatch, tmp_path):
     assert (r["cells"], r["mapped"], r["matched"]) == (3, 3, 2)
     assert r["by_col"]["saleq"] == {"cells": 2, "mapped": 1.0, "match_of_mapped": 1.0}
     assert r["by_col"]["atq"]["match_of_mapped"] == 0.0
+
+
+def test_restatement_vintages_from_quarterly_history(monkeypatch, tmp_path):
+    w = World(tmp_path)
+    fy0, q1, q2, fy1, fy2 = D(2020, 12, 31), D(2021, 3, 31), D(2021, 6, 30), D(2021, 12, 31), D(2022, 12, 31)
+    w.ev(40, "fy0", T(2021, 2, 20), fy0, "FY", "10-K")
+    e1 = w.ev(40, "q1", T(2021, 5, 1), q1, "Q1", sale_q=100.0, mib=50.0, pstk=0.0, sale_ttm=400.0,
+              cat={"ceq": 400.0, "teq": 450.0}, **{"at": 1000.0, "seq": 400.0})
+    for item, v in (("sale_q", 100.0), ("at", 1000.0), ("seq", 400.0), ("mib", 50.0), ("pstk", 0.0)):
+        w.hist(40, item, q1, v, e1["available_at"], accn="q1")
+    e2 = w.ev(40, "q2", T(2021, 8, 1), q2, "Q2")
+    for item, v in (("sale_q", 90.0), ("at", 1010.0), ("seq", 410.0)):     # the Q2 10-Q restates Q1
+        w.hist(40, item, q1, v, e2["available_at"], accn="q2")
+    e3 = w.ev(40, "fy1", T(2022, 2, 20), fy1, "FY", "10-K", sale_q=100.0, sale_ttm=400.0, ni_ttm=40.0)
+    w.hist(40, "sale_q", fy1, 100.0, e3["available_at"], accn="fy1")
+    e4 = w.ev(40, "fy2", T(2023, 5, 20), D(2023, 3, 31), "Q1", "10-Q")
+    w.hist(40, "sale_q", fy1, 110.0, e4["available_at"], accn="fy2")    # FY2021 comparative restated (Q4 + 10)
+    w.hist(40, "ni_q", fy1, 5.0, e4["available_at"], accn="fy2")        # newly derivable: no base, ttm unchanged
+    _, q, a = _build(monkeypatch, w)
+    con = duckdb.connect()
+    rows = con.execute(f"SELECT accession, datadate, vintage_kind, is_restated, first_reported, saleq, atq, seqq, ceqq, "
+                       f"teqq, restated_items, available_at FROM read_parquet('{(tmp_path / 'cstd' / 'fundq.parquet').as_posix()}') "
+                       "WHERE datadate = DATE '2021-03-31' ORDER BY available_at").fetchall()
+    assert rows[0][:5] == ("q1", q1, "filing", False, True)
+    v = rows[1]
+    assert v[:5] == ("q2", q1, "restatement", True, False) and v[11] == e2["available_at"]
+    assert v[5:10] == (90.0, 1010.0, 410.0, 410.0, 460.0)
+    assert set(v[10].split(",")) == {"sale_q", "sale_ttm", "at", "seq", "c_ceq", "c_teq"}   # TTM includes Q1
+    for sql in cs.macros_sql(tmp_path / "cstd"):
+        con.execute(sql)
+    asof = lambda t: con.execute(f"SELECT accession, saleq FROM fundq_asof(TIMESTAMP '{t}') "  # noqa: E731
+                                 "WHERE datadate = DATE '2021-03-31'").fetchall()
+    assert asof("2021-07-01") == [("q1", 100.0)] and asof("2021-09-01") == [("q2", 90.0)]
+    # A later 10-Q can restate an annual comparative; it must retain annual values and the 10-Q clock.
+    fa = con.execute(f"SELECT accession, sale, ni, vintage_kind FROM read_parquet('{(tmp_path / 'cstd' / 'funda.parquet').as_posix()}') "
+                     "WHERE datadate = DATE '2021-12-31' ORDER BY available_at").fetchall()
+    assert fa == [("fy1", 400.0, 40.0, "filing"), ("fy2", 410.0, 40.0, "restatement")]
+    assert con.execute(f"SELECT form, available_at FROM read_parquet('{(tmp_path / 'cstd' / 'funda.parquet').as_posix()}') "
+                       "WHERE accession = 'fy2'").fetchall() == [("10-Q", e4["available_at"])]
+
+
+def test_ten_q_labelled_fy_is_no_fiscal_year_source(monkeypatch, tmp_path):
+    w = World(tmp_path)
+    w.ev(41, "k20", T(2021, 2, 20), D(2020, 12, 31), "FY", "10-K")
+    w.ev(41, "q21a", T(2021, 5, 1), D(2021, 3, 31), "FY", "10-Q", sale_ttm=10.0)   # DEI error: 10-Q labelled FY
+    w.ev(41, "q21b", T(2021, 8, 1), D(2021, 6, 30), "Q2", "10-Q")
+    w.ev(42, "only", T(2021, 5, 1), D(2021, 3, 31), "FY", "10-Q")                  # no annual row, FY label
+    _, q, a = _build(monkeypatch, w)
+    assert (q["q21a"]["fyr"], q["q21a"]["fqtr"]) == (12, 1)
+    assert (q["q21b"]["fyr"], q["q21b"]["fqtr"]) == (12, 2)                       # no fyr reset to March
+    assert q["only"]["fqtr"] is None and q["only"]["fyr"] is None
+    assert set(a) == {"k20"}
+
+
+def test_rdq_gate_uses_acceptance_et_date_of_filing(tmp_path):
+    w = World(tmp_path)
+    # rdq is an earlier release date; same-date acceptance must compare against filing date, not rdq.
+    w.ann = [{"cik": 51, "accession": "a", "announcement_utc": T(2021, 4, 20),
+              "available_at": T(2021, 5, 6, 1), "fiscal_period_end": D(2021, 3, 31), "is_primary": True},
+             {"cik": 52, "accession": "b", "announcement_utc": T(2021, 4, 20),
+              "available_at": T(2021, 5, 6, 5), "fiscal_period_end": D(2021, 3, 31), "is_primary": True}]
+    w.write()
+    con = duckdb.connect()
+    con.execute("SET TimeZone = 'UTC'")
+    con.execute("CREATE TABLE cov AS SELECT 2021 AS year, cik, DATE '2021-03-31' AS datadate, "
+                "DATE '2021-04-19' AS rdq, 'filing' AS rdq_src, TIMESTAMP '2021-05-05 20:00' AS clock_utc, "
+                "TIMESTAMP '2021-05-07' AS available_at, DATE '2021-05-05' AS filed, '10-Q' AS form "
+                "FROM (VALUES (51), (52)) v(cik)")
+    r = cs.rdq_gate(con, tmp_path, tmp_path / 'earn_x')["by_year"]["2021"]
+    assert r["rdq_8k_same_date"] == 0.5  # 01:00 UTC is May 5 ET; 05:00 UTC is May 6 ET
+    assert r["rdq_from_8k_pit"] == 0.0
+    con.close()
