@@ -24,7 +24,10 @@
   "budget": {
     "id": "v8x-hand-25-plus-y-15",
     "admission_cap": 40,
-    "admission_cycle_prefix": "v8x",
+    "admission_cycle_prefixes": [
+      "v8x",
+      "v8ys"
+    ],
     "construction_cap": 62
   },
   "ledger": "build-equity/trials.jsonl",
@@ -38,7 +41,7 @@
   "marginal": {
     "ruling": "PM8-15",
     "pool_only": true,
-    "seconds": 720
+    "seconds": 600
   },
   "candidates": [
     {

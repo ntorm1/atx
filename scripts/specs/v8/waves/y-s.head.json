@@ -9,10 +9,10 @@
   "acceptance": {"rule": "pm7-34", "printed": ["capacity-4x-higher", "turnover-per-gross-not-higher", "cost-bps-lower"]},
   "sign_rule": "pm7-35",
   "gross_match": "pm6-6",
-  "budget": {"id": "v8x-hand-25-plus-y-15", "admission_cap": 40, "admission_cycle_prefix": "v8x", "construction_cap": 62},
+  "budget": {"id": "v8x-hand-25-plus-y-15", "admission_cap": 40, "admission_cycle_prefixes": ["v8x", "v8ys"], "construction_cap": 62},
   "ledger": "build-equity/trials.jsonl",
   "expect": {"n_before": 56},
   "out_dir": "build-equity/waves/y-s",
   "record": {"copy_to": ".superpowers/sdd/platform-v8-20260929/waves"},
-  "marginal": {"ruling": "PM8-15", "pool_only": true, "seconds": 720}
+  "marginal": {"ruling": "PM8-15", "pool_only": true, "seconds": 600}
 }
