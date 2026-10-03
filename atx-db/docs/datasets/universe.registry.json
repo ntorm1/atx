@@ -1,7 +1,7 @@
 {
   "stage": "universe",
   "lane": "A",
-  "task": "tier1-v4 Task 2",
+  "task": "tier1-v4 Tasks 2/2x fix round 1",
   "schema": "atx.alpha-panel.universe/v1",
   "module": "atx_db.alpha_panel.universe",
   "args": [
@@ -38,5 +38,7 @@
   "validation": "validation/universe.json (gates, counts, 30-field coverage), validation/universe_hand_check_sample.json",
   "guard_gb": 0.8,
   "staleness": "daily; rebuilt with the panel",
-  "doc": "atx-db/docs/datasets/universe.md"
+  "doc": "atx-db/docs/datasets/universe.md",
+  "exchange_rule": "NULL frozen-panel exchange repaired only from dated FINRA listing evidence, dissemination_date < d, age <=45 days, shared EXCHANGE_BY_CLASS; T1-b qualification preserved",
+  "rule": "universe-all-common-v2"
 }

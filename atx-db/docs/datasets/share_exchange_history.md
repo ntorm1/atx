@@ -1,22 +1,21 @@
 # share_exchange_history (`security_master/share_exchange_history.parquet`)
 
 CRSP-style dated share codes (`shrcd`) and exchange codes (`exchcd`) per line (tier1-v3 S2.5 codes, module
-`atx_db.alpha_panel.identity_v3 codes`). Rebuilt 2026-10-03 in tier1-v4 Task 1 (fix round 1: clock restamped,
-rows otherwise identical to the 2026-09-30 build). Manifest
+`atx_db.alpha_panel.identity_v3 codes`). Rebuilt 2026-10-03 in Task 2x: dated fresh FINRA repair for NULL frozen-panel exchanges; T1 first-session clock preserved. Manifest
 `security_master/share_exchange_history_manifest.json` (schema `atx.alpha-panel.share-exchange-history/v1`; no
 done criterion is defined for it).
 
-- Path: `data/alpha_panel/v1/security_master/share_exchange_history.parquet` (397,050 rows, 2,291,842 bytes).
+- Path: `data/alpha_panel/v1/security_master/share_exchange_history.parquet` (399,328 rows, 2,307,647 bytes).
 - Keys: `(security_id, valid_from)`, unique; runs never overlap within a line (0 overlaps measured).
 - Span: 2018-01-02 .. 2026-09-18, 22,704 lines. Delisted lines included up to their last panel session.
-- Input: the v2 panel's point-in-time security flags (`panel/`, manifest SHA-256 in the manifest).
+- Inputs: frozen v2 panel flags and security_master/finra_names; both input manifest SHA-256s are recorded. The panel code and data are never rebuilt.
 
 ## Rule
 
 One row per maximal run of consecutive calendar sessions with the same `(exchange, exchcd, shrcd, security_type)`.
 
 - `exchcd`: 1 NYSE (`XNYS`), 2 NYSE American (`XASE`), 3 Nasdaq (`XNAS`), 4 NYSE Arca (`ARCX`), 5 Cboe BZX (`BATS`),
-  6 IEX (`IEXG`) (5 and 6 are our extensions), 0 OTC; NULL when the panel `exchange` is NULL (unknown, not OTC).
+  6 IEX (`IEXG`) (5 and 6 are our extensions), 0 OTC; NULL when both panel exchange and dated fresh FINRA mapping are unknown (not OTC). SC -> XNAS and BZX -> BATS use the shared security_master mapping, dissemination_date < d and age <=45 days. Unsupported and stale classes remain unknown.
 - `shrcd` (first matching): 73 ETF / ETP (`is_etf`); 31 ADR (`is_adr` or `is_adr_likely`); 14 closed-end fund
   (`security_type` fund); 71 LP; 18 REIT common; 12 foreign private issuer common (`is_fpi`); 11 US common
   (`security_type` common / common_unverified); NULL otherwise (preferred, warrant, unit, right, note, SPAC, unknown).
@@ -82,3 +81,12 @@ Member cells with `shrcd` 11: 82-83%; 12: 4.6-7.4%; 18: 4.5-6.4%.
 - `exchcd` NULL means the panel has no exchange that session, not OTC.
 - The share code is derived from vendor / FINRA / SEC flags, not from CRSP; ADR detection includes the
   `is_adr_likely` heuristic (FPI filer with common-like line).
+
+## Task 2x rebuild and provenance
+
+Command: `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.identity_v3 codes`.
+
+| input | SHA-256 |
+|---|---|
+| panel_manifest_sha256 | c19a4d850c3ed9f59d1202e40c7d77b3147def81c45bd676302008a75d5fb2b4 |
+| security_master_manifest_sha256 | 3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a |

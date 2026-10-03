@@ -1,7 +1,7 @@
 {
   "stage": "share_exchange_history",
   "lane": "ID",
-  "task": "tier1-v4 Task 1",
+  "task": "tier1-v4 Tasks 2/2x fix round 1",
   "schema": "atx.alpha-panel.share-exchange-history/v1",
   "module": "atx_db.alpha_panel.identity_v3",
   "args": [
@@ -9,7 +9,8 @@
   ],
   "manifest": "security_master/share_exchange_history_manifest.json",
   "inputs": [
-    "panel"
+    "panel",
+    "security_master"
   ],
   "outputs": [
     {
@@ -29,5 +30,6 @@
   "guard_gb": 0.45,
   "staleness": "daily; rebuilt with the panel",
   "doc": "atx-db/docs/datasets/share_exchange_history.md",
-  "clock_rule": "share-exchange-runs-v2: available_at = 22:00 UTC of the session before valid_from minus 1 s; the run is visible from its first session (tested: tests/test_alpha_panel_identity_v3.py::test_share_exchange_history_as_of_returns_new_code_from_its_first_session)"
+  "clock_rule": "share-exchange-runs-v2: available_at = 22:00 UTC of the session before valid_from minus 1 s; the run is visible from its first session (tested: tests/test_alpha_panel_identity_v3.py::test_share_exchange_history_as_of_returns_new_code_from_its_first_session)",
+  "exchange_rule": "NULL frozen-panel exchange repaired only from dated FINRA listing evidence, dissemination_date < d, age <=45 days, shared EXCHANGE_BY_CLASS; T1-b qualification preserved"
 }

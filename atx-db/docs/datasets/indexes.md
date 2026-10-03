@@ -1,19 +1,10 @@
 # indexes (`indexes/`)
 
-Rule-based Russell 1000 / 2000 / 3000 and S&P-500-like proxies, point in time (tier1-v3 S3.6, rules
-`russell-proxy-v1`, `sp500-proxy-v1`, module `atx_db.alpha_panel.indexes`). Built 2026-10-03 in tier1-v4 Task 1.
-Manifest `indexes/manifest.json` (schema `atx.alpha-panel.indexes/v1`, `gate_status` included).
+Rebuilt 2026-10-03 in Task 2x, recomputing eligible company caps, ranks, Russell bands, S&P buffers and membership intervals from the frozen panel with dated fresh FINRA exchange repair. SC -> XNAS, BZX -> BATS; no additive membership patch and no panel rebuild. Rule `russell-proxy-v1` / `sp500-proxy-v1`; manifest `indexes/manifest.json`; registry stub `indexes.registry.json`.
 
-## Outputs
+Command: `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.indexes build`.
 
-| file | keys | rows | bytes |
-|---|---|---|---|
-| `indexes/constituents.parquet` | `(index_id, security_id, recon_date)` | 73,177 | 1,016,128 |
-| `indexes/membership/year=YYYY/membership.parquet` | `(session_date, security_id)` (unique) | 6,218,671 | 2,085,448 |
-| `indexes/recon_summary.parquet` | `(index_id, recon_date)` | 61 (3 x 9 Russell, 34 S&P) | 6,964 |
-
-`index_id`: `R1000P`, `R2000P`, `R3000P`, `SP500P`. Membership spans 2018-03-19 (S&P proxy) / 2018-06-25 (Russell
-proxies) .. 2026-09-18; every session from 2019 carries all four flags.
+FINRA fallback replaces only NULL panel exchange when dissemination_date < rank session and age <=45 days. Unknown/stale classes remain unknown. T1-b's panel/link/directory qualification persists. Rank-date availability remains 22:00 UTC and membership starts the next session after reconstitution. These are value/membership products and span 2018-2026 despite R5's truncation of aggregate-return products.
 
 ## Rules (summary; full text in the module docstring and manifest `rule_text`)
 
@@ -54,20 +45,50 @@ session after the reconstitution date, so `available_at` precedes `effective_fro
 | recon_summary | turnover_oneway, turnover_cap | DOUBLE | share | additions / lines; added ME share | - | - |
 | recon_summary | p1000_cum_share, eligible_companies | DOUBLE / BIGINT | - | Russell breakpoint; companies eligible | - | - |
 
-## Measured
 
-| gate | measured | result |
+## R2000 reconstitutions
+
+| rank | effective | lines | companies |
+|---|---|---|---|
+| 2018-05-11 | 2018-06-25 | 2019 | 2000 |
+| 2019-05-10 | 2019-07-01 | 2080 | 2012 |
+| 2020-05-08 | 2020-06-29 | 2056 | 2002 |
+| 2021-05-07 | 2021-06-28 | 2054 | 1989 |
+| 2022-05-06 | 2022-06-27 | 2048 | 1995 |
+| 2023-04-28 | 2023-06-26 | 2066 | 2016 |
+| 2024-04-30 | 2024-07-01 | 2065 | 2016 |
+| 2025-04-30 | 2025-06-30 | 2056 | 2007 |
+| 2026-04-30 | 2026-06-29 | 2046 | 2004 |
+
+
+Inherited R2000 count gate [1,900,2,100]: {"companies": {"2018-06-22": 2000, "2019-06-28": 2012, "2020-06-26": 2002, "2021-06-25": 1989, "2022-06-24": 1995, "2023-06-23": 2016, "2024-06-28": 2016, "2025-06-27": 2007, "2026-06-26": 2004}, "criterion": "R2000 proxy companies in [1900, 2100] at every reconstitution", "lines": {"2018-06-22": 2019, "2019-06-28": 2080, "2020-06-26": 2056, "2021-06-25": 2054, "2022-06-24": 2048, "2023-06-23": 2066, "2024-06-28": 2065, "2025-06-27": 2056, "2026-06-26": 2046}, "official_overlap": "GAP: FTSE Russell / S&P DJI constituent lists are licensed (not measured)", "outside": {}, "pass": true}
+
+## Outputs
+
+| file | rows | bytes |
 |---|---|---|
-| R2000 proxy companies in [1900, 2100] at every reconstitution | 1,989 .. 2,016 (2018 2,000; 2019 2,014; 2020 2,003; 2021 1,989; 2022 1,992; 2023 2,014; 2024 2,016; 2025 2,008; 2026 1,996) | PASS |
-| official list overlap >= 95% (plan S3.6) | not measurable: FTSE Russell / S&P DJI lists are licensed, pages terms-gated | GAP |
+| indexes\constituents.parquet | 73175 | 1026539 |
+| indexes\membership\year=2018\membership.parquet | 425591 | 155605 |
+| indexes\membership\year=2019\membership.parquet | 751091 | 251546 |
+| indexes\membership\year=2020\membership.parquet | 762144 | 251117 |
+| indexes\membership\year=2021\membership.parquet | 757470 | 260781 |
+| indexes\membership\year=2022\membership.parquet | 750282 | 251361 |
+| indexes\membership\year=2023\membership.parquet | 748128 | 249599 |
+| indexes\membership\year=2024\membership.parquet | 752665 | 246684 |
+| indexes\membership\year=2025\membership.parquet | 747145 | 250103 |
+| indexes\membership\year=2026\membership.parquet | 527028 | 197331 |
+| indexes\recon_summary.parquet | 61 | 6971 |
 
-Mean member lines per session: R3000P 2,964 (2019) .. 2,986 (2025); R1000P 1,002-1,029; R2000P 1,959-1,986;
-SP500P 525-530 (500 companies; share classes counted as lines). R2000P one-way turnover 12-22% per year
-(cap-weighted 5.5-16.8%); SP500P 1-4.5% per quarter after the first.
 
-## Known limits
+## Limits
 
-- Proxies only: no float adjustment, no committee, sector or IPO rules; the December 2026 semi-annual Russell
-  reconstitution falls after the last vendor session.
-- SP500P counts every eligible line of a member company (about 26-36 extra lines vs 500 companies).
-- Company identity is the CIK from the panel link; an unlinked line is ranked as its own company.
+Official-list overlap remains an unmeasured licensed-source GAP. No float adjustment, committee/sector discretion, complete IPO or spin-off additions; CIK company identity inherits panel links. R3000 includes REITs and some classes deliberately excluded by broad all_common. SC representation and row-key/alignment checks are recorded in Task 2x report.
+
+## Input provenance
+
+| input | SHA-256 |
+|---|---|
+| market/market_liquidity_manifest.json | fc73dbfeb820743598127bfab814363339c2648a778e743b1ea1d74ceaafc51d |
+| market/market_shares_manifest.json | 41af29e0fa817b0dff57028e027537f850825c18d11c6ed7a449ef5e6a8b0990 |
+| panel | c19a4d850c3ed9f59d1202e40c7d77b3147def81c45bd676302008a75d5fb2b4 |
+| security_master | 3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a |

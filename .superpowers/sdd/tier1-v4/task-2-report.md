@@ -1,5 +1,7 @@
 # tier1-v4 Task 2 report: universe stage `universe/`
 
+Current fix-round status: DONE_WITH_CONCERNS; 4 PASS / 1 FAIL, French 27/60 months outside unchanged +/-5%. The original report below is historical; current measurements are in Fix round 1.
+
 Status: DONE_WITH_CONCERNS (one binding gate FAILs: French NYSE count, 14 of 60 months; reported, not weakened).
 Branch `feat/tier1-v3-warehouse`. Every data job ran under the memory guard from `C:/atx/atx-db` with
 `PYTHONPATH=C:/atx/atx-db/src OPENBLAS_NUM_THREADS=1`; `G(x)` = `.venv/Scripts/python.exe
@@ -124,3 +126,168 @@ compares lines; companies reported too). Disk: `universe/` 189 MB, `_tmp/mkt/uni
 9. Self-review: diff touches only the five new files; no data or scratch committed; every as-of join filters
    `available_at < lake_cutoff(d)`; no return statistic computed (GC2 untouched: value/count comparisons only);
    test file runs in ~5 s; the manifest binds the committed module SHA and current input manifests.
+
+## Fix round 1 (2026-10-03): Task 2 plus Task 2x dependency
+
+Status: DONE_WITH_CONCERNS. Implementer: Codex, controller-selected gpt-6.1-sol under R1; historical GC6 trailer retained as required, not a claim of an Anthropic runtime. I1, I2, I3 and I5 fixed; I4 remains FAIL with measured residuals requiring controller ruling/remediation. No PIT/accuracy threshold amended. No foreign panel code or stage changed/rebuilt. No shared registry or progress.md edits.
+
+Code commits: `d306e7768f7d72293aa600718a396814c98caba9` (Task 2x), `f0ab20f50a5d9fa4e4e8d0a68b23beeba90f51f4` (Task 2 classifiers/sample binding). Documentation/report commit is listed in the final controller response; use these specific commits, never BASE..HEAD.
+
+- I1: incorporation uses dated cover facts strictly before cutoff; undated profile snapshot removed, earlier state unknown. Later-foreign-snapshot fixture protects history.
+- I2: SIC 6770 supplements SPAC only with zero/missing panel sale_ttm, matching established panel behavior. Positive-revenue retained-SIC de-SPAC fixture admitted.
+- I3: authoritative SC/BZX mapping and dated NULL-panel exchange fallback in codes, market and index eligibility. Company caps/ranks/bands/buffers/intervals fully recomputed; universe rebuilt after dependency. Task 2x details in task-2x-report.md.
+- I5: latest qualifying 814- status event before each cutoff replaces global min-election/max-withdrawal. Withdrawal/re-election/future-withdrawal fixture proves no appended-future revision; withdrawals win a tied event timestamp.
+- Also closes validation incompleteness risk: expected French months must exist, missing R2000 year counts fail; precision requires unique keys, matching seed/rule/sample hash. 17 newly selected sample keys manually rechecked against primary SEC descriptions/closing chronology, 83 unchanged identity/stratum claims retain prior judgments. The same-classifier zero-suspect result below is internal consistency, not independent accuracy validation.
+
+### Gates
+
+| criterion | PASS/FAIL | measured | command |
+|---|---|---|---|
+| daily_band | PASS | {"2020": 3340.3, "2021": 3689.3, "2022": 3732.8, "2023": 3562.4, "2024": 3499.0, "2025": 3430.5} | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build |
+| French +/-5% | FAIL | 33/60 inside; missing=[] | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build |
+| R2000 effective companies | PASS | {"2018-06-25": 1987, "2019-07-01": 1993, "2020-06-29": 1980, "2021-06-28": 1972, "2022-06-27": 1980, "2023-06-26": 1990, "2024-07-01": 1992, "2025-06-30": 1988, "2026-06-29": 1972} | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build |
+| codes >=99% | PASS | {"2020": 1.0, "2021": 1.0, "2022": 1.0, "2023": 1.0, "2024": 1.0, "2025": 1.0} | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build |
+| hand precision >=95% | PASS | 97/100; per stratum {'is_adr': {'correct': 9, 'lines': 12}, 'is_cef_etf': {'correct': 12, 'lines': 12}, 'is_foreign_issuer': {'correct': 12, 'lines': 12}, 'is_reit': {'correct': 12, 'lines': 12}, 'is_spac': {'correct': 12, 'lines': 12}, 'univ_all_common': {'correct': 40, 'lines': 40}} | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build |
+
+
+Rule `universe-all-common-v2`; sample SHA-256 `1bddcafc12563e986a6ec5124df0e4d3e2fd97f16b78e2399c6f8aa29388a37e`. ADR remains 9/12 despite pooled 97/100; no recall claim. Actual beta/idiosyncratic-volatility coverage remains Task 6; the 30-field table includes clearly labeled input sufficiency. Annual counts and all three coverage universes still cover 2020-2025.
+
+### Built artifacts
+
+| year | rows | bytes |
+|---|---|---|
+| 2018 | 2006722 | 15813869 |
+| 2019 | 2110686 | 19088007 |
+| 2020 | 2192161 | 19783137 |
+| 2021 | 2616995 | 22863117 |
+| 2022 | 2765910 | 25731721 |
+| 2023 | 2615921 | 24346647 |
+| 2024 | 2625233 | 24100337 |
+| 2025 | 2783952 | 25162589 |
+| 2026 | 2151262 | 19681143 |
+
+
+### Month-by-month French reconciliation
+
+Benchmark count unit and +/-5% line-count gate are retained. Company counts are diagnostic only. Exclusive classes partition observed NYSE panel lines in t2-french-reconciliation.json; source coverage counters overlap separately. Zero admitted non-common names under the existing FINRA classifier is not external validation.
+
+| month | French | admitted lines | companies | residual lines | otherwise eligible missing shares | admitted unknown incorporation |
+|---|---|---|---|---|---|---|
+| 2018-01 | 1228 | 1128 | 1122 | -100 | 278 | 1128 |
+| 2018-02 | 1226 | 1169 | 1166 | -57 | 233 | 1169 |
+| 2018-03 | 1225 | 1172 | 1169 | -53 | 230 | 1172 |
+| 2018-04 | 1224 | 1165 | 1165 | -59 | 219 | 1165 |
+| 2018-05 | 1224 | 1354 | 1339 | 130 | 16 | 1354 |
+| 2018-06 | 1225 | 1354 | 1339 | 129 | 17 | 1354 |
+| 2018-07 | 1226 | 1346 | 1330 | 120 | 20 | 1346 |
+| 2018-08 | 1225 | 1353 | 1340 | 128 | 15 | 1353 |
+| 2018-09 | 1226 | 1357 | 1341 | 131 | 15 | 1357 |
+| 2018-10 | 1225 | 1344 | 1328 | 119 | 15 | 1344 |
+| 2018-11 | 1221 | 1350 | 1332 | 129 | 14 | 1350 |
+| 2018-12 | 1215 | 1332 | 1318 | 117 | 16 | 1332 |
+| 2019-01 | 1211 | 1333 | 1317 | 122 | 14 | 1333 |
+| 2019-02 | 1206 | 1328 | 1311 | 122 | 14 | 1328 |
+| 2019-03 | 1204 | 1329 | 1312 | 125 | 11 | 1329 |
+| 2019-04 | 1204 | 1326 | 1310 | 122 | 12 | 1326 |
+| 2019-05 | 1209 | 1320 | 1306 | 111 | 16 | 1320 |
+| 2019-06 | 1213 | 1328 | 1313 | 115 | 17 | 1324 |
+| 2019-07 | 1213 | 1305 | 1289 | 92 | 17 | 1065 |
+| 2019-08 | 1214 | 1258 | 1243 | 44 | 17 | 403 |
+| 2019-09 | 1210 | 1247 | 1236 | 37 | 17 | 319 |
+| 2019-10 | 1206 | 1241 | 1229 | 35 | 13 | 261 |
+| 2019-11 | 1205 | 1234 | 1222 | 29 | 12 | 188 |
+| 2019-12 | 1194 | 1227 | 1214 | 33 | 13 | 168 |
+| 2020-01 | 1192 | 1220 | 1207 | 28 | 11 | 161 |
+| 2020-02 | 1190 | 1214 | 1198 | 24 | 12 | 146 |
+| 2020-03 | 1182 | 1184 | 1169 | 2 | 12 | 126 |
+| 2020-04 | 1182 | 1186 | 1174 | 4 | 12 | 120 |
+| 2020-05 | 1177 | 1188 | 1175 | 11 | 10 | 103 |
+| 2020-06 | 1173 | 1100 | 1091 | -73 | 10 | 90 |
+| 2020-07 | 1167 | 1184 | 1172 | 17 | 12 | 86 |
+| 2020-08 | 1168 | 1187 | 1175 | 19 | 14 | 21 |
+| 2020-09 | 1171 | 1184 | 1172 | 13 | 15 | 15 |
+| 2020-10 | 1169 | 1173 | 1162 | 4 | 13 | 15 |
+| 2020-11 | 1168 | 1199 | 1188 | 31 | 12 | 16 |
+| 2020-12 | 1170 | 1208 | 1195 | 38 | 14 | 18 |
+| 2021-01 | 1167 | 1203 | 1191 | 36 | 12 | 18 |
+| 2021-02 | 1170 | 1212 | 1199 | 42 | 11 | 17 |
+| 2021-03 | 1182 | 1216 | 1202 | 34 | 18 | 14 |
+| 2021-04 | 1180 | 1214 | 1203 | 34 | 17 | 14 |
+| 2021-05 | 1184 | 1224 | 1212 | 40 | 24 | 13 |
+| 2021-06 | 1195 | 1229 | 1212 | 34 | 24 | 13 |
+| 2021-07 | 1207 | 1232 | 1214 | 25 | 15 | 13 |
+| 2021-08 | 1211 | 1254 | 1236 | 43 | 26 | 3 |
+| 2021-09 | 1213 | 1266 | 1249 | 53 | 26 | 1 |
+| 2021-10 | 1222 | 1265 | 1249 | 43 | 29 | 0 |
+| 2021-11 | 1229 | 1292 | 1277 | 63 | 20 | 0 |
+| 2021-12 | 1230 | 1297 | 1281 | 67 | 23 | 0 |
+| 2022-01 | 1230 | 1301 | 1286 | 71 | 18 | 0 |
+| 2022-02 | 1229 | 1302 | 1285 | 73 | 18 | 0 |
+| 2022-03 | 1228 | 1310 | 1294 | 82 | 16 | 2 |
+| 2022-04 | 1228 | 1309 | 1291 | 81 | 17 | 2 |
+| 2022-05 | 1228 | 1309 | 1292 | 81 | 12 | 0 |
+| 2022-06 | 1241 | 1305 | 1290 | 64 | 12 | 0 |
+| 2022-07 | 1239 | 1301 | 1285 | 62 | 11 | 0 |
+| 2022-08 | 1236 | 1305 | 1288 | 69 | 9 | 0 |
+| 2022-09 | 1239 | 1298 | 1282 | 59 | 11 | 0 |
+| 2022-10 | 1229 | 1287 | 1270 | 58 | 12 | 0 |
+| 2022-11 | 1224 | 1273 | 1258 | 49 | 8 | 0 |
+| 2022-12 | 1219 | 1266 | 1250 | 47 | 8 | 0 |
+
+
+Exact failed months/deviations: `{"2018-01": -0.0814, "2018-05": 0.1062, "2018-06": 0.1053, "2018-07": 0.0979, "2018-08": 0.1045, "2018-09": 0.1069, "2018-10": 0.0971, "2018-11": 0.1057, "2018-12": 0.0963, "2019-01": 0.1007, "2019-02": 0.1012, "2019-03": 0.1038, "2019-04": 0.1013, "2019-05": 0.0918, "2019-06": 0.0948, "2019-07": 0.0758, "2020-06": -0.0622, "2021-11": 0.0513, "2021-12": 0.0545, "2022-01": 0.0577, "2022-02": 0.0594, "2022-03": 0.0668, "2022-04": 0.066, "2022-05": 0.066, "2022-06": 0.0516, "2022-07": 0.05, "2022-08": 0.0558}`.
+
+Measured unresolved causes and next work: early negative residuals coexist with dated shares/source-coverage holes among lines otherwise satisfying the rule. Those holes are measured here, but the French aggregate contains no identities, so not every missing candidate is established as a missing benchmark member. Repairing authorized market_shares SEC/vendor coverage is a feasible upstream step; it must use original clocks, not future share backfill. Removal of the newly introduced non-PIT incorporation fallback also exposes early positive residuals in 2018-05..2019-07, when dated incorporation covers are missing. Those cannot be closed by restoring the snapshot; an authorized dated historical incorporation source is a feasible remedy. Later positive residuals persist after internal fixes. Multi-class lines explain only line-minus-company counts; admitted incorporation-unknown counts quantify whether missing dated incorporation could explain excess. No named class reconciliation establishes the remaining counterpart; do not assert licensed CRSP is necessary or that broad counts validate accuracy. Feasible next remediation is an independent dated audit of the residual candidate cohort (US domicile, security/share type, blank-check chronology, filer regimes, vendor/link validity), plus a documented benchmark-definition comparison and issuer-level reconciliation using free source evidence. Aggregate benchmark alone cannot assign a specific falsely admitted line. Controller carry-forward ruling remains pending; manifest FAIL preserved.
+
+### Tests and self-review
+
+`.venv/Scripts/python.exe -m pytest tests/test_universe_stage.py tests/test_exchange_repair.py tests/test_alpha_panel_market.py tests/test_alpha_panel_indexes.py tests/test_alpha_panel_identity_v3.py -q -n0`: 61 passed, offline, under 10 seconds combined. R5 regression injects an extreme 2023 return, proves it never enters source u before aggregation, checks no output period >=2023, and rejects later --end. Covered exchange SC/BZX, unsupported/stale/same-date evidence, codes, market/rank eligibility, cutoff/link/index transitions, retained SIC, snapshots, BDC future append, missing months and stale sample binding. Explicit-path diffs checked; owned code/tests clean after commits. No full suites or held-out evaluation.
+
+### Commands / memory evidence
+
+All real builds and SQL/fetch/build diagnostics use the guard, one at a time in this lane. Fixture tests need no guard. All source updates are local source contracts; no new raw source landing.
+
+| job | exact command |
+|---|---|
+| before audit | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t2_audit.py before |
+| codes | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.identity_v3 codes |
+| market R5 final | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.market_index build --end 2022-12-31 |
+| indexes | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.indexes build |
+| universe final | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe -m atx_db.alpha_panel.universe build |
+| French reconciliation | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.9 --wait-minutes 60 -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t2_reconcile.py |
+| verification | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t2_verify.py |
+| hand evidence binding | .venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.4 --wait-minutes 60 -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t2_handcheck.py |
+
+
+| guard receipt | status | cap GiB | peak GiB | wall s | exit |
+|---|---|---|---|---|---|
+| 20261003T160034-3528 | completed | 0.8 | 0.3918 | 14.0 | 0 |
+| 20261003T160212-17664 | completed | 0.8 | 0.4613 | 27.0 | 0 |
+| 20261003T160357-6664 | completed | 0.9 | 0.5447 | 26.0 | 0 |
+| 20261003T160448-16944 | completed | 0.9 | 0.3929 | 45.0 | 0 |
+| 20261003T160607-11508 | completed | 0.9 | 0.5385 | 30.0 | 0 |
+| 20261003T160722-15108 | completed | 0.9 | 0.6555 | 265.2 | 0 |
+| 20261003T161245-14416 | completed | 0.9 | 0.5236 | 192.2 | 0 |
+| 20261003T161717-13484 | completed | 0.4 | 0.037 | 1.0 | 0 |
+| 20261003T162105-14416 | completed | 0.9 | 0.6603 | 263.2 | 0 |
+| 20261003T162800-12600 | completed | 0.9 | 0.6045 | 93.1 | 0 |
+| 20261003T162956-15928 | completed | 0.8 | 0.4347 | 44.0 | 0 |
+
+
+Raw/stage provenance: original Task 1 commits ee353557, 0c35357e, ff4d829a, 5b773a2f, 3afb9687; original Task 2 b2d3b4705272a01c61d8924283f1431610d9604a, 8791f4cdaf6613f11e157b5f79887a5919a0da3f, bf0ad7faa480aff09cac7540b070cfe6fd52c937. Frozen panel provenance SHA `c19a4d850c3ed9f59d1202e40c7d77b3147def81c45bd676302008a75d5fb2b4` unchanged. Baseline full manifests/input hashes in t2-before-audit.json; corrected hashes/code fingerprints in t2-after-verification.json and dataset docs. No return value/evaluation >=2023 inspected. Initial inherited market run published later aggregate-return product rows despite --end; R5 corrected/superseded it, and future factor-return products are now unavailable without authorization.
+
+Files: owned alpha_panel universe/security_master/identity_v3/market_index/indexes modules; universe/exchange regressions; universe/indexes/market_index/share_exchange_history docs and registry stubs; hand judgments; reports and reproducible diagnostics/measurement artifacts in this scratch directory. No new raw data; SEC/FINRA/Nasdaq web pages were primary reference checks, not lake source landings. Existing free FINRA semi-monthly names, SEC filings/covers, vendor price/shares and French monthly benchmark receipts/terms/cadence remain those of original Task 1/2 reports.
+
+### Final source-coverage and dated-header assessment
+
+June 2020 residual is -73 lines. A diagnostic cohort of 1,170 NYSE common lines present at both May29 and July31 month ends has 90 missing June30 panel rows; all 90 also lack June30 price-stage and original vendor bars. This is a measured vendor-source coverage hole. Neighboring future observations are diagnostic only and do not backfill features; aggregate French counts cannot prove which candidates belong to the benchmark. Evidence: t2-vendor-coverage.json and its producer.
+
+Missing-incorporation admitted NYSE month-end cohorts contain 1,420 distinct CIKs in 2018 and 1,359 in 2019, union 1,454. All 1,454 have a current CIK file in existing submissions.zip; that archive can supply accession discovery, but its current incorporation profile is not historical evidence. Existing sec_text primary-document metadata covers 2,588 pre2020 filings for 1,277 cohort CIKs, earliest 2018-01-19. Selected parsed sections contain the literal STATE OF INCORPORATION in 15 pre2020 rows for nine CIKs. These are candidates, not verified original submission-header facts: completeness, state value, issuer identity and filing acceptance/publication clocks still require inspection. No complete-header cache or usable pre2018 header coverage has been established by this bounded assessment. No acquisition launched.
+
+A primary EDGAR submission header containing STATE OF INCORPORATION, the issuer CIK and original acceptance timestamp is a feasible dated source after validating publication/revision semantics. One suitable pre-first-eligibility accession per cohort issuer implies a minimum 1,454 candidate header requests before cache reuse; state changes require more, so this is a lower bound rather than a fetch plan. Inspect the nine existing text candidates first; use cached archive accession discovery to locate earlier filings and bounded missing-header requests. Never assign a later filing state to earlier sessions. SEC header backfill should be separately authorized/reviewed and preserve strict cutoff and unresolved unknowns.
+
+For 2021-22 excess, missing incorporation is near zero and the same FINRA classifier's zero suspects proves only internal consistency. Independent candidates are dated original SEC cover/security descriptions and prospectuses for NYSE listed classes, contemporaneous 814-N/814-NW and fund status, completed-SPAC versus retained SIC6770 chronology, foreign domicile/FPI filing history, duplicate share classes, and dated exchange/link validity. French uses its documented count unit; company counts remain a diagnostic alternative. The aggregate benchmark has no constituent identities, so these hypotheses are not established false inclusions. Preserve French FAIL pending controller ruling and independently measured remediation.
+
+Guard commands (all from atx-db with PYTHONPATH=src): `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb CAP --wait-minutes 60 -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/SCRIPT`. Vendor coverage: CAP=0.8, SCRIPT=t2_vendor_coverage.py, receipt 20261003T163345-14836, peak 0.0738 GiB, 2 seconds. Header cohort/schema/hash: CAP=0.9, SCRIPT=t2_header_assessment.py, receipt 20261003T163832-2172, peak 0.8454 GiB, 13 seconds. Header text-cache: CAP=0.6, SCRIPT=t2_header_cache_check.py, receipt 20261003T163926-16608, peak 0.2476 GiB, 14 seconds. All completed with exit 0 and no cap hit.
+
+All four published manifest LF-normalized code fingerprints match current modules (individual comparisons in t2-header-assessment.json). Owned directory disk bytes: universe 196,586,801; indexes 3,187,407; market 1,761,260,397 (includes inherited non-return market files). This is directory footprint, not new raw bytes. No foreign output modified.
