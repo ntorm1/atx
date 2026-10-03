@@ -150,3 +150,191 @@ Identity (no exe output byte moves; nothing here changes NAV, IC, fit, weights o
 - The NAV verb writes `summary.json` before its capacity pass and `v7_extras.json`: a NAV with `--capacity-curve` is
   done only with `capacity_curve.csv` + `v7_extras.json` (research_cycle `CAPACITY_FILES`, P9 NV-4).
 - Spec null pins by kind (`test_research_spec.spec_null_pins`) reproduce the deleted 29-entry `NULL_PINS` list exactly.
+
+## Tasks 1+
+
+### Outcome
+DONE_WITH_CONCERNS: brief-E1 "wave 1 proper" is in seven Python-only commits (tasks 1-7). The killed implementer's
+10 dirty files (partial task 2) were mapped: the cycle_resume / runner / fake-runner parts were kept, the rest was
+rewritten or finished; nothing of theirs is lost or committed unreviewed. Every new manifest key and CLI flag is
+opt-in: with all absent, the tiny-world wave's argv, specs and written bytes match e93d5c2b (evidence 5). Concerns:
+see Open risks (the stale-code reuse refusal is unconditional; `--candidates` waits for S1's exe).
+
+### Branch / SHAs
+`feat/p9-e1-20261003`, on top of the task-0 code `3fa2dd4a` and its report `a57961bb`:
+
+| task | commit | subject |
+|---|---|---|
+| 1 | `e93d5c2b` | task-0 review minors 1-4 and the `--runner-override` cap |
+| 2 | `c925ea2d` | K-P9-10 receipts, OR-3 resume argv check, OR-4 attempt sub-dirs, manifest `driver` block |
+| 3 | `5e00576c` | F-5 (a) launch admission, OR section 5 host memory semaphore and parallel steps |
+| 4 | `92b4f203` | OR-2 `lock --exes` pins `exes_sha256`, runs check them, verify compares parent and cell |
+| 5 | `e5c219d6` | OR section 3: content receipt digests, manifest record date, code-keyed reuse, per-run verdicts |
+| 6 | `159ab299` | OR section 5: complete timings in `wave-result.json` and `scoreboard --timings` |
+| 7 | `d19606dd` | K-P9-11 registration keys, `candidates pin --by` role list, ruling P4 `candidates_only` |
+
+This report is a separate commit on top of `d19606dd`.
+
+### What changed, per task
+- **Task 1** (`atx-impl/tools/backtest_integrity.py` ledger lock only, `cycle_resume.py`, `research_cycle.py`,
+  `wave_stage_record.py`, `wave_stage_util.py`, `test_research_spec.py`, `test_wave_hardening.py`): lock removal
+  retried on a sharing violation then warned (never raised over a finished append); a timed-out wait names the
+  holder pid and whether it runs; one NAV run-dir enumeration (`cycle_resume.nav_run_dirs` / `completed_exes`) used
+  by verify; the spec-kind test checks independent evidence; `--runner-override seconds=N` above 600 refused at parse.
+- **Task 2** (`run_bounded_research.py`, `research_tree.py`, `cycle_resume.py`, `research_cycle.py`,
+  `wave_context.py`, `wave_manifest.py`, `wave_stage_util.py`, `wave_steps.py`): K-P9-10: every `start.json` /
+  `receipt.json` carries `argv_sha256` (`research_tree.argv_sha256`, the command after its executable), `attempt`
+  (`--attempt K`, 1..99, default 1), `executable_sha256`, `build_type` (`--build-type Debug|Release`, else null;
+  research_cycle passes it only for a spec with a `build` key via `research_tree.BUILD_TYPES`). OR-3:
+  `cycle_resume.check_receipt_argv`: a done bounded output is reused only when its receipt's command equals the one
+  the spec runs now (`REUSE_NEUTRAL`: `--save-combined`, `--no-composition`, the fit's theme-resid parent pair, aside);
+  a mismatch is HARD-STOP exit 3. OR-4: `research_cycle --auto-attempt`: a step whose latest attempt has an
+  `AUTO_OUTCOMES` receipt (prelaunch-memory-refusal, system-memory-limit, prelaunch-admission-timeout) and no output
+  runs again in `<run dir>/attempt-k` (k <= `MAX_ATTEMPTS`); later reads use the latest sub-dir (receipt, NAV
+  binding); the wave lists sub-dirs (`Wave.run_dirs`: timings, seal scan, verify). Manifest `driver` block
+  (`wave_manifest.DRIVER_KEYS`, every key opt-in; `driver.auto_attempt` -> `run --auto-attempt`).
+- **Task 3** (`run_bounded_research.py`, `research_tree.py`, `research_cycle.py`, `wave_context.py`,
+  `wave_manifest.py`, `wave_stage_cell.py`, `wave_stage_record.py`, `wave_steps.py`): runner
+  `--admission-wait-seconds S`: before launch, wait <= S for free >= `max_rss_mib + min_free_mib` and no
+  cl / clang-cl / ninja / lld-link process; timeout = outcome `prelaunch-admission-timeout`, nothing launched.
+  `--host-budget-mib N` (needs the wait): host semaphore, one claim file (declared cap) per admitted process under
+  `--host-claims` (default `%TEMP%/atx-host-claims`), written under an `O_EXCL` lock, released in `finally`; dead
+  owners' claims and locks dropped. research_cycle `--admission-wait` / `--host-budget-mib` pass both to every
+  bounded process; under a budget `PARALLEL` pairs (ref || u, card || marginal) run in two threads; a phase cap above
+  the budget is refused when planned. Wave: `driver.admission_wait_seconds` / `host_budget_mib` reach research_cycle,
+  readers and bundle; under a budget the judge runs summ || bundle || book reader.
+- **Task 4** (`research_cycle.py`, `wave_manifest.py`, `wave_result.py`, `wave_stage_library.py`,
+  `wave_stage_record.py`, `wave_stage_util.py`, `wave_steps.py`): `lock --exes` writes `exes_sha256` {exe key: SHA}
+  of the effective exes (a template's into `change.set`); a spec carrying it is checked when a Cycle is built (moved
+  exe = exit 3) and the header lists the pins. `driver.lock_exes`: `lock SPEC --exes --write` for the screen
+  library, a b library and a rule cell before their commit; verify records `{parent, cell, differ}` of spec pins and
+  refuses a pinned NAV exe that moved without its ref run (`exe_problem`).
+- **Task 5** (`atx-engine/tools/stage_chain.py` + test, `cycle_verdict.py`, `research_cycle.py`,
+  `research_wave.py`, `wave_manifest.py`, `wave_result.py`, `wave_stage_cell.py`, `wave_stage_library.py`,
+  `wave_stage_record.py`, `wave_stage_util.py`, `wave_steps.py`, `tests/wave_fixture.py`): `Chain(digest="content")`
+  chains `previous_receipt_content_sha256` over canonical JSON without `TIME_KEYS` (`driver.receipt_digest:
+  "content"`, also for `wave-result.json` receipt digests); `driver.record_date` dates the record stage's queue
+  history; reader / bundle reuse refused (exit 3) when a `*.py` their run bound no longer hashes as bound;
+  `research_cycle --keep-verdicts` (`driver.keep_verdicts`) leaves every `cycle_verdict.json` write in
+  `<cycle dir>/verdicts/<mode>-<k>.json` (exclusive create) and the screen / judge pin that copy.
+- **Task 6** (`wave_context.py`, `wave_manifest.py`, `wave_result.py`, `wave_scoreboard.py`, `wave_stage_library.py`,
+  `wave_stage_util.py`, `wave_stages.py`): `driver.timings`: every command and git query timed; each stage receipt
+  gains `outputs.processes`; the screen records its phase rows (u / fit / card / marginal); `wave-result.json` adds
+  reader (`reader:<name>`) and bundle rows, `stage_seconds`, `processes`; `scoreboard --timings` adds register and
+  git phases and a by-stage table.
+- **Task 7** (`wave_manifest.py`, `wave_queue.py`, `wave_steps.py`, `wave_stage_library.py`, `research_cycle.py`):
+  K-P9-11 optional `source_sample_end` (YYYY), `predicted_mechanism` (one line), `data_class` (H|W|P|N) on candidates
+  and `rule_cell`; `candidates new --source-sample-end / --predicted-mechanism / --data-class`; `candidates pin --by`
+  checked against `wave_queue.PIN_ROLES = ("pm", "root", "owner")`, any case. Ruling P4: `marginal.candidates_only`
+  (bool) -> `WS.marginal_ruled` writes `marginal.candidates` (register: every manifest id; b library: the kept ids) ->
+  research_cycle passes `--candidates <cycle dir>/marginal-candidates-<sha12>.txt` (UTF-8, one id per line, bound in
+  the receipt, written when the step starts, never overwritten).
+
+Tests (all in the new `scripts/tests/test_wave_driver.py`, 13): `test_receipt_k_p9_10_keys`,
+`test_resume_refuses_argv_mismatch`, `test_attempt_subdir_after_floor_kill` (planted floor kill on the fake tools
+resumes to completion in `attempt-2`; partial-output and `MAX_ATTEMPTS` cases; NAV binding in the sub-dir),
+`test_driver_auto_attempt_manifest_flag`, `test_launch_waits_for_free_memory`, `test_parallel_steps_under_host_budget`,
+`test_lock_exes_pins_and_verify_compares`, `test_receipt_digest_time_free`,
+`test_reader_reuse_keyed_on_code_and_verdict_per_run`, `test_timings_complete`, `test_registration_keys_k_p9_11`,
+`test_pin_by_role_list`, `test_marginal_candidates_only`. Each opt-in test also asserts the key-absent case.
+
+### Evidence
+All runs on the working tree that is commit `d19606dd` (no edit after the runs started).
+
+1. `"C:/Program Files/Python312/python.exe" scripts/tests/run_two_seeds.py` (`PYTHONDONTWRITEBYTECODE=1`) -> exit 0
+   ```
+   == PYTHONHASHSEED=0 -m pytest -q -p no:cacheprovider scripts/tests
+   338 passed, 4 skipped in 323.91s (0:05:23)
+   == PYTHONHASHSEED=0: exit 0
+   == PYTHONHASHSEED=1 -m pytest -q -p no:cacheprovider scripts/tests
+   338 passed, 4 skipped in 266.33s (0:04:26)
+   == PYTHONHASHSEED=1: exit 0
+   ```
+2. `... -m pytest -q -p no:cacheprovider atx-engine/tools` -> exit 0: `349 passed, 6 subtests passed in 162.60s`
+3. `... -m pytest -q -p no:cacheprovider atx-impl/tools` -> exit 0:
+   `625 passed, 2 skipped, 17 subtests passed in 199.09s`
+4. `... -m pytest -q -p no:cacheprovider scripts/tests/test_wave*.py scripts/tests/test_research_cycle.py` -> exit 0:
+   `156 passed, 3 skipped in 101.24s` (after task 7, before the full runs).
+5. Identity, tiny-world wave (scratch script, not committed): the tests' `wave_fixture` world run end to end
+   (`research_wave.main(["run", ...])`, fake cycle tools, sign rule drops alpha_b, no `driver` key) once with the
+   e93d5c2b scripts (`git archive`) and once with HEAD's, plain and with a PM8-15 marginal ruling. With the temp
+   root, time keys and receipt-file SHAs (which hash time fields) normalised: research_cycle argv 17/17 and 18/18
+   identical, every library spec byte-identical, all 42 / 43 files under `out/waves/w1` identical in content (stage
+   receipts, wave-result.json, wave-log.md, readers, bundle receipt), driver log identical. The only differences
+   are git's "LF will be replaced by CRLF" warnings in 1-2 commit console logs, which differ between two HEAD runs
+   too (git stat-cache noise).
+6. Identity, plans (scratch, not committed): `research_cycle.py wave plan` of `y-s.json` with root's two DEC-1 /
+   DEC-2 amendments (scratch copy): e93d5c2b vs HEAD output byte-identical, exit 0, 57 lines. `research_cycle.py plan`
+   of all 39 `scripts/specs/v8/*.json`: identical output, but every one exits 3 at input resolution in pool-17
+   (`input role missing: build-equity/train-2020-2023-lo3/manifest.json`: no data in this tree), so it proves little;
+   the full-argv equalities in `test_research_cycle.py` (e.g. `test_screen_stops_before_w`) cover spec argv.
+
+### Identity (flags and keys absent)
+- Unconditional, by contract: runner receipts gain `argv_sha256`, `attempt`, `build_type` (K-P9-10; receipts are
+  never byte-reproducible, they hold `started_utc`). `--build-type` is passed only for a spec with a `build` key
+  (none of the 39 v8 specs has one).
+- Unconditional, behaviour: (a) OR-3 refuses a done output only when its receipt has `argv_sha256` and a different
+  command (pre-K-P9-10 receipts reused as before); (b) reader / bundle reuse refuses when a bound `*.py` changed
+  (before: silent reuse); (c) `candidates pin --by` must be pm / root / owner (all 15 pins in
+  `scripts/specs/v8/candidates/` are by PM; queue files are never rewritten by the check); (d) K-P9-11 keys are
+  optional (no file changes).
+- Everything else is behind a `driver` key or a CLI flag: `auto_attempt`, `admission_wait_seconds`,
+  `host_budget_mib`, `lock_exes`, `receipt_digest`, `record_date`, `keep_verdicts`, `timings`; research_cycle
+  `--auto-attempt`, `--admission-wait`, `--host-budget-mib`, `--keep-verdicts`, `lock --exes`; spec
+  `exes_sha256`, `marginal.candidates`; manifest `marginal.candidates_only`.
+
+### Deviations from brief
+- Attempt sub-dirs live under the runner's run dir (`<out>-run/attempt-k`), not `<output>/attempt-k/`: the output dir
+  must stay absent for "never overwritten" and the done check; the run dir is what the runner owns. Attempt 1 is
+  the run dir itself; the receipt's `attempt` is that index. The fit's `-run<k>` passes keep their own numbering.
+- Auto-advance happens on the next invocation with `--auto-attempt` (the refused attempt is reported as a stop that
+  names the flag), not inside the same invocation.
+- "Queue history dated from the manifest" and "`cycle_verdict.json` written per run, never overwritten" are opt-in
+  (`driver.record_date`; `--keep-verdicts` copies to `verdicts/<mode>-<k>.json` while `cycle_verdict.json` keeps its
+  path for every consumer) to honour the identity rule.
+- Parallel ref || u: under a budget u runs beside ref and ref's compare runs after both. Record-stage seconds are not
+  in `stage_seconds` (the record stage writes `wave-result.json` itself).
+- The brief's "tiny-world wave end to end with a planted floor kill" is covered at the cycle level
+  (`test_attempt_subdir_after_floor_kill` on the fake cycle tools); the fake wave (`FakeCycle`) fakes research_cycle
+  itself, so a wave-level floor kill would only re-test the fake. Root's tiny-world run is the real one.
+- `--candidates` is deliberately not in `research_cycle.MARGINAL_BUILT` (see merge notes).
+
+### Cross-lane edits
+- `scripts/research_cycle.py` (ruling P3: E1 owns it in wave 1): tasks 1-7 (runner flags, `launch_flags`,
+  `PARALLEL` and the run-loop split into `parallel_partner` / `start_step` / `run_processes` / `step_outcome` /
+  `finish_step`, exe pins, `--keep-verdicts`, `marginal.candidates`, docstring).
+- `scripts/tests/test_research_cycle.py` (its test): fake runner behaviours `floor-kill`, `floor-kill-partial`.
+- `scripts/tests/wave_fixture.py` (shared wave fixture): `FakeCycle.write_verdict` mirrors `--keep-verdicts`.
+- `atx-impl/tools/backtest_integrity.py`: task 1 touches `ledger_append`'s lock only (the task-0 lines).
+- `scripts/tests/test_research_spec.py`: task 1 review minor 4 only.
+- No `scripts/specs/**`, registration file, C++ or `atx-db/` file touched.
+
+### Merge notes for root
+1. Merge `d19606dd` (tasks 1-7). No spec or manifest needs an edit: every new key is opt-in.
+2. After S1 merges, `test_research_cycle.py::test_marginal_argv_is_the_verbs_full_cli` (it re-reads
+   `strategy_marginal_ic.cpp`) fails until research_cycle names S1's new verb options: add `MARGINAL_CANDIDATES` to
+   `MARGINAL_BUILT` and place S1's other new options (`--pair-cache`, `--verified-digests` if they land) in
+   `MARGINAL_BUILT` or `MARGINAL_SPEC_FLAGS`. Until S1's exe is built, do not set `marginal.candidates_only` in a
+   manifest (today's exe would refuse `--candidates`).
+3. E2 (wave 2) moves `research_cycle.py`: carry the task 2-7 additions listed above in the move.
+4. To opt in, a new wave manifest adds e.g. `"driver": {"auto_attempt": true, "admission_wait_seconds": 900,
+   "host_budget_mib": 12000, "lock_exes": true, "receipt_digest": "content", "keep_verdicts": true, "timings": true}`
+   before its pre-registration commit (`host_budget_mib` needs `admission_wait_seconds` and >= 1536).
+5. Verify: `$PY scripts/tests/run_two_seeds.py`; `$PY -m pytest -q -p no:cacheprovider atx-engine/tools`;
+   `$PY -m pytest -q -p no:cacheprovider atx-impl/tools`; `$PY scripts/research_cycle.py wave plan
+   scripts/specs/v8/waves/y-s.json` must print the same lines as before the merge.
+
+### Open risks
+- Stale-code refusal is unconditional: a wave in flight across a merge that changes `scripts/wave_readers.py` or
+  `atx-impl/tools/nav_summ.py` stops (exit 3) when a resumed stage would reuse a reader or bundle output made with the
+  old code; the message says to move the output aside or start a new state dir. Finish in-flight waves first.
+- The host claims dir defaults to the host temp dir, shared by every worktree on purpose (one host budget); a claim
+  file of a live but hung process holds its share until that process ends.
+- `candidates pin --by` now refuses names other than pm / root / owner (any case); a lane script that pinned with
+  another name stops with exit 2.
+
+### Ledger candidates
+- Two runs of the same fake wave differ in git's CRLF warnings in commit console logs: compare wave outputs by
+  content, never console logs, for identity.
+- K-P9-10 receipts make OR-3 checkable: a done bounded output is reused only on the command (argv_sha256) that made
+  it (`cycle_resume.check_receipt_argv`, P9 E1 task 2, c925ea2d).
