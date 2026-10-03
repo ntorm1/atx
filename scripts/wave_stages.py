@@ -35,6 +35,7 @@ from pathlib import Path
 import re
 import shutil
 
+import cycle_resume as CR
 import research_add_alpha as AA
 import research_cycle as RC
 import research_ledger
@@ -514,7 +515,8 @@ def match(w: Wave, done: dict, log) -> dict:
     log(f"   gross: G {gc} vs G_parent {gp} (mode {mode}, tolerance {rule.get('tolerance')})")
     if WR.gross_matches(mode, gp, gc):
         return dict(out, corrected=False, cell_spec=s["cell_spec"], nav=done["run"]["nav"], leverage=s["leverage"],
-                    g_cell=gc, mechanics=cal["navs"]["cell"], phases=done["run"]["phases"])
+                    g_cell=gc, mechanics=cal["navs"]["cell"], phases=done["run"]["phases"],
+                    readers=reader_digests(w, ["mech-calibration"]))
     new = WR.matched_leverage(s["leverage"], gp, gc)
     gm = WS.gm_path(s["cell_spec"])
     w.require_clean("match", {gm})
@@ -536,7 +538,12 @@ def match(w: Wave, done: dict, log) -> dict:
         raise StageError(f"gross match: the matched run's G {g2} is {abs(g2 - gp):.5f} from G_parent {gp} after "
                          f"{rule.get('corrections')} correction: stop for the PM's ruling (no ledger line)")
     return dict(out, corrected=True, cell_spec=gm, commit=commit, nav=nav, leverage=new, g_cell=g2,
-                mechanics=got["navs"]["cell"], spec_digest=w.spec_digest(gm), phases=phase_rows(w, gm))
+                mechanics=got["navs"]["cell"], spec_digest=w.spec_digest(gm), phases=phase_rows(w, gm),
+                readers=reader_digests(w, ["mech-calibration", "mech-matched"]))
+
+
+def reader_digests(w: Wave, names: list[str]) -> dict:
+    return {n: w.sha(w.wave_path("readers", f"{n}.json")) for n in names}
 
 
 def match_plan(w: Wave, done: dict) -> list[str]:
@@ -557,20 +564,26 @@ def verify(w: Wave, done: dict, log) -> dict:
     for r in chk["rows"]:
         log(f"   mechanics {r['check']}: {r['value']} {r['limit']} -> {'pass' if r['pass'] else 'FAIL'}")
     nav_run = f"{mt['nav']}-run"
-    binding = w.read_json(f"{nav_run}/cycle_binding.json")
+    bpath = f"{nav_run}/cycle_binding.json"
+    binding = w.read_json(bpath)
+    digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done))
     problems = []
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
-        problems.append(f"the cell's NAV has no C-13 binding {nav_run}/cycle_binding.json")
+        problems.append(f"the cell's NAV has no C-13 binding {bpath}")
+    elif binding.get("spec_rule") != CR.SPEC_RULE or binding.get("spec_sha256") != digest:
+        problems.append(f"the cell's NAV binding {bpath} names spec {binding.get('spec_sha256')} "
+                        f"({binding.get('spec_rule')}), not the cell spec {mt['cell_spec']} ({CR.SPEC_RULE} {digest})")
     problems += wave_seal.problems(seal)
     if problems:
         raise StageError("verify: " + "; ".join(problems) + ": stop for the PM's ruling (the cell ran; no ledger "
                          "line was written)")
-    log(f"   mechanics PASS; binding {binding['argv_sha256'][:12]}; seal scan {seal['files']} log(s), 0 tokens")
-    return {"mechanics": chk, "binding": {"path": f"{nav_run}/cycle_binding.json", "argv_sha256":
-                                          binding["argv_sha256"], "spec_sha256": binding.get("spec_sha256")},
+    log(f"   mechanics PASS; binding {binding['argv_sha256'][:12]} (spec {digest[:12]}); seal scan {seal['files']} "
+        "log(s), 0 tokens")
+    return {"mechanics": chk, "binding": {"path": bpath, "sha256": w.sha(bpath), "argv_sha256": binding["argv_sha256"],
+                                          "spec_sha256": binding["spec_sha256"]},
             "seal_scan": seal, "identity": "the cycle's compare steps ran in every research_cycle run (a miss is its "
                                            "exit 4, which stops the stage)"}
 
@@ -617,8 +630,8 @@ def judge(w: Wave, done: dict, log) -> dict:
     log(f"   verdict ({verdict['rule']}): {'ACCEPTED' if verdict['accepted'] else 'NOT ACCEPTED'} {verdict['checks']}")
     return {"cycle_verdict": vpath, "cycle_verdict_sha256": w.sha(vpath),
             "summ_json_sha256": w.sha(f"{outs['cycle_dir']}/summ.json"), "paired": v["paired"], "dsr": v["dsr"],
-            "pbo": v.get("pbo"), "bundle": bundle, "book": book, "verdict": verdict,
-            "phases": phase_rows(w, cell)}
+            "pbo": v.get("pbo"), "bundle": bundle, "book": book, "readers": reader_digests(w, ["book"]),
+            "verdict": verdict, "phases": phase_rows(w, cell)}
 
 
 def judge_plan(w: Wave, done: dict) -> list[str]:
@@ -689,12 +702,73 @@ def record_plan(w: Wave, done: dict) -> list[str]:
             f"{w.wave_path(wave_result.RESULT)} and {w.wave_path(wave_result.LOG)}"]
 
 
+# ------------------------------------------------------------------ predecessor digests (stage inputs)
+# Each stage's inputs are the digests its predecessor recorded of the files it hands on, recomputed now (only files no
+# later stage rewrites): a moved file is stale (exit 3) both before the stage runs (against the predecessor's record)
+# and on every resume after (against the stage's own receipt). Preflight pins the manifest, parent and fields itself.
+def pinned(stage: str, recorded: dict, now: dict) -> dict:
+    out = {}
+    for key, value in now.items():
+        if value != recorded.get(key):
+            raise StageError(f"STALE: {stage} recorded {key} {str(recorded.get(key))[:80]}; it is {str(value)[:80]} "
+                             "now (a file a done stage recorded changed: restore it, or start a new state dir)",
+                             stage_chain.EXIT_STALE)
+        out[f"{stage}.{key}"] = value
+    return out
+
+
+def screen_inputs(w: Wave, done: dict) -> dict:
+    r = done.get("register") or {}
+    return pinned("register", r, {"spec_sha256": w.sha(r["spec"])}) if r.get("spec") else {}
+
+
+def spec_inputs(w: Wave, done: dict) -> dict:
+    sc = done.get("screen") or {}
+    return pinned("screen", sc, {"admission_sha256": w.sha(sc["admission"])}) if sc.get("admission") else {}
+
+
+def run_inputs(w: Wave, done: dict) -> dict:
+    sp = done.get("spec") or {}
+    if not sp.get("cell_spec"):
+        return {}
+    return pinned("spec", sp, {"spec_digest": w.spec_digest(sp["cell_spec"]) if w.exists(sp["cell_spec"]) else None})
+
+
+def match_inputs(w: Wave, done: dict) -> dict:
+    rn = done.get("run") or {}
+    return pinned("run", rn, {"summary_sha256": w.sha(f"{rn['nav']}/summary.json")}) if rn.get("nav") else {}
+
+
+def verify_inputs(w: Wave, done: dict) -> dict:
+    mt = done.get("match") or {}
+    if not mt.get("readers"):
+        return {}
+    now = {"readers": reader_digests(w, list(mt["readers"]))}
+    if mt.get("spec_digest"):
+        now["spec_digest"] = w.spec_digest(mt["cell_spec"]) if w.exists(mt["cell_spec"]) else None
+    return pinned("match", mt, now)
+
+
+def judge_inputs(w: Wave, done: dict) -> dict:
+    b = (done.get("verify") or {}).get("binding")
+    return pinned("verify.binding", b, {"sha256": w.sha(b["path"])}) if b else {}
+
+
+def record_inputs(w: Wave, done: dict) -> dict:
+    jd = done.get("judge") or {}
+    if not jd.get("cycle_verdict"):
+        return {}
+    return dict(pinned("judge", jd, {"cycle_verdict_sha256": w.sha(jd["cycle_verdict"]),
+                                     "readers": reader_digests(w, list(jd["readers"]))}),
+                **pinned("judge.bundle", jd["bundle"], {"sha256": w.sha(jd["bundle"]["path"])}))
+
+
 STAGES = [Stage("preflight", preflight, preflight_inputs, preflight_plan),
           Stage("register", register, None, register_plan),
-          Stage("screen", screen, None, screen_plan),
-          Stage("spec", spec_stage, None, spec_plan),
-          Stage("run", run_stage, None, run_plan),
-          Stage("match", match, None, match_plan),
-          Stage("verify", verify, None, verify_plan),
-          Stage("judge", judge, None, judge_plan),
-          Stage("record", record, None, record_plan)]
+          Stage("screen", screen, screen_inputs, screen_plan),
+          Stage("spec", spec_stage, spec_inputs, spec_plan),
+          Stage("run", run_stage, run_inputs, run_plan),
+          Stage("match", match, match_inputs, match_plan),
+          Stage("verify", verify, verify_inputs, verify_plan),
+          Stage("judge", judge, judge_inputs, judge_plan),
+          Stage("record", record, record_inputs, record_plan)]

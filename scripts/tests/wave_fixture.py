@@ -21,6 +21,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import research_cycle as RC  # noqa: E402
 import research_ledger  # noqa: E402
+import research_spec  # noqa: E402
+import research_tree  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 import wave_readers  # noqa: E402
 
@@ -261,8 +263,10 @@ class FakeCycle:
             write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift)
             write_json(self.root, f"{nav}-run/receipt.json", {"outcome": "completed", "exit_code": 0,
                                                               "wall_seconds": 41.5, "sampled_peak_tree_rss_bytes": 586 << 20})
-            write_json(self.root, f"{nav}-run/cycle_binding.json", {"argv_sha256": sha(nav.encode()),
-                                                                    "spec_sha256": sha(rel.encode())})
+            write_json(self.root, f"{nav}-run/cycle_binding.json",       # cycle_resume.write_binding's layout
+                       {"schema": "atx.cycle-nav-binding/v1", "output": nav, "argv_sha256": sha(nav.encode()),
+                        "spec_sha256": research_spec.spec_digest(self.root / rel, research_tree.REPO),
+                        "spec_rule": "spec-digest-v1"})
             write(self.root, f"{nav}-run/stdout.log", "nav replay 2020-01-02 .. 2021-02-10\n")
             return self.ok(args)
         daily = (self.root / nav / "daily_s2.csv").read_bytes()

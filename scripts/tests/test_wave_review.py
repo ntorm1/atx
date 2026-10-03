@@ -234,3 +234,46 @@ def test_the_hidden_data_line_counts_the_records_scan(tmp_path):
     verified = receipt(root, "07-verify.json")["outputs"]["seal_scan"]["files"]
     assert seal["tokens_at_or_after_seal"] == 0 and seal["files"] > verified                # the judge's logs too
     assert f"seal scan of {seal['files']} log(s)" in (root / STATE / "wave-log.md").read_text()
+
+
+# ------------------------------------------------------------------ MAJOR 5: every stage re-checks its predecessor
+def test_a_library_spec_edited_after_register_is_never_screened(tmp_path, capsys):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL)
+    assert wave(root, fake, "run", "--until", "register")[0] == 0
+    spec = root / "scripts/specs/v8/lib-w1.json"
+    spec.write_text(spec.read_text().replace("synthetic cell w1", "edited and committed"))
+    F.git(root, "commit", "-q", "-am", "edit the library spec")
+    code, _ = wave(root, fake, "run")
+    assert code == 3 and "STALE: register recorded spec_sha256" in capsys.readouterr().err
+    assert not any("--screen" in c for c in fake.calls) and not (root / STATE / "receipts/03-screen.json").exists()
+
+
+def test_a_file_a_done_stage_recorded_that_moves_is_stale_on_resume(tmp_path, capsys):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL)
+    assert wave(root, fake, "run", "--until", "match")[0] == 0
+    nav = receipt(root, "05-run.json")["outputs"]["nav"]
+    summary = root / nav / "summary.json"
+    summary.write_text(summary.read_text().replace('"complete"', '"rewritten"'))
+    code, _ = wave(root, fake, "run")
+    assert code == 3 and "STALE: run recorded summary_sha256" in capsys.readouterr().err
+    code, lines = wave(root, fake, "status")
+    assert [x.split()[:2] for x in lines][5] == ["match", "stale"]
+
+
+class OtherSpecBinding(F.FakeCycle):
+    def cycle(self, args):
+        done = super().cycle(args)
+        if "--stop-after" in args:
+            spec, c = self.spec_outputs(args[1])
+            p = self.root / f"{c.out(spec['nav']['output'])}-run/cycle_binding.json"
+            p.write_text(json.dumps(dict(json.loads(p.read_text()), spec_sha256="0" * 64)))
+        return done
+
+
+def test_verify_compares_the_navs_binding_with_the_cell_spec(tmp_path):
+    root = F.build(tmp_path / "r")
+    code, _ = wave(root, OtherSpecBinding(root, KEPT_ALL), "run")
+    err = failed(root, "07-verify.failed-1.json")
+    assert code == 4 and f"names spec {'0' * 64} (spec-digest-v1), not the cell spec" in err
