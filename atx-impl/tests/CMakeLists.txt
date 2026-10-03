@@ -152,3 +152,8 @@ foreach(_strategy_tests IN ITEMS
     gtest_discover_tests(${_strategy_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_strategy_tests}."
         PROPERTIES LABELS atx_equity_strategy)
 endforeach()
+
+# P9 lane D1 (DEC-8, contract K-P9-6): the composition rule table, the theme table, the
+# --list-rules envelope and the ordered stage list (strategy_ic_rules.hpp) in the focused IC
+# target; atx-impl-tests already compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_rules_test.cpp)
