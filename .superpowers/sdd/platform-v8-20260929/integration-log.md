@@ -7285,3 +7285,21 @@ parent's receipt; the cell's fit with `--two-speed`, card, w), before any cell N
 done) and runs the calibration NAV.
 
 **Stop**: any (a) mismatch beyond the stated paths, a (b) failure, or a (c) mismatch = P13 fails = stop (0 trials).
+
+### P13 (a) and (b) results (source `73e50d6a`, the plan commit; one run at a time)
+
+Launch: `"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --output build-equity/<run dir> --seconds
+<s> --max-rss-mib <m> --min-free-mib 512 --bind <the parent receipt's bindings> -- <the parent receipt's command, --output
+renamed>`, PATH prepended with the spec's `env_path_prepend`. Host check before each (psutil): no compiler, no `atx-*` exe,
+no research process (two other lanes' pytest running, not blocking); free memory sampled every 0.25 s.
+
+| pass | run dir | gate / free before / min | s / peak MiB | exe | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| fit (180 / 1,536) | `p9-r09-p13-fit-run` | 1,594 / 2,601 / 2,400 | 1.3 / 63 | python `624bbc05`, fitter `8d05a9bb` | `e099fad9b5c122a65f600f28448877caa9ce1f2817177d45a66d0ba563efbf42` | **3 / 3 byte-identical**: `admission.csv` `c3933116`, `admission.json` `121f7046`, `composition_weights.json` `0c480773` (= the parent's pins; no substitution needed) |
+| w (300 / 3,072) | `p9-r09-p13-w-run` | 4,322 / 4,390 / 2,910 (first try: gate not met in 900 s at ~3,700 free, nothing launched; second: met after 647 s) | 45.4 / 1,435 | ic `985019d9` | `3983802f5668eb5d194567fc55deb1c762c49301c7ee23a81f3db825e0297754` | **10 / 12 byte-identical**: `train_combined.json` `e13fbc4d`, `.f64` `70d863f9`, `_finite.u8` `c61f5b62`, `_ids.u64` `761bd1df`, `_member.u8` `c61f5b62`, `_sessions.i64` `ab244802`, `train_daily_ic.csv` `45261f20`, `orientations.json` `8d1a7f64`, `recipe.json` `c248eff7`, `train_planned_targets.csv` `cb744a74`; `summary.json` (273 of 8,330 leaf paths) and `train_candidates.jsonl` (264 of 7,571) differ only in `stage_seconds.*`, `wall_seconds`, `hash_seconds` (warm cache both: no cache-count path differs) |
+| NAV (180 / 1,536) | `p9-r09-p13-nav-run` | 3,072 / 4,652 / 3,973 | 43.0 / 586 | targets `72ff6d2d` | `c86205248efb088cfd4c1f9f3192f314fa2ec36b672f853fc3aa08bae50a4aeb` | **27 / 27 byte-identical** |
+| (b) `TwoSpeedRunner.*` | `build-equity/bin/atx-impl-strategy-ic-tests.exe --gtest_filter=TwoSpeedRunner.* --gtest_output=xml:build-equity/p9-r09-p13-twospeedrunner.xml` | - | 0.7 | ic-tests `3393a953` (v8-16e) | xml `08412bc0` | **2 / 2 passed** (`SavesTheSleevesBesideAnUnchangedBlend`, `BlockRefusalsPrecedeAnyPayloadOrOutput`) |
+
+All three receipts: completed, exit 0, "clean in the code pathspec", dirty outside only the untracked png, stderr empty.
+**P13 (a) PASS** (the parent's fit, w and NAV argv reproduce on the P5 build with `--two-speed` absent) and **(b) PASS**.
+(c) follows stage 04. Comparisons by SHA-256 and JSON paths only; no value read.
