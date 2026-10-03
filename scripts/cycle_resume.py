@@ -16,10 +16,17 @@ the new spec_sha256 in cycle_verdict.json to the old cell's numbers. Now:
           the argv check), from the binding or else from its bounded-runner receipt (outcome completed, exit 0,
           ``command`` = the executable and its argv). A mismatch, or an output with neither, is refused with the
           digests in the message.
+
+Every other bounded output (u, fit, w, card, marginal, an every-phase fields or monitor; P9 OR-3, contract K-P9-10):
+a done step is reused only when the receipt of the run that made it names the command this spec would run now
+(``check_receipt_argv``; a receipt written before K-P9-10, without argv_sha256, is reused as before).
+
+Attempt sub-dirs (P9 OR-4): attempt 1 of a bounded step runs in its run dir, attempt k >= 2 in
+<run dir>/attempt-k (``attempt_dirs``); research_cycle advances to the next one only under --auto-attempt and only
+after a host-memory refusal that wrote nothing (AUTO_OUTCOMES).
 """
 from __future__ import annotations
 
-import hashlib
 import json
 
 import research_spec
@@ -28,24 +35,42 @@ import research_tree
 BINDING = "cycle_binding.json"
 SCHEMA = "atx.cycle-nav-binding/v1"
 SPEC_RULE = "spec-digest-v1"           # review F-9: spec_sha256 = research_spec.spec_digest (a template's chain)
+ATTEMPT_PREFIX = "attempt-"            # <run dir>/attempt-k: attempt k >= 2 of a bounded step (P9 OR-4)
+# the runner outcomes of an attempt that the host refused (memory: its floor at launch or while running, or the
+# bounded launch admission timing out), after which nothing the process wrote is kept: an attempt-k may follow
+AUTO_OUTCOMES = ("prelaunch-memory-refusal", "system-memory-limit", "prelaunch-admission-timeout")
+# per phase, the options whose presence never changes the output a resumed step reuses (P9 OR-3): the u pass's blend
+# switch (the screen's --no-composition, B-1; nothing downstream reads the u-pass blend) and the fit's re-fit check
+# of a theme-resid parent (an input check, derived only for the cell that adds --theme-resid: R-11, R6B-O-5)
+REUSE_NEUTRAL = {"u": {"--save-combined": 0, "--no-composition": 0},
+                 "fit": {"--theme-resid-parent": 1, "--theme-resid-parent-sha256": 1}}
 
 
 class ResumeError(ValueError):
     """A done output that cannot be scored under the current spec (research_cycle.py: a pin stop, exit 3)."""
 
 
+def attempt_dirs(res, run_dir: str, limit: int) -> list[str]:
+    """``run_dir`` and its attempt sub-dirs <run_dir>/attempt-2, -3, ... that exist (contiguous: research_cycle makes
+    attempt k + 1 only after attempt k), at most ``limit`` in all; ``res`` has exists_dir (a Resolver, a wave)."""
+    out = [run_dir]
+    while len(out) < limit and res.exists_dir(f"{run_dir}/{ATTEMPT_PREFIX}{len(out) + 1}"):
+        out.append(f"{run_dir}/{ATTEMPT_PREFIX}{len(out) + 1}")
+    return out
+
+
 def nav_run_dirs(out: str, attempts: int) -> list[str]:
     """The run dirs research_cycle gives the NAV (or ref) output ``out``, in attempt order: <out>-run, then
-    <out>-run<k> for k = 2..attempts (``--attempt nav=k``). The one enumeration of them: research_cycle's ref skip and
-    the wave's verify both read it (review E1t0, minor 3)."""
+    <out>-run<k> for k = 2..attempts (``--attempt nav=k``); each may hold attempt-k sub-dirs (attempt_dirs). The one
+    enumeration of them: research_cycle's ref skip and the wave's verify both read it (review E1t0, minor 3)."""
     return [f"{out}-run"] + [f"{out}-run{k}" for k in range(2, attempts + 1)]
 
 
 def completed_exes(res, out: str, attempts: int) -> list[str]:
-    """The executable_sha256 of every completed (exit 0) run receipt of the NAV output ``out`` (nav_run_dirs), in
-    attempt order, read through ``res`` (anything with read_json: a research_cycle Resolver, a wave)."""
+    """The executable_sha256 of every completed (exit 0) run receipt of the NAV output ``out`` (nav_run_dirs and their
+    attempt sub-dirs), in attempt order, read through ``res`` (read_json, exists_dir: a Resolver, a wave)."""
     found = []
-    for d in nav_run_dirs(out, attempts):
+    for d in [a for base in nav_run_dirs(out, attempts) for a in attempt_dirs(res, base, attempts)]:
         r = res.read_json(f"{d}/receipt.json")
         if isinstance(r, dict) and r.get("outcome") == "completed" and r.get("exit_code") == 0 and \
                 isinstance(r.get("executable_sha256"), str):
@@ -61,14 +86,50 @@ def completed_exe_sha256(res, out: str, attempts: int) -> str | None:
 
 
 def argv_digest(args: list[str]) -> str:
-    """SHA-256 of a command's arguments after its executable (compact JSON list)."""
-    return hashlib.sha256(json.dumps([str(a) for a in args], separators=(",", ":")).encode()).hexdigest()
+    """SHA-256 of a command's arguments after its executable (compact JSON list): research_tree.argv_sha256, the
+    bounded runner's receipt argv_sha256 (K-P9-10)."""
+    return research_tree.argv_sha256(args)
 
 
 def step_args(st) -> list[str]:
     """A bounded step's command after its executable: what the runner records as ``command[1:]``."""
     k = st.argv.index("--")
     return st.argv[k + 2:]
+
+
+def reuse_args(phase: str, args: list[str]) -> list[str]:
+    """``args`` without the phase's REUSE_NEUTRAL options and their values (what a resumed step's reuse compares)."""
+    neutral, out, i = REUSE_NEUTRAL.get(phase, {}), [], 0
+    while i < len(args):
+        a = str(args[i])
+        if a in neutral:
+            i += 1 + neutral[a]
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def check_receipt_argv(cycle, st) -> str | None:
+    """P9 OR-3 (contract K-P9-10): raise ResumeError unless the done bounded step ``st`` (u, fit, w, card, marginal,
+    an every-phase fields or monitor; nav and ref are bound by check_binding) was made by the command this spec would
+    run now: the receipt's ``command`` after its executable equals the step's, REUSE_NEUTRAL options aside (else, with
+    no command, its argv_sha256 equals the step's). None: the receipt predates K-P9-10 (no argv_sha256), reused as
+    before; else how it matched (for the log)."""
+    r = cycle.receipt(st.run_dir)
+    if not isinstance(r, dict) or not isinstance(r.get("argv_sha256"), str):
+        return None
+    now, src = step_args(st), f"{st.run_dir}/receipt.json"
+    made = list(r["command"][1:]) if isinstance(r.get("command"), list) and r["command"] else None
+    same = reuse_args(st.phase, made) == reuse_args(st.phase, now) if made is not None else \
+        r["argv_sha256"] == argv_digest(now)
+    if not same:
+        raise ResumeError(f"{st.phase} output {st.output} was made by a command with argv sha256 {r['argv_sha256']} "
+                          f"({src}); this spec's {st.phase} command is argv sha256 {argv_digest(now)}: refusing to "
+                          f"reuse it (an input of {st.phase} changed and its output name did not: rename the output "
+                          "or run under a fresh --suffix)")
+    neutral = made is not None and made != [str(a) for a in now]
+    return f"argv sha256 {r['argv_sha256']} ({src})" + (", reuse-neutral options aside" if neutral else "")
 
 
 def spec_digest(cycle) -> str | None:

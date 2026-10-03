@@ -41,6 +41,11 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  carries the screen's per-row marginal fields (report only) instead of
                                                  a second marginal pass when the screen ran its marginal mode, and a
                                                  b library runs --screen before its cell
+   "driver": {KEY: VALUE, ...}                    optional (P9 lane E1): how the driver runs the wave; every key is
+                                                 opt-in, and without it (or without the block) the wave's argv, behaviour
+                                                 and written bytes are those of before (DRIVER_KEYS):
+       "auto_attempt": BOOL                      research_cycle run --auto-attempt: a bounded step the host refused for
+                                                 memory with nothing written runs again in <run dir>/attempt-k (OR-4)
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
@@ -73,8 +78,11 @@ CANDIDATE_OPTIONAL = ("kind", "replaces", "rescreen", "removes", "fields", "prio
 TOP_REQUIRED = ("schema", "wave", "parent", "fields", "acceptance", "gross_match", "budget", "ledger", "expect",
                 "out_dir")
 TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed",
-                "marginal")
+                "marginal", "driver")
 SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
+# "driver": the wave driver's opt-in behaviours (P9 lane E1; each absent = that of before): a key maps to its value
+# check and the text of its refusal
+DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false")}
 MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)
@@ -240,6 +248,7 @@ def validate(m) -> list[str]:
         out.append("marginal must be {ruling: the PM ruling, pool_only?: true | false, seconds?: a positive integer}")
     elif research_tree.seconds_cap_refusal("marginal.seconds", mg.get("seconds")):
         out.append(research_tree.seconds_cap_refusal("marginal.seconds", mg["seconds"]))
+    out += driver_problems(m.get("driver", {}))
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
     return out
@@ -305,3 +314,18 @@ def budget_prefixes(b: dict) -> list[str]:
 
 def speed(m: dict, key: str) -> bool:
     return bool((m.get("speed") or {}).get(key, True))
+
+
+def driver_problems(d) -> list[str]:
+    """Problems of a manifest's driver block (empty: valid): known keys only, each value as DRIVER_KEYS checks it."""
+    if not isinstance(d, dict):
+        return [f"driver must be an object of {', '.join(DRIVER_KEYS)} (see the module doc)"]
+    out = [f"driver: unknown key {k!r} (known: {', '.join(DRIVER_KEYS)})" for k in sorted(set(d) - set(DRIVER_KEYS))]
+    out += [f"driver.{k} must be {DRIVER_KEYS[k][1]}" for k, v in d.items() if k in DRIVER_KEYS and
+            not DRIVER_KEYS[k][0](v)]
+    return out
+
+
+def driver(m: dict, key: str, default=None):
+    """A driver key of the manifest (absent: ``default``, the behaviour of before)."""
+    return (m.get("driver") or {}).get(key, default)

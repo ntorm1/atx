@@ -3,7 +3,7 @@
 
   research_cycle.py plan   SPEC [--root R] [--suffix S [--keep-fields]] [--attempt PHASE=N ...] [--reuse-fields DIR]
                                 [--ledger PATH] [--runner-override KEY=VALUE ...] [--lines-only] [--no-git] [--screen]
-  research_cycle.py run    SPEC [same options] [--stop-after PHASE]
+  research_cycle.py run    SPEC [same options] [--stop-after PHASE] [--auto-attempt]
   research_cycle.py status SPEC [same options]
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
   research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
@@ -26,6 +26,14 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   (admission and marginal rows, per-phase seconds and peak MiB) into the cycle dir
                   <out_root or build-equity>/cycle-<name>[-suffix]/; a full run writes it too (with the paired dSR,
                   DSR N and PBO blocks read from nav_summ --json / --pbo-json when the spec sets "verdict": true)
+  --auto-attempt  (P9 OR-4) a bounded step whose latest attempt the host refused (cycle_resume.AUTO_OUTCOMES: the
+                  memory floor at launch or while running, a launch-admission timeout) and whose output is absent runs
+                  again in <run dir>/attempt-k (k = 2, 3, ... <= MAX_ATTEMPTS) on the next invocation; without the flag
+                  that state is a stop, as before. A step whose run dir holds attempt-k sub-dirs is read from the
+                  latest (its receipt and NAV binding); attempt 1 keeps the run dir of before
+  resume argv     (P9 OR-3, K-P9-10) a done bounded output (u, fit, w, card, marginal, every-phase fields / monitor) is
+                  reused only when its run receipt's command equals the one this spec would run now
+                  (cycle_resume.REUSE_NEUTRAL options aside); a receipt written before K-P9-10 is reused as before
   --no-git        (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
                   --root R --no-git, and a relative tool path (runner, builder, fit, card, monitor, summ scripts) that
                   is absent under R resolves to this worktree's copy
@@ -710,7 +718,8 @@ class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
-                 screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None):
+                 screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None,
+                 auto_attempt: bool = False):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and as_built(spec.get("fields")):
@@ -730,6 +739,7 @@ class Cycle:
         self.attempts = dict(attempts or {})
         self.reuse_fields, self.ledger, self.spec_path = reuse_fields, ledger, spec_path
         self.no_git, self.screen = no_git, screen
+        self.auto_attempt = auto_attempt    # P9 OR-4: a refused attempt with no output advances to attempt-k
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
         # task H-1 (research_roles.py): an era of a roles: cycle keys its outputs and receipts by role_key; the
@@ -878,10 +888,58 @@ class Cycle:
                  "--min-free-mib", str(caps["min_free_mib"])]
         if self.role_key and phase in ERA_PHASES:   # H-1: an era's own run (the pooled fit and summ have none)
             argv += ["--role-id", self.role_key]
+        if self.spec.get("build") in research_tree.BUILD_TYPES:   # K-P9-10: the exes' build type in the receipt
+            argv += ["--build-type", research_tree.BUILD_TYPES[self.spec["build"]]]
         argv += ["--output", run_dir]
         for b in binds:
             argv += ["--bind", b]
         return argv + ["--"]
+
+    # -------------------------------------------------------------- attempt sub-dirs (P9 OR-4)
+    def retarget(self, st: Step, run_dir: str, attempt: int) -> None:
+        """Point a bounded step's runner at ``run_dir`` (an attempt-k sub-dir of its run dir) as attempt ``attempt``:
+        the runner's --output and --attempt before its "--" (the command after it is unchanged)."""
+        k = st.argv.index("--")
+        head, tail = list(st.argv[:k]), st.argv[k:]
+        i = head.index("--output")
+        head[i + 1] = run_dir
+        if "--attempt" in head:
+            head[head.index("--attempt") + 1] = str(attempt)
+        else:
+            head[i:i] = ["--attempt", str(attempt)]
+        st.argv, st.run_dir = head + tail, run_dir
+
+    def resolve_attempts(self, st: Step) -> None:
+        """Attempt sub-dirs of a bounded step (P9 OR-4): attempt 1 is the step's run dir, attempt k >= 2 is
+        <run dir>/attempt-k. A step with sub-dirs on disk is pointed at the latest one (where its receipt and NAV
+        binding are). A failed step whose output is absent and whose latest attempt the runner refused for host
+        memory (cycle_resume.AUTO_OUTCOMES: nothing ran to the end, nothing was written) advances to the next
+        attempt-k under --auto-attempt (no spec edit, no --suffix); without the flag it stays a stop, as before."""
+        if st.kind != "bounded" or not st.run_dir or st.state not in ("done", "failed") or \
+                st.phase in ("check", "summ"):
+            return
+        base = st.run_dir
+        dirs = cycle_resume.attempt_dirs(self.res, base, MAX_ATTEMPTS)
+        if len(dirs) > 1:
+            self.retarget(st, dirs[-1], len(dirs))
+            if st.state == "failed":       # the latest attempt's receipt, not the first one's
+                st.note = f"{self.failure_note(dirs[-1])} (attempt {len(dirs)}); never overwritten"
+        if st.state != "failed" or (st.output and self.res.exists_dir(st.output)):
+            return
+        r = self.receipt(dirs[-1])
+        if not (isinstance(r, dict) and r.get("outcome") in cycle_resume.AUTO_OUTCOMES):
+            return
+        nxt = f"{base}/{cycle_resume.ATTEMPT_PREFIX}{len(dirs) + 1}"
+        if len(dirs) >= MAX_ATTEMPTS:
+            st.note += f"; refused with nothing written, and the {MAX_ATTEMPTS} attempts are spent"
+        elif self.auto_attempt:
+            self.retarget(st, nxt, len(dirs) + 1)
+            st.state = "pending"
+            st.note = (f"attempt {len(dirs) + 1} (--auto-attempt): {dirs[-1]} was refused ({r.get('outcome')}) and "
+                       f"{st.output} is absent")
+        else:
+            st.note += (f"; refused with nothing written: a resume with --auto-attempt runs attempt {len(dirs) + 1} in "
+                        f"{nxt}")
 
     def always_run_dir(self, phase: str) -> str:
         """A fresh receipt dir of an always-run phase (check, summ): <cycle dir>/<phase>-run<k>, k the first unused."""
@@ -1012,6 +1070,8 @@ class Cycle:
             out.append(self.monitor_step(u_out, w_dir, card_out))
         if "summ" in s:
             out.append(self.summ_step(w_dir, n_out))
+        for st in out:
+            self.resolve_attempts(st)
         steps = self.with_compares(out)
         if self.screen:  # u -> fit -> card -> marginal -> gate; the identity NAV and the cell wait for the full run
             for st in steps:
@@ -1369,8 +1429,8 @@ class Cycle:
             j = self.attempts["fit"]
         elif self.res.exists(f"{w_dir}/composition_weights.json"):
             j = runs[-1] if runs else 1
-        elif runs:
-            last = self.receipt(f"{w_dir}-run{runs[-1]}")
+        elif runs:   # the pass's last attempt (an attempt-k sub-dir after a refusal, P9 OR-4) decides the next pass
+            last = self.receipt(cycle_resume.attempt_dirs(self.res, f"{w_dir}-run{runs[-1]}", MAX_ATTEMPTS)[-1])
             j = runs[-1] + 1 if last and last.get("exit_code") == FIT_INCOMPLETE else runs[-1]
         else:
             j = 1
@@ -1591,7 +1651,8 @@ def header(cycle: Cycle) -> list[str]:
              f"root {cycle.res.root}; "
              f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
              f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
-             f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"]
+             f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"
+             f"{'; --auto-attempt' if getattr(cycle, 'auto_attempt', False) else ''}"]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
     return lines + research_spec.header_lines(cycle.spec, cycle.spec_path, research_tree.REPO)
@@ -1698,11 +1759,15 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase in ("nav", "ref"):  # review C-13: scored only when made from this spec (F-6: ref compared
-                try:                        # only when made by the NAV command the spec runs now)
-                    log(f"   binding: {cycle_resume.check_binding(cycle, st)}")
-                except cycle_resume.ResumeError as exc:
-                    raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
+            try:
+                if st.phase in ("nav", "ref"):  # review C-13: scored only when made from this spec (F-6: ref
+                    log(f"   binding: {cycle_resume.check_binding(cycle, st)}")   # compared only when made by the
+                elif st.kind == "bounded":      # NAV command the spec runs now); P9 OR-3: every other bounded output
+                    how = cycle_resume.check_receipt_argv(cycle, st)               # reused only on the same argv
+                    if how:
+                        log(f"   receipt argv: {how}")
+            except cycle_resume.ResumeError as exc:
+                raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
             admission_trials(cycle, w_dir, log)
@@ -1741,8 +1806,12 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                     log("   fit incomplete (exit 3, the documented resume protocol): next pass resumes")
                     continue
                 if r.get("outcome") != "completed" or r.get("exit_code") != 0:
+                    retry = r.get("outcome") in cycle_resume.AUTO_OUTCOMES and st.output and \
+                        not cycle.res.exists_dir(st.output)   # P9 OR-4: the host refused it, nothing was written
                     raise CycleError(f"HARD-STOP [{key}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
-                                     f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}")
+                                     f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}"
+                                     + ("; nothing was written: a resume with --auto-attempt runs the next attempt"
+                                        if retry else ""))
             else:
                 if st.kind == "direct" and done.returncode != 0:
                     raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
@@ -1935,6 +2004,9 @@ def main(argv=None) -> int:
     ap.add_argument("--runner-override", action="append", default=[], help="seconds|max_rss_mib|min_free_mib=N")
     ap.add_argument("--lines-only", action="store_true", help="plan: the command lines only")
     ap.add_argument("--stop-after", choices=STOP_PHASES, default=None)
+    ap.add_argument("--auto-attempt", action="store_true",
+                    help="P9 OR-4: a step the host refused (memory) with nothing written runs again in <run dir>/"
+                         "attempt-k (the wave passes it when its manifest's driver.auto_attempt is true)")
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
     ap.add_argument("--write", action="store_true", help="lock: write the pins back into SPEC")
     ap.add_argument("--no-git", action="store_true", help="K3: a --root outside any git repository (test roots)")
@@ -1958,7 +2030,7 @@ def main(argv=None) -> int:
         cycle = make_cycle(Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
                            reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
                            runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
-                           screen=a.screen)
+                           screen=a.screen, auto_attempt=a.auto_attempt)
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK

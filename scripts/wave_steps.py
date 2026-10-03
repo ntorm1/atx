@@ -77,6 +77,13 @@ def cycle_argv(py: str, verb: str, spec: str, *extra: str, root=None) -> list[st
     return rooted([py, tool(RCY, root), verb, spec, *extra], root)
 
 
+def driver_flags(driver: dict | None) -> list[str]:
+    """research_cycle run options of a manifest's driver block (wave_manifest.DRIVER_KEYS; none without one):
+    auto_attempt -> --auto-attempt (P9 OR-4)."""
+    d = driver or {}
+    return ["--auto-attempt"] if d.get("auto_attempt") else []
+
+
 def bounded_argv(py: str, run_dir: str, binds: list[str], command: list[str], root=None) -> list[str]:
     argv = [py, tool(RUNNER, root), "--seconds", READER_CAPS["seconds"], "--max-rss-mib", READER_CAPS["max_rss_mib"],
             "--min-free-mib", READER_CAPS["min_free_mib"], "--output", run_dir]

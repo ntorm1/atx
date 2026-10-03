@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cycle_resume  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_spec  # noqa: E402
 import research_tree  # noqa: E402
@@ -132,13 +133,23 @@ class Wave:
 
     def run_dirs(self, base: str) -> list[str]:
         """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in attempt order (-run, then
-        k ascending: -run2 before -run10)."""
+        k ascending: -run2 before -run10), each followed by its attempt sub-dirs ``attempt-k`` (P9 OR-4: research_cycle
+        --auto-attempt's retries after a host refusal), k ascending: the timings rows and the seal scan read them all."""
         p = self.path(f"{base}-run")
         if not p.parent.is_dir():
             return []
         found = [d for d in p.parent.glob(p.name + "*")
                  if d.is_dir() and (d.name == p.name or d.name[len(p.name):].isdigit())]
-        return [self.rel(d) for d in sorted(found, key=lambda d: int(d.name[len(p.name):] or 0))]
+        out = []
+        for d in sorted(found, key=lambda d: int(d.name[len(p.name):] or 0)):
+            out.append(self.rel(d))
+            subs = [s for s in d.glob(cycle_resume.ATTEMPT_PREFIX + "*")
+                    if s.is_dir() and s.name[len(cycle_resume.ATTEMPT_PREFIX):].isdigit()]
+            out += [self.rel(s) for s in sorted(subs, key=lambda s: int(s.name[len(cycle_resume.ATTEMPT_PREFIX):]))]
+        return out
+
+    def exists_dir(self, rel: str) -> bool:
+        return self.path(rel).is_dir()
 
     # -------------------------------------------------------------- processes
     def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str:

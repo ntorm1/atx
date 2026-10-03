@@ -9,11 +9,15 @@
 * ``RUNNER_MAX_SECONDS`` is the bounded runner's hard time cap (run_bounded_research.py refuses more): a wave
   manifest, a cycle spec and a wave step refuse a phase cap above it when they are loaded or built (P9 OR-1), never
   half way through a wave.
+* ``argv_sha256`` is the one digest of a command's arguments after its executable (contract K-P9-10: the bounded
+  runner's receipt, research_cycle's resume check and NAV binding); ``BUILD_TYPES`` maps a cycle spec's "build" to the
+  CMake build type the runner records.
 
 Standard library only (the bounded runner imports it before psutil is needed).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -24,6 +28,13 @@ CODE_PATHSPEC = ("atx-core", "atx-tsdb", "atx-engine", "atx-impl", "scripts", "C
                  "cmake")
 WINDOW_JSON = "atx-impl/strategies/research_window.json"     # W0-1: the one source of the research window
 RUNNER_MAX_SECONDS = 600                                     # run_bounded_research.py's hard time cap (P9 OR-1)
+BUILD_TYPES = {"equity": "Debug", "equity-rel": "Release"}  # research_cycle's spec "build" -> the CMake build type
+
+
+def argv_sha256(args) -> str:
+    """SHA-256 of a command's arguments after its executable (a compact JSON list of strings): the bounded runner's
+    receipt ``argv_sha256`` (contract K-P9-10) and cycle_resume's NAV binding (review C-13) use this one rule."""
+    return hashlib.sha256(json.dumps([str(a) for a in args], separators=(",", ":")).encode()).hexdigest()
 
 
 def seconds_cap_refusal(key: str, value) -> str | None:

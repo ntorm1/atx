@@ -23,8 +23,9 @@ def lib_spec(name: str) -> str:
 
 def cyc(w: Wave, verb: str, spec: str, *extra: str) -> list[str]:
     """research_cycle.py VERB SPEC ... --root <the wave's root> (it writes under that root, the root the driver
-    commits)."""
-    return WS.cycle_argv(w.python, verb, spec, *extra, root=w.root)
+    commits); a ``run`` carries the manifest's driver options (WS.driver_flags; none without a driver block)."""
+    flags = WS.driver_flags(w.manifest.get("driver")) if verb == "run" else []
+    return WS.cycle_argv(w.python, verb, spec, *extra, *flags, root=w.root)
 
 
 def library_wave(w: Wave) -> bool:

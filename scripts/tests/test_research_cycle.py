@@ -197,6 +197,10 @@ if b == "refuse":
     receipt("prelaunch-memory-refusal", None); sys.exit(1)
 if b == "error":
     receipt("process-error", 1); sys.exit(1)
+if b in ("floor-kill", "floor-kill-partial"):    # P9 OR-4: the host memory floor killed it (before / after a write)
+    if b == "floor-kill-partial":
+        Path(cmd[cmd.index("--output") + 1]).mkdir(parents=True, exist_ok=True)
+    receipt("system-memory-limit", 1); sys.exit(1)
 if b == "incomplete":
     (out / "stdout.log").write_text('{"status": "incomplete", "partial": true}'); receipt("process-error", 3); sys.exit(1)
 for rel, text in beh.get("touch", {}).get(out.name, []):   # v8 A-3: a file written while this phase runs

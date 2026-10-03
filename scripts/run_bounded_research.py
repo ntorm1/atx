@@ -16,6 +16,10 @@ pathspec (research_tree.CODE_PATHSPEC) must be empty; dirty paths outside it
 such as the tiny_world fixture) and is refused for a root inside one.
 --role-id ID (platform v8 H-1) names the era role of the run in start.json and
 receipt.json (written only when given).
+Contract K-P9-10: every receipt carries argv_sha256 (research_tree.argv_sha256 of
+the command after its executable), attempt (--attempt K, default 1),
+executable_sha256 and build_type (--build-type Debug | Release, else null);
+research_cycle refuses to resume an output whose receipt names another argv.
 """
 from __future__ import annotations
 
@@ -35,6 +39,8 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_tree  # noqa: E402
+
+BUILD_TYPES = ("Debug", "Release")
 
 
 def digest(path: Path) -> str:
@@ -86,6 +92,10 @@ def main() -> int:
                         help="no source pin: only for a --root outside any git repository (contract K3)")
     parser.add_argument("--role-id", default=None,
                         help="the era role of this run (v8 H-1): recorded in start.json and receipt.json")
+    parser.add_argument("--attempt", type=int, default=1,
+                        help="the attempt this run dir is (K-P9-10; research_cycle's attempt-k sub-dirs): recorded")
+    parser.add_argument("--build-type", default=None,
+                        help="the CMake build type of the executables (Debug | Release; K-P9-10): recorded")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -95,6 +105,8 @@ def main() -> int:
                      "limits")
     if args.role_id is not None and not re.fullmatch(r"[A-Za-z0-9_]+", args.role_id):
         parser.error("--role-id must match [A-Za-z0-9_]+")
+    if not 1 <= args.attempt <= 99 or (args.build_type is not None and args.build_type not in BUILD_TYPES):
+        parser.error(f"--attempt is 1..99 and --build-type one of {', '.join(BUILD_TYPES)}")
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     if args.no_git and research_tree.no_git_refusal(root):
         parser.error(research_tree.no_git_refusal(root))
@@ -121,7 +133,8 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=False)
     receipt = dict(schema="atx.bounded-research-run/v1", source_sha=source,
         started_utc=dt.datetime.now(dt.timezone.utc).isoformat(), command=command,
-        executable_sha256=digest(Path(command[0])), bindings=bindings,
+        executable_sha256=digest(Path(command[0])), argv_sha256=research_tree.argv_sha256(command[1:]),
+        attempt=args.attempt, build_type=args.build_type, bindings=bindings,
         limits=dict(seconds=args.seconds, max_rss_mib=args.max_rss_mib,
                     min_free_mib=args.min_free_mib), sampled_peak_tree_rss_bytes=0,
         minimum_system_free_bytes=psutil.virtual_memory().available,
