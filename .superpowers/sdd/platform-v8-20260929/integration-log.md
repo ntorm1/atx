@@ -6754,3 +6754,13 @@ up to 30 min).** Planned peaks (MiB) and gates:
 - 09 record: ledger N 56 -> 57 (the cell's line among the lines appended since preflight); wave-result.json; copies to
   `.superpowers/sdd/platform-v8-20260929/waves/y-s/`. **Scoreboard 4x check (P12):** `research_cycle.py scoreboard` 4x net
   Sharpe row against the 4x row of one real `capacity_curve.csv` read directly.
+
+### Stages 01-02 (source `c4201d94`; argv `wave run scripts/specs/v8/waves/y-s.json --until <stage>`)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 01 preflight | 0 | - / 0.30 | - (no exe) | 4,879 / - | `01-preflight.json` `f4f759088ae95ac284e224e99fc3ab9346b1684e168df5db98ee87918cf59d14` | **= hand plan on every item**: manifest commit `4492f301`, sha `22b5534f`; parent `v8x-theme-erc-gm` L 1.1720, NAV `mega-nav-v8x-theme-erc-L1.1720`, spec digest `92131961`; fields `26fee5ce`, 84 rows, seal 2024-01-01; ledger 112 lines, head `d1484e69a5f2...`, N 56; budget used 25 + new 15 (roster order) <= 40, prefixes `["v8x", "v8ys"]`, construction cap 62; window research-window-v2 |
+| 02 register | 0 | 9.1 / 8.94 | 2 per plan-only (R0-5) | 4,850 / 4,675 | `02-register.json` `facb7fb20cfb09768450377d70de6993e3276882a844dc6458fa153a48f8de2d` | 15 add-alpha exit 0; K1 plans of record `build-equity/waves/y-s/plans/v8ys/<id>.json` (59..73 rows; e.g. `peer_mom_1m` 6 slots / 41 bars, `iv_vol_of_vol` 5 / 41 / `iv_atm_21d` = the repaired string `4d42a72b`, `dato` 5 / 272 / 4 extra fields, `conn_rev` 3 / 0); **IC library `fund_industry_ic_v8ys.json` `bbcfbf9dd000dc41055e2415ddc1a0047811a796752de55fd4e92ab636f4e9bd` = R0-5's scratch build byte for byte** (73 members); `lib-v8ys.json` rewritten once by PM8-15 (marginal `-poolonly`, `runner.phases.marginal.seconds` 600), lock dry; spec `05732a95`; driver commit **`a5914373`** (exactly the 6 add-alpha files: registry, IC library, recipe, library def, prereg stub, spec) |
+
+Gate list of `lib-v8ys.json`: the 15 strings, roster order, require any, sign_agrees. u 300 s / 2,560 MiB, w 300 / 3,072,
+card 300 / 2,560, marginal 600 / 1,536 (default rss), others 180 / 1,536.
