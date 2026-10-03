@@ -27,9 +27,9 @@ OUT_OF_SCOPE = ("atx-db/", "archive/", ".superpowers/", "docs/", "deps/")
 VERSION_TOKEN = re.compile(r"_v\d+[a-z]*(?:_|\.py$)")
 GENERATOR = re.compile(r"^generate_.*_v\d")
 LANES = ("T1", "A3", "A4", "B2", "C2", "C3", "D2", "D3", "E2", "P10")
-CLASS_C = "class-C generator (audit section 4), deleted after root's slice-2 --check"
 
-# path -> (retired_by, why it exists). Frozen at FROZEN_AT: delete rows, never add one.
+# path -> (retired_by, why it exists). Frozen at FROZEN_AT: delete rows, never add one. The 19 class-C rows (the
+# generators of audit section 4 and their tests) left with their files in lane T1's deletion commit.
 ALLOWLIST = {
     "atx-engine/tools/research_fields_v8.py": ("A4", "Python field builders (v8 set); C++ builder kinds replace them"),
     "atx-engine/tools/research_fields_v9.py": ("A4", "Python field builders (v9 set); C++ builder kinds replace them"),
@@ -40,25 +40,6 @@ ALLOWLIST = {
     "atx-engine/tools/test_linked_operating_v2.py": ("P10", "test of the linked-operating-v2 role rule (role builder "
                                                             "stays Python in P9; migration slice 9)"),
     "atx-engine/tools/test_linked_operating_v3.py": ("P10", "test of the linked-operating-v3 role rule"),
-    "atx-impl/strategies/check_fund_ic_v6.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v4.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v42.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v5.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v6.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v61.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v70.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_fund_ic_v71.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_price_volume_ic96_v2.py": ("T1", CLASS_C),
-    "atx-impl/strategies/generate_pv_fields_ic121_v3.py": ("T1", CLASS_C),
-    "atx-impl/strategies/test_check_fund_ic_v6_ops.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v4.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v42.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v5.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v6.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v61.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v70.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_fund_ic_v71.py": ("T1", "test of a class-C file"),
-    "atx-impl/strategies/test_generate_pv_fields_ic121_v3.py": ("T1", "test of a class-C file"),
     "atx-impl/tools/test_mega_report_v8.py": ("P10", "tests of the v8 report protocol (rename after P9)"),
     "atx-impl/tools/test_mega_report_v8_render.py": ("P10", "tests of the v8 report protocol (rename after P9)"),
     "atx-impl/tools/test_nav_summ_v8.py": ("P10", "tests of nav_summ --protocol v8 (rename after P9)"),
