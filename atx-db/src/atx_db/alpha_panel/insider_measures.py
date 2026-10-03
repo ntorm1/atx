@@ -35,7 +35,7 @@ from typing import Any
 from . import common as C
 
 STAGE = "insider_ext"
-SCHEMA = "atx.alpha-panel.insider-ext/v1"
+SCHEMA = "atx.alpha-panel.insider-ext/v2"
 RULE = "cmp-routine-v1"
 FIRST_YEAR = 2019
 MEMORY = "400MB"
@@ -63,6 +63,32 @@ TRADES_SQL = """
     WHERE table_type = 'non_derivative' AND transaction_code IN ('P', 'S') AND NOT coalesce(is_amendment, false)
       AND shares > 0 AND issuer_cik IS NOT NULL AND owner_cik IS NOT NULL AND transaction_date IS NOT NULL
 """
+
+
+def price_sanity_sql(trades: str, prices: str) -> str:
+    """Require one dated issuer line and a finite raw close on the trade date.
+
+    Multiple share classes are ambiguous without a security link; retain shares
+    and counts but NULL the value. A same-day acceptance waits until the close
+    comparison is observable (22:00 UTC conservative panel-close clock).
+    """
+    return f"""WITH p AS (
+        SELECT cik AS issuer_cik, session_date AS transaction_date,
+               CASE WHEN count(DISTINCT security_id) = 1 THEN max(raw_close) END AS panel_close
+        FROM read_parquet('{prices}', hive_partitioning=false)
+        WHERE cik IS NOT NULL GROUP BY 1, 2)
+    SELECT t.* EXCLUDE(value, available_at),
+           CASE WHEN isfinite(price) AND isfinite(panel_close) AND panel_close > 0
+                     AND price BETWEEN 0.2 * panel_close AND 5.0 * panel_close
+                THEN shares * price END AS value,
+           CASE WHEN panel_close IS NULL OR NOT isfinite(panel_close) OR panel_close <= 0 THEN 'close_missing_or_ambiguous'
+                WHEN price IS NULL OR NOT isfinite(price) OR price <= 0 THEN 'price_missing_or_invalid'
+                WHEN price NOT BETWEEN 0.2 * panel_close AND 5.0 * panel_close THEN 'price_outside_0.2_5x'
+                ELSE 'qualified' END AS price_sanity,
+           panel_close,
+           greatest(t.available_at, (CAST(t.transaction_date AS TIMESTAMP) + INTERVAL 22 HOUR)
+                    AT TIME ZONE 'UTC') AS available_at
+    FROM ({trades}) t LEFT JOIN p USING (issuer_cik, transaction_date)"""
 
 
 HIST_SQL = """CREATE OR REPLACE TABLE hist AS
@@ -122,10 +148,13 @@ def build() -> dict[str, Any]:
     ins = root / "insider"
     if C.read_json(ins / "manifest.json").get("status") != "complete":
         raise SystemExit("insider stage not published")
+    if C.read_json(root / "panel" / "manifest.json").get("status") != "complete":
+        raise SystemExit("panel stage not published")
     out = C.stage_dir(STAGE)
     con = C.connect(memory=MEMORY, threads=2, temp_dir=root / "_tmp" / "insider_ext", db_file="insider_ext.duckdb")
     tx = (ins / "transactions" / "*" / "*.parquet").as_posix()
-    con.execute(f"CREATE TABLE t AS {TRADES_SQL.format(tx=tx)}")
+    prices = (root / "panel" / "year=*" / "*.parquet").as_posix()
+    con.execute(f"CREATE TABLE t AS {price_sanity_sql(TRADES_SQL.format(tx=tx), prices)}")
     con.execute(HIST_SQL)
     con.execute(LABEL_SQL)
     n_tr = C.copy_to_parquet(con, f"""
@@ -173,13 +202,13 @@ def publish(receipt: dict[str, Any]) -> None:
 
     root = C.build_root()
     payload = {
-        "rules": {"trades": "non-derivative P / S, original filings, shares > 0; value = shares x price when price > 0",
+        "rules": {"trades": "non-derivative P / S, originals, shares > 0; value only for finite price 0.2-5x unique dated issuer raw close",
                   "cmp": __doc__.split("Rule ``cmp-routine-v1``")[1].split("Outputs:")[0].strip(),
                   "monthly": "month = calendar month (UTC) of available_at; available_at = latest trade clock of the month",
                   "form144": F.__doc__.split("Outputs")[0].strip()},
         "staleness": "monthly event aggregates; a month with no row had no qualifying trade",
         "inputs": {"input_manifests_sha256": {k: C.sha256_file(root / k / "manifest.json")
-                                              for k in ("insider", "sec_filings") if (root / k / "manifest.json").exists()}},
+                                              for k in ("insider", "sec_filings", "panel") if (root / k / "manifest.json").exists()}},
         "sources": {"sec_144_fetch_ledger": D.ledger_counts(F.SOURCE), "sec_144_objects_bytes": D.objects_bytes(F.SOURCE)},
         "receipt": receipt,
     }

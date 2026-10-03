@@ -60,7 +60,7 @@ from . import sec_docs as D
 from . import shortflow_common as S
 
 STAGE = "nport"
-SCHEMA = "atx.alpha-panel.nport/v1"
+SCHEMA = "atx.alpha-panel.nport/v2"
 PAGE_URL = "https://www.sec.gov/data-research/sec-markets-data/form-n-port-data-sets"
 RAW_DIR = S.RAW_ROOT / "sec_nport"
 MEMBERS = ("SUBMISSION", "REGISTRANT", "FUND_REPORTED_INFO", "MONTHLY_TOTAL_RETURN", "FUND_REPORTED_HOLDING",
@@ -231,7 +231,10 @@ def parse_quarter(tsv: Path, quarter: str, lookup: Path) -> dict[str, Any]:
                         SELECT accession, median(ret_q) AS ret_q, count(*) AS n_classes, count(ret_q) AS n_classes_ret FROM (
                           SELECT trim(ACCESSION_NUMBER) AS accession,
                                  (1 + r1 / 100) * (1 + r2 / 100) * (1 + r3 / 100) - 1 AS ret_q
-                          FROM (SELECT ACCESSION_NUMBER, {rets} FROM {_tsv(f['MONTHLY_TOTAL_RETURN'])}))
+                          FROM (SELECT m.ACCESSION_NUMBER, {rets}
+                                FROM {_tsv(f['MONTHLY_TOTAL_RETURN'])} m
+                                JOIN sub s ON trim(m.ACCESSION_NUMBER) = s.accession
+                                WHERE s.report_date < DATE '2023-01-01'))
                         GROUP BY 1""")
         n_fil = C.copy_to_parquet(con, f"""
             SELECT s.accession, r.cik, r.registrant_name, r.file_num, r.registrant_lei, i.series_id, i.series_name, i.series_lei,
@@ -239,6 +242,8 @@ def parse_quarter(tsv: Path, quarter: str, lookup: Path) -> dict[str, Any]:
                    s.is_last_filing, i.total_assets, i.total_liabilities, i.net_assets,
                    {', '.join(f'i.{k}_m{j}' for k in ('sales', 'reinvestment', 'redemption') for j in (1, 2, 3))},
                    m.ret_q, m.n_classes, m.n_classes_ret,
+                   CASE WHEN s.report_date >= DATE '2023-01-01' THEN 'return_window_holdout'
+                        WHEN s.report_date IS NULL THEN 'report_date_missing' END AS return_boundary_reason,
                    coalesce(CAST(l.available_at AS TIMESTAMPTZ),
                             CAST(timezone('America/New_York', CAST(s.filing_date AS TIMESTAMP) + INTERVAL 1 DAY) AS TIMESTAMPTZ)) AS available_at,
                    CASE WHEN l.available_at IS NOT NULL THEN 'acceptance' ELSE 'filing_date_eod_et' END AS available_basis,
@@ -402,12 +407,14 @@ def _effective_tables(con) -> None:
             SELECT e.*, row_number() OVER (PARTITION BY fund_key, q ORDER BY report_date DESC) AS rk FROM eff e) WHERE rk = 1""")
 
 
-_FLOW = " + ".join(f"coalesce(sales_m{i}, 0) + coalesce(reinvestment_m{i}, 0) - coalesce(redemption_m{i}, 0)" for i in (1, 2, 3))
+_FLOW = " + ".join(f"sales_m{i} + reinvestment_m{i} - redemption_m{i}" for i in (1, 2, 3))
 _GAP_OK = f"date_diff('day', prev_report_date, report_date) BETWEEN {FLOW_GAP_DAYS[0]} AND {FLOW_GAP_DAYS[1]} AND prev_net_assets > 0"
 FLOWS_SQL = f"""
     WITH e AS (
         SELECT fund_key, series_id, cik, registrant_name, series_name, report_date, q, accession, filing_date, available_at,
-               net_assets, total_assets, ret_q, n_classes, ({_FLOW}) AS net_flow_reported,
+               net_assets, total_assets,
+               CASE WHEN report_date < DATE '2023-01-01' THEN ret_q END AS ret_q,
+               n_classes, ({_FLOW}) AS net_flow_reported,
                lag(report_date) OVER w AS prev_report_date, lag(net_assets) OVER w AS prev_net_assets,
                lag(available_at) OVER w AS prev_available_at
         FROM eff WINDOW w AS (PARTITION BY fund_key ORDER BY report_date))
@@ -415,7 +422,10 @@ FLOWS_SQL = f"""
            CASE WHEN {_GAP_OK} AND ret_q IS NOT NULL THEN net_assets - prev_net_assets * (1 + ret_q) END AS flow_proxy,
            CASE WHEN {_GAP_OK} AND ret_q IS NOT NULL
                 THEN (net_assets - prev_net_assets * (1 + ret_q)) / prev_net_assets END AS flow_proxy_pct,
-           greatest(available_at, prev_available_at) AS flow_available_at
+           greatest(available_at, prev_available_at) AS flow_available_at,
+           CASE WHEN net_flow_reported IS NULL THEN 'reported_component_missing' END AS flow_missing_reason,
+           CASE WHEN report_date >= DATE '2023-01-01' THEN 'return_window_holdout'
+                WHEN report_date IS NULL THEN 'report_date_missing' END AS return_boundary_reason
     FROM e ORDER BY report_date, fund_key"""
 
 

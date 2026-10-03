@@ -1,0 +1,8 @@
+{
+  "stage": "thirteenf_quality",
+  "path": "thirteenf_quality/accessions.parquet",
+  "keys": ["accession"],
+  "schema_id": "atx.alpha-panel.thirteenf-quality/v1",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('thirteenf_quality/accessions.parquet') WHERE available_at < cutoff",
+  "admission": "diagnostic_only_unqualified_normalized_adapters"
+}

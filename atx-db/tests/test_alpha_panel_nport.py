@@ -99,8 +99,9 @@ def test_parse_quarter_tiny(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     f = {r["accession"]: r for r in pq.read_table(part / "filings.parquet").to_pylist()}
     assert f[a1]["cik"] == 36405 and f[a1]["report_date"] == dt.date(2024, 3, 31) and f[a1]["filing_date"] == dt.date(2024, 5, 28)
     assert f[a1]["sales_m1"] == 50 and f[a1]["redemption_m1"] == 20 and f[a1]["sales_m2"] is None
-    assert f[a1]["ret_q"] == pytest.approx(1.01 * 1.02 * 1.03 - 1)     # median over classes with all 3 months
-    assert (f[a1]["n_classes"], f[a1]["n_classes_ret"]) == (2, 1)
+    assert f[a1]["ret_q"] is None
+    assert f[a1]["return_boundary_reason"] == "return_window_holdout"
+    assert (f[a1]["n_classes"], f[a1]["n_classes_ret"]) == (None, None)
     assert f[a2]["is_amendment"] is True
     # no acceptance: 00:00 America/New_York the day after filing = 04:00 UTC in May
     assert f[a2]["available_at"].astimezone(dt.UTC) == dt.datetime(2024, 5, 30, 4, 0, tzinfo=dt.UTC)
@@ -141,8 +142,11 @@ def test_effective_reports_and_flows() -> None:
     fl = {r[0]: r[1:] for r in con.execute(f"""SELECT accession, net_flow_reported, flow_pct_reported, flow_proxy, flow_proxy_pct
                                               FROM ({N.FLOWS_SQL})""").fetchall()}
     assert fl["a2"][0] == 10.0 and fl["a2"][1] == pytest.approx(0.10)
-    assert fl["a2"][2] == pytest.approx(121.0 - 100.0 * 1.10) and fl["a2"][3] == pytest.approx(0.11)
+    assert fl["a2"][2] is None and fl["a2"][3] is None                    # return product strict holdout
     assert fl["b1"][1] is None                                              # prior report only 29 days earlier
+    con.execute("UPDATE eff SET sales_m2=NULL WHERE accession='a2'")
+    missing = con.execute(f"SELECT net_flow_reported,flow_missing_reason FROM ({N.FLOWS_SQL}) WHERE accession='a2'").fetchone()
+    assert missing == (None, "reported_component_missing")
 
 
 def test_aggregate_and_changes(tmp_path: Path) -> None:
