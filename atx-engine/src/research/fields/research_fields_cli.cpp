@@ -229,7 +229,7 @@ struct Args {
     err << usage();
     return 2;
   }
-  for (usize i = 2; i < args.size(); ++i) {
+  for (usize i = 2; i < args.size(); i += 2) { // each option takes one value
     const std::string_view arg = args[i];
     std::optional<std::string_view> *slot = arg == "--spec"       ? &out.spec
                                             : arg == "--receipt"  ? &out.receipt
@@ -240,7 +240,6 @@ struct Args {
       return 2;
     }
     *slot = args[i + 1];
-    ++i;
   }
   if (!out.spec || !out.receipt) {
     err << usage();
