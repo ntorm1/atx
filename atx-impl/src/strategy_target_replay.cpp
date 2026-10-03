@@ -622,10 +622,13 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   ConstructionDay fast_day;
   if (state->fast_desired.size() != n) state->fast_desired.assign(n, 0.0);
   if (desired.size() != n) desired.assign(n, 0.0);
-  ATX_TRY(const bool fast_ok, form_desired(fast_in, inner, d, row, state->fast_desired, scratch,
-                                           fast_day, no_short, state));
-  ATX_TRY(const bool slow_ok,
-          form_desired(slow_in, inner, d, row, desired, scratch, out, no_short, state));
+  // Qualified as at the rebalance call below: unqualified, ADL on the detail:: argument types also
+  // finds detail::form_desired (same signature) and the call is ambiguous (integration of YCOMB).
+  ATX_TRY(const bool fast_ok,
+          ::atx::impl::strategy::form_desired(fast_in, inner, d, row, state->fast_desired, scratch,
+                                              fast_day, no_short, state));
+  ATX_TRY(const bool slow_ok, ::atx::impl::strategy::form_desired(slow_in, inner, d, row, desired,
+                                                                  scratch, out, no_short, state));
   if (!fast_ok && slow_ok) copy_neutralization(fast_day, out); // the skip is the fast sleeve's
   out.locate_zeroed += fast_day.locate_zeroed;
   // Mechanics only (the skip rule above is unchanged): would the parent's construction of the full
@@ -636,8 +639,8 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   if (neutralizing(inner)) {
     if (state->parent_desired.size() != n) state->parent_desired.assign(n, 0.0);
     ConstructionDay parent_day;
-    const auto parent = form_desired(in, inner, d, row, state->parent_desired, scratch,
-                                     parent_day, no_short, state);
+    const auto parent = ::atx::impl::strategy::form_desired(in, inner, d, row, state->parent_desired,
+                                                            scratch, parent_day, no_short, state);
     out.two_speed_parent_failed = !parent;
     out.two_speed_parent_skipped = parent && !*parent;
   }
