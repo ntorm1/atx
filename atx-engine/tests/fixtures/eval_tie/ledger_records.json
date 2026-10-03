@@ -1,0 +1,103 @@
+{
+ "note": "synthetic construction lines for the house DSR; not a ledger of record (no hash chain)",
+ "records": [
+  {
+   "cell": "trial_00",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 1.0209959583299106,
+   "trial_id": "0000000000000001",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_01",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 0.34356400961768313,
+   "trial_id": "0000000000000002",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_02",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 1.3055028446139716,
+   "trial_id": "0000000000000003",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_03",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 1.1737995448584695,
+   "trial_id": "0000000000000004",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_04",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 0.42917672494405396,
+   "trial_id": "0000000000000005",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_05",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": -0.5933802062025071,
+   "trial_id": "0000000000000006",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_06",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 0.6337788660730975,
+   "trial_id": "0000000000000007",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_07",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 0.4306654073749685,
+   "trial_id": "0000000000000008",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_08",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": -0.3260361967292663,
+   "trial_id": "0000000000000009",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_09",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": -0.305824619891403,
+   "trial_id": "000000000000000a",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_10",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": -0.748091295143829,
+   "trial_id": "000000000000000b",
+   "window_id": "eval-tie-v1"
+  },
+  {
+   "cell": "trial_11",
+   "count": 1,
+   "kind": "construction",
+   "s2_net_sr": 0.08712803150279319,
+   "trial_id": "000000000000000c",
+   "window_id": "eval-tie-v1"
+  }
+ ],
+ "schema": "atx.eval-tie-ledger/v1",
+ "window_id": "eval-tie-v1"
+}
