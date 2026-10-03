@@ -547,3 +547,126 @@ Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration
 - **Host:** free memory 3.2-4.8 GB at my launches, dipping to ~1.3 GB during the cold w (2.4 GB peak) while another
   session's processes ran. A pytest I did not start (PID 7524, `timeout.exe 1200 ... test_fit_composition_weights.py
   test_alpha_report_card.py`, from 15:23) was alive at hand-off; I left it. I left no process of my own.
+
+## M1c: slot 8 (C1)
+
+Agent root-m1c, 2026-10-03. Integration head at dispatch: `d656bbfa` (tree: the owner's png and other agents'
+uncommitted `wave2-carry.md`, sprint plan, later `progress.md` lines, all left as they were until the docs commit).
+Same Python and pytest flags as M1a/M1b; pytest only with explicit suite paths (PY-HYG); scratch logs `gt-*.log` /
+`pyt-*.log` and the comparison scripts (`dircmp.py`, `jdiff.py`, `allowed.py`, `csvcols.py`, `navrun.py`) in the
+session scratchpad `m1c/`.
+
+### Slot 8: C1 (`10c35df3`, pool-15)
+
+- **DEC-20 substitution list first:** written into `integration-log.md` ("M1c", "C1 NAV re-pin") and committed alone
+  as **`02d6232b`** before the stage-1 build and before any C1 run. It is C1 report §4 (fix round 1) made exact: files
+  and JSON paths per stage, labels L0-L4 / K, the Release clause and its plan §2.4 fallback.
+- **Merge in two steps** (the bounded runner refuses a dirty code pathspec, so each stage needs a committed source):
+  1. `git merge --no-ff dd925b7f` -> **`d71cabe1`** (sqrt only: `replay_cost.cpp`, `strategy_cost_v2.cpp`, their two
+     test files). Stage-1 source.
+  2. `git merge --no-ff 10c35df3` -> **`b52a5de7`** (the rest of the lane: NAV replay / v7 / risk-target sources,
+     four test files, the lane report). Stage-2 source.
+  - Both merged with no conflict. C1 edits no CMake file (its report: "No CMake ... edits"), so the hand-over's
+    predicted `atx-impl/CMakeLists.txt` tail conflict did not arise; the file is unchanged by slot 8 (6 `if(` / 6
+    `endif()` as M1b left it).
+  - Tree check: `git diff 7ead85f7 b52a5de7` (`7ead85f7` = `git merge-tree --write-tree d656bbfa 10c35df3`, the
+    single-merge tree) shows only my `integration-log.md` commit: the two-step merge gives the same code tree.
+- **Pre-build reference:** `build-equity/bin/atx-equity-strategy-targets.exe` (`f0ee3908`, p9-1f, pre-C1, the exe
+  of the stage-1 baseline `p9-d1-x5-nav`) copied with the 13 bin DLLs to `build-equity/p9-m1c-ref-targets-pre-c1/`.
+- **Builds** (all equity-dev, `scripts/research-build.ps1`, 4 jobs; ConfiguredProvenance `1239a5ff...-dirty`: no
+  reconfigure, C1 adds no file; DirtyEntries 3-4 = the files above, outside the code pathspec):
+
+  | tag | source | targets | result | TUs / links | warnings |
+  |---|---|---|---|---|---|
+  | **p9-1g** | `d71cabe1` | `atx-equity-strategy-targets` (the stage-1 NAV exe only) | exit 0, 14.8 s, free 3,764 MiB | 2 / 3 | **0** |
+  | **p9-1h** | `b52a5de7` | exactly C1's three: `atx-engine-w1-cost-tests, atx-impl-strategy-target-tests, atx-equity-strategy-targets` | exit 0, 113.9 s, free 3,871 MiB | 26 / 4 | **0** |
+  | **p9-1i** | `b52a5de7` | earlier-lane targets that link `atx-impl-core` / `atx-engine` (C1's libraries): `atx-equity-strategy-ic, atx-impl-strategy-ic-tests, atx-impl-tests` | exit 0, 22.7 s, free 6,163 MiB | 12 / 4 | **0** |
+
+  Logs: 0 "warning" lines, 0 "error" lines in each. C1's ~2,000 lines written without a compiler compiled first time
+  under `/W4 /WX` (no slip). Executables: stage-1 targets
+  **`5954565699f68d0430754c9e552a219fc2da0f29bb90d5baf354d2272de9452d`** (p9-1g, since overwritten in `bin`); p9-1h
+  targets **`bf4b0ec25e77af6e6af8c67a7251337cbe24ce2ca48e8c86881c2f387c990f7a`**, target-tests `64da5532...01f4`,
+  w1-cost-tests `ca235cb8...28cd`; p9-1i ic **`a1ceb9e038265ec90f0555565df855d1962467e58065a9c7591a83a02244735a`**,
+  ic-tests `f970bf08...7a8c`, impl-tests `0de252d5...6a68`. The B1 admission and A2 fields targets link neither
+  library (`atx::core` + json only), so they were not rebuilt.
+- **gtests** (Debug, all exit 0, 0 failed; none of the three M1a-RED known reds is in any binary or filter run here):
+
+  | binary / filter | result |
+  |---|---|
+  | `atx-engine-w1-cost-tests --gtest_filter=ReplayCostSqrt.*` (the Debug half of the sqrt probe) | 3 passed |
+  | `atx-engine-w1-cost-tests` (whole binary) | 49 passed, 11 suites |
+  | `atx-impl-strategy-target-tests` C1 new: `ReplayCostSqrt.*:NavBookRule.*:NavCapacityLockstep.*:NavSummaryBinding.*:VolTarget.TruncationInvariant:AdvHoldCapacityPerMultiple.*:SpoV3.CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes` | **13 passed** (NavBookRule 5, NavCapacityLockstep 3, and 1 each of the rest; C1-SPO's gtest, "written not run", passes) |
+  | same exe, C1 regression `RiskTarget.*:VolTarget.*:NavV7Hook.*:CostV2*:AdvHold*:ConstructionGrid.*:NavBookWorkers.*:Spo*:TwoSpeed.*:NavLabelRole.*:InvVol.*:NavReplay*:Nav*` | **160 passed**, 31 suites (the filter misses `StrategyNavReplay`, `StrategyLive`, `TransferCoefficient`, ...; hence the next row) |
+  | `atx-impl-strategy-target-tests` (whole binary: 59 suites incl. `StrategyNavReplay`, `StrategyLive`, B1 `FactorsVerb`, D1 `TwoSpeed`) | **338 passed**, 108 s |
+  | earlier lanes on the p9-1i exes: S1 `MarginalIc.*:IcIdentity.*:CombineMarginalRankIc.*:` + 2 pins | 31 passed |
+  | D1 new `CompositionRules.*:IcAdmission.*:ThemeRegistryRunner.*` | 8 passed |
+  | D1 regressions (the 15-suite filter of slot 7) | 132 passed |
+  | `atx-impl-tests --gtest_filter=CompositionRules.*:Exposures.*:FactorsVerb.*` (D1 / B1) | 14 passed |
+  | `atx-impl-tests` with C1's new filter (the glob compiles C1's tests here too) | 13 passed |
+
+- **K-P9-6 / K-P9-7 smoke:** `atx-equity-strategy-ic --list-rules --json` exit 0, JSON-equal to
+  `atx-impl/tests/fixtures/composition_rules_list.json` after the relink; `atx-equity-strategy-targets nav
+  --list-rules --json` exit 0, envelope `atx.nav-rules/v1` with `fixed-v1`, `vol-target-v1`, `risk-target-v1`
+  (kind leverage).
+- **pytest** (C1 touches no Python; the C1 reviewer's NAV-tools suites, and B1's exe suites because the targets exe
+  changed):
+
+  | command | result | exit | wall |
+  |---|---|---|---|
+  | `-m pytest -q -p no:cacheprovider atx-impl/tools/test_nav_summ.py atx-impl/tools/test_nav_summ_v8.py` | 29 passed, 1 skipped (= the review's count) | 0 | 11 s |
+  | `ATX_EQUITY_TARGETS_EXE` = p9-1h, `ATX_RESEARCH_ADMISSION_EXE` = p9-1d: `test_factor_series_admission.py test_exposures_export.py test_horizon_stats.py` | 20 passed, 0 skipped | 0 | 13 s |
+
+- **Identity: X-5 NAV, two Debug stages** (C1 report §4 run (a)). Every run: the argv of
+  `build-equity/p9-d1-x5-nav-run/receipt.json` (X-5, L 1.1720, `--capacity-curve`, argv sha `7b517c04`) with only
+  `--output` changed (scratch `navrun.py` asserts one changed position); `run_bounded_research.py` 600 s, cap 1,536
+  MiB, floor 512, admission wait 900 s, `--build-type Debug`; receipts "clean in the code pathspec". Compared by
+  SHA-256 per file (`dircmp.py`) and JSON leaf path (`jdiff.py`, classified by `allowed.py` against the pre-written
+  list); for the CSVs sqrt moved, only header names and counts of differing cells (`csvcols.py`), no value.
+
+  | run | source / exe | outcome | wall | peak RSS | min free |
+  |---|---|---|---|---|---|
+  | `p9-c1-s1-x5-nav(-run)` | `d71cabe1` / p9-1g `59545656` | completed, exit 0 | 113.7 s (host busy: another tree's compile) | 586 MiB | 2,954 MiB |
+  | `p9-c1-s2-x5-nav(-run)` | `b52a5de7` / p9-1h `bf4b0ec2` | completed, exit 0 | 62.6 s | 591 MiB | 2,585 MiB |
+
+  C1's admission risk ("+~110 MB" under `--max-bytes 1 GiB`) did not fire: X-5 was admitted, peak +5 MiB.
+
+  **Stage 1** (sqrt only vs `p9-d1-x5-nav`, pre-C1 head):
+
+  | list item | expected | observed | match |
+  |---|---|---|---|
+  | `daily_L0`, `events_L0`, `recipe.json`, `capacity/recipe.json` | byte-identical | identical | yes |
+  | L1-L4 `daily_` / `events_` | may differ | 3 dailies differ (L1 `529062d6`->`75a54774`, L2 `0fc97711`->`a9a2e742`, L3 `53d9e446`->`93356e1e`); L4 daily and all 4 events identical | yes |
+  | `capacity/` dailies / events | may differ | 5 dailies differ (x1 = L1 `75a54774`, still bit-equal to the primary); 5 events identical | yes |
+  | `capacity_curve.csv`, `v7_transfer_coefficient.csv` | may differ | identical | yes |
+  | `summary.json` (`a03937cf`->`5d3fab71`) | only `/scenarios/1..4`, `/warm_start/...<L1..L4>`, `/v7/books/<L1..L4>` | 4 leaves: `/scenarios/{1,2,3}/daily_csv_sha256`, `/scenarios/3/costs/unrationed_full_request_cost_dollars`; 0 outside the list | yes |
+  | `capacity/summary.json` (`1d93afb8`->`1163a2a5`) | only `/scenarios/0..4`, `/warm_start/...<K>`, `/v7/books/<L1..L4>` | 5 leaves `/scenarios/{0..4}/daily_csv_sha256`; 0 outside | yes |
+  | `v7_extras.json` | only `/files/{TC, curve}`, `/capacity/0..4` | identical | yes |
+  | files on one side only | none | none (27 / 27) | yes |
+
+  Columns sqrt moved (header names only): `impact_cost_dollars`, `unrationed_cost_dollars`, `trade_cost_dollars`,
+  `trade_cost_return`, 1-3 cells per file in 1,005 rows; no NAV / return / position column moved. **Stage 1 holds.**
+
+  **Stage 2** (whole lane vs stage 1):
+
+  | list item | expected | observed | match |
+  |---|---|---|---|
+  | 20 CSVs, both recipes, `capacity/summary.json`, `capacity_curve.csv`, `v7_transfer_coefficient.csv` | byte-identical | 25 / 25 identical | **yes** |
+  | `summary.json` (`5d3fab71`->`5c34142b`) | only `/v7/extras`, `/v7/files/*` (added), `/producer/*` (added) | CHANGED `/v7/extras`; ADDED `/v7/files/{v7_extras.json, capacity/summary.json}`, `/producer/{build_type, definition, engine_git_sha}`; 0 outside | **yes** |
+  | `v7_extras.json` (`3bd003f2`->`474ea2bf`) | only `/files/capacity/summary.json` (added) | that one leaf added; 0 outside | **yes** |
+
+  Binding check (SHA strings, not statistics): `summary.json` `/v7/files` = the SHA-256 of `v7_extras.json` and of
+  `capacity/summary.json` on disk; `v7_extras.json` `/files` = the SHA-256 of `capacity/summary.json`, the TC CSV and
+  the curve; `capacity_x1_equals_primary_bit_for_bit` true and the two files equal; `capacity/summary.json` has no
+  `producer` and pass `capacity`; mtimes recipe < capacity summary < extras < summary (summary last).
+  `producer` = `{build_type: debug, engine_git_sha: 1239a5ff0fd31689651d79a4c0844173cabd4c06-dirty, definition}`:
+  the configure-time commit, by its own definition (the tree was last configured at `1239a5ff`; C1 adds no file, so no
+  build reconfigured). **Stage 2 holds.**
+
+  **Re-pin** (DEC-20, ruled list): the new Debug X-5 NAV reference is `build-equity/p9-c1-s2-x5-nav` (S2 primary daily
+  `75a54774b417...`, was `529062d6`); every move is inside the pre-written list.
+- **Slips fixed:** none (C1 compiled first time; no CMake conflict).
+- **Trial ledger:** 0 trials; `build-equity/trials.jsonl` 133 lines, sha256 prefix `27e40f9f`, mtime 11:32 (unchanged).
+- **Disclosure:** while listing `summary.json`'s key skeleton of the pre-C1 baseline I printed, by a key filter that
+  matched `financing`, the `scenarios[*].financing` blocks (TRAIN 2020-2023 financing dollars / shares) of
+  `p9-d1-x5-nav` and its `capacity/summary.json`. Nothing dated 2024-01-01 or later; no comparison or decision used
+  them (identity is SHA and path only); every later print was paths, SHAs or header names.
