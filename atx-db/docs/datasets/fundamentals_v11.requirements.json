@@ -1,0 +1,715 @@
+{
+  "version": "fundamentals-v11-requirements-v1",
+  "status": "SOURCE_QUALIFICATION_AND_COVERAGE_PENDING",
+  "primitives": {
+    "sales": {
+      "columns": [
+        "sale_ttm",
+        "sale_q"
+      ],
+      "implemented_columns": [
+        "sale_ttm",
+        "sale_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "cogs": {
+      "columns": [
+        "cogs_ttm",
+        "cogs_q"
+      ],
+      "implemented_columns": [
+        "cogs_ttm",
+        "cogs_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "gross_profit": {
+      "columns": [
+        "gp_ttm",
+        "gp_q"
+      ],
+      "implemented_columns": [
+        "gp_ttm",
+        "gp_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "operating_income": {
+      "columns": [
+        "oi_ttm",
+        "oi_q"
+      ],
+      "implemented_columns": [
+        "oi_ttm",
+        "oi_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "ebitda": {
+      "columns": [
+        "ebitda_ttm",
+        "ebitda_q"
+      ],
+      "implemented_columns": [
+        "ebitda_ttm",
+        "ebitda_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "net_income": {
+      "columns": [
+        "ni_ttm",
+        "ni_q"
+      ],
+      "implemented_columns": [
+        "ni_ttm",
+        "ni_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "income_before_extraordinary": {
+      "columns": [
+        "ib_ttm"
+      ],
+      "implemented_columns": [
+        "ib_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "operating_cash_flow": {
+      "columns": [
+        "cfo_ttm"
+      ],
+      "implemented_columns": [
+        "cfo_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "assets": {
+      "columns": [
+        "at"
+      ],
+      "implemented_columns": [
+        "at"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "equity": {
+      "columns": [
+        "seq",
+        "ceq",
+        "teq"
+      ],
+      "implemented_columns": [
+        "seq",
+        "ceq",
+        "teq"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "working_capital": {
+      "columns": [
+        "act",
+        "lct"
+      ],
+      "implemented_columns": [
+        "act",
+        "lct"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "inventory": {
+      "columns": [
+        "invt"
+      ],
+      "implemented_columns": [
+        "invt"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "receivables": {
+      "columns": [
+        "rect"
+      ],
+      "implemented_columns": [
+        "rect"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "debt": {
+      "columns": [
+        "dlc",
+        "dltt"
+      ],
+      "implemented_columns": [
+        "dlc",
+        "dltt"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "interest": {
+      "columns": [
+        "xint_ttm"
+      ],
+      "implemented_columns": [
+        "xint_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "tax": {
+      "columns": [
+        "txt_ttm",
+        "txditc"
+      ],
+      "implemented_columns": [
+        "txt_ttm",
+        "txditc"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "capex": {
+      "columns": [
+        "capx_ttm"
+      ],
+      "implemented_columns": [
+        "capx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "research": {
+      "columns": [
+        "xrd_ttm"
+      ],
+      "implemented_columns": [
+        "xrd_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "dividends": {
+      "columns": [
+        "dvc_ttm"
+      ],
+      "implemented_columns": [
+        "dvc_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "issuance": {
+      "columns": [
+        "sstk_ttm"
+      ],
+      "implemented_columns": [
+        "sstk_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "buybacks": {
+      "columns": [
+        "prstkc_ttm"
+      ],
+      "implemented_columns": [
+        "prstkc_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "basic_shares": {
+      "columns": [
+        "cshpri"
+      ],
+      "implemented_columns": [
+        "cshpri"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "diluted_shares": {
+      "columns": [
+        "cshfd"
+      ],
+      "implemented_columns": [
+        "cshfd"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "basic_eps": {
+      "columns": [
+        "epspx_ttm"
+      ],
+      "implemented_columns": [
+        "epspx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "diluted_eps": {
+      "columns": [
+        "epsfx_ttm"
+      ],
+      "implemented_columns": [
+        "epsfx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    }
+  },
+  "formula_to_gold": {
+    "gross_margin": {
+      "formula": "gp_ttm/sale_ttm",
+      "primitive_families": [
+        "gross_profit",
+        "sales"
+      ],
+      "gold_column": "gross_margin",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "operating_margin": {
+      "formula": "oi_ttm/sale_ttm",
+      "primitive_families": [
+        "operating_income",
+        "sales"
+      ],
+      "gold_column": "operating_margin",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "net_margin": {
+      "formula": "ni_ttm/sale_ttm",
+      "primitive_families": [
+        "net_income",
+        "sales"
+      ],
+      "gold_column": "net_margin",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "cash_margin": {
+      "formula": "cfo_ttm/sale_ttm",
+      "primitive_families": [
+        "operating_cash_flow",
+        "sales"
+      ],
+      "gold_column": "cash_margin",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "gp_assets": {
+      "formula": "gp_ttm/at",
+      "primitive_families": [
+        "gross_profit",
+        "assets"
+      ],
+      "gold_column": "gp_assets",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "roa": {
+      "formula": "ni_ttm/mean(at,prior_at)",
+      "primitive_families": [
+        "net_income",
+        "assets"
+      ],
+      "gold_column": "roa",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "roe": {
+      "formula": "ni_ttm/mean(seq+txditc,prior_seq+prior_txditc)",
+      "primitive_families": [
+        "net_income",
+        "equity",
+        "tax"
+      ],
+      "gold_column": "roe",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "roic": {
+      "formula": "source_EBIT*(1-source_effective_tax)/mean(source_invested_capital,prior_source_invested_capital)",
+      "primitive_families": [
+        "operating_income",
+        "equity",
+        "debt",
+        "tax"
+      ],
+      "gold_column": "roic",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "roce": {
+      "formula": "source_EBIT/mean(source_capital_employed,prior_source_capital_employed)",
+      "primitive_families": [
+        "operating_income",
+        "equity",
+        "debt"
+      ],
+      "gold_column": "roce",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "cash_conversion": {
+      "formula": "cfo_ttm/ni_ttm",
+      "primitive_families": [
+        "operating_cash_flow",
+        "net_income"
+      ],
+      "gold_column": "cash_conversion",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "accrual_quality": {
+      "formula": "(ni_ttm-cfo_ttm)/mean(at,prior_at)",
+      "primitive_families": [
+        "net_income",
+        "operating_cash_flow",
+        "assets"
+      ],
+      "gold_column": "accrual_quality",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "free_cash_flow": {
+      "formula": "cfo_ttm-capx_ttm",
+      "primitive_families": [
+        "operating_cash_flow",
+        "capex"
+      ],
+      "gold_column": "free_cash_flow",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "working_capital_growth": {
+      "formula": "((act-lct)-(prior_act-prior_lct))/abs(prior_act-prior_lct)",
+      "primitive_families": [
+        "working_capital"
+      ],
+      "gold_column": "working_capital_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "dilution": {
+      "formula": "basic_shares/prior_basic_shares-1",
+      "primitive_families": [
+        "basic_shares"
+      ],
+      "gold_column": "dilution",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "sales_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "sales"
+      ],
+      "gold_column": "sales_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "sales_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "sales"
+      ],
+      "gold_column": "sales_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "sales_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "sales"
+      ],
+      "gold_column": "sales_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "net_income_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "net_income"
+      ],
+      "gold_column": "net_income_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "net_income_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "net_income"
+      ],
+      "gold_column": "net_income_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "net_income_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "net_income"
+      ],
+      "gold_column": "net_income_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "operating_cash_flow_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "operating_cash_flow"
+      ],
+      "gold_column": "operating_cash_flow_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "operating_cash_flow_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "operating_cash_flow"
+      ],
+      "gold_column": "operating_cash_flow_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "operating_cash_flow_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "operating_cash_flow"
+      ],
+      "gold_column": "operating_cash_flow_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "assets_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "assets"
+      ],
+      "gold_column": "assets_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "assets_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "assets"
+      ],
+      "gold_column": "assets_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "assets_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "assets"
+      ],
+      "gold_column": "assets_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "equity_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "equity"
+      ],
+      "gold_column": "equity_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "equity_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "equity"
+      ],
+      "gold_column": "equity_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "equity_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "equity"
+      ],
+      "gold_column": "equity_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "capex_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "capex"
+      ],
+      "gold_column": "capex_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "capex_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "capex"
+      ],
+      "gold_column": "capex_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "capex_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "capex"
+      ],
+      "gold_column": "capex_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "research_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "research"
+      ],
+      "gold_column": "research_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "research_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "research"
+      ],
+      "gold_column": "research_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "research_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "research"
+      ],
+      "gold_column": "research_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "basic_eps_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "basic_eps"
+      ],
+      "gold_column": "basic_eps_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "basic_eps_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "basic_eps"
+      ],
+      "gold_column": "basic_eps_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "basic_eps_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "basic_eps"
+      ],
+      "gold_column": "basic_eps_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "diluted_eps_quarterly_yoy_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "diluted_eps"
+      ],
+      "gold_column": "diluted_eps_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "diluted_eps_annual_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "diluted_eps"
+      ],
+      "gold_column": "diluted_eps_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "diluted_eps_ttm_growth": {
+      "formula": "(current-prior)/abs(prior)",
+      "primitive_families": [
+        "diluted_eps"
+      ],
+      "gold_column": "diluted_eps_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "gross_margin_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "gross_profit",
+        "sales"
+      ],
+      "gold_column": "gross_margin_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "operating_margin_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "operating_income",
+        "sales"
+      ],
+      "gold_column": "operating_margin_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "net_margin_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "net_income",
+        "sales"
+      ],
+      "gold_column": "net_margin_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "cash_margin_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "operating_cash_flow",
+        "sales"
+      ],
+      "gold_column": "cash_margin_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "gp_assets_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "gross_profit",
+        "assets"
+      ],
+      "gold_column": "gp_assets_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "roa_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "net_income",
+        "assets"
+      ],
+      "gold_column": "roa_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    },
+    "roe_change": {
+      "formula": "current-prior",
+      "primitive_families": [
+        "net_income",
+        "equity",
+        "tax"
+      ],
+      "gold_column": "roe_change",
+      "status": "Task7/16 registration and independent qualification pending"
+    }
+  },
+  "policy": {
+    "history": "Quarterly YoY requires same fiscal quarter; annual requires source 350-380-day periods and matching fiscal calendars; TTM requires four contiguous source quarters. Prior values use the visible restatement vintage.",
+    "denominators": "Actual averages of current/prior source stocks; missing prior is NULL. Zero growth base is NULL; negative base uses abs(base) with explicit negative-base quality flag.",
+    "currency": "Same economically comparable reporting currency or verified source FX conversion; unsupported currency/basis is NULL.",
+    "sector": "Existing bank/insurer/REIT structural masks; no observed-missingness structural inference.",
+    "null_reasons": [
+      "missing_source",
+      "missing_history",
+      "invalid_source_duration",
+      "fiscal_transition",
+      "currency_mismatch",
+      "uncertified_economic_scope",
+      "uncertified_share_basis",
+      "structural_not_applicable",
+      "stale",
+      "zero_denominator"
+    ],
+    "coverage": "Every year2020-2025 in member_equity, univ_all_common, univ_r3000p; ordinary missing history remains eligible denominator. Measurements pending final producer and coordinated universe snapshot.",
+    "returns": "All return statistics and complete label windows end before2023-01-01."
+  },
+  "explicit_dependencies": [
+    "Task7 gold formula registration/comparison",
+    "Task13 indicated dividend rate",
+    "market producer class/ADR/EPS/split/date alignment",
+    "independent composite original-model qualification"
+  ]
+}

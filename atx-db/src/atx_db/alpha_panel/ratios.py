@@ -69,6 +69,7 @@ import re
 import sys
 import time
 from pathlib import Path
+import pyarrow.parquet as pq
 import hashlib
 from typing import Any
 
@@ -384,11 +385,15 @@ def _load(con, std: Path, where: str) -> None:
                fin_template, sic, curcd, fx_converted, {', '.join(f'"{c}"' for c in qcols)}
         FROM read_parquet('{fq}') WHERE ({where}) AND datadate >= DATE '{ROWS_FROM}'""")
     acols = sorted({c for v in ANN_LAGS.values() for c in v})
+    schema = set(pq.ParquetFile(std / 'funda.parquet').schema.names)
+    period_types = {'source_period_start':'DATE','source_period_end':'DATE','source_full_year':'BOOLEAN',
+                    'source_period_available_at':'TIMESTAMP'}
+    periods = ', '.join(c if c in schema else f'CAST(NULL AS {t}) AS {c}' for c,t in period_types.items())
     forms = ", ".join(f"'{f}'" for f in ANNUAL_FORMS)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE a AS
         SELECT row_number() OVER () AS arid, cik, datadate, fyear, fyr, accession, form, filed, available_at,
-               {', '.join(f'"{c}"' for c in acols)}
+               {', '.join(f'"{c}"' for c in acols)}, {periods}
         FROM read_parquet('{fa}') WHERE ({where}) AND datadate >= DATE '{ROWS_FROM}'""")
 
 
@@ -557,10 +562,12 @@ def build_state_bucket(con, std: Path, where: str, dest: Path) -> int:
         WITH h AS (SELECT cik, tau, max(datadate) AS d0 FROM visa GROUP BY 1, 2),
         x AS (SELECT v.cik, v.tau, v.arid, date_diff('day', v.datadate, h.d0) AS dd,
                      a0.fyear - ai.fyear AS fiscal_lag, ai.fyr = a0.fyr AS same_calendar,
-                     EXISTS (SELECT 1 FROM visa vp JOIN a prior ON prior.arid = vp.arid
-                             WHERE vp.cik = v.cik AND vp.tau = v.tau AND prior.fyear = ai.fyear - 1
-                               AND prior.fyr = ai.fyr
-                               AND date_diff('day', prior.datadate, ai.datadate) BETWEEN 350 AND 380) AS full_year
+                     (ai.source_full_year AND ai.source_period_start IS NOT NULL
+                       AND ai.source_period_end=ai.datadate AND ai.source_period_available_at<=v.tau
+                       AND date_diff('day',ai.source_period_start,ai.source_period_end)+1 BETWEEN 350 AND 380
+                       AND EXISTS (SELECT 1 FROM visa vp JOIN a prior ON prior.arid=vp.arid
+                           WHERE vp.cik=v.cik AND vp.tau=v.tau AND prior.fyear=ai.fyear-1 AND prior.fyr=ai.fyr
+                           AND date_diff('day',prior.datadate,ai.datadate) BETWEEN 350 AND 380)) AS full_year
               FROM visa v JOIN h USING (cik, tau) JOIN a ai ON ai.arid = v.arid
               JOIN visa v0 ON v0.cik = v.cik AND v0.tau = v.tau AND v0.datadate = h.d0
               JOIN a a0 ON a0.arid = v0.arid),
@@ -575,6 +582,19 @@ def build_state_bucket(con, std: Path, where: str, dest: Path) -> int:
     aagg += [f'count(CASE WHEN l.k <= 1 THEN a."{x}" END) AS na_{x}' for x in ANNUAL_ONLY_ITEMS]
     con.execute(f"CREATE OR REPLACE TEMP TABLE ap AS SELECT l.cik, l.tau, {', '.join(aagg)} "
                 f"FROM alag l JOIN a USING (arid) GROUP BY 1, 2")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE annual_status AS
+        SELECT v.cik,v.tau,
+            CASE WHEN a.source_period_start IS NULL OR a.source_period_available_at IS NULL
+                      THEN 'missing_source_duration'
+                 WHEN a.source_period_available_at>v.tau THEN 'source_duration_not_yet_available'
+                 WHEN a.source_period_end IS DISTINCT FROM a.datadate THEN 'source_period_end_mismatch'
+                 WHEN NOT coalesce(a.source_full_year,false)
+                      OR date_diff('day',a.source_period_start,a.source_period_end)+1 NOT BETWEEN 350 AND 380
+                      THEN 'invalid_or_transition_source_duration'
+                 ELSE 'source_duration_valid_history_required' END AS annual_history_status
+        FROM visa v JOIN a USING(arid)
+        QUALIFY row_number() OVER(PARTITION BY v.cik,v.tau ORDER BY a.datadate DESC,a.available_at DESC,a.accession DESC)=1""")
     # split log factor between each per-share value's filing date and the state's date (issuer level)
     con.execute("""
         CREATE OR REPLACE TEMP TABLE sb AS
@@ -596,8 +616,10 @@ def build_state_bucket(con, std: Path, where: str, dest: Path) -> int:
         SELECT p.cik, p.tau AS available_at, CAST(p.tau AS DATE) AS basis_date, p.datadate, p.fqtr_q0 AS fqtr, p.fyr,
                p.accession0, p.form0, p.fin_template, p.sic, p.curcd, p.fx_converted,
                ap.datadate_a0 AS fy0_datadate, ap.form_a0 AS fy0_form, {_absent_sql()} AS absent_items,
+               coalesce(ast.annual_history_status,'missing_annual_source') AS annual_history_status,
                {_state_sql()}
         FROM qp p LEFT JOIN ap USING (cik, tau)
+        LEFT JOIN annual_status ast USING(cik,tau)
         LEFT JOIN (SELECT cik, tau, {sl} FROM sl) s USING (cik, tau)""")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE st2 AS
@@ -621,7 +643,7 @@ MONTHLY_ID_COLS = ("session_date", "security_id", "cik", "link_tier", "linkprim"
                    "me_lines", "eps_adj", "fund_available_at", "datadate", "fqtr", "form0", "ttm_src", "ttm_fy0_items",
                    "fy0_datadate", "first_datadate", "hist_days",
                    "fin_template", "sic", "curcd", "fx_converted", "absent_items", "be_q0", "ev", "staleness_days",
-                   "fresh_q", "fresh_a")
+                   "fresh_q", "fresh_a", "annual_history_status")
 
 
 def consume_sql(cells: str, state: str, spl: str) -> str:

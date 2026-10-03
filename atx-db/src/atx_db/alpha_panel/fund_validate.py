@@ -115,7 +115,9 @@ CUTOFF_EVENTS, CUTOFF_SEED = 200, 20260929
 
 
 def out_path() -> Path:
-    return common.build_root() / "validation" / "fundamentals.json"
+    # A new producer must not overwrite another published stage's acceptance evidence.
+    name = "fundamentals_v11.json" if fx.stage_name() == "fundamentals_v11" else "fundamentals.json"
+    return common.build_root() / "validation" / name
 
 
 def _stage() -> Path:
@@ -404,7 +406,8 @@ def cutoff(con, stage: Path, n_events: int = CUTOFF_EVENTS, seed: int = CUTOFF_S
             h: list[tuple] = []
             counters: dict[str, int] = {}
             rebuilt = [e for e in fi.issuer_events(cik, part, fu.EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik),
-                                                   h, fx=fx_table) if e["available_at"] < cut]
+                                                   h, fx=fx_table, source_backed_only=stage.name == "fundamentals_v11")
+                       if e["available_at"] < cut]
             view = con.execute(fa.events_as_of_sql(stage, cut, ciks=[cik])).fetchall()
             names = [d[0] for d in con.description]
             cview = con.execute(

@@ -98,12 +98,13 @@ import pyarrow.parquet as pq
 from . import common as C
 from . import fund_catalog as fcat
 from . import fund_fx as ffx
+from . import fund_items as fi
 
 STAGE = "compustat_std"
 SCHEMA = "atx.alpha-panel.compustat-std/v2"
 RULE = "cstd-pit-v3"
 CODE_VERSION = "compustat-std-v3"
-MODULES = ("compustat_std", "fund_catalog", "fund_fx", "common")
+MODULES = ("compustat_std", "fund_catalog", "fund_items", "fund_fx", "common")
 DEFAULT_FUND_STAGE = "fundamentals_v10"
 DEFAULT_EARN_STAGE = "earnings_calendar"
 DATADATE_MIN = dt.date(1990, 1, 1)
@@ -238,6 +239,8 @@ def catalog_names() -> list[tuple[str, str, str, str]]:
 
 # Company Facts concepts read for ibq / doq / EPS / cshprq: key -> (unit kind, chain), the catalog chains
 FACT_KEYS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "source_period": ("money", ("NetIncomeLoss", "ProfitLoss", "NetCashProvidedByUsedInOperatingActivities",
+                                "ifrs-full:ProfitLoss", "ifrs-full:CashFlowsFromUsedInOperatingActivities")),
     "ib": ("money", fcat.BY_COL["ib_ttm"].chain),
     "do": ("money", fcat.BY_COL["do_ttm"].chain),
     "eps_b": ("per_share", fcat.BY_COL["epspx_ttm"].chain),
@@ -255,10 +258,14 @@ CAT_EXTRA = ("do_ttm", "xido_ttm")
 DESC_Q = ("cik", "datadate", "fyearq", "fqtr", "fyr", "accession", "form", "filed", "clock_utc", "available_at",
           "rdq", "rdq_src", "curcd", "fx_converted", "fx_rate", "fx_rate_avg_q", "first_reported", "vintage_kind",
           "is_restated", "restated_items", "is_amendment", "nonreliance_402_at", "fiscal_year", "fiscal_period",
-          "fin_template", "sic", "zero_filled")
+          "fin_template", "sic", "zero_filled", "source_period_start", "source_period_end",
+          "source_period_days", "source_full_year", "source_period_available_at", "source_period_accession")
 # restatement vintages: event column -> quarterly_history item, by conversion rate (FX-converted rows)
 VINT_STOCK = {c: c for c in ("at", "lt", "seq", "che", "act", "lct", "invt", "rect", "ap", "ppe", "pstk", "mib",
                              "gdwl", "ppegt", "intan")}
+VINT_STOCK.update({"c_dlc": "dlc", "c_dltt": "dltt", "c_txditc": "txditc", "c_re": "re",
+                   "c_mibt": "tempeq"})
+VINT_ANNUAL = {("c_txt_ttm" if col == "txt_ttm" else col): "annual_" + col for col in fi.DEPTH_ANNUAL}
 VINT_FLOW_Q = {c: c for c in ("sale_q", "cogs_q", "xsga_q", "oi_q", "ebitda_q", "dp_q", "xint_q", "txt_q", "ni_q")}
 VINT_TTM = {"sale_ttm": "sale_q", "cogs_ttm": "cogs_q", "xsga_ttm": "xsga_q", "gp_ttm": "gp_q", "oi_ttm": "oi_q",
             "ebitda_ttm": "ebitda_q", "dp_ttm": "dp_q", "xint_ttm": "xint_q", "ni_ttm": "ni_q", "cfo_ttm": "cfo_q",
@@ -267,7 +274,8 @@ VINT_TTM = {"sale_ttm": "sale_q", "cogs_ttm": "cogs_q", "xsga_ttm": "xsga_q", "g
 # catalog columns moved by component deltas
 VINT_DERIVED = {"c_ceq": (("seq", 1), ("pstk", -1)), "c_teq": (("seq", 1), ("mib", 1)),
                 "c_intano": (("gdwl", 1), ("intan", 1))}
-HIST_ITEMS = tuple(sorted(set(VINT_STOCK.values()) | set(VINT_FLOW_Q.values()) | set(VINT_TTM.values())))
+HIST_ITEMS = tuple(sorted(set(VINT_STOCK.values()) | set(VINT_FLOW_Q.values()) | set(VINT_TTM.values())
+                         | set(VINT_ANNUAL.values())))
 SRC_Q = ("ibq_src", "epspxq_src")
 
 
@@ -330,7 +338,7 @@ def prepare_facts(con, fund: Path, dest: Path, datadate_max: dt.date) -> dict[st
                datediff('day', b.period_start, b.period_end) AS dur, b.value, b.accession_number AS accession
         FROM read_parquet('{glob}') b JOIN fact_spec s ON s.taxonomy = b.taxonomy AND s.concept = b.concept
         WHERE b.period_start IS NOT NULL AND b.value IS NOT NULL
-          AND datediff('day', b.period_start, b.period_end) BETWEEN {Q_DUR[0]} AND {FY_DUR[1]}
+          AND datediff('day', b.period_start, b.period_end) BETWEEN 1 AND 450
           AND ((s.ukind = 'shares' AND b.unit = 'shares') OR (s.ukind = 'per_share' AND b.unit LIKE '%/shares')
                OR (s.ukind = 'money' AND b.unit NOT LIKE '%/%' AND b.unit <> 'shares'))""")
     n_raw, n_out = con.execute(f"""SELECT count(*), count(*) FILTER (WHERE period_end < DATE '{DATADATE_MIN}'
@@ -536,19 +544,34 @@ def _derive(con, inp: Inputs) -> None:
                  AND abs(datediff('day', a.fiscal_period_end, r.period_end)) <= {RDQ_MATCH_DAYS}
             GROUP BY 1, 2, 3, 4) k USING (cik, period_end, accession, available_at)""")
     # ---- assemble ----
-    no_do = "r.ni_q IS NOT NULL AND NOT w.do_recent" if inp.facts is not None else "false"
+    # Source periods, including short transition years, retain actual start/end and disclosure clock.
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE source_period AS
+        SELECT r.cik,r.period_end,r.accession,r.available_at,f.period_start AS source_period_start,
+               f.period_end AS source_period_end,f.dur+1 AS source_period_days,
+               f.dur+1 BETWEEN 350 AND 380 AS source_full_year,
+               f.clock_utc AS source_period_available_at,f.accession AS source_period_accession
+        FROM r2 r LEFT JOIN fct f ON f.cik=r.cik AND f.period_end=r.period_end AND f.key='source_period'
+             AND f.clock_utc<=r.available_at AND f.unit=r.mccy
+        QUALIFY row_number() OVER (PARTITION BY r.cik,r.period_end,r.accession,r.available_at
+             ORDER BY (f.accession=r.accession) DESC,f.clock_utc DESC,f.accession DESC,f.dur DESC,f.rnk)=1""")
+    source_backed = inp.fund.name == "fundamentals_v11"
+    no_do = "r.ni_q IS NOT NULL AND NOT w.do_recent" if inp.facts is not None and not source_backed else "false"
     doq = ("coalesce(w.do_3 * r.rq, CASE WHEN r.fqtr = 4 THEN w.do_4 * r.rq END, "
            f"CASE WHEN r.c_do_ttm = 0 OR ({no_do}) THEN 0.0 END)")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE j AS
         SELECT r.*, y.* EXCLUDE (cik, period_end, accession, available_at), w.* EXCLUDE (cik, period_end, accession, available_at), d.rdq_8k,
                d.rdq_filing,
-               {doq} AS doq
+               {doq} AS doq, sp.* EXCLUDE (cik,period_end,accession,available_at)
         FROM r2 r JOIN ytd y USING (cik, period_end, accession, available_at) JOIN fw w USING (cik, period_end, accession, available_at)
-        JOIN rd d USING (cik, period_end, accession, available_at)""")
+        JOIN rd d USING (cik, period_end, accession, available_at)
+        JOIN source_period sp USING (cik, period_end, accession, available_at)""")
     ibq = """CASE WHEN ib_3 IS NOT NULL THEN ib_3 * rq
                  WHEN fqtr = 4 AND ib_4 IS NOT NULL THEN ib_4 * rq
                  WHEN ni_q IS NOT NULL AND doq IS NOT NULL AND coalesce(c_xido_ttm, 0) = 0 THEN ni_q - doq END"""
+    if source_backed:
+        ibq = ibq.replace("coalesce(c_xido_ttm, 0) = 0", "c_xido_ttm = 0")
     ibq_src = """CASE WHEN ib_3 IS NOT NULL THEN 'ib_3m'
                      WHEN fqtr = 4 AND ib_4 IS NOT NULL THEN 'ib_fy_less_9m'
                      WHEN ni_q IS NOT NULL AND doq IS NOT NULL AND coalesce(c_xido_ttm, 0) = 0
@@ -577,7 +600,9 @@ def _derive(con, inp: Inputs) -> None:
             "is_restated": "is_restated",
             "restated_items": "restated_items", "is_amendment": "is_amendment",
             "nonreliance_402_at": "nonreliance_402_at", "fiscal_year": "fiscal_year", "fiscal_period": "fiscal_period",
-            "fin_template": "fin_template", "sic": "sic_in_force", "zero_filled": zero}
+            "fin_template": "fin_template", "sic": "sic_in_force", "zero_filled": zero,
+            **{c:c for c in ("source_period_start","source_period_end","source_period_days","source_full_year",
+                             "source_period_available_at","source_period_accession")}}
     assert tuple(desc) == DESC_Q
 
     def src(s: str) -> str:
@@ -650,7 +675,7 @@ def _vintages(con) -> None:
             GROUP BY 1, 2, 3, 4, 5, 6)
         WHERE h_n IS NOT NULL AND h_o IS NOT NULL GROUP BY 1, 2, 3, 4, 5""")
     ytd_h = sorted({h for _, h, _, _ in YTD_ITEMS})
-    items = sorted(set(VINT_STOCK.values()) | set(VINT_FLOW_Q.values()) | set(ytd_h))
+    items = sorted(set(VINT_STOCK.values()) | set(VINT_FLOW_Q.values()) | set(ytd_h) | set(VINT_ANNUAL.values()))
     piv = ", ".join(f"max(CASE WHEN item = '{i}' THEN h_n END) AS {i}_n, max(CASE WHEN item = '{i}' THEN h_o END) "
                     f"AS {i}_o" for i in items)
     piv4 = ", ".join(f"max(CASE WHEN item = '{i}' THEN d4 END) AS {i}_d4" for i in sorted(set(VINT_TTM.values())))
@@ -676,6 +701,9 @@ def _vintages(con) -> None:
     for col, h in VINT_TTM.items():
         new[col] = (f"CASE WHEN coalesce(d.{h}_d4, 0) = 0 OR b.\"{col}\" IS NULL THEN b.\"{col}\" "
                     f"ELSE b.\"{col}\" + d.{h}_d4 * {ttm} END")
+    for col,h in VINT_ANNUAL.items():
+        # A source annual total is independent of reconstructed quarterly deltas (scope/restatement changes).
+        new[col] = f"CASE WHEN b.fqtr=4 AND d.{h}_n IS NOT NULL THEN d.{h}_n * {ttm} ELSE ({new.get(col, f'b.{col}')}) END"
     for col, parts in VINT_DERIVED.items():
         # The stock can first appear in history after the base filing. Move derived components by the
         # actual published stock change, including that case, rather than requiring an old history fact.

@@ -55,7 +55,7 @@ from . import fund_extract as fx
 from . import fund_fx as ffx
 from . import fund_items as fi
 
-CODE_VERSION = "fundamentals-v10"
+CODE_VERSION = "fundamentals-v11"
 RULE = "fund-events-pit-v3"
 SCHEMA = "atx.alpha-panel.fundamentals/v2"
 EMIT_FROM = dt.datetime(2010, 1, 1)
@@ -219,6 +219,8 @@ POS_RULE = (
     "cost-of-revenue chain (filers that tag cost of revenue only by product and service line)")
 # FSDS PRE (not parenthetical) statement lines of each accession, case-insensitive tag patterns.
 PRE_PATTERNS = {
+    "is_sale_contract": r"^revenuefromcontractwithcustomer(excluding|including)assessedtax$",
+    "is_sale_generic": r"^revenues$",
     "is_rd": r"researchanddevelopment|researchdevelopment",
     "is_rev": r"revenue|sales|rental|leaseincome|royalt|premium|commission|feeincome|fees|licens|tuition|contractincome",
     "is_tax": r"incometax|taxexpense|taxbenefit|taxesonincome|provisionforincome",
@@ -306,6 +308,7 @@ def pre_flags_sql(pre_glob: str) -> str:
     is_names = [name for name in PRE_PATTERNS if name != "cf_capx"]
     line_is = ",\n".join(
         f"(stmt IN ('IS', 'CI') AND regexp_matches(ltag, {_q(pat)})"
+        + (" AND NOT custom" if name in ("is_sale_contract", "is_sale_generic") else "")
         + (f" AND NOT regexp_matches(ltag, {_q(PRE_REV_EXCLUDE)})" if name == "is_rev" else "")
         + f") AS {name}"
         for name, pat in PRE_PATTERNS.items() if name != "cf_capx")
@@ -750,7 +753,7 @@ def process_batch(con, batch: Path, fx_table: ffx.FxTable | None = None) -> dict
             n_rows += len(rows)
             h: list[tuple] = []
             events.extend(fi.issuer_events(cik, rows, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h,
-                                           fx=fx_table))
+                                           fx=fx_table, source_backed_only=fx.stage_name() == "fundamentals_v11"))
             hist.add(cik, h, basis_by)
         n_hist = hist.close()
     except BaseException:
@@ -899,6 +902,17 @@ def finalize() -> dict[str, Any]:
                                 "items_v1": list(fi.ITEM_COLUMNS), "items_v2": list(fi.ITEM_COLUMNS_V2),
                                 "history_items": list(fi.HISTORY_ITEMS)}
     old = common.read_json(out_dir / "manifest.json") if (out_dir / "manifest.json").exists() else {}
+    if fx.stage_name() == 'fundamentals_v11':
+        manifest['source_backed_only'] = True
+        manifest['legacy_item_rules'] = manifest.pop('item_rules')
+        manifest['item_rules'] = {
+            'missing_values':'Only explicit source zeros are zero. Missing/PRE omission/nil omissions stay NULL.',
+            'balance':'Reported source stocks; no assets-minus-liabilities balancing plugs; catalog temporary equity retained.',
+            'debt':'DebtCurrent else current LTD plus reported other short borrowing; total LTD less reported current LTD.',
+            'history':'Core discrete quarters plus direct source annual flows and tax/debt/RE/temp-equity comparatives at disclosure clocks.',
+            'sales':'Presented contractual revenue only when own FSDS IS/CI contractual caption exists and generic Revenues caption does not.'}
+        manifest['nil_zero_rule'] = 'disabled: absence/nil does not certify an explicit source zero'
+        manifest['rule_text'] += ' V11 source-backed-only overrides legacy zero/default/plug rules; see item_rules.'
     stale = out_dir / "manifest.json"
     if stale.exists():
         stale.unlink()  # publish-last: no manifest while the outputs are being replaced
@@ -1408,7 +1422,8 @@ def validate_cutoff(out: Path | None, ciks: tuple[int, ...] = CUTOFF_CIKS) -> di
             part = [r for r in rows if r[0] < cutoff]
             h: list[tuple] = []
             counters: dict[str, int] = {}
-            for e in fi.issuer_events(cik, part, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h):
+            for e in fi.issuer_events(cik, part, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h,
+                                     source_backed_only=fx.stage_name() == "fundamentals_v11"):
                 rebuilt_ev[(cik, e["accession"])] = e
             for item, pe, fp, accn, value, clock, zero, cur in h:
                 rebuilt_h.add((cik, item, pe, fp, accn, value, cur, clock, zero))

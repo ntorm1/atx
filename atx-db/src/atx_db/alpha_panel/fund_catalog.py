@@ -111,8 +111,8 @@ CATALOG: tuple[CatItem, ...] = (
                  r"|^accruedemployee|^accruedpayroll|^accruedcompensation|^interestpayablecurrent"
                  r"|^accountspayableandaccruedliabilities|^accountspayableandotheraccruedliabilities",
             exclude=r"tax|receivable|non-?current|long[- ]term"),
-    CatItem("dlc", "DLC", 1205, "derived", note="debt in current liabilities as in debt: DebtCurrent, else current LTD + "
-                                                "short-term borrowings; 0 when at exists and neither is reported"),
+    CatItem("dlc", "DLC", 1205, "derived", note="DebtCurrent, else current LTD + reported short-term borrowings; "
+                                                "v11 requires both components, no asset-only zero"),
     CatItem("dd1", "DD1", 1206, "stock", ("LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent")
             + _i("CurrentPortionOfLongtermBorrowings"),
             "BS", r"current (portion|maturities|installments)|due within one year|long[- ]term debt,? current|debt,? current",
@@ -123,8 +123,8 @@ CATALOG: tuple[CatItem, ...] = (
                  r"|^otherlongtermdebtcurrent|^longtermloanspayablecurrent|^capitalleaseobligationscurrent"
                  r"|^financeleaseliabilitycurrent|currentportionoflongtermborrowings|currentmaturities",
             exclude=r"operating lease"),
-    CatItem("dltt", "DLTT", 1207, "derived", note="long-term debt excluding current maturities as in debt (0 when at "
-                                                  "exists and no long-term debt concept is reported)"),
+    CatItem("dltt", "DLTT", 1207, "derived", note="noncurrent long-term debt source, else total LTD less reported "
+                                                  "current maturities; v11 has no asset-only zero"),
     CatItem("llo", "LLO", 1209, "stock", ("OperatingLeaseLiability", "OperatingLeaseLiabilityNoncurrent") + _i("LeaseLiabilities"),
             "BS", r"operating lease|lease liabilit|lease obligation", knowledge_zero=True,
             tags=r"^operatingleaseliabilit|^leaseliabilit|^operatingleasesliabilit",

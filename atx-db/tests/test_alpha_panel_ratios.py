@@ -23,7 +23,8 @@ A_ITEMS = sorted({c for v in R.ANN_LAGS.values() for c in v})
 DESC = [("cik", pa.int64()), ("datadate", pa.date32()), ("fqtr", pa.int64()), ("fyr", pa.int64()), ("fyearq", pa.int64()), ("fyear", pa.int64()),
         ("accession", pa.string()), ("form", pa.string()), ("filed", pa.date32()), ("available_at", pa.timestamp("us")),
         ("fin_template", pa.string()), ("sic", pa.int32()), ("curcd", pa.string()), ("fx_converted", pa.bool_()),
-        ("first_reported", pa.bool_())]
+        ("first_reported", pa.bool_()), ("source_period_start",pa.date32()), ("source_period_end",pa.date32()),
+        ("source_full_year",pa.bool_()), ("source_period_available_at",pa.timestamp('us'))]
 FQ_SCHEMA = pa.schema(DESC + [(c, pa.float64()) for c in Q_ITEMS])
 FA_SCHEMA = pa.schema(DESC + [(c, pa.float64()) for c in A_ITEMS])
 
@@ -51,7 +52,10 @@ class World:
         r = {f.name: None for f in FA_SCHEMA}
         r.update({"cik": cik, "datadate": dd, "fqtr": 4, "fyr": 12, "fyear": dd.year, "accession": accn, "form": form,
                   "filed": avail.date(), "available_at": avail, "fin_template": "other", "sic": 3570, "curcd": "USD",
-                  "fx_converted": False, "first_reported": True})
+                  "fx_converted": False, "first_reported": True,
+                  "source_period_start":D(dd.year,1,1),"source_period_end":dd,
+                  "source_full_year":350<=(dd-D(dd.year,1,1)).days+1<=380,
+                  "source_period_available_at":avail})
         r.update(items)
         self.fa.append(r)
 
