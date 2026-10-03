@@ -4031,7 +4031,13 @@ TEST(TwoSpeedRunner, SavesTheSleevesBesideAnUnchangedBlend) {
     EXPECT_TRUE(split);
     std::vector<f64> share(D);
     ASSERT_TRUE(read_payload(dir.path/"two"/(role_name+"_sleeve_fast_share.f64"),share));
-    for (const f64 x:share) EXPECT_EQ(x,0.5);
+    // PM8-16 #9 (5ee9f039): the share counts only the themes present at the date, 0 when none is (the blend
+    // row has no finite cell); .5 wherever both are present (integration of YCOMB: the test predated #9).
+    for (usize d=0;d<D;++d) {
+      bool present=false;
+      for (usize i=0;i<N;++i) present=present || !std::isnan(blend[d*N+i]);
+      EXPECT_EQ(share[d],present?0.5:0.0) << d;
+    }
   }
   auto two_recipe=read_json(dir.path/"two"/"recipe.json"),std_recipe=read_json(dir.path/"std"/"recipe.json");
   EXPECT_EQ(two_recipe.at("composition_sleeves"),"two-speed-v1");
