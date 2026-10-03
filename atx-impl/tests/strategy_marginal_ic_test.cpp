@@ -157,6 +157,7 @@ struct Fixture {
   st::MarginalIcConfig cfg;
   std::string role_sha, library_sha, weights_sha, pool_sha;
   fs::path cache_entry_dir;
+  std::string entry_identity; // the sidecars' vm_identity: this build's (see write_cache)
   Block block{Block::none};
   bool holes{false};
   usize extra{0};
@@ -263,10 +264,17 @@ struct Fixture {
         {"instruments", N}, {"bytes", D * N * sizeof(f64)},
         {"layout", "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"}, {"payload", stem + ".f64"},
         {"payload_sha256", files[stem + ".f64"]["sha256"]}, {"field_payload_sha256", Json::object()},
-        {"vm_identity", "synthetic"}}, unused);
+        {"vm_identity", entry_identity}}, unused);
   }
+  // Entries go where this build's u pass writes them, recording its VM identity (P9 S1 fix
+  // round 1: the verb reads that root alone and matches every sidecar's vm_identity): DIR
+  // itself under the legacy identity (the v8 fixture's directory), else DIR/<identity>.
   bool write_cache() {
-    cache_entry_dir = dir.path / "cache" / role_sha;
+    st::MarginalIcConfig probe;
+    probe.candidate_cache_directory = (dir.path / "cache").string();
+    const auto layout = st::marginal_cache_roots(probe);
+    cache_entry_dir = layout.own / role_sha;
+    entry_identity = layout.identity;
     std::error_code ec; fs::create_directories(cache_entry_dir, ec);
     if (ec) return false;
     for (const auto& e : entries) if (!write_entry(e)) return false;
@@ -773,5 +781,116 @@ TEST(IcIdentity, BuildTokenSeparatesCaches) {
   // A Release tree: its own cache roots.
   EXPECT_FALSE(ae::build_flavor_suffix(flavor).empty()) << ic;
 #endif
+}
+
+// Fix round 1 (review S1 major, DS-1): a Debug and a Release tree never read each other's
+// candidate-cache entries. The verb reads only the root its build's u pass writes -- DIR for the
+// legacy (equity-dev Debug) identity, keeping the v8 roots DIR/<identity>, DIR; DIR/<identity>
+// alone for any other -- and every sidecar it reads must record its identity. So a Release
+// build never falls back to the legacy DIR, and no build reads another identity's entry
+// wherever it sits. `probe` stands for a build of another flavour; it is no real identity, so
+// the test holds in the Debug and the Release tree alike.
+TEST(MarginalIc, CacheRootsNeverShareAcrossBuilds) {
+  const std::string legacy = "dslvm1_clang18.1"; // strategy_ic_signal_cache.cpp legacy_vm_identity
+  const std::string probe = "dslvm1_s1probe";
+  // The rule, as strings (gtest does not print std::filesystem::path safely).
+  const auto under = [](const std::string& leaf) {
+    return (fs::path("cache_dir") / leaf).string();
+  };
+  st::MarginalIcConfig rule;
+  rule.candidate_cache_directory = "cache_dir";
+  rule.cache_identity = probe;
+  const auto other = st::marginal_cache_roots(rule);
+  EXPECT_EQ(other.identity, probe);
+  EXPECT_EQ(other.own.string(), under(probe));
+  ASSERT_EQ(other.roots.size(), 1U);
+  EXPECT_EQ(other.roots.front().string(), under(probe));
+  rule.cache_identity.clear();
+  const auto own = st::marginal_cache_roots(rule);
+  EXPECT_EQ(own.identity, st::ic_cache_vm_identity().identity);
+  const bool legacy_build = own.identity == legacy;
+  if (legacy_build) {
+    EXPECT_EQ(own.own.string(), fs::path("cache_dir").string());
+    ASSERT_EQ(own.roots.size(), 2U);
+    EXPECT_EQ(own.roots.front().string(), under(legacy));
+    EXPECT_EQ(own.roots.back().string(), fs::path("cache_dir").string());
+  } else {
+    EXPECT_EQ(own.own.string(), under(own.identity));
+    ASSERT_EQ(own.roots.size(), 1U);
+    EXPECT_EQ(own.roots.front().string(), under(own.identity));
+  }
+#if defined(NDEBUG)
+  EXPECT_FALSE(legacy_build) << own.identity; // a Release tree never reads the legacy DIR
+#endif
+  // End to end on copies of the fixture's entries (which sit in this build's own root).
+  Fixture f(Mode::Noise); ASSERT_TRUE(f.ok);
+  const auto reference = run_into(f, f.cfg, "own_root");
+  EXPECT_EQ(reference.at("inputs").at("candidate_cache").at("build_vm_identity"), own.identity);
+  // The fixture's entries copied into `entry_dir`, each sidecar recording `recorded`.
+  const auto place = [&f](const fs::path& entry_dir, const std::string& recorded) {
+    std::error_code ec;
+    fs::create_directories(entry_dir, ec);
+    if (ec) return false;
+    for (const auto& item : fs::directory_iterator(f.cache_entry_dir)) {
+      const auto target = entry_dir / item.path().filename();
+      if (item.path().extension() != ".json") {
+        if (!fs::copy_file(item.path(), target, fs::copy_options::overwrite_existing)) return false;
+        continue;
+      }
+      auto sidecar = read_json(item.path());
+      sidecar["vm_identity"] = recorded;
+      std::string unused;
+      if (!json_file(target, sidecar, unused)) return false;
+    }
+    return true;
+  };
+  // The fixture's config over cache directory `root`, read as `identity` (empty: this build).
+  const auto over = [&f](const fs::path& root, const std::string& identity) {
+    auto run = f.cfg;
+    run.candidate_cache_directory = root.string();
+    run.cache_identity = identity;
+    return run;
+  };
+  // A run that must refuse with `code` and a message containing `says`, before any output.
+  const auto refused = [&f](st::MarginalIcConfig run, const std::string& name,
+                            core::ErrorCode code, const std::string& says) {
+    run.output_directory = (f.dir.path / name).string();
+    std::ostringstream progress;
+    const auto status = st::run_marginal_ic(run, progress);
+    ASSERT_FALSE(status) << name;
+    const auto message = status.error().to_string();
+    EXPECT_EQ(status.error().code(), code) << message;
+    EXPECT_NE(message.find(says), std::string::npos) << message;
+    EXPECT_FALSE(fs::exists(run.output_directory)) << name;
+  };
+  const std::string not_found = "no candidate cache entry", foreign = "records vm_identity";
+  // 1. The review's case: a Debug u pass filled only the legacy DIR. A build of any other
+  //    identity (this Release tree, or the probe) does not fall back to it.
+  const auto legacy_dir = f.dir.path / "legacy";
+  ASSERT_TRUE(place(legacy_dir / f.role_sha, legacy));
+  refused(over(legacy_dir, probe), "legacy_probe", core::ErrorCode::NotFound, not_found);
+  if (legacy_build) {
+    const auto debug = run_into(f, over(legacy_dir, ""), "legacy_own");
+    EXPECT_EQ(debug.at("candidates").dump(), reference.at("candidates").dump());
+  } else {
+    refused(over(legacy_dir, ""), "legacy_own", core::ErrorCode::NotFound, not_found);
+  }
+  // 2. Vice versa: entries only in another build's own root DIR/<probe>/, recording it, are
+  //    read by that build alone; this build (the legacy roots included) never reaches them.
+  const auto probe_dir = f.dir.path / "probe";
+  ASSERT_TRUE(place(probe_dir / probe / f.role_sha, probe));
+  refused(over(probe_dir, ""), "probe_own", core::ErrorCode::NotFound, not_found);
+  const auto matched = run_into(f, over(probe_dir, probe), "probe_probe");
+  EXPECT_EQ(matched.at("inputs").at("candidate_cache").at("build_vm_identity"), probe);
+  EXPECT_EQ(matched.at("candidates").dump(), reference.at("candidates").dump());
+  // 3. An entry in a build's own root that records another identity refuses: for the probe,
+  //    and for this build (under the legacy identity, a foreign sidecar in DIR itself).
+  ASSERT_TRUE(place(probe_dir / probe / f.role_sha, legacy));
+  refused(over(probe_dir, probe), "probe_foreign", core::ErrorCode::InvalidArgument, foreign);
+  const auto mixed_dir = f.dir.path / "mixed";
+  st::MarginalIcConfig mixed;
+  mixed.candidate_cache_directory = mixed_dir.string();
+  ASSERT_TRUE(place(st::marginal_cache_roots(mixed).own / f.role_sha, probe));
+  refused(over(mixed_dir, ""), "own_foreign", core::ErrorCode::InvalidArgument, foreign);
 }
 } // namespace

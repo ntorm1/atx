@@ -1,6 +1,8 @@
 #pragma once
+#include <filesystem>
 #include <iosfwd>
 #include <string>
+#include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
@@ -43,8 +45,9 @@ namespace atx::impl::strategy {
 //                       regressors without its own term (the review CM s.4 bias: v8 member rows
 //                       sit in a composite that contains them). Report-only rows.
 struct MarginalIcConfig {
-  // The u pass's --candidate-cache DIR; entries are read (v2 layout) under DIR/<vm identity of
-  // this build> or DIR, in <role sha>/ or <role sha>/fp_*/.
+  // The u pass's --candidate-cache DIR; entries are read (v2 layout) in <role sha>/ or
+  // <role sha>/fp_*/ of the roots marginal_cache_roots names (this build's own root only), and
+  // every sidecar read must record this build's VM identity.
   std::string candidate_cache_directory;
   std::string library_path, library_sha256; // SHA optional: verified when given, always recorded
   std::string pool_path, pool_sha256;       // <role>_combined.json of a --save-combined run
@@ -63,7 +66,23 @@ struct MarginalIcConfig {
   // instead of the date's member names. Outputs are byte-identical either way (test
   // MarginalIc.CompactedRowsEqual).
   bool compact_rows{true};
+  // Test seam, no CLI flag: read as a build of this VM identity, which must not be the legacy
+  // one (root DIR/<it>; sidecars must record it). Empty: this build's ic_cache_vm_identity()
+  // and the root its u pass writes.
+  std::string cache_identity;
 };
+// The candidate-cache roots the verb reads, in order, by the IC runner's rule (P9 S1 fix round 1,
+// DS-1: a Debug and a Release tree never share an entry). `own` is the root this build's u pass
+// writes (strategy_ic_signal_cache.cpp cache_root). When it is DIR itself (the legacy equity-dev
+// identity) the v8 roots DIR/<identity>, DIR are kept; any other identity's only root is `own`
+// = DIR/<identity>, never DIR. Under every identity a sidecar must record `identity`, as the
+// runner and the weights fitter require.
+struct MarginalCacheRoots {
+  std::string identity;                     // this build's; recorded as build_vm_identity
+  std::filesystem::path own;                // this build's root
+  std::vector<std::filesystem::path> roots; // searched in order; the first intact entry wins
+};
+[[nodiscard]] MarginalCacheRoots marginal_cache_roots(const MarginalIcConfig& cfg);
 // Conservative peak bytes: the role while labels are built, labels, member mask, one row per
 // stream, the daily series and the pairwise sums. No term is dates x names x candidates.
 [[nodiscard]] atx::core::Result<atx::u64> marginal_ic_working_bytes(

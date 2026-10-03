@@ -338,8 +338,11 @@ co::Result<std::map<std::string, std::string>> read_fields(const MarginalIcConfi
 struct CacheEntry { fs::path sidecar, payload; std::string payload_sha, vm_identity; };
 using FieldShas = std::map<std::string, std::string>;
 // nullopt: an intact entry for other field payloads than the pinned fields manifest names.
+// P9 S1 fix round 1 (DS-1): the sidecar must record `identity`, this build's VM identity, as
+// the runner (v2_payload_sha) and the weights fitter require; another build's entry refuses.
 co::Result<std::optional<CacheEntry>> accept_sidecar(const fs::path& path, const Candidate& c, const std::string& stem,
-                                                     const Pool& pool, const FieldShas& fields) {
+                                                     const Pool& pool, const FieldShas& fields,
+                                                     const std::string& identity) {
   ATX_TRY(auto text, icd::metadata_text(path.string(), metadata_limit));
   const auto j = Json::parse(text, nullptr, false);
   const u64 bytes = static_cast<u64>(pool.dates) * pool.names * sizeof(f64);
@@ -352,6 +355,11 @@ co::Result<std::optional<CacheEntry>> accept_sidecar(const fs::path& path, const
       !j.at("field_payload_sha256").is_object())
     return co::Err(fail(co::ErrorCode::InvalidArgument, "candidate cache sidecar does not describe " + c.id +
         " on the pool's role: " + path.string()));
+  if (text_of(j, "vm_identity") != identity)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "candidate cache sidecar of " + c.id + " records vm_identity '" +
+                        text_of(j, "vm_identity") + "', not this build's " + identity + ": " +
+                        path.string()));
   if (!fields.empty()) {
     for (const auto& item : j.at("field_payload_sha256").items()) {
       const auto at = fields.find(item.key());
@@ -374,8 +382,9 @@ co::Result<std::vector<fs::path>> entry_directories(const fs::path& base) {
   return co::Ok(std::move(out));
 }
 // The first root holding an intact entry wins; two in one root (other field payloads) need --fields.
+// `roots` and `identity`: marginal_cache_roots (this build's own root; sidecars must record it).
 co::Result<CacheEntry> resolve_entry(const std::vector<fs::path>& roots, const Candidate& c, const Pool& pool,
-                                     const FieldShas& fields) {
+                                     const FieldShas& fields, const std::string& identity) {
   const auto stem = c.id + "." + c.dsl_sha.substr(0, 16);
   for (const auto& root : roots) {
     const auto base = root / pool.role_sha;
@@ -387,7 +396,7 @@ co::Result<CacheEntry> resolve_entry(const std::vector<fs::path>& roots, const C
       const auto probe = directory / (stem + ".json");
       std::error_code present;
       if (!fs::exists(probe, present)) continue;
-      ATX_TRY(auto entry, accept_sidecar(probe, c, stem, pool, fields));
+      ATX_TRY(auto entry, accept_sidecar(probe, c, stem, pool, fields, identity));
       if (entry) found.push_back(std::move(*entry));
     }
     if (found.size() > 1U)
@@ -841,6 +850,26 @@ Json method_json(const MarginalIcConfig& cfg, const Themes& themes) {
 }
 } // namespace
 
+MarginalCacheRoots marginal_cache_roots(const MarginalIcConfig& cfg) {
+  const fs::path base(cfg.candidate_cache_directory);
+  MarginalCacheRoots out;
+  if (!cfg.cache_identity.empty()) {
+    out.identity = cfg.cache_identity;
+    out.own = base / out.identity;
+  } else {
+    // The runner's own rule (cache_root): DIR for the legacy identity, else DIR/<identity>.
+    out.identity = ic_cache_vm_identity().identity;
+    IcRunnerConfig runner;
+    runner.candidate_cache_directory = cfg.candidate_cache_directory;
+    out.own = icd::cache_root(runner);
+  }
+  // The legacy identity keeps the v8 roots in v8 order (its runner never writes DIR/<identity>);
+  // any other identity reads its own root alone, never the legacy DIR (review S1 major).
+  if (out.own == base) out.roots = {base / out.identity, base};
+  else out.roots = {out.own};
+  return out;
+}
+
 co::Result<u64> marginal_ic_working_bytes(usize dates, usize names, usize score_rows, usize candidates, usize regressors) {
   if (dates == 0U || dates > 4096U || names == 0U || names > 20000U || score_rows > dates || candidates == 0U ||
       candidates > 256U || regressors == 0U || regressors > cb::kMaxMarginalRegressors)
@@ -905,11 +934,13 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     ATX_TRY(const auto fields, read_fields(cfg, pool, fields_sha));
     ATX_TRY(const auto listing, read_candidates(cfg, lib));
     ATX_TRY(auto verified, read_verified(cfg));
-    const auto identity = ic_cache_vm_identity().identity;
-    const std::vector<fs::path> roots{fs::path(cfg.candidate_cache_directory) / identity, fs::path(cfg.candidate_cache_directory)};
+    // Fix round 1 (DS-1): this build's own root only, every sidecar recording this build's
+    // identity, so a Debug and a Release tree never read each other's entries.
+    const auto layout = marginal_cache_roots(cfg);
+    const auto& identity = layout.identity;
     std::vector<CacheEntry> entries; entries.reserve(lib.size());
     for (const auto& c : lib) {
-      ATX_TRY(auto entry, resolve_entry(roots, c, pool, fields));
+      ATX_TRY(auto entry, resolve_entry(layout.roots, c, pool, fields, identity));
       entries.push_back(std::move(entry));
     }
     const usize lag = execution_delay + horizon;
