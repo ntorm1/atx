@@ -88,6 +88,39 @@ def test_a_failed_stage_leaves_a_failed_receipt_and_is_retried(tmp_path):
         SC.Chain.write(ch.receipt_path(2), {})
 
 
+def test_any_exception_leaves_a_failed_receipt_with_code_4(tmp_path):
+    """Review YINFRA #11: a KeyError / TypeError / JSON error after side effects is a failed receipt, not a traceback
+    that leaves no record."""
+    def boom(ctx, done, log):
+        ctx.calls.append("x")
+        return {"v": abs(None)}                                   # TypeError, as wave_stages' abs(None) was
+    ctx = Ctx(tmp_path)
+    ch = SC.Chain("test", [make("a"), SC.Stage("x", boom)], tmp_path / "state", clock=lambda: "T")
+    with pytest.raises(SC.ChainError, match=r"HARD-STOP \[x\]: TypeError: bad operand") as e:
+        ch.run(ctx, log=lambda s: None)
+    failed = json.loads((ch.receipt_dir() / "02-x.failed-1.json").read_text())
+    assert e.value.code == SC.EXIT_STOP and failed["code"] == 4 and failed["error"].startswith("TypeError: ")
+    assert not ch.lock_path().exists()                            # released on the way out
+
+
+def test_a_second_run_of_one_state_dir_is_refused_while_the_lock_is_held(tmp_path):
+    ctx = Ctx(tmp_path)
+    ch = chain(tmp_path)
+    seen = []
+
+    def nested(c, done, log):                                     # a second `run` while the first holds the dir
+        with pytest.raises(SC.ChainError, match="is held") as e:
+            chain(tmp_path).run(ctx, log=lambda s: None)
+        seen.append(e.value.code)
+        return {}
+    ch.stages[1] = SC.Stage("b", nested)
+    ch.run(ctx, log=lambda s: None)
+    assert seen == [SC.EXIT_STOP] and ctx.calls == ["a", "c"] and not ch.lock_path().exists()
+    ch.lock_path().write_text('{"pid": 1}\n')                     # a crashed run's leftover: refused until removed
+    with pytest.raises(SC.ChainError, match='"pid": 1'):
+        chain(tmp_path).run(ctx, log=lambda s: None)
+
+
 def test_plan_runs_nothing_and_marks_done_stages(tmp_path):
     ctx = Ctx(tmp_path)
     ch = chain(tmp_path)

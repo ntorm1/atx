@@ -18,9 +18,11 @@ A stage is ``Stage(name, run, inputs=None, plan=None)``:
 ``done`` maps each earlier stage name to its recorded outputs (an empty dict for a stage not run yet in a dry run).
 
 Receipts: ``<state dir>/receipts/<NN>-<name>.json`` = {schema, chain, stage, index, status "ok", inputs, outputs,
-started_utc, seconds}, written once (never overwritten). A stage that raises StageError leaves
-``<NN>-<name>.failed-<k>.json`` (k the first free number; kept for the record, never read for resume) and stops the
-chain with that error's code; the next ``run`` retries it. Standard library only.
+started_utc, seconds}, written once (never overwritten). A stage that raises (StageError with its code, any other
+exception with code 4 and its type named) leaves ``<NN>-<name>.failed-<k>.json`` (k the first free number; kept for
+the record, never read for resume) and stops the chain; the next ``run`` retries it. ``run`` holds
+``<state dir>/chain.lock`` (created O_EXCL, removed when it ends): a second run of the same state dir is refused.
+Standard library only.
 """
 from __future__ import annotations
 
@@ -28,12 +30,14 @@ from dataclasses import dataclass
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
 from typing import Callable
 
 SCHEMA = "atx.stage-receipt/v1"
 PREV = "previous_receipt_sha256"          # the input every stage after the first carries
+LOCK = "chain.lock"                       # <state dir>/chain.lock while a run holds the state dir
 EXIT_STALE, EXIT_STOP = 3, 4
 
 
@@ -162,10 +166,37 @@ class Chain:
             out += list(st.plan(ctx, done)) if st.plan else []
         return out
 
+    def lock_path(self) -> Path:
+        return self.state_dir / LOCK
+
+    def acquire(self) -> None:
+        """The state dir's run lock (O_CREAT | O_EXCL): one ``run`` per state dir at a time."""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(self.lock_path(), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                held = self.lock_path().read_text(encoding="utf-8").strip()
+            except OSError:
+                held = "unreadable"
+            raise ChainError(f"chain {self.name}: {self.lock_path()} is held ({held}): another run of this state dir "
+                             "is in progress; a crashed run leaves it behind (check that no run is alive, then remove "
+                             "it)", EXIT_STOP) from None
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid(), "started_utc": self.clock()}) + "\n")
+
     def run(self, ctx, *, until: str | None = None, log=print) -> dict:
-        """Run the pending stages in order (see the module doc); returns {stage: outputs} of every ok stage."""
+        """Run the pending stages in order (see the module doc) under the state dir's lock; returns {stage: outputs}
+        of every ok stage."""
         if until is not None and until not in [s.name for s in self.stages]:
             raise ChainError(f"chain {self.name}: no stage {until!r}", 2)
+        self.acquire()
+        try:
+            return self._run(ctx, until, log)
+        finally:
+            self.lock_path().unlink(missing_ok=True)
+
+    def _run(self, ctx, until: str | None, log) -> dict:
         done: dict = {}
         for i, st in enumerate(self.stages):
             rec = self.read(i)
@@ -183,10 +214,12 @@ class Chain:
                 started, t0 = self.clock(), time.monotonic()
                 try:
                     outputs = st.run(ctx, done, log)
-                except StageError as exc:
+                except Exception as exc:                  # noqa: BLE001  any failure leaves its receipt and stops
+                    code = exc.code if isinstance(exc, StageError) else EXIT_STOP
+                    error = str(exc) if isinstance(exc, StageError) else f"{type(exc).__name__}: {exc}"
                     self.write(self.failed_path(i), dict(self.body(i, now, {}, started, t0), status="failed",
-                                                         error=str(exc), code=exc.code))
-                    raise ChainError(f"HARD-STOP [{st.name}]: {exc}", exc.code) from exc
+                                                         error=error, code=code))
+                    raise ChainError(f"HARD-STOP [{st.name}]: {error}", code) from exc
                 outputs = json.loads(canonical(outputs or {}))
                 self.write(self.receipt_path(i), self.body(i, now, outputs, started, t0))
                 done[st.name] = outputs
