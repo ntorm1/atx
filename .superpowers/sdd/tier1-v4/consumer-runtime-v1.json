@@ -1,0 +1,41 @@
+{
+  "schema": "atx.tier1-v4.consumer-runtime/v1",
+  "status": "BINARY_BUILT_REAL_LOAD_PENDING",
+  "contract": "consumer-contract-v2.json",
+  "binary": "C:/atx/build-equity/bin/atx-equity-strategy-ic.exe",
+  "binary_sha256": "e474f0d2c2cb064ecf1b519d19e6ebd4ae909fb5f1f5bf56f28b494c254065a8",
+  "build": {
+    "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/atx/scripts/atx-build.ps1 -Preset equity-dev -Jobs 1 build atx-equity-strategy-ic",
+    "guard_receipt": "logs/consumer-binary-build-v1.receipt.json",
+    "stdout": "logs/consumer-binary-build-v1.out.log",
+    "stderr": "logs/consumer-binary-build-v1.err.log",
+    "job_cap_gib": 1.0,
+    "peak_job_gib": 0.2203,
+    "seconds": 49.3,
+    "exit_code": 0,
+    "cap_hit": false,
+    "preset": "equity-dev",
+    "build_type": "Debug",
+    "embedded_git_identity": "63c0c067c8584ae27278e6afb2fa24045d31699b-dirty",
+    "warnings": ["Dependency spdlog compilations emitted clang-cl unused /MP argument warnings."],
+    "scope": "One target with one compiler worker; current shared workspace, no source edits. Dirty identity is explicit and does not establish a clean reproducible release."
+  },
+  "source_sha256": {
+    "atx-impl/src/strategy_ic_runner.cpp": "6a332b0397ec4ad9eeb0d3cdaab360c7f141dc71e13bec6235b46edd1104901d",
+    "atx-engine/src/data/strategy_data.cpp": "5e11e544589cb765eb3a6942e18858e144aeb42dda734b01e971e220660860aa",
+    "atx-engine/tools/prepare_research_fields.py": "eae8d6dc2ced38e3f2308b6af09472a3d1f2bae8ba708d2462c57e7ddbb44b3e"
+  },
+  "cli_probe": {
+    "command": "C:/atx/build-equity/bin/atx-equity-strategy-ic.exe --help",
+    "exit_code": 0,
+    "observed": "Advertises pinned library, train/validation role manifests, optional role-bound fields and bounded memory/workers."
+  },
+  "not_yet_measured": [
+    "Real release role and fields load",
+    "Exact exported axes, membership, timing and NaN behavior",
+    "Representative downstream workflow wholly before 2023",
+    "Binary and artifact deterministic rebuild and rollback"
+  ],
+  "return_data_read": false,
+  "release_accepted": false
+}
