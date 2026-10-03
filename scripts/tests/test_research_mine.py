@@ -30,7 +30,11 @@ import research_mine as M  # noqa: E402
 import research_window as RW  # noqa: E402
 from test_research_ledger import grow_registry  # noqa: E402
 
-TEMPLATE = REPO / "scripts" / "specs" / "v9" / "mine-c1.json"
+# The registered template as committed before the lock (`23b52a5d`): the tests below pin the registration on it.
+# The live spec is the campaign as locked and run in X batch 2 (v8x prereg section 9 A2-A4), pinned by
+# test_the_live_spec_is_the_campaign_as_locked.
+TEMPLATE = HERE / "fixtures" / "mine-c1.registered.json"
+LIVE = REPO / "scripts" / "specs" / "v9" / "mine-c1.json"
 VERB_CPP = REPO / "atx-impl" / "src" / "strategy_mine.cpp"
 POOL_HPP = REPO / "atx-impl" / "src" / "strategy_mine_pool.hpp"
 # The registration's field rule (prereg item 4): fields v9 rows that no registry alpha reads, minus these classes.
@@ -73,6 +77,31 @@ def test_template_is_the_registration():
     assert spec["rule"] == {"min_names": 1000, "min_dates": 128, "max_promotions": 16}
     assert spec["registry"] == {"path": f"{spec['output']}/registry.atxtrg", "head": None}
     assert round(M.bonferroni_z(132), 4) == 3.5544
+
+
+def test_the_live_spec_is_the_campaign_as_locked():
+    """scripts/specs/v9/mine-c1.json as run (X batch 2): the registered template with A3's fields (the rule applied to
+    the registry at H-F: the X members' fields left the list), budget 11 x fields, H-F's role / fields / pool source,
+    every pin locked, the probe's cap at its workers, no open requires and nothing to fill; everything else is the
+    template's."""
+    live, reg = M.load(LIVE), template()
+    registry = json.loads((REPO / "atx-impl" / "strategies" / "alphas" / "registry.json").read_text(encoding="utf-8"))
+    read_x = set()
+    for a in registry["alphas"]:
+        if str(a.get("added_in", "")).startswith("v8x"):
+            read_x.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a["dsl"]))
+    assert live["fields"] == [f for f in reg["fields"] if f not in read_x] and len(live["fields"]) == 10
+    assert live["budget"] == M.capacity(live) == 11 * len(live["fields"]) == 110
+    assert live["requires"] == [] and M.research_spec.fills(live) == []
+    assert live["inputs"]["role"]["path"] == "build-equity/train-2020-2023-lo3/manifest.json"
+    assert all(re.fullmatch(r"[0-9a-f]{64}", v["sha256"] or "") for s in ("inputs", "pool_source") for v in live[s].values())
+    assert isinstance(live["max_memory_mib"], int) and live["max_memory_mib"] % 64 == 0 and \
+        live["max_memory_mib"] <= 7680 and live["search"]["workers"] in (1, 2, 4)
+    same = ("campaign_id", "registration", "python", "build", "exe", "runner", "windows", "rule", "registry", "output",
+            "ledger")
+    assert {k: live[k] for k in same} == {k: reg[k] for k in same}
+    assert {k: v for k, v in live["search"].items() if k != "workers"} == \
+        {k: v for k, v in reg["search"].items() if k != "workers"}
 
 
 def test_fields_are_the_rule_applied_to_the_registry():
