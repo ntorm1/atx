@@ -7009,3 +7009,25 @@ Ledger `build-equity/trials.jsonl`: lines 112 -> 128, head `e186895aeed3f7f3`, N
 Hidden-data record: seal scan of 79 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x10 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x66 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
 **Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
 
+## R0-7 Y-3 norm-score (P9 Phase 0): STOP before stage 01 -- no wave manifest (2026-10-03, 13:07Z)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD `ff0c5552`. Parent named by the Y-S driver:
+`scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828; `wave-result.json` `next_parent`). **Nothing ran; 0 trials;
+ledger `build-equity/trials.jsonl` 128 lines (= R0-6's), N 57.**
+
+| check (read-only) | argv / source | result |
+|---|---|---|
+| Y-3 wave manifest | `ls scripts/specs/v8/waves/`; `git log --all -- scripts/specs/v8/waves/` | **absent**: only `y-s.json`, `y-s.head.json` (commits `d7c1c520`, `4492f301`); no Y-3 manifest or head on any branch |
+| registration | `v8y-prereg.md` sections 5, 6, 14; YP-7 | template `scripts/specs/v8/y-norm-score.json` @ `02633038`, file `693c64f5...`; through `wave run` as a `rule_cell`; PM6-6 gm template; PM7-34; 1 construction cell, 0 admission |
+| template pin | `git show 02633038:` / `HEAD:` piped to sha256 | blob `693c64f5471ceff6...` = the registered pin (unchanged since `02633038`) |
+| template on disk | `sha256sum`; `git ls-files --eol` | `73d16673f93e8ff0...`: `i/lf w/crlf` (`core.autocrlf=true`). The driver hashes disk bytes (`wave_context.Wave.sha`), so preflight with the registered pin would refuse ("not the pinned cell template"). All four `y-*.json` templates are `w/crlf`; `y-s.json` and `lib-v8ysb-gm.json` are `w/lf` |
+| Y-3 defined on the parent | `lib-v8ysb-gm.json` `nav` | rule `aim-partial-v5`, L 1.1828; no `--hold-band`, `--vol-scale`, spo: **defined** |
+| draft manifest (scratchpad, uncommitted) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan <scratchpad>/y-3.draft.json --root C:/atx-wt/pool-2` | **exit 0**, 9 stages pending; cell file `scripts/specs/v8/y-norm-score-y-3.json`; draft sha256 `d4ece3a5bded754b...`; nothing written (no `build-equity/waves/y-3`, tree unchanged) |
+| heads-up for R0-9 | `git log -- scripts/specs/v8/y-two-speed.json` | blob at HEAD `e29365d1` != registered `69cf6134` (@ `e2ac7d63`); changed by `b3b5dab4` "registered text follows the code" |
+
+**Why stopped (brief stop rule "something needs a ruling"; nothing improvised).** The manifest's commit is the
+pre-registration (preflight: "manifest committed"), and it holds choices no ruling fixes: the wave id, the printed
+criteria list (Y-3's registered criterion, gross-of-cost return per unit gross, has no named rule; YP-7 says to write it by
+hand), the budget id and caps, the record dir, and the template's EOL on disk vs its registered pin. The draft and the
+choices are in `.superpowers/sdd/platform-p9-20261003/root-R0-7-report.md`.
+
