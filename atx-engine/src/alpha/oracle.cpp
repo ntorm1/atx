@@ -226,6 +226,25 @@ void cs_group_count_mean(std::span<const atx::f64> x, std::span<const atx::f64> 
   }
 }
 
+// CsSumG (v8 YOPS group_sum): restated independently of cs_ops.hpp — per valid
+// cell, rescan the valid set for its group's members and sum them in ascending
+// instrument order (the order cs_group_aggregate_row accumulates in).
+void cs_group_sum(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                  const std::vector<atx::usize> &valid, std::span<atx::f64> out) {
+  for (const atx::usize i : valid) {
+    if (is_nan(g[i])) {
+      continue;
+    }
+    atx::f64 sum = 0.0;
+    for (const atx::usize j : valid) {
+      if (g[j] == g[i]) {
+        sum += x[j];
+      }
+    }
+    out[i] = sum;
+  }
+}
+
 // CsScaleG (P3b-2): scale within each group so Σ|x| over the group's valid
 // members == 1 (zero-L1 group -> 0). A NaN group label -> stays NaN.
 void cs_group_scale(std::span<const atx::f64> x, std::span<const atx::f64> g,
@@ -301,7 +320,7 @@ atx::core::Status Oracle::eval_cross_section(const Instr &in) {
   const bool grouped =
       (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
        in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-       in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
+       in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize || in.op == OpCode::CsSumG);
   std::span<const atx::f64> g{};
   std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
   atx::f64 scale_a = 1.0;
@@ -386,6 +405,9 @@ void Oracle::cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const
     return;
   case OpCode::CsMeanG:
     cs_group_count_mean(x, g, valid, out, /*want_mean=*/true);
+    return;
+  case OpCode::CsSumG:
+    cs_group_sum(x, g, valid, out);
     return;
   case OpCode::CsScaleG:
     cs_group_scale(x, g, valid, out);
