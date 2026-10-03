@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -24,10 +25,25 @@ namespace atx::core::db {
 
 namespace {
 
-// Map a SQLite primary result code to an atx ErrorCode. The primary code is the
-// low 8 bits; extended codes (e.g. SQLITE_CONSTRAINT_PRIMARYKEY) share a primary
-// code (SQLITE_CONSTRAINT) and map the same way.
+// Map a SQLite result code to an atx ErrorCode (W3). Constraint failures are
+// told apart by their extended code (connections run with extended result
+// codes on, see Database::open): a duplicate key is AlreadyExists, a value the
+// schema refuses is InvalidArgument. Every other code maps by its primary part
+// (the low 8 bits), so e.g. SQLITE_BUSY_SNAPSHOT maps as SQLITE_BUSY did.
 [[nodiscard]] ErrorCode map_code(int rc) noexcept {
+  switch (rc) {
+  case SQLITE_CONSTRAINT_UNIQUE:
+  case SQLITE_CONSTRAINT_PRIMARYKEY:
+    return ErrorCode::AlreadyExists;
+  case SQLITE_CONSTRAINT_CHECK:
+  case SQLITE_CONSTRAINT_NOTNULL:
+  case SQLITE_CONSTRAINT_FOREIGNKEY:
+  case SQLITE_CONSTRAINT_TRIGGER:
+  case SQLITE_CONSTRAINT_DATATYPE:
+    return ErrorCode::InvalidArgument;
+  default:
+    break;
+  }
   switch (rc & 0xFF) {
   case SQLITE_OK:
   case SQLITE_ROW:
@@ -84,6 +100,51 @@ namespace {
     return SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
   }
   return SQLITE_OPEN_READONLY; // unreachable (exhaustive switch)
+}
+
+// True when `tail` holds only whitespace and SQL comments (`-- ...` to the end
+// of a line, `/* ... */`; an unterminated block comment runs to the end, as in
+// SQLite's tokenizer). Bounded: every iteration consumes at least one byte.
+[[nodiscard]] bool tail_is_blank(std::string_view tail) noexcept {
+  usize i = 0;
+  while (i < tail.size()) {
+    const char c = tail[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v') {
+      ++i;
+    } else if (tail.substr(i, 2) == "--") {
+      const usize end = tail.find('\n', i + 2);
+      i = (end == std::string_view::npos) ? tail.size() : end + 1;
+    } else if (tail.substr(i, 2) == "/*") {
+      const usize end = tail.find("*/", i + 2);
+      i = (end == std::string_view::npos) ? tail.size() : end + 2;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Checked-reader guard: a current row holds column `col`.
+[[nodiscard]] Status check_column(sqlite3_stmt *stmt, i32 col) {
+  if (col < 0 || col >= sqlite3_data_count(stmt)) {
+    return Err(ErrorCode::OutOfRange, "no current row or column " + std::to_string(col) +
+                                          " outside it");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status check_storage(sqlite3_stmt *stmt, i32 col, int want, std::string_view what) {
+  const int got = sqlite3_column_type(stmt, col);
+  if (got == SQLITE_NULL) {
+    return Err(ErrorCode::InvalidArgument,
+               "column " + std::to_string(col) + " is NULL, expected " + std::string{what});
+  }
+  if (got != want) {
+    return Err(ErrorCode::InvalidArgument, "column " + std::to_string(col) +
+                                               " has storage class " + std::to_string(got) +
+                                               ", expected " + std::string{what});
+  }
+  return Ok();
 }
 
 } // namespace
@@ -259,6 +320,34 @@ ColumnType Statement::column_type(i32 col) const noexcept {
   }
 }
 
+Result<i64> Statement::checked_int(i32 col) const {
+  ATX_TRY_VOID(check_column(stmt_, col));
+  ATX_TRY_VOID(check_storage(stmt_, col, SQLITE_INTEGER, "INTEGER"));
+  return Ok(static_cast<i64>(sqlite3_column_int64(stmt_, col)));
+}
+
+Result<f64> Statement::checked_double(i32 col) const {
+  ATX_TRY_VOID(check_column(stmt_, col));
+  if (sqlite3_column_type(stmt_, col) == SQLITE_INTEGER) {
+    return Ok(sqlite3_column_double(stmt_, col));
+  }
+  ATX_TRY_VOID(check_storage(stmt_, col, SQLITE_FLOAT, "REAL"));
+  return Ok(sqlite3_column_double(stmt_, col));
+}
+
+Result<std::string> Statement::checked_text(i32 col) const {
+  ATX_TRY_VOID(check_column(stmt_, col));
+  ATX_TRY_VOID(check_storage(stmt_, col, SQLITE_TEXT, "TEXT"));
+  return Ok(std::string{column_text(col)});
+}
+
+Result<std::vector<std::byte>> Statement::checked_blob(i32 col) const {
+  ATX_TRY_VOID(check_column(stmt_, col));
+  ATX_TRY_VOID(check_storage(stmt_, col, SQLITE_BLOB, "BLOB"));
+  const std::span<const std::byte> view = column_blob(col);
+  return Ok(std::vector<std::byte>(view.begin(), view.end()));
+}
+
 Status Statement::reset() noexcept {
   // sqlite3_reset returns the result code of the PRIOR step (SQLITE_OK if it
   // succeeded). A prior-step error here is informational, not a reset failure;
@@ -285,6 +374,8 @@ Result<Database> Database::open(std::string_view path, OpenMode mode) {
     sqlite3_close_v2(db); // db may be non-null even on failure; close it
     return Err(std::move(e));
   }
+  // W3: extended codes let map_code tell a duplicate key from a refused value.
+  (void)sqlite3_extended_result_codes(db, 1); // returns SQLITE_OK on an open handle
   return Ok(Database{db});
 }
 
@@ -323,20 +414,38 @@ Status Database::exec(std::string_view sql) {
 }
 
 Result<Statement> Database::prepare(std::string_view sql) {
+  // W2: the length crosses into a C int.
+  if (sql.size() > static_cast<usize>(std::numeric_limits<int>::max())) {
+    return Err(ErrorCode::OutOfRange, "SQL text exceeds INT_MAX bytes");
+  }
   sqlite3_stmt *stmt = nullptr;
+  const char *tail = nullptr;
   // prepare_v2 takes an explicit length, so `sql` need not be NUL-terminated.
-  const int rc = sqlite3_prepare_v2(db_, sql.data(), static_cast<int>(sql.size()), &stmt, nullptr);
+  const int rc = sqlite3_prepare_v2(db_, sql.data(), static_cast<int>(sql.size()), &stmt, &tail);
   if (rc != SQLITE_OK) {
     return Err(make_error(rc, db_));
   }
-  return Ok(Statement{stmt, db_});
+  Statement compiled{stmt, db_}; // owns stmt from here (finalized on every return path)
+  // W1: SQLite compiles the first statement only; refuse a second one instead of dropping it.
+  // SAFETY: on SQLITE_OK `tail` points into [sql.data(), sql.data() + sql.size()].
+  const usize consumed =
+      (tail == nullptr) ? sql.size() : static_cast<usize>(tail - sql.data());
+  if (!tail_is_blank(sql.substr(consumed))) {
+    return Err(ErrorCode::ParseError,
+               "prepare: more than one SQL statement (use exec for multi-statement SQL)");
+  }
+  return Ok(std::move(compiled));
 }
 
 Result<Statement *> Database::prepare_cached(std::string_view sql) {
   std::string key{sql};
   const auto it = cache_.find(key);
   if (it != cache_.end()) {
-    // Reuse: rewind + clear bindings (ignore a stale prior-step code here).
+    // Reuse: rewind + clear bindings. W8: both statuses are discarded on purpose.
+    // sqlite3_reset returns the result of the statement's PREVIOUS step (already
+    // reported to whoever stepped it), not a failure to rewind, and
+    // sqlite3_clear_bindings cannot fail on a valid statement; surfacing either
+    // here would fail an unrelated new use of the cached statement.
     (void)it->second->reset();
     (void)it->second->clear_bindings();
     return Ok(it->second.get());
@@ -399,7 +508,8 @@ Result<BackupReport> Database::backup_to(Database &dest, const BackupOptions &op
       }
       continue;
     }
-    if (step_rc == SQLITE_BUSY || step_rc == SQLITE_LOCKED) {
+    // Primary part: the connections run with extended result codes (W3).
+    if ((step_rc & 0xFF) == SQLITE_BUSY || (step_rc & 0xFF) == SQLITE_LOCKED) {
       if (report.busy_retries >= options.maximum_busy_retries) {
         Error error = make_error(step_rc, dest.db_);
         (void)sqlite3_backup_finish(backup);
@@ -431,11 +541,24 @@ Result<Transaction> Transaction::begin_immediate(Database &db) {
   return Ok(Transaction{&db});
 }
 
+namespace {
+
+// W6: the destructor / move-assign rollback. Database::exec builds a std::string
+// (it may throw) and is not callable from a noexcept path; this runs the literal
+// directly and allocates nothing on the C++ side. A failure to roll back is
+// unrecoverable here; the result code is discarded (fail-safe: SQLite rolls the
+// transaction back when the connection closes).
+void rollback_noexcept(Database *db) noexcept {
+  if (db != nullptr && db->handle() != nullptr) {
+    (void)sqlite3_exec(db->handle(), "ROLLBACK", nullptr, nullptr, nullptr);
+  }
+}
+
+} // namespace
+
 Transaction::~Transaction() noexcept {
-  if (db_ != nullptr && !finished_) {
-    // Roll back an uncommitted transaction. A failure to roll back is
-    // unrecoverable in a destructor; discard the Status (fail-safe).
-    (void)db_->exec("ROLLBACK");
+  if (!finished_) {
+    rollback_noexcept(db_);
   }
 }
 
@@ -447,8 +570,8 @@ Transaction::Transaction(Transaction &&other) noexcept
 
 Transaction &Transaction::operator=(Transaction &&other) noexcept {
   if (this != &other) {
-    if (db_ != nullptr && !finished_) {
-      (void)db_->exec("ROLLBACK");
+    if (!finished_) {
+      rollback_noexcept(db_);
     }
     db_ = other.db_;
     finished_ = other.finished_;
@@ -503,7 +626,27 @@ BlobStream &BlobStream::operator=(BlobStream &&other) noexcept {
 
 i64 BlobStream::size() const noexcept { return sqlite3_blob_bytes(blob_); }
 
+namespace {
+
+// W5: [offset, offset + length) must lie inside a blob of `size` bytes, and both
+// values must fit the C API's int, BEFORE either is narrowed.
+[[nodiscard]] Status check_blob_range(i64 offset, usize length, i64 size) {
+  constexpr i64 kIntMax = std::numeric_limits<int>::max();
+  if (offset < 0 || offset > kIntMax || length > static_cast<usize>(kIntMax)) {
+    return Err(ErrorCode::OutOfRange, "blob offset or length outside [0, INT_MAX]");
+  }
+  if (offset + static_cast<i64>(length) > size) {
+    return Err(ErrorCode::OutOfRange, "blob range [" + std::to_string(offset) + ", " +
+                                          std::to_string(offset + static_cast<i64>(length)) +
+                                          ") exceeds the blob size " + std::to_string(size));
+  }
+  return Ok();
+}
+
+} // namespace
+
 Result<usize> BlobStream::read(std::span<std::byte> out, i64 offset) {
+  ATX_TRY_VOID(check_blob_range(offset, out.size(), size()));
   const int rc =
       sqlite3_blob_read(blob_, out.data(), static_cast<int>(out.size()), static_cast<int>(offset));
   if (rc != SQLITE_OK) {
@@ -513,6 +656,7 @@ Result<usize> BlobStream::read(std::span<std::byte> out, i64 offset) {
 }
 
 Status BlobStream::write(std::span<const std::byte> in, i64 offset) {
+  ATX_TRY_VOID(check_blob_range(offset, in.size(), size()));
   const int rc =
       sqlite3_blob_write(blob_, in.data(), static_cast<int>(in.size()), static_cast<int>(offset));
   return (rc == SQLITE_OK) ? Ok() : Err(make_error(rc, nullptr));
