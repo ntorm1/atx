@@ -6319,3 +6319,36 @@ ledger-campaign --ledger build-equity/trials.jsonl --campaign build-equity/mine-
 registered order (receipt; ledger line; mechanics; then counts, promotions, `mined_members.json`, `trials.csv` last).
 The spec edits break `scripts/tests/test_research_mine.py`'s pins of the committed template (12 fields, 4 requires,
 fills); fixed in tests only after the run (as `4d0c8d8f`).
+
+**Steps 1-6 done (metadata only; no payload opened by the probe; nothing of the campaign has run):**
+- Spec filled (`scratchpad/mine_fill.py`): fields 10, budget 110, role lo3, fields v13, `pool_source` = X-5's three files,
+  description. `mine lock --write`: role `e1c67101`, fields `e5f7f28c`, combined `2a442f56`, weights `8310da2c`, summary
+  `9303cac6` locked; pool missing (expected).
+- `mine pool`: `build-equity/mine-pool-v9-c1/manifest.json` (`atx.mine-pool/v1`): 1 regressor (`book` = X-5's combined
+  signal) and **47 members** (every v8x3b member with a positive weight in X-5's weights; hard links into the lo3
+  candidate cache; 3.0 GiB apparent). `mine lock --write`: pool `d129f873`.
+- **Finding (tool defect, fixed, `23b52a5d`):** `mine probe` failed before any verb ran: `FileNotFoundError [WinError 2]`
+  -- Windows CreateProcess does not find the relative verb path `build-equity/bin/atx-equity-strategy-mine.exe` written
+  with '/' (the bounded runner resolves its command with `shutil.which`, so IC / NAV phases never met it; the probe and
+  `mine run`'s `--help` check launch the verb directly). Fix: `research_mine.launchable()` resolves argv[0] against the
+  root at those two launches only; printed lines and the run's argv keep the spec's spelling. Test added (the probe
+  launches the root-resolved verb; `launchable` unit test); `test_research_mine.py` on the committed template 41 passed.
+  Rule 7: a tool defect, nothing read, 0 trials.
+- **`mine probe`** (verb `2176fa4a`, `--max-memory-mib 64`, refuses before any payload): required **3,737 MiB at 4
+  workers**, 2,577 at 2, 2,560 at 1. **Identity of the memory model (runbook step 5: "other numbers mean a wrong
+  build"):** the runbook's 3,979 / 2,784 / 2,765 are the joined model at 12 fields and an assumed 1,405 x 6,100 shape;
+  the lo3 role has 5,922 instruments (role manifest). The same probe at the registered 12 fields (`scratchpad/probe12.py`,
+  spec not edited, metadata only) gives 3,865 / 2,705 / 2,687 MiB; the joined model's bytes scaled by 5,922 / 6,100 give
+  3,862 / 2,702 / 2,684 MiB plus about 4 MiB of fixed terms that do not scale (`small`, metadata): **the build is the
+  joined head**; the 10-field numbers are the same model with two fields fewer. **W = 4; `max_memory_mib` 3,776**
+  (3,737 rounded up to 64; <= 7,680); runner 8,192 MiB / 600 s.
+- `requires` deleted: (1) OD-7 granted by the owner's goal text as ruled in PM7-2 and confirmed in PM7-27 (2); (2)
+  runbook step 1 passed at integration 8 on these executables (mine `2176fa4a`, mine-tests `d6e40412`, factory `58bb8bee`;
+  golden at 1 and 4 workers; rung_failed 0); (3) step 2 done for the source cell H-F = X-5; (4) the field rule re-checked
+  (A3: 10 fields).
+- Prereg amended in the same commit (`docs/plans/2026-10-01-v9-mine-campaign-prereg.md` items 4, 5 and the reading of
+  12 (3), runbook step 2): 10 fields, N 110, z(110) 3.5062, raw discover t 5.3996.
+- `mine plan` header: every input and pool_source line `[locked, verified]`; `capacity 110 (templates 11 x 10, stage 2
+  off); budget 110 (ceiling in force 10000)`; `Bonferroni z 3.5062`, `F 1.54`, `raw discover t 5.3996`; `Fc by m (m
+  1..16: 1.77; cap 16)`; `discover [2020-01-01, 2023-01-01), confirm [2023-01-01, 2024-01-01)`; `--max-memory-mib 3776,
+  runner 8192 MiB / 600 s`; registry `new`; no `# requires`, no `# fill` line.

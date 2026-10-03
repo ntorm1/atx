@@ -72,10 +72,17 @@ Root copies this block into the v9 pre-registration with the pins, as v8-prereg.
    (lt, noa_lag4), categorical codes (grp_sic2, ea_time_of_day), 0/1 indicators (ea_window_pre5,
    ea_window_post3, ins_cluster_buy, k8_item_material_21), the 13F holder count (inst_n_holders, scales with
    size), and ea_days_since, inst_own_share (read by the v8.0 library wave).
+   **Amended at the lock (2026-10-02, v8x prereg section 9 A3, root; runbook step 2):** the rule re-applied to the
+   registry at H-F (X-5) removes k8_count_63 (read by k8_intensity) and inst_own_chg_q (read by inst_persist), two
+   X-3 members; fields (10): iv_atm_63d, iv_atm_126d, ea_delay_days, ins_net_buy_ratio, ins_n_buyers,
+   ins_n_sellers, k8_days_since_any, inst_breadth_chg, regsho_threshold_days63, sv_offexchange_share126.
 5. Budget and hurdle. N = 11 x (fields) = 132, fixed now (pre-registration rule 10, Ruling E-32a); at most the
    ceiling in force (kMinedMaxBudget, 10,000). Discover hurdle: f2 / F >= z(N) = -Phi^-1(.05 / (2 N)) = 3.5544,
    F the overlap factor of N's band (item 13): 1.54 for budgets 101..1,000 (kMinedOverlapBands), so a raw
    marginal HAC t of z(N) x F = 3.554438 x 1.54 = 5.4738 (5.51 at the single F 1.55 of 20e7bd19).
+   **Amended at the lock (A3): N = 11 x 10 = 110**; z(110) = -Phi^-1(.05 / 220) = 3.5062; F(110) = 1.54 (101..1,000);
+   raw discover t = 3.506205 x 1.54 = 5.3996. Confirm unchanged (Fc 1.77 for m <= 16). In item 12 (3) read
+   distinct = 110 and z(110) for 132 and z(132).
 6. Windows. Discover [2020-01-01, 2023-01-01), confirm [2023-01-01, 2024-01-01): the research window's TRAIN
    bounds (never typed: "{train_begin}", "{train_end}" in the spec) split at 2023-01-01. Labels are h 21 with
    delay 1 and mature inside their window (ic_screen maturity_end = window end): the last 22 discover decision
