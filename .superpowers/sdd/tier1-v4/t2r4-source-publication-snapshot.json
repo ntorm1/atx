@@ -1,0 +1,76 @@
+{
+  "guard_job": "Local\\atx-memory-guard-19804-134355366065991876",
+  "publications": {
+    "issuer_classes": {
+      "actual_files": {
+        "incorporation.parquet": {
+          "bytes": 49812,
+          "sha256": "8e19b17a552ba63b8b1d784bae44af651699544266b2e2b402a3507901b61d2b"
+        },
+        "reit_status.parquet": {
+          "bytes": 10448,
+          "sha256": "f057d8f8551585cc5e0b1ea0952954339acc6e0afd7c1bb948f199cca7cd872c"
+        }
+      },
+      "assessment_matches": true,
+      "code_matches": {
+        "common.py": true,
+        "issuer_class_replay.py": true,
+        "issuer_classes.py": true,
+        "issuer_history.py": true,
+        "listing_events.py": true,
+        "sec_filings.py": true
+      },
+      "files_changed_from_round2": true,
+      "files_match": true,
+      "manifest_files": {
+        "incorporation.parquet": {
+          "bytes": 49812,
+          "sha256": "8e19b17a552ba63b8b1d784bae44af651699544266b2e2b402a3507901b61d2b"
+        },
+        "reit_status.parquet": {
+          "bytes": 10448,
+          "sha256": "f057d8f8551585cc5e0b1ea0952954339acc6e0afd7c1bb948f199cca7cd872c"
+        }
+      },
+      "manifest_sha256": "f53a2a598ae37523c9dad6d0d2e7d37d9e932c81c03a0f7307b7824452e17e3e",
+      "network_matches": true,
+      "partial_files": [],
+      "plan_matches": true,
+      "raw_ledger_matches": true,
+      "reusable_completed_publication": true,
+      "round2_manifest_sha256": "35c906ba83c05bebc3fc9c4bd403a05393068f8379cfb08f95be5094c3d1958d",
+      "rule_matches": true
+    },
+    "issuer_history": {
+      "actual_files": {
+        "incorporation.parquet": {
+          "bytes": 102145,
+          "sha256": "1c8f04b1632a4bfb679776ee8033728d26e258d81a8b3a89fe788d3d3f323eb8"
+        }
+      },
+      "code_matches": {
+        "common.py": true,
+        "issuer_history.py": true,
+        "listing_events.py": true,
+        "sec_filings.py": true
+      },
+      "files_changed_from_round2": false,
+      "files_match": true,
+      "manifest_files": {
+        "incorporation.parquet": {
+          "bytes": 102145,
+          "sha256": "1c8f04b1632a4bfb679776ee8033728d26e258d81a8b3a89fe788d3d3f323eb8"
+        }
+      },
+      "manifest_sha256": "0a2cf97e9d00ee0c152742b9674b125e8c40b2ca757dac1a913ec3cb652d3f14",
+      "network_matches": true,
+      "partial_files": [],
+      "plan_matches": true,
+      "raw_ledger_matches": true,
+      "reusable_completed_publication": true,
+      "round2_manifest_sha256": "46c83410ee7ed899b2aac239335c97d9983a27346df990cc0b4719d98d6f8939",
+      "rule_matches": true
+    }
+  }
+}

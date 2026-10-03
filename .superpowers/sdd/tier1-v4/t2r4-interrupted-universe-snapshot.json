@@ -1,0 +1,86 @@
+{
+  "acceptance": "HOLD: interrupted universe build; gates/coverage not remeasured",
+  "actual_files": {
+    "year=2018/universe.parquet": {
+      "bytes": 15820151,
+      "sha256": "febd04ab2e88cacc18793658e1f26b3b5df1881aedc6d003772271577fb72bf0"
+    },
+    "year=2019/universe.parquet": {
+      "bytes": 19091036,
+      "sha256": "d0c7837f5b32a3a07fc3d0b84887b43b9a9344eab138edb42354befa7d18de6f"
+    },
+    "year=2020/universe.parquet": {
+      "bytes": 19784496,
+      "sha256": "b17adb7244973c9393ed784c74eb54152ec8c121365b1307bde90d2bc0f06a79"
+    },
+    "year=2021/universe.parquet": {
+      "bytes": 22864338,
+      "sha256": "8cfe8562b88135a18004cf423de3aaa46ba0b47c9ce43285f0c645e70a3b7a42"
+    },
+    "year=2022/universe.parquet": {
+      "bytes": 25732851,
+      "sha256": "15fd432715c9c0eb0d85d2d15b63109d0c2f2657d26b0acfe92bebf62afac2b3"
+    },
+    "year=2023/universe.parquet": {
+      "bytes": 24347373,
+      "sha256": "36cc0459a031ba99b70562df4ff8a48cc6f35563935b9f7e6289008ac52e8d1d"
+    },
+    "year=2024/universe.parquet": {
+      "bytes": 24101238,
+      "sha256": "ccdff596d8edc61fb749ca59ad29d765e492e695085e3013bbe883c49575c5b0"
+    },
+    "year=2025/universe.parquet": {
+      "bytes": 25163321,
+      "sha256": "88eb92c2144ebcc275407176d01a81443c16a229bbd4f69f0b122e21c275acaa"
+    },
+    "year=2026/universe.parquet": {
+      "bytes": 19681777,
+      "sha256": "dbff768742c769147903016281396433ee3c39bd95b95a68cd37c6fca20b91f7"
+    }
+  },
+  "changed_from_round2": [],
+  "files_match_manifest": true,
+  "guard_job": "Local\\atx-memory-guard-18540-134355369338938383",
+  "input_snapshot_stale": true,
+  "manifest_files": {
+    "year=2018/universe.parquet": {
+      "bytes": 15820151,
+      "sha256": "febd04ab2e88cacc18793658e1f26b3b5df1881aedc6d003772271577fb72bf0"
+    },
+    "year=2019/universe.parquet": {
+      "bytes": 19091036,
+      "sha256": "d0c7837f5b32a3a07fc3d0b84887b43b9a9344eab138edb42354befa7d18de6f"
+    },
+    "year=2020/universe.parquet": {
+      "bytes": 19784496,
+      "sha256": "b17adb7244973c9393ed784c74eb54152ec8c121365b1307bde90d2bc0f06a79"
+    },
+    "year=2021/universe.parquet": {
+      "bytes": 22864338,
+      "sha256": "8cfe8562b88135a18004cf423de3aaa46ba0b47c9ce43285f0c645e70a3b7a42"
+    },
+    "year=2022/universe.parquet": {
+      "bytes": 25732851,
+      "sha256": "15fd432715c9c0eb0d85d2d15b63109d0c2f2657d26b0acfe92bebf62afac2b3"
+    },
+    "year=2023/universe.parquet": {
+      "bytes": 24347373,
+      "sha256": "36cc0459a031ba99b70562df4ff8a48cc6f35563935b9f7e6289008ac52e8d1d"
+    },
+    "year=2024/universe.parquet": {
+      "bytes": 24101238,
+      "sha256": "ccdff596d8edc61fb749ca59ad29d765e492e695085e3013bbe883c49575c5b0"
+    },
+    "year=2025/universe.parquet": {
+      "bytes": 25163321,
+      "sha256": "88eb92c2144ebcc275407176d01a81443c16a229bbd4f69f0b122e21c275acaa"
+    },
+    "year=2026/universe.parquet": {
+      "bytes": 19681777,
+      "sha256": "dbff768742c769147903016281396433ee3c39bd95b95a68cd37c6fca20b91f7"
+    }
+  },
+  "manifest_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e",
+  "partial_files": [],
+  "prior_manifest_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e"
+}

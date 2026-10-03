@@ -1,0 +1,1343 @@
+{
+  "changed_parser_assertions": [],
+  "guard_job": "Local\\atx-memory-guard-22756-134355366356003806",
+  "hand_file_sha256": "f715bd28b357a95a34ca73dd3824a7598a100c2863640fb1d8c6a49d246a2f51",
+  "method": "Original raw SHA reverified and full-context source parser rerun. These parser results are independent of retained manual cover/status judgments; a parser unknown is not a manual negative. Claim membership must remain unchanged on final rebuild before binding is accepted.",
+  "rows": [
+    {
+      "security_id": 38790,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-06-26",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "096a3662e62078003404bfdafdc87e6cb58f3cc083c001e290b84427979caf4c",
+          "url": "https://www.sec.gov/Archives/edgar/data/107140/000010714024000114/jwa-20240430.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "WLY"
+    },
+    {
+      "security_id": 6362685,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "676a7ca3f9a086f1ca396e6ecdc553887cd9cea9145ace48f7db8f90697e814d",
+          "url": "https://www.sec.gov/Archives/edgar/data/1793659/000179365924000048/rsi-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "RSI"
+    },
+    {
+      "security_id": 37875,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-06-11",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "88b888a337b895f83a2cc804b97f504fea4b9315ba7257d8b9c15dbc907c5d04",
+          "url": "https://www.sec.gov/Archives/edgar/data/1017480/000101748024000070/hibb-20240504.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "HIBB"
+    },
+    {
+      "security_id": 4513940,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-26",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "9e3d0b7a6c0587ad988eca6bd0c344a003571a4fe00cda8238c3b9a7de555650",
+          "url": "https://www.sec.gov/Archives/edgar/data/1433195/000143319524000054/appf-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "APPF"
+    },
+    {
+      "security_id": 165190,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-15",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "6134264685fdb60e5301f667e2e2b61e52e18a991e042dba4014966ca79b7bf7",
+          "url": "https://www.sec.gov/Archives/edgar/data/1289850/000162828024023431/nuro-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "NURO"
+    },
+    {
+      "security_id": 426299,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "638cb209336180f4bdb70e9e54dedbc18dd626c2d0a413540a31be03335f0060",
+          "url": "https://www.sec.gov/Archives/edgar/data/1361538/000155837024007404/prim-20240331x10q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "PRIM"
+    },
+    {
+      "security_id": 6576530,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "b8d1e572a4ad21f7f4b5432c13473228a60c4cb01d7dca06970f98c1afebf081",
+          "url": "https://www.sec.gov/Archives/edgar/data/1898496/000162828024022320/gety-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "GETY"
+    },
+    {
+      "security_id": 106000,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-30",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "94021d94e8f7e0a32d68864b125d5bfd64da75c417276d649aab1edb2b25d54d",
+          "url": "https://www.sec.gov/Archives/edgar/data/1408075/000140807524000020/gpk-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "GPK"
+    },
+    {
+      "security_id": 36086,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "ea2ce9c1ecb5cf504b5aff5d1f16d920d00883110ff594ea75b019955225e332",
+          "url": "https://www.sec.gov/Archives/edgar/data/1069157/000106915724000046/ewbc-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "EWBC"
+    },
+    {
+      "security_id": 5971398,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-25",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "e66673bc490f6e92482d7f705aaf654d9cbde5fc986970913957dddcbccdd82a",
+          "url": "https://www.sec.gov/Archives/edgar/data/1679363/000167936324000030/morf-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "MORF"
+    },
+    {
+      "security_id": 4143701,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-08",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "7ef793cd22f8d432f44e78d52ad1828b55f3faa99a56bb8f7c2df3a83bb081ed",
+          "url": "https://www.sec.gov/Archives/edgar/data/1554859/000155485924000017/smlr-20240331x10q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "SMLR"
+    },
+    {
+      "security_id": 44627,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "8f516bc20573f6891407657b1ac6ca89185db4ddd7e2884a8a1e53fe57d6a586",
+          "url": "https://www.sec.gov/Archives/edgar/data/1069258/000106925824000036/ktos-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "KTOS"
+    },
+    {
+      "security_id": 42953,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "350ed2ea2213c774309744767e21c0aae468b6d174ae6d88096b085d5975ee67",
+          "url": "https://www.sec.gov/Archives/edgar/data/94344/000009434424000009/stc-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "STC"
+    },
+    {
+      "security_id": 3854958,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-06-11",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "976a53c566c279be5045e2519e3a2c9755f982a909172ca70ac7fe856794f535",
+          "url": "https://www.sec.gov/Archives/edgar/data/1520358/000162828024027669/mama-20240430.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "MAMA"
+    },
+    {
+      "security_id": 5377237,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-14",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "d3db64af581d967c663452c3940bcdfe72a9ddd5e7ff425b9e49f850de6cdb25",
+          "url": "https://www.sec.gov/Archives/edgar/data/1720580/000095017024059507/acet-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "ACET"
+    },
+    {
+      "security_id": 6807343,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "e9902191cad53e82d2ff1112a3780df561dee4156de72cbfc193ef79f09c7994",
+          "url": "https://www.sec.gov/Archives/edgar/data/1832466/000162828024019994/alhc-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "ALHC"
+    },
+    {
+      "security_id": 5436000,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "11638efa46647558ce2105ab79a8b1ffd1455402054135efeac288a8715221b1",
+          "url": "https://www.sec.gov/Archives/edgar/data/1341317/000155837024006454/bwb-20240331x10q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "BWB"
+    },
+    {
+      "security_id": 7592010,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-17",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "22710e208b3ac5bbebde2a2c929ecdb6a1343074f22cc647753ed893624c970d",
+          "url": "https://www.sec.gov/Archives/edgar/data/1342958/000149315224020464/form10-q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "DGLY"
+    },
+    {
+      "security_id": 6956618,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-10",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "70db8c5b81d32f54aa2ad988892e763c4ee7f5344753db232bd45a17e37e1a8a",
+          "url": "https://www.sec.gov/Archives/edgar/data/1841925/000162828024022356/indi-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "INDI"
+    },
+    {
+      "security_id": 42736,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-26",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "9fe548e9d8e5dc29ae98fd7a5a4f7461bc4bd4a80c9511214a84d04ffbc762a2",
+          "url": "https://www.sec.gov/Archives/edgar/data/92380/000009238024000055/luv-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "LUV"
+    },
+    {
+      "security_id": 33149,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "60f811ae170a7a50f890a7ea0823d37b0a7e5849e01a9fb72dea83676d5c0616",
+          "url": "https://www.sec.gov/Archives/edgar/data/4447/000162828024021077/hes-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "HES"
+    },
+    {
+      "security_id": 6430053,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-08",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "90b3ebede21cc0084eb92a9eb800e0ee15e2b3bd255f281bd763f6c9223068e1",
+          "url": "https://www.sec.gov/Archives/edgar/data/1830033/000095017024055747/pct-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "PCT"
+    },
+    {
+      "security_id": 1947367,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "27a14835bf11d89fb87e0e34f5d4511b604d7310aee5c3eb73e8e70acecce505",
+          "url": "https://www.sec.gov/Archives/edgar/data/1397911/000139791124000053/lpla-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "LPLA"
+    },
+    {
+      "security_id": 6709371,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "f67fef2322c613c0698a205d63a15655a46a36e7aba0599a4325ba54d347f70d",
+          "url": "https://www.sec.gov/Archives/edgar/data/1821175/000149315224018097/form10-q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "MSGM"
+    },
+    {
+      "security_id": 40576,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-10",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "9abcf53faaeed214e4865c84c91949ac2b1028928608d8e095782a1e213a0c6d",
+          "url": "https://www.sec.gov/Archives/edgar/data/1000694/000100069424000031/nvax-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "NVAX"
+    },
+    {
+      "security_id": 43550,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "9f911261d8e88c3a758f97fda61eb39b53383d7db46b140ab5159807addeacbf",
+          "url": "https://www.sec.gov/Archives/edgar/data/916365/000091636524000059/tsco-20240330.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "TSCO"
+    },
+    {
+      "security_id": 212386,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-10",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "b7bb739676ae33d15c70eb5940d09ecfc6679bf7878bf435f6870d78ba131161",
+          "url": "https://www.sec.gov/Archives/edgar/data/1306830/000130683024000098/ce-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "CE"
+    },
+    {
+      "security_id": 4285681,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "9843b1e02d4866405f376724af0b5602e7af216ffcd30b32eb80e9c07dd177eb",
+          "url": "https://www.sec.gov/Archives/edgar/data/1084048/000108404824000047/zd-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "ZD"
+    },
+    {
+      "security_id": 35617,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-06-26",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "e73804b243155a057e056eb9a1980692cf4534030f2c4038ea60c14e8217fb08",
+          "url": "https://www.sec.gov/Archives/edgar/data/915779/000091577924000025/dakt-20240427.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "DAKT"
+    },
+    {
+      "security_id": 4247303,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-15",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "a619935563bbc1887514e370e74d4a2ad51cfe2f91d65b3cfaaf66feba09088e",
+          "url": "https://www.sec.gov/Archives/edgar/data/1601485/000160148524000033/angn-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "ELTX"
+    },
+    {
+      "security_id": 5734960,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-13",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "bbb6b3fa5b4f86f778ed0b44cdc2c7013d96a0a309eaa321951aaccc24b7b69f",
+          "url": "https://www.sec.gov/Archives/edgar/data/1642375/000149315224018930/form10-q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "GHSI"
+    },
+    {
+      "security_id": 36936,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-03",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "442f96938013a2fde07fe9f7e068a1071d275eeb26d76c514457303e24a867f1",
+          "url": "https://www.sec.gov/Archives/edgar/data/36966/000003696624000060/fhn-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "FHN"
+    },
+    {
+      "security_id": 33240,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "dd5bc1d094115dcbd1e1a56853a21fa0530c4bbbbb141c40e6a150202dd7c5f4",
+          "url": "https://www.sec.gov/Archives/edgar/data/5272/000000527224000051/aig-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "AIG"
+    },
+    {
+      "security_id": 6951068,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-13",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "8954a58557e7970b35fc2a02dd5e68969700096f63be8369c5a95ad5de2ecf02",
+          "url": "https://www.sec.gov/Archives/edgar/data/1850902/000095017024058827/tkno-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "TKNO"
+    },
+    {
+      "security_id": 40761,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "5349d1cd260544cd135c114b643144c9e8c8b222c8a4c536b71e99851310e3cf",
+          "url": "https://www.sec.gov/Archives/edgar/data/357173/000035717324000035/tmb-20240331x10q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "OSBC"
+    },
+    {
+      "security_id": 5891403,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-10",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "aeef243076c8b86f1997b18869d1e3592270e5a0b1a7f2dc1614aa62f3100de6",
+          "url": "https://www.sec.gov/Archives/edgar/data/1758057/000162828024022459/lazr-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "LAZR"
+    },
+    {
+      "security_id": 36779,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "2016231fa003ed3f513fe67e722330d234cec9d73d056320800bb874e3cd0d87",
+          "url": "https://www.sec.gov/Archives/edgar/data/314489/000031448924000157/buse-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "BUSE"
+    },
+    {
+      "security_id": 6971745,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-08",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "864de6f3b9dbc2a811cf70ad52c779ae7269d452c907fec103ee7be156c01dfd",
+          "url": "https://www.sec.gov/Archives/edgar/data/1855747/000185574724000050/blnd-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "BLND"
+    },
+    {
+      "security_id": 37525,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "a942d71ed669759731c4228855ad302e7126f10512621281ea4549c8cab9b9af",
+          "url": "https://www.sec.gov/Archives/edgar/data/43196/000143774924014938/gtn20240331_10q.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "GTN.A"
+    },
+    {
+      "security_id": 79392,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-08",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "d4c4b185a84f27218382eeb8d51b2a68622273334e7bc7a7241fd2197544f5cb",
+          "url": "https://www.sec.gov/Archives/edgar/data/730708/000073070824000139/sbcf-20240331.htm"
+        }
+      ],
+      "stratum": "univ_all_common",
+      "ticker": "SBCF"
+    },
+    {
+      "security_id": 4028337,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-03",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be treated as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "9f55ffe3ef7f53c2a40ae8094f8587285f4835fb656b81dbdbd64f6e204337bc",
+          "url": "https://www.sec.gov/Archives/edgar/data/1556593/000155659324000013/ritm-20240331.htm"
+        },
+        {
+          "filing_date": "2024-02-20",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be treated as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "98a1b19baeb44955c8bf86f289eeec29aa15da3aec69e1f5ffe4cc9d7ea4a0c0",
+          "url": "https://www.sec.gov/Archives/edgar/data/1556593/000155659324000007/nrz-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "RITM"
+    },
+    {
+      "security_id": 7637586,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-14",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "a66b12bfa7b21fb2d5043f3f85074186473f98584bedf394cbf7b665992aab22",
+          "url": "https://www.sec.gov/Archives/edgar/data/1782430/000149315224019017/form10-q.htm"
+        },
+        {
+          "filing_date": "2024-03-19",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "fb5a4e0171e0332c9c0656fecc502083eb800a074c11af58818f29947c2bca7b",
+          "url": "https://www.sec.gov/Archives/edgar/data/1782430/000149315224010409/form10-k.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "STRW"
+    },
+    {
+      "security_id": 5666293,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "5460a983c751131d6224e6a1d984d66e6a64292fc4f448441ae69f20f67f3ade",
+          "url": "https://www.sec.gov/Archives/edgar/data/1654595/000155837024007624/mdrr-20240331x10q.htm"
+        },
+        {
+          "filing_date": "2024-03-06",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit",
+              "we have elected to be taxed as a reit",
+              "the company has elected to be taxed as a real estate investment trust"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "1aff9ccb14887340b4b0be9245a4776fb2bd210c722dc7a45e8618a248c1f230",
+          "url": "https://www.sec.gov/Archives/edgar/data/1654595/000155837024002614/mdrr-20231231x10k.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "MDRR"
+    },
+    {
+      "security_id": 5746249,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "86df4cdc020e948d05b09c7b55a4bcb7b2848ff6d10d547bcb1acb5ac8a33d08",
+          "url": "https://www.sec.gov/Archives/edgar/data/1574085/000157408524000099/bhr-20240331.htm"
+        },
+        {
+          "filing_date": "2024-03-14",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "4d9aa21da32963022f39e36444cf7f9ccc8156514fbd1ceaf76454faf2be5bac",
+          "url": "https://www.sec.gov/Archives/edgar/data/1574085/000157408524000033/bhr-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "BHR.PRD"
+    },
+    {
+      "security_id": 1657757,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-25",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a real estate investment trust",
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "2a2f1d1dccf4c8a4070c872d4cc06564a0b02ca5c1eccdf21f47b99d26acd1cf",
+          "url": "https://www.sec.gov/Archives/edgar/data/1428205/000142820524000100/arr-20240331.htm"
+        },
+        {
+          "filing_date": "2024-03-15",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a real estate investment trust",
+              "we have elected to be taxed as a reit",
+              "we have elected to be taxed as a real estate investment trust"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "92897dd2d551bb0b4a773f1a63335dde771af8166d7bca2205b767a283ffd8c1",
+          "url": "https://www.sec.gov/Archives/edgar/data/1428205/000142820524000061/arr-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "ARR"
+    },
+    {
+      "security_id": 5385995,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": [
+              "we are a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "1a6222c6cac1e2c46107c2151c958ece2ff48c9372a817225c0bd6649d9ff627",
+          "url": "https://www.sec.gov/Archives/edgar/data/1043219/000162828024020047/nly-20240331.htm"
+        },
+        {
+          "filing_date": "2024-02-15",
+          "parser_assertion": {
+            "evidence": [
+              "we are a reit",
+              "we are a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "4bde85fb37a462e61c846a1b1a5e5fb7c297da6fbaf26f21aad52953337e4bb5",
+          "url": "https://www.sec.gov/Archives/edgar/data/1043219/000162828024005115/nly-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "NLY.PRG"
+    },
+    {
+      "security_id": 2022779,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "e855752cb197f61c12bef2615a5823cd4081075340fa8f820d4b682e403ba96b",
+          "url": "https://www.sec.gov/Archives/edgar/data/1175535/000143774924014401/wstr20240331_10q.htm"
+        },
+        {
+          "filing_date": "2024-03-13",
+          "parser_assertion": {
+            "evidence": [
+              "we are a maryland reit",
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "fb68e55c9b26ec703c27994e2cd8d6d4f9c14d94d4865f398803f3aea9e1e7d8",
+          "url": "https://www.sec.gov/Archives/edgar/data/1175535/000143774924007627/wstr20231231c_10k.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "WSR"
+    },
+    {
+      "security_id": 38659,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-07",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "6e84ead8edc41ed5ce54a8ffaad1f320a4941da2f871436e02a1816595f952e7",
+          "url": "https://www.sec.gov/Archives/edgar/data/1095651/000109565124000016/safe-20240331x10q.htm"
+        },
+        {
+          "filing_date": "2024-02-13",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "df2c603ea42982d8efdf24fb24eb97e1774587891926ccee923d18dd9666e962",
+          "url": "https://www.sec.gov/Archives/edgar/data/1095651/000109565124000009/safe-20231231x10k.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "SAFE"
+    },
+    {
+      "security_id": 3953657,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-09",
+          "parser_assertion": {
+            "evidence": [
+              "the company has elected to be taxed as a real estate investment trust",
+              "the company has elected to be treated as a reit",
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "47d129065f96532734ea44b0a50605cd1cbdd258fe3444b3e75d153a86fadd79",
+          "url": "https://www.sec.gov/Archives/edgar/data/1547546/000162828024022314/oaks-20240331.htm"
+        },
+        {
+          "filing_date": "2024-03-15",
+          "parser_assertion": {
+            "evidence": [
+              "we are a real estate investment trust",
+              "we have elected to be taxed as a reit",
+              "we have elected to be taxed as a reit",
+              "the company has elected to be taxed as a real estate investment trust",
+              "the company has elected to be treated as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "73e5dc96477397586d8008804483a25a01f45c07a60f30559ee3429c479bba1a",
+          "url": "https://www.sec.gov/Archives/edgar/data/1547546/000162828024011505/hcft-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "LFT"
+    },
+    {
+      "security_id": 7166929,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-10",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "1299508eee38c0f427ba097de311a0a4485ba5485394a75b14ef69c50b99af53",
+          "url": "https://www.sec.gov/Archives/edgar/data/1356115/000135611524000012/nxdt-20240331.htm"
+        },
+        {
+          "filing_date": "2024-03-14",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "c0d393358f696e086cee2a59006a98dd707401a6486c8d768d67b020a13272a1",
+          "url": "https://www.sec.gov/Archives/edgar/data/1356115/000135611524000007/nxdt-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "NXDT"
+    },
+    {
+      "security_id": 5186456,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-05-02",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "d53b834e3e92e4f5d08d102f37cf3f01025ee1c5ccb724e80da2953b6b5c17b8",
+          "url": "https://www.sec.gov/Archives/edgar/data/1464423/000095017024052125/pmt-20240331.htm"
+        },
+        {
+          "filing_date": "2024-02-22",
+          "parser_assertion": {
+            "evidence": [
+              "we have elected to be taxed as a reit",
+              "the company has elected to be taxed as a reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "147701b30985ac8fa8310dec98986aeb04eed60ccf79a1a7e8289c67c0afcbe5",
+          "url": "https://www.sec.gov/Archives/edgar/data/1464423/000095017024018760/pmt-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "PMT.PRB"
+    },
+    {
+      "security_id": 33130,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-25",
+          "parser_assertion": {
+            "evidence": [
+              "prologis inc is a self administered and self managed reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "ef51b159f800f147850f3fce23e4c0eadb84c2decb6766c8ebe73ef18a954cf5",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045609/000095017024048421/pld-20240331.htm"
+        },
+        {
+          "filing_date": "2024-02-13",
+          "parser_assertion": {
+            "evidence": [
+              "prologis inc is a self administered and self managed reit"
+            ],
+            "reason": "explicit_issuer_status_or_election",
+            "status": true
+          },
+          "raw_sha256": "c6629f4252b3eb341270cc0afae75d6badd56a6fdfd2708d90f175f320ff2f7e",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045609/000095017024014539/pld-20231231.htm"
+        }
+      ],
+      "stratum": "is_reit",
+      "ticker": "PLD"
+    },
+    {
+      "security_id": 47091,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-02-14",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "aadb67808db0b0068d70997c3adfa369180056aa0ea679511718370f557f0e01",
+          "url": "https://www.sec.gov/Archives/edgar/data/1086888/000119312524036601/d930980d40f.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "MFC"
+    },
+    {
+      "security_id": 47359,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-03-12",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "0f38375abea22f1d3f44ac25c8b4246ed4460f2122fc03d6c346b748fc7b3155",
+          "url": "https://www.sec.gov/Archives/edgar/data/1129928/000112992824000018/oncyf-20231231.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "ONCY"
+    },
+    {
+      "security_id": 71100,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-29",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "f1168d95387f7b741091a4099b0c8a2ebbb11831591e6ef7fefa9e3275c5d9e0",
+          "url": "https://www.sec.gov/Archives/edgar/data/1105101/000095017024049420/gigm-20231231.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "GIGM"
+    },
+    {
+      "security_id": 39651,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-06-20",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "f7b0714eef2215254d6ea959f0926bc5c5dde4bac74e3e4ce6b23a846fc265ae",
+          "url": "https://www.sec.gov/Archives/edgar/data/1613103/000161310324000072/mdt-20240426.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "MDT"
+    },
+    {
+      "security_id": 7202323,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-04",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "2b7601620b342051909767422beea42c2b56f7eed51ad89803ba5f0928148934",
+          "url": "https://www.sec.gov/Archives/edgar/data/1847577/000114036124017987/ef20016432_10k.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "LCW"
+    },
+    {
+      "security_id": 6502489,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-22",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "7ad4694dc816397fb769a95c47539cb021491204ee05ef8b2060d519d862181f",
+          "url": "https://www.sec.gov/Archives/edgar/data/1795251/000121390024034697/f20f2023_nanoximaging.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "NNOX"
+    },
+    {
+      "security_id": 7254103,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-06-24",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "9b939f61f77a3c25437be6d73a73d5ba6115a4e75e77975cb298f8159f8ea504",
+          "url": "https://www.sec.gov/Archives/edgar/data/1807794/000162828024029629/crdo-20240427.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "CRDO"
+    },
+    {
+      "security_id": 46324,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-04-22",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "ad73aea6685d295e217f5cd65501cec727a267ccb05d66629f574ce2b4cb0b5c",
+          "url": "https://www.sec.gov/Archives/edgar/data/1050140/000110465924050087/tm242227d1_40f.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "DSGX"
+    },
+    {
+      "security_id": 69083,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-02-22",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "ed8926419488ea2b870704dacfddd07c67935e699abaa4ed259bc9f5def98887",
+          "url": "https://www.sec.gov/Archives/edgar/data/1996862/000199686224000007/bg-20231231.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "BG"
+    },
+    {
+      "security_id": 591742,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-02-28",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "616ece9bbd6ad4b11032ee6454caeb4e52543b3d7b113dd28c798dcbc1e9f496",
+          "url": "https://www.sec.gov/Archives/edgar/data/1232524/000123252424000015/jazz-20231231.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "JAZZ"
+    },
+    {
+      "security_id": 46022,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2024-03-20",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "4a52733574986dc6d0612c9c2aaa79df49ebab7d7add166d4b9e89b636bf71e1",
+          "url": "https://www.sec.gov/Archives/edgar/data/1017413/000101741324000015/cnq-20231231.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "CNQ"
+    },
+    {
+      "security_id": 6161889,
+      "session_date": "2024-06-28",
+      "sources": [
+        {
+          "filing_date": "2023-05-16",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "no_unambiguous_issuer_status_assertion",
+            "status": null
+          },
+          "raw_sha256": "07d20965494af1211536d27f005b89043ea8eb0c561a22ff960e7f76c3291af9",
+          "url": "https://www.sec.gov/Archives/edgar/data/1786511/000121390023040488/f20f2022_fresh2group.htm"
+        },
+        {
+          "filing_date": "2023-12-15",
+          "parser_assertion": {
+            "evidence": null,
+            "reason": "issuer_not_bound",
+            "status": null
+          },
+          "raw_sha256": "da58963a3f25eb2f59898e7ded7a6b518434cf2bfc83dd40e7418dccf1812ce2",
+          "url": "https://www.sec.gov/Archives/edgar/data/1786511/000121390023096086/ea190159-6k_fresh2group.htm"
+        }
+      ],
+      "stratum": "is_foreign_issuer",
+      "ticker": "FRES"
+    }
+  ],
+  "sample_file_sha256": "56266d3e11817e324dc8771c894aade791c9f27842e44ce5c3c74d86ca9b8eeb",
+  "sample_sha256": "652e3d884a29df032187d4082778dd272356284d3ab2a310b6f02016b08906e0",
+  "source_artifact_sha256": "c6ed1493da72f73d956745a61c2e41fe85490c5b4fab3b4c43ad7330229655e8"
+}
