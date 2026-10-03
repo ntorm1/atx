@@ -16,11 +16,12 @@
     "inputs":  [
                    "notes"
                ],
-    "inputs_note":  "builds read only notes/parts/source=*/{sub,num_items,dim}.parquet; coverage (cell panels) also reads identity/link_table_v3.parquet, calendar.parquet, _tmp/panel_member/year=*.parquet and, once published, universe/year=*/universe.parquet; exact retained primary/linkbase receipts supply filing/role/SHA-bound structural proof only",
+    "inputs_note":  "builds read notes/parts/source=*/{sub,num_items,dim}.parquet; exact retained primary/linkbase receipts supply filing/role/SHA-bound reportable and external-revenue row proof. Cell coverage reads identity/link_table_v3.parquet, calendar.parquet and panel cells; --defer-universe-coverage publishes local/source gates while final Task2 producer/integrity release is pending (R9). Final universe coverage additionally reads universe/year=*/universe.parquet.",
     "guard_gb":  0.9,
     "code":  [
                  "fund_notes",
                  "fund_notes_structure",
+                 "fund_notes_semantic",
                  "fund_notes_disclosure",
                  "notes_fetch",
                  "common"
@@ -57,7 +58,7 @@
                         "keys":  [
                                      "adsh"
                                  ],
-                        "doc":  "all original 10-K/10-KT filings: verified reconciliation class plus separate candidate-only diagnostics"
+                        "doc":  "all original 10-K/10-KT filings: verified reconciliation class plus separate candidate-only diagnostics; revenue_tag_strict retains original measure, revenue_measure_basis distinguishes explicit external revenue from reported segment measure"
                     },
                     {
                         "view":  "fundamentals_notes_segments",
@@ -123,7 +124,7 @@
                                      "adsh",
                                      "tag"
                                  ],
-                        "doc":  "exact filing/role/concept/context/source-SHA corroborated reportable cuts and signed bridge provenance;9 rows"
+                        "doc":  "exact filing/role/concept/context/source-SHA corroborated reportable cuts, signed bridge and selected external-revenue provenance; filing-specific proof count is measured in manifest"
                     }
                 ],
     "asof_macros":  {
@@ -139,6 +140,7 @@
                          "monthly_coverage_cutoff":  "month-end session 22:00 UTC",
                          "extra_context_projection":  "exhaustive timing partition with original-context provenance",
                          "business_partition_quality":  "bseg_partition_quality: source_verified_reportable / tagged_unverified_reportable / inferred_singleton_unverified; bseg_partition_source_adsh carries proof origin with amendments; bseg_n_tagged retains raw count",
+                         "segment_revenue_measure_basis": "bseg_rev_measure_basis: source_declared_external_revenue / source_reported_segment_measure / tagged_unverified_segment_measure / inferred_consolidated_singleton; independent of reportable-count quality; carries with business block",
                          "foreign_sales_quality":  "unverified_tagged_geography; business proof never upgrades geographic quality",
                          "source_structure":  "qualified graph plus exact accession/primary SHA/role/concept/current contexts and disclosed reportable cut; graph or arithmetic alone is insufficient"
                      }

@@ -592,3 +592,55 @@ def test_disclosure_period_conditional_reorganization_uncertainty():
         assert text[claims[0]['start_offset']:claims[0]['end_offset']]==claims[0]['claim']
     assert disclosure_claims('We currently have two reportable segments.','2024-12-31')[0]['quality']=='explicit_claim_period_uncorroborated'
     assert disclosure_claims('We have two operating segments.','2024-12-31')[0]['quality']=='operating_only_reportable_unverified'
+
+@pytest.mark.parametrize('damage',[None,'period','unit','duration','coreg','context','component','total','duplicate'])
+def test_external_revenue_num_identity_guards(tmp_path,damage):
+    con=duckdb.connect()
+    con.execute("""CREATE TABLE items AS SELECT * FROM (VALUES
+      ('filing','RevenueFromContractWithCustomerExcludingAssessedTax',DATE '2024-12-31',4,'USD',NULL::VARCHAR,NULL::VARCHAR,100.),
+      ('filing','RevenueFromContractWithCustomerExcludingAssessedTax',DATE '2024-12-31',4,'USD',NULL::VARCHAR,'BusinessSegments=Alpha;',60.),
+      ('filing','RevenueFromContractWithCustomerExcludingAssessedTax',DATE '2024-12-31',4,'USD',NULL::VARCHAR,'BusinessSegments=Beta;ConsolidationItems=OperatingSegments;',40.),
+      ('filing','Revenues',DATE '2024-12-31',4,'USD',NULL::VARCHAR,'BusinessSegments=Alpha;ConsolidationItems=OperatingSegments;',80.))
+      v(adsh,tag,ddate,qtrs,uom,coreg,segments,value)""")
+    proof={'concept':'us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax','currency':'USD','company_total_context_ids':['company'],
+           'members':['Alpha','Beta'],'context_ids':{'Alpha':['a'],'Beta':['b']},
+           'segments':{'Alpha':'BusinessSegments=Alpha;','Beta':'BusinessSegments=Beta;ConsolidationItems=OperatingSegments;'}}
+    updates={'period':"ddate=DATE '2023-12-31'",'unit':"uom='EUR'",'duration':'qtrs=1',
+             'coreg':"coreg='other-filer'",'context':"segments='BusinessSegments=Beta;ConsolidationItems=IntersegmentElimination;'"}
+    if damage in updates:con.execute('UPDATE items SET '+updates[damage]+" WHERE segments LIKE 'BusinessSegments=Beta;%'")
+    if damage=='component':proof['concept']='us-gaap_InterestIncomeExpenseNet'
+    if damage=='total':con.execute('UPDATE items SET value=110 WHERE segments IS NULL')
+    if damage=='duplicate':con.execute("INSERT INTO items SELECT * REPLACE (50 AS value) FROM items WHERE segments LIKE 'BusinessSegments=Beta;%'")
+    path=tmp_path/'items.parquet';con.execute(f"COPY items TO '{path.as_posix()}' (FORMAT PARQUET)")
+    result=FN.source_external_values(con,path.as_posix(),'filing',dt.date(2024,12,31),'USD',100.,proof)
+    assert result==({'Alpha':60.,'Beta':40.} if damage is None else {})
+    con.close()
+
+def test_source_external_measure_reaches_production_hhi_and_retains_strict_tag(lake_seg,monkeypatch):
+    from atx_db.alpha_panel import fund_notes_structure as S
+    # Add customer-revenue rows to this already parsed fixture before the production
+    # extraction; the original gross segment concept remains untouched.
+    part=N.parts_dir()/'source=2021q1'/'num_items.parquet'
+    con=duckdb.connect();con.execute(f"CREATE TABLE n AS SELECT * FROM read_parquet('{part.as_posix()}')")
+    con.execute(f"""INSERT INTO n SELECT * REPLACE ('RevenueFromContractWithCustomerExcludingAssessedTax' AS tag,
+       CASE value WHEN 40 THEN 60 WHEN 30 THEN 20 WHEN 25 THEN 15 ELSE value END AS value)
+       FROM n WHERE adsh='{I9}' AND tag='Revenues' AND value IN (40,30,25,95)""")
+    con.execute(f"COPY n TO '{part.as_posix()}' (FORMAT PARQUET)");con.close()
+    monkeypatch.setattr(S,'cached_accessions',lambda root:{I9})
+    monkeypatch.setattr(S,'cached_structure',lambda root,adsh,tag,period,members:{
+        'status':'verified_structure','members':['SubA','SubB','Other'],
+        'concept':'us-gaap_Revenues','period':period,'roles':[{'role':'fixture-note'}],
+        'sources':[{'sha256':'fixture','url':'fixture'}],'context_ids':{'SubA':['a'],'SubB':['b'],'Other':['c']},
+        'external_revenue_selection':{'concept':'us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax',
+          'currency':'USD','company_total_context_ids':['company'],'members':['SubA','SubB','Other'],'context_ids':{'SubA':['ea'],'SubB':['eb'],'Other':['ec']},
+          'segments':{m:f'BusinessSegments={m};' for m in ['SubA','SubB','Other']}}})
+    FN.build(defer_universe_coverage=True)
+    out=N.C.stage_dir(FN.STAGE);row=_features(out)[I9]
+    assert row.bseg_rev_tag=='RevenueFromContractWithCustomerExcludingAssessedTax'
+    assert row.bseg_rev_measure_basis=='source_declared_external_revenue'
+    assert row.bseg_rev_hhi==pytest.approx((60**2+20**2+15**2)/95**2)
+    assert (row.bseg_n,row.bseg_rev_n,row.bseg_recon_class)==(3,3,'reconciled_search')
+    con=duckdb.connect()
+    assert con.execute(f"SELECT revenue_tag_strict,rel_diff_strict,seg_sum FROM read_parquet('{out/'segment_recon.parquet'}') WHERE adsh=?",[I9]).fetchone()==('Revenues',pytest.approx(70/95),95.)
+    con.close()
+    assert 'GC3 pending' in N.C.read_json(out/'coverage.json')['cells']['universe']

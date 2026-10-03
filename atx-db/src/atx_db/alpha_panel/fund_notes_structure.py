@@ -257,6 +257,7 @@ def cached_structure(rawroot: Path, accession: str, tag: str, period: str, fact_
         graph_members={local_member(n) for r in roles if r['role']==corroboration['role'] for a,b,_ in r['edges'] for n in (a,b)}
         result['bridge_context_ids']={m:bridge[m] for m in corroboration['bridge_members'] if m in bridge and m in graph_members}
     if result['status']=='verified_structure' and primary:
-        from .fund_notes_semantic import source_bridge_contexts
+        from .fund_notes_semantic import source_bridge_contexts, source_external_revenue
         result['source_bridge_contexts']=source_bridge_contexts(primary,concept,period,set(result['members']),roles)
+        result['external_revenue_selection']=source_external_revenue(primary,period,set(result['members']),roles)
     return result | {'sources':sources,'concept':concept,'period':period,'context_ids':contexts}

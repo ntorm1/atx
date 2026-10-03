@@ -80,3 +80,76 @@ def test_explicit_reportable_corporate_name_remains_an_economic_member():
     claims=P.reportable_lists(parsed,'2024-12-31',{'PersonalSystems','Printing','CorporateInvestments'})
     assert claims[0]['quality']=='explicit_named_reportable_list'
     assert claims[0]['members']==['CorporateInvestments','PersonalSystems','Printing']
+
+@pytest.mark.parametrize('statement',[
+    'We have two reportable segments: Gamma and Delta. Our products Alpha and Beta generate revenue.',
+    'We have two reportable segments:</p><p>Previously Alpha and Beta.',
+    'We have two reportable segments: Alpha provides services and Beta sells products.',
+    'We have two reportable segments: Gamma and Beta. Alpha also generates revenue.',
+    'We have two reportable segments:</p><p>Alpha and</p><p>Previously Beta.',
+    'We have two reportable segments:</p><p>Alpha and</p><p>Beta in 2023.',
+    'We have two reportable segments:</p><p>Alpha and Beta, which will be reorganized.',
+    'We have two reportable segments:</p><p>Alpha</p><p>Beta</p><p>Previously these were our segments.',
+    'We have two reportable segments: Alpha and Beta. Previously these were our segments.',
+    'We have two reportable segments: Alpha and Beta.</p><p>These segments were previously reported.',
+    'We have two reportable segments: Alpha and Beta.</p><p>As of 2023 these were the segments.',
+    'We have two reportable segments:</p><p>Alpha</p><p>Our products Beta generate revenue.',
+])
+def test_declared_list_never_fills_count_from_unrelated_or_qualified_names(statement):
+    assert cut(document(statement))['status']!='verified_structure'
+
+@pytest.mark.parametrize('statement',[
+    'We have two reportable segments:</p><p>Alpha and Beta.',
+    'We have two reportable segments:</p><p>Alpha</p><p>Beta.',
+    'We have two reportable segments:</p><p>Alpha and</p><p>Beta.',
+    'We have two reportable segments:</p><p>(1) Alpha;</p><p>(2) Beta.',
+    'We have two reportable segments: Alpha and Beta. Our products Product generate revenue.',
+    'We have two reportable segments: Alpha and Beta (2024).',
+    'We have two reportable segments: Alpha and Beta.</p><p>Given the market trends, we expect prices to change.',
+])
+def test_genuine_bounded_multiline_declared_lists_are_certifiable(statement):
+    proof=cut(document(statement))
+    assert proof['status']=='verified_structure' and proof['members']==['Alpha','Beta']
+    assert len(proof['corroboration']['claim']['list_items'])==2
+
+def test_syntactic_list_preserves_and_within_a_member_name():
+    parsed=P.Primary('<p>We have two reportable segments: Oil and Natural Gas, Carbon Management.</p>')
+    claim=P.reportable_lists(parsed,'2024-12-31',{'OilAndNaturalGasSegment','CarbonManagementSegment'})[0]
+    assert claim['quality']=='explicit_named_reportable_list'
+    assert claim['members']==['CarbonManagementSegment','OilAndNaturalGasSegment']
+
+def external_document(heading='Sales to external customers',year='2024-12-31'):
+    body=document(year=year).decode()
+    facts=''.join(f'<tr><td>{m}<ix:nonFraction name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="{m}" unitRef="USD">40</ix:nonFraction></td></tr>' for m in ['Alpha','Beta'])
+    total='<ix:nonFraction name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="company" unitRef="USD">80</ix:nonFraction>'
+    body=body.replace('</table>',f'<tr><td>{heading}</td></tr>'+facts+f'<tr><td>Total sales{total}</td></tr></table>')
+    body='<xbrli:context id="company"><xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>'+year+'</xbrli:endDate></xbrli:period></xbrli:context>'+body
+    role=roles();role[0]['edges'].append(('us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax',S.AXIS,'parent-child'))
+    return body.encode(),role
+
+def test_external_source_rows_select_measure_before_any_values():
+    body,role=external_document()
+    proof=P.source_external_revenue(body,'2024-12-31',{'Alpha','Beta'},role)
+    assert proof['concept']=='us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax'
+    assert proof['currency']=='USD' and proof['segments']=={'Alpha':'BusinessSegments=Alpha;','Beta':'BusinessSegments=Beta;'}
+    assert proof['source_label']=='Sales to external customers'
+    assert proof['company_total_context_ids']==['company']
+    assert body.decode()[proof['start_offset']:proof['end_offset']].count('nonFraction')==4
+    for heading in ['Total sales','Intersegment sales','External sales may increase']:
+        bad,role=external_document(heading)
+        assert not P.source_external_revenue(bad,'2024-12-31',{'Alpha','Beta'},role)
+    assert not P.source_external_revenue(body,'2023-12-31',{'Alpha','Beta'},role)
+    assert not P.source_external_revenue(body,'2024-12-31',{'Alpha','Beta','Product'},role)
+    assert not P.source_external_revenue(body.replace(b'contextRef="Beta" unitRef="USD"',b'contextRef="Beta" unitRef="EUR"'),'2024-12-31',{'Alpha','Beta'},role)
+    assert not P.source_external_revenue(body.replace(b'Total sales',b'Unknown total'),'2024-12-31',{'Alpha','Beta'},role)
+    assert not P.source_external_revenue(body.replace(b'contextRef="company"',b'contextRef="missing"'),'2024-12-31',{'Alpha','Beta'},role)
+    assert not P.source_external_revenue(body.replace(b'<tr><td>Alpha',b'<tr><td>Intersegment sales</td></tr><tr><td>Alpha',1),'2024-12-31',{'Alpha','Beta'},role)
+
+def test_customer_revenue_row_requires_complete_annual_member_identity():
+    body,role=external_document()
+    text=body.decode();start=text.index('<tr><td>Sales to external customers')
+    text=text[:start]+text[start:].replace('<tr><td>Sales to external customers</td></tr><tr><td>Alpha','<tr><td>Revenues from customers Alpha').replace('</td></tr><tr><td>Beta',' Beta')
+    text=text.replace('</td></tr><tr><td>Total sales',' Total sales')
+    proof=P.source_external_revenue(text.encode(),'2024-12-31',{'Alpha','Beta'},role)
+    assert proof['concept']=='us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax'
+    assert len(proof['source_rows'])==1

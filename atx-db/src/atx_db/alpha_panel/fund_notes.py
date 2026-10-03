@@ -433,7 +433,7 @@ def _registry_rows() -> list[tuple[str, str, str, str, int]]:
     return rows
 
 
-def build(years: list[int] | None = None) -> dict[str, Any]:
+def build(years: list[int] | None = None, *, defer_universe_coverage: bool = False) -> dict[str, Any]:
     import pyarrow as pa
 
     pa.set_memory_pool(pa.system_memory_pool())     # freed Arrow buffers go back to the OS (stitch under the cap)
@@ -577,7 +577,7 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     shutil.rmtree(tmp, ignore_errors=True)
     with C.timed(receipt, "coverage"):
         receipt["coverage"] = coverage(con, out)
-        receipt["coverage"]["cells"] = cell_coverage(con, out)
+        receipt["coverage"]["cells"] = cell_coverage(con, out, defer_universe=defer_universe_coverage)
     receipt["gate_status"] = gate_status(receipt["coverage"])
     receipt["coverage"]["gate_status"] = receipt["gate_status"]
     C.write_json_atomic(out / "coverage.json", receipt["coverage"])
@@ -738,7 +738,32 @@ def _overlay_schema():
     import pyarrow as pa
     return pa.schema([("adsh", pa.string()), ("recon_rule", pa.string()), ("candidate_only", pa.bool_()), ("dropped_members", pa.list_(pa.string())),
                       ("seg_sum_reconciled", pa.float64()), ("reconciling_used", pa.float64()),
-                      ("seg_members", pa.list_(pa.struct([("member", pa.string()), ("value", pa.float64())])))])
+                      ("seg_members", pa.list_(pa.struct([("member", pa.string()), ("value", pa.float64())]))),
+                      ("source_revenue_tag", pa.string()),("source_revenue_basis",pa.string())])
+
+
+def source_external_values(con, items: str, adsh: str, period, currency: str, total: float, proof: dict) -> dict[str, float]:
+    """Read the already source-selected full-revenue rows with exact NUM guards.
+
+    Neither a sum nor an improvement in reconciliation selects these facts. A
+    unique same-concept company total and every exact source context are required.
+    """
+    tag=proof.get('concept','').removeprefix('us-gaap_')
+    if tag not in FULL_REVENUE_TAGS or proof.get('currency')!=currency or not proof.get('company_total_context_ids'):return {}
+    own_totals=con.execute(f"""SELECT DISTINCT value FROM read_parquet('{items}',hive_partitioning=false)
+      WHERE adsh=? AND tag=? AND ddate=? AND qtrs=4 AND uom=? AND coreg IS NULL
+        AND segments IS NULL AND value IS NOT NULL""",[adsh,tag,period,currency]).fetchall()
+    if len(own_totals)!=1 or own_totals[0][0]!=total:return {}
+    selected={}
+    for member in proof.get('members',[]):
+        context=proof.get('segments',{}).get(member)
+        if not context or not proof.get('context_ids',{}).get(member):return {}
+        rows=con.execute(f"""SELECT DISTINCT value FROM read_parquet('{items}',hive_partitioning=false)
+          WHERE adsh=? AND tag=? AND ddate=? AND qtrs=4 AND uom=? AND coreg IS NULL
+            AND segments=? AND value IS NOT NULL""",[adsh,tag,period,currency,context]).fetchall()
+        if len(rows)!=1:return {}
+        selected[member]=rows[0][0]
+    return selected
 
 
 def recon_overlay(con, items: str, seg: str, strict: str):
@@ -790,9 +815,20 @@ def recon_overlay(con, items: str, seg: str, strict: str):
                 # A role-correct segment concept cannot borrow a different GAAP/component total.
                 continue
             selected={m:values[m] for m in proof['members']}
+            external=proof.get('external_revenue_selection',{})
+            external_values=source_external_values(con,items,adsh,_per,_cur,total,external) if external else {}
+            source_tag=tag
+            if set(external_values)==set(selected):
+                selected=external_values
+                source_tag=external['concept'].removeprefix('us-gaap_')
+                proof['selected_external_revenue']=external
+            proof['selected_revenue_tag']=source_tag
             bridge=[]
             bridge_contexts={m:{'context_ids':ids,'segments':f'ConsolidationItems={m};'} for m,ids in proof.get('bridge_context_ids',{}).items()}
             bridge_contexts.update(proof.get('source_bridge_contexts',{}))
+            # A source-selected external measure has its own exact rows and context
+            # family. Never carry bridges from the original gross-revenue concept.
+            if source_tag!=tag:bridge_contexts={}
             for member,source_context in bridge_contexts.items():
                 context_ids=source_context['context_ids']
                 facts=con.execute(f"""SELECT DISTINCT value,segments FROM read_parquet('{items}',hive_partitioning=false)
@@ -809,6 +845,8 @@ def recon_overlay(con, items: str, seg: str, strict: str):
             rows.append({'adsh':adsh,'recon_rule':'source_role_structure','candidate_only':False,
                          'dropped_members':sorted(set(values)-set(selected)),
                          'seg_sum_reconciled':sum(selected.values()),'reconciling_used':sum(t['value'] for t in bridge) if bridge else None,
+                         'source_revenue_tag':source_tag,
+                         'source_revenue_basis':'source_declared_external_revenue' if external_values else 'source_reported_segment_measure',
                          'seg_members':[{'member':m,'value':v} for m,v in sorted(selected.items())]})
             continue
         cs = comps.get(adsh, []) + ([recon] if recon is not None else [])
@@ -832,7 +870,10 @@ def recon_final_sql(strict: str) -> str:
                CASE WHEN o.recon_rule='source_role_structure' THEN len(o.seg_members) ELSE r.n_revenue_members END AS n_revenue_members,
                CASE WHEN o.recon_rule='source_role_structure' THEN o.reconciling_used ELSE r.reconciling_items END AS reconciling_items,
                CASE WHEN o.recon_rule='source_role_structure' THEN (o.seg_sum_reconciled-r.consolidated_revenue)/nullif(abs(r.consolidated_revenue),0) ELSE r.rel_diff END AS rel_diff,
-               CASE WHEN o.recon_rule='source_role_structure' THEN o.seg_sum_reconciled ELSE r.seg_sum END AS seg_sum),
+               CASE WHEN o.recon_rule='source_role_structure' THEN o.seg_sum_reconciled ELSE r.seg_sum END AS seg_sum,
+               coalesce(o.source_revenue_tag,r.revenue_tag) AS revenue_tag),
+               r.revenue_tag AS revenue_tag_strict,
+               coalesce(o.source_revenue_basis,'tagged_unverified_segment_measure') AS revenue_measure_basis,
                r.recon_class AS recon_class_strict,r.rel_diff AS rel_diff_strict,
                CASE WHEN o.recon_rule='source_role_structure' THEN (o.seg_sum_reconciled+coalesce(o.reconciling_used,0)-r.consolidated_revenue)/nullif(abs(r.consolidated_revenue),0) END AS rel_diff_after_source_bridge,
                o.recon_rule, o.dropped_members, o.seg_sum_reconciled,
@@ -884,7 +925,7 @@ DD_BUCKETS = ("dd1", "dd2", "dd3", "dd4", "dd5", "dd_after5")
 #: the latest earlier vintage whose key is set: each row is the state of knowledge at its available_at
 CARRY_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bseg_n", ("bseg_n", "bseg_basis", "bseg_n_tagged", "bseg_rev_n", "bseg_rev_tag", "bseg_rev_rule", "bseg_rev_hhi",
-                "bseg_recon_class", "bseg_partition_quality", "bseg_partition_source_adsh")),
+                "bseg_recon_class", "bseg_partition_quality", "bseg_partition_source_adsh", "bseg_rev_measure_basis")),
     ("geo_rev_n", ("geo_rev_n", "foreign_sales_share", "foreign_basis", "foreign_sales_quality")),
     ("major_cust_n", ("major_cust_n", "major_cust_share")),
     ("dd_sched_total", (*DD_BUCKETS, "dd_rem_fy", "dd_n_buckets", "dd_sched_total", "dd1_share")),
@@ -978,6 +1019,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
         ),
         bus AS (
             SELECT adsh, any_value(tag) AS bseg_rev_tag, NULL::VARCHAR AS bseg_rev_rule,
+                   'tagged_unverified_segment_measure' AS bseg_rev_measure_basis,
                    count(*) FILTER (WHERE rep AND value > 0) AS bseg_rev_n,
                    sum(value) FILTER (WHERE rep AND value > 0) AS s1, sum(value * value) FILTER (WHERE rep AND value > 0) AS s2
             FROM (SELECT *, NOT regexp_matches(member, '{RECONCILING_RE}') AS rep FROM sel
@@ -986,6 +1028,7 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
             UNION ALL
             SELECT o.adsh, CASE WHEN any_value(o.recon_rule) LIKE 'mixed_tags%' THEN 'mixed' ELSE any_value(r.revenue_tag) END,
                    any_value(o.recon_rule),
+                   any_value(r.revenue_measure_basis),
                    count(*) FILTER (WHERE o.rep AND o.value > 0),
                    sum(o.value) FILTER (WHERE o.rep AND o.value > 0), sum(o.value * o.value) FILTER (WHERE o.rep AND o.value > 0)
             FROM (SELECT ov.*, CASE WHEN recon_rule='source_role_structure' THEN true
@@ -1027,6 +1070,9 @@ def features_sql(items: str, seg: str, wide: str, recon: str) -> str:
                         WHEN f.flow_qtrs=4 AND f.form NOT LIKE '%/A' AND ft.total IS NOT NULL THEN 'inferred_singleton_unverified' END AS bseg_partition_quality,
                    CASE WHEN f.adsh IN (SELECT adsh FROM structure_evidence) THEN f.adsh END AS bseg_partition_source_adsh,
                    b.bseg_rev_n, b.bseg_rev_tag, b.bseg_rev_rule,
+                   CASE WHEN b.bseg_rev_n>0 THEN b.bseg_rev_measure_basis
+                        WHEN coalesce(m.n,0)<=1 AND f.flow_qtrs=4 AND f.form NOT LIKE '%/A' AND ft.total>0
+                        THEN 'inferred_consolidated_singleton' END AS bseg_rev_measure_basis,
                    CASE WHEN coalesce(m.n, 0) >= 2 AND b.bseg_rev_n >= 2 THEN b.s2 / (b.s1 * b.s1)
                         WHEN coalesce(m.n, 0) <= 1 AND (b.bseg_rev_n = 1 OR
                              (f.flow_qtrs = 4 AND f.form NOT LIKE '%/A' AND ft.total > 0)) THEN 1.0
@@ -1149,11 +1195,13 @@ def member_ciks(con, years: tuple[int, ...] = tuple(range(2019, 2027))) -> bool:
 UNIVERSE_PANELS = ("univ_all_common", "univ_r3000p")
 
 
-def cell_coverage(con, out, years: tuple[int, ...] = GATE_YEARS) -> dict[str, Any]:
+def cell_coverage(con, out, years: tuple[int, ...] = GATE_YEARS, *, defer_universe: bool = False) -> dict[str, Any]:
     """GC3 coverage per panel: ``member_equity`` always, ``univ_all_common`` / ``univ_r3000p`` once the Task 2
     ``universe`` stage is published (its manifest exists)."""
     res = {"member_equity": member_coverage(con, out, years)}
-    if (C.build_root() / "universe" / "manifest.json").exists():
+    if defer_universe:
+        res['universe']='GC3 pending final producer completion and file-integrity signal (R9); no overlap-era measurement accepted'
+    elif (C.build_root() / "universe" / "manifest.json").exists():
         for flag in UNIVERSE_PANELS:
             res[flag] = member_coverage(con, out, years, flag)
     else:
@@ -1262,6 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--years", help="e.g. 2019-2026 (default: every filing year)")
+    b.add_argument('--defer-universe-coverage',action='store_true',help='Publish source/local gates while universe producer is rewriting (R9)')
     sub.add_parser("coverage", help="re-measure coverage and gates from the published files")
     args = ap.parse_args(argv)
     if args.cmd == "coverage":
@@ -1272,7 +1321,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.years:
         a, _, z = args.years.partition("-")
         years = list(range(int(a), int(z or a) + 1))
-    rec = build(years)
+    rec = build(years,defer_universe_coverage=args.defer_universe_coverage)
     print(json.dumps({k: v for k, v in rec.items() if k != "coverage"}, default=str)[:4000], flush=True)
     print(json.dumps(rec.get("coverage", {}).get("segments"), default=str), flush=True)
     return 0
