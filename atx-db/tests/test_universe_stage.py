@@ -61,7 +61,7 @@ def make_lake(root) -> None:
     pschema = pa.schema([("session_date", pa.date32()), ("security_id", pa.int64()), ("cik", pa.int64()),
                          ("ticker", pa.string()), ("exchange", pa.string()), ("raw_close", pa.float64()),
                          ("security_type", pa.string())]
-                        + [(c, pa.bool_()) for c in U.PANEL_COLUMNS[7:]])
+                        + [(c, pa.bool_()) for c in U.PANEL_COLUMNS[7:] if c != "sale_ttm"] + [("sale_ttm", pa.float64())])
     _w(root, "panel/year=2021/panel-01.parquet", panel, pschema)
     _w(root, "market/shares_daily/year=2021/shares_daily.parquet", shares)
     _w(root, "security_master/finra_names.parquet", [
@@ -104,7 +104,7 @@ def make_lake(root) -> None:
         {"cik": 107, "adsh": "g1", "available_at": T(2021, 6, 3, 15, tzinfo=UTC), "inc_state_country": "E9"},
     ], pa.schema([("cik", pa.int64()), ("adsh", pa.string()), ("available_at", tz), ("inc_state_country", pa.string())]))
     _w(root, "sec_filings/issuer_profile.parquet", [
-        {"cik": 107, "state_of_incorporation": "DE"}, {"cik": 102, "state_of_incorporation": "NV"},
+        {"cik": 107, "state_of_incorporation": "DE"}, {"cik": 102, "state_of_incorporation": "E9"},
         {"cik": 111, "state_of_incorporation": "X1"}])
     _w(root, "sec_filings/filings.parquet", [
         {"cik": 109, "form": "10-K", "file_number": "814-00001", "available_at": T(2020, 3, 1)},
@@ -197,7 +197,7 @@ def test_cover_page_incorporation_is_point_in_time(lake):
     # cover clock 2021-06-03 15:00 UTC: before lake_cutoff(06-04) = 06-03 22:00, after lake_cutoff(06-03)
     assert not _flag(con, "is_foreign_issuer", 7, D(2021, 6, 3)) and _flag(con, "univ_all_common", 7, D(2021, 6, 3))
     assert _flag(con, "is_foreign_issuer", 7, D(2021, 6, 4)) and not _flag(con, "univ_all_common", 7, D(2021, 6, 4))
-    assert _flag(con, "inc", 7, D(2021, 6, 3)) == "DE"          # snapshot fallback before the cover is visible
+    assert _flag(con, "inc", 7, D(2021, 6, 3)) is None          # undated snapshot is never consumed
 
 
 def test_spac_sic_history_is_point_in_time(lake):
@@ -211,6 +211,46 @@ def test_bdc_from_814_filings_with_withdrawal(lake):
     assert _flag(con, "is_cef_etf", 9, D(2021, 6, 8))
     assert _flag(con, "is_bdc", 10, D(2021, 6, 2)) and not _flag(con, "is_bdc", 10, D(2021, 6, 3))
     assert not _flag(con, "is_bdc", 1, D(2021, 6, 2))            # a Form 4 under an 814- number is not BDC evidence
+
+
+def test_later_foreign_snapshot_never_backfills_missing_cover(lake):
+    con, _ = lake
+    assert _flag(con, "inc", 2, CAL[0]) is None
+    assert not _flag(con, "is_foreign_issuer", 2, CAL[0])
+
+
+def test_retained_spac_sic_with_operating_revenue(lake):
+    con, root = lake
+    path = root / "panel/year=2021/panel-01.parquet"
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        if row["security_id"] == 8 and row["session_date"] >= D(2021, 6, 3):
+            row["sale_ttm"] = 1000000.0
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    con.execute("DELETE FROM sic_hist WHERE cik=108 AND sic=7372")
+    U.build_year(con, 2021)
+    assert _flag(con, "is_spac", 8, D(2021, 6, 2))
+    assert not _flag(con, "is_spac", 8, D(2021, 6, 3))
+    assert _flag(con, "univ_all_common", 8, D(2021, 6, 3))
+
+
+def test_bdc_re_election_and_future_withdrawal_do_not_revise_history(lake):
+    con, root = lake
+    path = root / "sec_filings/filings.parquet"
+    rows = pq.read_table(path).to_pylist()
+    rows += [{"cik": 110, "form": "N-54A", "file_number": "814-00002",
+              "available_at": T(2021, 6, 4, 12)}]
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    U.load_issuer_tables(con)
+    U.build_year(con, 2021)
+    before = [_flag(con, "is_bdc", 10, d) for d in CAL]
+    assert before == [True, True, False, False, True, True]
+    rows += [{"cik": 110, "form": "N-54C", "file_number": "814-00002",
+              "available_at": T(2022, 6, 4, 12)}]
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    U.load_issuer_tables(con)
+    U.build_year(con, 2021)
+    assert [_flag(con, "is_bdc", 10, d) for d in CAL] == before
 
 
 def test_link_table_fallback_is_point_in_time_and_never_fans_out(lake):
@@ -315,3 +355,16 @@ def test_build_publishes_manifest_with_gate_status_and_resumes(tmp_path, monkeyp
     assert val["gates"]["codes_on_all_common"]["per_year"]["2021"] < 1     # line 2 lacks codes on 06-07 / 06-08
     assert rec["rows"]["2021"] == len(CAL) * len(LINES) and rec["resumed_years"] == []
     assert U.build(range(2021, 2022))["resumed_years"] == [2021]
+
+def test_french_expected_months_cannot_pass_incomplete_overlap():
+    ours={D(2021,1,31):(1000,1000)}
+    french={D(2021,1,31):1000,D(2021,2,28):1000}
+    g=U.french_gate(ours,french,expected=list(french))
+    assert not g['pass'] and g['missing_months']==['2021-02']
+
+
+def test_hand_verdicts_require_current_rule_and_sample_binding(tmp_path):
+    p=tmp_path/'hand.json'
+    p.write_text(json.dumps({'rule':'old','seed':U.HAND_SEED,'rows':[]}),encoding='utf-8')
+    g=U.hand_check_gate(p,sample=[])
+    assert not g['pass'] and g['status']=='stale_verdicts_require_recheck'

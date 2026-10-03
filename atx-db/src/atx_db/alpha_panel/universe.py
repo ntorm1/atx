@@ -11,26 +11,24 @@ Point in time. ``available_at`` = 22:00 UTC of ``session_date``. A row uses its 
   ``exchcd_like`` is the repaired listing exchange below (``exchcd_basis`` = ``finra_class_repair``).
 * listing exchange (``exchange_u``, not published): the panel ``exchange``, else the FINRA market class of the
   panel's own as-of FINRA row (dissemination date before d, at most ``FINRA_STALE_DAYS`` old) mapped with
-  ``security_master.EXCHANGE_BY_CLASS`` plus ``CLASS_REPAIR``: FINRA writes Nasdaq Capital Market as ``SC`` and Cboe
-  BZX as ``BZX``, two classes the security-master map lacks, so the panel and the codes leave those lines with a NULL
-  exchange (500-700 of the all_common lines a day, 2019-2025).
+  ``security_master.EXCHANGE_BY_CLASS`` including SC (Nasdaq Capital Market) and BZX (Cboe BZX); the frozen panel is repaired from dated FINRA evidence
+  by the codes, market and index builders without rebuilding panel.
 * issuer CIK (``cik``): the panel ``cik``, else ``identity/link_table_v3`` as of the cutoff (interval holding d).
 * ``filer_regime``: ``sec_filings/filer_regime`` of the CIK as of the cutoff (interval holding d): ``domestic``
   (10-K filer), ``fpi_20f``, ``canadian_40f``, ``fund`` (N-CSR filer), ``none``; NULL when unknown or unlinked.
 * SIC: ``classification/issuer_industry`` (SIC in force per filing) of the CIK, latest with clock < cutoff.
 * incorporation: the latest 10-K / 10-Q / 8-K cover page ``dei:EntityIncorporationStateCountryCode``
-  (``identity_cover``) with clock < cutoff, else ``sec_filings/issuer_profile.state_of_incorporation`` (a snapshot:
-  non-PIT fallback, used before 2019 covers exist; incorporation rarely changes).
+  (``identity_cover``) with clock < cutoff, otherwise unknown; undated issuer-profile snapshots never change historical membership.
 * BDC: the CIK filed a 10-K, 10-Q, 8-K, N-54A, N-6F or N-2 (or amendment) under an ``814-`` (Investment Company
-  Act BDC) file number with clock < cutoff, and no later N-54C withdrawal before the cutoff.
+  Act BDC) file number with clock < cutoff, status is the latest qualifying election/support or N-54C withdrawal event strictly before the cutoff.
 * index proxies: ``indexes_membership_as_of(cutoff) WHERE session_date = d`` (membership is known at its rank date).
 
 Flags (every row): ``is_adr`` = panel ``is_adr`` or ``is_adr_likely``; ``is_reit`` = panel ``is_reit`` or SIC 6798;
-``is_spac`` = panel ``is_spac`` or SIC 6770 (blank check); ``is_cef_etf`` = panel ``is_etf``, ``security_type``
+``is_spac`` = panel ``is_spac`` or SIC 6770 with zero/missing panel revenue (blank check); ``is_cef_etf`` = panel ``is_etf``, ``security_type``
 fund, regime ``fund`` or BDC (CRSP share code 14 / 73 analogues); ``is_foreign_issuer`` = panel ``is_fpi``, regime
 ``fpi_20f`` / ``canadian_40f``, or incorporation outside the US (CRSP second digit 2 analogue).
 
-Rule ``universe-all-common-v1`` (``univ_all_common``):
+Rule ``universe-all-common-v2`` (``univ_all_common``):
 
 1. the ``market_index`` all_common rule, imported (``market_index.common_filter`` on the panel flags, ``is_operating``,
    not ``is_index``, listing exchange in ``market_index.LISTED``), on the repaired listing exchange;
@@ -57,6 +55,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import hashlib
 import random
 import statistics
 import sys
@@ -71,12 +70,11 @@ from .security_master import EXCHANGE_BY_CLASS, SYMBOL_SUFFIX
 
 STAGE = "universe"
 SCHEMA = "atx.alpha-panel.universe/v1"
-RULE = "universe-all-common-v1"
+RULE = "universe-all-common-v2"
 MODULES = ("universe", "market_index", "market_common", "security_master", "identity_v3", "common")
 MIN_PRICE = 1.0
 FINRA_STALE_DAYS = 45            # = panel.SI_STALE_DAYS (the panel's FINRA freshness rule; asserted in the tests)
-CLASS_REPAIR = {"SC": "XNAS", "BZX": "BATS", "IEX": "IEXG"}
-EXCHANGE_MAP = {**EXCHANGE_BY_CLASS, **CLASS_REPAIR}
+EXCHANGE_MAP = EXCHANGE_BY_CLASS
 SUFFIX_RE = "|".join(p.pattern for p, _ in SYMBOL_SUFFIX)
 US_JURISDICTIONS = tuple(
     "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR "
@@ -102,7 +100,7 @@ INPUTS = ("panel", "market/market_shares_manifest.json", "indexes", "security_ma
 COVERAGE_INPUTS = ("market/market_liquidity_manifest.json", "borrow_proxy")
 PANEL_COLUMNS = ("session_date", "security_id", "cik", "ticker", "exchange", "raw_close", "security_type", "is_adr",
                  "is_adr_likely", "is_fpi", "is_reit", "is_lp", "is_royalty_trust", "is_operating", "is_index",
-                 "is_etf", "is_spac")
+                 "is_etf", "is_spac", "sale_ttm")
 MARK = M.MARK
 
 # no LAKE_STAGES literal: three inputs (share_exchange_history, link_table_v3, identity_cover) are not registered
@@ -130,7 +128,8 @@ def flags_sql(a: str = "t") -> dict[str, str]:
     return {
         "is_adr": f"coalesce({a}.is_adr, false) OR coalesce({a}.is_adr_likely, false)",
         "is_reit": f"coalesce({a}.is_reit, false) OR coalesce({a}.sic_asof = {REIT_SIC}, false)",
-        "is_spac": f"coalesce({a}.is_spac, false) OR coalesce({a}.sic_asof = {SPAC_SIC}, false)",
+        "is_spac": (f"coalesce({a}.is_spac, false) OR "
+                    f"(coalesce({a}.sic_asof = {SPAC_SIC}, false) AND coalesce({a}.sale_ttm, 0) = 0)"),
         "is_cef_etf": (f"coalesce({a}.is_etf, false) OR coalesce({a}.security_type = 'fund', false) "
                        f"OR coalesce({a}.filer_regime = 'fund', false) OR {a}.is_bdc"),
         "is_foreign_issuer": (f"coalesce({a}.is_fpi, false) "
@@ -146,7 +145,7 @@ def base_rule_sql(a: str = "t", exchange: str = "exchange_u") -> str:
 
 
 def all_common_sql(a: str = "t", price: bool = True) -> str:
-    """Rule ``universe-all-common-v1`` over a step-3 row ``a`` (``price=False`` drops the $1 screen)."""
+    """Rule ``universe-all-common-v2`` over a step-3 row ``a`` (``price=False`` drops the $1 screen)."""
     f = flags_sql(a)
     px = f"coalesce({a}.raw_close >= {MIN_PRICE}, false) AND " if price else ""
     return (f"{base_rule_sql(a)} AND {px}coalesce({a}.shrout > 0, false) "
@@ -180,15 +179,12 @@ def load_issuer_tables(con) -> dict[str, int]:
                         FROM read_parquet('{_p('identity_cover', 'cover_page.parquet')}')
                         WHERE inc_state_country IS NOT NULL AND available_at IS NOT NULL AND cik IS NOT NULL
                         GROUP BY 1, 2""",
-        "inc_snap": f"""SELECT cik, any_value(state_of_incorporation) AS inc
-                        FROM read_parquet('{_p('sec_filings', 'issuer_profile.parquet')}')
-                        WHERE state_of_incorporation IS NOT NULL GROUP BY 1""",
-        "bdc": f"""SELECT cik, min(available_at) FILTER (WHERE form IN ({_in(BDC_FORMS)})) AS first_at,
-                          max(available_at) FILTER (WHERE form IN ({_in(BDC_WITHDRAW_FORMS)})) AS withdraw_at
+        "bdc": f"""SELECT cik, available_at,
+                          bool_and(form NOT IN ({_in(BDC_WITHDRAW_FORMS)})) AS elected
                    FROM read_parquet('{_p('sec_filings', 'filings.parquet')}')
                    WHERE file_number LIKE '814-%' AND available_at IS NOT NULL
                      AND form IN ({_in(BDC_FORMS + BDC_WITHDRAW_FORMS)})
-                   GROUP BY 1""",
+                   GROUP BY 1, 2""",
     }
     out = {}
     for name, sql in stmts.items():
@@ -231,18 +227,16 @@ def build_year(con, y: int) -> None:
         "false AS r1000, false AS r2000, false AS r3000, false AS sp500"
     con.execute(f"""CREATE OR REPLACE TABLE t3 AS
         SELECT t2.*, c.shrcd AS shrcd_like, c.exchcd AS exchcd_v3, r.regime AS filer_regime, si.sic AS sic_asof,
-               coalesce(ic.inc, sn.inc) AS inc,
-               coalesce(b.first_at < t2.cutoff AND NOT coalesce(b.withdraw_at > b.first_at AND b.withdraw_at < t2.cutoff,
-                                                                false), false) AS is_bdc,
+               ic.inc AS inc,
+               coalesce(b.elected, false) AS is_bdc,
                {mcols}
         FROM t2
         LEFT JOIN codes c ON c.security_id = t2.security_id AND t2.session_date BETWEEN c.valid_from AND c.valid_to
                          AND c.available_at < t2.cutoff
         LEFT JOIN regime r ON r.cik = t2.cik_u AND t2.session_date BETWEEN r.valid_from AND r.valid_to
                           AND r.available_at < t2.cutoff
-        LEFT JOIN inc_snap sn ON sn.cik = t2.cik_u
-        LEFT JOIN bdc b ON b.cik = t2.cik_u
         {mem}
+        ASOF LEFT JOIN bdc b ON b.cik = t2.cik_u AND t2.cutoff > b.available_at
         ASOF LEFT JOIN sic_hist si ON si.cik = t2.cik_u AND t2.cutoff > si.available_at
         ASOF LEFT JOIN inc_hist ic ON ic.cik = t2.cik_u AND t2.cutoff > ic.available_at""")
     # a panel row must stay one row (the interval inputs never overlap; checked, not assumed)
@@ -312,11 +306,12 @@ def band_gate(daily: dict[str, dict[str, int]], band: tuple[int, int] = DAILY_BA
 
 
 def french_gate(ours: dict[dt.date, tuple[int, int]], french: dict[dt.date, int], tol: float = FRENCH_TOL,
-                end: dt.date = FRENCH_END) -> dict[str, Any]:
+                end: dt.date = FRENCH_END, expected: list[dt.date] | None = None) -> dict[str, Any]:
     """``ours`` = {month end date: (NYSE all_common lines, companies)} on the month's last session; ``french`` =
     {month end: n_nyse_firms}. Pass when every common month <= ``end`` has lines within +-``tol``."""
     rows: list[dict[str, Any]] = []
     outside: dict[str, float] = {}
+    missing = [m.isoformat()[:7] for m in (expected or []) if m <= end and (m not in ours or m not in french)]
     for m in sorted(k for k in ours if k in french and k <= end):
         lines, comps = ours[m]
         f = french[m]
@@ -327,7 +322,8 @@ def french_gate(ours: dict[dt.date, tuple[int, int]], french: dict[dt.date, int]
             outside[m.isoformat()[:7]] = round(dev, 4)
     return {"criterion": f"NYSE all_common lines within +-{tol:.0%} of French ME-breakpoint NYSE count, each month "
                          f"<= {end.isoformat()[:7]}",
-            "pass": bool(rows) and not outside, "months": len(rows), "months_outside": len(outside),
+            "pass": bool(rows) and not outside and not missing, "missing_months": missing,
+            "months": len(rows), "months_outside": len(outside),
             "outside": outside, "max_abs_dev": max((abs(r["dev_lines"]) for r in rows), default=None), "monthly": rows}
 
 
@@ -338,7 +334,7 @@ def r2000_gate(counts: dict[str, int], bounds: tuple[int, int] = R2000_COMPANIES
             "outside": outside}
 
 
-def hand_check_gate(path: Path | None = None, floor: float = HAND_FLOOR) -> dict[str, Any]:
+def hand_check_gate(path: Path | None = None, floor: float = HAND_FLOOR, sample: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Precision of the flags asserted true on the hand-checked lines (``rows[].verdict`` 'correct' / 'wrong');
     ``path`` defaults to ``HAND_CHECK`` (read at call time)."""
     path = path or HAND_CHECK
@@ -347,6 +343,14 @@ def hand_check_gate(path: Path | None = None, floor: float = HAND_FLOOR) -> dict
                 "status": "missing", "file": str(path)}
     doc = json.loads(path.read_text(encoding="utf-8"))
     rows = doc["rows"]
+    if sample is not None:
+        keys = lambda rs: sorted((r["stratum"], str(r["session_date"]), r["security_id"]) for r in rs)
+        valid = (doc.get("rule") == RULE and doc.get("seed") == HAND_SEED
+                 and doc.get("sample_sha256") == sample_hash(sample)
+                 and keys(rows) == keys(sample) and len(set(keys(rows))) == len(rows))
+        if not valid:
+            return {"criterion": f"flags >= {floor:.0%} precise on a 100-line hand check", "pass": False,
+                    "status": "stale_verdicts_require_recheck", "sample_sha256": sample_hash(sample)}
     n = len(rows)
     ok = sum(1 for r in rows if r["verdict"] == "correct")
     by: dict[str, list[int]] = {}
@@ -377,7 +381,9 @@ def measure_french(con) -> dict[str, Any]:
         SELECT CAST(last_day(u.session_date) AS DATE), count(*), count(DISTINCT coalesce(u.cik, -u.security_id))
         FROM u JOIN last ON u.session_date = last.d
         WHERE u.univ_all_common AND u.exchcd_like = 1 GROUP BY 1""").fetchall()}
-    return french_gate(ours, french)
+    expected = [dt.date(y, m, 1) for y in range(YEARS[0], FRENCH_END.year + 1) for m in range(1, 13)]
+    expected = [(d.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1) for d in expected]
+    return french_gate(ours, french, expected=expected)
 
 
 def measure_r2000(con) -> dict[str, Any]:
@@ -389,6 +395,7 @@ def measure_r2000(con) -> dict[str, Any]:
         y = d.year
         f = _p(STAGE, f"year={y}", "universe.parquet")
         if not Path(f).exists():
+            counts[d.isoformat()] = 0
             continue
         counts[d.isoformat()] = con.execute(f"""SELECT count(DISTINCT coalesce(cik, -security_id))
                                                FROM read_parquet('{f}') WHERE session_date = DATE '{d}' AND univ_r2000p"""
@@ -499,6 +506,14 @@ def coverage(con, years: range = GATE_YEARS) -> dict[str, Any]:
     return out
 
 
+def sample_hash(sample: list[dict[str, Any]]) -> str:
+    fields = ("stratum", "session_date", "security_id", "shrcd_like", "exchcd_like", "filer_regime",
+              "is_adr", "is_reit", "is_spac", "is_cef_etf", "is_foreign_issuer", "univ_all_common")
+    payload = {"rule": RULE, "seed": HAND_SEED,
+               "rows": [{k: r[k] for k in fields} for r in sample]}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
 HAND_SEED = 20261002
 HAND_STRATA = {"univ_all_common": ("u.univ_all_common", "2024-06-28", 40),
                "is_adr": ("u.is_adr", "2024-06-28", 12),
@@ -591,6 +606,7 @@ def build(years: range = YEARS) -> dict[str, Any]:
         cov = coverage(con)
     with C.timed(receipt, "hand_check_sample"):
         sample = hand_check_sample(con)
+    gates["hand_check"] = hand_check_gate(sample=sample)
     con.close()
     (C.build_root() / "_tmp" / "universe.duckdb").unlink(missing_ok=True)
     all_years = range(min(int(d[:4]) for d in daily), max(int(d[:4]) for d in daily) + 1)
@@ -599,7 +615,7 @@ def build(years: range = YEARS) -> dict[str, Any]:
                   "input_manifests_sha256": {**inputs, **M.input_manifests(*COVERAGE_INPUTS)}}
     C.write_json_atomic(C.stage_dir("validation") / "universe.json", validation)
     C.write_json_atomic(C.stage_dir("validation") / "universe_hand_check_sample.json",
-                        {"seed": HAND_SEED, "strata": HAND_STRATA, "rows": sample})
+                        {"rule": RULE, "seed": HAND_SEED, "strata": HAND_STRATA, "sample_sha256": sample_hash(sample), "rows": sample})
     automated = ("daily_band", "french_nyse", "r2000", "codes_on_all_common")
     gate_status = {"pass": all(gates[k]["pass"] for k in automated) and gates["hand_check"]["pass"],
                    "gates": GATES, "per_gate": {k: g["pass"] for k, g in gates.items()},
