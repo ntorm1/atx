@@ -261,13 +261,16 @@ class FakeCycle:
             gross = self.gross_per_l.get(base, 0.9862 / 1.1474) * float(spec["nav"]["leverage"])
             drift = 3e-4 + int(sha(base.encode()), 16) % 100003 * 1e-9          # each cell its own series
             write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift)
-            write_json(self.root, f"{nav}-run/receipt.json", {"outcome": "completed", "exit_code": 0,
+            run_dir, k = f"{nav}-run", 2                                 # research_cycle: -run, then -run<k>
+            while (self.root / run_dir).exists():
+                run_dir, k = f"{nav}-run{k}", k + 1
+            write_json(self.root, f"{run_dir}/receipt.json", {"outcome": "completed", "exit_code": 0,
                                                               "wall_seconds": 41.5, "sampled_peak_tree_rss_bytes": 586 << 20})
-            write_json(self.root, f"{nav}-run/cycle_binding.json",       # cycle_resume.write_binding's layout
+            write_json(self.root, f"{run_dir}/cycle_binding.json",       # cycle_resume.write_binding's layout
                        {"schema": "atx.cycle-nav-binding/v1", "output": nav, "argv_sha256": sha(nav.encode()),
                         "spec_sha256": research_spec.spec_digest(self.root / rel, research_tree.REPO),
                         "spec_rule": "spec-digest-v1"})
-            write(self.root, f"{nav}-run/stdout.log", "nav replay 2020-01-02 .. 2021-02-10\n")
+            write(self.root, f"{run_dir}/stdout.log", "nav replay 2020-01-02 .. 2021-02-10\n")
             return self.ok(args)
         daily = (self.root / nav / "daily_s2.csv").read_bytes()
         write_json(self.root, f"{c.cycle_dir()}/summ.json", [{"dir": nav}])

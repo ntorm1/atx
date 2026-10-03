@@ -377,3 +377,28 @@ def test_a_seal_allow_ruling_passes_verify_and_is_carried_to_record(tmp_path):
     assert seal["allowed"][0]["token"] == "20241105" and seal["allowed"][0]["ruling"] == "PM8-99 build tag"
     assert "20241105 x1 allowed: PM8-99 build tag" in (root / STATE / "wave-log.md").read_text()
     assert wave(root, fake, "run", "--seal-allow", "x")[0] == 2
+
+
+# ------------------------------------------------------------------ MINOR 10: the binding of the attempt that made it
+class RetriedNav(F.FakeCycle):
+    """The cell's first NAV attempt was killed (its dir holds a receipt and a stale binding); the retry is -run2."""
+
+    def cycle(self, args):
+        if "--stop-after" in args and not args[1].endswith("-gm.json"):
+            spec, c = self.spec_outputs(args[1])
+            first = f"{c.out(spec['nav']['output'])}-run"
+            if not (self.root / first).exists():
+                F.write_json(self.root, f"{first}/receipt.json", {"outcome": "killed", "exit_code": None,
+                                                                  "wall_seconds": 180.0})
+                F.write_json(self.root, f"{first}/cycle_binding.json", {"argv_sha256": "a" * 64,
+                                                                        "spec_sha256": "b" * 64,
+                                                                        "spec_rule": "spec-digest-v1"})
+        return super().cycle(args)
+
+
+def test_verify_reads_the_binding_of_the_last_completed_nav_attempt(tmp_path):
+    root = F.build(tmp_path / "r")
+    code, out = wave(root, RetriedNav(root, KEPT_ALL), "run")
+    assert code == 0, out
+    b = receipt(root, "07-verify.json")["outputs"]["binding"]
+    assert b["path"].endswith("-run2/cycle_binding.json") and b["spec_sha256"] != "b" * 64

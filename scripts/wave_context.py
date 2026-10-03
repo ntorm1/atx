@@ -131,12 +131,14 @@ class Wave:
         return bases
 
     def run_dirs(self, base: str) -> list[str]:
-        """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in name order."""
+        """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in attempt order (-run, then
+        k ascending: -run2 before -run10)."""
         p = self.path(f"{base}-run")
         if not p.parent.is_dir():
             return []
-        return [self.rel(d) for d in sorted(p.parent.glob(p.name + "*"))
-                if d.is_dir() and (d.name == p.name or d.name[len(p.name):].isdigit())]
+        found = [d for d in p.parent.glob(p.name + "*")
+                 if d.is_dir() and (d.name == p.name or d.name[len(p.name):].isdigit())]
+        return [self.rel(d) for d in sorted(found, key=lambda d: int(d.name[len(p.name):] or 0))]
 
     # -------------------------------------------------------------- processes
     def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str:

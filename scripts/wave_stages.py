@@ -569,7 +569,10 @@ def verify(w: Wave, done: dict, log) -> dict:
     chk = WR.mechanics_check(mt["mechanics"])
     for r in chk["rows"]:
         log(f"   mechanics {r['check']}: {r['value']} {r['limit']} -> {'pass' if r['pass'] else 'FAIL'}")
-    nav_run = f"{mt['nav']}-run"
+    # the binding of the NAV attempt that made the cell's NAV: the last completed one (a retry writes <nav>-run<k>)
+    navs = [r for r in phase_rows(w, mt["cell_spec"]) if r["phase"] == "nav" and r["outcome"] == "completed"
+            and r["exit_code"] == 0]
+    nav_run = navs[-1]["run_dir"] if navs else f"{mt['nav']}-run"
     bpath = f"{nav_run}/cycle_binding.json"
     binding = w.read_json(bpath)
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
