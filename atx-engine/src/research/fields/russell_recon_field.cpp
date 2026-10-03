@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "atx/engine/data/research_window.hpp"
+#include "atx/engine/research/fields/clock.hpp"
 
 namespace atx::engine::research::fields {
 namespace {
