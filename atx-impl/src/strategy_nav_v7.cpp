@@ -900,13 +900,16 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       o.risk_target.on = true;
       o.risk_target.law = risk_target::Law::vol_target_v1;
     }
-    // v8 Y-5 two-speed-v1: the replay's shared construction composes the sleeves into the aim that
-    // aim-partial-v5 trades at its own theta, at one L for every book; so no rule that replaces that
-    // plan or varies L per book, and the fixed rate.
+    // v8 Y-5 two-speed-v1: the replay's shared construction composes the sleeves into the netted aim
+    // that aim-partial-v5 trades at its own theta; so no rule that replaces that plan, and the fixed
+    // rate. Composition with --risk-target / --vol-target (Ruling on Y-5 / Y-1, registered order Y-5 ->
+    // X-10 -> Y-1): the netted target is the book target; the scaler's L_t replaces the run's L in the
+    // plan of that target, i.e. scales the netted target by L_t / L, and its sigma reads the book's own
+    // (net) weights, never the virtual fast sleeve, which stays at the run's L.
     if (std::find(args.begin(), args.end(), "--two-speed") != args.end() &&
-        (o.spo_v1 || o.aim_v6 || o.risk_target.on || (rate && *rate != "fixed")))
+        (o.spo_v1 || o.aim_v6 || (rate && *rate != "fixed")))
       throw std::invalid_argument("--two-speed two-speed-v1 needs aim-partial-v5 at the fixed rate, without "
-                                  "spo, aim-partial-v6, --risk-target or --vol-target");
+                                  "spo or aim-partial-v6");
     // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
     // value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {

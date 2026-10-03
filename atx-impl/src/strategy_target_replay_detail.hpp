@@ -35,7 +35,7 @@ struct DesiredState {
   std::vector<atx::f64> sigma, sigma_sorted;
   // two-speed-v1 (v8 Y-5): the virtual fast sleeve F per name (empty until the first rebalance)
   // and the fast sleeve's desired target of the decision (scratch).
-  std::vector<atx::f64> fast, fast_desired;
+  std::vector<atx::f64> fast, fast_desired, parent_desired; // parent_desired: the mechanics scratch
 };
 // One externally pinned saved blend plus its bound price role, owned. Date-major.
 // volume is empty unless requested; present => finite >= 0 raw shares, absent => NaN.

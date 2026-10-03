@@ -206,6 +206,9 @@ struct ConstructionDay {
   // kernel ran (every cadence decision with the rule on); no CSV column.
   atx::usize norm_scored{};
   atx::f64 norm_max_abs{};
+  // two-speed-v1 (v8 Y-5; mechanics, printed only): the rebalance was skipped because a sleeve's
+  // neutralization was skipped; the parent's construction of the full blend would have been skipped.
+  bool two_speed_sleeve_skipped{}, two_speed_parent_skipped{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input

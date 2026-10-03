@@ -8,8 +8,10 @@
 //
 // Suite: TwoSpeed
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -20,6 +22,9 @@
 #include "atx/engine/book/two_speed.hpp"
 #include "../src/strategy_ic_composition.hpp"
 #include "../src/strategy_nav_replay.hpp"
+#include "../src/strategy_nav_v7.hpp"
+#include "../src/strategy_risk_target.hpp"
+#include "../src/strategy_spo.hpp"
 #include "../src/strategy_target_replay.hpp"
 #include "../src/strategy_target_replay_detail.hpp"
 #include "../src/strategy_two_speed.hpp"
@@ -29,6 +34,9 @@ namespace {
 using namespace atx;
 using namespace atx::impl::strategy::spo::fixture;
 namespace st = atx::impl::strategy;
+namespace sp = atx::impl::strategy::spo;
+namespace rt = atx::impl::strategy::risk_target;
+namespace v7 = atx::impl::strategy::v7;
 using Json = nlohmann::json;
 using Ranked = std::pair<f64, usize>;
 
@@ -280,5 +288,163 @@ TEST(TwoSpeed, RuleIdRecipeAndSummaryCarryTheRuleOnlyWhenOn) {
   const auto summary_off = Json::parse(st::detail::construction_summary_json(off, days));
   EXPECT_EQ(summary_on.at("construction").at("two_speed").at("theta_slow").get<f64>(), on.trade_fraction);
   EXPECT_FALSE(summary_off.at("construction").contains("two_speed"));
+}
+// ---- Y-5 / Y-1 composition (registered order Y-5 -> X-10 -> Y-1): the netted aim is the book target;
+// --vol-target / --risk-target scale its leverage (the scaler reads the net book, never F) ----
+std::shared_ptr<const sp::RiskStore> clean_store(const Directory& dir, const Role& role, u64 seed) {
+  const std::vector<u8> forecast(role.d, u8{1});
+  const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", seed);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  EXPECT_TRUE(store) << store.error().to_string();
+  return store ? std::make_shared<const sp::RiskStore>(std::move(*store)) : nullptr;
+}
+rt::Options vol_options() {
+  rt::Options o;
+  o.on = true;
+  o.law = rt::Law::vol_target_v1;
+  return o;
+}
+atx::core::Result<v7::NavV7Command> parse(std::vector<std::string> args) {
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  return v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data());
+}
+
+// With a zero fast share the two-speed book under vol-target-v1 is the parent under vol-target-v1:
+// every NAV day and every L_t the scaler records, bit for bit.
+TEST(TwoSpeed, UnderVolTargetZeroShareIsTheParentRunBitForBit) {
+  const Directory dir;
+  const Role role(70, 12, 53);
+  const auto risk = clean_store(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  v7::NavV7Options o;
+  o.risk_target = vol_options();
+  o.spo_risk = risk;
+  auto cfg = nav_config();
+  std::vector<f64> parent_returns, parent_leverage;
+  {
+    const v7::ScopedNavExtension extension(o);
+    const auto parent = st::replay_nav(role.nav(), cfg);
+    ASSERT_TRUE(parent) << parent.error().to_string();
+    for (const auto& day : parent->days) parent_returns.push_back(day.net_return);
+    for (const auto& r : extension.risk_target_scaler()->records()) parent_leverage.push_back(r.leverage);
+  }
+  const Sleeves sleeves(role, 0.0);
+  auto in = role.nav();
+  sleeves.attach(in.target);
+  cfg.target.two_speed = true;
+  const v7::ScopedNavExtension extension(o);
+  const auto two = st::replay_nav(in, cfg);
+  ASSERT_TRUE(two) << two.error().to_string();
+  ASSERT_EQ(two->days.size(), parent_returns.size());
+  for (usize t = 0; t < parent_returns.size(); ++t)
+    EXPECT_EQ(bits(two->days[t].net_return), bits(parent_returns[t])) << t;
+  const auto records = extension.risk_target_scaler()->records();
+  ASSERT_EQ(records.size(), parent_leverage.size());
+  ASSERT_GT(records.size(), 60U);
+  for (usize k = 0; k < records.size(); ++k)
+    EXPECT_EQ(bits(records[k].leverage), bits(parent_leverage[k])) << k;
+}
+
+// A fast share of .3 under vol-target-v1. (1) The hook plans the netted aim at the scaler's L_t:
+// update_weights with --aim-leverage L_t on the same desired target, bit for bit. (2) Closed form at
+// L_t = 1 against the run's L 1.2 (no dust, immediate exit): the book moves toward (1 / L) x the
+// netted target T = L m_s d_s + F + (F_next - F) / theta, and F follows the run's L whatever L_t is.
+TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
+  const Directory dir;
+  const Role role(50, 12, 41);
+  const auto risk = clean_store(dir, role, 5);
+  ASSERT_NE(risk, nullptr);
+  auto cfg = nav_config();
+  cfg.target.two_speed = true;
+  const Sleeves sleeves(role, 0.3);
+  auto x = role.target();
+  sleeves.attach(x);
+  auto fast_x = x, slow_x = x;
+  fast_x.signal = sleeves.fast;
+  slow_x.signal = sleeves.slow;
+  auto plain = cfg.target;
+  plain.two_speed = false;
+  auto fixed = cfg.target;
+  fixed.aim_leverage = 1.0; fixed.dust_multiple = 0.0; fixed.exit_rate = 1.0;
+  const f64 L = cfg.target.aim_leverage, theta = cfg.target.trade_fraction;
+  const f64 theta_f = atx::engine::book::two_speed_fast_theta();
+  v7::NavV7Options o;
+  o.risk_target = vol_options();
+  o.spo_risk = risk;
+  const v7::ScopedNavExtension extension(o);
+  st::detail::DesiredState state;
+  std::vector<Ranked> row;
+  st::PriceRiskScratch scratch;
+  std::vector<f64> current(role.n, 0.0), closed(role.n, 0.0), F(role.n, 0.0);
+  for (usize d = 0; d < 45; ++d) {
+    std::vector<f64> desired(role.n, 0.0), df(role.n, 0.0), ds(role.n, 0.0);
+    st::ConstructionDay rec, rf, rs;
+    ASSERT_TRUE(st::detail::form_desired(x, cfg.target, d, row, desired, scratch, rec, {}, &state));
+    ASSERT_TRUE(st::detail::form_desired(fast_x, plain, d, row, df, scratch, rf));
+    ASSERT_TRUE(st::detail::form_desired(slow_x, plain, d, row, ds, scratch, rs));
+    std::vector<f64> hooked = current, at_lt = current;
+    st::TargetReplayDay a, b;
+    ASSERT_TRUE(v7::plan(x, cfg, d, true, 0.0, 1e8, desired, hooked, a, {}));
+    auto t = cfg.target;
+    t.aim_leverage = extension.risk_target_scaler()->records().back().leverage;
+    ASSERT_TRUE(st::detail::update_weights(x, t, d, true, 0.0, desired, at_lt, b));
+    for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(hooked[i]), bits(at_lt[i])) << d << ' ' << i;
+    current = hooked;
+    std::vector<f64> step = closed;
+    st::TargetReplayDay c;
+    ASSERT_TRUE(st::detail::update_weights(x, fixed, d, true, 0.0, desired, step, c));
+    for (usize i = 0; i < role.n; ++i) {
+      if (!role.member[d * role.n + i]) {
+        F[i] = 0.0;
+        EXPECT_EQ(step[i], 0.0) << d << ' ' << i;
+        continue;
+      }
+      const f64 before = F[i];
+      F[i] = before + theta_f * (L * 0.3 * df[i] - before);
+      const f64 netted = L * (1.0 - 0.3) * ds[i] + before + (F[i] - before) / theta;
+      EXPECT_NEAR(step[i], closed[i] + theta * ((1.0 / L) * netted - closed[i]), 1e-14) << d << ' ' << i;
+      EXPECT_NEAR(state.fast[i], F[i], 1e-15) << d << ' ' << i;
+    }
+    closed = step;
+  }
+}
+
+TEST(TwoSpeed, ParseComposesWithTheScalersAndRefusesTheRest) {
+  const std::vector<std::string> base{"nav", "--rule", "aim-partial-v5", "--aim-leverage", "2", "--output", "x",
+                                      "--two-speed", "two-speed-v1"};
+  const std::vector<std::string> store{"--risk-model", "risk", "--risk-model-sha256", "abc"};
+  for (const auto& scaler : {std::vector<std::string>{"--vol-target", "vol-target-v1"},
+                             std::vector<std::string>{"--risk-target", ".05"}}) {
+    auto args = base;
+    args.insert(args.end(), scaler.begin(), scaler.end());
+    args.insert(args.end(), store.begin(), store.end());
+    const auto r = parse(args);
+    ASSERT_TRUE(r) << r.error().to_string();
+    EXPECT_TRUE(r->options.risk_target.on);
+    EXPECT_NE(std::find(r->args.begin(), r->args.end(), "--two-speed"), r->args.end()); // the replay's flag
+  }
+  for (const auto& args : {std::vector<std::string>{"nav", "--rule", "aim-partial-v6", "--output", "x", "--two-speed",
+                                                    "two-speed-v1"},
+                           std::vector<std::string>{"nav", "--rule", "aim-partial-v5", "--rate", "per-name-v1",
+                                                    "--output", "x", "--two-speed", "two-speed-v1"}}) {
+    const auto r = parse(args);
+    ASSERT_FALSE(r);
+    EXPECT_NE(r.error().to_string().find("--two-speed"), std::string::npos) << r.error().to_string();
+  }
+}
+
+// The NAV summary's construction.two_speed prints both skip counts (mechanics only).
+TEST(TwoSpeed, SummaryPrintsTheSleeveSkipsBesideTheParents) {
+  std::vector<st::ConstructionDay> days(5);
+  days[1].two_speed_sleeve_skipped = true;
+  days[3].two_speed_sleeve_skipped = true;
+  days[3].two_speed_parent_skipped = true;
+  days[4].two_speed_parent_skipped = true;
+  days[0].two_speed_parent_skipped = true;
+  const auto s = Json::parse(st::detail::construction_summary_json(two_speed_config(true), days));
+  const auto& block = s.at("construction").at("two_speed");
+  EXPECT_EQ(block.at("rebalances_skipped_by_a_sleeve").get<usize>(), 2U);
+  EXPECT_EQ(block.at("parent_rebalances_skipped").get<usize>(), 3U);
 }
 } // namespace

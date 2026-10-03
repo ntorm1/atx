@@ -596,6 +596,16 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
                                            no_short, state));
   ATX_TRY(const bool slow_ok, form_desired(slow_in, inner, d, row, desired, scratch, out, no_short, state));
   out.locate_zeroed += fast_day.locate_zeroed;
+  // Mechanics only (the skip rule above is unchanged): would the parent's construction of the full
+  // blend have been skipped at d? Only a neutralization can skip, so without one it never is.
+  out.two_speed_sleeve_skipped = !fast_ok || !slow_ok;
+  if (neutralizing(inner)) {
+    if (state->parent_desired.size() != n) state->parent_desired.assign(n, 0.0);
+    ConstructionDay parent_day;
+    ATX_TRY(const bool parent_ok, form_desired(in, inner, d, row, state->parent_desired, scratch, parent_day,
+                                               no_short, state));
+    out.two_speed_parent_skipped = !parent_ok;
+  }
   if (!fast_ok || !slow_ok) return co::Ok(false);
   if (state->fast.size() != n) state->fast.assign(n, 0.0);
   ATX_TRY_VOID(eb::two_speed_aim(in.member.subspan(d * n, n), state->fast_desired, share, cfg.aim_leverage,
@@ -1478,11 +1488,19 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
   if (adv_hold_on(c)) body["adv_hold"] = adv_hold_summary(c, decisions);
   if (inv_vol_on(c)) body["vol_scale"] = inv_vol_summary(decisions);
   if (norm_score_on(c)) body["rank_shape"] = norm_score_summary(decisions);
-  if (two_speed_on(c)) // v8 Y-5: the registered constants (the sleeves' trades are the NAV's)
+  if (two_speed_on(c)) { // v8 Y-5: the registered constants and the skip mechanics (printed only)
+    usize sleeve_skipped = 0, parent_skipped = 0;
+    for (const auto& day : decisions) {
+      sleeve_skipped += day.two_speed_sleeve_skipped ? 1U : 0U;
+      parent_skipped += day.two_speed_parent_skipped ? 1U : 0U;
+    }
     body["two_speed"] = Json{{"id", "two-speed-v1"}, {"theta_fast", eb::two_speed_fast_theta()},
                              {"theta_slow", c.trade_fraction},
                              {"fast_half_life", eb::two_speed_fast_half_life},
-                             {"fast_bound", eb::two_speed_fast_bound}};
+                             {"fast_bound", eb::two_speed_fast_bound},
+                             {"rebalances_skipped_by_a_sleeve", sleeve_skipped},
+                             {"parent_rebalances_skipped", parent_skipped}};
+  }
   return Json{{"construction", std::move(body)}};
 }
 // The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows
