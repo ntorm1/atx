@@ -7319,3 +7319,11 @@ no `rule_cell.constants` key, no free constant. The description records both tem
 | plan (pre-commit) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-5.json --root C:/atx-wt/pool-2` | **0** | 9 stages pending; cell file `scripts/specs/v8/y-two-speed-y-5.json`; nothing written |
 | pre-registration commit | `git commit -m "wave y-5: manifest (pre-registration of cell Y-5; v8y-prereg sections 5, 6, 13 P13, 14)"` | 0 | **`43128be8`** |
 | plan (committed) | same argv | **0** | 27 lines; state `build-equity/waves/y-5/receipts` |
+
+### R0-9 Y-5 stages
+
+Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-5.json --root C:/atx-wt/pool-2 --until <stage>`. Host check before each stage (psutil): no compiler, no `atx-*` exe, no research process; free memory sampled every 0.25 s during the stage. Gates: a stage with an exe needs free >= its peak + 1,536 MiB (05 run: w plan 2,786 + 1,536 = 4,322, as R0-8; 06 / 08: cap 1,536 + 1,536 = 3,072).
+
+| stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
+|---|---|---|---|---|---|---|---|
+| 01 preflight | 0 | 0.4 | - (no exe) | 4,688 / 4,665 | `c1d7ad9ab16cd9402de476490112880ee1a09627444b32073669181121de70e9` | - | manifest commit `43128be8` (`f538f9f5`); parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `e29365d1`; ledger 130 lines N 59 (head `58bce60e`); budget v8y-construction-n59-plus-1, construction cap 62 |
