@@ -339,3 +339,95 @@ Agent root-m1b2 (resume of root-m1b, killed mid slot 5), 2026-10-03. Integration
   pair-cache rerun was made (the pairwise stage is 7.5-11.7 s of the wall; the kernel dominates).
 - **Slips fixed:** none. The `20443022` merge note was the planned E1 x S1 follow-up, not a slip.
 - **Trial ledger:** 0 trials.
+
+### Slot 6: B1 (`01f20405`, pool-14)
+
+- **Merge:** `git merge --no-ff 01f20405` -> **`1ab97798`**. Three list-tail conflicts (ruling P2), each resolved by
+  keeping both blocks, the integration branch's first: `atx-engine/tests/CMakeLists.txt` (T1's deferred
+  `atx_research` registration + A2's `target_sources`, then B1's `atx-engine-research-admission-tests` target),
+  `atx-impl/CMakeLists.txt` (S1's pair-cache `target_sources`, then B1's `strategy_factors_verb.cpp` + its private
+  Debug `/O2`), `atx-impl/tests/CMakeLists.txt` (T1's deferred registration, then B1's `target_sources` of
+  `strategy_factors_verb_test.cpp`). Only the marker lines were removed, plus one blank separator line in each tests
+  file; the diff against HEAD is exactly B1's three blocks. `atx-engine/CMakeLists.txt` (B1's library + exe block)
+  auto-merged. T1's deferred engine-side call lists `atx-engine-research-admission-tests`, which this block defines.
+- **Pre-build reference:** before the build overwrote it, `build-equity/bin/atx-equity-strategy-targets.exe`
+  (`72ff6d2d...5f25`) was copied with the bin DLLs to `build-equity/p9-m1b-ref-targets/` (mtime kept). It is the
+  v8-16d receipt's `atx-equity-strategy-targets` (Source `e0fd0297`), i.e. pre-S1 and pre-B1 code.
+- **Build p9-1d** (source `1ab97798`, DirtyEntries 2 = the owner's png + `docs/plans/2026-10-03-p9-sprint-plan.md`,
+  another agent's uncommitted edit outside the code pathspec; equity-dev, 4 jobs, free 4,842 MiB at admission):
+  targets exactly B1's five `atx-equity-strategy-targets, atx-impl-strategy-target-tests,
+  atx-engine-research-admission, atx-research-admission, atx-engine-research-admission-tests` -> **exit 0, 31.3 s,
+  12 TUs, 6 links, 0 warnings** (UTF-16 log: 0 "warning" lines; its one "error"-matching line is PowerShell 5.1
+  wrapping cmake's stderr notice `-- GLOB mismatch!`, the re-glob that reconfigured for B1's new test files, not a
+  compiler message). Executables: `atx-equity-strategy-targets`
+  **`5149aab9ecce386f5ff7506fd7d2416750aa203c46521d41ef7aec6db5f3e33b`**, `atx-impl-strategy-target-tests`
+  `033aa33c...67f4`, `atx-research-admission` **`416966bc38c2d8d7d6715340edd2919aa27102fce4cc9447caba2b60e838d32e`**,
+  `atx-engine-research-admission-tests` `c2b35ce7...1461`. B1 wrote the C++ without compiling it; it compiled first
+  time (no slip).
+- **gtests** (Debug):
+
+  | binary / filter | result | exit |
+  |---|---|---|
+  | `atx-impl-strategy-target-tests --gtest_filter=FactorsVerb.*` | 4 passed (EqualsFixture, FutureReturnDoesNotChangePast, VerbWritesTheKP94Layout, RefusesBeforeAnyOutput) | 0 |
+  | `atx-engine-research-admission-tests --gtest_filter=ResearchAdmission*` | **16 passed** (the binary lists 16; the report's "17" is the review's m9 miscount) | 0 |
+  | `Exposures.*` | not in any B1 target: the suite is compiled only into `atx-impl-tests` (glob), which B1 does not name. Deferred to M1d's impl test exe run; the exposures verb is covered below by the pytest export test on the new exe and the X-5 NAV identity | - |
+
+- **pytest** (B1 "How root verifies" 3 and its neighbours; vcpkg bins on PATH):
+
+  | command | result | exit | wall |
+  |---|---|---|---|
+  | `ATX_EQUITY_TARGETS_EXE=<bin>\atx-equity-strategy-targets.exe ATX_RESEARCH_ADMISSION_EXE=<bin>\atx-research-admission.exe -m pytest -rs atx-impl/tools/test_factor_series_admission.py` | **8 passed, 0 skipped** (lane: 7p/1s; the end-to-end test of both exes now runs) | 0 | 2 s |
+  | `-m pytest atx-impl/tools/test_exposures_export.py atx-impl/tools/test_horizon_stats.py` (no exe env) | 11 passed, 1 skipped (needs the exe) | 0 | 5 s |
+  | same, with `ATX_EQUITY_TARGETS_EXE` = the new exe | 12 passed, 0 skipped (`test_verb_export_reproduces_the_fitters_factors` on the p9-1d exe) | 0 | 5 s |
+
+- **Identity 1: existing verb bytes unchanged** (B1 step 4: "X-5's nav ... must stay byte-identical"). X-5's NAV
+  argv exactly as v8 recorded it (`mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b-run`: `nav
+  --combined mega-v8-r1w-train-std-v8x3b-1/train_combined.json` `7f9a6bc5`, role lo3, fields v13, label role
+  lo3-dlret, `aim-partial-v5`, L 1.1414, `--capacity-curve`, ...), only `--output` changed; bounded runner 300 s, cap
+  1,536 MiB, `--admission-wait-seconds 600`, source `1ab97798`.
+
+  | run | exe | outcome | wall | peak |
+  |---|---|---|---|---|
+  | `p9-b1-x5-nav-old(-run)` | `p9-m1b-ref-targets` `72ff6d2d` (v8-16d, pre-S1/B1) | completed, exit 0 | 77.6 s | 587 MiB |
+  | `p9-b1-x5-nav-new(-run)` | `bin` `5149aab9` (p9-1d: S1 + B1 in `atx-impl-core`) | completed, exit 0 | 70.8 s | 586 MiB |
+
+  | compared (SHA-256 per file, whole tree) | expected | observed | match |
+  |---|---|---|---|
+  | old vs new | all files byte-identical | 27 / 27 files identical (5 daily CSVs, 5 events CSVs, recipe, summary, v7_extras, v7 TC CSV, capacity_curve.csv, `capacity/*`); none on one side only | **yes** |
+  | old vs v8's recorded X-5 NAV dir (exe `a95f6f0a`) | (extra check) | 27 / 27 identical | yes |
+
+- **Identity 2: admission comparator on real data** (B1 step 5; P12: decisions and order byte-equal, floats within
+  1e-12 x max(1, |x|)). Scratch scripts `b1_signals.py`, `b1_factor_compare.py`, `b1_admission_compare.py`,
+  `b1_real.py`. Inputs exactly each fit's own: role lo3 `e1c67101`, the library / orientations / runner-summary SHAs
+  of the fit receipt; `entries = [CacheLayout.resolve(c, role) for c in library]`; fitter records = the WorkStore
+  (`build-equity/fit-work`) records the X-5 and Y-S fits reused (all present; one context digest each, equal to that
+  fit's `admission.json inputs.context_sha256`). Then `factors` (bounded, cap 1,536) and `atx-research-admission
+  screen --screen v4-prior-v1 --candidates <fit>/admission.json` (bounded, cap 1,024).
+  - Attempt 1 on X-5 (`p9-b1-x5-factors-run`): process-error, exit 1 in 16.8 s, `InvalidArgument: factors: candidate
+    value_composite: IC runner: factors signal payload value_composite extent`. **My slip**: I wrote the fitter's
+    repo-relative payload paths into `signals.json`; the verb resolves a relative payload against the signals DIR
+    (`strategy_factors_verb.cpp:117`, as its report states), so the file was not found (the shared `load_pinned_f64`
+    reports a missing file as "extent"). Nothing was written. Fixed in the input (`p9-b1-x5-factors-sig2`: absolute
+    payload paths, each file size checked = 1,405 x 5,922 x 8 B), no code change. Note for E2 / D2, who will write
+    `signals.json`: B1's recipe ("write `signals_document(entries)`") needs absolute paths or paths relative to DIR.
+
+  | check | X-5 (v8x3b, 58 candidates; fit `mega-weights-v8-r1-std-v8x3b`) | Y-S (v8ys, 73 candidates; fit `mega-weights-v8x-theme-erc-v8ys`) |
+  |---|---|---|
+  | `factors` run | completed, exit 0, 35.9 s, peak 507 MiB; 1004 decisions x 58, 0 refused | completed, exit 0, 43.8 s, peak 507 MiB; 1004 x 73, 0 refused |
+  | verb candidate order = library order | yes | yes |
+  | `compare_factor_series` (flat decisions exact; f, tau <= 1e-12) | **0 differences** (worst abs gap f 1.2e-16, tau 8.9e-16) | **0 differences** (f 1.8e-16, tau 1.1e-15) |
+  | `screen` run | completed, exit 0, 0.27 s | completed, exit 0, 0.25 s |
+  | `compare_admission_csv` (P12) | **0 differences** | **0 differences** |
+  | every row's cell count = the header's (review m4: the helper's `zip` would hide a missing cell) | 58 rows x 24 cells, both files | 73 rows x 24 cells, both files |
+  | non-float cells (ids, statuses, failed checks, redundancy, ranks, signs, cache entries, order) | byte-equal | byte-equal |
+  | float cells | 284 differ in text; worst relative gap 5.4e-15 | 358 differ in text; worst 5.4e-15 |
+  | manifest `admitted` order / `counts` / `sign_conflicts` vs the fit's `admission.json` | equal / equal / equal (47 admitted) | equal / equal / equal (61 admitted) |
+  | whole-file bytes | differ (float text: numpy pairwise vs sequential sums, as the lane predicts) | differ (same) |
+
+  Output SHAs (prefix): X-5 `factor.f64` `9854cfb9`, `manifest.json` `e09e3bac`, C++ `admission.csv` `3ee7a705` (fit
+  `b6cb8a74`); Y-S `manifest.json` `5f7b7c11`, C++ `admission.csv` `6a15a9dc` (fit `3fd17187`).
+
+  **Result: B1 identity holds** (existing NAV bytes unchanged; X-5 and Y-S admission equal under P12).
+- **Slips fixed:** none in code (the signals-path slip was in my own input file).
+- **B1 merge note** (`load_pinned_f64` from S1's TU, D1's header): built after S1 here; rebuilt after D1 in slot 7.
+- **Trial ledger:** 0 trials (reader runs; no ledger line).
