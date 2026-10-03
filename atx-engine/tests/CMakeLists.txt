@@ -361,6 +361,24 @@ if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-risk-tests REUSE_FROM atx-engine-test-pch)
 endif()
 
+# Platform core migration slice 1: the research field-builder library's own bounded target. Its sources live in
+# tests/research/, which is deliberately not a test group (ATX_ALL_TEST_GROUPS): the files are listed here and
+# compile into this executable only, without the shared test PCH (the fixture path is a target-local define).
+# Run it directly with a gtest filter (ResearchFields*); nothing is registered with CTest twice.
+add_executable(atx-engine-research-fields-tests EXCLUDE_FROM_ALL
+    research/research_fields_clock_test.cpp
+    research/research_fields_writer_test.cpp
+    research/research_fields_volume_mean_test.cpp
+    research/research_fields_finra_asof_test.cpp
+    research/research_fields_fixture_test.cpp
+    research/research_fields_cli_test.cpp)
+target_link_libraries(atx-engine-research-fields-tests PRIVATE
+    atx::engine-research-fields GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-fields-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-fields-tests PRIVATE
+    "ATX_RESEARCH_FIELDS_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_fields\"")
+
 add_executable(atx-engine-w1-data-tests EXCLUDE_FROM_ALL
     data/exposure_panel_test.cpp
     data/price_exposure_provider_test.cpp

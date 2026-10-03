@@ -245,6 +245,42 @@ target_link_libraries(atx-engine PUBLIC Threads::Threads)
 add_executable(atx-shm-worker src/parallel/shm_worker_main.cpp)
 target_link_libraries(atx-shm-worker PRIVATE atx::engine atx_warnings)
 
+# Platform core migration slice 1 (docs/plans/2026-10-02-platform-core-migration.md): the engine's research
+# field-builder layer as its own small library. It needs atx::core and header-only engine pieces only
+# (research_window.hpp), never the atx-engine archive or its PCH, so an edit here rebuilds this library and its
+# test target alone. EXCLUDE_FROM_ALL: no existing build compiles it unless a consumer asks for it.
+add_library(atx-engine-research-fields ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/fields/asof_series.cpp
+    src/research/fields/clock.cpp
+    src/research/fields/field_spec.cpp
+    src/research/fields/field_stats.cpp
+    src/research/fields/field_writer.cpp
+    src/research/fields/file_io.cpp
+    src/research/fields/finra_asof_field.cpp
+    src/research/fields/finra_inputs.cpp
+    src/research/fields/research_fields_cli.cpp
+    src/research/fields/role_axes.cpp
+    src/research/fields/role_rows.cpp
+    src/research/fields/trailing_mean.cpp
+    src/research/fields/volume_mean_field.cpp)
+add_library(atx::engine-research-fields ALIAS atx-engine-research-fields)
+target_include_directories(atx-engine-research-fields
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-fields PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-fields
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+
+# Slice 3: the field builder's executable (`atx-research-fields build --spec S --receipt R`), the
+# engine path of prepare_research_fields.py --engine-fields. EXCLUDE_FROM_ALL like its library.
+add_executable(atx-research-fields EXCLUDE_FROM_ALL src/research/fields/research_fields_main.cpp)
+target_link_libraries(atx-research-fields PRIVATE atx::engine-research-fields atx_warnings)
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()

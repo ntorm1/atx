@@ -1,0 +1,33 @@
+{
+  "clock_recipe": "modeled-session+22h-mark+23h-decision-v1",
+  "dates": 300,
+  "files": {
+    "ids.u64": {
+      "bytes": 64,
+      "sha256": "d22296f38f7e16f7ed3287880eb75cf5b95d86c65a57e564557eaca2df3faab3"
+    },
+    "member.u8": {
+      "bytes": 2400,
+      "sha256": "2bac925075796390b52425585098cea118255097e27f6bdd3952832980e91304"
+    },
+    "present.u8": {
+      "bytes": 2400,
+      "sha256": "c643befdf43f3d51505aa66b8cf5b14b4af4bd6d594f9887c7139c1483608c61"
+    },
+    "sessions.i64": {
+      "bytes": 2400,
+      "sha256": "57b1cacf4ba2e999b61c79160326c64a5f1f3225cf5c11329e06b3296767ca04"
+    },
+    "volume.f64": {
+      "bytes": 19200,
+      "sha256": "de601762e64002d80797a00f788d88e653251d8e831a8e5ce2f6513522982651"
+    }
+  },
+  "instrument_namespace": "spiderrock.securityID",
+  "instruments": 8,
+  "schema": "atx.recent-research-role/v1",
+  "score_begin": 130,
+  "score_end": 300,
+  "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "complete"
+}

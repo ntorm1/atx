@@ -1,0 +1,55 @@
+{
+  "schema": "atx.library-spec/v1",
+  "library": "v71",
+  "registry_pins": {
+    "house_budget": {
+      "max_extra_fields": 5,
+      "max_slots": 7,
+      "max_prior_bars": 314,
+      "max_dsl_bytes": 4096,
+      "max_roster": 56
+    }
+  },
+  "outputs": {
+    "fund_industry_ic_v71.json": "787c802ed1cdf7cfc507500b014525c3d4dff148f44e77ebd8368c0a686c2259",
+    "fund_industry_ic_v71.recipe.v2.json": "69e95298470d1e4fc38b7b4e6d35809740b5a1479f6c5be1c34a8daac3017107"
+  },
+  "frozen": {
+    "fund_industry_ic_v4.json": "daa9663e43119102fbb42aba3be9b57961cd34925920c50baee7f340f0e1eddf",
+    "fund_industry_ic_v4.recipe.json": "62b510f12a79cfacd2e74d64e020f20cee202cadb82153653b2e1065ec250c81",
+    "fund_industry_ic_v42.json": "22af107ca1322f23d7eb31ea4f007995bf06af0721b2bd5248e6d6a8b041e6a7",
+    "fund_industry_ic_v42.recipe.json": "396a1d0d1d0ab679b2dad33ad3500be99757642dd534ccb6ee5318be6a9a1c98",
+    "fund_industry_ic_v5.json": "9e5ea08cb3c9a802f72e23dd069499b59294fba5708e0873d9dfc57f8a7458e0",
+    "fund_industry_ic_v5.recipe.json": "a26670b0f7b6d1681a4ea8a4758da83841163ceaea8af5a4256ee718ad7c3aea",
+    "fund_industry_ic_v6.json": "5ee66d137c60527c4b00f948e8b15c04f2bddc789e988b660a4254a6df6e896a",
+    "fund_industry_ic_v6.recipe.json": "36c084522237b756d2847bc3e589855fafe589bba55b5111642c444afecfc72b",
+    "fund_industry_ic_v61.json": "db35c2769f6c13a8d9d5b2897a9e6968855bffbe6214ff96a12f6869cb59f9b5",
+    "fund_industry_ic_v61.recipe.json": "9bf278a6f3dfa78edd506ab3e499b2e8dd1ce34899752fe81df573e65550f547",
+    "fund_industry_ic_v70.json": "e7bae75c9dc3c4ac6b826289f39a50e26dc9c41ca80df4b272395a3e7362c162",
+    "fund_industry_ic_v70.recipe.json": "60b823004cc40b105781262c530cc7c23b77c149d1135d3886d61a47b69820fc",
+    "fund_industry_ic_v71.recipe.json": "7f8a264312d47487d2a9f7e0e92ecd76defb22ce2822ec319805f9ad0dffb271",
+    "price_volume_ic96_v2.json": "fd1e359b316842eeb04551f91135e2f1fb5e13bdc8e888d0450ddac509fe1389",
+    "price_volume_ic96_v2.recipe.json": "b7bdf06dd68aa26858802b7a7edceebe26fb38b827a89789c83e77992d5b4c21",
+    "pv_fields_ic121_v3.json": "5d164ea115c633677dae59de975c24c4882ee05430d03a7e1bafa6bc591cb9f8",
+    "pv_fields_ic121_v3.recipe.json": "ff1b0922edbecb22bbea19d46b6fbb93637ac3a4e38775319d6c9c85007a84b2",
+    "slow_price_volume_ic48_v1.json": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+    "slow_price_volume_ic48_v1.recipe.json": "3b6707f7a46e392391281a9f84585e6c6b1a1b5567cd9ff2656931b72481130b"
+  },
+  "plan": {
+    "json": "alphas/fixtures/v71_plan_k1.json"
+  },
+  "replaces": [
+    "generate_fund_ic_v4.py",
+    "generate_fund_ic_v42.py",
+    "generate_fund_ic_v5.py",
+    "generate_fund_ic_v6.py",
+    "generate_fund_ic_v61.py",
+    "generate_fund_ic_v70.py",
+    "generate_fund_ic_v71.py",
+    "generate_price_volume_ic96_v2.py",
+    "generate_pv_fields_ic121_v3.py",
+    "generate_slow_ic_48.py",
+    "check_fund_ic_v6.py"
+  ],
+  "note": "Platform core migration slice 2 (docs/plans/2026-10-02-platform-core-audit.md section 4, Ruling PM8-12). v7.1's IC library and slim recipe are generated from alphas/registry.json + libraries/v71.json at the house budget recorded in the committed recipe.v2 (max_roster 56; the registry moved to 80 later). Every artefact the eleven class-C generators wrote is frozen here by sha256: the legacy recipes embed their generator's own source hash, so they are provenance documents, not regenerable outputs. The plan is the hand-written K1 fixture; root's identity run passes the exe's live --plan-only output with --plan-json. After root's run (exit 0) the replaced files and their tests are deleted in one commit."
+}
