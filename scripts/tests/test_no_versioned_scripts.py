@@ -7,7 +7,8 @@ before it is committed) must be a row of ALLOWLIST, which is frozen at the P9 wa
 
   - a file that is not a row fails (no new versioned script; pick an unversioned name, a flag or a spec entry);
   - a row whose file is gone fails (the commit that deletes a file deletes its row, so the list cannot go stale);
-  - the list never grows past its frozen size, and every row names the lane that retires it (P10 = after P9).
+  - the list only shrinks: its rows stay a subset of FROZEN_ROWS (the 30 rows at the base), and every row names the
+    lane that retires it (P10 = after P9).
 
 Out of scope, with the reason: atx-db/ (a separate package with its own CI and owners; P9 lanes never touch it),
 archive/ (archived code, never run), .superpowers/ (sprint working state: studies and review diffs), docs/, and the
@@ -44,7 +45,20 @@ ALLOWLIST = {
     "atx-impl/tools/test_mega_report_v8_render.py": ("P10", "tests of the v8 report protocol (rename after P9)"),
     "atx-impl/tools/test_nav_summ_v8.py": ("P10", "tests of nav_summ --protocol v8 (rename after P9)"),
 }
-FROZEN_SIZE = 30
+# The 30 rows at FROZEN_AT (the 11 above plus the 19 retired class-C rows). The live rows must stay a subset: a retired
+# row cannot come back and no row can be swapped for a new path (review finding 2: a size cap allowed both).
+FROZEN_ROWS = frozenset(f"{directory}/{name}.py" for directory, names in (
+    ("atx-engine/tools", "research_fields_v8 research_fields_v9 test_research_fields_v8 test_research_fields_v8_quarters "
+                         "test_research_fields_v9_earn test_research_fields_v9_nt test_linked_operating_v2 "
+                         "test_linked_operating_v3"),
+    ("atx-impl/strategies", "check_fund_ic_v6 generate_fund_ic_v4 generate_fund_ic_v42 generate_fund_ic_v5 "
+                            "generate_fund_ic_v6 generate_fund_ic_v61 generate_fund_ic_v70 generate_fund_ic_v71 "
+                            "generate_price_volume_ic96_v2 generate_pv_fields_ic121_v3 test_check_fund_ic_v6_ops "
+                            "test_generate_fund_ic_v4 test_generate_fund_ic_v42 test_generate_fund_ic_v5 "
+                            "test_generate_fund_ic_v6 test_generate_fund_ic_v61 test_generate_fund_ic_v70 "
+                            "test_generate_fund_ic_v71 test_generate_pv_fields_ic121_v3"),
+    ("atx-impl/tools", "test_mega_report_v8 test_mega_report_v8_render test_nav_summ_v8"),
+) for name in names.split())
 
 
 def is_versioned(rel: str) -> bool:
@@ -78,7 +92,9 @@ def test_every_allowlist_row_names_an_existing_file():
 
 
 def test_the_allowlist_only_shrinks_and_names_a_retiring_lane():
-    assert len(ALLOWLIST) <= FROZEN_SIZE, f"the allowlist frozen at {FROZEN_AT} gained rows"
+    assert len(FROZEN_ROWS) == 30
+    grown = sorted(set(ALLOWLIST) - FROZEN_ROWS)
+    assert not grown, f"rows outside the allowlist frozen at {FROZEN_AT} (only removals are allowed): {grown}"
     assert all(lane in LANES and why for lane, why in ALLOWLIST.values())
     assert all(is_versioned(rel) and in_scope(rel) for rel in ALLOWLIST)
 
