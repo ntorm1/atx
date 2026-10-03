@@ -9,3 +9,5 @@ Task3 dependency (T3-b): remeasure rdq 8-K 2.02 share using acceptance on or bef
 
 Event-derived features must have clocks reflecting all required inputs. In particular, an announcement-window return cannot be visible at the original release acceptance before its price window has finished. R5/GC2 still prohibit aggregate/evaluation return statistics on or after 2023. No foreign event/gold pipeline is authorized by this task.
 
+R13 conservative reaction-return boundary: compute the new ea_ret_3d only when its entire announcement/reaction window ends before2023; leave later reaction values uncomputed/NULL with the holdout reason. Bound source dates before calculation. Earnings values, clocks, SUE and value/coverage audits remain authorized through latest. This does not change the separate Task7 contract for historical predictor inputs.
+
