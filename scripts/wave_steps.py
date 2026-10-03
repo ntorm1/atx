@@ -214,7 +214,8 @@ def marginal_ruled(doc: dict, rule: dict) -> dict:
 
 def unpinned(doc: dict) -> dict:
     """A cell template without the pins `lock --write` writes into it (research_spec.lock_template: the "locked"
-    block, change.inputs.*.sha256, the fields manifest pin in change.set): a resumed rule cell compares on this."""
+    block, change.inputs.*.sha256, the fields manifest pin in change.set; `lock --exes`: change.set.exes_sha256): a
+    resumed rule cell compares on this."""
     out = copy.deepcopy(doc)
     out.pop("locked", None)
     change: dict = out["change"] if isinstance(out.get("change"), dict) else {}
@@ -222,6 +223,7 @@ def unpinned(doc: dict) -> dict:
         if isinstance(item, dict) and "sha256" in item:
             item["sha256"] = None
     sets = change.get("set") or {}
+    sets.pop("exes_sha256", None)               # `lock --exes --write` (P9 OR-2, driver.lock_exes)
     if "fields.manifest_sha256" in sets:
         sets["fields.manifest_sha256"] = None
     if isinstance(sets.get("fields"), dict) and "manifest_sha256" in sets["fields"]:

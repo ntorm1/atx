@@ -28,6 +28,17 @@ def cyc(w: Wave, verb: str, spec: str, *extra: str) -> list[str]:
     return WS.cycle_argv(w.python, verb, spec, *extra, *flags, root=w.root)
 
 
+def lock_exes(w: Wave) -> bool:
+    """driver.lock_exes (P9 OR-2): the wave pins the exes of every cell spec it writes (`lock --exes --write`)."""
+    return bool((w.manifest.get("driver") or {}).get("lock_exes"))
+
+
+def pin_exes(w: Wave, spec: str) -> None:
+    """`lock SPEC --exes --write` before the spec's commit, under driver.lock_exes; nothing without it."""
+    if lock_exes(w):
+        w.run(cyc(w, "lock", spec, "--exes", "--write"), f"lock --exes {spec}")
+
+
 def library_wave(w: Wave) -> bool:
     return "candidates" in w.manifest
 

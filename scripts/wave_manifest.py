@@ -53,6 +53,10 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  memory semaphore over declared caps (--host-budget-mib N), under which
                                                  ref || u, card || marginal and the judge's summ || bundle || book reader
                                                  run side by side (OR section 5)
+       "lock_exes": BOOL                         every cell spec the wave writes (the screen library, a b library, a
+                                                 rule cell) is pinned with `lock --exes --write` before its commit: its
+                                                 exes_sha256, checked by every run; verify records the parent's and the
+                                                 cell's pins (OR-2)
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
@@ -95,7 +99,8 @@ DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
                                           f"an integer number of seconds in [1, {research_tree.ADMISSION_MAX_SECONDS}]"),
                "host_budget_mib": (lambda v: type(v) is int and
                                    research_tree.HOST_BUDGET_MIB[0] <= v <= research_tree.HOST_BUDGET_MIB[1],
-                                   f"an integer number of MiB in {list(research_tree.HOST_BUDGET_MIB)}")}
+                                   f"an integer number of MiB in {list(research_tree.HOST_BUDGET_MIB)}"),
+               "lock_exes": (lambda v: type(v) is bool, "true or false")}
 MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)

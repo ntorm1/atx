@@ -7,6 +7,7 @@
   test_driver_auto_attempt_manifest_flag  the manifest's driver block (each key opt-in) reaches research_cycle
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
+  test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
 
 Every file is synthetic (fake tools, sessions 2020-2021); no data of the repository is read.
 
@@ -36,6 +37,7 @@ import research_wave  # noqa: E402
 import run_bounded_research as RB  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake cycle tools)
 import wave_manifest as WM  # noqa: E402
+import wave_stage_record as WR  # noqa: E402
 import wave_steps as WS  # noqa: E402
 from wave_context import Wave  # noqa: E402
 
@@ -434,3 +436,79 @@ def test_parallel_steps_under_host_budget(tmp_path):
     assert sorted(met) == ["book", "bundle", "summ"] and any("summ || bundle || book reader, side by side" in x
                                                              for x in lines)
     assert json.loads((root / "out/waves/w1/wave-result.json").read_text())["verdict"]["rule"] == "pm7-34"
+
+
+# ------------------------------------------------------------------ OR-2: exes pinned by lock, compared by verify
+def test_lock_exes_pins_and_verify_compares(tmp_path):
+    """P9 OR-2: `lock --exes` writes exes_sha256 (the SHA-256 of every exe the cell runs; a template's into
+    change.set); plan and run stop (exit 3) when an exe no longer hashes to its pin, and a re-lock re-pins it (noted
+    RELOCKED). Without --exes the lock writes what it wrote before. Under driver.lock_exes the wave locks every spec it
+    writes with --exes before the commit; verify records the parent's and the cell's pins and refuses a cell whose
+    pinned NAV exe moved without its reference construction on it."""
+    root, sp = T.make_root(tmp_path / "c")
+    plain, _ = RC.lock(sp, root)
+    assert RC.EXES_PIN not in plain
+    spec, notes = RC.lock(sp, root, exes=True)
+    ic, nav = sha(b"ic"), sha(b"nav")
+    assert spec[RC.EXES_PIN] == {"ic": ic, "nav": nav} and f"locked exe nav: bin/nav.exe {nav}" in notes
+    assert {k: v for k, v in spec.items() if k != RC.EXES_PIN} == plain       # nothing else moves
+    assert RC.main(["lock", str(sp), "--root", str(root), "--exes", "--write"]) == RC.EXIT_OK
+    c = T.cycle_of(root, sp)
+    assert c.exe_pins == {"ic": ("bin/ic.exe", ic), "nav": ("bin/nav.exe", nav)}
+    assert f"# pin exe nav: bin/nav.exe {nav} [exes_sha256, verified]" in RC.header(c)
+    assert not any(x.startswith("# pin exe") for x in RC.header(T.cycle_of(*T.make_root(tmp_path / "p"))))
+    (root / "bin" / "nav.exe").write_bytes(b"nav rebuilt")                   # a rebuild: plan / run stop
+    with pytest.raises(RC.CycleError, match=rf"PIN MISMATCH exe nav: bin/nav.exe is {sha(b'nav rebuilt')}, spec "
+                                            rf"exes_sha256 pins {nav}") as e:
+        T.cycle_of(root, sp)
+    assert e.value.code == RC.EXIT_PIN
+    _, notes = RC.lock(sp, root, exes=True)
+    assert f"RELOCKED exe nav: bin/nav.exe {nav} -> {sha(b'nav rebuilt')}" in notes
+    for bad in ({"ic": "x"}, {"other": ic}, {}):
+        with pytest.raises(RC.CycleError, match="exes_sha256 must map exes keys"):
+            RC.validate_spec(dict(json.loads(sp.read_text()), exes_sha256=bad))
+    # a template: its pins go into change.set (over the pins its parent's spec carries)
+    root, sp = T.make_root(tmp_path / "t")
+    assert T.run(root, sp) == RC.EXIT_OK                                    # the parent's outputs (derived inputs)
+    assert RC.main(["lock", str(sp), "--root", str(root), "--exes", "--write"]) == RC.EXIT_OK
+    child = sp.parent / "child.json"
+    child.write_text(json.dumps({"schema": RC.research_spec.TEMPLATE_SCHEMA, "name": "child", "parent": sp.name,
+                                 "change": {"set": {"nav.output": "out/N2"}}}))
+    assert RC.load_spec(child)[RC.EXES_PIN] == {"ic": ic, "nav": nav}       # inherited from the parent's spec
+    (root / "bin" / "nav.exe").write_bytes(b"nav 2")
+    doc, notes = RC.lock(child, root, exes=True)
+    assert doc["change"]["set"][RC.EXES_PIN] == {"ic": ic, "nav": sha(b"nav 2")} and RC.EXES_PIN not in doc
+    assert WS.unpinned(doc)["change"]["set"] == {"nav.output": "out/N2"}     # a resumed rule cell compares without it
+    # the wave: driver.lock_exes locks the specs it writes with --exes before their commit
+    assert WM.validate(manifest(driver={"lock_exes": True})) == []
+    root = F.build(tmp_path / "w", driver={"lock_exes": True})
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    locks = [a for a in research_cycle_calls(fake, "lock") if "--exes" in a]
+    assert [F.unrooted(a)[3:] for a in locks] == [["scripts/specs/v8/lib-w1.json", "--exes", "--write"]]
+    k = fake.calls.index(locks[0])
+    assert fake.calls[k + 1][:2] == ["git", "add"] and "scripts/specs/v8/lib-w1.json" in fake.calls[k + 1]
+    root = F.build(tmp_path / "w0")
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    assert not any("--exes" in a for a in fake.calls)                      # no driver key: the argv of before
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert "exes_sha256" not in res and "exes_sha256" not in json.loads(
+        (root / "out/waves/w1/receipts/07-verify.json").read_text())["outputs"]
+    # verify's record and refusal
+    a, b = "a" * 64, "b" * 64
+    F.write_json(root, F.PARENT, dict(F.cell_spec("p0", F.PARENT_NAV, reference_nav="out/nav-base"),
+                                      exes_sha256={"ic": a, "nav": a}))
+    F.write_json(root, "scripts/specs/v8/lib-c.json", dict(F.cell_spec("c", "out/nav-c", reference_nav=F.PARENT_NAV),
+                                                           exes_sha256={"ic": a, "nav": b}))
+    w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
+    done = {"preflight": {"parent": {"spec": F.PARENT}}, "match": {"cell_spec": "scripts/specs/v8/lib-c.json"}}
+    pins = WR.exes_pins(w, done)
+    assert pins == {"parent": {"ic": a, "nav": a}, "cell": {"ic": a, "nav": b}, "differ": ["nav"]}
+    assert "exes_sha256 pins: cell " + b in WR.exe_problem({"equal": None, "ref": "missing", "cell": b,
+                                                             "parent": a}, pins)
+    assert WR.exe_problem({"equal": None, "ref": "ran", "cell": b, "parent": a}, pins) is None
+    assert WR.exe_problem({"equal": None, "ref": "none", "cell": b, "parent": a}, pins) is None   # a rule cell
+    assert WR.exe_problem({"equal": True, "ref": "missing", "cell": a, "parent": a}, None) is None
+    assert "differs from the parent NAV's" in WR.exe_problem({"equal": False, "ref": "missing", "cell": b,
+                                                              "parent": a}, None)

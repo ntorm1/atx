@@ -6,7 +6,7 @@
   research_cycle.py run    SPEC [same options] [--stop-after PHASE] [--auto-attempt]
                                 [--admission-wait S [--host-budget-mib N]]
   research_cycle.py status SPEC [same options]
-  research_cycle.py lock   SPEC [--root R] [--relock] [--write]
+  research_cycle.py lock   SPEC [--root R] [--relock] [--write] [--exes]
   research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
                               --parent v71 [--name v72] [--plan-json PATH] [--root R]   (research_add_alpha.py)
   research_cycle.py cache gc --keep-referenced-by SPEC [SPEC ...] [--under DIR] [--root R] [--apply]
@@ -40,6 +40,9 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
                   --host-budget-mib), and the steps that read nothing of each other run side by side under it
                   (PARALLEL: ref || u, card || marginal); a phase cap above N is refused when planned
+  exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by
+                  `lock --exes` (a template's into change.set, over the pins its parent's spec carries); plan and run stop
+                  (exit 3) when an exe no longer hashes to its pin; absent, exes are pinned by path only, as before
   --no-git        (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
                   --root R --no-git, and a relative tool path (runner, builder, fit, card, monitor, summ scripts) that
                   is absent under R resolves to this worktree's copy
@@ -246,6 +249,8 @@ BUILDS = {
     "equity-rel": {"bin": "build-equity-rel/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
 }
 EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
+EXES_PIN = "exes_sha256"               # P9 OR-2: spec {exe key: SHA-256}, written by `lock --exes`
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 # P9 NV-4: the NAV verb (strategy_nav_v7.cpp) writes summary.json before the capacity pass and v7_extras.json; a NAV
 # whose argv carries CAPACITY_FLAG is done only when CAPACITY_FILES exist beside its summary.json
 CAPACITY_FLAG, CAPACITY_FILES = "--capacity-curve", ("capacity_curve.csv", "v7_extras.json")
@@ -462,6 +467,12 @@ def validate_v8_keys(spec: dict) -> None:
     E-27b on the parsed argv (``validate_e27b``)."""
     if "build" in spec and spec["build"] not in BUILDS:
         raise CycleError(f"spec build must be one of {', '.join(BUILDS)}", EXIT_USAGE)
+    if EXES_PIN in spec:
+        pins, exes = spec[EXES_PIN], effective_exes(spec)
+        if not (isinstance(pins, dict) and pins and all(k in exes and isinstance(v, str) and SHA256_RE.fullmatch(v)
+                                                        for k, v in pins.items())):
+            raise CycleError(f"spec {EXES_PIN} must map exes keys ({', '.join(exes) or 'none'}) to SHA-256 digests "
+                             "(`lock --exes` writes it)", EXIT_USAGE)
     if "out_root" in spec and (not isinstance(spec["out_root"], str) or not spec["out_root"] or
                                Path(spec["out_root"]).is_absolute()):
         raise CycleError("spec out_root must be a root-relative directory (the bounded runner writes only inside "
@@ -763,6 +774,7 @@ class Cycle:
         self.summ_history = False
         # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
         self.pins = self.verify_inputs() if verify else {}
+        self.exe_pins = self.verify_exes() if verify else {}     # P9 OR-2: {} without exes_sha256
 
     # -------------------------------------------------------------- names and pins
     def out(self, name: str, keyed: bool = True) -> str:
@@ -846,6 +858,21 @@ class Cycle:
                 if got != role["universe"]:
                     raise CycleError(f"role universe is {got!r}, spec declares {role['universe']!r}", EXIT_PIN)
         return pins
+
+    def verify_exes(self) -> dict:
+        """P9 OR-2: {exe key: (path, sha)} of the exes the spec pins (exes_sha256, `lock --exes`); each must hash to its
+        pin (else exit 3: a rebuilt exe is re-pinned by `lock --exes --write`). {} without the key, as before."""
+        out = {}
+        for key, want in (self.spec.get(EXES_PIN) or {}).items():
+            rel = (self.spec.get("exes") or {}).get(key)
+            got = self.res.sha(rel) if rel else None
+            if got is None:
+                raise CycleError(f"exe {key} missing: {rel} (spec {EXES_PIN} pins {want})", EXIT_PIN)
+            if got != want:
+                raise CycleError(f"PIN MISMATCH exe {key}: {rel} is {got}, spec {EXES_PIN} pins {want} (a rebuilt exe "
+                                 "is re-pinned by `lock --exes --write`)", EXIT_PIN)
+            out[key] = (rel, got)
+        return out
 
     def pin(self, key: str) -> str:
         return self.pins[key][1]
@@ -1683,6 +1710,8 @@ def header(cycle: Cycle) -> list[str]:
              + "".join(f"; {k} {v}" for k, v in (getattr(cycle, "launch", None) or {}).items())]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
+    for key, (rel, sha) in (getattr(cycle, "exe_pins", None) or {}).items():   # P9 OR-2 (none without the pins)
+        lines.append(f"# pin exe {key}: {rel} {sha} [{EXES_PIN}, verified]")
     return lines + research_spec.header_lines(cycle.spec, cycle.spec_path, research_tree.REPO)
 
 
@@ -1999,9 +2028,39 @@ def copy_ledger(cycle: Cycle, log) -> None:
 
 
 # ------------------------------------------------------------------ lock
-def lock(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[str]]:
+def lock(spec_path: Path, root: Path, relock: bool = False, exes: bool = False) -> tuple[dict, list[str]]:
     """The spec with every input pin (and a null as-built fields.manifest_sha256) computed from its file; a template
-    gets the pins of the inputs it adds or derives (research_spec.lock_template), its parent keeps its own."""
+    gets the pins of the inputs it adds or derives (research_spec.lock_template), its parent keeps its own. ``exes``
+    (``lock --exes``, P9 OR-2) also pins the exes the cell runs (lock_exes)."""
+    spec, notes = lock_inputs(spec_path, root, relock)
+    if exes:
+        lock_exes(spec, spec_path, Resolver(root), notes)
+    return spec, notes
+
+
+def lock_exes(spec: dict, spec_path: Path, res: Resolver, notes: list[str]) -> None:
+    """P9 OR-2: exes_sha256 = {exe key: SHA-256} of every exe the cell runs (effective_exes of the resolved spec), always
+    the files as they are now (a pin that moves is noted RELOCKED: re-pinning the build is the point of the call); a
+    template's goes into change.set, over the pins its parent's spec carries. A missing exe is exit 3."""
+    template = research_spec.is_template(spec)
+    exes = effective_exes(load_spec(spec_path) if template else spec)
+    if not exes:
+        raise CycleError("lock --exes: the spec names no exes", EXIT_PIN)
+    target = spec.setdefault("change", {}).setdefault("set", {}) if template else spec
+    have, pins = target.get(EXES_PIN) or {}, {}
+    for key, rel in sorted(exes.items()):
+        got = res.sha(rel)
+        if got is None:
+            raise CycleError(f"lock --exes: exe {key} missing: {rel}", EXIT_PIN)
+        if have.get(key) != got:
+            notes.append(f"{'RELOCKED' if have.get(key) else 'locked'} exe {key}: {rel} "
+                         f"{have.get(key) + ' -> ' if have.get(key) else ''}{got}")
+        pins[key] = got
+    target[EXES_PIN] = pins
+
+
+def lock_inputs(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[str]]:
+    """``lock`` without --exes: the input pins (see lock)."""
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     if "roles" in spec:                    # H-1: the inputs and every role's role and fields pins
         import research_roles  # noqa: PLC0415  (imports this module)
@@ -2107,13 +2166,14 @@ def main(argv=None) -> int:
                          "side")
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
     ap.add_argument("--write", action="store_true", help="lock: write the pins back into SPEC")
+    ap.add_argument("--exes", action="store_true", help="lock: also pin the exes' SHA-256 (exes_sha256, P9 OR-2)")
     ap.add_argument("--no-git", action="store_true", help="K3: a --root outside any git repository (test roots)")
     ap.add_argument("--screen", action="store_true", help="u, fit, card, marginal, gate; stop before w")
     a = ap.parse_args(argv)
     try:
         spec_path = find_spec(a.spec)
         if a.verb == "lock":
-            spec, notes = lock(spec_path, a.root, a.relock)
+            spec, notes = lock(spec_path, a.root, a.relock, a.exes)
             for n in notes:
                 print(n)
             text = json.dumps(spec, indent=2) + "\n"

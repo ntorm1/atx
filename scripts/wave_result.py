@@ -14,7 +14,8 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
    pbo, verdict{rule, text, accepted, checks, decided_by, criteria[]} | {accepted: false, reason},
    ledger{path, lines_before, lines_after, head, n_before, n_after, trial_id, admission_lines[]},
    next_parent{spec, library}, timings[{phase, run_dir, outcome, exit_code, seconds, peak_mib, executable_sha256}],
-   receipts{stage: sha256}}
+   receipts{stage: sha256},
+   exes_sha256{parent, cell, differ}   only when a spec pins its exes (lock --exes; verify's record, P9 OR-2)}
 """
 from __future__ import annotations
 
@@ -50,22 +51,25 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
         if r["run_dir"] not in seen:
             seen.add(r["run_dir"])
             rows.append(r)
-    return {"schema": SCHEMA, "wave": m["wave"], "kind": "library" if library else "rule",
-            "description": m.get("description", ""), "manifest": pre["manifest"],
-            "library": m.get("library"), "template": (m.get("rule_cell") or {}).get("template"),
-            "budget": pre.get("budget"),
-            "parent": {k: parent.get(k) for k in ("spec", "spec_digest", "library", "nav", "leverage")},
-            "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
-                        "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
-                        "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
-            "cell": cell, "marginal": marginal_rows(sc, sp, jd), "mechanics": vf.get("mechanics"),
-            "nav_exe": vf.get("nav_exe"),
-            "seal_scan": seal if seal is not None else vf.get("seal_scan"),
-            "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
-            "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
-            "next_parent": ({"spec": cell["spec"], "library": cell["library"]} if accepted and cell else
-                            {"spec": parent["spec"], "library": parent["library"]}),
-            "timings": rows, "receipts": receipt_digests(w)}
+    doc = {"schema": SCHEMA, "wave": m["wave"], "kind": "library" if library else "rule",
+           "description": m.get("description", ""), "manifest": pre["manifest"],
+           "library": m.get("library"), "template": (m.get("rule_cell") or {}).get("template"),
+           "budget": pre.get("budget"),
+           "parent": {k: parent.get(k) for k in ("spec", "spec_digest", "library", "nav", "leverage")},
+           "screen": ({"spec": sc["spec"], "gate_exit": sc["gate_exit"], "rows": sc["decision"]["rows"],
+                       "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
+                       "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
+           "cell": cell, "marginal": marginal_rows(sc, sp, jd), "mechanics": vf.get("mechanics"),
+           "nav_exe": vf.get("nav_exe"),
+           "seal_scan": seal if seal is not None else vf.get("seal_scan"),
+           "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
+           "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
+           "next_parent": ({"spec": cell["spec"], "library": cell["library"]} if accepted and cell else
+                           {"spec": parent["spec"], "library": parent["library"]}),
+           "timings": rows, "receipts": receipt_digests(w)}
+    if vf.get("exes_sha256") is not None:   # P9 OR-2: only when a spec pins its exes (the layout of before otherwise)
+        doc["exes_sha256"] = vf["exes_sha256"]
+    return doc
 
 
 PER_ROW = ("id", "ic21", "ic21_hac_t", "marginal_ic21", "marginal_hac_t")   # a row's own: pool / themes, not library

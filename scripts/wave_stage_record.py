@@ -40,11 +40,8 @@ def verify(w: Wave, done: dict, log) -> dict:
     binding = w.read_json(bpath)
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
-    problems = []
-    exe = nav_exe(w, done)
-    if exe["equal"] is False and exe["ref"] == "missing":
-        problems.append(f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']} and the cell "
-                        "spec's reference construction did not run on it (no completed ref run with that exe)")
+    exe, pins = nav_exe(w, done), exes_pins(w, done)
+    problems = [p for p in [exe_problem(exe, pins)] if p]
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
@@ -58,11 +55,38 @@ def verify(w: Wave, done: dict, log) -> dict:
                          "line was written)")
     log(f"   mechanics PASS; binding {binding['argv_sha256'][:12]} (spec {digest[:12]}); seal scan {seal['files']} "
         f"log(s), 0 tokens; NAV exe {str(exe['cell'])[:12]} vs parent {str(exe['parent'])[:12]} (ref {exe['ref']})")
-    return {"mechanics": chk, "binding": {"path": bpath, "sha256": w.sha(bpath), "argv_sha256": binding["argv_sha256"],
-                                          "spec_sha256": binding["spec_sha256"]},
-            "nav_exe": exe,
-            "seal_scan": seal, "identity": "the cycle's compare steps ran in every research_cycle run (a miss is its "
-                                           "exit 4, which stops the stage)"}
+    out = {"mechanics": chk, "binding": {"path": bpath, "sha256": w.sha(bpath), "argv_sha256": binding["argv_sha256"],
+                                         "spec_sha256": binding["spec_sha256"]},
+           "nav_exe": exe,
+           "seal_scan": seal, "identity": "the cycle's compare steps ran in every research_cycle run (a miss is its "
+                                          "exit 4, which stops the stage)"}
+    if pins is not None:                    # P9 OR-2: only when a spec pins its exes (the receipt of before otherwise)
+        out["exes_sha256"] = pins
+    return out
+
+
+def exe_problem(exe: dict, pins: dict | None) -> str | None:
+    """Verify's NAV exe refusal (P9 OR-2): the cell's NAV ran on another exe than the parent's (their completed run
+    receipts differ, or the specs' exes_sha256 pins name two NAV exes) and the cell spec's reference construction did
+    not run on the cell's exe; None otherwise (a rule cell has no ref phase: recorded only)."""
+    moved = "nav" in ((pins or {}).get("differ") or [])
+    if not ((exe["equal"] is False or moved) and exe["ref"] in ("missing", "unknown")):
+        return None
+    return (f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']}"
+            + (f" (exes_sha256 pins: cell {pins['cell'].get('nav')}, parent {pins['parent'].get('nav')})" if moved
+               else "") +
+            " and the cell spec's reference construction did not run on it (no completed ref run with that exe)")
+
+
+def exes_pins(w: Wave, done: dict) -> dict | None:
+    """P9 OR-2: {parent, cell, differ} of the parent's and the cell's spec pins exes_sha256 (`lock --exes`; differ: the
+    exe keys whose pins differ, null unless both specs pin); None when neither spec pins its exes."""
+    parent = w.load_spec(done["preflight"]["parent"]["spec"]).get(RC.EXES_PIN)
+    cell = w.load_spec(done["match"]["cell_spec"]).get(RC.EXES_PIN)
+    if parent is None and cell is None:
+        return None
+    differ = sorted(k for k in set(parent) | set(cell) if parent.get(k) != cell.get(k)) if parent and cell else None
+    return {"parent": parent, "cell": cell, "differ": differ}
 
 
 def nav_exe(w: Wave, done: dict) -> dict:
