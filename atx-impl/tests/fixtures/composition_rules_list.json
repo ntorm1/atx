@@ -17,26 +17,8 @@
         "theme-erc-v1"
       ],
       "params_schema": {
-        "properties": {
-          "composition": {
-            "const": "ew-theme-v6"
-          },
-          "rule": {
-            "const": "within-theme-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "rule",
-          "composition",
-          "themes"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "type": "object"
       },
       "recipe_key": "composition_redistribution",
@@ -54,26 +36,8 @@
         "within-theme-v1"
       ],
       "params_schema": {
-        "properties": {
-          "rerank": {
-            "type": "boolean"
-          },
-          "rule": {
-            "const": "ew-theme-std-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "rule",
-          "rerank",
-          "themes"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -91,63 +55,17 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "ic_shrink": {
-            "properties": {
-              "floor": {
-                "const": 0
-              },
-              "intensity": {
-                "const": 0.5
-              },
-              "members": {
-                "additionalProperties": {
-                  "properties": {
-                    "ic": {
-                      "type": "number"
-                    },
-                    "theme": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "theme",
-                    "ic"
-                  ],
-                  "type": "object"
-                },
-                "minProperties": 1,
-                "type": "object"
-              }
-            },
-            "required": [
-              "intensity",
-              "floor",
-              "members"
-            ],
-            "type": "object"
+          "floor": {
+            "const": 0,
+            "type": "number"
           },
-          "rerank": {
-            "const": true
-          },
-          "rule": {
-            "const": "ic-shrink-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+          "intensity": {
+            "const": 0.5,
+            "type": "number"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes",
-          "ic_shrink"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -165,68 +83,17 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "ic_shrink": {
-            "properties": {
-              "floor": {
-                "const": 0
-              },
-              "intensity": {
-                "const": 0.5
-              },
-              "members": {
-                "additionalProperties": {
-                  "properties": {
-                    "gain": {
-                      "exclusiveMinimum": 0,
-                      "type": "number"
-                    },
-                    "ic": {
-                      "type": "number"
-                    },
-                    "theme": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "theme",
-                    "ic",
-                    "gain"
-                  ],
-                  "type": "object"
-                },
-                "minProperties": 1,
-                "type": "object"
-              }
-            },
-            "required": [
-              "intensity",
-              "floor",
-              "members"
-            ],
-            "type": "object"
+          "floor": {
+            "const": 0,
+            "type": "number"
           },
-          "rerank": {
-            "const": true
-          },
-          "rule": {
-            "const": "ic-shrink-aim-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+          "intensity": {
+            "const": 0.5,
+            "type": "number"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes",
-          "ic_shrink"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -244,89 +111,17 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "rerank": {
-            "const": true
+          "dispersion": {
+            "const": 1e-10,
+            "type": "number"
           },
-          "rule": {
-            "const": "theme-erc-v1"
-          },
-          "theme_erc": {
-            "properties": {
-              "covariance": {
-                "properties": {
-                  "matrix": {
-                    "items": {
-                      "items": {
-                        "type": "number"
-                      },
-                      "type": "array"
-                    },
-                    "type": "array"
-                  },
-                  "themes": {
-                    "items": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    },
-                    "type": "array"
-                  }
-                },
-                "required": [
-                  "themes",
-                  "matrix"
-                ],
-                "type": "object"
-              },
-              "dispersion": {
-                "const": 1e-10
-              },
-              "members": {
-                "additionalProperties": {
-                  "properties": {
-                    "share": {
-                      "type": "number"
-                    },
-                    "theme": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "theme",
-                    "share"
-                  ],
-                  "type": "object"
-                },
-                "minProperties": 1,
-                "type": "object"
-              },
-              "sweeps": {
-                "const": 10000
-              }
-            },
-            "required": [
-              "sweeps",
-              "dispersion",
-              "members",
-              "covariance"
-            ],
-            "type": "object"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+          "sweeps": {
+            "const": 10000,
+            "type": "integer"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes",
-          "theme_erc"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -345,22 +140,8 @@
         "two-speed-v1"
       ],
       "params_schema": {
-        "properties": {
-          "order": {
-            "items": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "rule": {
-            "const": "theme-resid-v1"
-          }
-        },
-        "required": [
-          "rule",
-          "order"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "type": "object"
       },
       "recipe_key": "composition_residualise",
@@ -383,58 +164,21 @@
         "theme-resid-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "blocks": {
-            "items": {
-              "properties": {
-                "from_session": {
-                  "type": "integer"
-                },
-                "trailing": {
-                  "items": {
-                    "type": "number"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "from_session",
-                "trailing"
-              ],
-              "type": "object"
-            },
-            "maxItems": 4096,
-            "minItems": 1,
-            "type": "array"
-          },
           "lag": {
-            "const": 3
+            "const": 3,
+            "type": "integer"
           },
           "lookback": {
-            "const": 252
-          },
-          "rule": {
-            "const": "theme-tsmom-v1"
+            "const": 252,
+            "type": "integer"
           },
           "step": {
-            "const": 21
-          },
-          "themes": {
-            "items": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "array"
+            "const": 21,
+            "type": "integer"
           }
         },
-        "required": [
-          "rule",
-          "lookback",
-          "lag",
-          "step",
-          "themes",
-          "blocks"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_schedule",
@@ -458,14 +202,7 @@
       ],
       "params_schema": {
         "additionalProperties": false,
-        "properties": {
-          "rule": {
-            "const": "two-speed-v1"
-          }
-        },
-        "required": [
-          "rule"
-        ],
+        "properties": {},
         "type": "object"
       },
       "recipe_key": "composition_sleeves",

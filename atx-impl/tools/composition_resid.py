@@ -82,6 +82,9 @@ PRIOR_ONLY = ("--theme-resid needs the prior path (--orientation prior, a v4 scr
 PARENT_CHECK = ("the re-fit minus theme_residualise and provenance.resid equals the parent cell's weights file apart "
                 "from provenance.script_sha256 and provenance.admission_sha256, and the re-fit's admission.json equals "
                 "the parent's apart from inputs.script_sha256")
+# P9 lane D2 (CM-5): the fitter's identity in its outputs is producer_fingerprint (script_sha256 before CM-5); either
+# key, on either side, is the fitter identity the check allows to differ (PARENT_CHECK's text is the v8 rule's).
+FITTER_IDENTITY_KEYS = ("script_sha256", "producer_fingerprint")
 
 
 class ResidError(ValueError):
@@ -189,11 +192,12 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
     child = json.loads(_text(document))
     child.pop(BLOCK, None)
     child["provenance"].pop("resid", None)
-    for doc in (child, mother):
-        doc["provenance"].pop("script_sha256", None)
-    for doc in (child_adm, mother_adm):
-        if isinstance(doc.get("inputs"), dict):
-            doc["inputs"].pop("script_sha256", None)
+    for key in FITTER_IDENTITY_KEYS:  # CM-5: the fitter identity under either name
+        for doc in (child, mother):
+            doc["provenance"].pop(key, None)
+        for doc in (child_adm, mother_adm):
+            if isinstance(doc.get("inputs"), dict):
+                doc["inputs"].pop(key, None)
     adm_differ = _differing(child_adm, mother_adm)
     _require(not adm_differ, f"{RULE_ID}: --theme-resid-parent: the re-fit's admission.json differs from the parent's "
                              f"beyond inputs.script_sha256 (keys {adm_differ})", error)

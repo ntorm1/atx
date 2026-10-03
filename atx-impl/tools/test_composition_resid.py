@@ -598,8 +598,9 @@ class FitterEndToEnd(unittest.TestCase):
 
     def test_the_re_fit_is_checked_against_the_parent_cells_file(self):
         """Finding R6B-O-5: with --theme-resid-parent the re-fit must be the parent cell's weights file plus the block;
-        provenance.resid and the summary record the parent's SHA-256. A changed fitter file (script_sha256, and the
-        admission SHA it moves) is the one tolerated difference."""
+        provenance.resid and the summary record the parent's SHA-256. A changed fitter (its identity, and the admission
+        SHA it moves) is the one tolerated difference: producer_fingerprint since CM-5 (P9 lane D2), script_sha256 in a
+        parent fitted before CM-5."""
         parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
         sha = hashlib.sha256(parent.read_bytes()).hexdigest()
         code, summary = self.resid_fit("checked", parent)
@@ -612,13 +613,27 @@ class FitterEndToEnd(unittest.TestCase):
         del doc[cres.BLOCK]
         del doc["provenance"]["resid"]
         self.assertEqual(fcw.canonical_bytes(doc), parent.read_bytes())
-        with unittest.mock.patch.object(fcw, "SCRIPT_SHA256", "0" * 64):       # the fitter file changed in between
+        with unittest.mock.patch.object(fcw, "producer_fingerprint", lambda funcs: "0" * 64):  # a fitter code change
             code, _ = self.resid_fit("new-script", parent)
         self.assertEqual(code, fcw.EXIT_OK)
         moved = json.loads((self.root / "new-script" / fcw.OUTPUT_WEIGHTS).read_bytes())["provenance"]
         before = json.loads(parent.read_bytes())["provenance"]
-        self.assertEqual(moved["script_sha256"], "0" * 64)
+        self.assertEqual(moved["producer_fingerprint"], "0" * 64)
         self.assertNotEqual(moved["admission_sha256"], before["admission_sha256"])
+        # CM-5: a parent fitted before CM-5 names the fitter by script_sha256 (inputs and provenance): tolerated too
+        legacy = self.root / "legacy-parent"
+        legacy.mkdir()
+        adm = json.loads((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        del adm["inputs"]["producer_fingerprint"]
+        adm["inputs"]["script_sha256"] = "1" * 64
+        adm_bytes = fcw.canonical_bytes(adm)
+        doc = json.loads(parent.read_bytes())
+        del doc["provenance"]["producer_fingerprint"]
+        doc["provenance"].update(script_sha256="1" * 64, admission_sha256=hashlib.sha256(adm_bytes).hexdigest())
+        (legacy / fcw.OUTPUT_ADMISSION).write_bytes(adm_bytes)
+        (legacy / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
+        code, _ = self.resid_fit("legacy-out", legacy / fcw.OUTPUT_WEIGHTS)
+        self.assertEqual(code, fcw.EXIT_OK)
 
     def test_a_re_fit_that_is_not_the_parent_cells_file_is_refused(self):
         """Finding R6B-O-5: another composition's file, a parent whose weights or admission were changed, a parent with

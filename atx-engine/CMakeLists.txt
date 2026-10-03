@@ -361,3 +361,38 @@ target_link_libraries(atx-engine-research-admission
         nlohmann_json::nlohmann_json)
 add_executable(atx-research-admission EXCLUDE_FROM_ALL src/research/admission/admission_main.cpp)
 target_link_libraries(atx-research-admission PRIVATE atx::engine-research-admission atx_warnings)
+
+# Platform P9 lane D2 (migration plan section 1 `composition/`, slice 6): the composition rule library. It holds
+# the rule kernels relocated from atx-impl (ic-shrink-v1, theme-erc-v1, theme-tsmom-v1, theme-resid-v1,
+# two-speed-v1; atx-impl's strategy_ic_*.hpp are thin includes of them), ew-theme-std-v1's tier weights and member
+# cap, and the fit on a K-P9-4 factor series (`atx-research-composition fit ...`). It needs atx::core, header-only
+# engine pieces (combine/group_*.hpp, book/two_speed.hpp, data/research_window.hpp) and the admission library
+# (read_factor_series, the screen's mean), never the atx-engine archive or its PCH. atx-impl-core links it.
+# theme-resid-v1's kernel runs per date and name inside the IC runner, so the warm Debug tree gives this library
+# the IC translation units' private /O2 (atx-impl/CMakeLists.txt; Debug CRT, assertions and FP settings unchanged).
+add_library(atx-engine-research-composition ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/composition/composition_cli.cpp
+    src/research/composition/ew_theme_std.cpp
+    src/research/composition/fit.cpp
+    src/research/composition/ic_shrink.cpp
+    src/research/composition/theme_erc.cpp
+    src/research/composition/theme_resid.cpp
+    src/research/composition/theme_tsmom.cpp)
+add_library(atx::engine-research-composition ALIAS atx-engine-research-composition)
+target_include_directories(atx-engine-research-composition
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-composition PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-composition
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx-engine-research-admission
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(atx-engine-research-composition PRIVATE /O2 /Ob2 /clang:-finline)
+endif()
+add_executable(atx-research-composition EXCLUDE_FROM_ALL src/research/composition/composition_main.cpp)
+target_link_libraries(atx-research-composition PRIVATE atx::engine-research-composition atx_warnings)

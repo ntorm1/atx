@@ -673,18 +673,21 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<listing.dump(2)<<'\n'; return co::Ok();
     }
     if (cfg.plan_only) {
-      // A scored role over the memory budget (P9 lane D1): the plan still prints, each role with
-      // within_budget and its memory terms (admit), then the run refuses exactly as an unplanned
-      // run does (the first such role's required_bytes message; exit 1). Within budget the plan's
-      // bytes are unchanged.
+      // A scored role over the memory budget (P9 lane D1): the plan still prints (without the K1
+      // candidate rows), each role with within_budget and its memory terms (admit), then the run
+      // refuses exactly as an unplanned run does (the first such role's required_bytes message;
+      // exit 1). Within budget the plan's bytes are unchanged.
       const auto over=std::find_if(roles.begin(),roles.end(),[&](const Role& role) {
         return role.bytes>cfg.max_working_bytes;
       });
-      // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count.
+      // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count. P9 lane
+      // D2 (D1 review minor): a refused plan omits the K1 rows, so its saved stdout can never load
+      // as a valid K1 plan (--plan-json); within budget the keys and bytes are the v8 plan's.
       Json plan{{"mode","metadata-only-no-payload"},{"candidate_count",lib.candidates.size()},
-          {"candidates",candidate_plan_rows(lib)},{"max_working_bytes",cfg.max_working_bytes},
+          {"max_working_bytes",cfg.max_working_bytes},
           {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
+      if (over==roles.end()) plan["candidates"]=candidate_plan_rows(lib);
       for (const auto& role:roles) {
         Json row{{"role",role.name},{"manifest_sha256",role.sha},{"required_bytes",role.bytes}};
         if (over!=roles.end()) {
@@ -807,17 +810,23 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
   try {
     // K-P9-6 (P9 lane D1): `--list-rules --json` prints the composition rule table and the exe's
     // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
-    // option (JSON is its only format).
-    for (int i=1;i<argc;++i)
-      if (std::string_view(argv[i])=="--list-rules") {
-        const bool json_flag=argc==3 &&
-            (std::string_view(argv[1])=="--json" || std::string_view(argv[2])=="--json");
-        if (!json_flag) throw std::invalid_argument("--list-rules takes exactly --json");
+    // option (JSON is its only format). P9 lane D2 (D1 review minor): the verb is argv[1] and
+    // argv[2] alone (either order), so an option value spelled --list-rules is an ordinary value;
+    // a --list-rules anywhere else reaches the general parse, which refuses it as an unknown option.
+    if (argc>=2 && std::string_view(argv[1])=="--list-rules" && argc!=3)
+      throw std::invalid_argument("--list-rules takes exactly --json");
+    if (argc==3) {
+      const std::string_view first(argv[1]),second(argv[2]);
+      if (first=="--list-rules" || second=="--list-rules") {
+        const bool pair=(first=="--list-rules" && second=="--json") ||
+                        (first=="--json" && second=="--list-rules");
+        if (!pair) throw std::invalid_argument("--list-rules takes exactly --json");
         const auto listing=list_rules_json();
         if (!listing) { err<<listing.error().to_string()<<'\n'; return 1; }
         out<<listing->dump(2)<<'\n';
         return 0;
       }
+    }
     for (int i=1;i<argc;++i) {
       const std::string key=argv[i];
       if (key=="--plan-only") { cfg.plan_only=true; continue; }

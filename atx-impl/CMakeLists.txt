@@ -221,3 +221,7 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
+# P9 lane D2: the composition rules' kernels moved down to atx-engine-research-composition (migration plan
+# section 1); strategy_ic_{shrink,theme_erc,theme_tsmom,theme_resid}.hpp and strategy_two_speed.hpp are thin
+# includes of it, and the IC runner's verify and composition call it.
+target_link_libraries(atx-impl-core PUBLIC atx-engine-research-composition)

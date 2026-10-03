@@ -397,65 +397,27 @@ constexpr std::array<std::string_view,4> standardise_ids{theme_standardise_rule,
 constexpr std::array<std::string_view,1> redistribute_ids{theme_redistribution_rule};
 constexpr std::array<std::string_view,2> resid_excludes{theme_tsmom_rule,two_speed_rule};
 constexpr std::array<std::string_view,1> resid_ids{theme_residualise_rule};
-// JSON Schema of each block (params_schema; list_rules_json parses it). A schema states the keys
-// the block's parse and verify read; they allow other keys unless it says otherwise.
-constexpr std::string_view redistribute_schema=
-    R"({"type":"object","required":["rule","composition","themes"],)"
-    R"("properties":{"rule":{"const":"within-theme-v1"},"composition":{"const":"ew-theme-v6"},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}}}})";
-constexpr std::string_view std_schema=
-    R"({"type":"object","required":["rule","rerank","themes"],)"
-    R"("properties":{"rule":{"const":"ew-theme-std-v1"},"rerank":{"type":"boolean"},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}}}})";
-constexpr std::string_view shrink_schema=
-    R"({"type":"object","required":["rule","rerank","themes","ic_shrink"],)"
-    R"("properties":{"rule":{"const":"ic-shrink-v1"},"rerank":{"const":true},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"ic_shrink":{"type":"object","required":["intensity",)"
-    R"("floor","members"],"properties":{"intensity":{"const":0.5},"floor":{"const":0},)"
-    R"("members":{"type":"object","minProperties":1,"additionalProperties":{"type":"object",)"
-    R"("required":["theme","ic"],"properties":{"theme":{"type":"string","pattern":"^[a-z0-9_]{1,)"
-    R"(64}$"},"ic":{"type":"number"}}}}}}}})";
-constexpr std::string_view shrink_aim_schema=
-    R"({"type":"object","required":["rule","rerank","themes","ic_shrink"],)"
-    R"("properties":{"rule":{"const":"ic-shrink-aim-v1"},"rerank":{"const":true},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"ic_shrink":{"type":"object","required":["intensity",)"
-    R"("floor","members"],"properties":{"intensity":{"const":0.5},"floor":{"const":0},)"
-    R"("members":{"type":"object","minProperties":1,"additionalProperties":{"type":"object",)"
-    R"("required":["theme","ic","gain"],"properties":{"theme":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"},"ic":{"type":"number"},"gain":{"type":"number",)"
-    R"("exclusiveMinimum":0}}}}}}}})";
-constexpr std::string_view erc_schema=
-    R"({"type":"object","required":["rule","rerank","themes","theme_erc"],)"
-    R"("properties":{"rule":{"const":"theme-erc-v1"},"rerank":{"const":true},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"theme_erc":{"type":"object","required":["sweeps",)"
-    R"("dispersion","members","covariance"],"properties":{"sweeps":{"const":10000},)"
-    R"("dispersion":{"const":1e-10},"members":{"type":"object","minProperties":1,)"
-    R"("additionalProperties":{"type":"object","required":["theme","share"],)"
-    R"("properties":{"theme":{"type":"string","pattern":"^[a-z0-9_]{1,64}$"},)"
-    R"("share":{"type":"number"}}}},"covariance":{"type":"object","required":["themes",)"
-    R"("matrix"],"properties":{"themes":{"type":"array","items":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"matrix":{"type":"array","items":{"type":"array",)"
-    R"("items":{"type":"number"}}}}}}}}})";
-constexpr std::string_view resid_schema=
-    R"({"type":"object","required":["rule","order"],)"
-    R"("properties":{"rule":{"const":"theme-resid-v1"},"order":{"type":"array",)"
-    R"("items":{"type":"string","pattern":"^[a-z0-9_]{1,64}$"}}}})";
-constexpr std::string_view tsmom_schema=
-    R"({"type":"object","required":["rule","lookback","lag","step","themes","blocks"],)"
-    R"("properties":{"rule":{"const":"theme-tsmom-v1"},"lookback":{"const":252},)"
-    R"("lag":{"const":3},"step":{"const":21},"themes":{"type":"array","items":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"blocks":{"type":"array","minItems":1,"maxItems":4096,)"
-    R"("items":{"type":"object","required":["from_session","trailing"],)"
-    R"("properties":{"from_session":{"type":"integer"},"trailing":{"type":"array",)"
-    R"("items":{"type":"number"}}}}}}})";
-constexpr std::string_view sleeves_schema=
-    R"({"type":"object","required":["rule"],"additionalProperties":false,)"
-    R"("properties":{"rule":{"const":"two-speed-v1"}}})";
+// params_schema (progress.md ruling D1-PSCHEMA, P9 lane D2): the JSON Schema of the `params` a
+// K-P9-9 wave-manifest rule entry {name: <id>, params: {...}} may carry for the row. A rule's params
+// are its registered constants: each key optional (absent = the registered value) and, when given,
+// equal to it (`const`, integers typed); no other key is accepted. A rule without a registered
+// constant a cell could restate takes only {}. Lane E2 validates a manifest's params against the
+// schema it reads from `--list-rules --json`. The weights-file blocks the fitter writes are checked
+// by each row's parse and verify, not by params_schema. ParamsSchemaConstantsAreTheRegisteredOnes
+// pins every const below to the C++ constant it restates.
+constexpr std::string_view no_params_schema=
+    R"({"type":"object","additionalProperties":false,"properties":{}})";
+constexpr std::string_view shrink_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"intensity":{"type":"number","const":0.5},"floor":{"type":"number","const":0}}})";
+constexpr std::string_view erc_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"sweeps":{"type":"integer","const":10000},)"
+    R"("dispersion":{"type":"number","const":1e-10}}})";
+constexpr std::string_view tsmom_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"lookback":{"type":"integer","const":252},"lag":{"type":"integer","const":3},)"
+    R"("step":{"type":"integer","const":21}}})";
 // Parse order: theme_redistribution, theme_standardise (four rows; the recorded-rule check runs
 // with them), theme_residualise, theme_schedule, theme_sleeves -- the v8 runner's order, so every
 // refusal is the one it gave.
@@ -464,34 +426,36 @@ constexpr std::array<CompositionRule,8> rule_table{{
      .stage=IcStageKind::redistribute, .parse=&composition_themes, .verify=nullptr,
      .recipe_key="composition_redistribution", .recipe_text=redistribute_text,
      .working_bytes="two f64 dates x names planes per theme (blend and present weight)",
-     .params_schema=redistribute_schema, .incompatible=standardise_ids, .requires_any={},
+     .params_schema=no_params_schema, .incompatible=standardise_ids, .requires_any={},
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 writes it too; the R-1 identity device,
     // composition_rules.identity_document, grafts a rerank-off block onto ew-theme-v1 weights)
     {.id=theme_standardise_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=nullptr,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
-     .working_bytes=grouping_bytes, .params_schema=std_schema, .incompatible=redistribute_ids,
+     .working_bytes=grouping_bytes, .params_schema=no_params_schema, .incompatible=redistribute_ids,
      .requires_any={}, .rerank_off=true, .also_written_by="ew-theme-std-aim-v1",
      .identity_source="ew-theme-v1"},
     // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
     {.id=ic_shrink_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=&verify_ic_shrink,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
-     .working_bytes=grouping_bytes, .params_schema=shrink_schema, .incompatible=redistribute_ids,
+     .working_bytes=grouping_bytes, .params_schema=shrink_params_schema,
+     .incompatible=redistribute_ids,
      .requires_any={}, .rerank_off=false, .also_written_by={}, .identity_source={}},
     // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
     {.id=ic_shrink_aim_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise,
      .verify=&verify_ic_shrink_aim, .recipe_key="composition_standardise",
      .recipe_text=standardise_text, .working_bytes=grouping_bytes,
-     .params_schema=shrink_aim_schema, .incompatible=redistribute_ids, .requires_any={},
+     .params_schema=shrink_params_schema, .incompatible=redistribute_ids, .requires_any={},
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-erc-v1 (X XCOMB, strategy_ic_theme_erc.hpp)
     {.id=theme_erc_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=&verify_theme_erc,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
-     .working_bytes=grouping_bytes, .params_schema=erc_schema, .incompatible=redistribute_ids,
+     .working_bytes=grouping_bytes, .params_schema=erc_params_schema,
+     .incompatible=redistribute_ids,
      .requires_any={}, .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-resid-v1 (R-11, strategy_ic_theme_resid.cpp): residualises the standardised planes
     {.id=theme_residualise_rule, .version="v1", .block_key="theme_residualise",
@@ -499,21 +463,21 @@ constexpr std::array<CompositionRule,8> rule_table{{
      .recipe_key="composition_residualise", .recipe_text={},
      .working_bytes="per name 8 B per theme plus 8 B of regression scratch, on the standardise "
                     "planes",
-     .params_schema=resid_schema, .incompatible=resid_excludes, .requires_any=standardise_ids,
+     .params_schema=no_params_schema, .incompatible=resid_excludes, .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-tsmom-v1 (Y-2, strategy_ic_theme_tsmom.cpp): the theme masses in force per date
     {.id=theme_tsmom_rule, .version="v1", .block_key="theme_schedule",
      .stage=IcStageKind::schedule, .parse=&composition_schedule, .verify=nullptr,
      .recipe_key="composition_schedule", .recipe_text={},
      .working_bytes="none beyond the standardise planes (the block masses)",
-     .params_schema=tsmom_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
+     .params_schema=tsmom_params_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // two-speed-v1 (Y-5, strategy_ic_two_speed.cpp): the fast and slow sleeves beside the blend
     {.id=two_speed_rule, .version="v1", .block_key="theme_sleeves",
      .stage=IcStageKind::sleeves, .parse=&composition_sleeves, .verify=nullptr,
      .recipe_key="composition_sleeves", .recipe_text={},
      .working_bytes="two f64 dates x names sleeve planes and one f64 per date (the fast share)",
-     .params_schema=sleeves_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
+     .params_schema=no_params_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
 }};
 // What the exe offers beyond the v7 CLI (the envelope's capabilities; lane E2 reads them in place

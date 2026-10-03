@@ -82,7 +82,7 @@ struct CompositionRule {
   std::string_view recipe_key;     // the recipe and combined-manifest key that records the id
   std::string_view recipe_text;    // the recipe composition statement after the signs (empty: kept)
   std::string_view working_bytes;  // the composition envelope term (ic_composition_stage_bytes)
-  std::string_view params_schema;  // JSON Schema of the block
+  std::string_view params_schema;  // JSON Schema of a K-P9-9 manifest rule's params (D1-PSCHEMA)
   std::span<const std::string_view> incompatible;  // ids refused in one document with it
   std::span<const std::string_view> requires_any;  // one of these ids must be present (empty: none)
   // theme_standardise rows (finding R6B-C-5): whether the block may switch the re-rank off (the
