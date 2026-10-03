@@ -30,12 +30,12 @@ import test_research_fields_holdings as thold
 import test_research_fields_mgr13f as tmgr
 
 IDS = [101, 202, 303, 404, 505, 606, 707, 808]
-SESSIONS = thold.SESSIONS            # 2024-05-01 .. 2024-12-31 weekdays
-QS = [dt.date(2024, 3, 31), dt.date(2024, 6, 30), dt.date(2024, 9, 30)]
+SESSIONS = thold.SESSIONS            # 2023-05-01 .. 2023-12-29 weekdays
+QS = [dt.date(2023, 3, 31), dt.date(2023, 6, 30), dt.date(2023, 9, 30)]
 SECS = {f"C{s}": s for s in IDS + [909]}                      # 909 is mapped but not a role line; CUNM is unmapped
 PRICE = {"C101": 50.0, "C202": 40.0, "C303": 30.0, "C404": 20.0, "C505": 25.0, "C606": 60.0, "C707": 70.0,
          "C808": 80.0, "C909": 90.0, "CUNM": 10.0}
-T_Q3 = SESSIONS.index(dt.date(2024, 9, 30))
+T_Q3 = SESSIONS.index(dt.date(2023, 9, 29))   # the Q3 quarter-end session (09-30 is a Saturday)
 NOT_MEMBER = (T_Q3, 707)             # 707 is not a member at the Q3 quarter-end session: not a Q3 node
 INDEX_LIKE = {"1": 0.05, "9": 0.02}  # books holding a fixed fraction of every line's shares_out
 BOOKS = {
@@ -51,8 +51,8 @@ ACTIVE = {2, 3, 4, 5, 6}             # 505 is a node held only by the index-like
 Q3_BOOKS = {"2": {"C101": 400, "C202": 300, "C808": 50}, "4": {"C606": 900, "C808": 300}}
 K, CMIN = 3, 2
 RECIPE = ["si_shares", "shares_out", con.NAME]
-CUT = dt.date(2024, 11, 18)          # Q3 becomes visible on 2024-11-19 (V = 11-15 22:00 UTC)
-PRICE_CUT = SESSIONS.index(dt.date(2024, 10, 15))
+CUT = dt.date(2023, 11, 16)          # Q3 becomes visible on 2023-11-17 (V = 11-15 22:00 UTC)
+PRICE_CUT = SESSIONS.index(dt.date(2023, 10, 17))
 
 
 @contextlib.contextmanager
@@ -338,12 +338,12 @@ class ConnectedField(unittest.TestCase):
             self.assertNotIn(sid, nets[QS[1]])
             self.assertTrue(np.isnan(self.got[:, IDS.index(sid)]).all())
         j707 = IDS.index(707)
-        t_in, t_out = SESSIONS.index(dt.date(2024, 11, 27)), SESSIONS.index(dt.date(2024, 11, 29))
+        t_in, t_out = SESSIONS.index(dt.date(2023, 11, 27)), SESSIONS.index(dt.date(2023, 11, 29))
         self.assertTrue(math.isfinite(self.got[t_in, j707]))                  # Q2's network, still fresh
         self.assertTrue(math.isnan(self.got[t_out, j707]))                    # Q2 stale after 150 days
         per_q = self.manifest["source_checks"]["connected"]["thirteenf"]["per_quarter"]
-        self.assertEqual(per_q["2024-03-31"]["not_built"], "the quarter end is before the first role session")
-        for q, nodes in (("2024-06-30", 7), ("2024-09-30", 6)):
+        self.assertEqual(per_q["2023-03-31"]["not_built"], "the quarter end is before the first role session")
+        for q, nodes in (("2023-06-30", 7), ("2023-09-30", 6)):
             self.assertEqual(per_q[q]["nodes"], nodes)
             self.assertEqual(per_q[q]["nodes_with_connections"], nodes - 1)       # 505
             self.assertEqual(per_q[q]["active_owners"], len(ACTIVE))
@@ -361,7 +361,7 @@ class ConnectedField(unittest.TestCase):
                                           "conn_min": CMIN})
         self.assertEqual(e["formula_id"], "ap-connected-ret63-13f-v1")
         clock = self.manifest["source_checks"]["connected"]["thirteenf"]["quarter_visible_at"]
-        self.assertEqual(clock["2024-09-30"], "2024-11-15T22:00:00.000000000Z")
+        self.assertEqual(clock["2023-09-30"], "2023-11-15T22:00:00.000000000Z")
         self.assertTrue(math.isfinite(self.got[t, j]))
 
     def test_point_in_time_probe_13f(self):
