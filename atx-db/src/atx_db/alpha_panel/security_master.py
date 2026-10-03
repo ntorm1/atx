@@ -33,8 +33,35 @@ DEAD_BEFORE = "2026-09-01"
 INDEX_ID_MIN = 1_000_000_000_000
 EXCHANGE_BY_CLASS = {
     "NNM": "XNAS", "NSC": "XNAS", "NCM": "XNAS", "NGM": "XNAS", "NMS": "XNAS", "NASDAQ": "XNAS",
-    "NYSE": "XNYS", "AMEX": "XASE", "ARCA": "ARCX", "BATS": "BATS", "IEXG": "IEXG", "OTC": "OTC", "OTCBB": "OTC",
+    "NYSE": "XNYS", "AMEX": "XASE", "ARCA": "ARCX", "BATS": "BATS", "BZX": "BATS", "SC": "XNAS",
+    "IEXG": "IEXG", "IEX": "IEXG", "OTC": "OTC", "OTCBB": "OTC",
 }
+FINRA_STALE_DAYS = 45
+
+
+def exchange_case(col: str) -> str:
+    """FINRA listing market class to the warehouse MIC; unsupported values remain unknown."""
+    return "CASE upper(" + col + ") " + " ".join(
+        f"WHEN '{k}' THEN '{v}'" for k, v in EXCHANGE_BY_CLASS.items()) + " END"
+
+
+def listed_panel_sql(panel: str) -> str:
+    """Repair only NULL frozen-panel exchanges from dated, fresh FINRA listing evidence.
+
+    Inherits T1-b: dissemination_date < session_date and the panel's 45-day freshness.
+    Never infer an exchange from a ticker or default an unsupported class to Nasdaq.
+    """
+    names = C.build_root() / "security_master" / "finra_names.parquet"
+    if not names.exists():
+        return f"SELECT * FROM read_parquet('{panel}', union_by_name=true, hive_partitioning=false)"
+    return f"""SELECT p.* REPLACE (coalesce(p.exchange,
+        CASE WHEN p.session_date - f.dissemination_date <= {FINRA_STALE_DAYS}
+             THEN {exchange_case('f.market_class')} END) AS exchange)
+        FROM read_parquet('{panel}', union_by_name=true, hive_partitioning=false) p
+        ASOF LEFT JOIN (SELECT security_id, dissemination_date, any_value(market_class) AS market_class
+                        FROM read_parquet('{names.as_posix()}') WHERE issue_name IS NOT NULL
+                        GROUP BY 1, 2) f
+        ON p.security_id=f.security_id AND p.session_date > f.dissemination_date"""
 TRUNCATED_SUFFIX = {"W": "warrant", "U": "unit", "R": "right"}
 
 

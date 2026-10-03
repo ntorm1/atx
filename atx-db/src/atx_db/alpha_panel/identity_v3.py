@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from . import common as C
+from .security_master import listed_panel_sql
 from . import identity_names as N
 from . import shortflow_common as S
 
@@ -77,7 +78,7 @@ RECENT_DAYS = 120
 MIN_WEIGHT = 2
 MEMORY = "220MB"
 EXPORT_SEAL = "2024-01-01"      # consumer seal for the bridge exports (global constraint 1)
-MODULES = ("identity_v3", "identity_names", "shortflow_common", "common")
+MODULES = ("identity_v3", "identity_names", "shortflow_common", "security_master", "common")
 DEAD_BEFORE = "2026-09-01"
 FIRST_SESSION = "2017-10-01"
 
@@ -699,7 +700,7 @@ def codes() -> dict[str, Any]:
     con.execute(f"""CREATE TABLE d AS
         SELECT p.session_date, p.security_id, p.exchange, CASE p.exchange {ex} END AS exchcd,
                {shrcd_sql()} AS shrcd, p.security_type
-        FROM read_parquet('{panel}', hive_partitioning = false) p""")
+        FROM ({listed_panel_sql(panel)}) p""")
     dest = root / "security_master" / "share_exchange_history.parquet"
     n = C.copy_to_parquet(con, f"""
         WITH c AS (SELECT session_date, row_number() OVER (ORDER BY session_date) AS k,
@@ -723,7 +724,8 @@ def codes() -> dict[str, Any]:
     C.write_json_atomic(root / "security_master" / "share_exchange_history_manifest.json", {
         "schema": "atx.alpha-panel.share-exchange-history/v1", "status": "complete", "rule_text": __doc__,
         "code": C.code_identity(*MODULES), "files": C.output_hashes(root / "security_master", "share_exchange_history.parquet"),
-        "input_manifests_sha256": {"panel_manifest_sha256": C.sha256_file(root / "panel" / "manifest.json")}
+        "input_manifests_sha256": {"panel_manifest_sha256": C.sha256_file(root / "panel" / "manifest.json"),
+            "security_master_manifest_sha256": C.sha256_file(root / "security_master" / "manifest.json")}
         if (root / "panel" / "manifest.json").exists() else {},
         "exchcd": EXCHCD, "shrcd_rule": shrcd_sql(), "receipt": rec})
     return rec

@@ -50,11 +50,12 @@ import sys
 from typing import Any
 
 from . import common as C
+from .security_master import listed_panel_sql
 from . import market_common as M
 
 STAGE = "indexes"
 SCHEMA = "atx.alpha-panel.indexes/v1"
-MODULES = ("indexes", "market_common", "common")
+MODULES = ("indexes", "market_common", "security_master", "common")
 LISTED = ("XNYS", "XNAS", "XASE", "ARCX", "BATS")
 RUSSELL = [("2018-05-11", "2018-06-22"), ("2019-05-10", "2019-06-28"), ("2020-05-08", "2020-06-26"),
            ("2021-05-07", "2021-06-25"), ("2022-05-06", "2022-06-24"), ("2023-04-28", "2023-06-23"),
@@ -162,7 +163,7 @@ def snapshot(con, d: dt.date) -> list[dict[str, Any]]:
     cur = con.execute(f"""
         SELECT p.security_id, p.cik, p.raw_close, s.shrout, s.shrout * p.raw_close AS me, p.ni_ttm, p.ni_q,
                l.adv_63
-        FROM read_parquet('{panel}', union_by_name = true, hive_partitioning = false) p
+        FROM ({listed_panel_sql(panel)}) p
         JOIN read_parquet('{shares}') s USING (session_date, security_id)
         LEFT JOIN read_parquet('{liq}') l USING (session_date, security_id)
         WHERE p.session_date = DATE '{d}' AND p.security_type IN ('common', 'common_unverified', 'REIT')

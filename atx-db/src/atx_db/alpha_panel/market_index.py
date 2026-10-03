@@ -1,7 +1,8 @@
 """Stage ``market_index`` (S3 market returns): CRSP-style value- and equal-weight index returns, plus the S3 exit
 checks against the French library -> ``market/index_returns.parquet`` and ``validation/factors_market.json``.
 
-Universes, per session, from the panel (read only):
+Universes, per session, from the frozen panel, NULL exchanges repaired from dated fresh FINRA evidence (T1-b).
+Aggregate-return input rows and output periods are bounded by --end <= 2022-12-31 (R5):
 
 * ``member_common``: ``member_equity`` and a CRSP share-code 10/11-like common stock: ``security_type`` common or
   common_unverified, not an ADR (``is_adr`` / ``is_adr_likely``), foreign private issuer (``is_fpi``), REIT,
@@ -46,16 +47,17 @@ import sys
 from typing import Any
 
 from . import common as C
+from .security_master import listed_panel_sql
 from . import market_common as M
 
 STAGE = "market_index"
 SCHEMA = "atx.alpha-panel.market-index/v1"
 RULE = "crsp-index-v1"
-MODULES = ("market_index", "market_common", "common")
+MODULES = ("market_index", "market_common", "security_master", "common")
 OUT_DIR = "market"
 HOLDOUT_END = dt.date(2022, 12, 31)
 LISTED = ("XNYS", "XNAS", "XASE", "ARCX", "BATS")
-INPUTS = ("panel", "market/market_shares_manifest.json", "reference", "prices", "prices_history")
+INPUTS = ("panel", "market/market_shares_manifest.json", "reference", "prices", "prices_history", "security_master")
 GATES = {"mkt_rf_monthly_rho": 0.99, "smb_monthly_rho": 0.90, "mkt_all_common_monthly_rho_2013": 0.99}
 HISTORY_START = dt.date(2013, 1, 1)
 HISTORY_RULE = "crsp-index-history-v1"
@@ -63,7 +65,7 @@ HISTORY_RULE = "crsp-index-history-v1"
 LAKE_STAGES = [
     {"name": "market_index", "lane": "MKT", "schema": "atx.alpha-panel.market-index/v1",
      "module": "atx_db.alpha_panel.market_index", "args": ["build"],
-     "inputs": ["panel", "market_shares", "reference", "prices", "prices_history"],
+     "inputs": ["panel", "market_shares", "reference", "prices", "prices_history", "security_master"],
      "manifest": "market/market_index_manifest.json",
      "outputs": [{"glob": "market/index_returns.parquet", "view": "market_index_returns"}],
      "staleness": "daily; rebuilt with the panel", "vintage": "event", "guard_gb": 0.5},
@@ -78,8 +80,10 @@ def common_filter(alias: str = "p") -> str:
             f"AND NOT coalesce({a}.is_royalty_trust, false)")
 
 
-def load_universe(con, receipt: dict[str, Any]) -> None:
+def load_universe(con, receipt: dict[str, Any], end: dt.date = HOLDOUT_END) -> None:
     """``u``: every all_common / member_common line-session with ME, return and sort inputs (disk-backed)."""
+    if end > HOLDOUT_END:
+        raise ValueError("D6: aggregate market returns must end before 2023")
     panel = (C.build_root() / "panel" / "year=*" / "*.parquet").as_posix()
     shares = (C.build_root() / OUT_DIR / "shares_daily" / "year=*" / "shares_daily.parquet").as_posix()
     listed = ", ".join(f"'{x}'" for x in LISTED)
@@ -88,10 +92,10 @@ def load_universe(con, receipt: dict[str, Any]) -> None:
         SELECT p.session_date, p.security_id, p.cik, coalesce(p.is_issuer_primary, true) AS is_primary,
                p.exchange, p.raw_close, p.ret, coalesce(p.ret_guarded, true) AS ret_guarded,
                coalesce(p.member_equity, false) AS member_common, s.shrout, s.shrout * p.raw_close AS me
-        FROM read_parquet('{panel}', union_by_name = true, hive_partitioning = false) p
+        FROM ({listed_panel_sql(panel)}) p
         LEFT JOIN read_parquet('{shares}', hive_partitioning = false) s USING (session_date, security_id)
         WHERE {common_filter('p')} AND coalesce(p.is_operating, false) AND NOT coalesce(p.is_index, false)
-          AND p.exchange IN ({listed})
+          AND p.exchange IN ({listed}) AND p.session_date <= DATE '{end}'
     """)
     receipt["universe"] = [list(map(str, r)) for r in con.execute("""
         SELECT year(session_date), count(*), count(*) FILTER (WHERE member_common), count(me),
@@ -382,7 +386,7 @@ def build(end: dt.date = HOLDOUT_END) -> dict[str, Any]:
     receipt: dict[str, Any] = {"rule": RULE}
     con = C.connect(memory="300MB", threads=2, db_file="mkt_index.duckdb")
     with C.timed(receipt, "universe"):
-        load_universe(con, receipt)
+        load_universe(con, receipt, end)
     with C.timed(receipt, "index"):
         build_index(con, receipt)
     with C.timed(receipt, "factor_checks"):
