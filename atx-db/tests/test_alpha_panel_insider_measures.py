@@ -21,6 +21,7 @@ def test_price_sanity_boundaries_ambiguous_class_and_close_clock(tmp_path):
         v(cik, security_id, session_date, raw_close)""")
     con.execute(f"COPY p TO '{p.as_posix()}' (FORMAT parquet)")
     trades = """SELECT * FROM (VALUES
+        (1, DATE '2020-05-01', 3.0, 100.0, 300.0, NULL),
         (1, DATE '2020-05-01', 2.0, 100.0, 200.0, TIMESTAMPTZ '2020-05-01 12:00:00Z'),
         (1, DATE '2020-05-01', 50.0, 100.0, 5000.0, TIMESTAMPTZ '2020-05-02 12:00:00Z'),
         (1, DATE '2020-05-01', 50.1, 100.0, 5010.0, TIMESTAMPTZ '2020-05-02 12:00:00Z'),
@@ -30,6 +31,8 @@ def test_price_sanity_boundaries_ambiguous_class_and_close_clock(tmp_path):
     columns = [c[0] for c in con.description]
     rows = [dict(zip(columns, row)) for row in result]
     by_price = {(r["issuer_cik"], float(r["price"])): r for r in rows}
+    assert by_price[(1, 3)]["available_at"] is None
+    assert by_price[(1, 3)]["value"] == 300
     assert by_price[(1, 2)]["value"] == 200
     assert by_price[(1, 50)]["value"] == 5000
     assert by_price[(1, 50.1)]["value"] is None

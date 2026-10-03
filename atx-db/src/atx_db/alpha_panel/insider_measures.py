@@ -86,8 +86,8 @@ def price_sanity_sql(trades: str, prices: str) -> str:
                 WHEN price NOT BETWEEN 0.2 * panel_close AND 5.0 * panel_close THEN 'price_outside_0.2_5x'
                 ELSE 'qualified' END AS price_sanity,
            panel_close,
-           greatest(t.available_at, (CAST(t.transaction_date AS TIMESTAMP) + INTERVAL 22 HOUR)
-                    AT TIME ZONE 'UTC') AS available_at
+           CASE WHEN t.available_at IS NULL THEN NULL ELSE greatest(t.available_at, (CAST(t.transaction_date AS TIMESTAMP) + INTERVAL 22 HOUR)
+                    AT TIME ZONE 'UTC') END AS available_at
     FROM ({trades}) t LEFT JOIN p USING (issuer_cik, transaction_date)"""
 
 

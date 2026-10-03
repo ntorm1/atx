@@ -140,14 +140,41 @@ def test_native_coverage_preserves_full_denominator_strict_clock_and_latest_quar
           inst_breadth_change,cohort_complete,quality_status)""")
     for table,path in (("m",member),("m",expected),("f",features)):
         con.execute(f"COPY {table} TO '{path.as_posix()}' (FORMAT parquet)")
+    calendar_path=tmp_path / "calendar.parquet"
+    con.execute(f"COPY (SELECT DISTINCT session_date,cutoff AS previous_session_close FROM m) TO '{calendar_path.as_posix()}' (FORMAT parquet)")
     specfile=tmp_path / "coverage.json"
-    item=dict(path=str(member),path_sha256=sha256_file(member),expected_keys=str(expected),expected_keys_sha256=sha256_file(expected))
+    item=dict(calendar=str(calendar_path),calendar_sha256=sha256_file(calendar_path),cutoff_policy="daily_previous_session_close",path=str(member),path_sha256=sha256_file(member),expected_keys=str(expected),expected_keys_sha256=sha256_file(expected))
     spec={name:item.copy() for name in ("member_equity","univ_all_common","univ_r3000p")}
     specfile.write_text(json.dumps(spec))
     receipt=measure_coverage(specfile,features,tmp_path / "coverage-out.json")
     level=next(row for row in receipt["reports"]["member_equity"] if row["metric"]=="inst_ownership")
     assert level["benchmark_cells"]==3 and level["qualified_cells"]==1
     assert level["known_zero_cells"]==1 and level["no_visible_feature_cells"]==2
+    for date,clock,valid in (("2020-05-31","2020-05-31T22:00:00Z",True),
+                             ("2020-05-30","2020-05-30T22:00:00Z",False),
+                             ("2020-05-31","2020-05-29T22:00:00Z",False)):
+        for path in (member,expected):
+            con.execute(f"COPY (SELECT DATE '{date}' AS session_date,security_id,TIMESTAMPTZ '{clock}' AS cutoff FROM m) TO '{path.as_posix()}' (FORMAT parquet)")
+        for item in spec.values():
+            item.update(path_sha256=sha256_file(member),expected_keys_sha256=sha256_file(expected),cutoff_policy="monthly_month_end_close")
+        specfile.write_text(json.dumps(spec))
+        output=tmp_path / (date+clock[8:10]+"-monthly.json")
+        if valid:
+            assert measure_coverage(specfile,features,output)["reports"]["member_equity"][0]["benchmark_cells"]==3
+        else:
+            with pytest.raises(ValueError,match="declared month-end close"):
+                measure_coverage(specfile,features,output)
+    for path in (member,expected):
+        con.execute(f"COPY m TO '{path.as_posix()}' (FORMAT parquet)")
+    for item in spec.values():
+        item.update(path_sha256=sha256_file(member),expected_keys_sha256=sha256_file(expected),cutoff_policy="daily_previous_session_close")
+    for bad_cutoff in ("2026-05-15T22:00:00Z","2020-05-18T12:00:00Z","2020-05-15T21:00:00Z"):
+        con.execute(f"COPY (SELECT * EXCLUDE(cutoff),TIMESTAMPTZ '{bad_cutoff}' AS cutoff FROM m) TO '{member.as_posix()}' (FORMAT parquet)")
+        for item in spec.values():
+            item["path_sha256"]=sha256_file(member)
+        specfile.write_text(json.dumps(spec))
+        with pytest.raises(ValueError,match="pinned previous session close"):
+            measure_coverage(specfile,features,tmp_path / (bad_cutoff[:10]+bad_cutoff[11:13]+"-fail.json"))
     con.execute(f"COPY (SELECT * FROM m WHERE security_id!=102) TO '{member.as_posix()}' (FORMAT parquet)")
     for item in spec.values():
         item["path_sha256"]=sha256_file(member)
@@ -162,7 +189,7 @@ def test_pit_cohort_baseline_future_manager_entrants_missing_and_amendments():
     at=lambda day:dt.datetime(2020,5,day,20,tzinfo=dt.UTC)
     def original(manager,day):
         return dict(filer_cik=manager,form="13F-HR",accession=f"manager{manager}-{day}",
-                    available_at=at(day).isoformat(),qualified_original=True)
+                    available_at=at(day).isoformat(),qualified_original=True,source_qualified=True)
     prior=[original("0001",10),original("2",21)]
     current=[original("1",15),original("2",19)]
     earlier=cohort_state(prior,current,at(20))
@@ -177,6 +204,18 @@ def test_pit_cohort_baseline_future_manager_entrants_missing_and_amendments():
     assert cohort_state(prior,current+[amendment],at(20))["prior_visible_baseline_complete"]
     later=cohort_state(prior,current+[amendment],at(20)+dt.timedelta(microseconds=1))
     assert not later["prior_visible_baseline_complete"]
+    assert "amendment" not in earlier["source_accessions"]
+    evidence=next(row for row in later["source_lineage"] if row["accession"]=="amendment")
+    assert evidence["blocking_reason"]=="amendment_source_unqualified" and evidence["available_at"]==at(20).isoformat()
+    for flag in (False,None):
+        bad=dict(current[0],source_qualified=flag)
+        state=cohort_state(prior,[bad],at(20))
+        assert not state["prior_visible_baseline_complete"] and not state["contemporaneous_arrived_complete"]
+        state=cohort_state([dict(prior[0],source_qualified=flag)],current,at(20))
+        assert not state["prior_visible_baseline_complete"]
+    notice=dict(amendment,form="13F-NT",accession="notice")
+    state=cohort_state(prior,current+[notice],at(20)+dt.timedelta(microseconds=1))
+    assert next(row for row in state["source_lineage"] if row["accession"]=="notice")["blocking_reason"]=="notice_resolution_unqualified"
     assert cohort_state(prior,current,at(22))["prior_visible_baseline_manager_ids"]==["1","2"]
 
 
@@ -186,9 +225,9 @@ def test_native_cohort_vintages_preserve_missing_populations_and_rejected_access
     monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT",str(tmp_path / "lake"))
     filing=tmp_path / "filings.jsonl"
     rows=[dict(accession="prior",form="13F-HR",filer_cik=1,report_date="2019-12-31",
-               available_at="2020-02-15T20:00:00Z",qualified_original=True),
+               available_at="2020-02-15T20:00:00Z",qualified_original=True,source_qualified=True),
           dict(accession="current",form="13F-HR",filer_cik=1,report_date="2020-03-31",
-               available_at="2020-05-15T20:00:00Z",qualified_original=True),
+               available_at="2020-05-15T20:00:00Z",qualified_original=True,source_qualified=True),
           dict(accession="missing",form="13F-HR",filer_cik=2,report_date=None,available_at=None)]
     filing.write_text("".join(json.dumps(row)+"\n" for row in rows))
     manifest=tmp_path / "manifest.json"

@@ -173,3 +173,9 @@ security aggregation, stakes parser/handchecks/rebuild, insider quiescent-input
 and realbuild qualification, finaluniverse_release_v1/v11bindings, R15 full reader-
 product provenance/key admission, realall-universe coverage/operationalrebuilds,
 economic-source approvals and independent review. No gate weakened or implied PASS.
+
+## Independent native checkpoint review fix round 1/5
+
+Addressed I1-I4 in review-T11-native-findings.md. Coverage requires pinned independent calendar and declared GC1 daily previous-session 22:00 UTC or monthly stamped-month-end 22:00 UTC policy; null/duplicate calendars, future/mismatched cutoffs and non-month-end monthly dates reject measurement. Missing insider filing clock stays NULL rather than being fabricated from close evidence. Prior/current original and arrived cohort completion require affirmative source qualification. Every selected original plus relevant visible amendment/notice has accession, public clock and blocking-reason lineage persisted by native cohort producer.
+
+Focused offline commands (PYTHONPATH=C:/atx/atx-db/src, OPENBLAS_NUM_THREADS=1): `pytest -n 0 tests/test_alpha_panel_thirteenf_features.py -q` 9 passed after GC1 correction; `pytest -n 0 tests/test_alpha_panel_insider_measures.py -q` 4 passed. Fixtures cover future-year/same-session/wrong-hour daily cutoffs, valid/month-end-invalid monthly cutoffs, NULL filing clock and same-day acceptance, false/missing original qualification, and amendment/notice lineage around actual public clock. No actual data jobs, source hashes or HTTP; original source/economic gates and all previously listed full Task11 gaps remain unmeasured/open. Independent review required before actual producer builds.

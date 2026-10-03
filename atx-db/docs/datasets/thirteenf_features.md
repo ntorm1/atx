@@ -60,3 +60,5 @@ then latest vintage with strict clock; uses inherited150calendar-day staleness.
 Reports levels/changes/breadth peryear2020+, nonnull/fresh/qualified/knownzero,
 incompletecohort/missingfeature/stale counts separately. No return evaluation.
 UNQUALIFIED source features cannot become qualified coverage or known-zero cells.
+
+Coverage specifications additionally require `calendar`, `calendar_sha256` and `cutoff_policy`. The independently pinned calendar has unique DATE `session_date` and TIMESTAMPTZ `previous_session_close`. `daily_previous_session_close` requires exact previous-session 22:00 UTC; `monthly_month_end_close` requires the stamped date to be a calendar month-end and exact 22:00 UTC of that date, with calendar evidence for that month. Future and mismatched cutoffs reject measurement without shrinking denominators.

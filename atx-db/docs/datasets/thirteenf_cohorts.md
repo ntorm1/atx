@@ -29,3 +29,5 @@ and parent publication are pinned before/after. Stage remains UNQUALIFIED.
 No real cohort build or source/economic admission is established. Public-source
 closure, original verification, full native position assembly and review remain
 open; these metadata products alone cannot certify ownership/buying/zero.
+
+Completion requires affirmative `qualified_original` and `source_qualified` for both selected prior/current originals; missing/false qualifications remain incomplete. `source_lineage` is JSON containing each selected original and every visible relevant amendment/notice accession, public clock, form, manager and blocking reason; `source_accessions` includes all these contributors. Lineage preserves strict visibility before each snapshot.

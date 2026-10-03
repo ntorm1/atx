@@ -26,3 +26,5 @@ out-of-range prices, ambiguous classes and the conservative close clock.
 Stage acceptance additionally needs pinned stable input files, final universe
 bindings, real rebuild and independent review. Existing monthly aggregation
 reports observed sums; incomplete price coverage must be evaluated separately.
+
+Missing filing `available_at` remains NULL after close-price qualification; a price close cannot fabricate filing availability. Such trades stay outside PIT windows requiring a public clock, while monetary diagnostics may remain present.

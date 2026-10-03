@@ -46,6 +46,7 @@ def cohort_state(prior:list[dict[str,Any]],current:list[dict[str,Any]],cutoff:dt
     previous,arrived=originals(prior),originals(current)
     def amendment_blocks(rows):
         blocked=set()
+        lineage=[]
         for row in rows:
             at=dt.datetime.fromisoformat(row["available_at"].replace("Z","+00:00"))
             if at.tzinfo is None:
@@ -53,13 +54,28 @@ def cohort_state(prior:list[dict[str,Any]],current:list[dict[str,Any]],cutoff:dt
             if at<cutoff and row["form"] in {"13F-HR/A","13F-NT","13F-NT/A"}:
                 if row["form"]!="13F-HR/A" or row.get("source_qualified") is not True or row.get("amendment_type") not in {"RESTATEMENT","NEW HOLDINGS"}:
                     blocked.add(str(int(row["filer_cik"])))
-        return blocked
-    previous_blocked,current_blocked=amendment_blocks(prior),amendment_blocks(current)
+                    reason=("notice_resolution_unqualified" if row["form"]!="13F-HR/A" else
+                            "amendment_source_unqualified" if row.get("source_qualified") is not True else
+                            "amendment_type_unresolved")
+                else:
+                    reason=None
+                lineage.append(dict(accession=row["accession"],available_at=at.isoformat(),
+                    form=row["form"],filer_cik=str(int(row["filer_cik"])),blocking_reason=reason))
+        return blocked,lineage
+    previous_blocked,previous_lineage=amendment_blocks(prior)
+    current_blocked,current_lineage=amendment_blocks(current)
+    lineage=[dict(accession=row["accession"],available_at=at.isoformat(),form=row["form"],
+                  filer_cik=manager,blocking_reason=(None if row.get("qualified_original") is True
+                  and row.get("source_qualified") is True else "original_source_unqualified"))
+             for selected in (previous,arrived) for manager,(at,row) in selected.items()]
+    lineage+=previous_lineage+current_lineage
+    lineage=sorted(lineage,key=lambda row:(row["available_at"],row["accession"]))
     baseline=set(previous)
     entrants=set(arrived)-baseline
     outstanding=baseline-set(arrived)
     baseline_complete=bool(baseline) and not outstanding and all(
         previous[m][1].get("qualified_original") is True and arrived[m][1].get("qualified_original") is True
+        and previous[m][1].get("source_qualified") is True and arrived[m][1].get("source_qualified") is True
         and m not in previous_blocked and m not in current_blocked
         for m in baseline)
     return {"prior_visible_baseline_manager_ids":sorted(baseline),
@@ -67,11 +83,10 @@ def cohort_state(prior:list[dict[str,Any]],current:list[dict[str,Any]],cutoff:dt
         "contemporaneous_arrived_manager_ids":sorted(arrived),"visible_entrant_manager_ids":sorted(entrants),
         "outstanding_manager_ids":sorted(outstanding),"comparison_population_managers":len(baseline),
         "prior_visible_baseline_complete":baseline_complete,
-        "contemporaneous_arrived_complete":bool(arrived) and not current_blocked and all(row[1].get("qualified_original") is True for row in arrived.values()),
+        "contemporaneous_arrived_complete":bool(arrived) and not current_blocked and all(row[1].get("qualified_original") is True and row[1].get("source_qualified") is True for row in arrived.values()),
         "retrospective_inventory_complete":None,"full_population_complete":False,
         "economic_ownership_zero_known":False,
-        "source_accessions":sorted({row[1]["accession"] for row in previous.values()} |
-                                   {row[1]["accession"] for row in arrived.values()})}
+        "source_accessions":sorted({row["accession"] for row in lineage}),"source_lineage":lineage}
 
 
 def _quarter_end(date:dt.date) -> dt.date:
@@ -140,7 +155,7 @@ def build_cohort_vintages(filings:Path,input_manifest:Path,*,event_start:dt.date
             visible_entrant_manager_ids VARCHAR[],outstanding_manager_ids VARCHAR[],comparison_population_managers BIGINT,
             prior_visible_baseline_complete BOOLEAN,contemporaneous_arrived_complete BOOLEAN,
             retrospective_inventory_complete BOOLEAN,full_population_complete BOOLEAN,economic_ownership_zero_known BOOLEAN,
-            source_accessions VARCHAR[],quality_status VARCHAR,PRIMARY KEY(period_q,available_at))""")
+            source_accessions VARCHAR[],source_lineage VARCHAR,quality_status VARCHAR,PRIMARY KEY(period_q,available_at))""")
         cursor=con.cursor()
         cursor.execute("""SELECT DISTINCT available_at,period_q FROM fil WHERE available_at>=? AND available_at<?
             ORDER BY available_at,period_q LIMIT ?""",[event_start,event_end,max_events+1])
@@ -162,11 +177,11 @@ def build_cohort_vintages(filings:Path,input_manifest:Path,*,event_start:dt.date
                         qualified_original=qualified,source_qualified=source_qualified,amendment_type=amendment_type)
                     (current if row_q==period else prior).append(record)
                 state=cohort_state(prior,current,clock+dt.timedelta(microseconds=1))
-                con.execute("INSERT INTO cohorts VALUES("+",".join("?" for _ in range(15))+") ON CONFLICT DO NOTHING",[
+                con.execute("INSERT INTO cohorts VALUES("+",".join("?" for _ in range(16))+") ON CONFLICT DO NOTHING",[
                     period,clock,state["prior_visible_baseline_cohort_id"],state["prior_visible_baseline_manager_ids"],
                     state["contemporaneous_arrived_manager_ids"],state["visible_entrant_manager_ids"],state["outstanding_manager_ids"],
                     state["comparison_population_managers"],state["prior_visible_baseline_complete"],
-                    state["contemporaneous_arrived_complete"],None,False,False,state["source_accessions"],"UNQUALIFIED_SOURCE_ADAPTERS"])
+                    state["contemporaneous_arrived_complete"],None,False,False,state["source_accessions"],json.dumps(state["source_lineage"]),"UNQUALIFIED_SOURCE_ADAPTERS"])
         if C.sha256_file(filings)!=input_hash or C.sha256_file(input_manifest)!=manifest_hash:
             raise RuntimeError("cohort source changed during build")
         rows=C.copy_to_parquet(con,"SELECT * FROM cohorts ORDER BY period_q,available_at",out / "cohorts.parquet")
@@ -331,6 +346,33 @@ def measure_coverage(specification: Path, features: Path, output: Path) -> dict[
             fields={r[0]:r[1] for r in con.execute(f"DESCRIBE SELECT * FROM {actual_sql}").fetchall()}
             if fields.get("cutoff")!="TIMESTAMP WITH TIME ZONE":
                 raise ValueError("membership cutoff requires timezone-aware timestamp")
+            if item.get("cutoff_policy") not in {"daily_previous_session_close", "monthly_month_end_close"}:
+                raise ValueError("declared daily/monthly cutoff policy required")
+            calendar_path=Path(item["calendar"])
+            calendar_hash=item["calendar_sha256"]
+            if C.sha256_file(calendar_path)!=calendar_hash:
+                raise ValueError("calendar identity mismatch")
+            identities[f"{name}:calendar"]={"path":str(calendar_path),"sha256":calendar_hash}
+            calendar_sql="read_parquet('"+calendar_path.as_posix().replace("'","''")+"',hive_partitioning=false)"
+            calendar_fields={r[0]:r[1] for r in con.execute(f"DESCRIBE SELECT * FROM {calendar_sql}").fetchall()}
+            if calendar_fields.get("session_date")!="DATE" or calendar_fields.get("previous_session_close")!="TIMESTAMP WITH TIME ZONE":
+                raise ValueError("pinned calendar requires typed session and previous close")
+            if con.execute(f"""SELECT count(*) FROM (SELECT session_date FROM {calendar_sql}
+                GROUP BY 1 HAVING session_date IS NULL OR count(*)!=1)""").fetchone()[0]:
+                raise ValueError("calendar null or duplicate sessions")
+            if item["cutoff_policy"]=="daily_previous_session_close":
+                invalid=con.execute(f"""SELECT count(*) FROM {actual_sql} m LEFT JOIN {calendar_sql} c USING(session_date)
+                    WHERE c.previous_session_close IS NULL OR m.cutoff!=c.previous_session_close
+                    OR CAST(c.previous_session_close AT TIME ZONE 'UTC' AS DATE)>=m.session_date
+                    OR CAST(c.previous_session_close AT TIME ZONE 'UTC' AS TIME)!=TIME '22:00:00'""").fetchone()[0]
+            else:
+                invalid=con.execute(f"""SELECT count(*) FROM {actual_sql} m
+                    WHERE m.session_date!=last_day(m.session_date)
+                    OR m.cutoff!=(CAST(m.session_date AS TIMESTAMP)+INTERVAL 22 HOUR) AT TIME ZONE 'UTC'
+                    OR NOT EXISTS(SELECT 1 FROM {calendar_sql} c
+                        WHERE date_trunc('month',c.session_date)=date_trunc('month',m.session_date))""").fetchone()[0]
+            if invalid:
+                raise ValueError("membership cutoff differs from pinned previous session close or declared month-end close")
             query=coverage_sql(member.as_posix(),features.as_posix())
             rows=con.execute(query).fetchall()
             columns=[r[0] for r in con.description]
