@@ -302,7 +302,11 @@ class Cycle:
         caps.update({k: v for k, v in self.runner_overrides.items() if k in CAP_KEYS})
         return caps
 
-    def runner(self, run_dir: str, binds: list[str], phase: str | None = None) -> list[str]:
+    def runner(self, run_dir: str, binds: list[str], phase: str | None = None, attempt: int = 1) -> list[str]:
+        """The bounded runner's argv up to its "--". ``attempt`` is the step's index in its phase's own numbering (the
+        IC passes' <out>-run<n>, the NAV's <out>-run<k> of --attempt nav=k, the fit's <out>-run<j> passes): k >= 2 is
+        passed as the runner's --attempt k, so the K-P9-10 receipt records it; k = 1 keeps the argv of before (P9 E2,
+        ruling E2-1). An OR-4 attempt-k sub-dir (retarget) carries the sub-dir's own k instead."""
         r = self.spec["runner"]
         caps = self.phase_caps(phase) if phase else {k: r[k] for k in CAP_KEYS}
         argv = [self.py, self.tool(r["script"])]
@@ -315,6 +319,8 @@ class Cycle:
         if self.spec.get("build") in research_tree.BUILD_TYPES:   # K-P9-10: the exes' build type in the receipt
             argv += ["--build-type", research_tree.BUILD_TYPES[self.spec["build"]]]
         argv += self.launch_flags(caps, phase)
+        if attempt >= 2:          # K-P9-10: before --output, where retarget puts an OR-4 sub-dir's --attempt
+            argv += ["--attempt", str(attempt)]
         argv += ["--output", run_dir]
         for b in binds:
             argv += ["--bind", b]
@@ -479,7 +485,7 @@ class Cycle:
                 # B-1: a screen skips the u-pass blend nobody reads (and so has no combined signal to save)
                 flags = [x for x in flags if x != "--save-combined"] + ["--no-composition"]
             themes, theme_binds = self.theme_registry()
-            argv = self.runner(run_dir, [s["exes"]["ic"], lib, role_m, fdm, *theme_binds], "u") + [
+            argv = self.runner(run_dir, [s["exes"]["ic"], lib, role_m, fdm, *theme_binds], "u", n) + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", u_out,
                 *flags, "--candidate-cache", self.cache_dir(), *themes]
@@ -507,7 +513,7 @@ class Cycle:
             weights = f"{w_dir}/{self.weights_name}"
             w_flags = research_spec.apply_flags(ic["flags"], ic.get("w_flags") or {}, "ic.w_flags")   # E-28
             themes, theme_binds = self.theme_registry()
-            argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights, *theme_binds], "w") + [
+            argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights, *theme_binds], "w", n) + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", wt_out,
                 *w_flags, "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
@@ -731,7 +737,7 @@ class Cycle:
         if "label_role" in s["inputs"]:   # v8 E-25: the label role marks every replayed book (review F-8: ref too)
             binds.append(self.ipath("label_role"))
             label = ["--label-role", self.ipath("label_role"), "--label-role-sha256", self.pin("label_role")]
-        argv = self.runner(run_dir, binds, phase) + [
+        argv = self.runner(run_dir, binds, phase, k) + [
             s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m,
             "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
             "--rule", nav["rule"], *flags, *label]
@@ -915,7 +921,8 @@ class Cycle:
         pool_argv, pool_binds = self.fit_pool or ([], [])   # H-1: --era ... --era-id of the anchor era
         resid_parent = "reference_resid_parent" in s["inputs"] and not self.fit_pool   # v8 R-11 (R6B-O-5)
         parent_binds = [self.ipath("reference_resid_parent")] if resid_parent else []
-        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm, *pool_binds, *parent_binds], "fit") + [
+        argv = self.runner(run_dir, [lib, self.ipath("recipe"), role_m, o, sm, *pool_binds, *parent_binds], "fit",
+                           j) + [
             self.py, self.tool(fit["script"]), "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
             role_sha, "--orientations", o, "--orientations-sha256", self.rt_sha(o), "--runner-summary", sm,
             "--runner-summary-sha256", self.rt_sha(sm), *fit["flags"]]

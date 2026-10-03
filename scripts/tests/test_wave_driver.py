@@ -11,6 +11,7 @@
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
   test_two_launches_never_overcommit      review E1 major: two simultaneous admits never count the same free memory
   test_adopt_never_kills_the_child        re-review 1 N2: adopt under the lock, retried; a failure only warns
+  test_claims_lock_failures_are_admission_waits  E1 minor: a claims-lock problem is an admission wait, not runner-error
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
@@ -30,10 +31,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 import psutil
 import pytest
@@ -95,7 +98,8 @@ def research_cycle_calls(fake, verb: str | None = None) -> list[list[str]]:
 def test_receipt_k_p9_10_keys(tmp_path):
     """Contract K-P9-10: the bounded runner's start.json and receipt.json carry argv_sha256 (research_tree.argv_sha256
     of the command after its executable), attempt (--attempt, default 1), executable_sha256 and build_type
-    (--build-type Debug | Release, else null); an attempt outside 1..99 or another build type is a usage error."""
+    (--build-type Debug | Release, else null); an attempt outside 1..99 or another build type is a usage error.
+    research_cycle passes --attempt k for an attempt k >= 2 of its numbered run dirs (ruling E2-1)."""
     root = tmp_path / "r"
     root.mkdir()
     runner = str(HERE.parent / "run_bounded_research.py")
@@ -129,6 +133,32 @@ def test_receipt_k_p9_10_keys(tmp_path):
     u = step_of(rroot, sp, "u")
     k = u.argv.index("--")
     assert u.argv[u.argv.index("--build-type") + 1] == "Release" and u.argv.index("--build-type") < k
+    # E1 review minor, ruling E2-1: an attempt k >= 2 of the existing numberings (the IC passes' <out>-run<n>, the NAV's
+    # --attempt nav=k, the fit's <out>-run<j> passes) is the runner's --attempt k, right before its --output; k = 1
+    # keeps the argv of before; an OR-4 sub-dir (retarget) replaces the value, never adds a second --attempt
+    def head(st):
+        return st.argv[:st.argv.index("--")]
+
+    def attempt_of(st):
+        h = head(st)
+        return h[h.index("--attempt") + 1] if "--attempt" in h else None
+    numbered = {"u": 2, "fit": 2, "w": 3, "nav": 4}
+    cyc = T.cycle_of(rroot, sp, attempts=numbered)
+    steps = {st.phase: st for st in cyc.steps()}
+    assert {p: attempt_of(steps[p]) for p in numbered} == {p: str(n) for p, n in numbered.items()}
+    for p, n in numbered.items():
+        h = head(steps[p])
+        assert h.index("--attempt") + 2 == h.index("--output") and h[h.index("--output") + 1] == steps[p].run_dir
+        assert steps[p].run_dir.endswith(f"-run{n}"), (p, steps[p].run_dir)
+    plain = {st.phase: st for st in T.cycle_of(rroot, sp).steps()}
+    assert all(attempt_of(st) is None for st in plain.values() if st.argv and "--" in st.argv)
+    for p, n in numbered.items():   # one phase numbered: its runner head differs only by the run dir and the pair
+        one = next(st for st in T.cycle_of(rroot, sp, attempts={p: n}).steps() if st.phase == p)
+        h, i = head(one), head(one).index("--attempt")
+        assert h[:i] + h[i + 2:] == [one.run_dir if x == plain[p].run_dir else x for x in head(plain[p])], p
+    sub = f"{steps['u'].run_dir}/attempt-3"
+    cyc.retarget(steps["u"], sub, 3)
+    assert head(steps["u"]).count("--attempt") == 1 and attempt_of(steps["u"]) == "3" and steps["u"].run_dir == sub
 
 
 def test_resume_refuses_argv_mismatch(tmp_path):
@@ -682,6 +712,60 @@ def test_adopt_never_kills_the_child(tmp_path, capsys):
         for p in helpers:
             p.kill()
             p.wait(30)
+
+
+def test_claims_lock_failures_are_admission_waits(tmp_path, monkeypatch):
+    """E1 review minor (HostClaims lock): a claims-lock problem is an admission wait (prelaunch-admission-timeout, an
+    AUTO_OUTCOMES refusal), never a runner-error. (a) PermissionError on the lock's create (Windows: a lock being
+    removed) is held, like FileExistsError; (b) a lock still unreadable LOCK_STALE_SECONDS after its last write (a
+    runner killed between create and write) is reclaimed, a fresh unreadable one is held; (c) the lock wait is bounded
+    by the admission's own wait left, and a held lock ends as AdmissionTimeout."""
+    me, claims = psutil.Process(), tmp_path / "claims"
+    args = admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=1.0)
+    lock = claims / RB.CLAIMS_LOCK
+
+    def admit_now(a=args):
+        return RB.admit(a, tmp_path / "o", available=lambda: 8 << 30, compilers=lambda: [], clock=Clock(),
+                        sleep=lambda s: None, owner=(me.pid, me.create_time()))
+    # (b) abandoned: empty and written a minute ago -> reclaimed, admitted
+    claims.mkdir(parents=True)
+    lock.write_text("")
+    old = lock.stat().st_mtime - 60
+    os.utime(lock, (old, old))
+    block, held = admit_now()
+    assert held.mine.exists() and not lock.exists() and "refused" not in block
+    held.release()
+    # (b) being written: empty but fresh (mtime ahead of now) -> held; (c) bounded by the admission wait -> timeout
+    lock.write_text("")
+    ahead = lock.stat().st_mtime + 3600
+    os.utime(lock, (ahead, ahead))
+    started = time.monotonic()
+    with pytest.raises(RB.AdmissionTimeout, match="host claims lock") as e:
+        RB.admit(admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=0.3), tmp_path / "o",
+                 available=lambda: 8 << 30, compilers=lambda: [], owner=(me.pid, me.create_time()))
+    assert time.monotonic() - started < RB.LOCK_WAIT_SECONDS / 2           # not the 30 s lock wait
+    assert lock.exists() and e.value.block["claimed_by_others_mib"] is None and RB.OUTCOME_ADMISSION in CR.AUTO_OUTCOMES
+    assert not list(claims.glob("*" + RB.CLAIM_SUFFIX))
+    # a live holder's readable lock: held the same way (this process holds it)
+    lock.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time()}))
+    clock = Clock()
+    with pytest.raises(RB.AdmissionTimeout, match="host claims lock"):
+        RB.admit(args, tmp_path / "o", available=lambda: 8 << 30, compilers=lambda: [], clock=clock,
+                 sleep=clock.sleep, owner=(me.pid, me.create_time()))
+    lock.unlink()
+    # (a) the create refused with PermissionError twice (a lock being removed), then free: admitted
+    real_open, refused = RB.os.open, []
+
+    def flaky_open(path, flags, *rest):
+        if Path(path) == lock and len(refused) < 2:
+            refused.append(path)
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, flags, *rest)
+    monkeypatch.setattr(RB.os, "open", flaky_open)
+    block, held = admit_now()
+    monkeypatch.undo()
+    assert len(refused) == 2 and held.mine.exists() and not lock.exists() and "refused" not in block
+    held.release()
 
 
 def gated_executor(names: set[str], seen: list[str]):

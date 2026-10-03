@@ -20,6 +20,13 @@ Contract K-P9-10: every receipt carries argv_sha256 (research_tree.argv_sha256 o
 the command after its executable), attempt (--attempt K, default 1),
 executable_sha256 and build_type (--build-type Debug | Release, else null);
 research_cycle refuses to resume an output whose receipt names another argv.
+For the readers (the wave, the scoreboard): attempt is the run dir's index in
+its own numbering. research_cycle passes --attempt k for k >= 2 of the IC
+passes' <out>-run<k>, the NAV's <out>-run<k> (--attempt nav=k) and the fit's
+<out>-run<k> passes, and an OR-4 sub-dir <run dir>/attempt-k records its own k;
+the run dir's path says which numbering. Receipts written before P9 E2 record 1
+for every numbered run dir. build_type null means the spec has no "build" key:
+the default equity build, which is Debug (the dev preset).
 
 Launch admission (P9 F-5 (a); each flag absent = no wait, as before):
 --admission-wait-seconds S waits, at most S seconds, before the launch until the
@@ -67,6 +74,9 @@ CLAIMS_DIR = Path(tempfile.gettempdir()) / "atx-host-claims"   # --host-claims d
 CLAIM_SUFFIX, CLAIMS_LOCK = ".claim", "claims.lock"
 REPLACE_RETRY_SECONDS = 2.0            # a claim's os.replace retried while another handle holds the file (Windows)
 ADOPT_LOCK_SECONDS = 5.0               # how long adopt waits for the claims lock before writing without it
+LOCK_WAIT_SECONDS = 30.0               # the longest one wait for the claims lock (admit: also its own wait left)
+LOCK_STALE_SECONDS = 5.0               # an unreadable claims lock this old is a killed writer's: reclaimed
+LOCK_RECLAIMS = 3                      # dead or abandoned locks one acquire removes before it only waits
 OUTCOME_ADMISSION = "prelaunch-admission-timeout"
 
 
@@ -76,6 +86,11 @@ class AdmissionTimeout(RuntimeError):
     def __init__(self, message: str, block: dict):
         super().__init__(message)
         self.block = block
+
+
+class LockTimeout(RuntimeError):
+    """The host claims lock stayed held for the whole wait (admit: one more admission check, retried until its own
+    wait runs out, then AdmissionTimeout; adopt: the claim is written without the lock)."""
 
 
 def live_owned(owned: dict) -> list[psutil.Process]:
@@ -197,34 +212,54 @@ class HostClaims:
                 remove(p)
         return out
 
-    def acquire_lock(self, seconds: float = 30.0) -> Path:
+    def acquire_lock(self, seconds: float = LOCK_WAIT_SECONDS) -> Path:
+        """Create ``<dir>/claims.lock`` (O_CREAT | O_EXCL) naming this owner, waiting at most ``seconds`` (at least one
+        try); raises LockTimeout. On Windows a lock being removed (or held open by a scanner) refuses the create with
+        PermissionError: held, like FileExistsError (E1 review minor). A held lock is reclaimed (``reclaim``) when its
+        holder is dead or when it is still unreadable LOCK_STALE_SECONDS after its last write."""
         self.dir.mkdir(parents=True, exist_ok=True)
-        lock, end = self.dir / CLAIMS_LOCK, time.monotonic() + seconds
+        lock, end, reclaims = self.dir / CLAIMS_LOCK, time.monotonic() + seconds, 0
         while True:
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 break
-            except FileExistsError:
-                try:
-                    held = json.loads(lock.read_text(encoding="utf-8"))
-                    if not is_alive(int(held["pid"]), float(held["create_time"])):
-                        remove(lock)                       # a killed runner's lock
-                        continue
-                except (OSError, ValueError, KeyError, TypeError):
-                    pass                                   # being written: held
+            except (FileExistsError, PermissionError):
+                if reclaims < LOCK_RECLAIMS and self.reclaim(lock):
+                    reclaims += 1                          # removed: create it again at once
+                    continue
                 if time.monotonic() > end:
-                    raise RuntimeError(f"host claims lock {lock} held for {seconds} s") from None
+                    raise LockTimeout(f"host claims lock {lock} held for {seconds:g} s") from None
                 time.sleep(0.05)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps({"pid": self.owner[0], "create_time": self.owner[1]}) + "\n")
         return lock
 
-    def try_claim(self, mib: int, need: int, output: str, available) -> dict:
-        """Under the claims lock: claim ``mib`` when (a) the live claims plus ``mib`` fit the budget and (b) free memory
-        (``available()`` bytes, read inside the lock) minus what the other claims have yet to allocate (each claim's
-        mib less its processes' RSS now, tree_rss_mib, at least 0) covers ``need`` (this process's peak + floor).
-        Returns {claimed, free_mib, claimed_by_others_mib, reserved_by_others_mib}."""
-        lock = self.acquire_lock()
+    @staticmethod
+    def reclaim(lock: Path) -> bool:
+        """Remove the claims lock ``lock`` when its holder is dead (a killed runner's lock), or when it is unreadable
+        and was last written more than LOCK_STALE_SECONDS ago (a runner killed between its create and its write; a
+        live holder writes at once). True when the caller should create it again now (removed, or already gone)."""
+        try:
+            held = json.loads(lock.read_text(encoding="utf-8"))
+            dead = not is_alive(int(held["pid"]), float(held["create_time"]))
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError, KeyError, TypeError):
+            try:                                           # being written (held), or abandoned
+                dead = time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS
+            except OSError:
+                return False
+        if dead:
+            remove(lock)
+        return dead
+
+    def try_claim(self, mib: int, need: int, output: str, available, lock_seconds: float = LOCK_WAIT_SECONDS) -> dict:
+        """Under the claims lock (waited for at most ``lock_seconds``; LockTimeout): claim ``mib`` when (a) the live
+        claims plus ``mib`` fit the budget and (b) free memory (``available()`` bytes, read inside the lock) minus what
+        the other claims have yet to allocate (each claim's mib less its processes' RSS now, tree_rss_mib, at least 0)
+        covers ``need`` (this process's peak + floor). Returns {claimed, free_mib, claimed_by_others_mib,
+        reserved_by_others_mib}."""
+        lock = self.acquire_lock(lock_seconds)
         try:
             live = self.live()
             free = available() >> 20
@@ -294,8 +329,10 @@ def admit(args, output: Path, *, available=lambda: psutil.virtual_memory().avail
     floor (need = max_rss_mib + min_free_mib) and no COMPILERS process; with args.host_budget_mib the free check runs
     inside the claims lock, net of the memory the other live claims have yet to allocate, together with a claim of
     max_rss_mib under the host budget (HostClaims.try_claim: two simultaneous launches never both count the same free
-    memory). Returns (the receipt's admission block, the claims holding this process's claim, or None); raises
-    AdmissionTimeout (its ``block``) when the wait runs out. ``owner``: the claiming process (default this one)."""
+    memory). A claims lock held past min(LOCK_WAIT_SECONDS, the wait left) is one more refused check, so it ends as
+    AdmissionTimeout (retryable), never as a runner-error. Returns (the receipt's admission block, the claims holding
+    this process's claim, or None); raises AdmissionTimeout (its ``block``) when the wait runs out. ``owner``: the
+    claiming process (default this one)."""
     need = args.max_rss_mib + args.min_free_mib
     claims = HostClaims(args.host_claims, args.host_budget_mib, owner) if args.host_budget_mib else None
     block = {"wait_seconds": args.admission_wait_seconds, "need_free_mib": need, "host_budget_mib": args.host_budget_mib,
@@ -313,16 +350,23 @@ def admit(args, output: Path, *, available=lambda: psutil.virtual_memory().avail
             block.update(waited_seconds=round(clock() - start, 3), checks=checks, free_mib=free,
                          claimed_by_others_mib=others)
         else:
-            busy = compilers()
+            busy, got = compilers(), None
             if busy:
                 why.append(f"running: {', '.join(busy)}")
-            got = claims.try_claim(args.max_rss_mib, need, str(output), available) if not busy else \
-                {"claimed": False, "free_mib": available() >> 20, "claimed_by_others_mib": None,
-                 "reserved_by_others_mib": None}
+            else:   # E1 review minor: the lock wait is bounded by the admission's own; a held lock is one more wait
+                left = max(0.0, args.admission_wait_seconds - (clock() - start))
+                try:
+                    got = claims.try_claim(args.max_rss_mib, need, str(output), available,
+                                           min(LOCK_WAIT_SECONDS, left))
+                except LockTimeout as exc:
+                    why.append(str(exc))
+            if got is None:
+                got = {"claimed": False, "free_mib": available() >> 20, "claimed_by_others_mib": None,
+                       "reserved_by_others_mib": None}
             others, reserved = got["claimed_by_others_mib"], got["reserved_by_others_mib"]
-            if not busy and others + args.max_rss_mib > args.host_budget_mib:
+            if others is not None and others + args.max_rss_mib > args.host_budget_mib:
                 why.append(f"claimed {others} MiB + {args.max_rss_mib} MiB > host budget {args.host_budget_mib} MiB")
-            if not busy and got["free_mib"] - reserved < need:
+            if reserved is not None and got["free_mib"] - reserved < need:
                 why.append(f"free memory {got['free_mib']} MiB less {reserved} MiB the other claims have yet to "
                            f"allocate < {need} MiB (peak {args.max_rss_mib} + floor {args.min_free_mib})")
             block.update(waited_seconds=round(clock() - start, 3), checks=checks, free_mib=got["free_mib"],
@@ -361,7 +405,8 @@ def main() -> int:
     parser.add_argument("--role-id", default=None,
                         help="the era role of this run (v8 H-1): recorded in start.json and receipt.json")
     parser.add_argument("--attempt", type=int, default=1,
-                        help="the attempt this run dir is (K-P9-10; research_cycle's attempt-k sub-dirs): recorded")
+                        help="the attempt this run dir is (K-P9-10; research_cycle's <out>-run<k> and attempt-k "
+                             "sub-dirs): recorded")
     parser.add_argument("--build-type", default=None,
                         help="the CMake build type of the executables (Debug | Release; K-P9-10): recorded")
     parser.add_argument("--admission-wait-seconds", type=float, default=None,
