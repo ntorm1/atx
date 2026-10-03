@@ -321,6 +321,41 @@ No Python mirror of the rule exists (PM8-12): the closed forms are in the gtests
 - New source `atx-impl/src/strategy_ic_two_speed.cpp` in atx-impl-core and the Debug /O2 lists.
 - The engine book group picks up the extended `book_two_speed_test.cpp`.
 
+## Y-5 / Y-1 composition (registered order Y-5 -> X-10 -> Y-1; half-life table pinned by PM8-13)
+
+Defined blind, one way, in C++.
+
+**What composes.** `nav --two-speed two-speed-v1` now composes with `--vol-target vol-target-v1` and `--risk-target`.
+X-10 inherits the parent's construction. The refusal stays only for spo, aim-partial-v6 and a non-fixed rate.
+
+**How.**
+
+- The netted aim from `engine::book::two_speed_aim` is the book target, `T = L m_s d_s + F + (F_next - F) / theta`,
+  formed at the run's L.
+- The scaler's L_t replaces the run's L only in the plan of that target, so the book moves toward
+  `(L_t / L) x T`.
+- The scaler's sigma reads the book's own planned (net) weights. The virtual fast sleeve F never enters it and keeps
+  evolving at the run's L.
+- Gross matching (PM6-6) is computed on the net book, which is the NAV's all-rows gross.
+
+**Mechanics printed in the NAV summary.** `construction.two_speed` now carries two counts, printed only:
+
+- `rebalances_skipped_by_a_sleeve`: rebalances skipped because a sleeve's neutralization was skipped.
+- `parent_rebalances_skipped`: per decision, whether the parent's construction of the full blend would have been
+  skipped. This is computed in the same run; without a neutralization it is always 0.
+
+The registered skip behaviour is unchanged.
+
+**Tests added.** All in `atx-impl-strategy-target-tests`, filter `TwoSpeed.*`:
+
+- `TwoSpeed.UnderVolTargetZeroShareIsTheParentRunBitForBit`: every NAV day and every recorded L_t equal the parent
+  under vol-target-v1.
+- `TwoSpeed.UnderVolTargetTheScalerScalesTheNettedTarget`: with a fast share of .3, the hook's plan equals
+  update_weights at the recorded L_t bit for bit. In closed form at L_t = 1 against L 1.2, the book steps toward
+  `(1 / L) T`, and F follows the run's L.
+- `TwoSpeed.ParseComposesWithTheScalersAndRefusesTheRest`.
+- `TwoSpeed.SummaryPrintsTheSleeveSkipsBesideTheParents`.
+
 ## Core vs wrapper (PM8-12; for lane YARCH)
 
 | Python path | What it computes | Duplicates C++? | Migration |
@@ -384,8 +419,8 @@ R-8's `strategy_risk_target.{hpp,cpp}` gains a second law; the default is unchan
 1. All four C++ commits are unbuilt and must compile first time under clang-cl `/W4 /WX`. The likeliest friction:
    aggregate init of `IcThemeBlock`, the new `score_role` and `method_recipe` parameters, and the `ConstructionDay`
    fields Y-3 adds (two per day).
-2. Y-5 runs only with both flags (fit and nav). Two-speed is refused with `--risk-target` and `--vol-target`, so if
-   Y-5 is accepted, Y-1 (later in the order) cannot run on top of it until F is scaled by each book's L_t: a follow-up lane.
+2. Y-5 runs only with both flags (fit and nav). Under `--vol-target` or `--risk-target` the scaler scales the netted target
+   (section "Y-5 / Y-1 composition"); that composition is defined blind and is untested on real data.
 3. Y-1 may be read under E-45 as a re-parameterisation of R-8. R-8 targets an absolute vol; Y-1 targets the book's own
    running mean, which is the Moreira-Muir form. The PM rules on that.
 4. Y-3 pushes gross to the tails. Single-name weights rise about 4x the mean |w|. Borrow on hard-to-borrow tails and
