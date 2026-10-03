@@ -465,6 +465,83 @@
       "producer": "atx-engine/tools/research_fields_ohlc.py",
       "clock": "ohlc-same-session-v1: row t reads the vendor TickerHistory3 row of session t (its open, high and low, delivered in the end-of-day row that also carries the role's close: known at session t's 22:00 UTC close mark, TH_CLOCK) and the role's close.f64, raw_close.f64 and present.u8 of row t; nothing dated after session t; rows on or after the seal are never read",
       "basis": "the session's vendor low x close.f64 / raw_close.f64 of the row; same cell rule as open_adj (formula id ohlc-low-adj-v1)"
+    },
+    "ea_window_pre5": {
+      "formula_id": "sec-ea-window-pre5-v1",
+      "origin": "fields_v8",
+      "producer": "atx-engine/tools/research_fields_sec.py",
+      "clock": "sec-acceptance-lag1-v1: a source row is usable at role session t iff available_at (UTC, the EDGAR acceptance resolved by atx-db acceptance-per-file-clock-v1) < 22:00 UTC of session t-1 on the session calendar (role sessions inside the role range, the NYSE rule calendar nyse-rule-v1 outside it); rows available on or after 2024-01-01 are dropped; sessions are counted on the same calendar",
+      "basis": "1 if 1 <= ea_days_to_expected <= 5 else 0 (formula id sec-ea-window-pre5-v1; producer atx-engine/tools/research_fields_sec.py, fields-v15)"
+    },
+    "noa_lag4": {
+      "formula_id": null,
+      "origin": "fields_v5",
+      "producer": "atx-engine/tools/prepare_research_fields.py",
+      "clock": "fund-events-lagged-v1: the linked CIK's latest events row with clock < date(session t-L) 22:00 UTC, L = 1 declared lag session(s) on the role calendar (--fund-lag-sessions): usable from the first session whose 22:00 UTC mark follows the clock, plus L sessions; sessions t < L -> NaN; clock = events accepted_utc (FSDS SUB accepted_utc of the filing, else FC1 = filed 00:00 UTC + 46 h, clock_basis cf_fc1); consumer selection rule of atx.fundamental-events/v1 (row-level, latest-clock-wins): for a CIK and mark, take the latest visible row (max accepted_utc, tie by accession). line -> CIK: the pinned identity-bridge row of the line whose [start, end_incl] contains date(session t) (bridge rows are point in time: available_at <= start 22:00 UTC, asserted per row; a violating row, counted, is also gated by available_at <= date(session t) 22:00 UTC); the value is published on primary (P) lines only (secondary J lines, unlinked lines and lines with two qualifying rows for different CIKs -> NaN)",
+      "basis": "net operating assets four fiscal quarters earlier: item `noa_lag4` of the pinned fundamental events artifact, value of the linked CIK's latest visible events row (see clock and staleness) (formula id None; producer atx-engine/tools/prepare_research_fields.py, fields-v15)"
+    },
+    "ret_overnight": {
+      "formula_id": "price-ret-overnight-lag1-v1",
+      "origin": "fields_v10",
+      "producer": "atx-engine/tools/research_fields_price.py",
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "basis": "row t: a = session t-1, b = session t-2 (extended axis); O_a F_a / (C_b F_b) - 1, C = vendor close, O = vendor open, F = chained factor (SOURCE_RULE); needs observations at a and b, a finite positive open at a, no kept_gap step in (b, a], and the house guard on the adjusted log ratio (|x| <= 1.5 and |x| <= |log(O_a / C_b)| + 0.10) (formula id price-ret-overnight-lag1-v1; producer atx-engine/tools/research_fields_price.py, fields-v15)"
+    },
+    "ret_intraday": {
+      "formula_id": "price-ret-intraday-lag1-v1",
+      "origin": "fields_v10",
+      "producer": "atx-engine/tools/research_fields_price.py",
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "basis": "row t: a = session t-1; C_a / O_a - 1 (the factor cancels within a session); needs an observation at a with a finite positive open, and |log(C_a / O_a)| <= 1.5 (formula id price-ret-intraday-lag1-v1; producer atx-engine/tools/research_fields_price.py, fields-v15)"
+    },
+    "exch_up_365d": {
+      "formula_id": "finra-listing-up-switch365-v1",
+      "origin": "fields_v12",
+      "producer": "atx-engine/tools/research_fields_holdings.py",
+      "clock": "finra-names-up-switch-asof-v1: FINRA name rows (security_master finra_names, PIT at their dissemination available_at) are usable at role session t iff available_at < date(t-1) 22:00 UTC; the line's state and its events at t come from those rows only",
+      "basis": "1 when the line's latest visible up-switch of its listing exchange (Nasdaq -> NYSE, NYSE American -> NYSE or Nasdaq -> NYSE American; Dharan and Ikenberry 1995, the Chen-Zimmermann ExchSwitch moves) has a dissemination date d with date(t) - d <= 365 days, else 0. finra-listing-up-switch-v1: the listing venue of a FINRA name row is its market_class mapped NNM/SC -> nasdaq, AMEX -> amex (NYSE American), NYSE -> nyse, any other class (ARCA, BZX, OTC, IEX, null) -> other. The rows of the role's lines are taken in visibility order (available_at, then dissemination_date, then venue, then file order). Per line: the first row sets the current (dissemination date, venue); a row with a later dissemination date advances it and is an up-switch when current venue -> row venue is nasdaq -> nyse, amex -> nyse or nasdaq -> amex and the two dissemination dates are at most 45 days apart; a row on the current date with another venue makes the current venue other (conflict: the next row cannot switch from it); a row dated before the current one is ignored (out of order). An event is decided when its row becomes visible and is never revised by a later row. Formula id finra-listing-up-switch365-v1. (formula id finra-listing-up-switch365-v1; producer atx-engine/tools/research_fields_holdings.py, fields-v15)"
+    },
+    "ins_cluster_buy": {
+      "formula_id": "sec-ins-cluster-buy21-min3-v1",
+      "origin": "fields_v8",
+      "producer": "atx-engine/tools/research_fields_sec.py",
+      "clock": "sec-acceptance-lag1-v1: a source row is usable at role session t iff available_at (UTC, the EDGAR acceptance resolved by atx-db acceptance-per-file-clock-v1) < 22:00 UTC of session t-1 on the session calendar (role sessions inside the role range, the NYSE rule calendar nyse-rule-v1 outside it); rows available on or after 2024-01-01 are dropped; sessions are counted on the same calendar",
+      "basis": "1 if at least 3 distinct primary reporting owners have a P trade visible at t with transaction_date on or after session t-21 (21 sessions), else 0 (formula id sec-ins-cluster-buy21-min3-v1; producer atx-engine/tools/research_fields_sec.py, fields-v15)"
+    },
+    "iv_skew_21": {
+      "formula_id": "xzz-yan-skew-shd1-spy-oriented-v1",
+      "origin": "fields_ydata",
+      "producer": "atx-engine/tools/research_fields_ivshape.py",
+      "clock": "ivshape-lag1-v1: row t reads the vendor TickerHistory3 rows of sessions t-21..t-1 only (shD1 and atmCenI_21d of session s are delivered at 22:00 America/Chicago, by 04:00 UTC of s+1, before the 22:00 UTC mark of s+1); nothing dated session t or later; rows on or after the seal are never read",
+      "basis": "xzz-yan-skew-shd1-spy-oriented-v1: S = the vendor shD1 of a valid cell, kept iff finite and 0 < |S| <= 5.0 (an exact 0.0 is the vendor's empty print); o_t = sign(median of SPY's kept S over sessions t-21..t-1) when at least 17 are kept and the median is not 0, the market line = the unique vendor securityID whose ticker_tk is 'SPY' on every row read (another securityID -> refused); value at t = o_t x S of the line at session t-1; NaN when o_t or S is undefined (a cell (session s, line) is valid iff exactly one vendor row has that (tradingDate, securityID) key (duplicates quarantined) and its atmCenI_21d v satisfies float32(0.02) <= v <= float32(5.0) (IV_DOMAIN: a surface exists)) (formula id xzz-yan-skew-shd1-spy-oriented-v1; producer atx-engine/tools/research_fields_ivshape.py, fields-v15)"
+    },
+    "stio_chg_q": {
+      "formula_id": "yz-stio-chg-q-v1",
+      "origin": "fields_ydata",
+      "producer": "atx-engine/tools/research_fields_mgr13f.py",
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "basis": "Yan-Zhang (2009) short-term institutional trading. holdings rows of the effective filings with sshprnamt_type SH, no put/call, shares > 0 and a finite value_usd >= 0; value_usd x filing_checks.unit_factor of the accession (1 when unlisted); CUSIP -> security_id by cusip_map_pit.parquet at the same period_q; a mapped row with value > 0 whose implied price value/shares lies outside [1/10, 10] x the median implied price of its security's rows that quarter is dropped (declared screen for share / value unit errors). gmm-yz-min-churn-v1: for filer k with positions in q-1 and q, over every security i it holds in either: d = N_q - a_i N_(q-1) (0 for an absent side), price x = p_q(i), else p_(q-1)(i) / a_i, else 0; buys = sum of max(d, 0) x, sells = sum of max(-d, 0) x; CR = min(buys, sells) / ((total_(q-1) + total_q) / 2), NaN when that mean is not positive. 13f-basis-change-v1: per security, s = the median of N_q / N_(q-1) over the filers holding it in both quarters; a = s when at least 5 such filers, s outside [1/1.2, 1.2] and s x p_q / p_(q-1) inside [1/1.5, 1.5] (shares and price moved inversely: a split or a stock distribution), else a = 1. yz-short-term-tercile-v1: m = the filers with a finite CR in each of q-3..q (consecutive calendar quarters); their mean CR ranked ascending with average ties (1..m); ST(q) = the filers whose rank exceeds 0.666667 m; undefined when m < 3. yz-stio-chg-q-v1: STIO(q, S) = sum over filers in S of the security's position shares in q / shares_out at the last role session on or before the quarter end q; 0 when the security has positions in q but none by S; NaN without positions in q, without a finite positive shares_out, or above 2; value at anchor P = STIO(P, ST(P-1)) - STIO(P-1, ST(P-1)), NaN when P-1 is not the previous calendar quarter or ST(P-1) is undefined. (formula id yz-stio-chg-q-v1; producer atx-engine/tools/research_fields_mgr13f.py, fields-v15)"
+    },
+    "div_init_omit": {
+      "formula_id": "mtw-div-init-omit-v1",
+      "origin": "fields_ydata",
+      "producer": "atx-engine/tools/research_fields_divevent.py",
+      "clock": "divevent-lag1-v1: row t reads the ex-date ledger of extended sessions <= t-1 only (each ex-date row known at its 22:00 UTC close mark); an omission is decided at the session it is detected",
+      "basis": "mtw-div-init-omit-v1 on the research_fields_xdata ex-date ledger (hs-divseason ledger rule: an observed session whose factor step is a cash yield in [1 bp, 4%], no kept_gap step, not a factor-break-v1 jump cell). Row t, e = its extended row: initiation = an ex-date s in [e-252, e-1] with no ex-date in [s-504, s-1] and the line first observed at or before s-504; omission = L, the latest ex-date <= e-1, has at least 3 ex-dates in [L-251, L] and D = L + 126 lies in [e-252, e-1] with the line observed at D; value = 1{initiation} - 1{omission}; NaN when the line is first observed after e-1-504. vendor observations of the role's lines on the extended axis (NYSE rule sessions before the role, the role's sessions inside it): research_fields_price SOURCE_RULE (unique positive key, finite positive close and cumulReturnFactor, finite volume >= 0; F = the chained factor with every factor-break-v1 repaired step divided out; a span across a kept_gap step is unusable) (formula id mtw-div-init-omit-v1; producer atx-engine/tools/research_fields_divevent.py, fields-v15)"
+    },
+    "conn_ret63": {
+      "formula_id": "ap-connected-ret63-13f-v1",
+      "origin": "fields_ydata",
+      "producer": "atx-engine/tools/research_fields_connected.py",
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back); returns: role close rows <= t-1 (price-close-lag1)",
+      "basis": "Anton-Polk (2014) connected-stock return. holdings rows of the effective filings with sshprnamt_type SH, no put/call, shares > 0 and a finite value_usd >= 0; value_usd x filing_checks.unit_factor of the accession (1 when unlisted); CUSIP -> security_id by cusip_map_pit.parquet at the same period_q; a mapped row with value > 0 whose implied price value/shares lies outside [1/10, 10] x the median implied price of its security's rows that quarter is dropped (declared screen for share / value unit errors). ap-nodes-member-v1: nodes of quarter P = role lines that are members at the last role session t_P <= P, with a finite positive shares_out at t_P and a 13F price p (median implied price of the kept rows); m = shares_out x p. ap-active-share-book-v1: a filer is an active owner iff it has >= 2 node positions and AS = 1/2 sum_i |V_i / sum V - m_i / sum m| >= 0.2 over its node positions (V = N x p). ap-fcap-v1: FCAP_ij = sum over the active owners f holding both i and j of (N_i^f p_i + N_j^f p_j) / (m_i + m_j), i != j; connected iff FCAP > 0. ap-rank-top50-v1: w_ij = average-tie rank of FCAP_ij among the connected pairs of P / their count; each node keeps its 50 largest-FCAP connections, ties to the lower role column. ap-connected-ret-v1: sum w_ij r_j / sum w_ij over kept connections with a valid r_j = close_(t-1) / close_(t-64) - 1 (present at both ends, finite, > 0); NaN with fewer than 10 valid. (formula id ap-connected-ret63-13f-v1; producer atx-engine/tools/research_fields_connected.py, fields-v15)"
+    },
+    "deal_pending": {
+      "formula_id": "sec-deal-target-pending-v1",
+      "origin": "fields_ydata",
+      "producer": "atx-engine/tools/research_fields_deals.py",
+      "clock": "sec-acceptance-lag1-v1: a source row is usable at role session t iff available_at (UTC, the EDGAR acceptance resolved by atx-db acceptance-per-file-clock-v1) < 22:00 UTC of session t-1 on the session calendar (role sessions inside the role range, the NYSE rule calendar nyse-rule-v1 outside it); rows available on or after 2024-01-01 are dropped; sessions are counted on the same calendar",
+      "basis": "sec-deal-target-pending-v1 on the sec_filings stage's filings.parquet: forms upper-cased and trimmed, originals only (is_amendment false and no '/A'); deal filings = PREM14A, DEFM14A, PREM14C, DEFM14C, SC 14D9, SC14D9C under the CIK, except a PREM14A, DEFM14A, PREM14C, DEFM14C whose CIK filed an original S-4 or S-4EF with available_at in [its available_at - 365 days, its available_at] (the acquirer's proxy); a deal filing usable from session u (SEC_CLOCK) is open on [u, min(u_r, u + 252)), u_r = the usable session of the CIK's first resolution filing (25, 25-NSE, 15-12B, 15-12G, 15-15D, 15F-12B, 15F-12G, 15F-15D) with a later available_at; value at t = 1 if any deal filing of the line's CIK is open at t, else 0 (formula id sec-deal-target-pending-v1; producer atx-engine/tools/research_fields_deals.py, fields-v15)"
     }
   },
   "alphas": [
