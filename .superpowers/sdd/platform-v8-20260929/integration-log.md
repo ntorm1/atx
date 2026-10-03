@@ -6627,3 +6627,38 @@ with the screen u pass's flags (`--min-names 1000 --workers 4 --no-composition`,
 `--max-memory-mib 8192` so the plan prints `roles[].required_bytes` instead of refusing; through the bounded runner (120 s,
 1,024 MiB). Rule (plan R0-5, YP-12): <= 2,560 MiB: cap unchanged; over 2,560: probe workers 2 and 1 and report for a cap
 ruling (w already runs at 3,072); over 3,072: stop.
+
+### R0-4 / R0-5 results (source `d23efa5a`, the plan commit; one run at a time; free memory 5,546 MiB before the first)
+
+| run | receipt dir | exe | s / peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| P8: X-5 ref on v15 (180 / 1,536) | `p9-r04-x5-ref-v15-run` | targets v8-16d `72ff6d2d` | 56.4 / 586 | 0 | `2dc33a24098571a174c90f9206848115a70304e5f41d8caae9d5af1e1d9f9edd` | **S2 daily `529062d6f06f1ceb8dab5e7cbd98a3693a2f66922b0b4547df81f956fd4e3d61` = X-5's ledgered series**; 23 of 27 files byte-identical to X-5's NAV, the other 4 (`recipe.json`, `summary.json`, `capacity/recipe.json`, `capacity/summary.json`) differ only in `/financing_fields/manifest_sha256` (v13 -> v15) and, in the two summaries, the `/recipe_sha256` that follows it |
+| R0-5: Y-S screen library `--plan-only`, workers 4 (120 / 1,024) | `p9-r05-ys-plan-w4-run` | ic v8-16d `985019d9` | 0.27 / 2 | 0 | `c33557ebcaea383d32ff5e49cde21f74e209952eaedb7e0ae1c6debe6a6fd07a` | plan (stdout `f0623208`): metadata-only, 73 candidates, composition skipped, max compiled slots 8, lookback 272, resident field capacity 8 (87 planned loads of 60 declared fields), **required_bytes 2,047,374,058 = 1,952.5 MiB** |
+| R0-5 calibration: X-5's w pass `--plan-only` (v8x3b, its weights, fields v13, workers 4) | `p9-r05-x5w-plan-w4-run` | ic v8-16d `985019d9` | 0.27 / 2 | 0 | `a28ece5f6c6e2c01e05ffd551e15339b1b54cee76086cc4f7e1723e02366a547` | plan (stdout `a8e8f69c`): 58 candidates, 11 themes standardised, slots 8, capacity 8: required_bytes 2,854,733,324 = 2,722.5 MiB |
+
+Argv of the P8 run against X-5's NAV receipt: exactly the three planned tokens differ (11 `--fields`, 13
+`--fields-sha256`, 15 `--output`); receipt "clean in the code pathspec", dirty outside only the untracked png, stderr empty,
+minimum system free 4,768 MiB. **P8: PASS** (the parent reads no new field; its S2 series on v15 is X-5's byte for byte).
+
+**R0-5: 1,952.5 MiB <= 2,560 MiB: the Y-S screen's IC cap stays 2,560 at `--workers 4`; no cap ruling needed.** The old
+~3,200 MiB estimate scaled admission linearly in members; the admission of a `--no-composition` u pass does not depend on
+the member count at all (`strategy_ic_admission.cpp:246-282`: cells x (72 + 8 x max slots), the resident field capacity, the
+labels and the worker envelope), only on the worst candidate's slots (8, a parent member; the 15 Y rows plan at <= 6). The
+composition plane is the only member- and theme-dependent term: X-5's w admission minus the Y-S u admission = 807,359,266 B
+= `ic_composition_working_bytes(1,405 x 5,922, 58 members, 11 themes, standardise)` to the byte, so **the Y-S cell's w pass
+(73 members, 12 themes, the same slots and capacity) admits 2,047,374,058 + 873,930,226 = 2,921,304,284 B = 2,786.0 MiB
+<= its 3,072 cap** [arith, formula verified on X-5]. The 15 Y plan rows (scratch, not of record; register makes the K1
+plans of record): slots 2-6, lookback 0-272, extra fields <= 4 (dato), all within the house budget (7 / 314 / 5);
+`iv_vol_of_vol` 5 slots / 41 bars / `iv_atm_21d` as the repair logged.
+
+### State and hidden-data record (R0-3..R0-5)
+
+- R0-3 PASS, R0-4 PASS (pin, 83 / 1, seal, P8), R0-5 PASS (1,952.5 MiB; cap unchanged). Nothing for the PM to rule. Next:
+  R0-2 (P0-FIX merge, `y-s.json` amendment), then R0-6.
+- Opened by tools: the X-5 u / fit / w / NAV outputs and receipts (SHA-256, JSON paths, the cache / field-load counters),
+  the v13 / v14 / v15a / v15 field manifests (metadata) and payload bytes (hashing only), the role and label-role
+  manifests, the ledger line of X-5 (series path and SHA only), the two plan JSONs. Read by me: receipts, manifests
+  (metadata), JSON path lists, plan rows. While locating the ref precedent in this log I passed X-7's already-ledgered
+  public lines (section "X batch 2, resumed"); no Y statistic exists or was read.
+- **Nothing dated 2024-01-01 or later was opened. No NAV `stdout.log` opened; no value of a `summary.json`, a daily CSV or
+  `train_daily_ic.csv` read.** `C:/atx`, `atx-db/`, other pools and E1's files untouched; no build; no push.
