@@ -129,7 +129,9 @@ def test_constants_mirror_the_verb():
         str(M.MAX_POOL_MEMBERS)
     assert f'"{M.POOL_SCHEMA}"' in (REPO / "atx-impl" / "src" / "strategy_mine_pool.cpp").read_text(encoding="utf-8")
     runner = (REPO / "scripts" / "run_bounded_research.py").read_text(encoding="utf-8")
-    assert f"0 < args.seconds <= {M.RUNNER_MAX_SECONDS}" in runner and \
+    import research_tree  # noqa: PLC0415  (P9 OR-1: the runner's time cap is research_tree.RUNNER_MAX_SECONDS)
+    assert research_tree.RUNNER_MAX_SECONDS == M.RUNNER_MAX_SECONDS and \
+        "0 < args.seconds <= research_tree.RUNNER_MAX_SECONDS" in runner and \
         f"32 <= args.max_rss_mib <= {M.RUNNER_MAX_RSS_MIB}" in runner
 
 

@@ -9,6 +9,7 @@ import cycle_admission
 import research_ledger
 import research_spec
 import research_tree
+import wave_manifest as WM
 import wave_queue
 from wave_context import Wave
 from wave_stage_util import EXIT_PIN, StageError, library_wave
@@ -64,12 +65,14 @@ def budget_selects(b: dict, origin) -> bool:
 
 def admission_used(w: Wave, records: list[dict], b: dict) -> int:
     """The admission trials the budget has spent (the hand count): the ledger's admission lines of cycles with the
-    budget's prefix and, when set, its origin class; a re-screen line (its candidate in the cycle library's
-    ``rescreens``: Ruling R2-e, 0 admission trials, e.g. X-4's nine) is left out, as the hand count leaves it out."""
+    budget's prefix (or any of its prefixes, wave_manifest.budget_prefixes: P9 DEC-2) and, when set, its origin class;
+    a re-screen line (its candidate in the cycle library's ``rescreens``: Ruling R2-e, 0 admission trials, e.g. X-4's
+    nine) is left out, as the hand count leaves it out."""
     bi = research_ledger.backtest_integrity()
     cache: dict = {}
+    prefixes = tuple(WM.budget_prefixes(b))
     return sum(c for r, c in zip(records, bi.trial_counts(records))
-               if r.get("kind") == "admission" and str(r.get("cycle", "")).startswith(b["admission_cycle_prefix"])
+               if r.get("kind") == "admission" and str(r.get("cycle", "")).startswith(prefixes)
                and budget_selects(b, r.get("origin")) and r.get("candidate") not in rescreens_of(w, r.get("cycle"), cache))
 
 
@@ -100,8 +103,9 @@ def budget_check(w: Wave, records: list[dict], n_before: int) -> tuple[dict, lis
     out, problems = {"id": b["id"]}, []
     if "admission_cap" in b:
         used, new = admission_used(w, records, b), admission_new(w, records, b) if library_wave(w) else []
+        prefix = {k: b[k] for k in WM.PREFIX_KEYS if k in b}      # the manifest's own key (one form or the other)
         out.update(admission_used=used, admission_new=len(new), admission_new_ids=new, admission_cap=b["admission_cap"],
-                   admission_cycle_prefix=b["admission_cycle_prefix"], admission_origin=b.get("admission_origin"))
+                   **prefix, admission_origin=b.get("admission_origin"))
         if used + len(new) > b["admission_cap"]:
             problems.append(f"budget {b['id']}: {used} admission trials used + {len(new)} new > cap "
                             f"{b['admission_cap']} (a ruling raises the cap; the wave does not)")

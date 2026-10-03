@@ -34,6 +34,20 @@ class ResumeError(ValueError):
     """A done output that cannot be scored under the current spec (research_cycle.py: a pin stop, exit 3)."""
 
 
+def completed_exe_sha256(res, out: str, attempts: int) -> str | None:
+    """The executable_sha256 of the last completed (exit 0) bounded run of the output ``out``: its run dirs
+    <out>-run, then <out>-run<k> for k = 2..attempts (research_cycle's NAV attempt dirs), read through the cycle's
+    Resolver ``res``; None when no such receipt records one (P9 OR-2: the parent NAV's exe, which a cell's NAV exe
+    is compared with)."""
+    found = None
+    for d in [f"{out}-run"] + [f"{out}-run{k}" for k in range(2, attempts + 1)]:
+        r = res.read_json(f"{d}/receipt.json")
+        if isinstance(r, dict) and r.get("outcome") == "completed" and r.get("exit_code") == 0 and \
+                isinstance(r.get("executable_sha256"), str):
+            found = r["executable_sha256"]
+    return found
+
+
 def argv_digest(args: list[str]) -> str:
     """SHA-256 of a command's arguments after its executable (compact JSON list)."""
     return hashlib.sha256(json.dumps([str(a) for a in args], separators=(",", ":")).encode()).hexdigest()

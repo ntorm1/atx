@@ -13,7 +13,8 @@ book       after the mechanics passed (the judge stage): the book line of the sc
            summary.json primary scenario (net / gross Sharpe, net annual mean, CAGR, volatility, max drawdown), gross
            of cost = net annual mean + the annualised |trade cost|, |borrow| and |long financing| returns (252 x summed
            return / observations, the integrator's cellstats reading), construction_stats' turnover and cost per
-           traded dollar, and the net Sharpe of the 4x book from capacity_curve.csv (null without the file).
+           traded dollar, and the net Sharpe of the 4x book from capacity_curve.csv (null without the file; when the
+           summary declares the curve, --capacity-curve, a missing file or 4x row refuses: P9 NV-4).
 
 The output file is new (never overwritten): {schema, kind, navs: {NAME: {dir, scenario, daily_csv_sha256, ...}}}.
 """
@@ -74,16 +75,33 @@ def mechanics(d: Path) -> dict:
                                                    "tolerance")}}
 
 
-def capacity_x4(d: Path, scenario: str) -> float | None:
-    """Net Sharpe of the 4x book in capacity_curve.csv (the row of multiple 4, the primary book's when several)."""
+def capacity_expected(summary: dict) -> bool:
+    """Whether the NAV ran the capacity curve: its summary.json's v7 declarations say capacity_curve true (the NAV
+    verb's --capacity-curve; strategy_nav_v7.cpp writes the curve and v7_extras.json after this summary)."""
+    v7 = summary.get("v7") if isinstance(summary, dict) else None
+    decl = v7.get("declarations") if isinstance(v7, dict) else None
+    return isinstance(decl, dict) and decl.get("capacity_curve") is True
+
+
+def capacity_x4(d: Path, scenario: str, expected: bool = False) -> float | None:
+    """Net Sharpe of the 4x book in capacity_curve.csv (the row of multiple 4, the primary book's when several). None
+    without the file or the row; when the curve is ``expected`` (capacity_expected) that None is refused (P9 NV-4: a
+    capacity pass that did not finish never reads as a null 4x book): SystemExit naming the file, no value printed."""
     p = d / "capacity_curve.csv"
     if not p.is_file():
+        if expected:
+            raise SystemExit(f"wave_readers: {p} is missing but {d}/summary.json declares the capacity curve (the "
+                             "capacity pass did not finish)")
         return None
     with p.open(newline="", encoding="utf-8") as f:
         rows = [r for r in csv.DictReader(f) if _float(r.get("multiple")) == CAPACITY_MULTIPLE]
     if len(rows) > 1:
         rows = [r for r in rows if r.get("book") == scenario] or rows[:0]
-    return _float(rows[0].get("net_sharpe")) if len(rows) == 1 else None
+    got = _float(rows[0].get("net_sharpe")) if len(rows) == 1 else None
+    if got is None and expected:
+        raise SystemExit(f"wave_readers: {p} has no single finite 4x row for book {scenario} but {d}/summary.json "
+                         "declares the capacity curve")
+    return got
 
 
 def _float(x) -> float | None:
@@ -95,7 +113,7 @@ def _float(x) -> float | None:
 
 
 def book(d: Path) -> dict:
-    NS, _, scen, daily, sha = _primary(d)
+    NS, summary, scen, daily, sha = _primary(d)
     stats = NS.construction_stats(daily, scen)
     obs = scen.get("observations") or 0
     costs, fin = scen.get("costs") or {}, scen.get("financing") or {}
@@ -111,7 +129,8 @@ def book(d: Path) -> dict:
             "ann_vol": scen.get("ann_vol"), "max_drawdown": scen.get("max_drawdown"),
             "tau_gmv_mean": tau, "mean_gross_leverage_all_rows": g,
             "tau_per_gross": tau / g if isinstance(tau, float) and isinstance(g, float) and g > 0 else None,
-            "cost_bps_traded": stats.get("cost_bps_traded"), "x4_net_sharpe": capacity_x4(d, scen["scenario"])}
+            "cost_bps_traded": stats.get("cost_bps_traded"),
+            "x4_net_sharpe": capacity_x4(d, scen["scenario"], capacity_expected(summary))}
 
 
 READERS = {"mechanics": mechanics, "book": book}

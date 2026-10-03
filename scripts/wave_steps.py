@@ -176,7 +176,11 @@ def pool_only_marginal(doc: dict) -> dict:
 def marginal_ruled(doc: dict, rule: dict) -> dict:
     """The manifest's "marginal" ruling (e.g. PM8-15: an add-alpha wave on a theme-erc parent with more themes than
     the marginal verb takes runs it on the pool only, PM6-8 (i); the phase's time cap): pool_only applies
-    pool_only_marginal, seconds sets runner.phases.marginal.seconds; a spec without a marginal phase is unchanged."""
+    pool_only_marginal, seconds sets runner.phases.marginal.seconds; a spec without a marginal phase is unchanged. A
+    cap above the bounded runner's maximum (research_tree.RUNNER_MAX_SECONDS) is refused (ValueError, P9 OR-1)."""
+    refusal = research_tree.seconds_cap_refusal("marginal.seconds", rule.get("seconds"))
+    if refusal:
+        raise ValueError(f"wave manifest {refusal}")
     out = pool_only_marginal(doc) if rule.get("pool_only") else copy.deepcopy(doc)
     if "seconds" in rule and isinstance(out.get("marginal"), dict):
         phases = out.setdefault("runner", {}).setdefault("phases", {})

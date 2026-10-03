@@ -56,16 +56,31 @@ def write_spec_file(w: Wave, rel: str, doc: dict, same=None) -> None:
 
 # ------------------------------------------------------------------ phase receipts, reader digests
 def phase_rows(w: Wave, spec_rel: str) -> list[dict]:
-    """The bounded-runner receipts of a cell's phases (timings: seconds, peak MiB, outcome), every attempt."""
+    """The bounded-runner receipts of a cell's phases (timings: seconds, peak MiB, outcome; the executable_sha256 the
+    runner recorded, P9 OR-2), every attempt."""
     rows = []
     for phase, base in w.phase_bases(spec_rel).items():
-        for d in w.run_dirs(base):
-            r = w.read_json(f"{d}/receipt.json")
-            if isinstance(r, dict):
-                rows.append({"phase": phase, "run_dir": d, "outcome": r.get("outcome"), "exit_code": r.get("exit_code"),
-                             "seconds": r.get("wall_seconds"),
-                             "peak_mib": (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20})
+        rows += run_rows(w, phase, base)
     return rows
+
+
+def run_rows(w: Wave, phase: str, base: str) -> list[dict]:
+    """One phase row per bounded run dir of the output ``base`` (``<base>-run[<k>]``) holding a receipt."""
+    rows = []
+    for d in w.run_dirs(base):
+        r = w.read_json(f"{d}/receipt.json")
+        if isinstance(r, dict):
+            rows.append({"phase": phase, "run_dir": d, "outcome": r.get("outcome"), "exit_code": r.get("exit_code"),
+                         "seconds": r.get("wall_seconds"),
+                         "peak_mib": (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20,
+                         "executable_sha256": r.get("executable_sha256")})
+    return rows
+
+
+def completed_exe(rows: list[dict]) -> str | None:
+    """The executable_sha256 of the last completed (exit 0) run among phase rows (None: none, or none recorded)."""
+    done = [r for r in rows if r["outcome"] == "completed" and r["exit_code"] == 0]
+    return done[-1].get("executable_sha256") if done else None
 
 
 def reader_digests(w: Wave, names: list[str]) -> dict:

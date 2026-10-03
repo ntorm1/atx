@@ -16,8 +16,11 @@ One wave is one cell on the current book, declared before anything is measured:
    "acceptance": {"rule": "pm7-34", "printed": [criterion, ...]},
    "sign_rule": "pm7-35",                         (library waves)
    "gross_match": "pm6-6" | "none",
-   "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT?, "admission_origin": CLASS?,
-              "construction_cap": N?}     the hand count: admission lines of cycles with the prefix (and of the
+   "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT? | "admission_cycle_prefixes": [TEXT]?,
+              "admission_origin": CLASS?, "construction_cap": N?}
+                                          the hand count: admission lines of cycles with the prefix, or with any of
+                                          the prefixes (P9 DEC-2: a wave whose library is not under the older prefix,
+                                          e.g. ["v8x", "v8ys"]; one of the two keys, with admission_cap) (and of the
                                           origin class), re-screens left out; new = the wave's non-re-screen strings
                                           whose trial_id is not ledgered yet
    "ledger": PATH,                                the sprint ledger of record (the cells' summ.ledger)
@@ -29,9 +32,10 @@ One wave is one cell on the current book, declared before anything is measured:
    "speed": {"reuse_screen_marginal": true, "screen_first": true},
    "marginal": {"ruling": ID, "pool_only": BOOL?, "seconds": N?}}   optional: a PM ruling on the library's marginal
                                                  phase (e.g. PM8-15: pool only, PM6-8 (i), on a theme-erc parent
-                                                 with more themes than the verb takes; the phase cap 720 s), applied
+                                                 with more themes than the verb takes; the phase cap), applied
                                                  to the screen library at register and to a b library that runs
-                                                 its own marginal
+                                                 its own marginal; seconds above the bounded runner's maximum
+                                                 (research_tree.RUNNER_MAX_SECONDS, 600) is refused at load
                                                  the wave's own speed rules (wave_stages.py; both default true; they
                                                  change no input of a decision): the cell after a sign-rule drop
                                                  carries the screen's per-row marginal fields (report only) instead of
@@ -73,6 +77,8 @@ TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule"
 SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
 MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
+PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)
+BUDGET_KEYS = ("id", "admission_cap") + PREFIX_KEYS + ("admission_origin", "construction_cap")
 
 
 class WaveError(ValueError):
@@ -202,14 +208,19 @@ def validate(m) -> list[str]:
     out += wave_rules.validate_names(m.get("sign_rule") if has_c else None, acc["rule"], acc.get("printed", []),
                                      m.get("gross_match"))
     b = m.get("budget")
-    if not (isinstance(b, dict) and _text(b.get("id")) and set(b) <= {"id", "admission_cap", "admission_cycle_prefix",
-                                                                        "admission_origin", "construction_cap"} and
+    if not (isinstance(b, dict) and _text(b.get("id")) and set(b) <= set(BUDGET_KEYS) and
             all(type(b[k]) is int and b[k] >= 0 for k in ("admission_cap", "construction_cap") if k in b) and
-            (("admission_cap" in b) == ("admission_cycle_prefix" in b)) and
+            sum(k in b for k in PREFIX_KEYS) == (1 if "admission_cap" in b else 0) and
             ("admission_cycle_prefix" not in b or _text(b["admission_cycle_prefix"])) and
+            ("admission_cycle_prefixes" not in b or (isinstance(b["admission_cycle_prefixes"], list) and
+                                                     b["admission_cycle_prefixes"] and
+                                                     all(_text(p) for p in b["admission_cycle_prefixes"]) and
+                                                     len(set(b["admission_cycle_prefixes"])) ==
+                                                     len(b["admission_cycle_prefixes"]))) and
             b.get("admission_origin", ORIGINS[0]) in ORIGINS and ("admission_origin" not in b or "admission_cap" in b)):
-        out.append("budget must be {id, admission_cap + admission_cycle_prefix (together), admission_origin? (prior | "
-                   "grid | mined), construction_cap}")
+        out.append("budget must be {id, admission_cap + one of admission_cycle_prefix (TEXT) or "
+                   "admission_cycle_prefixes ([TEXT, ...], distinct) (together), admission_origin? (prior | grid | "
+                   "mined), construction_cap}")
     e = m.get("expect")
     if not (isinstance(e, dict) and set(e) == {"n_before"} and type(e["n_before"]) is int and e["n_before"] >= 0):
         out.append("expect must be {n_before: the ledger N the wave was planned on}")
@@ -227,6 +238,8 @@ def validate(m) -> list[str]:
             mg["ruling"].strip() and type(mg.get("pool_only", False)) is bool and
             ("seconds" not in mg or (type(mg["seconds"]) is int and mg["seconds"] > 0))):
         out.append("marginal must be {ruling: the PM ruling, pool_only?: true | false, seconds?: a positive integer}")
+    elif research_tree.seconds_cap_refusal("marginal.seconds", mg.get("seconds")):
+        out.append(research_tree.seconds_cap_refusal("marginal.seconds", mg["seconds"]))
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
     return out
@@ -280,6 +293,14 @@ def load(path: Path) -> tuple[dict, str]:
 
 def b_library(m: dict) -> str:
     return m["library"] + m.get("b_suffix", "b")
+
+
+def budget_prefixes(b: dict) -> list[str]:
+    """The cycle-name prefixes whose admission lines a budget counts: admission_cycle_prefixes, else the one
+    admission_cycle_prefix (the older form, still valid), else none."""
+    if "admission_cycle_prefixes" in b:
+        return list(b["admission_cycle_prefixes"])
+    return [b["admission_cycle_prefix"]] if "admission_cycle_prefix" in b else []
 
 
 def speed(m: dict, key: str) -> bool:

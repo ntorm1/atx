@@ -17,8 +17,8 @@ import wave_steps as WS
 from wave_context import Wave
 from wave_stage_cell import nav_series, read_once, reader_plan, unbound
 from wave_stage_preflight import ledger_state
-from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, StageError, cyc, no_cell, phase_rows, pinned, reader_digests,
-                             skipped)
+from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, StageError, completed_exe, cyc, no_cell, phase_rows, pinned,
+                             reader_digests, run_rows, skipped)
 
 
 # ------------------------------------------------------------------ verify
@@ -30,14 +30,18 @@ def verify(w: Wave, done: dict, log) -> dict:
     for r in chk["rows"]:
         log(f"   mechanics {r['check']}: {r['value']} {r['limit']} -> {'pass' if r['pass'] else 'FAIL'}")
     # the binding of the NAV attempt that made the cell's NAV: the last completed one (a retry writes <nav>-run<k>)
-    navs = [r for r in phase_rows(w, mt["cell_spec"]) if r["phase"] == "nav" and r["outcome"] == "completed"
-            and r["exit_code"] == 0]
+    rows = phase_rows(w, mt["cell_spec"])
+    navs = [r for r in rows if r["phase"] == "nav" and r["outcome"] == "completed" and r["exit_code"] == 0]
     nav_run = navs[-1]["run_dir"] if navs else f"{mt['nav']}-run"
     bpath = f"{nav_run}/cycle_binding.json"
     binding = w.read_json(bpath)
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
     problems = []
+    exe = nav_exe(w, done, rows)
+    if exe["equal"] is False and exe["ref"] == "missing":
+        problems.append(f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']} and the cell "
+                        "spec's reference construction did not run on it (no completed ref run with that exe)")
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
@@ -50,16 +54,32 @@ def verify(w: Wave, done: dict, log) -> dict:
         raise StageError("verify: " + "; ".join(problems) + ": stop for the PM's ruling (the cell ran; no ledger "
                          "line was written)")
     log(f"   mechanics PASS; binding {binding['argv_sha256'][:12]} (spec {digest[:12]}); seal scan {seal['files']} "
-        "log(s), 0 tokens")
+        f"log(s), 0 tokens; NAV exe {str(exe['cell'])[:12]} vs parent {str(exe['parent'])[:12]} (ref {exe['ref']})")
     return {"mechanics": chk, "binding": {"path": bpath, "sha256": w.sha(bpath), "argv_sha256": binding["argv_sha256"],
                                           "spec_sha256": binding["spec_sha256"]},
+            "nav_exe": exe,
             "seal_scan": seal, "identity": "the cycle's compare steps ran in every research_cycle run (a miss is its "
                                            "exit 4, which stops the stage)"}
 
 
+def nav_exe(w: Wave, done: dict, rows: list[dict]) -> dict:
+    """P9 OR-2: the executable_sha256 of the parent NAV's and the cell NAV's last completed run receipts (``rows``: the
+    cell's phase rows), whether they are equal (None when either is unknown) and the cell's reference construction:
+    "ran" (a completed ref run on the cell's exe: research_cycle runs the ref when the exes differ), "missing" (the
+    cell spec has a ref phase and none ran on that exe), or "none" (the spec has no ref phase, e.g. a rule cell)."""
+    parent = completed_exe(run_rows(w, "nav", done["preflight"]["parent"]["nav"]))
+    cell = completed_exe([r for r in rows if r["phase"] == "nav"])
+    refs = [r for r in rows if r["phase"] == "ref"]
+    has_ref = "ref" in w.phase_bases(done["match"]["cell_spec"])
+    ran = any(r["outcome"] == "completed" and r["exit_code"] == 0 and r.get("executable_sha256") == cell for r in refs)
+    return {"parent": parent, "cell": cell, "equal": parent == cell if parent and cell else None,
+            "ref": "none" if not has_ref else "unknown" if not cell else "ran" if ran else "missing"}
+
+
 def verify_plan(w: Wave, done: dict) -> list[str]:
-    return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; seal scan of every log the "
-            "wave produced (run dirs of the screen, the cell and its -gm copy, readers, consoles)"]
+    return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; NAV exe sha256 of the parent "
+            "vs the cell (recorded; differing, the cell's ref must have run on the cell's exe); seal scan of every log "
+            "the wave produced (run dirs of the screen, the cell and its -gm copy, readers, consoles)"]
 
 
 # ------------------------------------------------------------------ judge

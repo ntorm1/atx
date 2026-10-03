@@ -19,6 +19,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import wave_fixture as F  # noqa: E402
 import research_cycle as RC  # noqa: E402
+import research_tree as RT  # noqa: E402
 import research_wave  # noqa: E402
 import wave_scoreboard as S  # noqa: E402
 
@@ -76,14 +77,15 @@ def test_a_replacing_wave_runs_its_marginal_on_the_pool_only(tmp_path):
 
 def test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it(tmp_path):
     """PM8-15 (integration of Y): an add-alpha wave on a theme-erc parent with more themes than the marginal verb
-    takes runs the marginal on the pool only (PM6-8 (i)) under the ruled phase cap; the b library carries the rows."""
-    rule = {"ruling": "PM8-15", "pool_only": True, "seconds": 720}
+    takes runs the marginal on the pool only (PM6-8 (i)) under the ruled phase cap; the b library carries the rows.
+    The cap is the bounded runner's maximum (P9 DEC-1: y-s's 720 s is refused at load, test_runner_max_refuses_720)."""
+    rule = {"ruling": "PM8-15", "pool_only": True, "seconds": RT.RUNNER_MAX_SECONDS}
     root = F.build(tmp_path / "r", marginal=rule)
     fake = F.FakeCycle(root, ONE_DROPPED)
     lines = run(root, fake)
     s = json.loads((root / "scripts/specs/v8/lib-w1.json").read_text())
     assert "themes" not in s["marginal"] and s["marginal"]["output"] == "out/u-w1-marginal-poolonly"
-    assert s["runner"]["phases"]["marginal"] == {"seconds": 720}
+    assert s["runner"]["phases"]["marginal"] == {"seconds": 600}
     assert any("marginal as ruled (PM8-15)" in x for x in lines)
     b = json.loads((root / B_SPEC).read_text())
     assert "marginal" not in b and "phases" not in b["runner"]                         # the same mode: rows carried
@@ -92,7 +94,7 @@ def test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it(t
     off = F.build(tmp_path / "s", marginal=rule, speed={"reuse_screen_marginal": False})
     run(off, F.FakeCycle(off, ONE_DROPPED))
     b = json.loads((off / B_SPEC).read_text())
-    assert "themes" not in b["marginal"] and b["runner"]["phases"]["marginal"] == {"seconds": 720}
+    assert "themes" not in b["marginal"] and b["runner"]["phases"]["marginal"] == {"seconds": 600}
     assert F.WM.validate(F.manifest(marginal={"pool_only": True})) and F.WM.validate(F.manifest(marginal={
         "ruling": "PM8-15", "seconds": 0}))                                             # a ruling and a positive cap
 
