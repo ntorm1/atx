@@ -1,0 +1,42 @@
+{
+  "stage": "universe",
+  "lane": "A",
+  "task": "tier1-v4 Task 2",
+  "schema": "atx.alpha-panel.universe/v1",
+  "module": "atx_db.alpha_panel.universe",
+  "args": [
+    "build"
+  ],
+  "manifest": "universe/manifest.json",
+  "inputs": [
+    "panel",
+    "market_shares",
+    "indexes",
+    "security_master",
+    "share_exchange_history",
+    "identity_link_table_v3",
+    "sec_filings",
+    "classification",
+    "identity_cover"
+  ],
+  "outputs": [
+    {
+      "view": "universe",
+      "glob": "universe/year=*/universe.parquet",
+      "keys": [
+        "session_date",
+        "security_id"
+      ],
+      "clock": "available_at",
+      "vintage": "daily"
+    }
+  ],
+  "as_of_sql": "CREATE MACRO universe_as_of(ts) AS TABLE SELECT * FROM universe WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT security_id, univ_all_common, univ_r3000p FROM universe_as_of(lake_cutoff(DATE '2024-03-15')) QUALIFY row_number() OVER (PARTITION BY security_id ORDER BY session_date DESC) = 1",
+  "formation_join": "research panels keyed by session_date join universe on (session_date, security_id): the flags of session d use prices through the close of d and issuer facts before lake_cutoff(d), the CRSP formation-date convention (form at the close of d, hold from d+1)",
+  "registered": "NOT registered: no LAKE_STAGES literal (inputs share_exchange_history, identity/link_table_v3 and identity_cover have no registered stage; a literal naming them would break registry.load for every lane); Task 17 folds this stub into stagelake",
+  "validation": "validation/universe.json (gates, counts, 30-field coverage), validation/universe_hand_check_sample.json",
+  "guard_gb": 0.8,
+  "staleness": "daily; rebuilt with the panel",
+  "doc": "atx-db/docs/datasets/universe.md"
+}
