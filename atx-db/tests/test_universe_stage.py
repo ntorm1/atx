@@ -465,6 +465,7 @@ def test_source_plan_load_future_extension_preserves_prior_membership(tmp_path,m
 
 
 @pytest.mark.parametrize('initial,pending',[
+    ('We have elected to be taxed as a REIT. We will terminate our election next year.','We will terminate our election next year.'),
     ('We are a REIT.','The Company is no longer required to operate under REIT rules if its revocation is accepted.'),
     ('We are no longer a REIT.','Assuming the IRS approves the pending election and all other conditions are met, we are a REIT.'),
     ('We are no longer a REIT.','We are a REIT only if the IRS approves our election.'),
@@ -497,3 +498,13 @@ def test_pending_primary_assertion_loads_no_event_or_membership_transition(tmp_p
     assert len(events)==1 and events[0]['accession']==rows[0]['accession']
     assessment=C.read_json(stage/'assessment.json')['rows']
     assert assessment[1]['status'] is None
+    if 'have elected' in initial:
+        termination={**rows[1],'accession':'0000000112-21-000003','filing_date':D(2021,6,4),'header_url':'completed-header','primary_url':'completed-primary'}
+        raws[termination['header_url']]=raws[rows[1]['header_url']].replace(b'20210602',b'20210604').replace(rows[1]['accession'].encode(),termination['accession'].encode())
+        raws[termination['primary_url']]=b'<ix:nonNumeric name="dei:EntityCentralIndexKey">112</ix:nonNumeric>We are no longer a REIT.'
+        final=publish(rows+[termination])
+        line=[r for r in final if r[1]==12]
+        assert [r[2] for r in line]==[True,True,True,True,True,False]
+        assert [r[3] for r in line]==[False,False,False,False,False,True]
+        events=pq.read_table(stage/'reit_status.parquet').to_pylist()
+        assert [r['reit_status'] for r in events]==[True,False]

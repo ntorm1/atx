@@ -37,13 +37,22 @@ class AssertionReplay:
     """Reuse only exact source/code/plan matches; interrupted rows leave no valid entry."""
     def __init__(self,directory:Path,identity:dict):
         self.directory=directory;self.identity=freeze(identity);self.hits=0;self.computed=0;self.invalid=0;self.completed=[]
+        self.assessed=[]
         directory.mkdir(parents=True,exist_ok=True)
+
+    def capture(self,row:dict,store)->dict:
+        identity=self.row_identity(row,store,'')
+        self.assessed.append((freeze(row),store,identity))
+        return identity
+
+    def verify(self,row:dict,store,identity:dict)->None:
+        if self.row_identity(row,store,'')!=identity:raise RuntimeError('source changed during assessment consumption')
 
     def row_identity(self,row:dict,store,name:str)->dict:
         sources={}
         for field in ('header_url','primary_url'):
             url=row[field];record=store.lookup(url)
-            source={key:getattr(record,key,None) for key in ('url','status','error','sha256','bytes')}
+            source={key:getattr(record,key,None) for key in ('url','status','error','sha256','bytes','fetched_at')}
             source['requested_url']=url;source['retained_object']=None
             if record and record.ok and record.sha256:
                 for path in (store.object_path(record.sha256),store.raw_object_path(record.sha256)):
@@ -72,8 +81,9 @@ class AssertionReplay:
 
     def finish(self,current_code:dict)->dict:
         if current_code!=self.identity:raise RuntimeError('parser/helper code changed during replay')
+        for row,store,identity in self.assessed:self.verify(row,store,identity)
         for row,store,name,key in self.completed:
             if digest(self.row_identity(row,store,name))!=key:raise RuntimeError('source changed before replay publication')
         return {'schema':SCHEMA,'directory':str(self.directory),'code_identity_sha256':digest(self.identity),
-                'reused':self.hits,'computed':self.computed,'invalidated':self.invalid,'completed':len(self.completed),
+                'reused':self.hits,'computed':self.computed,'invalidated':self.invalid,'completed':len(self.completed),'assessed_sources':len(self.assessed),
                 'completed_identities_sha256':digest([key for *_,key in self.completed])}

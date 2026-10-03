@@ -139,3 +139,27 @@ def test_missing_header_is_accounted_as_unknown_and_never_cached_as_false(lake):
     assert result['observations']==2 and len(rows)==2
     assert rows[0]['status'] is None and rows[0]['reason']=='source_not_fetched_or_failed'
     assert result['replay_checkpoint']['completed']==1
+
+@pytest.mark.parametrize('moment',['after_header_read','after_clock','prior_unknown','prior_primary_failure'])
+def test_all_assessment_sources_bound_before_consumption(lake,monkeypatch,moment):
+    first=lake.rows[0];original_read=lake.store.read;original_parse=I.parse_header
+    def corrupt():
+        rec=lake.store.lookup(first['header_url'])
+        lake.store.object_path(rec.sha256).write_bytes(gzip.compress(b'changed original header',mtime=0))
+    if moment=='prior_unknown':
+        del lake.store.records[first['primary_url']]
+    def read(rec,maximum=None):
+        if moment=='prior_primary_failure' and rec.url==first['primary_url']:raise ValueError('fixture read failure')
+        raw=original_read(rec,maximum)
+        if moment=='after_header_read' and rec.url==first['header_url']:corrupt()
+        if moment.startswith('prior_') and rec.url==lake.rows[1]['header_url']:corrupt()
+        return raw
+    def parse(raw,*args,**kwargs):
+        result=original_parse(raw,*args,**kwargs)
+        if moment=='after_clock' and args[1]==first['accession']:corrupt()
+        return result
+    monkeypatch.setattr(lake.store,'read',read);monkeypatch.setattr(I,'parse_header',parse)
+    with pytest.raises(RuntimeError,match='source changed'):K.load(lake.cache)
+    assert not lake.published
+    assert not (lake.stage/'reit_status.parquet').exists()
+    assert not (lake.stage/'incorporation.parquet').exists()

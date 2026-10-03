@@ -121,3 +121,7 @@ def test_class_prepare_extensions_retain_annual_audit_and_followup_paths(tmp_pat
     C.write_json_atomic(audit,{'samples':[]})
     third=I.prepare(cohort,audit,status_followup=True)
     assert {r['accession'] for r in second['rows']}=={r['accession'] for r in third['rows']}
+def test_completed_election_survives_separate_future_termination_sentence():
+    result=I.reit_assertion(doc('We have elected to be taxed as a REIT. We will terminate our election next year.'),'Example Corp',12)
+    assert result['status'] is True
+    assert I.reit_assertion(doc('We have elected to be taxed as a REIT effective next year.'),'Example Corp',12)['status'] is None

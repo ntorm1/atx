@@ -80,7 +80,7 @@ def reit_assertion(raw:bytes,name:str,cik:int)->dict:
         for m in re.finditer(pattern,normalized):
             evidence=m.group(0)
             if conditional(m):continue
-            if re.search(r'\b(?:have|has) elected\b',evidence) and re.search(r'\b(?:commencing|beginning|effective|will)\b',normalized[m.end():m.end()+180]):continue
+            if re.search(r'\b(?:have|has) elected\b',evidence) and re.search(r'\b(?:commencing|beginning|effective|will)\b',re.split(r'[.!?]',normalized[m.end():],maxsplit=1)[0]):continue
             if re.search(r'\b(?:not|no longer|subsidiar\w*|will|would|intend\w*|expect\w*|holding company|invests|investing|if)\b',evidence):continue
             positives.append(evidence)
     if negatives and positives:return {'status':None,'reason':'contradictory_status_needs_manual_review','evidence':negatives+positives}
@@ -185,25 +185,29 @@ def load(checkpoint_dir:Path|None=None)->dict:
     replay=R.AssertionReplay(checkpoint_dir,R.code_identity(Path(__file__),RULE,PRIMARY_MAXIMUM)) if checkpoint_dir is not None else None
     ledger_sha=C.sha256_file(I.RAW/H.FETCH_LEDGER_NAME) if replay is not None else None
     for r in plan['rows']:
-        head=store.lookup(r['header_url']);primary=store.lookup(r['primary_url'])
-        item={'cik':r['cik'],'accession':r['accession'],'primary_url':r['primary_url'],'header_url':r['header_url'],'filing_date':r['filing_date']}
-        if not head or not primary or not head.ok or not primary.ok:assessment.append({**item,'status':None,'reason':'source_not_fetched_or_failed'});continue
+        source_identity=replay.capture(r,store) if replay is not None else None
         try:
-            rawhead=store.read(head,maximum=2_000_000)
-            clock=I.parse_header(rawhead,r['cik'],r['accession'],require_incorporation=False);name=issuer_name(rawhead,r['cik'])
-        except (ValueError,OSError) as exc:
-            assessment.append({**item,'status':None,'reason':'header_read_or_parse_failure','error':type(exc).__name__});continue
-        if not clock or not name:assessment.append({**item,'status':None,'reason':'header_identity_state_or_clock_unverified'});continue
-        if clock['inc_state_country'] is not None:
-            inc.append({**clock,'source_url':r['header_url'],'raw_sha256':head.sha256,'fetched_at':head.fetched_at})
-        try:
-            process=lambda:reit_assertion(store.read(primary,maximum=PRIMARY_MAXIMUM),name,r['cik'])
-            assertion=replay.assertion(r,store,name,process) if replay is not None else process()
-        except (ValueError,OSError) as exc:
-            assessment.append({**item,'status':None,'reason':'primary_read_or_parse_failure','error':type(exc).__name__});continue
-        period=report_period(rawhead)
-        item={**item,**assertion,'issuer_name':name,'report_period_end':period,'available_at':clock['available_at'],'accepted_at':clock['accepted_at'],'primary_sha256':primary.sha256,'header_sha256':head.sha256};assessment.append(item)
-        if assertion['status'] is not None:events.append({'cik':r['cik'],'accession':r['accession'],'accepted_at':clock['accepted_at'],'available_at':clock['available_at'],'report_period_end':period,'reit_status':assertion['status'],'primary_url':r['primary_url'],'primary_sha256':primary.sha256,'header_sha256':head.sha256,'evidence':json.dumps(assertion['evidence'])})
+            head=store.lookup(r['header_url']);primary=store.lookup(r['primary_url'])
+            item={'cik':r['cik'],'accession':r['accession'],'primary_url':r['primary_url'],'header_url':r['header_url'],'filing_date':r['filing_date']}
+            if not head or not primary or not head.ok or not primary.ok:assessment.append({**item,'status':None,'reason':'source_not_fetched_or_failed'});continue
+            try:
+                rawhead=store.read(head,maximum=2_000_000)
+                clock=I.parse_header(rawhead,r['cik'],r['accession'],require_incorporation=False);name=issuer_name(rawhead,r['cik'])
+            except (ValueError,OSError) as exc:
+                assessment.append({**item,'status':None,'reason':'header_read_or_parse_failure','error':type(exc).__name__});continue
+            if not clock or not name:assessment.append({**item,'status':None,'reason':'header_identity_state_or_clock_unverified'});continue
+            if clock['inc_state_country'] is not None:
+                inc.append({**clock,'source_url':r['header_url'],'raw_sha256':head.sha256,'fetched_at':head.fetched_at})
+            try:
+                process=lambda:reit_assertion(store.read(primary,maximum=PRIMARY_MAXIMUM),name,r['cik'])
+                assertion=replay.assertion(r,store,name,process) if replay is not None else process()
+            except (ValueError,OSError) as exc:
+                assessment.append({**item,'status':None,'reason':'primary_read_or_parse_failure','error':type(exc).__name__});continue
+            period=report_period(rawhead)
+            item={**item,**assertion,'issuer_name':name,'report_period_end':period,'available_at':clock['available_at'],'accepted_at':clock['accepted_at'],'primary_sha256':primary.sha256,'header_sha256':head.sha256};assessment.append(item)
+            if assertion['status'] is not None:events.append({'cik':r['cik'],'accession':r['accession'],'accepted_at':clock['accepted_at'],'available_at':clock['available_at'],'report_period_end':period,'reit_status':assertion['status'],'primary_url':r['primary_url'],'primary_sha256':primary.sha256,'header_sha256':head.sha256,'evidence':json.dumps(assertion['evidence'])})
+        finally:
+            if replay is not None:replay.verify(r,store,source_identity)
     if len(assessment)!=len(keys) or {(r['cik'],r['accession']) for r in assessment}!=set(keys):raise RuntimeError('incomplete issuer-class source assessment')
     if C.sha256_file(C.stage_dir(STAGE)/'plan.json')!=plan_sha:raise RuntimeError('source plan changed during assessment')
     replay_receipt=replay.finish(R.code_identity(Path(__file__),RULE,PRIMARY_MAXIMUM)) if replay is not None else None
