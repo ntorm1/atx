@@ -323,3 +323,29 @@ There are 3 new tests (378 → 381 in tools; 30 → 33 in the focused set).
 **m3 adopted (PM ruling A1-M3), commit `4df3f7b7`.** `require_research_seal` now refuses a `seal` that is present but not an object (a string, null or a list) instead of logging it as legacy. A seal object takes the same path as before, whether its `exclusive_end` is equal, different or missing. An absent seal is still logged and accepted (P13). The fields builder has written `seal` as an object since `c615ce36`. A new window-independent test covers this: `test_prepare_research_fields_seal.py::MalformedSealBlock`. Tools rerun: `382 passed, 6 subtests passed in 171.56s`, exit 0.
 
 **How root verifies (delta).** Run the pytest commands above as separate processes. The cheap production acceptance command from "How root verifies" still prints `ok 92`. Once a DEC-5 row is appended, it prints the total row count.
+
+## Fix round 2
+**Outcome:** DONE. FIX_BASE `e5780efb`; the re-review (`task-A1-rereview-1.md`) blocked there. This round changes tests only: `field_registry.py`, `field_registry.json` (sha256 still `6c56b739...3e51`) and the builder are unchanged since `e5780efb`.
+
+**Commit:** `8fd511d0` test(fields): registry tests hold with engine-only rows (P9 A1 fix 2). Changes `atx-engine/tools/test_field_registry.py`.
+
+**N1 (major; closes M1).** The `CommittedRegistry` tests no longer assume the committed file has no engine-only rows. They hold only the Python-producible rows to the code. A new helper, `engine_only_names(doc)`, runs `fr.engine_only` with every shim bound. Per test:
+- `test_this_harness_generates...` compares through `fr.regenerate`, which keeps engine-only rows verbatim.
+- `test_lane_a2_flip...` pins A2's three ids among the file's twins, which are the engine flips that are not engine-only. It calls `generate` with those twins only and compares the result with the producible rows.
+- `test_dtype_is_declared...` computes the `group` and `grp_` sets over the producible rows.
+- `test_engine_only_rows_appended...` finds its two synthetic names in order inside `only`, and checks that each one appears in the refusal text.
+- `test_generated_from_the_four_mechanisms...` passes the file that the harness's `fr.load()` reads (`fr.DEFAULT_PATH`) to its fresh interpreter, so a patched path reaches the subprocess too.
+
+Regression: two new classes, `CommittedRegistryWithADec5Row` (f64) and `CommittedRegistryWithADec5GroupRow` (`dtype: group`). Each patches `fr.DEFAULT_PATH` to a copy of the committed file with one appended engine-only row, `syn_dec5`, and reruns every inherited `CommittedRegistry` test unedited. Each also adds `test_the_copy_holds_the_engine_only_row`. All 16 pass. A DEC-5 append therefore needs no edit to A1's tests.
+
+**N2 (minor; same lines).** `test_valid_and_in_v15_order` asserts again that every engine twin is routable: twins ⊆ `prepare_research_fields_engine.ENGINE_FIELDS`, and each twin's kind id is its own name. Engine-only rows are exempt.
+
+**Evidence** (pool-12, `PYTHONDONTWRITEBYTECODE=1`):
+```
+$ cd atx-engine/tools && "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider test_field_registry.py
+35 passed in 5.22s
+$ "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tools
+398 passed, 6 subtests passed in 163.86s (0:02:43)
+exit_code=0
+```
+The tools count went from 382 to 398: the two regression classes add 16 tests.
