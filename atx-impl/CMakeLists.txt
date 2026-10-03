@@ -221,3 +221,12 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
+# P9 lane AL-COMB: composition rules theme-cov-hedge-v1 (over engine combine/char_cov_hedge.hpp) and
+# mom-volman-v1 (a theme_schedule rule), with the IC TUs' flag set as strategy_ic_rules.cpp above.
+target_sources(atx-impl-core PRIVATE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp)
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()

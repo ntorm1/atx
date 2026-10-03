@@ -2,6 +2,7 @@
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_detail.hpp"
 #include "strategy_ic_rules.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -367,6 +368,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     ATX_TRY(auto stages,composition_stages(pinned,role.session_keys));
     ATX_TRY(auto created,IcComposition::create_from_stages(cc,candidates,effective,stages));
     composition.emplace(std::move(created));
+    // theme-cov-hedge-v1 (P9 lane AL-COMB): the role's session returns for its stage; else nothing.
+    ATX_TRY_VOID(attach_theme_hedge(pinned,role,*composition));
   }
   // One key per candidate (empty = cache off); directories are created on write.
   const bool signal_cache=!cache.keys.empty();

@@ -128,6 +128,10 @@ co::Status composition_standardise(const Json& doc,const RuleInputs& in,PinnedWe
 co::Status composition_residualise(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
 co::Status composition_schedule(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
 co::Status composition_sleeves(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
+// P9 lane AL-COMB: the theme_schedule rows' shared parse (theme-tsmom-v1 and mom-volman-v1;
+// strategy_ic_mom_volman.cpp) and theme-cov-hedge-v1's (strategy_ic_theme_hedge.cpp).
+co::Status composition_schedule_rules(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
+co::Status composition_hedge(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
 co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_theme_erc(const Json& block,const Library& lib,const std::vector<f64>& weights);
