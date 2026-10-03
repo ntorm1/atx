@@ -1,0 +1,35 @@
+{
+    "Source":  "b0b0fbf2ed7f717019b4c11ed9918f8337162ee1",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  16,
+    "ConfiguredProvenance":  "b0b0fbf2ed7f717019b4c11ed9918f8337162ee1-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4597,
+    "CommitMiB":  4125,
+    "Targets":  [
+                    "atx-engine-research-ledger-tests",
+                    "atx-engine-research-eval-tests",
+                    "atx-research-eval"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  550.1596791,
+    "CompiledTUs":  225,
+    "Links":  12,
+    "Tag":  "p9-b2-a",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-14\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-ledger-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-14\\build-equity\\bin\\atx-engine-research-ledger-tests.exe",
+                                                                 "Sha256":  "c76a9bf62722ec9d8f62f14c85c7c1a17b22a4009791291558b5d428e16b571e"
+                                                             },
+                        "atx-engine-research-eval-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-14\\build-equity\\bin\\atx-engine-research-eval-tests.exe",
+                                                               "Sha256":  "56f009f91a0bc74404d31c93686b852e7e432e95fa53af6291679834ec3329db"
+                                                           },
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-14\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "ff4ec20b4cc8db9d0808a03b0cb0ec461b5dfa9119918305cae2fc1f2535dba8"
+                                              }
+                    }
+}
