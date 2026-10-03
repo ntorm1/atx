@@ -264,7 +264,7 @@ DESC_Q = ("cik", "datadate", "fyearq", "fqtr", "fyr", "accession", "form", "file
 VINT_STOCK = {c: c for c in ("at", "lt", "seq", "che", "act", "lct", "invt", "rect", "ap", "ppe", "pstk", "mib",
                              "gdwl", "ppegt", "intan")}
 VINT_STOCK.update({"c_dlc": "dlc", "c_dltt": "dltt", "c_txditc": "txditc", "c_re": "re",
-                   "c_mibt": "tempeq"})
+                   "c_mibt": "tempeq", "c_teq": "teq"})
 VINT_ANNUAL = {("c_txt_ttm" if col == "txt_ttm" else col): "annual_" + col for col in fi.DEPTH_ANNUAL}
 VINT_FLOW_Q = {c: c for c in ("sale_q", "cogs_q", "xsga_q", "oi_q", "ebitda_q", "dp_q", "xint_q", "txt_q", "ni_q")}
 VINT_TTM = {"sale_ttm": "sale_q", "cogs_ttm": "cogs_q", "xsga_ttm": "xsga_q", "gp_ttm": "gp_q", "oi_ttm": "oi_q",
@@ -576,6 +576,8 @@ def _derive(con, inp: Inputs) -> None:
                      WHEN fqtr = 4 AND ib_4 IS NOT NULL THEN 'ib_fy_less_9m'
                      WHEN ni_q IS NOT NULL AND doq IS NOT NULL AND coalesce(c_xido_ttm, 0) = 0
                           THEN CASE WHEN doq = 0 THEN 'niq_no_do' ELSE 'niq_less_doq' END END"""
+    if source_backed:
+        ibq_src = ibq_src.replace("coalesce(c_xido_ttm, 0) = 0", "c_xido_ttm = 0")
 
     def eps(cont: str, tot: str) -> tuple[str, str]:
         v = (f"CASE WHEN {cont}_3 IS NOT NULL THEN {cont}_3 * rq WHEN doq = 0 AND {tot}_3 IS NOT NULL THEN {tot}_3 * rq "
@@ -709,7 +711,9 @@ def _vintages(con) -> None:
         # actual published stock change, including that case, rather than requiring an old history fact.
         moves = " + ".join(f"({sign}) * (CASE WHEN ({new[h]}) IS NOT NULL THEN "
                            f"({new[h]}) - coalesce(b.\"{h}\", 0.0) ELSE 0.0 END)" for h, sign in parts)
-        new[col] = f"CASE WHEN b.{col} IS NULL THEN NULL ELSE b.{col} + {moves} END"
+        derived = f"CASE WHEN b.{col} IS NULL THEN NULL ELSE b.{col} + {moves} END"
+        new[col] = (f"CASE WHEN d.teq_n IS NOT NULL THEN d.teq_n * {spot} ELSE ({derived}) END"
+                    if col == "c_teq" else derived)
     changed = " || ".join([f"CASE WHEN ({expr}) IS DISTINCT FROM b.\"{col}\" THEN ',{col}' ELSE '' END"
                            for col, expr in new.items()] +
                           # a restated discrete quarter of a YTD flow moves the row's YTD sum (recomputed downstream)
@@ -1341,6 +1345,12 @@ _ATTR = re.compile(r"(\w+(?::\w+)?)=\"([^\"]*)\"")
 def parse_ixbrl(html: str) -> list[dict[str, Any]]:
     """Numeric facts of an inline XBRL document: concept (local name), start, end / instant, ``dim`` (the context has
     a segment), value (scale and sign applied). Nested ``ix:nonFraction`` tags each yield their own fact."""
+    namespace_candidates: dict[str, set[str]] = {}
+    for prefix, uri in re.findall(r'xmlns:([^\s=]+)=["\']([^"\']+)["\']', html):
+        namespace_candidates.setdefault(prefix, set()).add(uri)
+    # This bounded parser cannot resolve scoped prefix redeclarations. Preserve ambiguity explicitly.
+    namespaces = {prefix: next(iter(uris)) if len(uris) == 1 else None
+                  for prefix, uris in namespace_candidates.items()}
     ctx: dict[str, dict[str, Any]] = {}
     for cid, body in _CTX.findall(html):
         s = re.search(r"<(?:xbrli:)?startDate>\s*([\d-]+)", body)
@@ -1366,7 +1376,11 @@ def parse_ixbrl(html: str) -> list[dict[str, Any]]:
         val *= 10 ** int(a.get("scale", "0") or 0)
         if a.get("sign") == "-":
             val = -val
-        facts.append({"concept": a.get("name", "").split(":")[-1], "start": c["start"], "end": c["end"],
+        qname = a.get("name", "")
+        prefix = qname.split(":", 1)[0] if ":" in qname else None
+        facts.append({"concept": qname.split(":")[-1], "qualified_name": qname,
+                      "taxonomy_prefix": prefix, "namespace_uri": namespaces.get(prefix),
+                      "unit_ref": a.get("unitRef"), "numeric_text": text, "start": c["start"], "end": c["end"],
                       "instant": c["instant"], "dim": c["dim"], "value": val, "context": a.get("contextRef")})
     return facts
 

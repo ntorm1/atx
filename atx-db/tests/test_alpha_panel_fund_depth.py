@@ -61,6 +61,22 @@ def test_parent_equity_and_net_operating_assets_require_reported_components():
     b=F.ItemCalc(F.Snapshot(k)).bs(END)
     assert b['seq']==390 and b['mib']==10 and b['noa'] is None
 
+
+def test_cash_and_deferred_revenue_require_both_components_in_event_and_history():
+    k=kfacts(('CashAndCashEquivalentsAtCarryingValue',None,END,10),
+             ('ContractWithCustomerLiabilityCurrent',None,END,20))
+    assert F.compute_items(k,END,{}, {},F.Ctx())['che'] is None
+    assert F.compute_items(k,END,{}, {},F.Ctx())['drev'] is None
+    assert 'che' not in F.history_values(k,END,F.Ctx())
+    assert 'drev' not in F.history_values(k,END,F.Ctx())
+    k.apply(F.CID['ShortTermInvestments'],None,END,0,CLOCK)
+    k.apply(F.CID['ContractWithCustomerLiabilityNoncurrent'],None,END,0,CLOCK)
+    out=F.compute_items(k,END,{}, {},F.Ctx());h=F.history_values(k,END,F.Ctx())
+    assert out['che']==10 and out['drev']==20 and h['che']==(10,False) and h['drev']==(20,False)
+    legacy=F.Knowledge()
+    legacy.apply(F.CID['CashAndCashEquivalentsAtCarryingValue'],None,END,10,CLOCK)
+    assert F.ItemCalc(F.Snapshot(legacy)).bs(END)['che']==10
+
 def test_prior_annual_tax_and_income_arrive_at_comparative_filing_clock():
     prior=DAY(2019,12,31)
     rows=[(CLOCK,'a',F.CID['Assets'],None,END,1000,'USD','10-K',CLOCK.date(),2020,'FY','fsds_accepted_utc'),
@@ -102,3 +118,30 @@ def test_missing_or_regressed_counter_cannot_reset_consumed_allocation(tmp_path)
     (tmp_path/'attempt-counter.json').write_text(json.dumps({'attempts':1,'raw_bytes':0}),encoding='utf8')
     with pytest.raises(RuntimeError,match='behind'):
         D.AttemptBudget(tmp_path,Limiter())
+
+
+def test_original_local_name_collision_and_blank_do_not_certify_source_values():
+    html='''<html xmlns:g="http://fasb.org/us-gaap/2020-01-31" xmlns:x="https://example.com/custom">
+      <xbrli:context id="c"><xbrli:period><xbrli:instant>2020-12-31</xbrli:instant></xbrli:period></xbrli:context>
+      <ix:nonFraction name="x:Assets" contextRef="c" unitRef="USD">1000</ix:nonFraction>
+      <ix:nonFraction name="g:Assets" contextRef="c" unitRef="USD">0</ix:nonFraction>
+      <ix:nonFraction name="g:Liabilities" contextRef="c" unitRef="USD"></ix:nonFraction></html>'''
+    facts=D.qualified_original_facts(html)
+    assert facts[0]['qualified_name']=='x:Assets' and facts[0]['standard_taxonomy'] is None
+    assert facts[1]['standard_taxonomy']=='us-gaap' and facts[1]['value']==0 and facts[1]['source_numeric_qualified']
+    assert not facts[2]['source_numeric_qualified']
+    conflicting=html.replace('</html>','<div xmlns:g="https://example.com/custom"></div></html>')
+    assert D.qualified_original_facts(conflicting)[1]['standard_taxonomy'] is None
+
+
+def test_extract_reuse_verifies_receipt_and_excludes_mutable_parts(tmp_path):
+    src=tmp_path/'old';cf=src/'_work/cf';cf.mkdir(parents=True)
+    data=cf/'batch-0000.parquet';data.write_bytes(b'fixture')
+    (src/'manifest.json').write_text(json.dumps({'sources':{'companyfacts_batches':
+        {data.name:{'extract_sha256':D.C.sha256_file(data)}}}}))
+    (cf/'batch-0000.json').write_text(json.dumps({'file':data.name,'parquet_bytes':7,'parquet_sha256':D.C.sha256_file(data)}))
+    (cf/'unapproved.partial').write_bytes(b'junk')
+    result=D.reuse_extract(src,tmp_path/'new')
+    assert result['files']==2 and not (tmp_path/'new/_work/cf/unapproved.partial').exists()
+    data.write_bytes(b'changed')
+    with pytest.raises(ValueError,match='receipt hash'):D.reuse_extract(src,tmp_path/'another')

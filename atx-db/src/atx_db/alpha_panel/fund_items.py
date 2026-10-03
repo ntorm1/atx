@@ -946,7 +946,8 @@ class ItemCalc:
             che = cash_sti
         else:
             cash, sti = s.inst("cash", end), s.inst("sti", end)
-            che = None if cash is None and sti is None else _add(cash, sti)
+            che = None if (cash is None or sti is None) and s.k.source_backed_only else (
+                None if cash is None and sti is None else _add(cash, sti))
         dcur, cur_ltd, stb = s.inst("debt_current", end), s.inst("cur_ltd", end), s.inst("stb", end)
         st = dcur if dcur is not None else (None if cur_ltd is None and stb is None else _add(cur_ltd, stb))
         if s.k.source_backed_only and dcur is None and (cur_ltd is None or stb is None):
@@ -1504,7 +1505,8 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
     drev = s.inst("drev", end)
     if drev is None:
         dc, dn = s.inst("drev_cur", end), s.inst("drev_nc", end)
-        drev = None if dc is None and dn is None else _add(dc, dn)
+        drev = None if (dc is None or dn is None) and s.k.source_backed_only else (
+            None if dc is None and dn is None else _add(dc, dn))
     out["drev"] = drev
     out["ppegt"] = s.inst("ppegt", end)
     gw = s.inst("gdwl", end)
@@ -1829,7 +1831,8 @@ def history_values(k: Knowledge, end: dt.date, ctx: Ctx) -> dict[str, tuple[floa
     drev = s.inst("drev", end)
     if drev is None:
         dc, dn = s.inst("drev_cur", end), s.inst("drev_nc", end)
-        drev = None if dc is None and dn is None else _add(dc, dn)
+        drev = None if (dc is None or dn is None) and s.k.source_backed_only else (
+            None if dc is None and dn is None else _add(dc, dn))
     put("drev", drev)
     put("mib", b.get("mib"))
     put("pstk", b.get("pstk"))

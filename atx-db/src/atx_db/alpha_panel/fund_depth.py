@@ -11,6 +11,8 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 
 from atx_db import sec_http
@@ -19,6 +21,24 @@ from . import common as C
 MAX_ATTEMPTS = 12
 MAX_DOCUMENT = 24 * 1024**2
 MAX_TOTAL = 288 * 1024**2
+
+
+def qualified_original_facts(html: str) -> list[dict]:
+    """Retain qualified identity for independent checks; local-name collisions are never standard facts.
+
+    This does not certify unit/currency, main-statement scope, source clock or economic equivalence.
+    A blank numeric element is missing. A printed dash is not an explicit numeric zero here.
+    """
+    from .compustat_std import parse_ixbrl
+    facts = parse_ixbrl(html)
+    for fact in facts:
+        uri = fact.get('namespace_uri') or ''
+        fact['standard_taxonomy'] = (
+            'us-gaap' if re.fullmatch(r'https?://fasb.org/us-gaap/[^/]+', uri) else
+            'dei' if re.fullmatch(r'https?://xbrl.sec.gov/dei/[^/]+', uri) else
+            'ifrs-full' if re.fullmatch(r'https?://xbrl.ifrs.org/taxonomy/[^/]+/ifrs-full', uri) else None)
+        fact['source_numeric_qualified'] = fact.get('numeric_text') not in ('', '-', '—', '–')
+    return facts
 
 
 class AttemptBudget:
@@ -87,17 +107,38 @@ def acquire(targets: list[dict], root: Path) -> dict:
 def reuse_extract(source: Path, target: Path) -> dict:
     """Hardlink immutable extract/preparation inputs only; never link outputs or mutable part files."""
     src=source/'_work'/'cf';dst=target/'_work'/'cf';dst.mkdir(parents=True,exist_ok=True)
+    approved=C.read_json(source/'manifest.json')['sources']
+    expected=approved['companyfacts_batches']
+    receipts=sorted(src.glob('batch-[0-9][0-9][0-9][0-9].json'))
+    if not receipts:raise FileNotFoundError('No approved extraction receipts')
+    if len(receipts)!=len(expected):raise ValueError('Approved extraction inventory count differs')
+    inventory=[]
+    for receipt in receipts:
+        record=C.read_json(receipt);p=src/record['file']
+        if p.parent!=src or not re.fullmatch(r'batch-\d{4}\.parquet',p.name):
+            raise ValueError('Unsupported extraction inventory member')
+        pinned=expected.get(p.name,{})
+        if (record['parquet_sha256']!=pinned.get('extract_sha256')
+                or p.stat().st_size!=record['parquet_bytes'] or C.sha256_file(p)!=record['parquet_sha256']):
+            raise ValueError('Source extraction receipt hash/size mismatch')
+        inventory.extend((p,receipt))
+    plan=src/'plan.json'
+    if plan.exists():
+        if C.sha256_file(plan)!=approved['companyfacts_extract_plan']['sha256']:
+            raise ValueError('Approved extraction plan hash mismatch')
+        inventory.append(plan)
     count=logical=0
-    for p in sorted(src.glob('*')):
-        if not p.is_file():continue
+    for p in inventory:
         dest=dst/p.name
         if dest.exists():
             if dest.stat().st_size!=p.stat().st_size or C.sha256_file(dest)!=C.sha256_file(p):
                 raise ValueError('Cached immutable extract differs')
-        else:os.link(p,dest)
+        elif p.suffix=='.parquet':os.link(p,dest)
+        else:shutil.copyfile(p,dest)  # mutable metadata never shares a hardlink with the old stage
         count+=1;logical+=p.stat().st_size
     if not count:raise FileNotFoundError(src)
-    return {'source':str(source),'files':count,'logical_bytes':logical,'new_data_bytes':0}
+    return {'source':str(source),'source_manifest_sha256':C.sha256_file(source/'manifest.json'),
+            'files':count,'logical_bytes':logical,'new_data_bytes':sum(p.stat().st_size for p in inventory if p.suffix!='.parquet')}
 
 
 def main(argv=None):
