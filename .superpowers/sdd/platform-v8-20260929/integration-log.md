@@ -7870,3 +7870,176 @@ Y-F0 -.019712), mechanics: True (6/6; gross 1.555665 in [.828796, 1.672591])}`
   unlevered claims book; neither X-10 nor Y-1 is in the Sharpe claim. Which book is deployed is the owner's risk decision
   (PM7-3); OD-P9-3 keeps P9 at L <= 2.0 (Y-1's L_t <= 2.0). Y-1 gets no OD-3 read (YP-11: a `--risk-model` NAV).
 - **Count:** 1 construction trial, **N 62 of 62** (the cap); it enters V.
+
+## R0-12 adoption print (v8y 7), after re-deriving X-10 and Y-1 (P9 Phase 0) (2026-10-03, 16:00Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `671d61d2`. Ledger `build-equity/trials.jsonl`
+133 lines (file `27e40f9f`, head `5a3ef9d9bf242dbb`), N 62 of 62. Rulings applied: P9 `progress.md:172` (re-derive the
+two hand verdicts before opening the logged rows), `:173` (reader / bundle stages only, 0 trials, memory gate,
+SEAL-ALLOW), SEAL-ALLOW, Y1-PARENT. Report: `.superpowers/sdd/platform-p9-20261003/root-R0-12-report.md`.
+
+### R0-12 Part A: X-10 and Y-1 re-derived from the rule text and the files
+
+The derivation was committed at `5292b46e` before the R0-10 / R0-11 verdict rows were opened.
+
+Anchoring disclosure: before this derivation the agent saw three pieces of verdict text:
+- the truncated subjects of `e6418b0d` and `0829f784` in `git log --oneline`;
+- "X-10 is accepted" in `d1f2d7f2`, the commit that holds Y-1's limits;
+- three lines of that diff's context.
+
+| cell | rule | re-derived | deciding numbers (source files in the report, with sha256) | logged | match |
+|---|---|---|---|---|---|
+| X-10 | PM7-34 (3); v8y 6 / 8; limits `50406181` | **ACCEPTED** | net annual .093061 > .056538; S2 net Sharpe 1.808289 >= 1.749482 (dSR vs Y-F0 -.041193); mechanics 6 / 6 at r 1.690903 (gross 1.666718 in [1.521813, 1.775448], abs net .010446, tau .028189 / .033163, accounting 3.39e-16 / 4.80e-14) | lines 7605-7606: ACCEPTED, the same numbers | **yes** |
+| Y-1 | v8y 6 / 8 (YP-9); limits `d1f2d7f2` | **ACCEPTED** | dSR vs X-10 +.021481 (Memmel SE .0518, p one-sided .2980); net annual .087990 > .056538; S2 net Sharpe 1.829770 >= 1.749482 (dSR vs Y-F0 -.019712); mechanics 6 / 6 (gross 1.555665 in [.828796, 1.672591]); `vol_target.csv`: 48 estimates, 0 before the first, 584 / 21 / 399, L_t in [1.0, 2.0], priced_share mean .998634 | lines 7863-7865: ACCEPTED, the same numbers | **yes** |
+
+### R0-12 route and gate
+
+- Six steps, each 0 trials. Each argv is built by the driver's own builders (`wave_steps.reader_argv`, `bundle_argv`,
+  `bounded_argv`).
+- Each step ran once under `run_bounded_research.py` with the reader caps 180 s / 1,536 MiB / 512 MiB free, one at a
+  time.
+- Gate before each launch: free memory >= 3,072 MiB (cap + 1,536), sampled every .25 s.
+- The ledger's line count and sha256 were checked before and after each step. An argv that holds `--ledger` was
+  refused (scratch `r12run.py`).
+- The DSR step is v8y 4's tool `nav_summ.py --dsr-total`. It is read-only (no `--ledger`). It is a reader that is not
+  one of the driver's named stages.
+- No wave manifest was used, so no `--seal-allow` was passed.
+- Host: the only other jobs were another session's atx-db jobs in `C:/atx` (`compustat_std build`, `fund_notes build`,
+  pytest). There was no compiler, no `atx-*` exe and no other research run of root's.
+
+| step | command (under the bounded runner) | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output (SHA-256) |
+|---|---|---|---|---|---|---|
+| mech | `wave_readers.py mechanics --nav yf0=<Y-F0 NAV>` | 3,072 / 3,646 / 3,566 | **0** | 0.5 / 45 | `2865798f7c75e37d199a6388b148e246531e34fcd9e7f826ce226230e245e768` | `p9-r12-adopt/mech.json` `c397ac3f` |
+| bundle R-2 | `nav_summ.py --protocol v8 --bundle <R-2 NAV> <Y-F0 NAV>` | 3,072 / 3,536 / 2,942 | **0** | 1.3 / 479 | `25c6c4ab3e20e8dc996935da145b39afab331f4295bbec3aa9228e4bd87fb9d4` | `bundle-r2-yf0.json` `803e5456` |
+| bundle X-F0 | the same, `<X-F0 NAV> <Y-F0 NAV>` | 3,072 / 3,568 / 3,179 | **0** | 1.1 / 516 | `b1986f51baf8fce42ba866f8062155d2de4530722d285880870bf9ddf9d56a90` | `bundle-xf0-yf0.json` `f3098044` |
+| bundle B0c | the same, `<B0c NAV> <Y-F0 NAV>` | 3,072 / 3,606 / 3,172 | **0** | 1.1 / 479 | `36ab6f638e491217f0095baade0432c7ab8096dba9a9f326908b60fa58e7b27f` | `bundle-b0c-yf0.json` `24f6479b` |
+| book | `wave_readers.py book`, 6 books (Y-F0, R-2, X-F0, B0c, Y-1, X-10) | 3,072 / 4,466 / 4,399 | **0** | 0.5 / 45 | `c9f875fb152bc0be14a66aced63c54baaaf39312c50b347aac2f92d8f855b545` | `book.json` `642ad29b` |
+| DSR | `nav_summ.py --protocol v8 <Y-F0> <R-2> --dsr-total trials.jsonl --dsr-hand <X-F0> --dsr-hand <R-2> --ledger-n trials.jsonl --json` | 3,072 / 4,431 / 4,370 | **0** | 0.5 / 49 | `f04213e3f61f973bb85b3f0e031e49f5a399b39f175994534a6f73fbb79d75ae` | `dsr.json` `fdb6a972` |
+
+Every receipt: completed, exit 0, "clean in the code pathspec", source `5292b46e`. The run dirs are under
+`build-equity/p9-r12-adopt/`. The NAV dirs:
+- Y-F0 `mega-nav-v8x-theme-erc-L1.1828-v8ysb`;
+- R-2 (V8-F) `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`;
+- X-F0 `mega-nav-v8x-theme-erc-L1.1720`;
+- B0c `mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`.
+
+The ledger was **133 lines, `27e40f9f`, before and after every step. 0 trials.**
+
+**Seal (per-hit check; scratch `sealr12.py`).** It applies `tools/sealsrc.py`'s classification to 36 files: every
+file under `p9-r12-adopt/` and the six consoles. Hits:
+- `2026-10-02`, source (a), x18: the png name in the dirty list;
+- `2026-10-03`, source (b), x18: receipt `started_utc`;
+- seed `20260929` x6;
+- **`20261003` x18, OTHER.** Its source is the P9 sprint directory name `.superpowers/sdd/platform-p9-20261003/progress.md`
+  in each receipt's / start.json's / console's `dirty_outside_pathspec` list (progress.md held the PM's uncommitted
+  lines).
+
+That token is a path name, not a data date. SEAL-ALLOW's two sources do not cover it, so it is **for the PM's
+ruling**. Every number read in this step comes from TRAIN NAV outputs through the seal-checked loaders.
+
+### R0-12 the print (v8y 7; S2 `modeled-1bn-stale5-v1+swap-fin-v1`)
+
+**Adoption rule (PM7-34 (2), v8y 7): Y-F0 is deployable iff S2 net Sharpe >= 1.0 AND mechanics of Y-F0.**
+- S2 net Sharpe **1.849482 >= 1.0**.
+- Mechanics (v8-mech, `mech.json`): **PASS 6 / 6**.
+  - all-rows gross .986213 in [.90, 1.05];
+  - abs(net) .005340 <= .02;
+  - tau mean .028134 <= .20;
+  - tau p95 .033410 <= .30;
+  - accounting 3.68e-16 / 1.11e-13 <= 1e-09.
+- **Rule met: Y-F0 (`scripts/specs/v8/lib-v8ysb-gm.json`, L 1.1828) is the deployable book**, in R-2's place.
+
+**G-B1 (P9 plan 0.3), for Y-F0:**
+- S2 net Sharpe of the deployable unlevered book: **1.849482**.
+- Floor >= 1.0: **met**.
+- P9 target >= 1.85: not met (1.849482).
+
+**Bundles** (nav_summ `--protocol v8`: block 21, seed 20260929, 4,999 resamples; 1,005 sessions):
+
+| bundle (base -> Y-F0) | dSR | SR Y-F0 / base | rho | Memmel SE | CBB 95% | LW 95% | p one-sided | p two-sided | tool verdict (v8-prereg 9 part) |
+|---|---|---|---|---|---|---|---|---|---|
+| R-2 -> Y-F0 | **+.5935** | 1.8495 / 1.2559 | .8995 | .2258 | [+.132, +1.088] | [+.068, +1.119] | **.0030** | **.0308** | PASS |
+| X-F0 -> Y-F0 | **+.0800** | 1.8495 / 1.7695 | .9556 | .1502 | [-.236, +.407] | [-.256, +.416] | **.3122** | **.6262** | FAIL |
+| B0c -> Y-F0 | **+.7167** | 1.8495 / 1.1328 | .8721 | .2548 | [+.233, +1.189] | [+.232, +1.202] | **.0024** | **.0050** | PASS |
+
+**Deflated Sharpe** (`dsr.json`; ledger 133 lines, chain head `5a3ef9d9bf242dbb`). V[SR] is 1.296e-03 per session, from
+33 research-window-v2 cells. Y-F0 moments: SR 1.849 annual, T 1005, skew -.376, kurtosis 5.636.
+
+| print | book | N | DSR | SR0 (annual) |
+|---|---|---|---|---|
+| **DSR_tot** | Y-F0 | N_tot 233 = admission 61 + construction 62 + campaign registry 110 | **.6798** | 1.609 |
+| **DSR_hand** (YP-2; X-9 undefined, so not in the lineage) | Y-F0 | N_hand 123 = 233 - M 110 - mined-wave lines 0; `dsr_total.dsr_at`, V as DSR_tot | **.7589** | 1.487 |
+| **DSR_v8** | Y-F0 | N_c 62 | **.8350** | 1.347 |
+| beside: X-F0 at its own state (`--dsr-hand`) | X-F0 | prefix 97 lines, N_tot 88; V 1.239e-03 (25 cells) | .7741 | 1.389 |
+| beside: V8-F at its own state (`--dsr-hand`, prefix rule) | R-2 | prefix 50 lines, N_tot 49; V 1.272e-05 (5 cells) | .9857 | .128 |
+| beside: V8-F at the print's N and V | R-2 | N_tot 233 / N_c 62 | .2468 / .4297 | 1.609 / 1.347 |
+| beside: V8-F public (freeze print, line 5250) | R-2 | N 50; V 1.2971e-03 (21 cells) | .4648 | 1.301 |
+
+**PBO.** v8y 7 does not name the PBO grid. Both are printed; the choice is the PM's:
+- over the ledger's whole grid: **.1526** (70 candidates, 16 blocks, 12,870 splits). The file is Y-1's summ
+  `cycle-v8y-vol-target-y-1/pbo.json` `2beb256c`. No cell has been ledgered since, so the grid is unchanged;
+- Y-F0's own cycle: .0766 (65 candidates, `cycle-v8ysb-gm/pbo.json` `556192c0`).
+
+**4x capacity row** (`capacity_curve.csv`, multiple 4, `capacity-x4-v1+swap-fin-v1`):
+
+| book | net Sharpe | gross Sharpe | ann mean net | ann vol | max DD | cost bps / traded $ | capped share | file |
+|---|---|---|---|---|---|---|---|---|
+| Y-F0 | **1.6994** | 2.2444 | .05186 | .03051 | .02641 | 17.09 | .1004 | `edf1001d` |
+| R-2 | 1.1785 | 1.5966 | .04229 | .03589 | .03334 | 16.87 | .0802 | `b99b1cd1` |
+
+**Books** (`book.json`; net annual = summary `ann_mean`; turnover = tau_gmv mean):
+
+| book | net Sharpe 1x | net Sharpe 4x | net annual (CAGR) | gross of cost | all-rows gross | tau mean (per unit gross) | vol | max DD | cost bps |
+|---|---|---|---|---|---|---|---|---|---|
+| Y-F0 | **1.8495** | **1.6994** | **5.654%** (5.767%) | 7.068% | .98621 | **.02813** (.02853) | 3.057% | 2.580% | 12.66 |
+| R-2 (V8-F) | 1.2559 | 1.1785 | 4.536% (4.571%) | 5.812% | .98599 | .02393 (.02427) | 3.611% | 3.248% | 12.47 |
+| X-F0 (X-5) | 1.7695 | 1.6549 | 5.078% (5.166%) | 6.449% | .98623 | .02684 (.02722) | 2.870% | 2.060% | 12.56 |
+| B0c | 1.1328 | .9776 | 4.417% (4.436%) | 6.050% | .98196 | .03407 (.03469) | 3.899% | 3.885% | 13.13 |
+| Y-F = Y-1 (v8y 8) | 1.8298 | 1.6281 | 8.799% (9.070%) | 11.196% | 1.55566 | .02854 (.01834) | 4.809% | 3.602% | 14.03 |
+| X-10 (v8y 8) | 1.8083 | 1.5829 | 9.306% (9.606%) | 11.922% | 1.66672 | .02819 (.01691) | 5.146% | 4.326% | 14.51 |
+
+Y-1 mean L_t is 1.8671, from the summary's `vol_target` block for the S2 book. X-10's L is fixed at 2.0.
+
+**Year table** (bundle `year_table`, S2):
+
+| year | Y-F0 net / SR / vol / tau / bps | R-2 net / SR | X-F0 net / SR | B0c net / SR | dSR vs R-2 / X-F0 / B0c |
+|---|---|---|---|---|---|
+| 2020 (252) | +.0431 / 1.335 / .0320 / .0304 / 14.98 | -.0111 / -.316 | +.0130 / .478 | +.0135 / .319 | +1.651 / +.857 / +1.016 |
+| 2021 (252) | +.0983 / 2.984 / .0316 / .0273 / 11.68 | +.0983 / 2.596 | +.1038 / 3.282 | +.0767 / 2.352 | +.388 / -.298 / +.632 |
+| 2022 (251) | +.0691 / 2.099 / .0322 / .0278 / 12.36 | +.0796 / 1.841 | +.0684 / 2.171 | +.0859 / 1.936 | +.259 / -.072 / +.163 |
+| 2023 (250) | +.0211 / .820 / .0260 / .0271 / 11.72 | +.0193 / .638 | +.0232 / .926 | +.0034 / .118 | +.182 / -.107 / +.702 |
+
+**Appendix A (Y form, v8y 14):** `TRAIN construction cells 62; admission trials this sprint 61 (v8 12, X hand-written 25,
+mined 0, Y hand-written 15; X-4 re-screens 9, a part the Y form has no slot for); mined campaigns 1 (v9-mine-c1: budget
+110, registry count 110, admitted 0); N_tot 233; N_hand 123; window research-window-v2 (2020-2023); hidden 2024+ unread
+in this sprint; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.`
+
+The parts come from the ledger's `cycle` field: v80 7 + v81 5; v8x2 5 + v8x3 8 + v8x7 12; v8x4 9; v8ys 15. The tool's
+own v8 line: "TRAIN construction cells 62; admission trials this sprint 61; ...; history reads 0; 2025+ never read."
+
+**Claims** (v8x 7, with Y-F0 for X-F0; values only).
+- **Sharpe up** ("only under (a)-(c)"):
+  - (a) dSR vs V8-F +.5935, one-sided p .0030 < .10: met;
+  - (b) DSR_tot .6798 >= .95: **unmet**;
+  - (c) mechanics: met.
+  - PM7-34 (2) replaced the gate as the adoption rule. v8y 7 carries v8x 7's claim text unchanged.
+- **DSR up** (DSR_tot(Y-F0) .6798 against DSR_tot(V8-F) at V8-F's ledger state). The reference is ambiguous and is for
+  the PM:
+  - the tool's `--dsr-hand` prefix rule gives .9857 (N_tot 49), which Y-F0 is below;
+  - v8y 4's "public .465 at N 50" gives .4648, which Y-F0 is above;
+  - beside: V8-F at the print's N and V is .2468.
+- **Capacity up** (sign level): Y-F0 4x 1.6994 vs R-2 4x 1.1785, positive sign.
+- **Return up**, in two parts:
+  - Y-F0 vs R-2 at matched gross (.98621 vs .98599): 5.654% vs 4.536%;
+  - Y-F (Y-1) vs Y-F0 (leverage, the owner's risk decision): 8.799% vs 5.654%.
+- **PM7-37 / PM7-38 (X-5 lines kept):**
+  - X-5's +.349 is reported as in sample until OD-3;
+  - the review's decomposition: lower volatility +.311, gross alpha +.080, trade cost -.042, borrow +.002;
+  - "under the rule's own equal-Sharpe premise the expected gain is about +.15".
+
+**Open for the PM (not picked here):**
+1. the seal token `20261003` (sprint dir name in the dirty list), outside SEAL-ALLOW's two sources;
+2. the V8-F reference of "DSR up";
+3. the PBO grid.
+
+Count: 0 trials. Ledger 133 lines, `27e40f9f`, N 62 of 62.
