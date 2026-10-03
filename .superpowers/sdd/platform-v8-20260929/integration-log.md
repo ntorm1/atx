@@ -6868,3 +6868,18 @@ Ledger after: 127 lines, `869a0c6a` (unchanged: 0 trials). Nothing read from the
 | stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
 |---|---|---|---|---|---|---|
 | 06 match | 0 | 59.3 / 59.06 | 586 (matched NAV); readers 44 | 4,847 / 3,879 | `06-match.json` `b23bd9289ee3e9e52616868e91ec31d9cdb58ca2af9f1c7353caa3963d66c5ce` | PM6-6 (tolerance .005): calibration at L 1.1720 **G 0.9772114158 vs G_parent 0.9862260459** (miss .0090 > .005) -> `lib-v8ysb-gm.json` at **L 1.1828** (spec digest `1e3ec118`), lock dry exit 0, **driver commit `c0f1fae6`** (exactly the -gm file); matched run `run lib-v8ysb-gm.json --stop-after nav` exit 0 (console 039: ref, ref-s2-daily IDENTICAL `529062d6`, u-compare IDENTICAL, gate PASS with 0 lines appended, **w: done (attempt 2 reused)**, nav attempt 1 55.6 s / 586 MiB, receipt `fbfb6208b985...`, exe `72ff6d2d`); **matched G 0.9862134133 vs G_parent 0.9862260459**, within tolerance after 1 correction. Cell NAV `mega-nav-v8x-theme-erc-L1.1828-v8ysb` (`summary.json` `2d30b7f6`). Readers: `mech-calibration.json` `56d6be1c`, `mech-matched.json` `811be8ec` |
+
+### Stage 07 verify (source `4833e844`; no exe, no memory gate; free 4,557 at 12:48:14Z, no compiler running) -- STOPPED for a ruling
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 07 verify | **4** | 0.7 / 0.41 | - (no exe) | 4,557 / 4,634 | `07-verify.failed-1.json` `ae50e347fe7e076835039b37a40a5178e6d616ebca33831ad48353268925ec25` (no ok receipt) | mechanics (v8-mech) on the -gm cell, as printed: gross_all_rows 0.9862134133 in [0.9, 1.05] pass; abs_net_all_rows 0.0053399819 <= 0.02 pass; tau_mean 0.0281343967 <= 0.2 pass; tau_p95 0.0334104438 <= 0.3 pass; max_return_identity_error 3.7e-16 <= 1e-9 pass; max_cash_book_relative_error 1.1e-13 <= 1e-9 pass. C-13 binding and NAV-exe check: not in the stage's problem list. **HARD-STOP: "9 date token(s) at or after the seal 2024-01-01" in consoles 019, 032, 033, 034, 035, 039, 040: "stop for the PM's ruling (the cell ran; no ledger line was written)"** |
+
+The 9 tokens, classified with `wave_seal.tokens` (token, form and the 40 characters before it only; no data line opened):
+7 x `2026-10-02` (iso) = the file name `docs/plans/2026-10-02-x5-equity-curve.png` (untracked, not root's, outside the code
+pathspec), printed by research_cycle's dirty check ("dirty outside the code pathspec (listed, not a stop)") in consoles
+019/032/033/034/039 and in the reader receipts' `dirty_outside_pathspec` in 035/040; 2 x `2026-10-03` (iso) = `"started_utc"`
+of the bounded-runner receipt the mechanics reader prints (consoles 035, 040). None is a data date. No precedent:
+y-s is the first wave whose verify stage has run (the log holds no `--seal-allow` ruling). The driver's remedy is
+`research_wave.py run ... --seal-allow TOKEN=RULING` (kept by the verify receipt for the record stage's second scan).
+Ledger 127 lines, `869a0c6a` (0 trials). Root stops for the PM's ruling (brief: a validator refuses).
