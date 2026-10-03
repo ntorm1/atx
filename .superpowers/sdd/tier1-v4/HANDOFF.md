@@ -10,17 +10,17 @@ Three current agent lanes (list live agents before dispatching duplicates):
 
 | Agent | Current work | State/artifacts |
 |---|---|---|
-| /root/t2_fix_r1 | Task 2 fix round 1 + Task 2x SC/BZX repair | review-T2-r0-findings.md has 5 Important findings; all codes/index/universe rebuilds completed, French attribution and revised 17-row handcheck in progress. Review pending. |
-| /root/t3_fix_r1 | Task 3 fix round 1 | interim commits 791767cd, dc68f3bf; controller caught new derived-component restatement bug; agent fixing/rebuilding (0.8 GiB copy cap hit, retry at <=1.0 GiB). Do not review only interim commits. |
-| /root/t14_notes | Task 14 fix round 1 | recovered report f77afbc3; review-T14-r0-findings.md has 4 Important + denominator gap. Economic provenance/amendment/monthly-clock fixes and broader denominator implemented; full corrected build queued under guard. |
+| /root/t2_fix_r1 | Task 2 fix round 2 | r1 commits d306e776,f0ab20f5,21d6c4ac; I1/I2/I3/I5 addressed, I4 French FAIL remains (27/60). Task 2x separately review-clean COMPLETE. Dated header backfill and independent class/REIT audit underway; <=3000 HTTP attempts /1 per sec, 200 reserved for later audit. |
+| /root/t3_review_r2 | Task 3 scoped review round 2 | fix commits 61b804ce,faccdf7c; package review-T3-r2.diff. R6 available_at keys, schema v2/cstd-pit-v3; 20 tests, guarded build214.2s/0.7623GiB, cutoff/duplicate checks clean,30 handchecks rebound. Five gates PASS/three dependency FAILs. |
+| /root/t14_review_r2 | Task 14 scoped review round 2 | fix commits 1b1856c2,1fae76ef,f986d6fe,20cd6ffe; package review-T14-r2.diff. N1 fixed with omitted-year preservation;26 tests, rebuild112.1s/0.5399GiB. Pilot recovered3 accession-scoped filings;1945 reconciliation misses/1235 missing revenue;0PASS/2FAIL. General hierarchy ingestion still missing. |
 
-Completed reviewer agents /root/t2_review_r0 and /root/t14_review_r0 wrote their artifact findings. Task 3 scoped review still needed against review-T3-r0-recovered-findings.md and its eventual full fix commit list. Then Task 4 (existing WIP fd9d67b7; no report yet). Task 9 still orientation only; follows Task 14. All remaining task ordering remains below, with Task 2x inside Task 2 fix lane (R4).
+Latest completed reviews are round1; Task3/14 round2 reviews now active. Task4 follows Task3 review (WIP fd9d67b7; no report), must receive R6 updated clock keys. Task9 still orientation only; follows Task14. All remaining ordering remains below; Task2x is already complete, not a new dispatch.
 
 R5 is critical: market_index --end originally bounded only validation and a resumed run still computed product aggregate returns through 2026. Owner's strict GC2 includes portfolio-return products. Agent corrected actual source aggregation bounds and rebuilt market_index through 2022, with regression; no post-2022 evaluation values were inspected. Carry this boundary to Tasks 6/8/16. Latest membership/code/value/coverage outputs remain authorized.
 
 Task 16 must read task-16-evaluation-addendum.md: predeclared 5/21/63-session IC/quantile-return evidence, label windows entirely before 2023, multiplicity/overlap controls, honest statistical FAILs. Do not claim significance in advance. Integration refresh queue is in progress.md: final universe invalidates older coverage reports; Task 5 v11 rebuild invalidates Task 6 if built on v10; Task 9 rdq measurement must use final compustat outputs.
 
-Controller artifacts committed f5c91b4a, 4d0b0d4d, 0fa53b3e; newer progress/HANDOFF edits may be pending. Foreign paths remain read-only. At most three active agent lanes; every real-data job <=1 GiB guard. Continue autonomously, no routine approval questions.
+Controller artifacts include f5c91b4a,4d0b0d4d,0fa53b3e,e502f601,55041b89,037a73ff; newer bookkeeping may be pending. Foreign paths remain read-only. At most three active agent lanes; every real-data job <=1 GiB guard. Temporary model-capacity failures were retried on the requested gpt-6.1-sol, with state reconciliation. Continue autonomously, no routine approval questions.
 
 ## Historical handoff (2026-10-02 ~23:45 EDT)
 
