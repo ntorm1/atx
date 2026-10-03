@@ -259,7 +259,7 @@ TEST(ThemeHedgeRule, BlockParseAndRefusals) {
                              R"("theme_standardise":{"rule":"ew-theme-std-v1","rerank":true,)"
                              R"("themes":{"a1":"value","a2":"value",)"
                              R"("b1":"reversal_seasonality","b2":"reversal_seasonality"}},)"
-                             R"("theme_sleeves":{"rule":"two-speed-v1"}})" +
+                             R"("theme_sleeves":{"rule":"two-speed-v1"})" +
                              std::string(hedge_block) + "}");
   const auto with_sleeves = f.parse(sleeved);
   ASSERT_FALSE(with_sleeves);
