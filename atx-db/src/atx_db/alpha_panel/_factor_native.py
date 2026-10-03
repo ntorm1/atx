@@ -129,6 +129,23 @@ def setup(con, spec: dict) -> dict:
     # membership or return values are inferred from this date-only union.
     con.execute('CREATE TEMP TABLE t6_calendar_dates AS SELECT DISTINCT session_date FROM (SELECT session_date FROM t6_calendar UNION ALL SELECT session_date FROM t6_prices)')
     con.execute('CREATE OR REPLACE TEMP VIEW t6_calendar AS SELECT * FROM t6_calendar_dates')
+    identities["source_specification"] = json.loads(json.dumps(spec.get("sources"),sort_keys=True))
+    identities["release_bindings"] = spec["release"]
+    identities["audit_share_source"] = spec.get("audit_share_source")
+    if 'member_equity' not in spec:
+        raise ValueError('member_equity binding or explicit unavailable null required')
+    member=spec['member_equity']
+    identities['member_equity']=member
+    if member is None:
+        con.execute('CREATE TEMP VIEW t6_member_equity AS SELECT CAST(NULL AS DATE) AS session_date,CAST(NULL AS BIGINT) AS security_id WHERE false')
+    else:
+        m=F.bind_snapshot(Path(member['manifest']),member['sha256'],member['stage'])
+        if not member['files'] or any(f not in m['files'] for f in member['files']):
+            raise ValueError('member_equity outputs not bound')
+        con.execute('CREATE TEMP VIEW t6_member_equity AS SELECT session_date,security_id FROM '+S.parquet_relation([Path(member['manifest']).parent/f for f in member['files']]))
+        if con.execute('SELECT 1 FROM t6_member_equity GROUP BY session_date,security_id HAVING count(*)>1 LIMIT 1').fetchone():
+            raise ValueError('duplicate member_equity grid')
+    S.assert_price_keys(con)
     return identities
 
 
@@ -143,13 +160,10 @@ def eg_predictors_sql(formation,cutoff):
         lag(ap) OVER w AS ap1,lag(xacc) OVER w AS xacc1 FROM visible WINDOW w AS(PARTITION BY cik ORDER BY datadate)),
       a AS (SELECT * FROM lagged QUALIFY row_number() OVER(PARTITION BY cik ORDER BY datadate DESC)=1),
       q AS ({quarter}),
-      fiscal_me AS (SELECT a.cik,sum(u.me) AS me FROM a JOIN t6_universe u ON a.cik=u.cik
+      fiscal_me AS (SELECT a.cik,CASE WHEN bool_and(coalesce(cq.certified,false) AND u.me>0) THEN sum(u.me) END AS me FROM a JOIN t6_universe u ON a.cik=u.cik
         AND u.session_date=(SELECT max(c.session_date) FROM t6_calendar c WHERE c.session_date<=a.datadate)
-        JOIN t6_cap_quality cq ON cq.security_id=u.security_id AND cq.session_date=u.session_date
-        AND cq.available_at<TIMESTAMP '{tau}' AND cq.source_available_at<TIMESTAMP '{tau}'
-        AND cq.certified AND cq.membership_certified AND cq.audit_status='independently_verified'
-        AND cq.evidence_sha256 IS NOT NULL AND cq.shares_source_sha256 IS NOT NULL
-        AND cq.membership_source_sha256 IS NOT NULL GROUP BY a.cik)
+        LEFT JOIN ({S.quality_sql(cutoff)}) cq ON cq.security_id=u.security_id AND cq.session_date=u.session_date
+        WHERE u.univ_all_common GROUP BY a.cik)
       SELECT a.cik,greatest(a.available_at,q.available_at) AT TIME ZONE 'UTC' AS available_at,
         CASE WHEN a.at>0 AND (fm.me+a.dltt+a.dlc)>0 THEN ln((fm.me+a.dltt+a.dlc)/a.at) END AS log_q,
         CASE WHEN a.at>0 THEN (a.revt-a.cogs-a.xsga+coalesce(a.xrd,0)
@@ -179,10 +193,8 @@ def native_training(con,formation,dates):
           lag(datadate) OVER w AS date1,lag(datadate,2) OVER w AS date2 FROM v WINDOW w AS(PARTITION BY cik ORDER BY datadate)),
         a AS (SELECT * FROM lagged QUALIFY row_number() OVER(PARTITION BY cik ORDER BY datadate DESC)=1),
         x AS ({eg_predictors_sql(predictorday,_cutoff(predictorday))}),
-        me AS (SELECT u.cik,sum(u.me) AS me FROM t6_universe u JOIN t6_cap_quality cq
+        me AS (SELECT u.cik,CASE WHEN bool_and(coalesce(cq.certified,false) AND u.me>0) THEN sum(u.me) END AS me FROM t6_universe u LEFT JOIN ({S.quality_sql(_cutoff(fitday))}) cq
           USING(security_id,session_date) WHERE u.session_date=DATE '{fitday}' AND u.univ_all_common
-          AND cq.available_at<TIMESTAMP '{tau}' AND cq.source_available_at<TIMESTAMP '{tau}'
-          AND cq.certified AND cq.membership_certified AND cq.audit_status='independently_verified'
           GROUP BY u.cik)
         SELECT a.cik,a.datadate AS outcome_period_end,a.available_at AT TIME ZONE 'UTC' AS outcome_available_at,
           x.available_at AS predictor_available_at,x.log_q,x.cop,x.droe,me.me,
@@ -214,10 +226,7 @@ def issuer_period(con, first, last, formation):
 
 def formation_issuers(con,formation):
     tau=_cutoff(formation).replace(tzinfo=None).isoformat()
-    sql=f"""WITH q AS(SELECT * FROM t6_cap_quality WHERE available_at<TIMESTAMP '{tau}'
-      AND source_available_at<TIMESTAMP '{tau}' AND audit_status='independently_verified'
-      AND evidence_sha256 IS NOT NULL AND shares_source_sha256 IS NOT NULL AND membership_source_sha256 IS NOT NULL
-      QUALIFY row_number() OVER(PARTITION BY security_id,session_date ORDER BY available_at DESC)=1)
+    sql=f"""WITH q AS({S.quality_sql(_cutoff(formation))})
       SELECT u.cik,sum(u.me) AS me,CAST(NULL AS DOUBLE) AS ret,bool_and(u.exchcd_like=1) AS nyse,
       bool_and(coalesce(q.certified AND q.membership_certified,false)) AS certified
       FROM t6_universe u LEFT JOIN q USING(security_id,session_date)
@@ -235,10 +244,17 @@ def signal_history(con, formation: dt.date, months: int, skip: int) -> dict:
     def date(o):
         return dt.date(o//12,o%12+1,1)
     start, nextmonth = date(startordinal), date(endordinal+1)
-    sql = f"""WITH m AS (SELECT security_id,date_trunc('month',session_date) AS month,
-      CASE WHEN bool_or(ret_guarded OR ret IS NULL OR ret< -1) THEN NULL
+    sql = f"""WITH grid AS (SELECT u.security_id,c.session_date FROM
+      (SELECT security_id FROM t6_universe WHERE session_date=DATE '{formation}' AND univ_all_common) u
+      CROSS JOIN t6_calendar c WHERE c.session_date>=DATE '{start}' AND c.session_date<DATE '{nextmonth}'
+        AND c.session_date<DATE '2023-01-01'),
+    bars AS (SELECT g.*,p.ret,p.ret_guarded,count(p.security_id) OVER(PARTITION BY g.security_id,g.session_date) AS n
+      FROM grid g LEFT JOIN t6_prices p USING(security_id,session_date)),
+    m AS (SELECT security_id,date_trunc('month',session_date) AS month,
+      CASE WHEN bool_or(n>1) THEN error('duplicate price session')
+        WHEN bool_or(n=0 OR coalesce(ret_guarded,true) OR ret IS NULL OR ret< -1) THEN NULL
         WHEN bool_or(ret=-1) THEN -1 ELSE exp(sum(ln(1+ret)))-1 END AS ret
-      FROM t6_prices WHERE session_date>=DATE '{start}' AND session_date<DATE '{nextmonth}'
+      FROM bars WHERE session_date>=DATE '{start}' AND session_date<DATE '{nextmonth}'
         AND session_date<DATE '2023-01-01' GROUP BY 1,2),
     u AS (SELECT * FROM t6_universe WHERE session_date=DATE '{formation}' AND univ_all_common),
     r AS (SELECT security_id,CASE WHEN count(ret)={months} THEN
@@ -293,23 +309,24 @@ def held_q(data,ia_labels,roe_labels):
 
 
 def native_betas(con,formation,dates):
+    S.assert_price_keys(con)
     keep=[d for d in dates if d<=formation][-1260:]
     if len(keep)<752:
         return {}
     # Own market history from dated lag-cap certified holdings; never borrow
     # benchmark returns as own-factor histories or use a current membership set.
     sql=f"""WITH cal AS (SELECT session_date,lag(session_date) OVER(ORDER BY session_date) AS prev FROM t6_calendar),
-      q AS (SELECT * FROM t6_cap_quality WHERE audit_status='independently_verified'
-        AND evidence_sha256 IS NOT NULL AND shares_source_sha256 IS NOT NULL AND membership_source_sha256 IS NOT NULL),
-      line AS (SELECT p.session_date,u.cik,u.me,p.ret,p.ret_guarded,
-        coalesce(q.certified AND q.membership_certified,false) AS certified
-        FROM cal c JOIN t6_prices p USING(session_date)
-        JOIN t6_universe u ON u.session_date=c.prev AND u.security_id=p.security_id
-        LEFT JOIN q ON q.session_date=u.session_date AND q.security_id=u.security_id
-          AND q.available_at<CAST(c.prev AS TIMESTAMP)+INTERVAL 22 HOUR
-          AND q.source_available_at<CAST(c.prev AS TIMESTAMP)+INTERVAL 22 HOUR
-        WHERE p.session_date BETWEEN DATE '{keep[0]}' AND DATE '{formation}'
-          AND p.session_date<DATE '2023-01-01' AND u.univ_all_common AND u.me>0 AND u.cik IS NOT NULL),
+      line AS (SELECT c.session_date,u.cik,u.me,p.ret,p.ret_guarded,
+        coalesce(q.certified AND q.membership_certified AND q.audit_status='independently_verified'
+          AND q.evidence_sha256 IS NOT NULL AND q.shares_source_sha256 IS NOT NULL
+          AND q.membership_source_sha256 IS NOT NULL
+          AND q.source_available_at<CAST(c.prev AS TIMESTAMP)+INTERVAL 22 HOUR,false) AS certified
+        FROM cal c JOIN t6_universe u ON u.session_date=c.prev
+        LEFT JOIN t6_prices p ON p.session_date=c.session_date AND p.security_id=u.security_id
+        LEFT JOIN LATERAL (SELECT * FROM ({S.quality_sql_at("CAST(c.prev AS TIMESTAMP)+INTERVAL 22 HOUR")}) a
+          WHERE a.session_date=u.session_date AND a.security_id=u.security_id) q ON true
+        WHERE c.session_date BETWEEN DATE '{keep[0]}' AND DATE '{formation}'
+          AND c.session_date<DATE '2023-01-01' AND u.univ_all_common AND u.me>0 AND u.cik IS NOT NULL),
       issuer AS (SELECT session_date,cik,sum(me) AS me,CASE WHEN bool_and(certified)
         AND count(ret)=count(*) AND NOT bool_or(ret_guarded) THEN sum(me*ret)/sum(me) END AS ret
         FROM line GROUP BY 1,2),
@@ -406,8 +423,10 @@ def native_factors(spec: dict,destination: Path):
                         values['SMB'] = F.mean(smb)
                         values.update(held_q(data,q_ia_labels,roe_labels))
                         values['q_EG'],_=held_factor(data,eg_labels)
-                        bab_stocks=[F.Stock(r['cik'],r['me'],r['ret'],r['nyse'],{'beta':beta_values.get(r['cik'])},
-                            _cutoff(lagday),True) for r in data if r['certified']]
+                        current={r['cik']:r for r in data if r['certified']}
+                        bab_stocks=[F.Stock(r['cik'],current.get(r['cik'],r)['me'],
+                            current.get(r['cik'],{}).get('ret'),r['nyse'],{'beta':beta_values.get(r['cik'])},
+                            _cutoff(prior),True) for r in (pd if prior else []) if r['certified']]
                         values['BAB']=F.bab(bab_stocks,rf)
                         results.append({'freq':freq,'session_date':stamp,'available_at':_cutoff(stamp),
                             'n_universe':len(data),'n_qualified':len(eligible),
@@ -429,6 +448,9 @@ def setup_check(spec):
         if item is not None:
             for part in item.get('parts',[item]):
                 F.bind_snapshot(Path(part['manifest']),part['sha256'],part['stage'])
+    if spec.get('member_equity'):
+        item=spec['member_equity']
+        F.bind_snapshot(Path(item['manifest']),item['sha256'],item['stage'])
     if spec.get('audit_share_source'):
         item=spec['audit_share_source']
         F.bind_snapshot(Path(item['manifest']),item['sha256'],'market_shares')
@@ -479,6 +501,42 @@ def validate_benchmarks(spec,destination):
         con.close()
 
 
+def coverage_gate(con,output_relation,start,end,member_available,checks):
+    """Expected cells originate independently from immutable source membership."""
+    if con.execute(f'SELECT 1 FROM {output_relation} GROUP BY session_date,security_id HAVING count(*)>1 LIMIT 1').fetchone():
+        raise ValueError('duplicate published risk cell')
+    projection=' AND '.join('o.'+k.strip().split()[0]+' IS NOT NULL' for k in checks.split(' AND '))
+    sql=f"""WITH expected AS (
+      SELECT session_date,security_id,'all_common' AS universe FROM t6_universe WHERE univ_all_common
+      UNION ALL SELECT session_date,security_id,'r3000p' FROM t6_universe WHERE univ_r3000p
+      UNION ALL SELECT session_date,security_id,'member_equity' FROM t6_member_equity),
+    e AS (SELECT * FROM expected WHERE session_date BETWEEN DATE '{start}' AND DATE '{end}')
+    SELECT e.universe,year(e.session_date) AS year,count(*) AS denominator,
+      count(*) FILTER(WHERE o.security_id IS NOT NULL) AS output_cells,
+      count(*) FILTER(WHERE {projection}) AS complete
+      FROM e LEFT JOIN {output_relation} o USING(session_date,security_id) GROUP BY 1,2 ORDER BY 1,2"""
+    coverage=list(rows(con,sql))
+    required={(u,y) for u in ('all_common','r3000p','member_equity') for y in range(2020,2026)}
+    measured={(r['universe'],r['year']) for r in coverage if r['denominator']>0 and r['complete']/r['denominator']>=.99 and r['output_cells']==r['denominator']}
+    # Calendar day with no required universe is an explicit source-grid failure.
+    missing_days=con.execute(f"SELECT count(*) FROM t6_calendar c WHERE c.session_date BETWEEN DATE '{start}' AND DATE '{end}' AND NOT EXISTS(SELECT 1 FROM t6_universe u WHERE u.session_date=c.session_date AND u.univ_all_common)").fetchone()[0]
+    status='PASS' if member_available and start<=dt.date(2020,1,1) and end>=dt.date(2025,12,31) and not missing_days and required<=measured else 'FAIL'
+    coverage.append({'universe':'member_equity','source_status':'bound' if member_available else 'explicitly_unavailable','missing_universe_days':missing_days})
+    return coverage,status
+
+
+def require_factor_lineage(own,spec,source_identity):
+    expected={k:v['sha256'] for k,v in spec['release'].items()}
+    if own.get('input_manifests_sha256')!=expected:
+        raise ValueError('stale or missing own-factor release lineage')
+    identity=own.get('input_identity',{})
+    base={k:v for k,v in identity.items() if k not in ('config_sha256','kind','code')}
+    if base!=source_identity or identity.get('config_sha256')!=F.config_hash() or identity.get('kind')!='factors':
+        raise ValueError('stale or missing own-factor selected-source lineage')
+    if identity.get('code')!=code_identity():
+        raise ValueError('stale or missing own-factor code lineage')
+
+
 def native_risk(spec,destination,start,end):
     from . import risk_inputs as R
     if start>end:
@@ -498,8 +556,10 @@ def native_risk(spec,destination,start,end):
         own=F.bind_snapshot(manifest,f['sha256'],'factors')
         if own.get('config_sha256')!=F.config_hash():
             raise ValueError('risk factor snapshot has stale formula configuration')
+        require_factor_lineage(own,spec,identity)
+        factor_source_identity=dict(identity)
         con.execute(f"CREATE TEMP VIEW t6_own_factors AS SELECT * FROM {S.parquet_relation([manifest.parent/p for p in own['files'] if p.endswith('.parquet')])} WHERE freq='D' AND session_date<DATE '2023-01-01'")
-        all_dates=[r[0] for r in con.execute('SELECT session_date FROM t6_calendar ORDER BY session_date').fetchall()]
+        all_dates=[r[0] for r in con.execute('SELECT DISTINCT session_date FROM (SELECT session_date FROM t6_calendar UNION ALL SELECT session_date FROM t6_universe UNION ALL SELECT session_date FROM t6_member_equity) ORDER BY session_date').fetchall()]
         dates=[d for d in all_dates if start<=d<=end]
         identity.update(own_factors=f['sha256'],config_sha256=F.config_hash(),kind='risk_inputs',start=str(start),end=str(end),
             code=code_identity())
@@ -519,17 +579,15 @@ def native_risk(spec,destination,start,end):
                 primitive=list(rows(con,S.risk_primitives_sql(day,cutoff)))
                 if len(primitive)>20000:
                     raise ValueError('bounded risk cross-section exceeded')
-                caprows=list(rows(con,f"SELECT security_id,bool_and(certified AND membership_certified) AS qualified FROM t6_cap_quality WHERE session_date=DATE '{previous}' AND available_at<TIMESTAMP '{cutoff.replace(tzinfo=None).isoformat()}' AND source_available_at<TIMESTAMP '{cutoff.replace(tzinfo=None).isoformat()}' AND audit_status='independently_verified' AND evidence_sha256 IS NOT NULL AND shares_source_sha256 IS NOT NULL AND membership_source_sha256 IS NOT NULL GROUP BY security_id"))
-                caps={r['security_id']:r['qualified'] for r in caprows}
                 exposures={}
                 if day<=F.END:
-                    keep=[d for d in all_dates if d<=day][-252:]
+                    keep=[d for d in all_dates if d<=previous][-252:]
                     if keep:
                         sql=f"""SELECT p.security_id,p.session_date,CASE WHEN p.ret_guarded THEN NULL ELSE p.ret END AS ret,rf.rf AS RF,
                           f.MktRF,f.SMB,f.HML,f.RMW,f.CMA FROM t6_prices p
-                          LEFT JOIN t6_own_factors f USING(session_date)
+                          LEFT JOIN t6_own_factors f ON f.session_date=p.session_date AND f.available_at<TIMESTAMPTZ '{cutoff.isoformat()}'
                           LEFT JOIN t6_rf rf ON rf.session_date=p.session_date AND rf.freq='D'
-                          WHERE p.session_date BETWEEN DATE '{keep[0]}' AND DATE '{day}'
+                          WHERE p.session_date BETWEEN DATE '{keep[0]}' AND DATE '{previous}'
                             AND p.session_date<DATE '2023-01-01'
                             AND p.security_id IN(SELECT security_id FROM t6_universe WHERE session_date=DATE '{day}')
                           ORDER BY p.security_id,p.session_date"""
@@ -537,7 +595,7 @@ def native_risk(spec,destination,start,end):
                         def flush():
                             if active is not None:
                                 clean=[{k:(v if v is not None else float('nan')) for k,v in r.items()} for r in hist]
-                                ff=R.exposure(day,clean)
+                                ff=R.exposure(previous,clean)
                                 capm=R.regress([r['ret'] for r in clean],[[r['MktRF']] for r in clean],[r['RF'] for r in clean])
                                 exposures[active]={**ff,'ivol_capm_252':capm['idio_vol'],
                                     'volatility':float(__import__('numpy').std([r['ret'] for r in clean[-21:]],ddof=1)) if len(clean)>=21 and all(math.isfinite(r['ret']) for r in clean[-21:]) else None}
@@ -553,7 +611,7 @@ def native_risk(spec,destination,start,end):
                 momentum=signal_history(con,previous,11,1) if day<=F.END else {}
                 for row in primitive:
                     ex=exposures.get(row['security_id'],{})
-                    qualified=bool(caps.get(row['security_id'],False))
+                    qualified=bool(row['cap_qualified'] and row['me'] is not None and row['me']>0)
                     value=row['be_q0']/row['me'] if row['be_q0'] is not None and row['me'] and row['me']>0 else None
                     style={'size':math.log(row['me']) if row['me'] and row['me']>0 else None,
                         'value':value,'momentum':momentum.get(row['cik']),'volatility':ex.get('volatility'),
@@ -574,14 +632,13 @@ def native_risk(spec,destination,start,end):
                         r[style]=v
                 generation.write(unit,output)
             setup_check(spec)
-            F.bind_snapshot(manifest,f['sha256'],'factors')
+            require_factor_lineage(F.bind_snapshot(manifest,f['sha256'],'factors'),spec,factor_source_identity)
             # Measure output nulls on every member cell, including incomplete rows.
             files=[generation.path/v['path'] for v in generation.state['units'].values()]
             view=S.parquet_relation(files)
             required_fields=['beta_252',*[f'beta_ff5_{k}' for k in R.FF5],'ivol_ff5_252','ff49',*R.STYLES,'adv_21','adv_63','spread_cs_21','si_to_io']
             checks=' AND '.join(k+' IS NOT NULL' for k in required_fields)
-            coverage=list(rows(con,f"SELECT year(session_date) AS year,count(*) FILTER(WHERE univ_all_common) AS all_common_denominator,count(*) FILTER(WHERE univ_all_common AND {checks}) AS all_common_complete,count(*) FILTER(WHERE univ_r3000p) AS r3000p_denominator,count(*) FILTER(WHERE univ_r3000p AND {checks}) AS r3000p_complete FROM {view} GROUP BY 1 ORDER BY 1"))
-            gate='PASS' if {r['year'] for r in coverage}>={2020,2021,2022,2023,2024,2025} and all(r['all_common_denominator']>0 and r['all_common_complete']/r['all_common_denominator']>=.99 for r in coverage) else 'FAIL'
+            coverage,gate=coverage_gate(con,view,start,end,spec.get('member_equity') is not None,checks)
             return generation.publish(required,{'schema_id':'atx.alpha-panel.risk-inputs/v1','config':F.CONFIG,
                 'config_sha256':F.config_hash(),'input_manifests_sha256':{k:v['sha256'] for k,v in spec['release'].items()},
                 'coverage_by_year':coverage,'gate_status':{'exposure_coverage':gate,'threshold':.99}})

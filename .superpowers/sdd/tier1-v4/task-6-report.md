@@ -80,7 +80,7 @@ supersedes its missing-adapter/publication statements.
   per-row source/evidence clocks. Boolean caller assertions do not certify inputs.
   CIK77159 remains excluded unless that independent audit explicitly resolves it.
 
-Frozen artifact: `atx-db/docs/datasets/factors.config.json`; SHA256
+Historical 92fd8f8e frozen artifact: `atx-db/docs/datasets/factors.config.json`; canonical sorted-JSON semantic SHA256
 `7b948fa14ee2684915fe20c6fa6379123d13da320cc78471b9f7680683095578`.
 Exact primary literature references and formula/source deviations are recorded in
 the artifact and factors.md. No actual return comparison preceded the freeze.
@@ -165,3 +165,55 @@ added exact audit-source evidence binding, preserved fixed formation labels, avo
 daily long-short compounding, and included delayed-component clocks in derived states.
 Independent review should assess scientific/source-equivalence limitations before real
 comparisons; fixture correctness is not gold certification.
+
+
+### Fix round 1/5 — review-T6-prebuild-findings.md (supersedes prior code assessment)
+
+Status: DONE_WITH_CONCERNS, offline code checkpoint ready for independent review;
+no real source reads, return jobs, fit/evaluation, HTTP acquisition or acceptance.
+All six Important findings addressed in owned Task6 sources:
+
+- I1: complete eligible line/session grids precede compounding; absent bars remain
+  NULL; duplicate/overlapping selected prices reject; monthly signals require daily
+  support; historical BAB market retains missing eligible lines and monthly BAB holds
+  formed members. Delisting/source uncertainty is not converted to liquidation returns.
+- I2: audited previous-session ME and matching qualification feed issuer-consolidated
+  size/value; universe observation available_at also strictly precedes cutoff;
+  SI/ratio/FTD/threshold strict individual clocks; return history ends at
+  prior session and own factors require strict availability before its cutoff.
+- I3: generation identity now binds complete selected file lists/parts, RF adapters/
+  mappings, all release and audit/share/membership bindings, config and code.
+- I4: own factors require complete matching producer release, selected-source, config
+  and current code lineage before use and again before dependent publication.
+- I5: shared latest-visible audit selection precedes status checks in formation,
+  returns, EG fiscal/training ME, BAB and risk; revoked/failed replaces old pass;
+  equal-clock ambiguity rejects. Missing issuer lines do not get silently omitted.
+- I6: independent expected all_common/r3000p/member_equity grids left-join output;
+  absent output cells remain denominator; each universe/year2020-2025 tested; missing
+  calendar-day universe or explicitly unavailable member_equity yields FAIL.
+
+Minor M1 corrected: hashes are semantic versus physical. The old92fd8f8e semantic
+hash was7b948fa14ee2684915fe20c6fa6379123d13da320cc78471b9f7680683095578;
+review reported oldLF-normalized artifact bytes0d559fbe513571ddb8f61325b50a7c137f5a96b43188e82a8c2b1edeac64bb4a.
+New `task6-frozen-v2-review1` artifact committed before any real return comparison:
+canonical sorted-JSON semantic SHA256
+`b5b512372b318be2a23e51413f41a0d21c63795af11d48d4ccb49100d25f7f58`;
+physical LF artifact byte SHA256
+`668de8d4770daf08e47e9e22f09abe99c56414ee591f78130194330865fc7a6b`.
+CRLF checkout bytes may differ; semantic and physical LF hashes are distinct contracts.
+
+Focused verification from C:/atx, PYTHONPATH=C:/atx/atx-db/src and
+OPENBLAS_NUM_THREADS=1; all fixture connections128MB/one thread/UTC:
+`atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts= -p no:cacheprovider -q --tb=short atx-db/tests/test_alpha_panel_factor_native.py -k 'review or native_risk or native_setup or annual or quarterly'`
+14 PASS,7 deselected,9.68s. Native risk test invokes actual argument-parsing CLI with
+tiny synthetic registered relations and fixture guard marker, not production sources.
+During fixture development a clock-boundary check exposed fixture DuckDB local timezone; fixture now
+explicitUTC like production common.connect; corrected test and focused set passed.
+No unchanged broad suite rerun and no live child jobs remain.
+
+Real gates remain3 grouped FAIL/unmeasured,120 benchmark months fixed, coverage years
+and eligible denominators intact. Final qualified release (controller's future explicit
+versioned universe binding/R15), audited economicbasis/delisting/history, genuine
+member_equity source, EG primitive/training gaps and production-memory measurements
+remain independent dependencies. This change does not accept unsafe Task2 checkpoints
+or certify synthetic audit flags/source membership as external evidence.

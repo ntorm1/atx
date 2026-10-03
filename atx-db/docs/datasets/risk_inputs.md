@@ -42,3 +42,19 @@ primitive inputs and insufficient histories remain nullable, never forward fille
 Registry integration must resolve exact manifest files rather than glob generations.
 Dataset build rows/bytes/memory and coverage are unmeasured. Final v11/universe
 snapshots, independent economic-basis audit and an exclusive guarded build are pending.
+
+## Review fix round 1 timing and denominator contract
+
+Risk primitives use the previous calendar session's strict 22:00 UTC cutoff.
+Size/value use that same audited lagged observation, summed across the issuer's
+eligible share classes. Current-day ME cannot change these inputs. Borrow fields
+are individually masked unless their SI/ratio/FTD/threshold clock is strictly before
+the cutoff; emitted component clocks remain internal source-lineage evidence.
+Own return history ends at the previous session and factor rows must themselves be
+strictly available before the cutoff. Post-2022 return statistics remain missing.
+
+Coverage joins independently selected immutable all_common, r3000p and member_equity
+expected cells to published output, preserving absent cells and days as failures.
+Each universe and year2020-2025 must meet the frozen 99% threshold. Unavailable
+member_equity explicitly fails, and missing universe rows on a calendar day fail.
+Sparse synthetic calendars test mechanics only and cannot certify production coverage.

@@ -95,3 +95,27 @@ components are not present in the inspected schema; available standardized value
 use documented book-equity fallbacks, leaving source equivalence unqualified.
 Actual memory peak, build rows/bytes, all benchmark gates and source certification
 remain unmeasured until final producers and an authorized exclusive data slot.
+
+## Review fix round 1 contract (offline)
+
+The required return grid is every selected calendar session for every formed eligible
+line. An absent/guarded bar makes its entire period return NULL. Duplicate or
+overlapping selected price line/session keys are rejected before construction;
+there is no assumed delisting liquidation or implicit shorter window. Issuer and
+market weights preserve missing eligible lines. BAB retains monthly formed members.
+Monthly signal support also requires every session in every required month.
+
+All cap consumers select the latest strictly visible audit per line/date before
+checking qualification. A later failed/revoked record supersedes an older pass;
+equal-clock records are rejected as ambiguous. Fiscal ME/training ME consolidate
+all eligible issuer lines without multiplying audit vintages or dropping failed lines.
+
+Generation identity includes complete selected files, price parts, RF adapter and
+frequency mappings, release bindings, audit/share binding and membership binding,
+as well as config/code. Risk accepts own factors only at equal producer release,
+selected-source, configuration and code lineage; these identities are checked again
+before publication. Exact old snapshots cannot certify a new dependent release.
+
+The native spec also requires `member_equity`: explicit null for unavailable membership,
+or `{stage, manifest, sha256, files}` binding immutable session_date/security_id cells.
+Missing membership is a source/coverage FAIL. No caller Boolean supplies source evidence.

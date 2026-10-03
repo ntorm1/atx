@@ -62,6 +62,29 @@ def quarterly_sql(cutoff: dt.datetime) -> str:
     FROM calc QUALIFY row_number() OVER(PARTITION BY cik ORDER BY datadate DESC)=1"""
 
 
+def quality_sql(cutoff: dt.datetime) -> str:
+    """Select newest visible audit first; revocations supersede old passes."""
+    tau=cutoff.astimezone(dt.UTC).replace(tzinfo=None).isoformat()
+    return quality_sql_at("TIMESTAMP '"+tau+"'")
+
+
+def quality_sql_at(clock: str) -> str:
+    return f"""SELECT * EXCLUDE(n) REPLACE(
+      CASE WHEN n>1 THEN error('ambiguous equal-clock cap audit') ELSE
+      coalesce(certified AND membership_certified AND audit_status='independently_verified'
+        AND evidence_sha256 IS NOT NULL AND shares_source_sha256 IS NOT NULL
+        AND membership_source_sha256 IS NOT NULL AND source_available_at<{clock},false)
+      END AS certified) FROM (
+      SELECT *,count(*) OVER(PARTITION BY security_id,session_date,available_at) AS n
+      FROM t6_cap_quality WHERE available_at<{clock}
+      QUALIFY row_number() OVER(PARTITION BY security_id,session_date ORDER BY available_at DESC)=1)"""
+
+
+def assert_price_keys(con):
+    if con.execute("SELECT 1 FROM t6_prices WHERE session_date<DATE '2023-01-01' GROUP BY security_id,session_date HAVING count(*)>1 LIMIT 1").fetchone():
+        raise ValueError('duplicate/overlapping price line session')
+
+
 def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: dt.datetime) -> str:
     if end >= dt.date(2023,1,1) or start > end or formation >= start:
         raise ValueError('invalid factor period/holdout boundary')
@@ -70,14 +93,15 @@ def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: 
     # line/date observation with its own strict clock, not vendor-share numeric fit.
     return f"""
     WITH u AS (SELECT * FROM t6_universe WHERE session_date=DATE '{formation}' AND univ_all_common),
-    quality AS (SELECT * FROM t6_cap_quality WHERE available_at<TIMESTAMP '{tau}'
-      AND audit_status='independently_verified' AND evidence_sha256 IS NOT NULL
-      AND shares_source_sha256 IS NOT NULL AND membership_source_sha256 IS NOT NULL
-      AND source_available_at<TIMESTAMP '{tau}'
-      QUALIFY row_number() OVER(PARTITION BY security_id,session_date ORDER BY available_at DESC)=1),
-    bars AS (SELECT security_id,session_date,ret,ret_guarded,close FROM t6_prices
-      WHERE session_date BETWEEN DATE '{start}' AND DATE '{end}' AND session_date<DATE '2023-01-01'),
-    r AS (SELECT security_id, CASE WHEN bool_or(ret_guarded OR ret IS NULL OR ret< -1) THEN NULL
+    quality AS ({quality_sql(cutoff)}),
+    grid AS (SELECT u.security_id,c.session_date FROM u CROSS JOIN t6_calendar c
+      WHERE c.session_date BETWEEN DATE '{start}' AND DATE '{end}'),
+    bars AS (SELECT g.security_id,g.session_date,p.ret,p.ret_guarded,p.close,
+      count(p.security_id) OVER(PARTITION BY g.security_id,g.session_date) AS n
+      FROM grid g LEFT JOIN t6_prices p USING(security_id,session_date)
+      WHERE g.session_date<DATE '2023-01-01'),
+    r AS (SELECT security_id, CASE WHEN bool_or(n>1) THEN error('duplicate price session')
+      WHEN bool_or(n=0 OR coalesce(ret_guarded,true) OR ret IS NULL OR ret< -1) THEN NULL
       WHEN bool_or(ret=-1) THEN -1 ELSE exp(sum(ln(1+ret)))-1 END AS ret FROM bars GROUP BY security_id),
     joined AS (SELECT u.*,r.ret,q.certified,q.membership_certified,q.reason AS cap_reason
       FROM u LEFT JOIN r USING(security_id)
@@ -93,6 +117,12 @@ def risk_primitives_sql(day: dt.date, cutoff: dt.datetime) -> str:
     tau = cutoff.astimezone(dt.UTC).replace(tzinfo=None).isoformat()
     return f"""
     WITH u AS (SELECT * FROM t6_universe WHERE session_date=DATE '{day}'),
+    q AS ({quality_sql(cutoff)}),
+    lag_u AS (SELECT l.*,coalesce(q.certified AND l.available_at<TIMESTAMP '{tau}',false) AS cap_qualified FROM t6_universe l
+      LEFT JOIN q USING(security_id,session_date)
+      WHERE l.session_date=(SELECT max(session_date) FROM t6_calendar WHERE session_date<DATE '{day}')),
+    issuer AS (SELECT cik,CASE WHEN bool_and(cap_qualified AND me>0) THEN sum(me) END AS me
+      FROM lag_u WHERE univ_all_common GROUP BY cik),
     l AS (SELECT * FROM t6_liquidity WHERE available_at<TIMESTAMP '{tau}'
       AND date_diff('day',session_date,DATE '{day}') BETWEEN 0 AND 10
       QUALIFY row_number() OVER(PARTITION BY security_id ORDER BY session_date DESC)=1),
@@ -103,13 +133,14 @@ def risk_primitives_sql(day: dt.date, cutoff: dt.datetime) -> str:
     r AS (SELECT * FROM t6_ratios_state WHERE available_at<TIMESTAMP '{tau}'
       AND date_diff('day',datadate,DATE '{day}') BETWEEN 0 AND 400
       QUALIFY row_number() OVER(PARTITION BY cik ORDER BY available_at DESC)=1)
-    SELECT u.session_date,u.security_id,u.cik,u.univ_all_common,u.univ_r3000p,u.me,
+    SELECT u.session_date,u.security_id,u.cik,u.univ_all_common,u.univ_r3000p,issuer.me,coalesce(lag_u.cap_qualified,false) AS cap_qualified,
       i.ff49_no AS ff49,l.adv_21,l.adv_63,l.spread_cs_21,l.amihud_21,
-      b.si_to_io,b.si_shares,
-      CASE WHEN date_diff('day',b.ftd_settlement_date,DATE '{day}') BETWEEN 0 AND 60 THEN b.ftd_quantity END AS ftd_quantity,
-      CASE WHEN date_diff('day',b.threshold_list_date,DATE '{day}') BETWEEN 0 AND 10 THEN b.on_threshold_list END AS on_threshold_list,
+      CASE WHEN b.si_to_io_available_at<TIMESTAMPTZ '{cutoff.isoformat()}' THEN b.si_to_io END AS si_to_io,
+      CASE WHEN b.si_available_at<TIMESTAMPTZ '{cutoff.isoformat()}' THEN b.si_shares END AS si_shares,
+      CASE WHEN b.ftd_available_at<TIMESTAMPTZ '{cutoff.isoformat()}' AND date_diff('day',b.ftd_settlement_date,DATE '{day}') BETWEEN 0 AND 60 THEN b.ftd_quantity END AS ftd_quantity,
+      CASE WHEN b.threshold_available_at<TIMESTAMPTZ '{cutoff.isoformat()}' AND date_diff('day',b.threshold_list_date,DATE '{day}') BETWEEN 0 AND 10 THEN b.on_threshold_list END AS on_threshold_list,
       r.be_q0,r.at_q0,r.at_q4,r.debt_at,r.gprof,r.available_at AS accounting_available_at,
       l.available_at AS liquidity_available_at,i.available_at AS industry_available_at,
       b.si_to_io_available_at,b.si_available_at,b.ftd_available_at,b.threshold_available_at
-    FROM u LEFT JOIN l USING(security_id) LEFT JOIN b USING(security_id)
+    FROM u LEFT JOIN lag_u USING(security_id,cik) LEFT JOIN issuer USING(cik) LEFT JOIN l USING(security_id) LEFT JOIN b USING(security_id)
       LEFT JOIN i USING(cik) LEFT JOIN r USING(cik)"""

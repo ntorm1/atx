@@ -25,7 +25,7 @@ START = dt.date(2013, 1, 1)
 FACTORS = ('MktRF', 'SMB', 'HML', 'RMW', 'CMA', 'UMD', 'STREV', 'LTREV',
            'q_ME', 'q_IA', 'q_ROE', 'q_EG', 'BAB')
 CONFIG = {
-    'rule': 'task6-frozen-v1', 'start': str(START), 'end': str(END),
+    'rule': 'task6-frozen-v2-review1', 'start': str(START), 'end': str(END),
     'universe': 'univ_all_common', 'breakpoints': 'NYSE issuer ME median; signal 30/70',
     'accounting_formation': 'June annual; previous fiscal year visible before formation cutoff',
     'price_formation': 'monthly; UMD months -12:-2; STREV -1; LTREV -60:-13',
@@ -36,6 +36,10 @@ CONFIG = {
     'beta': '252 sessions, minimum 200 complete observations; intercept OLS',
     'bab_beta': 'daily log volatility252 min120; overlapping3day log correlation1260 min750; .6 beta+.4',
     'missing': 'NULL if any required portfolio leg absent; no zero filling',
+    'return_grid': 'all required calendar sessions per formed eligible line; absent bar NULL; duplicate or overlapping line/session rejected; no implicit delisting liquidation',
+    'audit_vintages': 'latest strictly visible line/date audit before qualification; revoked/failed supersedes prior pass; equal-clock ambiguity rejected',
+    'risk_primitive_timing': 'previous-session strict cutoff; audited lagged issuer ME; individual borrow clocks strict; own factor availability strict before cutoff',
+    'coverage_denominators': 'independent immutable all_common/r3000p/member_equity expected cells for every year2020-2025; absent output retained; unavailable membership FAIL',
     'benchmark_join': 'exact calendar month; 120 required months 2013-2022; no window shrink',
     'cap_uncertainty': 'exclude unresolved share-basis inputs including CIK 77159 until exact-source audit',
     'benchmark_thresholds': {'MktRF': .99, 'SMB': .90, 'UMD': .90, 'HML': .85,
