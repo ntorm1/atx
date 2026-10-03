@@ -22,3 +22,45 @@ def test_current_termination_and_contradiction():
     assert I.reit_assertion(doc('We are no longer a REIT.'),'ISSUER INC',12)['status'] is False
     both=doc('We are a real estate investment trust. We are no longer a REIT.')
     assert I.reit_assertion(both,'ISSUER INC',12)['status'] is None
+    assert I.reit_assertion(doc('We are no longer taxed as a REIT.'),'ISSUER INC',12)['status'] is False
+    assert I.reit_assertion(doc('We will no longer be taxed as a REIT next year.'),'ISSUER INC',12)['status'] is None
+    assert I.reit_assertion(doc('The Company is no longer required to operate under REIT rules.'),'ISSUER INC',12)['status'] is False
+    assert I.reit_assertion(doc('Our subsidiary is no longer required to operate under REIT rules.'),'ISSUER INC',12)['status'] is None
+    assert I.reit_assertion(doc('The Company approved a plan to terminate its REIT status next year.'),'ISSUER INC',12)['status'] is None
+    for text in ('If we are no longer a REIT, corporate taxes apply.','When the Company is no longer required to operate under REIT rules, it may change operations.'):
+        assert I.reit_assertion(doc(text),'ISSUER INC',12)['status'] is None
+
+def test_original_report_period_is_provenance_not_availability():
+    import datetime as dt
+    assert I.report_period(b'CONFORMED PERIOD OF REPORT: 20210930')==dt.date(2021,9,30)
+    assert I.report_period(b'CONFORMED PERIOD OF REPORT: 20211340') is None
+
+def test_larger_retry_preserves_success_and_terminal_unknown(tmp_path):
+    from types import SimpleNamespace
+    import json
+    class Store:
+        def __init__(self):self.records={};self.calls=[]
+        def lookup(self,url):return self.records.get(url)
+        def fetch(self,url,**kwargs):
+            self.calls.append(('fetch',url,kwargs['maximum']))
+            return self.records[url]
+        def ensure(self,url,**kwargs):
+            self.calls.append(('ensure',url,kwargs['maximum']))
+            return self.records[url],False
+    store=Store();bad=SimpleNamespace(error=I.H.RESPONSE_TOO_LARGE,status=200,sha256=None)
+    good=SimpleNamespace(error=None,status=200,sha256='verified')
+    store.records={'large':bad,'good':good};retried=set();path=tmp_path/'retries.jsonl'
+    assert I.fetch_source(store,'good',object(),retried,path) is good
+    I.fetch_source(store,'large',object(),retried,path)
+    I.fetch_source(store,'large',object(),retried,path)
+    assert store.calls==[('ensure','good',64_000_000),('fetch','large',64_000_000),('ensure','large',64_000_000)]
+    assert json.loads(path.read_text())['error']==I.H.RESPONSE_TOO_LARGE
+    assert retried=={'large'}
+
+def test_audit_keeps_recent_periodic_after_old_annual_and_excludes_future():
+    import datetime as dt
+    rows=[{'form':form,'accession':acc,'filing_date':dt.date.fromisoformat(day)} for form,acc,day in
+          [('10-K','annual','2021-03-15'),('10-Q','post-close','2021-11-10'),('10-Q','future','2022-03-15')]]
+    selected=I.audit_observations(rows,dt.date(2021,11,30))
+    assert {r['accession'] for r in selected}=={'annual','post-close'}
+    assert next(r for r in selected if r['accession']=='post-close')['priority']==-2

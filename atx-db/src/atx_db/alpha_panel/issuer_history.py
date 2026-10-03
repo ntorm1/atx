@@ -50,8 +50,13 @@ class RoundLimiter:
         self.count+=1
         return grant
 
-def parse_header(raw:bytes,cik:int,accession:str)->dict|None:
-    """Match the requested issuer's company block; reject ambiguous/missing states."""
+def parse_header(raw:bytes,cik:int,accession:str,*,require_incorporation:bool=True)->dict|None:
+    """Match the issuer and clock; incorporation output additionally requires known state.
+
+    A missing incorporation literal cannot supply a state, but a corporate issuer-bound
+    header can still date an independently bound primary status assertion. Conflicting
+    issuer states remain ambiguous even for that clock-only use.
+    """
     original=html.unescape(raw.decode('utf-8',errors='replace'))
     text=html.unescape(re.sub(r'<[^>]+>','',original))
     accepted=re.search(r'<ACCEPTANCE-DATETIME>\s*(\d{14})',original,re.I)
@@ -63,16 +68,18 @@ def parse_header(raw:bytes,cik:int,accession:str)->dict|None:
     if form.group(1).strip().upper().removesuffix('/A') not in FORMS:return None
     # Repeated company blocks may describe filing agents/owners: only exact issuer CIK.
     blocks=re.split(r'COMPANY DATA:',text,flags=re.I)[1:]
-    states=set()
+    states=set();matched=False
     for block in blocks:
         block=re.split(r'BUSINESS ADDRESS:|MAIL ADDRESS:|FORMER COMPANY:',block,flags=re.I)[0]
         key=re.search(r'CENTRAL INDEX KEY:\s*(\d+)',block,re.I)
         state=re.search(r'STATE OF INCORPORATION:\s*([A-Z0-9]{2})(?:\s|$)',block,re.I)
-        if key and int(key.group(1))==cik and state:states.add(state.group(1).upper())
-    if len(states)!=1:return None
+        if key and int(key.group(1))==cik:
+            matched=True
+            if state:states.add(state.group(1).upper())
+    if not matched or len(states)>1:return None
     # EDGAR's incorporation jurisdiction namespace: XX explicitly means unknown.
     # SC is South Carolina here, irrespective of FINRA's exchange class SC.
-    if states=={'XX'}:return None
+    if require_incorporation and (len(states)!=1 or states=={'XX'}):return None
     try:local=dt.datetime.strptime(accepted.group(1),'%Y%m%d%H%M%S')
     except ValueError:return None
     if local.replace(tzinfo=ET,fold=0).utcoffset()!=local.replace(tzinfo=ET,fold=1).utcoffset():return None
@@ -82,7 +89,7 @@ def parse_header(raw:bytes,cik:int,accession:str)->dict|None:
     try:end_day=max(dt.datetime.strptime(d,'%Y%m%d').date() for d in days)
     except ValueError:return None
     eod=dt.datetime.combine(end_day,dt.time(23,59,59),ET).astimezone(dt.UTC)
-    return {'cik':cik,'accession':accession,'inc_state_country':next(iter(states)),
+    return {'cik':cik,'accession':accession,'inc_state_country':next(iter(states)) if states and states!={'XX'} else None,
             'accepted_at':accepted_at,'available_at':max(accepted_at,eod),
             'clock':'max(original_acceptance_utc,filing_and_change_date_eod_et)',
             'revision_risk':'header_state_at_submission; changed-date conservatively bounded'}

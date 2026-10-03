@@ -11,7 +11,15 @@ import datetime as dt
 from pathlib import Path
 from . import common as C,issuer_history as I,sec_filings as SF,listing_events as LE
 from atx_db import sec_http as H
-STAGE='issuer_classes';RULE='issuer-bound-original-reit-status-v1'
+STAGE='issuer_classes';RULE='issuer-bound-original-reit-status-v2'
+PRIMARY_MAXIMUM=64_000_000
+
+def report_period(header:bytes)->dt.date|None:
+    text=html.unescape(re.sub(r'<[^>]+>','',html.unescape(header.decode(errors='replace'))))
+    match=re.search(r'CONFORMED PERIOD OF REPORT:\s*(\d{8})',text,re.I)
+    if not match:return None
+    try:return dt.datetime.strptime(match.group(1),'%Y%m%d').date()
+    except ValueError:return None
 
 def plain_text(raw:bytes)->str:
     text=raw.decode('utf-8',errors='replace')
@@ -40,15 +48,20 @@ def reit_assertion(raw:bytes,name:str,cik:int)->dict:
     if not subjects:return {'status':None,'reason':'issuer_not_bound','evidence':None}
     subject=r'\b(?:'+ '|'.join(subjects)+r')\b'
     positives=[];negatives=[]
-    negative=subject+r'\s+(?:is|are)\s+no longer\s+(?:a\s+)?(?:qualified as a\s+)?(?:reit|real estate investment trust)\b'
-    for m in re.finditer(negative,normalized):negatives.append(m.group(0))
+    negative=subject+r'\s+(?:is|are)\s+no longer\s+(?:(?:taxed|treated|qualified)\s+as\s+)?(?:a\s+)?(?:reit|real estate investment trust)\b'
+    ended_rules=subject+r'\s+(?:is|are)\s+no longer required to operate under reit rules\b'
+    def conditional(m):
+        return bool(re.search(r'\b(?:if|unless|whether|assuming|when|once|until|as long as)\s+(?:.{0,30}\s+)?$',normalized[max(0,m.start()-45):m.start()]))
+    for pattern in (negative,ended_rules):
+        for m in re.finditer(pattern,normalized):
+            if not conditional(m):negatives.append(m.group(0))
     qualifier=r'(?:a|an|and|publicly traded|fully integrated|self administered|self managed|internally managed|externally managed|equity|mortgage|maryland|delaware|u s|domestic|residential|commercial|industrial|diversified|specialty|healthcare|retail|office|hotel|lodging|multifamily|corporation|organized as)'
     patterns=[subject+r'\s+(?:is|are|operates as|operate as)\s+(?:'+qualifier+r'\s+){0,10}(?:real estate investment trust|reit)\b',
               subject+r'\s+(?:have|has)\s+elected\s+(?:to be taxed|to qualify|to be treated)\s+as\s+(?:a\s+)?(?:real estate investment trust|reit)\b']
     for pattern in patterns:
         for m in re.finditer(pattern,normalized):
             evidence=m.group(0)
-            if re.search(r'\b(?:if|unless|whether|assuming)\s+(?:.{0,30}\s+)?$',normalized[max(0,m.start()-45):m.start()]):continue
+            if conditional(m):continue
             if re.search(r'\b(?:have|has) elected\b',evidence) and re.search(r'\b(?:commencing|beginning|effective|will)\b',normalized[m.end():m.end()+180]):continue
             if re.search(r'\b(?:not|no longer|subsidiar\w*|will|would|intend\w*|expect\w*|holding company|invests|investing|if)\b',evidence):continue
             positives.append(evidence)
@@ -57,7 +70,19 @@ def reit_assertion(raw:bytes,name:str,cik:int)->dict:
     if positives:return {'status':True,'reason':'explicit_issuer_status_or_election','evidence':positives}
     return {'status':None,'reason':'no_unambiguous_issuer_status_assertion','evidence':None}
 
-def prepare(cohort_path:Path,audit_path:Path)->dict:
+def audit_observations(rows,cut):
+    """Retain annual context and the newest dated periodic disclosure for status changes."""
+    available=[r for r in rows if r['filing_date']<cut]
+    annual=[r for r in available if r['form'] in ('10-K','20-F','40-F')]
+    periodic=[r for r in available if r['form'] in ('10-K','10-Q','20-F','40-F')]
+    selected=[]
+    for eligible,priority in ((annual or available,-1),(periodic,-2)):
+        if eligible:
+            chosen={**max(eligible,key=lambda r:(r['filing_date'],r['accession'])),'priority':priority}
+            if not any(r['accession']==chosen['accession'] for r in selected):selected.append(chosen)
+    return selected
+
+def prepare(cohort_path:Path,audit_path:Path,status_followup:bool=False)->dict:
     cohort=C.read_json(cohort_path);audit=C.read_json(audit_path)
     wanted={r['cik']:r for r in cohort['candidates']};wanted.update({r['cik_u']:{'cik':r['cik_u'],'first_candidate':r['session_date'],'sic_values':[]} for r in audit['samples'] if r['cik_u'] not in wanted})
     rows={c:[] for c in wanted};archive=C.PACKAGE_ROOT/'data/cache/submissions.zip'
@@ -80,24 +105,47 @@ def prepare(cohort_path:Path,audit_path:Path)->dict:
             if eligible:plan.append({**max(eligible,key=lambda r:(r['filing_date'],r['accession'])),'priority':priority})
             else:missing.append({'cik':c,'boundary':str(end)})
     for sample in audit['samples']:
-        c=sample['cik_u'];cut=dt.date.fromisoformat(str(sample['session_date'])[:10]);available=[r for r in rows[c] if r['filing_date']<cut]
-        eligible=[r for r in available if r['form'] in ('10-K','20-F','40-F')]
-        if not eligible:eligible=available
-        if eligible:plan.append({**max(eligible,key=lambda r:(r['filing_date'],r['accession'])),'priority':-1})
+        c=sample['cik_u'];cut=dt.date.fromisoformat(str(sample['session_date'])[:10])
+        selected=audit_observations(rows[c],cut)
+        if selected:plan.extend(selected)
         else:missing.append({'cik':c,'boundary':str(cut),'reason':'no_annual_before_audit_date'})
+    followup=[]
+    if status_followup:
+        assessment_path=C.stage_dir(STAGE)/'assessment.json'
+        known={r['cik'] for r in C.read_json(assessment_path)['rows'] if r['status'] is True}
+        for c in sorted(known):
+            periodic=[r for r in rows[c] if r['form'] in ('10-K','10-Q','20-F','40-F')]
+            if periodic:
+                chosen={**max(periodic,key=lambda r:(r['filing_date'],r['accession'])),'priority':-3}
+                plan.append(chosen);followup.append(chosen)
     plan.sort(key=lambda r:(r['priority'],r['cik'],r['filing_date']));seen=set();plan=[r for r in plan if not ((r['cik'],r['accession']) in seen or seen.add((r['cik'],r['accession'])))]
     for r in plan:
         base=f"https://www.sec.gov/Archives/edgar/data/{r['cik']}/{r['accession'].replace('-','')}/"
         r['header_url']=base+r['accession']+'-index-headers.html';r['primary_url']=base+r['primary_document']
     result={'rule':RULE,'rows':plan,'missing_annual_candidates':missing,'candidate_cohort_sha256':C.sha256_file(cohort_path),'audit_sample_sha256':C.sha256_file(audit_path),'candidates':cohort['candidates'],
-        'selection':'all285 financial candidates annual2021/2022;41 real-estate candidates also last annual pre-eligibility and2018-2020 annual; deterministic audit annual before sampled date; observations never backdated; sparse years do not prove unchanged status'}
+        'selection':'all285 financial candidates annual2021/2022;41 real-estate candidates also last annual pre-eligibility and2018-2020 annual; deterministic audit annual context and latest periodic before sampled date; observations never backdated; sparse years do not prove unchanged status',
+        'status_followup':{'rule':'latest available 2022-or-earlier periodic filing for every issuer with a positive original REIT assertion; checks subsequent status uniformly, no ticker patches','rows':followup}}
     C.write_json_atomic(C.stage_dir(STAGE)/'plan.json',result);print('class source plan',len(plan),'header+primary maximum',2*len(plan),'missing',len(missing));return result
+
+def fetch_source(store,url,limiter,retried,retry_path):
+    """Reuse receipts; permit one recorded larger-bound retry of an oversize receipt."""
+    old=store.lookup(url)
+    if old and old.error==H.RESPONSE_TOO_LARGE and url not in retried:
+        rec=store.fetch(url,limiter=limiter,maximum=PRIMARY_MAXIMUM)
+        with retry_path.open('a',encoding='utf-8') as fh:
+            fh.write(json.dumps({'url':url,'maximum':PRIMARY_MAXIMUM,'status':rec.status,'error':rec.error,'sha256':rec.sha256})+'\n')
+        retried.add(url)
+        return rec
+    return store.ensure(url,limiter=limiter,maximum=PRIMARY_MAXIMUM)[0]
 
 def fetch(cap:int=3000)->dict:
     plan=C.read_json(C.stage_dir(STAGE)/'plan.json');store=H.FetchLedgerStore(I.RAW).load();limiter=I.RoundLimiter(I.RAW/'http-attempts.jsonl',cap=cap);stopped=False
+    retry_path=I.RAW/'larger-payload-retries.jsonl'
+    retried={json.loads(line)['url'] for line in retry_path.read_text().splitlines()} if retry_path.exists() else set()
     try:
         for n,r in enumerate(plan['rows']):
-            for url in (r['header_url'],r['primary_url']):store.ensure(url,limiter=limiter,maximum=10_000_000)
+            for url in (r['header_url'],r['primary_url']):
+                fetch_source(store,url,limiter,retried,retry_path)
             if (n+1)%25==0:print('class observations',n+1,'total round attempts',limiter.count,flush=True)
     except I.RequestBudgetExhausted:stopped=True
     except BaseException as exc:
@@ -116,12 +164,21 @@ def load()->dict:
         head=store.lookup(r['header_url']);primary=store.lookup(r['primary_url'])
         item={'cik':r['cik'],'accession':r['accession'],'primary_url':r['primary_url'],'header_url':r['header_url'],'filing_date':r['filing_date']}
         if not head or not primary or not head.ok or not primary.ok:assessment.append({**item,'status':None,'reason':'source_not_fetched_or_failed'});continue
-        rawhead=store.read(head);clock=I.parse_header(rawhead,r['cik'],r['accession']);name=issuer_name(rawhead,r['cik'])
+        try:
+            rawhead=store.read(head,maximum=2_000_000)
+            clock=I.parse_header(rawhead,r['cik'],r['accession'],require_incorporation=False);name=issuer_name(rawhead,r['cik'])
+        except (ValueError,OSError) as exc:
+            assessment.append({**item,'status':None,'reason':'header_read_or_parse_failure','error':type(exc).__name__});continue
         if not clock or not name:assessment.append({**item,'status':None,'reason':'header_identity_state_or_clock_unverified'});continue
-        inc.append({**clock,'source_url':r['header_url'],'raw_sha256':head.sha256,'fetched_at':head.fetched_at})
-        assertion=reit_assertion(store.read(primary),name,r['cik']);item={**item,**assertion,'issuer_name':name,'available_at':clock['available_at'],'accepted_at':clock['accepted_at'],'primary_sha256':primary.sha256,'header_sha256':head.sha256};assessment.append(item)
-        if assertion['status'] is not None:events.append({'cik':r['cik'],'accession':r['accession'],'accepted_at':clock['accepted_at'],'available_at':clock['available_at'],'reit_status':assertion['status'],'primary_url':r['primary_url'],'primary_sha256':primary.sha256,'header_sha256':head.sha256,'evidence':json.dumps(assertion['evidence'])})
-    schema=pa.schema([('cik',pa.int64()),('accession',pa.string()),('accepted_at',pa.timestamp('us',tz='UTC')),('available_at',pa.timestamp('us',tz='UTC')),('reit_status',pa.bool_()),('primary_url',pa.string()),('primary_sha256',pa.string()),('header_sha256',pa.string()),('evidence',pa.string())])
+        if clock['inc_state_country'] is not None:
+            inc.append({**clock,'source_url':r['header_url'],'raw_sha256':head.sha256,'fetched_at':head.fetched_at})
+        try:assertion=reit_assertion(store.read(primary,maximum=PRIMARY_MAXIMUM),name,r['cik'])
+        except (ValueError,OSError) as exc:
+            assessment.append({**item,'status':None,'reason':'primary_read_or_parse_failure','error':type(exc).__name__});continue
+        period=report_period(rawhead)
+        item={**item,**assertion,'issuer_name':name,'report_period_end':period,'available_at':clock['available_at'],'accepted_at':clock['accepted_at'],'primary_sha256':primary.sha256,'header_sha256':head.sha256};assessment.append(item)
+        if assertion['status'] is not None:events.append({'cik':r['cik'],'accession':r['accession'],'accepted_at':clock['accepted_at'],'available_at':clock['available_at'],'report_period_end':period,'reit_status':assertion['status'],'primary_url':r['primary_url'],'primary_sha256':primary.sha256,'header_sha256':head.sha256,'evidence':json.dumps(assertion['evidence'])})
+    schema=pa.schema([('cik',pa.int64()),('accession',pa.string()),('accepted_at',pa.timestamp('us',tz='UTC')),('available_at',pa.timestamp('us',tz='UTC')),('report_period_end',pa.date32()),('reit_status',pa.bool_()),('primary_url',pa.string()),('primary_sha256',pa.string()),('header_sha256',pa.string()),('evidence',pa.string())])
     target=C.stage_dir(STAGE)/'reit_status.parquet';tmp=target.with_suffix('.partial');pq.write_table(pa.Table.from_pylist(events,schema=schema),tmp,compression='zstd');tmp.replace(target)
     ischema=pa.schema([('cik',pa.int64()),('accession',pa.string()),('inc_state_country',pa.string()),('accepted_at',pa.timestamp('us',tz='UTC')),('available_at',pa.timestamp('us',tz='UTC')),('clock',pa.string()),('revision_risk',pa.string()),('source_url',pa.string()),('raw_sha256',pa.string()),('fetched_at',pa.string())])
     target=C.stage_dir(STAGE)/'incorporation.parquet';tmp=target.with_suffix('.partial');pq.write_table(pa.Table.from_pylist(inc,schema=ischema),tmp,compression='zstd');tmp.replace(target)
@@ -133,8 +190,8 @@ def load()->dict:
     C.write_stage_manifest(STAGE,'atx.alpha-panel.issuer-classes/v1',('issuer_classes','issuer_history','common','sec_filings','listing_events'),result);print(result);return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['prepare','fetch','load']);p.add_argument('--cohort',type=Path);p.add_argument('--audit',type=Path);p.add_argument('--cap',type=int,default=3000);a=p.parse_args()
-    if a.command=='prepare':prepare(a.cohort,a.audit)
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['prepare','fetch','load']);p.add_argument('--cohort',type=Path);p.add_argument('--audit',type=Path);p.add_argument('--cap',type=int,default=3000);p.add_argument('--status-followup',action='store_true');a=p.parse_args()
+    if a.command=='prepare':prepare(a.cohort,a.audit,a.status_followup)
     elif a.command=='fetch':fetch(a.cap)
     else:load()
 if __name__=='__main__':main()

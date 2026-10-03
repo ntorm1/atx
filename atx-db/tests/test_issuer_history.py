@@ -45,6 +45,17 @@ def test_multi_entity_header_never_uses_other_company_or_address_state():
     noncorporate=header().replace(b'CONFORMED SUBMISSION TYPE: 10-K',b'CONFORMED SUBMISSION TYPE: 4')
     assert I.parse_header(noncorporate,12,'0000000012-17-000001') is None
 
+def test_clock_only_use_never_invents_missing_incorporation_or_issuer():
+    raw=header().replace(b'STATE OF INCORPORATION: DE',b'')
+    assert I.parse_header(raw,12,'0000000012-17-000001') is None
+    clock=I.parse_header(raw,12,'0000000012-17-000001',require_incorporation=False)
+    assert clock['inc_state_country'] is None
+    assert clock['available_at']==dt.datetime(2017,12,30,4,59,59,tzinfo=dt.UTC)
+    assert I.parse_header(raw,99,'0000000012-17-000001',require_incorporation=False) is None
+    assert I.parse_header(raw.replace(b'TYPE: 10-K',b'TYPE: 4'),12,'0000000012-17-000001',require_incorporation=False) is None
+    conflict=header().replace(b'</SEC-HEADER>',b'COMPANY DATA:\n CENTRAL INDEX KEY: 12\n STATE OF INCORPORATION: E9\n</SEC-HEADER>')
+    assert I.parse_header(conflict,12,'0000000012-17-000001',require_incorporation=False) is None
+
 def test_pre_eligibility_selection_and_later_redomicile():
     first=dt.date(2018,1,2)
     rows=[{'accession':str(i),'form':f,'filing_date':d} for i,f,d in [(1,'10-K',dt.date(2017,12,1)),(2,'4',dt.date(2017,12,31)),(3,'8-K',dt.date(2018,5,1)),(4,'10-Q',dt.date(2018,11,1)),(5,'10-K',dt.date(2023,2,1))]]
