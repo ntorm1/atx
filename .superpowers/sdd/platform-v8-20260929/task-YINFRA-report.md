@@ -158,8 +158,9 @@ Files over ~400 lines (PM8-12): none. `wave_stages.py` (824 after the fixes) is 
 191, `wave_stage_library.py` 201, `wave_stage_cell.py` 151, `wave_stage_record.py` 208, `wave_stage_util.py` 87,
 `wave_stages.py` 54 (the table); the largest new file is `wave_fixture.py` 349.
 
-Tests (final code, `d4b28b5d`): `scripts/tests` (whole) **see the final line below**; `atx-engine/tools` (whole):
-**308 passed, 6 subtests passed** (357.0 s, at `5c21fd2a`, after the last stage_chain change).
+Tests (final code, `d4b28b5d`): `scripts/tests` (whole, no `ATX_EQUITY_BIN`): **304 passed, 4 skipped, 0 failed**
+(395.8 s; 273 / 4 before the fixes, + 31 review tests); `atx-engine/tools` (whole): **308 passed, 6 subtests
+passed, 0 failed** (357.0 s, at `5c21fd2a`; `d4b28b5d` changes no file under atx-engine).
 
 ## 8. Core vs wrapper (Ruling PM8-12)
 
