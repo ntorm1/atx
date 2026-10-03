@@ -35,7 +35,8 @@
     "options_implied": "Implied-minus-realized volatility spread; high implied volatility relative to realized volatility predicts higher returns.",
     "ownership_flow": "Informed-owner flows from SEC ownership filings: opportunistic insider net buying (Form 4) and 13F manager conviction; informed buying predicts higher returns.",
     "filing_events": "Adverse SEC filing events: an 8-K Item 4.02 non-reliance disclosure within the last 63 sessions; a recent event predicts lower returns.",
-    "price_volume": "Formulaic price-volume structure (Kakushadze 2016, 101 Formulaic Alphas): short-window time-series correlation of a price, range position or dollar liquidity with trading volume, and of volume changes with the intraday return; prices that move with volume predict lower returns."
+    "price_volume": "Formulaic price-volume structure (Kakushadze 2016, 101 Formulaic Alphas): short-window time-series correlation of a price, range position or dollar liquidity with trading volume, and of volume changes with the intraday return; prices that move with volume predict lower returns.",
+    "merger_arbitrage": "Risk-arbitrage spread: targets of pending mergers and tender offers, from the target's own SEC merger filings until delisting or deregistration"
   },
   "fields": {
     "close": {

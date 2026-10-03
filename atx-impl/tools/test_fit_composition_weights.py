@@ -2808,8 +2808,10 @@ class OwnershipFlowTheme(unittest.TestCase):
         return fx, ids
 
     def test_declared_constants(self):
-        self.assertEqual(fcw.V7_APPENDED_THEMES, ("ownership_flow", "filing_events", "price_volume"))  # PM7-15 a, PM7-39
-        self.assertEqual(fcw.PRIOR_THEMES, fcw.V4_THEMES + ("ownership_flow", "filing_events", "price_volume"))
+        self.assertEqual(fcw.V7_APPENDED_THEMES,  # PM7-15 a, PM7-39, PM8-14
+                         ("ownership_flow", "filing_events", "price_volume", "merger_arbitrage"))
+        self.assertEqual(fcw.PRIOR_THEMES,
+                         fcw.V4_THEMES + ("ownership_flow", "filing_events", "price_volume", "merger_arbitrage"))
         self.assertEqual(len(fcw.V4_THEMES), 9)
 
     def test_libraries_without_an_appended_theme_keep_the_pre_l7_bytes(self):
@@ -2879,7 +2881,8 @@ class OwnershipFlowTheme(unittest.TestCase):
         }).encode())
         with self.assertRaises(fcw.FitError) as caught:  # an unknown theme is still refused
             fcw.load_priors(lib, sha(lib.read_bytes()), None, None, fcw.load_library(lib, sha(lib.read_bytes())))
-        self.assertIn("appended theme ('ownership_flow', 'filing_events', 'price_volume')", str(caught.exception))
+        self.assertIn("appended theme ('ownership_flow', 'filing_events', 'price_volume', 'merger_arbitrage')",
+                      str(caught.exception))
         base = load_blob(self.PRE_L7_BLOB, "fcw_pre_l7_refuse", self.root)
         if base is None:
             self.skipTest("git history with the pre-L7 fitter blob is unavailable")

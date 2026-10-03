@@ -274,8 +274,9 @@ V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_
 # empty until wave 2) keeps its bytes. ew-theme-v1 counts only themes with an admitted member, so an empty theme never
 # changes a weight. filing_events (v8.1 E7) is appended last (Ruling PM7-15 (a)), after the registry's themes table and
 # the runner's theme_resid_order, so every earlier theme keeps its theme-resid-v1 residual; price_volume (v8 X-7, lane
-# XWQ) after it (Rulings PM7-36 (a), PM7-39), in the registry, here and in theme_resid_order.
-V7_APPENDED_THEMES = ("ownership_flow", "filing_events", "price_volume")
+# XWQ) after it (Rulings PM7-36 (a), PM7-39), in the registry, here and in theme_resid_order; merger_arbitrage (v8 Y,
+# lane YDATA) last (Rulings PM8-8 (2), PM8-14), the same three places.
+V7_APPENDED_THEMES = ("ownership_flow", "filing_events", "price_volume", "merger_arbitrage")
 PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES
 TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
 V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
