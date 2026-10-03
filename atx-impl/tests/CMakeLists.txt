@@ -176,3 +176,7 @@ function(atx_impl_register_research_tests)
     endforeach()
 endfunction()
 cmake_language(DEFER CALL atx_impl_register_research_tests)
+
+# Platform P9 B1: the `factors` verb (contract K-P9-4) on its synthetic role, beside the other
+# atx-equity-strategy-targets verbs (FactorsVerb.*; the glob above also compiles it into atx-impl-tests).
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_factors_verb_test.cpp)

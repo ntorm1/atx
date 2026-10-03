@@ -422,3 +422,18 @@ cmake_language(DEFER CALL atx_engine_register_research_tests)
 target_sources(atx-engine-research-fields-tests PRIVATE
     research/research_fields_registry_test.cpp
     research/research_fields_manifest_test.cpp)
+
+# Platform P9 B1: the admission library's own bounded target (sources in tests/research/, not a test group; no
+# shared test PCH; the fitter-generated fixture path is a target-local define). Run it directly with the gtest
+# filter ResearchAdmission*. The library target is defined after this directory (end of atx-engine/CMakeLists.txt);
+# CMake resolves the link name at generation.
+add_executable(atx-engine-research-admission-tests EXCLUDE_FROM_ALL
+    research/research_admission_screen_test.cpp
+    research/research_admission_sign_test.cpp
+    research/research_admission_fixture_test.cpp)
+target_link_libraries(atx-engine-research-admission-tests PRIVATE
+    atx-engine-research-admission GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-admission-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-admission-tests PRIVATE
+    "ATX_RESEARCH_ADMISSION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_admission\"")

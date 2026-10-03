@@ -205,3 +205,11 @@ target_sources(atx-impl-core PRIVATE src/stage_equity_mine.cpp)
 target_sources(atx-impl-core PRIVATE src/strategy_exposures_verb.cpp)
 # P9 S1: the marginal verb's pair cache (--pair-cache)
 target_sources(atx-impl-core PRIVATE src/strategy_marginal_pair_cache.cpp)
+# platform P9 B1: the `factors` verb (contract K-P9-4) of atx-equity-strategy-targets. Its per-candidate rank and
+# projection loops run over every decision of a full role, so the warm Debug tree gives this TU the same private
+# /O2 as the IC TUs above (Debug CRT, assertions and FP settings unchanged; no shared PCH under other flags).
+target_sources(atx-impl-core PRIVATE src/strategy_factors_verb.cpp)
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/strategy_factors_verb.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/strategy_factors_verb.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
