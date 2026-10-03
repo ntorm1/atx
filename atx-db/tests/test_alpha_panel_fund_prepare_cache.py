@@ -286,3 +286,47 @@ def test_cached_return_rechecks_live_dependency(tmp_path, monkeypatch):
         c.copy(con, sql, dest, receipt, 'scope', dependencies=(dependency,))
     assert receipt['cached'] == [] and receipt['preparation_units'] == {}
     con.close()
+
+
+@pytest.mark.parametrize('order', [('2020q2', '2020q1'), ('2020q2', '2020q3', '2020q1')])
+def test_permuted_manifest_quarters_certify_identical_outputs_and_resume(tmp_path, monkeypatch, order):
+    fu, root, links = prepared_fixture(tmp_path, monkeypatch)
+    if '2020q3' in order:
+        for table in ('sub', 'num', 'pre'):
+            pq.write_table(pa.table({'token': [1]}), root / table / '2020q3.parquet')
+        snapshot(root)
+    baseline = fu.prepare()
+    manifest = root / 'fsds-staging-manifest.json'
+    metadata = json.loads(manifest.read_text())
+    metadata['quarters'] = {q: {'tables': dict(reversed(list(metadata['quarters'][q]['tables'].items())))}
+                            for q in order}
+    manifest.write_text(json.dumps(metadata))
+    prepared = fu.prepare()
+    assert fu._verify_preparation() == prepared['preparation_binding']
+    assert {p: u['output'] for p, u in prepared['preparation_units'].items()} == {
+        p: u['output'] for p, u in baseline['preparation_units'].items()}
+    for path, unit in prepared['preparation_units'].items():
+        old = baseline['preparation_units'][path]['binding']
+        for field in ('sql', 'key', 'sources', 'dependencies', 'options', 'code'):
+            assert unit['binding'][field] == old[field]
+        assert unit['binding']['sources'] == sorted(unit['binding']['sources'])
+    # Raw manifest bytes remain pinned: formatting/order changes invalidate old
+    # source bindings; an unchanged reordered snapshot resumes with the same binding.
+    assert prepared['preparation_binding']['source']['manifest'] != baseline['preparation_binding']['source']['manifest']
+    resumed = fu.prepare()
+    assert resumed['preparation_binding'] == prepared['preparation_binding']
+    assert len(resumed['cached']) == 6 + 2 * len(order)
+    assert fu._verify_preparation() == resumed['preparation_binding']
+
+
+def test_empty_quarter_inventory_and_duplicate_quarter_keys_fail_closed(tmp_path, monkeypatch):
+    from atx_db.alpha_panel import fundamentals as fu
+    s = snapshot(tmp_path / 'empty')
+    with pytest.raises(ValueError, match='configured FSDS quarter'):
+        fu._required_preparation_units(s)
+    # JSON duplicates must be refused before a parser can silently discard a quarter.
+    s.manifest.write_text('{"quarters":{"2020q1":{"tables":{}},"2020q1":{"tables":{}}}}')
+    with pytest.raises(ValueError, match='duplicate FSDS manifest key'):
+        cache.SourceSnapshot(s.root)
+    with pytest.raises(ValueError, match='duplicate preparation source'):
+        cache.ordered_sources(['num/2020q1.parquet', 'num/2020q1.parquet'])

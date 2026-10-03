@@ -30,12 +30,29 @@ def identity(path: Path) -> dict:
     return {"sha256": digest(path), "bytes": path.stat().st_size}
 
 
+def ordered_sources(paths) -> list[str]:
+    """One canonical order for unit creation and required-unit certification."""
+    paths = list(paths)
+    if len(paths) != len(set(paths)):
+        raise ValueError("duplicate preparation source selection")
+    return sorted(paths)
+
+
+def _unique_manifest_mapping(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate FSDS manifest key: {key}")
+        result[key] = value
+    return result
+
+
 class SourceSnapshot:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.manifest = self.root / "fsds-staging-manifest.json"
         self.manifest_identity = identity(self.manifest)
-        metadata = common.read_json(self.manifest)
+        metadata = json.loads(self.manifest.read_text(), object_pairs_hook=_unique_manifest_mapping)
         self.pins = {}
         for quarter, entry in metadata["quarters"].items():
             for table, info in entry["tables"].items():
@@ -83,7 +100,7 @@ class PreparationCache:
             dependencies = {p: live(p) for p in spec["dependencies"]}
             sql = spec["sql"](units) if callable(spec["sql"]) else spec["sql"]
             expected = {**self.binding, "sql": sql, "key": spec["key"],
-                        "dependencies": dependencies, "sources": list(spec["sources"]),
+                        "dependencies": dependencies, "sources": ordered_sources(spec["sources"]),
                         "options": spec["options"]}
             if (not isinstance(unit, dict) or unit.get("complete") is not True
                     or side != unit or unit.get("binding") != expected):
@@ -97,7 +114,7 @@ class PreparationCache:
 
     def copy(self, con, sql, dest, receipt, key, *, sources=(), dependencies=(), **kw):
         receipt.setdefault("cached", [])
-        sources = tuple(sources)
+        sources = ordered_sources(sources)
         dependencies = tuple(Path(p) for p in dependencies)
         dependency_pins = {p.as_posix(): identity(p) for p in dependencies}
         binding = {**self.binding, "sql": sql, "key": key,

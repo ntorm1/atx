@@ -431,14 +431,14 @@ def _union_sql(parts, hashes) -> str:
 
 def _required_preparation_units(snapshot) -> dict:
     """Fixed products plus both quarter products for every pinned configured quarter."""
-    tables = {t: sorted(p for p in snapshot.pins if p.startswith(t + "/"))
+    tables = {t: fpc.ordered_sources(p for p in snapshot.pins if p.startswith(t + "/"))
               for t in ("sub", "num", "pre")}
     quarters = {t: {Path(p).name for p in paths} for t, paths in tables.items()}
     if not quarters["pre"] or not (quarters["sub"] == quarters["num"] == quarters["pre"]):
         raise ValueError("incomplete configured FSDS quarter tables")
     required = {}
     def add(dest, key, sql, sources=(), dependencies=(), **options):
-        required[dest.as_posix()] = {"key": key, "sql": sql, "sources": list(sources),
+        required[dest.as_posix()] = {"key": key, "sql": sql, "sources": fpc.ordered_sources(sources),
             "dependencies": [p.as_posix() for p in dependencies], "options": options}
     num_glob = (common.FSDS_DIR / "num" / "*.parquet").as_posix()
     add(sub_clock_path(), "sub_clock", _sub_clock_sql(), tables["sub"])
@@ -507,7 +507,7 @@ def prepare() -> dict[str, Any]:
                 con,
                 _sub_clock_sql(),
                 dest, receipt, "sub_clock",
-                sources=tuple(p for p in snapshot.pins if p.startswith("sub/")),
+                sources=required[dest.as_posix()]["sources"],
             )
             dup = con.execute(
                 f"SELECT count(*) - count(DISTINCT adsh) FROM read_parquet('{dest.as_posix()}')"
@@ -521,11 +521,10 @@ def prepare() -> dict[str, Any]:
         with common.timed(receipt, "class_shares"):
             num_glob = (common.FSDS_DIR / "num" / "*.parquet").as_posix()
             receipt["class_share_rows"] = cached_copy(con, class_sum_sql(num_glob), class_shares_path(), receipt,
-                                                      "class_shares", sources=tuple(
-                                                          p for p in snapshot.pins if p.startswith("num/")))
+                                                      "class_shares", sources=required[class_shares_path().as_posix()]["sources"])
         with common.timed(receipt, "pos_sums"):
             receipt["pos_sum_rows"] = cached_copy(con, pos_sum_sql(num_glob), pos_sums_path(), receipt, "pos_sums",
-                sources=tuple(p for p in snapshot.pins if p.startswith("num/")))
+                sources=required[pos_sums_path().as_posix()]["sources"])
         with common.timed(receipt, "pre_flags"):
             receipt["pre_flag_rows"] = per_quarter(con, "pre_flags", lambda pre, num: pre_flags_sql(pre),
                                                    pre_flags_path(), receipt, row_group_size=32768)
