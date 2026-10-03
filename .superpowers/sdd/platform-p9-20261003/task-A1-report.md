@@ -275,7 +275,7 @@ Total: 115 tests in 22 modules. The PM's "25" was an estimate. T2 needs a PM rul
 - **`autocrlf=true` rewrites LF files on checkout.** Any byte-pinned new file needs a `-text` attribute; `atx-engine/tools/.gitattributes` does this for the registry.
 
 ## Fix round 1
-**Outcome:** DONE_WITH_CONCERNS. FIX_BASE `88c9efa2`. The review's one major (M1) is fixed. The minors stay deferred, as the PM ruled. The concern is one uncommitted file, described below.
+**Outcome:** DONE. FIX_BASE `88c9efa2`. The review's one major (M1) is fixed. m3 was adopted under PM ruling A1-M3; the other minors stay deferred, as the PM ruled.
 
 **Commits** (branch `feat/p9-a1-20261003`, pool 12):
 - `d672eb8d` fix(fields): registry check/regenerate accept engine-only rows (P9 A1 fix 1). Changes `atx-engine/tools/field_registry.py`.
@@ -318,11 +318,8 @@ exit_code=0
 ```
 There are 3 new tests (378 → 381 in tools; 30 → 33 in the focused set).
 
-**Minors.** m1–m7 stay deferred (PM). The killed implementer's partial edits for m1 (refuse every unroutable engine row behind `--engine-exe`) and m7 (strict `first_session` date) were removed from `field_registry.py`. The `--engine-exe` routing check now covers engine-only rows only, because that is part of M1. Engine twins keep m1's deferred behaviour.
+**Minors.** m1, m2 and m4–m7 stay deferred (PM); m3 was adopted (below). The killed implementer's partial edits for m1 (refuse every unroutable engine row behind `--engine-exe`) and m7 (strict `first_session` date) were removed from `field_registry.py`. The `--engine-exe` routing check now covers engine-only rows only, because that is part of M1. Engine twins keep m1's deferred behaviour.
 
-**Concern: uncommitted file.** `atx-engine/tools/prepare_research_fields.py` still has the killed implementer's uncommitted, unreviewed partial edit for m3: it refuses a `seal` block that is not an object instead of accepting it as legacy (+5/-3 in `require_research_seal`).
-- It is not committed and is not part of this fix round.
-- Restoring the file from HEAD was blocked by the session's permission guard, so it is still dirty in pool-12. The PM should discard it or adopt it. `git -C C:/atx-wt/pool-12 diff atx-engine/tools/prepare_research_fields.py` shows it.
-- The test runs above include that edit in the working tree. It changes behaviour only for a non-object `seal`, which no test fixture has.
+**m3 adopted (PM ruling A1-M3), commit `4df3f7b7`.** `require_research_seal` now refuses a `seal` that is present but not an object (a string, null or a list) instead of logging it as legacy. A seal object takes the same path as before, whether its `exclusive_end` is equal, different or missing. An absent seal is still logged and accepted (P13). The fields builder has written `seal` as an object since `c615ce36`. A new window-independent test covers this: `test_prepare_research_fields_seal.py::MalformedSealBlock`. Tools rerun: `382 passed, 6 subtests passed in 171.56s`, exit 0.
 
 **How root verifies (delta).** Run the pytest commands above as separate processes. The cheap production acceptance command from "How root verifies" still prints `ok 92`. Once a DEC-5 row is appended, it prints the total row count.
