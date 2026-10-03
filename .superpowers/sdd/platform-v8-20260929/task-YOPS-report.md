@@ -341,7 +341,40 @@ Output ends `yops_check: PASS`.
   - `AlphaFormulaicOps_Typecheck`: 27 refusals and 9 lookbacks.
   - `AlphaFormulaicOps_Registry`: tables 74 / 17 / 7, names absent from the factory tables, `group_count` still arity 2,
     opcode ids 88 / 104 to 111, chunk axes.
-  - `AlphaFormulaicOps_Frozen`: the 10 strings, SHA-256 pinned, ≤ 4,096 bytes, VM == oracle, finite cells present.
+  - `AlphaFormulaicOps_Frozen`: the 10 strings, SHA-256 pinned, ≤ 4,096 bytes, the minimum-history table (analyze's
+    lookback = section 4's bars) asserted per string, VM == oracle on the usual holed fixture, and finite cells at
+    dates ≥ each string's lookback on a complete fixture of (max lookback 91) + 1 + 40 = 132 sessions x 16 names.
+
+**Addendum (root build v8-16a, merge 8544a36f).** The build passed with 0 warnings and 15 of 16 `AlphaFormulaicOps`
+tests passing. The failure was the Frozen test's `finite > 0` check for #88 on `make_fixture(130, 8)`; VM == oracle and the
+SHA pins held.
+
+**Diagnosis: fixture degeneracy, not a VM or oracle defect.**
+
+- #88's second term `ts_rank(decay_linear(correlation(ts_rank(close, 8), ts_rank(adv60, 20), 8), 6), 2)` has lookback 91.
+  A finite cell therefore needs every raw_close and volume cell of its last 92 sessions present.
+- The fixture removes 4% of cells (2% sessions without a bar, 2% universe gaps), so P = 0.96^92 = 2.3% per (date, name).
+  At 39 eligible dates x 8 names that is about 7 cells expected, many of them in the same runs.
+- I replicated the fixture's rules in numpy and evaluated #88 with yops_check's interpreter (proven equal to the printed
+  formula), over 20 seeds:
+
+  | panel (dates x names) | missing cells | fixtures where #88 has no finite cell | mean finite cells of #88 |
+  |---|---|---|---|
+  | 130 x 8 | 4% | 14 of 20 | 2.0 |
+  | 260 x 8 | 4% | 5 of 20 | not recorded |
+  | 400 x 8 | 4% | 2 of 20 | not recorded |
+  | 130 x 8 | none | 0 of 20 | 143 |
+
+  Term A (the decayed rank composite, lookback 7) is finite on about 709 cells even on the holed 130 x 8 panel.
+- A longer holed panel is not a fix: 2 of 20 seeds still have no finite #88 cell at 400 sessions.
+
+**Fix (test only).**
+
+- Each string's minimum history is pinned and asserted against `analyze()`.
+- The VM == oracle check stays on the holed fixture.
+- The finite-cell check moves to a complete fixture (`make_fixture(..., complete = true)`) whose length is derived, not
+  chosen: max lookback + 1 + 40 sessions, with 16 names. With 8 names, #15's 3-session rank correlations can be all flat;
+  the minimum over 30 replica seeds at 132 x 16 is 72 finite cells for #15 and higher for every other string.
 
 ## 6. Deviations from the brief
 

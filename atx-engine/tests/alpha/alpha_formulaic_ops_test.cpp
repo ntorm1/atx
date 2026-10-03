@@ -159,8 +159,10 @@ struct Fixture {
 // w = raw_close / close that steps on splits (x2 / x0.5) and is NaN on those
 // sessions, integer-level x (cross-sectional ties), a noise y, industry labels
 // with a reclassification and NaN labels, size-1 / size-all / all-NaN groupings
-// and a moving universe.
-[[nodiscard]] Fixture make_fixture(atx::usize dates, atx::usize inst, std::uint64_t seed) {
+// and a moving universe. `complete` switches the sessions without a bar and the
+// universe gaps off (the default fixture's draws are unchanged).
+[[nodiscard]] Fixture make_fixture(atx::usize dates, atx::usize inst, std::uint64_t seed,
+                                   bool complete = false) {
   Fixture f;
   f.dates = dates;
   f.inst = inst;
@@ -184,7 +186,7 @@ struct Fixture {
       if (u(rng) < 0.03) {
         factor[j] *= (u(rng) < 0.5) ? 2.0 : 0.5; // a split moves the rebase factor
       }
-      const bool hole = u(rng) < 0.02; // a session without a bar
+      const bool hole = u(rng) < 0.02 && !complete; // a session without a bar
       const atx::f64 o = prev * (1.0 + 0.005 * nd(rng));
       f.cols[kClose][i] = hole ? kNaN : px[j];
       f.cols[kRawClose][i] = hole ? kNaN : px[j] * factor[j];
@@ -203,7 +205,7 @@ struct Fixture {
       f.cols[kGrpOne][i] = 1.0;
       f.cols[kGrpEach][i] = static_cast<atx::f64>(j);
       f.cols[kGrpNan][i] = kNaN;
-      if (u(rng) < 0.02) {
+      if (u(rng) < 0.02 && !complete) {
         f.universe[i] = 0;
       }
     }
@@ -888,29 +890,95 @@ struct Frozen {
 }
 // clang-format on
 
+// Minimum history per string: analyze()'s required lookback (task-YOPS-report.md
+// section 4, "bars"). A cell of the string can be finite only at date >= lookback,
+// and only when every input cell of its last lookback + 1 sessions is present.
+[[nodiscard]] int frozen_lookback(int alpha) noexcept {
+  constexpr std::array<std::pair<int, int>, 10> kBars{{{1, 24},
+                                                       {3, 9},
+                                                       {4, 8},
+                                                       {13, 4},
+                                                       {15, 4},
+                                                       {16, 4},
+                                                       {29, 11},
+                                                       {31, 30},
+                                                       {80, 17},
+                                                       {88, 91}}};
+  for (const auto &[a, bars] : kBars) {
+    if (a == alpha) {
+      return bars;
+    }
+  }
+  return -1;
+}
+
+[[nodiscard]] int analyzed_lookback(std::string_view src) {
+  auto ast = alpha::parse_expr(src, lib());
+  if (!ast) {
+    return -1;
+  }
+  auto ana = alpha::analyze(ast.value());
+  return ana ? static_cast<int>(ana->required_lookback()) : -1;
+}
+
+// VM == oracle on every cell of `panel`; returns the finite cells at dates >= `from`.
+[[nodiscard]] atx::usize frozen_vm_matches_oracle(const Frozen &fz, const Panel &panel,
+                                                  atx::usize from) {
+  const Program prog = compile_expr(fz.dsl);
+  EXPECT_FALSE(prog.roots.empty()) << "#" << fz.alpha;
+  Engine eng{panel};
+  auto vm = eng.evaluate(prog);
+  auto ref = alpha::evaluate_reference(prog, panel);
+  EXPECT_TRUE(vm.has_value() && ref.has_value()) << "#" << fz.alpha;
+  if (prog.roots.empty() || !vm || !ref) {
+    return 0;
+  }
+  const std::vector<atx::f64> &v = vm->alphas.front().values;
+  const std::vector<atx::f64> &r = ref->alphas.front().values;
+  EXPECT_EQ(v.size(), r.size()) << "#" << fz.alpha;
+  atx::usize finite = 0;
+  for (atx::usize i = 0; i < v.size() && i < r.size(); ++i) {
+    EXPECT_TRUE(same_cell(v[i], r[i])) << "#" << fz.alpha << " cell " << i;
+    finite += (i / panel.instruments() >= from && std::isfinite(v[i])) ? 1U : 0U;
+  }
+  return finite;
+}
+
 TEST(AlphaFormulaicOps_Frozen, ReportStringsArePinnedCompileAndMatchTheOracle) {
-  const Fixture f = make_fixture(130, 8, 0xF0E2E4ULL); // > #88's 91-bar lookback
-  const Panel panel = prefix_panel(f, f.dates);
   ASSERT_EQ(frozen().size(), 10U);
+  int max_lookback = 0;
   for (const Frozen &fz : frozen()) {
     EXPECT_LE(fz.dsl.size(), 4096U) << "#" << fz.alpha; // the IC runner's DSL byte limit
     auto sha = atx::core::sha256_hex(fz.dsl);
     ASSERT_TRUE(sha.has_value());
     EXPECT_EQ(sha.value(), fz.sha256) << "#" << fz.alpha << " drifted from its frozen bytes";
-    const Program prog = compile_expr(fz.dsl);
-    ASSERT_FALSE(prog.roots.empty()) << "#" << fz.alpha;
-    Engine eng{panel};
-    auto vm = eng.evaluate(prog);
-    ASSERT_TRUE(vm.has_value()) << "#" << fz.alpha << ": " << vm.error().message();
-    auto ref = alpha::evaluate_reference(prog, panel);
-    ASSERT_TRUE(ref.has_value()) << "#" << fz.alpha << ": " << ref.error().message();
-    atx::usize finite = 0;
-    for (atx::usize i = 0; i < vm->alphas.front().values.size(); ++i) {
-      const atx::f64 v = vm->alphas.front().values[i];
-      ASSERT_TRUE(same_cell(v, ref->alphas.front().values[i])) << "#" << fz.alpha << " cell " << i;
-      finite += std::isfinite(v) ? 1U : 0U;
-    }
-    EXPECT_GT(finite, 0U) << "#" << fz.alpha;
+    const int lb = analyzed_lookback(fz.dsl);
+    EXPECT_EQ(lb, frozen_lookback(fz.alpha)) << "#" << fz.alpha << " minimum history";
+    max_lookback = std::max(max_lookback, lb);
+  }
+  // #88's second term: ts_rank(decay_linear(correlation(., ts_rank(adv60, 20), 8), 6), 2).
+  ASSERT_EQ(max_lookback, 91);
+  // (1) The usual fixture (2% sessions without a bar, 2% universe gaps): VM == oracle
+  // on every cell. No finite-cell claim here: a finite #88 cell needs 92 consecutive
+  // present raw_close / volume cells, P = 0.96^92 = 2.3% per (date, name), so most
+  // 130 x 8 draws have none (numpy replica: 14 of 20 seeds).
+  const Fixture holed = make_fixture(130, 8, 0xF0E2E4ULL);
+  const Panel holed_panel = prefix_panel(holed, holed.dates);
+  for (const Frozen &fz : frozen()) {
+    (void)frozen_vm_matches_oracle(fz, holed_panel, 0);
+  }
+  // (2) A complete fixture sized from the derived history: max lookback + 1 sessions
+  // before the first possible finite date, then 40 more; 16 names (#15's 3-session
+  // rank correlations are flat unless names cross, numpy replica minimum over 30
+  // seeds at 132 x 16: 72 finite cells, every other string more). Every string must
+  // be finite somewhere at a date >= its own lookback, VM == oracle throughout.
+  const Fixture full = make_fixture(static_cast<atx::usize>(max_lookback) + 1 + 40, 16,
+                                    0xF0E2E5ULL, /*complete=*/true);
+  const Panel full_panel = prefix_panel(full, full.dates);
+  for (const Frozen &fz : frozen()) {
+    const atx::usize from = static_cast<atx::usize>(frozen_lookback(fz.alpha));
+    EXPECT_GT(frozen_vm_matches_oracle(fz, full_panel, from), 0U)
+        << "#" << fz.alpha << " has no finite cell on a complete " << full.dates << " x 16 panel";
   }
 }
 
