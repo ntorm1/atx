@@ -11,7 +11,7 @@ import datetime as dt
 from pathlib import Path
 from . import common as C,issuer_history as I,sec_filings as SF,listing_events as LE
 from atx_db import sec_http as H
-STAGE='issuer_classes';RULE='issuer-bound-original-reit-status-v2'
+STAGE='issuer_classes';RULE='issuer-bound-original-reit-status-v3'
 PRIMARY_MAXIMUM=64_000_000
 
 def report_period(header:bytes)->dt.date|None:
@@ -50,8 +50,21 @@ def reit_assertion(raw:bytes,name:str,cik:int)->dict:
     positives=[];negatives=[]
     negative=subject+r'\s+(?:is|are)\s+no longer\s+(?:(?:taxed|treated|qualified)\s+as\s+)?(?:a\s+)?(?:reit|real estate investment trust)\b'
     ended_rules=subject+r'\s+(?:is|are)\s+no longer required to operate under reit rules\b'
+    # Match offsets below refer to this punctuation-preserving normalized copy.
+    # A condition can qualify either side of the assertion and be arbitrarily far
+    # from its subject within the same sentence. Never truncate its context.
+    contextual=re.sub(r'[^a-z0-9.!?;]+',' ',text.lower()).strip()
+    contextual=re.sub(r'\b(?:[a-z]\.){2,}',lambda m:m.group(0).replace('.',' '),contextual)
+    # Common issuer abbreviations are not sentence boundaries.
+    contextual=re.sub(r'\b(inc|corp|co|ltd|u|s)\.(?= |$)',r'\1 ',contextual)
+    contextual=re.sub(r' +',' ',contextual)
+    normalized=contextual
     def conditional(m):
-        return bool(re.search(r'\b(?:if|unless|whether|assuming|when|once|until|as long as)\s+(?:.{0,30}\s+)?$',normalized[max(0,m.start()-45):m.start()]))
+        left=max(normalized.rfind(mark,0,m.start()) for mark in '.!?')+1
+        ends=[normalized.find(mark,m.end()) for mark in '.!?']
+        right=min((end for end in ends if end>=0),default=len(normalized))
+        context=normalized[left:right]
+        return bool(re.search(r'\b(?:if|unless|whether|assuming|when|once|until|upon|as long as|provided that|subject to|pending|proposed|contingent|would|will|intend\w*|expect\w*)\b',context))
     for pattern in (negative,ended_rules):
         for m in re.finditer(pattern,normalized):
             if not conditional(m):negatives.append(m.group(0))
@@ -122,8 +135,9 @@ def prepare(cohort_path:Path,audit_path:Path,status_followup:bool=False)->dict:
     for r in plan:
         base=f"https://www.sec.gov/Archives/edgar/data/{r['cik']}/{r['accession'].replace('-','')}/"
         r['header_url']=base+r['accession']+'-index-headers.html';r['primary_url']=base+r['primary_document']
+    plan=I.retain_plan_observations(plan,C.stage_dir(STAGE)/'plan.json')
     result={'rule':RULE,'rows':plan,'missing_annual_candidates':missing,'candidate_cohort_sha256':C.sha256_file(cohort_path),'audit_sample_sha256':C.sha256_file(audit_path),'candidates':cohort['candidates'],
-        'selection':'all285 financial candidates annual2021/2022;41 real-estate candidates also last annual pre-eligibility and2018-2020 annual; deterministic audit annual context and latest periodic before sampled date; observations never backdated; sparse years do not prove unchanged status',
+        'selection':'all285 financial candidates annual2021/2022;41 real-estate candidates also last annual pre-eligibility and2018-2020 annual; deterministic audit annual context and latest periodic before sampled date; retain all previously selected observations on extension; observations never backdated; sparse years do not prove unchanged status',
         'status_followup':{'rule':'latest available 2022-or-earlier periodic filing for every issuer with a positive original REIT assertion; checks subsequent status uniformly, no ticker patches','rows':followup}}
     C.write_json_atomic(C.stage_dir(STAGE)/'plan.json',result);print('class source plan',len(plan),'header+primary maximum',2*len(plan),'missing',len(missing));return result
 

@@ -77,3 +77,19 @@ def test_every_http_attempt_paced_persisted_and_capped(tmp_path,monkeypatch):
     assert grants==['first','retry']
     resumed=I.RoundLimiter(path,cap=2,clock=lambda:now[0],sleep=sleep)
     with pytest.raises(I.RequestBudgetExhausted):resumed.acquire('resume')
+
+
+def test_plan_extensions_retain_prior_same_year_and_preeligibility_observations(tmp_path):
+    path=tmp_path/'plan.json'
+    prior={'cik':12,'accession':'prior','form':'10-K','filing_date':dt.date(2017,12,1),'priority':0}
+    june={'cik':12,'accession':'june','form':'10-Q','filing_date':dt.date(2018,6,1),'priority':1}
+    C=I.C
+    C.write_json_atomic(path,{'rows':I.retain_plan_observations([prior,june],path)})
+    november={**june,'accession':'november','filing_date':dt.date(2018,11,1)}
+    earlier={**prior,'accession':'new-prior','filing_date':dt.date(2017,12,20)}
+    extended=I.retain_plan_observations(I.select_observations([prior,earlier,june,november],dt.date(2018,1,2)),path)
+    assert [r['accession'] for r in extended]==['prior','june','new-prior','november']
+    C.write_json_atomic(path,{'rows':extended})
+    assert I.retain_plan_observations([],path)==C.read_json(path)['rows']
+    with pytest.raises(ValueError,match='conflicting retained source identity'):
+        I.retain_plan_observations([{**june,'filing_date':dt.date(2018,7,1)}],path)

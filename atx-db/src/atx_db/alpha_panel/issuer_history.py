@@ -21,7 +21,7 @@ from atx_db import sec_http as H
 from . import common as C, sec_filings as SF, listing_events as LE
 
 STAGE='issuer_history'
-RULE='original-sec-header-incorporation-v1'
+RULE='original-sec-header-incorporation-v2'
 FORMS={'10-K','10-Q','8-K','20-F','40-F','6-K','S-1','F-1','S-3','F-3','424B4','N-2','N-54A','N-54C'}
 ET=ZoneInfo('America/New_York')
 RAW=C.PACKAGE_ROOT/'data/raw/sec_issuer_history/round2'
@@ -109,6 +109,25 @@ def header_failure_reason(raw:bytes,cik:int)->str:
     if not states:return 'missing_target_incorporation_state'
     return 'unverified_form_accession_or_clock'
 
+def retain_plan_observations(rows, plan_path:Path):
+    """Extend an acquisition plan without replacing previously selected observations.
+
+    Source identity is immutable for an accession. Discovery priority may change,
+    but the retained row (including its URLs) remains the authoritative receipt key.
+    """
+    previous=C.read_json(plan_path)['rows'] if plan_path.exists() else []
+    result=[];seen={}
+    for row in [*previous,*rows]:
+        key=(int(row['cik']),row['accession'])
+        if key in seen:
+            old=seen[key]
+            for field in ('form','filing_date','primary_document','url','header_url','primary_url'):
+                if field in old and field in row and str(old[field])!=str(row[field]):
+                    raise ValueError(f'conflicting retained source identity {key}: {field}')
+            continue
+        copy=dict(row);seen[key]=copy;result.append(copy)
+    return result
+
 def select_observations(rows:list[dict],first:dt.date)->list[dict]:
     eligible=[r for r in rows if r['form'].removesuffix('/A') in FORMS and r['filing_date']<=dt.date(2022,12,31)]
     before=[r for r in eligible if r['filing_date']<first]
@@ -143,8 +162,9 @@ def prepare(cohort:Path)->dict:
     plan.sort(key=lambda r:(r['priority'],r['cik'],r['filing_date'],r['accession']))
     seen=set();plan=[r for r in plan if not ((r['cik'],r['accession']) in seen or seen.add((r['cik'],r['accession'])))]
     for r in plan:r['url']=f"https://www.sec.gov/Archives/edgar/data/{r['cik']}/{r['accession'].replace('-','')}/{r['accession']}-index-headers.html"
+    plan=retain_plan_observations(plan,C.stage_dir(STAGE)/'plan.json')
     result={'rule':RULE,'cohort_ciks':ciks,'first_eligibility':{str(k):str(v) for k,v in first.items()},'no_pre_eligibility_filing':missing,'rows':plan,
-        'source_archive':C.file_identity(zip_path),'cohort_sha256':C.sha256_file(cohort),'selection':'last issuer filing before first eligible session; latest subsequent issuer observation per calendar year; priority initial then2018..2022; sparse not exhaustive'}
+        'source_archive':C.file_identity(zip_path),'cohort_sha256':C.sha256_file(cohort),'selection':'last issuer filing before first eligible session; latest subsequent issuer observation per calendar year appended to all previously selected observations; priority initial then2018..2022; sparse not exhaustive'}
     C.write_json_atomic(C.stage_dir(STAGE)/'plan.json',result);print('plan',len(plan),'cohort',len(ciks),'no prefiling',len(missing));return result
 
 def fetch(limit:int=3000)->dict:

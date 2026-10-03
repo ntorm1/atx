@@ -423,3 +423,77 @@ def test_hand_verdicts_require_current_rule_and_sample_binding(tmp_path):
     p.write_text(json.dumps({'rule':'old','seed':U.HAND_SEED,'rows':[]}),encoding='utf-8')
     g=U.hand_check_gate(p,sample=[])
     assert not g['pass'] and g['status']=='stale_verdicts_require_recheck'
+
+
+def test_source_plan_load_future_extension_preserves_prior_membership(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from atx_db.alpha_panel import issuer_history as I
+    monkeypatch.setenv('ATX_ALPHA_PANEL_ROOT',str(tmp_path))
+    make_lake(tmp_path)
+    rawroot=tmp_path/'raw';rawroot.mkdir()
+    (rawroot/I.H.FETCH_LEDGER_NAME).write_text('fixture ledger')
+    monkeypatch.setattr(I,'RAW',rawroot)
+    monkeypatch.setattr(C,'write_stage_manifest',lambda *args,**kwargs:None)
+    stage=C.stage_dir(I.STAGE);stage.mkdir(parents=True,exist_ok=True)
+    C.write_json_atomic(stage/'fetch_status.json',{})
+    def row(accession,day,state):
+        return {'cik':102,'accession':accession,'form':'10-Q','filing_date':day,'priority':1,'url':accession,'state':state}
+    prior=row('0000000102-21-000000',D(2021,5,28),'DE')
+    june=row('0000000102-21-000001',D(2021,6,2),'E9');november=row('0000000102-21-000002',D(2021,11,1),'DE')
+    raws={}
+    for r in (prior,june,november):
+        stamp=r['filing_date'].strftime('%Y%m%d')
+        raws[r['url']]=f'<SEC-HEADER><ACCEPTANCE-DATETIME>{stamp}100000\nACCESSION NUMBER: {r["accession"]}\nCONFORMED SUBMISSION TYPE: 10-Q\nFILED AS OF DATE: {stamp}\nCOMPANY DATA:\nCENTRAL INDEX KEY: 102\nSTATE OF INCORPORATION: {r["state"]}\nBUSINESS ADDRESS:\nSTATE: NY\n</SEC-HEADER>'.encode()
+    store=SimpleNamespace(load=lambda:store,lookup=lambda url:SimpleNamespace(ok=True,sha256=url,fetched_at='fixture',bytes=len(raws[url]),url=url),read=lambda rec,maximum:raws[rec.url])
+    monkeypatch.setattr(I.H,'FetchLedgerStore',lambda root:store)
+    def publish(rows):
+        C.write_json_atomic(stage/'plan.json',{'rows':I.retain_plan_observations(rows,stage/'plan.json')})
+        I.load()
+        con=C.connect(memory='200MB',threads=1)
+        try:
+            U.load_issuer_tables(con);U.build_year(con,2021)
+            return con.execute('SELECT session_date,security_id,univ_all_common,is_reit,is_foreign_issuer FROM t ORDER BY session_date,security_id').fetchall()
+        finally:con.close()
+    before=publish([prior,june])
+    after=publish(I.select_observations([prior,june,november],D(2021,6,1)))
+    assert before==after
+    line=[r for r in before if r[1]==2]
+    assert [r[2] for r in line]==[True,True,True,False,False,False]
+    assert [r[4] for r in line]==[False,False,False,True,True,True]
+    assert {r['accession'] for r in C.read_json(stage/'plan.json')['rows']}=={prior['accession'],june['accession'],november['accession']}
+
+
+
+@pytest.mark.parametrize('initial,pending',[
+    ('We are a REIT.','The Company is no longer required to operate under REIT rules if its revocation is accepted.'),
+    ('We are no longer a REIT.','Assuming the IRS approves the pending election and all other conditions are met, we are a REIT.'),
+    ('We are no longer a REIT.','We are a REIT only if the IRS approves our election.'),
+])
+def test_pending_primary_assertion_loads_no_event_or_membership_transition(tmp_path,monkeypatch,initial,pending):
+    from types import SimpleNamespace
+    from atx_db.alpha_panel import issuer_history as I,issuer_classes as K
+    monkeypatch.setenv('ATX_ALPHA_PANEL_ROOT',str(tmp_path));make_lake(tmp_path)
+    rawroot=tmp_path/'raw';rawroot.mkdir();(rawroot/I.H.FETCH_LEDGER_NAME).write_text('fixture')
+    monkeypatch.setattr(I,'RAW',rawroot);monkeypatch.setattr(C,'write_stage_manifest',lambda *a,**k:None)
+    stage=C.stage_dir(K.STAGE);stage.mkdir(parents=True,exist_ok=True);C.write_json_atomic(stage/'fetch_status.json',{})
+    rows=[];raws={}
+    for i,(day,assertion) in enumerate(((D(2021,5,28),initial),(D(2021,6,2),pending)),1):
+        accession=f'0000000112-21-{i:06d}';stamp=day.strftime('%Y%m%d');h=accession+'header';p=accession+'primary'
+        rows.append({'cik':112,'accession':accession,'form':'10-Q','filing_date':day,'header_url':h,'primary_url':p})
+        raws[h]=f'<SEC-HEADER><ACCEPTANCE-DATETIME>{stamp}100000\nACCESSION NUMBER: {accession}\nCONFORMED SUBMISSION TYPE: 10-Q\nFILED AS OF DATE: {stamp}\nCOMPANY DATA:\nCOMPANY CONFORMED NAME: Example Corp\nCENTRAL INDEX KEY: 112\nSTATE OF INCORPORATION: DE\nBUSINESS ADDRESS:\nSTATE: NY\n</SEC-HEADER>'.encode()
+        raws[p]=('<ix:nonNumeric name="dei:EntityCentralIndexKey">112</ix:nonNumeric>'+assertion).encode()
+    store=SimpleNamespace(load=lambda:store,lookup=lambda url:SimpleNamespace(ok=True,sha256=url,fetched_at='fixture',bytes=len(raws[url]),url=url),read=lambda rec,maximum:raws[rec.url])
+    monkeypatch.setattr(I.H,'FetchLedgerStore',lambda root:store)
+    def publish(selected):
+        C.write_json_atomic(stage/'plan.json',{'rows':I.retain_plan_observations(selected,stage/'plan.json')});K.load()
+        con=C.connect(memory='200MB',threads=1)
+        try:
+            U.load_issuer_tables(con);U.build_year(con,2021)
+            return con.execute('SELECT session_date,security_id,is_reit,univ_all_common FROM t ORDER BY session_date,security_id').fetchall()
+        finally:con.close()
+    before=publish(rows[:1]);after=publish(rows)
+    assert before==after
+    events=pq.read_table(stage/'reit_status.parquet').to_pylist()
+    assert len(events)==1 and events[0]['accession']==rows[0]['accession']
+    assessment=C.read_json(stage/'assessment.json')['rows']
+    assert assessment[1]['status'] is None

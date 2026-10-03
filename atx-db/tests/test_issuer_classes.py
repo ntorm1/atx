@@ -1,3 +1,4 @@
+import pytest
 from atx_db.alpha_panel import issuer_classes as I
 
 def doc(text,ciks=(12,)):
@@ -64,3 +65,50 @@ def test_audit_keeps_recent_periodic_after_old_annual_and_excludes_future():
     selected=I.audit_observations(rows,dt.date(2021,11,30))
     assert {r['accession'] for r in selected}=={'annual','post-close'}
     assert next(r for r in selected if r['accession']=='post-close')['priority']==-2
+
+
+@pytest.mark.parametrize('text',[
+    'We are a REIT only if the IRS approves our election.',
+    'The Company is no longer required to operate under REIT rules if its revocation is accepted.',
+    'Assuming the IRS approves the pending election and all other conditions are met, we are a REIT.',
+    'We are a REIT provided that the IRS approves our election.',
+    'We are a REIT; only if the IRS approves our election.',
+    'Unless all of the unusually extensive requirements established by the IRS have been satisfied, we are a REIT.',
+    'We are no longer a REIT subject to acceptance of the pending revocation.',
+    'Assuming the I.R.S. approves the election, we are a REIT.',
+    'We are no longer a REIT upon acceptance of our revocation.',
+    'We are a REIT contingent on approval of our proposed election.',
+])
+def test_complete_conditional_assertion_context_is_never_an_event(text):
+    result=I.reit_assertion(doc(text),'Example Corp',12)
+    assert result['status'] is None
+    assert result['evidence'] is None
+
+
+def test_unrelated_sentence_condition_does_not_cancel_current_assertion():
+    assert I.reit_assertion(doc('We are a REIT. If prices rise, revenue may improve.'),'Example Corp',12)['status'] is True
+
+
+def test_class_prepare_extensions_retain_annual_audit_and_followup_paths(tmp_path,monkeypatch):
+    import json,zipfile
+    from atx_db.alpha_panel import common as C
+    monkeypatch.setattr(C,'PACKAGE_ROOT',tmp_path)
+    monkeypatch.setenv('ATX_ALPHA_PANEL_ROOT',str(tmp_path/'lake'))
+    cache=tmp_path/'data/cache';cache.mkdir(parents=True)
+    cohort=tmp_path/'cohort.json';audit=tmp_path/'audit.json'
+    C.write_json_atomic(cohort,{'candidates':[{'cik':12,'first_candidate':'2018-01-02','sic_values':[6500]}]})
+    C.write_json_atomic(audit,{'samples':[{'cik_u':12,'session_date':'2022-12-31'}]})
+    records=[('0000000012-21-000001','10-K','2021-06-01'),('0000000012-22-000001','10-K','2022-06-01')]
+    def archive():
+        body={'filings':{'recent':{'accessionNumber':[r[0] for r in records],'form':[r[1] for r in records],'filingDate':[r[2] for r in records],'primaryDocument':['original.htm']*len(records)}}}
+        with zipfile.ZipFile(cache/'submissions.zip','w',compression=zipfile.ZIP_DEFLATED) as z:z.writestr('CIK0000000012.json',json.dumps(body))
+    archive();first=I.prepare(cohort,audit)
+    records.extend([('0000000012-22-000002','10-K','2022-11-01'),('0000000012-22-000003','10-Q','2022-12-01')]);archive()
+    C.write_json_atomic(C.stage_dir(I.STAGE)/'assessment.json',{'rows':[{'cik':12,'status':True}]})
+    second=I.prepare(cohort,audit,status_followup=True)
+    assert {r['accession'] for r in first['rows']}<={r['accession'] for r in second['rows']}
+    assert '0000000012-22-000003' in {r['accession'] for r in second['rows']}
+    C.write_json_atomic(C.stage_dir(I.STAGE)/'assessment.json',{'rows':[{'cik':12,'status':None}]})
+    C.write_json_atomic(audit,{'samples':[]})
+    third=I.prepare(cohort,audit,status_followup=True)
+    assert {r['accession'] for r in second['rows']}=={r['accession'] for r in third['rows']}
