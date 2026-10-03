@@ -3,7 +3,6 @@ scoring, bundle, book and verdict; the ledger re-read, wave-result.json, the log
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 from pathlib import Path
 import shutil
@@ -159,10 +158,10 @@ def judge(w: Wave, done: dict, log) -> dict:
     budget = WM.driver(m, "host_budget_mib")
     if budget:          # P9 OR section 5: none reads what another writes; each bounded process holds its claim
         log(f"   the cell's summ || bundle || book reader, side by side under the host memory budget {budget} MiB")
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            jobs = [pool.submit(score), pool.submit(bundle_once, w, parent_nav, nav),
-                    pool.submit(read_once, w, "book", "book", navs)]
-            _, bundle, read = [j.result() for j in jobs]        # the first failure, in this order, stops the stage
+        # records (consoles, process rows) in this call order, whatever finishes first; the first failure, in this
+        # order, stops the stage (Wave.side_by_side, E1 review minor)
+        _, bundle, read = w.side_by_side([(score,), (bundle_once, w, parent_nav, nav),
+                                          (read_once, w, "book", "book", navs)])
         vpath, v = scored_verdict(w, cell)
     else:
         score()

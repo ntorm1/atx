@@ -7,6 +7,7 @@ cwd = the root), so a test drives every stage with a fake and ``--dry-run`` prin
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, wait
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,7 @@ class Wave:
         self._py: str | None = None
         self.seal_allow: dict[str, str] = {}     # research_wave.py --seal-allow TOKEN=RULING (wave_seal.py)
         self._console_lock = threading.Lock()   # the judge's side-by-side commands number their consoles in turn
+        self._local = threading.local()         # .buffer: the side_by_side call this thread runs keeps its records
         # P9 OR section 5: every command and git query of the stage running now, {what, seconds, exit_code} (in memory;
         # wave_stages.timed folds them into the stage's outputs under driver.timings)
         self.processes: list[dict] = []
@@ -144,8 +146,42 @@ class Wave:
         return self.path(rel).is_dir()
 
     # -------------------------------------------------------------- processes
-    def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str:
-        """Keep a command's stdout and stderr under <out_dir>/consoles/ (the seal scan reads every one)."""
+    def side_by_side(self, calls: list[tuple]) -> list:
+        """Run each ``(fn, *args)`` of ``calls`` in its own thread (P9 OR section 5: the judge's summ || bundle || book
+        under the host memory budget). A call's records (note_process rows, consoles) go to its own buffer and are
+        written in call order once every call has ended (E1 review minor): the consoles' numbers and the order of
+        ``processes`` (so the judge receipt's content digest) are those of a serial run, whatever finishes first.
+        Driver log lines stay live (progress, not records). Returns the results in call order; the first failure, in
+        call order, is raised after every call has ended and every buffer is written."""
+        buffers: list[list] = [[] for _ in calls]
+
+        def job(buf: list, fn, *args):
+            self._local.buffer = buf
+            try:
+                return fn(*args)
+            finally:
+                self._local.buffer = None
+        with ThreadPoolExecutor(max_workers=max(1, len(calls))) as pool:
+            jobs = [pool.submit(job, buf, *call) for buf, call in zip(buffers, calls)]
+            wait(jobs)
+        for buf in buffers:
+            for record, args in buf:
+                record(*args)
+        return [j.result() for j in jobs]
+
+    def buffered(self, record, *args) -> bool:
+        """Inside a side_by_side call: keep ``record(*args)`` for the call-order write (True); else False."""
+        buf = getattr(self._local, "buffer", None)
+        if buf is None:
+            return False
+        buf.append((record, args))
+        return True
+
+    def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str | None:
+        """Keep a command's stdout and stderr under <out_dir>/consoles/ (the seal scan reads every one); inside a
+        side_by_side call it is written, and numbered, when the calls have ended (None here)."""
+        if self.buffered(self.console, argv, what, done):
+            return None
         d = self.path(self.wave_path("consoles"))
         d.mkdir(parents=True, exist_ok=True)
         slug = "".join(ch if ch.isalnum() else "-" for ch in what.lower()).strip("-")[:48] or "command"
@@ -160,6 +196,8 @@ class Wave:
         return self.rel(p)
 
     def note_process(self, what: str, seconds: float, code) -> None:
+        if self.buffered(self.note_process, what, seconds, code):
+            return
         with self._console_lock:
             self.processes.append({"what": what, "seconds": round(seconds, 3), "exit_code": code})
 

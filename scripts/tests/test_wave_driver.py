@@ -13,6 +13,7 @@
   test_adopt_never_kills_the_child        re-review 1 N2: adopt under the lock, retried; a failure only warns
   test_claims_lock_failures_are_admission_waits  E1 minor: a claims-lock problem is an admission wait, not runner-error
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
+  test_judge_records_in_call_order        E1 minor: the side-by-side judge records consoles and processes in call order
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
   test_code_reuse_keyed_on_import_closure E1-REUSE (b): the code key covers the in-repo import closure
@@ -837,6 +838,53 @@ def test_parallel_steps_under_host_budget(tmp_path):
     assert sorted(met) == ["book", "bundle", "summ"] and any("summ || bundle || book reader, side by side" in x
                                                              for x in lines)
     assert json.loads((root / "out/waves/w1/wave-result.json").read_text())["verdict"]["rule"] == "pm7-34"
+
+
+def judge_finishing_in(fake, order: list[str], finished: list[str]):
+    """An executor under which the judge's three side-by-side commands (the cell's summ run, the bundle, the book
+    reader) finish in ``order``: each waits for the one before it (a serial run would time out there)."""
+    ended = {name: threading.Event() for name in order}
+
+    def run(argv, root_, env=None):
+        tool = Path(argv[1]).name if argv[0] != "git" else "git"
+        score = tool == "research_cycle.py" and argv[2] == "run" and not {"--screen", "--stop-after"} & set(argv)
+        name = "summ" if score else "bundle" if "--bundle" in argv else \
+            "book" if tool == "run_bounded_research.py" and "book" in argv else None
+        if name is None:
+            return fake(argv, root_, env)
+        i = order.index(name)
+        assert i == 0 or ended[order[i - 1]].wait(30), f"{name}: {order[i - 1]} never ended (not side by side)"
+        try:
+            return fake(argv, root_, env)
+        finally:
+            finished.append(name)
+            ended[name].set()
+    return run
+
+
+def test_judge_records_in_call_order(tmp_path):
+    """E1 review minor (judge row order under a budget): under driver.host_budget_mib the judge runs the cell's summ,
+    the bundle and the book reader side by side (Wave.side_by_side); the consoles' numbers and the judge receipt's
+    process rows (with driver.timings) follow the call order, so a judge whose book reader finishes first records
+    exactly what one finishing in call order records."""
+    driver = {"admission_wait_seconds": 60, "host_budget_mib": 8192, "timings": True}
+    seen = {}
+    for label, order in (("in-order", ["summ", "bundle", "book"]), ("reversed", ["book", "bundle", "summ"])):
+        root = F.build(tmp_path / label, driver=driver)
+        finished: list[str] = []
+        ex = judge_finishing_in(F.FakeCycle(root, ADMIT_ALL), order, finished)
+        assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=ex, log=lambda s: None) == 0
+        assert finished == order
+        judge = json.loads((root / "out/waves/w1/receipts/08-judge.json").read_text())["outputs"]
+        consoles = sorted(p.name for p in (root / "out/waves/w1/consoles").glob("*.log"))
+        seen[label] = ([p["what"] for p in judge["processes"]], consoles)
+    assert seen["reversed"] == seen["in-order"]
+    whats, consoles = seen["in-order"]
+    first = [whats.index(w) for w in ("the cell's monitor and summ (nav_summ scores and ledgers the cell)",
+                                      "bundle (PM5-23)", "book reader")]
+    assert first == sorted(first)                                            # summ, then bundle, then book
+    numbered = [c for c in consoles if c[4:].startswith(("the-cell-s-monitor", "bundle--pm5-23", "book-reader"))]
+    assert [c[4:].split("-")[0] for c in numbered] == ["the", "bundle", "book"]
 
 
 # ------------------------------------------------------------------ OR-2: exes pinned by lock, compared by verify
