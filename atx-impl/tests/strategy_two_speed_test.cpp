@@ -13,6 +13,7 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -124,6 +125,37 @@ TEST(TwoSpeed, CompositionSleevesAreTheThemePartsOfTheBlend) {
   EXPECT_EQ(scheduled->sleeve_fast_share[1], .5 / (.5 + w_b));
   EXPECT_EQ(scheduled->sleeve_fast_share[2], 0.0);
   EXPECT_EQ(scheduled->sleeve_fast[2 * Composer::width], 0.0); // theme a off: the fast sleeve adds nothing
+}
+
+// Ruling PM8-16 #9: the fast share of a date counts only the themes with a present member there
+// (a theme without one adds nothing to the blend at that date); none present: 0.
+TEST(TwoSpeed, FastShareCountsOnlyThemesPresentAtTheDate) {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const f64 w_a = 0.5, w_b = 0.0 + .25 + .25, both = w_a / (0.0 + w_a + w_b);
+  Composer fast_absent;
+  for (usize i = 0; i < Composer::width; ++i) fast_absent.signals[0][2 * Composer::width + i] = nan;
+  const auto a = fast_absent.compose(weights, a_fast);
+  ASSERT_TRUE(a);
+  for (usize d = 0; d < Composer::days; ++d)
+    EXPECT_EQ(a->sleeve_fast_share[d], d == 2 ? 0.0 : both) << d;
+  for (usize i = 0; i < Composer::width; ++i) // members 0: the fast sleeve adds nothing there
+    EXPECT_EQ(a->sleeve_fast[2 * Composer::width + i], 0.0) << i;
+  Composer slow_absent;
+  for (usize i = 0; i < Composer::width; ++i) {
+    slow_absent.signals[1][3 * Composer::width + i] = nan;
+    slow_absent.signals[2][3 * Composer::width + i] = nan;
+  }
+  const auto b = slow_absent.compose(weights, a_fast);
+  ASSERT_TRUE(b);
+  for (usize d = 0; d < Composer::days; ++d)
+    EXPECT_EQ(b->sleeve_fast_share[d], d == 3 ? 1.0 : both) << d;
+  Composer none;
+  for (auto& s : none.signals)
+    for (usize i = 0; i < Composer::width; ++i) s[i] = nan;
+  const auto c = none.compose(weights, a_fast);
+  ASSERT_TRUE(c);
+  EXPECT_EQ(c->sleeve_fast_share[0], 0.0);
+  EXPECT_EQ(c->sleeve_fast_share[1], both);
 }
 
 TEST(TwoSpeed, CompositionSleeveRefusalsKeepNothing) {

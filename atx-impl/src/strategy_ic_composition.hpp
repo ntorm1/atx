@@ -40,7 +40,8 @@ struct IcCompositionResult {
   atx::usize deployment_date{}; // dates if there was no nonzero deployment
   // two-speed-v1 (platform v8 Y-5; empty unless set_theme_sleeves ran): the fast and the slow
   // themes' parts of `signal` (each: members 0 plus its themes' W_theme x re-rank, nonmembers
-  // NaN, as `signal` is built) and per date the fast themes' share of the theme mass in force.
+  // NaN, as `signal` is built) and per date the fast themes' share of the theme mass in force
+  // over the themes with a present member at that date (0 when none has one; Ruling PM8-16 #9).
   std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
 };
 // Conservative owned allocation envelope, including result + scratch and bounded
@@ -127,7 +128,8 @@ class IcComposition {
   // two-speed-v1 (platform v8 Y-5): optional, before finish, IcThemeRule::standardise only. `fast`:
   // one flag per theme index (1 fast, 0 slow), at least one of each. finish then also adds each
   // theme's W x re-rank (the mass in force, as `signal` gets it) to its sleeve's plane and records
-  // the fast themes' mass share per date; `signal` is unchanged bit for bit. Refuses
+  // the fast themes' mass share per date (over the themes present at the date); `signal` is
+  // unchanged bit for bit. Refuses
   // (InvalidArgument) under another rule, after finish or on a malformed flag row; OutOfRange when
   // the planes exceed the working budget. Nothing is kept on refusal.
   [[nodiscard]] atx::core::Status set_theme_sleeves(std::span<const atx::u8> fast);

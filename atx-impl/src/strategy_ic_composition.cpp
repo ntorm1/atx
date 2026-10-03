@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <limits>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include "atx/engine/combine/group_rerank.hpp"
@@ -419,25 +420,33 @@ co::Result<IcCompositionResult> IcComposition::finish() {
       }
   }
   // two-speed-v1 (else no-op): each theme's same re-rank times the same mass in force, added to its
-  // sleeve's plane (a second pass; `signal` above is untouched), and per date the fast themes'
-  // share of the theme mass in force (block by block, in theme index order).
+  // sleeve's plane (a second pass; `signal` above is untouched), and per date d the fast themes'
+  // share of the mass in force of the themes with a present member at d (Ruling PM8-16 #9: a
+  // theme without one adds nothing to the blend at d, so it carries no share there), summed in
+  // theme index order; no such theme: 0.
   if (!p.sleeve_of.empty()) {
+    const usize names = p.cfg.instruments;
     for (usize b = 0; b <= p.schedule.size(); ++b) {
       const usize begin = b == 0 ? 0 : p.schedule[b - 1].begin;
       const usize end = b == p.schedule.size() ? p.cfg.dates : p.schedule[b].begin;
       if (begin == end) continue;
       const std::vector<f64>& mass = b == 0 ? p.std_mass : p.schedule[b - 1].mass;
-      f64 fast = 0, total = 0;
       for (usize t = 0; t < p.std_plane.size(); ++t) {
-        total += mass[t];
-        if (p.sleeve_of[t]) fast += mass[t];
         if (!(mass[t] > 0)) continue;
         auto& plane = p.sleeve_of[t] ? out.sleeve_fast : out.sleeve_slow;
-        ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, begin, end, mass[t], plane, p.row));
+        ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], names, begin, end, mass[t], plane,
+                                          p.row));
       }
-      const f64 share = total > 0 ? fast / total : 0.0;
-      std::fill(out.sleeve_fast_share.begin() + static_cast<std::ptrdiff_t>(begin),
-                out.sleeve_fast_share.begin() + static_cast<std::ptrdiff_t>(end), share);
+      for (usize d = begin; d < end; ++d) {
+        f64 fast = 0, total = 0;
+        for (usize t = 0; t < p.std_plane.size(); ++t) {
+          const auto row = std::span<const f64>(p.std_plane[t]).subspan(d * names, names);
+          if (std::all_of(row.begin(), row.end(), [](f64 v) { return std::isnan(v); })) continue;
+          total += mass[t];
+          if (p.sleeve_of[t]) fast += mass[t];
+        }
+        out.sleeve_fast_share[d] = total > 0 ? fast / total : 0.0;
+      }
     }
   }
   std::vector<IcThemeBlock>().swap(p.schedule);
