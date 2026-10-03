@@ -1,6 +1,6 @@
 # Dataset `compustat_std` (fundq / funda, Compustat-shaped, point in time)
 
-Code `src/atx_db/alpha_panel/compustat_std.py` (rule `cstd-pit-v2`, schema `atx.alpha-panel.compustat-std/v1`);
+Code `src/atx_db/alpha_panel/compustat_std.py` (rule `cstd-pit-v3`, schema `atx.alpha-panel.compustat-std/v2`);
 registration stub `docs/datasets/compustat_std.registry.json`. Tier1-v4 task 3 (gap analysis section 2 item 2).
 Built from the fundamentals stage (`--fund-stage`, default `fundamentals_v10`; task 5 rebuilds it on
 `fundamentals_v11`) and `earnings_calendar`; no new source.
@@ -9,20 +9,26 @@ Built from the fundamentals stage (`--fund-stage`, default `fundamentals_v10`; t
 
 | file | rows (build 2026-10-03) | bytes | keys | content |
 | --- | --- | --- | --- | --- |
-| `compustat_std/fundq.parquet` | 747,073 (17,010 CIKs) | 70,193,167 | (cik, datadate, fyearq, fqtr, accession) | filing and restatement vintages |
-| `compustat_std/funda.parquet` | 235,563 (15,875 CIKs) | 45,919,123 | (cik, datadate, fyear, accession) | annual-form base periods and their restatement vintages: annual items + 81 catalog fields |
+| `compustat_std/fundq.parquet` | 747,073 (17,010 CIKs) | 70,193,182 | (cik, datadate, fyearq, fqtr, accession, available_at) | filing and restatement vintages |
+| `compustat_std/funda.parquet` | 235,563 (15,875 CIKs) | 45,919,124 | (cik, datadate, fyear, accession, available_at) | annual-form base periods and their restatement vintages: annual items + 81 catalog fields |
 | `compustat_std/validation.json` | | | | gate measurements (coverage, rdq, sum4, balance, fsds, cutoff, handcheck) |
 | `compustat_std/manifest.json` | | | | schema, code SHA-256, file SHA-256, input manifest SHA-256, counts, `gate_status` |
 
 datadate 2004-12-31 .. 2026-08-31; available_at 2010-01-05 19:00:00 .. 2026-09-19 22:00:00 UTC.
 406,166 first-reported rows, 325,843 restatement rows, 7,267 FX-converted rows, 29 rows without a fiscal
-quarter (no annual FY row and no usable Q/FY label). `(cik, datadate, accession)` is unique in each file.
+quarter (no annual FY row and no usable Q/FY label). `(cik, datadate, accession, available_at)` is unique in each file.
+Ruling R6 extends vintage identity with `available_at`: one accession may supply multiple legitimate clocks.
+Each visible snapshot is retained, including delayed components of the original accession. Consumers must include
+the clock when joining physical vintages; as-of grouping remains `(cik, datadate)` with strict `available_at < t`.
 
 ## Point-in-time rule
 
 * `available_at` (TIMESTAMP, naive UTC) is the clock of every column of a row: the fundamentals event's
   `available_at` (EDGAR acceptance, or `filed` + 46 h when FSDS lacks the accession; FX-converted filers: the latest
-  H.10 rate publication used). A row is visible at session d only if `available_at` < 22:00 UTC of session d-1.
+  H.10 rate publication used). Restatement snapshots use each distinct legitimate quarterly-history clock after
+  the base filing. At t1 a restated sale can be visible while a delayed asset value remains unavailable until t2;
+  neither a minimum nor a future maximum clock suppresses those successive snapshots. A row is visible at
+  session d only if `available_at` < 22:00 UTC of session d-1.
 * Every derived value uses only inputs with a clock at or before the row's `available_at`: the fiscal-year-end
   month from FY rows already received, quarterly-history vintages, Company Facts facts at their filing clock,
   8-K 2.02 announcements already accepted, H.10 rates already published. The `cutoff` gate rebuilds the stage from
@@ -353,7 +359,8 @@ The deterioration from initial filing-only balances is attributable to 554 base-
 whose visible upstream stock history also fails: 552 USD and 2 FX periods. All have complete history and stage
 components match the failing history within the same 0.5% tolerance. Within this deterioration subset,
 no complete passing history becomes a failing reconstruction. Case keys/queries: `.superpowers/sdd/tier1-v4/t3-fix1-balance-attribution.py` and its JSON.
-Task 5 must verify upstream facts, concepts and clocks before repairing these discrepancies; no balancing plugs
+Clock-vintage case keys were refreshed in `t3-fix2-balance-attribution.json`; the 552 USD /2 FX attribution
+is unchanged. Task 5 must verify upstream facts, concepts and clocks before repairing these discrepancies; no balancing plugs
 or gate waiver. Original Q4 and mezzanine issues also remain.
 
 ### Other gates
@@ -376,7 +383,7 @@ python $G -- python -m atx_db.alpha_panel.compustat_std cutoff       # 0 differe
 python $G -- python -m atx_db.alpha_panel.compustat_std handcheck    # network: SEC via atx_db.sec_http (<= 5 req/s)
 ```
 
-Measured final publication: build 189.2 s, peak 0.7617 GiB (guard cap 1.0 GiB; DuckDB 450 MB; default 32 CIK buckets); validate 48.8 s at 0.8 GiB cap; cutoff 17.7 s at 0.8 GiB cap. Handcheck 28 s at 0.8 GiB cap. Scratch `_tmp/compustat_std/facts.parquet` (33 MB, the prepared Company Facts subset) is kept for the cutoff check. An earlier 0.8 GiB build exhausted native memory during final copy, so the registry requests 1.0 GiB.
+Measured final publication: build 214.2 s, peak 0.7623 GiB (guard cap 1.0 GiB; DuckDB 450 MB; default 32 CIK buckets); validate 44.5 s at 0.8 GiB cap; cutoff 16.1 s at 0.8 GiB cap. Handcheck 28 s at 0.8 GiB cap. Scratch `_tmp/compustat_std/facts.parquet` (33 MB, the prepared Company Facts subset) is kept for the cutoff check. An earlier 0.8 GiB build exhausted native memory during final copy, so the registry requests 1.0 GiB.
 
 ## Known limits
 
@@ -397,3 +404,27 @@ Measured final publication: build 189.2 s, peak 0.7617 GiB (guard cap 1.0 GiB; D
 * `dvy` is common dividends paid (fundamentals dvc chain); funda carries both `dvc` and the catalog `dv` (total).
 * The fiscal-year-end month follows FY rows already received: quarters of a new fiscal calendar before the transition
   10-KT keep the old `fyr`.
+
+## Schema v2 clock-vintage migration (ruling R6)
+
+Physical vintage identity includes `available_at`; existing item names, paths and as-of macro signatures remain
+unchanged. Join/reconcile snapshots on `(cik, datadate, accession, available_at)`, with fiscal descriptors as
+additional published primary-key fields. The serving as-of grouping remains `(cik, datadate)`; order is latest
+`available_at`, then accession descending. Successive clocks of a single accession are distinct rows.
+
+The counterexample is exercised for both quarterly and annual periods, and for both a comparative accession
+and delayed components of the base accession:
+
+| clock | saleq | atq | visible when |
+| --- | --- | --- | --- |
+| base (2021-05-01) | 100 | 1000 | t greater than base clock |
+| t1 (2021-08-01) | 90 | 1000 | t1 < t <= t2 |
+| t2 (2021-08-02) | 90 | 1010 | t > t2 |
+
+No future component or future metadata suppresses the t1 snapshot. Cutoff rebuilds before, at and after t2
+equal the corresponding full-publication subsets. All YTD/fact/rdq assembly identities, FSDS physical joins,
+cutoff comparison keys and handcheck records retain the clock. Current v10 inputs have zero multi-clock
+accession-period groups; synthetic regressions supply this case. Real cutoff evidence still has zero
+differences across 19,956 rows /1,691,724 cells. Extended primary keys have zero duplicates in both tables.
+Existing 30 SEC source checks bind uniquely to unchanged first-filing clock rows with zero value differences;
+no fresh SEC requests were needed.

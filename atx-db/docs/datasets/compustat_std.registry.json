@@ -1,7 +1,7 @@
 {
   "name": "compustat_std",
   "lane": "tier1-v4 lane B (task 3)",
-  "schema": "atx.alpha-panel.compustat-std/v1",
+  "schema": "atx.alpha-panel.compustat-std/v2",
   "module": "atx_db.alpha_panel.compustat_std",
   "args": [
     [
@@ -58,9 +58,10 @@
         "datadate",
         "fyearq",
         "fqtr",
-        "accession"
+        "accession",
+        "available_at"
       ],
-      "doc": "Compustat-shaped PIT quarterly fundamentals (fundq), filing and restatement vintages (vintage_kind); rdq informational"
+      "doc": "Compustat-shaped PIT quarterly fundamentals (fundq), filing and restatement vintages (vintage_kind); rdq informational; available_at is part of vintage identity (multiple clocks per accession, ruling R6)"
     },
     {
       "view": "funda",
@@ -78,14 +79,21 @@
         "cik",
         "datadate",
         "fyear",
-        "accession"
+        "accession",
+        "available_at"
       ],
-      "doc": "Compustat-shaped PIT annual fundamentals (funda): annual-form base periods with fqtr 4 and their later restatement vintages; 81 catalog fields, including non-Compustat extensions tempeq and nicon"
+      "doc": "Compustat-shaped PIT annual fundamentals (funda): annual-form base periods with fqtr 4 and their later restatement vintages; 81 catalog fields, including non-Compustat extensions tempeq and nicon; available_at is part of vintage identity (multiple clocks per accession, ruling R6)"
     }
   ],
   "asof_macros": {
     "fundq_asof": "CREATE OR REPLACE MACRO fundq_asof(ts) AS TABLE SELECT * FROM read_parquet('<root>/compustat_std/fundq.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik, datadate ORDER BY available_at DESC, accession DESC) = 1",
     "funda_asof": "CREATE OR REPLACE MACRO funda_asof(ts) AS TABLE SELECT * FROM read_parquet('<root>/compustat_std/funda.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik, datadate ORDER BY available_at DESC, accession DESC) = 1"
   },
-  "asof_note": "fundq_asof(ts) / funda_asof(ts): per (cik, datadate) the latest vintage with available_at < ts (ts a naive UTC TIMESTAMP); identical to the stagelake vintage <view>_as_of macro with keys (cik, datadate) and order (available_at, accession). <root> = the alpha-panel build root."
+  "asof_note": "fundq_asof(ts) / funda_asof(ts): per (cik, datadate) the latest vintage with available_at < ts (ts a naive UTC TIMESTAMP); identical to the stagelake vintage <view>_as_of macro with keys (cik, datadate) and order (available_at, accession). <root> = the alpha-panel build root.",
+  "vintage_identity": [
+    "cik",
+    "datadate",
+    "accession",
+    "available_at"
+  ]
 }

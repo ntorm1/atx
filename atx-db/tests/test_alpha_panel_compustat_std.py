@@ -292,9 +292,11 @@ def test_cutoff_rebuild_equals_published_asof_rows(monkeypatch, tmp_path):
     reb = con.execute(f"SELECT * FROM q_out {cs.ORDER}").fetchall()
     pub = con.execute(f"SELECT * FROM read_parquet('{(out / 'fundq.parquet').as_posix()}') "
                       f"WHERE available_at < TIMESTAMP '2021-08-15' {cs.ORDER}").fetchall()
-    assert len(pub) == 4 and reb == pub
+    assert len(pub) == 5 and reb == pub
     v = [r for r in pub if r[0] == 11 and r[1] == D(2021, 3, 31)]
-    assert len(v) == 2                                             # Q1 first vintage + restatement vintage
+    assert len(v) == 3  # base + sale restatement + delayed same-accession CFO snapshot
+    assert con.execute("SELECT saleq, oancfy FROM q_out WHERE datadate=DATE '2021-03-31' "
+                       "ORDER BY available_at").fetchall() == [(50.0, 7.0), (55.0, 7.0), (55.0, 9.0)]
     con.close()
 
 
@@ -500,4 +502,43 @@ def test_rdq_gate_modeled_filing_clock_uses_filed_date(monkeypatch, tmp_path):
     cs.coverage_gate(con, tmp_path / 'cstd')
     r = cs.rdq_gate(con, tmp_path / 'cstd', tmp_path / 'earn_x')['by_year']['2021']
     assert r['rdq_8k_same_date'] == 0.0  # conservative modeled clock is not an acceptance date
+    con.close()
+
+
+@pytest.mark.parametrize('annual', [False, True])
+@pytest.mark.parametrize('same_accession', [False, True])
+def test_delayed_component_clock_snapshots(monkeypatch, tmp_path, annual, same_accession):
+    w = World(tmp_path)
+    pe = D(2020, 12, 31) if annual else D(2021, 3, 31)
+    t0, t1, t2 = T(2021, 5, 1), T(2021, 8, 1), T(2021, 8, 2)
+    w.ev(61, 'q1', t0, pe, 'FY' if annual else 'Q1', '10-K' if annual else '10-Q',
+         sale_q=100.0, sale_ttm=400.0, **{'at': 1000.0})
+    w.ev(61, 'q2', t1, D(2021, 6, 30), 'Q2')
+    for item, value in [('sale_q', 100.0), ('at', 1000.0)]:
+        w.hist(61, item, pe, value, t0, accn='q1')
+    acc = 'q1' if same_accession else 'q2'
+    w.hist(61, 'sale_q', pe, 90.0, t1, accn=acc)
+    w.hist(61, 'at', pe, 1010.0, t2, accn=acc)
+    _build(monkeypatch, w)
+    out = tmp_path / 'cstd'
+    con = C.connect(memory='200MB', threads=1)
+    for sql in cs.macros_sql(out):
+        con.execute(sql)
+    rows = con.execute(f"SELECT accession,available_at,saleq,atq FROM read_parquet('{(out/'fundq.parquet').as_posix()}') "
+                       "WHERE datadate=? ORDER BY available_at", [pe]).fetchall()
+    assert rows == [('q1', t0, 100.0, 1000.0), (acc, t1, 90.0, 1000.0), (acc, t2, 90.0, 1010.0)]
+    for cut, expected in [(t1, (100.0, 1000.0)), (t1+dt.timedelta(seconds=1), (90.0, 1000.0)),
+                          (t2, (90.0, 1000.0)), (t2+dt.timedelta(seconds=1), (90.0, 1010.0))]:
+        assert con.execute('SELECT saleq,atq FROM fundq_asof(?) WHERE datadate=?', [cut,pe]).fetchall() == [expected]
+        cs.derive_subset(con, cs.Inputs(tmp_path/'fund_x',tmp_path/'earn_x',None,[],D(2027,10,2)), 'cik=61', cut)
+        for table, tmp in [('fundq','q_out'), ('funda','a_out')]:
+            pub=con.execute(f"SELECT * FROM read_parquet('{(out/(table+'.parquet')).as_posix()}') "
+                            f"WHERE available_at<? {cs.ORDER}", [cut]).fetchall()
+            reb=con.execute(f'SELECT * FROM {tmp} {cs.ORDER}').fetchall()
+            assert reb == pub
+            assert con.execute(f'SELECT count(*) FROM (SELECT cik,datadate,accession,available_at FROM {tmp} '
+                               'GROUP BY ALL HAVING count(*)>1)').fetchone()[0] == 0
+        if annual:
+            assert con.execute('SELECT sale,"at" FROM funda_asof(?) WHERE datadate=?', [cut,pe]).fetchall() == [
+                (400.0 if cut<=t1 else 390.0, expected[1])]
     con.close()
