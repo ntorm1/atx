@@ -41,6 +41,7 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/data/research_window.hpp"
 #include "atx/engine/research/eval/paired.hpp"
+#include "atx/engine/research/ledger/ledger_file.hpp"
 
 namespace atx::engine::research::eval {
 
@@ -87,6 +88,9 @@ struct EvalRequest {
   std::vector<LabeledPath> pbo_series;     // default: the cells
   usize pbo_blocks{16U};
   std::optional<std::string> ledger;
+  // An absent ledger reads as empty (ledger_read) or is refused (dsr_total.read_ledger).
+  atx::engine::research::ledger::MissingLedger ledger_missing{
+      atx::engine::research::ledger::MissingLedger::Empty};
   std::string window_id{std::string(atx::engine::data::kResearchWindowId)};
   std::vector<LabeledPath> trials;         // label -> trial_id
   std::vector<std::string> history;        // labels scored as history reads (Ruling E-41)

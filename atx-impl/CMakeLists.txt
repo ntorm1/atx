@@ -221,3 +221,6 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
+# P9 lane B2 (cross-lane append): the IC stage's trial ledger moved down to atx-engine-research-ledger;
+# src/trial_ledger.{hpp,cpp} re-export it, so atx-impl-core links the library.
+target_link_libraries(atx-impl-core PUBLIC atx::engine-research-ledger)
