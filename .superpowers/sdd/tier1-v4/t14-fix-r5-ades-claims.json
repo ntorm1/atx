@@ -1,0 +1,46 @@
+[
+  {
+    "declared_count": 2,
+    "members": [],
+    "quality": "unmapped_reportable_list",
+    "start_offset": 553042,
+    "end_offset": 553269,
+    "text": "As of December 31, 2020, we have two reportable segments, RC and APT.",
+    "list_items": [],
+    "list_clause": ", RC and APT",
+    "qualifier_scope": "Business Segments As of December 31, 2020, we have two reportable segments, RC and APT.",
+    "contributing_blocks": [
+      {
+        "start_offset": 553042,
+        "end_offset": 553269
+      }
+    ],
+    "reporting_period": "2020-12-31",
+    "certified": false
+  },
+  {
+    "declared_count": 2,
+    "members": [
+      "AdvancedPurificationTechnologies",
+      "RefinedCoal"
+    ],
+    "quality": "explicit_named_reportable_list",
+    "start_offset": 2432489,
+    "end_offset": 2433283,
+    "text": "As of December 31, 2020, the Company has two reportable segments: (1) Refined Coal (\"RC\"); and (2) Advanced Purification Technologies (\"APT\").",
+    "list_items": [
+      "Refined Coal",
+      "Advanced Purification Technologies"
+    ],
+    "list_clause": ": (1) Refined Coal (\"RC\"); and (2) Advanced Purification Technologies (\"APT\")",
+    "qualifier_scope": "ial performance. As of December 31, 2020, the Company's CODM was the Company's CEO. The Company's operating and reportable segments are organized by products and services provided. As of December 31, 2020, the Company has two reportable segments: (1) Refined Coal (\"RC\"); and (2) Advanced Purification Technologies (\"APT\").",
+    "contributing_blocks": [
+      {
+        "start_offset": 2432489,
+        "end_offset": 2433283
+      }
+    ],
+    "reporting_period": "2020-12-31",
+    "certified": false
+  }
+]

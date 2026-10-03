@@ -86,7 +86,7 @@
                         "keys":  [
                                      "adsh"
                                  ],
-                        "doc":  "one row per periodic filing: current-period notes items (debt maturities, leases, pension, SBC, tax, impairments), filer currency, as filed"
+                        "doc":  "One row per periodic filing, current-period notes in filer currency. Legacy namespace ambiguity affects 6 distinct-value tax_dtl source choices; goodwill duplicate values agree. See Task14 Fix5 collision evidence. Segment features/gates unaffected."
                     },
                     {
                         "view":  "fundamentals_notes_items",
@@ -103,7 +103,7 @@
                                      "uom",
                                      "coreg"
                                  ],
-                        "doc":  "long table of every registry-tag fact (notes items, segment metrics and totals, major-customer revenue), as filed, one per fact key (lowest iprx)"
+                        "doc":  "Long registry-tag facts as filed; advertised keys are NOT currently unique: 36 legacy US-GAAP/IFRS local-name/version collisions (72 rows). Extraction dedups by taxonomy version but public items omit it; namespace triage required before registration."
                     },
                     {
                         "view":  "fundamentals_notes_segment_census",
@@ -135,6 +135,9 @@
     "registered":  "NOT registered: Task 17 folds this stub into stagelake",
     "coverage":  "fundamentals_notes/coverage.json: corrected month-end panels, all-tag census proxy denominator, uncertified revenue gate, verified reconciliation gate",
     "verification":  {
+                         "public_item_key_unique": false,
+                         "public_item_key_collision_groups": 36,
+                         "whole_stage_integrity": "FAIL: long-item keys collide across omitted US-GAAP/IFRS namespace/version; 6 current tax_dtl wide source choices are ambiguous; goodwill duplicates agree in value. Derived public table keys are unique, segment features/revenue gates unaffected. Controller/Task17 triage required.",
                          "denominator_certified":  false,
                          "arithmetic_candidates":  "diagnostic only",
                          "monthly_coverage_cutoff":  "month-end session 22:00 UTC",

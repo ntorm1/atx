@@ -1,0 +1,530 @@
+[
+  {
+    "adsh": "0000950170-23-004361",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/916076/000095017023004361/mlm-20221231.htm",
+      "bytes": 8284893,
+      "sha256": "213017d672c48f545f72b1dc979ddb603ccf33b76caf5e4d0dd8504f56060127",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T16:57:36.768+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0000950170-23-004361",
+      "path": "0000950170-23-004361/primary-213017d672c48f545f72b1dc979ddb603ccf33b76caf5e4d0dd8504f56060127.gz"
+    },
+    "compressed_sha256": "224f7d80e0e70fed11d56ba9dba2a9bc31449d005a01158727210e85d977d61b",
+    "primary_sha256": "213017d672c48f545f72b1dc979ddb603ccf33b76caf5e4d0dd8504f56060127",
+    "selected_members": [
+      "BuildingMaterialsBusinessEastGroup",
+      "BuildingMaterialsBusinessWestGroup",
+      "MagnesiaSpecialties"
+    ],
+    "citations": [
+      {
+        "start_offset": 369078,
+        "end_offset": 376160,
+        "visible_text": "Part I \u2666 Item 1 \u2013 Business Business Segment Information The Company conducts its Building Materials business through two reportable segments, organized by geography: East Group and West Group. The East Group provides aggregates and asphalt products. The West Group provides aggregates, cement, downstream products and paving services. The ten largest revenue-generating states accounted for 83% of the Building Materials business' total revenues in 2022: Texas, Colorado, North Carolina, Minnesota, California, Georgia, Arizona, Iowa, Florida and Indiana. The Company\u2019s Magnesia Specialties business is reported as a separate segment, which includes its magnesia-based chemicals and dolomitic lime businesses. For more information on the organization and geographic area of the Company\u2019s business segments, see \u201cNote A: Accounting Policies\u201d and \u201cNote P: Segments\u201d of the \u201cNotes to Financial Statements\u201d of the Company\u2019s consolidated financial statements, which appear in Item 8, \u201cFinancial Statements and Supplementary Data,\u201d of this Annual Report on Form 10-K (this Form 10-K), which information is incorporated by reference. Building Materials Business The profitability of the Building Materials business, which serves customers in the construction marketplace, is sensitive to national, regional and local economic conditions and construction cyclicality, which are in turn affected by fluctuations in levels of public-sector infrastructure funding; interest rates; access to capital markets; and demographic, geographic, employment and population dynamics. The heavy-side construction business is conducted outdoors, as are much of the Building Materials business\u2019s operations. Therefore, erratic weather patterns, seasonal changes, and other weather-related conditions, including precipitation, flooding, hurricanes, snowstorms, extreme temperatures, wildfires, earthquakes and droughts, can significantly affect production schedules, shipments, costs, efficiencies and profitability. Generally, the financial results for the first and fourth quarters are subject to the impacts of winter weather, while the second and third quarters are subject to the impacts of heavy precipitation. The Building Materials business markets its products primarily to the construction industry, with 35% of its 2022 aggregates shipments sold to contractors in connection with highway and other public infrastructure projects and the balance of its shipments sold primarily to contractors for nonresidential and residential construction projects. The Company believes the business\u2019 mix of public sector-related shipments lessens the impacts of fluctuations in nonresidential and residential, or private-sector, construction spending.",
+        "raw_span_sha256": "0674e4438e537f1b027c5a82de23d2df5a2cd0966012ba2812410df7c34b5170"
+      },
+      {
+        "start_offset": 1119444,
+        "end_offset": 1127747,
+        "visible_text": "Martin Marietta Materials, Inc. (the Company or Martin Marietta) is a natural resource-based building materials company, with 2022 total revenues of $6.16 billion and 2022 net earnings from continuing operations attributable to Martin Marietta of $856.3 million. These results were achieved in part by supplying aggregates (crushed stone, sand and gravel) through its network of approximately 350 quarries, mines and distribution yards in 28 states, Canada and The Bahamas. Martin Marietta also provides cement and downstream products, namely ready mixed concrete, asphalt and paving services, in certain markets where the Company has a leading aggregates position. Specifically, the Company has two cement plants in Texas, ready mixed concrete operations in Arizona, California and Texas, and asphalt operations in Arizona, California, Colorado and Minnesota. Paving services are offered in California and Colorado. The Company also has one cement plant, related cement distribution terminals and ready mixed concrete operations in California that are classified as assets held for sale and reported as discontinued operations as of and for the years ended December 31, 2022 and 2021. The Company\u2019s heavy-side building materials are used in infrastructure, nonresidential and residential construction projects. Aggregates are also used in agricultural, utility and environmental applications and as railroad ballast. The aggregates, cement, ready mixed concrete and asphalt and paving product lines are reported collectively as the \u201cBuilding Materials\u201d business. As more fully discussed in the Consolidated Strategic Objectives section, geography is critically important for the Building Materials business. The Company conducts its Building Materials business through two reportable segments, organized by geography: East Group and West Group. The East Group, consisting of the East and Central divisions, provides aggregates and asphalt products. The West Group is comprised of the Southwest and West divisions and provides aggregates, cement, downstream products and paving services. Further, the following five states accounted for 64% of the Building Materials business 2022 total revenues: Texas, Colorado, North Carolina, Minnesota and California. Form 10-K \u2666 Page 35 Part II \u2666 Item 7 \u2013 Management\u2019s Discussion and Analysis of Financial Condition and Results of Operations Magnesia Specialties",
+        "raw_span_sha256": "7e63e2c7f2d727c82e98b568e76ef0111ed841df6341e7fe4d4e0f226dee63c2"
+      },
+      {
+        "start_offset": 2068559,
+        "end_offset": 2075626,
+        "visible_text": "Impairment Review of Goodwill Goodwill is required to be tested annually for impairment. An interim review is performed between annual tests if facts and circumstances indicate a potential impairment. The Company performs its impairment evaluation as of October 1, which represents the annual evaluation date. The impairment review of goodwill is a critical accounting estimate because goodwill represented 24% (excluding goodwill allocated to assets held for sale) of the Company\u2019s total assets at December 31, 2022; the review requires management to apply judgment and make key assumptions; and an impairment charge could be material to the Company\u2019s financial condition and results of operations. Certain operating segments within the Building Materials business meet the aggregation criteria and are consolidated into reportable segments for financial reporting. The Company\u2019s reporting units, which represent the level at which goodwill is tested for impairment, are based on the operating segments of the Building Materials business. Goodwill is assigned to the respective reporting unit(s) based on the location of acquisitions at the time of consummation. If subsequent organizational changes result in operations being transferred to a different reporting unit, a proportionate amount of goodwill is transferred from the former to the new reporting unit. The Southwest Division is the most significant reporting unit and includes $1.8 billion of the Company\u2019s goodwill. There is also $1.1 billion of goodwill in the West Division reporting unit. There is no goodwill related to the Magnesia Specialties business. Goodwill is tested for impairment by comparing the reporting unit\u2019s fair value to its carrying value, which represents a Step-1 analysis. However, prior to Step 1, the Company may perform an optional qualitative assessment, or Step 0. As part of the qualitative assessment, the Company considers, among other things, the following events and circumstances: macroeconomic conditions, industry and market conditions, cost factors, overall financial performance and other business or reporting unit-specific events. If the Company concludes it is more-likely-than-not (i.e., a likelihood of more than 50%) that a reporting unit\u2019s fair value is higher than its carrying value, the Company does not perform any further goodwill impairment testing for that reporting unit. Otherwise, it proceeds to Step 1 of its goodwill impairment analysis. If the reporting unit\u2019s fair value exceeds its carrying value, no further calculation is necessary. A reporting unit with a carrying value in excess of its fair value constitutes a Step-1 failure and results in an impairment charge. When the Company validates its conclusion by measuring fair value, it may resume performing a qualitative assessment for a reporting unit in any subsequent period. The Company may bypass the qualitative assessment for any reporting unit in any period and proceed directly with the quantitative calculation in Step 1. The Company performs a Step-1 analysis for all its reporting units every three years. For the 2022 annual impairment evaluation, the Company performed a Step-1 analysis for all reporting units. The fair values were calculated using a discounted cash flow model. Key assumptions included management\u2019s estimates of changes in average selling price, shipment volumes and production costs as well as assumptions of future profitability, capital requirements, discount rates ranging from 10.0% to 10.25% and a terminal growth rate of 2.5%. The fair value of all reporting units exceeded the carrying value. For sensitivity purposes, a 100-basis-point increase in the discount rate, holding all other assumptions constant, would still result in all units passing the Step-1 analysis. Future profitability and capital requirements are, by their nature, estimates. Price, cost and volume assumptions were based on various factors, including historical averages and current forecasts, external sources, and market conditions, while also considering any production capacity constraints. Capital requirements included maintenance-level needs and known efficiency- and capacity-increasing investments.",
+        "raw_span_sha256": "520aec4f7d6e9cf19bbf71014a6164484c3b668968bdd3373300dcc89e5cd959"
+      },
+      {
+        "start_offset": 3680424,
+        "end_offset": 3693976,
+        "visible_text": "Note A: Accounting Policies Organization. Martin Marietta is a natural resource-based building materials company. The Company supplies aggregates (crushed stone, sand and gravel) through its network of approximately 350 quarries, mines and distribution yards in 28 states, Canada and The Bahamas. Martin Marietta also provides cement and downstream products and services, namely, ready mixed concrete, asphalt and paving, in vertically-integrated structured markets where the Company also has a leading aggregates position. Specifically, the Company has two cement plants and several cement distribution facilities in Texas; ready mixed concrete plants in Arizona and Texas; and asphalt plants in Arizona, California, Colorado and Minnesota. Paving services are located in California and Colorado. In addition, the Company also has one cement plant, related cement distribution terminals and ready mixed concrete operations in California that are classified as assets held for sale and reported as discontinued operations as of and for the years ended December 31, 2022 and 2021. The Company\u2019s heavy-side building materials are used in infrastructure, nonresidential and residential construction projects. Aggregates are also used in agricultural, utility and environmental applications and as railroad ballast. The aggregates, cement, ready mixed concrete and asphalt and paving product lines are reported collectively as the Building Materials business. As of December 31, 2022, the Building Materials business contains the following reportable segments: East Group and West Group. The East Group consists of the East and Central divisions and operates in Alabama, Florida, Georgia, Indiana, Iowa, Kansas, Kentucky, Maryland, Minnesota, Missouri, Nebraska, North Carolina, Ohio, Pennsylvania, South Carolina, Tennessee, Virginia, West Virginia, Nova Scotia and The Bahamas. The West Group is comprised of the Southwest and West divisions and operates in Arizona, Arkansas, California, Colorado, Louisiana, Oklahoma, Texas, Utah, Washington and Wyoming. The following states accounted for 64% of the Building Materials business\u2019 2022 total revenues: Texas, Colorado, North Carolina, Minnesota and California. The Company also operates a Magnesia Specialties business, which produces magnesia-based chemical products used in industrial, agricultural and environmental applications, and dolomitic lime sold primarily to customers for steel production and soil stabilization. Magnesia Specialties\u2019 production facilities are located in Ohio and Michigan, and products are shipped to customers domestically and worldwide. Basis of Presentation and Use of Estimates. The Company\u2019s consolidated financial statements are presented in conformity with accounting principles generally accepted in the United States, which require management to make certain estimates and assumptions about future events. These estimates and the underlying assumptions affect the amounts of assets and liabilities reported, disclosures about contingent assets and liabilities and reported amounts of revenues and expenses. Such estimates include the valuation of investments, accounts receivable, inventories, goodwill, other intangible assets and other long-lived assets, as well as assumptions used in the calculation of income tax expense, retirement and postemployment benefits, stock-based compensation, the allocation of the purchase price to the fair values of assets acquired and liabilities assumed as part of business combinations and revenue recognition for service contracts. These estimates and assumptions are based on management\u2019s judgment. Management evaluates estimates and assumptions on an ongoing basis using historical experience and other factors, including the current economic environment, and adjusts such estimates and assumptions when facts and circumstances dictate. Changes in credit, equity and energy markets and changes in construction activity increase the uncertainty inherent in certain estimates and assumptions. As future events and their effects cannot be determined with precision, actual results could differ significantly from estimates. Changes in estimates, including those resulting from changes in the economic environment, are reflected in the consolidated financial statements for the period in which the change in estimate occurs. Basis of Consolidation. The consolidated financial statements include the accounts of the Company and its wholly-owned and majority-owned subsidiaries. Partially-owned affiliates are either consolidated or accounted for using the cost method or the equity method, depending on the level of ownership interest or the Company\u2019s ability to exercise control over the affiliates\u2019 operations. Intercompany balances and transactions between subsidiaries have been eliminated in consolidation.",
+        "raw_span_sha256": "07559dfee603b9c312233ccf78704aec170362a06fcf75ec06031300e32fbac3"
+      },
+      {
+        "start_offset": 7182828,
+        "end_offset": 7194792,
+        "visible_text": "Employees. Approximately 13% of the Company\u2019s employees are represented by a labor union. All such employees are hourly employees. The Company maintains collective bargaining agreements relating to the union employees within the Building Materials business and Magnesia Specialties segment. All of the hourly employees of the Magnesia Specialties segment, located in Manistee, Michigan, and Woodville, Ohio, are represented by labor unions. The Woodville collective bargaining agreement expires in June 2026. The Manistee collective bargaining agreement expires in August 2027. Note P: Segments As of December 31, 2022, the Building Materials business is comprised of four divisions that represent individual operating segments. These operating segments are consolidated into two reportable segments, the East Group and the West Group, for financial reporting purposes as they meet the aggregation criteria. The Magnesia Specialties business represents an individual operating and reportable segment. The accounting policies used for segment reporting are the same as those described in Note A. Form 10-K \u2666 Page 108 Part II \u2666 Item 8 \u2013 Financial Statements and Supplementary Data The Chief Operating Decision Maker\u2019s evaluation of performance and allocation of resources are based primarily on earnings from operations. Consolidated earnings from operations include total revenues less cost of revenues; selling, general and administrative expenses; acquisition and integration expenses; other operating income and expenses, net; and exclude interest expense; other nonoperating income and expenses, net; and income tax expense. Corporate loss from operations primarily includes depreciation; expenses for corporate administrative functions; acquisition and integration expenses; and other nonrecurring income and expenses not attributable to operations of the Company's other operating segments. All long-term debt and related interest expense are held at Corporate.",
+        "raw_span_sha256": "1cc07ace9549d919c60dc773c27461b38bc6d03db839ddd5de5d1e0d28e9dabf"
+      }
+    ]
+  },
+  {
+    "adsh": "0001558370-25-001617",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/866829/000155837025001617/hlx-20241231x10k.htm",
+      "bytes": 3503678,
+      "sha256": "5d139e8b95301bc2d3c4586ffb438868a1b84ba1ebb6ec6503c136bd5e309d44",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T16:57:32.831+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0001558370-25-001617",
+      "path": "0001558370-25-001617/primary-5d139e8b95301bc2d3c4586ffb438868a1b84ba1ebb6ec6503c136bd5e309d44.gz"
+    },
+    "compressed_sha256": "eff9abde42201bf001ff2dbf34e8178f2cb1f9dd8029fede5e58071b9ff2c010",
+    "primary_sha256": "5d139e8b95301bc2d3c4586ffb438868a1b84ba1ebb6ec6503c136bd5e309d44",
+    "selected_members": [
+      "ProductionFacilities",
+      "Robotics",
+      "ShallowWaterAbandonment",
+      "WellIntervention"
+    ],
+    "citations": [
+      {
+        "start_offset": 2791600,
+        "end_offset": 2796483,
+        "visible_text": "\u200b Note 14 \u2014 Business Segment Information We have four reportable business segments: Well Intervention, Robotics, Shallow Water Abandonment and Production Facilities. Our U.S., U.K. and Brazil Well Intervention operating segments are aggregated into the Well Intervention segment for financial reporting purposes. These reportable segments are strategic business units that utilize different mix of vessels and/or equipment to perform different types of services. We formed the Shallow Water Abandonment segment in the third quarter 2022 following the Alliance acquisition (Note 3). All material intercompany transactions between the segments have been eliminated. See Note 1 for more information on our business segments. Our chief operating decision maker (\u201cCODM\u201d) is the chief operating officer. The CODM uses segment operating income or loss as the measure of segment profit or loss to evaluate segment performance by comparing the results of each segment with its annual budgeted amounts and monthly forecasts as well as the results of other segments. The CODM also uses segment operating income or loss to allocate company resources (including employees, property, and financial resources) to each segment. Information about our segment revenues and our measure of segment profit or loss is shown as follows (in thousands): \u200b \u200b",
+        "raw_span_sha256": "045c9544d3d101f2adee369299f627a5dd300348b49d4f4d852a823b08516522"
+      }
+    ]
+  },
+  {
+    "adsh": "0001558370-25-001102",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/795403/000155837025001102/wts-20241231x10k.htm",
+      "bytes": 4340224,
+      "sha256": "6506263989373cd6466617f2da12de34f825338647aa3f833e3ccd7da79644a2",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T16:58:41.021+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0001558370-25-001102",
+      "path": "0001558370-25-001102/primary-6506263989373cd6466617f2da12de34f825338647aa3f833e3ccd7da79644a2.gz"
+    },
+    "compressed_sha256": "93201f9d5d945884b6e2d015ce9e37f2e1c32c62c829743fa5bfca1530e2f8b6",
+    "primary_sha256": "6506263989373cd6466617f2da12de34f825338647aa3f833e3ccd7da79644a2",
+    "selected_members": [
+      "AmericasSegment",
+      "AsiaPacificMiddleEastAndAfricaSegment",
+      "EuropeSegment"
+    ],
+    "citations": [
+      {
+        "start_offset": 3719068,
+        "end_offset": 3721991,
+        "visible_text": "(18) Segment Information \u200b The Company adopted ASU 2023-07 \"Segment Reporting (Topic 280): Improvements to Reportable Segment Disclosures\u201d for its annual reporting beginning January 1, 2024. The Company discloses segment information on the same basis that the Chief Executive Officer, the Company\u2019s chief operating decision-maker (\u201cCODM\u201d), manages the segments, evaluates financial results and makes key operating decisions to allocate investments and resources. The Company operates in three geographic and reportable segments: Americas, Europe, and APMEA. Each of these segments sells similar products and solutions and has separate financial results that are reviewed by the CODM. Each segment earns revenue and income almost exclusively from the sale of the Company\u2019s products. The Company sells its products into various end markets around the world with sales by region based upon location of the entity recording the sale. See Note 4 for further detail on sales by region of the product categories. The accounting policies for each segment are the same as those described in Note 2 of the Notes to Consolidated Financial Statements. \u200b In the fourth quarter of 2024, the Company\u2019s segment performance measure was changed to segment earnings as this is the performance measure used by the CODM in assessing segment performance and deciding how to allocate resources. Prior to the fourth quarter of 2024, the Company\u2019s segment performance measure was operating income (loss). Segment earnings excludes the impact of special items defined as non-recurring, and unusual items such as restructuring costs, acquisition-related costs, gain or loss on sale of assets, pension settlements and contingent consideration adjustments. The CODM uses segment earnings for insight into underlying trends comparing past financial performance with current performance by reporting segment on a consistent basis. \u200b",
+        "raw_span_sha256": "88b4883c18d6b348296409c4132c1674d6f5788a09fc47a0c3d63cbc12e25d5d"
+      }
+    ]
+  },
+  {
+    "adsh": "0001558370-25-001888",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/1167419/000155837025001888/riot-20241231x10k.htm",
+      "bytes": 3716326,
+      "sha256": "3133bdff9589402322059c6d077dc369507b4af4d0db087d632af7c3d1f0239e",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T16:59:58.579+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0001558370-25-001888",
+      "path": "0001558370-25-001888/primary-3133bdff9589402322059c6d077dc369507b4af4d0db087d632af7c3d1f0239e.gz"
+    },
+    "compressed_sha256": "9640182494d508a2dd4d07eee1c7299c608955ecea5f93b4cdeb0605e6381c0a",
+    "primary_sha256": "3133bdff9589402322059c6d077dc369507b4af4d0db087d632af7c3d1f0239e",
+    "selected_members": [
+      "BitcoinMiningSegment",
+      "EngineeringSegment"
+    ],
+    "citations": [
+      {
+        "start_offset": 832385,
+        "end_offset": 834281,
+        "visible_text": "Data Center Hosting \u200b In 2023, we made the decision to stop pursuing new hosting contracts and end our legacy contracts, to focus on our self-mining efforts. During the year ended December 31, 2024, all agreements with Data Center Hosting customers were terminated, and we have no plans to offer data center hosting services to new customers. We no longer report Data Center Hosting as a separate reportable segment. \u200b Engineering Our Engineering business designs and manufactures power distribution equipment and custom engineered electrical products. The products allow us to vertically-integrate many critical electrical components and engineering services necessary for our site developments and to reduce our execution and counter-party risk in ongoing and future expansion projects. The specialized talent employed in our Engineering business allows us the opportunity to explore new methods to optimize and develop best-in-class Bitcoin Mining operations and have been instrumental in the development of our industrial-scale immersion-cooled Bitcoin mining hardware.",
+        "raw_span_sha256": "3c5c27b329608338b54c0f1c205777626bc80200dbd97051776535bc715fdbe0"
+      },
+      {
+        "start_offset": 1936422,
+        "end_offset": 1939867,
+        "visible_text": "For the Company\u2019s operating leases, fixed lease payments are recognized as lease expense on a straight-line basis over the lease term. For leases with a term of 12 months or less, any fixed lease payments are recognized on a straight-line basis over the lease term and are not recognized on the Consolidated Balance Sheets as an accounting policy election. Leases qualifying for the short-term lease exception were insignificant. Variable lease costs are recognized as incurred and primarily consist of common area maintenance and utility charges not included in the measurement of right of use assets and operating lease liabilities. Operating segments Operating segments are defined as components of an entity for which discrete financial information is available that is regularly reviewed by the chief operating decision maker (\u201cCODM\u201d), which is comprised of several members of its executive management team, including the CEO, Executive Chairman, EVO-CFO, EVP-Head of Corporate Development & Strategy, and COO. The CODM uses segment gross profit (loss) to assess the performance of, manage the operations of, and allocate capital and operational resources to the Company\u2019s two reportable segments. Change in Reportable Segments Previously, the Company operated in three reportable business segments: Bitcoin Mining, Data Center Hosting, and Engineering. As of January 1, 2024, the Company has terminated all contracts with its legacy data center hosting customers and made the strategic decision to no longer offer data center hosting services to customers. Commencing with the three months ended March 31, 2024, the F-15",
+        "raw_span_sha256": "a05ca52af6329ab91e7c33c9fe5aebb7b9bef24d4eb594ff3509550ea7b2e215"
+      },
+      {
+        "start_offset": 1937436,
+        "end_offset": 1940371,
+        "visible_text": "Operating segments Operating segments are defined as components of an entity for which discrete financial information is available that is regularly reviewed by the chief operating decision maker (\u201cCODM\u201d), which is comprised of several members of its executive management team, including the CEO, Executive Chairman, EVO-CFO, EVP-Head of Corporate Development & Strategy, and COO. The CODM uses segment gross profit (loss) to assess the performance of, manage the operations of, and allocate capital and operational resources to the Company\u2019s two reportable segments. Change in Reportable Segments Previously, the Company operated in three reportable business segments: Bitcoin Mining, Data Center Hosting, and Engineering. As of January 1, 2024, the Company has terminated all contracts with its legacy data center hosting customers and made the strategic decision to no longer offer data center hosting services to customers. Commencing with the three months ended March 31, 2024, the F-15 Table of Contents",
+        "raw_span_sha256": "5045e93372c1786f5f21ae8e1f2c115d9232c9ef03ef36261f0e83344429b6fb"
+      },
+      {
+        "start_offset": 1940375,
+        "end_offset": 1943605,
+        "visible_text": "Riot Platforms, Inc. Notes to Consolidated Financial Statements Data Center Hosting Segment no longer met the quantitative requirements as a reportable segment, and the CODM ceased analyzing the performance of the Company\u2019s legacy data center hosting operations. As such, the Data Center Hosting Segment has been eliminated as a separate reportable segment. Bitcoin Mining and Engineering are the Company\u2019s two remaining reportable business segments. See Note 20. Segment Information for more information. Income taxes The Company accounts for income taxes under the asset and liability method, in which deferred tax assets and liabilities are recognized for the future tax consequences attributable to differences between the financial statement carrying amounts of existing assets and liabilities and their respective tax bases and operating loss and tax credit carry forwards. Deferred tax assets and liabilities are measured using enacted tax rates expected to apply to taxable income in the years in which those temporary differences are expected to be recovered or settled. The effect on deferred tax assets and liabilities of a change in tax rates is recognized in operations in the period that includes the enactment date. A valuation allowance is required to the extent any deferred tax assets may not be realizable. Contract balances",
+        "raw_span_sha256": "8ae9ec4d999c4089afe1ecd14aa4120a1ab33177a531609bc3b83cfcecb96c49"
+      },
+      {
+        "start_offset": 1990111,
+        "end_offset": 1994356,
+        "visible_text": "The right of use asset and operating lease liabilities consisted of an operating lease of office and commercial space in Houston, Texas. The lease has annual payments of approximately $0.4 million and a remaining lease term of approximately two years as of acquisition. \u200b Goodwill was attributable to the assembled workforce of experienced personnel at E4A Solutions and synergies expected to be achieved from the combined operations of Riot and E4A Solutions. The goodwill recognized is not expected to be deductible for tax purposes. We assigned the goodwill to our Engineering reportable segment. The operating results of E4A Solutions have been included in the Company\u2019s Consolidated Statements of Operations since the acquisition date. Through December 31, 2024, the Company recognized approximately $2.7 million of acquisition-related costs related to this acquisition that were expensed as incurred. From the acquisition date through December 31, 2024, E4A Solution\u2019s total revenue and net income was approximately $0.8 million and less than $0.1 million, respectively. \u200b",
+        "raw_span_sha256": "f21b0a0515bad5c51919054260c09caa484369ca2ed827e6cce6fc40f92738d0"
+      },
+      {
+        "start_offset": 2024553,
+        "end_offset": 2030685,
+        "visible_text": "The right of use asset and operating lease liabilities consisted of an operating lease of a data center in Calvert City, Kentucky. The lease has annual payments of approximately $1.4 million and a remaining lease term of approximately 3.0 years as of acquisition. The assumed debt consisted of a $5.0 million secured loan and a $5.7 million note payable. The secured loan was paid off on the date of acquisition. The note payable carries a fixed rate of 8.81%, and matures in December 2035, with annual principal and accrued interest payments beginning on December 31, 2024. The fair value of the debt at acquisition of $5.7 million was determined to equal its carrying value due at acquisition, as the interest rate is reasonably consistent with rates the Company would expect to incur for similar debt instruments. Goodwill was attributable to the assembled workforce of experienced personnel at Block Mining and synergies expected to be achieved from the combined operations of Riot and Block Mining. The goodwill recognized is not expected to be deductible for tax purposes. We assigned the goodwill to our Bitcoin Mining reportable segment. The operating results of Block Mining have been included in the Company\u2019s Consolidated Statements of Operations since the acquisition date. Through December 31, 2024, the Company recognized $2.8 million of acquisition-related costs related to this acquisition that were expensed as incurred. F-19 Table of Contents",
+        "raw_span_sha256": "cf739a45bc8d9fc4347e642ebb5ef4628912ab3e9899cb09c106c72a61c14a7c"
+      },
+      {
+        "start_offset": 2049009,
+        "end_offset": 2051544,
+        "visible_text": "Note 4. Revenue from Contracts with Customers Disaggregated revenue Revenue disaggregated by reportable segment is presented in See Note 20. Segments Information. Contract balances Contract assets relate to uncompleted Engineering contracts. As of December 31, 2024 and 2023, contract assets were $6.5 million and $15.4 million, respectively. Contract liabilities primarily relate to upfront payments and consideration received from a legacy data center hosting customer and uncompleted Engineering contracts. As of December 31, 2024 and 2023, contract liabilities and deferred revenue were $26.1 million and $22.3 million, respectively.",
+        "raw_span_sha256": "cc7ec8438bd7d4bfdf4ab91d932fb20a04ac353cd4283dad9ca2bd56ce783cce"
+      },
+      {
+        "start_offset": 3152861,
+        "end_offset": 3156461,
+        "visible_text": "\u200b Note 20. Segment Information The Company has two reportable segments: Bitcoin Mining and Engineering. The reportable segments are identified based on the types of service performed. No operating segments have been aggregated to form the reportable segments. Gross profit (loss) is the segment performance measure the CODM uses to assess the Company\u2019s reportable segments, and is before elimination of intersegment profits. Prior to 2024, the Company had a Data Center Hosting reportable segment but has since terminated all contracts with its Data Center Hosting customers. Commencing with the three months ended March 31, 2024, the CODM ceased analyzing the performance of the Data Center Hosting operations and the Company ceased reporting Data Center Hosting as a separate reportable business segment. The Company has no plans to offer data center hosting services to new customers. All residual revenue and costs of revenue related to Data Center Hosting incurred during the year ended December 31, 2024, are included in Revenue: Other and Cost of Revenue: Other. Prior period amounts related to Data Center Hosting have been recast into Revenue: Other and Cost of Revenue: Other. Other than the $96.9 million of goodwill from the Block Mining Acquisition allocated to the Bitcoin Mining segment, and $25.0 million of goodwill from the E4A Solutions Acquisition allocated to the Engineering segment, the Company does not allocate assets",
+        "raw_span_sha256": "0ed8249b0cf3c9f3abd69660ed32ae989e7a8fc434888fbb8eee55d905c8dbe3"
+      },
+      {
+        "start_offset": 3153259,
+        "end_offset": 3156764,
+        "visible_text": "Note 20. Segment Information The Company has two reportable segments: Bitcoin Mining and Engineering. The reportable segments are identified based on the types of service performed. No operating segments have been aggregated to form the reportable segments. Gross profit (loss) is the segment performance measure the CODM uses to assess the Company\u2019s reportable segments, and is before elimination of intersegment profits. Prior to 2024, the Company had a Data Center Hosting reportable segment but has since terminated all contracts with its Data Center Hosting customers. Commencing with the three months ended March 31, 2024, the CODM ceased analyzing the performance of the Data Center Hosting operations and the Company ceased reporting Data Center Hosting as a separate reportable business segment. The Company has no plans to offer data center hosting services to new customers. All residual revenue and costs of revenue related to Data Center Hosting incurred during the year ended December 31, 2024, are included in Revenue: Other and Cost of Revenue: Other. Prior period amounts related to Data Center Hosting have been recast into Revenue: Other and Cost of Revenue: Other. Other than the $96.9 million of goodwill from the Block Mining Acquisition allocated to the Bitcoin Mining segment, and $25.0 million of goodwill from the E4A Solutions Acquisition allocated to the Engineering segment, the Company does not allocate assets F-46",
+        "raw_span_sha256": "023b9216aac6ffe508f98a5f78dfd90dcb44ed96bd6aad40f0b54b60abe2724a"
+      },
+      {
+        "start_offset": 3153410,
+        "end_offset": 3157268,
+        "visible_text": "The Company has two reportable segments: Bitcoin Mining and Engineering. The reportable segments are identified based on the types of service performed. No operating segments have been aggregated to form the reportable segments. Gross profit (loss) is the segment performance measure the CODM uses to assess the Company\u2019s reportable segments, and is before elimination of intersegment profits. Prior to 2024, the Company had a Data Center Hosting reportable segment but has since terminated all contracts with its Data Center Hosting customers. Commencing with the three months ended March 31, 2024, the CODM ceased analyzing the performance of the Data Center Hosting operations and the Company ceased reporting Data Center Hosting as a separate reportable business segment. The Company has no plans to offer data center hosting services to new customers. All residual revenue and costs of revenue related to Data Center Hosting incurred during the year ended December 31, 2024, are included in Revenue: Other and Cost of Revenue: Other. Prior period amounts related to Data Center Hosting have been recast into Revenue: Other and Cost of Revenue: Other. Other than the $96.9 million of goodwill from the Block Mining Acquisition allocated to the Bitcoin Mining segment, and $25.0 million of goodwill from the E4A Solutions Acquisition allocated to the Engineering segment, the Company does not allocate assets F-46 Table of Contents",
+        "raw_span_sha256": "ca90b751432a0f3ffaab24d43130f35bd1fccdeab78e0385906d233b1420f3b5"
+      },
+      {
+        "start_offset": 3343401,
+        "end_offset": 3347128,
+        "visible_text": "\u200b (a)Other revenue is primarily attributable to Data Center Hosting revenue and is therefore not included in the total for segment gross profit (loss). (b)For each reportable segment, the other segment items category primarily consists of: Bitcoin Mining \u2013 Bitcoin miner and network repair and maintenance costs. Engineering \u2013 Manufacturing overhead costs. \u200b",
+        "raw_span_sha256": "38fd4a2236613ba7c424910d17ad0501390b072e04bc80d9cd12bbff256049c8"
+      }
+    ]
+  },
+  {
+    "adsh": "0001628280-25-015336",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/1753162/000162828025015336/fthm-20241231.htm",
+      "bytes": 1651249,
+      "sha256": "20df588d2dacd6fa7be0dfcd71be70a8bf5a19f3a7e6f925b1964c16e95c52a7",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T17:00:15.977+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0001628280-25-015336",
+      "path": "0001628280-25-015336/primary-20df588d2dacd6fa7be0dfcd71be70a8bf5a19f3a7e6f925b1964c16e95c52a7.gz"
+    },
+    "compressed_sha256": "98fec4110dd778829df83978e11ea65aea4ae7e592757c2755a65139e4e7e3a5",
+    "primary_sha256": "20df588d2dacd6fa7be0dfcd71be70a8bf5a19f3a7e6f925b1964c16e95c52a7",
+    "selected_members": [
+      "MortgageSegment",
+      "RealEstateBrokerage",
+      "Technology"
+    ],
+    "citations": [
+      {
+        "start_offset": 523171,
+        "end_offset": 525643,
+        "visible_text": "Agent Equity Ownership Beginning January 1, 2023, agents have been primarily able to earn stock grants in the form of stock units based on agent referral metrics achieved. These stock grants typically are granted quarterly and vest in two years. Reportable Segments Our CEO, who is our Chief Operating Decision Maker (\"CODM\"), makes operating decisions and assesses performance based on the services of identified operating segments and has identified three operating and reportable segments: Real Estate Brokerage; Mortgage; and Technology. Through its Real Estate Brokerage segment, the Company provides real estate brokerage services. Through its Mortgage segment, the Company provides residential loan origination and underwriting services. Through its Technology segment, the Company provides SaaS solutions and data mining for third party customers and continues to develop its intelliAgent platform for current use by the Company\u2019s real estate agents. The CODM reviews revenue and adjusted EBITDA to evaluate financial performance of the reportable segments and to allocate resources. Adjusted EBITDA represents the revenues of the operating segment less operating expenses directly attributable to the respective operating segment. Adjusted EBITDA is defined by us as net income (loss), excluding other 43",
+        "raw_span_sha256": "7a8790081fc5675bccd33834e84b7d5e86bb9553053afc7bac104eb8152fc8ed"
+      },
+      {
+        "start_offset": 523373,
+        "end_offset": 526098,
+        "visible_text": "Beginning January 1, 2023, agents have been primarily able to earn stock grants in the form of stock units based on agent referral metrics achieved. These stock grants typically are granted quarterly and vest in two years. Reportable Segments Our CEO, who is our Chief Operating Decision Maker (\"CODM\"), makes operating decisions and assesses performance based on the services of identified operating segments and has identified three operating and reportable segments: Real Estate Brokerage; Mortgage; and Technology. Through its Real Estate Brokerage segment, the Company provides real estate brokerage services. Through its Mortgage segment, the Company provides residential loan origination and underwriting services. Through its Technology segment, the Company provides SaaS solutions and data mining for third party customers and continues to develop its intelliAgent platform for current use by the Company\u2019s real estate agents. The CODM reviews revenue and adjusted EBITDA to evaluate financial performance of the reportable segments and to allocate resources. Adjusted EBITDA represents the revenues of the operating segment less operating expenses directly attributable to the respective operating segment. Adjusted EBITDA is defined by us as net income (loss), excluding other 43 Table of Contents",
+        "raw_span_sha256": "7935bda3aeb7bedbddbe4b6c4ff72dbba5c0f2361976ded50e329a9e50f48f51"
+      },
+      {
+        "start_offset": 523774,
+        "end_offset": 526912,
+        "visible_text": "Reportable Segments Our CEO, who is our Chief Operating Decision Maker (\"CODM\"), makes operating decisions and assesses performance based on the services of identified operating segments and has identified three operating and reportable segments: Real Estate Brokerage; Mortgage; and Technology. Through its Real Estate Brokerage segment, the Company provides real estate brokerage services. Through its Mortgage segment, the Company provides residential loan origination and underwriting services. Through its Technology segment, the Company provides SaaS solutions and data mining for third party customers and continues to develop its intelliAgent platform for current use by the Company\u2019s real estate agents. The CODM reviews revenue and adjusted EBITDA to evaluate financial performance of the reportable segments and to allocate resources. Adjusted EBITDA represents the revenues of the operating segment less operating expenses directly attributable to the respective operating segment. Adjusted EBITDA is defined by us as net income (loss), excluding other 43 Table of Contents income and expense, costs related to acquisitions, income taxes, depreciation and amortization, and share-based compensation expense. In particular, the Company believes the exclusion of non-cash share-based compensation expense related to restricted stock awards and stock options and transaction-related costs provides a useful supplemental measure in evaluating the performance of our operations and provides better transparency into our results of operations. The Company\u2019s presentation of Adjusted EBITDA might not be comparable to similar measures used by other companies. See \"NON-GAAP FINANCIAL MEASURE\" below for more information.",
+        "raw_span_sha256": "b1659766a138975e2b39684c5771d83a6e20fca0302d59514a75dab8ca614241"
+      },
+      {
+        "start_offset": 1376268,
+        "end_offset": 1379019,
+        "visible_text": "Note 17. Segment Reporting The Company's Chief Operating Decision Maker (\"CODM\") is the Chief Executive Officer (CEO), who is responsible for evaluating the performance of the Company's operating segments and allocating resources. The Company identifies an operating segment as a component: (i) that engages in business activities from which it may earn revenues and incur expenses; (ii) that has available discrete financial information; and (iii) whose operating results are regularly reviewed by the CODM. The Company does not conduct business outside of the United States and no single customer accounts for more than 10% of total revenue in any reporting period. Our Chief Operating Decision Maker makes operating decisions and assesses performance based on the services of identified operating segments and has identified three operating and reportable segments: Real Estate Brokerage; F-27 Table of Contents FATHOM HOLDINGS INC.",
+        "raw_span_sha256": "990cb4960ca707b96c6fc89ba28ae76c2c2a192d2508a5942f2c6cbff4b02797"
+      },
+      {
+        "start_offset": 1379025,
+        "end_offset": 1382446,
+        "visible_text": "NOTES TO THE CONSOLIDATED FINANCIAL STATEMENTS Mortgage; and Technology. Through its Real Estate Brokerage segment, the Company provides real estate brokerage services. Through its Mortgage segment, the Company provides residential loan origination and underwriting services. Through its Technology segment, the Company provides SaaS solutions and data mining for third party customers and continues to develop its intelliAgent platform for current use by the Company\u2019s real estate agents. The CODM reviews revenue and adjusted EBITDA to evaluate financial performance of the reportable segments and to allocate resources. Adjusted EBITDA represents the revenues of the operating segment less operating expenses directly attributable to the respective operating segment. Adjusted EBITDA is defined by us as net income (loss), excluding other income and expense, costs related to acquisitions, income taxes, depreciation and amortization, and share-based compensation expense. In particular, the Company believes the exclusion of non-cash share-based compensation expense related to restricted stock awards and stock options and transaction-related costs provides a useful supplemental measure in evaluating the performance of our operations and provides better transparency into our results of operations. The Company\u2019s presentation of Adjusted EBITDA might not be comparable to similar measures used by other companies. The Company has determined that the main expenses regularly reviewed by the CODM in assessing segment performance are: \u2022Compensation Expense \u2013 Includes salaries and wages for personnel across the Real Estate Brokerage, Mortgage, Technology, and Corporate and Other Services functions. \u2022Commission Expense \u2013 Includes commissions and related agent payments incurred in connection with revenue-generating transactions, across the Real Estate Brokerage, Mortgage, Technology, and Corporate and Other Services functions.",
+        "raw_span_sha256": "970bd9dc1cd2efa7e242ac62e2d4963d85f4eecc8192a889be5c5dea2974cc9e"
+      },
+      {
+        "start_offset": 1381868,
+        "end_offset": 1384593,
+        "visible_text": "\u2022Commission Expense \u2013 Includes commissions and related agent payments incurred in connection with revenue-generating transactions, across the Real Estate Brokerage, Mortgage, Technology, and Corporate and Other Services functions. These expenses are presented within the segment disclosures below as they represent the most significant cost drivers impacting the Company\u2019s operating segments and are used by management in evaluating performance, allocating resources, and assessing operating efficiency. The Company has updated its segment reporting to include compensation and commission expenses as separate line items for each reportable segment beginning in fiscal year 2024. Prior-period segment disclosures have been reclassified to conform to the current period presentation. The Company does not allocate assets to its operating segments as they are not included in the review performed by the CODM for purposes of assessing segment performance and allocating resources. The balance sheet is managed on a consolidated basis and is not used in the context of segment reporting. F-28 Table of Contents",
+        "raw_span_sha256": "a47e57c72dbc534a08896e8f821c6815879e2c97a3758137003d452853e6f127"
+      },
+      {
+        "start_offset": 1384599,
+        "end_offset": 1391111,
+        "visible_text": "FATHOM HOLDINGS INC. NOTES TO THE CONSOLIDATED FINANCIAL STATEMENTS Key operating data for the reportable segments for the years ended December 31, 2024 and 2023 and are set forth in the tables below (amounts in thousands). The Company has included the results of the acquisitions from the acquisition date. For the Year Ended December 31, 2024 Real Estate BrokerageMortgageTechnologyTotal Revenue$314,741 $10,925 $3,072 $328,738",
+        "raw_span_sha256": "631cbc616bfc345f17363e689d0dc6e4bea265f307f3b348e7ef9f8d26a3c062"
+      }
+    ]
+  },
+  {
+    "adsh": "0001609253-25-000027",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/1609253/000160925325000027/crc-20241231.htm",
+      "bytes": 4016207,
+      "sha256": "527b195df15110807dd991153c789efece5f735dff219fc11bf023b133a506ca",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T16:56:52.747+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0001609253-25-000027",
+      "path": "0001609253-25-000027/primary-527b195df15110807dd991153c789efece5f735dff219fc11bf023b133a506ca.gz"
+    },
+    "compressed_sha256": "5eb437864a444a0efd04965d42518f25969ba1466f7fa0bdf6bad1c49fc46646",
+    "primary_sha256": "527b195df15110807dd991153c789efece5f735dff219fc11bf023b133a506ca",
+    "selected_members": [
+      "CarbonManagementSegment",
+      "OilAndNaturalGasSegment"
+    ],
+    "citations": [
+      {
+        "start_offset": 1938487,
+        "end_offset": 1942460,
+        "visible_text": "Nature of Business We are an independent energy and carbon management company committed to energy transition. We are committed to environmental stewardship while safely providing local, responsibly sourced energy. We are also focused on maximizing the value of our land, mineral ownership, and energy expertise for decarbonization by developing carbon capture and storage (CCS) and other emissions-reducing projects. Our reportable segments include oil and natural gas and carbon management. The oil and gas segment explores for, develops, and produces oil and condensate, natural gas liquids and natural gas. The carbon management segment, which we refer to as Carbon TerraVault, is expected to build, install, operate and maintain CO2 capture equipment, transportation assets and storage facilities. Our carbon management segment includes our investment in the Carbon TerraVault joint venture. See Note 4 Investments and Related Party Transactions and Note 16 Segment Information for additional information. On July 1, 2024, pursuant to the Agreement and Plan of Merger, dated as of February 7, 2024 (the Merger Agreement), we acquired Aera Energy LLC (Aera) in an all-stock transaction (Aera Merger). See Note 2 Aera Merger for transaction details. The effective date of the acquisition was January 1, 2024. Except when the context otherwise requires or where otherwise indicated, all references to \u2018\u2018CRC,\u2019\u2019 the \u2018\u2018Company,\u2019\u2019 \u2018\u2018we,\u2019\u2019 \u2018\u2018us\u2019\u2019 and \u2018\u2018our\u2019\u2019 refer to California Resources Corporation and its consolidated subsidiaries as of the date presented. Basis of Presentation",
+        "raw_span_sha256": "18a065b440a783993ce3611899f63baf6ca12220b23967d12eca6dea1a72fecb"
+      },
+      {
+        "start_offset": 3084118,
+        "end_offset": 3087678,
+        "visible_text": "140 NOTE 16 SEGMENT INFORMATION We conduct our business primarily through two reportable segments: (1) oil and natural gas and (2) carbon management. We identified these segments based on the nature of their activities, the types of products sold and services to be provided. Our oil and natural gas segment explores for, develops, and produces oil and condensate, natural gas liquids and natural gas. Our carbon management segment, that we refer to as Carbon TerraVault, is expected to build, install, operate and maintain CO2 capture equipment, transportation assets and storage facilities. Our oil and natural gas segment and carbon management segment operate exclusively in California. Our chief operating decision maker (CODM) is Francisco Leon, Chief Executive Officer. The CODM uses segment profit or loss to assess the performance of each business, as well as our overall performance, and to make decisions about resources to be allocated to the segment, including capital investments. Intersegment revenues relates to sales of produced natural gas to our Elk Hills power plant. Direct labor-related costs are allocated to our reportable segments based on job function. General and administrative expenses are allocated to a segment if they directly support a segment's activities. We do not allocate income taxes to our segments. We use proportionate consolidation to account for our share of oil and natural gas producing activities. 141",
+        "raw_span_sha256": "69295083f6f0fa4ae2307b2a57c247a3c754c35e943ece266a3d88ff34b920d7"
+      },
+      {
+        "start_offset": 3084974,
+        "end_offset": 3089707,
+        "visible_text": "We conduct our business primarily through two reportable segments: (1) oil and natural gas and (2) carbon management. We identified these segments based on the nature of their activities, the types of products sold and services to be provided. Our oil and natural gas segment explores for, develops, and produces oil and condensate, natural gas liquids and natural gas. Our carbon management segment, that we refer to as Carbon TerraVault, is expected to build, install, operate and maintain CO2 capture equipment, transportation assets and storage facilities. Our oil and natural gas segment and carbon management segment operate exclusively in California. Our chief operating decision maker (CODM) is Francisco Leon, Chief Executive Officer. The CODM uses segment profit or loss to assess the performance of each business, as well as our overall performance, and to make decisions about resources to be allocated to the segment, including capital investments. Intersegment revenues relates to sales of produced natural gas to our Elk Hills power plant. Direct labor-related costs are allocated to our reportable segments based on job function. General and administrative expenses are allocated to a segment if they directly support a segment's activities. We do not allocate income taxes to our segments. We use proportionate consolidation to account for our share of oil and natural gas producing activities. 141 The following tables provide segment profit or loss and reconciliations of segment profit or loss to consolidated income before income taxes for the years ended December 31, 2024, 2023, and 2022. Year ended December 31, 2024",
+        "raw_span_sha256": "9a03372a96effbb226f85426271d923e30204afc2c6c61efed064ca64cada3b8"
+      },
+      {
+        "start_offset": 3089437,
+        "end_offset": 3092302,
+        "visible_text": "Year ended December 31, 2024 Oil and Natural GasCarbon Management Total Reportable Segments Reconciliation of Operating Revenues Total (in millions)",
+        "raw_span_sha256": "52f986f236af612f90774a2bd81f05674e58f5cbf896f9c4618b1f0d8e73faf8"
+      },
+      {
+        "start_offset": 3133273,
+        "end_offset": 3136285,
+        "visible_text": "Year ended December 31, 2024 Oil and Natural GasCarbon Management Total Reportable Segments Reconciliation (Income)/Expense Total (in millions)",
+        "raw_span_sha256": "5da1c7700af2ff258bc19ade1969d6f3723b91a74b1f2659079bcff6040f263f"
+      },
+      {
+        "start_offset": 3188505,
+        "end_offset": 3191370,
+        "visible_text": "Year ended December 31, 2023 Oil and Natural GasCarbon Management Total Reportable Segments Reconciliation of Operating Revenues Total (in millions)",
+        "raw_span_sha256": "89c3b8b6338671e1c20c118ffccfa7008f6047ac37ba3a0e5c918c7eb51d12f2"
+      },
+      {
+        "start_offset": 3226812,
+        "end_offset": 3229672,
+        "visible_text": "Year ended December 31, 2023 Oil and Natural GasCarbon Management Total Reportable Segments Reconciliation (Income)/Expense Total (in millions)",
+        "raw_span_sha256": "965c9fc3abcab7cf209afb0b67b2cecee328e37e97111f02fd32c3a9d0315526"
+      },
+      {
+        "start_offset": 3284699,
+        "end_offset": 3287564,
+        "visible_text": "Year ended December 31, 2022 Oil and Natural GasCarbon Management Total Reportable Segments Reconciliation of Operating Revenues Total (in millions)",
+        "raw_span_sha256": "a69da86cf482390718389fdc51de96b7eaf106e498e7f4fd88fdbbb3345c54e2"
+      },
+      {
+        "start_offset": 3323095,
+        "end_offset": 3325955,
+        "visible_text": "Year ended December 31, 2022 Oil and Natural GasCarbon Management Total Reportable Segments Reconciliation (Income)/Expense Total (in millions)",
+        "raw_span_sha256": "b1c26f23d15dd7ce0b931ab736e0498f9c20d5be3f384be800288adf32ab4f12"
+      }
+    ]
+  },
+  {
+    "adsh": "0001060391-25-000091",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/1060391/000106039125000091/rsg-20241231.htm",
+      "bytes": 3273759,
+      "sha256": "3560da64dd58fd3fd2696e385abf3cd29839bd728cc7e8f6bbf13977c6414588",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T16:57:12.538+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0001060391-25-000091",
+      "path": "0001060391-25-000091/primary-3560da64dd58fd3fd2696e385abf3cd29839bd728cc7e8f6bbf13977c6414588.gz"
+    },
+    "compressed_sha256": "75beffd718871700278afb122cb50730152f4509e4d47c93828f95467baac1c3",
+    "primary_sha256": "3560da64dd58fd3fd2696e385abf3cd29839bd728cc7e8f6bbf13977c6414588",
+    "selected_members": [
+      "Group1Segment",
+      "Group2Segment",
+      "Group3Segment"
+    ],
+    "citations": [
+      {
+        "start_offset": 392686,
+        "end_offset": 396580,
+        "visible_text": "14 Table of Contents adverse effect on us. Federal, state and local laws and regulations vary, but generally govern wastewater or storm water discharges, air emissions, the handling, transportation, treatment, storage and disposal of hazardous and non-hazardous waste and the remediation of contamination associated with the release or threatened release of hazardous substances. These laws and regulations provide governmental authorities with strict powers of enforcement, which include the ability to revoke or decline to renew any of our operating permits, obtain injunctions, or impose fines or penalties in the event of violations, including criminal penalties. The United States EPA and various other federal, state, provincial and local authorities administer these regulations. Regulations with respect to hazardous waste are particularly relevant for our Group 3 reportable segment that provides treatment, recycling and disposal of hazardous waste. In order to comply with these regulations, we must incur substantial capital expenditures relating to our vehicles, landfills, transfer stations, recycling centers and other assets, and in connection with our capping, closure, post-closure and environmental remediation activities. Compliance with existing and future legal and regulatory requirements, including changes relating to per- and polyfluoroalkyl substances (commonly referred to as PFAS) and other chemicals of emerging concern, and limitations or bans on disposal of certain types of wastes or on the transportation of waste, could increase our costs to operate or require additional capital expenditures. A decrease in regulation may lower barriers to entry for our competitors. Further, we compete with counties and municipalities that operate their own collection and disposal facilities, and have the benefits of tax revenue and greater opportunities for tax-exempt financing. We strive to conduct our operations in compliance with applicable laws, regulations and permits. However, from time to time we have been issued citations or notices from governmental authorities that have resulted in the need to expend funds for remedial work and related activities at various landfills and other facilities or in the need to expend funds for fines, penalties or settlements. Citations and notices may be issued in the future, notwithstanding our strong regulatory compliance efforts. We have established final capping, closure, post-closure and remediation reserves that we believe, based on currently available information, will be adequate to cover our current estimates of regulatory costs; however, actual costs may exceed our reserves.",
+        "raw_span_sha256": "0e3e541c14678589c2600b472e416f2843726965e5f9c3826100173965cdb464"
+      },
+      {
+        "start_offset": 853891,
+        "end_offset": 857865,
+        "visible_text": "We have deferred tax assets related to state net operating loss carryforwards with an estimated tax effect of $50 million available as of December 31, 2024. These state net operating loss carryforwards expire at various times between 2025 and 2044. We believe that it is more likely than not that the benefit from some of our state net operating loss carryforwards will not be realized due to limitations on these loss carryforwards in certain states. In recognition of this risk, as of December 31, 2024, we have provided a valuation allowance of $45 million. For additional discussion and detail regarding our income taxes, see Note 11, Income Taxes, of the notes to our audited consolidated financial statements in Part II, Item 8 of this Annual Report on Form 10-K. Reportable Segments Our senior management evaluates, oversees and manages the financial performance of our operations through three field groups, referred to as Group 1, Group 2 and Group 3. Group 1 is our recycling and waste business operating primarily in geographic areas located in the western United States. Group 2 is our recycling and waste business operating primarily in geographic areas located in the southeastern and mid-western United States, the eastern seaboard of the United States, and Canada. Group 3 is our environmental solutions business operating primarily in geographic areas located across the United States and Canada. These groups are presented below as our reportable segments, which each provide integrated environmental services, including but not limited to collection, transfer, recycling and disposal. Corporate entities and other include marketing, operations support, business development, legal, tax, treasury, information technology, risk management, human resources and other administrative functions. National Accounts revenue included in Corporate entities and other represents the portion of revenue generated from nationwide and regional contracts in markets outside our operating areas where the associated material handling is subcontracted to local operators. Consequently, substantially all of this revenue is offset with related subcontract costs, which are recorded in cost of operations. Revenue and overhead costs of Corporate entities and other are either specifically assigned or allocated on a rational and consistent basis among our reportable segments to calculate adjusted EBITDA by reportable segment. 44",
+        "raw_span_sha256": "5d8919c4c21227c601e55334ca4b09597584046140e604c1b89c5a1cd7516f30"
+      },
+      {
+        "start_offset": 854768,
+        "end_offset": 858320,
+        "visible_text": "For additional discussion and detail regarding our income taxes, see Note 11, Income Taxes, of the notes to our audited consolidated financial statements in Part II, Item 8 of this Annual Report on Form 10-K. Reportable Segments Our senior management evaluates, oversees and manages the financial performance of our operations through three field groups, referred to as Group 1, Group 2 and Group 3. Group 1 is our recycling and waste business operating primarily in geographic areas located in the western United States. Group 2 is our recycling and waste business operating primarily in geographic areas located in the southeastern and mid-western United States, the eastern seaboard of the United States, and Canada. Group 3 is our environmental solutions business operating primarily in geographic areas located across the United States and Canada. These groups are presented below as our reportable segments, which each provide integrated environmental services, including but not limited to collection, transfer, recycling and disposal. Corporate entities and other include marketing, operations support, business development, legal, tax, treasury, information technology, risk management, human resources and other administrative functions. National Accounts revenue included in Corporate entities and other represents the portion of revenue generated from nationwide and regional contracts in markets outside our operating areas where the associated material handling is subcontracted to local operators. Consequently, substantially all of this revenue is offset with related subcontract costs, which are recorded in cost of operations. Revenue and overhead costs of Corporate entities and other are either specifically assigned or allocated on a rational and consistent basis among our reportable segments to calculate adjusted EBITDA by reportable segment. 44 Table of Contents",
+        "raw_span_sha256": "fbef309bb090da3d6331879e3f7e72ca673d1ae1ff6f9a93b092a3c22ff40cc4"
+      },
+      {
+        "start_offset": 855453,
+        "end_offset": 859601,
+        "visible_text": "Reportable Segments Our senior management evaluates, oversees and manages the financial performance of our operations through three field groups, referred to as Group 1, Group 2 and Group 3. Group 1 is our recycling and waste business operating primarily in geographic areas located in the western United States. Group 2 is our recycling and waste business operating primarily in geographic areas located in the southeastern and mid-western United States, the eastern seaboard of the United States, and Canada. Group 3 is our environmental solutions business operating primarily in geographic areas located across the United States and Canada. These groups are presented below as our reportable segments, which each provide integrated environmental services, including but not limited to collection, transfer, recycling and disposal. Corporate entities and other include marketing, operations support, business development, legal, tax, treasury, information technology, risk management, human resources and other administrative functions. National Accounts revenue included in Corporate entities and other represents the portion of revenue generated from nationwide and regional contracts in markets outside our operating areas where the associated material handling is subcontracted to local operators. Consequently, substantially all of this revenue is offset with related subcontract costs, which are recorded in cost of operations. Revenue and overhead costs of Corporate entities and other are either specifically assigned or allocated on a rational and consistent basis among our reportable segments to calculate adjusted EBITDA by reportable segment. 44 Table of Contents Adjusted EBITDA is the single financial measure our chief operating decision maker (CODM) uses to evaluate operating segment profitability and determine resource allocations. Cost of operations and selling, general and administrative are significant segment expenses used in the evaluation. Summarized financial information regarding our reportable segments for the years ended December 31, 2024 and 2023 (in millions of dollars) follows. For totals as well as further detail regarding our reportable segments and the adjustments used to calculate adjusted EBITDA for each segment, see Note 15, Segment Reporting, of the notes to our audited consolidated financial statements in Part II, Item 8 of this Annual Report on Form 10-K.",
+        "raw_span_sha256": "8a63e46044ee63f219065361c61165c3cd8f3159e87726298e716a56b9e5bf86"
+      },
+      {
+        "start_offset": 857708,
+        "end_offset": 861871,
+        "visible_text": "44 Table of Contents Adjusted EBITDA is the single financial measure our chief operating decision maker (CODM) uses to evaluate operating segment profitability and determine resource allocations. Cost of operations and selling, general and administrative are significant segment expenses used in the evaluation. Summarized financial information regarding our reportable segments for the years ended December 31, 2024 and 2023 (in millions of dollars) follows. For totals as well as further detail regarding our reportable segments and the adjustments used to calculate adjusted EBITDA for each segment, see Note 15, Segment Reporting, of the notes to our audited consolidated financial statements in Part II, Item 8 of this Annual Report on Form 10-K. Group 1Group 2 Recycling & Waste Subtotal (1) Group 3",
+        "raw_span_sha256": "410164f4ac1f3344195c4104d5e7cdb4fac9d0f4784438a45dc49078b9eae244"
+      },
+      {
+        "start_offset": 925355,
+        "end_offset": 934260,
+        "visible_text": "Capital Expenditures$707 $542 $1,249 $145 $237 $1,631 Total Assets$13,665 $10,988 $24,653 $4,471 $2,286 $31,410 (1) The Recycling & Waste Subtotal represents the combined results of our Group 1 and Group 2 reportable segments. Significant changes in the revenue and Adjusted EBITDA of our reportable segments for 2024 compared to 2023 are discussed below. Group 1 Adjusted EBITDA in Group 1 increased from $2,135 million for the year ended December 31, 2023 to $2,353 million for the year ended December 31, 2024.",
+        "raw_span_sha256": "63264aa959df37562589efe22037ddb4d50c165cc88600b2c04f897163f8b010"
+      },
+      {
+        "start_offset": 929248,
+        "end_offset": 934575,
+        "visible_text": "Total Assets$13,665 $10,988 $24,653 $4,471 $2,286 $31,410 (1) The Recycling & Waste Subtotal represents the combined results of our Group 1 and Group 2 reportable segments. Significant changes in the revenue and Adjusted EBITDA of our reportable segments for 2024 compared to 2023 are discussed below. Group 1 Adjusted EBITDA in Group 1 increased from $2,135 million for the year ended December 31, 2023 to $2,353 million for the year ended December 31, 2024. The most significant items impacting adjusted EBITDA in Group 1 during the year ended December 31, 2024 compared to the year ended December 31, 2023 include:",
+        "raw_span_sha256": "5ec0451a5c0a16d3e57b1af38369d91ba44cf6d7c367c42ef06e3c8b342b742e"
+      },
+      {
+        "start_offset": 1669538,
+        "end_offset": 1673742,
+        "visible_text": "NOTES TO CONSOLIDATED FINANCIAL STATEMENTS 1.BASIS OF PRESENTATION Republic Services, Inc., a Delaware corporation, and its consolidated subsidiaries (also referred to collectively as Republic, the Company, we, us, or our), is one of the largest providers of environmental services in the United States, as measured by revenue. Our senior management evaluates, oversees and manages the financial performance of our operations through three field groups, referred to as Group 1, Group 2 and Group 3. Group 1 is our recycling and waste business operating primarily in geographic areas located in the western United States. Group 2 is our recycling and waste business operating primarily in geographic areas located in the southeastern and mid-western United States, the eastern seaboard of the United States, and Canada. Group 3 is our environmental solutions business operating primarily in geographic areas located across the United States and Canada. These groups represent our reportable segments, which provide integrated environmental services, including but not limited to collection, transfer, recycling, and disposal. The consolidated financial statements include the accounts of Republic Services, Inc. and its wholly owned and majority-owned subsidiaries in accordance with accounting principles generally accepted in the United States of America (U.S. GAAP). We account for investments in entities in which we do not have a controlling financial interest under the equity method of accounting or, for investments that do not meet the criteria to be accounted for under the equity method, we reflect these investments at their fair value when it is readily determinable. If fair value is not readily determinable, we use an alternative measurement approach. All material intercompany accounts and transactions have been eliminated in consolidation. For comparative purposes, certain prior year amounts have been reclassified to conform to the current year presentation and are not material to our consolidated financial statements. All dollar amounts in tabular presentations are in millions, except per share amounts and unless otherwise noted. 2.SUMMARY OF SIGNIFICANT ACCOUNTING POLICIES",
+        "raw_span_sha256": "6efeb12365ae25154843dda8946ca66fb401970346d1bebe46eb7c719db00e3c"
+      },
+      {
+        "start_offset": 2641755,
+        "end_offset": 2647302,
+        "visible_text": "During the year ended December 31, 2024, there were no antidilutive securities outstanding. During each of the years ended December 31, 2023 and 2022, there were less than 1 million antidilutive securities outstanding. 15. SEGMENT REPORTING Our senior management evaluates, oversees and manages the financial performance of our operations through three field groups, referred to as Group 1, Group 2 and Group 3. Group 1 is our recycling and waste business operating primarily in geographic areas located in the western United States. Group 2 is our recycling and waste business operating primarily in geographic areas located in the southeastern and mid-western United States, the eastern seaboard of the United States, and Canada. Group 3 is our environmental solutions business operating in geographic areas located across the United States and Canada. These groups are presented below as our reportable segments, which each provide integrated environmental services, including but not limited to collection, transfer, recycling and disposal. We generated $182 million, $170 million and $90 million of revenue in Canada for the years ended December 31, 2024, 2023 and 2022, respectively. As of December 31, 2024 and 2023, we had $129 million and $137 million, respectively, of long-lived assets in Canada. The remainder of our revenue and assets were related to our United States operations. Our chief operating decision maker (CODM) is Jon Vander Ark, President and Chief Executive Officer of Republic Services, Inc. Adjusted EBITDA is the single financial measure our CODM uses to evaluate segment profitability and returns, which informs resource allocation. For all segments, the CODM uses adjusted EBITDA to evaluate income generated from segment assets (return on invested capital). The CODM considers budget-to-actual variances and year-over-year growth on a monthly basis to assess the performance of each segment. Cost of operations and selling, general and administrative are significant segment expenses used in the evaluation. 100",
+        "raw_span_sha256": "8c770049faf1512f02b2b1d2e1dc69d791b76ac00e6a215a4fb7961ad19c143b"
+      },
+      {
+        "start_offset": 2647763,
+        "end_offset": 2651391,
+        "visible_text": "REPUBLIC SERVICES, INC. NOTES TO CONSOLIDATED FINANCIAL STATEMENTS\u2014(Continued) Summarized financial information concerning our reportable segments for the years ended December 31, 2024, 2023 and 2022 follows: Group 1Group 2 Recycling & Waste Subtotal(1) Group 3",
+        "raw_span_sha256": "060faab19105bdecbde63b8627cf7c42146e4994831e55134a49d0325f108ae1"
+      },
+      {
+        "start_offset": 2776291,
+        "end_offset": 2787896,
+        "visible_text": "Capital Expenditures$620 $542 $1,162 $133 $159 $1,454 Total Assets$12,418 $10,528 $22,946 $4,090 $2,017 $29,053 (1) The Recycling & Waste Subtotal represents the combined results of our Group 1 and Group 2 reportable segments. Corporate functions include marketing, operations support, business development, legal, tax, treasury, information technology, risk management, human resources and other administrative functions. National Accounts revenue included in Corporate entities and other represents the portion of revenue generated from nationwide and regional contracts in markets outside our operating areas where the associated material handling is subcontracted to local operators. Revenue and overhead costs of Corporate entities and other are either specifically assigned or allocated on a rational and consistent basis among our reportable 101 Table of Contents",
+        "raw_span_sha256": "61eb4fcbd540c0f3bf27a8df9622060f8cef5bee73975d5059469147d73357a9"
+      }
+    ]
+  },
+  {
+    "adsh": "0000886206-25-000085",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/886206/000088620625000085/fc-20250831x10k.htm",
+      "bytes": 6410685,
+      "sha256": "2807c9b8adbe821d43fa563f79fc8055189b0120f28d03357d712a05a891b0fe",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T17:00:48.867+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0000886206-25-000085",
+      "path": "0000886206-25-000085/primary-2807c9b8adbe821d43fa563f79fc8055189b0120f28d03357d712a05a891b0fe.gz"
+    },
+    "compressed_sha256": "5ea17eb1b95ac63431ab74d4412da4a325b0d2ea106c46f9f3f495d0dd215cc3",
+    "primary_sha256": "2807c9b8adbe821d43fa563f79fc8055189b0120f28d03357d712a05a891b0fe",
+    "selected_members": [
+      "EducationPractice",
+      "InternationalDirectOfficeSegment",
+      "InternationalLicenseesSegment",
+      "NorthAmericaSegment"
+    ],
+    "citations": [
+      {
+        "start_offset": 2737270,
+        "end_offset": 2747477,
+        "visible_text": "Intangible assets that are deemed to have an indefinite life and acquired goodwill are not amortized, but rather are tested for impairment on an annual basis or more often if events or circumstances indicate that a potential impairment exists. The Covey trade name intangible asset has been deemed to have an indefinite life. This intangible asset is tested for impairment using qualitative factors or the present value of estimated royalties on trade name related revenues, which consist primarily of training seminars and work sessions, international licensee sales, and related products. Based on the fiscal 2025 evaluation of the Covey trade name, we believe the fair value of the Covey trade name substantially exceeds its carrying value. No impairment charges were recorded against the Covey trade name during the periods presented in this report. Goodwill is recorded when the purchase price for a business acquisition exceeds the estimated fair value of the net tangible and identified intangible assets acquired. We test goodwill for impairment each year on August 31 or upon the occurrence of events or changes in circumstances which indicate that goodwill may be impaired. Goodwill is assigned to our reporting units, which are our operating segments, where discrete financial information is available that is regularly reviewed by management to evaluate segment performance. During the annual impairment testing process, we have the option to first perform a qualitative assessment (commonly referred to as Step Zero) over relative events and circumstances to determine whether it is more likely than not that the fair value of a reporting unit is less than its carrying value or to perform a quantitative assessment where we estimate the fair value of each reporting unit using both an income and market approach. At August 31, 2025, we completed a quantitative assessment of our goodwill and concluded there were no impairments. Refer to Note 4, Intangible Assets and Goodwill for further information on our goodwill, including the allocation of our goodwill to our reportable segments. When we perform a quantitative analysis to assess the recoverability of our goodwill, we determine the estimated fair value of each reporting unit and compare it to the carrying value of the reporting unit, including goodwill. If the fair value is less than the carrying value of the net assets and related goodwill, an impairment charge is recognized for the difference. The estimated fair value of each reporting unit is calculated using a combination of the income approach (discounted cash flows) and the market approach (using market multiples derived from a set of companies with comparable market characteristics). The value estimated using a discounted cash flow model is weighted against the estimated value derived from the guideline company market approach method. The market approach method estimates the price reasonably expected to be realized from the sale of the reporting unit based on comparable companies. In developing the discounted cash flow analysis, our assumptions about future revenues and expenses, capital expenditures, and changes in working capital are based on our internal plan and assume a terminal growth rate thereafter. The discounted cash flow analysis is derived from valuation techniques in which one or more significant inputs are not observable and constitute Level 3 fair value measures. 54 Table of Contents",
+        "raw_span_sha256": "53547d2b6d2bba42cc4aec5e9343b0ce9c058192c3fae5046d3909dbc0f1f700"
+      },
+      {
+        "start_offset": 4806459,
+        "end_offset": 4815005,
+        "visible_text": "1.24 17. SEGMENT INFORMATION Reportable Segments Our sales are primarily comprised of training and consulting services and our internal reporting and operating structure is currently organized around two divisions: the Enterprise Division, which consists of our North America, International Direct Office, and International Licensee segments, and the Education Division, which is comprised of our Education practice. We have determined that our chief operating decision maker (CODM) continues to be the CEO. Beginning with the first quarter of fiscal 2025, our CODM began to manage our business, allocate resources, and evaluate performance based on changes that were made in the Company\u2019s management and reporting structure in connection with the restructuring activities discussed in Note 14, Restructuring. After these changes, the Company has identified four operating and reportable segments as described below: \uf0b7North America \u2013 Our North America segment has a depth of expertise in helping organizations solve problems that require changes in human behavior, including leadership, productivity, execution, trust, and sales performance. We have a variety of principle-based offerings that help build winning and profitable cultures. This segment includes our sales personnel and operations that serve the United States and Canada.",
+        "raw_span_sha256": "b9fc95d9013e2d10b0a08e2e3a1302fcac19abe33f3baca3f9e33f2c1884ddea"
+      },
+      {
+        "start_offset": 4809955,
+        "end_offset": 4817715,
+        "visible_text": "Reportable Segments Our sales are primarily comprised of training and consulting services and our internal reporting and operating structure is currently organized around two divisions: the Enterprise Division, which consists of our North America, International Direct Office, and International Licensee segments, and the Education Division, which is comprised of our Education practice. We have determined that our chief operating decision maker (CODM) continues to be the CEO. Beginning with the first quarter of fiscal 2025, our CODM began to manage our business, allocate resources, and evaluate performance based on changes that were made in the Company\u2019s management and reporting structure in connection with the restructuring activities discussed in Note 14, Restructuring. After these changes, the Company has identified four operating and reportable segments as described below: \uf0b7North America \u2013 Our North America segment has a depth of expertise in helping organizations solve problems that require changes in human behavior, including leadership, productivity, execution, trust, and sales performance. We have a variety of principle-based offerings that help build winning and profitable cultures. This segment includes our sales personnel and operations that serve the United States and Canada. \uf0b7International Direct Offices \u2013 Our international direct offices provide the same offerings and content in countries outside of North America, which includes Australia, Austria, China, France, Germany, Ireland, Japan, New Zealand, Switzerland, and the United Kingdom. \uf0b7International Licensees \u2013 Our independently owned international licensees provide our offerings and services in countries where we do not have a directly-owned office. These licensee partners allow us to expand the reach of our services to large multinational organizations as well as smaller organizations in their countries. This segment\u2019s revenue is primarily comprised of royalty revenues received from the licensees.",
+        "raw_span_sha256": "d910129ac1319f8e25ccd85ff8df41cf8478f787dc56d1fa0224229fd6db9e15"
+      },
+      {
+        "start_offset": 4818866,
+        "end_offset": 4826594,
+        "visible_text": "Table of Contents \uf0b7Education Division \u2013 Centered around the principles found in The Leader in Me, the Education Division is dedicated to helping educational institutions build a culture that will produce great results. We believe these results are manifested by increases in student performance, improved school culture, decreased disciplinary issues, and increased teacher engagement and parental involvement. This segment includes our domestic and international Education practice operations, which are focused on sales to educational institutions such as elementary schools, middle schools, high schools, and colleges and universities. Our reportable segments reflect the structure of the Company\u2019s internal organization and the financial information the CODM regularly reviews to assess Company performance and allocate resources. The CODM reviews the performance of each segment using internal reports which provide variance analysis of actual results by segment compared to budget, forecast, and prior year. The primary measurement tool used in segment performance analysis is Adjusted EBITDA, which may not be calculated as similarly titled amounts disclosed by other companies. The prior period segment information has been recast to conform with the new reporting segment presentation described above. Our operations are not capital intensive and we do not own any manufacturing facilities or equipment. Accordingly, we do not allocate assets to the divisions for analysis purposes. Interest expense and interest income are primarily generated at the corporate level and are not allocated. Income taxes are likewise calculated and paid on a corporate level (except for entities that operate in foreign jurisdictions) and are not allocated for analysis purposes. Other segment items in the following tables consist primarily of other normal operating expenses such as computer software subscription expense, advertising and promotion costs, travel and entertainment expenses, and necessary overhead costs such as legal and rent and utilities expense. \u200e",
+        "raw_span_sha256": "3204585357cd7ff150a38af69b80d0dba570f9cbe030d58a6056c425e1af18c9"
+      }
+    ]
+  },
+  {
+    "adsh": "0000929351-22-000017",
+    "source_receipt": {
+      "url": "https://www.sec.gov/Archives/edgar/data/929351/000092935122000017/lgfa-20220331.htm",
+      "bytes": 5051820,
+      "sha256": "11dd7437166a1d19c38745c5c5a9323bcd1aa1eb4983cd365d323a89d85bb439",
+      "http_status": 200,
+      "fetched_at": "2026-10-03T17:00:37.159+00:00",
+      "requests": 1,
+      "error": null,
+      "kind": "primary",
+      "adsh": "0000929351-22-000017",
+      "path": "0000929351-22-000017/primary-11dd7437166a1d19c38745c5c5a9323bcd1aa1eb4983cd365d323a89d85bb439.gz"
+    },
+    "compressed_sha256": "2a54c8a7168c79ffcceadc4b29c627d17446070adfa6ca2e0097cb9d0d6619d9",
+    "primary_sha256": "11dd7437166a1d19c38745c5c5a9323bcd1aa1eb4983cd365d323a89d85bb439",
+    "selected_members": [
+      "MediaNetworks",
+      "MotionPicture",
+      "TelevisionProduction"
+    ],
+    "citations": [
+      {
+        "start_offset": 2565728,
+        "end_offset": 2568612,
+        "visible_text": "The Company's Motion Picture and Television Production segments generate revenue principally from the licensing of content in domestic theatrical exhibition, home entertainment (e.g., digital media and packaged media), television, and international market places. The Company's Media Networks segment generates revenue primarily from the distribution of the Company's STARZ branded premium subscription video services, and through March 31, 2021, from the Company's formerly majority owned premium Spanish language streaming services business, Pantaya. The Company sold its interest in Pantaya on March 31, 2021, see Note 2 for further information. Revenue is recognized upon transfer of control of promised services or goods to customers in an amount that reflects the consideration the Company expects to receive in exchange for those services or goods. Revenues do not include taxes collected from customers on behalf of taxing authorities such as sales tax and value-added tax. In the ordinary course of business, the Company's reportable segments enter into transactions with one another. The most common types of intersegment transactions include licensing motion pictures or television programming (including Starz original productions) from the Motion Picture and Television Production segments to the Media Networks segment. While F-9 Table of Contents LIONS GATE ENTERTAINMENT CORP.",
+        "raw_span_sha256": "2b6fbb79cbb9027a0fb68ffde18c18db378bfa8d27029993335bc6d33f7f7c55"
+      },
+      {
+        "start_offset": 4155960,
+        "end_offset": 4160447,
+        "visible_text": "(1)As of March 31, 2022, the remaining severance liability of approximately $1.5 million is expected to be paid in the next 12 months. 16. Segment Information The Company\u2019s reportable segments have been determined based on the distinct nature of their operations, the Company's internal management structure, and the financial information that is evaluated regularly by the Company's chief operating decision maker. The Company has three reportable business segments: (1) Motion Picture, (2) Television Production and (3) Media Networks. We refer to our Motion Picture and Television Production segments collectively as our Studio Business. Studio Business: Motion Picture. Motion Picture consists of the development and production of feature films, acquisition of North American and worldwide distribution rights, North American theatrical, home entertainment and television distribution of feature films produced and acquired, and worldwide licensing of distribution rights to feature films produced and acquired.",
+        "raw_span_sha256": "b38c9f493846003ce05479459b5611905cd3298293b3ae0bab66abfe9f732078"
+      },
+      {
+        "start_offset": 4161330,
+        "end_offset": 4164380,
+        "visible_text": "Media Networks Business: Media Networks. Media Networks consists of the following product lines (i) Starz Networks, which includes the domestic distribution of STARZ branded premium subscription video services through OTT platforms and Distributors and on a direct-to-consumer basis through the Starz App and (ii) STARZPLAY International, which represents revenues primarily from the OTT distribution of the Company's STARZ branded premium subscription video services outside of the U.S. Through March 31, 2021, Media Networks also included Other Streaming Services, which represented primarily the Company's formerly majority owned premium Spanish language streaming services business, Pantaya. The Company sold its interest in Pantaya on March 31, 2021 (see Note 2). In the ordinary course of business, the Company's reportable segments enter into transactions with one another. The most common types of intersegment transactions include licensing motion pictures or television programming (including Starz original productions) from the Motion Picture and Television Production segments to the Media Networks segment. While intersegment transactions are treated like third-party transactions to determine segment performance, the revenues (and corresponding expenses, assets, or liabilities recognized by the segment that is the counterparty to the transaction) are eliminated in consolidation and, therefore, do not affect consolidated results. F-50 Table of Contents LIONS GATE ENTERTAINMENT CORP.",
+        "raw_span_sha256": "153e168e1d6ee690cf09b761c249f08d68fe6ff321a5971c003d8bf273f0c7fd"
+      }
+    ]
+  }
+]
