@@ -1,0 +1,961 @@
+{
+  "products": {
+    "borrow_2020": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "borrow_proxy/year=2020/borrow_proxy.parquet": {
+          "bytes": 18110080,
+          "sha256": "cd1d9c8bb3d21077039f587570e7f8d142fbbf360351841a87651bf732b7fd55"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product borrow_2020; producer declaration borrow_proxy/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "borrow_2021": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "borrow_proxy/year=2021/borrow_proxy.parquet": {
+          "bytes": 21219607,
+          "sha256": "0e01f0bcaf36ebdcb1f55628d22634a3a161a3faf2438988724e642f657cfb91"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product borrow_2021; producer declaration borrow_proxy/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "borrow_2022": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "borrow_proxy/year=2022/borrow_proxy.parquet": {
+          "bytes": 26531875,
+          "sha256": "dd03aef3a0880580fb0534008565a201f8532d94ffde32b37c299aebe24a2c28"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product borrow_2022; producer declaration borrow_proxy/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "borrow_2023": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "borrow_proxy/year=2023/borrow_proxy.parquet": {
+          "bytes": 22878372,
+          "sha256": "5d0992e052063a3c2c64a030d935c348d980e1f8d9c24c6af9e74fb9eefbd8e0"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product borrow_2023; producer declaration borrow_proxy/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "borrow_2024": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "borrow_proxy/year=2024/borrow_proxy.parquet": {
+          "bytes": 21977378,
+          "sha256": "cc2e6ac6d6c76d4e5faf4b91012dcee7e590ffa22f3770285cfab1e78daae926"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product borrow_2024; producer declaration borrow_proxy/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "borrow_2025": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "borrow_proxy/year=2025/borrow_proxy.parquet": {
+          "bytes": 23357976,
+          "sha256": "8d1f9e21206ae68c99a1fb1b9c22eecdcf24f0c0f2f6b25197050ef41e4b5835"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product borrow_2025; producer declaration borrow_proxy/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "calendar": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "calendar.parquet": {
+          "bytes": 19323,
+          "sha256": "dd9cb6958d8a4a84de1f6a4ac44d07a8f8e8f9ad8d6ebed477e30d89675fa44e"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product calendar; producer declaration standalone calendar. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "class_headers": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "issuer_classes/incorporation.parquet": {
+          "bytes": 49812,
+          "sha256": "8e19b17a552ba63b8b1d784bae44af651699544266b2e2b402a3507901b61d2b"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product class_headers; producer declaration issuer_classes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "codes": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "security_master/share_exchange_history.parquet": {
+          "bytes": 2307647,
+          "sha256": "c6e8afc916e9f4439c02a7e5ddb15c17b26b90eb682e74fd358da1ef50948fff"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product codes; producer declaration security_master/share_exchange_history_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "cover": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "identity_cover/cover_page.parquet": {
+          "bytes": 52120466,
+          "sha256": "6c85a4f87003711d8cb211c8a7b12eb488c3a96816aea670b9dd0bae0bc08327"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product cover; producer declaration identity_cover/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "filings": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "sec_filings/filings.parquet": {
+          "bytes": 544988422,
+          "sha256": "432b1b696442ad0567c25cd0ccf392c4c12e6d037dd39acaac71eaeb42218cb6"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product filings; producer declaration sec_filings/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "finra_names": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "security_master/finra_names.parquet": {
+          "bytes": 1410313,
+          "sha256": "1acfed75fc172f82a17115c5651370e14d36e4204fbc3f133765eb1354cd591d"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product finra_names; producer declaration security_master/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "headers": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "issuer_history/incorporation.parquet": {
+          "bytes": 102145,
+          "sha256": "1c8f04b1632a4bfb679776ee8033728d26e258d81a8b3a89fe788d3d3f323eb8"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product headers; producer declaration issuer_history/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "industry": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "classification/issuer_industry.parquet": {
+          "bytes": 737865,
+          "sha256": "9264fb17fe8bf8e1910b5e4fd7eed0765dc1d3394e539a72a88bdb0cd42e36b7"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product industry; producer declaration classification/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "links": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "identity/link_table_v3.parquet": {
+          "bytes": 1710840,
+          "sha256": "17e79e3d8060a6535bcbae03a3d29ac8967f19374b4e135c98d3accd624a6541"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product links; producer declaration identity/link_table_v3_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "liquidity_2020": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/liquidity/year=2020/liquidity.parquet": {
+          "bytes": 159353882,
+          "sha256": "ac9851fc1c241a6d2581322019ea740ddca523b1fbea99e5908958afb81da906"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product liquidity_2020; producer declaration market/market_liquidity_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "liquidity_2021": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/liquidity/year=2021/liquidity.parquet": {
+          "bytes": 186976583,
+          "sha256": "ad3b16146781135755247ec63310ac519bb4236be4ec350c6d9fe6a5f233a2e0"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product liquidity_2021; producer declaration market/market_liquidity_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "liquidity_2022": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/liquidity/year=2022/liquidity.parquet": {
+          "bytes": 204981749,
+          "sha256": "84dcf4f32c2ab5af8f5e7aee3c400914831e82aaabf56bf6781e8120e2086b1c"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product liquidity_2022; producer declaration market/market_liquidity_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "liquidity_2023": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/liquidity/year=2023/liquidity.parquet": {
+          "bytes": 191935411,
+          "sha256": "476cae3bf8e4610a4bfe1156903c93d419cd971b9bc6c2c8284551ad5c383146"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product liquidity_2023; producer declaration market/market_liquidity_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "liquidity_2024": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/liquidity/year=2024/liquidity.parquet": {
+          "bytes": 191195706,
+          "sha256": "72f516fdee06052c43f78964980e9041a95cfbbd65b82b3d5593ec8f57dc6120"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product liquidity_2024; producer declaration market/market_liquidity_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "liquidity_2025": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/liquidity/year=2025/liquidity.parquet": {
+          "bytes": 201147491,
+          "sha256": "d6fc07f2fd41568ce3b88010ce256c1d80b0d17e42284a239dc4fdbd29aab504"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product liquidity_2025; producer declaration market/market_liquidity_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2018": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2018/membership.parquet": {
+          "bytes": 155605,
+          "sha256": "05a80daaa5519f20ccf26ed172e24c9014de17a89624a919283b4dbced2678ad"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2018; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2019": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2019/membership.parquet": {
+          "bytes": 251546,
+          "sha256": "55ca819ab85fa9848df14e37993466963dd9dccb88bee4752c7c0dd129c37a77"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2019; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2020": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2020/membership.parquet": {
+          "bytes": 251117,
+          "sha256": "aeca42ed975b7326fa4d09d6bcd6bdf3e08386b024ec051c32b04bace738ff49"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2020; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2021": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2021/membership.parquet": {
+          "bytes": 260781,
+          "sha256": "66b3a09257dad5c9837be97733bcb2a57d48e21d545391ce2025c30b98aa960d"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2021; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2022": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2022/membership.parquet": {
+          "bytes": 251361,
+          "sha256": "91ae1733312dc47f0b09c5114b1381283b9d866f4b25518e629ea28577104791"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2022; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2023": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2023/membership.parquet": {
+          "bytes": 249599,
+          "sha256": "f52b3dbeaf33871454a440d05f2c920694cbdadb45433d282b300d39221d3176"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2023; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2024": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2024/membership.parquet": {
+          "bytes": 246684,
+          "sha256": "2a39dfec5328b8358700bfd7e2e6c707e517a38bddbf04bede14f16b1088a2ef"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2024; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2025": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2025/membership.parquet": {
+          "bytes": 250103,
+          "sha256": "3a4f0542e6df6e35513c754912387e3b8ec3ac1b992fd7b005f8a6c3ed27df59"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2025; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "membership_2026": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/membership/year=2026/membership.parquet": {
+          "bytes": 197331,
+          "sha256": "f970a5858979db38e7bdd4a478814ab7bee178f1877347fa75fed50adb1f19ed"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product membership_2026; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2018": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2018/panel-01.parquet": {
+          "bytes": 28203824,
+          "sha256": "224fc968891776ec5e7b3ac7e1f7d926ffb4ef377881cf779e823c1697ac9058"
+        },
+        "panel/year=2018/panel-02.parquet": {
+          "bytes": 25665072,
+          "sha256": "423fa6fb7b20dab095998dd44493fa56e9a26bb661549af5665f73a92cf1730a"
+        },
+        "panel/year=2018/panel-03.parquet": {
+          "bytes": 27713230,
+          "sha256": "e08f96c1d487ef4a9e729763126ea705683f10c8665ff07583f663f3772942ea"
+        },
+        "panel/year=2018/panel-04.parquet": {
+          "bytes": 29568579,
+          "sha256": "e627d9f6489d273dcb1eb6f63db460e341534e832211366417ee634c7863a3b6"
+        },
+        "panel/year=2018/panel-05.parquet": {
+          "bytes": 32400061,
+          "sha256": "b0cbc76b84f1add402b2e09ccbda17e520cdb12457b216c51db45b252842ec00"
+        },
+        "panel/year=2018/panel-06.parquet": {
+          "bytes": 31736316,
+          "sha256": "2d1bec941eb2950f9ee737f94ce95e0478726e1ae765ca8d7765a57e55c1b972"
+        },
+        "panel/year=2018/panel-07.parquet": {
+          "bytes": 31989851,
+          "sha256": "12c2c2498bdfacd27c4f828b117ab140da72c88d808750e7eb94df3e70036521"
+        },
+        "panel/year=2018/panel-08.parquet": {
+          "bytes": 37641872,
+          "sha256": "013573e1d0d9f1bf394c1a7bd26dc06d544c66fe18b0d0a7505438d954d9f13f"
+        },
+        "panel/year=2018/panel-09.parquet": {
+          "bytes": 30144790,
+          "sha256": "7c09b08c8520d96bc9ce1481029b5025a9b5564af6a9042262824622b821858c"
+        },
+        "panel/year=2018/panel-10.parquet": {
+          "bytes": 36969346,
+          "sha256": "1805f29abab88328f7c4517bdd7ba9a469d96833ebaea22f17a96f60400944db"
+        },
+        "panel/year=2018/panel-11.parquet": {
+          "bytes": 35201374,
+          "sha256": "c55193f4b76187442315d11e641f61ca467b37f9db1e3f3fb952af4a67532628"
+        },
+        "panel/year=2018/panel-12.parquet": {
+          "bytes": 30510749,
+          "sha256": "3031515c7653890d5b85de7967c6f93e86d408c98a7963052d3aae4d84f3fd69"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2018; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2019": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2019/panel-01.parquet": {
+          "bytes": 33987793,
+          "sha256": "64e8e7be17ef4362b429d86ace8233826e2d9e655742e7b58985eaa3c33c884f"
+        },
+        "panel/year=2019/panel-02.parquet": {
+          "bytes": 30826473,
+          "sha256": "3bab3db21327450a2dc7ae77e00b95d45eabe6980e8ed3c2aea2bc8dc908e2b6"
+        },
+        "panel/year=2019/panel-03.parquet": {
+          "bytes": 34288666,
+          "sha256": "a9037f39881cf5d6b84147dcc47023a06a190e9af8cb61cdd28c3b6fbd74fe15"
+        },
+        "panel/year=2019/panel-04.parquet": {
+          "bytes": 34439067,
+          "sha256": "f796b9ee75fc4dc91526f49a5013ec3a86bc55ab62bc81607021fd7b19defed8"
+        },
+        "panel/year=2019/panel-05.parquet": {
+          "bytes": 37323781,
+          "sha256": "643deb358aa322f82707c67c5ff363b9d69a86468bea9198e6b323b42fe7827c"
+        },
+        "panel/year=2019/panel-06.parquet": {
+          "bytes": 32432144,
+          "sha256": "2c1a78debff324f9107d22ff9aa151d17fd69af269aa163fe9c38efa23f1c203"
+        },
+        "panel/year=2019/panel-07.parquet": {
+          "bytes": 36397000,
+          "sha256": "93dcb0b7fd4ef0b8dbd0089af8f0e6978c3fd7768b21d52c9266acd3faeee1ed"
+        },
+        "panel/year=2019/panel-08.parquet": {
+          "bytes": 37687406,
+          "sha256": "b2e565a88eb9286456bbe396dbe6b074fa3c9ca5cb8f7830739f660470fe0235"
+        },
+        "panel/year=2019/panel-09.parquet": {
+          "bytes": 32625933,
+          "sha256": "1386d524355575939f1a752a887a98559fb115bd384fa871dc9803d6828b39f1"
+        },
+        "panel/year=2019/panel-10.parquet": {
+          "bytes": 37816980,
+          "sha256": "6ce4c0e8df2d55371920e5d0d233457f90cbe78dce00a79330b081c05397cbb7"
+        },
+        "panel/year=2019/panel-11.parquet": {
+          "bytes": 33778043,
+          "sha256": "5ab532b67e23120c98d9f18d7b3666ade0933a7d2012eb37cc5cea6db3909a18"
+        },
+        "panel/year=2019/panel-12.parquet": {
+          "bytes": 34706264,
+          "sha256": "49c4b04f575c2520de48d2f26c08c10f4c233c58abf93d9ea44a5ea8d7232921"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2019; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2020": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2020/panel-01.parquet": {
+          "bytes": 34738412,
+          "sha256": "a752bfe3d184cd01a9a4f5fb678f1fbd2387f9fa3c713831709ce5db813081b9"
+        },
+        "panel/year=2020/panel-02.parquet": {
+          "bytes": 31533640,
+          "sha256": "83c25b565abfef67f4532885cb2b18dcac120b96ea32ad23388b33628e23cef1"
+        },
+        "panel/year=2020/panel-03.parquet": {
+          "bytes": 36912128,
+          "sha256": "b9ff05ddbb20dcee8b3cf5fdc240884e0c942be3fa89023a40993ba3ced7adf7"
+        },
+        "panel/year=2020/panel-04.parquet": {
+          "bytes": 34765032,
+          "sha256": "1b1856120dbecd507d1a2cee28117f65e2ed05a111ab268ddb46bd9b30fa077a"
+        },
+        "panel/year=2020/panel-05.parquet": {
+          "bytes": 34199268,
+          "sha256": "62986485761c8616f7b9594d7cde86b0361e945ab9b7bdf512a466694318a6f4"
+        },
+        "panel/year=2020/panel-06.parquet": {
+          "bytes": 36977234,
+          "sha256": "f9edbd9acd6a0abbdb9d179606034854deccf7a4e715e7f3b8398bbe3adc0506"
+        },
+        "panel/year=2020/panel-07.parquet": {
+          "bytes": 37132921,
+          "sha256": "79302a22f5de8014e67eb0d26aea2dc92c529819ab88b63e0ea57c1bcfc6250d"
+        },
+        "panel/year=2020/panel-08.parquet": {
+          "bytes": 36549164,
+          "sha256": "367f5373f43c79ee4a1cfb77dc3e7f3f9c472845fbe4fa8ad4ebad3f0802e666"
+        },
+        "panel/year=2020/panel-09.parquet": {
+          "bytes": 35767137,
+          "sha256": "f58480726ff85a288f448cb6cd36d039473bed86968f318926b993f0493a223e"
+        },
+        "panel/year=2020/panel-10.parquet": {
+          "bytes": 37589088,
+          "sha256": "eecf8a1117f0ff7a0b881e65c4d66878e7f748ccd9980550f3e6c0e9d29fa997"
+        },
+        "panel/year=2020/panel-11.parquet": {
+          "bytes": 35770154,
+          "sha256": "e884c5dda925fd97302e50ae829fb1963c784d3fccab3ef1b0bd685e57f1f32a"
+        },
+        "panel/year=2020/panel-12.parquet": {
+          "bytes": 38639959,
+          "sha256": "7c2c6d28ad16a69426a117dec3cc16cad49c517c9ae575e48fefef69ba3a8b5d"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2020; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2021": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2021/panel-01.parquet": {
+          "bytes": 34776743,
+          "sha256": "5ffaf684487e958afee500513932f596bb62bd78ae1f87f88eda4af808dde163"
+        },
+        "panel/year=2021/panel-02.parquet": {
+          "bytes": 35395806,
+          "sha256": "5d10e8d1ac54dc2a8f85a93b617e16d697dcb898051aa534397872409a6035d4"
+        },
+        "panel/year=2021/panel-03.parquet": {
+          "bytes": 43937047,
+          "sha256": "326ba4ff98f4475bfdf380707971b70d883b04bd3f0a61b146d2ef4d303172e0"
+        },
+        "panel/year=2021/panel-04.parquet": {
+          "bytes": 41192347,
+          "sha256": "a9b71965f5c43d31f92a1934381a8d2a6273c8fe97ec617057b8af9c9c56baf1"
+        },
+        "panel/year=2021/panel-05.parquet": {
+          "bytes": 41148987,
+          "sha256": "706d2b9023cc66ecddcbb597b3448441ecd0993613410187520b5998b2ee7af3"
+        },
+        "panel/year=2021/panel-06.parquet": {
+          "bytes": 44828929,
+          "sha256": "f471bdf54c65ec2fd5ce70da82b054d0e4f56053a75b2d8c49ebfe3e06ede7fd"
+        },
+        "panel/year=2021/panel-07.parquet": {
+          "bytes": 43801744,
+          "sha256": "2673dcf53a3525e58946b3cf1b470616a42b698dc5f4423443d65662ce4c4bf0"
+        },
+        "panel/year=2021/panel-08.parquet": {
+          "bytes": 47408275,
+          "sha256": "8a128c8cd6c48f6b6106763eff463c76c26ceb9c58400a9b561f60c3e5e7846f"
+        },
+        "panel/year=2021/panel-09.parquet": {
+          "bytes": 45100523,
+          "sha256": "adb91dedf5b5fe9cfad55c025eacd5ac7efffe03684025b46ae4cd3e721c47c8"
+        },
+        "panel/year=2021/panel-10.parquet": {
+          "bytes": 45524131,
+          "sha256": "05289420399d1415500b230093afe24a864dbcf026e028fc592ddb2e048bc9a2"
+        },
+        "panel/year=2021/panel-11.parquet": {
+          "bytes": 47411094,
+          "sha256": "411f457763c0f9db574800cff939227a68cae9ada43433ff1d4f5bb04b376a39"
+        },
+        "panel/year=2021/panel-12.parquet": {
+          "bytes": 49689318,
+          "sha256": "605b254c3143536d339757d238d823298880789df6c694c14ac59c11b2353872"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2021; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2022": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2022/panel-01.parquet": {
+          "bytes": 45578204,
+          "sha256": "e331bbedc04d03d682559ead63903349af27d01e8ce4446a1c8a78f1207742ba"
+        },
+        "panel/year=2022/panel-02.parquet": {
+          "bytes": 43426376,
+          "sha256": "c902160e7f247df8b27e4f1bb404546f54417ef6fc2f74941c06293cac446c07"
+        },
+        "panel/year=2022/panel-03.parquet": {
+          "bytes": 52916338,
+          "sha256": "80603034d5133ecec33899a20c8ef09ffa2f8330345f4bf03477762e5bc6615a"
+        },
+        "panel/year=2022/panel-04.parquet": {
+          "bytes": 46868180,
+          "sha256": "efe2fa9899bf188d026740aef1bf22d0ef945f14e694987876f2867b92cd9064"
+        },
+        "panel/year=2022/panel-05.parquet": {
+          "bytes": 50516166,
+          "sha256": "345b3070f888092e9ae1d9bf54de54c026eb241c9fdcdeac3cadeb2b6eab0f5e"
+        },
+        "panel/year=2022/panel-06.parquet": {
+          "bytes": 48821624,
+          "sha256": "90e73434faffa7cba7266b04b768b0661643f2eea4e72381dc24faadf204bc13"
+        },
+        "panel/year=2022/panel-07.parquet": {
+          "bytes": 45830836,
+          "sha256": "99d1266f6c796d1763f9b47703a3a8d5d9c6280ee354a9d34a97611cc1577429"
+        },
+        "panel/year=2022/panel-08.parquet": {
+          "bytes": 53839246,
+          "sha256": "7d392c4d7e36582fc0d8bf8bb7a6fe50619a1d11f3136fa4cf6948504d6999dd"
+        },
+        "panel/year=2022/panel-09.parquet": {
+          "bytes": 47896581,
+          "sha256": "0b552d8f685243c7ca592f1944e0cfeb0d71c83b2702054ac1c2c5abd7f93e3b"
+        },
+        "panel/year=2022/panel-10.parquet": {
+          "bytes": 47593371,
+          "sha256": "98d6ceb10de64a16bd8faed607e4e5c5add5592fccda8e4ca812c44882f6c649"
+        },
+        "panel/year=2022/panel-11.parquet": {
+          "bytes": 48224946,
+          "sha256": "43d5b04dd5951d66f30517a8a10b57c1123f38d967290310510539617754ce1a"
+        },
+        "panel/year=2022/panel-12.parquet": {
+          "bytes": 47019229,
+          "sha256": "1f57eee51f8615abc8670fa51ffce40cf992a1899e94ab7488f17fd428684a4d"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2022; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2023": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2023/panel-01.parquet": {
+          "bytes": 44669406,
+          "sha256": "32c0b4ba996d287008e5915aa2bed90ed604c6f4e19cb04d006ff275d5855c22"
+        },
+        "panel/year=2023/panel-02.parquet": {
+          "bytes": 42228704,
+          "sha256": "c9d1e1bda848c2f64744df13f7706e86249ab5cedc2dd1925a8d1c2e60b08351"
+        },
+        "panel/year=2023/panel-03.parquet": {
+          "bytes": 50706894,
+          "sha256": "4da601ecff9dc93d47d266cdcfaefb8dd002a1e5338ca7d88461dbcb634fce39"
+        },
+        "panel/year=2023/panel-04.parquet": {
+          "bytes": 41353524,
+          "sha256": "a55165a2598a2f4046b204152d825f36a3d8f9c56ac49e2cde9a15a70de3a8ac"
+        },
+        "panel/year=2023/panel-05.parquet": {
+          "bytes": 48588191,
+          "sha256": "49b0b1ed854eeb5a017ea406b6811f2f8117d50b8cd60e16410e2fb3718abf3e"
+        },
+        "panel/year=2023/panel-06.parquet": {
+          "bytes": 45243303,
+          "sha256": "5f01caf9ab61b38a0df6b9e674ccf895932d9383ecf1f63ee69e3a1bbb8cec50"
+        },
+        "panel/year=2023/panel-07.parquet": {
+          "bytes": 43455244,
+          "sha256": "15df680795cb1277350c7008e1a1a3bdb94ac0c997b4f4223ce5789cb77c3d40"
+        },
+        "panel/year=2023/panel-08.parquet": {
+          "bytes": 50271004,
+          "sha256": "4805e2733ddb1798c378231207693b193bc25838864aaec42d55b38bc805b909"
+        },
+        "panel/year=2023/panel-09.parquet": {
+          "bytes": 43101776,
+          "sha256": "e91bafd469f15702158558276922cf26445f690fa4783fcb3eed628d6c484ca1"
+        },
+        "panel/year=2023/panel-10.parquet": {
+          "bytes": 46444121,
+          "sha256": "21db1225c5b8a1f486a8fe3de9ebfbf7e4a222fbcb40c38dc91628b203fc2a17"
+        },
+        "panel/year=2023/panel-11.parquet": {
+          "bytes": 45312265,
+          "sha256": "9e6f3643a61b02720413d66d85672c2bb83bc7431b8eacea4cd970035dcc2f4d"
+        },
+        "panel/year=2023/panel-12.parquet": {
+          "bytes": 42465329,
+          "sha256": "b1b80e803b56e6c9016fdc6bc020e505cc45e2145e3a360150cbed31342b7685"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2023; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2024": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2024/panel-01.parquet": {
+          "bytes": 44006763,
+          "sha256": "de39e14e1d271fef8122e7c021fab2986e1aad6dac731096e85656f3e48be893"
+        },
+        "panel/year=2024/panel-02.parquet": {
+          "bytes": 42290947,
+          "sha256": "1100a155118a83f1932f13c854c08632146ae657facc780fcb22edda2147d156"
+        },
+        "panel/year=2024/panel-03.parquet": {
+          "bytes": 42161826,
+          "sha256": "2e261b0da0e5fb175f977e92aa95ee2ce6dfb86e34d5da83d446079e2244ac95"
+        },
+        "panel/year=2024/panel-04.parquet": {
+          "bytes": 46076705,
+          "sha256": "f3d7a44815c7c9eac8d204481b2d148bf2d920f13f644d0e1417f598d09834e3"
+        },
+        "panel/year=2024/panel-05.parquet": {
+          "bytes": 47262969,
+          "sha256": "b201d759c182cf25615d619fd0fa9e55dd6c3297d399f7421abe9aa774899d5f"
+        },
+        "panel/year=2024/panel-06.parquet": {
+          "bytes": 39842843,
+          "sha256": "bbef59f756d8cd2d790956be0a71dc8f0d8442566ab2b947cd6fce39a68b26ea"
+        },
+        "panel/year=2024/panel-07.parquet": {
+          "bytes": 46128272,
+          "sha256": "a49c9d3a61e56da5a2fdb9e9b4211368139ef7eea93c974eab9c532e977396c6"
+        },
+        "panel/year=2024/panel-08.parquet": {
+          "bytes": 47200985,
+          "sha256": "e5bfad864e0785726cb4270379988d08291d5700e98d4b74e8004d2127984a3a"
+        },
+        "panel/year=2024/panel-09.parquet": {
+          "bytes": 42477439,
+          "sha256": "1fd453feb315b07903b40a167de54fd4dd59c0210de8ed6b9e026a31d3580574"
+        },
+        "panel/year=2024/panel-10.parquet": {
+          "bytes": 49222543,
+          "sha256": "12f1a6d1231089f673b043bbfb78b8549e4819c3fd4d18e6ca296b2f88ec731c"
+        },
+        "panel/year=2024/panel-11.parquet": {
+          "bytes": 43864145,
+          "sha256": "d7249e1c1c4e9e46c384ef49f595243b8b386404d524b3e92270a116daa31220"
+        },
+        "panel/year=2024/panel-12.parquet": {
+          "bytes": 45186073,
+          "sha256": "4ac33d345eb025c6f94e858bac44ee83ad85e393dadec71d63f344bccfb67cfa"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2024; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2025": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2025/panel-01.parquet": {
+          "bytes": 43517675,
+          "sha256": "48ec4d23064af20a7643283e576c66071452632b6894af80221e2b87c43a126c"
+        },
+        "panel/year=2025/panel-02.parquet": {
+          "bytes": 41869144,
+          "sha256": "f0fd6c4bbeead119a1081dd5ad06cbc84abca72388b1303d3e76a387e1cc52df"
+        },
+        "panel/year=2025/panel-03.parquet": {
+          "bytes": 45860460,
+          "sha256": "29517abb60215cfb35db824fad914aa10a091f889e4ee93e4784dd1337b07537"
+        },
+        "panel/year=2025/panel-04.parquet": {
+          "bytes": 46157892,
+          "sha256": "c558c53f62647174f791b0fc0ebe3d7c8fae8b7f1625343c90e2a0cc8c9b6cd2"
+        },
+        "panel/year=2025/panel-05.parquet": {
+          "bytes": 47578130,
+          "sha256": "0f3c0383bfe4b7f6d099e97afa0e66d150082e7b59cd7935a61987c6f6a80561"
+        },
+        "panel/year=2025/panel-06.parquet": {
+          "bytes": 44820000,
+          "sha256": "2a87624753a3ea888e9bc1f093d32bda5a1babebd92fa8c0e905608759c12279"
+        },
+        "panel/year=2025/panel-07.parquet": {
+          "bytes": 49795989,
+          "sha256": "1c64ce43d694955077c709eb3b7896f4d3301584410fe68992f0ad79509f8b2b"
+        },
+        "panel/year=2025/panel-08.parquet": {
+          "bytes": 48655275,
+          "sha256": "19441f4f902175b03aec12c0bd2e103e49e976ebe26536bd4341e1eb7db6e377"
+        },
+        "panel/year=2025/panel-09.parquet": {
+          "bytes": 48205242,
+          "sha256": "13f13279abaf0b413ace762e862d8ad368b9145f35493b77d2bdd3df2f94d092"
+        },
+        "panel/year=2025/panel-10.parquet": {
+          "bytes": 53220824,
+          "sha256": "7d131a48c0a59411a48e839a40aff7e8b432d545641933b2c9c02a07d5b41b0b"
+        },
+        "panel/year=2025/panel-11.parquet": {
+          "bytes": 45579845,
+          "sha256": "7e1023dbf676b2ba83ccbb871eb51d135584820806600e869fa4a772f099eecb"
+        },
+        "panel/year=2025/panel-12.parquet": {
+          "bytes": 52005718,
+          "sha256": "57de97cba1443b65cddb87e051b1de257ed96436c0c2a1c52e146e9b3871ab1c"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2025; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "panel_2026": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "panel/year=2026/panel-01.parquet": {
+          "bytes": 47081524,
+          "sha256": "0e347acfa087498ec91da3e73d987f79ec2924f52a5c032abca251c5f29fcabc"
+        },
+        "panel/year=2026/panel-02.parquet": {
+          "bytes": 45491858,
+          "sha256": "987af9810700ef0e54968c18ab75ca27c27734249f267823797279e8d9724739"
+        },
+        "panel/year=2026/panel-03.parquet": {
+          "bytes": 53937200,
+          "sha256": "e5bc7fa6d38bdbad94b7d5189140ec9b03782530298cc11592e82da4a66f6b53"
+        },
+        "panel/year=2026/panel-04.parquet": {
+          "bytes": 52256304,
+          "sha256": "e5d0ac8f3627dbb495cf419e5e16c3df69d3cbb0de68e1d45d67ef5f1a39d758"
+        },
+        "panel/year=2026/panel-05.parquet": {
+          "bytes": 51569197,
+          "sha256": "995887f9589664281c82007e610939cb13503ff82cf9dd75cbed9bb81f803208"
+        },
+        "panel/year=2026/panel-06.parquet": {
+          "bytes": 53709908,
+          "sha256": "6867862327cc4a748aefe6c2efa80fc9239000ad380f313c6c637f2fbba8642c"
+        },
+        "panel/year=2026/panel-07.parquet": {
+          "bytes": 56684394,
+          "sha256": "f5df98b4a11a262698eb0a02606afd76298bd7662a2075b8f0d446f59f8feb06"
+        },
+        "panel/year=2026/panel-08.parquet": {
+          "bytes": 54670043,
+          "sha256": "d1d423e1d94376f434e5ae57340653ab3c16a664a325fa65ff519c56ccd2dfa4"
+        },
+        "panel/year=2026/panel-09.parquet": {
+          "bytes": 33568037,
+          "sha256": "926ca8ca62f80b77374d72428692e9586e3ac2fd7a75ff66c9d1a6ad5a8ed35f"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product panel_2026; producer declaration panel/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "profile": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "sec_filings/issuer_profile.parquet": {
+          "bytes": 18250863,
+          "sha256": "d93e9b02b81b07445572d5a02a2ff9af080eabe852bb8a3707ad518976fd26ac"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product profile; producer declaration sec_filings/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "reconstitutions": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "indexes/recon_summary.parquet": {
+          "bytes": 6971,
+          "sha256": "37b26dcbc7545d25e2e91d81b2011f23f209d3390051da18b5424b3f7e5576e0"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product reconstitutions; producer declaration indexes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "regime": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "sec_filings/filer_regime.parquet": {
+          "bytes": 1450121,
+          "sha256": "02e1583c11b4804407ec0c1dfde98d4a8cdbc6ec42ac807074c33197e1f74ec5"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product regime; producer declaration sec_filings/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "reit": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "issuer_classes/reit_status.parquet": {
+          "bytes": 10448,
+          "sha256": "f057d8f8551585cc5e0b1ea0952954339acc6e0afd7c1bb948f199cca7cd872c"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product reit; producer declaration issuer_classes/manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2018": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2018/shares_daily.parquet": {
+          "bytes": 12830919,
+          "sha256": "c57994c9e3acff8b2cc179c2dd112c376b5fa1dc422672f9117d225c46117384"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2018; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2019": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2019/shares_daily.parquet": {
+          "bytes": 16198525,
+          "sha256": "99ecd33afca97ef4bdbb0373faed4ab94d7b020daff0865fc477f182f65d1d6f"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2019; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2020": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2020/shares_daily.parquet": {
+          "bytes": 16733540,
+          "sha256": "0db1453a97bdb83785460fd7cc6b365119876877bb15f4f336ef0481a2c08e4e"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2020; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2021": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2021/shares_daily.parquet": {
+          "bytes": 19890971,
+          "sha256": "bf1f8f37b6e9f3097f28f21b2a376674d4b4172f33be0b552d374ca043cc6dd7"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2021; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2022": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2022/shares_daily.parquet": {
+          "bytes": 24529471,
+          "sha256": "6215098a822f51e70a0f030d7077b5c8064148b51157cd05e4c4516e5a5ba50e"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2022; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2023": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2023/shares_daily.parquet": {
+          "bytes": 22570797,
+          "sha256": "c0f16aadaf15e3c7c937ed0de84625820fc5dca7ecba75087a334e0855f671a3"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2023; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2024": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2024/shares_daily.parquet": {
+          "bytes": 22061192,
+          "sha256": "aaeec1abf489848de9ad8a1513b5e4cb9e6a2262211151b992b1f40f948bf1ca"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2024; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2025": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2025/shares_daily.parquet": {
+          "bytes": 24602667,
+          "sha256": "6dbf1c76845264d354828b01e3c0c9712d7119a5eadc62fdec93a53ef9921f9e"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2025; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    },
+    "shares_2026": {
+      "admission": "BYTE_IDENTITY_ONLY. Independent root two-pass audit C:/atx/.superpowers/sdd/tier1-v4/task16-reader-byte-audit-v1.json SHA256=a542200c78a9770d6ce494222e1b57d8cbc961cb0d7bc388235dcae4dc97874b: identical complete actual file sets, zero producer mismatches. Require reviewed R15 source/code/key/counter validation at build and consumption. No economic, membership or production certification; original French/I4 FAIL remains.",
+      "clock": "Preserve the native reader clock and historical vintage limitations. This byte audit does not certify row availability or permit a clock override; strict GC1 admission and original source gaps remain binding.",
+      "files": {
+        "market/shares_daily/year=2026/shares_daily.parquet": {
+          "bytes": 21771621,
+          "sha256": "bee5f3bae6b2e4276fce000454e6966b8427442c558d15ecf1128e220ce493f4"
+        }
+      },
+      "source": "Retained alpha_panel/v1 reader product shares_2026; producer declaration market/market_shares_manifest.json. Actual retained bytes verified against all declared producer members; original-source economic qualification remains unestablished."
+    }
+  },
+  "version": "reader_binding_v1"
+}

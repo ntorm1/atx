@@ -156,6 +156,30 @@ Branch `feat/tier1-v3-warehouse`, start HEAD a3e02c6e. Workspace `.superpowers/s
 
 ## Release objective recovery (2026-10-03)
 
+- 23:35UTC: universefoundation864c6233 +root52productbinding independently
+  scopedApproved; rootowns LIVE firstyearcandidate job8796 (.8cap, guard16336,
+  stub26312/actual22236), r15_20261003_001 maxnewyears1. Noactualcompletionyet;
+  no competingdatajobs orrootfinalwhilelive. Source/counterreplay cost measured
+  onlywhenreceiptcompletes. Task11checkpointcb0e1137 frozenforindependentreview.
+- RulingR17 task-5-release-admission-ruling.md routesnativefundbatch provenance
+  defect intoindependentTask16release integration, preservingTask5cap5 andall
+  financialcriteria. /root/t6_factors designsources/code/144prep/85units/newattempts
+  and explicitphysical/logicalv11name interface; implementationapproved. Native
+  legacycompletedbatchesremainNOT_ADMITTED. /root/t7_characteristics startsnative
+  registry/formula/adapters, noactualdata andno implicitdefaultstagefallback.
+
+- 23:27UTC: Task6fixround2 c416c684 scopedApproved,9reviewtests12.25s; realgates
+  unmeasured. Author now designs separate Task16 fundamentals batch admission
+  underR15, noTask5produceredits/no sixthloop. Preserve logical/physicalv11names.
+  Universefoundation864c6233 fixround1 (32tests40.47s) independentlyreviewednext
+  by /root/t5_prebuild_review, includingroot's explicit52productbyteonlybinding.
+- Task5 one freshnewbatch0001 completed97.4s/.5538GiB,99CIKs/690783facts/
+  4048events/141419history, fullprepextractverificationbefore/prepafter.
+  Completedparts0000+0001of85remainNOT_ADMITTED. Original4bytepartial preserved
+  withsameSHA; badpostmoveFileInfo metadata corrected inseparateaudit, rawreceipt
+  retained. t5-operational-recovery-v4.md recordscommands/logs/remainingdependency.
+  No rootdatajobalive; nofinalfund/standardized/ratiospublication.
+
 - 23:16UTC: Task16 initial independent review Needs fixes (review-T16-foundation-
   findings.md): payload counter binding, validator's independently complete input/
   code/evidence contract, invariant manifest/gate schema; plus root-isolation and

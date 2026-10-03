@@ -2,6 +2,42 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+Latest at23:35UTC: ROOT LIVE DATA JOB session8796, guard16336/stub26312/actual
+python22236, logs/t16-universe-year2018-v1.*, .8GiB unchanged cap. First reviewed
+universe_release_v1 candidate r15_20261003_001, --max-new-years1. Native CPU active;
+source/admission/replay work adds cost, peaksofar.471GiB; no completion yet.
+Do not end root turn or launch another data job. Foundation864c6233 androotbinding
+scopedApproved in review-T16-foundation-r1-findings.md; allrealacceptancepending.
+
+Task11 coherentcheckpointcb0e1137 (plus0c92521b/29d2dd29) frozen while
+/root/t5_prebuild_review independently reviews fullpackage. Task11 remains partial,
+35focusedfixtureidentities, source/bronze/fullnativeassembly/filer/stakes/builds
+open. /root/t6_factors implements independentfund_batch_release under new R17
+task-5-release-admission-ruling.md; designapproved, noTask5produceredits orlegacy
+unitblessing. /root/t7_characteristics newlyspawnedGPT6.1Sol implements fullnative
+monthlylibrary afterdesignapproval; staticfinalv11schema andexplicitR15generation
+bindings required, actualdataheld. Root+threeactiveagents; nootherdatajobgrants.
+
+Latest at23:27UTC: no root live data job. Task6 c416c684 independently Approved
+scoped round2 in review-T6-prebuild-r2-findings.md (9tests12.25s); allactualgates
+stillunmeasured. /root/t6_factors now DESIGN ONLY independent Task16 batch-release
+admission perR15, notTask5producerfix; logical and physical fundamentals_v11
+names must remain to preserve sourcebackedbranches. Full source/code/prep/output
+identity and immutable freshcandidateunits required; noafter-the-factblessing.
+
+Task16 universefoundation fixround1 commit864c6233 has32tests40.47s and is under
+/root/t5_prebuild_review independent scoped review. Root prepared candidate-only
+52productbinding task16-reader-binding-v1.json SHA71e10cad2f2096fd3922da949051e962b9710d1e6973e3c47f80ae5a2af64d6c
+from independenttwopassbyteevidence; reviewer alsochecksdocument, no buildyet.
+
+Task5 new-onlybatch0001 completed97.4s/.5538GiB, native53.45s/99CIKs/690783facts/
+4048events/141419history. Preparation/extractverifiedbefore andprepafter. Completed
+legacybatchesnow0000+0001of85, stillNOT_ADMITTED/nofinalstage. Interrupted4byte
+historypartial preserved; originalpreservationreceipt's nullsize/1601timestamp
+correctedinseparatemetadataauditwithoutoverwritingoriginal. Read
+t5-operational-recovery-v4.md and logs forpreciseevidence. Task11 bringing native
+cohort/coverage/NPORT checkpoint tocommitforreview, fullbronze/filer/stakespending.
+
 Latest at23:16UTC: root has no live data job. Task16 independent review in
 review-T16-foundation-findings.md Needs fixes: I1 counters not bound to payload,
 I2 fullvalidator accepts abbreviated reader/code/external inventory, I3 unsupported
