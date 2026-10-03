@@ -39,7 +39,7 @@ constexpr int dsl_vm_semantics_version=1;
 // a semantic change bumps dsl_vm_semantics_version (clean cache miss); either way
 // the pin is re-set. The test also fails if a listed file includes an unlisted
 // atx/engine header, so the list cannot silently fall behind the closure.
-constexpr std::array<std::string_view,34> dsl_vm_sources{
+constexpr std::array<std::string_view,35> dsl_vm_sources{
     "atx-engine/include/atx/engine/alpha/asof_ops.hpp",
     "atx-engine/include/atx/engine/alpha/bytecode.hpp",
     "atx-engine/include/atx/engine/alpha/cs_ops.hpp",
@@ -49,6 +49,7 @@ constexpr std::array<std::string_view,34> dsl_vm_sources{
     "atx-engine/include/atx/engine/alpha/fwd.hpp",
     "atx-engine/include/atx/engine/alpha/lexer.hpp",
     "atx-engine/include/atx/engine/alpha/lit_ops.hpp",
+    "atx-engine/include/atx/engine/alpha/op_traits.hpp",
     "atx-engine/include/atx/engine/alpha/panel.hpp",
     "atx-engine/include/atx/engine/alpha/parser.hpp",
     "atx-engine/include/atx/engine/alpha/registry.hpp",
@@ -77,6 +78,11 @@ constexpr std::array<std::string_view,34> dsl_vm_sources{
 // v8 lane YOPS re-pinned WITHOUT a bump: it adds opcodes and kernels (group_sum,
 // group_delay, the as-of rank family; asof_ops.hpp) and changes no evaluated bit of
 // any pre-existing DSL string (a string naming a new op could not parse before).
+// P9 S2 re-pinned WITHOUT a bump: the per-opcode table (op_traits.hpp, joining the closure)
+// replaces hand-written predicate lists with the same sets, the serial kernels run in worker bands
+// of their chunk axis (byte-identical at every pool size; serial without a pool) and the W2 Ts
+// windows are sliced from a once-extracted column (the same values in the same order). No
+// evaluated bit changes; the worker-parity and slot-reuse suites pin it.
 constexpr std::string_view dsl_vm_sources_sha256=
     "fcf8021e76ee5ac3c161302367a27b8f6c49cd28a580d1339ff801d9feca1619";
 // Entries written before this identity existed sit directly under DIR/<sha>/ with
@@ -95,9 +101,13 @@ constexpr const char* cache_layout="date-major-little-endian-f64;non-finite-stor
 // which shares the VM-instantiating runner TU's flag set (strategy_ic_detail.hpp). The equity-dev
 // Debug flavour keeps the empty token, so its identity, cache root and summaries keep their bytes;
 // any other flavour (equity-rel) appends one and gets its own cache root: no shared entries.
-std::string vm_identity() {
+// P9 S2: --eval-mode audit-exact entries carry the "_audit" token (their own cache root and
+// sidecar identity), so AuditExact and ResearchFast signals never share an entry; the default
+// (ResearchFast) identity keeps its bytes.
+std::string vm_identity(bool audit_exact) {
   return "dslvm"+std::to_string(dsl_vm_semantics_version)+"_"+std::string(vm_compiler)+
-      std::string(vm_fp_flavor)+atx::engine::build_flavor_suffix(ATX_ENGINE_BUILD_FLAVOR);
+      std::string(vm_fp_flavor)+atx::engine::build_flavor_suffix(ATX_ENGINE_BUILD_FLAVOR)+
+      (audit_exact?"_audit":"");
 }
 // ---- Candidate signal cache -------------------------------------------------
 // ROOT is DIR/<vm identity>/ (DIR itself for the legacy identity), so a VM or
@@ -140,7 +150,8 @@ co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,Ha
   return status;
 }
 std::filesystem::path cache_root(const IcRunnerConfig& cfg) {
-  const auto root=std::filesystem::path(cfg.candidate_cache_directory); const auto identity=vm_identity();
+  const auto root=std::filesystem::path(cfg.candidate_cache_directory);
+  const auto identity=vm_identity(cfg.audit_exact);
   return identity==legacy_vm_identity?root:root/identity;
 }
 namespace {
@@ -151,7 +162,7 @@ std::string field_lines(const FieldShas& fields) {
 }
 // The exact bytes the signal key hashes (see the layout comment above).
 std::string signal_key_text(const CacheKey& key,const std::string& dsl_sha) {
-  return std::string(signal_key_schema)+"\nvm_identity="+key.vm_identity+"\neval_mode="+vm_eval_mode+
+  return std::string(signal_key_schema)+"\nvm_identity="+key.vm_identity+"\neval_mode="+key.eval_mode+
       "\nlayout="+cache_layout+"\nrole_manifest_sha256="+key.role_sha+"\ndates="+std::to_string(key.dates)+
       "\ninstruments="+std::to_string(key.instruments)+"\ndsl_sha256="+dsl_sha+"\n"+field_lines(key.fields);
 }
@@ -166,7 +177,8 @@ co::Result<CacheKey> cache_key(const IcRunnerConfig& cfg,const Role& role,const 
   CacheKey key;
   key.stem=c.id+"."+c.dsl_sha.substr(0,16); key.role_sha=role.sha;
   key.dates=role.metadata.at("dates").get<u64>(); key.instruments=role.metadata.at("instruments").get<u64>();
-  key.vm_identity=vm_identity(); key.dir=cache_root(cfg)/role.sha;
+  key.vm_identity=vm_identity(cfg.audit_exact); key.dir=cache_root(cfg)/role.sha;
+  key.eval_mode=cfg.audit_exact?vm_eval_mode_audit:vm_eval_mode;
   for (const auto& name:c.extra_fields) {
     const auto bound=std::find_if(role.fields.load.begin(),role.fields.load.end(),
         [&](const FieldFile& field) { return field.name==name; });
@@ -293,7 +305,7 @@ u64 count_field(const Json& j,const char* key) {
 // Checks shared by both layouts: this candidate on this role geometry and eval mode.
 bool same_geometry(const Json& j,const CacheKey& key,const Candidate& c) {
   return j.is_object() && text_field(j,"candidate_id")==c.id && text_field(j,"dsl_sha256")==c.dsl_sha &&
-      text_field(j,"role_manifest_sha256")==key.role_sha && text_field(j,"eval_mode")==vm_eval_mode &&
+      text_field(j,"role_manifest_sha256")==key.role_sha && text_field(j,"eval_mode")==key.eval_mode &&
       text_field(j,"layout")==cache_layout && count_field(j,"dates")==key.dates &&
       count_field(j,"instruments")==key.instruments &&
       count_field(j,"bytes")==key.dates*key.instruments*sizeof(f64);
@@ -467,7 +479,7 @@ co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,c
       {"role_manifest_sha256",key.role_sha},{"role",spec.name},{"source_sha256",role.source_sha256},
       {"dates",key.dates},{"instruments",key.instruments},{"bytes",signal.size()*sizeof(f64)},
       {"layout",cache_layout},{"payload",key.stem+".f64"},{"payload_sha256",sha},
-      {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",vm_eval_mode},
+      {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",key.eval_mode},
       {"vm_workers",cfg.workers},{"engine_git_sha",std::string(build_engine_git_sha())},
       {"vm_identity",key.vm_identity},{"field_payload_sha256",fields_json(key.fields)},
       {"signal_key_sha256",key.signal_key}};
@@ -515,7 +527,7 @@ co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const R
   ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known));
   Json plan{{"role",role.name},{"directory",(cache_root(cfg)/role.sha).string()},{"layout",cache_schema_v2},
       {"ready_entries",resolved.ready},{"legacy_ready_entries",resolved.legacy},
-      {"candidates",lib.candidates.size()},{"vm_identity",vm_identity()}};
+      {"candidates",lib.candidates.size()},{"vm_identity",vm_identity(cfg.audit_exact)}};
   if (!lib.extra_fields.empty()) plan["fields_directory"]=(cache_root(cfg)/role.fields.sha).string();
   return co::Ok(std::move(plan));
 }
@@ -576,7 +588,8 @@ co::Status scan_entries(const std::filesystem::path& dir,const std::set<std::str
 co::Result<Json> cache_report(const IcRunnerConfig& cfg,const Library& lib,const std::vector<Role>& roles,
                               const KnownManifests& known) {
   const auto root=cache_root(cfg);
-  Json report{{"mode","cache-report"},{"root",root.string()},{"vm_identity",vm_identity()},
+  Json report{{"mode","cache-report"},{"root",root.string()},
+      {"vm_identity",vm_identity(cfg.audit_exact)},
       {"layout",cache_schema_v2},{"roles",Json::array()}};
   std::set<std::string> referenced;
   for (const auto& role:roles) {

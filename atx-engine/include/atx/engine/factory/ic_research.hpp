@@ -18,7 +18,27 @@ struct ResearchIcCoverage {
   // are counted after presence admission; never sum these as a partition.
   atx::u64 missing_entry_pairs{}, missing_exit_pairs{}, guard_excluded_pairs{};
   atx::u64 invalid_price_pairs{}, nonfinite_return_pairs{};
+  // P9 S2: finite labels whose exit is an imputed terminal session (LabelTerminalRule::ImputedV1;
+  // always 0 under MissingExitV1). A subset of both missing_exit_pairs and finite_label_pairs.
+  atx::u64 terminal_imputed_pairs{};
 };
+// P9 S2 (DSL/IC review §7 item 3): the label of a pair whose exit session is absent.
+//   * MissingExitV1 (the default, every label before P9): no label. The IC and its HAC t are then
+//     conditional on surviving the horizon, a bias that depends on the signal.
+//   * ImputedV1: when a label-only panel prices the name on a session T in (entry, end] where the
+//     scored panel does not (the termination session a role built with delisting returns adds),
+//     the label is close_label[T] / close[entry] - 1: the position exits at its imputed terminal
+//     return and holds cash to the horizon end. Every other pair is labelled exactly as under
+//     MissingExitV1 (the caller binds the label panel to the scored one: equal axes, and equal
+//     close and presence wherever the scored panel is present). The label panel is read during
+//     preparation only: it never reaches a signal and need not outlive prepare_research_ic.
+enum class LabelTerminalRule : atx::u8 { MissingExitV1 = 0, ImputedV1 = 1 };
+struct ResearchIcTerminal {
+  LabelTerminalRule rule{LabelTerminalRule::MissingExitV1};
+  const alpha::Panel* label{nullptr}; // ImputedV1: the label-only panel (borrowed)
+  std::string_view price_field{"close"};
+};
+[[nodiscard]] std::string_view label_terminal_rule_name(LabelTerminalRule rule) noexcept;
 struct ResearchIcResult {
   IcScreenResult screen;
   std::array<ResearchIcCoverage,4> coverage{};
@@ -41,7 +61,7 @@ private:
   std::shared_ptr<const ic_screen_detail::Cache> data_;
   friend atx::core::Result<ResearchIcCache> prepare_research_ic(const alpha::Panel&,
       const IcScreenConfig&,const ResearchIcOptions&,std::span<const atx::u8>,
-      std::span<const atx::u32>,std::string_view);
+      std::span<const atx::u32>,std::string_view,const ResearchIcTerminal&);
   friend atx::core::Result<ResearchIcScratch> prepare_research_ic_scratch(const ResearchIcCache&);
   friend atx::core::Result<ResearchIcResult> evaluate_research_ic(
       std::span<const atx::f64>,const ResearchIcCache&,ResearchIcScratch&,parallel::DetPool*);
@@ -78,7 +98,8 @@ private:
 [[nodiscard]] atx::core::Result<ResearchIcCache> prepare_research_ic(
     const alpha::Panel&,const IcScreenConfig&,const ResearchIcOptions&,
     std::span<const atx::u8> decision_membership={},
-    std::span<const atx::u32> bad_return_prefix={},std::string_view price_field="close");
+    std::span<const atx::u32> bad_return_prefix={},std::string_view price_field="close",
+    const ResearchIcTerminal& terminal={});
 [[nodiscard]] atx::core::Result<ResearchIcScratch> prepare_research_ic_scratch(const ResearchIcCache&);
 [[nodiscard]] atx::core::Result<ResearchIcResult> evaluate_research_ic(
     std::span<const atx::f64>,const ResearchIcCache&,ResearchIcScratch&,

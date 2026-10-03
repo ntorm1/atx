@@ -1,6 +1,7 @@
 #include "strategy_ic_detail.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -13,6 +14,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include "atx/engine/data/research_window.hpp"
+#include "atx/engine/data/strategy_data.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_rules.hpp"
 
@@ -46,6 +49,15 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
   if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
   if (parallel_ic && cfg.workers!=1) recipe["research_ic_workers"]=cfg.workers;
   if (cfg.save_combined) recipe["saved_combined"]="date-major-f64-with-explicit-support-v1";
+  // P9 S2: each IC method option is recorded only when given (absent: the recipe keeps its bytes).
+  // The label role pins themselves are recorded per scored role by run_ic.
+  if (cfg.min_coverage!=ex::kDefaultIcMinCoverage) recipe["min_coverage"]=cfg.min_coverage;
+  if (!cfg.ic_hac_rule.empty()) recipe["ic_hac_rule"]=cfg.ic_hac_rule;
+  if (!cfg.label_terminal.empty()) {
+    recipe["label_terminal"]=cfg.label_terminal;
+    recipe["labels"]="close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity;"
+        "missing-exit:first-label-role-only-session-in-(d+1,d+1+h]-at-its-imputed-close-then-cash";
+  }
   // Absent weights leave the recipe byte-identical; pinned weights change both
   // the method statement and the canonical hash. The candidate cache is not a
   // method input: a verified hit is the exact VM output it replaces.
@@ -116,6 +128,34 @@ co::Status expect_frozen_fields(const IcRunnerConfig& cfg,const Library& lib,con
   expected["research_fields"]=fields_recipe(std::move(pins),lib);
   return co::Ok();
 }
+// P9 S2: likewise the label role pins of --label-terminal imputed-v1 (run_ic records one per scored
+// role). TRAIN's is taken from the source (its label role is never opened here) and, if
+// re-supplied, must match; a validation pin must equal this run's.
+co::Status expect_frozen_label_roles(const IcRunnerConfig& cfg,const Json& recipe,Json& expected) {
+  const auto differs=[] {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN label role pin differs");
+  };
+  if (!recipe.contains("label_role_manifest_sha256")) {
+    if (!cfg.train_label_role_sha256.empty()) return differs();
+    return co::Ok();
+  }
+  const auto& source=recipe.at("label_role_manifest_sha256");
+  if (!source.is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN label role record");
+  Json pins=Json::object();
+  if (source.contains("train")) {
+    const auto& train=source.at("train");
+    if (!train.is_string() || !hash_valid(train.get<std::string>()))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN label role record");
+    pins["train"]=train;
+  }
+  if (!cfg.train_label_role_sha256.empty() &&
+      (!pins.contains("train") || pins.at("train")!=cfg.train_label_role_sha256))
+    return differs();
+  if (source.contains("validation")) pins["validation"]=cfg.validation_label_role_sha256;
+  expected["label_role_manifest_sha256"]=std::move(pins);
+  return co::Ok();
+}
 } // namespace
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train) {
   ATX_TRY(auto artifact,pinned_json(cfg.orientations_path,cfg.orientations_sha256));
@@ -158,6 +198,7 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
   if (recipe.at("role_manifest_sha256").contains("validation"))
     expected["role_manifest_sha256"]["validation"]=cfg.validation_sha256;
   ATX_TRY_VOID(expect_frozen_fields(cfg,lib,recipe,expected));
+  ATX_TRY_VOID(expect_frozen_label_roles(cfg,recipe,expected));
   if (recipe!=expected)
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN method/statistical settings/role pins differ");
   const auto& rows=artifact.at("candidates");
@@ -272,7 +313,21 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
       return co::Err(co::ErrorCode::Unavailable,"IC runner: combined IC label/rank/scratch budget");
   }
   term("label_bytes");
-  // No second VM or label cache: only worker-local Cs/TS scratch. Allow 2x
+  // P9 S2 (--label-terminal imputed-v1; absent: no term, the bytes above): the pinned label role
+  // is resident beside the role while its labels prepare (role26, dropped before any VM), and
+  // today's labels stay prepared beside the imputed ones with their own row scratch, so each
+  // candidate also prints its IC under them (ic_missing_exit_v1).
+  if (!cfg.label_terminal.empty()) {
+    if (!b.add(cells,26)) return budget_refusal();
+    for (u64 h:{5ULL,21ULL,63ULL}) {
+      const auto mature=score_dates>h+1?score_dates-h-1:0;
+      if (!b.add(mature*n,16) || !b.add(mature,32))
+        return co::Err(co::ErrorCode::Unavailable,"IC runner: combined IC label/rank/scratch budget");
+    }
+    term("label_terminal_bytes");
+  }
+  // No second VM: only worker-local Cs/TS scratch (a second label cache only under
+  // --label-terminal, above). Allow 2x
   // vector growth within1024B/name and64B/date; add64B/name for IC row buffers;
   // separately reserve8MiB stack
   // address/commit envelope plus64KiB runtime slack per explicit worker. This
@@ -291,6 +346,88 @@ co::Status within_budget(const IcRunnerConfig& cfg,const Library& lib,const Role
                    "IC runner: required_bytes="+std::to_string(role.bytes)+" max_compiled_slots="+
                    std::to_string(lib.max_slots)+
                    " exceeds configured memory budget before payload load");
+  return co::Ok();
+}
+co::Status check_ic_method_options(const IcRunnerConfig& cfg,bool validation_only) {
+  const auto refused=[](const std::string& what) {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+what);
+  };
+  if (!std::isfinite(cfg.min_coverage) || cfg.min_coverage<=0.0 || cfg.min_coverage>1.0)
+    return refused("--min-coverage must be in (0, 1]");
+  if (!cfg.ic_hac_rule.empty() && cfg.ic_hac_rule!="bartlett-2h-v1" && cfg.ic_hac_rule!="horizon-aware-v3")
+    return refused("--ic-hac-rule takes bartlett-2h-v1 or horizon-aware-v3");
+  if (!cfg.label_terminal.empty() && cfg.label_terminal!="imputed-v1")
+    return refused("--label-terminal takes imputed-v1");
+  if (cfg.train_label_role.empty()!=cfg.train_label_role_sha256.empty() ||
+      cfg.validation_label_role.empty()!=cfg.validation_label_role_sha256.empty())
+    return refused("each --*-label-role needs its --*-label-role-sha256 (and the reverse)");
+  const bool train_pin=!cfg.train_label_role.empty(),validation_pin=!cfg.validation_label_role.empty();
+  if (cfg.label_terminal.empty()) {
+    if (train_pin || validation_pin) return refused("--*-label-role is read only with --label-terminal imputed-v1");
+    return co::Ok();
+  }
+  if (validation_pin && cfg.validation_manifest.empty())
+    return refused("--validation-label-role needs --validation");
+  if ((!validation_only && !train_pin) || (!cfg.validation_manifest.empty() && !validation_pin))
+    return refused("--label-terminal imputed-v1 needs a pinned label role for every scored role "
+                   "(--train-label-role / --validation-label-role with their SHA-256)");
+  return co::Ok();
+}
+ex::IcHacRule ic_hac_rule(const IcRunnerConfig& cfg) noexcept {
+  return cfg.ic_hac_rule=="horizon-aware-v3"?ex::IcHacRule::HorizonAwareV3:ex::IcHacRule::Bartlett2hV1;
+}
+LabelRolePin label_role_pin(const IcRunnerConfig& cfg,const std::string& role_name) {
+  if (role_name=="train") return {cfg.train_label_role,cfg.train_label_role_sha256};
+  if (role_name=="validation") return {cfg.validation_label_role,cfg.validation_label_role_sha256};
+  return {};
+}
+co::Status admit_label_role(const IcRunnerConfig& cfg,const Role& role) {
+  const auto pin=label_role_pin(cfg,role.name);
+  const auto option="--"+role.name+"-label-role";
+  if (pin.path.empty() || pin.sha.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --label-terminal imputed-v1 needs "+option+
+        " (and its SHA-256) for the scored "+role.name+" role");
+  ATX_TRY(auto text,pinned_text(pin.path,pin.sha));
+  // The one relaxation of Ruling E-10: this role prices labels only. It must be the role builder's
+  // --delisting-returns build (an unpatched role would impute nothing and is refused as a mistake).
+  ATX_TRY(const bool applied,engine::data::role_delisting_returns_applied(text));
+  if (!applied)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" must be the role builder's "
+        "--delisting-returns build of the "+role.name+" role (universe.delisting.returns_applied true): "+pin.path);
+  const auto j=Json::parse(text);
+  const auto& m=role.metadata;
+  for (const auto* key:{"dates","instruments","score_begin","score_end"})
+    if (!j.contains(key) || j.at(key)!=m.at(key))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" "+key+" differs from the pinned "+
+          role.name+" role manifest's");
+  const auto& files=j.at("files"); const auto& receipts=m.at("files");
+  for (const auto* file:{"sessions.i64","ids.u64"})
+    if (!files.contains(file) || files.at(file).at("sha256")!=receipts.at(file).at("sha256"))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" "+file+
+          " differs from the pinned "+role.name+" role manifest's (the label role shares its sessions and ids)");
+  return co::Ok();
+}
+co::Status bind_label_role(const engine::data::StrategyRoleData& role,
+                           const engine::data::StrategyRoleData& label) {
+  const auto& scored=role.panel; const auto& priced=label.panel;
+  if (scored.dates()!=priced.dates() || scored.instruments()!=priced.instruments() ||
+      role.session_keys!=label.session_keys || role.instrument_ids!=label.instrument_ids ||
+      role.score_begin!=label.score_begin || role.score_end!=label.score_end)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role axes differ from the scored role's");
+  ATX_TRY(const auto scored_id,scored.field_id(ic_price_field));
+  ATX_TRY(const auto priced_id,priced.field_id(ic_price_field));
+  const auto scored_close=scored.field_all(scored_id),priced_close=priced.field_all(priced_id);
+  const auto n=scored.instruments();
+  for (usize d=0;d<scored.dates();++d)
+    for (usize i=0;i<n;++i) {
+      if (!scored.in_universe(d,i)) continue;
+      const auto k=d*n+i;
+      if (!priced.in_universe(d,i) ||
+          std::bit_cast<u64>(scored_close[k])!=std::bit_cast<u64>(priced_close[k]))
+        return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role differs from the scored role "
+            "on a cell the role presents (date "+std::to_string(d)+", instrument "+std::to_string(i)+
+            "); a label role may only add presence (its termination sessions)");
+    }
   return co::Ok();
 }
 namespace {
@@ -326,6 +463,25 @@ Json field_definition(const Json& row) {
   }
   out["plausibility"]=std::move(domain);
   return out;
+}
+// P9 S2 (ruling P13, the IC half of the C++ seal consumer; research/fields/reuse.cpp is the
+// builder's): "match" when the manifest's seal.exclusive_end is this build's research seal, "absent"
+// for a legacy manifest without one (no seal block, or a block without exclusive_end, as the
+// Python producer reads it), accepted and logged by score_role. A present exclusive_end that is
+// not this build's seal, or a malformed seal block, refuses.
+co::Result<std::string> fields_seal(const Json& manifest,const std::string& role_name) {
+  const auto seal=manifest.find("seal");
+  if (seal==manifest.end()) return co::Ok(std::string("absent"));
+  if (!seal->is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role_name+
+        " fields manifest seal block is not an object");
+  const auto recorded=seal->find("exclusive_end");
+  if (recorded==seal->end()) return co::Ok(std::string("absent"));
+  if (!recorded->is_string() || recorded->get<std::string>()!=engine::data::kSealBeginDate)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role_name+
+        " fields manifest was built under the seal "+recorded->dump()+"; this build's seal is "+
+        std::string(engine::data::kSealBeginDate)+" ("+std::string(engine::data::kResearchWindowId)+")");
+  return co::Ok(std::string("match"));
 }
 } // namespace
 // Review M5: with both manifests pinned, every declared extra must mean the same
@@ -369,6 +525,7 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
   if (!j.is_object() || j.value("schema",std::string{})!=fields_schema ||
       j.value("status",std::string{})!="complete" || !j.contains("role") || !j.at("role").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest schema");
+  ATX_TRY(auto seal,fields_seal(j,role.name));
   const auto& bound=j.at("role");
   if (bound.value("manifest_sha256",std::string{})!=role.sha ||
       receipts.at("sessions.i64").at("sha256")!=bound.value("sessions_sha256",std::string{}) ||
@@ -405,7 +562,7 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
           "' is not point-in-time in the pinned "+role.name+" fields manifest (non_pit_aspects: "+
           it->second.non_pit_aspects+"); refusing look-ahead");
   }
-  RoleFields bound_fields{directory,pin,{},{}};
+  RoleFields bound_fields{directory,pin,{},{},std::move(seal)};
   for (const auto& name:lib.declared_extra) bound_fields.declared[name]=available.at(name).definition;
   for (const auto& name:lib.extra_fields) {
     const auto& field=available.at(name);
