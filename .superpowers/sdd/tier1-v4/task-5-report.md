@@ -79,3 +79,6 @@ atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider 
 ```
 
 Results: **23PASS6.58s**; final exact-data-set checks **16PASS2.21s**; final prior-contract assertions **5PASS1.24s**. No real-data scans, source writes/reuse, stage publication, HTTP, foreign edits or acceptance threshold/denominator changes. All actual acceptance measurements remain pending; Task4 remains OPEN0/6PASS. Await scoped re-review/data-slot grant.
+
+## Interrupted fund reconciliation (2026-10-03)
+Read-only guarded inspection completed exit 0 in 3.0s, peak 0.0439 GiB (.4 GiB cap); no retry or data mutation. Evidence and exact pins/recovery commands: t5-interruption-reconciliation-v1.md and logs/t5-interruption-inspection-v1.json. Source/target extract identity PASS (85 data batches); prepare cache payload authentication remains an unresolved operational-certification gap. Preserve interrupted _work then recompute preparation under root-owned .8 GiB guarded job; no skip-prepare. Original exit/cause unavailable. Data slot released; actual gates unmeasured, Task4 OPEN.
