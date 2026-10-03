@@ -1,0 +1,42 @@
+{
+  "acceptance": "NOT_ESTABLISHED; integrity is not source/coverage qualification",
+  "code": [
+    {
+      "file": "common.py",
+      "match": true,
+      "sha256": "9411975069075772e123bf570e85420681de830787191cdbcd358c7d9a110172"
+    },
+    {
+      "file": "issuer_history.py",
+      "match": true,
+      "sha256": "1bf114ce39a9b7bb5f1138451e7f941125405c0017385e42de1e5c98f0d5a3c2"
+    },
+    {
+      "file": "listing_events.py",
+      "match": true,
+      "sha256": "652a1340fc04cd3f35017a545ef550afc2e74346f064bfcd4351e824335fd71c"
+    },
+    {
+      "file": "sec_filings.py",
+      "match": true,
+      "sha256": "37c8303552323dbc5de35a45cc44e8029eceaabed97d3b783be17e84ef14d838"
+    }
+  ],
+  "current_code_pass": true,
+  "files": [
+    {
+      "bytes": 102145,
+      "file": "incorporation.parquet",
+      "match": true,
+      "sha256": "1c8f04b1632a4bfb679776ee8033728d26e258d81a8b3a89fe788d3d3f323eb8"
+    }
+  ],
+  "gate_status": null,
+  "manifest_sha256": "0a2cf97e9d00ee0c152742b9674b125e8c40b2ca757dac1a913ec3cb652d3f14",
+  "manifest_unchanged": true,
+  "physical_integrity_pass": true,
+  "producer_stats": null,
+  "second_pass_identical": true,
+  "sources": null,
+  "stage": "issuer_history"
+}
