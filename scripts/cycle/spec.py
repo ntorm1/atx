@@ -33,7 +33,10 @@ HOLDINGS_INPUTS = ("thirteenf", "ftd", "regsho_threshold", "security_master", "s
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
               "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
               "reference_orientations", "reference_daily_ic", "reference_weights") + SEC_INPUTS + HOLDINGS_INPUTS + \
-    ("reuse_fields", "label_role", "reference_resid_parent")
+    ("reuse_fields", "label_role", "reference_resid_parent", "theme_registry")
+# theme_registry (P9 lane E2, with D1's --theme-registry, K-P9-6): the alpha registry whose themes table is the IC
+# runner's theme order; the u and w passes get --theme-registry PATH --theme-registry-sha256 PIN (bound in their
+# receipts). Absent: the exe's built-in 13-theme table and the argv of before.
 # reference_resid_parent (v8 R-11, finding R6B-O-5; derived by research_spec for the cell whose template adds
 # --theme-resid): the parent cell's composition_weights.json; the single-window fit step passes it as
 # --theme-resid-parent PATH --theme-resid-parent-sha256 PIN (the fitter refuses a re-fit that is not that file plus the

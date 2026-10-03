@@ -478,10 +478,11 @@ class Cycle:
             if self.screen and "no-composition" in self.capabilities() and "--no-composition" not in flags:
                 # B-1: a screen skips the u-pass blend nobody reads (and so has no combined signal to save)
                 flags = [x for x in flags if x != "--save-combined"] + ["--no-composition"]
-            argv = self.runner(run_dir, [s["exes"]["ic"], lib, role_m, fdm], "u") + [
+            themes, theme_binds = self.theme_registry()
+            argv = self.runner(run_dir, [s["exes"]["ic"], lib, role_m, fdm, *theme_binds], "u") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", u_out,
-                *flags, "--candidate-cache", self.cache_dir()]
+                *flags, "--candidate-cache", self.cache_dir(), *themes]
             out.append(Step("u", "bounded", argv, u_out, run_dir, n, state, note))
         w_dir = ""
         if "fit" in s:
@@ -505,11 +506,12 @@ class Cycle:
             wt_out, run_dir = f"{base}-{n}", run_dir_of(base, n)
             weights = f"{w_dir}/{self.weights_name}"
             w_flags = research_spec.apply_flags(ic["flags"], ic.get("w_flags") or {}, "ic.w_flags")   # E-28
-            argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights], "w") + [
+            themes, theme_binds = self.theme_registry()
+            argv = self.runner(run_dir, [s["exes"]["ic"], role_m, fdm, lib, weights, *theme_binds], "w") + [
                 s["exes"]["ic"], "--library", lib, "--library-sha256", lib_sha, "--train", role_m, "--train-sha256",
                 role_sha, "--train-fields", fd, "--train-fields-sha256", self.rt_sha(fdm), "--output", wt_out,
                 *w_flags, "--candidate-cache", self.cache_dir(), "--composition-weights", weights,
-                "--composition-weights-sha256", self.rt_sha(weights)]
+                "--composition-weights-sha256", self.rt_sha(weights), *themes]
             out.append(Step("w", "bounded", argv, wt_out, run_dir, n, state, note))
         n_out = ""
         if "nav" in s:
@@ -529,6 +531,14 @@ class Cycle:
                         (st.phase.endswith(COMPARE_SUFFIX) and st.phase[:-len(COMPARE_SUFFIX)] in ("w", "nav")):
                     st.kind, st.state, st.note = "skipped", "skipped", "screen: runs with the full `run`"
         return steps
+
+    def theme_registry(self) -> tuple[list[str], list[str]]:
+        """(the IC passes' --theme-registry PATH --theme-registry-sha256 PIN, its bind) of inputs.theme_registry (P9
+        lane E2, D1's theme table, K-P9-6); ([], []) without the input: the argv of before."""
+        if "theme_registry" not in self.spec["inputs"]:
+            return [], []
+        path = self.ipath("theme_registry")
+        return ["--theme-registry", path, "--theme-registry-sha256", self.pin("theme_registry")], [path]
 
     def always_step(self, phase: str, argv: list[str], binds: list[str], note: str) -> Step:
         """An always-run process phase (check, summ): direct, or bounded with a fresh receipt dir (every-phase)."""

@@ -2023,3 +2023,23 @@ def test_cache_gc_keeps_a_referenced_store_however_the_paths_are_spelled(tmp_pat
     rep = research_gc.gc([sp], root, spellings, apply=True, log=lambda s: None)       # one listing, however spelled
     assert rep["deleted"] == ["build-equity/mega-candidate-cache-v1"] and len(rep["keep"]) == 2
     assert all((root / "build-equity" / r / "s" / "x.f64").is_file() for r in kept)
+
+
+def test_theme_registry_input_reaches_the_ic_passes(tmp_path):
+    """P9 lane E2 (D1's --theme-registry, K-P9-6): inputs.theme_registry gives the u and w passes --theme-registry PATH
+    --theme-registry-sha256 PIN, bound in their receipts; without the input their argv is that of before."""
+    root, sp = make_root(tmp_path)
+    plain = {st.phase: st.argv for st in cycle_of(root, sp).steps() if st.phase in ("u", "w")}
+    assert all("--theme-registry" not in argv for argv in plain.values())
+    (root / "lib" / "registry.json").write_text('{"schema": "atx.alpha-registry/v1", "themes": []}')
+    doc = json.loads(sp.read_text())
+    doc["inputs"]["theme_registry"] = {"path": "lib/registry.json", "sha256": None}
+    sp.write_text(json.dumps(doc))
+    pin = hashlib.sha256((root / "lib" / "registry.json").read_bytes()).hexdigest()
+    got = {st.phase: st.argv for st in cycle_of(root, sp).steps() if st.phase in ("u", "w")}
+    assert set(got) == {"u", "w"}
+    for phase, argv in got.items():
+        assert argv[-4:] == ["--theme-registry", "lib/registry.json", "--theme-registry-sha256", pin], phase
+        bind = argv.index("lib/registry.json")
+        assert bind < argv.index("--") and argv[bind - 1] == "--bind"                 # bound in the receipt
+        assert argv[:bind - 1] + argv[bind + 1:-4] == plain[phase]                    # nothing else moved
