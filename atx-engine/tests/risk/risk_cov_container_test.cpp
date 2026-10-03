@@ -244,9 +244,6 @@ std::vector<er::CovDateIndexEntry> index_of(const std::vector<u8>& bytes) {
   }
   throw std::runtime_error("no index");
 }
-bool parse_error(const co::Status& s) {
-  return !s && s.error().code() == co::ErrorCode::ParseError;
-}
 template <class T>
 bool parse_error(const co::Result<T>& r) {
   return !r && r.error().code() == co::ErrorCode::ParseError;
