@@ -3,7 +3,7 @@
 
 #include "atx/engine/combine/marginal_rank_ic.hpp"
 
-#include <algorithm> // std::clamp, std::fill, std::sort
+#include <algorithm> // std::adjacent_find, std::clamp, std::fill, std::sort
 #include <array>     // std::array
 #include <cmath>     // std::isfinite, std::sqrt
 #include <span>      // std::span
@@ -93,7 +93,51 @@ void grow(std::vector<f64> &buffer, usize n) {
   }
 }
 
+// One date of one pair (v8 add_date's body): the clamped Pearson correlation of x and y over
+// their jointly finite names, or NaN when fewer than `min_names` are joint or it is undefined.
+[[nodiscard]] f64 pair_value(std::span<const f64> x, std::span<const f64> y,
+                             usize min_names) noexcept {
+  usize joint = 0U;
+  f64 sx = 0.0;
+  f64 sy = 0.0;
+  f64 sxx = 0.0;
+  f64 syy = 0.0;
+  f64 sxy = 0.0;
+  for (usize i = 0U; i < x.size(); ++i) {
+    const f64 xi = x[i];
+    const f64 yi = y[i];
+    if (!std::isfinite(xi) || !std::isfinite(yi)) {
+      continue;
+    }
+    ++joint;
+    sx += xi;
+    sy += yi;
+    sxx += xi * xi;
+    syy += yi * yi;
+    sxy += xi * yi;
+  }
+  if (joint < min_names) {
+    return kMarginalNaN;
+  }
+  const f64 count = static_cast<f64>(joint);
+  const f64 vx = sxx - sx * sx / count;
+  const f64 vy = syy - sy * sy / count;
+  const f64 cov = sxy - sx * sy / count;
+  if (!(vx > 0.0) || !(vy > 0.0)) {
+    return kMarginalNaN;
+  }
+  const f64 rho = cov / std::sqrt(vx * vy);
+  if (!std::isfinite(rho)) {
+    return kMarginalNaN;
+  }
+  return std::clamp(rho, -1.0, 1.0);
+}
+
 } // namespace
+
+atx::engine::BuildFlavor marginal_rank_ic_build_flavor() noexcept {
+  return ATX_ENGINE_BUILD_FLAVOR;
+}
 
 atx::core::Status centred_tied_ranks(std::span<const f64> values, std::span<const u8> eligible,
                                      std::span<f64> out, std::vector<Ranked> &sorted) {
@@ -229,9 +273,78 @@ RankIcSummary summarize_rank_ic(std::span<const f64> daily, usize hac_lag,
 
 PairwiseRowCorrelation::PairwiseRowCorrelation(usize rows, usize min_names)
     : rows_{rows}, min_names_{min_names < 3U ? usize{3} : min_names}, sum_(rows * rows, 0.0),
-      count_(rows * rows, 0U) {}
+      count_(rows * rows, 0U), compute_(rows * rows, u8{0}) {
+  for (usize a = 0U; a < rows_; ++a) {
+    for (usize b = a + 1U; b < rows_; ++b) {
+      compute_[a * rows_ + b] = u8{1};
+    }
+  }
+  collect_computed();
+}
 
-atx::core::Status PairwiseRowCorrelation::add_date(std::span<const std::span<const f64>> rows) {
+void PairwiseRowCorrelation::collect_computed() {
+  computed_.clear();
+  for (usize a = 0U; a < rows_; ++a) {
+    for (usize b = a + 1U; b < rows_; ++b) {
+      if (compute_[a * rows_ + b] != u8{0}) {
+        computed_.emplace_back(a, b);
+      }
+    }
+  }
+}
+
+atx::core::Status PairwiseRowCorrelation::restrict_to(std::span<const u8> listed) {
+  if (started_ || listed.size() != rows_) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "PairwiseRowCorrelation: restrict_to needs one flag per row, before "
+                          "the first date");
+  }
+  for (usize a = 0U; a < rows_; ++a) {
+    for (usize b = a + 1U; b < rows_; ++b) {
+      if (listed[a] == u8{0} && listed[b] == u8{0}) {
+        compute_[a * rows_ + b] = u8{0};
+      }
+    }
+  }
+  collect_computed();
+  return atx::core::Ok();
+}
+
+atx::core::Status PairwiseRowCorrelation::seed(std::span<const PairSeed> seeds) {
+  if (started_) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "PairwiseRowCorrelation: seed before the first date");
+  }
+  // Every seed is checked before any is applied, so an Err leaves the object unchanged.
+  std::vector<usize> slots;
+  slots.reserve(seeds.size());
+  for (const PairSeed &s : seeds) {
+    const usize lo = (s.a < s.b) ? s.a : s.b;
+    const usize hi = (s.a < s.b) ? s.b : s.a;
+    if (lo == hi || hi >= rows_ || compute_[lo * rows_ + hi] == u8{0} || !std::isfinite(s.sum) ||
+        std::abs(s.sum) > static_cast<f64>(s.dates)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "PairwiseRowCorrelation: seed of a pair not computed, or its sum");
+    }
+    slots.push_back(lo * rows_ + hi);
+  }
+  std::vector<usize> order(slots);
+  std::sort(order.begin(), order.end());
+  if (std::adjacent_find(order.begin(), order.end()) != order.end()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "PairwiseRowCorrelation: one pair seeded twice");
+  }
+  for (usize k = 0U; k < seeds.size(); ++k) {
+    compute_[slots[k]] = u8{0};
+    sum_[slots[k]] = seeds[k].sum;
+    count_[slots[k]] = seeds[k].dates;
+  }
+  collect_computed();
+  return atx::core::Ok();
+}
+
+atx::core::Status
+PairwiseRowCorrelation::check_rows(std::span<const std::span<const f64>> rows) const {
   if (rows.size() != rows_) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "PairwiseRowCorrelation: row count differs from construction");
@@ -246,48 +359,60 @@ atx::core::Status PairwiseRowCorrelation::add_date(std::span<const std::span<con
                             "PairwiseRowCorrelation: row width mismatch");
     }
   }
-  for (usize a = 0U; a < rows_; ++a) {
-    const std::span<const f64> x = rows[a];
-    for (usize b = a + 1U; b < rows_; ++b) {
-      const std::span<const f64> y = rows[b];
-      usize joint = 0U;
-      f64 sx = 0.0;
-      f64 sy = 0.0;
-      f64 sxx = 0.0;
-      f64 syy = 0.0;
-      f64 sxy = 0.0;
-      for (usize i = 0U; i < n; ++i) {
-        const f64 xi = x[i];
-        const f64 yi = y[i];
-        if (!std::isfinite(xi) || !std::isfinite(yi)) {
-          continue;
-        }
-        ++joint;
-        sx += xi;
-        sy += yi;
-        sxx += xi * xi;
-        syy += yi * yi;
-        sxy += xi * yi;
-      }
-      if (joint < min_names_) {
-        continue;
-      }
-      const f64 count = static_cast<f64>(joint);
-      const f64 vx = sxx - sx * sx / count;
-      const f64 vy = syy - sy * sy / count;
-      const f64 cov = sxy - sx * sy / count;
-      if (!(vx > 0.0) || !(vy > 0.0)) {
-        continue;
-      }
-      const f64 rho = cov / std::sqrt(vx * vy);
-      if (!std::isfinite(rho)) {
-        continue;
-      }
-      sum_[a * rows_ + b] += std::clamp(rho, -1.0, 1.0);
-      ++count_[a * rows_ + b];
+  return atx::core::Ok();
+}
+
+atx::core::Status PairwiseRowCorrelation::add_date(std::span<const std::span<const f64>> rows) {
+  ATX_TRY_VOID(check_rows(rows));
+  started_ = true;
+  for (const auto &[a, b] : computed_) {
+    const f64 value = pair_value(rows[a], rows[b], min_names_);
+    if (std::isnan(value)) {
+      continue;
     }
+    sum_[a * rows_ + b] += value;
+    ++count_[a * rows_ + b];
   }
   return atx::core::Ok();
+}
+
+atx::core::Status PairwiseRowCorrelation::day_values(std::span<const std::span<const f64>> rows,
+                                                    std::span<f64> out) const {
+  ATX_TRY_VOID(check_rows(rows));
+  if (out.size() != computed_.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "PairwiseRowCorrelation: one day value per computed pair");
+  }
+  for (usize p = 0U; p < computed_.size(); ++p) {
+    out[p] = pair_value(rows[computed_[p].first], rows[computed_[p].second], min_names_);
+  }
+  return atx::core::Ok();
+}
+
+atx::core::Status PairwiseRowCorrelation::accumulate(std::span<const f64> values) {
+  if (values.size() != computed_.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "PairwiseRowCorrelation: one day value per computed pair");
+  }
+  started_ = true;
+  for (usize p = 0U; p < computed_.size(); ++p) {
+    if (std::isnan(values[p])) {
+      continue;
+    }
+    const usize at = computed_[p].first * rows_ + computed_[p].second;
+    sum_[at] += values[p];
+    ++count_[at];
+  }
+  return atx::core::Ok();
+}
+
+f64 PairwiseRowCorrelation::sum(usize a, usize b) const noexcept {
+  if (a == b || a >= rows_ || b >= rows_) {
+    return 0.0;
+  }
+  const usize lo = (a < b) ? a : b;
+  const usize hi = (a < b) ? b : a;
+  return sum_[lo * rows_ + hi];
 }
 
 f64 PairwiseRowCorrelation::mean(usize a, usize b) const noexcept {

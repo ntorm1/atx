@@ -3,6 +3,7 @@
 //
 // Suite: CombineMarginalRankIc
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -217,8 +218,9 @@ TEST(CombineMarginalRankIc, RefusesBadShapesAndBounds) {
   cb::MarginalRankIcScratch scratch;
   EXPECT_FALSE(cb::marginal_rank_ic_day(row, {}, shorter, 20U, scratch).has_value());
   EXPECT_FALSE(cb::marginal_rank_ic_day(row, {}, row, 2U, scratch).has_value());
-  const std::vector<std::span<const f64>> twelve(12U, std::span<const f64>(row));
-  EXPECT_FALSE(cb::marginal_rank_ic_day(row, twelve, row, 20U, scratch).has_value());
+  const std::vector<std::span<const f64>> over(cb::kMaxMarginalRegressors + 1U,
+                                               std::span<const f64>(row));
+  EXPECT_FALSE(cb::marginal_rank_ic_day(row, over, row, 20U, scratch).has_value());
   const std::vector<std::span<const f64>> ragged{std::span<const f64>(shorter)};
   EXPECT_FALSE(cb::marginal_rank_ic_day(row, ragged, row, 20U, scratch).has_value());
   // Too few paired names: a defined call with both ICs NaN, never an error.
@@ -231,6 +233,231 @@ TEST(CombineMarginalRankIc, RefusesBadShapesAndBounds) {
   EXPECT_EQ(day->names, 10U);
   EXPECT_TRUE(std::isnan(day->raw_ic));
   EXPECT_TRUE(std::isnan(day->marginal_ic));
+}
+
+// ---- P9 S1 (marginal verb speed) ----------------------------------------------------------------
+
+std::uint64_t bits(f64 x) { return std::bit_cast<std::uint64_t>(x); }
+
+// CM-6: the book composite plus 33 theme composites are accepted; one more is refused.
+TEST(CombineMarginalRankIc, AcceptsThirtyFourRegressors) {
+  static_assert(cb::kMaxMarginalRegressors == 34U);
+  Rng g{20261003U};
+  const usize n = 120U;
+  const std::vector<f64> candidate = draws(g, n);
+  const std::vector<f64> label = draws(g, n);
+  std::vector<std::vector<f64>> columns;
+  for (usize j = 0U; j < cb::kMaxMarginalRegressors; ++j) {
+    columns.push_back(draws(g, n));
+  }
+  std::vector<std::span<const f64>> regressors;
+  for (const auto &column : columns) {
+    regressors.emplace_back(column);
+  }
+  cb::MarginalRankIcScratch scratch;
+  const auto day = cb::marginal_rank_ic_day(candidate, regressors, label, 20U, scratch);
+  ASSERT_TRUE(day.has_value());
+  EXPECT_EQ(day->names, n);
+  EXPECT_TRUE(std::isfinite(day->raw_ic));
+  EXPECT_TRUE(std::isfinite(day->marginal_ic));
+  const std::span<const f64> first = regressors.front();
+  regressors.push_back(first);
+  EXPECT_FALSE(cb::marginal_rank_ic_day(candidate, regressors, label, 20U, scratch).has_value());
+}
+
+// Dropping the names that are NaN in every candidate input of a date (the marginal verb keeps only
+// the date's member names) gives the same bits from every row kernel: ranks, the marginal read-out
+// and the pair correlation. The regressor and the label stay finite on the dropped names.
+TEST(CombineMarginalRankIc, CompactedNamesKeepBits) {
+  Rng g{20261004U};
+  const usize n = 240U;
+  std::vector<u8> member(n, u8{0});
+  std::vector<usize> kept;
+  for (usize i = 0U; i < n; ++i) {
+    member[i] = (g.uni() < 0.7) ? u8{1} : u8{0};
+    if (member[i] != u8{0}) {
+      kept.push_back(i);
+    }
+  }
+  std::vector<f64> values = draws(g, n);
+  for (f64 &x : values) {
+    x = std::round(x * 4.0) / 4.0; // ties
+  }
+  const std::vector<f64> other = draws(g, n);
+  const std::vector<f64> book = draws(g, n);
+  const std::vector<f64> label = draws(g, n);
+  const usize m = kept.size();
+  const auto gather = [&](const std::vector<f64> &full) {
+    std::vector<f64> out(m);
+    for (usize j = 0U; j < m; ++j) {
+      out[j] = full[kept[j]];
+    }
+    return out;
+  };
+  std::vector<std::pair<f64, usize>> sorted;
+  std::vector<f64> ranks(n), other_ranks(n), ranks_m(m), other_ranks_m(m);
+  const std::vector<u8> member_m(m, u8{1});
+  ASSERT_TRUE(cb::centred_tied_ranks(values, member, ranks, sorted).has_value());
+  ASSERT_TRUE(cb::centred_tied_ranks(other, member, other_ranks, sorted).has_value());
+  const auto values_m = gather(values);
+  const auto other_m = gather(other);
+  ASSERT_TRUE(cb::centred_tied_ranks(values_m, member_m, ranks_m, sorted).has_value());
+  ASSERT_TRUE(cb::centred_tied_ranks(other_m, member_m, other_ranks_m, sorted).has_value());
+  for (usize j = 0U; j < m; ++j) {
+    EXPECT_EQ(bits(ranks_m[j]), bits(ranks[kept[j]])) << j;
+  }
+  const auto book_m = gather(book);
+  const auto label_m = gather(label);
+  const std::vector<std::span<const f64>> full_regressors{std::span<const f64>(book)};
+  const std::vector<std::span<const f64>> kept_regressors{std::span<const f64>(book_m)};
+  cb::MarginalRankIcScratch scratch;
+  const auto wide = cb::marginal_rank_ic_day(ranks, full_regressors, label, 20U, scratch);
+  const auto narrow = cb::marginal_rank_ic_day(ranks_m, kept_regressors, label_m, 20U, scratch);
+  ASSERT_TRUE(wide.has_value());
+  ASSERT_TRUE(narrow.has_value());
+  EXPECT_EQ(narrow->names, m);
+  EXPECT_EQ(wide->names, narrow->names);
+  EXPECT_EQ(bits(wide->raw_ic), bits(narrow->raw_ic));
+  EXPECT_EQ(bits(wide->marginal_ic), bits(narrow->marginal_ic));
+  EXPECT_EQ(wide->spanned, narrow->spanned);
+  cb::PairwiseRowCorrelation rho_wide(2U, 20U);
+  cb::PairwiseRowCorrelation rho_narrow(2U, 20U);
+  ASSERT_TRUE(rho_wide.add_date(std::vector<std::span<const f64>>{ranks, other_ranks}).has_value());
+  ASSERT_TRUE(
+      rho_narrow.add_date(std::vector<std::span<const f64>>{ranks_m, other_ranks_m}).has_value());
+  EXPECT_EQ(rho_wide.dates(0U, 1U), 1U);
+  EXPECT_EQ(bits(rho_wide.sum(0U, 1U)), bits(rho_narrow.sum(1U, 0U)));
+}
+
+// A small K-row pair world: rows with about 15% NaN names over a number of dates.
+struct PairWorld {
+  static constexpr usize kRows = 5U;
+  static constexpr usize kNames = 60U;
+  static constexpr usize kDates = 25U;
+  std::vector<std::vector<f64>> data; // date d, row r: data[d * kRows + r]
+  PairWorld() {
+    Rng g{20261005U};
+    data.resize(kDates * kRows);
+    for (auto &row : data) {
+      row = draws(g, kNames);
+      for (f64 &x : row) {
+        if (g.uni() < 0.15) {
+          x = kNaN;
+        }
+      }
+    }
+  }
+  [[nodiscard]] std::vector<std::span<const f64>> date(usize d) const {
+    std::vector<std::span<const f64>> rows;
+    for (usize r = 0U; r < kRows; ++r) {
+      rows.emplace_back(data[d * kRows + r]);
+    }
+    return rows;
+  }
+  // Every date through add_date.
+  [[nodiscard]] bool run(cb::PairwiseRowCorrelation &rho) const {
+    for (usize d = 0U; d < kDates; ++d) {
+      if (!rho.add_date(date(d)).has_value()) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+void expect_same_pair(const cb::PairwiseRowCorrelation &x, const cb::PairwiseRowCorrelation &y,
+                      usize a, usize b) {
+  EXPECT_EQ(bits(x.sum(a, b)), bits(y.sum(a, b))) << a << "," << b;
+  EXPECT_EQ(x.dates(a, b), y.dates(a, b)) << a << "," << b;
+  EXPECT_EQ(bits(x.mean(a, b)), bits(y.mean(a, b))) << a << "," << b;
+}
+
+// day_values then accumulate is add_date, bit for bit (the banded verb's date-ordered sum).
+TEST(CombineMarginalRankIc, PairDayValuesThenAccumulateIsAddDate) {
+  const PairWorld w;
+  cb::PairwiseRowCorrelation serial(PairWorld::kRows, 20U);
+  cb::PairwiseRowCorrelation split(PairWorld::kRows, 20U);
+  ASSERT_EQ(split.computed_pairs().size(), PairWorld::kRows * (PairWorld::kRows - 1U) / 2U);
+  std::vector<f64> values(split.computed_pairs().size());
+  ASSERT_TRUE(w.run(serial));
+  for (usize d = 0U; d < PairWorld::kDates; ++d) {
+    ASSERT_TRUE(split.day_values(w.date(d), values).has_value());
+    ASSERT_TRUE(split.accumulate(values).has_value());
+  }
+  for (usize a = 0U; a < PairWorld::kRows; ++a) {
+    for (usize b = a + 1U; b < PairWorld::kRows; ++b) {
+      expect_same_pair(serial, split, a, b);
+    }
+  }
+  EXPECT_GT(serial.dates(0U, 1U), 0U);
+  std::vector<f64> short_values(values.size() - 1U);
+  EXPECT_FALSE(split.day_values(w.date(0U), short_values).has_value());
+  EXPECT_FALSE(split.accumulate(short_values).has_value());
+}
+
+// --candidates: only pairs with a listed row are computed; those keep their bits.
+TEST(CombineMarginalRankIc, RestrictToKeepsListedPairs) {
+  const PairWorld w;
+  cb::PairwiseRowCorrelation full(PairWorld::kRows, 20U);
+  cb::PairwiseRowCorrelation listed(PairWorld::kRows, 20U);
+  const std::vector<u8> flags{u8{0}, u8{1}, u8{0}, u8{0}, u8{1}};
+  ASSERT_TRUE(listed.restrict_to(flags).has_value());
+  const std::vector<std::pair<usize, usize>> expected{{0U, 1U}, {0U, 4U}, {1U, 2U}, {1U, 3U},
+                                                      {1U, 4U}, {2U, 4U}, {3U, 4U}};
+  const auto computed = listed.computed_pairs();
+  const std::vector<std::pair<usize, usize>> actual(computed.begin(), computed.end());
+  EXPECT_EQ(actual, expected);
+  ASSERT_TRUE(w.run(full));
+  ASSERT_TRUE(w.run(listed));
+  for (usize a = 0U; a < PairWorld::kRows; ++a) {
+    for (usize b = a + 1U; b < PairWorld::kRows; ++b) {
+      if (flags[a] != u8{0} || flags[b] != u8{0}) {
+        expect_same_pair(full, listed, a, b);
+      } else {
+        EXPECT_EQ(listed.dates(a, b), 0U);
+        EXPECT_TRUE(std::isnan(listed.mean(a, b)));
+      }
+    }
+  }
+  EXPECT_FALSE(listed.restrict_to(flags).has_value()); // after the first date
+  cb::PairwiseRowCorrelation fresh(PairWorld::kRows, 20U);
+  EXPECT_FALSE(fresh.restrict_to(std::vector<u8>(PairWorld::kRows - 1U, u8{1})).has_value());
+}
+
+// --pair-cache: a seeded pair takes the cached sum and count and is not computed again; every
+// pair ends with the bits of the run that computed all of them. Bad seeds change nothing.
+TEST(CombineMarginalRankIc, SeededPairsEqualComputedPairs) {
+  const PairWorld w;
+  cb::PairwiseRowCorrelation full(PairWorld::kRows, 20U);
+  ASSERT_TRUE(w.run(full));
+  cb::PairwiseRowCorrelation seeded(PairWorld::kRows, 20U);
+  const std::vector<cb::PairSeed> seeds{{3U, 0U, full.sum(0U, 3U), full.dates(0U, 3U)},
+                                        {1U, 2U, full.sum(1U, 2U), full.dates(1U, 2U)}};
+  ASSERT_TRUE(seeded.seed(seeds).has_value());
+  EXPECT_EQ(seeded.computed_pairs().size(), PairWorld::kRows * (PairWorld::kRows - 1U) / 2U - 2U);
+  ASSERT_TRUE(w.run(seeded));
+  for (usize a = 0U; a < PairWorld::kRows; ++a) {
+    for (usize b = a + 1U; b < PairWorld::kRows; ++b) {
+      expect_same_pair(full, seeded, a, b);
+    }
+  }
+  EXPECT_FALSE(seeded.seed(std::vector<cb::PairSeed>{{0U, 4U, 0.0, 0U}}).has_value()); // started
+  cb::PairwiseRowCorrelation bad(PairWorld::kRows, 20U);
+  const std::vector<std::vector<cb::PairSeed>> refused{
+      {{2U, 2U, 0.0, 0U}},                       // not a pair
+      {{0U, PairWorld::kRows, 0.0, 0U}},         // out of range
+      {{0U, 1U, 3.0, 2U}},                       // |sum| > dates
+      {{0U, 1U, kNaN, 2U}},                      // not finite
+      {{0U, 1U, 0.5, 2U}, {1U, 0U, 0.5, 2U}},    // one pair twice
+      {{0U, 2U, 0.5, 2U}, {0U, 0U, 0.0, 0U}}};   // a valid seed before a bad one
+  for (const auto &batch : refused) {
+    EXPECT_FALSE(bad.seed(batch).has_value()) << batch.size();
+    EXPECT_EQ(bad.computed_pairs().size(), PairWorld::kRows * (PairWorld::kRows - 1U) / 2U);
+  }
+  ASSERT_TRUE(bad.seed(std::vector<cb::PairSeed>{{0U, 1U, 0.5, 2U}}).has_value());
+  EXPECT_FALSE(bad.seed(std::vector<cb::PairSeed>{{1U, 0U, 0.5, 2U}}).has_value()); // seeded
+  EXPECT_EQ(bad.dates(0U, 1U), 2U);
+  EXPECT_EQ(bits(bad.sum(1U, 0U)), bits(0.5));
 }
 
 } // namespace atx_test_v8_combine_marginal_rank_ic

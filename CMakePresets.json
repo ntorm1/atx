@@ -48,9 +48,11 @@
       "name": "equity-rel",
       "inherits": "equity-dev",
       "displayName": "equity-rel: optimised equity pipeline binary for measurement sweeps (no AVX2, no IPO)",
+      "description": "Release equity tree in build-equity-rel/. P9 S1 (DS-1): the Release IC exe atx-equity-strategy-ic (build preset equity-rel-ic, or scripts/research-build.ps1 -Preset equity-rel -Targets atx-equity-strategy-ic); its vm_identity / ic_identity carry the Release build token, so it never shares a candidate-cache or IC-result entry with the Debug tree. FETCHCONTENT_BASE_DIR is per-worktree (deps/equity-rel, gitignored) like equity-bench and equity-hygiene: a Release tree sharing the machine-wide C:/atx-cache/deps spdlog-build with the Debug trees races on _ITERATOR_DEBUG_LEVEL (rel-avx2, scripts/atx-build.ps1 DEPS ISOLATION). equity-asan and equity-bench set their own.",
       "binaryDir": "${sourceDir}/build-equity-rel",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/equity-rel"
       }
     },
     {
@@ -183,6 +185,10 @@
     { "name": "equity-dev", "configurePreset": "equity-dev" },
     { "name": "equity-hygiene", "configurePreset": "equity-hygiene" },
     { "name": "equity-rel", "configurePreset": "equity-rel" },
+    {
+      "name": "equity-rel-ic", "configurePreset": "equity-rel",
+      "targets": ["atx-equity-strategy-ic", "atx-impl-strategy-ic-tests"]
+    },
     {
       "name": "equity-asan", "configurePreset": "equity-asan",
       "targets": ["atx-engine-risk-sector-asan"]

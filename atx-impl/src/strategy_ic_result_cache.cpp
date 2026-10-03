@@ -11,6 +11,7 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include "atx/engine/build_flavor.hpp"
 #include "build_provenance.hpp"
 
 namespace atx::impl::strategy::ic_detail {
@@ -26,9 +27,10 @@ constexpr const char* ic_cache_schema="atx.dsl-candidate-ic/v1";
 // Tripwire for the bump above (test StrategyIcRunner.IcSourcesPinnedToSemanticsVersion,
 // same digest recipe as dsl_vm_sources): the IC scoring TU and its atx/engine include
 // closure, plus the TUs those headers declare.
-constexpr std::array<std::string_view,10> ic_result_sources{
+constexpr std::array<std::string_view,11> ic_result_sources{
     "atx-engine/include/atx/engine/alpha/fwd.hpp",
     "atx-engine/include/atx/engine/alpha/panel.hpp",
+    "atx-engine/include/atx/engine/build_flavor.hpp",
     "atx-engine/include/atx/engine/eval/hac.hpp",
     "atx-engine/include/atx/engine/factory/ic_research.hpp",
     "atx-engine/include/atx/engine/factory/ic_screen.hpp",
@@ -37,14 +39,20 @@ constexpr std::array<std::string_view,10> ic_result_sources{
     "atx-engine/include/atx/engine/parallel/fwd.hpp",
     "atx-engine/src/alpha/panel.cpp",
     "atx-engine/src/factory/ic_screen.cpp"};
+// P9 S1 re-pinned WITHOUT a bump: ic_screen.{hpp,cpp} add ic_screen_build_flavor() and
+// build_flavor.hpp joins the closure; no scored bit changes (the build token is in ic_identity).
 constexpr std::string_view ic_result_sources_sha256=
-    "e7a40331a3f2f1a4268feece00d354961ae7ab8215a379733d5855f40f61579a";
+    "2d758bff0cfb5090c965d1dc3e4c9403ecdb8f0e29b3a84b243e4532c99615ed";
 } // namespace
-// FP build flavor as for the VM, plus the IC kernel's SIMD width (its reduction
-// order): ic_screen.cpp reports its own compiled xsimd batch size.
+// FP build flavor, the IC kernel's SIMD width (its reduction order) and the build flavour token
+// (build type, NDEBUG, CRT, xsimd version), each reported by ic_screen.cpp's own TU (P9 S1, DS-1:
+// before P9 the FP flavor came from this TU). The equity-dev Debug flavour gives the same FP words
+// as this TU and the empty token, so its identity keeps its bytes; equity-rel appends its token.
 std::string ic_identity() {
+  const auto flavor=ex::ic_screen_build_flavor();
   return "dslic"+std::to_string(ic_result_semantics_version)+"_"+std::string(vm_compiler)+
-      std::string(vm_fp_flavor)+"_simd"+std::to_string(ex::ic_screen_simd_width());
+      atx::engine::fp_flavor_suffix(flavor)+"_simd"+std::to_string(ex::ic_screen_simd_width())+
+      atx::engine::build_flavor_suffix(flavor);
 }
 IcSeries scratch_series(const ex::ResearchIcScratch& scratch) {
   IcSeries out;
