@@ -1,0 +1,118 @@
+numpy 1.26.4 | python 3.12.2
+
+====================================================================================================
+(1) ResearchFieldsWriter.QuantilesPartitionLikeNumpy: the {-0.0} case
+====================================================================================================
+numpy 1.26.4 numpy/lib/function_base.py _lerp (np.quantile's default method='linear' uses it):
+def _lerp(a, b, t, out=None):
+    """
+    Compute the linear interpolation weighted by gamma on each point of
+    two same shape array.
+
+    a : array_like
+        Left bound.
+    b : array_like
+        Right bound.
+    t : array_like
+        The interpolation weight.
+    out : array_like
+        Output array.
+    """
+    diff_b_a = subtract(b, a)
+    # asanyarray is a stop-gap until gh-13105
+    lerp_interpolation = asanyarray(add(a, diff_b_a * t, out=out))
+    subtract(b, diff_b_a * (1 - t), out=lerp_interpolation, where=t >= 0.5,
+             casting='unsafe', dtype=type(lerp_interpolation.dtype))
+    if lerp_interpolation.ndim == 0 and out is None:
+        lerp_interpolation = lerp_interpolation[()]  # unpack 0d arrays
+    return lerp_interpolation
+
+inputs [-0.0], probabilities [0.001, 0.01, 0.5, 0.99, 0.999]
+  digest_and_quantiles   p0.1: -0.0 (signbit=1, hex=-0x0.0p+0)
+  digest_and_quantiles     p1: -0.0 (signbit=1, hex=-0x0.0p+0)
+  digest_and_quantiles    p50: -0.0 (signbit=1, hex=-0x0.0p+0)
+  digest_and_quantiles    p99: -0.0 (signbit=1, hex=-0x0.0p+0)
+  digest_and_quantiles  p99.9: -0.0 (signbit=1, hex=-0x0.0p+0)
+  np.quantile direct     : ['-0.0 (signbit=1, hex=-0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)']
+inputs [-0.0, -0.0], probabilities [0.001, 0.01, 0.5, 0.99, 0.999]
+  digest_and_quantiles   p0.1: 0.0 (signbit=0, hex=0x0.0p+0)
+  digest_and_quantiles     p1: 0.0 (signbit=0, hex=0x0.0p+0)
+  digest_and_quantiles    p50: -0.0 (signbit=1, hex=-0x0.0p+0)
+  digest_and_quantiles    p99: -0.0 (signbit=1, hex=-0x0.0p+0)
+  digest_and_quantiles  p99.9: -0.0 (signbit=1, hex=-0x0.0p+0)
+  np.quantile direct     : ['0.0 (signbit=0, hex=0x0.0p+0)', '0.0 (signbit=0, hex=0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)', '-0.0 (signbit=1, hex=-0x0.0p+0)']
+
+numpy 1.26.4's own index and gamma helpers of method 'linear' (np.lib.function_base._get_indexes, _get_gamma):
+def _get_indexes(arr, virtual_indexes, valid_values_count):
+    """
+    Get the valid indexes of arr neighbouring virtual_indexes.
+    Note
+    This is a companion function to linear interpolation of
+    Quantiles
+
+    Returns
+    -------
+    (previous_indexes, next_indexes): Tuple
+        A Tuple of virtual_indexes neighbouring indexes
+    """
+    previous_indexes = np.asanyarray(np.floor(virtual_indexes))
+    next_indexes = np.asanyarray(previous_indexes + 1)
+    indexes_above_bounds = virtual_indexes >= valid_values_count - 1
+    # When indexes is above max index, take the max value of the array
+    if indexes_above_bounds.any():
+        previous_indexes[indexes_above_bounds] = -1
+        next_indexes[indexes_above_bounds] = -1
+    # When indexes is below min index, take the min value of the array
+    indexes_below_bounds = virtual_indexes < 0
+    if indexes_below_bounds.any():
+        previous_indexes[indexes_below_bounds] = 0
+        next_indexes[indexes_below_bounds] = 0
+    if np.issubdtype(arr.dtype, np.inexact):
+        # After the sort, slices having NaNs will have for last element a NaN
+        virtual_indexes_nans = np.isnan(virtual_indexes)
+        if virtual_indexes_nans.any():
+            previous_indexes[virtual_indexes_nans] = -1
+            next_indexes[virtual_indexes_nans] = -1
+    previous_indexes = previous_indexes.astype(np.intp)
+    next_indexes = next_indexes.astype(np.intp)
+    return previous_indexes, next_indexes
+
+n=1: virtual_index=[0.0, 0.0, 0.0, 0.0, 0.0] previous=[-1, -1, -1, -1, -1] next=[-1, -1, -1, -1, -1] gamma=[1.0, 1.0, 1.0, 1.0, 1.0]
+       gamma >= 0.5 (the overwrite branch b - diff*(1-gamma)): [True, True, True, True, True]
+n=2: virtual_index=[0.001, 0.01, 0.5, 0.99, 0.999] previous=[0, 0, 0, 0, 0] next=[1, 1, 1, 1, 1] gamma=[0.001, 0.01, 0.5, 0.99, 0.999]
+       gamma >= 0.5 (the overwrite branch b - diff*(1-gamma)): [False, False, True, True, True]
+With a = b = -0.0, diff = b - a = +0.0. Kept branch a + diff*gamma = -0.0 + +0.0 = +0.0; overwrite branch
+b - diff*(1-gamma) = -0.0 - +0.0 = -0.0. n=1: virtual_index 0 >= n-1, so previous = next = -1 and gamma = 0-(-1)
+= 1 at every p: all five take the overwrite branch -> -0.0. The base test (1239a5ff
+research_fields_writer_test.cpp:139) expected same_bits(x, +0.0) at all five ('_lerp(-0.0, -0.0, gamma >= 1) is
++0.0'): wrong for numpy 1.26.4, whose quantiles the manifest records.
+
+====================================================================================================
+(2) ResearchFieldsVolumeMean.SumOrderIsNumpys
+====================================================================================================
+vol_126 definition (research_fields_price.FIELDS['vol_126']['definition']):
+  row t >= 126: mean of the role's volume.f64 over the sessions s in t-126..t-1 with present[s] == 1 and a finite volume >= 0; NaN when fewer than 63 such sessions or t < 126. Raw share volume in each session's own share units, as the DSL's volume (a split inside the window mixes share bases)
+research_fields_price.volume_mean_rows, the accept rule and the ring:
+    ring = np.zeros((VOL_WINDOW, n))
+    seen = np.zeros((VOL_WINDOW, n), dtype=bool)
+    k = seen.sum(axis=0)
+    row = np.where(k >= VOL_MIN_SESSIONS, ring.sum(axis=0) / np.maximum(k, 1), np.nan)
+    ok = p & np.isfinite(v) & (v >= 0)
+    ring[slot], seen[slot] = np.where(ok, v, 0.0), ok
+base :120  two columns, window 3, after sessions 0..3: test expects row[0] == 1.0 / 3.0
+    volume_mean_rows -> ['5000000000000000.0 (signbit=0, hex=0x1.1c37937e08000p+52)', '1.0 (signbit=0, hex=0x1.0000000000000p+0)']
+    hypothetical rule accepting negatives -> ['0.3333333333333333', '1.0']
+base :133  one column, window 9: test expects one[0] == 0.0
+    volume_mean_rows -> ['1250000000000000.0 (signbit=0, hex=0x1.1c37937e08000p+50)']
+    hypothetical rule accepting negatives -> ['0.0']
+base :135  two columns, window 9: test expects row[0] == 1.0 / 9.0
+    volume_mean_rows -> ['1250000000000000.0 (signbit=0, hex=0x1.1c37937e08000p+50)', '1.0 (signbit=0, hex=0x1.0000000000000p+0)']
+    hypothetical rule accepting negatives -> ['0.1111111111111111', '1.0']
+new  two columns, window 3, after sessions 0..3: test expects row == {3333333333333334.0, 1.0}
+    volume_mean_rows -> ['3333333333333334.0 (signbit=0, hex=0x1.7af4c4a80aaacp+51)', '1.0 (signbit=0, hex=0x1.0000000000000p+0)']
+new  one column, window 9: test expects one[0] == 1111111111111111.4
+    volume_mean_rows -> ['1111111111111111.4 (signbit=0, hex=0x1.f9465b8ab8e3bp+49)']
+new  two columns, window 9: test expects row == {1111111111111111.1, 1.0}
+    volume_mean_rows -> ['1111111111111111.1 (signbit=0, hex=0x1.f9465b8ab8e39p+49)', '1.0 (signbit=0, hex=0x1.0000000000000p+0)']
+new  NegativeVolumeIsNotAccepted, window 3: test expects one[0] == 3.0
+    volume_mean_rows -> ['3.0 (signbit=0, hex=0x1.8000000000000p+1)']
