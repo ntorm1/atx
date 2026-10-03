@@ -1,0 +1,16 @@
+{
+  "stage": "issuer_history",
+  "lane": "A",
+  "task": "tier1-v4 Task 2 fix round 2",
+  "schema": "atx.alpha-panel.issuer-history/v1",
+  "module": "atx_db.alpha_panel.issuer_history",
+  "args": ["load"],
+  "manifest": "issuer_history/manifest.json",
+  "inputs": ["archived_sec_submissions", "sec_issuer_history_raw"],
+  "outputs": [{"view": "issuer_incorporation_history", "glob": "issuer_history/incorporation.parquet", "keys": ["cik", "accession"], "clock": "available_at", "vintage": "filing"}],
+  "as_of_sql": "SELECT * FROM issuer_incorporation_history WHERE available_at < CAST(ts AS TIMESTAMPTZ) QUALIFY row_number() OVER(PARTITION BY cik ORDER BY available_at DESC, accepted_at DESC, accession DESC)=1",
+  "registered": "Standalone stub only; Task 17 folds into stagelake. Source fetch and load are separate commands.",
+  "guard_gb": 0.95,
+  "staleness": "issuer filing events; sparse historical observations",
+  "doc": "atx-db/docs/datasets/issuer_history.md"
+}

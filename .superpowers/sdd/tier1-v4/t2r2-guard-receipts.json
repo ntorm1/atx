@@ -1,0 +1,915 @@
+{
+  "limits": "Persisted own matching round2 command receipts; failed/stopped/superseded runs are retained. Foreign guard workers excluded. Metadata collection only, no dataset SQL, build, HTTP or return values.",
+  "rows": [
+    {
+      "cap_hit": true,
+      "child_pid": 13892,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_inspect.py"
+      ],
+      "guard_pid": 20392,
+      "job_limit_gb": 0.6,
+      "native_peak_job_memory_gb": 0.6034,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T164947-20392.json",
+      "receipt_sha256": "da2f75fc34245568831eac7421cf4a15cd189d9b7cc324ad9e846a706f85c557",
+      "returncode": 1,
+      "run_seconds": 13.0,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 13212,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_inspect.py"
+      ],
+      "guard_pid": 19136,
+      "job_limit_gb": 0.6,
+      "native_peak_job_memory_gb": 0.3069,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T165117-19136.json",
+      "receipt_sha256": "cc1a2651b67472f61c04c39a6f0f718e1ad6da5daf61bf456a0823fa779a1f14",
+      "returncode": 0,
+      "run_seconds": 11.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19552,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2-header-assessment.json"
+      ],
+      "guard_pid": 18944,
+      "job_limit_gb": 0.95,
+      "native_peak_job_memory_gb": 0.2156,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T165404-18944.json",
+      "receipt_sha256": "2f4fb4a44e0be2ef9412f0165cdf29f571e312d11ab718d989c08f814f8e98d4",
+      "returncode": 4294967295,
+      "run_seconds": 90.1,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18940,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2-header-assessment.json"
+      ],
+      "guard_pid": 14064,
+      "job_limit_gb": 0.95,
+      "native_peak_job_memory_gb": 0.2775,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T165616-14064.json",
+      "receipt_sha256": "ab61235ab3d4738a05e765e81776eec3247bf09948a02530b91ac37622d6e952",
+      "returncode": 0,
+      "run_seconds": 16.0,
+      "status": "completed",
+      "wait_seconds": 173.4
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 12860,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_audit_prepare.py"
+      ],
+      "guard_pid": 3476,
+      "job_limit_gb": 0.8,
+      "native_peak_job_memory_gb": 0.3445,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170037-3476.json",
+      "receipt_sha256": "380117eb7861b621c1e60d7c2f62fb7d88500c82c559e060a5d1f2eec3dfad20",
+      "returncode": 1,
+      "run_seconds": 9.0,
+      "status": "failed",
+      "wait_seconds": 25.1
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 3484,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_audit_prepare.py"
+      ],
+      "guard_pid": 19792,
+      "job_limit_gb": 0.8,
+      "native_peak_job_memory_gb": 0.3464,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170142-19792.json",
+      "receipt_sha256": "abcb993506b0783a8e11375cb4003973b82260405a42bab54a00198441dabc18",
+      "returncode": 1,
+      "run_seconds": 6.0,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 17520,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_audit_prepare.py"
+      ],
+      "guard_pid": 18016,
+      "job_limit_gb": 0.8,
+      "native_peak_job_memory_gb": 0.3461,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170204-18016.json",
+      "receipt_sha256": "6c443a5a6694a304c50c890a8f4efaa1a65473e7b8028ee4bbb0035657c8ef31",
+      "returncode": 1,
+      "run_seconds": 6.0,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18644,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_audit_prepare.py"
+      ],
+      "guard_pid": 19084,
+      "job_limit_gb": 0.8,
+      "native_peak_job_memory_gb": 0.406,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170232-19084.json",
+      "receipt_sha256": "4cafbb9310ea68eee85e64e7d3ab82669f1396b9dc0d1df7352ee1cebb0d1c58",
+      "returncode": 0,
+      "run_seconds": 16.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 9656,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "fetch",
+        "--limit",
+        "3"
+      ],
+      "guard_pid": 2044,
+      "job_limit_gb": 0.3,
+      "native_peak_job_memory_gb": 0.0627,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170413-2044.json",
+      "receipt_sha256": "11123b2744b1e8a945b1c017830eafbc923c7078af0653372b4a078d246d6706",
+      "returncode": 0,
+      "run_seconds": 3.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 20468,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_verify_headers.py"
+      ],
+      "guard_pid": 5048,
+      "job_limit_gb": 0.3,
+      "native_peak_job_memory_gb": 0.06,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170433-5048.json",
+      "receipt_sha256": "a2cb2879696aa4ab3758bc267afde58e44bc5696ea57d3cf77af028610e7ff0d",
+      "returncode": 0,
+      "run_seconds": 1.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 10476,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_confirm_reit.py"
+      ],
+      "guard_pid": 6784,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.0727,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170717-6784.json",
+      "receipt_sha256": "8c10f1db4251e1f0a20abcf277e14778a6c8efae9c0bc80a1cc9f3d2879fb186",
+      "returncode": 0,
+      "run_seconds": 5.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 17752,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_class_cohort.py"
+      ],
+      "guard_pid": 14540,
+      "job_limit_gb": 0.8,
+      "native_peak_job_memory_gb": 0.365,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T170904-14540.json",
+      "receipt_sha256": "0bf50209a840ad7a7ea017ef1eab580e831687e4dcd3e282d24c0a3fcbf13102",
+      "returncode": 0,
+      "run_seconds": 15.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 8404,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2r2-class-cohort.json",
+        "--audit",
+        "../.superpowers/sdd/tier1-v4/t2r2-independent-audit-sample.json"
+      ],
+      "guard_pid": 17500,
+      "job_limit_gb": 0.5,
+      "native_peak_job_memory_gb": 0.0834,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T171338-17500.json",
+      "receipt_sha256": "cd916088596e425cd5066143d1fd9504ea2c02396728103c3b537b2473db47d5",
+      "returncode": 0,
+      "run_seconds": 5.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 16036,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "fetch",
+        "--limit",
+        "1460"
+      ],
+      "guard_pid": 14612,
+      "job_limit_gb": 0.3,
+      "native_peak_job_memory_gb": 0.0637,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T171404-14612.json",
+      "receipt_sha256": "8100a3f4d9593f4b60e2d8108f1ee7bebd7b48915249e78975e073789d69155e",
+      "returncode": 0,
+      "run_seconds": 1466.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 12640,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "load"
+      ],
+      "guard_pid": 19368,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.1044,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T173900-19368.json",
+      "receipt_sha256": "896778ecaa280c11fcb6e59dd4f041eab6aa981bbdd227b1a2cd5472cda90774",
+      "returncode": 0,
+      "run_seconds": 3.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 16768,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2r2-class-cohort.json",
+        "--audit",
+        "../.superpowers/sdd/tier1-v4/t2r2-independent-audit-sample.json"
+      ],
+      "guard_pid": 18484,
+      "job_limit_gb": 0.5,
+      "native_peak_job_memory_gb": 0.101,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T173918-18484.json",
+      "receipt_sha256": "a5fa1271654d4086f9eb3f98c7c7f6997490621762ac8041d3d35f6bed59129d",
+      "returncode": 0,
+      "run_seconds": 5.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19348,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "fetch",
+        "--cap",
+        "2800"
+      ],
+      "guard_pid": 9008,
+      "job_limit_gb": 0.3,
+      "native_peak_job_memory_gb": 0.0753,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T174230-9008.json",
+      "receipt_sha256": "b083c171c6b23d027449bb776eb0937e2a0d50e8ce06cdb25fdcd2aa90fa24b0",
+      "returncode": 4294967295,
+      "run_seconds": 652.5,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 1476,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "fetch",
+        "--cap",
+        "2800"
+      ],
+      "guard_pid": 6644,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.1091,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T175324-6644.json",
+      "receipt_sha256": "db2382e9f00be11cdafe03b27cdeef4900da6311817c24207b788d78ac74105e",
+      "returncode": 0,
+      "run_seconds": 711.7,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 10748,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "load"
+      ],
+      "guard_pid": 12656,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.166,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T180525-12656.json",
+      "receipt_sha256": "008d9199e83ece1f4d2fb906761200a1d1dca3b3656740b0d202d8353dde25c4",
+      "returncode": 0,
+      "run_seconds": 133.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19780,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_audit_extract.py"
+      ],
+      "guard_pid": 18144,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.0996,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T180758-18144.json",
+      "receipt_sha256": "52907a7d342990e168c2ae0afdc413294b6e5b2f96c048dc3455488f0e78bddd",
+      "returncode": 0,
+      "run_seconds": 9.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18972,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2r2-class-cohort.json",
+        "--audit",
+        "../.superpowers/sdd/tier1-v4/t2r2-independent-audit-sample.json"
+      ],
+      "guard_pid": 19004,
+      "job_limit_gb": 0.5,
+      "native_peak_job_memory_gb": 0.1007,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T180931-19004.json",
+      "receipt_sha256": "01d3400257eceb6014386cca3dfacd2662baa5a3d19e2ce636e7308aca8c3a50",
+      "returncode": 0,
+      "run_seconds": 6.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19240,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "fetch",
+        "--cap",
+        "2900"
+      ],
+      "guard_pid": 18964,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.1089,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T180954-18964.json",
+      "receipt_sha256": "f72578288fc3f4177efc02891c058742b0c4110c0c14cc87ac2ca5838ba431a2",
+      "returncode": 0,
+      "run_seconds": 107.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 11468,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_audit_extract.py"
+      ],
+      "guard_pid": 18968,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.0944,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T181208-18968.json",
+      "receipt_sha256": "265e0110637e74683cfb3b3318b9d32cdab2ae38c01301c4434c42b7d788ab4c",
+      "returncode": 0,
+      "run_seconds": 8.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18368,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "load"
+      ],
+      "guard_pid": 17968,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.1037,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T181229-17968.json",
+      "receipt_sha256": "85137dd63e15b821ed0b3b05949ace8b2ef3857e65753773d448da2c629f37e4",
+      "returncode": 0,
+      "run_seconds": 3.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 20100,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "load"
+      ],
+      "guard_pid": 17496,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1722,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T181233-17496.json",
+      "receipt_sha256": "2a2dc3c72bebc60e28ed1382f4246da4c4ed559daf58fef88125bcdc161e2c53",
+      "returncode": 0,
+      "run_seconds": 125.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19036,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.universe",
+        "build"
+      ],
+      "guard_pid": 5248,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.6646,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T181525-5248.json",
+      "receipt_sha256": "c600d7935dc78530c71fc567c921f5defaffb1cf6144205f4a15b565176ec0e2",
+      "returncode": 0,
+      "run_seconds": 348.3,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 10404,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2r2-class-cohort.json",
+        "--audit",
+        "../.superpowers/sdd/tier1-v4/t2r2-independent-audit-sample.json",
+        "--status-followup"
+      ],
+      "guard_pid": 3688,
+      "job_limit_gb": 0.5,
+      "native_peak_job_memory_gb": 0.1004,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T182308-3688.json",
+      "receipt_sha256": "3b3d7ef6b29c5a77e80048b35a5a57ca942c805115160057852731bc20827e1b",
+      "returncode": 0,
+      "run_seconds": 6.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18980,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "fetch",
+        "--cap",
+        "2920"
+      ],
+      "guard_pid": 18720,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.0702,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T182315-18720.json",
+      "receipt_sha256": "e0db2bddf7d346328804aacf358f3f84f3b5eb6096931e1bbdba43141405a32b",
+      "returncode": 0,
+      "run_seconds": 22.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18460,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "load"
+      ],
+      "guard_pid": 20192,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1702,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T182622-20192.json",
+      "receipt_sha256": "9c7d1a435ba6d5ea9165a14add43bbe87510639ec85e7b94998292de99a3f497",
+      "returncode": 0,
+      "run_seconds": 155.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 16796,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_status_followup.py"
+      ],
+      "guard_pid": 16592,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.0852,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183009-16592.json",
+      "receipt_sha256": "acfcadcaf616f6f9b9db61574c2274011068b88e5f802cdad425d29fc655c9ab",
+      "returncode": 0,
+      "run_seconds": 2.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18668,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "load"
+      ],
+      "guard_pid": 7200,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.1043,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183251-7200.json",
+      "receipt_sha256": "c6c5b2a0ca16efa7f9883b6153aa23ec0ed1e1f9a7fc66047e5afca13f5414fb",
+      "returncode": 0,
+      "run_seconds": 4.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19572,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "load"
+      ],
+      "guard_pid": 19140,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1719,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183256-19140.json",
+      "receipt_sha256": "97c97f56f452e0cb941fbdc64bc2c63779c8e39cfc79bb4254c4d5fe7ad66060",
+      "returncode": 0,
+      "run_seconds": 151.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 21444,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.universe",
+        "build"
+      ],
+      "guard_pid": 19348,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.5076,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183605-19348.json",
+      "receipt_sha256": "d46fc9283241684c7acc1aeba623cd2e6181f892ea3ce678227f040137095db6",
+      "returncode": 4294967295,
+      "run_seconds": 125.1,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19432,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "prepare",
+        "--cohort",
+        "../.superpowers/sdd/tier1-v4/t2r2-class-cohort.json",
+        "--audit",
+        "../.superpowers/sdd/tier1-v4/t2r2-independent-audit-sample.json",
+        "--status-followup"
+      ],
+      "guard_pid": 10128,
+      "job_limit_gb": 0.5,
+      "native_peak_job_memory_gb": 0.1009,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183840-10128.json",
+      "receipt_sha256": "9332f430e834f99fdabdda8cfafa90a89c4ad630f2de9364e8efd13cd4d3b913",
+      "returncode": 0,
+      "run_seconds": 7.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 18728,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "fetch",
+        "--cap",
+        "2922"
+      ],
+      "guard_pid": 6804,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.0585,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183848-6804.json",
+      "receipt_sha256": "f81b3ec251ffaf67829701a0fd62f3c8423c241c5567a37e6550acbd401f815e",
+      "returncode": 0,
+      "run_seconds": 3.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 21004,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_history",
+        "load"
+      ],
+      "guard_pid": 13588,
+      "job_limit_gb": 0.4,
+      "native_peak_job_memory_gb": 0.1048,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183853-13588.json",
+      "receipt_sha256": "e389bd26ae34dc88ec7d78b929a33ca27dd692b09081fe19ed58d39c6c3b7f24",
+      "returncode": 0,
+      "run_seconds": 4.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 16952,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.issuer_classes",
+        "load"
+      ],
+      "guard_pid": 17868,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1709,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T183858-17868.json",
+      "receipt_sha256": "0189711f066c8c4c074df43e94e836b1268c96f48b3d3affcab9f27218b3edee",
+      "returncode": 0,
+      "run_seconds": 160.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 6300,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.universe",
+        "build"
+      ],
+      "guard_pid": 20224,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.6561,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T185341-20224.json",
+      "receipt_sha256": "46e42309f9472728c96f7ade7b4739663d3395a757c5e7bacb6ea30cfaf85d09",
+      "returncode": 0,
+      "run_seconds": 353.3,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 12244,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_hand_sources.py"
+      ],
+      "guard_pid": 8524,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1069,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T185945-8524.json",
+      "receipt_sha256": "2709995d3eedbad3708a45358bf824a9c9dfe7c69cbbd6a5582a67a37b162cf1",
+      "returncode": 0,
+      "run_seconds": 85.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 6244,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_reconcile.py"
+      ],
+      "guard_pid": 12156,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.5937,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T190124-12156.json",
+      "receipt_sha256": "50e1d4688f8ecabdbb518e0eb526014743100531a9389be3af9d7bc077197904",
+      "returncode": 0,
+      "run_seconds": 79.1,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 19996,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_hand_sources.py"
+      ],
+      "guard_pid": 17968,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1045,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T190313-17968.json",
+      "receipt_sha256": "7884f2b37b43a3b3b574f59faefa98f780e48d249f868c7ecb6e43c47cf23891",
+      "returncode": 0,
+      "run_seconds": 24.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 20936,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_hand_sources.py"
+      ],
+      "guard_pid": 21316,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1029,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T190435-21316.json",
+      "receipt_sha256": "5e699daea010cb5f62e4e92fbfc2b2ac744d9d0206d7e6b2d8280bed91068d69",
+      "returncode": 0,
+      "run_seconds": 22.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 15692,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_hand_detail.py"
+      ],
+      "guard_pid": 6416,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.0757,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T190650-6416.json",
+      "receipt_sha256": "680e691f62ababb1201c4a6ef9ce702455792958165407008322d905400b5593",
+      "returncode": 1,
+      "run_seconds": 1.0,
+      "status": "failed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 20500,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "-m",
+        "atx_db.alpha_panel.universe",
+        "build"
+      ],
+      "guard_pid": 18928,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.6623,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T190725-18928.json",
+      "receipt_sha256": "16d0f39035cc53adf67fdabb19b3d51505fa2bcdbf5b457cc818daa8f84e6e98",
+      "returncode": 0,
+      "run_seconds": 399.4,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 21164,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_verify.py"
+      ],
+      "guard_pid": 13552,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.1548,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T191420-13552.json",
+      "receipt_sha256": "a5f20e17b6d74b307bda13f7e26d0b5bbce3bacb3b9709dfe4a4661809c703b2",
+      "returncode": 0,
+      "run_seconds": 7.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 20488,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_vendor_coverage.py"
+      ],
+      "guard_pid": 17584,
+      "job_limit_gb": 0.8,
+      "native_peak_job_memory_gb": 0.0743,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T191510-17584.json",
+      "receipt_sha256": "ed97965a2062e7b4547c7cf0821feb7cd91a18949f0514fe4886b45ea4552356",
+      "returncode": 0,
+      "run_seconds": 1.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 21264,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_status_followup.py"
+      ],
+      "guard_pid": 20180,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.0853,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T191529-20180.json",
+      "receipt_sha256": "01266f35736401070148205f3dea425b7a67d619510af09aedab12d30577ffd4",
+      "returncode": 0,
+      "run_seconds": 2.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    },
+    {
+      "cap_hit": false,
+      "child_pid": 20532,
+      "command": [
+        ".venv/Scripts/python.exe",
+        "../.superpowers/sdd/tier1-v4/t2r2_hand_detail.py"
+      ],
+      "guard_pid": 19004,
+      "job_limit_gb": 0.9,
+      "native_peak_job_memory_gb": 0.0751,
+      "receipt": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\receipts\\20261003T191532-19004.json",
+      "receipt_sha256": "8a4674ea210774363d82da102e85e5d442e761c05d86f9a8fcf83627d63c6845",
+      "returncode": 0,
+      "run_seconds": 1.0,
+      "status": "completed",
+      "wait_seconds": 0.0
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "stage": "issuer_classes",
+  "lane": "A",
+  "task": "tier1-v4 Task 2 fix round 2",
+  "schema": "atx.alpha-panel.issuer-classes/v1",
+  "module": "atx_db.alpha_panel.issuer_classes",
+  "args": ["load"],
+  "manifest": "issuer_classes/manifest.json",
+  "inputs": ["archived_sec_submissions", "sec_issuer_history_raw", "fixed_financial_candidate_cohort", "deterministic_audit_sample"],
+  "outputs": [{"view": "issuer_reit_status", "glob": "issuer_classes/reit_status.parquet", "keys": ["cik", "accession"], "clock": "available_at", "vintage": "filing"}, {"view": "issuer_class_header_incorporation", "glob": "issuer_classes/incorporation.parquet", "keys": ["cik", "accession"], "clock": "available_at", "vintage": "filing"}],
+  "as_of_sql": "SELECT * FROM issuer_reit_status WHERE available_at < CAST(ts AS TIMESTAMPTZ) QUALIFY row_number() OVER(PARTITION BY cik ORDER BY available_at DESC,accepted_at DESC,accession DESC)=1",
+  "registered": "Standalone stub only; Task 17 folds into stagelake. Unknown assessments are not status events.",
+  "guard_gb": 0.9,
+  "staleness": "issuer periodic filings; acquired source observation horizon through 2022; 2023-2026 status refresh remains unresolved",
+  "doc": "atx-db/docs/datasets/issuer_classes.md"
+}

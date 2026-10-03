@@ -1,0 +1,4038 @@
+{
+  "exclusive_classes": [
+    {
+      "n": 1064,
+      "reason": "admitted",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 894,
+      "reason": "base_filter",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 61,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 994,
+      "reason": "missing_shares",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 1,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 9,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 3,
+      "reason": "reit",
+      "session_date": "2018-01-31"
+    },
+    {
+      "n": 1100,
+      "reason": "admitted",
+      "session_date": "2018-02-28"
+    },
+    {
+      "n": 721,
+      "reason": "base_filter",
+      "session_date": "2018-02-28"
+    },
+    {
+      "n": 65,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-02-28"
+    },
+    {
+      "n": 734,
+      "reason": "missing_shares",
+      "session_date": "2018-02-28"
+    },
+    {
+      "n": 3,
+      "reason": "price_below_one",
+      "session_date": "2018-02-28"
+    },
+    {
+      "n": 4,
+      "reason": "reit",
+      "session_date": "2018-02-28"
+    },
+    {
+      "n": 1102,
+      "reason": "admitted",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 774,
+      "reason": "base_filter",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 66,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 665,
+      "reason": "missing_shares",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 1,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 4,
+      "reason": "reit",
+      "session_date": "2018-03-29"
+    },
+    {
+      "n": 1095,
+      "reason": "admitted",
+      "session_date": "2018-04-30"
+    },
+    {
+      "n": 841,
+      "reason": "base_filter",
+      "session_date": "2018-04-30"
+    },
+    {
+      "n": 66,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-04-30"
+    },
+    {
+      "n": 602,
+      "reason": "missing_shares",
+      "session_date": "2018-04-30"
+    },
+    {
+      "n": 3,
+      "reason": "price_below_one",
+      "session_date": "2018-04-30"
+    },
+    {
+      "n": 4,
+      "reason": "reit",
+      "session_date": "2018-04-30"
+    },
+    {
+      "n": 1276,
+      "reason": "admitted",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 861,
+      "reason": "base_filter",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 74,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 86,
+      "reason": "missing_shares",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 301,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 1,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-05-31"
+    },
+    {
+      "n": 1277,
+      "reason": "admitted",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 1097,
+      "reason": "base_filter",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 73,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 8,
+      "reason": "fund_bdc",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 121,
+      "reason": "missing_shares",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 304,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 146,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-06-29"
+    },
+    {
+      "n": 1269,
+      "reason": "admitted",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 1093,
+      "reason": "base_filter",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 73,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 132,
+      "reason": "missing_shares",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 303,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 143,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-07-31"
+    },
+    {
+      "n": 1276,
+      "reason": "admitted",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 1085,
+      "reason": "base_filter",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 73,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 6,
+      "reason": "fund_bdc",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 122,
+      "reason": "missing_shares",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 296,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 136,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-08-31"
+    },
+    {
+      "n": 1281,
+      "reason": "admitted",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 1098,
+      "reason": "base_filter",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 72,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 5,
+      "reason": "fund_bdc",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 114,
+      "reason": "missing_shares",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 296,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 138,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 5,
+      "reason": "price_below_one",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-09-28"
+    },
+    {
+      "n": 1268,
+      "reason": "admitted",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 1107,
+      "reason": "base_filter",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 72,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 5,
+      "reason": "fund_bdc",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 128,
+      "reason": "missing_shares",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 294,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 138,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 8,
+      "reason": "price_below_one",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-10-31"
+    },
+    {
+      "n": 1271,
+      "reason": "admitted",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 1118,
+      "reason": "base_filter",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 75,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 8,
+      "reason": "fund_bdc",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 130,
+      "reason": "missing_shares",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 279,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 140,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 13,
+      "reason": "price_below_one",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-11-30"
+    },
+    {
+      "n": 1252,
+      "reason": "admitted",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 1130,
+      "reason": "base_filter",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 76,
+      "reason": "foreign_incorporation",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 8,
+      "reason": "fund_bdc",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 123,
+      "reason": "missing_shares",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 274,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 137,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 19,
+      "reason": "price_below_one",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2018-12-31"
+    },
+    {
+      "n": 1253,
+      "reason": "admitted",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 1135,
+      "reason": "base_filter",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 76,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 125,
+      "reason": "missing_shares",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 280,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 149,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 16,
+      "reason": "price_below_one",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2019-01-31"
+    },
+    {
+      "n": 1249,
+      "reason": "admitted",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 1141,
+      "reason": "base_filter",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 75,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 123,
+      "reason": "missing_shares",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 278,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 141,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 10,
+      "reason": "price_below_one",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2019-02-28"
+    },
+    {
+      "n": 1247,
+      "reason": "admitted",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 1121,
+      "reason": "base_filter",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 77,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 112,
+      "reason": "missing_shares",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 275,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 135,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 10,
+      "reason": "price_below_one",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-03-29"
+    },
+    {
+      "n": 1246,
+      "reason": "admitted",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 1134,
+      "reason": "base_filter",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 75,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 6,
+      "reason": "fund_bdc",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 127,
+      "reason": "missing_shares",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 271,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 136,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 8,
+      "reason": "price_below_one",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-04-30"
+    },
+    {
+      "n": 1241,
+      "reason": "admitted",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 1123,
+      "reason": "base_filter",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 74,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 8,
+      "reason": "fund_bdc",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 126,
+      "reason": "missing_shares",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 272,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 133,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 11,
+      "reason": "price_below_one",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2019-05-31"
+    },
+    {
+      "n": 1246,
+      "reason": "admitted",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 1118,
+      "reason": "base_filter",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 77,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 125,
+      "reason": "missing_shares",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 268,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 133,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 8,
+      "reason": "price_below_one",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-06-28"
+    },
+    {
+      "n": 1236,
+      "reason": "admitted",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 1108,
+      "reason": "base_filter",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 83,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 139,
+      "reason": "missing_shares",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 266,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 139,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 7,
+      "reason": "price_below_one",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-07-31"
+    },
+    {
+      "n": 1230,
+      "reason": "admitted",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 1121,
+      "reason": "base_filter",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 89,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 133,
+      "reason": "missing_shares",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 263,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 127,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 10,
+      "reason": "price_below_one",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2019-08-30"
+    },
+    {
+      "n": 1222,
+      "reason": "admitted",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 1115,
+      "reason": "base_filter",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 92,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 131,
+      "reason": "missing_shares",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 261,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 129,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 7,
+      "reason": "price_below_one",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-09-30"
+    },
+    {
+      "n": 1217,
+      "reason": "admitted",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 1128,
+      "reason": "base_filter",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 92,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 8,
+      "reason": "fund_bdc",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 131,
+      "reason": "missing_shares",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 267,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 130,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 12,
+      "reason": "price_below_one",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-10-31"
+    },
+    {
+      "n": 1216,
+      "reason": "admitted",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 1112,
+      "reason": "base_filter",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 91,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 120,
+      "reason": "missing_shares",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 260,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 116,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 14,
+      "reason": "price_below_one",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-11-29"
+    },
+    {
+      "n": 1210,
+      "reason": "admitted",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 1121,
+      "reason": "base_filter",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 92,
+      "reason": "foreign_incorporation",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 9,
+      "reason": "fund_bdc",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 131,
+      "reason": "missing_shares",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 262,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 125,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 10,
+      "reason": "price_below_one",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2019-12-31"
+    },
+    {
+      "n": 1203,
+      "reason": "admitted",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 1121,
+      "reason": "base_filter",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 90,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 7,
+      "reason": "fund_bdc",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 132,
+      "reason": "missing_shares",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 260,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 130,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 13,
+      "reason": "price_below_one",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 6,
+      "reason": "reit",
+      "session_date": "2020-01-31"
+    },
+    {
+      "n": 1198,
+      "reason": "admitted",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 1129,
+      "reason": "base_filter",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 90,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 139,
+      "reason": "missing_shares",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 256,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 134,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 21,
+      "reason": "price_below_one",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 5,
+      "reason": "reit",
+      "session_date": "2020-02-28"
+    },
+    {
+      "n": 1169,
+      "reason": "admitted",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 1126,
+      "reason": "base_filter",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 85,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 137,
+      "reason": "missing_shares",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 244,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 128,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 61,
+      "reason": "price_below_one",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-03-31"
+    },
+    {
+      "n": 1171,
+      "reason": "admitted",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 1128,
+      "reason": "base_filter",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 86,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 130,
+      "reason": "missing_shares",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 246,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 130,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 47,
+      "reason": "price_below_one",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-04-30"
+    },
+    {
+      "n": 1173,
+      "reason": "admitted",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 1133,
+      "reason": "base_filter",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 85,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 123,
+      "reason": "missing_shares",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 242,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 128,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 46,
+      "reason": "price_below_one",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-05-29"
+    },
+    {
+      "n": 1086,
+      "reason": "admitted",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 1066,
+      "reason": "base_filter",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 83,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 122,
+      "reason": "missing_shares",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 223,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 119,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 32,
+      "reason": "price_below_one",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-06-30"
+    },
+    {
+      "n": 1169,
+      "reason": "admitted",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 1180,
+      "reason": "base_filter",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 87,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 148,
+      "reason": "missing_shares",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 245,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 132,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 28,
+      "reason": "price_below_one",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-07-31"
+    },
+    {
+      "n": 1177,
+      "reason": "admitted",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 1185,
+      "reason": "base_filter",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 88,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 15,
+      "reason": "fund_bdc",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 152,
+      "reason": "missing_shares",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 242,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 130,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 20,
+      "reason": "price_below_one",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-08-31"
+    },
+    {
+      "n": 1174,
+      "reason": "admitted",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 1215,
+      "reason": "base_filter",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 85,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 13,
+      "reason": "fund_bdc",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 158,
+      "reason": "missing_shares",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 240,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 123,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 26,
+      "reason": "price_below_one",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-09-30"
+    },
+    {
+      "n": 1163,
+      "reason": "admitted",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 1242,
+      "reason": "base_filter",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 84,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 13,
+      "reason": "fund_bdc",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 171,
+      "reason": "missing_shares",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 244,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 127,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 26,
+      "reason": "price_below_one",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-10-30"
+    },
+    {
+      "n": 1189,
+      "reason": "admitted",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 1287,
+      "reason": "base_filter",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 86,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 167,
+      "reason": "missing_shares",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 247,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 131,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 5,
+      "reason": "price_below_one",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-11-30"
+    },
+    {
+      "n": 1198,
+      "reason": "admitted",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 1330,
+      "reason": "base_filter",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 1,
+      "reason": "blank_check",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 84,
+      "reason": "foreign_incorporation",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 180,
+      "reason": "missing_shares",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 242,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 127,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 4,
+      "reason": "price_below_one",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2020-12-31"
+    },
+    {
+      "n": 1193,
+      "reason": "admitted",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 1345,
+      "reason": "base_filter",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 2,
+      "reason": "blank_check",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 85,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 176,
+      "reason": "missing_shares",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 244,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 118,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 1,
+      "reason": "price_below_one",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2021-01-29"
+    },
+    {
+      "n": 1203,
+      "reason": "admitted",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 1399,
+      "reason": "base_filter",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 2,
+      "reason": "blank_check",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 84,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 200,
+      "reason": "missing_shares",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 239,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 121,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 1,
+      "reason": "price_below_one",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2021-02-26"
+    },
+    {
+      "n": 1205,
+      "reason": "admitted",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 1421,
+      "reason": "base_filter",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 3,
+      "reason": "blank_check",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 86,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 225,
+      "reason": "missing_shares",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 230,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 110,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-03-31"
+    },
+    {
+      "n": 1203,
+      "reason": "admitted",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 1452,
+      "reason": "base_filter",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 4,
+      "reason": "blank_check",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 86,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 260,
+      "reason": "missing_shares",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 211,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 112,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-04-30"
+    },
+    {
+      "n": 1213,
+      "reason": "admitted",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 1501,
+      "reason": "base_filter",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 4,
+      "reason": "blank_check",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 89,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 269,
+      "reason": "missing_shares",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 208,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 111,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-05-28"
+    },
+    {
+      "n": 1219,
+      "reason": "admitted",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 1536,
+      "reason": "base_filter",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 5,
+      "reason": "blank_check",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 91,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 265,
+      "reason": "missing_shares",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 203,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 108,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-06-30"
+    },
+    {
+      "n": 1222,
+      "reason": "admitted",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 1500,
+      "reason": "base_filter",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 9,
+      "reason": "blank_check",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 94,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 261,
+      "reason": "missing_shares",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 210,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 109,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 2,
+      "reason": "price_below_one",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-07-30"
+    },
+    {
+      "n": 1245,
+      "reason": "admitted",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 1478,
+      "reason": "base_filter",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 99,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 262,
+      "reason": "missing_shares",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 212,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 108,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 2,
+      "reason": "price_below_one",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-08-31"
+    },
+    {
+      "n": 1257,
+      "reason": "admitted",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 1476,
+      "reason": "base_filter",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 97,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 252,
+      "reason": "missing_shares",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 214,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 99,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 3,
+      "reason": "price_below_one",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-09-30"
+    },
+    {
+      "n": 1256,
+      "reason": "admitted",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 1466,
+      "reason": "base_filter",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 8,
+      "reason": "blank_check",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 96,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 271,
+      "reason": "missing_shares",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 216,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 100,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 3,
+      "reason": "price_below_one",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-10-29"
+    },
+    {
+      "n": 1283,
+      "reason": "admitted",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 1484,
+      "reason": "base_filter",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 99,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 266,
+      "reason": "missing_shares",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 212,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 102,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 6,
+      "reason": "price_below_one",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-11-30"
+    },
+    {
+      "n": 1288,
+      "reason": "admitted",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 1514,
+      "reason": "base_filter",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 103,
+      "reason": "foreign_incorporation",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 270,
+      "reason": "missing_shares",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 210,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 100,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 10,
+      "reason": "price_below_one",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2021-12-31"
+    },
+    {
+      "n": 1292,
+      "reason": "admitted",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 1478,
+      "reason": "base_filter",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 101,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 11,
+      "reason": "fund_bdc",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 262,
+      "reason": "missing_shares",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 210,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 98,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 16,
+      "reason": "price_below_one",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2022-01-31"
+    },
+    {
+      "n": 1293,
+      "reason": "admitted",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 1488,
+      "reason": "base_filter",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 6,
+      "reason": "blank_check",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 99,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 13,
+      "reason": "fund_bdc",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 256,
+      "reason": "missing_shares",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 211,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 97,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 14,
+      "reason": "price_below_one",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2022-02-28"
+    },
+    {
+      "n": 1301,
+      "reason": "admitted",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 1515,
+      "reason": "base_filter",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 6,
+      "reason": "blank_check",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 98,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 13,
+      "reason": "fund_bdc",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 244,
+      "reason": "missing_shares",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 199,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 95,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 13,
+      "reason": "price_below_one",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 9,
+      "reason": "reit",
+      "session_date": "2022-03-31"
+    },
+    {
+      "n": 1301,
+      "reason": "admitted",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 1487,
+      "reason": "base_filter",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 96,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 230,
+      "reason": "missing_shares",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 194,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 97,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 15,
+      "reason": "price_below_one",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-04-29"
+    },
+    {
+      "n": 1301,
+      "reason": "admitted",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 1477,
+      "reason": "base_filter",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 5,
+      "reason": "blank_check",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 97,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 225,
+      "reason": "missing_shares",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 188,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 97,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 20,
+      "reason": "price_below_one",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-05-31"
+    },
+    {
+      "n": 1297,
+      "reason": "admitted",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 1448,
+      "reason": "base_filter",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 6,
+      "reason": "blank_check",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 99,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 209,
+      "reason": "missing_shares",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 187,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 96,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 21,
+      "reason": "price_below_one",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-06-30"
+    },
+    {
+      "n": 1293,
+      "reason": "admitted",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 1425,
+      "reason": "base_filter",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 100,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 10,
+      "reason": "fund_bdc",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 218,
+      "reason": "missing_shares",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 189,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 95,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 21,
+      "reason": "price_below_one",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-07-29"
+    },
+    {
+      "n": 1297,
+      "reason": "admitted",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 1380,
+      "reason": "base_filter",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 97,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 203,
+      "reason": "missing_shares",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 185,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 97,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 22,
+      "reason": "price_below_one",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-08-31"
+    },
+    {
+      "n": 1290,
+      "reason": "admitted",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 1354,
+      "reason": "base_filter",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 6,
+      "reason": "blank_check",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 95,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 12,
+      "reason": "fund_bdc",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 191,
+      "reason": "missing_shares",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 185,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 96,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 33,
+      "reason": "price_below_one",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-09-30"
+    },
+    {
+      "n": 1279,
+      "reason": "admitted",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 1329,
+      "reason": "base_filter",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 7,
+      "reason": "blank_check",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 92,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 13,
+      "reason": "fund_bdc",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 177,
+      "reason": "missing_shares",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 183,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 96,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 32,
+      "reason": "price_below_one",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 8,
+      "reason": "reit",
+      "session_date": "2022-10-31"
+    },
+    {
+      "n": 1266,
+      "reason": "admitted",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 1349,
+      "reason": "base_filter",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 6,
+      "reason": "blank_check",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 93,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 14,
+      "reason": "fund_bdc",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 170,
+      "reason": "missing_shares",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 184,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 97,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 42,
+      "reason": "price_below_one",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2022-11-30"
+    },
+    {
+      "n": 1259,
+      "reason": "admitted",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 1287,
+      "reason": "base_filter",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 6,
+      "reason": "blank_check",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 93,
+      "reason": "foreign_incorporation",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 13,
+      "reason": "fund_bdc",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 171,
+      "reason": "missing_shares",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 185,
+      "reason": "non_domestic_or_missing_regime",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 96,
+      "reason": "preferred_warrant_unit_right_suffix",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 43,
+      "reason": "price_below_one",
+      "session_date": "2022-12-30"
+    },
+    {
+      "n": 7,
+      "reason": "reit",
+      "session_date": "2022-12-30"
+    }
+  ],
+  "limits": "Overlapping class counters are diagnostic, not additive attribution; no licensed CRSP line-level comparator exists. Unknown incorporation is never snapshot-backfilled. Same-FINRA-classifier suspects are internal consistency only, not independent class accuracy. Original receipt-backed class audit is a separate artifact.",
+  "monthly": [
+    {
+      "admitted": 1064,
+      "base_common": 2136,
+      "companies": 1058,
+      "foreign_flag": 63,
+      "french": 1228,
+      "fund_bdc_flag": 93,
+      "missing_shares": 994,
+      "non_domestic_regime": 613,
+      "nyse_rows": 3030,
+      "otherwise_eligible_missing_shares": 277,
+      "price_excluded": 4,
+      "residual": -164,
+      "session_date": "2018-01-31",
+      "source_reit_positive": 3,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 214,
+      "unknown_inc": 91
+    },
+    {
+      "admitted": 1100,
+      "base_common": 1906,
+      "companies": 1097,
+      "foreign_flag": 65,
+      "french": 1226,
+      "fund_bdc_flag": 96,
+      "missing_shares": 734,
+      "non_domestic_regime": 486,
+      "nyse_rows": 2627,
+      "otherwise_eligible_missing_shares": 233,
+      "price_excluded": 3,
+      "residual": -126,
+      "session_date": "2018-02-28",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 5,
+      "unknown_inc": 95
+    },
+    {
+      "admitted": 1102,
+      "base_common": 1842,
+      "companies": 1099,
+      "foreign_flag": 66,
+      "french": 1225,
+      "fund_bdc_flag": 96,
+      "missing_shares": 665,
+      "non_domestic_regime": 422,
+      "nyse_rows": 2616,
+      "otherwise_eligible_missing_shares": 230,
+      "price_excluded": 4,
+      "residual": -123,
+      "session_date": "2018-03-29",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 5,
+      "unknown_inc": 91
+    },
+    {
+      "admitted": 1095,
+      "base_common": 1770,
+      "companies": 1095,
+      "foreign_flag": 70,
+      "french": 1224,
+      "fund_bdc_flag": 99,
+      "missing_shares": 602,
+      "non_domestic_regime": 374,
+      "nyse_rows": 2611,
+      "otherwise_eligible_missing_shares": 215,
+      "price_excluded": 3,
+      "residual": -129,
+      "session_date": "2018-04-30",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 2,
+      "unknown_inc": 92
+    },
+    {
+      "admitted": 1276,
+      "base_common": 1758,
+      "companies": 1262,
+      "foreign_flag": 74,
+      "french": 1224,
+      "fund_bdc_flag": 99,
+      "missing_shares": 86,
+      "non_domestic_regime": 373,
+      "nyse_rows": 2619,
+      "otherwise_eligible_missing_shares": 16,
+      "price_excluded": 4,
+      "residual": 52,
+      "session_date": "2018-05-31",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 5,
+      "unknown_inc": 113
+    },
+    {
+      "admitted": 1277,
+      "base_common": 1939,
+      "companies": 1263,
+      "foreign_flag": 74,
+      "french": 1225,
+      "fund_bdc_flag": 99,
+      "missing_shares": 121,
+      "non_domestic_regime": 517,
+      "nyse_rows": 3036,
+      "otherwise_eligible_missing_shares": 16,
+      "price_excluded": 4,
+      "residual": 52,
+      "session_date": "2018-06-29",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 191,
+      "unknown_inc": 114
+    },
+    {
+      "admitted": 1269,
+      "base_common": 1937,
+      "companies": 1254,
+      "foreign_flag": 75,
+      "french": 1226,
+      "fund_bdc_flag": 99,
+      "missing_shares": 132,
+      "non_domestic_regime": 521,
+      "nyse_rows": 3030,
+      "otherwise_eligible_missing_shares": 19,
+      "price_excluded": 4,
+      "residual": 43,
+      "session_date": "2018-07-31",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 191,
+      "unknown_inc": 112
+    },
+    {
+      "admitted": 1276,
+      "base_common": 1919,
+      "companies": 1264,
+      "foreign_flag": 75,
+      "french": 1225,
+      "fund_bdc_flag": 95,
+      "missing_shares": 122,
+      "non_domestic_regime": 501,
+      "nyse_rows": 3004,
+      "otherwise_eligible_missing_shares": 14,
+      "price_excluded": 4,
+      "residual": 51,
+      "session_date": "2018-08-31",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 188,
+      "unknown_inc": 114
+    },
+    {
+      "admitted": 1281,
+      "base_common": 1917,
+      "companies": 1266,
+      "foreign_flag": 75,
+      "french": 1226,
+      "fund_bdc_flag": 95,
+      "missing_shares": 114,
+      "non_domestic_regime": 497,
+      "nyse_rows": 3015,
+      "otherwise_eligible_missing_shares": 14,
+      "price_excluded": 5,
+      "residual": 55,
+      "session_date": "2018-09-28",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 188,
+      "unknown_inc": 116
+    },
+    {
+      "admitted": 1268,
+      "base_common": 1919,
+      "companies": 1253,
+      "foreign_flag": 75,
+      "french": 1225,
+      "fund_bdc_flag": 97,
+      "missing_shares": 128,
+      "non_domestic_regime": 515,
+      "nyse_rows": 3026,
+      "otherwise_eligible_missing_shares": 14,
+      "price_excluded": 8,
+      "residual": 43,
+      "session_date": "2018-10-31",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 189,
+      "unknown_inc": 114
+    },
+    {
+      "admitted": 1271,
+      "base_common": 1922,
+      "companies": 1254,
+      "foreign_flag": 77,
+      "french": 1221,
+      "fund_bdc_flag": 88,
+      "missing_shares": 130,
+      "non_domestic_regime": 502,
+      "nyse_rows": 3040,
+      "otherwise_eligible_missing_shares": 13,
+      "price_excluded": 13,
+      "residual": 50,
+      "session_date": "2018-11-30",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 190,
+      "unknown_inc": 114
+    },
+    {
+      "admitted": 1252,
+      "base_common": 1895,
+      "companies": 1239,
+      "foreign_flag": 78,
+      "french": 1215,
+      "fund_bdc_flag": 95,
+      "missing_shares": 123,
+      "non_domestic_regime": 489,
+      "nyse_rows": 3025,
+      "otherwise_eligible_missing_shares": 15,
+      "price_excluded": 19,
+      "residual": 37,
+      "session_date": "2018-12-31",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 183,
+      "unknown_inc": 114
+    },
+    {
+      "admitted": 1253,
+      "base_common": 1912,
+      "companies": 1238,
+      "foreign_flag": 79,
+      "french": 1211,
+      "fund_bdc_flag": 110,
+      "missing_shares": 125,
+      "non_domestic_regime": 507,
+      "nyse_rows": 3047,
+      "otherwise_eligible_missing_shares": 13,
+      "price_excluded": 16,
+      "residual": 42,
+      "session_date": "2019-01-31",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 197,
+      "unknown_inc": 113
+    },
+    {
+      "admitted": 1249,
+      "base_common": 1889,
+      "companies": 1233,
+      "foreign_flag": 79,
+      "french": 1206,
+      "fund_bdc_flag": 112,
+      "missing_shares": 123,
+      "non_domestic_regime": 495,
+      "nyse_rows": 3030,
+      "otherwise_eligible_missing_shares": 13,
+      "price_excluded": 10,
+      "residual": 43,
+      "session_date": "2019-02-28",
+      "source_reit_positive": 4,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 192,
+      "unknown_inc": 113
+    },
+    {
+      "admitted": 1247,
+      "base_common": 1871,
+      "companies": 1231,
+      "foreign_flag": 84,
+      "french": 1204,
+      "fund_bdc_flag": 111,
+      "missing_shares": 112,
+      "non_domestic_regime": 478,
+      "nyse_rows": 2992,
+      "otherwise_eligible_missing_shares": 10,
+      "price_excluded": 10,
+      "residual": 43,
+      "session_date": "2019-03-29",
+      "source_reit_positive": 6,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 184,
+      "unknown_inc": 113
+    },
+    {
+      "admitted": 1246,
+      "base_common": 1876,
+      "companies": 1231,
+      "foreign_flag": 93,
+      "french": 1204,
+      "fund_bdc_flag": 111,
+      "missing_shares": 127,
+      "non_domestic_regime": 489,
+      "nyse_rows": 3010,
+      "otherwise_eligible_missing_shares": 11,
+      "price_excluded": 8,
+      "residual": 42,
+      "session_date": "2019-04-30",
+      "source_reit_positive": 6,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 192,
+      "unknown_inc": 113
+    },
+    {
+      "admitted": 1241,
+      "base_common": 1872,
+      "companies": 1228,
+      "foreign_flag": 97,
+      "french": 1209,
+      "fund_bdc_flag": 109,
+      "missing_shares": 126,
+      "non_domestic_regime": 481,
+      "nyse_rows": 2995,
+      "otherwise_eligible_missing_shares": 15,
+      "price_excluded": 11,
+      "residual": 32,
+      "session_date": "2019-05-31",
+      "source_reit_positive": 6,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 187,
+      "unknown_inc": 115
+    },
+    {
+      "admitted": 1246,
+      "base_common": 1872,
+      "companies": 1232,
+      "foreign_flag": 98,
+      "french": 1213,
+      "fund_bdc_flag": 110,
+      "missing_shares": 125,
+      "non_domestic_regime": 476,
+      "nyse_rows": 2990,
+      "otherwise_eligible_missing_shares": 16,
+      "price_excluded": 8,
+      "residual": 33,
+      "session_date": "2019-06-28",
+      "source_reit_positive": 6,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 186,
+      "unknown_inc": 116
+    },
+    {
+      "admitted": 1236,
+      "base_common": 1885,
+      "companies": 1221,
+      "foreign_flag": 106,
+      "french": 1213,
+      "fund_bdc_flag": 108,
+      "missing_shares": 139,
+      "non_domestic_regime": 494,
+      "nyse_rows": 2993,
+      "otherwise_eligible_missing_shares": 16,
+      "price_excluded": 7,
+      "residual": 23,
+      "session_date": "2019-07-31",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 196,
+      "unknown_inc": 93
+    },
+    {
+      "admitted": 1230,
+      "base_common": 1869,
+      "companies": 1215,
+      "foreign_flag": 114,
+      "french": 1214,
+      "fund_bdc_flag": 111,
+      "missing_shares": 133,
+      "non_domestic_regime": 470,
+      "nyse_rows": 2990,
+      "otherwise_eligible_missing_shares": 17,
+      "price_excluded": 10,
+      "residual": 16,
+      "session_date": "2019-08-30",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 181,
+      "unknown_inc": 40
+    },
+    {
+      "admitted": 1222,
+      "base_common": 1860,
+      "companies": 1211,
+      "foreign_flag": 117,
+      "french": 1210,
+      "fund_bdc_flag": 112,
+      "missing_shares": 131,
+      "non_domestic_regime": 464,
+      "nyse_rows": 2975,
+      "otherwise_eligible_missing_shares": 17,
+      "price_excluded": 7,
+      "residual": 12,
+      "session_date": "2019-09-30",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 184,
+      "unknown_inc": 33
+    },
+    {
+      "admitted": 1217,
+      "base_common": 1865,
+      "companies": 1205,
+      "foreign_flag": 118,
+      "french": 1206,
+      "fund_bdc_flag": 112,
+      "missing_shares": 131,
+      "non_domestic_regime": 475,
+      "nyse_rows": 2993,
+      "otherwise_eligible_missing_shares": 13,
+      "price_excluded": 12,
+      "residual": 11,
+      "session_date": "2019-10-31",
+      "source_reit_positive": 6,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 185,
+      "unknown_inc": 28
+    },
+    {
+      "admitted": 1216,
+      "base_common": 1834,
+      "companies": 1204,
+      "foreign_flag": 119,
+      "french": 1205,
+      "fund_bdc_flag": 112,
+      "missing_shares": 120,
+      "non_domestic_regime": 443,
+      "nyse_rows": 2946,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 14,
+      "residual": 11,
+      "session_date": "2019-11-29",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 0,
+      "suffix_flag": 173,
+      "unknown_inc": 21
+    },
+    {
+      "admitted": 1210,
+      "base_common": 1846,
+      "companies": 1197,
+      "foreign_flag": 119,
+      "french": 1194,
+      "fund_bdc_flag": 111,
+      "missing_shares": 131,
+      "non_domestic_regime": 458,
+      "nyse_rows": 2967,
+      "otherwise_eligible_missing_shares": 13,
+      "price_excluded": 10,
+      "residual": 16,
+      "session_date": "2019-12-31",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 190,
+      "unknown_inc": 18
+    },
+    {
+      "admitted": 1203,
+      "base_common": 1841,
+      "companies": 1190,
+      "foreign_flag": 116,
+      "french": 1192,
+      "fund_bdc_flag": 102,
+      "missing_shares": 132,
+      "non_domestic_regime": 464,
+      "nyse_rows": 2962,
+      "otherwise_eligible_missing_shares": 11,
+      "price_excluded": 13,
+      "residual": 11,
+      "session_date": "2020-01-31",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 193,
+      "unknown_inc": 18
+    },
+    {
+      "admitted": 1198,
+      "base_common": 1855,
+      "companies": 1182,
+      "foreign_flag": 117,
+      "french": 1190,
+      "fund_bdc_flag": 91,
+      "missing_shares": 139,
+      "non_domestic_regime": 471,
+      "nyse_rows": 2984,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 21,
+      "residual": 8,
+      "session_date": "2020-02-28",
+      "source_reit_positive": 7,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 198,
+      "unknown_inc": 15
+    },
+    {
+      "admitted": 1169,
+      "base_common": 1844,
+      "companies": 1154,
+      "foreign_flag": 113,
+      "french": 1182,
+      "fund_bdc_flag": 99,
+      "missing_shares": 137,
+      "non_domestic_regime": 460,
+      "nyse_rows": 2970,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 61,
+      "residual": -13,
+      "session_date": "2020-03-31",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 193,
+      "unknown_inc": 16
+    },
+    {
+      "admitted": 1171,
+      "base_common": 1830,
+      "companies": 1159,
+      "foreign_flag": 112,
+      "french": 1182,
+      "fund_bdc_flag": 98,
+      "missing_shares": 130,
+      "non_domestic_regime": 456,
+      "nyse_rows": 2958,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 47,
+      "residual": -11,
+      "session_date": "2020-04-30",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 1,
+      "suffix_flag": 190,
+      "unknown_inc": 16
+    },
+    {
+      "admitted": 1173,
+      "base_common": 1817,
+      "companies": 1160,
+      "foreign_flag": 110,
+      "french": 1177,
+      "fund_bdc_flag": 98,
+      "missing_shares": 123,
+      "non_domestic_regime": 446,
+      "nyse_rows": 2950,
+      "otherwise_eligible_missing_shares": 10,
+      "price_excluded": 46,
+      "residual": -4,
+      "session_date": "2020-05-29",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 192,
+      "unknown_inc": 9
+    },
+    {
+      "admitted": 1086,
+      "base_common": 1685,
+      "companies": 1077,
+      "foreign_flag": 107,
+      "french": 1173,
+      "fund_bdc_flag": 87,
+      "missing_shares": 122,
+      "non_domestic_regime": 414,
+      "nyse_rows": 2751,
+      "otherwise_eligible_missing_shares": 10,
+      "price_excluded": 32,
+      "residual": -87,
+      "session_date": "2020-06-30",
+      "source_reit_positive": 10,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 183,
+      "unknown_inc": 9
+    },
+    {
+      "admitted": 1169,
+      "base_common": 1828,
+      "companies": 1157,
+      "foreign_flag": 112,
+      "french": 1167,
+      "fund_bdc_flag": 96,
+      "missing_shares": 148,
+      "non_domestic_regime": 464,
+      "nyse_rows": 3008,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 28,
+      "residual": 2,
+      "session_date": "2020-07-31",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 216,
+      "unknown_inc": 6
+    },
+    {
+      "admitted": 1177,
+      "base_common": 1833,
+      "companies": 1165,
+      "foreign_flag": 113,
+      "french": 1168,
+      "fund_bdc_flag": 96,
+      "missing_shares": 152,
+      "non_domestic_regime": 459,
+      "nyse_rows": 3018,
+      "otherwise_eligible_missing_shares": 14,
+      "price_excluded": 20,
+      "residual": 9,
+      "session_date": "2020-08-31",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 215,
+      "unknown_inc": 3
+    },
+    {
+      "admitted": 1174,
+      "base_common": 1828,
+      "companies": 1162,
+      "foreign_flag": 112,
+      "french": 1171,
+      "fund_bdc_flag": 91,
+      "missing_shares": 158,
+      "non_domestic_regime": 460,
+      "nyse_rows": 3043,
+      "otherwise_eligible_missing_shares": 15,
+      "price_excluded": 26,
+      "residual": 3,
+      "session_date": "2020-09-30",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 213,
+      "unknown_inc": 3
+    },
+    {
+      "admitted": 1163,
+      "base_common": 1837,
+      "companies": 1152,
+      "foreign_flag": 110,
+      "french": 1169,
+      "fund_bdc_flag": 94,
+      "missing_shares": 171,
+      "non_domestic_regime": 481,
+      "nyse_rows": 3079,
+      "otherwise_eligible_missing_shares": 13,
+      "price_excluded": 26,
+      "residual": -6,
+      "session_date": "2020-10-30",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 2,
+      "suffix_flag": 230,
+      "unknown_inc": 4
+    },
+    {
+      "admitted": 1189,
+      "base_common": 1845,
+      "companies": 1178,
+      "foreign_flag": 109,
+      "french": 1168,
+      "fund_bdc_flag": 96,
+      "missing_shares": 167,
+      "non_domestic_regime": 474,
+      "nyse_rows": 3132,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 5,
+      "residual": 21,
+      "session_date": "2020-11-30",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 5,
+      "suffix_flag": 231,
+      "unknown_inc": 7
+    },
+    {
+      "admitted": 1198,
+      "base_common": 1856,
+      "companies": 1185,
+      "foreign_flag": 108,
+      "french": 1170,
+      "fund_bdc_flag": 99,
+      "missing_shares": 180,
+      "non_domestic_regime": 477,
+      "nyse_rows": 3186,
+      "otherwise_eligible_missing_shares": 14,
+      "price_excluded": 4,
+      "residual": 28,
+      "session_date": "2020-12-31",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 4,
+      "suffix_flag": 238,
+      "unknown_inc": 9
+    },
+    {
+      "admitted": 1193,
+      "base_common": 1837,
+      "companies": 1181,
+      "foreign_flag": 108,
+      "french": 1167,
+      "fund_bdc_flag": 92,
+      "missing_shares": 176,
+      "non_domestic_regime": 470,
+      "nyse_rows": 3182,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 1,
+      "residual": 26,
+      "session_date": "2021-01-29",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 4,
+      "suffix_flag": 232,
+      "unknown_inc": 9
+    },
+    {
+      "admitted": 1203,
+      "base_common": 1870,
+      "companies": 1190,
+      "foreign_flag": 107,
+      "french": 1170,
+      "fund_bdc_flag": 93,
+      "missing_shares": 200,
+      "non_domestic_regime": 490,
+      "nyse_rows": 3269,
+      "otherwise_eligible_missing_shares": 11,
+      "price_excluded": 1,
+      "residual": 33,
+      "session_date": "2021-02-26",
+      "source_reit_positive": 11,
+      "source_reit_termination": 0,
+      "spac_flag": 4,
+      "suffix_flag": 250,
+      "unknown_inc": 9
+    },
+    {
+      "admitted": 1205,
+      "base_common": 1880,
+      "companies": 1191,
+      "foreign_flag": 113,
+      "french": 1182,
+      "fund_bdc_flag": 90,
+      "missing_shares": 225,
+      "non_domestic_regime": 479,
+      "nyse_rows": 3301,
+      "otherwise_eligible_missing_shares": 17,
+      "price_excluded": 0,
+      "residual": 23,
+      "session_date": "2021-03-31",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 7,
+      "suffix_flag": 258,
+      "unknown_inc": 7
+    },
+    {
+      "admitted": 1203,
+      "base_common": 1897,
+      "companies": 1192,
+      "foreign_flag": 116,
+      "french": 1180,
+      "fund_bdc_flag": 86,
+      "missing_shares": 260,
+      "non_domestic_regime": 500,
+      "nyse_rows": 3349,
+      "otherwise_eligible_missing_shares": 16,
+      "price_excluded": 0,
+      "residual": 23,
+      "session_date": "2021-04-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 8,
+      "suffix_flag": 274,
+      "unknown_inc": 7
+    },
+    {
+      "admitted": 1213,
+      "base_common": 1915,
+      "companies": 1201,
+      "foreign_flag": 122,
+      "french": 1184,
+      "fund_bdc_flag": 85,
+      "missing_shares": 269,
+      "non_domestic_regime": 488,
+      "nyse_rows": 3416,
+      "otherwise_eligible_missing_shares": 24,
+      "price_excluded": 0,
+      "residual": 29,
+      "session_date": "2021-05-28",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 9,
+      "suffix_flag": 289,
+      "unknown_inc": 6
+    },
+    {
+      "admitted": 1219,
+      "base_common": 1911,
+      "companies": 1202,
+      "foreign_flag": 128,
+      "french": 1195,
+      "fund_bdc_flag": 78,
+      "missing_shares": 265,
+      "non_domestic_regime": 472,
+      "nyse_rows": 3447,
+      "otherwise_eligible_missing_shares": 24,
+      "price_excluded": 0,
+      "residual": 24,
+      "session_date": "2021-06-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 13,
+      "suffix_flag": 280,
+      "unknown_inc": 7
+    },
+    {
+      "admitted": 1222,
+      "base_common": 1928,
+      "companies": 1204,
+      "foreign_flag": 129,
+      "french": 1207,
+      "fund_bdc_flag": 80,
+      "missing_shares": 261,
+      "non_domestic_regime": 494,
+      "nyse_rows": 3428,
+      "otherwise_eligible_missing_shares": 15,
+      "price_excluded": 2,
+      "residual": 15,
+      "session_date": "2021-07-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 18,
+      "suffix_flag": 287,
+      "unknown_inc": 8
+    },
+    {
+      "admitted": 1245,
+      "base_common": 1955,
+      "companies": 1227,
+      "foreign_flag": 131,
+      "french": 1211,
+      "fund_bdc_flag": 76,
+      "missing_shares": 262,
+      "non_domestic_regime": 487,
+      "nyse_rows": 3433,
+      "otherwise_eligible_missing_shares": 26,
+      "price_excluded": 2,
+      "residual": 34,
+      "session_date": "2021-08-31",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 18,
+      "suffix_flag": 288,
+      "unknown_inc": 1
+    },
+    {
+      "admitted": 1257,
+      "base_common": 1949,
+      "companies": 1240,
+      "foreign_flag": 128,
+      "french": 1213,
+      "fund_bdc_flag": 78,
+      "missing_shares": 252,
+      "non_domestic_regime": 470,
+      "nyse_rows": 3425,
+      "otherwise_eligible_missing_shares": 26,
+      "price_excluded": 3,
+      "residual": 44,
+      "session_date": "2021-09-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 20,
+      "suffix_flag": 286,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1256,
+      "base_common": 1971,
+      "companies": 1240,
+      "foreign_flag": 127,
+      "french": 1222,
+      "fund_bdc_flag": 79,
+      "missing_shares": 271,
+      "non_domestic_regime": 490,
+      "nyse_rows": 3437,
+      "otherwise_eligible_missing_shares": 29,
+      "price_excluded": 3,
+      "residual": 34,
+      "session_date": "2021-10-29",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 21,
+      "suffix_flag": 292,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1283,
+      "base_common": 1996,
+      "companies": 1268,
+      "foreign_flag": 132,
+      "french": 1229,
+      "fund_bdc_flag": 76,
+      "missing_shares": 266,
+      "non_domestic_regime": 491,
+      "nyse_rows": 3480,
+      "otherwise_eligible_missing_shares": 20,
+      "price_excluded": 6,
+      "residual": 54,
+      "session_date": "2021-11-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 0,
+      "spac_flag": 20,
+      "suffix_flag": 304,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1288,
+      "base_common": 2009,
+      "companies": 1272,
+      "foreign_flag": 136,
+      "french": 1230,
+      "fund_bdc_flag": 71,
+      "missing_shares": 270,
+      "non_domestic_regime": 492,
+      "nyse_rows": 3523,
+      "otherwise_eligible_missing_shares": 23,
+      "price_excluded": 10,
+      "residual": 58,
+      "session_date": "2021-12-31",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 20,
+      "suffix_flag": 308,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1292,
+      "base_common": 2006,
+      "companies": 1277,
+      "foreign_flag": 134,
+      "french": 1230,
+      "fund_bdc_flag": 69,
+      "missing_shares": 262,
+      "non_domestic_regime": 494,
+      "nyse_rows": 3484,
+      "otherwise_eligible_missing_shares": 18,
+      "price_excluded": 16,
+      "residual": 62,
+      "session_date": "2022-01-31",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 19,
+      "suffix_flag": 295,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1293,
+      "base_common": 1998,
+      "companies": 1276,
+      "foreign_flag": 133,
+      "french": 1229,
+      "fund_bdc_flag": 75,
+      "missing_shares": 256,
+      "non_domestic_regime": 487,
+      "nyse_rows": 3486,
+      "otherwise_eligible_missing_shares": 18,
+      "price_excluded": 14,
+      "residual": 64,
+      "session_date": "2022-02-28",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 18,
+      "suffix_flag": 299,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1301,
+      "base_common": 1978,
+      "companies": 1285,
+      "foreign_flag": 138,
+      "french": 1228,
+      "fund_bdc_flag": 74,
+      "missing_shares": 244,
+      "non_domestic_regime": 465,
+      "nyse_rows": 3493,
+      "otherwise_eligible_missing_shares": 16,
+      "price_excluded": 13,
+      "residual": 73,
+      "session_date": "2022-03-31",
+      "source_reit_positive": 14,
+      "source_reit_termination": 0,
+      "spac_flag": 16,
+      "suffix_flag": 292,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1301,
+      "base_common": 1960,
+      "companies": 1283,
+      "foreign_flag": 136,
+      "french": 1228,
+      "fund_bdc_flag": 74,
+      "missing_shares": 230,
+      "non_domestic_regime": 451,
+      "nyse_rows": 3447,
+      "otherwise_eligible_missing_shares": 17,
+      "price_excluded": 15,
+      "residual": 73,
+      "session_date": "2022-04-29",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 15,
+      "suffix_flag": 286,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1301,
+      "base_common": 1953,
+      "companies": 1284,
+      "foreign_flag": 146,
+      "french": 1228,
+      "fund_bdc_flag": 72,
+      "missing_shares": 225,
+      "non_domestic_regime": 445,
+      "nyse_rows": 3430,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 20,
+      "residual": 73,
+      "session_date": "2022-05-31",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 16,
+      "suffix_flag": 287,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1297,
+      "base_common": 1933,
+      "companies": 1282,
+      "foreign_flag": 144,
+      "french": 1241,
+      "fund_bdc_flag": 70,
+      "missing_shares": 209,
+      "non_domestic_regime": 426,
+      "nyse_rows": 3381,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 21,
+      "residual": 56,
+      "session_date": "2022-06-30",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 17,
+      "suffix_flag": 273,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1293,
+      "base_common": 1941,
+      "companies": 1277,
+      "foreign_flag": 145,
+      "french": 1239,
+      "fund_bdc_flag": 69,
+      "missing_shares": 218,
+      "non_domestic_regime": 436,
+      "nyse_rows": 3366,
+      "otherwise_eligible_missing_shares": 11,
+      "price_excluded": 21,
+      "residual": 54,
+      "session_date": "2022-07-29",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 18,
+      "suffix_flag": 281,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1297,
+      "base_common": 1928,
+      "companies": 1280,
+      "foreign_flag": 141,
+      "french": 1236,
+      "fund_bdc_flag": 70,
+      "missing_shares": 203,
+      "non_domestic_regime": 420,
+      "nyse_rows": 3308,
+      "otherwise_eligible_missing_shares": 9,
+      "price_excluded": 22,
+      "residual": 61,
+      "session_date": "2022-08-31",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 16,
+      "suffix_flag": 273,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1290,
+      "base_common": 1916,
+      "companies": 1274,
+      "foreign_flag": 138,
+      "french": 1239,
+      "fund_bdc_flag": 69,
+      "missing_shares": 191,
+      "non_domestic_regime": 408,
+      "nyse_rows": 3270,
+      "otherwise_eligible_missing_shares": 11,
+      "price_excluded": 33,
+      "residual": 51,
+      "session_date": "2022-09-30",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 15,
+      "suffix_flag": 263,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1279,
+      "base_common": 1887,
+      "companies": 1262,
+      "foreign_flag": 135,
+      "french": 1229,
+      "fund_bdc_flag": 70,
+      "missing_shares": 177,
+      "non_domestic_regime": 390,
+      "nyse_rows": 3216,
+      "otherwise_eligible_missing_shares": 12,
+      "price_excluded": 32,
+      "residual": 50,
+      "session_date": "2022-10-31",
+      "source_reit_positive": 13,
+      "source_reit_termination": 0,
+      "spac_flag": 14,
+      "suffix_flag": 240,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1266,
+      "base_common": 1879,
+      "companies": 1251,
+      "foreign_flag": 136,
+      "french": 1224,
+      "fund_bdc_flag": 76,
+      "missing_shares": 170,
+      "non_domestic_regime": 384,
+      "nyse_rows": 3228,
+      "otherwise_eligible_missing_shares": 8,
+      "price_excluded": 42,
+      "residual": 42,
+      "session_date": "2022-11-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 1,
+      "spac_flag": 12,
+      "suffix_flag": 241,
+      "unknown_inc": 0
+    },
+    {
+      "admitted": 1259,
+      "base_common": 1873,
+      "companies": 1243,
+      "foreign_flag": 135,
+      "french": 1219,
+      "fund_bdc_flag": 79,
+      "missing_shares": 171,
+      "non_domestic_regime": 386,
+      "nyse_rows": 3160,
+      "otherwise_eligible_missing_shares": 8,
+      "price_excluded": 43,
+      "residual": 40,
+      "session_date": "2022-12-30",
+      "source_reit_positive": 12,
+      "source_reit_termination": 1,
+      "spac_flag": 12,
+      "suffix_flag": 239,
+      "unknown_inc": 0
+    }
+  ],
+  "name_classifier_suspects": []
+}

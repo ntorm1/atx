@@ -25,12 +25,16 @@ Point in time. ``available_at`` = 22:00 UTC of ``session_date``. A row uses its 
   Act BDC) file number with clock < cutoff, status is the latest qualifying election/support or N-54C withdrawal event strictly before the cutoff.
 * index proxies: ``indexes_membership_as_of(cutoff) WHERE session_date = d`` (membership is known at its rank date).
 
-Flags (every row): ``is_adr`` = panel ``is_adr`` or ``is_adr_likely``; ``is_reit`` = panel ``is_reit`` or SIC 6798;
+Flags (every row): ``is_adr`` = panel ``is_adr`` or ``is_adr_likely``; ``is_reit`` = the latest issuer-bound
+original REIT status observation strictly before cutoff, falling back to panel ``is_reit`` or SIC 6798
+when no explicit observation exists. Explicit termination overrides stale panel/SIC REIT classification
+and the corresponding base-common exclusion. Sparse observations do not certify uninterrupted status;
+the bounded historical source horizon ends in 2022 and later refresh remains required.
 ``is_spac`` = panel ``is_spac`` or SIC 6770 with zero/missing panel revenue (blank check); ``is_cef_etf`` = panel ``is_etf``, ``security_type``
 fund, regime ``fund`` or BDC (CRSP share code 14 / 73 analogues); ``is_foreign_issuer`` = panel ``is_fpi``, regime
 ``fpi_20f`` / ``canadian_40f``, or incorporation outside the US (CRSP second digit 2 analogue).
 
-Rule ``universe-all-common-v2`` (``univ_all_common``):
+Rule ``universe-all-common-v3`` (``univ_all_common``):
 
 1. the ``market_index`` all_common rule, imported (``market_index.common_filter`` on the panel flags, ``is_operating``,
    not ``is_index``, listing exchange in ``market_index.LISTED``), on the repaired listing exchange;
