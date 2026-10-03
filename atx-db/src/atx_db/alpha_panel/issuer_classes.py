@@ -64,7 +64,12 @@ def reit_assertion(raw:bytes,name:str,cik:int)->dict:
         ends=[normalized.find(mark,m.end()) for mark in '.!?']
         right=min((end for end in ends if end>=0),default=len(normalized))
         context=normalized[left:right]
-        return bool(re.search(r'\b(?:if|unless|whether|assuming|when|once|until|upon|as long as|provided that|subject to|pending|proposed|contingent|would|will|intend\w*|expect\w*)\b',context))
+        if re.search(r'\b(?:if|unless|whether|assuming|when|once|until|upon|as long as|provided that|subject to|pending|proposed|contingent)\b',context):return True
+        # A current completed election is not made prospective by a separate
+        # intention to maintain/continue that already asserted status. Conditions
+        # above still apply across the entire sentence, including that clause.
+        current=re.split(r'\band\s+(?:we\s+)?(?:intend\w*|expect\w*)\s+to\s+(?:maintain|continue)\b',context,maxsplit=1)[0]
+        return bool(re.search(r'\b(?:would|will|intend\w*|expect\w*)\b',current))
     for pattern in (negative,ended_rules):
         for m in re.finditer(pattern,normalized):
             if not conditional(m):negatives.append(m.group(0))

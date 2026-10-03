@@ -89,6 +89,15 @@ def test_unrelated_sentence_condition_does_not_cancel_current_assertion():
     assert I.reit_assertion(doc('We are a REIT. If prices rise, revenue may improve.'),'Example Corp',12)['status'] is True
 
 
+@pytest.mark.parametrize('text',[
+    'We have elected to be treated as a REIT for U.S. federal income tax and intend to maintain this status in future periods.',
+    'The Company has elected to be taxed as a REIT as defined under Section 856 of the Code for U.S. federal income tax purposes and expects to continue to operate to qualify as a REIT.',
+])
+def test_completed_election_with_separate_continuance_intention_is_current(text):
+    assert I.reit_assertion(doc(text),'Example Corp',12)['status'] is True
+    assert I.reit_assertion(doc(text[:-1]+' if the IRS approves our election.'),'Example Corp',12)['status'] is None
+
+
 def test_class_prepare_extensions_retain_annual_audit_and_followup_paths(tmp_path,monkeypatch):
     import json,zipfile
     from atx_db.alpha_panel import common as C
