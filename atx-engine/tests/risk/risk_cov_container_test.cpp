@@ -98,7 +98,10 @@ void rehash_root(std::vector<u8>& bytes) {
                                          std::span<const u8>(bytes).subspan(table, entries * 64)};
   for (u64 s = 0; s < entries; ++s) {
     const auto e = get<er::CovSectionEntry>(bytes, table + s * 64);
-    if (e.flags & cov::section_in_root) parts.push_back(std::span<const u8>(bytes).subspan(e.offset, e.bytes));
+    // A section moved out of the file (a refusal fixture) cannot be hashed: left out here.
+    const bool inside = e.offset <= bytes.size() && e.bytes <= bytes.size() - e.offset;
+    if ((e.flags & cov::section_in_root) && inside)
+      parts.push_back(std::span<const u8>(bytes).subspan(e.offset, e.bytes));
   }
   const auto root = sha(parts);
   put(bytes, 224, root);

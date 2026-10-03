@@ -607,6 +607,21 @@ std::vector<f64> rolling_bias(std::span<const f64> z, usize window) {
   for (usize j = window - 1; j < z.size(); ++j) out[j] = bias_statistic(z.subspan(j + 1 - window, window));
   return out;
 }
+f64 qlike(std::span<const f64> z) noexcept {
+  f64 sum = 0; usize count = 0;
+  for (const f64 v : z) {
+    if (!std::isfinite(v) || v == 0.0) continue;
+    const f64 q = v * v;
+    sum += q - std::log(q); ++count;
+  }
+  return count ? sum / static_cast<f64>(count) : nan;
+}
+f64 mrad(std::span<const f64> z, usize window) {
+  f64 sum = 0; usize count = 0;
+  for (const f64 b : rolling_bias(z, window))
+    if (std::isfinite(b)) { sum += std::abs(b - 1.0); ++count; }
+  return count ? sum / static_cast<f64>(count) : nan;
+}
 
 f64 interval_return(const RiskPanel& p, usize t, usize i) noexcept {
   if (t == 0 || t >= p.dates || i >= p.instruments) return nan;
@@ -1380,5 +1395,242 @@ void BiasHarness::form(const RiskDay& day) {
     }
     if (!h.weights.empty()) apply_forecast(h, forecast_vol(day, h));
   }
+}
+
+// Extended families formed at t (the header states the rules): the eigenportfolios of the
+// forecast factor block F_t, then the minimum-variance and optimized books over the eligible names
+// with a complete forecast, V^-1 applied by Woodbury on that block (never N x N).
+void BiasHarness::form_extended(const RiskDay& day) {
+  constexpr usize kf = factor_count;
+  std::vector<usize> block, column(kf, npos);
+  for (usize k = 0; k < kf; ++k)
+    if (std::isfinite(day.covariance[k * kf + k])) { column[k] = block.size(); block.push_back(k); }
+  const usize m = block.size();
+  if (m == 0) return;
+  Eigen::MatrixXd f(ix(m), ix(m));
+  for (usize a = 0; a < m; ++a)
+    for (usize b = 0; b < m; ++b) {
+      const f64 c = day.covariance[block[a] * kf + block[b]];
+      if (!std::isfinite(c)) return; // a forecast block is finite by construction: refuse to form
+      f(ix(a), ix(b)) = c;
+    }
+  const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(f);
+  if (eig.info() == Eigen::Success && eig.eigenvalues().minCoeff() > 0) {
+    eigen_.factors = block;
+    eigen_.values.assign(eig.eigenvalues().data(), eig.eigenvalues().data() + m);
+    eigen_.vectors.assign(m * m, 0.0);
+    for (usize k = 0; k < m; ++k)
+      for (usize a = 0; a < m; ++a) eigen_.vectors[k * m + a] = eig.eigenvectors()(ix(a), ix(k));
+    eigen_.live = true;
+  }
+  const usize n = panel_.instruments;
+  std::vector<usize> names;
+  for (usize i = 0; i < n; ++i) {
+    const u8 slot = day.industry_slot[i];
+    if (!day.eligible[i] || slot >= industry_slots || !finite_positive(day.specific_variance[i]))
+      continue;
+    bool complete = column[0] != npos && column[industry_factor(slot)] != npos;
+    for (usize s = 0; complete && s < style_count; ++s)
+      if (day.styles[i * style_count + s] != 0.0 && column[style_factor(s)] == npos) complete = false;
+    if (complete) names.push_back(i);
+  }
+  if (names.size() < 2) return;
+  const usize u = names.size();
+  Eigen::MatrixXd x = Eigen::MatrixXd::Zero(ix(u), ix(m));
+  Eigen::VectorXd dinv(ix(u));
+  for (usize r = 0; r < u; ++r) {
+    const usize i = names[r];
+    x(ix(r), ix(column[0])) = 1.0;
+    x(ix(r), ix(column[industry_factor(day.industry_slot[i])])) = 1.0;
+    for (usize s = 0; s < style_count; ++s) {
+      const f64 z = day.styles[i * style_count + s];
+      if (z != 0.0) x(ix(r), ix(column[style_factor(s)])) = z;
+    }
+    dinv[ix(r)] = 1.0 / day.specific_variance[i];
+  }
+  // V^-1 v = D^-1 (v - X C^-1 X' D^-1 v), C = F^-1 + X' D^-1 X (Woodbury).
+  const Eigen::LLT<Eigen::MatrixXd> f_llt(f);
+  if (f_llt.info() != Eigen::Success) return;
+  const Eigen::MatrixXd f_inverse = f_llt.solve(Eigen::MatrixXd::Identity(ix(m), ix(m)));
+  const Eigen::MatrixXd capacitance = f_inverse + x.transpose() * dinv.asDiagonal() * x;
+  const Eigen::LLT<Eigen::MatrixXd> c_llt(capacitance);
+  if (c_llt.info() != Eigen::Success) return;
+  const auto apply_inverse = [&](const Eigen::VectorXd& v) -> Eigen::VectorXd {
+    const Eigen::VectorXd scaled = dinv.cwiseProduct(v);
+    const Eigen::VectorXd c = c_llt.solve(x.transpose() * scaled);
+    return dinv.cwiseProduct(v - x * c);
+  };
+  const Eigen::VectorXd ones_inverse = apply_inverse(Eigen::VectorXd::Ones(ix(u)));
+  const f64 ones_mass = ones_inverse.sum();
+  if (!(std::isfinite(ones_mass) && ones_mass > 0)) return;
+  auto& minvar = held_[random_];
+  for (usize r = 0; r < u; ++r) minvar.weights.emplace_back(names[r], ones_inverse[ix(r)] / ones_mass);
+  apply_forecast(minvar, forecast_vol(day, minvar));
+  Eigen::VectorXd alpha(ix(u));
+  for (usize q = 0; q < optimized_portfolios; ++q) {
+    for (usize r = 0; r < u; ++r) alpha[ix(r)] = optimized_scores_[q * n + names[r]];
+    const Eigen::VectorXd tilt = apply_inverse(alpha);
+    const Eigen::VectorXd w = tilt - (tilt.sum() / ones_mass) * ones_inverse;
+    const f64 gross = w.cwiseAbs().sum();
+    if (!(std::isfinite(gross) && gross > 0)) continue;
+    auto& h = held_[random_ + 1 + q];
+    for (usize r = 0; r < u; ++r) h.weights.emplace_back(names[r], w[ix(r)] / gross);
+    apply_forecast(h, forecast_vol(day, h));
+  }
+}
+
+// ---- atx.cov-container rows (K-P9-12) ----------------------------------------------------------
+namespace {
+namespace cv = atx::engine::risk::cov;
+constexpr std::array<const char*, cv::diag_count> diag_names{
+    "lambda2_factor", "lambda2_specific", "bias_factor", "bias_specific", "structural_scale", "r2",
+    "eigen_effective", "regression_rows", "active_industries", "structural_names",
+    "specific_names", "structural_factors", "unforecast_exposed_factors", "residual_names",
+    "fenced_values", "unscaled_descriptors", "max_specific_variance", "structural_sigma_lower",
+    "structural_sigma_upper", "structural_bounded_names", "structural_clamped_names",
+    "eigen_outcome", "", "", "", "", "", "", "", "", "", ""};
+} // namespace
+
+const std::array<const char*, cv::diag_count>& cov_diag_names() { return diag_names; }
+
+CovDenseRow cov_dense_row(const RiskDay& d, std::span<const u64> ids, i64 history_first,
+                          CovDayScratch& s) {
+  constexpr usize kf = factor_count;
+  s.styles.resize(d.styles.size());
+  for (usize k = 0; k < s.styles.size(); ++k) s.styles[k] = static_cast<f32>(d.styles[k]);
+  s.factor_flags.assign(kf, u8{0});
+  for (usize k = 0; k < kf && k * kf + k < d.covariance.size(); ++k)
+    s.factor_flags[k] = static_cast<u8>(
+        (std::isfinite(d.covariance[k * kf + k]) ? cv::factor_forecast : u8{0}) |
+        (k < d.factor_structural.size() && d.factor_structural[k] ? cv::factor_structural : u8{0}));
+  s.row_flags.assign(d.eligible.size(), u8{0});
+  for (usize i = 0; i < s.row_flags.size(); ++i) {
+    const u8 sf = i < d.specific_flags.size() ? d.specific_flags[i] : u8{0};
+    s.row_flags[i] = static_cast<u8>((d.eligible[i] ? cv::row_eligible : u8{0}) |
+                                     ((sf & specific_structural) ? cv::row_structural_specific : u8{0}) |
+                                     ((sf & specific_bounded) ? cv::row_bounded : u8{0}));
+  }
+  const auto count = [](usize c) { return static_cast<f64>(c); };
+  s.diag.fill(nan);
+  const std::array<f64, 22> values{d.lambda2_factor, d.lambda2_specific, d.bias_factor,
+      d.bias_specific, d.structural_scale, d.r2, d.eigen_effective, count(d.regression_rows),
+      count(d.active_industries), count(d.structural_names), count(d.specific_names),
+      count(d.structural_factors), count(d.unforecast_exposed_factors), count(d.residual_names),
+      count(d.fenced_values), count(d.unscaled_descriptors), d.max_specific_variance,
+      d.structural_sigma_lower, d.structural_sigma_upper, count(d.structural_bounded_names),
+      count(d.structural_clamped_names), static_cast<f64>(static_cast<u8>(d.eigen))};
+  std::copy(values.begin(), values.end(), s.diag.begin());
+  CovDenseRow row;
+  row.date = d.date;
+  row.session = d.session;
+  row.history_first = history_first;
+  row.flags = (d.forecast ? cv::date_forecast : 0U) |
+              (d.structural_factors > 0 ? cv::date_structural : 0U) |
+              (d.eigen == EigenOutcome::Adjusted ? cv::date_eigen_adjusted : 0U) |
+              (d.vra_factor_applied ? cv::date_vra : 0U);
+  row.ids = ids;
+  row.slot = d.industry_slot;
+  row.specific = d.specific_variance;
+  row.styles = s.styles;
+  row.covariance = d.covariance;
+  row.factor_return = d.factor_return;
+  row.factor_flags = s.factor_flags;
+  row.row_flags = s.row_flags;
+  row.diag = s.diag;
+  row.eigen_gamma = d.eigen_gamma;
+  return row;
+}
+
+co::Result<atx::engine::risk::CovBlockInput> cov_block_of(const CovDenseRow& row,
+                                                          CovBlockScratch& s) {
+  constexpr usize kf = factor_count;
+  const usize n = row.ids.size();
+  if (row.slot.size() != n || row.specific.size() != n || row.styles.size() != n * style_count ||
+      row.covariance.size() != kf * kf ||
+      (!row.factor_return.empty() && row.factor_return.size() != kf) ||
+      (!row.factor_flags.empty() && row.factor_flags.size() != kf) ||
+      (!row.row_flags.empty() && row.row_flags.size() != n) ||
+      (!row.diag.empty() && row.diag.size() != cv::diag_count) ||
+      (!row.eigen_gamma.empty() && row.eigen_gamma.size() != kf) ||
+      n > std::numeric_limits<u32>::max() || row.date > std::numeric_limits<u32>::max())
+    return co::Err(co::ErrorCode::InvalidArgument, "cov block: dense row geometry");
+  for (const u8 slot : row.slot)
+    if (slot >= industry_slots && slot != no_exposure)
+      return co::Err(co::ErrorCode::InvalidArgument, "cov block: industry slot outside 0..49/255");
+  const u64 default_specific = std::bit_cast<u64>(nan);
+  const auto has_row = [&](usize i) {
+    if (row.slot[i] != no_exposure || std::bit_cast<u64>(row.specific[i]) != default_specific)
+      return true;
+    for (usize k = 0; k < style_count; ++k)
+      if (std::bit_cast<u32>(row.styles[i * style_count + k]) != 0U) return true;
+    return false;
+  };
+  const auto is_priced = [&](usize i) {
+    return row.slot[i] < industry_slots && finite_positive(row.specific[i]);
+  };
+  s.ids.clear(); s.role.clear(); s.group.clear(); s.exposures.clear(); s.specific.clear();
+  s.row_flags.clear();
+  u32 priced_rows = 0;
+  for (const bool part : {true, false})
+    for (usize i = 0; i < n; ++i) {
+      if (!has_row(i) || is_priced(i) != part) continue;
+      s.ids.push_back(row.ids[i]);
+      s.role.push_back(static_cast<u32>(i));
+      s.group.push_back(row.slot[i] == no_exposure ? 0U : static_cast<u32>(row.slot[i]) + 1U);
+      const auto z = row.styles.subspan(i * style_count, style_count);
+      s.exposures.insert(s.exposures.end(), z.begin(), z.end());
+      s.specific.push_back(row.specific[i]);
+      if (!row.row_flags.empty()) s.row_flags.push_back(row.row_flags[i]);
+      priced_rows += part ? 1U : 0U;
+    }
+  atx::engine::risk::CovBlockInput b;
+  b.as_of_session_ns = row.session;
+  b.data_cutoff_ns = row.session;
+  b.history_first_ns = row.history_first;
+  b.role_date_index = static_cast<u32>(row.date);
+  b.flags = row.flags;
+  b.priced_rows = priced_rows;
+  b.ids = s.ids;
+  b.role_index = s.role;
+  b.group = s.group;
+  b.exposures_f32 = s.exposures;
+  b.specific = s.specific;
+  b.factor_cov = row.covariance;
+  b.factor_return = row.factor_return;
+  b.factor_flags = row.factor_flags;
+  b.row_flags = s.row_flags;
+  b.diag = row.diag;
+  b.eigen_gamma = row.eigen_gamma;
+  return co::Ok(b);
+}
+
+co::Status scatter_cov_block(const atx::engine::risk::CovBlockView& v, usize instruments,
+                             std::span<u8> slot, std::span<f64> specific, std::span<f32> styles,
+                             std::span<f64> covariance) {
+  constexpr usize kf = factor_count;
+  const usize rows = v.rows;
+  const bool narrow = v.exposures_f32.size() == rows * style_count; // an f32 file (or no rows)
+  if (v.factors != kf || v.groups != industry_slots || v.dense != style_count ||
+      slot.size() != instruments || specific.size() != instruments ||
+      styles.size() != instruments * style_count || covariance.size() != kf * kf ||
+      v.ids.size() != rows || v.role_index.size() != rows || v.group.size() != rows ||
+      v.specific.size() != rows || v.factor_cov.size() != kf * kf ||
+      (!narrow && v.exposures_f64.size() != rows * style_count))
+    return co::Err(co::ErrorCode::InvalidArgument, "cov block: scatter geometry");
+  std::fill(slot.begin(), slot.end(), no_exposure);
+  std::fill(specific.begin(), specific.end(), nan);
+  std::fill(styles.begin(), styles.end(), 0.0F);
+  for (usize r = 0; r < rows; ++r) {
+    const usize i = v.role_index[r];
+    if (i >= instruments || v.group[r] > industry_slots)
+      return co::Err(co::ErrorCode::InvalidArgument, "cov block: row outside the instruments");
+    slot[i] = v.group[r] == 0 ? no_exposure : static_cast<u8>(v.group[r] - 1U);
+    specific[i] = v.specific[r];
+    for (usize k = 0; k < style_count; ++k)
+      styles[i * style_count + k] = narrow ? v.exposures_f32[r * style_count + k]
+                                           : static_cast<f32>(v.exposures_f64[r * style_count + k]);
+  }
+  std::copy(v.factor_cov.begin(), v.factor_cov.end(), covariance.begin());
+  return co::Ok();
 }
 } // namespace atx::impl::strategy::risk

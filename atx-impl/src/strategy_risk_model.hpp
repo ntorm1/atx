@@ -458,6 +458,12 @@ public:
   [[nodiscard]] atx::core::Status on_day(const RiskDay& day) override;
   [[nodiscard]] const std::vector<BiasSeries>& series() const noexcept { return series_; }
   [[nodiscard]] BiasFamilies families() const noexcept { return families_; }
+  // The weights held book `book` formed at the last on_day (inspection): random..., [Extended:
+  // minvar, optimized...], book; empty past the end.
+  using Weights = std::span<const std::pair<atx::usize, atx::f64>>;
+  [[nodiscard]] Weights formed(atx::usize book) const {
+    return book < held_.size() ? Weights(held_[book].weights) : Weights{};
+  }
 
 private:
   enum class Excluded : atx::u8 { None = 0, FactorExposure, UncoveredName };
@@ -536,6 +542,20 @@ struct CovBlockScratch {
   std::vector<atx::f64> specific;
   std::vector<atx::u8> row_flags;
 };
+// One RiskDay as the verb's dense row (the ContainerSink and the tests' in-memory sinks share
+// it): styles narrowed to f32 exactly as style_exposures.f32 (static_cast<f32>); date flags
+// date_forecast (day.forecast), date_structural (structural factors forecast), date_eigen_adjusted
+// (S2b ran), date_vra (the factor VRA is an EWMA, not the default 1); FACTOR_FLAGS factor_forecast
+// (finite diagonal) | factor_structural; ROW_FLAGS row_eligible | row_structural_specific |
+// row_bounded; DIAG in cov_diag_names order; the gammas. history_first: the first session whose
+// return entered an estimator (RiskDay::returns_entered), tracked by the caller (else the session).
+struct CovDayScratch {
+  std::vector<atx::f32> styles;
+  std::vector<atx::u8> factor_flags, row_flags;
+  std::array<atx::f64, atx::engine::risk::cov::diag_count> diag{};
+};
+[[nodiscard]] CovDenseRow cov_dense_row(const RiskDay& day, std::span<const atx::u64> ids,
+                                        atx::i64 history_first, CovDayScratch& scratch);
 // The row rule (lossless legacy scatter): rows = every instrument with an exposure row, a
 // specific variance other than the default quiet NaN, or a style whose f32 bits are not +0;
 // rows [0, P) are the priced ones (a slot < 50 and a finite positive specific variance), then the
@@ -579,6 +599,9 @@ struct LegacyComparison {
   atx::usize sessions{};
   atx::i64 session{};     // the first differing session (when !equal)
   std::string what;       // the differing file
+  // The legacy files compared: factor_covariance.f64 and specific_variance.f64 always,
+  // style_exposures.f32 and industry_slot.u8 when the run wrote them (--emit-exposures all).
+  std::vector<std::string> compared;
 };
 [[nodiscard]] atx::core::Result<LegacyComparison> compare_container_to_legacy(
     const std::string& directory);
