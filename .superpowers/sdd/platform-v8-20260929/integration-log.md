@@ -6289,3 +6289,33 @@ Capacity (report only; X-5 beside): net Sharpe .5x 1.669 (1.809), 1x 1.609 (1.76
 the new `price_volume` sleeve the largest share (.154, a low-volatility sleeve), the book's volatility did not fall
 (2.87% both), the gross return fell (6.26% vs 6.45%) and trading cost rose by .28% a year with 33% more turnover: the
 formulaic picks paid less than they cost at the book's horizon.
+
+Tests after the cell (tests only, `a80e2c47`): `lib-v8x7b-gm.json` joins NULL_PINS / ADD_ALPHA_COPIES as `lib-v8x3b-gm.json`
+did; `scripts/tests` **249 passed, 3 skipped, 0 failed**. Disk: 69,372,051,456 B free (64.6 GiB): the drop from 114 GiB
+is other sessions' builds (a vcpkg grpc build tree, `C:/atx/build-server-rel`); this batch's new outputs are about 2 GiB
+(bar fields 3 x 69 MB, candidate-cache entries of the 22 X-7 member runs, cards, w and NAV dirs).
+
+### 4. Campaign v9-mine-c1 (prereg section 9 runbook, PM7-2, PM7-12) -- plan, written before any campaign command
+
+**H-F = X-5** (the last accepted hand-written X cell; X-7 not accepted): spec `x-theme-erc-gm.json`, library v8x3b, w
+pass `build-equity/mega-v8xw-train-theme-erc-1`, fit `build-equity/mega-weights-v8x-theme-erc`, role lo3
+(`train-2020-2023-lo3/manifest.json`, B0b won), fields v13 (`train-2020-2023-lo3-fields-v13/manifest.json`).
+**Step 0 (integration 8 receipt; executables unchanged since):** mine exe `2176fa4a`, mine-tests `d6e40412`, factory-tests
+`58bb8bee` (re-hashed now = v8-14's): mine-tests 44 / 44, factory 392 / 392, golden `0x889874a3b9b29c55` at 1 and 4
+workers, `PromotesThePlantedSignalsOnlyInFiveSeeds` rung_failed 0 (integration 8 log). v8-15 rebuilt only the ic exe.
+**A3 field rule at the lock** (registry at H-F, every X-listed member included): k8_count_63 (read by k8_intensity) and
+inst_own_chg_q (inst_persist) leave the list; no X-7 string reads any of the 12. **Fields 10**: iv_atm_63d, iv_atm_126d,
+ea_delay_days, ins_net_buy_ratio, ins_n_buyers, ins_n_sellers, k8_days_since_any, inst_breadth_chg,
+regsho_threshold_days63, sv_offexchange_share126 (all 10 are fields v13 rows). **B = 11 x 10 = 110** (A3; F = 1.54 for
+101..1,000; z(110) = 3.5062, raw discover t = 3.5062 x 1.54 = 5.3996; Fc 1.77 for m <= 16). Prereg items 4, 5 and 12 (3)
+amended to match in the spec commit (runbook step 2). **Commands, in order** (`RC = python scripts/research_cycle.py`,
+`SPEC = scripts/specs/v9/mine-c1.json`): edit SPEC (fields, budget 110, `inputs.role` / `inputs.fields` = H-F's,
+`pool_source` = H-F's three files); `$RC mine lock $SPEC --write`; `$RC mine pool $SPEC`; `$RC mine lock $SPEC --write`;
+`$RC mine probe $SPEC` (W = the largest of 4, 2, 1 with required <= 7,680 MiB; `max_memory_mib` = required at W rounded up
+to 64); delete the four `requires` lines (OD-7: PM7-2, PM7-12; PM7-27 (2)); commit; `$RC mine plan $SPEC` (header
+check); `$RC mine run $SPEC --date 2026-10-02` alone, only with free physical memory >= `max_memory_mib` + 1,024 MiB
+(PM7-12; else A4: workers 4 -> 2 -> 1 with the probe value, never the budget; stop if 1 does not fit); `$RC
+ledger-campaign --ledger build-equity/trials.jsonl --campaign build-equity/mine-v9-c1` must exit 2. Reads only in the
+registered order (receipt; ledger line; mechanics; then counts, promotions, `mined_members.json`, `trials.csv` last).
+The spec edits break `scripts/tests/test_research_mine.py`'s pins of the committed template (12 fields, 4 requires,
+fills); fixed in tests only after the run (as `4d0c8d8f`).
