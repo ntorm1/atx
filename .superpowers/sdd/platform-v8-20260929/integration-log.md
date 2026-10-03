@@ -7223,3 +7223,65 @@ Ledger `build-equity/trials.jsonl`: lines 129 -> 130, head `58bce60efae09d44`, N
 Hidden-data record: seal scan of 37 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x68 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
 **Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
 
+
+## R0-9 Y-5 two-speed (P9 Phase 0) (2026-10-03, 13:49Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `020cc018`. Ledger `build-equity/trials.jsonl`
+130 lines, N 59 (construction cap 62). Rulings applied: R0-9-PIN, R0-7-MAN, R0-7-EOL (done in R0-7), SEAL-ALLOW, R0-6-ATT
+(only if an attempt fails). DEC-16 noted (info-clock distinct from Y-5; context only).
+
+### R0-9-PIN: template diff (read-only)
+
+| check | argv / source | result |
+|---|---|---|
+| registered bytes | `git show e2ac7d63:scripts/specs/v8/y-two-speed.json \| sha256sum` | `69cf613457ff5b474d56269ff200d3d0211b5f06a0e67162e03b9b3c06b3291e` = v8y 14's pin (blob `b3834504`) |
+| HEAD bytes | `git show HEAD:...` and disk; `git ls-files --eol` | `e29365d1597a31ba659996120ec2fc05f8d3947419249e4bbe945736533ca023` (blob `fb472969`), disk = HEAD, `i/lf w/lf`; history: `e2ac7d63`, then `b3b5dab4` (2026-10-02 21:26 -0400, "registered text follows the code and PM8-16") only |
+| JSON diff | leaf-path diff of both parsed files (python json) | 12 leaf paths each, union 12; **only `/description` differs** (3,191 -> 4,286 chars); top-level key order equal; equal with `description` removed; `git diff e2ac7d63 HEAD` = 1 line (+1 / -1), the description line |
+
+**R0-9-PIN holds**: the manifest pins `e29365d1` (LF bytes); both SHAs and the description-only diff are recorded here.
+
+### Parent (registration vs driver)
+
+- Registration: `y-two-speed.json` `parent: null`, `nominal_parent` `x-theme-erc.json`; text: "parent = the last accepted book
+  at that point, whose fit carries a standardised composition" (v8y 14: "root sets `parent` to the last accepted spec at run
+  time"). Last accepted = Y-S cell `scripts/specs/v8/lib-v8ysb-gm.json` (Y-3, Y-2 not accepted). Its fit
+  `--composition ew-theme-std-v1 --theme-erc theme-erc-v1`: `composition_weights.json` has `theme_standardise` (rerank
+  true, 12 themes), no `theme_residualise`, no `theme_schedule`, no `theme_sleeves`.
+- Driver: `build-equity/waves/y-2/wave-result.json` (`09fbd24e`) `next_parent` = `scripts/specs/v8/lib-v8ysb-gm.json`
+  (v8ysb). **Agree: not ambiguous.**
+- Y-5 defined on it (v8y 6 "Undefined" Y-5 row): NAV `aim-partial-v5`, cadence 1, `--trade-fraction .05` (fixed rate), no
+  `--hold-band` / `--vol-scale` / `--adv-hold-q`, not spo / v6; fit rerank-true `theme_standardise`, no
+  `theme_residualise`; the 12 weighted themes are all in the 13-entry table (`strategy_two_speed.hpp`, `merger_arbitrage`
+  126 by `0ad71615`, an ancestor of the v8-16d source `e0fd0297`); fast bucket = reversal_seasonality (5; price_volume has
+  no weighted member), slow = the other 11: neither empty. **Defined.**
+
+### P13 plan (v8y 13 P13; YCOMB "How root verifies flag absent"), written before any run
+
+Build: the P5 build is v8-16d (ic `985019d9`, targets `72ff6d2d`; R0-3) + v8-16e's ic-tests (`3393a953`). The parent's
+receipts ran on exactly these executables (fit python `624bbc05` with fitter `8d05a9bb` = disk now; w `985019d9`; NAV
+`72ff6d2d`). Every run below goes through the bounded runner (or the cycle); free memory >= peak + 1,536 MiB; no compiler,
+no `atx-*` exe, no research process; comparisons by SHA-256 and JSON paths only (no value read).
+
+(a) **Flag absent: the parent's fit, w and NAV argv re-run** (`--two-speed` absent; argv = the parent's receipt `command`
+with only `--output` renamed; the receipt's limits and `--bind` set):
+| pass | parent receipt / output | new run dir / output | limits | expected |
+|---|---|---|---|---|
+| fit | `mega-weights-v8x-theme-erc-v8ysb-run1` / `mega-weights-v8x-theme-erc-v8ysb` | `p9-r09-p13-fit-run` / `p9-r09-p13-fit` | 180 s / 1,536 | `admission.csv`, `admission.json`, `composition_weights.json` byte-identical (fitter and registry unchanged since the parent's fit; a difference outside PM7-30's three provenance paths is a stop) |
+| w | `mega-v8xw-train-theme-erc-v8ysb-run2` / `mega-v8xw-train-theme-erc-v8ysb-2` | `p9-r09-p13-w-run` / `p9-r09-p13-w` | 300 s / 3,072 | the six `train_combined.*`, `train_daily_ic.csv`, `orientations.json`, `recipe.json`, `train_planned_targets.csv` byte-identical; `summary.json`, `train_candidates.jsonl` only in timing / cache paths (R0-3's list). Candidate cache as the parent's argv (warm: same exe as the parent's w, so a cold cache would test nothing new) |
+| NAV | `mega-nav-v8x-theme-erc-L1.1828-v8ysb-run` / `mega-nav-v8x-theme-erc-L1.1828-v8ysb` | `p9-r09-p13-nav-run` / `p9-r09-p13-nav` | 180 s / 1,536 | every file byte-identical (reads the parent's combined `e13fbc4d`) |
+
+(b) **`TwoSpeedRunner.*`** on the P5 ic-tests exe (`3393a953`; 2 / 2 in `build-equity/v8-i16e-ic-tests.xml`): re-run
+`--gtest_filter=TwoSpeedRunner.*` (synthetic fixture, no real data), xml `build-equity/p9-r09-p13-twospeedrunner.xml`.
+
+(c) **The cell's own w pass reproduces the parent's combined signal byte for byte**, and `parent` is set in the copy: after
+stage 04 writes `scripts/specs/v8/y-two-speed-y-5.json` (its `parent` must be `lib-v8ysb-gm.json`), root runs the strict
+prefix of stage 05's own argv, `research_cycle.py run scripts/specs/v8/y-two-speed-y-5.json --stop-after w` (u = the
+parent's receipt; the cell's fit with `--two-speed`, card, w), before any cell NAV. The cell's w vs the parent's w
+(`mega-v8xw-train-theme-erc-v8ysb-2`), as `TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend` asserts:
+`train_combined.f64`, `_finite.u8`, `_member.u8`, `train_planned_targets.csv` byte-identical (also `_ids.u64`,
+`_sessions.i64`); the `__combined__` rows of `train_daily_ic.csv` equal (SHA-256 of the extracted rows; no value printed);
+`train_combined.json` keeps its 5-file set and pins `train_sleeves.json` by SHA-256 under `composition_sleeves`;
+`recipe.json` differs only in `composition_sleeves` and `composition_weights_sha256`. Stage 05 then resumes (fit, card, w
+done) and runs the calibration NAV.
+
+**Stop**: any (a) mismatch beyond the stated paths, a (b) failure, or a (c) mismatch = P13 fails = stop (0 trials).
