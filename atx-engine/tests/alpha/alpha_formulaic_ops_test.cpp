@@ -300,7 +300,7 @@ void expect_signals_equal(const SignalSet &got, const SignalSet &want, std::stri
       "asof_rank_decay_linear(delta(close, 3), w, 6, 0)",
       "asof_rank_decay_linear(x, w, 3, 2)",
       "asof_rank_correlation(close, w, rank(volume), 5, 0)",
-      "asof_rank_correlation(x, w, y, 3, 2)",
+      "asof_rank_correlation(close, w, y, 6, 2)",
       "asof_rank_covariance(close, w, rank(volume), 5, 1)",
       "asof_rank_covariance(x, one, y, 4, 0)",
       "asof_rank_correlation(x, w, y, 1, 0)",
