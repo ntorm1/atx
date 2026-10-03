@@ -292,3 +292,28 @@ endif()
 if(ATX_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+# Platform P9 B1 (DEC-7; migration plan section 1 `admission/`): the admission screen (screen_v4 on eval::hac,
+# greedy redundancy, the PM7-35 sign predicate, the report-only traded-horizon columns) as its own small library.
+# Like the fields library it needs atx::core and header-only engine pieces only (eval/hac.hpp,
+# data/research_window.hpp), never the atx-engine archive or its PCH. EXCLUDE_FROM_ALL: nothing builds it unless
+# asked. The executable screens a K-P9-4 factor series directory (`atx-research-admission screen ...`).
+add_library(atx-engine-research-admission ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/admission/admission_cli.cpp
+    src/research/admission/admission_csv.cpp
+    src/research/admission/screen.cpp
+    src/research/admission/traded_horizon.cpp)
+add_library(atx::engine-research-admission ALIAS atx-engine-research-admission)
+target_include_directories(atx-engine-research-admission
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-admission PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-admission
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+add_executable(atx-research-admission EXCLUDE_FROM_ALL src/research/admission/admission_main.cpp)
+target_link_libraries(atx-research-admission PRIVATE atx::engine-research-admission atx_warnings)
