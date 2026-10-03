@@ -1,0 +1,16 @@
+### Task 16: Golden research panels `golden_panel/{monthly,daily}`
+
+Deliverable: research-ready panels keyed (session_date or month_end, security_id) with cik, permco-like issuer id,
+universe flags (Task 2), returns (ret, ret_excess, dlret-adjusted next-period return label kept in a separate
+`labels` table), me, Compustat-std as-of items (Task 3), ratios (Task 4), factor exposures (Task 6), JKP
+characteristics (Task 7, monthly), earnings/guidance/ownership/short/events/text fields that exist (Tasks 9-15),
+each column with source stage and clock in the manifest. Monthly: 2020-01..latest (warmup history allowed in
+inputs, not output); daily: 2020-01-02..latest, year files. Gates: unique keys; complete `univ_all_common`
+membership alignment; per-column coverage table per year; PIT audit — for 200 random (date, security, column)
+cells recompute the value from the source stage with the GC1 rule and match exactly; a reader helper
+`load_golden(start, end, columns, universe)` with memory-bounded scans. Independent of the foreign `gold.py`
+alpha-admission panel (different stage name; do not edit it). Files: new `alpha_panel/golden_panel.py`, tests,
+`docs/datasets/golden_panel.md`. Report: `task-16-report.md`.
+
+Owner extensions: read `task-16-evaluation-addendum.md` and `owner-coverage-addendum.md`. Gold panels must include PIT 13F, profitability and growth families, bronze-to-gold lineage and qualified predictive evidence at 5/21/63 sessions.
+
