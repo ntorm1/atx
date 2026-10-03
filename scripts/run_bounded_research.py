@@ -27,9 +27,14 @@ host's free memory covers the declared peak plus the floor (--max-rss-mib +
 --min-free-mib) and no compiler or linker runs (COMPILERS); --host-budget-mib N
 (with S) also waits until the declared caps of every live bounded process that
 holds a claim under --host-claims DIR (default: the host's temp dir, so every
-worktree of the host shares it) plus this one fit in N MiB, then holds its claim
-until its process tree has ended: the host memory semaphore that lets research
-steps run side by side. A wait that times out writes outcome
+worktree of the host shares it) plus this one fit in N MiB, and checks free
+memory inside the claims lock net of what the other claims have yet to allocate
+(their caps less their trees' RSS now), so launches started at the same instant
+never both count the same free memory; it holds its claim until its process
+tree (the child included, should the runner die) has ended: the host memory
+semaphore that lets research steps run side by side. N bounds the sum of the
+declared caps; the free-memory check, not N, keeps them within the host's
+memory. A wait that times out writes outcome
 prelaunch-admission-timeout (nothing ran). The receipt's "admission" block (only
 with the flags) records the wait.
 """
@@ -139,22 +144,56 @@ def remove(path: Path) -> None:
     print(f"run_bounded_research: warning: could not remove {path}", file=sys.stderr)
 
 
-class HostClaims:
-    """The host memory semaphore (--host-budget-mib): ``<dir>/<pid>-<ms>.claim`` = {pid, create_time, mib, output}
-    per admitted bounded process (its declared cap, --max-rss-mib), written under ``<dir>/claims.lock`` (O_CREAT |
-    O_EXCL, held only to check the sum and write the claim) and removed when the process tree has ended. A claim whose
-    process is gone (killed) is stale: dropped and removed by the next check."""
+def tree_rss_mib(doc: dict) -> int:
+    """The memory a claim's processes hold now (MiB): the RSS of the claiming runner's descendants and of its adopted
+    child's tree (the research process, which may outlive a hard-killed runner); the runner itself is not counted
+    (its cap covers the child tree only). Unreadable processes count 0 (the claim then reserves more, never less)."""
+    seen, total = set(), 0
+    for key, tree in (("pid", False), ("child_pid", True)):
+        try:
+            pid, born = int(doc[key]), float(doc[key.replace("pid", "create_time")])
+            proc = psutil.Process(pid)
+            if abs(proc.create_time() - born) >= 0.01:
+                continue
+            procs = ([proc] if tree else []) + proc.children(recursive=True)
+        except (KeyError, TypeError, ValueError, psutil.Error, OSError):
+            continue
+        for q in procs:
+            if q.pid in seen:
+                continue
+            seen.add(q.pid)
+            try:
+                total += q.memory_info().rss
+            except (psutil.Error, OSError):
+                pass
+    return total >> 20
 
-    def __init__(self, directory: Path, budget_mib: int):
+
+class HostClaims:
+    """The host memory semaphore (--host-budget-mib): ``<dir>/<pid>-<ms>.claim`` = {pid, create_time, mib, output,
+    child_pid?, child_create_time?} per admitted bounded process (its declared cap, --max-rss-mib; the child once
+    launched), written under ``<dir>/claims.lock`` (O_CREAT | O_EXCL) and removed when the process tree has ended.
+    Admission checks free memory inside that lock, net of what the other claims have yet to allocate (try_claim), so
+    two runners started at the same instant never both count the same free memory. A claim whose runner and child are
+    both gone (killed) is stale: dropped and removed by the next check. ``owner`` = (pid, create_time) of the claiming
+    process (default this one)."""
+
+    def __init__(self, directory: Path, budget_mib: int, owner: tuple[int, float] | None = None):
         self.dir, self.budget = Path(directory), budget_mib
+        if owner is None:
+            me = psutil.Process()
+            owner = (me.pid, me.create_time())
+        self.owner = owner
         self.mine: Path | None = None
+        self.doc: dict | None = None
 
     def live(self) -> list[dict]:
         out = []
         for p in sorted(self.dir.glob("*" + CLAIM_SUFFIX)):
             try:
                 doc = json.loads(p.read_text(encoding="utf-8"))
-                running = is_alive(int(doc["pid"]), float(doc["create_time"]))
+                running = is_alive(int(doc["pid"]), float(doc["create_time"])) or (
+                    "child_pid" in doc and is_alive(int(doc["child_pid"]), float(doc["child_create_time"])))
                 doc["mib"] = int(doc["mib"])
             except (OSError, ValueError, KeyError, TypeError):
                 continue                                   # claims are written whole (os.replace): unreadable = gone
@@ -182,28 +221,43 @@ class HostClaims:
                 if time.monotonic() > end:
                     raise RuntimeError(f"host claims lock {lock} held for {seconds} s") from None
                 time.sleep(0.05)
-        me = psutil.Process()
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"pid": me.pid, "create_time": me.create_time()}) + "\n")
+            f.write(json.dumps({"pid": self.owner[0], "create_time": self.owner[1]}) + "\n")
         return lock
 
-    def try_claim(self, mib: int, output: str) -> tuple[bool, int]:
-        """Claim ``mib`` when the live claims leave room under the budget: (claimed, MiB the others claim)."""
+    def try_claim(self, mib: int, need: int, output: str, available) -> dict:
+        """Under the claims lock: claim ``mib`` when (a) the live claims plus ``mib`` fit the budget and (b) free memory
+        (``available()`` bytes, read inside the lock) minus what the other claims have yet to allocate (each claim's
+        mib less its processes' RSS now, tree_rss_mib, at least 0) covers ``need`` (this process's peak + floor).
+        Returns {claimed, free_mib, claimed_by_others_mib, reserved_by_others_mib}."""
         lock = self.acquire_lock()
         try:
-            others = sum(d["mib"] for d in self.live())
-            if others + mib > self.budget:
-                return False, others
-            me = psutil.Process()
-            path = self.dir / f"{me.pid}-{int(me.create_time() * 1000)}{CLAIM_SUFFIX}"
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time(), "mib": mib,
-                                       "output": output}) + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-            self.mine = path
-            return True, others
+            live = self.live()
+            free = available() >> 20
+            others = sum(d["mib"] for d in live)
+            reserved = sum(max(0, d["mib"] - tree_rss_mib(d)) for d in live)
+            out = {"claimed": others + mib <= self.budget and free - reserved >= need, "free_mib": free,
+                   "claimed_by_others_mib": others, "reserved_by_others_mib": reserved}
+            if out["claimed"]:
+                pid, born = self.owner
+                self.mine = self.dir / f"{pid}-{int(born * 1000)}{CLAIM_SUFFIX}"
+                self.doc = {"pid": pid, "create_time": born, "mib": mib, "output": output}
+                self.write()
+            return out
         finally:
             remove(lock)
+
+    def write(self) -> None:
+        tmp = self.mine.with_name(self.mine.name + ".tmp")
+        tmp.write_text(json.dumps(self.doc) + "\n", encoding="utf-8")
+        os.replace(tmp, self.mine)
+
+    def adopt(self, child: psutil.Process) -> None:
+        """Record the launched child in this process's claim: the claim lives while the child does (a hard-killed
+        runner's orphaned child keeps its share) and its RSS counts against the claim's reservation."""
+        if self.mine is not None and self.doc is not None:
+            self.doc.update(child_pid=child.pid, child_create_time=child.create_time())
+            self.write()
 
     def release(self) -> None:
         if self.mine is not None:
@@ -212,29 +266,45 @@ class HostClaims:
 
 
 def admit(args, output: Path, *, available=lambda: psutil.virtual_memory().available, compilers=compilers_running,
-          clock=time.monotonic, sleep=time.sleep) -> tuple[dict, HostClaims | None]:
+          clock=time.monotonic, sleep=time.sleep, owner: tuple[int, float] | None = None
+          ) -> tuple[dict, HostClaims | None]:
     """Wait, at most args.admission_wait_seconds, until the launch may start: free memory >= the declared peak + the
-    floor (max_rss_mib + min_free_mib), no COMPILERS process, and with args.host_budget_mib a claim of max_rss_mib under
-    the host budget. Returns (the receipt's admission block, the claims holding this process's claim, or None); raises
-    AdmissionTimeout (its ``block``) when the wait runs out."""
+    floor (need = max_rss_mib + min_free_mib) and no COMPILERS process; with args.host_budget_mib the free check runs
+    inside the claims lock, net of the memory the other live claims have yet to allocate, together with a claim of
+    max_rss_mib under the host budget (HostClaims.try_claim: two simultaneous launches never both count the same free
+    memory). Returns (the receipt's admission block, the claims holding this process's claim, or None); raises
+    AdmissionTimeout (its ``block``) when the wait runs out. ``owner``: the claiming process (default this one)."""
     need = args.max_rss_mib + args.min_free_mib
-    claims = HostClaims(args.host_claims, args.host_budget_mib) if args.host_budget_mib else None
+    claims = HostClaims(args.host_claims, args.host_budget_mib, owner) if args.host_budget_mib else None
     block = {"wait_seconds": args.admission_wait_seconds, "need_free_mib": need, "host_budget_mib": args.host_budget_mib,
              "claims_dir": str(claims.dir) if claims else None}
     start, checks = clock(), 0
     while True:
         checks += 1
-        free, busy, others, why = available() >> 20, compilers(), None, []
-        if free < need:
-            why.append(f"free memory {free} MiB < {need} MiB (peak {args.max_rss_mib} + floor {args.min_free_mib})")
-        if busy:
-            why.append(f"running: {', '.join(busy)}")
-        if not why and claims is not None:
-            ok, others = claims.try_claim(args.max_rss_mib, str(output))
-            if not ok:
+        others, why = None, []
+        if claims is None:
+            free, busy = available() >> 20, compilers()
+            if free < need:
+                why.append(f"free memory {free} MiB < {need} MiB (peak {args.max_rss_mib} + floor {args.min_free_mib})")
+            if busy:
+                why.append(f"running: {', '.join(busy)}")
+            block.update(waited_seconds=round(clock() - start, 3), checks=checks, free_mib=free,
+                         claimed_by_others_mib=others)
+        else:
+            busy = compilers()
+            if busy:
+                why.append(f"running: {', '.join(busy)}")
+            got = claims.try_claim(args.max_rss_mib, need, str(output), available) if not busy else \
+                {"claimed": False, "free_mib": available() >> 20, "claimed_by_others_mib": None,
+                 "reserved_by_others_mib": None}
+            others, reserved = got["claimed_by_others_mib"], got["reserved_by_others_mib"]
+            if not busy and others + args.max_rss_mib > args.host_budget_mib:
                 why.append(f"claimed {others} MiB + {args.max_rss_mib} MiB > host budget {args.host_budget_mib} MiB")
-        block.update(waited_seconds=round(clock() - start, 3), checks=checks, free_mib=free,
-                     claimed_by_others_mib=others)
+            if not busy and got["free_mib"] - reserved < need:
+                why.append(f"free memory {got['free_mib']} MiB less {reserved} MiB the other claims have yet to "
+                           f"allocate < {need} MiB (peak {args.max_rss_mib} + floor {args.min_free_mib})")
+            block.update(waited_seconds=round(clock() - start, 3), checks=checks, free_mib=got["free_mib"],
+                         claimed_by_others_mib=others, reserved_by_others_mib=reserved)
         if not why:
             return block, claims
         if clock() - start >= args.admission_wait_seconds:
@@ -352,6 +422,8 @@ def main() -> int:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             process = psutil.Process(child.pid)
             owned[(process.pid, process.create_time())] = process
+            if claims is not None:              # the claim lives (and its reservation shrinks) with the child
+                claims.adopt(process)
             while True:
                 tree = live_owned(owned)
                 if child.poll() is not None and not tree:

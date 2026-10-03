@@ -41,7 +41,10 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   >= its declared peak + floor and no compiler (run_bounded_research --admission-wait-seconds)
   --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
                   --host-budget-mib), and the steps that read nothing of each other run side by side under it
-                  (PARALLEL: ref || u, card || marginal); a phase cap above N is refused when planned
+                  (PARALLEL: ref || u, card || marginal); a phase cap above N is refused when planned. Each launch
+                  checks free memory inside the semaphore's lock, net of the other claims' unallocated caps, so a
+                  pair never over-commits; N bounds the sum of declared caps: set it no higher than the host's free
+                  memory at wave start
   --keep-verdicts (P9 OR section 3) every cycle_verdict.json write also leaves its bytes in
                   <cycle dir>/verdicts/<mode>-<k>.json, never overwritten (a receipt's verdict pin never dangles)
   exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by

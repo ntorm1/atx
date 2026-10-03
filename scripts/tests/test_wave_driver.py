@@ -7,6 +7,7 @@
   test_attempt_subdir_after_floor_kill    OR-4: a planted floor kill resumes to completion in <run dir>/attempt-2
   test_driver_auto_attempt_manifest_flag  the manifest's driver block (each key opt-in) reaches research_cycle
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
+  test_two_launches_never_overcommit      review E1 major: two simultaneous admits never count the same free memory
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
@@ -416,6 +417,73 @@ def test_launch_waits_for_free_memory(tmp_path):
     assert runs and all(a[-4:-2] == ["--admission-wait", "60"] for a in runs)
     assert bounded and all(a[a.index("--output") - 2:a.index("--output")] == ["--admission-wait-seconds", "60"]
                            for a in bounded)
+
+
+def test_two_launches_never_overcommit(tmp_path):
+    """Review E1 (major): under --host-budget-mib the free-memory check runs inside the claims lock, net of what the
+    other live claims have yet to allocate (cap less their trees' RSS now), so two runners started at the same instant
+    (research_cycle's ref || u) never both count the same free memory. With 3,584 MiB free, u (2,560 + floor 512) and
+    ref (1,536 + 512) need 4,608 MiB together: one is admitted, the other waits (here: times out) until the first's
+    claim is gone. A claim lives while its runner or its adopted child does (an orphaned child keeps its share)."""
+    helpers = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"]) for _ in range(3)]
+    try:
+        own = [(p.pid, psutil.Process(p.pid).create_time()) for p in helpers]
+        claims, free = tmp_path / "claims", (lambda: 3584 << 20)
+        u = admit_args(tmp_path, max_rss_mib=2560, min_free_mib=512, host_budget_mib=12000, admission_wait_seconds=1.0)
+        ref = admit_args(tmp_path, max_rss_mib=1536, min_free_mib=512, host_budget_mib=12000, admission_wait_seconds=1.0)
+        # at the same instant: both pass the compiler check together (a barrier), then exactly one is admitted
+        gate, results = threading.Barrier(2, timeout=30), {}
+
+        def launch(name, args, owner):
+            first = [True]
+
+            def compilers():
+                if first[0]:
+                    first[0] = False
+                    gate.wait()
+                return []
+            clock = Clock()
+            try:
+                results[name] = RB.admit(args, tmp_path / name, available=free, compilers=compilers, clock=clock,
+                                         sleep=clock.sleep, owner=owner)
+            except RB.AdmissionTimeout as exc:
+                results[name] = exc
+        threads = [threading.Thread(target=launch, args=a) for a in (("u", u, own[0]), ("ref", ref, own[1]))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        won = [n for n, r in results.items() if isinstance(r, tuple)]
+        lost = [r for r in results.values() if isinstance(r, RB.AdmissionTimeout)]
+        assert len(won) == 1 and len(lost) == 1, results
+        assert "the other claims have yet to allocate" in lost[0].block["refused"][-1]
+        assert lost[0].block["reserved_by_others_mib"] == (2560 if won == ["u"] else 1536)
+        results[won[0]][1].release()
+        # one after the other: ref waits while u's claim (nothing allocated yet) reserves 2,560 MiB, then is admitted
+        block, held = RB.admit(u, tmp_path / "u", available=free, compilers=lambda: [], clock=Clock(),
+                               sleep=lambda s: None, owner=own[0])
+        assert block["reserved_by_others_mib"] == 0 and block["free_mib"] == 3584
+        clock = Clock()
+        with pytest.raises(RB.AdmissionTimeout, match=r"free memory 3584 MiB less 2560 MiB the other claims have yet "
+                                                      r"to allocate < 2048 MiB \(peak 1536 \+ floor 512\)"):
+            RB.admit(ref, tmp_path / "ref", available=free, compilers=lambda: [], clock=clock, sleep=clock.sleep,
+                     owner=own[1])
+        held.adopt(psutil.Process(own[2][0]))                                # u's child, launched
+        doc = json.loads(held.mine.read_text())
+        assert (doc["child_pid"], doc["child_create_time"]) == own[2] and RB.tree_rss_mib(doc) > 0
+        helpers[0].kill()                                                    # the runner dies, its child lives on
+        helpers[0].wait(30)
+        assert [d["output"] for d in RB.HostClaims(claims, 12000, own[1]).live()] == [str(tmp_path / "u")]
+        helpers[2].kill()                                                    # the child ends: the claim is stale
+        helpers[2].wait(30)
+        block, held2 = RB.admit(ref, tmp_path / "ref", available=free, compilers=lambda: [], clock=Clock(),
+                                sleep=lambda s: None, owner=own[1])
+        assert block["claimed_by_others_mib"] == 0 and not held.mine.exists()
+        held2.release()
+    finally:
+        for p in helpers:
+            p.kill()
+            p.wait(30)
 
 
 def gated_executor(names: set[str], seen: list[str]):

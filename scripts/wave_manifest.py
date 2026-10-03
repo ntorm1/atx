@@ -56,7 +56,9 @@ One wave is one cell on the current book, declared before anything is measured:
        "host_budget_mib": N                      (with admission_wait_seconds; at least the readers' cap) the host
                                                  memory semaphore over declared caps (--host-budget-mib N), under which
                                                  ref || u, card || marginal and the judge's summ || bundle || book reader
-                                                 run side by side (OR section 5)
+                                                 run side by side (OR section 5); each launch also checks free memory
+                                                 net of the other claims' unallocated caps. Set N no higher than the
+                                                 host's free memory at wave start
        "lock_exes": BOOL                         every cell spec the wave writes (the screen library, a b library, a
                                                  rule cell) is pinned with `lock --exes --write` before its commit: its
                                                  exes_sha256, checked by every run; verify records the parent's and the
