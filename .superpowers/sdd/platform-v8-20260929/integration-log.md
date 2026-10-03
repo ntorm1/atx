@@ -6538,3 +6538,92 @@ unchanged, so a warm cache would never run the new VM on the X-book strings); li
 | NAV | `mega-nav-v8x-theme-erc-L1.1720-run` | `v8-i16-x5-nav` | `mega-nav-v8x-theme-erc-L1.1720` | 27 / 27 byte-identical |
 
 A mismatch is a stop (PM8-4 (b)). No statistic is read: comparisons by SHA-256 and JSON paths only.
+
+## P9 Phase 0, root steps R0-3, R0-4, R0-5 (PM session 9 dispatch; 2026-10-03)
+
+Root in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `84f06f6b` (code pathspec clean; one untracked file
+outside it, `docs/plans/2026-10-02-x5-equity-curve.png`, not root's, left alone). Read: P9 plan
+(`docs/plans/2026-10-03-p9-sprint-plan.md`) header DS paragraph, sections 0.6 and 1.1 (R0-3..R0-5), integrator-rules,
+global-constraints, `v8y-prereg.md` sections 9 and 13 (P5, P8, P10) and Appendix B YP-12, this log's "Y integration" section
+3, progress PM7-30 and PM8-4. Lane E1's P0-FIX files and `y-s.json` untouched (R0-2). No C++ built.
+
+### R0-3. X-5 identity under build v8-16d: verified from disk (v8y P5, PM7-30)
+
+The three passes were run by a previous root session at source `d7c1c520` (bounded runner, "clean in the code pathspec",
+dirty outside none) but no result was logged. Verified from disk now, not from a report:
+- **Build v8-16d** (receipt `build-equity/mega-v8-16d-receipt.json` `a3258637`): source `e0fd0297`, DirtyEntries 0, preset
+  equity-dev, 8 targets (`atx-equity-strategy`, `-ic`, `-targets`, `atx-impl-strategy-ic-tests`, `-target-tests`,
+  `atx-impl-tests`, `atx-engine-book-tests`, `atx-engine-research-fields-tests`), exit 0, 287.5 s, 104 TUs, 10 links.
+  Executables re-hashed on disk = the receipt: **ic `985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989`**,
+  **targets `72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25`**, atx-equity-strategy `8c4cc70b...a3ea`.
+  v8-16c (`5b9af8ba`) exited 1 (superseded before any run); v8-16e (`2206504b`) rebuilt `atx-impl-strategy-ic-tests` only
+  (`3393a953`). Between `e0fd0297` and `84f06f6b` the only C++ change is `atx-impl/tests/strategy_ic_runner_test.cpp`
+  (v8-16e's): the research executables are current.
+- **Argv** (token by token against X-5's recorded receipts): fit 1 differing token (`--output`), w 2 (`--output`;
+  `--candidate-cache` -> the new empty `build-equity/v8-i16d-cand-cache-empty`), NAV 1 (`--output`); limits equal.
+
+| pass | X-5 receipt / reference | new receipt (`receipt.json` SHA-256) | exe | s / MiB | result |
+|---|---|---|---|---|---|
+| fit (180 / 1,536) | `mega-weights-v8x-theme-erc-run1` / `mega-weights-v8x-theme-erc` | `v8-i16d-x5-fit-run` `cd7458de867e2e7cc55e9c68d2c34afad9116e96a43e307db0b1b479092ed5d0` | python (fitter) | 1.6 / 56 | `admission.csv` **byte-identical** (`b6cb8a74`); `admission.json` differs only in `/inputs/script_sha256` (`4c529f5f` -> `8d05a9bb` = the fitter at head: `merger_arbitrage` in `V7_APPENDED_THEMES`); `composition_weights.json` only in `/provenance/script_sha256` (same), `/provenance/admission_sha256` (`5f5b3edb` -> `90adeef8`) and `/provenance/std/registry_sha256` (`7ff10f4e` -> `6a1ef89d` = `registry.json` at head: theme `merger_arbitrage`, the Y field rows). **Both byte-identical after substituting those values back** (admission `5f5b3edb`, weights `8310da2c`): the PM7-30 list, nothing else |
+| w, cold cache (300 / 3,072) | `mega-v8xw-train-theme-erc-run1` / `mega-v8xw-train-theme-erc-1` | `v8-i16d-x5-w-run` `d6c9f5069a5f8d1c948960de9fdcdad582dfda99dbc0e72cfa8523e7535d8f8f` | ic v8-16d `985019d9` (X-5 ran v8-14 `67f72921`) | 254.4 / 2,373 | **10 of 12 byte-identical**: the six `train_combined.*` (`.json` `2a442f56` = X-5's pin, `.f64` `c17ac935`), `train_daily_ic.csv`, `orientations.json`, `recipe.json`, `train_planned_targets.csv` -- the library re-evaluated by the v8-16d VM (58 VM evaluations) reproduces byte for byte. `summary.json` (603 of 7,245 leaf paths) and `train_candidates.jsonl` (464 of 6,554) differ only in timing paths (`stage_seconds.*`, `wall_seconds`, `hash_seconds`), cache paths and counts (`candidate_cache.{directory, fields_directory, entries[].payload, entries[].sidecar, hits, misses, vm_evaluations, ic_results.hits, ic_results.misses}`, per candidate `signal_cache`, `ic_result_cache`) and the cold-cache I/O counters `research_fields.{field_loads, loaded_bytes, peak_resident_fields}`, `verify_bytes` |
+| NAV (180 / 1,536) | `mega-nav-v8x-theme-erc-L1.1720-run` / `mega-nav-v8x-theme-erc-L1.1720` | `v8-i16d-x5-nav-run` `618f0b69d2635707758366563f185c4c7ccf723857e99ce7a3280c28d809bd35` | targets v8-16d `72ff6d2d` (X-5 ran `a95f6f0a`) | 145.7 / 585 | **27 of 27 byte-identical** (S2 daily `529062d6...3d61` = X-5's ledgered series SHA-256, trial `269cfc47be86d4a7`; `summary.json` `a03937cf`; `capacity/`); `--max-bytes 1073741824` held |
+
+The I/O counters follow the cache state, not the build: the reference ran warm (hits 58, misses 0, vm_evaluations 0,
+field_loads 0), this run cold (hits 0, misses 58, vm_evaluations 58, field_loads 68, peak resident fields 8). Cross-check:
+the superseded v8-16a cold run `v8-i16-x5-w` (same argv, its own empty cache) and this run differ in `summary.json` only in
+timing and cache-directory paths (I/O counters equal).
+
+**R0-3: PASS. X-5 reproduces under v8-16d** (NAV and w byte for byte with every Y flag absent; fit with the three
+provenance hashes of the PM7-30 kind). Comparisons by SHA-256 and JSON paths only; no value of `summary.json`,
+`train_daily_ic.csv` or any NAV file was read; no NAV `stdout.log` opened. Observation (timing only, decides nothing): the
+v8-16d NAV took 145.7 s of its 180 s cap (X-5 under v8-15: 45.4 s; the X-7 ref: 59.0 s), minimum system free 1,300 MiB
+during the run; host load from other sessions is the likely cause, but Y-cell NAV phases have 34 s headroom at that pace.
+
+### R0-4. Fields v15 (v8y section 9, P8): checks from disk
+
+Built by the previous root session at source `5db89d36` (two bounded processes, v8y section 9 A then B); not logged.
+
+| step | receipt dir | outcome / exit | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|
+| A, v15a | `train-2020-2023-lo3-fields-v15a-run` | completed / 0 | 294.5 | 710 | `1b87f1ae631932264d6699a136088400471a4afc01205dba4853fb28daaf83bd` | `0422a796b1deee72793a82e2adfb00bdad04614ea4789a918f98a9aca9124e7f` |
+| B, v15 | `train-2020-2023-lo3-fields-v15-run` | completed / 0 | 209.8 | 799 | `201fe448da9b9813d062a1aa5f9699152716212df3b7a5397847b1fc75308252` | **`26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09`** |
+
+- Caps W0-i (600 s / 2,560 MiB) held by both; receipts "clean in the code pathspec", dirty outside none, stderr empty.
+- **Pin: the v15 manifest re-hashes to `26fee5ce...3b09` = `scripts/specs/v8/waves/y-s.json` `fields.manifest_sha256`**
+  (`fields.dir` `build-equity/train-2020-2023-lo3-fields-v15`).
+- **Counts = section 9's expectation.** v15a: reused **78** (from v14 `4b12c0e1`), computed **5** (`iv_skew_21`,
+  `stio_chg_q`, `div_init_omit`, `deal_pending`, `exch_up_365d`). v15: reused **83** (from v15a `0422a796`), computed **1**
+  (`conn_ret63`); 84 fields. Reused entries: sha256 = the prior manifest's 78 / 78 and 83 / 83; hardlinks of the prior files
+  78 / 78 and 83 / 83; all 84 v15 payloads re-hash to their pins (84 / 84). Builder `code_sha256_lf` `74df97f9` (= v13 /
+  v14).
+- **Seal**: status complete; `seal.exclusive_end` 2024-01-01 ("every source row available on or after 2024-01-01 is
+  dropped before use; role sessions asserted < 2024-01-01"); role lo3 `e1c67101`, 1,405 dates, 2018-06-01 - 2023-12-29.
+- Section 9 source checks (metadata): `source_checks.ivshape.orientation_line` = ticker SPY (security 549535; 1,404
+  sessions with a slope, 0 duplicates quarantined, 0 rows off calendar). `mgr13f.thirteenf.per_quarter`: 28 quarters, 0
+  sealed; `short_term_filers` / `filers` .246-.271 over the 24 defined quarters (the first 4 undefined: rule
+  `yz-short-term-tercile-v1` needs q-3..q), i.e. the top third of the classified filers by the rule's construction.
+- Date tokens in the v15 manifest (paths only, values not read): 92 tokens dated 2024 or later, 54 of them the seal date
+  2024-01-01; the rest are metadata strings (field caveats, the `calendar.last` entries of `sec`, `v9/nt_first_126`,
+  `deals`, short-volume file download stamps, one plausibility-rule text, one excluded-column reason), as v13 / v14.
+
+**P8 plan, written before the run.** The parent's ref on v15 = X-5's NAV receipt argv with three tokens changed (the
+X-7 ref precedent `mega-nav-v8x-theme-erc-L1.1720-v8x7b-ref`): `--fields build-equity/train-2020-2023-lo3-fields-v15/manifest.json`,
+`--fields-sha256 26fee5ce...3b09`, `--output build-equity/p9-r04-x5-ref-v15` (a name the Y-S wave's own `<nav.output>-ref`
+cannot collide with). Runner: `--output build-equity/p9-r04-x5-ref-v15-run --seconds 180 --max-rss-mib 1536
+--min-free-mib 512`, bindings as X-5's (targets exe v8-16d `72ff6d2d`, `train_combined.json` `2a442f56`, the v15 manifest,
+the lo3-dlret label role `95e16cfe`). **Expected: `daily_modeled-1bn-stale5-v1+swap-fin-v1.csv` SHA-256 =
+`529062d6f06f1ceb8dab5e7cbd98a3693a2f66922b0b4547df81f956fd4e3d61`** (X-5's ledgered S2 series); any other value is a
+rule-7 stop. Compared by SHA-256 only; free memory checked >= 586 + 1,536 MiB before launch.
+
+### R0-5. IC memory re-probe for the Y-S screen library (v8y P10, YP-12) -- plan, written before the run
+
+The Y-S library file is written by the wave's register stage (after R0-2), so the probe uses a scratch copy built in memory
+by `generate_library.py`'s own functions (registry copied in memory; the 15 alphas of `y-s.json` registered in roster
+order, each `dsl` checked against its `dsl_sha256`; `child_library(v8x3b -> v8ys)`, `build_library`, `encode`; nothing in
+the repo written): **73 members (58 + 15), 63 fields, 12 families, SHA-256
+`bbcfbf9dd000dc41055e2415ddc1a0047811a796752de55fd4e92ab636f4e9bd`** (not of record; R0-6 can compare the registered
+library's bytes to it). Probe: ic v8-16d `--plan-only` (metadata only, no payload) on that library, role lo3, fields v15,
+with the screen u pass's flags (`--min-names 1000 --workers 4 --no-composition`, as `mega-v8-b0b-train-u-v8x7b-run1`) and
+`--max-memory-mib 8192` so the plan prints `roles[].required_bytes` instead of refusing; through the bounded runner (120 s,
+1,024 MiB). Rule (plan R0-5, YP-12): <= 2,560 MiB: cap unchanged; over 2,560: probe workers 2 and 1 and report for a cap
+ruling (w already runs at 3,072); over 3,072: stop.
