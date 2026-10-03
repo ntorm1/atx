@@ -450,6 +450,15 @@ private:
     case OpCode::TsDecayLinearMp:
     case OpCode::TsCorrMp:
       return eval_lit(in);
+    // ---- platform-v8 YOPS formulaic ops: independent twins (oracle_formulaic.cpp;
+    //      CsSumG is a Cs op above) ----
+    case OpCode::GroupDelay:
+    case OpCode::AsofRankTsRank:
+    case OpCode::AsofRankTsMin:
+    case OpCode::AsofRankDecayLinear:
+    case OpCode::AsofRankCorr:
+    case OpCode::AsofRankCov:
+      return eval_formulaic(in);
     case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -625,6 +634,12 @@ private:
   // the obviously-correct gather-then-compute style, with the SAME summation /
   // solve order, so the VM differential is a real cross-check.
   [[nodiscard]] atx::core::Status eval_lit(const Instr &in);
+
+  // ---- platform-v8 YOPS group_delay / as-of rank (src/alpha/oracle_formulaic.cpp) --
+  // Restates the asof_ops.hpp rule INDEPENDENTLY (no asof_ops.hpp include): per
+  // date, the factor scan, the window rows re-ranked with this oracle's cs_rank,
+  // then this oracle's own ts_unary_at / ts_binary_at over the ranked window.
+  [[nodiscard]] atx::core::Status eval_formulaic(const Instr &in);
 
   // ---- stateful recurrence (forward scan, true cross-date state) -----------
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in);

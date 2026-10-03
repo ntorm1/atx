@@ -212,13 +212,30 @@ namespace detail {
 }
 
 // Platform-v8 lane YOPS formulaic ops. Same positional row layout as builtin_ops.
-// Semantics: cs_ops.hpp (group_sum).
+// Semantics: cs_ops.hpp (group_sum), asof_ops.hpp (group_delay, the as-of rank
+// family); the typechecker (analyze_formulaic_call) owns the group_delay and
+// as-of argument rails.
 [[nodiscard]] std::span<const OpSig> formulaic_ops() noexcept {
-  static constexpr std::array<OpSig, 1> kFormulaic = {{
+  static constexpr std::array<OpSig, 7> kFormulaic = {{
       // group_sum(x, g): Σ x over the group's valid members (x non-NaN, the same
       // non-NaN label), broadcast to each valid member; arg 2 is a Group classifier
       // exactly as group_mean's (typecheck needs_group_arg).
       {"group_sum", 2, 2, OpCode::CsSumG, DType::F64, true, {}, &shape_cross_section},
+      // group_delay(g, d) -> Group: the label d sessions ago (delay's kernel on a
+      // classifier, which delay itself refuses); d is the literal 2nd operand.
+      {"group_delay", 2, 2, OpCode::GroupDelay, DType::Group, true, {}, &shape_panel},
+      // asof_rank_<outer>(x, w, [y,] d, j): window d and lag j peeled into imm[0],
+      // imm[1]; x, w (and y) are numeric vectors.
+      {"asof_rank_ts_rank", 4, 4, OpCode::AsofRankTsRank, DType::F64, true, {}, &shape_panel,
+       2, {}},
+      {"asof_rank_ts_min", 4, 4, OpCode::AsofRankTsMin, DType::F64, true, {}, &shape_panel, 2,
+       {}},
+      {"asof_rank_decay_linear", 4, 4, OpCode::AsofRankDecayLinear, DType::F64, true, {},
+       &shape_panel, 2, {}},
+      {"asof_rank_correlation", 5, 5, OpCode::AsofRankCorr, DType::F64, true, {}, &shape_panel,
+       2, {}},
+      {"asof_rank_covariance", 5, 5, OpCode::AsofRankCov, DType::F64, true, {}, &shape_panel,
+       2, {}},
   }};
   return kFormulaic;
 }

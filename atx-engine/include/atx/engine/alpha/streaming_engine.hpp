@@ -56,6 +56,7 @@
 #include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/asof_ops.hpp" // v8 YOPS as-of rank kernel (shared with the VM)
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/lit_ops.hpp" // W2 literature kernels (shared with the VM)
@@ -129,6 +130,18 @@ struct LitTsState {
   std::vector<atx::f64> ring; // d * n_in * instruments
 };
 
+// Per-as-of-instruction state (v8 YOPS, asof_ops.hpp): rings of the last
+// cap = d + j input rows of x, w (and y), row of date s at (s % cap). Each step
+// gathers the window chronologically and runs the VM's row kernel.
+struct AsofState {
+  atx::usize d{0};
+  atx::usize cap{0}; // d + j
+  bool pair{false};
+  std::vector<atx::f64> ring_x; // cap * instruments
+  std::vector<atx::f64> ring_w;
+  std::vector<atx::f64> ring_y; // pair ops only
+};
+
 // Per-recurrence-instruction carried state.
 struct RecState {
   std::vector<atx::f64> prior;               // trade_when
@@ -179,6 +192,7 @@ struct RecState {
   case OpCode::OuHalflife:
   case OpCode::OuMean:
   case OpCode::OuZscore:
+  case OpCode::GroupDelay: // v8 YOPS: delay's shift on a classifier (TsKind::Lookback)
     return true;
   default:
     return false;
@@ -218,7 +232,7 @@ struct RecState {
 
 // Classify a Ts op exactly as vm.hpp eval_time_series routes it.
 [[nodiscard]] inline TsKind classify(OpCode op, EvalMode mode) noexcept {
-  if (op == OpCode::TsDelay || op == OpCode::TsDelta) {
+  if (op == OpCode::TsDelay || op == OpCode::TsDelta || op == OpCode::GroupDelay) {
     return TsKind::Lookback;
   }
   // W0-A0 (A-13): AuditExact ts_sum/ts_mean are the batch per-window recompute
@@ -362,6 +376,7 @@ private:
     ts_.assign(n, TsState{});
     rec_.assign(n, RecState{});
     lit_.assign(n, streaming_detail::LitTsState{});
+    asof_.assign(n, streaming_detail::AsofState{});
     const auto const_of = [&](SlotId s, atx::f64 &v) {
       if (s == kNoSlot || s >= producer.size() || producer[s] >= n ||
           prog_.code[producer[s]].op != OpCode::Const) {
@@ -372,7 +387,9 @@ private:
     };
     for (atx::usize k = 0; k < n; ++k) {
       const Instr &in = prog_.code[k];
-      if (streaming_detail::is_ts_op(in.op)) {
+      if (detail::is_asof_op(in.op)) {
+        ATX_TRY_VOID(analyze_asof(k, in));
+      } else if (streaming_detail::is_ts_op(in.op)) {
         ATX_TRY_VOID(analyze_ts(k, in, const_of));
       } else if (detail::is_lit_ts_op(in.op)) {
         ATX_TRY_VOID(analyze_lit_ts(k, in, const_of));
@@ -403,6 +420,26 @@ private:
   [[nodiscard]] static atx::core::Status not_const(const char *what) {
     return atx::core::Err(atx::core::ErrorCode::NotImplemented,
                           std::string("StreamingEngine: non-Const ") + what);
+  }
+
+  // v8 YOPS as-of op: d and j are the instruction immediates (no Const operand);
+  // rings of the last d + j rows of x, w (and y).
+  [[nodiscard]] atx::core::Status analyze_asof(atx::usize k, const Instr &in) {
+    const detail::AsofGeom geo = detail::asof_geom(in.imm);
+    if (geo.d == 0) {
+      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
+                            "StreamingEngine: zero as-of window");
+    }
+    streaming_detail::AsofState &st = asof_[k];
+    st.d = geo.d;
+    st.cap = geo.d + geo.j;
+    st.pair = detail::asof_is_pair(in.op);
+    st.ring_x.assign(st.cap * inst_, detail::kVmNaN);
+    st.ring_w.assign(st.cap * inst_, detail::kVmNaN);
+    if (st.pair) {
+      st.ring_y.assign(st.cap * inst_, detail::kVmNaN);
+    }
+    return atx::core::Ok();
   }
 
   // W2 trailing-window op: window from the last operand (a Const, as analyze_ts),
@@ -535,6 +572,8 @@ private:
     }
     if (detail::is_lit_op(in.op)) {
       exec_lit(k, in);
+    } else if (detail::is_asof_op(in.op)) {
+      exec_asof(k, in);
     } else if (streaming_detail::is_ts_op(in.op)) {
       exec_ts(k, in);
     } else if (streaming_detail::is_cs_op(in.op)) {
@@ -645,6 +684,48 @@ private:
                                  std::span<const atx::f64>{lit_win_.data(), st.n_in * len},
                                  st.n_in, len, st.d, in.imm[0], lit_scratch_);
     }
+  }
+
+  // v8 YOPS as-of op (asof_ops.hpp): append today's x / w (/ y) rows to the
+  // rings, then hand the row kernel the window chronologically — the rows the
+  // batch eval_asof slices from the panel (no Cs mask here, as exec_cs; default
+  // kernel policy, as every streaming Cs / Ts op).
+  void exec_asof(atx::usize k, const Instr &in) {
+    streaming_detail::AsofState &st = asof_[k];
+    const atx::usize base = static_cast<atx::usize>(t_ % st.cap) * inst_;
+    const std::span<const atx::f64> xs = src(in, 0);
+    const std::span<const atx::f64> ws = src(in, 1);
+    std::copy_n(xs.data(), inst_, st.ring_x.data() + base);
+    std::copy_n(ws.data(), inst_, st.ring_w.data() + base);
+    if (st.pair) {
+      const std::span<const atx::f64> ys = src(in, 2);
+      std::copy_n(ys.data(), inst_, st.ring_y.data() + base);
+    }
+    const std::span<atx::f64> o = row(in.dst);
+    if (t_ + 1 < st.cap) {
+      std::fill(o.begin(), o.end(), detail::kCsNaN);
+      return;
+    }
+    const atx::u64 first = t_ + 1 - st.cap; // the window's first date s0
+    const atx::usize nd = st.d * inst_;
+    asof_w_.resize(st.cap * inst_);
+    asof_x_.resize(nd);
+    asof_y_.resize(st.pair ? nd : atx::usize{0});
+    for (atx::usize r = 0; r < st.cap; ++r) {
+      const atx::usize off = static_cast<atx::usize>((first + r) % st.cap) * inst_;
+      std::copy_n(st.ring_w.data() + off, inst_, asof_w_.data() + r * inst_);
+      if (r < st.d) {
+        std::copy_n(st.ring_x.data() + off, inst_, asof_x_.data() + r * inst_);
+        if (st.pair) {
+          std::copy_n(st.ring_y.data() + off, inst_, asof_y_.data() + r * inst_);
+        }
+      }
+    }
+    detail::asof_rank_row(in.op, std::span<const atx::f64>{asof_x_.data(), nd},
+                          std::span<const atx::f64>{asof_w_.data(), st.cap * inst_},
+                          std::span<const atx::f64>{asof_y_.data(), asof_y_.size()},
+                          std::span<const atx::u8>{}, inst_, st.d, o, asof_scratch_,
+                          detail::RankTies::Average, detail::FlatGuard::RelativeV2);
   }
 
   void exec_load(const Instr &in, const CrossSection &today) {
@@ -941,7 +1022,8 @@ private:
         continue;
       }
       const atx::f64 shifted = at(st.ring_x, st, t_ - st.d, j, inst_);
-      o[j] = in.op == OpCode::TsDelay ? shifted : at(st.ring_x, st, t_, j, inst_) - shifted;
+      // TsDelay and v8 GroupDelay (the same shift on a classifier) copy; TsDelta differences.
+      o[j] = in.op != OpCode::TsDelta ? shifted : at(st.ring_x, st, t_, j, inst_) - shifted;
     }
   }
 
@@ -1124,6 +1206,11 @@ private:
   std::vector<streaming_detail::LitTsState> lit_; // W2 Ts rings (per instruction)
   std::vector<atx::f64> lit_win_;                 // W2 gathered windows (n_in * d)
   detail::LitScratch lit_scratch_;                // W2 sort / OLS scratch
+  std::vector<streaming_detail::AsofState> asof_; // v8 YOPS as-of rings (per instruction)
+  std::vector<atx::f64> asof_x_;                  // v8 YOPS gathered x window (d rows)
+  std::vector<atx::f64> asof_w_;                  // v8 YOPS gathered w window (d + j rows)
+  std::vector<atx::f64> asof_y_;                  // v8 YOPS gathered y window (pair ops)
+  detail::AsofScratch asof_scratch_;              // v8 YOPS rank rows / factor scratch
 };
 
 } // namespace atx::engine::alpha

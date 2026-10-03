@@ -64,9 +64,11 @@ namespace detail {
 // ----- opcode family predicates -----------------------------------------
 
 // The shift temporal family (lookback = d + max(child)): these reference the
-// value `d` bars ago without a window reduction.
+// value `d` bars ago without a window reduction. v8 group_delay (a Group shift)
+// belongs here for the factory's window-literal classification; its rails and
+// lookback come from analyze_formulaic_call, which analyze_call routes first.
 [[nodiscard]] inline bool is_shift_ts(OpCode op) noexcept {
-  return op == OpCode::TsDelay || op == OpCode::TsDelta;
+  return op == OpCode::TsDelay || op == OpCode::TsDelta || op == OpCode::GroupDelay;
 }
 
 // The rolling-window temporal family (lookback = (d-1) + max(child)): every
@@ -248,6 +250,17 @@ namespace detail {
 [[nodiscard]] atx::core::Result<TypeInfo> analyze_lit_call(const Ast &ast,
                                                            std::span<const TypeInfo> out,
                                                            const Expr &e);
+
+// v8 lane YOPS group_delay / as-of rank Call node — the op's complete rail set:
+//   * group_delay(g, d): g a Group classifier, d delay's window literal; Group
+//     result, lookback d + child (u16 overflow refused);
+//   * asof_rank_<outer>(x, w, [y,] d, j): x, w (and y) numeric (f64) vectors;
+//     d an integer in [1, 65535], j an integer in [0, 65535]; lookback
+//     (d - 1) + j + child (u16 overflow refused).
+// group_sum is a plain group op (is_cross_section / needs_group_arg).
+[[nodiscard]] atx::core::Result<TypeInfo> analyze_formulaic_call(const Ast &ast,
+                                                                 std::span<const TypeInfo> out,
+                                                                 const Expr &e);
 
 // Call node: shape from the op's table-driven rule, dtype from the registry row
 // (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops

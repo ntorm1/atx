@@ -39,6 +39,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/alpha/dag.cpp
     src/alpha/lexer.cpp
     src/alpha/oracle.cpp
+    src/alpha/oracle_formulaic.cpp
     src/alpha/oracle_lit.cpp
     src/alpha/panel.cpp
     src/alpha/parser.cpp
