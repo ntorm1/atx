@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 
 import cycle_resume
@@ -39,17 +38,26 @@ class Step:
         return self.state == "done"
 
 
+# K-P9-6 (lane D1): the IC exe's rule table and capabilities envelope, `--list-rules --json`
+CAPABILITY_ARGV, CAPABILITY_SCHEMA = ("--list-rules", "--json"), "atx.composition-rules/v1"
+
+
 def exe_capabilities(exe: str, root: Path, env: dict | None = None) -> frozenset:
-    """What the IC exe offers beyond the v7 CLI, read from its --help text: "no-composition" (B-1's u-pass flag) and
-    "marginal" (F-2's marginal IC verb, contract K6). A missing or failing exe offers nothing (never a hard stop)."""
+    """What the IC exe offers beyond the v7 CLI: the "capabilities" of its `--list-rules --json` envelope (K-P9-6,
+    CAPABILITY_SCHEMA; P9 lane E2: no longer probed from the --help text, OR section 3 / DS review section 4), e.g.
+    "no-composition" (B-1's u-pass flag) and "marginal" (F-2's marginal IC verb, contract K6). A missing or failing
+    exe, or output that is not the envelope (an exe before lane D1), offers nothing (never a hard stop)."""
     p = Path(exe) if Path(exe).is_absolute() else Path(root) / exe
     try:
-        done = subprocess.run([str(p), "--help"], cwd=root, env=env, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
+        done = subprocess.run([str(p), *CAPABILITY_ARGV], cwd=root, env=env, capture_output=True, text=True,
+                              timeout=30)
+        doc = json.loads(done.stdout or "")
+    except (OSError, subprocess.SubprocessError, ValueError):
         return frozenset()
-    text = (done.stdout or "") + (done.stderr or "")
-    return frozenset(name for name, found in (("no-composition", "--no-composition" in text),
-                                              ("marginal", re.search(r"\bmarginal\b", text) is not None)) if found)
+    caps = doc.get("capabilities") if isinstance(doc, dict) and doc.get("schema") == CAPABILITY_SCHEMA else None
+    if done.returncode != 0 or not isinstance(caps, list):
+        return frozenset()
+    return frozenset(c for c in caps if isinstance(c, str))
 
 
 class Cycle:
@@ -81,7 +89,7 @@ class Cycle:
         # P9 F-5 (a) / OR section 5: {admission_wait_seconds, host_budget_mib} for every bounded process ({}: none)
         self.launch = {k: v for k, v in (launch or {}).items() if v is not None}
         self.keep_verdicts = keep_verdicts  # P9 OR section 3: per-run verdict copies (cycle_verdict.keep_copy)
-        self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
+        self._capabilities = capabilities   # None: read the IC exe's --list-rules --json when a step needs it
         self.py = spec["python"]
         # task H-1 (research_roles.py): an era of a roles: cycle keys its outputs and receipts by role_key; the
         # anchor era's fit and summ pool the others (fit_pool: (argv, binds); summ_pool: [(id, nav dir, weights)])

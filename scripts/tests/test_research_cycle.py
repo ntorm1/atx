@@ -1759,7 +1759,11 @@ FAKE_IC_PLAN = r'''
 import hashlib, json, os, re, sys
 from pathlib import Path
 a = sys.argv[1:]
-if "--help" in a:
+if a == ["--list-rules", "--json"]:                  # K-P9-6: the rule table and the capabilities (P9 E2 reads them)
+    print(json.dumps({"schema": "atx.composition-rules/v1", "rules": [],
+                      "capabilities": ["list-rules", "marginal", "no-composition", "theme-registry"]}))
+    sys.exit(0)
+if "--help" in a:                                    # the v8 probe's text: no longer read (P9 E2)
     print("equity-strategy-ic --library JSON ... [--no-composition]\n  equity-strategy-ic marginal --candidate-cache DIR")
     sys.exit(0)
 if os.environ.get("FAKE_IC_ARGV"):                     # opt-in: the last plan argv, for the tests that read it
@@ -1926,7 +1930,9 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path, monkeypatch):
     (root / "bin").mkdir()
     (root / "bin" / "fake_ic.py").write_text(FAKE_IC_PLAN)
     (root / "bin" / "ic.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_ic.py" %*\n')
-    assert RC.exe_capabilities("bin/ic.cmd", root) == CAPS and RC.exe_capabilities("bin/none.exe", root) == frozenset()
+    caps = RC.exe_capabilities("bin/ic.cmd", root)                                   # the envelope's list (P9 E2)
+    assert CAPS <= caps == {"list-rules", "marginal", "no-composition", "theme-registry"}
+    assert RC.exe_capabilities("bin/none.exe", root) == frozenset()
     spec = json.loads((root / "scripts" / "specs" / "v70.json").read_text())
     spec["exes"]["ic"] = "bin/ic.cmd"
     (root / "scripts" / "specs" / "v70.json").write_text(json.dumps(spec))
