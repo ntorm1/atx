@@ -154,15 +154,23 @@ class Chain:
         return rows
 
     def plan(self, ctx) -> list[str]:
-        """Every stage's planned command lines (dry run): done stages are marked, the others ask their plan()."""
-        out, done = [], {}
-        for i, st in enumerate(self.stages):
-            rec = self.read(i)
-            if rec is not None:
-                done[st.name] = rec["outputs"]
-                out.append(f"# stage {i + 1:02d} {st.name}: done ({self.receipt_path(i)})")
+        """Every stage's planned command lines (dry run), on ``state``'s input diff: a done stage (receipt and inputs
+        unchanged) is marked done; a stale one is marked STALE with its changed inputs (``run`` refuses it) and the
+        stages after it blocked; a pending stage and those after it print their plan()."""
+        out: list[str] = []
+        done: dict = {}
+        stale = None
+        for i, (st, row) in enumerate(zip(self.stages, self.state(ctx))):
+            head = f"# stage {i + 1:02d} {st.name}"
+            if row["state"] == "done":
+                done[st.name] = self.read(i)["outputs"]
+                out.append(f"{head}: done ({self.receipt_path(i)})")
                 continue
-            out.append(f"# stage {i + 1:02d} {st.name}: pending")
+            if row["state"] == "stale":
+                stale = st.name
+                out.append(f"{head}: STALE ({row['why']}): run refuses it (restore the inputs, or a new state dir)")
+                continue
+            out.append(f"{head}: blocked (stage {stale} is stale)" if stale else f"{head}: pending")
             out += list(st.plan(ctx, done)) if st.plan else []
         return out
 

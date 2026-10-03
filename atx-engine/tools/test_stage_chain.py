@@ -132,6 +132,20 @@ def test_plan_runs_nothing_and_marks_done_stages(tmp_path):
     assert lines[0].startswith("# stage 01 a: done") and lines[2] == "tool b --after a"
 
 
+def test_plan_marks_a_stale_receipt_not_done(tmp_path):
+    """Review YINFRA #16: plan() uses state()'s input diff; a receipt whose input moved is not "done"."""
+    ctx = Ctx(tmp_path)
+    ch = chain(tmp_path)
+    ctx.file("a.in").write_text("v1")
+    ch.run(ctx, until="b", log=lambda s: None)
+    ctx.file("a.in").write_text("v2")
+    lines = ch.plan(ctx)
+    assert lines[0].startswith("# stage 01 a: STALE (inputs changed: input)") and "run refuses it" in lines[0]
+    assert lines[1] == "# stage 02 b: blocked (stage a is stale)"
+    assert lines[3] == "# stage 03 c: blocked (stage a is stale)"
+    assert ctx.calls == ["a", "b"]
+
+
 def test_stage_names_and_unknown_until(tmp_path):
     with pytest.raises(ValueError):
         SC.Chain("x", [make("a"), make("a")], tmp_path)
