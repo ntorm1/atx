@@ -97,10 +97,14 @@ def marginal_rows(sc: dict, sp: dict, jd: dict | None = None) -> dict | None:
 
 
 def receipt_digests(w) -> dict:
-    """{receipt file stem: SHA-256} of the wave's ok receipts so far (the record stage's own is written after)."""
+    """{receipt file stem: SHA-256} of the wave's ok receipts so far (the record stage's own is written after): the
+    files' digests, or under driver.receipt_digest "content" their content digests (stage_chain.content_sha256, no
+    time keys: P9 OR section 3)."""
     from wave_context import stage_chain  # noqa: PLC0415  (the scoreboard imports this module without the context)
+    content = (w.manifest.get("driver") or {}).get("receipt_digest") == "content"
+    digest = stage_chain.content_sha256 if content else stage_chain.sha256_file
     d = w.path(w.wave_path("receipts"))
-    return {p.stem: stage_chain.sha256_file(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
+    return {p.stem: digest(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
 
 
 def what_ran(doc: dict) -> str:

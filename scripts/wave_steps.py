@@ -79,10 +79,11 @@ def cycle_argv(py: str, verb: str, spec: str, *extra: str, root=None) -> list[st
 
 def driver_flags(driver: dict | None) -> list[str]:
     """research_cycle run options of a manifest's driver block (wave_manifest.DRIVER_KEYS; none without one):
-    auto_attempt -> --auto-attempt (P9 OR-4), admission_wait_seconds -> --admission-wait N (F-5 (a)),
-    host_budget_mib -> --host-budget-mib N (OR section 5)."""
+    auto_attempt -> --auto-attempt (P9 OR-4), keep_verdicts -> --keep-verdicts (OR section 3), admission_wait_seconds
+    -> --admission-wait N (F-5 (a)), host_budget_mib -> --host-budget-mib N (OR section 5)."""
     d = driver or {}
     out = ["--auto-attempt"] if d.get("auto_attempt") else []
+    out += ["--keep-verdicts"] if d.get("keep_verdicts") else []
     for key, flag in (("admission_wait_seconds", "--admission-wait"), ("host_budget_mib", "--host-budget-mib")):
         if key in d:
             out += [flag, str(d[key])]

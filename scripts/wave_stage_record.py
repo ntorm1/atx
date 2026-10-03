@@ -17,11 +17,11 @@ import wave_rules as WR
 import wave_seal
 import wave_steps as WS
 from wave_context import Wave
-from wave_stage_cell import nav_series, read_once, reader_plan, unbound
+from wave_stage_cell import last_completed, nav_series, read_once, reader_plan, refuse_stale_code, unbound
 from wave_stage_preflight import ledger_state
 import research_cycle as RC
 from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, StageError, cyc, no_cell, phase_rows, pinned, reader_digests,
-                             skipped)
+                             skipped, verdict_file)
 
 
 # ------------------------------------------------------------------ verify
@@ -124,13 +124,13 @@ def bundle_once(w: Wave, base: str, cell: str) -> dict:
             raise StageError(f"bundle wrote no {out}")
     if Path(str(doc.get("base"))).as_posix() != base or Path(str(doc.get("final"))).as_posix() != cell:
         raise StageError(f"{out} is the bundle of {doc.get('final')} vs {doc.get('base')}, not {cell} vs {base}")
-    runs = [d for d in w.run_dirs(w.wave_path("bundle"))
-            if (w.read_json(f"{d}/receipt.json") or {}).get("outcome") == "completed"]
+    run = last_completed(w, w.wave_path("bundle"))
     daily = [f for f in series if Path(f).name.startswith("daily_")]
-    loose = unbound(w, runs[-1], daily) if runs else daily
+    loose = unbound(w, run, daily) if run else daily
     if not daily or loose:
-        raise StageError(f"{out}: its run {runs[-1] if runs else '(none)'} did not bind the daily series {loose or daily}"
+        raise StageError(f"{out}: its run {run or '(none)'} did not bind the daily series {loose or daily}"
                          " at their SHA-256 now (the bundle read other series)", EXIT_PIN)
+    refuse_stale_code(w, out, run)                  # P9 OR section 3: nav_summ.py as the run bound it
     p, lw = doc.get("paired") or {}, (doc.get("paired") or {}).get("lw") or {}
     return {"dsr": p.get("dsr"), "rho": p.get("rho"), "sessions": p.get("sessions"), "memmel_se": p.get("memmel_se"),
             "cbb_ci95": p.get("cbb_ci95"), "lw_ci95": lw.get("ci95"), "p_two_sided": lw.get("p_value"),
@@ -140,7 +140,7 @@ def bundle_once(w: Wave, base: str, cell: str) -> dict:
 
 def scored_verdict(w: Wave, cell: str) -> tuple[str, dict]:
     """(path, document) of the cell's cycle_verdict.json, which must carry the scoring blocks (paired, dsr)."""
-    vpath = f"{w.outputs(cell)['cycle_dir']}/cycle_verdict.json"
+    vpath = verdict_file(w, w.outputs(cell)["cycle_dir"], "run")
     v = w.read_json(vpath)
     if not isinstance(v, dict) or not isinstance(v.get("paired"), dict) or not isinstance(v.get("dsr"), dict):
         raise StageError(f"judge: {vpath} has no scoring blocks (paired, dsr): a verdict spec scores its cell")
@@ -230,7 +230,8 @@ def record(w: Wave, done: dict, log) -> dict:
     sha = w.write_json(path, doc)
     w.path(md).write_text(wave_result.log_section(doc), encoding="utf-8", newline="\n")
     try:
-        queued = wave_queue.record_wave(w.root, m, doc, dt.date.today().isoformat())
+        queued = wave_queue.record_wave(w.root, m, doc,      # P9 OR section 3: the manifest's date when it has one
+                                        WM.driver(m, "record_date") or dt.date.today().isoformat())
     except wave_queue.QueueError as exc:
         raise StageError(f"record: {exc}") from exc
     commit = w.commit_paths(f"wave {m['wave']}: queue status of {', '.join(queued)} ({wave_result.verdict_word(doc)})",

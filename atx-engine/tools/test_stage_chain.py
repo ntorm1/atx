@@ -152,3 +152,38 @@ def test_stage_names_and_unknown_until(tmp_path):
     with pytest.raises(SC.ChainError) as e:
         chain(tmp_path).run(Ctx(tmp_path), until="zz", log=lambda s: None)
     assert e.value.code == 2
+    with pytest.raises(ValueError, match="digest must be one of file, content"):
+        SC.Chain("x", [make("a")], tmp_path, digest="mtime")
+
+
+def test_content_digest_chains_without_time_keys(tmp_path):
+    """P9 OR section 3: digest="content" chains each receipt's content digest (canonical JSON without started_utc and
+    seconds) as previous_receipt_content_sha256, so two runs at different times chain the same digests; the default
+    "file" rule keeps previous_receipt_sha256 (the file's SHA-256, time included); a state dir is read under one
+    rule (a receipt recorded under the other is stale)."""
+    digests = {}
+    for clock, rule in (("2020-01-02T00:00:00", "content"), ("2021-06-30T12:00:00", "content"),
+                        ("2020-01-02T00:00:00", "file"), ("2021-06-30T12:00:00", "file")):
+        ctx = Ctx(tmp_path / f"{rule}-{clock[:4]}")
+        ctx.root.mkdir()
+        ch = SC.Chain("test", [make("a"), make("b")], ctx.root / "state", clock=lambda c=clock: c, digest=rule)
+        ch.run(ctx, log=lambda s: None)
+        rec = json.loads(ch.receipt_path(1).read_text())
+        key = SC.PREV_CONTENT if rule == "content" else SC.PREV
+        assert set(rec["inputs"]) == {"input", key}
+        assert rec["inputs"][key] == ch.receipt_digest(ch.receipt_path(0))
+        digests.setdefault(rule, set()).add(rec["inputs"][key])
+    assert len(digests["content"]) == 1 and len(digests["file"]) == 2          # time-free vs time-dependent
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"stage": "a", "outputs": {"x": 1}, "started_utc": "T1", "seconds": 1.5}))
+    first = SC.content_sha256(p)
+    p.write_text(json.dumps({"seconds": 9.0, "started_utc": "T2", "outputs": {"x": 1}, "stage": "a"}, indent=2))
+    assert SC.content_sha256(p) == first                                      # time keys, order, layout aside
+    p.write_text(json.dumps({"stage": "a", "outputs": {"x": 2}, "started_utc": "T1", "seconds": 1.5}))
+    assert SC.content_sha256(p) != first                                      # content is digested
+    ctx = Ctx(tmp_path / "content-2020")                                      # one rule per state dir
+    ch = SC.Chain("test", [make("a"), make("b")], ctx.root / "state", clock=lambda: "T")
+    with pytest.raises(SC.ChainError, match=r"STALE \[b\].*previous_receipt_content_sha256, previous_receipt_sha256") \
+            as e:
+        ch.run(ctx, log=lambda s: None)
+    assert e.value.code == SC.EXIT_STALE

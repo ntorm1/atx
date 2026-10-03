@@ -64,9 +64,30 @@ def unbound(w: Wave, run_dir: str, files: list[str]) -> list[str]:
     return [f for f in files if got.get(w.path(f).resolve()) != w.sha(f)]
 
 
+def last_completed(w: Wave, base: str) -> str | None:
+    """The last run dir of ``base`` whose receipt completed (the run that wrote the output a stage reuses)."""
+    runs = [d for d in w.run_dirs(base) if (w.read_json(f"{d}/receipt.json") or {}).get("outcome") == "completed"]
+    return runs[-1] if runs else None
+
+
+def stale_code(w: Wave, run_dir: str | None) -> list[str]:
+    """The code files (*.py) ``run_dir``'s receipt binds that no longer hash as bound: the reader or the bundle changed
+    since that run wrote the output it would reuse (P9 OR section 3). Empty without a run or bound code."""
+    r = (w.read_json(f"{run_dir}/receipt.json") if run_dir else None) or {}
+    return [b["path"] for b in r.get("bindings") or [] if isinstance(b, dict) and
+            str(b.get("path", "")).endswith(".py") and w.sha(str(b["path"])) != b.get("sha256")]
+
+
+def refuse_stale_code(w: Wave, out: str, run_dir: str | None) -> None:
+    stale = stale_code(w, run_dir)
+    if stale:
+        raise StageError(f"{out}: its code {', '.join(stale)} changed since the run {run_dir} wrote it: never reused "
+                         "(move the output aside, or start a new state dir)", EXIT_PIN)
+
+
 def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
     """The reader's output for these NAV dirs, run once under the bounded runner (a resumed stage re-uses it while
-    every NAV's daily CSV still hashes as read)."""
+    every NAV's daily CSV still hashes as read and the reader's code as its run bound it: P9 OR section 3)."""
     out = w.wave_path("readers", f"{name}.json")
     doc = w.read_json(out)
     if doc is None:
@@ -75,6 +96,7 @@ def read_once(w: Wave, kind: str, name: str, navs: dict) -> dict:
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"{kind} reader wrote no {out}")
+    refuse_stale_code(w, out, last_completed(w, w.wave_path("readers", name)))
     for key, d in navs.items():
         row = (doc.get("navs") or {}).get(key) or {}
         if row.get("dir") != d or w.sha(f"{d}/daily_{row.get('scenario')}.csv") != row.get("daily_csv_sha256"):

@@ -13,7 +13,7 @@ import wave_rules as WR
 import wave_steps as WS
 from wave_context import Wave
 from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc, lib_spec, library_wave, lock_exes,
-                             pin_exes, pinned, skipped, write_spec_file)
+                             pin_exes, pinned, skipped, verdict_file, write_spec_file)
 
 
 # ------------------------------------------------------------------ register (library waves)
@@ -103,7 +103,7 @@ def screen(w: Wave, done: dict, log) -> dict:
     if not isinstance(adm, dict) or not isinstance(adm.get("candidates"), list):
         raise StageError(f"screen: no candidate rows in {apath}")
     rows = [{k: x.get(k) for k in ROW_KEYS} for x in adm["candidates"] if isinstance(x, dict)]
-    vpath = f"{outs['cycle_dir']}/cycle_verdict.json"
+    vpath = verdict_file(w, outs["cycle_dir"], "screen")
     doc = w.read_json(vpath)
     marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in (doc or {}).get("marginal") or [] if isinstance(x, dict)]
     ids = {c["id"] for c in m["candidates"]}

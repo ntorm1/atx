@@ -233,6 +233,15 @@ class FakeCycle:
     def ok(self, argv, code=0):
         return subprocess.CompletedProcess(argv, code, "", "")
 
+    def write_verdict(self, c: RC.Cycle, args: list[str], doc: dict, mode: str) -> None:
+        """cycle_verdict.json, and with --keep-verdicts its per-run copy verdicts/<mode>-<k>.json (P9 OR section 3)."""
+        write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", doc)
+        if "--keep-verdicts" in args:
+            k = 1
+            while (self.root / c.cycle_dir() / "verdicts" / f"{mode}-{k}.json").exists():
+                k += 1
+            write_json(self.root, f"{c.cycle_dir()}/verdicts/{mode}-{k}.json", doc)
+
     def spec_outputs(self, rel: str) -> tuple[dict, RC.Cycle]:
         spec = RC.load_spec(self.root / rel)
         return spec, RC.Cycle(spec, RC.Resolver(self.root), verify=False)
@@ -258,7 +267,7 @@ class FakeCycle:
             fit = c.out(spec["fit"]["output"], keyed=False)
             member = {"id": "m1", "status": "admitted", "runner_sign": 1, "s_k": 1}
             write_json(self.root, f"{fit}/admission.json", {"candidates": [member] + rows})
-            write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json", {"admission": listed, "marginal": marginal})
+            self.write_verdict(c, args, {"admission": listed, "marginal": marginal}, "screen")
             u_run = self.root / f"{c.out(spec['ic']['u_output'])}-run"
             u_run.mkdir(parents=True, exist_ok=True)
             write(self.root, f"{c.out(spec['ic']['u_output'])}-run/stdout.log", self.screen_log)
@@ -291,9 +300,9 @@ class FakeCycle:
         marginal = [{"id": cid, "ic21": 0.01, "ic21_hac_t": 2.0, "marginal_ic21": 0.004, "marginal_hac_t": 1.2,
                      "max_abs_rho": 0.3, "max_rho_member": "m1"} for cid in self.admission if cid in members] \
             if "marginal" in spec else []
-        write_json(self.root, f"{c.cycle_dir()}/cycle_verdict.json",
-                   {"admission": [], "paired": {"dsr": self.dsr, "se": 0.1, "cbb_ci": [-0.1, 0.2], "lw_p": 0.3},
-                    "dsr": {"n": 3, "cell_count": 0.6}, "pbo": 0.2, "marginal": marginal})
+        self.write_verdict(c, args, {"admission": [], "paired": {"dsr": self.dsr, "se": 0.1, "cbb_ci": [-0.1, 0.2],
+                                                                "lw_p": 0.3},
+                                     "dsr": {"n": 3, "cell_count": 0.6}, "pbo": 0.2, "marginal": marginal}, "run")
         sr = json.loads((self.root / nav / "summary.json").read_text())["scenarios"][0]["net_sharpe"]
         BI.ledger_append(self.root / LEDGER, [construction_line(nav, sha(daily), sr)], chain=True)
         return self.ok(args)

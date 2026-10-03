@@ -40,6 +40,8 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
                   --host-budget-mib), and the steps that read nothing of each other run side by side under it
                   (PARALLEL: ref || u, card || marginal); a phase cap above N is refused when planned
+  --keep-verdicts (P9 OR section 3) every cycle_verdict.json write also leaves its bytes in
+                  <cycle dir>/verdicts/<mode>-<k>.json, never overwritten (a receipt's verdict pin never dangles)
   exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by
                   `lock --exes` (a template's into change.set, over the pins its parent's spec carries); plan and run stop
                   (exit 3) when an exe no longer hashes to its pin; absent, exes are pinned by path only, as before
@@ -740,7 +742,7 @@ class Cycle:
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
                  screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None,
-                 auto_attempt: bool = False, launch: dict | None = None):
+                 auto_attempt: bool = False, launch: dict | None = None, keep_verdicts: bool = False):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and as_built(spec.get("fields")):
@@ -763,6 +765,7 @@ class Cycle:
         self.auto_attempt = auto_attempt    # P9 OR-4: a refused attempt with no output advances to attempt-k
         # P9 F-5 (a) / OR section 5: {admission_wait_seconds, host_budget_mib} for every bounded process ({}: none)
         self.launch = {k: v for k, v in (launch or {}).items() if v is not None}
+        self.keep_verdicts = keep_verdicts  # P9 OR section 3: per-run verdict copies (cycle_verdict.keep_copy)
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
         # task H-1 (research_roles.py): an era of a roles: cycle keys its outputs and receipts by role_key; the
@@ -1707,6 +1710,7 @@ def header(cycle: Cycle) -> list[str]:
              f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
              f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"
              f"{'; --auto-attempt' if getattr(cycle, 'auto_attempt', False) else ''}"
+             f"{'; --keep-verdicts' if getattr(cycle, 'keep_verdicts', False) else ''}"
              + "".join(f"; {k} {v}" for k, v in (getattr(cycle, "launch", None) or {}).items())]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
@@ -1972,7 +1976,7 @@ def admission_trials(cycle, w_dir: str, log) -> None:
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
     try:
         return _write_verdict(cycle, timings, cycle_resume.spec_digest(cycle), log,   # F-9: the template chain's
-                              ledger_state(cycle))
+                              ledger_state(cycle), keep=bool(getattr(cycle, "keep_verdicts", False)))
     except ValueError as exc:     # review C-1: no verdict DSR from a cell count; C-6: a broken ledger chain
         raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
 
@@ -2052,9 +2056,9 @@ def lock_exes(spec: dict, spec_path: Path, res: Resolver, notes: list[str]) -> N
         got = res.sha(rel)
         if got is None:
             raise CycleError(f"lock --exes: exe {key} missing: {rel}", EXIT_PIN)
-        if have.get(key) != got:
-            notes.append(f"{'RELOCKED' if have.get(key) else 'locked'} exe {key}: {rel} "
-                         f"{have.get(key) + ' -> ' if have.get(key) else ''}{got}")
+        old = have.get(key)
+        if old != got:
+            notes.append(f"RELOCKED exe {key}: {rel} {old} -> {got}" if old else f"locked exe {key}: {rel} {got}")
         pins[key] = got
     target[EXES_PIN] = pins
 
@@ -2159,6 +2163,9 @@ def main(argv=None) -> int:
     ap.add_argument("--auto-attempt", action="store_true",
                     help="P9 OR-4: a step the host refused (memory) with nothing written runs again in <run dir>/"
                          "attempt-k (the wave passes it when its manifest's driver.auto_attempt is true)")
+    ap.add_argument("--keep-verdicts", action="store_true",
+                    help="P9 OR section 3: also write each verdict to <cycle dir>/verdicts/<mode>-<k>.json (never "
+                         "overwritten)")
     ap.add_argument("--admission-wait", type=float, default=None, metavar="SECONDS",
                     help="P9 F-5 (a): every bounded process waits (bounded) for free memory and no compiler")
     ap.add_argument("--host-budget-mib", type=int, default=None, metavar="N",
@@ -2192,7 +2199,8 @@ def main(argv=None) -> int:
         cycle = make_cycle(Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
                            reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
                            runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
-                           screen=a.screen, auto_attempt=a.auto_attempt, launch=launch)
+                           screen=a.screen, auto_attempt=a.auto_attempt, launch=launch,
+                           keep_verdicts=a.keep_verdicts)
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK

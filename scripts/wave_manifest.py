@@ -57,6 +57,14 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  rule cell) is pinned with `lock --exes --write` before its commit: its
                                                  exes_sha256, checked by every run; verify records the parent's and the
                                                  cell's pins (OR-2)
+       "receipt_digest": "file" | "content"      "content": the stage receipts are chained, and digested in
+                                                 wave-result.json, over their content keys (no started_utc / seconds:
+                                                 stage_chain.content_sha256; OR section 3); "file" = as before
+       "record_date": "YYYY-MM-DD"               the date of the record stage's queue history entries (OR section 3:
+                                                 the manifest's, not the day the record ran)
+       "keep_verdicts": BOOL                     research_cycle run --keep-verdicts: every run also writes its verdict
+                                                 to <cycle dir>/verdicts/<mode>-<k>.json (never overwritten), and the
+                                                 screen and judge stages read and pin that copy (OR section 3)
 
 CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, with status and wave):
   {"id", "dsl", "dsl_sha256" (SHA-256 of the DSL's UTF-8 bytes), "theme", "tier", "prior_sign" (+1 | -1), "citation",
@@ -69,6 +77,7 @@ CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, wi
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from pathlib import Path
@@ -100,7 +109,17 @@ DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
                "host_budget_mib": (lambda v: type(v) is int and
                                    research_tree.HOST_BUDGET_MIB[0] <= v <= research_tree.HOST_BUDGET_MIB[1],
                                    f"an integer number of MiB in {list(research_tree.HOST_BUDGET_MIB)}"),
-               "lock_exes": (lambda v: type(v) is bool, "true or false")}
+               "lock_exes": (lambda v: type(v) is bool, "true or false"),
+               "receipt_digest": (lambda v: v in ("file", "content"), '"file" (as before) or "content"'),
+               "record_date": (lambda v: isinstance(v, str) and _iso_date(v), "a date YYYY-MM-DD"),
+               "keep_verdicts": (lambda v: type(v) is bool, "true or false")}
+
+
+def _iso_date(text: str) -> bool:
+    try:
+        return dt.date.fromisoformat(text).isoformat() == text
+    except ValueError:
+        return False
 MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)

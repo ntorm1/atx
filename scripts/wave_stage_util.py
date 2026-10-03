@@ -39,6 +39,20 @@ def pin_exes(w: Wave, spec: str) -> None:
         w.run(cyc(w, "lock", spec, "--exes", "--write"), f"lock --exes {spec}")
 
 
+def verdict_file(w: Wave, cycle_dir: str, mode: str) -> str:
+    """The cycle verdict a stage reads and pins: <cycle dir>/cycle_verdict.json, as before; under driver.keep_verdicts
+    the newest per-run copy <cycle dir>/verdicts/<mode>-<k>.json that the research_cycle run the stage just ran wrote
+    (never overwritten, so the stage's pin never dangles: P9 OR section 3; a missing copy is a stop)."""
+    if not (w.manifest.get("driver") or {}).get("keep_verdicts"):
+        return f"{cycle_dir}/cycle_verdict.json"
+    d, n = w.path(f"{cycle_dir}/verdicts"), len(mode) + 1
+    ks = sorted(int(p.stem[n:]) for p in d.glob(f"{mode}-*.json") if p.stem[n:].isdigit()) if d.is_dir() else []
+    if not ks:
+        raise StageError(f"driver.keep_verdicts: no {mode} verdict copy under {cycle_dir}/verdicts (research_cycle "
+                         "--keep-verdicts writes one per run)", EXIT_PIN)
+    return f"{cycle_dir}/verdicts/{mode}-{ks[-1]}.json"
+
+
 def library_wave(w: Wave) -> bool:
     return "candidates" in w.manifest
 

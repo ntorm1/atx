@@ -8,6 +8,8 @@
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
+  test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
+  test_reader_reuse_keyed_on_code_and_verdict_per_run  OR section 3: code-keyed reuse; per-run verdict copies
 
 Every file is synthetic (fake tools, sessions 2020-2021); no data of the repository is read.
 
@@ -37,9 +39,12 @@ import research_wave  # noqa: E402
 import run_bounded_research as RB  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake cycle tools)
 import wave_manifest as WM  # noqa: E402
+import wave_queue as WQ  # noqa: E402
+import wave_stage_cell as WSC  # noqa: E402
 import wave_stage_record as WR  # noqa: E402
+import wave_stage_util as WU  # noqa: E402
 import wave_steps as WS  # noqa: E402
-from wave_context import Wave  # noqa: E402
+from wave_context import Wave, stage_chain as SC  # noqa: E402
 
 ADMIT_ALL = {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", 1), "alpha_c": ("admitted", 1)}
 
@@ -512,3 +517,111 @@ def test_lock_exes_pins_and_verify_compares(tmp_path):
     assert WR.exe_problem({"equal": True, "ref": "missing", "cell": a, "parent": a}, None) is None
     assert "differs from the parent NAV's" in WR.exe_problem({"equal": False, "ref": "missing", "cell": b,
                                                               "parent": a}, None)
+
+
+# ------------------------------------------------------------------ OR section 3: determinism and stale reuse
+def queued_root(path: Path, **over) -> Path:
+    """A wave_fixture root (manifest keys ``over``) whose three candidates are queued and pinned, committed."""
+    root = F.build(path, **over)
+    for c in F.manifest()["candidates"]:
+        d = dict(c, schema=WQ.SCHEMA, status="proposed", wave=None,
+                 history=[{"status": "proposed", "at": "2026-10-02", "by": "lane"}])
+        WQ.write(root, WQ.transition(d, "pinned", "PM", "2026-10-02"))
+    F.git(root, "add", "-A")
+    F.git(root, "commit", "-q", "-m", "queue")
+    return root
+
+
+def test_receipt_digest_time_free(tmp_path):
+    """P9 OR section 3: under driver.receipt_digest "content" the wave's stage receipts are chained, and digested in
+    wave-result.json, over their content keys (stage_chain.content_sha256: no started_utc / seconds), so a time
+    field never moves a digest; under driver.record_date the queue history is dated from the manifest, not from the
+    day the record ran. Without the keys: file digests and today's date, as before."""
+    root = queued_root(tmp_path / "c", driver={"receipt_digest": "content", "record_date": "2026-10-01"})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, ADMIT_ALL),
+                              log=lambda s: None) == 0
+    rdir = root / "out/waves/w1/receipts"
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert res["receipts"] == {p.stem: SC.content_sha256(p) for p in sorted(rdir.glob("*.json")) if p.stem in
+                               res["receipts"]} and len(res["receipts"]) == 8          # every stage before record
+    two = json.loads((rdir / "02-register.json").read_text())
+    assert two["inputs"] == {SC.PREV_CONTENT: SC.content_sha256(rdir / "01-preflight.json")}
+    one = json.loads((rdir / "01-preflight.json").read_text())
+    before = SC.content_sha256(rdir / "01-preflight.json")
+    (rdir / "01-preflight.json").write_text(json.dumps(dict(one, started_utc="2020-01-02T00:00:00+00:00",
+                                                            seconds=123.0), indent=2, sort_keys=True) + "\n")
+    assert SC.content_sha256(rdir / "01-preflight.json") == before            # a time field moves no digest
+    w = Wave(F.MANIFEST, root, executor=F.FakeCycle(root, ADMIT_ALL), log=lambda s: None)
+    assert [r["state"] for r in research_wave.chain_of(w).state(w)] == ["done"] * 9   # the chain still verifies
+    assert {c["history"][-1]["at"] for c in WQ.load(root).values()} == {"2026-10-01"}
+    root = queued_root(tmp_path / "f")                                        # no keys: as before
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, ADMIT_ALL),
+                              log=lambda s: None) == 0
+    rdir = root / "out/waves/w1/receipts"
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert res["receipts"]["01-preflight"] == SC.sha256_file(rdir / "01-preflight.json")
+    assert set(json.loads((rdir / "02-register.json").read_text())["inputs"]) == {SC.PREV}
+    assert {c["history"][-1]["at"] for c in WQ.load(root).values()} == {WQ.today()}
+    for bad in ({"receipt_digest": "mtime"}, {"record_date": "2026-13-01"}, {"record_date": "20261001"},
+                {"keep_verdicts": 1}):
+        assert any(p.startswith("driver.") for p in WM.validate(manifest(driver=bad))), bad
+
+
+def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):
+    """P9 OR section 3: a reader's or the bundle's output is reused only while the code its run bound (every *.py of
+    the receipt) still hashes as bound; under research_cycle --keep-verdicts every verdict write leaves a per-run copy
+    <cycle dir>/verdicts/<mode>-<k>.json that is never overwritten, and under driver.keep_verdicts the screen and the
+    judge read and pin that copy, so a later run that rewrites cycle_verdict.json leaves their pins whole."""
+    root = F.build(tmp_path / "w")
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
+    navs = {"cell": "out/nav-w1-L1.1474", "parent": F.PARENT_NAV}
+    assert WSC.read_once(w, "book", "book", navs)["kind"] == "book"          # reused: the code is unchanged
+    p = root / "out/waves/w1/readers/book-run1/receipt.json"
+    doc = json.loads(p.read_text())
+    code = [b for b in doc["bindings"] if b["path"].endswith("wave_readers.py")]
+    assert code and code[0]["sha256"] == RC.sha256_file(Path(code[0]["path"]))
+    p.write_text(json.dumps(dict(doc, bindings=[dict(b, sha256="0" * 64) if b in code else b
+                                                for b in doc["bindings"]])))   # the reader's code moved since
+    with pytest.raises(WU.StageError, match=r"readers/book.json: its code .*wave_readers.py changed since the run "
+                                            r"out/waves/w1/readers/book-run1 wrote it: never reused") as e:
+        WSC.read_once(w, "book", "book", navs)
+    assert e.value.code == WU.EXIT_PIN
+    b = root / "out/waves/w1/bundle-run1/receipt.json"
+    doc = json.loads(b.read_text())
+    b.write_text(json.dumps(dict(doc, bindings=[dict(x, sha256="0" * 64) if x["path"].endswith("nav_summ.py") else x
+                                                for x in doc["bindings"]])))
+    with pytest.raises(WU.StageError, match=r"bundle.json: its code .*nav_summ.py changed since the run"):
+        WR.bundle_once(w, F.PARENT_NAV, "out/nav-w1-L1.1474")
+    # research_cycle --keep-verdicts: a per-run copy, never overwritten
+    croot, sp = T.make_root(tmp_path / "c")
+    assert T.run(croot, sp) == RC.EXIT_OK and not (croot / "build-equity/cycle-synthetic/verdicts").exists()
+    log: list[str] = []
+    assert T.run(croot, sp, log, keep_verdicts=True) == RC.EXIT_OK
+    vdir = croot / "build-equity/cycle-synthetic"
+    first = (vdir / "verdicts/run-1.json").read_bytes()
+    assert first == (vdir / "cycle_verdict.json").read_bytes()
+    assert "== verdict build-equity/cycle-synthetic/cycle_verdict.json (kept as build-equity/cycle-synthetic/verdicts/" \
+           "run-1.json)" in log
+    assert T.run(croot, sp, keep_verdicts=True) == RC.EXIT_OK
+    assert (vdir / "verdicts/run-1.json").read_bytes() == first and (vdir / "verdicts/run-2.json").is_file()
+    # the wave: driver.keep_verdicts reaches research_cycle runs; the screen and the judge pin the copies
+    root = F.build(tmp_path / "k", driver={"keep_verdicts": True})
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    assert all("--keep-verdicts" in a for a in research_cycle_calls(fake, "run"))
+    rdir = root / "out/waves/w1/receipts"
+    screen = json.loads((rdir / "03-screen.json").read_text())["outputs"]
+    judge = json.loads((rdir / "08-judge.json").read_text())["outputs"]
+    assert screen["verdict"] == "build-equity/cycle-w1/verdicts/screen-1.json"
+    assert judge["cycle_verdict"] == "build-equity/cycle-w1/verdicts/run-1.json"
+    cyc_dir = root / "build-equity/cycle-w1"
+    (cyc_dir / "cycle_verdict.json").write_text("{}")                         # a later run rewrites the latest
+    w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
+    assert [r["state"] for r in research_wave.chain_of(w).state(w)] == ["done"] * 9   # the pins hold
+    root = F.build(tmp_path / "n")                                            # no key: cycle_verdict.json, as before
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, ADMIT_ALL),
+                              log=lambda s: None) == 0
+    judge = json.loads((root / "out/waves/w1/receipts/08-judge.json").read_text())["outputs"]
+    assert judge["cycle_verdict"] == "build-equity/cycle-w1/cycle_verdict.json"

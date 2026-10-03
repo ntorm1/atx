@@ -12,6 +12,10 @@
                  (peak_mib null) for a direct phase run by this invocation,
    ledger{path, head, lines}  the sprint ledger of record's chain head when the cycle has a ledger (review C-6)}
 
+``keep`` (research_cycle --keep-verdicts, P9 OR section 3): every write also leaves the same bytes in
+<cycle dir>/verdicts/<mode>-<k>.json (k the first free number; written once, never overwritten), so a receipt that
+pins a verdict's SHA-256 never dangles when a later run rewrites cycle_verdict.json.
+
 The cycle is duck-typed (research_cycle.Cycle, or research_roles.RolesCycle): spec, res, screen, steps(), receipt(),
 cycle_dir(). A step of one era of a roles: cycle (task H-1) is keyed ``phase:role`` (``step_key``) in the phase rows;
 the scoring blocks are read for the last NAV step (a pooled summ's last JSON row is the pooled row).
@@ -23,6 +27,7 @@ from pathlib import Path
 
 VERDICT = "cycle_verdict.json"
 VERDICT_SCHEMA = "atx.cycle-verdict/v1"
+VERDICTS = "verdicts"                  # <cycle dir>/verdicts/<mode>-<k>.json: the per-run copies (keep)
 SUMM_JSON, PBO_JSON = "summ.json", "pbo.json"     # nav_summ --json / --pbo-json targets in the cycle dir
 
 
@@ -118,16 +123,34 @@ def verdict(cycle, timings: dict, spec_sha256: str | None, ledger: dict | None =
     return doc
 
 
-def write_verdict(cycle, timings: dict, spec_sha256: str | None, log, ledger: dict | None = None) -> dict:
+def keep_copy(cycle, mode: str, text: str) -> str:
+    """Write ``text`` to <cycle dir>/verdicts/<mode>-<k>.json, k the first free number (exclusive create: a copy is
+    never overwritten); returns its root-relative path."""
+    d = cycle.res.path(f"{cycle.cycle_dir()}/{VERDICTS}")
+    d.mkdir(parents=True, exist_ok=True)
+    k = 1
+    while True:
+        try:
+            with (d / f"{mode}-{k}.json").open("x", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            return f"{cycle.cycle_dir()}/{VERDICTS}/{mode}-{k}.json"
+        except FileExistsError:
+            k += 1
+
+
+def write_verdict(cycle, timings: dict, spec_sha256: str | None, log, ledger: dict | None = None,
+                  keep: bool = False) -> dict:
     path = cycle.res.path(f"{cycle.cycle_dir()}/{VERDICT}")
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = verdict(cycle, timings, spec_sha256, ledger)
-    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+    text = json.dumps(doc, indent=2) + "\n"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    copy = keep_copy(cycle, doc["mode"], text) if keep else None
     for r in doc["marginal"]:
         log(f"marginal {r.get('id')}: ic21 {r.get('ic21')} (HAC t {r.get('ic21_hac_t')}); marginal ic21 "
             f"{r.get('marginal_ic21')} (HAC t {r.get('marginal_hac_t')}); max |rho| {r.get('max_abs_rho')} with "
             f"{r.get('max_rho_member')}")
     if doc.get("marginal_note"):
         log(f"marginal: {doc['marginal_note']}")
-    log(f"== verdict {cycle.cycle_dir()}/{VERDICT}")
+    log(f"== verdict {cycle.cycle_dir()}/{VERDICT}" + (f" (kept as {copy})" if copy else ""))
     return doc
