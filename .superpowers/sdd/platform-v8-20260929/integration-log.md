@@ -7044,3 +7044,11 @@ clean (only the untracked png). No hash edited.
 | `scripts/specs/v8/y-two-speed.json` | `93aab9c6bb126cee...` | `e29365d1597a31ba659996120ec2fc05f8d3947419249e4bbe945736533ca023` | HEAD blob `e29365d1` (R0-9-PIN; registered `69cf6134`) | **equal** to HEAD blob |
 | `scripts/specs/v8/y-vol-target.json` | `d498abaded58de8e...` | `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4` | registered `4e190f54` | **equal** |
 
+### R0-7 resume: R0-7-MAN (P9 progress.md ruling) -- Y-3 manifest committed
+
+| step | argv | exit | result |
+|---|---|---|---|
+| manifest | the R0-6 report's validated draft, "DRAFT (uncommitted; for the PM's ruling) -- " prefix removed from `description`, 2-space JSON, LF | - | `scripts/specs/v8/waves/y-3.json` sha256 `a49e53874a3432edcf29e492f660816b76f6de16d65635b663a0252063a1dc10` (disk = blob, `i/lf w/lf`) |
+| pre-registration commit | `git commit -m "wave y-3: manifest (pre-registration of cell Y-3; v8y-prereg sections 5, 6, 14)"` | 0 | **`c18a92b7`** |
+| plan | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-3.json --root C:/atx-wt/pool-2` | **0** | 27 lines; manifest sha256 `a49e5387...`; 9 stages pending; state `build-equity/waves/y-3/receipts`; cell file `scripts/specs/v8/y-norm-score-y-3.json` |
+
