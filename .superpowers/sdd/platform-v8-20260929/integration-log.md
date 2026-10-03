@@ -7052,3 +7052,11 @@ clean (only the untracked png). No hash edited.
 | pre-registration commit | `git commit -m "wave y-3: manifest (pre-registration of cell Y-3; v8y-prereg sections 5, 6, 14)"` | 0 | **`c18a92b7`** |
 | plan | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-3.json --root C:/atx-wt/pool-2` | **0** | 27 lines; manifest sha256 `a49e5387...`; 9 stages pending; state `build-equity/waves/y-3/receipts`; cell file `scripts/specs/v8/y-norm-score-y-3.json` |
 
+### R0-7 Y-3 stage 01 preflight
+
+Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-3.json --root C:/atx-wt/pool-2 --until <stage>`. Host check before each stage (psutil): no compiler, no `atx-*` exe, no research process in pool-2.
+
+| stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
+|---|---|---|---|---|---|---|---|
+| 01 preflight | 0 | 0.5 | - (no exe) | 4,480 / 4,480 | `003e265c5436eda829785718a53c364562226b44c5616fa9ac159f00a1db323e` | - | manifest commit `c18a92b7`; parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `693c64f5`; ledger 128 lines N 57 (head `e186895a`); budget construction cap 62 |
+
