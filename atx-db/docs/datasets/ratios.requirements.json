@@ -1,0 +1,1528 @@
+{
+  "clock": "fundamentals strict < monthly month-end22UTC or daily prior-session22UTC; market close <= session",
+  "coverage_universe_manifest_sha256": "33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d",
+  "formula_authorities": {
+    "P/E": "https://finance.wharton.upenn.edu/~mrrobert/resources/FDM/fdm-20230823.pdf",
+    "WFRS": "https://people.tamu.edu/~cschulman/ECMT461/Termp/WRDS_Industry_Financial_Ratio_Manual.pdf"
+  },
+  "gold_linkage": {
+    "gprof": {
+      "candidate": "gp_at",
+      "identity": "gross profit TTM / end assets; source and clocks must align"
+    },
+    "growth": {
+      "owner": "Task5/7/16",
+      "required_families": [
+        "quarterly_YoY",
+        "annual_TTM_sales_earnings_cashflow_asset_equity_capex_RD_growth",
+        "margin_changes",
+        "working_capital_investment_growth",
+        "per_share_dilution"
+      ],
+      "status": "requires expanded primitive matrix; no invented primitive or source-equivalence claim"
+    },
+    "roa": {
+      "candidate": null,
+      "reason": "WFRS roa is EBITDA / average assets; cannot label as NI/assets"
+    },
+    "roe": {
+      "candidate": null,
+      "reason": "NI/average(SEQ+TXDITC); not automatically NI/end common equity"
+    }
+  },
+  "growth_handoff": "Task5 owns primitive recovery/matrix; Task7/16 own additional quarterly YoY/annual/TTM growth families. No missing historical period ->zero.",
+  "input_manifest_sha256": "9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325",
+  "input_schema": "atx.alpha-panel.compustat-std/v2",
+  "input_stage": "compustat_std",
+  "metrics": [
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Shiller's cyclically adjusted P/E: market equity / mean net income of the last five fiscal years (nominal)",
+      "den": "ni_avg5",
+      "downstream_column": "capei",
+      "expr": "CASE WHEN (ni_avg5) <> 0 THEN (me) / (ni_avg5) END",
+      "family": "valuation",
+      "freq": "a",
+      "inputs": [
+        "ni"
+      ],
+      "name": "capei",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 1431)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Book/Market: book equity / market equity",
+      "den": "me",
+      "downstream_column": "bm",
+      "expr": "CASE WHEN (me) <> 0 THEN (be_q0) / (me) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "seq"
+      ],
+      "name": "bm",
+      "num": "be_q0",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Enterprise value multiple: (me + dltt + dlc + pstk + mib - che) / EBITDA (oibdp) TTM",
+      "den": "oibdp_ttm",
+      "downstream_column": "evm",
+      "expr": "CASE WHEN (oibdp_ttm) <> 0 THEN (me + ev_debt) / (oibdp_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "che",
+        "oibdp"
+      ],
+      "name": "evm",
+      "num": "me + ev_debt",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Issuer aggregate common market equity / income before extraordinary items TTM (USD); cap/earnings analog, not diluted EPS P/E",
+      "den": "ib_ttm",
+      "downstream_column": "pe_issuer_ib",
+      "expr": "CASE WHEN (ib_ttm) <> 0 THEN (me) / (ib_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "ib"
+      ],
+      "name": "pe_issuer_ib",
+      "num": "me",
+      "price": true,
+      "role": "extension",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Issuer aggregate common market equity / parent net income TTM (USD); cap/earnings analog, not diluted EPS P/E",
+      "den": "ni_ttm",
+      "downstream_column": "pe_issuer_ni",
+      "expr": "CASE WHEN (ni_ttm) <> 0 THEN (me) / (ni_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "ni"
+      ],
+      "name": "pe_issuer_ni",
+      "num": "me",
+      "price": true,
+      "role": "extension",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "WFRS price / diluted EPS excluding EI; NULL until certified security-class/ADR/EPS share-basis alignment is available",
+      "den": "epsfx_ttm * eps_adj",
+      "downstream_column": "pe_exi",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "epsfx"
+      ],
+      "name": "pe_exi",
+      "num": "prc",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "WFRS price / diluted EPS including EI; NULL until certified security-class/ADR/EPS share-basis alignment is available",
+      "den": "epsfi_ttm * eps_adj",
+      "downstream_column": "pe_inc",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "epsfi"
+      ],
+      "name": "pe_inc",
+      "num": "prc",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Price/Sales: market equity / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "ps",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (me) / (sale_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "sale"
+      ],
+      "name": "ps",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Price/Cash flow: market equity / operating cash flow TTM",
+      "den": "oancf_ttm",
+      "downstream_column": "pcf",
+      "expr": "CASE WHEN (oancf_ttm) <> 0 THEN (me) / (oancf_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "oancf"
+      ],
+      "name": "pcf",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Dividend payout ratio: common cash dividends TTM / income before extraordinary items TTM",
+      "den": "ib_ttm",
+      "downstream_column": "dpr",
+      "expr": "CASE WHEN (ib_ttm) <> 0 THEN (dvc_ttm) / (ib_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "dvc",
+        "ib"
+      ],
+      "name": "dpr",
+      "num": "dvc_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Trailing PEG: pe_exi / 3-year compound annual growth (percent) of annual diluted EPS excl. EI (both > 0)",
+      "den": "eps_g3 * 100",
+      "downstream_column": "peg_trailing",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "qa",
+      "inputs": [
+        "epsfx"
+      ],
+      "name": "peg_trailing",
+      "num": "CASE WHEN (epsfx_ttm * eps_adj) <> 0 THEN (prc) / (epsfx_ttm * eps_adj) END",
+      "price": true,
+      "role": "primary",
+      "undef": "(((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 1066) OR epsfx_a0 <= 0 OR epsfx_a3 <= 0)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Dividend yield: common cash dividends TTM / market equity",
+      "den": "me",
+      "downstream_column": "divyield_paid",
+      "expr": "CASE WHEN (me) <> 0 THEN (dvc_ttm) / (me) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "dvc"
+      ],
+      "name": "divyield_paid",
+      "num": "dvc_ttm",
+      "price": true,
+      "role": "extension",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Price/Book: market equity / common equity",
+      "den": "ceq_q0",
+      "downstream_column": "ptb",
+      "expr": "CASE WHEN (ceq_q0) <> 0 THEN (me) / (ceq_q0) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "ceq"
+      ],
+      "name": "ptb",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Indicated dividend rate / price (WFRS); NULL: no source-backed indicated rate primitive",
+      "den": "prc",
+      "downstream_column": "divyield",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "indicated_dividend_rate"
+      ],
+      "name": "divyield",
+      "num": "CAST(NULL AS DOUBLE)",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Net profit margin: net income TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "npm",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (ni_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "sale"
+      ],
+      "name": "npm",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating profit margin before depreciation: oibdp TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "opmbd",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (oibdp_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oibdp",
+        "sale"
+      ],
+      "name": "opmbd",
+      "num": "oibdp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating profit margin after depreciation: oiadp TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "opmad",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (oiadp_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oiadp",
+        "sale"
+      ],
+      "name": "opmad",
+      "num": "oiadp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Gross profit margin: (sales - cogs) TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "gpm",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (sale_ttm - cogs_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "cogs"
+      ],
+      "name": "gpm",
+      "num": "sale_ttm - cogs_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Pre-tax profit margin: pretax income / sales (latest fiscal year)",
+      "den": "sale_a0",
+      "downstream_column": "ptpm",
+      "expr": "CASE WHEN (sale_a0) <> 0 THEN (pi_a0) / (sale_a0) END",
+      "family": "profitability",
+      "freq": "a",
+      "inputs": [
+        "pi",
+        "sale"
+      ],
+      "name": "ptpm",
+      "num": "pi_a0",
+      "price": false,
+      "role": "primary",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash flow margin: (income before extraordinary items + depreciation) TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "cfm",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (ib_ttm + dp_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ib",
+        "dp",
+        "sale"
+      ],
+      "name": "cfm",
+      "num": "ib_ttm + dp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Return on assets: oibdp TTM / average total assets",
+      "den": "avg_at",
+      "downstream_column": "roa",
+      "expr": "CASE WHEN (avg_at) <> 0 THEN (oibdp_ttm) / (avg_at) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oibdp",
+        "at"
+      ],
+      "name": "roa",
+      "num": "oibdp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Return on equity: NI TTM / average (parent stockholder equity + deferred taxes and investment tax credit)",
+      "den": "avg_wrds_be",
+      "downstream_column": "roe",
+      "expr": "CASE WHEN (avg_wrds_be) <> 0 THEN (ni_ttm) / (avg_wrds_be) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "seq",
+        "txditc"
+      ],
+      "name": "roe",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Return on capital employed: EBIT (NI + tax + interest) TTM / average (dltt + dlc + ceq)",
+      "den": "avg_capemp",
+      "downstream_column": "roce",
+      "expr": "CASE WHEN (avg_capemp) <> 0 THEN (ni_ttm + txt_ttm + xint_ttm) / (avg_capemp) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "txt",
+        "xint",
+        "dltt",
+        "dlc",
+        "ceq"
+      ],
+      "name": "roce",
+      "num": "ni_ttm + txt_ttm + xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Effective tax rate: income taxes / pretax income (latest fiscal year)",
+      "den": "pi_a0",
+      "downstream_column": "efftax",
+      "expr": "CASE WHEN (pi_a0) <> 0 THEN (txt_a0) / (pi_a0) END",
+      "family": "profitability",
+      "freq": "a",
+      "inputs": [
+        "txt",
+        "pi"
+      ],
+      "name": "efftax",
+      "num": "txt_a0",
+      "price": false,
+      "role": "primary",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax return on average common equity: NI TTM / average ceq",
+      "den": "avg_ceq",
+      "downstream_column": "aftret_eq",
+      "expr": "CASE WHEN (avg_ceq) <> 0 THEN (ni_ttm) / (avg_ceq) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "ceq"
+      ],
+      "name": "aftret_eq",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax return on invested capital: (NI + interest) TTM / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "aftret_invcapx",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (ni_ttm + xint_ttm) / (icapt_q0) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "xint",
+        "dltt",
+        "ceq"
+      ],
+      "name": "aftret_invcapx",
+      "num": "ni_ttm + xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax return on total stockholders' equity: NI TTM / average seq",
+      "den": "avg_seq",
+      "downstream_column": "aftret_equity",
+      "expr": "CASE WHEN (avg_seq) <> 0 THEN (ni_ttm) / (avg_seq) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "seq"
+      ],
+      "name": "aftret_equity",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Pre-tax return on net operating assets: oiadp TTM / average (ppent + act - lct)",
+      "den": "avg_noa",
+      "downstream_column": "pretret_noa",
+      "expr": "CASE WHEN (avg_noa) <> 0 THEN (oiadp_ttm) / (avg_noa) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oiadp",
+        "ppent",
+        "act",
+        "lct"
+      ],
+      "name": "pretret_noa",
+      "num": "oiadp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Pre-tax return on total earning assets: oiadp TTM / average (ppent + act)",
+      "den": "avg_tea",
+      "downstream_column": "pretret_earnat",
+      "expr": "CASE WHEN (avg_tea) <> 0 THEN (oiadp_ttm) / (avg_tea) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oiadp",
+        "ppent",
+        "act"
+      ],
+      "name": "pretret_earnat",
+      "num": "oiadp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Gross profit / total assets (WFRS GProf)",
+      "den": "at_q0",
+      "downstream_column": "gprof",
+      "expr": "CASE WHEN (at_q0) <> 0 THEN (sale_ttm - cogs_ttm) / (at_q0) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "cogs",
+        "at"
+      ],
+      "name": "gprof",
+      "num": "sale_ttm - cogs_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Common equity / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "equity_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (ceq_q0) / (icapt_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "ceq",
+        "dltt"
+      ],
+      "name": "equity_invcap",
+      "num": "ceq_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Long-term debt / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "debt_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (dltt_q0) / (icapt_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "ceq"
+      ],
+      "name": "debt_invcap",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt (dltt + dlc) / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "totdebt_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (dltt_q0 + dlc_q0) / (icapt_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "ceq"
+      ],
+      "name": "totdebt_invcap",
+      "num": "dltt_q0 + dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Capitalization ratio: dltt / (dltt + ceq + pstk)",
+      "den": "dltt_q0 + ceq_q0 + pstk_q0",
+      "downstream_column": "capital_ratio",
+      "expr": "CASE WHEN (dltt_q0 + ceq_q0 + pstk_q0) <> 0 THEN (dltt_q0) / (dltt_q0 + ceq_q0 + pstk_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "ceq"
+      ],
+      "name": "capital_ratio",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Interest TTM / average long-term debt",
+      "den": "avg_dltt",
+      "downstream_column": "int_debt",
+      "expr": "CASE WHEN (avg_dltt) <> 0 THEN (xint_ttm) / (avg_dltt) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "xint",
+        "dltt"
+      ],
+      "name": "int_debt",
+      "num": "xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Interest TTM / average total debt",
+      "den": "avg_totdebt",
+      "downstream_column": "int_totdebt",
+      "expr": "CASE WHEN (avg_totdebt) <> 0 THEN (xint_ttm) / (avg_totdebt) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "xint",
+        "dltt",
+        "dlc"
+      ],
+      "name": "int_totdebt",
+      "num": "xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash and short-term investments / total liabilities",
+      "den": "lt_q0",
+      "downstream_column": "cash_lt",
+      "expr": "CASE WHEN (lt_q0) <> 0 THEN (che_q0) / (lt_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "che",
+        "lt"
+      ],
+      "name": "cash_lt",
+      "num": "che_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Inventory / current assets",
+      "den": "act_q0",
+      "downstream_column": "invt_act",
+      "expr": "CASE WHEN (act_q0) <> 0 THEN (invt_q0) / (act_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "invt",
+        "act"
+      ],
+      "name": "invt_act",
+      "num": "invt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Receivables / current assets",
+      "den": "act_q0",
+      "downstream_column": "rect_act",
+      "expr": "CASE WHEN (act_q0) <> 0 THEN (rect_q0) / (act_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "rect",
+        "act"
+      ],
+      "name": "rect_act",
+      "num": "rect_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total liabilities / total assets (WFRS debt_at)",
+      "den": "at_q0",
+      "downstream_column": "debt_at",
+      "expr": "CASE WHEN (at_q0) <> 0 THEN (lt_q0) / (at_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "lt",
+        "at"
+      ],
+      "name": "debt_at",
+      "num": "lt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt / EBITDA TTM",
+      "den": "oibdp_ttm",
+      "downstream_column": "debt_ebitda",
+      "expr": "CASE WHEN (oibdp_ttm) <> 0 THEN (dltt_q0 + dlc_q0) / (oibdp_ttm) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "oibdp"
+      ],
+      "name": "debt_ebitda",
+      "num": "dltt_q0 + dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Short-term debt / total debt",
+      "den": "dltt_q0 + dlc_q0",
+      "downstream_column": "short_debt",
+      "expr": "CASE WHEN (dltt_q0 + dlc_q0) <> 0 THEN (dlc_q0) / (dltt_q0 + dlc_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc"
+      ],
+      "name": "short_debt",
+      "num": "dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Current liabilities / total liabilities",
+      "den": "lt_q0",
+      "downstream_column": "curr_debt",
+      "expr": "CASE WHEN (lt_q0) <> 0 THEN (lct_q0) / (lt_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "lct",
+        "lt"
+      ],
+      "name": "curr_debt",
+      "num": "lct_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Long-term debt / total liabilities",
+      "den": "lt_q0",
+      "downstream_column": "lt_debt",
+      "expr": "CASE WHEN (lt_q0) <> 0 THEN (dltt_q0) / (lt_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "lt"
+      ],
+      "name": "lt_debt",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating income before depreciation TTM / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "profit_lct",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (oibdp_ttm) / (lct_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oibdp",
+        "lct"
+      ],
+      "name": "profit_lct",
+      "num": "oibdp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating cash flow TTM / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "ocf_lct",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (oancf_ttm) / (lct_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oancf",
+        "lct"
+      ],
+      "name": "ocf_lct",
+      "num": "oancf_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating cash flow TTM / total debt",
+      "den": "dltt_q0 + dlc_q0",
+      "downstream_column": "cash_debt",
+      "expr": "CASE WHEN (dltt_q0 + dlc_q0) <> 0 THEN (oancf_ttm) / (dltt_q0 + dlc_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oancf",
+        "dltt",
+        "dlc"
+      ],
+      "name": "cash_debt",
+      "num": "oancf_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Free cash flow / operating cash flow",
+      "den": "oancf_ttm",
+      "downstream_column": "fcf_ocf",
+      "expr": "CASE WHEN (oancf_ttm) <> 0 THEN (oancf_ttm - capx_ttm) / (oancf_ttm) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oancf",
+        "capx"
+      ],
+      "name": "fcf_ocf",
+      "num": "oancf_ttm - capx_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total liabilities / total tangible assets (AT - INTAN)",
+      "den": "at_q0 - intan_q0",
+      "downstream_column": "lt_ppent",
+      "expr": "CASE WHEN (at_q0 - intan_q0) <> 0 THEN (lt_q0) / (at_q0 - intan_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "lt",
+        "at",
+        "intan"
+      ],
+      "name": "lt_ppent",
+      "num": "lt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Long-term debt / book equity",
+      "den": "be_q0",
+      "downstream_column": "dltt_be",
+      "expr": "CASE WHEN (be_q0) <> 0 THEN (dltt_q0) / (be_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "seq"
+      ],
+      "name": "dltt_be",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt/equity: total liabilities / shareholders' equity (common and preferred)",
+      "den": "ceq_q0 + pstk_q0",
+      "downstream_column": "de_ratio",
+      "expr": "CASE WHEN (ceq_q0 + pstk_q0) <> 0 THEN (lt_q0) / (ceq_q0 + pstk_q0) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "lt",
+        "ceq"
+      ],
+      "name": "de_ratio",
+      "num": "lt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Financial debt / total assets",
+      "den": "at_q0",
+      "downstream_column": "debt_assets",
+      "expr": "CASE WHEN (at_q0) <> 0 THEN (dltt_q0 + dlc_q0) / (at_q0) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "at"
+      ],
+      "name": "debt_assets",
+      "num": "dltt_q0 + dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt/capital: (ap + dlc + dltt) / (ap + dlc + dltt + ceq + pstk)",
+      "den": "ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0",
+      "downstream_column": "debt_capital",
+      "expr": "CASE WHEN (ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0) <> 0 THEN (ap_q0 + dlc_q0 + dltt_q0) / (ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "ap",
+        "dlc",
+        "dltt",
+        "ceq"
+      ],
+      "name": "debt_capital",
+      "num": "ap_q0 + dlc_q0 + dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax interest coverage: (xint + ib) TTM / xint TTM",
+      "den": "xint_ttm",
+      "downstream_column": "intcov",
+      "expr": "CASE WHEN (xint_ttm) <> 0 THEN (xint_ttm + ib_ttm) / (xint_ttm) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "xint",
+        "ib"
+      ],
+      "name": "intcov",
+      "num": "xint_ttm + ib_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Interest coverage ratio: EBIT (NI + tax + interest) TTM / xint TTM",
+      "den": "xint_ttm",
+      "downstream_column": "intcov_ratio",
+      "expr": "CASE WHEN (xint_ttm) <> 0 THEN (ni_ttm + txt_ttm + xint_ttm) / (xint_ttm) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "txt",
+        "xint"
+      ],
+      "name": "intcov_ratio",
+      "num": "ni_ttm + txt_ttm + xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash and short-term investments / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "cash_ratio",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (che_q0) / (lct_q0) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "che",
+        "lct"
+      ],
+      "name": "cash_ratio",
+      "num": "che_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Quick ratio (acid test): (current assets - inventories) / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "quick_ratio",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (act_q0 - invt_z0) / (lct_q0) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "act",
+        "invt",
+        "lct"
+      ],
+      "name": "quick_ratio",
+      "num": "act_q0 - invt_z0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Current ratio: current assets / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "curr_ratio",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (act_q0) / (lct_q0) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "act",
+        "lct"
+      ],
+      "name": "curr_ratio",
+      "num": "act_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash conversion cycle (days): 365 x (inventories / cogs + receivables / sales - payables / cogs), current balances and TTM flows",
+      "den": "cogs_ttm * sale_ttm",
+      "downstream_column": "cash_conversion",
+      "expr": "CASE WHEN cogs_ttm <> 0 AND sale_ttm <> 0 THEN 365.0 * (invt_q0 / cogs_ttm + rect_q0 / sale_ttm - ap_q0 / cogs_ttm) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "invt",
+        "rect",
+        "ap",
+        "cogs",
+        "sale"
+      ],
+      "name": "cash_conversion",
+      "num": null,
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Asset turnover: sales TTM / average total assets",
+      "den": "avg_at",
+      "downstream_column": "at_turn",
+      "expr": "CASE WHEN (avg_at) <> 0 THEN (sale_ttm) / (avg_at) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "at"
+      ],
+      "name": "at_turn",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Inventory turnover: cogs TTM / average inventories",
+      "den": "avg_invt",
+      "downstream_column": "inv_turn",
+      "expr": "CASE WHEN (avg_invt) <> 0 THEN (cogs_ttm) / (avg_invt) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "cogs",
+        "invt"
+      ],
+      "name": "inv_turn",
+      "num": "cogs_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Payables turnover: (cogs TTM + change in inventories over the year) / average accounts payable",
+      "den": "avg_ap",
+      "downstream_column": "pay_turn",
+      "expr": "CASE WHEN (avg_ap) <> 0 THEN (cogs_ttm + (invt_z0 - invt_z4)) / (avg_ap) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "cogs",
+        "invt",
+        "ap"
+      ],
+      "name": "pay_turn",
+      "num": "cogs_ttm + (invt_z0 - invt_z4)",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Receivables turnover: sales TTM / average receivables",
+      "den": "avg_rect",
+      "downstream_column": "rect_turn",
+      "expr": "CASE WHEN (avg_rect) <> 0 THEN (sale_ttm) / (avg_rect) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "rect"
+      ],
+      "name": "rect_turn",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Sales TTM / stockholders' equity",
+      "den": "seq_q0",
+      "downstream_column": "sale_equity",
+      "expr": "CASE WHEN (seq_q0) <> 0 THEN (sale_ttm) / (seq_q0) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "seq"
+      ],
+      "name": "sale_equity",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Sales TTM / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "sale_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (sale_ttm) / (icapt_q0) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "dltt",
+        "ceq"
+      ],
+      "name": "sale_invcap",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Sales TTM / working capital (act - lct)",
+      "den": "act_q0 - lct_q0",
+      "downstream_column": "sale_nwc",
+      "expr": "CASE WHEN (act_q0 - lct_q0) <> 0 THEN (sale_ttm) / (act_q0 - lct_q0) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "act",
+        "lct"
+      ],
+      "name": "sale_nwc",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Accruals / average total assets: (ib - oancf) TTM / average at (Sloan sign)",
+      "den": "avg_at",
+      "downstream_column": "accrual",
+      "expr": "CASE WHEN (avg_at) <> 0 THEN (ib_ttm - oancf_ttm) / (avg_at) END",
+      "family": "other",
+      "freq": "q",
+      "inputs": [
+        "ib",
+        "oancf",
+        "at"
+      ],
+      "name": "accrual",
+      "num": "ib_ttm - oancf_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "R&D expense TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "rd_sale",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (xrd_ttm) / (sale_ttm) END",
+      "family": "other",
+      "freq": "q",
+      "inputs": [
+        "xrd",
+        "sale"
+      ],
+      "name": "rd_sale",
+      "num": "xrd_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Advertising expense / sales (latest fiscal year)",
+      "den": "sale_a0",
+      "downstream_column": "adv_sale",
+      "expr": "CASE WHEN (sale_a0) <> 0 THEN (xad_a0) / (sale_a0) END",
+      "family": "other",
+      "freq": "a",
+      "inputs": [
+        "xad",
+        "sale"
+      ],
+      "name": "adv_sale",
+      "num": "xad_a0",
+      "price": false,
+      "role": "primary",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Piotroski (2000) F-score: sum of nine indicators on annual data (f_roa ib/at_t-1 > 0; f_cfo oancf/at_t-1 > 0; f_droa change in roa > 0; f_accrual cfo > roa; f_dlever change in dltt / average at < 0; f_dliquid change in current ratio > 0; f_eqoff sstk = 0; f_dmargin change in gross margin > 0; f_dturn change in sale/at_t-1 > 0); NULL unless all nine are defined",
+      "den": null,
+      "downstream_column": "piotroski_f",
+      "expr": "f_roa + f_cfo + f_droa + f_accrual + f_dlever + f_dliquid + f_eqoff + f_dmargin + f_dturn",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "ib",
+        "at",
+        "oancf",
+        "dltt",
+        "act",
+        "lct",
+        "sstk",
+        "sale",
+        "cogs"
+      ],
+      "name": "piotroski_f",
+      "price": false,
+      "role": "composite",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 700)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Altman (1968) Z = 1.2 (act - lct)/at + 1.4 re/at + 3.3 oiadp/at + 0.6 me/lt + 1.0 sale/at (latest fiscal year; me of the session)",
+      "den": null,
+      "downstream_column": "altman_z",
+      "expr": "CASE WHEN altman_x IS NOT NULL AND lt_a0 <> 0 AND me IS NOT NULL THEN altman_x + 0.6 * me / lt_a0 END",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "act",
+        "lct",
+        "at",
+        "re",
+        "oiadp",
+        "lt",
+        "sale"
+      ],
+      "name": "altman_z",
+      "price": true,
+      "role": "composite",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Ohlson (1980) model 1 O = -1.32 - 0.407 ln(at, USD millions, undeflated) + 6.03 lt/at - 1.43 (act - lct)/at + 0.0757 lct/act - 1.72 [lt > at] - 2.37 ni/at - 1.83 oancf/lt + 0.285 [ni < 0 both years] - 0.521 (ni_t - ni_t-1)/(|ni_t| + |ni_t-1|) (latest fiscal year)",
+      "den": null,
+      "downstream_column": "ohlson_o",
+      "expr": "ohlson_o",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "at",
+        "lt",
+        "act",
+        "lct",
+        "ni",
+        "oancf"
+      ],
+      "name": "ohlson_o",
+      "price": false,
+      "role": "composite",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 335)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Beneish (1999) 8-variable M = -4.84 + 0.920 DSRI + 0.528 GMI + 0.404 AQI + 0.892 SGI + 0.115 DEPI - 0.172 SGAI + 4.679 TATA - 0.327 LVGI (fiscal years t and t-1; TATA = (ib - oancf)/at)",
+      "den": null,
+      "downstream_column": "beneish_m",
+      "expr": "beneish_m",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "rect",
+        "sale",
+        "cogs",
+        "act",
+        "ppent",
+        "at",
+        "dp",
+        "xsga",
+        "lct",
+        "dltt",
+        "ib",
+        "oancf"
+      ],
+      "name": "beneish_m",
+      "price": false,
+      "role": "composite",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 335)"
+    }
+  ],
+  "policy": {
+    "EPSFI": "annual source only; no quarterly NI/IB approximation",
+    "P/E": "pe_exi/inc retain WRDS dilutedEPS meanings and publish explicit quality NULL; issuer ME/NI or IB only in pe_issuer_ni/ib extensions.",
+    "averages": "q0 and same-quarter prior-year q4; missing either -> NULL",
+    "bases": "ratio denominator zero -> NULL; signed denominators allowed except PEG requires positive EPS endpoints",
+    "calendar": "quarter offsets91.3125d +/-20; annual365.25d +/-30; fiscal changes may cause history nulls",
+    "currency": "standardized USD; fx_converted retained",
+    "known_conventions": "Missing deferred taxes, NCI, preferred stock and historical averages remain NULL; source-stage explicit reported zeros preserved.",
+    "restatement": "latest per(cik,datadate) at each distinct visible clock; annual comparative10Q supported",
+    "structural": "bank/insurer cogs and inventory only; missing observed inputs do not establish structural applicability"
+  },
+  "primitive_sources": {
+    "annual": {
+      "0": [
+        "sale",
+        "cogs",
+        "xsga",
+        "oiadp",
+        "oibdp",
+        "dp",
+        "xint",
+        "ni",
+        "ib",
+        "pi",
+        "txt",
+        "xad",
+        "at",
+        "lt",
+        "act",
+        "lct",
+        "rect",
+        "ppent",
+        "dltt",
+        "re",
+        "oancf",
+        "capx",
+        "dvc",
+        "xrd",
+        "sstk",
+        "prstkc",
+        "txditc",
+        "epsfx",
+        "epspx",
+        "epsfi"
+      ],
+      "1": [
+        "sale",
+        "cogs",
+        "xsga",
+        "dp",
+        "ni",
+        "ib",
+        "at",
+        "act",
+        "lct",
+        "rect",
+        "ppent",
+        "dltt",
+        "txditc"
+      ],
+      "2": [
+        "at",
+        "ni"
+      ],
+      "3": [
+        "ni",
+        "epsfx"
+      ],
+      "4": [
+        "ni"
+      ]
+    },
+    "quarter": {
+      "act": "actq",
+      "ap": "apq",
+      "at": "atq",
+      "capx": "capxy",
+      "ceq": "ceqq",
+      "che": "cheq",
+      "cogs": "cogsq",
+      "csho": "cshoq",
+      "dlc": "dlcq",
+      "dltt": "dlttq",
+      "dp": "dpq",
+      "dvc": "dvy",
+      "epsfx": "epsfxq",
+      "epspx": "epspxq",
+      "ib": "ibq",
+      "invt": "invtq",
+      "lct": "lctq",
+      "lt": "ltq",
+      "mib": "mibq",
+      "ni": "niq",
+      "oancf": "oancfy",
+      "oiadp": "oiadpq",
+      "oibdp": "oibdpq",
+      "ppent": "ppentq",
+      "prstkc": "prstkcy",
+      "pstk": "pstkq",
+      "rect": "rectq",
+      "sale": "saleq",
+      "seq": "seqq",
+      "sstk": "sstky",
+      "txt": "txtq",
+      "xint": "xintq",
+      "xrd": "xrdy",
+      "xsga": "xsgaq"
+    }
+  },
+  "producer_needs": {
+    "divyield": [
+      "Task13: source-backed indicated dividend rate with announcement and class/currency basis"
+    ],
+    "historical_average_nulls": [
+      "Task5: genuinely missing prior same-period balances; no current-only substitution"
+    ],
+    "pe_exi": [
+      "Task5: source-supported continuing-operations dilutedEPS history",
+      "market: dated security-class/ADR ratio and EPS share basis plus split clocks"
+    ],
+    "pe_inc": [
+      "Task5: source-supported total dilutedEPS quarterly/annual history; NI/IB scaling forbidden",
+      "market: dated security-class/ADR ratio and EPS share basis plus split clocks"
+    ],
+    "peg_trailing": [
+      "same pe_exi certification",
+      "Task5: 3-year comparable positive annual dilutedEPS history"
+    ],
+    "unmatched_source_checks": [
+      "Task5: source concept/source-default audit; keyed evidence t4-hand-attribution.json; absence in narrow source chains is not proof a primitive does not exist"
+    ]
+  },
+  "rebuild_chain": "compustat_std build --fund-stage fundamentals_v11 --stage <standardized>; ratios build --std-stage <standardized>",
+  "schema": "atx.ratios-requirements/v1"
+}

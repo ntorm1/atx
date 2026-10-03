@@ -1,0 +1,533 @@
+[
+  {
+    "key": {
+      "cik": 1280263,
+      "accession": "0001564590-21-016988",
+      "datadate": "2021-01-31",
+      "session_date": "2021-03-31"
+    },
+    "source_facts": [
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 241274000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 231403000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 199434000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 173345000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "RestrictedCashCurrent",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 10000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "RestrictedCashCurrent",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 9000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 231412000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2019-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 194058000.0,
+        "context": "C_0001280263_20190131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2018-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 346681000.0,
+        "context": "C_0001280263_20180131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 241284000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 231412000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2019-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 194058000.0,
+        "context": "C_0001280263_20190131"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 241274000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 231403000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2019-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 194047000.0,
+        "context": "C_0001280263_20190131"
+      },
+      {
+        "concept": "RestrictedCashCurrent",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 10000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "RestrictedCashCurrent",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 9000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "RestrictedCashCurrent",
+        "start": null,
+        "end": "2019-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 11000.0,
+        "context": "C_0001280263_20190131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 241284000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 231412000.0,
+        "context": "C_0001280263_20200131"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+        "start": null,
+        "end": "2019-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 194058000.0,
+        "context": "C_0001280263_20190131"
+      },
+      {
+        "concept": "DeferredIncomeTaxLiabilitiesNet",
+        "start": null,
+        "end": "2021-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 1288000.0,
+        "context": "C_0001280263_20210131"
+      },
+      {
+        "concept": "DeferredIncomeTaxLiabilitiesNet",
+        "start": null,
+        "end": "2020-01-31",
+        "instant": true,
+        "dim": false,
+        "value": 1288000.0,
+        "context": "C_0001280263_20200131"
+      }
+    ],
+    "state": {
+      "seq_q0": 474976000.0,
+      "seq_q4": 448072000.0,
+      "wrds_be_q0": 476264000.0,
+      "wrds_be_q4": 448072000.0,
+      "txditc_a0": 1288000.0,
+      "txditc_a1": 0.0,
+      "che_q0": 241274000.0,
+      "lt_q0": 98304000.0,
+      "lct_q0": 73967000.0
+    }
+  },
+  {
+    "key": {
+      "cik": 1818201,
+      "accession": "0001193125-22-061328",
+      "datadate": "2021-12-31",
+      "session_date": "2022-03-31"
+    },
+    "source_facts": [
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2021-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 182544000.0,
+        "context": "PAsOn12_31_2021"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2020-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 162118000.0,
+        "context": "PAsOn12_31_2020"
+      },
+      {
+        "concept": "DeferredIncomeTaxLiabilitiesNet",
+        "start": null,
+        "end": "2021-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 275745000.0,
+        "context": "PAsOn12_31_2021"
+      },
+      {
+        "concept": "DeferredIncomeTaxLiabilitiesNet",
+        "start": null,
+        "end": "2020-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 322348000.0,
+        "context": "PAsOn12_31_2020"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2020-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 162118000.0,
+        "context": "PAsOn12_31_2020"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2019-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 93201000.0,
+        "context": "PAsOn12_31_2019"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2018-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 57453000.0,
+        "context": "PAsOn12_31_2018"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2021-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 182544000.0,
+        "context": "PAsOn12_31_2021"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2020-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 162118000.0,
+        "context": "PAsOn12_31_2020"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2019-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 93201000.0,
+        "context": "PAsOn12_31_2019"
+      }
+    ],
+    "state": {
+      "seq_q0": 1872318000.0,
+      "seq_q4": 1371615000.0,
+      "wrds_be_q0": 2148063000.0,
+      "wrds_be_q4": 1371615000.0,
+      "txditc_a0": 275745000.0,
+      "txditc_a1": 0.0,
+      "che_q0": 182544000.0,
+      "lt_q0": 1351029000.0,
+      "lct_q0": 136649000.0
+    }
+  },
+  {
+    "key": {
+      "cik": 1802665,
+      "accession": "0001558370-25-001441",
+      "datadate": "2024-12-31",
+      "session_date": "2025-02-28"
+    },
+    "source_facts": [
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 453001000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 311660000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "ShortTermInvestments",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 14185000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "ShortTermInvestments",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 41800000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "RestrictedCashNoncurrent",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 270000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "RestrictedCashNoncurrent",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 270000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 311930000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2022-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 244534000.0,
+        "context": "As_Of_12_31_2022__uwjzX-nAUy2HeVR_Qg5Ag"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2021-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 235059000.0,
+        "context": "As_Of_12_31_2021_20ATAX_aTEWYA-XFlL9-3A"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 453271000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 311930000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2022-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 244534000.0,
+        "context": "As_Of_12_31_2022__uwjzX-nAUy2HeVR_Qg5Ag"
+      },
+      {
+        "concept": "InvestmentsAndCash",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 576060000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 453001000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "CashAndCashEquivalentsAtCarryingValue",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 311660000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "RestrictedCashNoncurrent",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 270000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "RestrictedCashNoncurrent",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 270000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2024-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 453271000.0,
+        "context": "As_Of_12_31_2024_TG_h2OD_ZkCPF-X72GPBqw"
+      },
+      {
+        "concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "start": null,
+        "end": "2023-12-31",
+        "instant": true,
+        "dim": false,
+        "value": 311930000.0,
+        "context": "As_Of_12_31_2023_v0YguuePdke66X42yBWZmQ"
+      }
+    ],
+    "state": {
+      "seq_q0": 659155000.0,
+      "seq_q4": 466992000.0,
+      "wrds_be_q0": 659155000.0,
+      "wrds_be_q4": 466992000.0,
+      "txditc_a0": 0.0,
+      "txditc_a1": 0.0,
+      "che_q0": 467186000.0,
+      "lt_q0": 340045000.0,
+      "lct_q0": 175082000.0
+    }
+  }
+]

@@ -1,85 +1,18 @@
 {
-  "name": "ratios",
-  "lane": "tier1-v4 lane B (task 4)",
-  "schema": "atx.alpha-panel.ratios/v1",
-  "module": "atx_db.alpha_panel.ratios",
-  "args": [
-    [
-      "build",
-      "--std-stage",
-      "compustat_std"
+  "asof_macro_sql": "CREATE OR REPLACE MACRO ratios_asof(d) AS TABLE \n    WITH c AS (\n        WITH ms AS (SELECT CAST(d AS DATE) AS session_date),\n        ltype AS (SELECT security_id, mode(finra_type) AS line_type FROM read_parquet('C:/atx/atx-db/data/alpha_panel/v1/security_master/finra_names.parquet') GROUP BY 1),\n        lk AS (SELECT m.session_date, l.security_id, l.cik, l.link_tier, l.linkprim\n               FROM ms m JOIN read_parquet('C:/atx/atx-db/data/alpha_panel/v1/identity/link_table_v3.parquet') l\n                 ON m.session_date BETWEEN l.valid_from AND coalesce(l.valid_to, DATE '2100-01-01')\n               LEFT JOIN ltype t ON t.security_id = l.security_id\n               WHERE l.link_tier IN ('strict', 'dated', 'name') AND l.linkprim IN ('P', 'J') AND l.cik IS NOT NULL\n                 AND l.available_at <= CAST(m.session_date AS TIMESTAMP) + INTERVAL 22 HOUR\n                 AND coalesce(t.line_type NOT IN ('preferred', 'warrant', 'unit', 'right', 'note', 'ETF', 'ETN', 'fund'), true)),\n        px AS (SELECT p.session_date, p.security_id, p.close AS prc FROM read_parquet('C:/atx/atx-db/data/alpha_panel/v1/prices/year=*/prices.parquet', union_by_name = true) p\n               WHERE p.session_date IN (SELECT session_date FROM ms) AND p.close > 0),\n        sh AS (SELECT s.session_date, s.security_id, s.shrout FROM read_parquet('C:/atx/atx-db/data/alpha_panel/v1/market/shares_daily/year=*/shares_daily.parquet', union_by_name = true) s\n               WHERE s.session_date IN (SELECT session_date FROM ms)),\n        c0 AS (SELECT lk.*, px.prc, sh.shrout, sh.shrout * px.prc AS me_line\n               FROM lk JOIN px USING (session_date, security_id) LEFT JOIN sh USING (session_date, security_id))\n        SELECT c0.*,\n               CASE WHEN count(*) OVER w = count(me_line) OVER w THEN sum(me_line) OVER w END AS me,\n               count(*) OVER w AS me_lines,\n               (SELECT CAST(max(session_date) AS TIMESTAMP) + INTERVAL 22 HOUR FROM read_parquet('C:/atx/atx-db/data/alpha_panel/v1/calendar.parquet') WHERE session_date < CAST(d AS DATE)) AS cutoff,\n               CAST(session_date AS TIMESTAMP) + INTERVAL 22 HOUR AS cutoff_clock\n        FROM c0 WINDOW w AS (PARTITION BY session_date, cik)),\n    s AS (SELECT c.*, st.* EXCLUDE (cik, available_at), st.available_at AS fund_available_at\n          FROM c ASOF LEFT JOIN read_parquet('C:/atx/atx-db/data/alpha_panel/v1/ratios/fund_state.parquet') st ON st.cik = c.cik AND c.cutoff > st.available_at),\n    k AS (SELECT s.*, exp(-(CASE WHEN s.basis_date IS NULL THEN 0\n                                 ELSE coalesce(sd.cum_lr, 0) - coalesce(sbas.cum_lr, 0) END)) AS eps_adj\n          FROM s ASOF LEFT JOIN read_parquet('C:/atx/atx-db/data/alpha_panel/v1/ratios/split_events.parquet') sd ON sd.cik = s.cik AND s.session_date >= sd.ex_date\n                 ASOF LEFT JOIN read_parquet('C:/atx/atx-db/data/alpha_panel/v1/ratios/split_events.parquet') sbas ON sbas.cik = s.cik AND s.basis_date >= sbas.ex_date),\n    x AS (SELECT *, date_diff('day', datadate, session_date) AS staleness_days,\n                 coalesce(date_diff('day', datadate, session_date)\n                          <= CASE WHEN form0 IN ('20-F', '20-F/A', '40-F', '40-F/A') THEN 550 ELSE 400 END,\n                          false) AS fresh_q,\n                 coalesce(date_diff('day', fy0_datadate, session_date) <= 550, false) AS fresh_a,\n                 me + ev_debt AS ev\n          FROM k)\n    SELECT session_date, security_id, cik, link_tier, linkprim, prc, shrout, me_line, me, me_lines, eps_adj, fund_available_at, datadate, fqtr, form0, ttm_src, ttm_fy0_items, fy0_datadate, first_datadate, hist_days, fin_template, sic, curcd, fx_converted, absent_items, be_q0, ev, staleness_days, fresh_q, fresh_a,\n           CASE WHEN fresh_a THEN CASE WHEN (ni_avg5) <> 0 THEN (me) / (ni_avg5) END END AS capei, CASE WHEN fresh_q THEN CASE WHEN (me) <> 0 THEN (be_q0) / (me) END END AS bm, CASE WHEN fresh_q THEN CASE WHEN (oibdp_ttm) <> 0 THEN (me + ev_debt) / (oibdp_ttm) END END AS evm, CASE WHEN fresh_q THEN CASE WHEN (ib_ttm) <> 0 THEN (me) / (ib_ttm) END END AS pe_issuer_ib, CASE WHEN fresh_q THEN CASE WHEN (ni_ttm) <> 0 THEN (me) / (ni_ttm) END END AS pe_issuer_ni, CASE WHEN fresh_q THEN CAST(NULL AS DOUBLE) END AS pe_exi, CASE WHEN fresh_q THEN CAST(NULL AS DOUBLE) END AS pe_inc, CASE WHEN fresh_q THEN CASE WHEN (sale_ttm) <> 0 THEN (me) / (sale_ttm) END END AS ps, CASE WHEN fresh_q THEN CASE WHEN (oancf_ttm) <> 0 THEN (me) / (oancf_ttm) END END AS pcf, CASE WHEN fresh_q THEN dpr END AS dpr, CASE WHEN (fresh_q AND fresh_a) THEN CAST(NULL AS DOUBLE) END AS peg_trailing, CASE WHEN fresh_q THEN CASE WHEN (me) <> 0 THEN (dvc_ttm) / (me) END END AS divyield_paid, CASE WHEN fresh_q THEN CASE WHEN (ceq_q0) <> 0 THEN (me) / (ceq_q0) END END AS ptb, CASE WHEN fresh_q THEN CAST(NULL AS DOUBLE) END AS divyield, CASE WHEN fresh_q THEN npm END AS npm, CASE WHEN fresh_q THEN opmbd END AS opmbd, CASE WHEN fresh_q THEN opmad END AS opmad, CASE WHEN fresh_q THEN gpm END AS gpm, CASE WHEN fresh_a THEN ptpm END AS ptpm, CASE WHEN fresh_q THEN cfm END AS cfm, CASE WHEN fresh_q THEN roa END AS roa, CASE WHEN fresh_q THEN roe END AS roe, CASE WHEN fresh_q THEN roce END AS roce, CASE WHEN fresh_a THEN efftax END AS efftax, CASE WHEN fresh_q THEN aftret_eq END AS aftret_eq, CASE WHEN fresh_q THEN aftret_invcapx END AS aftret_invcapx, CASE WHEN fresh_q THEN aftret_equity END AS aftret_equity, CASE WHEN fresh_q THEN pretret_noa END AS pretret_noa, CASE WHEN fresh_q THEN pretret_earnat END AS pretret_earnat, CASE WHEN fresh_q THEN gprof END AS gprof, CASE WHEN fresh_q THEN equity_invcap END AS equity_invcap, CASE WHEN fresh_q THEN debt_invcap END AS debt_invcap, CASE WHEN fresh_q THEN totdebt_invcap END AS totdebt_invcap, CASE WHEN fresh_q THEN capital_ratio END AS capital_ratio, CASE WHEN fresh_q THEN int_debt END AS int_debt, CASE WHEN fresh_q THEN int_totdebt END AS int_totdebt, CASE WHEN fresh_q THEN cash_lt END AS cash_lt, CASE WHEN fresh_q THEN invt_act END AS invt_act, CASE WHEN fresh_q THEN rect_act END AS rect_act, CASE WHEN fresh_q THEN debt_at END AS debt_at, CASE WHEN fresh_q THEN debt_ebitda END AS debt_ebitda, CASE WHEN fresh_q THEN short_debt END AS short_debt, CASE WHEN fresh_q THEN curr_debt END AS curr_debt, CASE WHEN fresh_q THEN lt_debt END AS lt_debt, CASE WHEN fresh_q THEN profit_lct END AS profit_lct, CASE WHEN fresh_q THEN ocf_lct END AS ocf_lct, CASE WHEN fresh_q THEN cash_debt END AS cash_debt, CASE WHEN fresh_q THEN fcf_ocf END AS fcf_ocf, CASE WHEN fresh_q THEN lt_ppent END AS lt_ppent, CASE WHEN fresh_q THEN dltt_be END AS dltt_be, CASE WHEN fresh_q THEN de_ratio END AS de_ratio, CASE WHEN fresh_q THEN debt_assets END AS debt_assets, CASE WHEN fresh_q THEN debt_capital END AS debt_capital, CASE WHEN fresh_q THEN intcov END AS intcov, CASE WHEN fresh_q THEN intcov_ratio END AS intcov_ratio, CASE WHEN fresh_q THEN cash_ratio END AS cash_ratio, CASE WHEN fresh_q THEN quick_ratio END AS quick_ratio, CASE WHEN fresh_q THEN curr_ratio END AS curr_ratio, CASE WHEN fresh_q THEN cash_conversion END AS cash_conversion, CASE WHEN fresh_q THEN at_turn END AS at_turn, CASE WHEN fresh_q THEN inv_turn END AS inv_turn, CASE WHEN fresh_q THEN pay_turn END AS pay_turn, CASE WHEN fresh_q THEN rect_turn END AS rect_turn, CASE WHEN fresh_q THEN sale_equity END AS sale_equity, CASE WHEN fresh_q THEN sale_invcap END AS sale_invcap, CASE WHEN fresh_q THEN sale_nwc END AS sale_nwc, CASE WHEN fresh_q THEN accrual END AS accrual, CASE WHEN fresh_q THEN rd_sale END AS rd_sale, CASE WHEN fresh_a THEN adv_sale END AS adv_sale, CASE WHEN fresh_a THEN piotroski_f END AS piotroski_f, CASE WHEN fresh_a THEN CASE WHEN altman_x IS NOT NULL AND lt_a0 <> 0 AND me IS NOT NULL THEN altman_x + 0.6 * me / lt_a0 END END AS altman_z, CASE WHEN fresh_a THEN ohlson_o END AS ohlson_o, CASE WHEN fresh_a THEN beneish_m END AS beneish_m,\n           CASE WHEN fresh_a THEN f_roa END AS f_roa, CASE WHEN fresh_a THEN f_cfo END AS f_cfo, CASE WHEN fresh_a THEN f_droa END AS f_droa, CASE WHEN fresh_a THEN f_accrual END AS f_accrual, CASE WHEN fresh_a THEN f_dlever END AS f_dlever, CASE WHEN fresh_a THEN f_dliquid END AS f_dliquid, CASE WHEN fresh_a THEN f_eqoff END AS f_eqoff, CASE WHEN fresh_a THEN f_dmargin END AS f_dmargin, CASE WHEN fresh_a THEN f_dturn END AS f_dturn, CASE WHEN fresh_a THEN m_dsri END AS m_dsri, CASE WHEN fresh_a THEN m_gmi END AS m_gmi, CASE WHEN fresh_a THEN m_aqi END AS m_aqi, CASE WHEN fresh_a THEN m_sgi END AS m_sgi, CASE WHEN fresh_a THEN m_depi END AS m_depi, CASE WHEN fresh_a THEN m_sgai END AS m_sgai, CASE WHEN fresh_a THEN m_lvgi END AS m_lvgi, CASE WHEN fresh_a THEN m_tata END AS m_tata,\n           nullif(concat_ws(',', CASE WHEN fresh_a AND ((ni_avg5) = 0 OR coalesce(((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 1431), false)) THEN 'capei' END, CASE WHEN fresh_q AND ((me) = 0) THEN 'bm' END, CASE WHEN fresh_q AND ((oibdp_ttm) = 0) THEN 'evm' END, CASE WHEN fresh_q AND ((ib_ttm) = 0) THEN 'pe_issuer_ib' END, CASE WHEN fresh_q AND ((ni_ttm) = 0) THEN 'pe_issuer_ni' END, CASE WHEN fresh_q AND ((epsfx_ttm * eps_adj) = 0) THEN 'pe_exi' END, CASE WHEN fresh_q AND ((epsfi_ttm * eps_adj) = 0) THEN 'pe_inc' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'ps' END, CASE WHEN fresh_q AND ((oancf_ttm) = 0) THEN 'pcf' END, CASE WHEN fresh_q AND ((ib_ttm) = 0) THEN 'dpr' END, CASE WHEN (fresh_q AND fresh_a) AND ((eps_g3 * 100) = 0 OR coalesce((((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 1066) OR epsfx_a0 <= 0 OR epsfx_a3 <= 0), false)) THEN 'peg_trailing' END, CASE WHEN fresh_q AND ((me) = 0) THEN 'divyield_paid' END, CASE WHEN fresh_q AND ((ceq_q0) = 0) THEN 'ptb' END, CASE WHEN fresh_q AND ((prc) = 0) THEN 'divyield' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'npm' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'opmbd' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'opmad' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'gpm' END, CASE WHEN fresh_a AND ((sale_a0) = 0 OR coalesce((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300), false)) THEN 'ptpm' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'cfm' END, CASE WHEN fresh_q AND ((avg_at) = 0) THEN 'roa' END, CASE WHEN fresh_q AND ((avg_wrds_be) = 0) THEN 'roe' END, CASE WHEN fresh_q AND ((avg_capemp) = 0) THEN 'roce' END, CASE WHEN fresh_a AND ((pi_a0) = 0 OR coalesce((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300), false)) THEN 'efftax' END, CASE WHEN fresh_q AND ((avg_ceq) = 0) THEN 'aftret_eq' END, CASE WHEN fresh_q AND ((icapt_q0) = 0) THEN 'aftret_invcapx' END, CASE WHEN fresh_q AND ((avg_seq) = 0) THEN 'aftret_equity' END, CASE WHEN fresh_q AND ((avg_noa) = 0) THEN 'pretret_noa' END, CASE WHEN fresh_q AND ((avg_tea) = 0) THEN 'pretret_earnat' END, CASE WHEN fresh_q AND ((at_q0) = 0) THEN 'gprof' END, CASE WHEN fresh_q AND ((icapt_q0) = 0) THEN 'equity_invcap' END, CASE WHEN fresh_q AND ((icapt_q0) = 0) THEN 'debt_invcap' END, CASE WHEN fresh_q AND ((icapt_q0) = 0) THEN 'totdebt_invcap' END, CASE WHEN fresh_q AND ((dltt_q0 + ceq_q0 + pstk_q0) = 0) THEN 'capital_ratio' END, CASE WHEN fresh_q AND ((avg_dltt) = 0) THEN 'int_debt' END, CASE WHEN fresh_q AND ((avg_totdebt) = 0) THEN 'int_totdebt' END, CASE WHEN fresh_q AND ((lt_q0) = 0) THEN 'cash_lt' END, CASE WHEN fresh_q AND ((act_q0) = 0) THEN 'invt_act' END, CASE WHEN fresh_q AND ((act_q0) = 0) THEN 'rect_act' END, CASE WHEN fresh_q AND ((at_q0) = 0) THEN 'debt_at' END, CASE WHEN fresh_q AND ((oibdp_ttm) = 0) THEN 'debt_ebitda' END, CASE WHEN fresh_q AND ((dltt_q0 + dlc_q0) = 0) THEN 'short_debt' END, CASE WHEN fresh_q AND ((lt_q0) = 0) THEN 'curr_debt' END, CASE WHEN fresh_q AND ((lt_q0) = 0) THEN 'lt_debt' END, CASE WHEN fresh_q AND ((lct_q0) = 0) THEN 'profit_lct' END, CASE WHEN fresh_q AND ((lct_q0) = 0) THEN 'ocf_lct' END, CASE WHEN fresh_q AND ((dltt_q0 + dlc_q0) = 0) THEN 'cash_debt' END, CASE WHEN fresh_q AND ((oancf_ttm) = 0) THEN 'fcf_ocf' END, CASE WHEN fresh_q AND ((at_q0 - intan_q0) = 0) THEN 'lt_ppent' END, CASE WHEN fresh_q AND ((be_q0) = 0) THEN 'dltt_be' END, CASE WHEN fresh_q AND ((ceq_q0 + pstk_q0) = 0) THEN 'de_ratio' END, CASE WHEN fresh_q AND ((at_q0) = 0) THEN 'debt_assets' END, CASE WHEN fresh_q AND ((ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0) = 0) THEN 'debt_capital' END, CASE WHEN fresh_q AND ((xint_ttm) = 0) THEN 'intcov' END, CASE WHEN fresh_q AND ((xint_ttm) = 0) THEN 'intcov_ratio' END, CASE WHEN fresh_q AND ((lct_q0) = 0) THEN 'cash_ratio' END, CASE WHEN fresh_q AND ((lct_q0) = 0) THEN 'quick_ratio' END, CASE WHEN fresh_q AND ((lct_q0) = 0) THEN 'curr_ratio' END, CASE WHEN fresh_q AND ((cogs_ttm * sale_ttm) = 0) THEN 'cash_conversion' END, CASE WHEN fresh_q AND ((avg_at) = 0) THEN 'at_turn' END, CASE WHEN fresh_q AND ((avg_invt) = 0) THEN 'inv_turn' END, CASE WHEN fresh_q AND ((avg_ap) = 0) THEN 'pay_turn' END, CASE WHEN fresh_q AND ((avg_rect) = 0) THEN 'rect_turn' END, CASE WHEN fresh_q AND ((seq_q0) = 0) THEN 'sale_equity' END, CASE WHEN fresh_q AND ((icapt_q0) = 0) THEN 'sale_invcap' END, CASE WHEN fresh_q AND ((act_q0 - lct_q0) = 0) THEN 'sale_nwc' END, CASE WHEN fresh_q AND ((avg_at) = 0) THEN 'accrual' END, CASE WHEN fresh_q AND ((sale_ttm) = 0) THEN 'rd_sale' END, CASE WHEN fresh_a AND ((sale_a0) = 0 OR coalesce((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300), false)) THEN 'adv_sale' END, CASE WHEN fresh_a AND (coalesce(((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 700), false)) THEN 'piotroski_f' END, CASE WHEN fresh_a AND (coalesce((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300), false)) THEN 'altman_z' END, CASE WHEN fresh_a AND (coalesce(((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 335), false)) THEN 'ohlson_o' END, CASE WHEN fresh_a AND (coalesce(((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 335), false)) THEN 'beneish_m' END), '') AS ratio_undefined,\n           'pe_exi,pe_inc,peg_trailing:missing_certified_security_class_diluted_EPS_alignment;divyield:missing_indicated_dividend_rate' AS ratio_missing_primitives,\n           cutoff_clock AS available_at\n    FROM x;",
+  "keys": [
+    "session_date",
+    "security_id"
+  ],
+  "path": "ratios/monthly/year=*/ratios_monthly.parquet",
+  "rule": "wfrs-pit-v2",
+  "schema_id": "atx.alpha-panel.ratios/v2",
+  "stage": "ratios",
+  "state": {
+    "keys": [
+      "cik",
+      "available_at"
     ],
-    [
-      "validate"
-    ],
-    [
-      "handcheck"
-    ]
-  ],
-  "inputs": [
-    "compustat_std",
-    "market_shares",
-    "prices",
-    "corporate_actions",
-    "identity_table"
-  ],
-  "inputs_note": "the compustat_std stage is a parameter (--std-stage); task 5 rebuilds on the v11-based stage. Reads <std stage>/{fundq,funda}.parquet, market/shares_daily/year=*/shares_daily.parquet, prices/year=*/prices.parquet, corporate_actions/vendor_events.parquet, identity/link_table_v3.parquet, calendar.parquet; validation also reads panel/ (member_equity, characteristic inputs) and universe/ when it has a manifest",
-  "manifest": "ratios/manifest.json",
-  "vintage": "vintage",
-  "staleness": "quarterly-based values NULL when session - datadate > 400 days (550 for 20-F/40-F filers); annual-based values when session - FY0 datadate > 550 days",
-  "guard_gb": 0.8,
-  "code": [
-    "ratios",
-    "common"
-  ],
-  "doc": "docs/datasets/ratios.md",
-  "outputs": [
-    {
-      "view": "ratios_monthly",
-      "glob": "ratios/monthly/year=*/ratios_monthly.parquet",
-      "clock": "available_at",
-      "vintage": "monthly",
-      "keys": [
-        "session_date",
-        "security_id"
-      ],
-      "primary_key": [
-        "session_date",
-        "security_id"
-      ],
-      "doc": "WFRS-analog ratios (66) and composite scores (Piotroski F, Altman Z, Ohlson O, Beneish M) per common line at each month-end session; fundamentals with available_at < 22:00 UTC of the month-end session, shares and raw close of that session; available_at = 22:00 UTC of the session"
-    },
-    {
-      "view": "ratios_fund_state",
-      "glob": "ratios/fund_state.parquet",
-      "clock": "available_at",
-      "vintage": "vintage",
-      "keys": [
-        "cik"
-      ],
-      "order": [
-        "available_at"
-      ],
-      "primary_key": [
-        "cik",
-        "available_at"
-      ],
-      "doc": "issuer fundamental state vintages (TTM flows, balances, averages, annual history, price-free ratios); the latest row with available_at < cutoff is the issuer's state at the cutoff"
-    },
-    {
-      "view": "ratios_split_events",
-      "glob": "ratios/split_events.parquet",
-      "clock": "ex_date",
-      "vintage": "event",
-      "keys": [
-        "cik",
-        "ex_date"
-      ],
-      "doc": "issuer split / reverse-split events (vendor corporate actions of the issuer's common lines) with the cumulative log ratio; puts per-share EPS on one share basis"
-    }
-  ],
-  "asof_macros": {
-    "ratios_asof": "generated: ratios.macros_sql(<root>) -- CREATE OR REPLACE MACRO ratios_asof(d) AS TABLE <the monthly SELECT for the single session d with the fundamentals cutoff 22:00 UTC of the previous calendar session>; the full SQL is stored in ratios/manifest.json (macro_sql)"
-  },
-  "asof_note": "ratios_asof(d): daily as-of view for session d (DATE): fund_state row with available_at < 22:00 UTC of the previous calendar session (GC1 daily), shares_daily.shrout and raw close of d, issuer splits between the state's date and d. Same columns as ratios_monthly. The monthly table uses the GC1 monthly cutoff (22:00 UTC of the month-end session itself)."
+    "path": "ratios/fund_state.parquet"
+  }
 }
