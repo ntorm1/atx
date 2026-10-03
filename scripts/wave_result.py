@@ -93,6 +93,16 @@ def receipt_digests(w) -> dict:
     return {p.stem: stage_chain.sha256_file(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
 
 
+def seal_tail(seal: dict) -> str:
+    """The seal scan's guard references and allow-listed tokens (wave_seal.scan), for the hidden-data line."""
+    out = []
+    refs = seal.get("seal_references") or {}
+    if refs.get("tokens"):
+        out.append(f"{refs['tokens']} seal reference(s) of a guard")
+    out += [f"{a['token']} x{a['tokens']} allowed: {a['ruling']}" for a in seal.get("allowed") or []]
+    return "; ".join(out)
+
+
 def verdict_word(doc: dict) -> str:
     if not doc.get("cell"):
         return "NO CELL"
@@ -155,8 +165,10 @@ def log_section(doc: dict) -> str:
                 for r in doc["timings"]]
         out.append("")
     seal = doc.get("seal_scan") or {}
+    tail = seal_tail(seal)
     out += [f"Hidden-data record: seal scan of {seal.get('files', 0)} log(s) (every run dir, reader and console of the "
-            f"wave): "
-            f"{seal.get('tokens_at_or_after_seal', 0)} date token(s) at or after {seal.get('seal', 'the seal')}.",
+            f"wave; forms {', '.join(seal.get('forms') or ['iso'])}): "
+            f"{seal.get('tokens_at_or_after_seal', 0)} date token(s) at or after {seal.get('seal', 'the seal')}" +
+            (f" ({tail})" if tail else "") + ".",
             f"**Next parent: `{doc['next_parent']['spec']}`, library {doc['next_parent']['library']}.**", ""]
     return "\n".join(out)

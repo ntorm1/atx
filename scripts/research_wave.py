@@ -1,7 +1,7 @@
 """research_cycle.py wave: one research wave, one command (platform v8 lane YINFRA).
 
   research_cycle.py wave plan   MANIFEST [--root R]                 the exact argv of every stage; nothing runs
-  research_cycle.py wave run    MANIFEST [--root R] [--until STAGE] [--dry-run]
+  research_cycle.py wave run    MANIFEST [--root R] [--until STAGE] [--dry-run] [--seal-allow TOKEN=RULING ...]
   research_cycle.py wave status MANIFEST [--root R]
 
 MANIFEST is a committed atx.research-wave/v1 file (wave_manifest.py), e.g. scripts/specs/v8/waves/<wave>.json. The
@@ -44,9 +44,20 @@ def main(argv=None, *, executor=execute, log=print) -> int:
     ap.add_argument("--until", default=None, choices=[s.name for s in wave_stages.STAGES],
                     help="run: stop after this stage")
     ap.add_argument("--dry-run", action="store_true", help="run: print every stage's argv, run nothing (= plan)")
+    ap.add_argument("--seal-allow", action="append", default=[], metavar="TOKEN=RULING",
+                    help="run: a seal-scan token that is not a data date, allowed by the named ruling (recorded in the "
+                         "verify receipt and the result; repeatable)")
     a = ap.parse_args(argv)
+    allow = {}
+    for item in a.seal_allow:
+        token, _, ruling = item.partition("=")
+        if not token.strip() or not ruling.strip():
+            print(f"research_cycle wave: --seal-allow {item!r}: TOKEN=RULING, both non-empty", file=sys.stderr)
+            return 2
+        allow[token.strip()] = ruling.strip()
     try:
         w = Wave(a.manifest, a.root, executor=executor, log=log)
+        w.seal_allow = allow
         chain = chain_of(w)
         if a.verb == "plan" or a.dry_run:
             log(f"# wave {w.manifest['wave']}: manifest {w.manifest_rel} sha256 {w.manifest_sha}; state "

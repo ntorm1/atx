@@ -15,6 +15,7 @@ import wave_fixture as F  # noqa: E402
 import research_wave  # noqa: E402
 import wave_context  # noqa: E402
 import wave_manifest as WM  # noqa: E402
+import wave_seal  # noqa: E402
 import wave_stages  # noqa: E402
 
 KEPT_ALL = {"alpha_a": ("admitted", 1), "alpha_b": ("admitted", 0), "alpha_c": ("reject_redundant", 0)}
@@ -329,3 +330,50 @@ def test_a_manifest_with_its_state_in_the_code_pathspec_never_runs(tmp_path):
     root = F.build(tmp_path / "r", out_dir="atx-impl/waves/w1")
     code, _ = wave(root, F.FakeCycle(root, KEPT_ALL), "run")
     assert code == 2 and not (root / "atx-impl/waves").exists()
+
+
+# ------------------------------------------------------------------ MINOR 8, 9: date forms, allow list, guard lines
+class Logs:
+    def __init__(self, root: Path):
+        self.root = root
+
+    def path(self, rel: str) -> Path:
+        return self.root / rel
+
+
+def test_the_scan_reads_compact_year_and_quarter_forms():
+    got = {raw: (iso, form) for raw, iso, form in wave_seal.tokens(
+        "a 20240315 b 0.20240316 c a20240317 d 20240318.5 e 20231399 f year=2024 g 2024Q2 h 2024-q3 i 2023Q4 "
+        "j 2025-02-03")}
+    assert got == {"20240315": ("2024-03-15", "compact"), "year=2024": ("2024-01-01", "year"),
+                   "2024Q2": ("2024-04-01", "quarter"), "2024-q3": ("2024-07-01", "quarter"),
+                   "2023Q4": ("2023-10-01", "quarter"), "2025-02-03": ("2025-02-03", "iso")}
+
+
+def test_seeds_and_guard_refusals_are_classified_not_hits(tmp_path):
+    F.write(tmp_path, "a.log", "nav_summ --protocol v8 seed 20260929 draws 4999\n"
+                               ".superpowers/sdd/platform-v8-20260929/x\n"
+                               "fit: a session at or after the research seal 2024-01-01 (w1); refusing (sealed)\n")
+    F.write(tmp_path, "b.log", "session 2024-03-05 at or after the research seal 2024-01-01; refusing (sealed)\n")
+    seal = wave_seal.scan(Logs(tmp_path), ["a.log", "b.log"])
+    assert seal["tokens_at_or_after_seal"] == 1 and seal["where"] == [{"file": "b.log", "tokens": 1}]   # 2024-03-05
+    assert seal["seal_references"] == {"tokens": 2, "files": ["a.log", "b.log"]}
+    assert seal["allowed"] == [{"token": "20260929", "ruling": wave_seal.SEEDS["20260929"], "tokens": 2,
+                                "files": ["a.log"]}]
+    ruled = wave_seal.scan(Logs(tmp_path), ["b.log"], {"2024-03-05": "PM8-99: a calendar constant"})
+    assert ruled["tokens_at_or_after_seal"] == 0 and ruled["rulings"] == {"2024-03-05": "PM8-99: a calendar constant"}
+
+
+def test_a_seal_allow_ruling_passes_verify_and_is_carried_to_record(tmp_path):
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, KEPT_ALL, screen_log="build tag 20241105\n")
+    code, _ = wave(root, fake, "run")
+    assert code == 4 and "--seal-allow TOKEN=RULING" in failed(root, "07-verify.failed-1.json")
+    code, out = wave(root, fake, "run", "--until", "verify", "--seal-allow", "20241105=PM8-99 build tag")
+    assert code == 0, out
+    assert receipt(root, "07-verify.json")["outputs"]["seal_scan"]["rulings"] == {"20241105": "PM8-99 build tag"}
+    assert wave(root, fake, "run")[0] == 0                                            # record: no flag, ruling kept
+    seal = result(root)["seal_scan"]
+    assert seal["allowed"][0]["token"] == "20241105" and seal["allowed"][0]["ruling"] == "PM8-99 build tag"
+    assert "20241105 x1 allowed: PM8-99 build tag" in (root / STATE / "wave-log.md").read_text()
+    assert wave(root, fake, "run", "--seal-allow", "x")[0] == 2

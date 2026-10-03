@@ -40,6 +40,7 @@ class Wave:
         self.executor, self.log = executor, log
         self.out_dir = self.manifest["out_dir"].rstrip("/")
         self._py: str | None = None
+        self.seal_allow: dict[str, str] = {}     # research_wave.py --seal-allow TOKEN=RULING (wave_seal.py)
 
     # -------------------------------------------------------------- paths
     def rel(self, path: Path) -> str:

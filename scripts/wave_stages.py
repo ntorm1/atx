@@ -573,7 +573,7 @@ def verify(w: Wave, done: dict, log) -> dict:
     bpath = f"{nav_run}/cycle_binding.json"
     binding = w.read_json(bpath)
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
-    seal = wave_seal.scan(w, wave_seal.wave_logs(w, done))
+    seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
     problems = []
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
@@ -678,7 +678,7 @@ def record(w: Wave, done: dict, log) -> dict:
     ledger = {"path": led["path"], "lines_before": pre["lines"], "lines_after": led["lines"], "head": led["head"],
               "n_before": pre["n_before"], "n_after": led["n"], "trial_id": trial,
               "admission_lines": [r.get("candidate") for r in new_lines if r.get("kind") == "admission"]}
-    seal = wave_seal.scan(w, wave_seal.wave_logs(w, done))     # again, after the judge's runs: the hidden-data line
+    seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))   # after the judge: the line
     bad = wave_seal.problems(seal)
     if bad:
         raise StageError("record: " + "; ".join(bad) + ": stop for the PM's ruling (no wave result is written)")
@@ -750,7 +750,7 @@ def verify_inputs(w: Wave, done: dict) -> dict:
     mt = done.get("match") or {}
     if not mt.get("readers"):
         return {}
-    now = {"readers": reader_digests(w, list(mt["readers"]))}
+    now: dict = {"readers": reader_digests(w, list(mt["readers"]))}
     if mt.get("spec_digest"):
         now["spec_digest"] = w.spec_digest(mt["cell_spec"]) if w.exists(mt["cell_spec"]) else None
     return pinned("match", mt, now)
