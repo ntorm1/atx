@@ -7522,3 +7522,33 @@ all-rows gross printed). Count: 1 construction trial (N 60 -> 61 <= 62) whatever
   receipt `executable_sha256` (source `c0f1fae6`).
 - `PYTHONHASHSEED=0 python -m pytest -q -p no:cacheprovider scripts/tests/test_research_spec.py` with the new locked file on disk: **86 passed** (181 s; the P0-FIX kind rule needs no tests-only commit).
 - **Pre-registration commit** of the cell: the spec and this log section together (next commit). No X-10 run has started.
+
+### R0-10 X-10 stage 1: NAV (`run --stop-after nav`) and mechanics before any return (source `42ddf3ba`)
+
+Host check before each launch (psutil): no compiler, no `atx-*` exe, no other research process; free memory sampled
+every 0.25 s (scratch `gate_run.py`, console logs kept in the scratchpad and scanned below).
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| NAV (the cell) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/x-leverage-L2.0.json --stop-after nav --root C:/atx-wt/pool-2` (launch 14:58:27Z) | 3,072 (met after 4 s) / 3,101 / 2,065 | **0** | 49.1 / 586 (cycle wall 49.8) | `b14ac066b05a0528b9e01ab3cb12e17c67d6608fd191e2925def2df8cdc3fd6b` | `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb` (run dir `-run`): fields / u / fit / card / w Y-F0's (done); gate p1-v8ysb re-read PASS (0 status changes; 0 admission lines appended, 9 already ledgered); receipt completed, "clean in the code pathspec", source `42ddf3ba`, NAV exe `72ff6d2d` (= Y-F0's); `summary.json` `1bc1b6ca`, S2 daily `e783eb74` (not read: no return before mechanics) |
+| mechanics reader | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r10-x10/mech-run1 --bind scripts/wave_readers.py --bind <both summary.json> --bind <both NAVs' daily_*.csv and capacity_curve.csv> -- python scripts/wave_readers.py mechanics --nav cell=<X-10 NAV> --nav parent=<Y-F0 NAV> --output build-equity/p9-r10-x10/mech.json` (the driver's `reader_argv`) | 3,072 / 3,498 / 3,389 | **0** | 0.5 / 45 | `2d933c8890d4377a37fb16ce30ed63cf684848430db0760149746f20ad864fd5` | `mech.json` `603b5afbcc05a25e1546cff705075c3835b27ca782bb49371c62052c2974a87b` (construction keys only) |
+
+**Mechanics (S2 `modeled-1bn-stale5-v1+swap-fin-v1`, the limits written at `50406181`): PASS 6/6.**
+
+| row | X-10 | limit | result | Y-F0 (beside) |
+|---|---|---|---|---|
+| all-rows mean gross | **1.666718** | [1.521813, 1.775448] | PASS | .986213 |
+| abs(all-rows mean net) | **.010446** | <= .033818 | PASS | .005340 |
+| tau mean | **.028189** | <= .338181 | PASS | .028134 |
+| tau p95 | **.033163** | <= .507271 | PASS | .033410 |
+| max return identity error | 3.39e-16 | <= 1e-09 | PASS | 3.68e-16 |
+| max cash book relative error | 4.80e-14 | <= 1e-09 | PASS | 1.11e-13 |
+
+Also (keys only): aim_leverage 2.0; post-ramp gross 1.6760 (943 rows); max gross 1.9156; max |net| .0469; gross by year
+1.636 / 1.684 / 1.663 / 1.684; 1,006 CSV rows, 1,005 return rows, 1,004 tau sessions; the NAV's own turnover flags
+`meets_daily_turnover_mean` / `_p95` true. Gross ratio X-10 / Y-F0 = 1.690017 (L ratio r = 1.690903).
+
+**Seal (SEAL-ALLOW per-hit check; scratch `sealx10.py`, wave_seal's four forms and date rule over `stdout.log`,
+`stderr.log`, `receipt.json` of the NAV and reader run dirs and both console logs; 8 files): `2026-10-02` source (a)
+x4 (the png name in the runner's dirty list), `2026-10-03` source (b) x3 (receipt `started_utc`), **0 OTHER**.**
+No return, Sharpe or NAV figure has been read. Trials so far: 0 (ledger 131 lines).
