@@ -174,3 +174,97 @@ Tests written:
 - Marginal rows compact to member names bit-identically: residualize_signal,
   centred_tied_ranks and the pair body read only finite cells, in ascending index order
   (P9 S1).
+
+## Fix round 1
+
+### Outcome
+DONE: the review's one major is fixed. FIX_BASE 17a885a8, fix commit 327f7e0a (code + gtest),
+plus the commit adding this section. No C++ was built or run (lane rule). The minors stay
+deferred per the PM (progress.md "Task S1: minor (deferred)"). None of them touch these lines.
+
+### Finding addressed
+- review S1 major, atx-impl/src/strategy_marginal_ic.cpp:908-909 (with :341-364).
+  - The problem: the verb searched `DIR/<vm identity>` and then `DIR`, and never compared a
+    sidecar's `vm_identity`. So a Release run could read Debug entries from the legacy root
+    (INFRA-F, DS-1).
+- The fix applies both remedies the review offered:
+  - New `marginal_cache_roots(cfg)` (strategy_marginal_ic.hpp/.cpp) uses the runner's own
+    rule: `icd::cache_root`.
+    - The legacy identity (equity-dev Debug, root `DIR`) keeps the v8 roots in v8 order:
+      `DIR/<identity>`, then `DIR`.
+    - Any other identity (equity-rel) reads `DIR/<identity>` alone, never `DIR`.
+  - `accept_sidecar` now requires `vm_identity == this build's identity`, under every
+    identity. This is the rule the runner (`v2_payload_sha`) and the weights fitter
+    (fit_composition_weights.py) already apply. A foreign sidecar refuses with
+    InvalidArgument ("records vm_identity ...").
+  - Together, these close both directions:
+    - Release never falls back to the legacy `DIR`.
+    - Debug's legacy roots never reach `DIR/<release id>/`. A foreign sidecar planted in
+      `DIR` itself refuses.
+  - Writes are unchanged. The verb writes only its output directory and the pair cache, and
+    the pair-cache key already carries the computing TU's build flavour.
+- The previous implementer's partial edit compared identities only for non-legacy builds. The
+  Debug legacy fallback stayed open to a foreign sidecar, so I rewrote that part. The
+  legacy-only `required_identity` field is gone.
+- Test seam: `MarginalIcConfig::cache_identity`, with no CLI flag. When set, the verb reads as
+  a build of that non-legacy identity: root `DIR/<it>`, and its sidecars must record it.
+- Debug identity:
+  - Same roots, same order.
+  - The output's `build_vm_identity` and `directory` are unchanged.
+  - The pin lists are untouched: strategy_marginal_ic.* is in no source pin.
+  - The one behaviour delta: a v2 sidecar whose `vm_identity` is not the legacy identity now
+    refuses instead of being read. The Debug runner writes the legacy identity into every v2
+    entry under `DIR`, and it refuses any other identity itself. So the outputs on every
+    cache the Debug u pass accepts are byte-identical.
+
+### Files changed
+- atx-impl/src/strategy_marginal_ic.hpp:
+  - `MarginalCacheRoots`;
+  - `marginal_cache_roots`;
+  - `MarginalIcConfig::cache_identity`;
+  - comments.
+- atx-impl/src/strategy_marginal_ic.cpp:
+  - `accept_sidecar` and `resolve_entry` take `identity`;
+  - `marginal_cache_roots`;
+  - `run_marginal_ic` uses them.
+- atx-impl/tests/strategy_marginal_ic_test.cpp:
+  - The fixture writes entries where this build's u pass would: under the legacy identity
+    that is `DIR/<role>`, the v8 directory, and otherwise `DIR/<identity>/<role>`. The
+    sidecars record this build's identity, where v8 recorded "synthetic". Without this the
+    MarginalIc suite could not find its entries in the Release tree.
+  - New gtest `MarginalIc.CacheRootsNeverShareAcrossBuilds` (written, not run). It checks
+    the rule for a probe identity and for this build. Under NDEBUG it asserts that this build
+    is not the legacy one. It then runs these cases end to end:
+    1. Entries only in the legacy `DIR`, recording `dslvm1_clang18.1`, give NotFound for the
+       probe. For this build they are read with the reference rows when it is the legacy
+       build, and give NotFound otherwise (Release).
+    2. Entries only in `DIR/<probe>/`, recording the probe, give NotFound for this build.
+       The probe reads them, and its rows equal the reference rows.
+    3. A foreign sidecar in a build's own root (the probe's, and this build's, which is
+       `DIR` itself under legacy) refuses with InvalidArgument.
+
+### Evidence
+- No build and no test ran (lane rule). I re-read every edited line for clang-cl 18
+  `/W4 /permissive- /WX` hazards and found none:
+  - no unused names (`refuses` and `text_file` are still used elsewhere);
+  - no sign conversion and no shadowing;
+  - the includes are present: `<filesystem>` and `<vector>` in the header;
+  - `IcRunnerConfig` and `icd::cache_root` come from the TU's existing includes.
+- A scan of the added lines shows none longer than 100 columns and no non-ASCII byte.
+
+### How root verifies
+1. Build `atx-impl-strategy-ic-tests` and `atx-equity-strategy-ic` in Debug (equity-dev) and in
+   Release (`equity-rel` / build preset `equity-rel-ic`).
+2. In both trees, run `atx-impl-strategy-ic-tests --gtest_filter=MarginalIc.*`.
+   `MarginalIc.CacheRootsNeverShareAcrossBuilds` is the fix's test, and the whole suite
+   checks the fixture move.
+3. Flag-absent Debug identity, unchanged from the main report's step 3: run the d7c1c520 and
+   the new Debug exe on the same X-5 `marginal` argv. The two `marginal_ic.json` files must be
+   byte-identical except `stage_seconds`.
+4. Release adoption: a Release `marginal` run on a DIR that holds only Debug entries must
+   refuse with NotFound ("no candidate cache entry"). After a Release u pass fills
+   `DIR/dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/`, the same run must succeed.
+
+### Open risks
+- A Release marginal run now needs a Release u pass first. E1 must pass the same `DIR` the
+  Release u pass wrote; it does, because `--candidate-cache` is the u pass's DIR.
