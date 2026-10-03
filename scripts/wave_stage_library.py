@@ -65,7 +65,8 @@ def register(w: Wave, done: dict, log) -> dict:
     if replaces(m["candidates"]):
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     if m.get("marginal"):
-        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"]),
+        ids = [c["id"] for c in m["candidates"]]              # candidates_only (P9 ruling P4): the wave's strings
+        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"], ids),
                      f"marginal as ruled ({m['marginal']['ruling']}): {m['marginal']}")
     pin_exes(w, lib_spec(name))
     commit = w.commit_paths(f"wave {m['wave']}: register library {name} ({len(m['candidates'])} frozen strings; "
@@ -184,7 +185,7 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
     elif want == "pool-only":
         rewrite_spec(w, lib_spec(name), WS.pool_only_marginal, "marginal on the pool only (PM6-8 (i), PM7-32)")
     if not reuse and m.get("marginal"):
-        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"]),
+        rewrite_spec(w, lib_spec(name), lambda d: WS.marginal_ruled(d, m["marginal"], kept),   # P4: the kept ids
                      f"marginal as ruled ({m['marginal']['ruling']}): {m['marginal']}")
     pin_exes(w, lib_spec(name))
     commit = w.commit_paths(f"wave {m['wave']}: cell library {name} = {m['parent']['library']} + {', '.join(kept)} "

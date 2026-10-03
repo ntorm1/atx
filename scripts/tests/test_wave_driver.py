@@ -11,6 +11,9 @@
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
   test_reader_reuse_keyed_on_code_and_verdict_per_run  OR section 3: code-keyed reuse; per-run verdict copies
   test_timings_complete                   OR section 5: screen, readers, bundle, register, git, stage seconds
+  test_registration_keys_k_p9_11          K-P9-11: source_sample_end, predicted_mechanism, data_class (optional)
+  test_pin_by_role_list                   `candidates pin --by` checked against wave_queue.PIN_ROLES
+  test_marginal_candidates_only           ruling P4: marginal.candidates_only -> the verb's --candidates FILE
 
 Every file is synthetic (fake tools, sessions 2020-2021); no data of the repository is read.
 
@@ -676,3 +679,129 @@ def test_timings_complete(tmp_path):
                for p in (root / "out/waves/w1/receipts").glob("0*.json"))
     b = S.board(root, ["out/waves/*/wave-result.json"])
     assert "stages" not in b["timings"][0] and "Wall-clock by stage" not in S.markdown(b, with_timings=True)
+
+
+# ------------------------------------------------------------------ K-P9-11, pin roles, ruling P4
+K_P9_11 = {"source_sample_end": "2015", "predicted_mechanism": "slow diffusion of supplier news", "data_class": "W"}
+
+
+def test_registration_keys_k_p9_11(tmp_path, capsys):
+    """Contract K-P9-11: a candidate (and a rule_cell) may carry source_sample_end (YYYY: a year, as text or an
+    integer), predicted_mechanism (one line) and data_class (H | W | P | N, lit section 3.1); each is optional (a
+    manifest without them validates as before); `candidates new` writes them and emit carries them to the manifest."""
+    assert WM.validate(manifest()) == []
+    m = manifest()
+    m["candidates"][0].update(K_P9_11)
+    assert WM.validate(m) == [] and WM.registration(m["candidates"][0])["data_class"] == "W"
+    m["candidates"][0]["source_sample_end"] = 2015
+    assert WM.validate(m) == []
+    for bad, needle in (({"source_sample_end": "15"}, "source_sample_end must be a year YYYY"),
+                        ({"source_sample_end": "2015-12"}, "source_sample_end must be a year YYYY"),
+                        ({"source_sample_end": True}, "source_sample_end must be a year YYYY"),
+                        ({"predicted_mechanism": "two\nlines"}, "predicted_mechanism must be one line"),
+                        ({"predicted_mechanism": " "}, "predicted_mechanism must be one line"),
+                        ({"data_class": "X"}, "data_class must be one of H, W, P, N")):
+        m = manifest()
+        m["candidates"][0].update(bad)
+        assert [p for p in WM.validate(m) if needle in p and "K-P9-11" in p], (bad, WM.validate(m))
+    rule = {"template": "scripts/specs/v8/x-rule.json", "template_sha256": "0" * 64, "name": "x-rule-w1",
+            "constants": {"flags": {"fit": {"--rule": "erc-v1"}}}}
+    drop = ("candidates", "sign_rule", "library")
+    assert WM.validate(manifest(drop=drop, rule_cell=rule)) == []
+    assert WM.validate(manifest(drop=drop, rule_cell=dict(rule, **K_P9_11))) == []
+    assert any("data_class" in p for p in WM.validate(manifest(drop=drop, rule_cell=dict(rule, data_class="Q"))))
+    assert WM.validate(manifest(drop=drop, rule_cell=dict(rule, other=1)))           # still a closed key set
+
+    def propose(cid: str, *extra: str) -> int:
+        return RC.main(["candidates", "new", "--root", str(tmp_path), "--dir", "q", "--id", cid, "--dsl",
+                        f"rank(ts_mean({cid}_field, 20))", "--theme", "value", "--tier", "B", "--prior-sign", "1",
+                        "--citation", "Synthetic 2026", "--origin", "prior", "--hypothesis", f"h-{cid}", "--by",
+                        "lane-ysig", "--at", "2026-10-02", *extra])
+    assert propose("alpha_a", "--source-sample-end", "2015", "--predicted-mechanism", K_P9_11["predicted_mechanism"],
+                   "--data-class", "W") == 0                                         # the queue writes them
+    d = json.loads((tmp_path / "q" / "alpha_a.json").read_text())
+    assert {k: d[k] for k in K_P9_11} == K_P9_11
+    assert propose("alpha_b") == 0                                                  # none: the file of before
+    assert not set(K_P9_11) & set(json.loads((tmp_path / "q" / "alpha_b.json").read_text()))
+    assert propose("alpha_c", "--source-sample-end", "15") == 2
+    assert "source_sample_end must be a year YYYY" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        propose("alpha_d", "--data-class", "Q")                                    # argparse: not a choice
+    assert RC.main(["candidates", "pin", "--root", str(tmp_path), "--dir", "q", "--id", "alpha_a", "--id",
+                    "alpha_b", "--by", "PM", "--at", "2026-10-03"]) == 0
+    head = {k: v for k, v in manifest().items() if k != "candidates"}
+    out = WQ.emit(tmp_path, head, ["alpha_a", "alpha_b"], d="q")                     # emit carries them
+    assert {k: out["candidates"][0][k] for k in K_P9_11} == K_P9_11
+    assert not set(K_P9_11) & set(out["candidates"][1])
+
+
+def test_pin_by_role_list(tmp_path, capsys):
+    """`candidates pin --by` names a role of wave_queue.PIN_ROLES (pm, root, owner; any case): only the PM, root or
+    the owner pins. Another name is refused (exit 2) and nothing is written."""
+    assert WQ.PIN_ROLES == ("pm", "root", "owner")
+    assert RC.main(["candidates", "new", "--root", str(tmp_path), "--dir", "q", "--id", "alpha_a", "--dsl",
+                    "rank(ts_mean(a_field, 20))", "--theme", "value", "--tier", "B", "--prior-sign", "1",
+                    "--citation", "Synthetic 2026", "--origin", "prior", "--hypothesis", "h-a", "--by", "lane-ysig",
+                    "--at", "2026-10-02"]) == 0
+    before = (tmp_path / "q" / "alpha_a.json").read_bytes()
+    pin = ["candidates", "pin", "--root", str(tmp_path), "--dir", "q", "--id", "alpha_a", "--at", "2026-10-03"]
+    for by in ("lane-ysig", "pm-lane", " "):
+        assert RC.main(pin + ["--by", by]) == 2
+        assert (tmp_path / "q" / "alpha_a.json").read_bytes() == before
+    assert "only pm / root / owner pins" in capsys.readouterr().err
+    assert RC.main(pin + ["--by", "Root"]) == 0
+    assert json.loads((tmp_path / "q" / "alpha_a.json").read_text())["history"][-1]["by"] == "Root"
+
+
+def test_marginal_candidates_only(tmp_path):
+    """P9 ruling P4: a wave manifest whose marginal ruling sets candidates_only writes the wave's ids into the library
+    spec's marginal.candidates (the screen library: every candidate; a b library: the kept ones), and research_cycle
+    passes them to the verb as --candidates FILE (one id per line, UTF-8, <cycle dir>/marginal-candidates-<sha12>.txt,
+    written when the step starts and bound in its receipt). Absent (or false): every spec and argv of before."""
+    rule = {"ruling": "PM9-P4", "candidates_only": True}
+    assert WM.validate(manifest(marginal=rule)) == [] and WM.validate(manifest(marginal=dict(rule, candidates_only=0)))
+    doc = {"marginal": {"output": "out/m"}, "runner": {}}
+    assert WS.marginal_ruled(doc, {"ruling": "x"}, ["a"]) == doc                     # no key: unchanged
+    assert WS.marginal_ruled(doc, dict(rule, candidates_only=False), ["a"]) == doc
+    assert WS.marginal_ruled(doc, rule, ["a", "b"])["marginal"]["candidates"] == ["a", "b"]
+    assert WS.marginal_ruled({"runner": {}}, rule, ["a"]) == {"runner": {}}            # no marginal phase
+    with pytest.raises(ValueError, match="no candidate ids"):
+        WS.marginal_ruled(doc, rule, [])
+    # the wave: the screen library lists every candidate, the b library (a second marginal pass) the kept ones
+    root = F.build(tmp_path / "w", marginal=rule, speed={"reuse_screen_marginal": False})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, DROP_B),
+                              log=lambda s: None) == 0
+    lib = json.loads((root / "scripts/specs/v8/lib-w1.json").read_text())["marginal"]
+    b = json.loads((root / "scripts/specs/v8/lib-w1b.json").read_text())["marginal"]
+    assert lib["candidates"] == ["alpha_a", "alpha_b", "alpha_c"] and b["candidates"] == ["alpha_a", "alpha_c"]
+    off = F.build(tmp_path / "o", marginal={"ruling": "PM9-P4"}, speed={"reuse_screen_marginal": False})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(off)], executor=F.FakeCycle(off, DROP_B),
+                              log=lambda s: None) == 0
+    assert "candidates" not in json.loads((off / "scripts/specs/v8/lib-w1.json").read_text())["marginal"]
+    # research_cycle: the verb's --candidates FILE, bound and written at the step's start
+    croot, sp = T.screen_root(tmp_path / "c")
+    plain = next(s for s in T.cycle_of(croot, sp, screen=True, capabilities=T.CAPS).steps() if s.phase == "marginal")
+    assert "--candidates" not in plain.argv and plain.writes == {}
+    spec = json.loads(sp.read_text())
+    spec["marginal"]["candidates"] = ["new_alpha"]
+    sp.write_text(json.dumps(spec))
+    st = next(s for s in T.cycle_of(croot, sp, screen=True, capabilities=T.CAPS).steps() if s.phase == "marginal")
+    path = f"build-equity/cycle-synthetic/marginal-candidates-{sha(b'new_alpha' + bytes([10]))[:12]}.txt"
+    k, kp = st.argv.index("--"), plain.argv.index("--")
+    tail = ["--min-names", "1000", "--output", "out/MIC"]
+    assert plain.argv[-4:] == tail and st.argv[k + 1:] == plain.argv[kp + 1:-4] + ["--candidates", path] + tail
+    binds = [st.argv[j + 1] for j, x in enumerate(st.argv[:k]) if x == "--bind"]
+    assert binds == [plain.argv[j + 1] for j, x in enumerate(plain.argv[:kp]) if x == "--bind"][:-1] + \
+        [path, "out/F/manifest.json"]
+    assert st.writes == {path: "new_alpha\n"} and not (croot / path).exists()          # planning writes nothing
+    assert T.run(croot, sp, screen=True, capabilities=T.CAPS) == RC.EXIT_OK
+    assert (croot / path).read_bytes() == b"new_alpha\n" and "MIC-run" in T.calls(croot)
+    for bad in ([], ["a", "a"], ["a b"], [1]):
+        with pytest.raises(RC.CycleError, match="marginal.candidates must be distinct member ids") as e:
+            RC.validate_spec(dict(spec, marginal=dict(spec["marginal"], candidates=bad)))
+        assert e.value.code == RC.EXIT_USAGE
+    croot, sp = T.screen_root(tmp_path / "d")                                     # other bytes there: never overwritten
+    sp.write_text(json.dumps(dict(json.loads(sp.read_text()), marginal=spec["marginal"])))
+    F.write_json(croot, path, ["x"])
+    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[marginal\]: .* exists with other bytes"):
+        T.run(croot, sp, screen=True, capabilities=T.CAPS)

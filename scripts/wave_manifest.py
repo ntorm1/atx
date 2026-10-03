@@ -30,12 +30,16 @@ One wave is one cell on the current book, declared before anything is measured:
    "record": {"copy_to": DIR?},                   where the record stage copies wave-result.json and the log section
                                                   (outside the code pathspec too)
    "speed": {"reuse_screen_marginal": true, "screen_first": true},
-   "marginal": {"ruling": ID, "pool_only": BOOL?, "seconds": N?}}   optional: a PM ruling on the library's marginal
-                                                 phase (e.g. PM8-15: pool only, PM6-8 (i), on a theme-erc parent
-                                                 with more themes than the verb takes; the phase cap), applied
-                                                 to the screen library at register and to a b library that runs
-                                                 its own marginal; seconds above the bounded runner's maximum
-                                                 (research_tree.RUNNER_MAX_SECONDS, 600) is refused at load
+   "marginal": {"ruling": ID, "pool_only": BOOL?, "seconds": N?, "candidates_only": BOOL?}}   optional: a PM ruling
+                                                 on the library's marginal phase (e.g. PM8-15: pool only, PM6-8 (i), on
+                                                 a theme-erc parent with more themes than the verb takes; the phase
+                                                 cap), applied to the screen library at register and to a b library
+                                                 that runs its own marginal; seconds above the bounded runner's maximum
+                                                 (research_tree.RUNNER_MAX_SECONDS, 600) is refused at load;
+                                                 candidates_only (P9 ruling P4) writes the wave's candidate ids (the b
+                                                 library's: its kept ones) into the spec's marginal.candidates, which
+                                                 research_cycle passes as the verb's --candidates FILE (rows for the
+                                                 listed members only; absent, every member, as before)
                                                  the wave's own speed rules (wave_stages.py; both default true; they
                                                  change no input of a decision): the cell after a sign-rule drop
                                                  carries the screen's per-row marginal fields (report only) instead of
@@ -76,7 +80,9 @@ CANDIDATE (also one file of the queue, scripts/specs/v8/candidates/<id>.json, wi
    "origin" (prior | grid | mined), "hypothesis" (the hypothesis id: one variant per hypothesis),
    "kind": "add" | "replace", "replaces": [ID, ...] (kind replace), "rescreen": bool (one replaced member),
    "removes": [ID, ...] (kind add), "fields": [NAME, ...]?, "prior_sign_source"?, "form"?, "formula"?, "domain"?,
-   "deviation"?, "exception": {"limits": {LIMIT: N}, "basis": TEXT}?, "ruling"? (a second variant of a hypothesis)}
+   "deviation"?, "exception": {"limits": {LIMIT: N}, "basis": TEXT}?, "ruling"? (a second variant of a hypothesis),
+   contract K-P9-11 (P9, each optional; a rule_cell may carry them too): "source_sample_end" (YYYY: the last year of
+   the source paper's sample), "predicted_mechanism" (one line), "data_class" (H | W | P | N, lit section 3.1)}
 
 ``load`` validates and returns (manifest, its file SHA-256); every problem is listed at once (WaveError).
 """
@@ -100,7 +106,11 @@ ORIGINS = ("prior", "grid", "mined")
 KINDS = (wave_rules.ADD, wave_rules.REPLACE)
 CANDIDATE_REQUIRED = ("id", "dsl", "dsl_sha256", "theme", "tier", "prior_sign", "citation", "origin", "hypothesis")
 CANDIDATE_OPTIONAL = ("kind", "replaces", "rescreen", "removes", "fields", "prior_sign_source", "form", "formula",
-                      "domain", "deviation", "exception", "ruling", "notes", "lane", "report")
+                      "domain", "deviation", "exception", "ruling", "notes", "lane", "report",
+                      "source_sample_end", "predicted_mechanism", "data_class")
+# contract K-P9-11: the registration keys a candidate (and a rule_cell) may carry, each optional
+REGISTRATION_KEYS = ("source_sample_end", "predicted_mechanism", "data_class")
+DATA_CLASSES = ("H", "W", "P", "N")                 # lit section 3.1
 TOP_REQUIRED = ("schema", "wave", "parent", "fields", "acceptance", "gross_match", "budget", "ledger", "expect",
                 "out_dir")
 TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed",
@@ -119,14 +129,8 @@ DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
                "record_date": (lambda v: isinstance(v, str) and _iso_date(v), "a date YYYY-MM-DD"),
                "keep_verdicts": (lambda v: type(v) is bool, "true or false"),
                "timings": (lambda v: type(v) is bool, "true or false")}
-
-
-def _iso_date(text: str) -> bool:
-    try:
-        return dt.date.fromisoformat(text).isoformat() == text
-    except ValueError:
-        return False
-MARGINAL_KEYS = ("pool_only", "seconds", "ruling")   # "marginal": a PM ruling on the library's marginal phase
+# "marginal": a PM ruling on the library's marginal phase (candidates_only: P9 ruling P4)
+MARGINAL_KEYS = ("pool_only", "seconds", "ruling", "candidates_only")
 BUDGET_LIMITS = ("max_extra_fields", "max_slots", "max_prior_bars")   # generate_library.BUDGET
 PREFIX_KEYS = ("admission_cycle_prefix", "admission_cycle_prefixes")  # one TEXT, or a list (P9 OR §4, DEC-2)
 BUDGET_KEYS = ("id", "admission_cap") + PREFIX_KEYS + ("admission_origin", "construction_cap")
@@ -134,6 +138,28 @@ BUDGET_KEYS = ("id", "admission_cap") + PREFIX_KEYS + ("admission_origin", "cons
 
 class WaveError(ValueError):
     pass
+
+
+def _iso_date(text: str) -> bool:
+    try:
+        return dt.date.fromisoformat(text).isoformat() == text
+    except ValueError:
+        return False
+
+
+def registration_problems(d: dict, where: str) -> list[str]:
+    """Problems of the K-P9-11 keys of a candidate or a rule_cell (each optional): source_sample_end a year YYYY (an
+    integer or its four digits), predicted_mechanism one line of text, data_class one of DATA_CLASSES."""
+    out = []
+    y = d.get("source_sample_end")
+    if "source_sample_end" in d and not (type(y) in (int, str) and re.fullmatch(r"(1[89]|20)[0-9]{2}", str(y))):
+        out.append(f"{where}: source_sample_end must be a year YYYY (contract K-P9-11)")
+    pm = d.get("predicted_mechanism")
+    if "predicted_mechanism" in d and not (_text(pm) and "\n" not in pm and "\r" not in pm):
+        out.append(f"{where}: predicted_mechanism must be one line of text (contract K-P9-11)")
+    if "data_class" in d and d["data_class"] not in DATA_CLASSES:
+        out.append(f"{where}: data_class must be one of {', '.join(DATA_CLASSES)} (contract K-P9-11)")
+    return out
 
 
 def dsl_sha256(dsl: str) -> str:
@@ -210,7 +236,7 @@ def candidate_problems(c, where: str, extra_keys: tuple = ()) -> list[str]:
                            not isinstance(ex["limits"], dict) or not ex["limits"] or
                            not all(k in BUDGET_LIMITS and type(v) is int and v > 0 for k, v in ex["limits"].items())):
         out.append(f"{where}: exception must be {{limits: {{{'|'.join(BUDGET_LIMITS)}: N}}, basis: TEXT}}")
-    return out
+    return out + registration_problems(c, where)
 
 
 def registration(c: dict) -> dict:
@@ -291,6 +317,8 @@ def validate(m) -> list[str]:
         out.append("marginal must be {ruling: the PM ruling, pool_only?: true | false, seconds?: a positive integer}")
     elif research_tree.seconds_cap_refusal("marginal.seconds", mg.get("seconds")):
         out.append(research_tree.seconds_cap_refusal("marginal.seconds", mg["seconds"]))
+    elif type(mg.get("candidates_only", False)) is not bool:
+        out.append("marginal.candidates_only must be true or false (P9 ruling P4)")
     out += driver_problems(m.get("driver", {}))
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
@@ -317,9 +345,12 @@ def candidates_problems(m: dict) -> list[str]:
 
 def rule_cell_problems(r) -> list[str]:
     if not (isinstance(r, dict) and {"template", "template_sha256"} <= set(r) and
-            set(r) <= {"template", "template_sha256", "name", "constants"} and _rel(r["template"]) and
-            isinstance(r["template_sha256"], str) and SHA_RE.fullmatch(r["template_sha256"])):
-        return ["rule_cell must be {template: PATH, template_sha256: PIN, name?, constants?}"]
+            set(r) <= {"template", "template_sha256", "name", "constants", *REGISTRATION_KEYS} and
+            _rel(r["template"]) and isinstance(r["template_sha256"], str) and SHA_RE.fullmatch(r["template_sha256"])):
+        return ["rule_cell must be {template: PATH, template_sha256: PIN, name?, constants?, "
+                f"{', '.join(k + '?' for k in REGISTRATION_KEYS)}}}"]
+    if registration_problems(r, "rule_cell"):
+        return registration_problems(r, "rule_cell")
     c = r.get("constants", {})
     if not (isinstance(c, dict) and set(c) <= {"set", "flags"} and isinstance(c.get("set", {}), dict) and
             isinstance(c.get("flags", {}), dict) and all(isinstance(v, dict) for v in c.get("flags", {}).values())):

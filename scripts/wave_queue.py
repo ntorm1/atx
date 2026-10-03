@@ -14,9 +14,11 @@ sign, citation, origin, hypothesis id, add or replace, ...) plus
   research_cycle.py candidates new      --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation C
                                         --origin prior --hypothesis H --by LANE [--kind replace --replaces ID
                                         [--rescreen]] [--removes ID] [--fields F,G] [--ruling R] [--note N]
+                                        [--source-sample-end YYYY] [--predicted-mechanism TEXT] [--data-class H|W|P|N]
   research_cycle.py candidates validate [--dir D]
   research_cycle.py candidates list     [--status S] [--dir D]
   research_cycle.py candidates pin      --id X [--id Y ...] --by PM [--ruling R] [--dir D]
+                                        (--by one of PIN_ROLES, any case: only the PM, root or the owner pins)
   research_cycle.py candidates emit     --head HEAD.json --select X,Y,... --output MANIFEST [--after RESULT]
 
 validate refuses: a file that is not a valid registration, an id that is not its file name, a status outside the
@@ -47,6 +49,7 @@ STATUSES = (PROPOSED, PINNED, SCREENED, ADMITTED, DROPPED, IN_BOOK)
 NEXT = {PROPOSED: (PINNED, DROPPED), PINNED: (SCREENED, ADMITTED, DROPPED, IN_BOOK)}   # the rest are final
 CONSUMED = (SCREENED, ADMITTED, IN_BOOK)          # set by a wave: carry its id
 QUEUE_KEYS = ("schema", "status", "wave", "history")
+PIN_ROLES = ("pm", "root", "owner")               # who may pin (P9 E1): `candidates pin --by` is checked against it
 
 
 class QueueError(ValueError):
@@ -250,7 +253,8 @@ def new_doc(a) -> dict:
         reg["rescreen"] = True
     if a.fields:
         reg["fields"] = [f for f in a.fields.split(",") if f]
-    for key in ("ruling", "prior_sign_source", "form", "formula", "domain", "deviation", "lane", "report"):
+    for key in ("ruling", "prior_sign_source", "form", "formula", "domain", "deviation", "lane", "report",
+                *WM.REGISTRATION_KEYS):
         if getattr(a, key, None):
             reg[key] = getattr(a, key)
     entry = {"status": PROPOSED, "at": a.at, "by": a.by}
@@ -280,7 +284,10 @@ def main(argv=None) -> int:
     ap.add_argument("--fields", default=None, help="F,G,...: the fields the DSL reads (checked against the fields)")
     for key in ("ruling", "prior-sign-source", "form", "formula", "domain", "deviation", "lane", "report", "note"):
         ap.add_argument(f"--{key}", default=None)
-    ap.add_argument("--by", default=None, help="new: the proposing lane; pin: the PM")
+    ap.add_argument("--source-sample-end", default=None, help="new (K-P9-11): YYYY, the source paper's last sample year")
+    ap.add_argument("--predicted-mechanism", default=None, help="new (K-P9-11): one line")
+    ap.add_argument("--data-class", default=None, choices=WM.DATA_CLASSES, help="new (K-P9-11): lit section 3.1")
+    ap.add_argument("--by", default=None, help=f"new: the proposing lane; pin: the PM (one of {', '.join(PIN_ROLES)})")
     ap.add_argument("--at", default=today(), help="YYYY-MM-DD of the transition (default today)")
     ap.add_argument("--status", default=None, choices=STATUSES)
     ap.add_argument("--head", type=Path)
@@ -314,6 +321,8 @@ def main(argv=None) -> int:
         if a.verb == "pin":
             if not a.id or not a.by:
                 ap.error("pin needs --id (repeatable) and --by")
+            if a.by.strip().lower() not in PIN_ROLES:
+                raise QueueError(f"pin --by {a.by!r}: only {' / '.join(PIN_ROLES)} pins (P9 E1)")
             docs = load(root, a.dir)
             for cid in a.id:
                 if cid not in docs:

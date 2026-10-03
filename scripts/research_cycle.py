@@ -45,7 +45,10 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by
                   `lock --exes` (a template's into change.set, over the pins its parent's spec carries); plan and run stop
                   (exit 3) when an exe no longer hashes to its pin; absent, exes are pinned by path only, as before
-  --no-git        (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
+  marginal.candidates (P9 ruling P4) [member id, ...]: the marginal verb gets --candidates FILE, the ids one per line
+                  (UTF-8) in <cycle dir>/marginal-candidates-<sha12>.txt, written when the step starts and bound in its
+                  receipt; set by a wave whose manifest's marginal ruling has candidates_only; absent, as before
+  --no-git       (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
                   --root R --no-git, and a relative tool path (runner, builder, fit, card, monitor, summ scripts) that
                   is absent under R resolves to this worktree's copy
   clean check     scoped to the code pathspec (research_tree.CODE_PATHSPEC), before every executed phase; dirty paths
@@ -231,6 +234,8 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
 # output); marginal.flags may set only MARGINAL_SPEC_FLAGS (unsigned integers; --min-names defaults to the u pass's).
 MARGINAL_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
 MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields")
+MARGINAL_CANDIDATES = "--candidates"   # P9 ruling P4: marginal.candidates -> the verb's --candidates FILE (lane S1)
+MEMBER_ID_RE = re.compile(r"[A-Za-z0-9_.:-]+")
 W_BUILT = ("--library", "--library-sha256", "--train", "--train-sha256", "--train-fields", "--train-fields-sha256",
            "--output", "--candidate-cache", "--composition-weights", "--composition-weights-sha256")
 MARGINAL_SPEC_FLAGS = {"--min-names": (3, None), "--max-memory-mib": (32, 16384)}   # option: (min, max) as the verb
@@ -581,6 +586,11 @@ def validate_marginal(spec: dict) -> None:
     if "--min-names" not in flags[::2] and ic_names is not None and not ic_names.isdigit():
         raise CycleError(f"spec marginal: the u pass's --min-names {ic_names!r} is not a count (set marginal.flags "
                          "--min-names)", EXIT_USAGE)
+    ids = m.get("candidates")
+    if ids is not None and not (isinstance(ids, list) and ids and len(set(ids)) == len(ids) and
+                                all(isinstance(x, str) and MEMBER_ID_RE.fullmatch(x) for x in ids)):
+        raise CycleError("spec marginal.candidates must be distinct member ids (P9 ruling P4: the verb's --candidates "
+                         "FILE, one id per line)", EXIT_USAGE)
 
 
 def input_dir(item: dict) -> str:
@@ -718,6 +728,7 @@ class Step:
         self.attempt, self.state, self.note = attempt, state, note
         self.checks = checks or []  # compare steps: the resolved comparisons
         self.role, self.cycle = None, None  # a roles: cycle's era id and era Cycle (H-1; step_key, fields_check)
+        self.writes: dict[str, str] = {}   # {repo path: UTF-8 text} written when the step starts (start_step)
 
     @property
     def done(self) -> bool:
@@ -1188,6 +1199,13 @@ class Cycle:
             argv += ["--themes", self.ipath(themes)]
             binds.append(self.ipath(themes))
         argv += ["--fields", fd]
+        writes = {}
+        if m.get("candidates"):           # P9 ruling P4: only the wave's ids, one per line (written when it starts)
+            text = "".join(f"{x}\n" for x in m["candidates"])
+            path = f"{self.cycle_dir()}/marginal-candidates-{hashlib.sha256(text.encode()).hexdigest()[:12]}.txt"
+            argv += [MARGINAL_CANDIDATES, path]
+            binds.append(path)
+            writes[path] = text
         flags = list(m.get("flags", []))
         min_names = option_value(s["ic"]["flags"], "--min-names")
         if "--min-names" not in flags[::2] and min_names is not None:   # the u pass's name floor
@@ -1196,8 +1214,10 @@ class Cycle:
         if "marginal" not in self.capabilities():
             return Step("marginal", "skipped", argv, m_out, run_dir, None, "skipped",
                         "the IC exe offers no marginal verb (contract K6, lane F): skipped")
-        return Step("marginal", "bounded", argv, m_out, run_dir, None, *self.single_state(
+        st = Step("marginal", "bounded", argv, m_out, run_dir, None, *self.single_state(
             m_out, run_dir, f"{m_out}/marginal_ic.json"))
+        st.writes = writes
+        return st
 
     def check_marginal_bindings(self, pool_key: str, themes: str | None) -> None:
         """The verb's bindings of the files this spec pins, checked when the step is planned (exit 3 before any phase
@@ -1822,6 +1842,13 @@ def start_step(cycle: Cycle, st: Step, key: str, clean, log, seen: set) -> None:
     check_clean(cycle, clean, log, seen)
     if st.phase == "summ" and cycle.spec.get("verdict"):
         cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
+    for rel, text in st.writes.items():   # e.g. the marginal --candidates FILE (P9 ruling P4): its name carries its SHA
+        dest = cycle.res.path(rel)
+        if dest.is_file() and dest.read_bytes() != text.encode("utf-8"):
+            raise CycleError(f"HARD-STOP [{key}]: {rel} exists with other bytes (never overwritten)")
+        if not dest.is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(text.encode("utf-8"))
     log(f"== {key}" + (f" (attempt {st.attempt})" if st.attempt else ""))
     log(fmt_argv(st.argv))
 

@@ -198,11 +198,13 @@ def pool_only_marginal(doc: dict) -> dict:
     return out
 
 
-def marginal_ruled(doc: dict, rule: dict) -> dict:
+def marginal_ruled(doc: dict, rule: dict, candidates: list[str] | None = None) -> dict:
     """The manifest's "marginal" ruling (e.g. PM8-15: an add-alpha wave on a theme-erc parent with more themes than
     the marginal verb takes runs it on the pool only, PM6-8 (i); the phase's time cap): pool_only applies
-    pool_only_marginal, seconds sets runner.phases.marginal.seconds; a spec without a marginal phase is unchanged. A
-    cap above the bounded runner's maximum (research_tree.RUNNER_MAX_SECONDS) is refused (ValueError, P9 OR-1)."""
+    pool_only_marginal, seconds sets runner.phases.marginal.seconds, candidates_only (P9 ruling P4) sets
+    marginal.candidates to ``candidates`` (the wave's ids in the library: research_cycle passes them as the verb's
+    --candidates FILE); a spec without a marginal phase is unchanged. A cap above the bounded runner's maximum
+    (research_tree.RUNNER_MAX_SECONDS) is refused (ValueError, P9 OR-1)."""
     refusal = research_tree.seconds_cap_refusal("marginal.seconds", rule.get("seconds"))
     if refusal:
         raise ValueError(f"wave manifest {refusal}")
@@ -210,6 +212,10 @@ def marginal_ruled(doc: dict, rule: dict) -> dict:
     if "seconds" in rule and isinstance(out.get("marginal"), dict):
         phases = out.setdefault("runner", {}).setdefault("phases", {})
         phases["marginal"] = dict(phases.get("marginal") or {}, seconds=rule["seconds"])
+    if rule.get("candidates_only") and isinstance(out.get("marginal"), dict):
+        if not candidates:
+            raise ValueError("wave manifest marginal.candidates_only: no candidate ids to list")
+        out["marginal"]["candidates"] = list(candidates)
     return out
 
 
