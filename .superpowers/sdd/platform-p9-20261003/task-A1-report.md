@@ -273,3 +273,56 @@ Total: 115 tests in 22 modules. The PM's "25" was an estimate. T2 needs a PM rul
 - **Rename keys at publish time.** Renaming a manifest key inside producer code moves its `code_fingerprint` closure and recomputes every dependent field on `--reuse`. Rename at publish time instead (`published_checks`); P9 A1 measured 30+ fields at risk.
 - **SEC clock texts embed the research seal.** As a result, `formula_id` and `field_registry.json` for 17 rows depend on the bound window. Regenerate and test the registry only in a fresh interpreter under the repository window.
 - **`autocrlf=true` rewrites LF files on checkout.** Any byte-pinned new file needs a `-text` attribute; `atx-engine/tools/.gitattributes` does this for the registry.
+
+## Fix round 1
+**Outcome:** DONE_WITH_CONCERNS. FIX_BASE `88c9efa2`. The review's one major (M1) is fixed. The minors stay deferred, as the PM ruled. The concern is one uncommitted file, described below.
+
+**Commits** (branch `feat/p9-a1-20261003`, pool 12):
+- `d672eb8d` fix(fields): registry check/regenerate accept engine-only rows (P9 A1 fix 1). Changes `atx-engine/tools/field_registry.py`.
+- `c43ff27e` test(fields): engine-only rows pass check and the round-trip; today's registry regenerates byte-identically (P9 A1 fix 1). Changes `atx-engine/tools/test_field_registry.py`.
+
+**Finding addressed: M1.** Before this fix, check and generate refused `kind: engine` rows that have no Python producer. That blocked DEC-5 appends (`field_registry.py` `check` / `generate`; `test_field_registry.py:86`, `:91-101`).
+- `check` now compares only the Python-producible rows with the code: their set and relative order, plus `builder` (python rows), `point_in_time`, `requires`, `dtype` and `formula_sha256`, as before. A python row the code cannot produce is still refused. An engine-only row (an engine row whose name the bound builder cannot produce) is held by `validate` alone.
+- New `engine_only(ns, doc)` returns the names of those rows in registry order.
+- New `regenerate(ns, doc)` is the generator round-trip:
+  - It calls `generate` with `doc`'s engine twins flipped, and places those rows at `doc`'s Python-producible positions in code order.
+  - It keeps `doc`'s engine-only rows verbatim at their positions. It drops a python row the code cannot produce, and appends any code field that has no row.
+  - The top-level keys come from `generate`.
+  - With no engine-only rows, it returns `generate(ns, engine_flips(doc))` exactly.
+  - `generate` itself is unchanged. It still flips only rows the code produces, and still refuses other names ("not producible"). Root's A2 flip of si_shares, si_dtc and vol_126 through `generate` is unaffected.
+- The `entry` refuses a requested engine-only row before any output, because Python has no fallback for it:
+  - without `--engine-exe`: "engine-only rows X have no Python producer; they need --engine-exe ...". This includes `--fields all`.
+  - with `--engine-exe` when `prepare_research_fields_engine.ENGINE_FIELDS` does not route the row: "... have no route in prepare_research_fields_engine ...". Today the builder would otherwise refuse it opaquely in `run()`.
+
+  Engine twins behave exactly as before.
+- Tests:
+  - The committed-file test (fresh interpreter, repository window) now asserts three things: `dump(regenerate(file)) == file bytes`; `dump(generate(engine_flips(producible rows))) == dump(producible rows)`, which is the flag-absent identity; and 92 producible rows.
+  - `test_valid_and_in_v15_order` counts the 92 rows and checks that holdings come last over the producible rows only. The `engine_flips ⊆ ENGINE_FIELDS` pin is relaxed: an `ENGINE_FIELDS` row that is flipped must carry its own name as kind id (A2's ids). Any other engine row may carry any id.
+  - New `test_engine_only_rows_appended_to_the_committed_file_check_and_round_trip` (fresh interpreter): the committed file plus two synthetic engine-only rows (row 40 and the end) passes `bind` + `check` and round-trips byte for byte. `generate` alone refuses them.
+  - New `Validation.test_engine_only_rows_pass_check_and_the_generator_round_trip`: an engine-only row next to an A2 twin flip passes `check` and is kept in place by `regenerate`. Each of these is still refused by `check`, and `regenerate` does not reproduce it: a python-declared extra row, producible rows swapped around the engine-only row, and a dropped code row.
+  - New `Entry.test_engine_only_rows_have_no_python_fallback`: the entry refuses an engine-only row in three cases (without an exe, under `--fields all`, and with an unroutable `--engine-exe`) and writes no output dir in any of them. The registry's other rows build the plain builder's bytes.
+
+**Identity.** `field_registry.json` is not modified (its sha256 is still `6c56b739...3e51`). For today's rows, `generate` and `regenerate` both reproduce its bytes; the fresh-interpreter test pins this. Python-producer rows and the builder are untouched. No producer fingerprint moves, so the root v15 identity run in "How root verifies" is unchanged.
+
+**Evidence** (pool-12, `PYTHONDONTWRITEBYTECODE=1`; tools and fixtures run as separate processes, per m5):
+```
+$ "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tools
+381 passed, 6 subtests passed in 159.43s (0:02:39)
+exit_code=0
+$ "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider atx-engine/tests/fixtures/research_fields
+9 passed, 1 skipped in 4.54s
+exit_code=0
+$ cd atx-engine/tools && "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider test_field_registry.py test_no_new_python_builder.py test_field_module_imports.py test_prepare_research_fields_reuse_keys.py test_prepare_research_fields_seal.py
+33 passed in 11.83s
+exit_code=0
+```
+There are 3 new tests (378 → 381 in tools; 30 → 33 in the focused set).
+
+**Minors.** m1–m7 stay deferred (PM). The killed implementer's partial edits for m1 (refuse every unroutable engine row behind `--engine-exe`) and m7 (strict `first_session` date) were removed from `field_registry.py`. The `--engine-exe` routing check now covers engine-only rows only, because that is part of M1. Engine twins keep m1's deferred behaviour.
+
+**Concern: uncommitted file.** `atx-engine/tools/prepare_research_fields.py` still has the killed implementer's uncommitted, unreviewed partial edit for m3: it refuses a `seal` block that is not an object instead of accepting it as legacy (+5/-3 in `require_research_seal`).
+- It is not committed and is not part of this fix round.
+- Restoring the file from HEAD was blocked by the session's permission guard, so it is still dirty in pool-12. The PM should discard it or adopt it. `git -C C:/atx-wt/pool-12 diff atx-engine/tools/prepare_research_fields.py` shows it.
+- The test runs above include that edit in the working tree. It changes behaviour only for a non-object `seal`, which no test fixture has.
+
+**How root verifies (delta).** Run the pytest commands above as separate processes. The cheap production acceptance command from "How root verifies" still prints `ok 92`. Once a DEC-5 row is appended, it prints the total row count.
