@@ -1,0 +1,38 @@
+{
+  "schema": "atx.research-wave/v1",
+  "wave": "y-5",
+  "description": "Cell Y-5 two-speed-v1 (v8y-prereg sections 5, 6, 11, 13 P13, 14; PM8-10 (a), (e); PM8-13; PM8-16): rule wave, template scripts/specs/v8/y-two-speed.json @ b3b5dab4 (blob e29365d1; registered @ e2ac7d63 blob 69cf6134, the two differ only in description, Ruling R0-9-PIN), registered constants theta_s .05 (the parent's trade fraction), theta_f .12945 (half-life 5) and the section 11 half-life table (fast iff half-life <= 10) inside fit --two-speed two-speed-v1 and nav --two-speed two-speed-v1 (the template's flags), on the parent's argv, u the parent's; parent = Y-S cell lib-v8ysb-gm.json (library v8ysb, L 1.1828; Y-2 not accepted, wave-result 09fbd24e next_parent), the last accepted book, whose fit carries a standardised composition (theme_standardise rerank true); P13 checked by root before the cell's NAV; fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); PM6-6 gross matching (gm template); printed only: turnover per unit gross, cost per traded dollar, 4x net Sharpe, net annual return, the fast mass share; budget construction N 59 + 1 <= 62 (N_c(X-F0) + 6), 0 admission trials.",
+  "parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "rule_cell": {
+    "template": "scripts/specs/v8/y-two-speed.json",
+    "template_sha256": "e29365d1597a31ba659996120ec2fc05f8d3947419249e4bbe945736533ca023"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "v8y-construction-n59-plus-1",
+    "construction_cap": 62
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 59
+  },
+  "out_dir": "build-equity/waves/y-5",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-v8-20260929/waves"
+  }
+}
