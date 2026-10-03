@@ -65,6 +65,8 @@ COMPILERS = frozenset(n + x for n in ("cl", "clang-cl", "ninja", "lld-link") for
 POLL_SECONDS = 0.5                     # how often a waiting launch re-checks the host
 CLAIMS_DIR = Path(tempfile.gettempdir()) / "atx-host-claims"   # --host-claims default: one per host
 CLAIM_SUFFIX, CLAIMS_LOCK = ".claim", "claims.lock"
+REPLACE_RETRY_SECONDS = 2.0            # a claim's os.replace retried while another handle holds the file (Windows)
+ADOPT_LOCK_SECONDS = 5.0               # how long adopt waits for the claims lock before writing without it
 OUTCOME_ADMISSION = "prelaunch-admission-timeout"
 
 
@@ -247,17 +249,45 @@ class HostClaims:
         finally:
             remove(lock)
 
-    def write(self) -> None:
+    def write(self, doc: dict | None = None) -> None:
+        """Write the claim whole (a temp file, then os.replace). On Windows a replace onto a file another process has
+        open (a reader, an indexer) fails with PermissionError: retried for about REPLACE_RETRY_SECONDS, then raised."""
+        doc = self.doc if doc is None else doc
         tmp = self.mine.with_name(self.mine.name + ".tmp")
-        tmp.write_text(json.dumps(self.doc) + "\n", encoding="utf-8")
-        os.replace(tmp, self.mine)
+        tmp.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        end = time.monotonic() + REPLACE_RETRY_SECONDS
+        while True:
+            try:
+                os.replace(tmp, self.mine)
+                return
+            except PermissionError:
+                if time.monotonic() >= end:
+                    remove(tmp)
+                    raise
+                time.sleep(0.05)
 
     def adopt(self, child: psutil.Process) -> None:
         """Record the launched child in this process's claim: the claim lives while the child does (a hard-killed
-        runner's orphaned child keeps its share) and its RSS counts against the claim's reservation."""
-        if self.mine is not None and self.doc is not None:
-            self.doc.update(child_pid=child.pid, child_create_time=child.create_time())
-            self.write()
+        runner's orphaned child keeps its share) and its RSS counts against the claim's reservation. Written under
+        the claims lock (the other runners read claims only under it) with a retried replace; any failure is a
+        warning that keeps the runner-pid claim and never stops the child just launched (re-review 1 N2)."""
+        if self.mine is None or self.doc is None:
+            return
+        lock = None
+        try:
+            doc = dict(self.doc, child_pid=child.pid, child_create_time=child.create_time())
+            try:
+                lock = self.acquire_lock(ADOPT_LOCK_SECONDS)
+            except (OSError, RuntimeError):
+                lock = None                     # a busy lock: the retried replace still writes the claim whole
+            self.write(doc)
+            self.doc = doc
+        except Exception as exc:                # noqa: BLE001 (the claim stays the runner's; the child runs on)
+            print(f"run_bounded_research: warning: claim {self.mine} keeps the runner pid only ({exc})",
+                  file=sys.stderr)
+        finally:
+            if lock is not None:
+                remove(lock)
 
     def release(self) -> None:
         if self.mine is not None:

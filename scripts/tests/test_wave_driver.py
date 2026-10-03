@@ -10,6 +10,7 @@
   test_driver_auto_attempt_manifest_flag  the manifest's driver block (each key opt-in) reaches research_cycle
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
   test_two_launches_never_overcommit      review E1 major: two simultaneous admits never count the same free memory
+  test_adopt_never_kills_the_child        re-review 1 N2: adopt under the lock, retried; a failure only warns
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
@@ -605,6 +606,38 @@ def test_two_launches_never_overcommit(tmp_path):
                                 sleep=lambda s: None, owner=own[1])
         assert block["claimed_by_others_mib"] == 0 and not held.mine.exists()
         held2.release()
+    finally:
+        for p in helpers:
+            p.kill()
+            p.wait(30)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a replace onto an open file fails only on Windows")
+def test_adopt_never_kills_the_child(tmp_path, capsys):
+    """Re-review 1 N2: adopt() writes the child into the claim under the claims lock with a retried replace. While
+    another runner holds the claim open (Windows: os.replace onto it fails with PermissionError), adopt waits and
+    then writes it; held open past the retries, adopt warns and keeps the runner-pid claim, and raises nothing (an
+    exception there would have recorded runner-error and killed the research process just launched)."""
+    helpers = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"]) for _ in range(2)]
+    try:
+        own = [(p.pid, psutil.Process(p.pid).create_time()) for p in helpers]
+        args = admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=1.0)
+        _, held = RB.admit(args, tmp_path / "o", available=lambda: 8 << 30, compilers=lambda: [], clock=Clock(),
+                           sleep=lambda s: None, owner=own[0])
+        claim = held.mine
+        reader = claim.open("r", encoding="utf-8")                          # another runner reading the claim
+        threading.Timer(0.5, reader.close).start()
+        held.adopt(psutil.Process(own[1][0]))                               # retried until the reader closed
+        doc = json.loads(claim.read_text())
+        assert (doc["child_pid"], doc["child_create_time"]) == own[1] and capsys.readouterr().err == ""
+        held.doc = {k: v for k, v in held.doc.items() if not k.startswith("child_")}
+        held.write()
+        with claim.open("r", encoding="utf-8"):                             # held open past every retry
+            held.adopt(psutil.Process(own[1][0]))
+        assert "keeps the runner pid only" in capsys.readouterr().err
+        assert "child_pid" not in json.loads(claim.read_text()) and "child_pid" not in held.doc
+        assert not list(claim.parent.glob("*.tmp")) and not (claim.parent / RB.CLAIMS_LOCK).exists()
+        held.release()
     finally:
         for p in helpers:
             p.kill()
