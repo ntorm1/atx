@@ -300,6 +300,16 @@ def test_probe_reads_the_verbs_required_bytes(tmp_path):
     assert all(a[a.index("--max-memory-mib") + 1] == "64" for a in calls)
     with pytest.raises(RC.CycleError, match="did not refuse"):
         M.probe(spec, root, [4], executor=lambda *a: done(0, out="mine: wrote"), log=lambda *_: None)
+    # the direct launch resolves the verb against the root (Windows does not find "build-equity/bin/x.exe" itself)
+    assert all(Path(a[0]) == root / "build-equity" / "bin" / "atx-equity-strategy-mine.exe" for a in calls)
+
+
+def test_launchable_resolves_a_relative_verb_and_keeps_an_absolute_one(tmp_path):
+    argv = ["build-equity/bin/atx-equity-strategy-mine.exe", "--help"]
+    assert M.launchable(argv, tmp_path) == [str(tmp_path / "build-equity" / "bin" / "atx-equity-strategy-mine.exe"),
+                                            "--help"]
+    absolute = [str(tmp_path / "v.exe"), "--x"]
+    assert M.launchable(absolute, Path("C:/elsewhere")) == absolute
 
 
 def fake_campaign(root: Path, spec: dict, pinned: dict, distinct: int = 132, edit=None) -> None:

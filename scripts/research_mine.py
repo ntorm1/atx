@@ -276,6 +276,14 @@ def exe_path(spec: dict) -> str:
     return exe if "/" in exe or "\\" in exe else f"{RC.BUILDS[spec['build']]['bin']}/{exe}"
 
 
+def launchable(argv: list[str], root: Path) -> list[str]:
+    """`argv` for a direct launch of the verb (probe, --help): argv[0] resolved against `root`. Windows CreateProcess
+    does not find a relative path written with '/' (WinError 2, found at the v8x campaign's probe); the bounded runner
+    resolves its command itself (shutil.which), so the run's argv and every printed line keep the spec's spelling."""
+    exe = Path(argv[0])
+    return [str(exe if exe.is_absolute() else Path(root) / exe)] + list(argv[1:])
+
+
 def env(spec: dict) -> dict:
     out = dict(os.environ)
     out["PATH"] = os.pathsep.join([str(Path(p)) for p in RC.BUILDS[spec["build"]]["path"]] + [out.get("PATH", "")])
@@ -536,7 +544,8 @@ def probe(spec: dict, root: Path, workers: list[int], executor=RC.execute, log=p
         fail(f"probe: output {spec['output']} exists (the verb refuses it first)", RC.EXIT_STOP)
     out = {}
     for w in workers:
-        done = executor(verb_argv(spec, pinned, workers=w, memory_mib=PROBE_MIB), root, env(spec), True)
+        done = executor(launchable(verb_argv(spec, pinned, workers=w, memory_mib=PROBE_MIB), root), root, env(spec),
+                        True)
         text = (done.stdout or "") + (done.stderr or "")
         m = REQUIRED_BYTES.search(text)
         if done.returncode == 0 or m is None:
@@ -566,7 +575,7 @@ def run_refusal(spec: dict, root: Path) -> list[str]:
 
 def exe_offers(spec: dict, root: Path, argv: list[str], executor) -> None:
     """The built verb's --help names every option the spec passes (a stale exe is refused before the run)."""
-    done = executor([argv[0], "--help"], root, env(spec), True)
+    done = executor(launchable([argv[0], "--help"], root), root, env(spec), True)
     text = (done.stdout or "") + (done.stderr or "")
     absent = [a for a in argv[1:] if a.startswith("--") and a not in text]
     if done.returncode != 0 or absent:
