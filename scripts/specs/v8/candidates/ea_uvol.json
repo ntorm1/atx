@@ -1,0 +1,40 @@
+{
+  "id": "ea_uvol",
+  "dsl": "rank(decay_linear(ts_backfill((log((ts_sum((volume / shares_out), 3) / (3 * delay(ts_mean((volume / shares_out), 60), 7)))) + (0 * log((1 - abs((ea_days_since - 1)))))), 126), 21))",
+  "dsl_sha256": "15f682ffd7504fbb249d5cffedc80a8be28ce93e781e41a5843413f7135d515c",
+  "theme": "earnings_momentum",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Garfinkel and Sokobin (2006, JAR 44(1)) Volume, opinion divergence, and returns: a study of post-earnings announcement drift",
+  "origin": "prior",
+  "hypothesis": "ea_uvol",
+  "kind": "add",
+  "fields": [
+    "ea_days_since",
+    "shares_out"
+  ],
+  "prior_sign_source": "Garfinkel-Sokobin 2006",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "log(turnover over sessions a-1..a+1 around the reaction session a of the latest earnings announcement / (3 x mean daily turnover over sessions a-65..a-6)), set at t = a+1 and held (ts_backfill 126) until the next announcement; post-announcement returns rise with abnormal announcement volume (opinion divergence)",
+  "domain": "NaN without an announcement reaction session in the last 126 sessions with finite turnover windows (turnover = volume / shares_out; ea_days_since NaN for non-filers of 8-K 2.02)",
+  "deviation": "abnormal volume = log ratio to the stock's own pre-announcement turnover (paper: volume unexplained by a regression on prior trading activity); 3-session window a-1..a+1; carried to the next announcement with the house ear idiom (ts_backfill 126) and decay 21; unsigned (not conditioned on the earnings news)",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 6); line 9f61609229cf55d7 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

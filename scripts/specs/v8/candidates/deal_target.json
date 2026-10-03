@@ -1,0 +1,39 @@
+{
+  "id": "deal_target",
+  "dsl": "rank(deal_pending)",
+  "dsl_sha256": "815952591ce849a82926f3144c0714ee5eba0925d0d7c82971842202e71aaf05",
+  "theme": "merger_arbitrage",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Mitchell and Pulvino (2001, JF) Characteristics of risk and return in risk arbitrage; Baker and Savasoglu (2002, JFE) Limited arbitrage in mergers and acquisitions",
+  "origin": "prior",
+  "hypothesis": "deal_target",
+  "kind": "add",
+  "fields": [
+    "deal_pending"
+  ],
+  "prior_sign_source": "Mitchell-Pulvino 2001; Baker-Savasoglu 2002",
+  "form": "R(x)",
+  "formula": "deal_pending (sec-deal-target-pending-v1): 1 while the issuer is the target of a pending merger or tender offer (an original PREM14A, DEFM14A, PREM14C, DEFM14C, SC 14D9 or SC14D9C under its CIK, not an acquirer's proxy with its own S-4 in the prior 365 days, open until the first later Form 25, 25-NSE or 15 or 252 sessions), else 0; long pending targets",
+  "domain": "NaN unless the line's primary link is a domestic periodic filer (a 10-K / 10-Q family filing within 400 days); values 0 and 1",
+  "deviation": "target identified by form type under the CIK, not by a deal database; no acquirer hedge for stock deals; withdrawn deals end at 252 sessions; the merger proxy follows the announcement by weeks, so the spread is captured, not the announcement jump",
+  "lane": "YDATA",
+  "report": "task-YDATA-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 14); line 1caa171ac90d2ce8 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

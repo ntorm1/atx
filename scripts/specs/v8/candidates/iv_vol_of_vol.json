@@ -1,0 +1,39 @@
+{
+  "id": "iv_vol_of_vol",
+  "dsl": "rank(decay_linear(((-1 * (ts_std_mp(delay(iv_atm_21d, 1), 21, 12) / ts_mean_mp(delay(iv_atm_21d, 1), 21, 12))) + (0 * log(ts_std_mp(delay(iv_atm_21d, 1), 21, 12)))), 21))",
+  "dsl_sha256": "4d42a72b859c3ff4ae69ed82cf34c8263d9877c4f0600b03c6cc32887ac5fac0",
+  "theme": "options_implied",
+  "tier": "B-",
+  "prior_sign": 1,
+  "citation": "Baltussen, van Bekkum and van der Grient (2018, JFQA 53(4)) Unknown unknowns: uncertainty about risk and stock returns",
+  "origin": "prior",
+  "hypothesis": "iv_vol_of_vol",
+  "kind": "add",
+  "fields": [
+    "iv_atm_21d"
+  ],
+  "prior_sign_source": "Baltussen-van Bekkum-van der Grient 2018",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "-VOV, VOV = sample std of iv_atm_21d over the last 21 sessions / its mean over the same sessions (each with at least 12 finite cells); long low vol-of-vol",
+  "domain": "NaN with fewer than 12 finite IV cells in 21 sessions (iv_atm_21d is NaN outside [0.02, 5]) and on a flat window (std 0: 0 * log(0) is NaN)",
+  "deviation": "21 sessions with 12 required (paper: 20 days, 12 required); ddof 1 (paper 1/20); vendor 21-session constant-maturity clean ATM IV (paper: OptionMetrics nearest-ATM call/put average); flat windows NaN; house 21-session decay on a monthly measure; top 3,000; IV rows t-21..t-1, the vendor IV clock (PM8-8 (6) repair)",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 3); line 60edfca89dba05d5 (the LIB2 line 06ef2910 with --dsl and --deviation repaired, PM8-8 (6), YP-5)"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

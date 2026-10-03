@@ -1,0 +1,40 @@
+{
+  "id": "so_wang_rev",
+  "dsl": "rank((ea_window_pre5 * (-1 * group_neutralize(((close / delay(close, 3)) - 1), grp_ff49))))",
+  "dsl_sha256": "c145cd2a7c1f85ef88a9bed87662ee8e3af8c71becb1d2b3f742aacd10cf59c8",
+  "theme": "reversal_seasonality",
+  "tier": "B-",
+  "prior_sign": 1,
+  "citation": "So and Wang (2014, JFE 114(1)) News-driven return reversals: liquidity provision ahead of earnings announcements",
+  "origin": "prior",
+  "hypothesis": "so_wang_rev",
+  "kind": "add",
+  "fields": [
+    "ea_window_pre5",
+    "grp_ff49"
+  ],
+  "prior_sign_source": "So-Wang 2014",
+  "form": "R(x)",
+  "formula": "-(3-session return, FF49 industry-demeaned) while the expected earnings announcement is 1..5 sessions ahead (ea_window_pre5 = 1), else 0; short-term reversals are about six times larger ahead of scheduled earnings news (market makers price the inventory risk of holding through it)",
+  "domain": "NaN where the earnings calendar is NaN (no visible primary 8-K 2.02 within 200 days, or overdue by more than 63 sessions) or the 3-session return is NaN; 0 outside the window (most names tie at the middle rank)",
+  "deviation": "rolling 3-session return ending at the decision session while the expected date is 1..5 sessions ahead (paper: the return over days a-4..a-2, held a-1..a+1 around the realised date); expected date from the house yoy_364 calendar, not the realised date; FF49-demeaned as the house reversal members (paper: raw returns); no decay (event-window form); the house fills at t+1",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 2); line d7830943610fc079 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "id": "conn_rev",
+  "dsl": "rank((-1 * conn_ret63))",
+  "dsl_sha256": "4a1cffe83a007531b9820da67da1a0938391832c79116c5319cd11e4858bcc45",
+  "theme": "reversal_seasonality",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Anton and Polk (2014, JF 69(3)) Connected stocks",
+  "origin": "prior",
+  "hypothesis": "conn_rev",
+  "kind": "add",
+  "fields": [
+    "conn_ret63"
+  ],
+  "prior_sign_source": "Anton-Polk 2014",
+  "form": "R(x)",
+  "formula": "-conn_ret63 (ap-connected-ret63-13f-v1): the rank(FCAP)-weighted 63-session return, ending t-1, of each stock's 50 strongest connections through common active 13F owners (FCAP = common owners' value of both / the pair's market value; active = within-book active share >= 0.2); long low connected return",
+  "domain": "NaN without a fresh visible 13F network in which the line is a connected member node (F13 clock, 150 days) or with fewer than 10 valid connected returns",
+  "deviation": "13F managers instead of CRSP active mutual funds (index books screened by within-book active share, filer_type not built); FCAP rank not orthogonalized to the Table II pair controls; top-50 links; all role members, not only above the NYSE median; no own-return double sort; no month skip or five-month hold (frozen v9 string)",
+  "lane": "YDATA",
+  "report": "task-YDATA-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 15); line 2afdabf99a96d7de = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

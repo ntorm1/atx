@@ -1,0 +1,40 @@
+{
+  "id": "day_rev_freq",
+  "dsl": "rank(decay_linear(ts_mean_mp((((ret_overnight > 0) && (ret_intraday < 0)) ? 1 : 0), 21, 15), 21))",
+  "dsl_sha256": "a5416c4ea13d4422592b378716d2a11b493d0152d06c2a48afc3b5937e42c5a7",
+  "theme": "reversal_seasonality",
+  "tier": "B-",
+  "prior_sign": 1,
+  "citation": "Akbas, Boehmer, Jiang and Koch (2022, JFE 145(3)) Overnight returns, daytime reversals, and future stock returns",
+  "origin": "prior",
+  "hypothesis": "day_rev_freq",
+  "kind": "add",
+  "fields": [
+    "ret_intraday",
+    "ret_overnight"
+  ],
+  "prior_sign_source": "Akbas-Boehmer-Jiang-Koch 2022",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "share of the last 21 sessions (at least 15 with both returns finite) with a positive overnight return followed by a negative intraday return of the same session (ret_overnight > 0 and ret_intraday < 0); a frequent tug of war predicts higher returns",
+  "domain": "a session counts only when both returns are finite (compare and && propagate NaN); NaN with fewer than 15 such sessions; withdrawn at 0 trials if the fields lack the vendor open (FieldNeedsOpen)",
+  "deviation": "rolling 21 sessions, not the calendar month; vendor open, not the auction print (a factor step dated t-1 sits in the overnight return); one-session field lag; house 21-session decay",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 4); line f57d3a76a9df22a1 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "id": "peer_mom_1m",
+  "dsl": "rank(decay_linear((((group_mean(((close / delay(close, 21)) - 1), grp_ff49) * group_count(((close / delay(close, 21)) - 1), grp_ff49)) - ((close / delay(close, 21)) - 1)) / (group_count(((close / delay(close, 21)) - 1), grp_ff49) - 1)), 21))",
+  "dsl_sha256": "67d4ff4a86c439d7734f7cf6ceff56318137ee1565a3729430a736caada2de77",
+  "theme": "price_momentum",
+  "tier": "B-",
+  "prior_sign": 1,
+  "citation": "Moskowitz and Grinblatt (1999, JF 54(4)) Do industries explain momentum?",
+  "origin": "prior",
+  "hypothesis": "peer_mom_1m",
+  "kind": "add",
+  "fields": [
+    "grp_ff49"
+  ],
+  "prior_sign_source": "Moskowitz-Grinblatt 1999",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "equal-weighted mean 21-session return of the stock's FF49 industry peers with the stock itself excluded: (n x group_mean(r21) - r21) / (n - 1), n = the industry's names with a finite r21; industries that won over the last month continue (industry momentum is strongest at one month)",
+  "domain": "NaN where the stock's own 21-session return or its FF49 label is NaN, and for a stock alone in its industry (n = 1: 0 / 0)",
+  "deviation": "equal-weighted peers, not the paper's value-weighted industry portfolios (the value-weighted leave-one-out string needs 8 slots in the compiler mirror, over the house 7; equal weights as ind_mom_12_1); the stock is left out of its own industry mean (its own one-month return, which reverses, is not in the signal); 49 Fama-French industries, not the paper's 20; rolling 21 sessions with the house decay, not monthly portfolios; a sibling share class of the same company counts as a peer",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 1); line 89e07be1e33db181 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

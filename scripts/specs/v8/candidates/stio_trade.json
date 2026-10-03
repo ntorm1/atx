@@ -1,0 +1,39 @@
+{
+  "id": "stio_trade",
+  "dsl": "rank(stio_chg_q)",
+  "dsl_sha256": "e845ba078144883ba13eefd48bfce4d1016dbf35e889515d64b46b4f6ccc619e",
+  "theme": "ownership_flow",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Yan and Zhang (2009, RFS 22(2)) Institutional investors and equity returns: are short-term institutions better informed?; Gaspar, Massa and Matos (2005, JFE) churn rate",
+  "origin": "prior",
+  "hypothesis": "stio_trade",
+  "kind": "add",
+  "fields": [
+    "stio_chg_q"
+  ],
+  "prior_sign_source": "Yan-Zhang 2009",
+  "form": "R(x)",
+  "formula": "stio_chg_q (yz-stio-chg-q-v1): change over the anchor 13F quarter P of the fraction of shares outstanding held by the filers classified short-term at P-1 (top tercile of the Gaspar-Massa-Matos minimum churn averaged over P-4..P-1, computed from their own 13F books); long names short-term institutions bought",
+  "domain": "NaN without a fresh visible 13F quarter with positions in the security (F13 clock, 150 days), without the previous calendar quarter, without a short-term classification (4 consecutive churn quarters, 3 classified filers), without shares_out, or with a level above 2",
+  "deviation": "13F filers of every type; churn on each filer's mapped book with a holder-detected share-basis change instead of CRSP adjustment factors; minimum churn at quarter-end 13F prices (median implied value / shares); shares outstanding = the house A8 90-day lagged vendor count; quarter visible after its 45-day deadline + 46 h, forward-filled until the next",
+  "lane": "YDATA",
+  "report": "task-YDATA-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 12); line 7dfca7c66bb61edc = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

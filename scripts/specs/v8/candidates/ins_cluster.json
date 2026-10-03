@@ -1,0 +1,39 @@
+{
+  "id": "ins_cluster",
+  "dsl": "rank(ins_cluster_buy)",
+  "dsl_sha256": "a3dfad407c4cd493562022b50172e18ab764033812844a6b23b9209a788f23d2",
+  "theme": "ownership_flow",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Alldredge and Blank (2019, Journal of Financial Research 42(2)) Do insiders cluster trades with colleagues? Evidence from daily insider trading",
+  "origin": "prior",
+  "hypothesis": "ins_cluster",
+  "kind": "add",
+  "fields": [
+    "ins_cluster_buy"
+  ],
+  "prior_sign_source": "Alldredge-Blank 2019",
+  "form": "R(x)",
+  "formula": "ins_cluster_buy: 1 when at least 3 distinct insiders (directors or officers) made open-market purchases with transaction dates in the last 21 sessions, visible at t, else 0; clustered insider purchases are followed by higher abnormal returns over the next month than solitary ones",
+  "domain": "NaN without a visible insider transaction row of the issuer within 365 days (Section 16 presence; foreign private issuers NaN); a binary flag: flagged names tie at the top rank, the rest tie below",
+  "deviation": "cluster = at least 3 distinct buyers within 21 sessions (field sec-ins-cluster-buy21-min3-v1), not the paper's purchase within two days of a peer insider's purchase; directors and officers on original Form 4s (10% owners and joint 10%-owner filings excluded); continuous rank of a flag, not an event-time portfolio; no decay (the flag lives 21 sessions from the trade date)",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 10); line 2c7272b4d4e4c852 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}

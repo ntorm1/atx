@@ -1,0 +1,42 @@
+{
+  "id": "dato",
+  "dsl": "group_rank(decay_linear(((((sale_ttm / noa) - (delay(sale_ttm, 252) / noa_lag4)) + (0 * log(noa))) + (0 * log(noa_lag4))), 21), grp_ff12)",
+  "dsl_sha256": "694fbe591a52faf131cebef6b0ccc753b3d30d7a7fa99609ce3f1915a916a20d",
+  "theme": "profitability_quality",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Soliman (2008, The Accounting Review 83(3)) The use of DuPont analysis by market participants",
+  "origin": "prior",
+  "hypothesis": "dato",
+  "kind": "add",
+  "fields": [
+    "grp_ff12",
+    "noa",
+    "noa_lag4",
+    "sale_ttm"
+  ],
+  "prior_sign_source": "Soliman 2008",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "change in asset turnover: sale_ttm / noa - (sale_ttm 252 sessions earlier) / noa_lag4, ranked within FF12; a rise in asset turnover predicts higher returns",
+  "domain": "NaN where net operating assets now or four quarters earlier are not positive (0 x log guard) or an input is NaN",
+  "deviation": "NOA at the period end, not average NOA; prior-year sales = sale_ttm 252 sessions earlier (the filing clock can read a TTM one quarter off for a few sessions around a filing; noa_lag4 is the exact four-quarter lag); continuous rank within FF12 (house R1), not deciles; house decay",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 7); line 61728bcc94dcc87f = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    }
+  ]
+}
