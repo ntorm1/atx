@@ -1,0 +1,5 @@
+{"cell":"fx-cell-1","count":1,"kind":"fixture","schema":"atx.trial-ledger/v1","trial_id":"fx-t1"}
+{"cell":"fx-cell-2","count":2,"kind":"fixture","schema":"atx.trial-ledger/v1","trial_id":"fx-t2"}
+{"cell":"fx-cell-3","count":3,"kind":"fixture","prev_sha256":"ae0d3acbbd4ebd91e0110d55165c1b57e9a71abe18f38d6588644fba4cb89cfb","schema":"atx.trial-ledger/v1","trial_id":"fx-t3"}
+{"cell":"fx-cell-4","count":4,"kind":"fixture","prev_sha256":"f93d046902418a50e4755a4138d16a272af906454eecd6c4c3b290e181e89050","schema":"atx.trial-ledger/v1","trial_id":"fx-t4"}
+{"cell":"fx-cell-5","count":5,"kind":"fixture","prev_sha256":"079296c237a3168178806165c0d4ac056081c8047a7e60c61665fe777ad29ef4","schema":"atx.trial-ledger/v1","trial_id":"fx-t5"}

@@ -1,0 +1,10 @@
+{
+  "schema": "atx.dsl-ic-library/v1",
+  "name": "lib-fx",
+  "candidates": [
+    {
+      "id": "fx_alpha_a",
+      "dsl": "rank(x)"
+    }
+  ]
+}
