@@ -339,6 +339,39 @@ TEST(TransferCoefficient, OneForTheUnconstrainedSignalPortfolioNaNWhenFlat) {
   EXPECT_TRUE(std::isnan(cv::transfer_coefficient(member, desired, sigma, std::vector<f64>(5, 0.1))));
 }
 
+// ---- P9 C1 (DEC-11, Ruling P10): the square-root law by std::sqrt ---------------------------
+// The capacity law impact_y * m^.5 and the S2 law's marginal cost (1 + .5) Y sigma (q/ADV)^.5
+// take std::sqrt (correctly rounded in every build and C runtime). The expected bits were
+// computed in Python (binary64, math.sqrt) in the C++ operation order; root runs this suite in
+// the Debug and the Release build (the capacity books and aim-partial-v6's c_i then cannot
+// differ between builds through this law).
+TEST(ReplayCostSqrt, CapacityLawAndS2MarginalCostBitsArePinned) {
+  const auto books = cv::capacity_scenarios(s2());
+  ASSERT_EQ(books.size(), cv::capacity_multiples.size());
+  constexpr u64 impact_y[] = {0x3fdb27247aff148fULL, 0x3fe3333333333333ULL,
+                              0x3feb27247aff148fULL, 0x3ff3333333333333ULL,
+                              0x3ffb27247aff148fULL}; // .6 x sqrt(m), m = .5, 1, 2, 4, 8
+  for (usize k = 0; k < books.size(); ++k)
+    EXPECT_EQ(bits(books[k].impact_y), impact_y[k]) << books[k].id;
+  struct Case {
+    f64 q, adv, sigma;
+    u64 expected;
+  };
+  constexpr Case cases[] = {{50000.0, 20000000.0, 0.018, 0x3f5719f7f8ca8198ULL},
+                            {1234.5, 750000.0, 0.031, 0x3f5c603c69cd192cULL},
+                            {900000.0, 440000000.0, 0.0123, 0x3f5208803bb78a4dULL}};
+  for (const auto& c : cases)
+    EXPECT_EQ(bits(cv::marginal_cost_s2(s2(), c.q, c.adv, c.sigma)), c.expected) << c.q;
+  // sigma NaN: the scenario's fallback vol (.05).
+  EXPECT_EQ(bits(cv::marginal_cost_s2(s2(), 50000.0, 20000000.0, missing)),
+            0x3f6758e219652bd4ULL);
+  // Another exponent keeps std::pow: delta 1 is linear in q / ADV (to std::pow's rounding).
+  auto linear = s2();
+  linear.impact_delta = 1.0;
+  EXPECT_DOUBLE_EQ(cv::marginal_cost_s2(linear, 50000.0, 20000000.0, 0.018),
+                   (5.0 + 1.0) * 1e-4 + (1.0 + 1.0) * 0.6 * 0.018 * (50000.0 / 20000000.0));
+}
+
 // ---- the v7 hook --------------------------------------------------------------------------
 TEST(NavV7Hook, NoExtensionIsTheIdentityAtEverySeam) {
   const auto matrix = st::nav_scenario_matrix(false);
