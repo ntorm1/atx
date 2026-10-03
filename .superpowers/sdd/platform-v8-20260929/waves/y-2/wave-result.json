@@ -1,0 +1,374 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "y-2",
+  "kind": "rule",
+  "description": "Cell Y-2 theme-tsmom-v1 (v8y-prereg sections 5, 6, 14; PM8-10 (c), (e); YP-7): rule wave, template scripts/specs/v8/y-theme-tsmom.json @ 43745dd7 (blob 9d3548b6), registered constants lookback 252, lag 3, step 21 inside fit --theme-tsmom theme-tsmom-v1 (the template's flag), on the parent's fit argv, u the parent's; parent = Y-S cell lib-v8ysb-gm.json (library v8ysb, L 1.1828; Y-3 not accepted, wave-result 619809ea next_parent); fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); PM6-6 gross matching; dSR SE printed with its 2021-2023 window (PM8-10 (c)); CM-2: the sleeves use the parent's full-TRAIN weights and the rule is a frozen mask out of sample, the registration stands (PM8-12 (e)); budget construction N 58 + 1 <= 62 (N_c(X-F0) + 6), 0 admission trials.",
+  "manifest": {
+    "commit": "15017bb41023fe4c7032a378f15b1e8e055f1e6a",
+    "path": "scripts/specs/v8/waves/y-2.json",
+    "sha256": "3655181d316f65489064576e763cd01955ddb9ac9dce7a94deea8872ec19b538"
+  },
+  "library": null,
+  "template": "scripts/specs/v8/y-theme-tsmom.json",
+  "budget": {
+    "construction_cap": 62,
+    "id": "v8y-construction-n58-plus-1"
+  },
+  "parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "spec_digest": "1e3ec118273cb52d7248568011e7dc24a211e7204c25b1116f5a5bd7deaa8626",
+    "library": "v8ysb",
+    "nav": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+    "leverage": "1.1828"
+  },
+  "screen": null,
+  "cell": {
+    "spec": "scripts/specs/v8/y-theme-tsmom-y-2-gm.json",
+    "spec_digest": "e84e35cc12809e87033a4b5a27a3771fcaed0d489647ef540227b4b6e9e67bd2",
+    "library": "v8ysb",
+    "kind": "rule",
+    "nav": "build-equity/mega-nav-v8y-theme-tsmom-L1.2038",
+    "leverage": "1.2038",
+    "gross": 0.9862340550340142,
+    "gross_parent": 0.9862134133265011,
+    "gross_calibration": 0.968983662083361,
+    "leverage_calibration": "1.1828",
+    "corrected": true,
+    "gross_match": "pm6-6"
+  },
+  "marginal": null,
+  "mechanics": {
+    "pass": true,
+    "rows": [
+      {
+        "check": "gross_all_rows",
+        "limit": "[0.9, 1.05]",
+        "pass": true,
+        "value": 0.9862340550340142
+      },
+      {
+        "check": "abs_net_all_rows",
+        "limit": "<= 0.02",
+        "pass": true,
+        "value": 0.004841113552102103
+      },
+      {
+        "check": "tau_mean",
+        "limit": "<= 0.2",
+        "pass": true,
+        "value": 0.030218918016125893
+      },
+      {
+        "check": "tau_p95",
+        "limit": "<= 0.3",
+        "pass": true,
+        "value": 0.04758974567738255
+      },
+      {
+        "check": "max_return_identity_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 4.3639137442541553e-16
+      },
+      {
+        "check": "max_cash_book_relative_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.8829006163548024e-14
+      }
+    ],
+    "rule": "v8-mech"
+  },
+  "nav_exe": {
+    "cell": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "equal": true,
+    "parent": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "ref": "none"
+  },
+  "seal_scan": {
+    "files": 37,
+    "seal": "2024-01-01",
+    "forms": [
+      "iso",
+      "compact",
+      "year",
+      "quarter"
+    ],
+    "tokens_at_or_after_seal": 0,
+    "where": [],
+    "seal_references": {
+      "tokens": 0,
+      "files": []
+    },
+    "allowed": [
+      {
+        "token": "2026-10-02",
+        "ruling": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/y-2/consoles/004-calibration-run----stop-after-nav.log",
+          "build-equity/waves/y-2/consoles/005-mechanics-reader.log",
+          "build-equity/waves/y-2/consoles/009-matched-run----stop-after-nav.log",
+          "build-equity/waves/y-2/consoles/010-mechanics-reader.log",
+          "build-equity/waves/y-2/consoles/011-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/y-2/consoles/012-bundle--pm5-23.log",
+          "build-equity/waves/y-2/consoles/013-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-03",
+        "ruling": "receipt started_utc wall-clock (PM SEAL-ALLOW)",
+        "tokens": 4,
+        "files": [
+          "build-equity/waves/y-2/consoles/005-mechanics-reader.log",
+          "build-equity/waves/y-2/consoles/010-mechanics-reader.log",
+          "build-equity/waves/y-2/consoles/012-bundle--pm5-23.log",
+          "build-equity/waves/y-2/consoles/013-book-reader.log"
+        ]
+      },
+      {
+        "token": "20260927",
+        "ruling": "nav_summ's default bootstrap seed (not a date)",
+        "tokens": 1,
+        "files": [
+          "build-equity/cycle-v8y-theme-tsmom-y-2-gm/summ-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20260929",
+        "ruling": "nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)",
+        "tokens": 68,
+        "files": [
+          "build-equity/cycle-v8y-theme-tsmom-y-2-gm/summ-run1/stdout.log",
+          "build-equity/waves/y-2/bundle-run1/stdout.log"
+        ]
+      }
+    ],
+    "rulings": {
+      "2026-10-02": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+      "2026-10-03": "receipt started_utc wall-clock (PM SEAL-ALLOW)"
+    }
+  },
+  "stats": {
+    "cell": {
+      "ann_vol": 0.03153123153586342,
+      "annual_costs": {
+        "borrow": 0.0032638968299516908,
+        "long_financing": 0.0020116477380304324,
+        "trade_cost": 0.009399132075896037
+      },
+      "cagr": 0.048509923193242654,
+      "cost_bps_traded": 12.613503275693525,
+      "daily_csv_sha256": "06fab81beb84efd67e82ad47d951536b0210e96b634655227aeedafe7d52f233",
+      "dir": "build-equity/mega-nav-v8y-theme-tsmom-L1.2038",
+      "gross_annual": 0.06254591676634855,
+      "gross_sharpe": 1.983580712474728,
+      "max_drawdown": 0.033925652771121695,
+      "mean_gross_leverage_all_rows": 0.9862340550340142,
+      "net_annual": 0.04787124012247038,
+      "net_sharpe": 1.518216631279433,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.030218918016125893,
+      "tau_per_gross": 0.030640716432250633,
+      "x4_net_sharpe": 1.349751164520677
+    },
+    "parent": {
+      "ann_vol": 0.030569717335626075,
+      "annual_costs": {
+        "borrow": 0.003275975200840431,
+        "long_financing": 0.0020127166514112933,
+        "trade_cost": 0.008851338874388331
+      },
+      "cagr": 0.05766642148886314,
+      "cost_bps_traded": 12.657953278624719,
+      "daily_csv_sha256": "73b69bcceb122b7c21bb3f75619058c51b8104ebd8a694bbbb1b12db14b401b0",
+      "dir": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+      "gross_annual": 0.07067817348886478,
+      "gross_sharpe": 2.3117806086991832,
+      "max_drawdown": 0.02580037230369092,
+      "mean_gross_leverage_all_rows": 0.9862134133265011,
+      "net_annual": 0.05653814276222473,
+      "net_sharpe": 1.849482026329859,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.028134396709054203,
+      "tau_per_gross": 0.028527696266223746,
+      "x4_net_sharpe": 1.6994264697927697
+    }
+  },
+  "paired": {
+    "cbb_ci": [
+      -1.0569527140577306,
+      0.23048206379363126
+    ],
+    "dsr": -0.33126539505042607,
+    "lw_p": 0.3976,
+    "se": 0.23066208082480136
+  },
+  "bundle": {
+    "cbb_ci95": [
+      -1.0569527140577306,
+      0.23048206379363126
+    ],
+    "dsr": -0.33126539505042607,
+    "freeze_gate": false,
+    "lw_ci95": [
+      -1.3585562467447394,
+      0.6956955931481709
+    ],
+    "memmel_se": 0.23066208082480136,
+    "p_one_sided": 0.8794,
+    "p_two_sided": 0.3976,
+    "path": "build-equity/waves/y-2/bundle.json",
+    "rho": 0.8951228867918395,
+    "sessions": 1005,
+    "sha256": "16a246b1b5d5cc107a5bc08838ba23717ff5778edc4a0a3666c405d537d8f854"
+  },
+  "dsr": {
+    "cell_count": 0.6456598642516174,
+    "effective_n": 0.9947867347465698,
+    "legacy": {
+      "cells": 37,
+      "dsr": 0.8831928949539738,
+      "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"
+    },
+    "n": 59,
+    "source": "nav_summ --dsr-ledger (deflated_ledger)",
+    "variance_cells": 30,
+    "variance_sr": 0.0012767775291618454,
+    "window_id": "research-window-v2"
+  },
+  "pbo": 0.15112665112665113,
+  "verdict": {
+    "accepted": false,
+    "checks": {
+      "criteria": false,
+      "dsr_positive": false,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      },
+      {
+        "criterion": "cost-bps-lower",
+        "met": true,
+        "printed": "met",
+        "text": "S2 cost_bps_traded lower than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": -0.33126539505042607,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 129,
+    "lines_after": 130,
+    "head": "58bce60efae09d44750a3e247ff81262d50778cc8a78dd7f14e8e351a4f56d73",
+    "n_before": 58,
+    "n_after": 59,
+    "trial_id": "aeeb2073e0bd8e2a",
+    "admission_lines": []
+  },
+  "next_parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "timings": [
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 530,
+      "phase": "u",
+      "run_dir": "build-equity/mega-v8-b0b-train-u-v8ysb-run1",
+      "seconds": 12.68800000000192
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 57,
+      "phase": "fit",
+      "run_dir": "build-equity/mega-weights-v8y-theme-tsmom-run1",
+      "seconds": 0.7810000000026776
+    },
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1432,
+      "phase": "w",
+      "run_dir": "build-equity/mega-v8yw-train-theme-tsmom-run1",
+      "seconds": 42.21899999999732
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8y-theme-tsmom-run",
+      "seconds": 43.5
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1396,
+      "phase": "card",
+      "run_dir": "build-equity/mega-cards-v8y-theme-tsmom-run",
+      "seconds": 18.17199999999866
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8y-theme-tsmom-L1.2038-run",
+      "seconds": 47.390999999995984
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 130,
+      "phase": "monitor",
+      "run_dir": "build-equity/mega-monitor-v8y-theme-tsmom-run",
+      "seconds": 1.5619999999980791
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 609,
+      "phase": "summ",
+      "run_dir": "build-equity/cycle-v8y-theme-tsmom-y-2-gm/summ-run1",
+      "seconds": 34.40600000000268
+    }
+  ],
+  "receipts": {
+    "01-preflight": "a7f876c13100abae6e73d82581d092f2c50cfc98fcd66b8cfa41401f642c62f3",
+    "02-register": "87a9551cc61431be410584d90df0065c13facf352cf97a5d0b77a4aeae7bbc0a",
+    "03-screen": "15ea31c51f4bb7eaf5bc109e3bf72da8fbe8c9b93bea586c57ffa25501058eff",
+    "04-spec": "ccf78090e9af5fb1a60d077bea26f29dcc40e67a643287d1ea4d10b78d10debe",
+    "05-run": "309b66eda38dc61c3bb106ccf5f0025ef1a735dec5dfe01404d75292ac11cb67",
+    "06-match": "8d8aa008d97d5bbbc3385c0b3d0a235db540ccd1dd19f8a3ffa161b9b23fb099",
+    "07-verify": "60dd5f657f9a443212485e0a452007287f94b8ce474b714ecb7d150005e97482",
+    "08-judge": "d8096f2d7319e73821d32100d4be82c846d057623f5f0eacb54c74d3c739d356"
+  }
+}
